@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -121,6 +122,7 @@ int main() {
     const bool akaze = matcher_case.matcher == hm::stitching::ControlPointMatcher::kAkazeHamming;
     const cv::Mat matcher_left = akaze ? left(cv::Rect(0, 0, 640, left.rows)).clone() : left;
     const cv::Mat matcher_right = akaze ? left(cv::Rect(320, 0, 640, left.rows)).clone() : right;
+    const auto started = std::chrono::steady_clock::now();
     auto matches = (*matcher)->Infer(matcher_left, matcher_right, 32);
     if (!matches.ok() || matches->accepted_match_count < 8 || matches->selected.empty() ||
         matches->selected.size() > 32) {
@@ -128,6 +130,20 @@ int main() {
                 << " inference: " << (matches.ok() ? "too few matches" : matches.status().ToString()) << '\n';
       return 1;
     }
+    if (matcher_case.matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue) {
+      size_t translated = 0;
+      for (const auto& match : matches->accepted) {
+        if (cv::norm(match.right - match.left - cv::Point2f(7.0f, 3.0f)) < 2.0)
+          ++translated;
+      }
+      if (translated * 2 < matches->accepted.size()) {
+        std::cerr
+            << "FAIL: SuperPoint matches must preserve the source translation after doubled-resolution inference\n";
+        return 1;
+      }
+    }
+    std::cout << matcher_case.name << ": " << matches->accepted_match_count << " matches in "
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() << " s\n";
   }
   return 0;
 }

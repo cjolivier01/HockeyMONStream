@@ -35,7 +35,8 @@ float bgr_channel_to_unit_float(const cv::Mat& image, int y, int x, int channel)
 absl::StatusOr<FeaturePairInput> prepare_feature_pair(
     const cv::Mat& left_bgr,
     const cv::Mat& right_bgr,
-    int input_channels) {
+    int input_channels,
+    cv::Size tensor_size) {
   auto status = validate_source_image(left_bgr, "Left");
   if (!status.ok())
     return status;
@@ -49,18 +50,17 @@ absl::StatusOr<FeaturePairInput> prepare_feature_pair(
   FeaturePairInput result;
   result.source_sizes[0] = left_bgr.size();
   result.source_sizes[1] = right_bgr.size();
-  result.tensor_size = {FeatureMatcher::kInputWidth, FeatureMatcher::kInputHeight};
-  const size_t image_plane = static_cast<size_t>(FeatureMatcher::kInputHeight) * FeatureMatcher::kInputWidth;
+  result.tensor_size = tensor_size;
+  const size_t image_plane = static_cast<size_t>(tensor_size.height) * tensor_size.width;
   result.tensor.assign(2 * static_cast<size_t>(input_channels) * image_plane, 0.0f);
   const cv::Mat* images[] = {&left_bgr, &right_bgr};
   for (int image_index = 0; image_index < 2; ++image_index) {
     const cv::Mat& source = *images[image_index];
     const double scale = std::min(
-        static_cast<double>(FeatureMatcher::kInputWidth) / source.cols,
-        static_cast<double>(FeatureMatcher::kInputHeight) / source.rows);
+        static_cast<double>(tensor_size.width) / source.cols, static_cast<double>(tensor_size.height) / source.rows);
     const int width = std::max(32, static_cast<int>(std::round(source.cols * scale)));
     const int height = std::max(32, static_cast<int>(std::round(source.rows * scale)));
-    if (width > FeatureMatcher::kInputWidth || height > FeatureMatcher::kInputHeight) {
+    if (width > tensor_size.width || height > tensor_size.height) {
       return absl::InternalError("Feature resize exceeded its fixed ONNX canvas");
     }
     result.resized_sizes[image_index] = {width, height};
@@ -73,19 +73,17 @@ absl::StatusOr<FeaturePairInput> prepare_feature_pair(
         const float green = bgr_channel_to_unit_float(resized, y, x, 1);
         const float red = bgr_channel_to_unit_float(resized, y, x, 2);
         if (input_channels == 1) {
-          result.tensor[image_base + static_cast<size_t>(y) * FeatureMatcher::kInputWidth + x] =
+          result.tensor[image_base + static_cast<size_t>(y) * tensor_size.width + x] =
               0.299f * red + 0.587f * green + 0.114f * blue;
           continue;
         }
         result.tensor
-            [image_base + static_cast<size_t>(0) * image_plane + static_cast<size_t>(y) * FeatureMatcher::kInputWidth +
-             x] = red;
+            [image_base + static_cast<size_t>(0) * image_plane + static_cast<size_t>(y) * tensor_size.width + x] = red;
         result.tensor
-            [image_base + static_cast<size_t>(1) * image_plane + static_cast<size_t>(y) * FeatureMatcher::kInputWidth +
-             x] = green;
+            [image_base + static_cast<size_t>(1) * image_plane + static_cast<size_t>(y) * tensor_size.width + x] =
+            green;
         result.tensor
-            [image_base + static_cast<size_t>(2) * image_plane + static_cast<size_t>(y) * FeatureMatcher::kInputWidth +
-             x] = blue;
+            [image_base + static_cast<size_t>(2) * image_plane + static_cast<size_t>(y) * tensor_size.width + x] = blue;
       }
     }
   }
@@ -385,7 +383,11 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::CreateLegacyAlik
 }
 
 absl::StatusOr<FeaturePairInput> FeatureMatcher::Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
-  return prepare_feature_pair(left_bgr, right_bgr, 3);
+  return prepare_feature_pair(left_bgr, right_bgr, 3, {kInputWidth, kInputHeight});
+}
+
+absl::StatusOr<FeaturePairInput> FeatureMatcher::PrepareSuperPoint(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
+  return prepare_feature_pair(left_bgr, right_bgr, 1, {kSuperPointInputWidth, kSuperPointInputHeight});
 }
 
 absl::StatusOr<FeaturePairInput> FeatureMatcher::PrepareLoFTR(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
@@ -466,14 +468,9 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessSparse(
   if (max_control_points == 0) {
     return absl::InvalidArgumentError("Maximum control point count must be positive");
   }
-  for (int image_index = 0; image_index < 2; ++image_index) {
-    if (input.source_sizes[image_index].width <= 0 || input.source_sizes[image_index].height <= 0 ||
-        input.resized_sizes[image_index].width <= 0 || input.resized_sizes[image_index].height <= 0 ||
-        input.resized_sizes[image_index].width > kInputWidth ||
-        input.resized_sizes[image_index].height > kInputHeight) {
-      return absl::InvalidArgumentError("Feature preprocessing metadata is invalid");
-    }
-  }
+  auto metadata_status = validate_preprocessing_metadata(input);
+  if (!metadata_status.ok())
+    return metadata_status;
 
   std::vector<FeatureMatch> accepted;
   accepted.reserve(score_count);
@@ -715,7 +712,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
     return absl::FailedPreconditionError("Feature matcher has no inference session");
 
   auto input = matcher_ == ControlPointMatcher::kLoFTR ? PrepareLoFTR(left_bgr, right_bgr)
-                                                       : prepare_feature_pair(left_bgr, right_bgr, input_channels_);
+      : input_channels_ == 1                           ? PrepareSuperPoint(left_bgr, right_bgr)
+                                                       : Prepare(left_bgr, right_bgr);
   if (!input.ok())
     return input.status();
   absl::StatusOr<std::vector<hm::onnx::Tensor>> outputs = absl::InternalError("Unknown feature matcher");
@@ -731,7 +729,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
   } else {
     outputs = session_->RunFloat(
         "images",
-        {2, input_channels_, kInputHeight, kInputWidth},
+        {2, input_channels_, input->tensor_size.height, input->tensor_size.width},
         input->tensor.data(),
         input->tensor.size(),
         is_cancelled);
