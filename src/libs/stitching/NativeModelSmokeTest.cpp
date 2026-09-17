@@ -8,6 +8,7 @@
 #include <random>
 #include <string>
 
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 namespace fs = std::filesystem;
@@ -64,6 +65,7 @@ int main() {
     std::cerr << "FAIL: rink model inference: " << rink_result.status() << '\n';
     return 1;
   }
+  rink->reset();
 
   cv::Mat texture(576, 1024, CV_8UC1);
   std::mt19937 rng(3);
@@ -101,6 +103,7 @@ int main() {
               << (legacy_matches.ok() ? "too few matches" : legacy_matches.status().ToString()) << '\n';
     return 1;
   }
+  legacy_aliked->reset();
   struct MatcherCase {
     const char* name;
     hm::stitching::ControlPointMatcher matcher;
@@ -120,8 +123,25 @@ int main() {
     }
     // AKAZE expects the right half of the left camera to overlap the left half of the right camera.
     const bool akaze = matcher_case.matcher == hm::stitching::ControlPointMatcher::kAkazeHamming;
-    const cv::Mat matcher_left = akaze ? left(cv::Rect(0, 0, 640, left.rows)).clone() : left;
-    const cv::Mat matcher_right = akaze ? left(cv::Rect(320, 0, 640, left.rows)).clone() : right;
+    cv::Mat matcher_left = akaze ? left(cv::Rect(0, 0, 640, left.rows)).clone() : left;
+    cv::Mat matcher_right = akaze ? left(cv::Rect(320, 0, 640, left.rows)).clone() : right;
+    const bool superpoint = matcher_case.matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue;
+    const char* game_dir = std::getenv("HM_SUPERPOINT_SMOKE_GAME_DIR");
+    const bool real_superpoint_images = superpoint && game_dir != nullptr && *game_dir != '\0';
+    if (real_superpoint_images) {
+      constexpr int flags = cv::IMREAD_COLOR | cv::IMREAD_ANYDEPTH | cv::IMREAD_IGNORE_ORIENTATION;
+      matcher_left = cv::imread((fs::path(game_dir) / "left.png").string(), flags);
+      matcher_right = cv::imread((fs::path(game_dir) / "right.png").string(), flags);
+      if (matcher_left.empty() || matcher_right.empty()) {
+        std::cerr << "FAIL: SuperPoint game fixture must contain left.png and right.png\n";
+        return 1;
+      }
+    } else if (superpoint) {
+      // Exercise native 4K-sized input, stride alignment, and unequal camera dimensions.
+      cv::resize(left, matcher_left, {3841, 2161});
+      cv::warpAffine(matcher_left, matcher_right, transform, matcher_left.size());
+      matcher_right = matcher_right(cv::Rect(0, 0, 3837, 2157));
+    }
     const auto started = std::chrono::steady_clock::now();
     auto matches = (*matcher)->Infer(matcher_left, matcher_right, 32);
     if (!matches.ok() || matches->accepted_match_count < 8 || matches->selected.empty() ||
@@ -130,20 +150,21 @@ int main() {
                 << " inference: " << (matches.ok() ? "too few matches" : matches.status().ToString()) << '\n';
       return 1;
     }
-    if (matcher_case.matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue) {
+    if (superpoint && !real_superpoint_images) {
       size_t translated = 0;
       for (const auto& match : matches->accepted) {
         if (cv::norm(match.right - match.left - cv::Point2f(7.0f, 3.0f)) < 2.0)
           ++translated;
       }
       if (translated * 2 < matches->accepted.size()) {
-        std::cerr
-            << "FAIL: SuperPoint matches must preserve the source translation after doubled-resolution inference\n";
+        std::cerr << "FAIL: SuperPoint matches must preserve the source translation after full-resolution inference\n";
         return 1;
       }
     }
-    std::cout << matcher_case.name << ": " << matches->accepted_match_count << " matches in "
-              << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() << " s\n";
+    std::cout << matcher_case.name << " (" << matcher_left.cols << 'x' << matcher_left.rows << ", "
+              << matcher_right.cols << 'x' << matcher_right.rows << "): " << matches->accepted_match_count
+              << " matches in " << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
+              << " s\n";
   }
   return 0;
 }

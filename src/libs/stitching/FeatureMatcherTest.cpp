@@ -71,19 +71,20 @@ int main() {
   ok &= expect(superpoint.ok(), "valid SuperPoint images must preprocess");
   if (superpoint.ok()) {
     ok &= expect(
-        superpoint->tensor_size == cv::Size(2048, 1152) && superpoint->resized_sizes[0] == cv::Size(2048, 1152) &&
-            superpoint->resized_sizes[1] == cv::Size(1152, 1152),
-        "SuperPoint must preserve aspect ratios in its doubled canvas");
-    const size_t image_plane = static_cast<size_t>(1152) * 2048;
+        superpoint->tensor_size == cv::Size(160, 104) && superpoint->resized_sizes[0] == left.size() &&
+            superpoint->resized_sizes[1] == right.size(),
+        "SuperPoint must keep each original size and pad the shared canvas to multiples of eight");
+    const size_t image_plane = static_cast<size_t>(104) * 160;
     ok &= expect(superpoint->tensor.size() == 2 * image_plane, "SuperPoint must receive two grayscale planes");
     const float left_gray = (0.299f * 10 + 0.587f * 20 + 0.114f * 30) / 255.0f;
     const float right_gray = (0.299f * 40 + 0.587f * 50 + 0.114f * 60) / 255.0f;
     ok &= expect(
-        std::abs(superpoint->tensor[image_plane - 1] - left_gray) < 1e-6f &&
-            std::abs(superpoint->tensor[image_plane + 1151 * 2048 + 1151] - right_gray) < 1e-6f,
-        "SuperPoint must normalize grayscale through the last resized pixel of both images");
+        std::abs(superpoint->tensor[89 * 160 + 159] - left_gray) < 1e-6f &&
+            std::abs(superpoint->tensor[image_plane + 99 * 160 + 99] - right_gray) < 1e-6f,
+        "SuperPoint must normalize grayscale through the last original pixel of both images");
     ok &= expect(
-        superpoint->tensor[image_plane + 1152] == 0.0f && superpoint->tensor.back() == 0.0f,
+        superpoint->tensor[90 * 160] == 0.0f && superpoint->tensor[image_plane + 100] == 0.0f &&
+            superpoint->tensor.back() == 0.0f,
         "SuperPoint padding must remain zero");
   }
   auto superpoint16 = hm::stitching::FeatureMatcher::PrepareSuperPoint(left16, right16);
@@ -92,6 +93,33 @@ int main() {
     ok &= expect(
         std::abs(superpoint16->tensor[0] - (0.299f * 1000 + 0.587f * 2000 + 0.114f * 3000) / 65535.0f) < 1e-6f,
         "16-bit SuperPoint input must use normalized grayscale");
+  }
+  ok &= expect(!hm::stitching::FeatureMatcher::PrepareSuperPoint({}, right).ok(), "empty SuperPoint images must fail");
+  const cv::Mat tiny(2, 3, CV_8UC3, cv::Scalar::all(255));
+  auto tiny_superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(tiny, tiny);
+  ok &= expect(
+      tiny_superpoint.ok() && tiny_superpoint->tensor_size == cv::Size(32, 32) &&
+          tiny_superpoint->resized_sizes[0] == tiny.size() && tiny_superpoint->tensor[3] == 0.0f,
+      "tiny SuperPoint images must pad for top-1024 without upscaling");
+
+  cv::Mat full_size(2161, 3841, CV_8UC3, cv::Scalar::all(0));
+  full_size.at<cv::Vec3b>(2160, 3840) = {255, 255, 255};
+  full_size.at<cv::Vec3b>(2159, 3839) = {255, 255, 255};
+  const cv::Mat cropped = full_size(cv::Rect(0, 0, 3840, 2160));
+  auto full_superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(full_size, cropped);
+  ok &= expect(full_superpoint.ok(), "full-resolution non-contiguous SuperPoint images must preprocess");
+  if (full_superpoint.ok()) {
+    const size_t image_plane = static_cast<size_t>(2168) * 3848;
+    ok &= expect(
+        full_superpoint->tensor_size == cv::Size(3848, 2168) && full_superpoint->resized_sizes[0] == full_size.size() &&
+            full_superpoint->resized_sizes[1] == cropped.size(),
+        "full-resolution images must not be downscaled or stretched to match the other camera");
+    ok &= expect(
+        std::abs(full_superpoint->tensor[2160 * 3848 + 3840] - 1.0f) < 1e-6f &&
+            std::abs(full_superpoint->tensor[image_plane + 2159 * 3848 + 3839] - 1.0f) < 1e-6f &&
+            full_superpoint->tensor[2160 * 3848 + 3839] == 0.0f &&
+            full_superpoint->tensor[image_plane + 2160 * 3848 + 3840] == 0.0f,
+        "single-pixel details at original image edges must survive unchanged and not leak into padding");
   }
 
   auto loftr_prepared = hm::stitching::FeatureMatcher::PrepareLoFTR(left, right);
@@ -150,6 +178,22 @@ int main() {
     ok &= expect(
         result->accepted[0].left_index == 0 && result->accepted[0].right_index == 0,
         "accepted matches must retain exported keypoint indices for exact parity checks");
+  }
+  if (full_superpoint.ok()) {
+    set_keypoint(0, 0, 3840.0f, 2160.0f);
+    set_keypoint(1, 0, 3839.0f, 2159.0f);
+    // This point is inside the shared canvas, but outside the smaller right image.
+    set_keypoint(1, 1, 3840.0f, 2160.0f);
+    auto native_matches = hm::stitching::FeatureMatcher::Postprocess(
+        *full_superpoint, keypoints.data(), keypoints.size(), matches.data(), 6, scores.data(), 2, 5);
+    ok &= expect(
+        native_matches.ok() && native_matches->accepted.size() == 1 &&
+            native_matches->accepted[0].left == cv::Point2f(3840, 2160) &&
+            native_matches->accepted[0].right == cv::Point2f(3839, 2159),
+        "native-resolution matches must keep exact source coordinates and reject per-image padding");
+    set_keypoint(0, 0, 10.0f, 30.0f);
+    set_keypoint(1, 0, 40.0f, 35.0f);
+    set_keypoint(1, 1, 50.0f, 15.0f);
   }
   const std::vector<int64_t> permuted_matches = {0, 2, 2, 0, 0, 0, 0, 1, 1};
   const std::vector<float> permuted_scores = {0.7f, 0.9f, 0.8f};

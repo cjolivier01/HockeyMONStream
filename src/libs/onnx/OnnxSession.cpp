@@ -16,9 +16,11 @@ Ort::Env& environment() {
   return env;
 }
 
-Ort::SessionOptions session_options() {
+Ort::SessionOptions session_options(bool use_cpu_memory_arena = true) {
   Ort::SessionOptions options;
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+  if (!use_cpu_memory_arena)
+    options.DisableCpuMemArena();
   // Avoid a second unbounded thread pool per session. ONNX Runtime still uses
   // its CPU provider, but calibration remains a predictable background task.
   options.SetIntraOpNumThreads(1);
@@ -149,9 +151,10 @@ Session::Session(
 absl::StatusOr<std::unique_ptr<Session>> Session::Create(
     const std::string& model_path,
     std::vector<TensorContract> inputs,
-    std::vector<TensorContract> outputs) {
+    std::vector<TensorContract> outputs,
+    bool use_cpu_memory_arena) {
   try {
-    auto options = session_options();
+    auto options = session_options(use_cpu_memory_arena);
     auto session = std::make_unique<Ort::Session>(environment(), model_path.c_str(), options);
     auto result = std::unique_ptr<Session>(new Session(std::move(session), std::move(inputs), std::move(outputs)));
     auto status = result->ValidateModelContract();
