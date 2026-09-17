@@ -1,4 +1,4 @@
-#include "src/apps/pipeline-app/TelemetryConfiguration.h"
+#include "src/apps/hstream-cli/TelemetryConfiguration.h"
 
 #include <unistd.h>
 #include <iostream>

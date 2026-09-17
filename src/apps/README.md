@@ -3,10 +3,10 @@
 Executable applications built from this repository.
 
 Notable apps
-- `hstream-cli`: Run DeepStream/GStreamer pipelines from the CLI. The existing `pipeline-app` target remains available
-  as a compatibility/developer target while scripts migrate.
-- `hstream-ui`: Qt desktop control-surface shell for in-process pipeline preview, outputs, and camera controls. The
-  current target uses a disconnected demo backend while the reusable pipeline controller backend is being connected.
+- `hstream-ui`: Main Qt desktop entry point for preview, outputs, calibration, and camera controls. It launches
+  `hstream-cli` as a child process and sends runtime commands through stdin.
+- `hstream-cli`: Main command-line entry point for DeepStream/GStreamer pipelines. Build with `make hstream-cli`
+  or `bazelisk build --config=opt //src/apps/hstream-cli:hstream-cli`.
 - `dual-record`: Dual-camera recorder utilities and daemon.
 
 Docs

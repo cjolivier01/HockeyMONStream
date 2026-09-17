@@ -583,7 +583,7 @@ def main() -> int:
   resources = as_map(config.get("resources", {}), "resources")
   source_game_dir = (cli.source_game_dir.resolve() if cli.source_game_dir else resolve_path(config.get("source_game_dir"), base, "source_game_dir"))
   workspace = resolve_path(pipeline.get("workspace", ".."), base, "pipeline.workspace")
-  executable = resolve_path(pipeline.get("executable", "bazel-bin/src/apps/pipeline-app/pipeline-app"), workspace, "pipeline.executable")
+  executable = resolve_path(pipeline.get("executable", "bazel-bin/src/apps/hstream-cli/hstream-cli"), workspace, "pipeline.executable")
   config_root = resolve_path(pipeline.get("config_root", "configs"), workspace, "pipeline.config_root")
   pipeline_config = resolve_path(pipeline.get("config", "configs/ds_hockey_app_config.yaml"), workspace, "pipeline.config")
   assert source_game_dir and output_dir and workspace and executable and config_root and pipeline_config
@@ -600,7 +600,7 @@ def main() -> int:
 
   runner_args = SimpleNamespace(
       workspace=workspace,
-      pipeline_app=executable,
+      hstream_cli=executable,
       config_root=config_root,
       pipeline_config=pipeline_config,
       control_points=int(config.get("defaults", {}).get("control_points", 900)),

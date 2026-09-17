@@ -80,7 +80,7 @@ original videos by absolute path and discards old panorama-coordinate rink metad
 Open the new game in HStream and select its Stitched preview, or encode the full canvas:
 
 ```sh
-USE_NEW_NVSTREAMMUX=yes bazel-bin/src/apps/pipeline-app/pipeline-app \
+USE_NEW_NVSTREAMMUX=yes bazel-bin/src/apps/hstream-cli/hstream-cli \
   -g sabercats-16a-preferred -c configs/ds_hockey_app_config.yaml \
   --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_STITCHED_FILE \
   --options=pipeline.primary-gie.enable=0,pipeline.ds-playtracker.enable=0,pipeline.hmplaycropper.enable=0,pipeline.tracker.enable=0,pipeline.hmaudio.enable=0 \

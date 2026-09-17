@@ -1,7 +1,7 @@
-#include "src/apps/pipeline-app/StitchingCalibrationMode.h"
+#include "src/apps/hstream-cli/StitchingCalibrationMode.h"
 #include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
-#include "src/apps/pipeline-app/StitcherOnePassConfig.h"
+#include "src/apps/hstream-cli/StitcherOnePassConfig.h"
 
 #include <filesystem>
 #include <iostream>

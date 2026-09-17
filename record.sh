@@ -1,5 +1,5 @@
 #!/bin/bash
-bazel-bin/src/apps/pipeline-app/pipeline-app \
+bazel-bin/src/apps/hstream-cli/hstream-cli \
   -c \
   configs/ds_hockey_configure_stitching.yaml \
   -c configs/ds_hockey_app_config.yaml \

@@ -1,4 +1,4 @@
-#include "src/apps/pipeline-app/StitchFrameTimePlan.h"
+#include "src/apps/hstream-cli/StitchFrameTimePlan.h"
 
 #include "hstream/src/libs/common/utils.h"
 

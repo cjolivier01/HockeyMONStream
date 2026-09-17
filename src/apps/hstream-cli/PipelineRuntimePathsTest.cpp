@@ -28,7 +28,7 @@ int main() {
   const fs::path workspace = temporary_root / "workspace";
   const fs::path execroot = temporary_root / "output-base/execroot/synthetic";
   const fs::path immutable_bazel_bin = execroot / "bazel-out/k8-opt/bin";
-  const fs::path executable = immutable_bazel_bin / "src/apps/pipeline-app/hstream-cli";
+  const fs::path executable = immutable_bazel_bin / "src/apps/hstream-cli/hstream-cli";
   const fs::path mutable_bazel_bin = workspace / "bazel-bin";
   fs::create_directories(executable.parent_path());
   fs::create_directories(mutable_bazel_bin / "src/gst-plugins");

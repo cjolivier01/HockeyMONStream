@@ -136,7 +136,7 @@ if [[ -z "${installed_deepstream_version}" ]] ||
 fi
 
 # ---------- verify artifacts ----------
-HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
+HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
 HSTREAM_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-job/hstream-job"
 HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
@@ -358,7 +358,6 @@ if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-ui")
 fi
-ln -s hstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
 
 # Keep the pinned ExifTool and its Perl modules together, as in Bazel runfiles.
 # Distro ExifTool versions (especially Jammy on Jetson) lack current camera tags.
@@ -1014,7 +1013,6 @@ ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
 ln -s "${INSTALL_PREFIX}/bin/hstream-job" "${STAGING}/usr/bin/hstream-job"
 ln -s "${INSTALL_PREFIX}/bin/hstream-assets" "${STAGING}/usr/bin/hstream-assets"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream"
-ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/pipeline-app"
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   ln -s "${INSTALL_PREFIX}/hstream-ui.sh" "${STAGING}/usr/bin/hstream-ui"
   install -m 0644 \

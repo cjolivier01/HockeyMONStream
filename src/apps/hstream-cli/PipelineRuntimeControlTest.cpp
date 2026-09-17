@@ -702,7 +702,7 @@ int main(int argc, char** argv) {
   const fs::path recreate_config = root / "pipeline-recreate.yaml";
   const fs::path error_config = root / "pipeline-error.yaml";
   const fs::path archive = root / "archive.mkv";
-  ok &= expect(fs::create_directory(home), "isolated pipeline-app HOME must be created");
+  ok &= expect(fs::create_directory(home), "isolated hstream-cli HOME must be created");
   ok &= expect(
       run_command({
           "ffmpeg",    "-hide_banner", "-loglevel",
@@ -732,27 +732,27 @@ int main(int argc, char** argv) {
           multi_track_video.string(),
       }),
       "synthetic multi-video-track input must be generated");
-  ok &= expect(write_config(config, video, archive), "pipeline-app test config must be written");
+  ok &= expect(write_config(config, video, archive), "hstream-cli test config must be written");
   ok &= expect(
       write_config(tracker_config, video, archive, false, true),
-      "pipeline-app native-tracker seek config must be written");
+      "hstream-cli native-tracker seek config must be written");
   ok &= expect(write_playtracker_config(playtracker_config), "playtracker base config must be written");
   ok &= expect(
       write_playtracker_runtime_config(playtracker_runtime_config), "playtracker live tuning config must be written");
   ok &= expect(
       write_playlist_seek_config(playlist_seek_config, video, playtracker_config),
-      "pipeline-app multi-chapter native-tracker seek config must be written");
+      "hstream-cli multi-chapter native-tracker seek config must be written");
   ok &= expect(
       write_playlist_seek_config(multi_track_playlist_seek_config, multi_track_video, playtracker_config),
-      "pipeline-app multi-track seek config must be written");
+      "hstream-cli multi-track seek config must be written");
   ok &= expect(
       write_playlist_seek_config(unequal_playlist_seek_config, video, playtracker_config, 1),
-      "pipeline-app unequal exact-pair seek config must be written");
+      "hstream-cli unequal exact-pair seek config must be written");
   ok &= expect(fs::create_directory(telemetry_csv_dir), "telemetry seek directory must be created");
   ok &= expect(
       write_playlist_seek_config(
           telemetry_seek_config, video, playtracker_config, 2, {{"telemetry-csv-dir", telemetry_csv_dir.string()}}),
-      "pipeline-app telemetry seek config must be written");
+      "hstream-cli telemetry seek config must be written");
   ok &= expect(fs::create_directory(telemetry_alias_csv_dir), "telemetry alias seek directory must be created");
   ok &= expect(
       write_playlist_seek_config(
@@ -761,13 +761,13 @@ int main(int argc, char** argv) {
           playtracker_config,
           2,
           {{"telemetry_csv_dir", telemetry_alias_csv_dir.string()}}),
-      "pipeline-app telemetry alias seek config must be written");
+      "hstream-cli telemetry alias seek config must be written");
   ok &=
       expect(fs::create_directory(telemetry_whitespace_csv_dir), "telemetry whitespace seek directory must be created");
   ok &= expect(
       write_playlist_seek_config(
           telemetry_whitespace_seek_config, video, playtracker_config, 2, {{"telemetry-csv-dir", R"yaml("   ")yaml"}}),
-      "pipeline-app telemetry whitespace seek config must be written");
+      "hstream-cli telemetry whitespace seek config must be written");
   ok &= expect(fs::create_directory(telemetry_disabled_csv_dir), "telemetry last-empty seek directory must be created");
   ok &= expect(
       write_playlist_seek_config(
@@ -779,22 +779,22 @@ int main(int argc, char** argv) {
               {"telemetry_csv_dir", telemetry_disabled_csv_dir.string()},
               {"telemetry-csv-dir", R"yaml("")yaml"},
           }),
-      "pipeline-app telemetry last-empty seek config must be written");
+      "hstream-cli telemetry last-empty seek config must be written");
   ok &=
-      expect(write_config(recreate_config, video, archive, true), "pipeline-app recreate test config must be written");
+      expect(write_config(recreate_config, video, archive, true), "hstream-cli recreate test config must be written");
   ok &= expect(
       write_playlist_error_config(error_config, video, root / "missing-second-chapter.mp4"),
-      "pipeline-app error test config must be written");
+      "hstream-cli error test config must be written");
 
   PipelineProcess process;
   ok &= expect(process.Start(argv[1], config), "hstream-cli process must start");
-  ok &= expect(process.WaitFor("Pipeline running"), "pipeline-app must reach PLAYING");
+  ok &= expect(process.WaitFor("Pipeline running"), "hstream-cli must reach PLAYING");
   ok &= expect(
       process.WaitFor(
           "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
           "\"stage\":0,\"generation\":1}"),
-      "pipeline-app must announce the active inspector stage/generation binding");
-  ok &= expect(process.running(), "pipeline-app must keep processing after reaching PLAYING");
+      "hstream-cli must announce the active inspector stage/generation binding");
+  ok &= expect(process.running(), "hstream-cli must keep processing after reaching PLAYING");
   const size_t graph_mark = process.Mark();
   ok &= expect(process.Send("@inspect-pipeline 101 0 1\n"), "pipeline graph inspection command must be delivered");
   ok &= expect(
@@ -881,37 +881,37 @@ int main(int argc, char** argv) {
       "backend must reject malformed inspector tokens without executing a lookup");
   ok &= expect(
       process.WaitForProgressAtOrBeyond(1, 0, std::chrono::seconds(12)),
-      "pipeline-app must advance its video position before controls");
+      "hstream-cli must advance its video position before controls");
   size_t seek_rejection_mark = process.Mark();
   ok &= expect(process.Send("@seek 10000000000 1\n"), "nonlocal seek command must be delivered");
   ok &= expect(
       process.WaitFor("HSTREAM_SEEK status=rejected generation=1 reason=nonlocal-output-active", seek_rejection_mark),
-      "pipeline-app must reject seeking when the active sink is not local rendering");
+      "hstream-cli must reject seeking when the active sink is not local rendering");
 
   for (int iteration = 0; iteration < 3 && ok; ++iteration) {
     size_t mark = process.Mark();
     ok &= expect(process.Send("p"), "pause command must be delivered");
-    ok &= expect(process.WaitFor("Pipeline paused", mark), "pipeline-app must reach PAUSED");
+    ok &= expect(process.WaitFor("Pipeline paused", mark), "hstream-cli must reach PAUSED");
     mark = process.Mark();
     ok &= expect(process.Send("r"), "resume command must be delivered");
-    ok &= expect(process.WaitFor("Pipeline running", mark), "pipeline-app must resume PLAYING");
+    ok &= expect(process.WaitFor("Pipeline running", mark), "hstream-cli must resume PLAYING");
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
   }
-  ok &= expect(process.running(), "pipeline-app must keep processing after repeated pause/resume");
+  ok &= expect(process.running(), "hstream-cli must keep processing after repeated pause/resume");
   ok &= expect(process.Interrupt(), "SIGINT stop must be delivered");
   int exit_code = -1;
-  ok &= expect(process.WaitForExit(&exit_code), "pipeline-app must stop promptly after SIGINT");
-  ok &= expect(exit_code == 0, "pipeline-app must exit successfully after a user stop");
+  ok &= expect(process.WaitForExit(&exit_code), "hstream-cli must stop promptly after SIGINT");
+  ok &= expect(exit_code == 0, "hstream-cli must exit successfully after a user stop");
   ok &= expect(
       process.output().find("App run successful") != std::string::npos,
-      "pipeline-app must report successful completion after a user stop");
+      "hstream-cli must report successful completion after a user stop");
 
   PipelineProcess relaunched_process;
   if (ok) {
     ok &= expect(
         relaunched_process.Start(argv[1], config, "URI", "RENDER", true),
-        "pipeline-app must relaunch with a headless local-render sink after a clean stop");
-    ok &= expect(relaunched_process.WaitFor("Pipeline running"), "relaunched pipeline-app must reach PLAYING");
+        "hstream-cli must relaunch with a headless local-render sink after a clean stop");
+    ok &= expect(relaunched_process.WaitFor("Pipeline running"), "relaunched hstream-cli must reach PLAYING");
     size_t pause_mark = relaunched_process.Mark();
     ok &= expect(relaunched_process.Send("p"), "local-render pipeline pause command must be delivered");
     ok &= expect(relaunched_process.WaitFor("Pipeline paused", pause_mark), "local-render pipeline must reach PAUSED");
@@ -926,11 +926,11 @@ int main(int argc, char** argv) {
     ok &= expect(relaunched_process.WaitFor("Pipeline running", resume_mark), "local-render pipeline must resume");
     ok &= expect(relaunched_process.Interrupt(), "local-render pipeline SIGINT stop must be delivered");
     exit_code = -1;
-    ok &= expect(relaunched_process.WaitForExit(&exit_code), "relaunched pipeline-app must stop promptly after SIGINT");
-    ok &= expect(exit_code == 0, "relaunched pipeline-app must exit successfully");
+    ok &= expect(relaunched_process.WaitForExit(&exit_code), "relaunched hstream-cli must stop promptly after SIGINT");
+    ok &= expect(exit_code == 0, "relaunched hstream-cli must exit successfully");
     ok &= expect(
         relaunched_process.output().find("App run successful") != std::string::npos,
-        "relaunched pipeline-app must report successful completion");
+        "relaunched hstream-cli must report successful completion");
   }
 
   PipelineProcess initial_seek_process;
@@ -995,8 +995,8 @@ int main(int argc, char** argv) {
                 {"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_FAIL_ONCE", "1"},
                 {"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_INTER_SOURCE_DELAY_MS", "250"},
             }),
-        "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
-    ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
+        "hstream-cli seek process must start with exact-paired multi-chapter sources and native tracker");
+    ok &= expect(seek_process.WaitFor("Pipeline running"), "seek hstream-cli must reach PLAYING");
     ok &= expect(
         seek_process.WaitFor(
             "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
@@ -1146,10 +1146,10 @@ int main(int argc, char** argv) {
             std::chrono::seconds(20)),
         "backward seek from chapter two must reset exact-pair and tracker state");
     const size_t final_teardown_mark = seek_process.Mark();
-    ok &= expect(seek_process.Send("q"), "quit command must be delivered to seek pipeline-app");
+    ok &= expect(seek_process.Send("q"), "quit command must be delivered to seek hstream-cli");
     exit_code = -1;
-    ok &= expect(seek_process.WaitForExit(&exit_code), "seek pipeline-app must stop promptly after q");
-    ok &= expect(exit_code == 0, "seek pipeline-app must exit successfully");
+    ok &= expect(seek_process.WaitForExit(&exit_code), "seek hstream-cli must stop promptly after q");
+    ok &= expect(exit_code == 0, "seek hstream-cli must exit successfully");
     ok &= expect(
         seek_process.output().find(
             "HSTREAM_URI_PLAYLIST_CALLBACK status=queued action=switch source=0", final_teardown_mark) !=
@@ -1619,7 +1619,7 @@ int main(int argc, char** argv) {
             "ENCODE_FILE",
             false,
             {{"HM_TEST_VERIFY_PIPELINE_RECREATE_SOURCE_CLEANUP", "1"}}),
-        "pipeline-app archive process must start");
+        "hstream-cli archive process must start");
     ok &= expect(archive_process.WaitFor("Pipeline running"), "archive pipeline must reach PLAYING");
     ok &= expect(
         archive_process.WaitFor(
@@ -1712,15 +1712,15 @@ int main(int argc, char** argv) {
 
   if (ok) {
     ok &=
-        expect(failed_process.Start(argv[1], error_config, "URI-MULTIPLE"), "pipeline-app failure process must start");
+        expect(failed_process.Start(argv[1], error_config, "URI-MULTIPLE"), "hstream-cli failure process must start");
     exit_code = 0;
     ok &= expect(
         failed_process.WaitForExit(&exit_code, std::chrono::seconds(20)),
-        "pipeline-app must stop after a decoder playlist error");
-    ok &= expect(exit_code != 0, "pipeline-app must return nonzero after a decoder playlist error");
+        "hstream-cli must stop after a decoder playlist error");
+    ok &= expect(exit_code != 0, "hstream-cli must return nonzero after a decoder playlist error");
     ok &= expect(
         failed_process.output().find("App run successful") == std::string::npos,
-        "pipeline-app must never report success after a decoder playlist error");
+        "hstream-cli must never report success after a decoder playlist error");
   }
 
   if (!ok) {

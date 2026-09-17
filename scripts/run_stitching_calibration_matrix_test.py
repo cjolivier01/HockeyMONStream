@@ -252,7 +252,7 @@ class ProcessGroupTest(unittest.TestCase):
         control_points=900,
         frame_count=4,
         max_live_canvas_dimension=2048,
-        pipeline_app=pipeline,
+        hstream_cli=pipeline,
         workspace=Path(__file__).resolve().parents[1],
         config_root=Path(__file__).resolve().parents[1] / "configs",
         pipeline_config=Path(__file__).resolve().parents[1] / "configs/ds_hockey_app_config.yaml",
@@ -334,7 +334,7 @@ class ProcessGroupTest(unittest.TestCase):
                 import run_stitching_calibration_matrix as matrix
                 args = argparse.Namespace(
                     control_points=900, frame_count=4, max_live_canvas_dimension=2048,
-                    pipeline_app=Path({str(pipeline)!r}), workspace=Path({str(Path(__file__).resolve().parents[1])!r}),
+                    hstream_cli=Path({str(pipeline)!r}), workspace=Path({str(Path(__file__).resolve().parents[1])!r}),
                     config_root=Path({str(Path(__file__).resolve().parents[1] / 'configs')!r}),
                     pipeline_config=Path({str(Path(__file__).resolve().parents[1] / 'configs/ds_hockey_app_config.yaml')!r}),
                     timeout=30, resource_check_interval=30,

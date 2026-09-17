@@ -13,7 +13,7 @@ CANONICAL_TARGETS = ("x86_64", "arm64", "jetson")
 REPO_COMMANDS = {
     "run",
     "build",
-    "pipeline-app",
+    "hstream-cli",
     "video-player",
     "dual-record",
     "dual-recordd",
@@ -297,9 +297,9 @@ def _resolve_repo_command(command: list[str], target: str, repo_mount: str | Non
         )
 
     binary_targets = {
-        "pipeline-app": (
-            "//src/apps/pipeline-app:pipeline-app",
-            "bazel-bin/src/apps/pipeline-app/pipeline-app",
+        "hstream-cli": (
+            "//src/apps/hstream-cli:hstream-cli",
+            "bazel-bin/src/apps/hstream-cli/hstream-cli",
         ),
         "video-player": (
             "//src/apps/video-player:video-player",
@@ -329,7 +329,7 @@ def _resolve_repo_command(command: list[str], target: str, repo_mount: str | Non
             set -euo pipefail
             {bootstrap}
             cd {shlex.quote(repo_mount)}
-            bazelisk build {bazel_flags} //src/apps/pipeline-app:pipeline-app
+            bazelisk build {bazel_flags} //src/apps/hstream-cli:hstream-cli
             exec ./run.sh {_shell_join(rest)}
             """
         )

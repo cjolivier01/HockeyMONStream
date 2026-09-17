@@ -4542,7 +4542,7 @@ QString hm::ui_internal::matching_development_pipeline_runner(const QString& app
   const QString bazel_bin = matching_development_bazel_bin(application_path);
   if (bazel_bin.isEmpty())
     return {};
-  const QString runner = QDir(bazel_bin).filePath("src/apps/pipeline-app/hstream-cli");
+  const QString runner = QDir(bazel_bin).filePath("src/apps/hstream-cli/hstream-cli");
   return QFileInfo(runner).isExecutable() ? QFileInfo(runner).absoluteFilePath() : QString();
 }
 
@@ -6834,19 +6834,15 @@ QString HStreamWindow::pipelineRunnerPath() const {
     // A Bazel-built UI must never fall back to an installed or differently
     // configured CLI. Returning the expected sibling path makes startup fail
     // closed with a useful missing-runner diagnostic.
-    return QDir(development_bazel_bin_).filePath("src/apps/pipeline-app/hstream-cli");
+    return QDir(development_bazel_bin_).filePath("src/apps/hstream-cli/hstream-cli");
   }
   const QString installed_runner = "/opt/hstream/bin/hstream-cli";
   if (QFileInfo::exists(installed_runner)) {
     return installed_runner;
   }
-  const QString bazel_runner = QDir::current().filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
+  const QString bazel_runner = QDir::current().filePath("bazel-bin/src/apps/hstream-cli/hstream-cli");
   if (QFileInfo::exists(bazel_runner)) {
     return bazel_runner;
-  }
-  const QString legacy_bazel_runner = QDir::current().filePath("bazel-bin/src/apps/pipeline-app/pipeline-app");
-  if (QFileInfo::exists(legacy_bazel_runner)) {
-    return legacy_bazel_runner;
   }
   return "hstream-cli";
 }

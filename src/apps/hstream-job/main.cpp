@@ -32,10 +32,10 @@ fs::path executable() {
 fs::path bazel_bin_for_runner(const fs::path& runner) {
   if (runner.filename() != "hstream-cli")
     return {};
-  const fs::path pipeline_app = runner.parent_path();
-  const fs::path apps = pipeline_app.parent_path();
+  const fs::path hstream_cli = runner.parent_path();
+  const fs::path apps = hstream_cli.parent_path();
   const fs::path src = apps.parent_path();
-  if (pipeline_app.filename() != "pipeline-app" || apps.filename() != "apps" || src.filename() != "src")
+  if (hstream_cli.filename() != "hstream-cli" || apps.filename() != "apps" || src.filename() != "src")
     return {};
   const fs::path bazel_bin = src.parent_path();
   return bazel_bin.filename() == "bin" ? bazel_bin : fs::path();
@@ -266,7 +266,7 @@ int main(int argc, char** argv) {
     const fs::path bin = executable().parent_path();
     const bool installed = fs::exists(bin / "hstream-cli");
     if (runner.empty())
-      runner = installed ? bin / "hstream-cli" : bin.parent_path() / "pipeline-app/hstream-cli";
+      runner = installed ? bin / "hstream-cli" : bin.parent_path() / "hstream-cli/hstream-cli";
     if (working.empty()) {
       if (installed)
         working = bin.parent_path();

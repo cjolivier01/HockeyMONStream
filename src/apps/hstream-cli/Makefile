@@ -15,7 +15,7 @@ ifeq ($(CUDA_VER),)
   $(error "CUDA_VER is not set")
 endif
 
-APP:= deepstream-app
+APP:= hstream-cli
 
 TARGET_DEVICE = $(shell gcc -dumpmachine | cut -f1 -d -)
 
