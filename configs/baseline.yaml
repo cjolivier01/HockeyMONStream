@@ -64,7 +64,7 @@ runtime:
 hstream_ui:
   drivegpt_database:
     # Initial checkbox state; capture disables seeking for the run.
-    enabled: false
+    enabled: true
 
 apply_camera:
   crop_play_box: false
