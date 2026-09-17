@@ -57,8 +57,9 @@ struct AkazeMatchingCalibration {
 
 class FeatureMatcher {
  public:
-  static constexpr int kSuperPointInputWidth = 2048;
-  static constexpr int kSuperPointInputHeight = 1152;
+  static constexpr int kSuperPointDimensionAlignment = 8;
+  // A 32x32 score grid supplies the graph's fixed top-1024 keypoints even for tiny inputs.
+  static constexpr int kSuperPointMinimumDimension = 32;
   // Frozen RGB canvas for DeDoDe and the legacy ALIKED parity graph.
   static constexpr int kInputWidth = 1024;
   static constexpr int kInputHeight = 576;

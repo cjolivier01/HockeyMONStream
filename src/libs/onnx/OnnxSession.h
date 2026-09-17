@@ -50,10 +50,12 @@ class Tensor {
 
 class Session {
  public:
+  // Large dynamic models can opt out of retaining temporary buffers in the CPU arena.
   static absl::StatusOr<std::unique_ptr<Session>> Create(
       const std::string& model_path,
       std::vector<TensorContract> inputs,
-      std::vector<TensorContract> outputs);
+      std::vector<TensorContract> outputs,
+      bool use_cpu_memory_arena = true);
   static absl::StatusOr<std::unique_ptr<Session>> CreateFromBytes(
       const void* bytes,
       size_t byte_count,
@@ -83,4 +85,4 @@ class Session {
   std::vector<TensorContract> outputs_;
 };
 
-}  // namespace hm::onnx
+} // namespace hm::onnx

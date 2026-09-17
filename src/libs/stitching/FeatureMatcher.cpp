@@ -32,11 +32,21 @@ float bgr_channel_to_unit_float(const cv::Mat& image, int y, int x, int channel)
   return static_cast<float>(image.ptr<cv::Vec3b>(y)[x][channel]) / 255.0f;
 }
 
+cv::Point2f restore_feature_point(cv::Point2f point, cv::Size source, cv::Size resized) {
+  if (source == resized)
+    return point;
+  return {
+      (point.x + 0.5f) * source.width / resized.width - 0.5f,
+      (point.y + 0.5f) * source.height / resized.height - 0.5f,
+  };
+}
+
 absl::StatusOr<FeaturePairInput> prepare_feature_pair(
     const cv::Mat& left_bgr,
     const cv::Mat& right_bgr,
     int input_channels,
-    cv::Size tensor_size) {
+    cv::Size tensor_size,
+    bool resize_to_fit) {
   auto status = validate_source_image(left_bgr, "Left");
   if (!status.ok())
     return status;
@@ -56,16 +66,20 @@ absl::StatusOr<FeaturePairInput> prepare_feature_pair(
   const cv::Mat* images[] = {&left_bgr, &right_bgr};
   for (int image_index = 0; image_index < 2; ++image_index) {
     const cv::Mat& source = *images[image_index];
-    const double scale = std::min(
-        static_cast<double>(tensor_size.width) / source.cols, static_cast<double>(tensor_size.height) / source.rows);
-    const int width = std::max(32, static_cast<int>(std::round(source.cols * scale)));
-    const int height = std::max(32, static_cast<int>(std::round(source.rows * scale)));
+    cv::Mat resized = source;
+    if (resize_to_fit) {
+      const double scale = std::min(
+          static_cast<double>(tensor_size.width) / source.cols, static_cast<double>(tensor_size.height) / source.rows);
+      const int width = std::max(32, static_cast<int>(std::round(source.cols * scale)));
+      const int height = std::max(32, static_cast<int>(std::round(source.rows * scale)));
+      cv::resize(source, resized, {width, height}, 0.0, 0.0, cv::INTER_AREA);
+    }
+    const int width = resized.cols;
+    const int height = resized.rows;
     if (width > tensor_size.width || height > tensor_size.height) {
-      return absl::InternalError("Feature resize exceeded its fixed ONNX canvas");
+      return absl::InternalError("Feature image exceeded its ONNX canvas");
     }
     result.resized_sizes[image_index] = {width, height};
-    cv::Mat resized;
-    cv::resize(source, resized, {width, height}, 0.0, 0.0, cv::INTER_AREA);
     const size_t image_base = static_cast<size_t>(image_index) * input_channels * image_plane;
     for (int y = 0; y < height; ++y) {
       for (int x = 0; x < width; ++x) {
@@ -331,7 +345,9 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
               {"keypoints", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {-1, kKeypointsPerImage, 2}},
               {"matches", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {-1, 3}},
               {"mscores", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1}},
-          });
+          },
+          // Full-resolution activations are large; release temporary buffers instead of retaining arena blocks.
+          /*use_cpu_memory_arena=*/false);
       break;
     case ControlPointMatcher::kDeDoDeLightGlue:
       input_channels = 3;
@@ -383,11 +399,21 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::CreateLegacyAlik
 }
 
 absl::StatusOr<FeaturePairInput> FeatureMatcher::Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
-  return prepare_feature_pair(left_bgr, right_bgr, 3, {kInputWidth, kInputHeight});
+  return prepare_feature_pair(left_bgr, right_bgr, 3, {kInputWidth, kInputHeight}, true);
 }
 
 absl::StatusOr<FeaturePairInput> FeatureMatcher::PrepareSuperPoint(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
-  return prepare_feature_pair(left_bgr, right_bgr, 1, {kSuperPointInputWidth, kSuperPointInputHeight});
+  // The batch shares a canvas, but each image retains its original pixels and coordinates.
+  const auto align_up = [](int dimension) {
+    return (static_cast<int64_t>(std::max(kSuperPointMinimumDimension, dimension)) + kSuperPointDimensionAlignment -
+            1) /
+        kSuperPointDimensionAlignment * kSuperPointDimensionAlignment;
+  };
+  const int64_t width = align_up(std::max(left_bgr.cols, right_bgr.cols));
+  const int64_t height = align_up(std::max(left_bgr.rows, right_bgr.rows));
+  if (width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max())
+    return absl::OutOfRangeError("SuperPoint canvas dimensions exceed OpenCV limits");
+  return prepare_feature_pair(left_bgr, right_bgr, 1, {static_cast<int>(width), static_cast<int>(height)}, false);
 }
 
 absl::StatusOr<FeaturePairInput> FeatureMatcher::PrepareLoFTR(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
@@ -499,10 +525,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessSparse(
       continue;
     }
     accepted.push_back({
-        {(left[0] + 0.5f) * input.source_sizes[0].width / input.resized_sizes[0].width - 0.5f,
-         (left[1] + 0.5f) * input.source_sizes[0].height / input.resized_sizes[0].height - 0.5f},
-        {(right[0] + 0.5f) * input.source_sizes[1].width / input.resized_sizes[1].width - 0.5f,
-         (right[1] + 0.5f) * input.source_sizes[1].height / input.resized_sizes[1].height - 0.5f},
+        restore_feature_point({left[0], left[1]}, input.source_sizes[0], input.resized_sizes[0]),
+        restore_feature_point({right[0], right[1]}, input.source_sizes[1], input.resized_sizes[1]),
         score,
         static_cast<int>(left_index),
         static_cast<int>(right_index),

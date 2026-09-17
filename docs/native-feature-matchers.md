@@ -4,10 +4,13 @@
 backends:
 
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
-  with a 2048 × 1152 canvas per camera. Images are resized with aspect ratio
-  preserved, padded on the right/bottom with zeros, and converted to grayscale
-  floats in `[0,1]`; the input tensor is `[2,1,1152,2048]`. The graph supports
-  dynamic spatial dimensions, so this resolution uses the existing model asset.
+  at each camera image's original resolution, without resizing. Images are
+  converted to grayscale floats in `[0,1]` and padded on the right/bottom with
+  zeros to a shared canvas covering both images, rounded up to multiples of 8.
+  A minimum 32 × 32 canvas supports the graph's fixed top-1024 operation for tiny
+  inputs. For two 3840 × 2160 cameras, the tensor is `[2,1,2160,3840]` with no
+  padding. Matches in padding are discarded; retained coordinates refer directly
+  to the original images. The existing graph supports dynamic spatial dimensions.
   The keypoint limit remains 1024 per image.
 - `dedode-lightglue` uses DeDoDe `L-C4-v2` detection, `B-upright`
   descriptors, and the `dedodeb` LightGlue weights in a fixed-shape ONNX
@@ -28,6 +31,18 @@ backends:
 
 The SuperPoint resolution applies when generating new control points. Existing
 saved calibration is reused until explicitly regenerated.
+Full-resolution inference increases calibration memory and runtime with source
+image size; there is no automatic downscaling fallback. SuperPoint disables
+ONNX Runtime's CPU memory arena so large temporary activation buffers can be
+released instead of retained for reuse. Other models keep the default allocator.
+
+The native model smoke test uses unequal, non-aligned 4K-sized synthetic images
+for SuperPoint and checks the known source-coordinate translation. To validate
+saved camera frames at their original resolution, set
+`HM_SUPERPOINT_SMOKE_GAME_DIR=/path/to/game` when running
+`//src/libs/stitching:native_model_smoke_test`; this reads `left.png` and
+`right.png` without modifying the game's calibration. Set
+`HM_REQUIRE_ONNX_MODEL_TESTS=1` to fail if model assets are unavailable.
 
 The DeDoDe and LightGlue source projects are MIT and Apache-2.0 respectively;
 Kornia and the EfficientLoFTR artifact are Apache-2.0. The DeDoDe graph also
