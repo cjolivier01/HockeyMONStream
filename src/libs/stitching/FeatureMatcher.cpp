@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <string>
 #include <tuple>
@@ -312,7 +313,10 @@ FeatureMatcher::FeatureMatcher(
 absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
     const std::string& model_path,
     ControlPointMatcher matcher,
-    AkazeMatchingCalibration akaze_calibration) {
+    AkazeMatchingCalibration akaze_calibration,
+    ControlPointResolution resolution,
+    hm::onnx::ExecutionProvider provider,
+    const std::string& profile_prefix) {
   if (matcher == ControlPointMatcher::kAkazeHamming) {
     if (akaze_calibration.left.has_value() != akaze_calibration.right.has_value()) {
       return absl::InvalidArgumentError("AKAZE lens calibration must contain both cameras or neither camera");
@@ -347,7 +351,9 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
               {"mscores", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1}},
           },
           // Full-resolution activations are large; release temporary buffers instead of retaining arena blocks.
-          /*use_cpu_memory_arena=*/false);
+          /*use_cpu_memory_arena=*/false,
+          provider,
+          profile_prefix);
       break;
     case ControlPointMatcher::kDeDoDeLightGlue:
       input_channels = 3;
@@ -358,7 +364,10 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
               {"keypoints", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {2, kKeypointsPerImage, 2}},
               {"matches0", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {1, kKeypointsPerImage}},
               {"matching_scores0", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {1, kKeypointsPerImage}},
-          });
+          },
+          true,
+          provider,
+          profile_prefix);
       break;
     case ControlPointMatcher::kLoFTR:
       input_channels = 1;
@@ -372,14 +381,21 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
               {"mkpts0_f", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, 2}},
               {"mkpts1_f", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, 2}},
               {"mconf", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1}},
-          });
+          },
+          true,
+          provider,
+          profile_prefix);
       break;
     case ControlPointMatcher::kAkazeHamming:
       break;
   }
   if (!session.ok())
     return session.status();
-  return std::unique_ptr<FeatureMatcher>(new FeatureMatcher(matcher, std::move(*session), input_channels));
+  auto result = std::unique_ptr<FeatureMatcher>(new FeatureMatcher(matcher, std::move(*session), input_channels));
+  result->resolution_ = resolution;
+  std::clog << "Control-point matcher " << ControlPointMatcherName(matcher)
+            << " execution provider=" << hm::onnx::ExecutionProviderName(provider) << '\n';
+  return result;
 }
 
 absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::CreateLegacyAlikedParity(
@@ -402,7 +418,12 @@ absl::StatusOr<FeaturePairInput> FeatureMatcher::Prepare(const cv::Mat& left_bgr
   return prepare_feature_pair(left_bgr, right_bgr, 3, {kInputWidth, kInputHeight}, true);
 }
 
-absl::StatusOr<FeaturePairInput> FeatureMatcher::PrepareSuperPoint(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
+absl::StatusOr<FeaturePairInput> FeatureMatcher::PrepareSuperPoint(
+    const cv::Mat& left_bgr,
+    const cv::Mat& right_bgr,
+    ControlPointResolution resolution) {
+  if (resolution == ControlPointResolution::k2K)
+    return prepare_feature_pair(left_bgr, right_bgr, 1, {kSuperPointReducedWidth, kSuperPointReducedHeight}, true);
   // The batch shares a canvas, but each image retains its original pixels and coordinates.
   const auto align_up = [](int dimension) {
     return (static_cast<int64_t>(std::max(kSuperPointMinimumDimension, dimension)) + kSuperPointDimensionAlignment -
@@ -736,7 +757,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
     return absl::FailedPreconditionError("Feature matcher has no inference session");
 
   auto input = matcher_ == ControlPointMatcher::kLoFTR ? PrepareLoFTR(left_bgr, right_bgr)
-      : input_channels_ == 1                           ? PrepareSuperPoint(left_bgr, right_bgr)
+      : input_channels_ == 1                           ? PrepareSuperPoint(left_bgr, right_bgr, resolution_)
                                                        : Prepare(left_bgr, right_bgr);
   if (!input.ok())
     return input.status();

@@ -3,6 +3,8 @@ INCLUDE_PREFIX = "hstream/src/libs/onnx"
 filegroup(
     name = "runtime_sources",
     srcs = [
+        "ExecutionProvider.cpp",
+        "ExecutionProvider.h",
         "OnnxSession.cpp",
         "OnnxSession.h",
     ],
@@ -25,10 +27,17 @@ config_setting(
     ],
 )
 
+config_setting(
+    name = "linux_jetson",
+    constraint_values = ["@platforms//cpu:aarch64", "@platforms//os:linux"],
+    define_values = {"target_platform": "jetson"},
+)
+
 cc_library(
     name = "onnxruntime",
     visibility = ["//visibility:private"],
     deps = select({
+        ":linux_jetson": ["@onnxruntime_linux_jetson//:onnxruntime"],
         ":linux_aarch64": ["@onnxruntime_linux_aarch64//:onnxruntime"],
         ":linux_x86_64": ["@onnxruntime_linux_x86_64//:onnxruntime"],
         "//conditions:default": ["@platforms//:incompatible"],
@@ -42,6 +51,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":execution_provider",
         ":onnxruntime",
         "@com_google_absl//absl/status:status",
         "@com_google_absl//absl/status:statusor",
@@ -57,9 +67,22 @@ cc_test(
 filegroup(
     name = "runtime_files",
     srcs = select({
+        ":linux_jetson": ["@onnxruntime_linux_jetson//:runtime_files"],
         ":linux_aarch64": ["@onnxruntime_linux_aarch64//:runtime_files"],
         ":linux_x86_64": ["@onnxruntime_linux_x86_64//:runtime_files"],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "execution_provider",
+    srcs = ["ExecutionProvider.cpp"],
+    hdrs = ["ExecutionProvider.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/status:statusor",
+    ],
 )

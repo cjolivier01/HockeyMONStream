@@ -30,7 +30,8 @@ int main() {
   const fs::path user_models = root / "home/.cache/hstream/models";
 
   constexpr const char* rink = "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx";
-  constexpr const char* superpoint = "superpoint-lightglue-pipeline-228994cea8c01014.onnx";
+  constexpr const char* superpoint = "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx";
+  constexpr const char* superpoint_cpu = "superpoint-lightglue-pipeline-228994cea8c01014.onnx";
   constexpr const char* dedode = "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx";
   constexpr const char* loftr = "efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx";
   write_model(package_models / rink);
@@ -38,6 +39,7 @@ int main() {
   write_model(package_models / loftr);
   write_model(user_models / rink);
   write_model(user_models / superpoint);
+  write_model(user_models / superpoint_cpu);
   write_model(user_models / dedode);
 
   ::setenv("HOME", (root / "home").c_str(), 1);
@@ -64,8 +66,16 @@ int main() {
   const auto cached_superpoint_asset =
       hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kSuperPointLightGlue);
   ok &= expect(
-      cached_superpoint_asset.ok() && *cached_superpoint_asset == "superpoint-lightglue",
+      cached_superpoint_asset.ok() && *cached_superpoint_asset == "superpoint-lightglue-cuda",
       "a stock cached SuperPoint graph must still select its asset declaration for SHA-256 verification");
+  const auto cpu_path = hm::stitching::feature_matcher_model_path(
+      hm::stitching::ControlPointMatcher::kSuperPointLightGlue, hm::onnx::ExecutionProvider::kCpu);
+  const auto cpu_asset = hm::stitching::feature_matcher_asset_to_ensure(
+      hm::stitching::ControlPointMatcher::kSuperPointLightGlue, hm::onnx::ExecutionProvider::kCpu);
+  ok &= expect(
+      cpu_path.ok() && *cpu_path == user_models / superpoint_cpu && cpu_asset.ok() &&
+          *cpu_asset == "superpoint-lightglue",
+      "CPU execution must select the original float32 graph and its verified asset");
   const fs::path explicit_models = root / "explicit-models";
   write_model(explicit_models / superpoint);
   ::setenv("HM_NATIVE_MODEL_DIR", explicit_models.c_str(), 1);
@@ -135,7 +145,7 @@ int main() {
   const auto missing_superpoint_asset =
       hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kSuperPointLightGlue);
   ok &= expect(
-      missing_superpoint_asset.ok() && *missing_superpoint_asset == "superpoint-lightglue",
+      missing_superpoint_asset.ok() && *missing_superpoint_asset == "superpoint-lightglue-cuda",
       "a missing stock SuperPoint graph must select its authorized on-demand asset");
   ::setenv("HM_FEATURE_MATCHER_ONNX_MODEL", (root / "missing-superpoint.onnx").c_str(), 1);
   ok &= expect(

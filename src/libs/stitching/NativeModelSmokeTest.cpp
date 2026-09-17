@@ -39,9 +39,17 @@ bool fail_or_skip(const std::string& message) {
 } // namespace
 
 int main() {
+  const char* requested_provider = std::getenv("HM_MATCHER_SMOKE_PROVIDER");
+  auto provider = hm::onnx::ParseExecutionProvider(requested_provider ? requested_provider : "cpu");
+  if (!provider.ok()) {
+    std::cerr << provider.status() << '\n';
+    return 1;
+  }
   const fs::path rink_path = model_path("HM_RINK_ONNX_MODEL", "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx");
-  const fs::path matcher_path =
-      model_path("HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx");
+  const fs::path matcher_path = model_path(
+      "HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL",
+      *provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx"
+                                                      : "superpoint-lightglue-pipeline-228994cea8c01014.onnx");
   const fs::path legacy_aliked_path =
       model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "aliked-lightglue-k2048-ea4a4ab2cb556958.onnx");
   const fs::path dedode_path =
@@ -115,8 +123,19 @@ int main() {
       {"EfficientLoFTR outdoor", hm::stitching::ControlPointMatcher::kLoFTR, loftr_path},
       {"AKAZE + M-LDB + Hamming", hm::stitching::ControlPointMatcher::kAkazeHamming, {}},
   };
+  const char* requested_resolution = std::getenv("HM_SUPERPOINT_SMOKE_RESOLUTION");
+  auto resolution = hm::stitching::ParseControlPointResolution(requested_resolution ? requested_resolution : "auto");
+  if (!resolution.ok()) {
+    std::cerr << resolution.status() << '\n';
+    return 1;
+  }
+  const char* profile_dir = std::getenv("HM_MATCHER_SMOKE_PROFILE_DIR");
   for (const auto& matcher_case : cases) {
-    auto matcher = hm::stitching::FeatureMatcher::Create(matcher_case.path.string(), matcher_case.matcher);
+    const std::string profile_prefix = profile_dir
+        ? (fs::path(profile_dir) / hm::stitching::ControlPointMatcherName(matcher_case.matcher)).string()
+        : "";
+    auto matcher = hm::stitching::FeatureMatcher::Create(
+        matcher_case.path.string(), matcher_case.matcher, {}, *resolution, *provider, profile_prefix);
     if (!matcher.ok()) {
       std::cerr << "FAIL: " << matcher_case.name << " model contract: " << matcher.status() << '\n';
       return 1;
@@ -157,14 +176,17 @@ int main() {
           ++translated;
       }
       if (translated * 2 < matches->accepted.size()) {
-        std::cerr << "FAIL: SuperPoint matches must preserve the source translation after full-resolution inference\n";
+        std::cerr
+            << "FAIL: SuperPoint matches must preserve the source translation after inference in source coordinates\n";
         return 1;
       }
     }
-    std::cout << matcher_case.name << " (" << matcher_left.cols << 'x' << matcher_left.rows << ", "
-              << matcher_right.cols << 'x' << matcher_right.rows << "): " << matches->accepted_match_count
-              << " matches in " << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
-              << " s\n";
+    std::cout << matcher_case.name
+              << (superpoint ? std::string(" resolution=") + hm::stitching::ControlPointResolutionName(*resolution)
+                             : "")
+              << " (" << matcher_left.cols << 'x' << matcher_left.rows << ", " << matcher_right.cols << 'x'
+              << matcher_right.rows << "): " << matches->accepted_match_count << " matches in "
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() << " s\n";
   }
   return 0;
 }

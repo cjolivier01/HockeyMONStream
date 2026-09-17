@@ -57,6 +57,8 @@ struct AkazeMatchingCalibration {
 
 class FeatureMatcher {
  public:
+  static constexpr int kSuperPointReducedWidth = 2048;
+  static constexpr int kSuperPointReducedHeight = 1152;
   static constexpr int kSuperPointDimensionAlignment = 8;
   // A 32x32 score grid supplies the graph's fixed top-1024 keypoints even for tiny inputs.
   static constexpr int kSuperPointMinimumDimension = 32;
@@ -76,13 +78,19 @@ class FeatureMatcher {
   static absl::StatusOr<std::unique_ptr<FeatureMatcher>> Create(
       const std::string& model_path,
       ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue,
-      AkazeMatchingCalibration akaze_calibration = {});
+      AkazeMatchingCalibration akaze_calibration = {},
+      ControlPointResolution resolution = DefaultControlPointResolution(),
+      hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda,
+      const std::string& profile_prefix = {});
   // The release qualification oracle predates the selectable production
   // backends and uses a frozen RGB RaCo-ALIKED k2048 graph. Keep its contract
   // explicit so it cannot be mistaken for the production SuperPoint graph.
   static absl::StatusOr<std::unique_ptr<FeatureMatcher>> CreateLegacyAlikedParity(const std::string& model_path);
   static absl::StatusOr<FeaturePairInput> Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
-  static absl::StatusOr<FeaturePairInput> PrepareSuperPoint(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
+  static absl::StatusOr<FeaturePairInput> PrepareSuperPoint(
+      const cv::Mat& left_bgr,
+      const cv::Mat& right_bgr,
+      ControlPointResolution resolution = DefaultControlPointResolution());
   static absl::StatusOr<FeaturePairInput> PrepareLoFTR(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
   static absl::StatusOr<FeatureMatchResult> Postprocess(
       const FeaturePairInput& input,
@@ -148,6 +156,7 @@ class FeatureMatcher {
       const std::function<void()>& inference_complete,
       const std::function<bool()>& is_cancelled) const;
 
+  ControlPointResolution resolution_{DefaultControlPointResolution()};
   ControlPointMatcher matcher_{ControlPointMatcher::kSuperPointLightGlue};
   std::unique_ptr<hm::onnx::Session> session_;
   int input_channels_{0};

@@ -211,11 +211,17 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool view_aware = lines.size() == 28 && lines[0] == "version=8";
+  const bool resolution_aware = lines.size() == 29 && lines[0] == "version=9";
+  const bool view_aware = (lines.size() == 28 && lines[0] == "version=8") || resolution_aware;
   const bool camera_aware = (lines.size() == 21 && lines[0] == "version=7") || view_aware;
   if (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware && !camera_aware)
     return absl::FailedPreconditionError("Invalid stitching canvas provenance format");
   HuginProject::CanvasProvenance provenance;
+  if (resolution_aware) {
+    std::string resolution;
+    HM_ASSIGN_OR_RETURN(resolution, parse_canvas_provenance_string(lines[28], "control-point-resolution"));
+    HM_ASSIGN_OR_RETURN(provenance.control_point_resolution, ParseControlPointResolution(resolution));
+  }
   HM_ASSIGN_OR_RETURN(provenance.max_output_width, parse_canvas_provenance_value(lines[1], "max-output-width"));
   HM_ASSIGN_OR_RETURN(provenance.max_canvas_dimension, parse_canvas_provenance_value(lines[2], "max-canvas-dimension"));
   HM_ASSIGN_OR_RETURN(provenance.source_canvas_width, parse_canvas_provenance_value(lines[3], "source-canvas-width"));
@@ -2422,7 +2428,7 @@ absl::Status HuginProject::Configure(
       : options.projection_parameters;
   HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*generated_projection, generated_projection_parameters));
   provenance.imbue(std::locale::classic());
-  provenance << std::setprecision(std::numeric_limits<double>::max_digits10) << "version=8\n"
+  provenance << std::setprecision(std::numeric_limits<double>::max_digits10) << "version=9\n"
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -2461,6 +2467,7 @@ absl::Status HuginProject::Configure(
                << '\n';
   for (size_t index = 0; index < effective_projection_framing.crop.size(); ++index)
     provenance << "projection-crop-" << index << '=' << effective_projection_framing.crop[index] << '\n';
+  provenance << "control-point-resolution=" << ControlPointResolutionName(options.control_point_resolution) << '\n';
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;

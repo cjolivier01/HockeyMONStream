@@ -67,7 +67,31 @@ int main() {
         "second 16-bit image must use the same preprocessing");
   }
 
-  auto superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right);
+  using hm::stitching::ControlPointResolution;
+  ok &= expect(
+      hm::stitching::ParseControlPointResolution("native").ok() &&
+          hm::stitching::ParseControlPointResolution("2k").ok() &&
+          !hm::stitching::ParseControlPointResolution("bad-size").ok(),
+      "resolution accepts native and 2k, rejecting unknown values");
+  const auto auto_resolution = hm::stitching::ParseControlPointResolution("auto");
+#ifdef IS_TEGRA
+  const auto expected_default = ControlPointResolution::k2K;
+#else
+  const auto expected_default = ControlPointResolution::kNative;
+#endif
+  auto default_input = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right);
+  ok &= expect(
+      auto_resolution.ok() && *auto_resolution == expected_default && default_input.ok() &&
+          default_input->tensor_size ==
+              (expected_default == ControlPointResolution::k2K ? cv::Size(2048, 1152) : cv::Size(160, 104)),
+      "auto and default preprocessing must use 2K on Jetson and native elsewhere");
+  auto reduced = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right, ControlPointResolution::k2K);
+  ok &= expect(
+      reduced.ok() && reduced->tensor_size == cv::Size(2048, 1152) &&
+          reduced->resized_sizes[0] == cv::Size(2048, 1152) && reduced->resized_sizes[1] == cv::Size(1152, 1152) &&
+          reduced->tensor[static_cast<size_t>(2048) * 1152 + 1152] == 0.0f,
+      "2K reproduces the aspect-preserving canvas and per-camera padding");
+  auto superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right, ControlPointResolution::kNative);
   ok &= expect(superpoint.ok(), "valid SuperPoint images must preprocess");
   if (superpoint.ok()) {
     ok &= expect(
@@ -87,7 +111,8 @@ int main() {
             superpoint->tensor.back() == 0.0f,
         "SuperPoint padding must remain zero");
   }
-  auto superpoint16 = hm::stitching::FeatureMatcher::PrepareSuperPoint(left16, right16);
+  auto superpoint16 =
+      hm::stitching::FeatureMatcher::PrepareSuperPoint(left16, right16, ControlPointResolution::kNative);
   ok &= expect(superpoint16.ok(), "16-bit SuperPoint images must preprocess");
   if (superpoint16.ok()) {
     ok &= expect(
@@ -96,7 +121,7 @@ int main() {
   }
   ok &= expect(!hm::stitching::FeatureMatcher::PrepareSuperPoint({}, right).ok(), "empty SuperPoint images must fail");
   const cv::Mat tiny(2, 3, CV_8UC3, cv::Scalar::all(255));
-  auto tiny_superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(tiny, tiny);
+  auto tiny_superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(tiny, tiny, ControlPointResolution::kNative);
   ok &= expect(
       tiny_superpoint.ok() && tiny_superpoint->tensor_size == cv::Size(32, 32) &&
           tiny_superpoint->resized_sizes[0] == tiny.size() && tiny_superpoint->tensor[3] == 0.0f,
@@ -106,7 +131,8 @@ int main() {
   full_size.at<cv::Vec3b>(2160, 3840) = {255, 255, 255};
   full_size.at<cv::Vec3b>(2159, 3839) = {255, 255, 255};
   const cv::Mat cropped = full_size(cv::Rect(0, 0, 3840, 2160));
-  auto full_superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(full_size, cropped);
+  auto full_superpoint =
+      hm::stitching::FeatureMatcher::PrepareSuperPoint(full_size, cropped, ControlPointResolution::kNative);
   ok &= expect(full_superpoint.ok(), "full-resolution non-contiguous SuperPoint images must preprocess");
   if (full_superpoint.ok()) {
     const size_t image_plane = static_cast<size_t>(2168) * 3848;
@@ -191,6 +217,21 @@ int main() {
             native_matches->accepted[0].left == cv::Point2f(3840, 2160) &&
             native_matches->accepted[0].right == cv::Point2f(3839, 2159),
         "native-resolution matches must keep exact source coordinates and reject per-image padding");
+    set_keypoint(0, 0, 10.0f, 30.0f);
+    set_keypoint(1, 0, 40.0f, 35.0f);
+    set_keypoint(1, 1, 50.0f, 15.0f);
+  }
+  if (reduced.ok()) {
+    set_keypoint(0, 0, 1279.5f, 639.5f);
+    set_keypoint(1, 0, 575.5f, 575.5f);
+    set_keypoint(1, 1, 1200.0f, 500.0f);
+    auto scaled = hm::stitching::FeatureMatcher::Postprocess(
+        *reduced, keypoints.data(), keypoints.size(), matches.data(), 6, scores.data(), 2, 5);
+    ok &= expect(
+        scaled.ok() && scaled->accepted.size() == 1 &&
+            cv::norm(scaled->accepted[0].left - cv::Point2f(99.5f, 49.5f)) < 1e-4 &&
+            cv::norm(scaled->accepted[0].right - cv::Point2f(49.5f, 49.5f)) < 1e-4,
+        "2K matches return source pixel-center coordinates and reject camera padding");
     set_keypoint(0, 0, 10.0f, 30.0f);
     set_keypoint(1, 0, 40.0f, 35.0f);
     set_keypoint(1, 1, 50.0f, 15.0f);

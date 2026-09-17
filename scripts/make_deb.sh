@@ -426,7 +426,13 @@ if [[ -z "${BAZEL_OUTPUT_BASE}" ]]; then
 fi
 case "${PKG_ARCH}" in
   amd64) ORT_REPOSITORY=onnxruntime_linux_x86_64 ;;
-  arm64) ORT_REPOSITORY=onnxruntime_linux_aarch64 ;;
+  arm64)
+    if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+      ORT_REPOSITORY=onnxruntime_linux_jetson
+    else
+      ORT_REPOSITORY=onnxruntime_linux_aarch64
+    fi
+    ;;
   *)
     echo "ERROR: unsupported package architecture for ONNX Runtime notices: ${PKG_ARCH}" >&2
     exit 1
@@ -437,6 +443,20 @@ if [[ ! -f "${ORT_SOURCE}/LICENSE" || ! -f "${ORT_SOURCE}/ThirdPartyNotices.txt"
   echo "ERROR: pinned ONNX Runtime notices were not found under ${ORT_SOURCE}" >&2
   exit 1
 fi
+ORT_VERSION="$(cat "${ORT_SOURCE}/VERSION_NUMBER")"
+if [[ ! "${ORT_VERSION}" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+  echo "ERROR: invalid pinned ONNX Runtime version: ${ORT_VERSION}" >&2
+  exit 1
+fi
+# The CUDA provider is dlopen'd, so it is absent from the core library's ldd
+# graph. Stage both providers beside the core and include their ELF dependencies.
+for ort_library in "libonnxruntime.so.${ORT_VERSION}" libonnxruntime_providers_shared.so libonnxruntime_providers_cuda.so; do
+  if [[ ! -f "${ORT_SOURCE}/lib/${ort_library}" ]]; then
+    echo "ERROR: missing pinned ONNX Runtime library: ${ort_library}" >&2
+    exit 1
+  fi
+  install_lib "${ORT_SOURCE}/lib/${ort_library}" "${STAGING}${INSTALL_PREFIX}/lib"
+done
 install -m 0644 "${ORT_SOURCE}/LICENSE" "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime/LICENSE"
 install -m 0644 "${ORT_SOURCE}/ThirdPartyNotices.txt" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime/ThirdPartyNotices.txt"
@@ -1050,11 +1070,22 @@ declare -a shlibdeps_private_lib_dirs=()
 for elf in "${package_elfs[@]}"; do
   CUDA_NEEDED="$(patchelf --print-needed "${elf}" \
     | grep -E '^lib(cudart|npp[^.]*|cublas[^.]*|cufft[^.]*|curand[^.]*|cusolver[^.]*|cusparse[^.]*|nvrtc[^.]*|nvJitLink)[.]so[.][0-9]+$' || true)"
-  if [[ -n "${CUDA_NEEDED}" ]] && grep -Ev "[.]so[.]${EXPECTED_CUDA_SONAME}$" <<< "${CUDA_NEEDED}" >/dev/null; then
-    echo "ERROR: ${TARGET_PLATFORM} package ELF linked against an unexpected CUDA major: ${elf}" >&2
-    printf '  %s\n' "${CUDA_NEEDED}" >&2
-    exit 1
-  fi
+  # CUDA component ABI versions do not all equal the toolkit major.
+  # cuRAND remains ABI 10. cuFFT/cuSOLVER use ABI 11 with CUDA 12
+  # and ABI 12 with CUDA 13; cuSPARSE remains ABI 12.
+  while IFS= read -r cuda_needed; do
+    [[ -n "${cuda_needed}" ]] || continue
+    case "${cuda_needed}" in
+      libcurand.so.*) component_abi=10 ;;
+      libcufft*.so.*|libcusolver*.so.*) component_abi=$((EXPECTED_CUDA_SONAME - 1)) ;;
+      libcusparse.so.*) component_abi=12 ;;
+      *) component_abi="${EXPECTED_CUDA_SONAME}" ;;
+    esac
+    if [[ "${cuda_needed}" != *.so."${component_abi}" ]]; then
+      echo "ERROR: ${TARGET_PLATFORM} package ELF linked against an unexpected CUDA component ABI: ${elf}: ${cuda_needed}" >&2
+      exit 1
+    fi
+  done <<< "${CUDA_NEEDED}"
   shlibdeps_elf_args+=("-e${elf}")
 done
 
@@ -1241,6 +1272,14 @@ if [[ -z "${SHLIB_DEPENDS}" ]]; then
   cat "${SHLIBDEPS_LOG}" >&2
   exit 1
 fi
+# ORT's CUDA 13 provider loads cuDNN 9 with dlopen; DT_NEEDED alone
+# cannot produce its package dependency. Require the package matching the toolkit.
+CUDNN_PACKAGE="libcudnn9-cuda-${EXPECTED_CUDA_SONAME}"
+if ! dpkg-query -W -f='${Status}' "${CUDNN_PACKAGE}" 2>/dev/null | grep -qx 'install ok installed'; then
+  echo "ERROR: ${CUDNN_PACKAGE} is required for ONNX Runtime CUDA inference." >&2
+  exit 1
+fi
+SHLIB_DEPENDS="${SHLIB_DEPENDS}, ${CUDNN_PACKAGE}"
 SHLIB_DEPENDS="${SHLIB_DEPENDS//, /,$'\n' }"
 # Keep the DeepStream relationship explicit below and avoid emitting it twice
 # when dependency-only DeepStream runtime ELFs also resolve to that package.
@@ -1331,16 +1370,16 @@ if grep -RIE '(python3|PYTHONPATH|HM_PYTHON|setup_pretrained_assets[.]py|hmlib[.
   echo "ERROR: an installed launcher still refers to Python calibration tooling." >&2
   exit 1
 fi
-if [[ ! -f "${STAGING}${INSTALL_PREFIX}/lib/libonnxruntime.so.1.23.2" ||
+if [[ ! -f "${STAGING}${INSTALL_PREFIX}/lib/libonnxruntime.so.${ORT_VERSION}" ||
       ! -L "${STAGING}${INSTALL_PREFIX}/lib/libonnxruntime.so.1" ]]; then
   echo "ERROR: the pinned ONNX Runtime library and SONAME link were not staged." >&2
   exit 1
 fi
-if [[ "$(readlink "${STAGING}${INSTALL_PREFIX}/lib/libonnxruntime.so.1")" != "libonnxruntime.so.1.23.2" ]]; then
+if [[ "$(readlink "${STAGING}${INSTALL_PREFIX}/lib/libonnxruntime.so.1")" != "libonnxruntime.so.${ORT_VERSION}" ]]; then
   echo "ERROR: the ONNX Runtime SONAME link does not target the pinned runtime." >&2
   exit 1
 fi
-if [[ "$(patchelf --print-soname "${STAGING}${INSTALL_PREFIX}/lib/libonnxruntime.so.1.23.2")" != \
+if [[ "$(patchelf --print-soname "${STAGING}${INSTALL_PREFIX}/lib/libonnxruntime.so.${ORT_VERSION}")" != \
       "libonnxruntime.so.1" ]]; then
   echo "ERROR: the staged ONNX Runtime library has an unexpected ELF SONAME." >&2
   exit 1

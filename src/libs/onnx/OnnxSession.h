@@ -9,7 +9,12 @@
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+// X11 defines None as a macro; ORT 1.30 also has OrtResourceCount::None().
+#pragma push_macro("None")
+#undef None
 #include "onnxruntime_cxx_api.h"
+#pragma pop_macro("None")
+#include "hstream/src/libs/onnx/ExecutionProvider.h"
 
 namespace hm::onnx {
 
@@ -55,7 +60,9 @@ class Session {
       const std::string& model_path,
       std::vector<TensorContract> inputs,
       std::vector<TensorContract> outputs,
-      bool use_cpu_memory_arena = true);
+      bool use_cpu_memory_arena = true,
+      ExecutionProvider provider = ExecutionProvider::kCpu,
+      const std::string& profile_prefix = {});
   static absl::StatusOr<std::unique_ptr<Session>> CreateFromBytes(
       const void* bytes,
       size_t byte_count,

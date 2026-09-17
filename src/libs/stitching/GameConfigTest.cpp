@@ -47,6 +47,61 @@ int main() {
   fs::create_directories(root);
   std::ofstream(root / "config.yaml") << "unrelated:\n  keep: true\n";
 
+  using hm::stitching::ControlPointResolution;
+  YAML::Node resolution_private(YAML::NodeType::Map);
+  const auto alternate_resolution = hm::stitching::DefaultControlPointResolution() == ControlPointResolution::kNative
+      ? ControlPointResolution::k2K
+      : ControlPointResolution::kNative;
+  const std::string alternate_name = hm::stitching::ControlPointResolutionName(alternate_resolution);
+  YAML::Node reduced_config;
+  reduced_config["stitching"]["control_point_resolution"] = alternate_name;
+  auto materialized_resolution =
+      hm::stitching::materialize_control_point_resolution(resolution_private, reduced_config);
+  ok &= expect(
+      materialized_resolution.ok() && *materialized_resolution &&
+          hm::stitching::read_control_point_resolution(resolution_private).value() == alternate_resolution,
+      "worker resolution must materialize a different size inherited from another layer");
+  ok &= expect(
+      hm::stitching::restore_generated_control_point_resolution(resolution_private) &&
+          hm::stitching::read_control_point_resolution(resolution_private).value() ==
+              hm::stitching::DefaultControlPointResolution(),
+      "generated resolution must not pin an inherited setting as a game override");
+  resolution_private["stitching"]["control_point_resolution"] = alternate_name;
+  auto displaced = hm::stitching::materialize_control_point_resolution(resolution_private, YAML::Node());
+  ok &= expect(
+      displaced.ok() && *displaced && hm::stitching::restore_generated_control_point_resolution(resolution_private) &&
+          hm::stitching::read_control_point_resolution(resolution_private).value() == alternate_resolution,
+      "temporary auto resolution must restore a displaced explicit override");
+  ok &= expect(
+      !hm::stitching::read_control_point_resolution(YAML::Load("stitching: {control_point_resolution: []}")).ok(),
+      "invalid resolution YAML must fail explicitly");
+
+  using hm::onnx::ExecutionProvider;
+  YAML::Node provider_private(YAML::NodeType::Map);
+  const YAML::Node cpu_config = YAML::Load("stitching: {control_point_execution_provider: cpu}");
+  auto materialized_provider =
+      hm::stitching::materialize_control_point_execution_provider(provider_private, cpu_config);
+  ok &= expect(
+      materialized_provider.ok() && *materialized_provider &&
+          hm::stitching::read_control_point_execution_provider(provider_private).value() == ExecutionProvider::kCpu,
+      "worker provider must materialize CPU execution inherited from another layer");
+  ok &= expect(
+      hm::stitching::restore_generated_control_point_execution_provider(provider_private) &&
+          hm::stitching::read_control_point_execution_provider(provider_private).value() == ExecutionProvider::kCuda,
+      "generated provider must not pin an inherited setting as a game override");
+  provider_private["stitching"]["control_point_execution_provider"] = "cpu";
+  auto displaced_provider = hm::stitching::materialize_control_point_execution_provider(provider_private, YAML::Node());
+  ok &= expect(
+      displaced_provider.ok() && *displaced_provider &&
+          hm::stitching::restore_generated_control_point_execution_provider(provider_private) &&
+          hm::stitching::read_control_point_execution_provider(provider_private).value() == ExecutionProvider::kCpu,
+      "temporary CUDA provider must restore a displaced_provider explicit CPU override");
+  ok &= expect(
+      !hm::stitching::read_control_point_execution_provider(
+           YAML::Load("stitching: {control_point_execution_provider: []}"))
+           .ok(),
+      "invalid provider YAML must fail explicitly");
+
   const YAML::Node camera_config = YAML::Load(R"(
 stitching:
   camera_configs:
@@ -938,6 +993,8 @@ stitching:
 
   YAML::Node backend_generation(YAML::NodeType::Map);
   backend_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  // Historical claims without a resolution field always mean native, including on Jetson.
+  backend_generation["stitching"]["control_point_resolution"] = "native";
   backend_generation["stitching"]["mapping_backend"] = "opencv-magsac";
   backend_generation["stitching"]["projection"] = "rectilinear";
   backend_generation["stitching"]["run_autooptimizer"] = false;
@@ -952,7 +1009,7 @@ stitching:
       hm::stitching::publish_game_config(root, YAML::Dump(backend_generation) + "\n").ok(),
       "backend-generation fixture must publish");
   const hm::stitching::StitchingBackendChoices magsac_choices{
-      "superpoint-lightglue", "opencv-magsac", "rectilinear", false};
+      "superpoint-lightglue", "opencv-magsac", "rectilinear", false, {}, {}, {}, ControlPointResolution::kNative};
   const hm::stitching::StitchingBackendChoices affine_choices{
       "superpoint-lightglue", "opencv-affine-ransac", "rectilinear", false};
   const absl::Status reserved =
@@ -973,6 +1030,33 @@ stitching:
                   .as<std::string>() == "opencv-magsac",
       "a competing backend tuple must not replace the generation's first reservation");
   if (after_conflict.ok() && after_conflict->has_value()) {
+    YAML::Node provider_mismatch = YAML::Clone(**after_conflict);
+    provider_mismatch["stitching"]["control_point_execution_provider"] = "cpu";
+    ok &= expect(
+        absl::IsAborted(
+            hm::stitching::validate_stitching_backend_generation(
+                provider_mismatch, "backend-generation-a", magsac_choices)),
+        "a worker must not publish after its execution provider changed concurrently");
+    YAML::Node resolution_mismatch = YAML::Clone(**after_conflict);
+    resolution_mismatch["stitching"]["control_point_resolution"] = "2k";
+    ok &= expect(
+        absl::IsAborted(
+            hm::stitching::validate_stitching_backend_generation(
+                resolution_mismatch, "backend-generation-a", magsac_choices)),
+        "a worker must not publish after its resolution changed concurrently");
+    auto reduced_choices = magsac_choices;
+    reduced_choices.control_point_resolution = ControlPointResolution::k2K;
+    ok &= expect(
+        absl::IsAborted(
+            hm::stitching::reserve_stitching_backend_generation_in_config(
+                resolution_mismatch, "backend-generation-a", reduced_choices)),
+        "a new resolution must not take over an existing native generation");
+    resolution_mismatch["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "resolution-generation";
+    ok &= expect(
+        hm::stitching::reserve_stitching_backend_generation_in_config(
+            resolution_mismatch, "resolution-generation", reduced_choices)
+            .ok(),
+        "a fresh generation can reserve 2K input");
     YAML::Node worker_mismatch = YAML::Clone(**after_conflict);
     worker_mismatch["stitching"]["projection"] = "general-panini";
     YAML::Node camera_worker_mismatch = YAML::Clone(**after_conflict);

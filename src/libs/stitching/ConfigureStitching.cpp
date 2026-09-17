@@ -2034,6 +2034,7 @@ enum class SeamValidationMode {
 };
 
 struct ConfiguredStitchAlgorithms {
+  ControlPointResolution control_point_resolution;
   ControlPointMatcher control_point_matcher;
   MappingBackend mapping_backend;
   StitchProjection projection;
@@ -2070,7 +2071,10 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     const bool projection_present = projection_node && !projection_node.IsNull();
     const bool camera_present = camera_node && !camera_node.IsNull();
     const bool camera_fov_present = camera_fov_node && !camera_fov_node.IsNull();
-    if (!matcher_present && !backend_present && !projection_present && !camera_present && !camera_fov_present)
+    const bool resolution_present =
+        stitching["control_point_resolution"] && !stitching["control_point_resolution"].IsNull();
+    if (!matcher_present && !backend_present && !projection_present && !camera_present && !camera_fov_present &&
+        !resolution_present)
       return std::nullopt;
     if ((matcher_present && !matcher_node.IsScalar()) || (backend_present && !backend_node.IsScalar()) ||
         (projection_present && !projection_node.IsScalar()) || (camera_present && !camera_node.IsScalar())) {
@@ -2105,7 +2109,10 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     HM_ASSIGN_OR_RETURN(camera, read_stitch_camera_selection(effective_camera_config));
     if (backend == MappingBackend::kNona)
       HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
+    ControlPointResolution resolution;
+    HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(**loaded));
     return ConfiguredStitchAlgorithms{
+        .control_point_resolution = resolution,
         .control_point_matcher = matcher,
         .mapping_backend = backend,
         .projection = projection,
@@ -2134,6 +2141,10 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
   }
   if (*provenance->control_point_matcher != configured->control_point_matcher)
     return CanvasProvenanceCompatibility{false, "the selected control-point matcher changed"};
+  if (configured->control_point_matcher == ControlPointMatcher::kSuperPointLightGlue &&
+      provenance->control_point_resolution.value_or(ControlPointResolution::kNative) !=
+          configured->control_point_resolution)
+    return CanvasProvenanceCompatibility{false, "the selected control-point resolution changed"};
   if (!provenance->camera.has_value())
     return CanvasProvenanceCompatibility{false, "camera FOV provenance is missing"};
   if (*provenance->camera != configured->camera)
@@ -2880,6 +2891,10 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
   HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(mapping_backend, projection));
   if (mapping_backend == MappingBackend::kNona)
     HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
+  ControlPointResolution resolution;
+  HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(config));
+  hm::onnx::ExecutionProvider provider;
+  HM_ASSIGN_OR_RETURN(provider, read_control_point_execution_provider(config));
   return StitchingBackendChoices{
       std::string(ControlPointMatcherName(control_point_matcher)),
       std::string(MappingBackendName(mapping_backend)),
@@ -2887,7 +2902,9 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
       run_autooptimizer,
       std::move(projection_parameters),
       projection_framing,
-      camera};
+      camera,
+      resolution,
+      provider};
 }
 
 bool is_missing_hugin_executable(const absl::Status& status) {
@@ -3041,7 +3058,8 @@ absl::Status create_control_points(
   ControlPointMatcher control_point_matcher;
   HM_ASSIGN_OR_RETURN(control_point_matcher, ParseControlPointMatcher(backend_choices.control_point_matcher));
   fs::path model_path;
-  HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path(control_point_matcher));
+  HM_ASSIGN_OR_RETURN(
+      model_path, feature_matcher_model_path(control_point_matcher, backend_choices.control_point_execution_provider));
   AkazeMatchingCalibration akaze_calibration;
   if (control_point_matcher == ControlPointMatcher::kAkazeHamming)
     HM_ASSIGN_OR_RETURN(akaze_calibration, load_akaze_matching_calibration(game_dir));
@@ -3052,7 +3070,14 @@ absl::Status create_control_points(
         "Calibrated AKAZE control points are rectified and require an OpenCV mapping backend; NONA does not consume "
         "the GoPro KB4 lens profile");
   }
-  HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher, akaze_calibration));
+  HM_ASSIGN_OR_RETURN(
+      matcher,
+      FeatureMatcher::Create(
+          model_path.string(),
+          control_point_matcher,
+          akaze_calibration,
+          backend_choices.control_point_resolution,
+          backend_choices.control_point_execution_provider));
   const size_t minimum_matches =
       control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona ? 6 : 16;
   struct CandidateFramePair {
@@ -3146,6 +3171,7 @@ absl::Status create_control_points(
   if (max_output_width > 0)
     options.max_output_width = max_output_width;
   options.control_point_matcher = control_point_matcher;
+  options.control_point_resolution = backend_choices.control_point_resolution;
   StitchProjection projection;
   HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(backend_choices.projection));
   options.mapping_backend = mapping_backend;

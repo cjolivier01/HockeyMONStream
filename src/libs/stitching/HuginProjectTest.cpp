@@ -838,6 +838,7 @@ int main(int argc, char** argv) {
             (*provenance)->projection_framing == options.projection_framing &&
             (*provenance)->camera == hm::stitching::StitchCameraSelection{"gopro-mission-1", 127.2, 95.0} &&
             (*provenance)->control_point_matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue &&
+            (*provenance)->control_point_resolution == hm::stitching::ControlPointResolution::kNative &&
             (*provenance)->akaze_calibration_fingerprint == "not-applicable",
         "published Hugin provenance must record canvas, camera/FOV, matcher, calibration, algorithm, parameters, and "
         "framing");

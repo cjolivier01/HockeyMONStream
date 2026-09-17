@@ -86,10 +86,16 @@ bool feature_matcher_model_override_configured(ControlPointMatcher matcher) {
   return (override_path != nullptr && *override_path != '\0') || (model_dir != nullptr && *model_dir != '\0');
 }
 
-absl::StatusOr<std::filesystem::path> feature_matcher_model_path(ControlPointMatcher matcher) {
+absl::StatusOr<std::filesystem::path> feature_matcher_model_path(
+    ControlPointMatcher matcher,
+    hm::onnx::ExecutionProvider provider) {
   switch (matcher) {
     case ControlPointMatcher::kSuperPointLightGlue:
-      return model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx", false);
+      return model_path(
+          "HM_FEATURE_MATCHER_ONNX_MODEL",
+          provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx"
+                                                         : "superpoint-lightglue-pipeline-228994cea8c01014.onnx",
+          false);
     case ControlPointMatcher::kDeDoDeLightGlue:
       return model_path(
           "HM_DEDODE_LIGHTGLUE_ONNX_MODEL", "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx", false, false);
@@ -101,11 +107,16 @@ absl::StatusOr<std::filesystem::path> feature_matcher_model_path(ControlPointMat
   return absl::InvalidArgumentError("Unknown native control-point matcher");
 }
 
-absl::StatusOr<std::filesystem::path> feature_matcher_model_target_path(ControlPointMatcher matcher) {
+absl::StatusOr<std::filesystem::path> feature_matcher_model_target_path(
+    ControlPointMatcher matcher,
+    hm::onnx::ExecutionProvider provider) {
   switch (matcher) {
     case ControlPointMatcher::kSuperPointLightGlue:
       return model_target_path(
-          "HM_FEATURE_MATCHER_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx", false);
+          "HM_FEATURE_MATCHER_ONNX_MODEL",
+          provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx"
+                                                         : "superpoint-lightglue-pipeline-228994cea8c01014.onnx",
+          false);
     case ControlPointMatcher::kDeDoDeLightGlue:
       return model_target_path(
           "HM_DEDODE_LIGHTGLUE_ONNX_MODEL", "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx", false);
@@ -117,10 +128,12 @@ absl::StatusOr<std::filesystem::path> feature_matcher_model_target_path(ControlP
   return absl::InvalidArgumentError("Unknown native control-point matcher");
 }
 
-absl::StatusOr<std::string> feature_matcher_asset_to_ensure(ControlPointMatcher matcher) {
+absl::StatusOr<std::string> feature_matcher_asset_to_ensure(
+    ControlPointMatcher matcher,
+    hm::onnx::ExecutionProvider provider) {
   if (matcher == ControlPointMatcher::kAkazeHamming)
     return std::string();
-  auto model = feature_matcher_model_path(matcher);
+  auto model = feature_matcher_model_path(matcher, provider);
   if (feature_matcher_model_override_configured(matcher)) {
     if (!model.ok())
       return model.status();
@@ -128,7 +141,7 @@ absl::StatusOr<std::string> feature_matcher_asset_to_ensure(ControlPointMatcher 
   }
   switch (matcher) {
     case ControlPointMatcher::kSuperPointLightGlue:
-      return "superpoint-lightglue";
+      return provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda" : "superpoint-lightglue";
     case ControlPointMatcher::kLoFTR:
       return "efficient-loftr-outdoor";
     case ControlPointMatcher::kDeDoDeLightGlue:

@@ -34,8 +34,10 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":control_point_matcher",
     ":stitching_algorithms",
     ":transaction_state",
+    "//src/libs/onnx:execution_provider",
     "//src/libs/common:baseline_config",
     "//src/libs/common:status",
     "@yaml-cpp",

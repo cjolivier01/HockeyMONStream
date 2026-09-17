@@ -12,19 +12,40 @@ namespace hm::onnx {
 namespace {
 
 Ort::Env& environment() {
-  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "hstream");
-  return env;
+  // Keep this one environment for the process lifetime. CUDA is loaded lazily
+  // after Env construction, so its static destructors can run before Env's.
+  // Releasing Env at exit then calls provider Shutdown on already-freed state
+  // (observed with ORT 1.30). Sessions and tensors still release normally.
+  static Ort::Env* const env = new Ort::Env(ORT_LOGGING_LEVEL_WARNING, "hstream");
+  return *env;
 }
 
-Ort::SessionOptions session_options(bool use_cpu_memory_arena = true) {
+Ort::SessionOptions session_options(
+    bool use_cpu_memory_arena = true,
+    ExecutionProvider provider = ExecutionProvider::kCpu,
+    const std::string& profile_prefix = {}) {
   Ort::SessionOptions options;
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
   if (!use_cpu_memory_arena)
     options.DisableCpuMemArena();
-  // Avoid a second unbounded thread pool per session. ONNX Runtime still uses
-  // its CPU provider, but calibration remains a predictable background task.
+  // Bound CPU support work even when the heavy operators run on CUDA.
   options.SetIntraOpNumThreads(1);
   options.SetInterOpNumThreads(1);
+  if (provider == ExecutionProvider::kCuda) {
+    OrtCUDAProviderOptionsV2* raw_cuda = nullptr;
+    Ort::ThrowOnError(Ort::GetApi().CreateCUDAProviderOptions(&raw_cuda));
+    const auto release = [](OrtCUDAProviderOptionsV2* value) { Ort::GetApi().ReleaseCUDAProviderOptions(value); };
+    std::unique_ptr<OrtCUDAProviderOptionsV2, decltype(release)> cuda(raw_cuda, release);
+    // Device zero respects CUDA_VISIBLE_DEVICES. Avoid exhaustive cuDNN search
+    // and power-of-two arena growth for full-resolution calibration images.
+    const char* keys[] = {
+        "device_id", "cudnn_conv_algo_search", "arena_extend_strategy", "cudnn_conv_use_max_workspace"};
+    const char* values[] = {"0", "HEURISTIC", "kSameAsRequested", "0"};
+    Ort::ThrowOnError(Ort::GetApi().UpdateCUDAProviderOptions(cuda.get(), keys, values, 4));
+    options.AppendExecutionProvider_CUDA_V2(*cuda);
+  }
+  if (!profile_prefix.empty())
+    options.EnableProfiling(profile_prefix.c_str());
   return options;
 }
 
@@ -152,17 +173,28 @@ absl::StatusOr<std::unique_ptr<Session>> Session::Create(
     const std::string& model_path,
     std::vector<TensorContract> inputs,
     std::vector<TensorContract> outputs,
-    bool use_cpu_memory_arena) {
+    bool use_cpu_memory_arena,
+    ExecutionProvider provider,
+    const std::string& profile_prefix) {
   try {
-    auto options = session_options(use_cpu_memory_arena);
-    auto session = std::make_unique<Ort::Session>(environment(), model_path.c_str(), options);
+    // CUDA provider registration uses ORT's default logger. Construct the
+    // process environment before configuring providers, including the first
+    // session in calibration (which need not have loaded a CPU model first).
+    auto& env = environment();
+    auto options = session_options(use_cpu_memory_arena, provider, profile_prefix);
+    auto session = std::make_unique<Ort::Session>(env, model_path.c_str(), options);
     auto result = std::unique_ptr<Session>(new Session(std::move(session), std::move(inputs), std::move(outputs)));
     auto status = result->ValidateModelContract();
     if (!status.ok())
       return status;
     return result;
   } catch (const Ort::Exception& error) {
-    return ort_error("Failed to load ONNX model " + model_path, error);
+    return ort_error(
+        "Failed to load ONNX model " + model_path + " with " + ExecutionProviderName(provider) +
+            (provider == ExecutionProvider::kCuda
+                 ? ". Check CUDA/cuDNN availability or explicitly set stitching.control_point_execution_provider=cpu"
+                 : ""),
+        error);
   }
 }
 
@@ -175,8 +207,9 @@ absl::StatusOr<std::unique_ptr<Session>> Session::CreateFromBytes(
     return absl::InvalidArgumentError("ONNX model bytes must not be empty");
   }
   try {
+    auto& env = environment();
     auto options = session_options();
-    auto session = std::make_unique<Ort::Session>(environment(), bytes, byte_count, options);
+    auto session = std::make_unique<Ort::Session>(env, bytes, byte_count, options);
     auto result = std::unique_ptr<Session>(new Session(std::move(session), std::move(inputs), std::move(outputs)));
     auto status = result->ValidateModelContract();
     if (!status.ok())

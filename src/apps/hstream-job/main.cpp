@@ -165,6 +165,15 @@ if [ -n "${HSTREAM_JOB_BAZEL_BIN}" ]; then
     } 2>/dev/null || true)"
     if [ -n "${onnxruntime_so}" ]; then
       ln -sfn "$(readlink -f "${onnxruntime_so}")" "${runtime_lib_dir}/libonnxruntime.so.1"
+      onnxruntime_source="$(dirname "$(readlink -f "${onnxruntime_so}")")"
+      # ORT opens providers beside the loaded core library, including this cache.
+      for onnxruntime_name in libonnxruntime_providers_shared.so libonnxruntime_providers_cuda.so; do
+        if [ ! -f "${onnxruntime_source}/${onnxruntime_name}" ]; then
+          echo "Missing ONNX Runtime library: ${onnxruntime_source}/${onnxruntime_name}" >&2
+          exit 78
+        fi
+        ln -sfn "$(readlink -f "${onnxruntime_source}/${onnxruntime_name}")" "${runtime_lib_dir}/${onnxruntime_name}"
+      done
     fi
     yolo_so="${HSTREAM_JOB_BAZEL_BIN}/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
     if [ -e "${yolo_so}" ]; then

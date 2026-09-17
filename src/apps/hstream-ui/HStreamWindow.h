@@ -398,6 +398,8 @@ class HStreamWindow : public QMainWindow {
   bool runAutooptimizer() const;
   QString stitchFrameTime() const;
   QString controlPointMatcher() const;
+  void updateControlPointResolution();
+  QString controlPointResolutionFromGameConfig(const YAML::Node& config) const;
   QString mappingBackend() const;
   hm::stitching::StitchCameraSelection stitchCameraSelection() const;
   absl::StatusOr<hm::stitching::StitchCameraSelection> stitchCameraSelectionFromGameConfig(
@@ -537,6 +539,8 @@ class HStreamWindow : public QMainWindow {
   QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
+  QComboBox* control_point_resolution_combo_{nullptr};
+  QString control_point_resolution_{"native"};
   QSpinBox* control_points_spin_{nullptr};
   QSpinBox* calibration_frame_count_spin_{nullptr};
   QSpinBox* stitch_max_output_width_spin_{nullptr};
@@ -765,6 +769,7 @@ class HStreamWindow : public QMainWindow {
   int active_stitch_max_output_width_{0};
   bool active_run_autooptimizer_{false};
   QString active_stitch_frame_time_;
+  QString active_control_point_resolution_{"native"};
   QString active_control_point_matcher_;
   QString active_mapping_backend_;
   hm::stitching::StitchCameraSelection active_camera_selection_;
@@ -817,6 +822,7 @@ class HStreamWindow : public QMainWindow {
   QString default_stitch_frame_time_{"00:00:00"};
   int default_stitch_max_output_width_{0};
   bool default_run_autooptimizer_{true};
+  QString default_control_point_resolution_{"native"};
   QString default_control_point_matcher_{"superpoint-lightglue"};
   QString default_mapping_backend_{"nona"};
   std::vector<hm::stitching::StitchCameraConfiguration> camera_configurations_;
@@ -838,6 +844,7 @@ class HStreamWindow : public QMainWindow {
   QString development_pipeline_runner_;
   QString development_bazel_bin_;
   QString saved_stitch_frame_time_;
+  QString saved_control_point_resolution_{"native"};
   QString saved_control_point_matcher_;
   QString saved_mapping_backend_;
   hm::stitching::StitchCameraSelection saved_camera_selection_;

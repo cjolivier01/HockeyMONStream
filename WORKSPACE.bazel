@@ -5,6 +5,7 @@ workspace(name = _workspace_name)
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
 load("//bazel:conditional_local_repository.bzl", "conditional_local_repository")
+load("//bazel:onnxruntime_gpu_repository.bzl", "onnxruntime_gpu_arm64_repository")
 
 local_repository(
     name = "gst_plugin_dev",
@@ -104,25 +105,36 @@ http_archive(
     url = "https://github.com/bazelbuild/rules_python/releases/download/1.1.0/rules_python-1.1.0.tar.gz",
 )
 
-# ONNX Runtime is kept private to HStream rather than depending on a distro
-# package whose ABI/version differs between supported Ubuntu releases.  Both
-# archives are CPU-only; the target platform selects the matching library in
-# //src/libs/onnx.  Keeping acceleration out of this baseline also makes the
-# same exported models usable on x86_64, SBSA, and Jetson.
+# Native CUDA runtimes remain private to HStream. Desktop/SBSA use CUDA 13;
+# JetPack 6 uses CUDA 12.6 and cuDNN 9. CPU execution remains explicitly selectable.
 http_archive(
     name = "onnxruntime_linux_x86_64",
     build_file = "@//buildfiles/third_party:onnxruntime.BUILD",
-    sha256 = "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b",
-    strip_prefix = "onnxruntime-linux-x64-1.23.2",
-    url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+    sha256 = "382d79133112388cf94ce5855789b7c9bef12bef76a08b6b277e5a317213adcd",
+    strip_prefix = "onnxruntime-linux-x64-gpu_cuda13-1.30.0",
+    url = "https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz",
 )
 
-http_archive(
+onnxruntime_gpu_arm64_repository(
     name = "onnxruntime_linux_aarch64",
     build_file = "@//buildfiles/third_party:onnxruntime.BUILD",
-    sha256 = "7c63c73560ed76b1fac6cff8204ffe34fe180e70d6582b5332ec094810241e5c",
-    strip_prefix = "onnxruntime-linux-aarch64-1.23.2",
-    url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
+    version = "1.30.0",
+    headers_version = "1.30.0",
+    headers_url = "https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-aarch64-1.30.0.tgz",
+    headers_sha256 = "e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da",
+    wheel_url = "https://files.pythonhosted.org/packages/54/21/81371bce6071c18a65c99f20a7943048146a46256aa34b318a21e057d75c/onnxruntime_gpu-1.30.0-cp311-cp311-manylinux_2_34_aarch64.whl",
+    wheel_sha256 = "6c70b83afd6bfcc34b4b58d6a41f8c439c96811bbb7fe9fb1d2c2c9dd9c881b5",
+)
+
+onnxruntime_gpu_arm64_repository(
+    name = "onnxruntime_linux_jetson",
+    build_file = "@//buildfiles/third_party:onnxruntime.BUILD",
+    version = "1.24.0",
+    headers_version = "1.24.1",
+    headers_url = "https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-aarch64-1.24.1.tgz",
+    headers_sha256 = "0f56edd68f7602df790b68b874a46b115add037e88385c6c842bb763b39b9f89",
+    wheel_url = "https://pypi.jetson-ai-lab.io/jp6/cu126/+f/d98/0b934b9a29c1a/onnxruntime_gpu-1.24.0-cp310-cp310-linux_aarch64.whl",
+    wheel_sha256 = "d980b934b9a29c1a9d6f39751edd7662b69fadd75556a10ff363773a58ce0950",
 )
 
 # The Python parity test reconstructs the exact eager-PyTorch pipeline from
