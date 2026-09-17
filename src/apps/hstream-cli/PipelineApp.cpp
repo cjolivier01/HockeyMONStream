@@ -1357,14 +1357,17 @@ absl::Status PipelineApplication::configureInstances(
       if (app_ctx->configurator().stitching_matcher_model_required()) {
         hm::stitching::ControlPointMatcher matcher;
         HM_ASSIGN_OR_RETURN(matcher, selected_stitching_matcher(app_ctx->configurator().config()));
+        hm::onnx::ExecutionProvider provider;
+        HM_ASSIGN_OR_RETURN(
+            provider, hm::stitching::read_control_point_execution_provider(app_ctx->configurator().config()));
         std::string matcher_asset;
-        HM_ASSIGN_OR_RETURN(matcher_asset, hm::stitching::feature_matcher_asset_to_ensure(matcher));
+        HM_ASSIGN_OR_RETURN(matcher_asset, hm::stitching::feature_matcher_asset_to_ensure(matcher, provider));
         if (!matcher_asset.empty()) {
           std::vector<fs::path> asset_configs;
           for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
             asset_configs.emplace_back(cfg_files_[index]);
           fs::path runtime_target;
-          HM_ASSIGN_OR_RETURN(runtime_target, hm::stitching::feature_matcher_model_target_path(matcher));
+          HM_ASSIGN_OR_RETURN(runtime_target, hm::stitching::feature_matcher_model_target_path(matcher, provider));
           hm::assets::AssetSpec verified_asset;
           HM_ASSIGN_OR_RETURN(
               verified_asset,

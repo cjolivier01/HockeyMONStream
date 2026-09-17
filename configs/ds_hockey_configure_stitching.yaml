@@ -24,6 +24,12 @@ pretrained-assets:
     url: https://github.com/fabio-sim/LightGlue-ONNX/releases/download/v2.0/superpoint_lightglue_pipeline.onnx
     sha256: 228994cea8c010146fa2aef933baa3ffaa4bcdc522bc8aa560087fcff8134526
     path: $HOME/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx
+  - name: superpoint-lightglue-cuda
+    on-demand: true
+    redistributable: false
+    url: https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx
+    sha256: 0f3d76a65c832fc10c81ce80048b361cef75fce8f1d67f6aa65a73294a333411
+    path: $HOME/.cache/hstream/models/superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx
   - name: efficient-loftr-outdoor
     on-demand: true
     redistributable: true

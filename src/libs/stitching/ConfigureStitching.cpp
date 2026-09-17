@@ -2893,6 +2893,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
     HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
   ControlPointResolution resolution;
   HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(config));
+  hm::onnx::ExecutionProvider provider;
+  HM_ASSIGN_OR_RETURN(provider, read_control_point_execution_provider(config));
   return StitchingBackendChoices{
       std::string(ControlPointMatcherName(control_point_matcher)),
       std::string(MappingBackendName(mapping_backend)),
@@ -2901,7 +2903,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
       std::move(projection_parameters),
       projection_framing,
       camera,
-      resolution};
+      resolution,
+      provider};
 }
 
 bool is_missing_hugin_executable(const absl::Status& status) {
@@ -3055,7 +3058,8 @@ absl::Status create_control_points(
   ControlPointMatcher control_point_matcher;
   HM_ASSIGN_OR_RETURN(control_point_matcher, ParseControlPointMatcher(backend_choices.control_point_matcher));
   fs::path model_path;
-  HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path(control_point_matcher));
+  HM_ASSIGN_OR_RETURN(
+      model_path, feature_matcher_model_path(control_point_matcher, backend_choices.control_point_execution_provider));
   AkazeMatchingCalibration akaze_calibration;
   if (control_point_matcher == ControlPointMatcher::kAkazeHamming)
     HM_ASSIGN_OR_RETURN(akaze_calibration, load_akaze_matching_calibration(game_dir));
@@ -3069,7 +3073,11 @@ absl::Status create_control_points(
   HM_ASSIGN_OR_RETURN(
       matcher,
       FeatureMatcher::Create(
-          model_path.string(), control_point_matcher, akaze_calibration, backend_choices.control_point_resolution));
+          model_path.string(),
+          control_point_matcher,
+          akaze_calibration,
+          backend_choices.control_point_resolution,
+          backend_choices.control_point_execution_provider));
   const size_t minimum_matches =
       control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona ? 6 : 16;
   struct CandidateFramePair {

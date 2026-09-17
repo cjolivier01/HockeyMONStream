@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
   ok &= expect(
       contains(packager, "X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}") &&
           contains(packager, "X-HStream-Target-Platform: ${TARGET_PLATFORM}") &&
-          contains(packager, "EXPECTED_CUDA_SONAME") && contains(packager, "unexpected CUDA major") &&
+          contains(packager, "EXPECTED_CUDA_SONAME") && contains(packager, "unexpected CUDA component ABI") &&
           contains(packager, "pretrained/native-calibration") && contains(packager, "model_cache_root") &&
           contains(packager, "--package-assets --verify") && contains(packager, "--package-assets --print-targets") &&
           contains(packager, "DeDoDe must be locally supplied") &&

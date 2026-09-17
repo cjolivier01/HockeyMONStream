@@ -44,6 +44,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
       bison \
       build-essential \
       cuda-libraries-13-2 \
+      libcudnn9-cuda-13 \
       dpkg-dev \
       file \
       flex \

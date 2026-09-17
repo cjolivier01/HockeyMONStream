@@ -1,19 +1,25 @@
+load("@kstream//bazel:onnxruntime_import.bzl", "onnxruntime_import")
+
 package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])
 
-cc_import(
-    name = "onnxruntime_shared",
-    # Reference the SONAME symlink so Bazel's runfiles preserve the loader name
-    # (libonnxruntime.so.1), not only the fully-versioned backing file.
-    shared_library = "lib/libonnxruntime.so.1",
+onnxruntime_import(
+    name = "native_runtime",
+    library = "lib/libonnxruntime.so.1",
+    providers = ["lib/libonnxruntime_providers_cuda.so", "lib/libonnxruntime_providers_shared.so"],
 )
 
 cc_library(
     name = "onnxruntime",
     hdrs = glob(["include/**/*.h"]),
     includes = ["include"],
-    deps = [":onnxruntime_shared"],
+    deps = [":native_runtime"],
+)
+
+filegroup(
+    name = "cuda_provider_files",
+    srcs = ["lib/libonnxruntime_providers_cuda.so", "lib/libonnxruntime_providers_shared.so"],
 )
 
 filegroup(
@@ -21,6 +27,6 @@ filegroup(
     srcs = [
         "LICENSE",
         "ThirdPartyNotices.txt",
-        "lib/libonnxruntime.so.1.23.2",
-    ],
+        ":cuda_provider_files",
+    ] + glob(["lib/libonnxruntime.so.1.*"]),
 )

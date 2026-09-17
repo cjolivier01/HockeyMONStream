@@ -79,7 +79,9 @@ class FeatureMatcher {
       const std::string& model_path,
       ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue,
       AkazeMatchingCalibration akaze_calibration = {},
-      ControlPointResolution resolution = ControlPointResolution::kNative);
+      ControlPointResolution resolution = ControlPointResolution::kNative,
+      hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda,
+      const std::string& profile_prefix = {});
   // The release qualification oracle predates the selectable production
   // backends and uses a frozen RGB RaCo-ALIKED k2048 graph. Keep its contract
   // explicit so it cannot be mistaken for the production SuperPoint graph.

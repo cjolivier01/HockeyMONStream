@@ -924,6 +924,63 @@ absl::StatusOr<bool> materialize_control_point_resolution(YAML::Node& config, co
   return YAML::Dump(config) != before;
 }
 
+absl::StatusOr<hm::onnx::ExecutionProvider> read_control_point_execution_provider(const YAML::Node& config) {
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    const YAML::Node value =
+        stitching && stitching.IsMap() ? stitching["control_point_execution_provider"] : YAML::Node();
+    if (!value || value.IsNull())
+      return hm::onnx::ExecutionProvider::kCuda;
+    if (!value.IsScalar())
+      return absl::InvalidArgumentError("stitching.control_point_execution_provider must be cuda or cpu");
+    return hm::onnx::ParseExecutionProvider(value.as<std::string>());
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to read control-point execution provider: " + std::string(exception.what()));
+  }
+}
+
+bool restore_generated_control_point_execution_provider(YAML::Node& config) {
+  const YAML::Node values = config;
+  const YAML::Node ui = values && values.IsMap() ? values["hstream_ui"] : YAML::Node();
+  const YAML::Node marker = ui && ui.IsMap() ? ui["generated_control_point_execution_provider"] : YAML::Node();
+  if (!marker || !marker.IsMap() || !marker["generated"] || !marker["generated"].IsScalar())
+    return false;
+  const YAML::Node stitching = values["stitching"];
+  const YAML::Node current =
+      stitching && stitching.IsMap() ? stitching["control_point_execution_provider"] : YAML::Node();
+  if (current && YAML::Dump(current) == YAML::Dump(marker["generated"])) {
+    if (marker["previous"])
+      config["stitching"]["control_point_execution_provider"] = YAML::Clone(marker["previous"]);
+    else
+      config["stitching"].remove("control_point_execution_provider");
+  }
+  config["hstream_ui"].remove("generated_control_point_execution_provider");
+  return true;
+}
+
+absl::StatusOr<bool> materialize_control_point_execution_provider(YAML::Node& config, const YAML::Node& effective) {
+  hm::onnx::ExecutionProvider provider;
+  HM_ASSIGN_OR_RETURN(provider, read_control_point_execution_provider(effective));
+  const std::string before = YAML::Dump(config);
+  restore_generated_control_point_execution_provider(config);
+  hm::onnx::ExecutionProvider previous;
+  HM_ASSIGN_OR_RETURN(previous, read_control_point_execution_provider(config));
+  if (previous != provider) {
+    YAML::Node marker(YAML::NodeType::Map);
+    const YAML::Node values = config;
+    const YAML::Node stitching = values && values.IsMap() ? values["stitching"] : YAML::Node();
+    const YAML::Node value =
+        stitching && stitching.IsMap() ? stitching["control_point_execution_provider"] : YAML::Node();
+    if (value)
+      marker["previous"] = YAML::Clone(value);
+    marker["generated"] = hm::onnx::ExecutionProviderName(provider);
+    config["hstream_ui"]["generated_control_point_execution_provider"] = marker;
+    config["stitching"]["control_point_execution_provider"] = hm::onnx::ExecutionProviderName(provider);
+  }
+  return YAML::Dump(config) != before;
+}
+
 bool restore_generated_stitch_rink_context(YAML::Node& config) {
   try {
     const YAML::Node values = config;
@@ -1714,7 +1771,12 @@ absl::Status validate_backend_generation_claim(
       HM_ASSIGN_OR_RETURN(
           claim_resolution, ParseControlPointResolution(claim["control_point_resolution"].as<std::string>()));
     }
-    const bool claim_matches = claim_resolution == expected_choices.control_point_resolution &&
+    hm::onnx::ExecutionProvider claim_provider;
+    YAML::Node claim_config;
+    claim_config["stitching"] = claim;
+    HM_ASSIGN_OR_RETURN(claim_provider, read_control_point_execution_provider(claim_config));
+    const bool claim_matches = claim_provider == expected_choices.control_point_execution_provider &&
+        claim_resolution == expected_choices.control_point_resolution &&
         claim["invalidation_id"].as<std::string>() == expected_invalidation_id &&
         claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
@@ -1737,12 +1799,14 @@ absl::Status validate_backend_generation_claim(
       std::ostringstream detail;
       detail << "Stitching backend choices were superseded for this calibration generation: expected {id="
              << expected_invalidation_id
+             << ", provider=" << hm::onnx::ExecutionProviderName(expected_choices.control_point_execution_provider)
              << ", resolution=" << ControlPointResolutionName(expected_choices.control_point_resolution)
              << ", matcher=" << expected_choices.control_point_matcher
              << ", backend=" << expected_choices.mapping_backend << ", projection=" << expected_choices.projection
              << ", autooptimizer=" << (expected_choices.run_autooptimizer ? "true" : "false")
              << ", parameters=" << format_parameters(expected_choices.projection_parameters)
              << "}, reserved {id=" << claim["invalidation_id"].as<std::string>()
+             << ", provider=" << hm::onnx::ExecutionProviderName(claim_provider)
              << ", resolution=" << ControlPointResolutionName(claim_resolution)
              << ", matcher=" << claim["control_point_matcher"].as<std::string>()
              << ", backend=" << claim["mapping_backend"].as<std::string>()
@@ -1788,7 +1852,10 @@ absl::Status validate_backend_generation_claim(
       return worker_camera.status();
     ControlPointResolution worker_resolution;
     HM_ASSIGN_OR_RETURN(worker_resolution, read_control_point_resolution(config));
-    const bool worker_tuple_matches = worker_resolution == expected_choices.control_point_resolution &&
+    hm::onnx::ExecutionProvider worker_provider;
+    HM_ASSIGN_OR_RETURN(worker_provider, read_control_point_execution_provider(config));
+    const bool worker_tuple_matches = worker_provider == expected_choices.control_point_execution_provider &&
+        worker_resolution == expected_choices.control_point_resolution &&
         stitching["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         stitching["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
         stitching["projection"].as<std::string>() == expected_choices.projection &&
@@ -1847,6 +1914,8 @@ absl::Status reserve_stitching_backend_generation_in_config(
       claim["invalidation_id"] = expected_invalidation_id;
       claim["control_point_matcher"] = expected_choices.control_point_matcher;
       claim["control_point_resolution"] = ControlPointResolutionName(expected_choices.control_point_resolution);
+      claim["control_point_execution_provider"] =
+          hm::onnx::ExecutionProviderName(expected_choices.control_point_execution_provider);
       claim["mapping_backend"] = expected_choices.mapping_backend;
       claim["projection"] = expected_choices.projection;
       claim["run_autooptimizer"] = expected_choices.run_autooptimizer;

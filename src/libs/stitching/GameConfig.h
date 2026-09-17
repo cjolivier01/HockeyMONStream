@@ -13,6 +13,7 @@
 #include "absl/status/statusor.h"
 #include "yaml-cpp/yaml.h"
 
+#include "hstream/src/libs/onnx/ExecutionProvider.h"
 #include "hstream/src/libs/stitching/ControlPointMatcher.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
@@ -90,6 +91,10 @@ absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML:
 bool restore_generated_control_point_resolution(YAML::Node& config);
 absl::StatusOr<bool> materialize_control_point_resolution(YAML::Node& config, const YAML::Node& effective);
 
+absl::StatusOr<hm::onnx::ExecutionProvider> read_control_point_execution_provider(const YAML::Node& config);
+bool restore_generated_control_point_execution_provider(YAML::Node& config);
+absl::StatusOr<bool> materialize_control_point_execution_provider(YAML::Node& config, const YAML::Node& effective);
+
 struct StitchingBackendChoices {
   std::string control_point_matcher;
   std::string mapping_backend;
@@ -99,6 +104,7 @@ struct StitchingBackendChoices {
   StitchProjectionFraming projection_framing;
   StitchCameraSelection camera;
   ControlPointResolution control_point_resolution{ControlPointResolution::kNative};
+  hm::onnx::ExecutionProvider control_point_execution_provider{hm::onnx::ExecutionProvider::kCuda};
 };
 
 // Camera configuration definitions live in the shared baseline under

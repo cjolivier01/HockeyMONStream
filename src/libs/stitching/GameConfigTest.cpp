@@ -70,6 +70,32 @@ int main() {
       !hm::stitching::read_control_point_resolution(YAML::Load("stitching: {control_point_resolution: []}")).ok(),
       "invalid resolution YAML must fail explicitly");
 
+  using hm::onnx::ExecutionProvider;
+  YAML::Node provider_private(YAML::NodeType::Map);
+  const YAML::Node cpu_config = YAML::Load("stitching: {control_point_execution_provider: cpu}");
+  auto materialized_provider =
+      hm::stitching::materialize_control_point_execution_provider(provider_private, cpu_config);
+  ok &= expect(
+      materialized_provider.ok() && *materialized_provider &&
+          hm::stitching::read_control_point_execution_provider(provider_private).value() == ExecutionProvider::kCpu,
+      "worker provider must materialize a cpu size inherited from another layer");
+  ok &= expect(
+      hm::stitching::restore_generated_control_point_execution_provider(provider_private) &&
+          hm::stitching::read_control_point_execution_provider(provider_private).value() == ExecutionProvider::kCuda,
+      "generated provider must not pin an inherited setting as a game override");
+  provider_private["stitching"]["control_point_execution_provider"] = "cpu";
+  auto displaced_provider = hm::stitching::materialize_control_point_execution_provider(provider_private, YAML::Node());
+  ok &= expect(
+      displaced_provider.ok() && *displaced_provider &&
+          hm::stitching::restore_generated_control_point_execution_provider(provider_private) &&
+          hm::stitching::read_control_point_execution_provider(provider_private).value() == ExecutionProvider::kCpu,
+      "temporary CUDA provider must restore a displaced_provider explicit CPU override");
+  ok &= expect(
+      !hm::stitching::read_control_point_execution_provider(
+           YAML::Load("stitching: {control_point_execution_provider: []}"))
+           .ok(),
+      "invalid provider YAML must fail explicitly");
+
   const YAML::Node camera_config = YAML::Load(R"(
 stitching:
   camera_configs:
@@ -996,6 +1022,13 @@ stitching:
                   .as<std::string>() == "opencv-magsac",
       "a competing backend tuple must not replace the generation's first reservation");
   if (after_conflict.ok() && after_conflict->has_value()) {
+    YAML::Node provider_mismatch = YAML::Clone(**after_conflict);
+    provider_mismatch["stitching"]["control_point_execution_provider"] = "cpu";
+    ok &= expect(
+        absl::IsAborted(
+            hm::stitching::validate_stitching_backend_generation(
+                provider_mismatch, "backend-generation-a", magsac_choices)),
+        "a worker must not publish after its execution provider changed concurrently");
     YAML::Node resolution_mismatch = YAML::Clone(**after_conflict);
     resolution_mismatch["stitching"]["control_point_resolution"] = "2k";
     ok &= expect(
