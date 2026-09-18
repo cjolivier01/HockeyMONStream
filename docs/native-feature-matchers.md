@@ -65,11 +65,28 @@ stitching:
   control_point_resolution: auto
 ```
 
-CUDA uses visible device 0 (`CUDA_VISIBLE_DEVICES` controls visibility). Failure
-to initialize CUDA fails calibration with an explicit error; there is no silent
-CPU retry. ONNX Runtime can place shape/control operators on CPU while running
+CUDA uses visible device 0 (`CUDA_VISIBLE_DEVICES` controls visibility). If model
+loading or inference exhausts GPU memory, calibration releases the CUDA session
+and retries the same inputs once on CPU. Remaining frame pairs use that CPU
+session. SuperPoint uses its original float32 CPU graph; startup verifies both
+CPU and CUDA assets when CUDA matching is selected. Provider-specific verified
+paths use `HM_FEATURE_MATCHER_CPU_ONNX_MODEL` and
+`HM_FEATURE_MATCHER_CUDA_ONNX_MODEL`; the explicit
+`HM_FEATURE_MATCHER_ONNX_MODEL` override remains a shared override for both.
+The calibration progress window reports the switch. Image resolution, frame
+count, cancellation, and generation ownership remain unchanged. Missing models,
+invalid inputs, CUDA initialization/driver errors other than memory exhaustion,
+and CPU failures remain errors. There is no repeated provider retry.
+ONNX Runtime can place shape/control operators on CPU while running
 convolutions and attention on CUDA. Existing valid calibration artifacts need
 not be regenerated merely to change execution placement.
+
+The ice-rink Mask2Former model also tries CUDA first, for both initial camera
+orientation and the Program ice mask on the stitched image. It uses the same
+one-time CPU fallback policy and reports the affected calibration stage. Its
+existing 1344 × 800 input canvas, inference scale, mask postprocessing, and
+publication rules are unchanged. These are calibration snapshots; no new
+steady-state video transfers are introduced.
 
 Desktop x86_64 and ARM64/SBSA use ONNX Runtime 1.30.0 with CUDA 13 and cuDNN 9.
 Jetson uses NVIDIA's JetPack 6 CUDA 12.6 ONNX Runtime 1.24.0 distribution with
@@ -103,9 +120,10 @@ measurement used CPU. Jetson Orin also completed the native 8K pair on CUDA
 in 21.63 seconds (47 accepted matches); its default is 2K to reduce calibration
 time and memory. These times include preprocessing, inference and match
 filtering, but exclude model load, image decoding and geometric calibration.
-Full resolution still requires substantial GPU memory; larger images or smaller
-GPUs may exceed memory/cuDNN limits. Choose `2k` explicitly when needed. There is
-no automatic downscaling. These transfers operate on the existing calibration
+Full resolution still requires substantial memory; larger images or smaller
+GPUs can trigger the CPU fallback, which is slower and needs sufficient host
+RAM. Choose `2k` explicitly to reduce matching memory and time. There is no
+automatic downscaling. These transfers operate on the existing calibration
 snapshots, never the steady-state video path; CPU shape/control work and the
 Loop's sparse descriptors do not introduce video-frame readback.
 
@@ -118,6 +136,12 @@ saved camera frames at their original resolution, set
 `HM_REQUIRE_ONNX_MODEL_TESTS=1` to fail if model assets are unavailable. Set
 `HM_SUPERPOINT_SMOKE_RESOLUTION=native` or `2k` to override the platform default. Both modes
 verify synthetic translation in the original source coordinates. Set
+`HM_MATCHER_SMOKE_NAME=superpoint-lightglue` to test rink segmentation and only
+that matcher without requiring unrelated model assets. Set
+`HM_RINK_SMOKE_IMAGE=/path/to/frame.png` to compare the selected provider's rink
+mask against CPU inference on a real frame (minimum intersection-over-union 0.99). Set
+`HM_REQUIRE_CPU_FALLBACK=1` when reproducing GPU memory exhaustion to require
+exactly one CPU retry of the selected matcher. Set
 `HM_MATCHER_SMOKE_PROVIDER=cuda` to exercise CUDA (the test defaults to CPU), and
 `HM_MATCHER_SMOKE_PROFILE_DIR=/existing/directory` to record operator placement
 for each matcher. A successful CUDA session alone is insufficient proof: inspect

@@ -71,14 +71,32 @@ const char* feature_matcher_override_name(ControlPointMatcher matcher) {
   return nullptr;
 }
 
+const char* provider_override_name(ControlPointMatcher matcher, hm::onnx::ExecutionProvider provider) {
+  if (matcher == ControlPointMatcher::kSuperPointLightGlue) {
+    return provider == hm::onnx::ExecutionProvider::kCuda ? "HM_FEATURE_MATCHER_CUDA_ONNX_MODEL"
+                                                          : "HM_FEATURE_MATCHER_CPU_ONNX_MODEL";
+  }
+  return feature_matcher_override_name(matcher);
+}
+
+const char* model_override_name(ControlPointMatcher matcher, hm::onnx::ExecutionProvider provider) {
+  const char* specific = provider_override_name(matcher, provider);
+  if (specific) {
+    const char* value = std::getenv(specific);
+    if (value && *value)
+      return specific;
+  }
+  return feature_matcher_override_name(matcher);
+}
+
 } // namespace
 
 absl::StatusOr<std::filesystem::path> rink_model_path() {
   return model_path("HM_RINK_ONNX_MODEL", "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx", false);
 }
 
-bool feature_matcher_model_override_configured(ControlPointMatcher matcher) {
-  const char* override_name = feature_matcher_override_name(matcher);
+bool feature_matcher_model_override_configured(ControlPointMatcher matcher, hm::onnx::ExecutionProvider provider) {
+  const char* override_name = model_override_name(matcher, provider);
   if (override_name == nullptr)
     return false;
   const char* override_path = std::getenv(override_name);
@@ -92,7 +110,7 @@ absl::StatusOr<std::filesystem::path> feature_matcher_model_path(
   switch (matcher) {
     case ControlPointMatcher::kSuperPointLightGlue:
       return model_path(
-          "HM_FEATURE_MATCHER_ONNX_MODEL",
+          model_override_name(matcher, provider),
           provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx"
                                                          : "superpoint-lightglue-pipeline-228994cea8c01014.onnx",
           false);
@@ -113,7 +131,7 @@ absl::StatusOr<std::filesystem::path> feature_matcher_model_target_path(
   switch (matcher) {
     case ControlPointMatcher::kSuperPointLightGlue:
       return model_target_path(
-          "HM_FEATURE_MATCHER_ONNX_MODEL",
+          model_override_name(matcher, provider),
           provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx"
                                                          : "superpoint-lightglue-pipeline-228994cea8c01014.onnx",
           false);
@@ -134,7 +152,7 @@ absl::StatusOr<std::string> feature_matcher_asset_to_ensure(
   if (matcher == ControlPointMatcher::kAkazeHamming)
     return std::string();
   auto model = feature_matcher_model_path(matcher, provider);
-  if (feature_matcher_model_override_configured(matcher)) {
+  if (feature_matcher_model_override_configured(matcher, provider)) {
     if (!model.ok())
       return model.status();
     return std::string();
@@ -154,8 +172,11 @@ absl::StatusOr<std::string> feature_matcher_asset_to_ensure(
   return absl::InvalidArgumentError("Unknown native control-point matcher");
 }
 
-absl::Status bind_feature_matcher_model_path(ControlPointMatcher matcher, const std::filesystem::path& verified_path) {
-  const char* override_name = feature_matcher_override_name(matcher);
+absl::Status bind_feature_matcher_model_path(
+    ControlPointMatcher matcher,
+    const std::filesystem::path& verified_path,
+    hm::onnx::ExecutionProvider provider) {
+  const char* override_name = provider_override_name(matcher, provider);
   if (override_name == nullptr)
     return absl::InvalidArgumentError("A model path cannot be bound for a model-free control-point matcher");
   if (verified_path.empty())

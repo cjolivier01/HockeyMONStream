@@ -47,6 +47,8 @@ int main() {
   ::setenv("HM_PACKAGED_NATIVE_MODEL_DIR", package_models.c_str(), 1);
   ::unsetenv("HM_RINK_ONNX_MODEL");
   ::unsetenv("HM_FEATURE_MATCHER_ONNX_MODEL");
+  ::unsetenv("HM_FEATURE_MATCHER_CUDA_ONNX_MODEL");
+  ::unsetenv("HM_FEATURE_MATCHER_CPU_ONNX_MODEL");
   ::unsetenv("HM_DEDODE_LIGHTGLUE_ONNX_MODEL");
   ::unsetenv("HM_LOFTR_ONNX_MODEL");
 
@@ -76,6 +78,34 @@ int main() {
       cpu_path.ok() && *cpu_path == user_models / superpoint_cpu && cpu_asset.ok() &&
           *cpu_asset == "superpoint-lightglue",
       "CPU execution must select the original float32 graph and its verified asset");
+  const fs::path verified_cuda = root / "verified-cuda.onnx";
+  const fs::path verified_cpu = root / "verified-cpu.onnx";
+  write_model(verified_cuda);
+  write_model(verified_cpu);
+  ok &= expect(
+      hm::stitching::bind_feature_matcher_model_path(
+          hm::stitching::ControlPointMatcher::kSuperPointLightGlue, verified_cuda, hm::onnx::ExecutionProvider::kCuda)
+          .ok(),
+      "CUDA SuperPoint asset must bind independently of the CPU graph");
+  const auto unbound_cpu_asset = hm::stitching::feature_matcher_asset_to_ensure(
+      hm::stitching::ControlPointMatcher::kSuperPointLightGlue, hm::onnx::ExecutionProvider::kCpu);
+  ok &= expect(
+      unbound_cpu_asset.ok() && *unbound_cpu_asset == "superpoint-lightglue",
+      "binding CUDA must not suppress CPU asset verification/download");
+  ok &= expect(
+      hm::stitching::bind_feature_matcher_model_path(
+          hm::stitching::ControlPointMatcher::kSuperPointLightGlue, verified_cpu, hm::onnx::ExecutionProvider::kCpu)
+          .ok(),
+      "CPU SuperPoint fallback asset must bind independently");
+  const auto bound_cuda = hm::stitching::feature_matcher_model_path(
+      hm::stitching::ControlPointMatcher::kSuperPointLightGlue, hm::onnx::ExecutionProvider::kCuda);
+  const auto bound_cpu = hm::stitching::feature_matcher_model_path(
+      hm::stitching::ControlPointMatcher::kSuperPointLightGlue, hm::onnx::ExecutionProvider::kCpu);
+  ok &= expect(
+      bound_cuda.ok() && *bound_cuda == verified_cuda && bound_cpu.ok() && *bound_cpu == verified_cpu,
+      "runtime must retain both verified SuperPoint graphs without crossing providers");
+  ::unsetenv("HM_FEATURE_MATCHER_CUDA_ONNX_MODEL");
+  ::unsetenv("HM_FEATURE_MATCHER_CPU_ONNX_MODEL");
   const fs::path explicit_models = root / "explicit-models";
   write_model(explicit_models / superpoint);
   ::setenv("HM_NATIVE_MODEL_DIR", explicit_models.c_str(), 1);

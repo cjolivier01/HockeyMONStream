@@ -1616,6 +1616,17 @@ bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
   if (!valid)
     return false;
 
+  const QString recovered_analysis = analyze({
+      "CUDA failure: status=2",
+      "HSTREAM_ONNX_FALLBACK provider=cpu reason=cuda-out-of-memory model=/tmp/rink.onnx",
+      "FAILED_PRECONDITION: No stitching calibration frame pair produced usable matches",
+  });
+  if (!expect(
+          recovered_analysis.contains("No stitching calibration frame pair produced usable matches") &&
+              !recovered_analysis.contains("CUDA out of memory (cudaErrorMemoryAllocation, status 2)"),
+          "A recovered GPU inference OOM must not hide the actual later calibration failure"))
+    return false;
+
   const QString generic_oom_analysis = analyze({
       "Cuda failure: status=2",
       "Error(-1) in buffer allocation",

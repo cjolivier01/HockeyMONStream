@@ -8624,6 +8624,14 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
   const QString diagnostic = line.trimmed();
   if (diagnostic.isEmpty())
     return;
+  if (diagnostic.startsWith("HSTREAM_ONNX_FALLBACK provider=cpu reason=cuda-out-of-memory ")) {
+    // A recovered inference OOM must not override a later CPU/model/geometry
+    // error in the failure dialog. The complete runtime log retains the event.
+    calibration_cuda_out_of_memory_ = false;
+    calibration_hmstitcher_input_pool_failure_ = false;
+    calibration_diagnostic_lines_.clear();
+    return;
+  }
   const QString normalized = diagnostic.toLower();
   const bool cuda_out_of_memory = is_cuda_out_of_memory_diagnostic(diagnostic);
   const bool gpu_buffer_allocation_failure = normalized.contains("gst_nvds_buffer_pool_alloc_buffer") ||

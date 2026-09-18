@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <iostream>
 #include <limits>
 #include <numeric>
 #include <utility>
@@ -105,16 +106,25 @@ absl::Status validate_profile_geometry(const RinkProfile& profile, int width, in
 
 RinkSegmentation::RinkSegmentation(std::unique_ptr<hm::onnx::Session> session) : session_(std::move(session)) {}
 
-absl::StatusOr<std::unique_ptr<RinkSegmentation>> RinkSegmentation::Create(const std::string& model_path) {
+absl::StatusOr<std::unique_ptr<RinkSegmentation>> RinkSegmentation::Create(
+    const std::string& model_path,
+    const std::function<void()>& on_cpu_fallback,
+    hm::onnx::ExecutionProvider provider) {
   auto session = hm::onnx::Session::Create(
       model_path,
       {{"images", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {1, 3, kInputHeight, kInputWidth}}},
       {
           {"class_logits", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {1, kQueryCount, kClassCountWithBackground}},
           {"mask_logits", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {1, kQueryCount, kMaskHeight, kMaskWidth}},
-      });
+      },
+      /*use_cpu_memory_arena=*/false,
+      provider,
+      {},
+      {model_path, on_cpu_fallback});
   if (!session.ok())
     return session.status();
+  std::clog << "Ice-rink model execution provider=" << hm::onnx::ExecutionProviderName((*session)->execution_provider())
+            << '\n';
   return std::unique_ptr<RinkSegmentation>(new RinkSegmentation(std::move(*session)));
 }
 
