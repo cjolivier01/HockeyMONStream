@@ -9,8 +9,21 @@
 #include <thread>
 #include <utility>
 
+#include <sched.h>
+
 namespace hm::onnx {
 namespace {
+
+int cpu_inference_thread_count() {
+  cpu_set_t available_cpus;
+  CPU_ZERO(&available_cpus);
+  // Respect taskset/container affinity, as nproc does, and reserve one logical
+  // CPU for the UI and pipeline. A single-CPU process still needs one worker.
+  const unsigned int available = sched_getaffinity(0, sizeof(available_cpus), &available_cpus) == 0
+      ? CPU_COUNT(&available_cpus)
+      : std::thread::hardware_concurrency();
+  return available > 1 ? static_cast<int>(available - 1) : 1;
+}
 
 Ort::Env& environment() {
   // Keep this one environment for the process lifetime. CUDA is loaded lazily
@@ -29,8 +42,13 @@ Ort::SessionOptions session_options(
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
   if (!use_cpu_memory_arena)
     options.DisableCpuMemArena();
-  // Bound CPU support work even when the heavy operators run on CUDA.
-  options.SetIntraOpNumThreads(1);
+  // CUDA only needs bounded CPU support work. CPU inference, including an OOM
+  // fallback, parallelizes kernels with nproc - 1 threads (at least one).
+  const int threads = provider == ExecutionProvider::kCpu ? cpu_inference_thread_count() : 1;
+  options.SetIntraOpNumThreads(threads);
+  if (provider == ExecutionProvider::kCpu)
+    std::clog << "ONNX CPU inference threads=" << threads << '\n';
+  // Keep graph nodes sequential to avoid overlapping large activation buffers.
   options.SetInterOpNumThreads(1);
   if (provider == ExecutionProvider::kCuda) {
     OrtCUDAProviderOptionsV2* raw_cuda = nullptr;

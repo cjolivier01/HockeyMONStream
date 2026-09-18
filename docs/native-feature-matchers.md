@@ -77,6 +77,12 @@ The calibration progress window reports the switch. Image resolution, frame
 count, cancellation, and generation ownership remain unchanged. Missing models,
 invalid inputs, CUDA initialization/driver errors other than memory exhaustion,
 and CPU failures remain errors. There is no repeated provider retry.
+CPU sessions use ONNX Runtime's intra-op thread pool with `max(1, nproc - 1)`
+threads, counting logical CPUs available in the process affinity mask. The
+chosen count is logged; CUDA sessions keep CPU support work at one thread.
+Graph nodes remain sequential to avoid increasing peak activation memory by
+running independent nodes concurrently. This uses ORT threading, not an
+`OMP_NUM_THREADS` setting, and applies when the session is created.
 ONNX Runtime can place shape/control operators on CPU while running
 convolutions and attention on CUDA. Existing valid calibration artifacts need
 not be regenerated merely to change execution placement.
