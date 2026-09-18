@@ -148,6 +148,7 @@ struct HStreamWindowTestAccess {
     window->calibration_diagnostic_lines_.clear();
     window->calibration_cuda_out_of_memory_ = false;
     window->calibration_hmstitcher_input_pool_failure_ = false;
+    window->calibration_stitch_blender_oom_ = false;
   }
 
   static void prepareRinkLevelingProtocol(
@@ -1614,6 +1615,38 @@ bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
   const bool valid =
       expect_clear_oom(analyze(early_cuda_diagnostic), "CUDA diagnostic precedes the calibration failure");
   if (!valid)
+    return false;
+
+  for (const bool delayed : {false, true}) {
+    QStringList diagnostics = {
+        "CUDA error at external/hm-cupano/src/cuda/cudaBlend.cu:875: out of memory",
+        "HSTREAM_CALIBRATION stage=calibration status=failed message=Pipeline failed during stitching calibration",
+    };
+    if (delayed)
+      diagnostics.swapItemsAt(0, 1);
+    analyze(diagnostics, 8192);
+    for (int index = 0; index < 30; ++index)
+      HStreamWindowTestAccess::recordCalibrationDiagnostic(
+          window, QString("INTERNAL: teardown diagnostic %1").arg(index));
+    const QString analysis =
+        HStreamWindowTestAccess::calibrationFailureAnalysis(window, "Pipeline failed during stitching calibration");
+    if (!expect(
+            analysis.contains("Failed stage: Live stitching blend") &&
+                analysis.contains("CUDA out of memory while allocating the live stitching blender") &&
+                analysis.contains("after the stitch maps were loaded") &&
+                analysis.contains("live video blending still requires GPU memory") &&
+                analysis.contains("try 4096 pixels (half)") &&
+                !analysis.contains("pre-stitch input-conversion buffer pool"),
+            "Native blender OOM must retain its cause, stage, and width guidance despite log ordering and teardown"))
+      return false;
+  }
+  const QString non_oom_analysis = analyze({
+      "CUDA error at external/hm-cupano/src/cuda/cudaBlend.cu:875: an illegal memory access was encountered",
+      "FAILED_PRECONDITION: an illegal memory access was encountered",
+  });
+  if (!expect(
+          !non_oom_analysis.contains("CUDA out of memory") && !non_oom_analysis.contains("Live stitching blend"),
+          "Other CUDA errors and a new run must not retain the blender OOM diagnosis"))
     return false;
 
   const QString recovered_analysis = analyze({

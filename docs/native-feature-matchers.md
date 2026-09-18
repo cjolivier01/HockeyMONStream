@@ -88,6 +88,12 @@ existing 1344 × 800 input canvas, inference scale, mask postprocessing, and
 publication rules are unchanged. These are calibration snapshots; no new
 steady-state video transfers are introduced.
 
+CPU fallback applies to ONNX calibration models. The live stitching blender still
+requires GPU memory. If its `cudaBlend` allocation fails after the maps are ready,
+the UI identifies the live blending stage and recommends reducing Max stitched
+width or closing other GPU-intensive applications. Reducing control-point counts
+does not reduce those panorama buffers.
+
 Desktop x86_64 and ARM64/SBSA use ONNX Runtime 1.30.0 with CUDA 13 and cuDNN 9.
 Jetson uses NVIDIA's JetPack 6 CUDA 12.6 ONNX Runtime 1.24.0 distribution with
 cuDNN 9, using the ABI-24 SDK headers from 1.24.1. The ARM wheels supply only

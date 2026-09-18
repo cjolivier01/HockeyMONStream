@@ -677,6 +677,7 @@ class HStreamWindow : public QMainWindow {
   QStringList calibration_diagnostic_lines_;
   bool calibration_cuda_out_of_memory_{false};
   bool calibration_hmstitcher_input_pool_failure_{false};
+  bool calibration_stitch_blender_oom_{false};
   int calibration_rejected_hypotheses_{0};
   int calibration_rejected_candidates_{0};
   bool calibration_waiting_for_playback_restart_{false};
