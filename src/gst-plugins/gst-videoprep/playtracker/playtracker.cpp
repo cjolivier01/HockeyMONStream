@@ -464,7 +464,6 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     return absl::FailedPreconditionError("vpplaytracker context is not initialized");
   }
   GstDsPlayTrackerFrame frame;
-  auto font_cache = draw_display::get_or_create_font_cache();
   NvDsFrameMetaList* fl = batch_meta->frame_meta_list;
   while (fl) {
     assert(frame.batch_index < in_surface->numFilled);
@@ -627,10 +626,14 @@ absl::Status PlayTrackerPriv::GenerateOutput(
         return absl::DataLossError("lossless telemetry exporter stopped before accepting a frame sample");
     }
     if (show_) {
+      // Building the cache forks fc-list, so only acquire it once and only when we actually draw.
+      if (!font_cache_) {
+        font_cache_ = draw_display::get_or_create_font_cache();
+      }
       NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;
       while (dm_list) {
         NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
-        HM_RETURN_IF_ERROR(draw_display_meta(frame.input_surf_params, display_meta, font_cache, 1.0f, cuda_stream_));
+        HM_RETURN_IF_ERROR(draw_display_meta(frame.input_surf_params, display_meta, font_cache_, 1.0f, cuda_stream_));
         dm_list = dm_list->next;
       }
     }

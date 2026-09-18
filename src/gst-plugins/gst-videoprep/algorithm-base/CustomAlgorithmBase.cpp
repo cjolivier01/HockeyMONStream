@@ -573,7 +573,10 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   NvDsBatchMeta* batch_meta = NULL;
   // int num_filled = 0;
 
-  GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %d\n", __func__, m_frameNum++);
+  // The increment must stay outside GST_DEBUG_OBJECT: that macro only evaluates
+  // its arguments when the debug level is enabled.
+  GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %d\n", __func__, m_frameNum);
+  m_frameNum++;
 
   if (last_flow_ret_ == GST_FLOW_ERROR) {
     return BufferResult::Buffer_Error;

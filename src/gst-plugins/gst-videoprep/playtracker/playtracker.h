@@ -5,8 +5,10 @@
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryDb.h"
+#include "hstream/src/libs/draw_display/Fonts.h"
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <vector>
 #include "absl/status/status.h"
@@ -73,6 +75,9 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   // Dynamic acceleration scaling (usually to slower) on the last live-box only
   float dynamic_acceleration_scaling_{1.0};
   unsigned preview_overlay_flags_{0};
+  // Held for the element's lifetime once overlay drawing starts; rebuilding it
+  // forks fc-list, so it must not be reacquired per frame.
+  std::shared_ptr<draw_display::FontCache> font_cache_;
   size_t frame_counter_{0};
   size_t frame_calculation_interval_{1};
   bool show_{false};

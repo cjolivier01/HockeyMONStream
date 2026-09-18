@@ -178,6 +178,9 @@ Scoreboard<T_pixel>::Scoreboard(
   if (perspectiveMatrix_.type() == CV_64F) {
     perspectiveMatrix_.convertTo(perspectiveMatrix_, CV_32F);
   }
+  // The warp kernels need the inverse, and the matrix never changes after
+  // construction, so invert it once instead of on every rewarp.
+  inversePerspectiveMatrix_ = inversePerspectiveMatrix(perspectiveMatrix_);
 }
 
 /**
@@ -246,8 +249,9 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     }
 
     static const float border[] = {0, 0, 0, 0};
-    assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
-    cv::Mat inverse_matrix = inversePerspectiveMatrix(perspectiveMatrix_);
+    assert(
+        inversePerspectiveMatrix_.type() == CV_32F && inversePerspectiveMatrix_.rows == 3 &&
+        inversePerspectiveMatrix_.cols == 3);
     cuerr = warpPerspectiveCudaRaw(
         working_image_->data_raw(),
         working_image_->pitch(),
@@ -257,7 +261,7 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         warped_image_->pitch(),
         warped_image_->width(),
         warped_image_->height(),
-        inverse_matrix.ptr<float>(),
+        inversePerspectiveMatrix_.ptr<float>(),
         cvDepth(working_image_->cuda_pixel_type()),
         working_image_->channels(),
         cv::INTER_LINEAR,
@@ -306,8 +310,9 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
   }
 
   static const float border[] = {0, 0, 0, 0};
-  assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
-  cv::Mat inverse_matrix = inversePerspectiveMatrix(perspectiveMatrix_);
+  assert(
+      inversePerspectiveMatrix_.type() == CV_32F && inversePerspectiveMatrix_.rows == 3 &&
+      inversePerspectiveMatrix_.cols == 3);
   cuErr = warpPerspectiveCudaRaw(
       full_image.data_raw(),
       full_image.pitch(),
@@ -317,7 +322,7 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
       warped_image_->pitch(),
       warped_image_->width(),
       warped_image_->height(),
-      inverse_matrix.ptr<float>(),
+      inversePerspectiveMatrix_.ptr<float>(),
       cvDepth(full_image.cuda_pixel_type()),
       full_image.channels(),
       cv::INTER_LINEAR,
