@@ -576,10 +576,7 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   // The increment must stay outside GST_DEBUG_OBJECT: that macro only evaluates
   // its arguments when the debug level is enabled.
   GST_DEBUG_OBJECT(
-      m_element,
-      "CustomLib: ---> Inside %s frame_num = %u\n",
-      __func__,
-      m_frameNum.load(std::memory_order_relaxed));
+      m_element, "CustomLib: ---> Inside %s frame_num = %u\n", __func__, m_frameNum.load(std::memory_order_relaxed));
   m_frameNum.fetch_add(1, std::memory_order_relaxed);
 
   if (last_flow_ret_ == GST_FLOW_ERROR) {
@@ -1101,7 +1098,7 @@ void CustomAlgorithmBase::OutputThread(void) {
         flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), outBuffer);
         GST_DEBUG_OBJECT(
             m_element,
-            "CustomLib: %s in_surf=%p, Pushing Frame %d to downstream... flow_ret = %d TS=%" GST_TIME_FORMAT " \n",
+            "CustomLib: %s in_surf=%p, Pushing Frame %u to downstream... flow_ret = %d TS=%" GST_TIME_FORMAT " \n",
             __func__,
             in_surf,
             packetInfo.frame_num,

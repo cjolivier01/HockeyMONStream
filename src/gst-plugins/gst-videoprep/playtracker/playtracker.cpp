@@ -274,6 +274,8 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     std::lock_guard<std::mutex> lk(context_mu_);
     show_ = !!std::atol(prop.value.c_str());
   } else if (key == "draw") {
+    // ReloadContextFromConfig rewrites init_params_ under this lock.
+    std::lock_guard<std::mutex> lk(context_mu_);
     init_params_.draw = !!std::atol(prop.value.c_str());
   } else if (key == "preview-overlay-flags") {
     char* end = nullptr;

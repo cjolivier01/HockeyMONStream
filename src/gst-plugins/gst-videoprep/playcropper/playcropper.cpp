@@ -894,9 +894,12 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
     const NvDsFrameMeta* frame_meta,
     cudaStream_t stream) {
   // Building the cache forks fc-list, so acquire it once, and only when we draw.
-  if ((plot_play_tracking_ || plot_player_tracking_) && !font_cache_) {
-    font_cache_ = draw_display::get_or_create_font_cache();
-  }
+  // Keep this next to each use so the two cannot drift apart.
+  const auto ensure_font_cache = [this] {
+    if (!font_cache_) {
+      font_cache_ = draw_display::get_or_create_font_cache();
+    }
+  };
   if (!display_surface_) {
     if (surface.get_image_format() != imageFormat::IMAGE_RGBA8) {
       return absl::FailedPreconditionError("Unsupported image format for RenderDisplayMeta");
@@ -926,6 +929,7 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
       nppStreamContext)));
 
   if (plot_play_tracking_) {
+    ensure_font_cache();
     NvDisplayMetaList* dm_list = frame_meta->display_meta_list;
     while (dm_list) {
       NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
@@ -945,6 +949,7 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
       tracked_player_metas.push_back(obj_meta);
     }
     if (!tracked_player_metas.empty()) {
+      ensure_font_cache();
       HM_RETURN_IF_ERROR(
           draw_object_meta(&display_dest_params_, tracked_player_metas, font_cache_, render_scale_, stream));
     }
@@ -997,8 +1002,15 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     }
     const int scoreboard_width = std::max(1, static_cast<int>(scoreboard_scale_ * scoreboard_width_or.value()));
     const int scoreboard_height = std::max(1, static_cast<int>(scoreboard_scale_ * scoreboard_height_or.value()));
-    scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
-        scoreboard_perspective_polygion_, scoreboard_width, scoreboard_height);
+    // The polygon is runtime-settable and only validated as eight finite floats,
+    // so a degenerate one reaches the perspective transform. Scoreboard reports
+    // that by throwing, and this runs on a bare worker thread.
+    try {
+      scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
+          scoreboard_perspective_polygion_, scoreboard_width, scoreboard_height);
+    } catch (const std::exception& e) {
+      return absl::InvalidArgumentError(TO_STRING("Cannot build the scoreboard perspective transform: " << e.what()));
+    }
   }
   if (scoreboard_) {
     const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;

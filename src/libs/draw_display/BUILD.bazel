@@ -50,6 +50,7 @@ cc_library(
 
 cc_test(
     name = "fonts_test",
+    size = "small",
     srcs = ["FontsTest.cpp"],
     deps = [":draw"],
 )

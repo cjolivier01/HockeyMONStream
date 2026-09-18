@@ -1,10 +1,17 @@
-// Pins the font cache's ownership contract.
+// Pins get_or_create_font_cache()'s ownership contract so it cannot be changed
+// silently.
 //
-// get_or_create_font_cache() retains only a static weak_ptr, so the cache is
-// destroyed as soon as the last caller drops its strong reference. Constructing
-// one forks fc-list (measured at ~9 ms on a desktop with ~2k fonts installed),
-// so a caller that takes it into a local instead of a member silently rebuilds
-// it on every call. That is exactly the bug this test exists to catch.
+// It retains only a static weak_ptr, so the cache is destroyed as soon as the
+// last caller drops its strong reference, and constructing one forks fc-list
+// (measured at ~9 ms on a desktop with ~2k fonts installed). That combination
+// is why a caller must hold the cache in a member: taking it into a local
+// rebuilds it on every call. This test cannot see caller-side misuse, but it
+// does fail if the contract those callers depend on is altered -- for example
+// by promoting the weak_ptr to a shared_ptr, which would leak a glyph atlas
+// and CUDA allocations into static destruction.
+//
+// Assertions here observe process-global state, so keep this binary to a single
+// source file; a second test in the same process would make it order-dependent.
 
 #include "hstream/src/libs/draw_display/Fonts.h"
 
