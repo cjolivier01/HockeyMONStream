@@ -29,6 +29,7 @@ bool IsCudaOutOfMemory(const std::string& message, ExecutionProvider provider, b
   return lower.find("cudaerrormemoryallocation") != std::string::npos ||
       lower.find("cuda_error_out_of_memory") != std::string::npos ||
       lower.find("cudnn_status_alloc_failed") != std::string::npos ||
+      lower.find("cublas_status_alloc_failed") != std::string::npos ||
       std::regex_search(lower, cuda_allocation_status) ||
       (!use_cpu_memory_arena && lower.find("bfcarena") != std::string::npos &&
        lower.find("failed to allocate memory for requested buffer") != std::string::npos);

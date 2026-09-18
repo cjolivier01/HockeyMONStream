@@ -125,7 +125,8 @@ int main() {
         std::string("CUDA failure: 2 ; GPU=0 ; expr=cudaMalloc"),
         std::string("CUDA failure: status=2"),
         std::string("CUDA_ERROR_OUT_OF_MEMORY"),
-        std::string("CUDNN_STATUS_ALLOC_FAILED")}) {
+        std::string("CUDNN_STATUS_ALLOC_FAILED"),
+        std::string("CUBLAS failure 3: CUBLAS_STATUS_ALLOC_FAILED; GPU=0; expr=cublasCreate(&cublas_handle_)")}) {
     ok &= expect(
         IsCudaOutOfMemory(diagnostic, ExecutionProvider::kCuda, false),
         "CUDA memory exhaustion must qualify for fallback");
@@ -141,6 +142,8 @@ int main() {
         "CUDA failure: status=200",
         "CUDA failure: 700: illegal memory access",
         "CUDNN_STATUS_NOT_SUPPORTED",
+        "CUBLAS_STATUS_NOT_INITIALIZED",
+        "CUBLAS_STATUS_EXECUTION_FAILED",
         "Failed to load CUDA provider",
         "bad_alloc",
         "CPU allocator failed to allocate memory",
