@@ -92,9 +92,11 @@ int main(int argc, char** argv) {
           !contains(installer, "install -m 0644 \"${combined_keyring}\" /usr/share/keyrings/cuda-archive-keyring.gpg"),
       "Ubuntu 26 installer must own its key and interruption-safely replace duplicate compatibility sources");
   ok &= expect(
-      contains(bazelrc, "build:deb_jetson --@rules_cuda//cuda:archs=sm_87") &&
+          contains(bazelrc, "build:deb_jetson --@rules_cuda//cuda:archs=sm_87") &&
           contains(jetson_builder, "--config=opt --config=deb_jetson") &&
           contains(jetson_builder, "output_base=\"${persistent_cache_root}/output\"") &&
+          contains(jetson_builder, "stale_repository_names") &&
+          contains(jetson_builder, "${external_root}/@${repository_name}.marker") &&
           !contains(jetson_builder, "--disk_cache") && contains(jetson_builder, "bazelisk --batch") &&
           contains(jetson_builder, "--sandbox_base=\"${sandbox_base}\"") &&
           contains(jetson_builder, "--action_env=TMPDIR=/var/tmp") &&
