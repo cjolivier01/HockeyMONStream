@@ -37,7 +37,7 @@ all: print_targets
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hstream-job hstream-cli run-hstream-cli hstream-ui run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
-	deb deb-ubuntu24 deb-ubuntu26 deb-jetson wsl-deb windows-installer publish publish-dry-run delete-release
+	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
@@ -128,6 +128,24 @@ deb-jetson:
 	@echo "Jetson Debian package output directory: $(JETSON_DEB_OUTPUT_DIR)"
 	scripts/make_deb_jetson.sh --host="$(JETSON_DEB_HOST)" --output-dir="$(JETSON_DEB_OUTPUT_DIR)" $(if $(PACKAGE_VERSION),--version="$(PACKAGE_VERSION)",)
 
+deploy:
+	@if [ -z "$(strip $(NODES))" ]; then \
+		echo 'ERROR: NODES is required. Usage: make deploy NODES=monster,stubby,mini' >&2; \
+		exit 2; \
+	fi
+	NODES="$(NODES)" \
+	PACKAGE_VERSION="$(PACKAGE_VERSION)" \
+	DEEPSTREAM_DEB="$(DEEPSTREAM_DEB)" \
+	DEPLOY_OUTPUT_DIR="$(if $(DEPLOY_OUTPUT_DIR),$(DEPLOY_OUTPUT_DIR),$(TOPDIR)/dist)" \
+	scripts/deploy.sh
+
+undeploy:
+	@if [ -z "$(strip $(NODES))" ]; then \
+		echo 'ERROR: NODES is required. Usage: make undeploy NODES=monster,stubby,mini' >&2; \
+		exit 2; \
+	fi
+	NODES="$(NODES)" scripts/deploy.sh --undeploy
+
 publish:
 	scripts/publish_release.sh
 
@@ -188,6 +206,8 @@ print_targets:
 		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (pass DEEPSTREAM_DEB=/path/to/deb if needed).' \
 		'deb-ubuntu26   Build the Ubuntu 26.04 package in Docker (output under dist/ubuntu26.04).' \
 		'deb-jetson     Build the Ubuntu 22.04 arm64 package on $(JETSON_DEB_HOST) (output under dist/jetson).' \
+		'deploy         Detect, build, and force-install on comma-separated NODES (required).' \
+		'undeploy       Remove HStream from comma-separated NODES without removing DeepStream.' \
 		'wsl-deb        Alias for the Ubuntu .deb used by the Windows WSL bootstrapper.' \
 		'windows-installer Build the small native Windows/WSL setup .exe on Ubuntu (requires NSIS).' \
 		'publish        Build every .deb, increment the vMAJOR.MINOR.PATCH tag, tag, and publish a GitHub release.' \
