@@ -171,6 +171,37 @@ scripts/build_hugin_tools_jetson.sh \
   --cache-dir="${persistent_cache_root}/hugin-tools" \
   --output-dir="${remote_root}/hugin-tools"
 
+# External repositories that use build_file labels contain symlinks back into
+# the immutable source snapshot. The snapshot is intentionally deleted after
+# each package build, so evict only repositories still tied to an older
+# snapshot and let Bazel recreate them from the persistent download cache.
+# Keep the action/output cache intact so unchanged native compilation remains
+# reusable across package builds.
+external_root="${output_base}/external"
+declare -A stale_repository_names=()
+if [[ -d "${external_root}" ]]; then
+  while IFS= read -r -d '' repository_symlink; do
+    symlink_target="$(readlink "${repository_symlink}")"
+    if [[ "${symlink_target}" != /tmp/hstream-jetson-deb.* ||
+          "${symlink_target}" == "${remote_root}"/* ]]; then
+      continue
+    fi
+    repository_relative="${repository_symlink#${external_root}/}"
+    repository_name="${repository_relative%%/*}"
+    if [[ ! "${repository_name}" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+      echo "ERROR: unsafe stale Bazel repository name: ${repository_name}" >&2
+      exit 1
+    fi
+    stale_repository_names["${repository_name}"]=1
+  done < <(find "${external_root}" -maxdepth 2 -type l -print0)
+
+  for repository_name in "${!stale_repository_names[@]}"; do
+    echo "[make_deb_jetson] Refreshing stale Bazel repository: ${repository_name}"
+    rm -rf -- "${external_root}/${repository_name}"
+    rm -f -- "${external_root}/@${repository_name}.marker"
+  done
+fi
+
 bazelisk --batch --output_base="${output_base}" build \
   --repository_cache="${persistent_cache_root}/repository" \
   --sandbox_base="${sandbox_base}" \

@@ -31,6 +31,7 @@
 # )
 exports_files([
     "capture_stitching_projection_frames.py",
+    "deploy.sh",
     "install_deb.sh",
     "build_hugin_tools_jetson.sh",
     "delete_release.sh",
@@ -64,4 +65,11 @@ py_test(
     ],
     data = ["//configs:stitching_projection_frames.yaml"],
     main = "capture_stitching_projection_frames_test.py",
+)
+
+sh_test(
+    name = "deploy_test",
+    size = "small",
+    srcs = ["deploy_test.sh"],
+    data = ["deploy.sh"],
 )

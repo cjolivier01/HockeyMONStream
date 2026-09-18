@@ -338,6 +338,7 @@ DEEPSTREAM_DEB=""
 DEEPSTREAM_MIN_VERSION="9.1.0-1"
 DEEPSTREAM_MAX_VERSION="9.2~"
 SIMULATE=0
+FORCE_HSTREAM=0
 
 usage() {
   cat <<'USAGE'
@@ -349,6 +350,8 @@ Usage:
 Options:
   --deepstream-deb FILE  Local deepstream-9.1 release artifact.
   --hstream-deb FILE    Local HStream artifact for this Ubuntu release.
+  --force-hstream       Replace HStream even when this version is installed;
+                        also permit an explicit downgrade to the local version.
   --simulate             Configure repositories and only simulate apt install.
   -h, --help             Show this help.
 USAGE
@@ -360,6 +363,7 @@ while [[ $# -gt 0 ]]; do
     --deepstream-deb=*) DEEPSTREAM_DEB="${1#*=}" ;;
     --hstream-deb) HSTREAM_DEB="$2"; shift ;;
     --hstream-deb=*) HSTREAM_DEB="${1#*=}" ;;
+    --force-hstream) FORCE_HSTREAM=1 ;;
     --simulate) SIMULATE=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -576,6 +580,9 @@ rm -f /etc/apt/preferences.d/hstream-tensorrt10
 
 apt_args=(-y --no-install-recommends)
 if [[ "${SIMULATE}" -eq 1 ]]; then apt_args+=(--simulate); fi
+if [[ "${FORCE_HSTREAM}" -eq 1 ]]; then apt_args+=(--allow-downgrades); fi
+installed_hstream_version="$(dpkg-query -W -f='${Version}' hstream 2>/dev/null || true)"
+requested_hstream_version="$(dpkg-deb -f "${HSTREAM_DEB}" Version)"
 
 # NVIDIA's versioned DeepStream artifacts install many of the same absolute
 # paths but do not declare Conflicts/Replaces against older versioned releases
@@ -658,6 +665,7 @@ printf '%s\n' "${simulation}"
 while read -r removed_package; do
   [[ -z "${removed_package}" ]] && continue
   allowed=0
+  if [[ "${removed_package}" == hmstream ]]; then allowed=1; fi
   for package in "${old_deepstream_packages[@]}"; do
     if [[ "${removed_package}" == "${package%%:*}" ]]; then allowed=1; break; fi
   done
@@ -669,6 +677,9 @@ done < <(awk '$1 == "Remv" {print $2}' <<<"${simulation}")
 
 if [[ "${SIMULATE}" -eq 0 ]]; then
   apt-get install "${apt_args[@]}" "${install_deepstream_deb}" "${HSTREAM_DEB}"
+  if [[ "${FORCE_HSTREAM}" -eq 1 && "${installed_hstream_version}" == "${requested_hstream_version}" ]]; then
+    apt-get install -y --no-install-recommends --reinstall "${HSTREAM_DEB}"
+  fi
 fi
 
 if [[ "${SIMULATE}" -eq 1 ]]; then

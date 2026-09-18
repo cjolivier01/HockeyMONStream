@@ -1339,6 +1339,8 @@ X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}
 X-HStream-Target-Platform: ${TARGET_PLATFORM}
 Maintainer: Christopher Olivier <cjolivier01@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
+Conflicts: hmstream
+Replaces: hmstream
 Depends: ${SHLIB_DEPENDS},
  ca-certificates,
  ${DEEPSTREAM_DEPENDS},

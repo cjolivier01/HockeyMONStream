@@ -59,6 +59,7 @@ int main(int argc, char** argv) {
   ok &= expect(
       contains(packager, "X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}") &&
           contains(packager, "X-HStream-Target-Platform: ${TARGET_PLATFORM}") &&
+          contains(packager, "Conflicts: hmstream") && contains(packager, "Replaces: hmstream") &&
           contains(packager, "EXPECTED_CUDA_SONAME") && contains(packager, "unexpected CUDA component ABI") &&
           contains(packager, "pretrained/native-calibration") && contains(packager, "model_cache_root") &&
           contains(packager, "--package-assets --verify") && contains(packager, "--package-assets --print-targets") &&
@@ -77,7 +78,8 @@ int main(int argc, char** argv) {
           !contains(installer, "Pin-Priority") && contains(installer, "old_deepstream_packages") &&
           contains(installer, "^deepstream-[0-9]+([.][0-9]+)*$") &&
           contains(installer, "deepstream-9.1-transition.deb") && contains(installer, "Conflicts") &&
-          contains(installer, "Replaces") && !contains(installer, "apt-get remove -y --no-install-recommends") &&
+          contains(installer, "Replaces") && contains(installer, "\"${removed_package}\" == hmstream") &&
+          !contains(installer, "apt-get remove -y --no-install-recommends") &&
           !contains(installer, "nccl") && !contains(installer, "NCCL"),
       "installer must validate OS provenance, replace older DeepStream atomically, and leave NCCL policy untouched");
   ok &= expect(
@@ -90,9 +92,11 @@ int main(int argc, char** argv) {
           !contains(installer, "install -m 0644 \"${combined_keyring}\" /usr/share/keyrings/cuda-archive-keyring.gpg"),
       "Ubuntu 26 installer must own its key and interruption-safely replace duplicate compatibility sources");
   ok &= expect(
-      contains(bazelrc, "build:deb_jetson --@rules_cuda//cuda:archs=sm_87") &&
+          contains(bazelrc, "build:deb_jetson --@rules_cuda//cuda:archs=sm_87") &&
           contains(jetson_builder, "--config=opt --config=deb_jetson") &&
           contains(jetson_builder, "output_base=\"${persistent_cache_root}/output\"") &&
+          contains(jetson_builder, "stale_repository_names") &&
+          contains(jetson_builder, "${external_root}/@${repository_name}.marker") &&
           !contains(jetson_builder, "--disk_cache") && contains(jetson_builder, "bazelisk --batch") &&
           contains(jetson_builder, "--sandbox_base=\"${sandbox_base}\"") &&
           contains(jetson_builder, "--action_env=TMPDIR=/var/tmp") &&
