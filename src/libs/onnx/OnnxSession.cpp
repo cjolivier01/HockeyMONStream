@@ -3,13 +3,27 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <thread>
 #include <utility>
 
+#include <sched.h>
+
 namespace hm::onnx {
 namespace {
+
+int cpu_inference_thread_count() {
+  cpu_set_t available_cpus;
+  CPU_ZERO(&available_cpus);
+  // Respect taskset/container affinity, as nproc does, and reserve one logical
+  // CPU for the UI and pipeline. A single-CPU process still needs one worker.
+  const unsigned int available = sched_getaffinity(0, sizeof(available_cpus), &available_cpus) == 0
+      ? CPU_COUNT(&available_cpus)
+      : std::thread::hardware_concurrency();
+  return available > 1 ? static_cast<int>(available - 1) : 1;
+}
 
 Ort::Env& environment() {
   // Keep this one environment for the process lifetime. CUDA is loaded lazily
@@ -28,8 +42,13 @@ Ort::SessionOptions session_options(
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
   if (!use_cpu_memory_arena)
     options.DisableCpuMemArena();
-  // Bound CPU support work even when the heavy operators run on CUDA.
-  options.SetIntraOpNumThreads(1);
+  // CUDA only needs bounded CPU support work. CPU inference, including an OOM
+  // fallback, parallelizes kernels with nproc - 1 threads (at least one).
+  const int threads = provider == ExecutionProvider::kCpu ? cpu_inference_thread_count() : 1;
+  options.SetIntraOpNumThreads(threads);
+  if (provider == ExecutionProvider::kCpu)
+    std::clog << "ONNX CPU inference threads=" << threads << '\n';
+  // Keep graph nodes sequential to avoid overlapping large activation buffers.
   options.SetInterOpNumThreads(1);
   if (provider == ExecutionProvider::kCuda) {
     OrtCUDAProviderOptionsV2* raw_cuda = nullptr;
@@ -175,7 +194,8 @@ absl::StatusOr<std::unique_ptr<Session>> Session::Create(
     std::vector<TensorContract> outputs,
     bool use_cpu_memory_arena,
     ExecutionProvider provider,
-    const std::string& profile_prefix) {
+    const std::string& profile_prefix,
+    const CpuFallbackOptions& cpu_fallback) {
   try {
     // CUDA provider registration uses ORT's default logger. Construct the
     // process environment before configuring providers, including the first
@@ -187,8 +207,20 @@ absl::StatusOr<std::unique_ptr<Session>> Session::Create(
     auto status = result->ValidateModelContract();
     if (!status.ok())
       return status;
+    result->provider_ = provider;
+    result->use_cpu_memory_arena_ = use_cpu_memory_arena;
+    if (provider == ExecutionProvider::kCuda)
+      result->cpu_fallback_ = cpu_fallback;
     return result;
   } catch (const Ort::Exception& error) {
+    if (!cpu_fallback.model_path.empty() && IsCudaOutOfMemory(error.what(), provider, use_cpu_memory_arena)) {
+      // The failed CUDA constructor has unwound before allocating the CPU session.
+      std::clog << "HSTREAM_ONNX_FALLBACK provider=cpu reason=cuda-out-of-memory model=" << cpu_fallback.model_path
+                << '\n';
+      if (cpu_fallback.on_fallback)
+        cpu_fallback.on_fallback();
+      return Create(cpu_fallback.model_path, inputs, outputs, false, ExecutionProvider::kCpu);
+    }
     return ort_error(
         "Failed to load ONNX model " + model_path + " with " + ExecutionProviderName(provider) +
             (provider == ExecutionProvider::kCuda
@@ -196,6 +228,25 @@ absl::StatusOr<std::unique_ptr<Session>> Session::Create(
                  : ""),
         error);
   }
+}
+
+absl::Status Session::FallBackToCpu() {
+  const CpuFallbackOptions fallback = std::move(cpu_fallback_);
+  cpu_fallback_ = {};
+  // Destroy the CUDA arena before CPU model loading or retrying the input.
+  session_.reset();
+  std::clog << "HSTREAM_ONNX_FALLBACK provider=cpu reason=cuda-out-of-memory model=" << fallback.model_path << '\n';
+  if (fallback.on_fallback)
+    fallback.on_fallback();
+  auto cpu = Create(fallback.model_path, inputs_, outputs_, false, ExecutionProvider::kCpu);
+  if (!cpu.ok()) {
+    fallback_failure_ = cpu.status();
+    return fallback_failure_;
+  }
+  session_ = std::move((*cpu)->session_);
+  provider_ = ExecutionProvider::kCpu;
+  use_cpu_memory_arena_ = false;
+  return absl::OkStatus();
 }
 
 absl::StatusOr<std::unique_ptr<Session>> Session::CreateFromBytes(
@@ -284,16 +335,18 @@ absl::StatusOr<std::vector<Tensor>> Session::RunFloat(
     const std::vector<int64_t>& input_shape,
     const float* input_data,
     size_t input_count,
-    const std::function<bool()>& is_cancelled) const {
+    const std::function<bool()>& is_cancelled) {
   return RunFloatInputs({{input_name, input_shape, input_data, input_count}}, is_cancelled);
 }
 
 absl::StatusOr<std::vector<Tensor>> Session::RunFloatInputs(
     const std::vector<FloatInput>& inputs,
-    const std::function<bool()>& is_cancelled) const {
+    const std::function<bool()>& is_cancelled) {
   if (is_cancelled && is_cancelled()) {
     return absl::CancelledError("ONNX inference cancelled before execution");
   }
+  if (!fallback_failure_.ok())
+    return fallback_failure_;
   if (inputs.size() != inputs_.size()) {
     return absl::InvalidArgumentError("Float input count does not match the model contract");
   }
@@ -322,9 +375,8 @@ absl::StatusOr<std::vector<Tensor>> Session::RunFloatInputs(
     input_values.reserve(inputs.size());
     input_names.reserve(inputs.size());
     for (const auto& input : inputs) {
-      input_values.push_back(
-          Ort::Value::CreateTensor<float>(
-              memory, const_cast<float*>(input.data), input.element_count, input.shape.data(), input.shape.size()));
+      input_values.push_back(Ort::Value::CreateTensor<float>(
+          memory, const_cast<float*>(input.data), input.element_count, input.shape.data(), input.shape.size()));
       input_names.push_back(input.name.c_str());
     }
     std::vector<const char*> output_names;
@@ -359,6 +411,14 @@ absl::StatusOr<std::vector<Tensor>> Session::RunFloatInputs(
   } catch (const Ort::Exception& error) {
     if (is_cancelled && is_cancelled()) {
       return absl::CancelledError("ONNX inference cancelled");
+    }
+    if (!cpu_fallback_.model_path.empty() && IsCudaOutOfMemory(error.what(), provider_, use_cpu_memory_arena_)) {
+      const auto status = FallBackToCpu();
+      if (!status.ok())
+        return status;
+      // CPU sessions have no fallback: at most one retry, preserving the exact
+      // inputs and cancellation monitor. Later inputs continue on CPU.
+      return RunFloatInputs(inputs, is_cancelled);
     }
     return ort_error("ONNX inference failed", error);
   }

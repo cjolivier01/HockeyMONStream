@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -39,10 +40,27 @@ bool fail_or_skip(const std::string& message) {
 } // namespace
 
 int main() {
+  const char* requested_matcher = std::getenv("HM_MATCHER_SMOKE_NAME");
+  std::string only_matcher;
+  if (requested_matcher && *requested_matcher) {
+    const auto parsed_matcher = hm::stitching::ParseControlPointMatcher(requested_matcher);
+    if (!parsed_matcher.ok()) {
+      std::cerr << "FAIL: unknown requested matcher\n";
+      return 1;
+    }
+    only_matcher = hm::stitching::ControlPointMatcherName(*parsed_matcher);
+  }
   const char* requested_provider = std::getenv("HM_MATCHER_SMOKE_PROVIDER");
   auto provider = hm::onnx::ParseExecutionProvider(requested_provider ? requested_provider : "cpu");
   if (!provider.ok()) {
     std::cerr << provider.status() << '\n';
+    return 1;
+  }
+  const char* require_fallback = std::getenv("HM_REQUIRE_CPU_FALLBACK");
+  const bool require_cpu_fallback = require_fallback && std::string(require_fallback) == "1";
+  if (require_cpu_fallback &&
+      (*provider != hm::onnx::ExecutionProvider::kCuda || only_matcher.empty() || only_matcher == "akaze-hamming")) {
+    std::cerr << "FAIL: CPU fallback smoke requires CUDA and one selected neural matcher\n";
     return 1;
   }
   const fs::path rink_path = model_path("HM_RINK_ONNX_MODEL", "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx");
@@ -55,13 +73,15 @@ int main() {
   const fs::path dedode_path =
       model_path("HM_DEDODE_LIGHTGLUE_ONNX_MODEL", "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx");
   const fs::path loftr_path = model_path("HM_LOFTR_ONNX_MODEL", "efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx");
-  if (!fs::is_regular_file(rink_path) || !fs::is_regular_file(matcher_path) ||
-      !fs::is_regular_file(legacy_aliked_path) || !fs::is_regular_file(dedode_path) ||
-      !fs::is_regular_file(loftr_path)) {
+  auto needs = [&](const std::string& name) { return only_matcher.empty() || only_matcher == name; };
+  if (!fs::is_regular_file(rink_path) || (needs("superpoint-lightglue") && !fs::is_regular_file(matcher_path)) ||
+      (only_matcher.empty() && !fs::is_regular_file(legacy_aliked_path)) ||
+      (needs("dedode-lightglue") && !fs::is_regular_file(dedode_path)) ||
+      (needs("loftr") && !fs::is_regular_file(loftr_path))) {
     return fail_or_skip("native calibration model assets are not cached") ? 0 : 1;
   }
 
-  auto rink = hm::stitching::RinkSegmentation::Create(rink_path.string());
+  auto rink = hm::stitching::RinkSegmentation::Create(rink_path.string(), {}, *provider);
   if (!rink.ok()) {
     std::cerr << "FAIL: rink model contract: " << rink.status() << '\n';
     return 1;
@@ -74,6 +94,28 @@ int main() {
     return 1;
   }
   rink->reset();
+
+  if (const char* rink_image = std::getenv("HM_RINK_SMOKE_IMAGE")) {
+    const cv::Mat frame = cv::imread(rink_image, cv::IMREAD_COLOR);
+    auto cuda_rink = hm::stitching::RinkSegmentation::Create(rink_path.string(), {}, *provider);
+    if (frame.empty() || !cuda_rink.ok())
+      return 1;
+    auto actual = (*cuda_rink)->Infer(frame, hm::stitching::RinkSegmentation::kHockeyMomInferenceScale);
+    cuda_rink->reset();
+    auto cpu_rink = hm::stitching::RinkSegmentation::Create(rink_path.string(), {}, hm::onnx::ExecutionProvider::kCpu);
+    if (!actual.ok() || !cpu_rink.ok())
+      return 1;
+    auto expected = (*cpu_rink)->Infer(frame, hm::stitching::RinkSegmentation::kHockeyMomInferenceScale);
+    if (!expected.ok())
+      return 1;
+    cv::Mat intersection, united;
+    cv::bitwise_and(actual->combined_mask, expected->combined_mask, intersection);
+    cv::bitwise_or(actual->combined_mask, expected->combined_mask, united);
+    const double iou = static_cast<double>(cv::countNonZero(intersection)) / std::max(1, cv::countNonZero(united));
+    std::cout << "Real rink mask CPU/provider IoU=" << iou << '\n';
+    if (iou < 0.99)
+      return 1;
+  }
 
   cv::Mat texture(576, 1024, CV_8UC1);
   std::mt19937 rng(3);
@@ -99,19 +141,21 @@ int main() {
   cv::Mat right;
   const cv::Mat transform = (cv::Mat_<double>(2, 3) << 1, 0, 7, 0, 1, 3);
   cv::warpAffine(left, right, transform, left.size());
-  auto legacy_aliked = hm::stitching::FeatureMatcher::CreateLegacyAlikedParity(legacy_aliked_path.string());
-  if (!legacy_aliked.ok()) {
-    std::cerr << "FAIL: legacy RaCo-ALIKED parity model contract: " << legacy_aliked.status() << '\n';
-    return 1;
+  if (only_matcher.empty()) {
+    auto legacy_aliked = hm::stitching::FeatureMatcher::CreateLegacyAlikedParity(legacy_aliked_path.string());
+    if (!legacy_aliked.ok()) {
+      std::cerr << "FAIL: legacy RaCo-ALIKED parity model contract: " << legacy_aliked.status() << '\n';
+      return 1;
+    }
+    auto legacy_matches = (*legacy_aliked)->Infer(left, right, 32);
+    if (!legacy_matches.ok() || legacy_matches->accepted_match_count < 8 || legacy_matches->selected.empty() ||
+        legacy_matches->selected.size() > 32) {
+      std::cerr << "FAIL: legacy RaCo-ALIKED parity inference: "
+                << (legacy_matches.ok() ? "too few matches" : legacy_matches.status().ToString()) << '\n';
+      return 1;
+    }
+    legacy_aliked->reset();
   }
-  auto legacy_matches = (*legacy_aliked)->Infer(left, right, 32);
-  if (!legacy_matches.ok() || legacy_matches->accepted_match_count < 8 || legacy_matches->selected.empty() ||
-      legacy_matches->selected.size() > 32) {
-    std::cerr << "FAIL: legacy RaCo-ALIKED parity inference: "
-              << (legacy_matches.ok() ? "too few matches" : legacy_matches.status().ToString()) << '\n';
-    return 1;
-  }
-  legacy_aliked->reset();
   struct MatcherCase {
     const char* name;
     hm::stitching::ControlPointMatcher matcher;
@@ -131,11 +175,22 @@ int main() {
   }
   const char* profile_dir = std::getenv("HM_MATCHER_SMOKE_PROFILE_DIR");
   for (const auto& matcher_case : cases) {
+    if (!needs(hm::stitching::ControlPointMatcherName(matcher_case.matcher)))
+      continue;
     const std::string profile_prefix = profile_dir
         ? (fs::path(profile_dir) / hm::stitching::ControlPointMatcherName(matcher_case.matcher)).string()
         : "";
+    int fallback_count = 0;
+    hm::onnx::CpuFallbackOptions fallback;
+    if (require_cpu_fallback) {
+      fallback.model_path = matcher_case.matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue
+          ? model_path("HM_FEATURE_MATCHER_CPU_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx")
+                .string()
+          : matcher_case.path.string();
+      fallback.on_fallback = [&] { ++fallback_count; };
+    }
     auto matcher = hm::stitching::FeatureMatcher::Create(
-        matcher_case.path.string(), matcher_case.matcher, {}, *resolution, *provider, profile_prefix);
+        matcher_case.path.string(), matcher_case.matcher, {}, *resolution, *provider, profile_prefix, fallback);
     if (!matcher.ok()) {
       std::cerr << "FAIL: " << matcher_case.name << " model contract: " << matcher.status() << '\n';
       return 1;
@@ -163,6 +218,10 @@ int main() {
     }
     const auto started = std::chrono::steady_clock::now();
     auto matches = (*matcher)->Infer(matcher_left, matcher_right, 32);
+    if (!fallback.model_path.empty() && fallback_count != 1) {
+      std::cerr << "FAIL: requested GPU OOM smoke must exercise CPU fallback exactly once\n";
+      return 1;
+    }
     if (!matches.ok() || matches->accepted_match_count < 8 || matches->selected.empty() ||
         matches->selected.size() > 32) {
       std::cerr << "FAIL: " << matcher_case.name

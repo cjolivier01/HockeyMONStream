@@ -32,6 +32,13 @@ struct FloatInput {
   size_t element_count{0};
 };
 
+struct CpuFallbackOptions {
+  // Empty disables fallback. May name a CPU-specific graph with the same I/O
+  // contract (SuperPoint), or the original graph (rink segmentation).
+  std::string model_path;
+  std::function<void()> on_fallback;
+};
+
 absl::StatusOr<size_t> checked_element_count(const std::vector<int64_t>& dimensions);
 absl::Status validate_shape(const std::vector<int64_t>& actual, const std::vector<int64_t>& expected);
 
@@ -62,7 +69,8 @@ class Session {
       std::vector<TensorContract> outputs,
       bool use_cpu_memory_arena = true,
       ExecutionProvider provider = ExecutionProvider::kCpu,
-      const std::string& profile_prefix = {});
+      const std::string& profile_prefix = {},
+      const CpuFallbackOptions& cpu_fallback = {});
   static absl::StatusOr<std::unique_ptr<Session>> CreateFromBytes(
       const void* bytes,
       size_t byte_count,
@@ -74,10 +82,14 @@ class Session {
       const std::vector<int64_t>& input_shape,
       const float* input_data,
       size_t input_count,
-      const std::function<bool()>& is_cancelled = {}) const;
+      const std::function<bool()>& is_cancelled = {});
   absl::StatusOr<std::vector<Tensor>> RunFloatInputs(
       const std::vector<FloatInput>& inputs,
-      const std::function<bool()>& is_cancelled = {}) const;
+      const std::function<bool()>& is_cancelled = {});
+
+  ExecutionProvider execution_provider() const {
+    return provider_;
+  }
 
  private:
   Session(
@@ -86,10 +98,15 @@ class Session {
       std::vector<TensorContract> outputs);
 
   absl::Status ValidateModelContract() const;
+  absl::Status FallBackToCpu();
 
   std::unique_ptr<Ort::Session> session_;
   std::vector<TensorContract> inputs_;
   std::vector<TensorContract> outputs_;
+  ExecutionProvider provider_{ExecutionProvider::kCpu};
+  bool use_cpu_memory_arena_{true};
+  CpuFallbackOptions cpu_fallback_;
+  absl::Status fallback_failure_;
 };
 
 } // namespace hm::onnx

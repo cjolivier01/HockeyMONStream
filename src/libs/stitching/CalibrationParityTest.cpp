@@ -406,7 +406,7 @@ int main(int argc, char** argv) {
     std::cerr << "SKIP: HockeyMOM rink parity is unavailable: " << reason << '\n';
   } else {
     const cv::Mat stitched = cv::imread((game_dir / "s.png").string(), cv::IMREAD_COLOR);
-    auto rink = hm::stitching::RinkSegmentation::Create(rink_model.string());
+    auto rink = hm::stitching::RinkSegmentation::Create(rink_model.string(), {}, hm::onnx::ExecutionProvider::kCpu);
     if (stitched.empty() || !rink.ok()) {
       std::cerr << "FAIL: native rink model/fixture contract failed\n";
       return 1;

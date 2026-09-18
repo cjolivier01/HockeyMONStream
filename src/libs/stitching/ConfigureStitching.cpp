@@ -3060,6 +3060,20 @@ absl::Status create_control_points(
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(
       model_path, feature_matcher_model_path(control_point_matcher, backend_choices.control_point_execution_provider));
+  hm::onnx::CpuFallbackOptions cpu_fallback;
+  if (backend_choices.control_point_execution_provider == hm::onnx::ExecutionProvider::kCuda &&
+      control_point_matcher != ControlPointMatcher::kAkazeHamming) {
+    fs::path cpu_model_path;
+    HM_ASSIGN_OR_RETURN(
+        cpu_model_path, feature_matcher_model_path(control_point_matcher, hm::onnx::ExecutionProvider::kCpu));
+    cpu_fallback.model_path = cpu_model_path.string();
+    cpu_fallback.on_fallback = [] {
+      report_calibration_progress(
+          "features",
+          "started",
+          "GPU memory exhausted; continuing control-point matching on CPU at the selected image size (may take longer)");
+    };
+  }
   AkazeMatchingCalibration akaze_calibration;
   if (control_point_matcher == ControlPointMatcher::kAkazeHamming)
     HM_ASSIGN_OR_RETURN(akaze_calibration, load_akaze_matching_calibration(game_dir));
@@ -3077,7 +3091,9 @@ absl::Status create_control_points(
           control_point_matcher,
           akaze_calibration,
           backend_choices.control_point_resolution,
-          backend_choices.control_point_execution_provider));
+          backend_choices.control_point_execution_provider,
+          {},
+          cpu_fallback));
   const size_t minimum_matches =
       control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona ? 6 : 16;
   struct CandidateFramePair {
@@ -4962,7 +4978,11 @@ absl::Status create_field_mask(
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
   std::unique_ptr<RinkSegmentation> model;
-  HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
+  HM_ASSIGN_OR_RETURN(
+      model, RinkSegmentation::Create(model_path.string(), [] {
+        report_calibration_progress(
+            "rink-mask", "started", "GPU memory exhausted; finding the ice surface on CPU (may take longer)");
+      }));
   RinkProfile profile;
   HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled));
   return save_rink_profile_locked(
@@ -4983,7 +5003,12 @@ absl::Status configure_orientation(
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
   std::unique_ptr<RinkSegmentation> model;
-  HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
+  HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string(), [] {
+                        report_calibration_progress(
+                            "orientation",
+                            "started",
+                            "GPU memory exhausted; finding the rink for camera orientation on CPU (may take longer)");
+                      }));
   return configure_game_orientation(game_dir, *model, expected_invalidation_id, is_cancelled);
 }
 

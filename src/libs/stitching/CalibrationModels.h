@@ -10,7 +10,9 @@
 namespace hm::stitching {
 
 absl::StatusOr<std::filesystem::path> rink_model_path();
-bool feature_matcher_model_override_configured(ControlPointMatcher matcher);
+bool feature_matcher_model_override_configured(
+    ControlPointMatcher matcher,
+    hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda);
 // Resolves the runtime target without requiring it to exist yet. This lets the
 // asset manager download a stock cache target or verify a packaged target.
 absl::StatusOr<std::filesystem::path> feature_matcher_model_target_path(
@@ -24,6 +26,9 @@ absl::StatusOr<std::string> feature_matcher_asset_to_ensure(
     hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda);
 // Pins subsequent matcher construction to the exact path already verified by
 // the asset manager.
-absl::Status bind_feature_matcher_model_path(ControlPointMatcher matcher, const std::filesystem::path& verified_path);
+absl::Status bind_feature_matcher_model_path(
+    ControlPointMatcher matcher,
+    const std::filesystem::path& verified_path,
+    hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda);
 
 } // namespace hm::stitching

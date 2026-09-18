@@ -38,7 +38,10 @@ class RinkSegmentation {
   static constexpr int kMaskHeight = 200;
   static constexpr double kHockeyMomInferenceScale = 0.5;
 
-  static absl::StatusOr<std::unique_ptr<RinkSegmentation>> Create(const std::string& model_path);
+  static absl::StatusOr<std::unique_ptr<RinkSegmentation>> Create(
+      const std::string& model_path,
+      const std::function<void()>& on_cpu_fallback = {},
+      hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda);
   static absl::StatusOr<RinkInput> Prepare(const cv::Mat& bgr_image);
   static absl::StatusOr<RinkProfile> Postprocess(
       const RinkInput& input,

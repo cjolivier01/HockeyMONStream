@@ -1358,7 +1358,7 @@ absl::Status PipelineApplication::configureInstances(
       if (clean_only_requested) {
         return absl::FailedPreconditionError("Eligible stitching configuration did not complete clean-only setup");
       }
-      // Matcher graphs are optional and large. Provision one only after
+      // Matcher graphs are optional and large. Provision them only after
       // configuration inspection proves that this launch will regenerate
       // control points. Honor explicit local overrides before fetching an
       // authorized declared asset. DeDoDe must be locally exported/provided
@@ -1370,19 +1370,26 @@ absl::Status PipelineApplication::configureInstances(
         hm::onnx::ExecutionProvider provider;
         HM_ASSIGN_OR_RETURN(
             provider, hm::stitching::read_control_point_execution_provider(app_ctx->configurator().config()));
-        std::string matcher_asset;
-        HM_ASSIGN_OR_RETURN(matcher_asset, hm::stitching::feature_matcher_asset_to_ensure(matcher, provider));
-        if (!matcher_asset.empty()) {
+        std::vector<hm::onnx::ExecutionProvider> providers{provider};
+        if (provider == hm::onnx::ExecutionProvider::kCuda)
+          providers.push_back(hm::onnx::ExecutionProvider::kCpu);
+        for (const auto model_provider : providers) {
+          std::string matcher_asset;
+          HM_ASSIGN_OR_RETURN(matcher_asset, hm::stitching::feature_matcher_asset_to_ensure(matcher, model_provider));
+          if (matcher_asset.empty())
+            continue;
           std::vector<fs::path> asset_configs;
           for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
             asset_configs.emplace_back(cfg_files_[index]);
           fs::path runtime_target;
-          HM_ASSIGN_OR_RETURN(runtime_target, hm::stitching::feature_matcher_model_target_path(matcher, provider));
+          HM_ASSIGN_OR_RETURN(
+              runtime_target, hm::stitching::feature_matcher_model_target_path(matcher, model_provider));
           hm::assets::AssetSpec verified_asset;
           HM_ASSIGN_OR_RETURN(
               verified_asset,
               hm::assets::AssetManager::EnsureNamedAtPath(asset_configs, matcher_asset, runtime_target));
-          HM_RETURN_IF_ERROR(hm::stitching::bind_feature_matcher_model_path(matcher, verified_asset.target));
+          HM_RETURN_IF_ERROR(
+              hm::stitching::bind_feature_matcher_model_path(matcher, verified_asset.target, model_provider));
         }
       }
       std::optional<double> stitch_output_rotation;

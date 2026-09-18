@@ -316,7 +316,8 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
     AkazeMatchingCalibration akaze_calibration,
     ControlPointResolution resolution,
     hm::onnx::ExecutionProvider provider,
-    const std::string& profile_prefix) {
+    const std::string& profile_prefix,
+    const hm::onnx::CpuFallbackOptions& cpu_fallback) {
   if (matcher == ControlPointMatcher::kAkazeHamming) {
     if (akaze_calibration.left.has_value() != akaze_calibration.right.has_value()) {
       return absl::InvalidArgumentError("AKAZE lens calibration must contain both cameras or neither camera");
@@ -353,7 +354,8 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
           // Full-resolution activations are large; release temporary buffers instead of retaining arena blocks.
           /*use_cpu_memory_arena=*/false,
           provider,
-          profile_prefix);
+          profile_prefix,
+          cpu_fallback);
       break;
     case ControlPointMatcher::kDeDoDeLightGlue:
       input_channels = 3;
@@ -365,9 +367,10 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
               {"matches0", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {1, kKeypointsPerImage}},
               {"matching_scores0", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {1, kKeypointsPerImage}},
           },
-          true,
+          /*use_cpu_memory_arena=*/false,
           provider,
-          profile_prefix);
+          profile_prefix,
+          cpu_fallback);
       break;
     case ControlPointMatcher::kLoFTR:
       input_channels = 1;
@@ -382,9 +385,10 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
               {"mkpts1_f", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, 2}},
               {"mconf", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1}},
           },
-          true,
+          /*use_cpu_memory_arena=*/false,
           provider,
-          profile_prefix);
+          profile_prefix,
+          cpu_fallback);
       break;
     case ControlPointMatcher::kAkazeHamming:
       break;
@@ -394,7 +398,8 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
   auto result = std::unique_ptr<FeatureMatcher>(new FeatureMatcher(matcher, std::move(*session), input_channels));
   result->resolution_ = resolution;
   std::clog << "Control-point matcher " << ControlPointMatcherName(matcher)
-            << " execution provider=" << hm::onnx::ExecutionProviderName(provider) << '\n';
+            << " execution provider=" << hm::onnx::ExecutionProviderName(result->session_->execution_provider())
+            << '\n';
   return result;
 }
 

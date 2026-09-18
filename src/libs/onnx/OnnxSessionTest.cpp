@@ -33,6 +33,32 @@ constexpr unsigned char kAddModel[] = {
     0x08, 0x0a, 0x02, 0x08, 0x01, 0x0a, 0x02, 0x08, 0x02, 0x42, 0x04, 0x0a, 0x00, 0x10, 0x11,
 };
 
+// An outer product requests a 640 GB CUDA intermediate and returns a [1, 2] slice.
+// The allocation cannot fit the test GPU; the CPU fallback uses the tiny Add
+// graph above, so this exercises a real ORT OOM without exhausting host RAM.
+constexpr unsigned char kCudaOomModel[] = {
+    0x08, 0x09, 0x3a, 0xf1, 0x02, 0x0a, 0x17, 0x0a, 0x04, 0x6c, 0x65, 0x66, 0x74, 0x0a, 0x05, 0x72, 0x69, 0x67, 0x68,
+    0x74, 0x12, 0x03, 0x73, 0x75, 0x6d, 0x22, 0x03, 0x41, 0x64, 0x64, 0x0a, 0x21, 0x0a, 0x03, 0x73, 0x75, 0x6d, 0x0a,
+    0x06, 0x73, 0x74, 0x61, 0x72, 0x74, 0x73, 0x0a, 0x03, 0x6f, 0x6e, 0x65, 0x12, 0x06, 0x73, 0x63, 0x61, 0x6c, 0x61,
+    0x72, 0x22, 0x05, 0x53, 0x6c, 0x69, 0x63, 0x65, 0x0a, 0x26, 0x0a, 0x06, 0x73, 0x63, 0x61, 0x6c, 0x61, 0x72, 0x0a,
+    0x0c, 0x63, 0x6f, 0x6c, 0x75, 0x6d, 0x6e, 0x5f, 0x73, 0x68, 0x61, 0x70, 0x65, 0x12, 0x06, 0x63, 0x6f, 0x6c, 0x75,
+    0x6d, 0x6e, 0x22, 0x06, 0x45, 0x78, 0x70, 0x61, 0x6e, 0x64, 0x0a, 0x27, 0x0a, 0x06, 0x63, 0x6f, 0x6c, 0x75, 0x6d,
+    0x6e, 0x12, 0x03, 0x72, 0x6f, 0x77, 0x22, 0x09, 0x54, 0x72, 0x61, 0x6e, 0x73, 0x70, 0x6f, 0x73, 0x65, 0x2a, 0x0d,
+    0x0a, 0x04, 0x70, 0x65, 0x72, 0x6d, 0x40, 0x01, 0x40, 0x00, 0xa0, 0x01, 0x07, 0x0a, 0x1c, 0x0a, 0x06, 0x63, 0x6f,
+    0x6c, 0x75, 0x6d, 0x6e, 0x0a, 0x03, 0x72, 0x6f, 0x77, 0x12, 0x05, 0x6c, 0x61, 0x72, 0x67, 0x65, 0x22, 0x06, 0x4d,
+    0x61, 0x74, 0x4d, 0x75, 0x6c, 0x0a, 0x24, 0x0a, 0x05, 0x6c, 0x61, 0x72, 0x67, 0x65, 0x0a, 0x06, 0x73, 0x74, 0x61,
+    0x72, 0x74, 0x73, 0x0a, 0x04, 0x65, 0x6e, 0x64, 0x73, 0x12, 0x06, 0x6f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x22, 0x05,
+    0x53, 0x6c, 0x69, 0x63, 0x65, 0x12, 0x08, 0x63, 0x75, 0x64, 0x61, 0x5f, 0x6f, 0x6f, 0x6d, 0x2a, 0x18, 0x08, 0x02,
+    0x10, 0x07, 0x3a, 0x04, 0x80, 0xb5, 0x18, 0x01, 0x42, 0x0c, 0x63, 0x6f, 0x6c, 0x75, 0x6d, 0x6e, 0x5f, 0x73, 0x68,
+    0x61, 0x70, 0x65, 0x2a, 0x10, 0x08, 0x02, 0x10, 0x07, 0x3a, 0x02, 0x00, 0x00, 0x42, 0x06, 0x73, 0x74, 0x61, 0x72,
+    0x74, 0x73, 0x2a, 0x0d, 0x08, 0x02, 0x10, 0x07, 0x3a, 0x02, 0x01, 0x01, 0x42, 0x03, 0x6f, 0x6e, 0x65, 0x2a, 0x0e,
+    0x08, 0x02, 0x10, 0x07, 0x3a, 0x02, 0x01, 0x02, 0x42, 0x04, 0x65, 0x6e, 0x64, 0x73, 0x5a, 0x16, 0x0a, 0x04, 0x6c,
+    0x65, 0x66, 0x74, 0x12, 0x0e, 0x0a, 0x0c, 0x08, 0x01, 0x12, 0x08, 0x0a, 0x02, 0x08, 0x01, 0x0a, 0x02, 0x08, 0x02,
+    0x5a, 0x17, 0x0a, 0x05, 0x72, 0x69, 0x67, 0x68, 0x74, 0x12, 0x0e, 0x0a, 0x0c, 0x08, 0x01, 0x12, 0x08, 0x0a, 0x02,
+    0x08, 0x01, 0x0a, 0x02, 0x08, 0x02, 0x62, 0x18, 0x0a, 0x06, 0x6f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x12, 0x0e, 0x0a,
+    0x0c, 0x08, 0x01, 0x12, 0x08, 0x0a, 0x02, 0x08, 0x01, 0x0a, 0x02, 0x08, 0x02, 0x42, 0x04, 0x0a, 0x00, 0x10, 0x11,
+};
+
 bool expect(bool condition, const char* message) {
   if (!condition)
     std::cerr << "FAIL: " << message << '\n';
@@ -86,6 +112,114 @@ int main() {
     ok &= expect(
         values.ok() && (*values)[0] == 4.25f && (*values)[1] == -1.5f,
         "first-session CUDA inference must use both inputs");
+  }
+
+  using hm::onnx::ExecutionProvider;
+  using hm::onnx::IsCudaOutOfMemory;
+  const std::string arena_oom =
+      "onnxruntime::BFCArena::AllocateRawInternal Failed to allocate memory for requested buffer of size 265420800";
+  for (const std::string& diagnostic :
+       {arena_oom,
+        std::string("CUDA failure 2: cudaErrorMemoryAllocation"),
+        std::string("CUDA failure 2: out of memory; GPU=0; expr=cudaMalloc"),
+        std::string("CUDA failure: 2 ; GPU=0 ; expr=cudaMalloc"),
+        std::string("CUDA failure: status=2"),
+        std::string("CUDA_ERROR_OUT_OF_MEMORY"),
+        std::string("CUDNN_STATUS_ALLOC_FAILED"),
+        std::string("CUBLAS failure 3: CUBLAS_STATUS_ALLOC_FAILED; GPU=0; expr=cublasCreate(&cublas_handle_)")}) {
+    ok &= expect(
+        IsCudaOutOfMemory(diagnostic, ExecutionProvider::kCuda, false),
+        "CUDA memory exhaustion must qualify for fallback");
+    ok &= expect(
+        !IsCudaOutOfMemory(diagnostic, ExecutionProvider::kCpu, false),
+        "CPU failures must never retry or switch providers");
+  }
+  ok &= expect(
+      !IsCudaOutOfMemory(arena_oom, ExecutionProvider::kCuda, true),
+      "an ambiguous CPU/GPU arena error must not be treated as GPU OOM");
+  for (const char* diagnostic :
+       {"CUDA failure: 200",
+        "CUDA failure: status=200",
+        "CUDA failure: 700: illegal memory access",
+        "CUDNN_STATUS_NOT_SUPPORTED",
+        "CUBLAS_STATUS_NOT_INITIALIZED",
+        "CUBLAS_STATUS_EXECUTION_FAILED",
+        "Failed to load CUDA provider",
+        "bad_alloc",
+        "CPU allocator failed to allocate memory",
+        "Invalid model input shape"}) {
+    ok &= expect(
+        !IsCudaOutOfMemory(diagnostic, ExecutionProvider::kCuda, false),
+        "non-OOM CUDA, model, and host-memory failures must not qualify for fallback");
+  }
+  if (const char* require_cuda = std::getenv("HM_REQUIRE_CUDA_TESTS");
+      require_cuda && std::string(require_cuda) == "1") {
+    const auto dir =
+        std::filesystem::temp_directory_path() / ("hstream-cpu-fallback-test-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    const auto gpu_path = dir / "cuda.onnx";
+    const auto cpu_path = dir / "cpu.onnx";
+    std::ofstream(gpu_path, std::ios::binary)
+        .write(reinterpret_cast<const char*>(kCudaOomModel), sizeof(kCudaOomModel));
+    std::ofstream(cpu_path, std::ios::binary).write(reinterpret_cast<const char*>(kAddModel), sizeof(kAddModel));
+    int fallbacks = 0;
+    bool cancel = false;
+    auto create = [&](const std::filesystem::path& gpu,
+                      const std::filesystem::path& cpu,
+                      const std::function<void()>& notification) {
+      return hm::onnx::Session::Create(
+          gpu.string(),
+          {{"left", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {1, 2}},
+           {"right", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {1, 2}}},
+          {output_contract()},
+          false,
+          ExecutionProvider::kCuda,
+          {},
+          {cpu.string(), notification});
+    };
+    const float left[] = {1.25f, -2.0f};
+    const float right[] = {3.0f, 0.5f};
+    const std::vector<hm::onnx::FloatInput> inputs{{"left", {1, 2}, left, 2}, {"right", {1, 2}, right, 2}};
+    auto fallback = create(gpu_path, cpu_path, [&] { ++fallbacks; });
+    ok &= expect(fallback.ok(), "CUDA OOM fixture must load successfully before inference");
+    if (fallback.ok()) {
+      ok &= expect((*fallback)->execution_provider() == ExecutionProvider::kCuda, "GPU must be attempted first");
+      auto cancelled = (*fallback)->RunFloatInputs(inputs, [] { return true; });
+      ok &= expect(absl::IsCancelled(cancelled.status()) && fallbacks == 0, "cancellation must not trigger fallback");
+      for (int attempt = 0; attempt < 2; ++attempt) {
+        auto result = (*fallback)->RunFloatInputs(inputs);
+        if (!result.ok())
+          std::cerr << result.status() << '\n';
+        ok &= expect(result.ok(), "GPU OOM must retry the current input on CPU and allow later inputs");
+        if (result.ok()) {
+          auto values = result->front().float_data();
+          ok &= expect(
+              values.ok() && (*values)[0] == 4.25f && (*values)[1] == -1.5f,
+              "CPU fallback must use the same inputs and the CPU-specific graph");
+        }
+        ok &= expect(
+            fallbacks == 1 && (*fallback)->execution_provider() == ExecutionProvider::kCpu,
+            "fallback must happen once and retain the CPU session");
+      }
+    }
+    auto invalid = create(dir / "missing.onnx", cpu_path, [&] { ++fallbacks; });
+    ok &= expect(!invalid.ok() && fallbacks == 1, "missing CUDA model must not be hidden by CPU fallback");
+    auto cpu_failure = create(gpu_path, dir / "missing-cpu.onnx", [&] { ++fallbacks; });
+    ok &= expect(cpu_failure.ok(), "missing CPU fallback graph must not prevent GPU session creation");
+    if (cpu_failure.ok()) {
+      const auto first = (*cpu_failure)->RunFloatInputs(inputs);
+      const auto second = (*cpu_failure)->RunFloatInputs(inputs);
+      ok &= expect(
+          !first.ok() && second.status() == first.status() && fallbacks == 2,
+          "CPU loading failures must remain terminal without repeated GPU/CPU attempts");
+    }
+    auto cancelled_retry = create(gpu_path, cpu_path, [&] { cancel = true; });
+    ok &= expect(cancelled_retry.ok(), "cancellable fallback fixture must load");
+    if (cancelled_retry.ok()) {
+      auto result = (*cancelled_retry)->RunFloatInputs(inputs, [&] { return cancel; });
+      ok &= expect(absl::IsCancelled(result.status()), "cancellation during fallback must prevent CPU inference");
+    }
+    std::filesystem::remove_all(dir);
   }
 
   auto empty_count = hm::onnx::checked_element_count({2, 0});

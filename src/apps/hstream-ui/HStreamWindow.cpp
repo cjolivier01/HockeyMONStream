@@ -166,7 +166,8 @@ bool is_cuda_out_of_memory_diagnostic(const QString& diagnostic) {
   static const QRegularExpression cuda_status_2(R"(cuda failure:\s*status=2(?:[^0-9]|$))");
   const QString normalized = diagnostic.toLower();
   return cuda_status_2.match(normalized).hasMatch() || normalized.contains("cudaerrormemoryallocation") ||
-      normalized.contains("cuda_error_out_of_memory");
+      normalized.contains("cuda_error_out_of_memory") ||
+      (normalized.startsWith("cuda error at ") && normalized.contains(": out of memory"));
 }
 
 QString stitching_oom_width_guidance(int current_max_output_width) {
@@ -8624,6 +8625,15 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
   const QString diagnostic = line.trimmed();
   if (diagnostic.isEmpty())
     return;
+  if (diagnostic.startsWith("HSTREAM_ONNX_FALLBACK provider=cpu reason=cuda-out-of-memory ")) {
+    // A recovered inference OOM must not override a later CPU/model/geometry
+    // error in the failure dialog. The complete runtime log retains the event.
+    calibration_cuda_out_of_memory_ = false;
+    calibration_hmstitcher_input_pool_failure_ = false;
+    calibration_stitch_blender_oom_ = false;
+    calibration_diagnostic_lines_.clear();
+    return;
+  }
   const QString normalized = diagnostic.toLower();
   const bool cuda_out_of_memory = is_cuda_out_of_memory_diagnostic(diagnostic);
   const bool gpu_buffer_allocation_failure = normalized.contains("gst_nvds_buffer_pool_alloc_buffer") ||
@@ -8633,6 +8643,8 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
   calibration_cuda_out_of_memory_ = calibration_cuda_out_of_memory_ || cuda_out_of_memory;
   calibration_hmstitcher_input_pool_failure_ =
       calibration_hmstitcher_input_pool_failure_ || hmstitcher_input_pool_failure;
+  calibration_stitch_blender_oom_ =
+      calibration_stitch_blender_oom_ || (cuda_out_of_memory && normalized.contains("cudablend"));
   const bool rejected_hypothesis = diagnostic.startsWith("Rejected calibrated MAGSAC hypothesis");
   const bool rejected_candidate = diagnostic.startsWith("Skipping pooled stitching calibration") ||
       diagnostic.startsWith("Skipping stitching calibration frame pair");
@@ -8677,8 +8689,11 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
   const bool cuda_out_of_memory = calibration_cuda_out_of_memory_ || is_cuda_out_of_memory_diagnostic(root_cause);
   const bool hmstitcher_input_pool_failure = calibration_hmstitcher_input_pool_failure_ ||
       (normalized_message.contains("hmstitcher_conv0") && normalized_message.contains("failed to activate bufferpool"));
+  const bool stitch_blender_oom = calibration_stitch_blender_oom_ ||
+      (is_cuda_out_of_memory_diagnostic(root_cause) && normalized_message.contains("cudablend"));
   if (cuda_out_of_memory) {
-    root_cause = hmstitcher_input_pool_failure
+    root_cause = stitch_blender_oom ? "CUDA out of memory while allocating the live stitching blender's GPU buffers."
+        : hmstitcher_input_pool_failure
         ? "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while activating hmstitcher's pre-stitch "
           "input-conversion buffer pool."
         : "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while allocating a calibration GPU buffer.";
@@ -8713,7 +8728,13 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
       evidence.contains("required hugin executable not found") || invalid_hugin_executable_override;
   QString explanation;
   QString action;
-  if (cuda_out_of_memory) {
+  if (stitch_blender_oom) {
+    explanation =
+        "The GPU ran out of VRAM during live video blending after the stitch maps were loaded. CPU fallback covers "
+        "control-point and ice-detection models; live video blending still requires GPU memory.";
+    action = QString("Close other GPU-intensive applications. %1")
+                 .arg(stitching_oom_width_guidance(active_stitch_max_output_width_));
+  } else if (cuda_out_of_memory) {
     explanation = hmstitcher_input_pool_failure
         ? "The GPU ran out of VRAM while preparing the native-resolution camera frames for stitching. This happened "
           "before frame matching, NONA, or optional rink leveling began."
@@ -8809,6 +8830,8 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
   const auto stage_label = calibration_stage_labels_.find(stage);
   if (stage_label != calibration_stage_labels_.end() && stage_label->second)
     stage = stage_label->second->text();
+  if (stitch_blender_oom)
+    stage = "Live stitching blend";
   auto selected_label = [](QComboBox* combo, const QString& value) {
     if (!combo)
       return value;
@@ -9246,6 +9269,7 @@ void HStreamWindow::startPipeline() {
   calibration_diagnostic_lines_.clear();
   calibration_cuda_out_of_memory_ = false;
   calibration_hmstitcher_input_pool_failure_ = false;
+  calibration_stitch_blender_oom_ = false;
   calibration_rejected_hypotheses_ = 0;
   calibration_rejected_candidates_ = 0;
   active_force_reconfigure_ = active_run_is_calibration_ && calibration_restart_requested_;
@@ -9940,7 +9964,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     const bool calibration_cuda_oom = calibration_ended_incomplete &&
         (calibration_cuda_out_of_memory_ || is_cuda_out_of_memory_diagnostic(calibration_failure_message_));
     const QString terminal_detail = calibration_cuda_oom
-        ? (calibration_hmstitcher_input_pool_failure_
+        ? (calibration_stitch_blender_oom_ ? QString("GPU out of memory in the live stitching blender")
+               : calibration_hmstitcher_input_pool_failure_
                ? QString("GPU out of memory in the pre-stitch input-conversion buffer pool")
                : QString("GPU out of memory during stitching calibration"))
         : QString("Pipeline exited with code %1 (%2)")
