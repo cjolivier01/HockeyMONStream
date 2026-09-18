@@ -59,5 +59,7 @@ expect_equal "$(deployment_action '' 1.2.3)" installed "new install action"
 expect_equal "$(deployment_action 1.2.3 1.2.3)" reinstalled "same version action"
 expect_equal "$(deployment_action 1.2.2 1.2.3)" updated "upgrade action"
 expect_equal "$(deployment_action 1.2.4 1.2.3)" downgraded "downgrade action"
+expect_equal "$(deployment_action 1.2.4 1.2.3 hmstream)" "replaced legacy hmstream" \
+  "legacy replacement action"
 
 echo "deploy_test: PASS"

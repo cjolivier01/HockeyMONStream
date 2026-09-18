@@ -665,6 +665,7 @@ printf '%s\n' "${simulation}"
 while read -r removed_package; do
   [[ -z "${removed_package}" ]] && continue
   allowed=0
+  if [[ "${removed_package}" == hmstream ]]; then allowed=1; fi
   for package in "${old_deepstream_packages[@]}"; do
     if [[ "${removed_package}" == "${package%%:*}" ]]; then allowed=1; break; fi
   done

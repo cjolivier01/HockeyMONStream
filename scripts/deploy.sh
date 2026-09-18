@@ -18,6 +18,7 @@ declare -A NODE_OS=()
 declare -A NODE_PLATFORM=()
 declare -A NODE_TARGET=()
 declare -A NODE_PREVIOUS=()
+declare -A NODE_PREVIOUS_PACKAGE=()
 declare -A NODE_INSTALLED=()
 declare -A NODE_RESULT=()
 declare -A NODE_DETAIL=()
@@ -41,8 +42,8 @@ targets are Ubuntu 24.04/26.04 amd64 desktops and Ubuntu 22.04 arm64 Jetsons.
 Nodes must allow non-interactive SSH access and passwordless sudo.
 The invoking HStream repository must have no tracked or source-file changes.
 
-Undeploy removes and purges only the hstream package. It leaves DeepStream and
-shared dependency packages installed.
+Undeploy removes and purges the hstream package and its legacy hmstream name.
+It leaves DeepStream and shared dependency packages installed.
 
 Optional make variables:
   PACKAGE_VERSION=VERSION   Override the source-derived package version.
@@ -130,8 +131,11 @@ target_description() {
 deployment_action() {
   local previous="$1"
   local installed="$2"
+  local previous_package="${3:-hstream}"
   if [[ -z "${previous}" ]]; then
     printf 'installed'
+  elif [[ "${previous_package}" != hstream ]]; then
+    printf 'replaced legacy %s' "${previous_package}"
   elif [[ "${previous}" == "${installed}" ]]; then
     printf 'reinstalled'
   elif dpkg --compare-versions "${previous}" lt "${installed}"; then
@@ -182,7 +186,7 @@ require_clean_repository() {
 
 detect_node() {
   local node="$1"
-  local output identity marker os_id os_version architecture platform previous extra target_key
+  local output identity marker os_id os_version architecture platform previous_package previous extra target_key
 
   printf '\n[%s] Detecting %s...\n' "${OPERATION}" "${node}"
   if ! output="$(ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s <<'REMOTE_DETECT'
@@ -198,9 +202,18 @@ if [ -f /etc/nv_tegra_release ]; then
 elif [ -r /proc/device-tree/compatible ] && tr '\000' '\n' < /proc/device-tree/compatible | grep -qi tegra; then
   platform=jetson
 fi
-installed_version="$(dpkg-query -W -f='${Version}' hstream 2>/dev/null || true)"
-printf '__HSTREAM_DEPLOY__|%s|%s|%s|%s|%s\n' \
-  "${ID:-}" "${VERSION_ID:-}" "$(uname -m)" "${platform}" "${installed_version}"
+installed_package=""
+installed_version=""
+for candidate in hstream hmstream; do
+  candidate_status="$(dpkg-query -W -f='${db:Status-Status}' "${candidate}" 2>/dev/null || true)"
+  if [ "${candidate_status}" = installed ]; then
+    installed_package="${candidate}"
+    installed_version="$(dpkg-query -W -f='${Version}' "${candidate}")"
+    break
+  fi
+done
+printf '__HSTREAM_DEPLOY__|%s|%s|%s|%s|%s|%s\n' \
+  "${ID:-}" "${VERSION_ID:-}" "$(uname -m)" "${platform}" "${installed_package}" "${installed_version}"
 REMOTE_DETECT
   )"; then
     NODE_OS["${node}"]="unknown"
@@ -218,7 +231,7 @@ REMOTE_DETECT
     NODE_DETAIL["${node}"]="invalid OS detection response"
     return 1
   fi
-  IFS='|' read -r marker os_id os_version architecture platform previous extra <<< "${identity}"
+  IFS='|' read -r marker os_id os_version architecture platform previous_package previous extra <<< "${identity}"
   if [[ "${marker}" != "__HSTREAM_DEPLOY__" || -n "${extra:-}" ]]; then
     NODE_OS["${node}"]="unknown"
     NODE_PLATFORM["${node}"]="unknown"
@@ -229,6 +242,7 @@ REMOTE_DETECT
 
   NODE_OS["${node}"]="${os_id:-unknown} ${os_version:-unknown}"
   NODE_PLATFORM["${node}"]="${platform:-unknown}"
+  NODE_PREVIOUS_PACKAGE["${node}"]="${previous_package:-}"
   NODE_PREVIOUS["${node}"]="${previous:-}"
   NODE_INSTALLED["${node}"]="${previous:-}"
 
@@ -249,7 +263,7 @@ REMOTE_DETECT
   fi
   printf '[%s] %s: %s (%s), installed HStream: %s\n' \
     "${OPERATION}" "${node}" "${NODE_OS[${node}]}" "${NODE_PLATFORM[${node}]}" \
-    "${previous:-not installed}"
+    "${previous_package:+${previous_package} }${previous:-not installed}"
 }
 
 resolve_desktop_deepstream_deb() {
@@ -396,7 +410,7 @@ query_installed_version() {
   local node="$1"
   local output version
   if ! output="$(ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" \
-    "version=\$(dpkg-query -W -f='\${Version}' hstream 2>/dev/null || true); printf '__HSTREAM_VERSION__|%s\\n' \"\${version}\"")"; then
+    "status=\$(dpkg-query -W -f='\${db:Status-Status}' hstream 2>/dev/null || true); version=; if [ \"\${status}\" = installed ]; then version=\$(dpkg-query -W -f='\${Version}' hstream); fi; printf '__HSTREAM_VERSION__|%s\\n' \"\${version}\"")"; then
     return 1
   fi
   version="$(printf '%s\n' "${output}" | sed -n 's/^__HSTREAM_VERSION__|//p' | tail -n 1)"
@@ -530,7 +544,8 @@ deploy_node() {
   fi
 
   NODE_INSTALLED["${node}"]="${installed}"
-  action="$(deployment_action "${NODE_PREVIOUS[${node}]:-}" "${installed}")"
+  action="$(deployment_action \
+    "${NODE_PREVIOUS[${node}]:-}" "${installed}" "${NODE_PREVIOUS_PACKAGE[${node}]:-hstream}")"
   NODE_RESULT["${node}"]="OK"
   NODE_DETAIL["${node}"]="${action}"
   printf '[deploy] %s: HStream %s (%s).\n' "${node}" "${installed}" "${action}"
@@ -548,15 +563,26 @@ undeploy_node() {
     return 0
   fi
 
-  printf '\n[undeploy] Removing HStream %s from %s...\n' "${NODE_PREVIOUS[${node}]}" "${node}"
+  printf '\n[undeploy] Removing %s %s from %s...\n' \
+    "${NODE_PREVIOUS_PACKAGE[${node}]:-hstream}" "${NODE_PREVIOUS[${node}]}" "${node}"
   if ! ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s <<'REMOTE_UNDEPLOY'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-sudo -n apt-get remove --purge -y hstream
-if dpkg-query -W -f='${db:Status-Status}' hstream 2>/dev/null | grep -qx installed; then
-  echo "ERROR: hstream remains installed after package removal." >&2
-  exit 1
+packages=()
+for package in hstream hmstream; do
+  status="$(dpkg-query -W -f='${db:Status-Status}' "${package}" 2>/dev/null || true)"
+  if [ "${status}" = installed ]; then packages+=("${package}"); fi
+done
+if [ "${#packages[@]}" -gt 0 ]; then
+  sudo -n apt-get remove --purge -y "${packages[@]}"
 fi
+for package in hstream hmstream; do
+  status="$(dpkg-query -W -f='${db:Status-Status}' "${package}" 2>/dev/null || true)"
+  if [ "${status}" = installed ]; then
+    echo "ERROR: ${package} remains installed after package removal." >&2
+    exit 1
+  fi
+done
 REMOTE_UNDEPLOY
   then
     NODE_RESULT["${node}"]="FAILED"
@@ -583,11 +609,15 @@ REMOTE_UNDEPLOY
 }
 
 print_summary() {
-  local node os platform previous installed result
+  local node os platform previous previous_package installed result
   local node_width=4 os_width=2 platform_width=8 previous_width=8 installed_width=9 result_width=6
 
   for node in "${NODES_LIST[@]}"; do
     previous="${NODE_PREVIOUS[${node}]:---}"
+    previous_package="${NODE_PREVIOUS_PACKAGE[${node}]:-}"
+    if [[ -n "${previous_package}" && "${previous_package}" != hstream && "${previous}" != -- ]]; then
+      previous="${previous_package}@${previous}"
+    fi
     installed="${NODE_INSTALLED[${node}]:---}"
     os="${NODE_OS[${node}]:-unknown}"
     platform="${NODE_PLATFORM[${node}]:-unknown}"
@@ -613,6 +643,10 @@ print_summary() {
     "${previous_width}" '' "${installed_width}" '' "${result_width}" '' | tr ' ' '-'
   for node in "${NODES_LIST[@]}"; do
     previous="${NODE_PREVIOUS[${node}]:---}"
+    previous_package="${NODE_PREVIOUS_PACKAGE[${node}]:-}"
+    if [[ -n "${previous_package}" && "${previous_package}" != hstream && "${previous}" != -- ]]; then
+      previous="${previous_package}@${previous}"
+    fi
     installed="${NODE_INSTALLED[${node}]:---}"
     result="${NODE_RESULT[${node}]:-FAILED}: ${NODE_DETAIL[${node}]:-not attempted}"
     printf '%-*s  %-*s  %-*s  %-*s  %-*s  %-*s\n' \

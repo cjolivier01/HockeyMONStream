@@ -59,6 +59,7 @@ int main(int argc, char** argv) {
   ok &= expect(
       contains(packager, "X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}") &&
           contains(packager, "X-HStream-Target-Platform: ${TARGET_PLATFORM}") &&
+          contains(packager, "Conflicts: hmstream") && contains(packager, "Replaces: hmstream") &&
           contains(packager, "EXPECTED_CUDA_SONAME") && contains(packager, "unexpected CUDA component ABI") &&
           contains(packager, "pretrained/native-calibration") && contains(packager, "model_cache_root") &&
           contains(packager, "--package-assets --verify") && contains(packager, "--package-assets --print-targets") &&
@@ -77,7 +78,8 @@ int main(int argc, char** argv) {
           !contains(installer, "Pin-Priority") && contains(installer, "old_deepstream_packages") &&
           contains(installer, "^deepstream-[0-9]+([.][0-9]+)*$") &&
           contains(installer, "deepstream-9.1-transition.deb") && contains(installer, "Conflicts") &&
-          contains(installer, "Replaces") && !contains(installer, "apt-get remove -y --no-install-recommends") &&
+          contains(installer, "Replaces") && contains(installer, "\"${removed_package}\" == hmstream") &&
+          !contains(installer, "apt-get remove -y --no-install-recommends") &&
           !contains(installer, "nccl") && !contains(installer, "NCCL"),
       "installer must validate OS provenance, replace older DeepStream atomically, and leave NCCL policy untouched");
   ok &= expect(
