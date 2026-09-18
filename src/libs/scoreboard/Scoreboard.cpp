@@ -249,9 +249,7 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     }
 
     static const float border[] = {0, 0, 0, 0};
-    assert(
-        inversePerspectiveMatrix_.type() == CV_32F && inversePerspectiveMatrix_.rows == 3 &&
-        inversePerspectiveMatrix_.cols == 3);
+    assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
     cuerr = warpPerspectiveCudaRaw(
         working_image_->data_raw(),
         working_image_->pitch(),
@@ -310,9 +308,7 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
   }
 
   static const float border[] = {0, 0, 0, 0};
-  assert(
-      inversePerspectiveMatrix_.type() == CV_32F && inversePerspectiveMatrix_.rows == 3 &&
-      inversePerspectiveMatrix_.cols == 3);
+  assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
   cuErr = warpPerspectiveCudaRaw(
       full_image.data_raw(),
       full_image.pitch(),

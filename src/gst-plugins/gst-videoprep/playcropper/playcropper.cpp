@@ -893,7 +893,8 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
     surface::Surface surface,
     const NvDsFrameMeta* frame_meta,
     cudaStream_t stream) {
-  if (!font_cache_) {
+  // Building the cache forks fc-list, so acquire it once, and only when we draw.
+  if ((plot_play_tracking_ || plot_player_tracking_) && !font_cache_) {
     font_cache_ = draw_display::get_or_create_font_cache();
   }
   if (!display_surface_) {

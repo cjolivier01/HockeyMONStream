@@ -270,6 +270,8 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     return !pt_context_ || DsPlayTrackerCtxApplyRuntimeTuning(pt_context_, tuning).ok();
   };
   if (key == "show") {
+    // GenerateOutput reads show_ (and the font cache it gates) under this lock.
+    std::lock_guard<std::mutex> lk(context_mu_);
     show_ = !!std::atol(prop.value.c_str());
   } else if (key == "draw") {
     init_params_.draw = !!std::atol(prop.value.c_str());
@@ -464,6 +466,10 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     return absl::FailedPreconditionError("vpplaytracker context is not initialized");
   }
   GstDsPlayTrackerFrame frame;
+  // Building the cache forks fc-list, so acquire it once, and only when we draw.
+  if (show_ && !font_cache_) {
+    font_cache_ = draw_display::get_or_create_font_cache();
+  }
   NvDsFrameMetaList* fl = batch_meta->frame_meta_list;
   while (fl) {
     assert(frame.batch_index < in_surface->numFilled);
@@ -626,10 +632,6 @@ absl::Status PlayTrackerPriv::GenerateOutput(
         return absl::DataLossError("lossless telemetry exporter stopped before accepting a frame sample");
     }
     if (show_) {
-      // Building the cache forks fc-list, so only acquire it once and only when we actually draw.
-      if (!font_cache_) {
-        font_cache_ = draw_display::get_or_create_font_cache();
-      }
       NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;
       while (dm_list) {
         NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;

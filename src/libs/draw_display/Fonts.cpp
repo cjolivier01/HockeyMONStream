@@ -239,6 +239,10 @@ class FontImpl : public Font {
    */
   FontImpl(const std::string& font_path, float pixel_height, bool use_jetson_font = true)
       : font_path_(font_path), pixel_height_(pixel_height), use_jetson_font_(use_jetson_font) {
+    // TODO: this discards the caller's font path, so load() always falls back to
+    // the jetson-utils built-in font and FontCacheImpl's name->path map only ever
+    // affects the cache key. Removing this clear() is what would make that map
+    // start selecting fonts, so it needs its own change and its own validation.
     font_path_.clear();
     // if (!fs::exists(font_path_)) {
     //   std::cerr << "Warning: Could not find font file: " << font_path << std::endl;
