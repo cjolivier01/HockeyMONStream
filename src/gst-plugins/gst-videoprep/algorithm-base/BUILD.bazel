@@ -31,6 +31,7 @@ cc_library (
         "gst_utils.cpp",
     ],
     hdrs = [
+        "CudaStreamCompletionFence.h",
         "preputils.h",
         "CustomAlgorithmBase.h",
         "VideoPrepPriv.h",

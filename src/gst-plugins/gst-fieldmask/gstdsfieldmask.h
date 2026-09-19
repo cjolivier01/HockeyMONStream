@@ -44,9 +44,6 @@ typedef struct _GstDsFieldMaskClass GstDsFieldMaskClass;
 // #define NVDSFIELDMASK_MAX_BATCH_SIZE 1024
 
 struct _GstDsFieldMask {
-  _GstDsFieldMask() {
-    usleep(0);
-  }
   GstBaseTransform base_trans;
 
   // Context of the custom algorithm library

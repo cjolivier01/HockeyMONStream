@@ -125,6 +125,8 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
  public:
   videoprep::GstVideoPrep* videoprep_;
   guint source_id = 0;
+  // Counts input buffers on the sink-pad streaming thread. Inserted output
+  // frames must not alter the frame-insert-interval cadence.
   guint m_frameNum = 0;
   gdouble m_scaleFactor = 1.0;
   guint m_frameinsertinterval = 0;

@@ -573,7 +573,11 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   NvDsBatchMeta* batch_meta = NULL;
   // int num_filled = 0;
 
-  GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %d\n", __func__, m_frameNum++);
+  // The increment must stay outside GST_DEBUG_OBJECT: that macro only evaluates
+  // its arguments when the debug level is enabled. Only input buffers advance
+  // this counter so frame-insert-interval has a stable input-frame cadence.
+  const guint previous_frame_num = m_frameNum++;
+  GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %u\n", __func__, previous_frame_num);
 
   if (last_flow_ret_ == GST_FLOW_ERROR) {
     return BufferResult::Buffer_Error;
@@ -610,7 +614,7 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   // Push buffer to process thread for further processing
   PacketInfo packetInfo;
   packetInfo.inbuf = inbuf;
-  packetInfo.frame_num = m_frameNum;
+  packetInfo.frame_num = previous_frame_num + 1;
   packetInfo.flush_generation = packet_flush_generation;
 
   // Add custom preprocessing logic if required, here
@@ -1094,7 +1098,7 @@ void CustomAlgorithmBase::OutputThread(void) {
         flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), outBuffer);
         GST_DEBUG_OBJECT(
             m_element,
-            "CustomLib: %s in_surf=%p, Pushing Frame %d to downstream... flow_ret = %d TS=%" GST_TIME_FORMAT " \n",
+            "CustomLib: %s in_surf=%p, Pushing Frame %u to downstream... flow_ret = %d TS=%" GST_TIME_FORMAT " \n",
             __func__,
             in_surf,
             packetInfo.frame_num,
@@ -1148,9 +1152,6 @@ absl::Status CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
   // TODO: Do Timestamp management,
   // currently setting is 10ms lesser than next buffer for this newly inserting frame
   GST_BUFFER_PTS(newGstOutBuf) = GST_BUFFER_PTS(packetInfo->inbuf) - 10000000;
-
-  // Increment frame count
-  m_frameNum++;
 
   // Check the surface we are psuhing downstream is of expected width and height values
   // else assert

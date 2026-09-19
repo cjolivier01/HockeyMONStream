@@ -246,8 +246,6 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
     }
     if (remove_me) {
       nvds_remove_obj_meta_from_frame(frame_meta, obj_meta);
-    } else {
-      usleep(0);
     }
   }
 }

@@ -16,6 +16,7 @@
 #include "absl/strings/str_cat.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CudaStreamCompletionFence.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
@@ -270,8 +271,12 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     return !pt_context_ || DsPlayTrackerCtxApplyRuntimeTuning(pt_context_, tuning).ok();
   };
   if (key == "show") {
+    // GenerateOutput reads show_ (and the font cache it gates) under this lock.
+    std::lock_guard<std::mutex> lk(context_mu_);
     show_ = !!std::atol(prop.value.c_str());
   } else if (key == "draw") {
+    // ReloadContextFromConfig rewrites init_params_ under this lock.
+    std::lock_guard<std::mutex> lk(context_mu_);
     init_params_.draw = !!std::atol(prop.value.c_str());
   } else if (key == "preview-overlay-flags") {
     char* end = nullptr;
@@ -463,8 +468,12 @@ absl::Status PlayTrackerPriv::GenerateOutput(
   if (!pt_context_) {
     return absl::FailedPreconditionError("vpplaytracker context is not initialized");
   }
+  videoprep::CudaStreamCompletionFence completion_fence(cuda_stream_);
   GstDsPlayTrackerFrame frame;
-  auto font_cache = draw_display::get_or_create_font_cache();
+  // Building the cache forks fc-list, so acquire it once, and only when we draw.
+  if (show_ && !font_cache_) {
+    font_cache_ = draw_display::get_or_create_font_cache();
+  }
   NvDsFrameMetaList* fl = batch_meta->frame_meta_list;
   while (fl) {
     assert(frame.batch_index < in_surface->numFilled);
@@ -630,7 +639,8 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;
       while (dm_list) {
         NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
-        HM_RETURN_IF_ERROR(draw_display_meta(frame.input_surf_params, display_meta, font_cache, 1.0f, cuda_stream_));
+        completion_fence.MarkSubmitted();
+        HM_RETURN_IF_ERROR(draw_display_meta(frame.input_surf_params, display_meta, font_cache_, 1.0f, cuda_stream_));
         dm_list = dm_list->next;
       }
     }
@@ -638,6 +648,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     ++frame_counter_;
     fl = fl->next;
   }
+  HM_RETURN_IF_ERROR(hm::to_status(completion_fence.Synchronize()));
   return absl::OkStatus();
 }
 

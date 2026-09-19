@@ -314,9 +314,6 @@ absl::Status draw_object_meta(
     cudaStream_t stream) {
   // TODO: do labels as a vectror of strings 9for same other stuff like size and color)
   for (auto* object_meta : object_meta) {
-    if (object_meta->tracker_confidence < 0.1) {
-      std::cout << "Low confidence tracking" << std::endl;
-    }
     const NvOSD_RectParams* rect_params = &object_meta->rect_params;
     NvOSD_RectParams rparams;
     rparams = *rect_params;
