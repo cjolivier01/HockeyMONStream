@@ -574,10 +574,9 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   // int num_filled = 0;
 
   // The increment must stay outside GST_DEBUG_OBJECT: that macro only evaluates
-  // its arguments when the debug level is enabled. Claim the slot once rather
-  // than re-reading the counter below, so InsertCustomFrame cannot bump it in
-  // between and make this buffer's number skip.
-  const guint previous_frame_num = m_frameNum.fetch_add(1, std::memory_order_relaxed);
+  // its arguments when the debug level is enabled. Only input buffers advance
+  // this counter so frame-insert-interval has a stable input-frame cadence.
+  const guint previous_frame_num = m_frameNum++;
   GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %u\n", __func__, previous_frame_num);
 
   if (last_flow_ret_ == GST_FLOW_ERROR) {
@@ -1153,12 +1152,6 @@ absl::Status CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
   // TODO: Do Timestamp management,
   // currently setting is 10ms lesser than next buffer for this newly inserting frame
   GST_BUFFER_PTS(newGstOutBuf) = GST_BUFFER_PTS(packetInfo->inbuf) - 10000000;
-
-  // Increment frame count
-  // TODO: this double-counts against ProcessBuffer's increment, so an inserted
-  // frame advances the counter by 2 and drifts the m_frameinsertinterval
-  // cadence. Latent: m_frameinsertinterval defaults to 0 and nothing sets it.
-  m_frameNum.fetch_add(1, std::memory_order_relaxed);
 
   // Check the surface we are psuhing downstream is of expected width and height values
   // else assert
