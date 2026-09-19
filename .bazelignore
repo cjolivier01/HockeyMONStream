@@ -1,6 +1,10 @@
 src/apps/pstudio
 external/deepstream
 
+# Agent git worktrees are full repo checkouts nested in the workspace; keep their
+# BUILD files out of //... (nested copies are not covered by the ignores above).
+.claude
+
 # Keep recursive target patterns (//...) out of Bazel's generated symlinks.
 bazel-bin
 bazel-out
