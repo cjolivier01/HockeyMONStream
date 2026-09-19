@@ -2,8 +2,14 @@
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
+#include <unistd.h>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include "nvbufsurface.h"
@@ -25,6 +31,18 @@ class TestPlayCropperPriv : public hm::playcropper::PlayCropperPriv {
   }
   cv::Point2f scoreboard_first_point() const {
     return scoreboard_perspective_polygion_.empty() ? cv::Point2f{} : scoreboard_perspective_polygion_.front();
+  }
+  std::chrono::steady_clock::time_point scoreboard_config_poll_after() const {
+    return scoreboard_config_poll_after_;
+  }
+  void expire_scoreboard_config_poll_interval() {
+    scoreboard_config_poll_after_ = std::chrono::steady_clock::time_point{};
+  }
+  void set_config_file(const std::string& config_file) {
+    config_file_ = config_file;
+  }
+  absl::Status EnsureScoreboardConfigured(hm::surface::Surface stitched_surface, const NvDsFrameMeta* frame_meta) {
+    return EnsureScoreboardPerspectiveConfigured(stitched_surface, frame_meta);
   }
 };
 
@@ -70,6 +88,103 @@ bool expect_size(
     std::cerr << "Unexpected runtime size: " << size->width << "x" << size->height << " batch " << size->batch_size
               << ", expected: " << expected_width << "x" << expected_height << " batch " << input_batch_capacity
               << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool write_game_config(const std::filesystem::path& game_dir, const char* contents) {
+  std::ofstream config(game_dir / "config.yaml", std::ios::binary | std::ios::trunc);
+  config << contents;
+  config.close();
+  return config.good();
+}
+
+// An unconfigured scoreboard re-reads the game config so that a polygon
+// published while the pipeline is running is picked up without a restart. That
+// re-read takes the game config and rink transaction locks and parses YAML, so
+// it must be rate limited rather than run once per frame -- and rate limiting
+// must not cost the late pickup.
+bool scoreboard_config_polling_is_rate_limited() {
+  namespace fs = std::filesystem;
+  const char* bazel_test_tmpdir = std::getenv("TEST_TMPDIR");
+  const fs::path temporary_root = bazel_test_tmpdir ? fs::path(bazel_test_tmpdir) : fs::temp_directory_path();
+  const fs::path game_dir = temporary_root / ("hstream-playcropper-scoreboard-" + std::to_string(::getpid()));
+  std::error_code error;
+  fs::remove_all(game_dir, error);
+  if (!fs::create_directories(game_dir, error) || error) {
+    std::cerr << "Could not create the scoreboard polling fixture directory\n";
+    return false;
+  }
+  struct DirectoryCleanup {
+    fs::path path;
+    ~DirectoryCleanup() {
+      std::error_code ignored;
+      fs::remove_all(path, ignored);
+    }
+  } cleanup{game_dir};
+
+  // No s.png and no stitched-output frame metadata, so the one-shot
+  // configuration attempt stops before it would launch the interactive
+  // selector. Only the config re-read above it is under test here.
+  if (!write_game_config(game_dir, "rink:\n  scoreboard: {}\n")) {
+    std::cerr << "Could not write the unconfigured scoreboard fixture config\n";
+    return false;
+  }
+
+  TestPlayCropperPriv cropper(/*gpu_id=*/0, /*batch_size=*/1);
+  cropper.set_config_file(game_dir.string());
+  NvBufSurfaceParams stitched_params{};
+  const hm::surface::Surface stitched_surface(&stitched_params);
+  const auto before_first_frame = std::chrono::steady_clock::now();
+
+  if (cropper.EnsureScoreboardConfigured(stitched_surface, nullptr).ok() || cropper.scoreboard_point_count() != 0) {
+    std::cerr << "An unconfigured scoreboard must read the game config on its first frame\n";
+    return false;
+  }
+  // A non-trivial interval, not merely a non-zero one: the skip below is
+  // guarded on this deadline, so a degenerate interval would silently turn it
+  // into a no-op rather than a failure.
+  const auto armed = cropper.scoreboard_config_poll_after();
+  if (armed - before_first_frame < std::chrono::milliseconds(100)) {
+    std::cerr << "A game-config re-read must arm the next poll before returning\n";
+    return false;
+  }
+
+  if (!write_game_config(
+          game_dir, "rink:\n  scoreboard:\n    perspective_polygon: [[1, 2], [3, 4], [5, 6], [7, 8]]\n")) {
+    std::cerr << "Could not publish the scoreboard fixture polygon\n";
+    return false;
+  }
+
+  // The armed interval has not elapsed, so the frames right behind the first
+  // one must skip the locks and the YAML parse entirely. Guarded on the armed
+  // deadline so a host that stalled past it skips the check instead of failing.
+  if (std::chrono::steady_clock::now() < armed &&
+      (!cropper.EnsureScoreboardConfigured(stitched_surface, nullptr).ok() || cropper.scoreboard_point_count() != 0)) {
+    std::cerr << "Frames inside the poll interval must not re-read the game config\n";
+    return false;
+  }
+
+  cropper.expire_scoreboard_config_poll_interval();
+  if (!cropper.EnsureScoreboardConfigured(stitched_surface, nullptr).ok() || cropper.scoreboard_point_count() != 4 ||
+      cropper.scoreboard_first_point() != cv::Point2f(1.0f, 2.0f) || cropper.scoreboard_disabled()) {
+    std::cerr << "A scoreboard polygon published mid-run must still be picked up without a restart\n";
+    return false;
+  }
+
+  // Publishing a different polygon with the interval already elapsed must not
+  // change anything: a configured scoreboard stops re-reading altogether, so
+  // neither the re-read nor its log line can repeat per frame.
+  if (!write_game_config(
+          game_dir, "rink:\n  scoreboard:\n    perspective_polygon: [[9, 10], [11, 12], [13, 14], [15, 16]]\n")) {
+    std::cerr << "Could not publish the replacement scoreboard fixture polygon\n";
+    return false;
+  }
+  cropper.expire_scoreboard_config_poll_interval();
+  if (!cropper.EnsureScoreboardConfigured(stitched_surface, nullptr).ok() || cropper.scoreboard_point_count() != 4 ||
+      cropper.scoreboard_first_point() != cv::Point2f(1.0f, 2.0f)) {
+    std::cerr << "A configured scoreboard must stop re-reading the game config\n";
     return false;
   }
   return true;
@@ -319,6 +434,10 @@ int main() {
     return 1;
   }
   nvds_destroy_batch_meta(batch_meta);
+
+  if (!scoreboard_config_polling_is_rate_limited()) {
+    return 1;
+  }
 
   return 0;
 }
