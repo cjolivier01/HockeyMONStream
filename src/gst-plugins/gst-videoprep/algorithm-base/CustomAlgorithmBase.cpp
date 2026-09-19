@@ -574,10 +574,11 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   // int num_filled = 0;
 
   // The increment must stay outside GST_DEBUG_OBJECT: that macro only evaluates
-  // its arguments when the debug level is enabled.
-  GST_DEBUG_OBJECT(
-      m_element, "CustomLib: ---> Inside %s frame_num = %u\n", __func__, m_frameNum.load(std::memory_order_relaxed));
-  m_frameNum.fetch_add(1, std::memory_order_relaxed);
+  // its arguments when the debug level is enabled. Claim the slot once rather
+  // than re-reading the counter below, so InsertCustomFrame cannot bump it in
+  // between and make this buffer's number skip.
+  const guint previous_frame_num = m_frameNum.fetch_add(1, std::memory_order_relaxed);
+  GST_DEBUG_OBJECT(m_element, "CustomLib: ---> Inside %s frame_num = %u\n", __func__, previous_frame_num);
 
   if (last_flow_ret_ == GST_FLOW_ERROR) {
     return BufferResult::Buffer_Error;
@@ -614,7 +615,7 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   // Push buffer to process thread for further processing
   PacketInfo packetInfo;
   packetInfo.inbuf = inbuf;
-  packetInfo.frame_num = m_frameNum.load(std::memory_order_relaxed);
+  packetInfo.frame_num = previous_frame_num + 1;
   packetInfo.flush_generation = packet_flush_generation;
 
   // Add custom preprocessing logic if required, here
