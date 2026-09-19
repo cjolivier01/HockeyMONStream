@@ -16,6 +16,7 @@
 #include "absl/strings/str_cat.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CudaStreamCompletionFence.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
@@ -467,6 +468,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
   if (!pt_context_) {
     return absl::FailedPreconditionError("vpplaytracker context is not initialized");
   }
+  videoprep::CudaStreamCompletionFence completion_fence(cuda_stream_);
   GstDsPlayTrackerFrame frame;
   // Building the cache forks fc-list, so acquire it once, and only when we draw.
   if (show_ && !font_cache_) {
@@ -637,6 +639,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;
       while (dm_list) {
         NvDsDisplayMeta* display_meta = (NvDsDisplayMeta*)dm_list->data;
+        completion_fence.MarkSubmitted();
         HM_RETURN_IF_ERROR(draw_display_meta(frame.input_surf_params, display_meta, font_cache_, 1.0f, cuda_stream_));
         dm_list = dm_list->next;
       }
@@ -645,6 +648,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     ++frame_counter_;
     fl = fl->next;
   }
+  HM_RETURN_IF_ERROR(hm::to_status(completion_fence.Synchronize()));
   return absl::OkStatus();
 }
 
