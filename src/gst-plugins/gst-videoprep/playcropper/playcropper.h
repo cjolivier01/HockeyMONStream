@@ -7,6 +7,7 @@
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
 
 #include <atomic>
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -100,6 +101,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   bool scoreboard_disabled_{false};
   bool scoreboard_configure_attempted_{false};
+  std::chrono::steady_clock::time_point scoreboard_config_poll_after_{};
   std::string scoreboard_output_generation_;
   std::string scoreboard_output_authorization_id_;
   std::string scoreboard_output_property_value_;

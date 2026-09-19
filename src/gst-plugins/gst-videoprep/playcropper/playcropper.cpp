@@ -13,6 +13,7 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -847,8 +848,23 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
   if (scoreboard_disabled_ || !scoreboard_perspective_polygion_.empty()) {
     return absl::OkStatus();
   }
+  // Re-reading the game config is how a polygon published after startup could
+  // reach a running pipeline, so it has to keep happening; it just must not
+  // happen per frame. load_game_config_file takes the game config lock, blocks
+  // on the rink transaction lock, runs transaction recovery, and parses the
+  // game YAML, all on the videoprep output worker. What is bounded here is
+  // blocking I/O, not work proportional to frames, so bound it against elapsed
+  // time.
+  constexpr std::chrono::seconds kScoreboardConfigPollInterval{1};
+  if (std::chrono::steady_clock::now() < scoreboard_config_poll_after_) {
+    return absl::OkStatus();
+  }
 
   absl::Status reload_status = LoadScoreboardPerspectiveFromConfig();
+  // Arm after the re-read so the interval measures the gap from one re-read
+  // finishing to the next starting, not from one start to the next: a
+  // contended lock can hold this call for longer than the interval.
+  scoreboard_config_poll_after_ = std::chrono::steady_clock::now() + kScoreboardConfigPollInterval;
   if (reload_status.ok()) {
     return absl::OkStatus();
   }
