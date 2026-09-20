@@ -188,11 +188,13 @@ int main(int argc, char** argv) {
     auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
     auto* previous = dialog.findChild<QPushButton*>("previousRinkLevelingButton");
     auto* method = dialog.findChild<QCheckBox*>("markRinkPostsCheck");
+    auto* blend_preview = dialog.findChild<QCheckBox*>("blendRinkLevelingPreviewCheck");
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(
-        method && !method->isChecked() && next->text() == "Next" && previous->text() == "Prev" &&
-            !dialog.findChild<QPushButton*>("previewRinkLevelingButton") && tabs->currentIndex() == 0,
-        "Corners are the default, with an unchecked Mark vertical posts option");
+        method && blend_preview && !method->isChecked() && !blend_preview->isChecked() && next->text() == "Next" &&
+            previous->text() == "Prev" && !dialog.findChild<QPushButton*>("previewRinkLevelingButton") &&
+            tabs->currentIndex() == 0,
+        "Corners and hard-seam previews are the defaults");
     previous->click();
     ok &= expect(
         tabs->currentIndex() == 0 && !accept->isEnabled(),
@@ -204,8 +206,14 @@ int main(int argc, char** argv) {
         "Prev wraps from Left to Preview and renders the current angles");
     const QByteArray nona_arguments = read(bin.filePath("rink-nona-arguments"));
     ok &= expect(
-        nona_arguments.contains("-v\n") && nona_arguments.contains("--seam=blend\n"),
-        "Leveling preview reports NONA stages and retains blended-seam composition");
+        nona_arguments.contains("-v\n") && nona_arguments.contains("--seam=hard\n") &&
+            !nona_arguments.contains("--seam=blend\n"),
+        "Leveling preview reports NONA stages and defaults to fast hard-seam composition");
+    blend_preview->setChecked(true);
+    ok &= expect(
+        !accept->isEnabled() && waitUntil([&]() { return accept->isEnabled(); }) &&
+            read(bin.filePath("rink-nona-arguments")).contains("--seam=blend\n"),
+        "Blend preview seams rerenders the current view with blended composition");
     const auto rendered_arguments = read(bin.filePath("rink-preview-arguments"));
     next->click();
     ok &= expect(tabs->currentIndex() == 0, "Next wraps from Preview to Left");
@@ -588,9 +596,14 @@ int main(int argc, char** argv) {
     dialog.show();
     advanceToPreview(dialog);
     auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
+    auto* blend_preview = dialog.findChild<QCheckBox*>("blendRinkLevelingPreviewCheck");
     ok &= expect(
         status && waitUntil([&]() { return status->text().contains("remapping left.png"); }),
         "An active NONA renderer streams its current stage into the dialog");
+    blend_preview->click();
+    ok &= expect(
+        !blend_preview->isEnabled() && !blend_preview->isChecked(),
+        "The seam choice cannot change while its preview render is active");
     QElapsedTimer elapsed;
     elapsed.start();
     dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();

@@ -127,6 +127,12 @@ RinkLevelingDialog::RinkLevelingDialog(
   preview_hint_ = new QLabel("Return to Preview with Next or Prev to render the current angles.");
   preview_hint_->setWordWrap(true);
   preview_layout->addWidget(preview_hint_);
+  blend_preview_check_ = new QCheckBox("Blend preview seams (slower)");
+  blend_preview_check_->setObjectName("blendRinkLevelingPreviewCheck");
+  blend_preview_check_->setChecked(false);
+  blend_preview_check_->setToolTip(
+      "Use NONA's slower blended seam for closer inspection. The default hard seam renders faster.");
+  preview_layout->addWidget(blend_preview_check_);
   preview_layout->addWidget(preview_canvas_, 1);
   preview_canvas_->hide();
   tabs_->addTab(preview_page, "Preview");
@@ -134,6 +140,11 @@ RinkLevelingDialog::RinkLevelingDialog(
     if (index >= 0 && index < 2)
       QTimer::singleShot(0, this, [this, index]() { canvases_[index]->fitImage(); });
     else if (index == 2 && !previewed_)
+      requestPreview();
+  });
+  connect(blend_preview_check_, &QCheckBox::toggled, this, [this]() {
+    invalidatePreview();
+    if (tabs_->currentIndex() == 2)
       requestPreview();
   });
   layout->addWidget(tabs_, 1);
@@ -379,6 +390,7 @@ void RinkLevelingDialog::setBusy(bool busy) {
   for (auto* spin : angle_spins_)
     spin->setEnabled(enabled);
   post_method_check_->setEnabled(enabled);
+  blend_preview_check_->setEnabled(enabled);
   previous_button_->setEnabled(enabled);
   next_button_->setEnabled(enabled);
   accept_button_->setEnabled(enabled && previewed_);
@@ -749,9 +761,10 @@ void RinkLevelingDialog::preview() {
         {},
         [this](const QByteArray&) {
           QFile::remove(temporary_.filePath("preview.png"));
+          const QString seam = blend_preview_check_->isChecked() ? "--seam=blend" : "--seam=hard";
           startTool(
               "nona",
-              {"-v", "-m", "PNG", "--ignore-exposure", "--seam=blend", "-o", "preview.png", "preview.pto"},
+              {"-v", "-m", "PNG", "--ignore-exposure", seam, "-o", "preview.png", "preview.pto"},
               {},
               [this](const QByteArray&) {
                 if (!preview_canvas_->setImage(temporary_.filePath("preview.png"))) {

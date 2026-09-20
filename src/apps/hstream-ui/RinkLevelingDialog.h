@@ -101,6 +101,7 @@ class RinkLevelingDialog : public QDialog {
   QTabWidget* tabs_{nullptr};
   ScoreboardSelectionCanvas* preview_canvas_{nullptr};
   QLabel* preview_hint_{nullptr};
+  QCheckBox* blend_preview_check_{nullptr};
   QPushButton* next_button_{nullptr};
   QPushButton* previous_button_{nullptr};
   QPushButton* accept_button_{nullptr};

@@ -84,7 +84,12 @@ class ProjectionCropDialog : public QDialog {
   void seedManualFromMode(const QString& source_mode);
   void seedManualFromAuto();
   void loadPreview();
-  void runTool(const QString& program, const QStringList& arguments, std::function<void()> completed);
+  void renderPreview(bool calculate_auto_crop);
+  void runTool(
+      const QString& program,
+      const QStringList& arguments,
+      std::function<void()> completed,
+      std::function<void(const QString&)> failed = {});
   void previewFailed(const QString& message);
   void acceptCrop();
   void stopTool();
@@ -107,12 +112,16 @@ class ProjectionCropDialog : public QDialog {
   bool manual_waiting_for_auto_{false};
   bool preview_ready_{false};
   bool auto_ready_{false};
+  bool rendered_blend_{false};
   ProjectionCropCanvas* canvas_{nullptr};
   QComboBox* mode_{nullptr};
   QCheckBox* keep_width_{nullptr};
+  QCheckBox* blend_preview_{nullptr};
   std::array<QDoubleSpinBox*, 4> edges_{};
   QLabel* coverage_{nullptr};
   QLabel* status_{nullptr};
   QPushButton* accept_{nullptr};
   QProcess* process_{nullptr};
+  QByteArray process_output_tail_;
+  QByteArray process_progress_partial_;
 };

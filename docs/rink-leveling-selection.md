@@ -80,9 +80,10 @@ and 1.32° RMS angular residual. That differs from the visually tuned −35°/+3
 accepting a fit, especially with rough marks or posts that are not actually vertical.
 
 The preview uses `pano_modify` and `nona` on temporary still files, at a maximum full-canvas width of 1600 pixels.
-It preserves source bit depth so 16-bit camera stills display correctly. Verbose remapping and blending stages appear in
-the dialog while it renders. The renderer remains cancellable but has no fixed timeout, while the other Hugin helper
-processes are bounded to 60 seconds.
+It preserves source bit depth so 16-bit camera stills display correctly. The preview defaults to NONA's faster hard
+seam. Select **Blend preview seams (slower)** on the Preview tab when seam quality matters for inspection. Verbose
+remapping and composition stages appear in the dialog while it renders. The renderer remains cancellable but has no
+fixed timeout, while the other Hugin helper processes are bounded to 60 seconds.
 This is an offline calibration operation; playback continues to use the existing GPU remap path with no added
 per-frame CPU readback. Hugin tools must be available on PATH. The repository's Qt frontend is currently excluded
 from the Jetson build; the geometry helper is included in cross-platform validation.

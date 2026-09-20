@@ -2,6 +2,7 @@
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
@@ -9,6 +10,7 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
@@ -28,6 +30,10 @@ bool write(const QString& path, const QByteArray& contents, bool executable = fa
   if (ok && executable)
     file.setPermissions(file.permissions() | QFile::ExeOwner);
   return ok;
+}
+QByteArray readContents(const QString& path) {
+  QFile file(path);
+  return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
 }
 bool waitUntil(const std::function<bool()>& condition, int timeout = 5000) {
   for (int elapsed = 0; elapsed < timeout; elapsed += 20) {
@@ -73,10 +79,11 @@ int main(int argc, char** argv) {
       const bool explained = waitUntil([&]() { return status->text().contains(expected); });
       const bool visible = canvas->accessibleDescription().contains(expected);
       const bool numeric_available = dialog.findChild<QDoubleSpinBox*>("projectionCropTop")->isEnabled();
+      const bool accept_available = dialog.findChild<QPushButton*>("acceptProjectionCropButton")->isEnabled();
       dialog.close();
       return expect(
-          explained && visible && numeric_available && dialog.sourceRevision().isEmpty(),
-          "An unavailable crop preview must explain why in the canvas and keep numeric trim available");
+          explained && visible && numeric_available && accept_available && dialog.sourceRevision().isEmpty(),
+          "An unavailable crop preview must explain why and keep crop controls available");
     };
     ok &= check_unavailable("Stitching calibration is not available yet");
     ok &= write(partial.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: pending}}\n");
@@ -168,11 +175,20 @@ int main(int argc, char** argv) {
   QImage preview(800, 400, QImage::Format_RGB32);
   preview.fill(QColor(120, 160, 180));
   ok &= preview.save(bin.filePath("fixture.png"));
-  ok &= write(bin.filePath("nona"), "#!/bin/sh\ncp \"" + bin.filePath("fixture.png").toUtf8() + "\" full.png\n", true);
+  const QByteArray nona_script =
+      "#!/bin/sh\n"
+      "if [ -n \"$CROP_NONA_ARGS\" ]; then printf '%s\\n' \"$@\" >\"$CROP_NONA_ARGS\"; fi\n"
+      "printf 'startup warning\\n' >&2\n"
+      "printf 'remapping crop preview\\n'\n"
+      "cp \"" +
+      bin.filePath("fixture.png").toUtf8() + "\" full.png\n";
+  ok &= write(bin.filePath("nona"), nona_script, true);
   if (!ok)
     return 1;
   const QByteArray path = qgetenv("PATH");
+  const QByteArray old_nona_args = qgetenv("CROP_NONA_ARGS");
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
+  qputenv("CROP_NONA_ARGS", bin.filePath("crop-nona-arguments").toUtf8());
   {
     // Old image artifacts do not make a pending calibration ready.
     ok &= write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: pending}}\n");
@@ -240,17 +256,57 @@ int main(int argc, char** argv) {
     dialog.show();
     auto* mode = dialog.findChild<QComboBox*>("projectionCropMode");
     auto* keep = dialog.findChild<QCheckBox*>("projectionCropKeepWidth");
+    auto* blend = dialog.findChild<QCheckBox*>("projectionCropBlendPreview");
+    auto* accept = dialog.findChild<QPushButton*>("acceptProjectionCropButton");
     ok &= expect(
-        mode->currentData() == "full" && !keep->isChecked(), "Full canvas must open with Keep full width unchecked");
+        mode->currentData() == "full" && !keep->isChecked() && blend && !blend->isChecked(),
+        "Full canvas must open with crop constraints and blended preview disabled");
     mode->setCurrentIndex(mode->findData("auto"));
     ok &= expect(
         waitUntil([&]() { return dialog.findChild<QLabel*>("projectionCropCoverage")->text().contains("80.0%"); }),
         "Auto selected after opening must show its calculated rectangle");
+    const QByteArray hard_arguments = readContents(bin.filePath("crop-nona-arguments"));
+    ok &= expect(
+        hard_arguments.contains("-v\n") && hard_arguments.contains("--seam=hard\n") &&
+            !hard_arguments.contains("--seam=blend\n"),
+        "Crop preview must report NONA stages and default to hard-seam composition");
+    blend->setChecked(true);
+    ok &= expect(
+        !accept->isEnabled() && waitUntil([&]() {
+          return accept->isEnabled() && readContents(bin.filePath("crop-nona-arguments")).contains("--seam=blend\n");
+        }),
+        "Blend preview seams must rerender the crop preview with blended composition");
+    ok &= write(bin.filePath("nona"), "#!/bin/sh\nprintf 'rerender failed' >&2\nexit 1\n", true);
+    blend->setChecked(false);
+    ok &= expect(
+        waitUntil([&]() { return dialog.findChild<QLabel*>("projectionCropStatus")->text().contains("Keeping"); }) &&
+            accept->isEnabled() && blend->isChecked() && !dialog.sourceRevision().isEmpty(),
+        "A failed optional rerender must retain the prior usable preview and seam selection");
+    ok &= write(bin.filePath("nona"), nona_script, true);
     mode->setCurrentIndex(mode->findData("manual"));
     ok &= expect(
         dialog.framing().crop == std::array<double, 4>{0.1, 0.9, 0.2, 0.9} && !keep->isChecked(),
         "Manual must start from the Auto rectangle currently on screen");
     dialog.close();
+  }
+  {
+    ok &= write(
+        bin.filePath("nona"),
+        "#!/bin/sh\nprintf 'startup warning\\n' >&2\nprintf 'remapping crop preview\\n'\nexec sleep 30\n",
+        true);
+    ProjectionCropDialog dialog(game.path(), framing, "general-panini", {100, 0, 0}, camera);
+    dialog.show();
+    auto* status = dialog.findChild<QLabel*>("projectionCropStatus");
+    ok &= expect(
+        status && waitUntil([&]() { return status->text().contains("remapping crop preview"); }),
+        "An active crop renderer streams its current NONA stage into the dialog");
+    QElapsedTimer elapsed;
+    elapsed.start();
+    dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
+    ok &= expect(
+        elapsed.elapsed() < 4000 && dialog.result() == QDialog::Rejected,
+        "Cancel stops an active crop renderer promptly");
+    ok &= write(bin.filePath("nona"), nona_script, true);
   }
   {
     framing.auto_crop = true;
@@ -286,6 +342,10 @@ int main(int argc, char** argv) {
         "An image decode failure after valid calibration must be distinguished from incomplete calibration");
     dialog.close();
   }
+  if (old_nona_args.isNull())
+    qunsetenv("CROP_NONA_ARGS");
+  else
+    qputenv("CROP_NONA_ARGS", old_nona_args);
   qputenv("PATH", path);
   return ok ? 0 : 1;
 }

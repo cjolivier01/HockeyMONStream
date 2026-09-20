@@ -39,10 +39,13 @@ stitching:
 ```
 
 The still preview is rendered from saved camera images and calibration at no more than 1600 pixels on either
-axis. It does not read back live GPU video frames. The crop overlay changes immediately; Auto's final bounds
-are recomputed at the actual output resolution during calibration. If calibration is missing, busy, or does not
-match the current camera/projection settings, the editor explains why its preview is unavailable. Mode selection
-and numeric trims remain available; save and calibrate the current geometry to enable the preview.
+axis. It defaults to NONA's faster hard seam. Select **Blend preview seams (slower)** to rerender the full preview
+with blended composition. NONA's verbose stages appear in the dialog; rendering remains cancellable and has a
+20-minute safety limit, while other Hugin helpers retain their 60-second limit. It does not read back live GPU video
+frames. The crop overlay changes immediately; Auto's final bounds are recomputed at the actual output resolution
+during calibration. If calibration is missing, busy, or does not match the current camera/projection settings, the
+editor explains why its preview is unavailable. Mode selection and numeric trims remain available; save and calibrate
+the current geometry to enable the preview.
 An incomplete or failed calibration is reported directly in the empty preview area, with instructions to finish
 calibration and reopen Adjust crop. Missing calibration files and image-loading errors are reported separately.
 
