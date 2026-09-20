@@ -7,11 +7,13 @@
 #include <QtCore/QStringList>
 #include <QtGui/QBrush>
 #include <QtGui/QIcon>
+#include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPen>
 #include <QtGui/QPixmap>
 #include <QtGui/QResizeEvent>
+#include <QtGui/QShortcut>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QApplication>
@@ -65,19 +67,54 @@ class PipelineGraphView : public QGraphicsView {
   explicit PipelineGraphView(QWidget* parent = nullptr) : QGraphicsView(parent) {
     setRenderHint(QPainter::Antialiasing);
     setDragMode(QGraphicsView::NoDrag);
-    setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+    setTransformationAnchor(QGraphicsView::NoAnchor);
     setResizeAnchor(QGraphicsView::AnchorViewCenter);
     setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
     setCursor(Qt::ArrowCursor);
   }
 
+  std::function<void(qreal)> zoomChanged;
+
   void zoomBy(qreal factor) {
-    const qreal current = transform().m11();
-    const qreal requested = current * factor;
-    if (requested < 0.08 || requested > 8.0) {
-      return;
+    zoomAt(factor, viewport()->rect().center());
+  }
+
+  void resetZoom() {
+    zoomBy(1.0 / transform().m11());
+  }
+
+  void fitGraph() {
+    if (scene() && !scene()->items().empty()) {
+      fitInView(scene()->sceneRect(), Qt::KeepAspectRatio);
+      zoomBy(1.0);
     }
-    scale(factor, factor);
+  }
+
+  void focusSelection() {
+    if (scene() && !scene()->selectedItems().isEmpty()) {
+      const QRectF bounds = scene()->selectedItems().front()->sceneBoundingRect();
+      fitInView(bounds.adjusted(-30, -30, 30, 30), Qt::KeepAspectRatio);
+      zoomBy(std::min(1.0, 2.0 / transform().m11()));
+      centerOn(bounds.center());
+    }
+  }
+
+  void zoomAt(qreal factor, const QPoint& anchor) {
+    const qreal current = transform().m11();
+    // A large live graph can fit at well below 8%. Always allow zooming
+    // back in from that overview, and clamp overshoots instead of ignoring them.
+    const QRectF bounds = sceneRect();
+    const qreal fit_scale = bounds.isEmpty() ? 0.08
+                                             : std::min(
+                                                   std::max(1, viewport()->width() - 4) / bounds.width(),
+                                                   std::max(1, viewport()->height() - 4) / bounds.height());
+    const qreal requested = std::clamp(current * factor, std::min(0.08, fit_scale), 8.0);
+    const QPointF scene_anchor = mapToScene(anchor);
+    scale(requested / current, requested / current);
+    centerOn(mapToScene(viewport()->rect().center()) + scene_anchor - mapToScene(anchor));
+    if (zoomChanged) {
+      zoomChanged(transform().m11());
+    }
   }
 
   void setOverlayButton(QToolButton* button) {
@@ -92,12 +129,21 @@ class PipelineGraphView : public QGraphicsView {
   }
 
   void mousePressEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::MiddleButton) {
+      panning_ = true;
+      pan_button_ = Qt::MiddleButton;
+      last_pan_pos_ = event->pos();
+      setCursor(Qt::ClosedHandCursor);
+      event->accept();
+      return;
+    }
     const HitTarget target = hitTargetAt(event->pos());
     if (event->button() == Qt::LeftButton && target == HitTarget::kEmpty) {
       if (scene()) {
         scene()->clearSelection();
       }
       panning_ = true;
+      pan_button_ = Qt::LeftButton;
       last_pan_pos_ = event->pos();
       setCursor(Qt::ClosedHandCursor);
       event->accept();
@@ -120,6 +166,7 @@ class PipelineGraphView : public QGraphicsView {
         (event->pos() - bin_pan_press_pos_).manhattanLength() >= QApplication::startDragDistance()) {
       pending_bin_pan_ = false;
       panning_ = true;
+      pan_button_ = Qt::LeftButton;
       pending_bin_node_id_.clear();
       last_pan_pos_ = bin_pan_press_pos_;
       if (scene()) {
@@ -139,7 +186,7 @@ class PipelineGraphView : public QGraphicsView {
   }
 
   void mouseReleaseEvent(QMouseEvent* event) override {
-    if (event->button() == Qt::LeftButton && panning_) {
+    if (event->button() == pan_button_ && panning_) {
       panning_ = false;
       pending_bin_pan_ = false;
       pending_bin_node_id_.clear();
@@ -151,7 +198,7 @@ class PipelineGraphView : public QGraphicsView {
       pending_bin_pan_ = false;
       QGraphicsItem* pending_item = findNodeItem(pending_bin_node_id_);
       if (pending_item) {
-        if (scene()) {
+        if (scene() && !pending_item->isSelected()) {
           scene()->clearSelection();
         }
         pending_item->setSelected(true);
@@ -167,13 +214,70 @@ class PipelineGraphView : public QGraphicsView {
   }
 
   void wheelEvent(QWheelEvent* event) override {
-    const qreal steps = static_cast<qreal>(event->angleDelta().y()) / 120.0;
+    const qreal steps = !event->angleDelta().isNull() ? static_cast<qreal>(event->angleDelta().y()) / 120.0
+                                                      : static_cast<qreal>(event->pixelDelta().y()) / 120.0;
     if (steps == 0.0) {
       QGraphicsView::wheelEvent(event);
       return;
     }
-    zoomBy(std::pow(1.18, steps));
+    zoomAt(std::pow(1.18, steps), event->position().toPoint());
     event->accept();
+  }
+
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton) {
+      pending_bin_pan_ = false;
+      pending_bin_node_id_.clear();
+      panning_ = false;
+      setCursor(Qt::ArrowCursor);
+      if (QGraphicsItem* item = nodeItemAt(event->pos())) {
+        if (!item->isSelected()) {
+          scene()->clearSelection();
+          item->setSelected(true);
+        }
+        focusSelection();
+      } else {
+        fitGraph();
+      }
+      event->accept();
+      return;
+    }
+    QGraphicsView::mouseDoubleClickEvent(event);
+  }
+
+  void keyPressEvent(QKeyEvent* event) override {
+    if (event->modifiers() == Qt::NoModifier || event->modifiers() == Qt::ShiftModifier) {
+      switch (event->key()) {
+        case Qt::Key_Plus:
+        case Qt::Key_Equal:
+          zoomBy(1.25);
+          break;
+        case Qt::Key_Minus:
+          zoomBy(1.0 / 1.25);
+          break;
+        case Qt::Key_1:
+          resetZoom();
+          break;
+        case Qt::Key_Home:
+        case Qt::Key_F:
+          fitGraph();
+          break;
+        case Qt::Key_S:
+          focusSelection();
+          break;
+        case Qt::Key_Escape:
+          if (scene()) {
+            scene()->clearSelection();
+          }
+          break;
+        default:
+          QGraphicsView::keyPressEvent(event);
+          return;
+      }
+      event->accept();
+      return;
+    }
+    QGraphicsView::keyPressEvent(event);
   }
 
  private:
@@ -202,15 +306,17 @@ class PipelineGraphView : public QGraphicsView {
   }
 
   QGraphicsItem* nodeItemAt(const QPoint& view_pos, bool* bin) const {
-    QGraphicsItem* item = itemAt(view_pos);
-    while (item) {
-      if (!item->data(kNodeIdRole).toString().isEmpty()) {
-        if (bin) {
-          *bin = item->data(kNodeBinRole).toBool();
+    // Connections and arrowheads may be above a bin's background. They
+    // must not prevent the bin underneath from being selected or dragged.
+    for (QGraphicsItem* hit : items(view_pos)) {
+      for (QGraphicsItem* item = hit; item; item = item->parentItem()) {
+        if (!item->data(kNodeIdRole).toString().isEmpty()) {
+          if (bin) {
+            *bin = item->data(kNodeBinRole).toBool();
+          }
+          return item;
         }
-        return item;
       }
-      item = item->parentItem();
     }
     return nullptr;
   }
@@ -232,6 +338,7 @@ class PipelineGraphView : public QGraphicsView {
   }
 
   bool panning_{false};
+  Qt::MouseButton pan_button_{Qt::NoButton};
   bool pending_bin_pan_{false};
   QPoint last_pan_pos_;
   QPoint bin_pan_press_pos_;
@@ -348,12 +455,25 @@ class PipelineNodeItem : public QGraphicsRectItem {
     const QRectF bounds = rect();
     const qreal lod = option->levelOfDetailFromTransform(painter->worldTransform());
     QColor fill = nodeColor(visual_);
-    if (visual_.bin) {
-      fill.setAlphaF(lod < 0.55 ? 0.24 : 0.34);
+    if (isSelected()) {
+      fill = fill.lighter(150);
     }
-    painter->setPen(QPen(isSelected() ? QColor("#f8fafc") : QColor("#91a4bf"), isSelected() ? 2.0 : 1.2));
+    if (visual_.bin) {
+      fill.setAlphaF(isSelected() ? 0.60 : (lod < 0.55 ? 0.24 : 0.34));
+    }
+    painter->setPen(QPen(QColor("#91a4bf"), 1.2));
     painter->setBrush(fill);
     painter->drawRoundedRect(bounds, visual_.bin ? 8.0 : 5.0, visual_.bin ? 8.0 : 5.0);
+    if (isSelected()) {
+      // Keep the selection outline three screen pixels wide even in the
+      // overview. Draw inside the item so repaint bounds include the stroke.
+      QPen selection_pen(QColor("#38bdf8"), 3.0);
+      selection_pen.setCosmetic(true);
+      painter->setPen(selection_pen);
+      painter->setBrush(Qt::NoBrush);
+      const qreal inset = std::min({1.5 / lod, bounds.width() / 2.0, bounds.height() / 2.0});
+      painter->drawRect(bounds.adjusted(inset, inset, -inset, -inset));
+    }
 
     if (lod < 0.34) {
       return;
@@ -479,6 +599,21 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
   zoom_in->setObjectName("pipelineInspectorZoomInButton");
   auto* fit = new QPushButton("Fit");
   fit->setObjectName("pipelineInspectorFitButton");
+  fit->setToolTip("Fit the whole pipeline (F or Home in the graph)");
+  auto* actual_size = new QPushButton("100%");
+  actual_size->setObjectName("pipelineInspectorActualSizeButton");
+  actual_size->setToolTip("Reset zoom to 100% (1 in the graph)");
+  auto* focus_selection = new QPushButton("Focus selected");
+  focus_selection->setObjectName("pipelineInspectorFocusSelectionButton");
+  focus_selection->setToolTip("Zoom to the selected node or bin (S or double-click in the graph)");
+  focus_selection->setEnabled(false);
+  auto* zoom_label = new QLabel("100%");
+  zoom_label->setObjectName("pipelineInspectorZoomLabel");
+  zoom_label->setMinimumWidth(48);
+  zoom_label->setAlignment(Qt::AlignCenter);
+  zoom_label->setToolTip("Current graph zoom");
+  zoom_out->setToolTip("Zoom out (− in the graph)");
+  zoom_in->setToolTip("Zoom in (+ in the graph)");
   node_search_ = new QLineEdit();
   node_search_->setObjectName("pipelineInspectorNodeSearch");
   node_search_->setPlaceholderText("Find node by name, factory, or path");
@@ -487,8 +622,11 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
   toolbar->addWidget(refresh);
   toolbar->addSpacing(8);
   toolbar->addWidget(zoom_out);
+  toolbar->addWidget(zoom_label);
   toolbar->addWidget(zoom_in);
   toolbar->addWidget(fit);
+  toolbar->addWidget(actual_size);
+  toolbar->addWidget(focus_selection);
   toolbar->addSpacing(12);
   toolbar->addWidget(node_search_, 1);
   toolbar->addWidget(find_next);
@@ -498,11 +636,19 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
   splitter_->setObjectName("pipelineInspectorSplitter");
   splitter_->setChildrenCollapsible(false);
   graph_scene_ = new QGraphicsScene(this);
-  graph_view_ = new PipelineGraphView();
+  auto* graph_view = new PipelineGraphView();
+  graph_view_ = graph_view;
+  graph_view->zoomChanged = [zoom_label](qreal scale) {
+    zoom_label->setText(QString::number(scale * 100.0, 'f', scale < 0.1 ? 1 : 0) + "%");
+  };
   graph_view_->setObjectName("pipelineInspectorGraphView");
   graph_view_->setScene(graph_scene_);
   graph_view_->setBackgroundBrush(QColor("#11151b"));
-  graph_view_->setToolTip("Drag empty space to pan. Use the mouse wheel or +/− buttons to zoom.");
+  graph_view_->setToolTip(
+      "Wheel: zoom at pointer. Drag background or middle-drag anywhere: pan.\n"
+      "Double-click node/bin: focus. Double-click empty space: fit all.\n"
+      "+/−: zoom; 1: 100%; F/Home: fit all; S: focus selected; arrows: pan; Esc: clear selection.\n"
+      "Ctrl+F: find node.");
   graph_maximize_button_ = new QToolButton(graph_view_);
   graph_maximize_button_->setObjectName("pipelineInspectorMaximizeButton");
   graph_maximize_button_->setFixedSize(24, 24);
@@ -575,10 +721,14 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
   connect(
       zoom_in, &QPushButton::clicked, this, [this]() { static_cast<PipelineGraphView*>(graph_view_)->zoomBy(1.25); });
   connect(graph_maximize_button_, &QToolButton::clicked, this, [this]() { setGraphMaximized(!graph_maximized_); });
-  connect(fit, &QPushButton::clicked, this, [this]() {
-    if (!graph_scene_->items().empty()) {
-      graph_view_->fitInView(graph_scene_->itemsBoundingRect().adjusted(-30, -30, 30, 30), Qt::KeepAspectRatio);
-    }
+  connect(fit, &QPushButton::clicked, this, [graph_view]() { graph_view->fitGraph(); });
+  connect(actual_size, &QPushButton::clicked, this, [graph_view]() { graph_view->resetZoom(); });
+  connect(focus_selection, &QPushButton::clicked, this, [graph_view]() { graph_view->focusSelection(); });
+  auto* find_shortcut = new QShortcut(QKeySequence::Find, this);
+  find_shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+  connect(find_shortcut, &QShortcut::activated, this, [this]() {
+    node_search_->setFocus();
+    node_search_->selectAll();
   });
   connect(find_next, &QPushButton::clicked, this, [this]() { selectNextSearchMatch(); });
   connect(node_search_, &QLineEdit::returnPressed, this, [this]() { selectNextSearchMatch(); });
@@ -592,8 +742,9 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
   });
   connect(property_table_, &QTableWidget::itemSelectionChanged, this, [this]() { updatePropertyEditor(); });
   connect(apply_button_, &QPushButton::clicked, this, [this]() { applySelectedProperty(); });
-  connect(graph_scene_, &QGraphicsScene::selectionChanged, this, [this]() {
+  connect(graph_scene_, &QGraphicsScene::selectionChanged, this, [this, focus_selection]() {
     const QList<QGraphicsItem*> selected = graph_scene_->selectedItems();
+    focus_selection->setEnabled(!selected.isEmpty());
     if (selected.isEmpty()) {
       pending_property_request_ = 0;
       pending_set_request_ = 0;
@@ -609,6 +760,12 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
       selectNode(node_id);
     }
   });
+}
+
+PipelineInspectorWidget::~PipelineInspectorWidget() {
+  // Scene teardown can emit selectionChanged after the toolbar widgets and
+  // our member containers have been destroyed.
+  disconnect(graph_scene_, nullptr, this, nullptr);
 }
 
 void PipelineInspectorWidget::setCommandWriter(CommandWriter writer) {
@@ -843,6 +1000,9 @@ bool PipelineInspectorWidget::responseMatchesSession(const QJsonObject& response
 }
 
 void PipelineInspectorWidget::renderGraph() {
+  const bool had_graph = !node_items_.empty();
+  const QString previous_selection = selected_node_id_;
+  const QPointF previous_center = graph_view_->mapToScene(graph_view_->viewport()->rect().center());
   graph_scene_->clear();
   node_items_.clear();
   selected_node_id_.clear();
@@ -1092,7 +1252,15 @@ void PipelineInspectorWidget::renderGraph() {
     node_items_[id] = rectangle;
   }
   graph_scene_->setSceneRect(graph_scene_->itemsBoundingRect().adjusted(-50, -50, 50, 50));
-  graph_view_->fitInView(graph_scene_->sceneRect(), Qt::KeepAspectRatio);
+  if (had_graph) {
+    graph_view_->centerOn(previous_center);
+    const auto selected = node_items_.find(previous_selection);
+    if (selected != node_items_.end()) {
+      selected->second->setSelected(true);
+    }
+  } else {
+    static_cast<PipelineGraphView*>(graph_view_)->fitGraph();
+  }
 }
 
 void PipelineInspectorWidget::selectNode(const QString& node_id) {
@@ -1101,6 +1269,11 @@ void PipelineInspectorWidget::selectNode(const QString& node_id) {
     return;
   }
   selected_node_id_ = node_id;
+  selected_node_label_->setText(QString("%1  [%2]\n%3")
+                                    .arg(
+                                        node->second.name,
+                                        node->second.factory.isEmpty() ? node->second.type : node->second.factory,
+                                        node->second.path));
   property_table_->setRowCount(0);
   displayed_properties_.clear();
   updatePropertyEditor();
@@ -1244,7 +1417,7 @@ void PipelineInspectorWidget::selectNextSearchMatch() {
   if (item != node_items_.end()) {
     graph_scene_->clearSelection();
     item->second->setSelected(true);
-    graph_view_->centerOn(item->second);
+    static_cast<PipelineGraphView*>(graph_view_)->focusSelection();
   }
 }
 

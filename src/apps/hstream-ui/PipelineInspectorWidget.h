@@ -26,6 +26,7 @@ class PipelineInspectorWidget : public QWidget {
   using CommandWriter = std::function<bool(const QByteArray&)>;
 
   explicit PipelineInspectorWidget(QWidget* parent = nullptr);
+  ~PipelineInspectorWidget() override;
 
   void setCommandWriter(CommandWriter writer);
   void setPipelineRunning(bool running);

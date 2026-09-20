@@ -1,5 +1,8 @@
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
 
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
+#include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
@@ -8,6 +11,7 @@
 #include <QtWidgets/QGraphicsRectItem>
 #include <QtWidgets/QGraphicsView>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSplitter>
@@ -73,6 +77,221 @@ QPoint find_bin_background_point(
     }
   }
   return QPoint(-1, -1);
+}
+
+void send_mouse(
+    QGraphicsView* view,
+    QEvent::Type type,
+    const QPoint& point,
+    Qt::MouseButton button,
+    Qt::MouseButtons buttons) {
+  QMouseEvent event(type, point, view->viewport()->mapToGlobal(point), button, buttons, Qt::NoModifier);
+  QApplication::sendEvent(view->viewport(), &event);
+}
+
+void click_graph(QGraphicsView* view, const QPoint& point) {
+  send_mouse(view, QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
+  send_mouse(view, QEvent::MouseButtonRelease, point, Qt::LeftButton, Qt::NoButton);
+  QApplication::processEvents();
+}
+
+void send_wheel(QGraphicsView* view, const QPoint& point, int angle, int pixels = 0) {
+  QWheelEvent event(
+      point,
+      view->viewport()->mapToGlobal(point),
+      QPoint(0, pixels),
+      QPoint(0, angle),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::NoScrollPhase,
+      false);
+  QApplication::sendEvent(view->viewport(), &event);
+  QApplication::processEvents();
+}
+
+void send_key(QWidget* widget, int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+  QKeyEvent event(QEvent::KeyPress, key, modifiers);
+  QApplication::sendEvent(widget, &event);
+  QApplication::processEvents();
+}
+
+int selection_pixel_count(QGraphicsView* view) {
+  const QImage image = view->viewport()->grab().toImage();
+  int count = 0;
+  for (int y = 0; y < image.height(); ++y) {
+    for (int x = 0; x < image.width(); ++x) {
+      const QColor pixel = image.pixelColor(x, y);
+      if (pixel.red() < 85 && pixel.green() > 155 && pixel.blue() > 220) {
+        ++count;
+      }
+    }
+  }
+  return count;
+}
+
+bool test_large_graph_navigation() {
+  PipelineInspectorWidget inspector;
+  inspector.resize(1300, 800);
+  inspector.show();
+  inspector.activateWindow();
+  QApplication::processEvents();
+  QByteArray last_command;
+  inspector.setCommandWriter([&last_command](const QByteArray& command) {
+    last_command = command;
+    return true;
+  });
+  inspector.setPipelineRunning(true);
+  inspector.handleBackendLine(
+      "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,"
+      "\"status\":\"ok\",\"stage\":0,\"generation\":1}");
+  QJsonArray nodes;
+  nodes.append(QJsonObject{{"id", "bin"}, {"path", "bin"}, {"name", "pipeline"}, {"bin", true}});
+  for (int index = 0; index < 150; ++index) {
+    const QString name = QString("node%1").arg(index, 3, 10, QChar('0'));
+    nodes.append(
+        QJsonObject{
+            {"id", name},
+            {"path", name},
+            {"parentId", "bin"},
+            {"name", name},
+            {"factory", "identity"},
+            {"bin", false}});
+  }
+  auto graph_response = [&]() {
+    const QJsonObject response{
+        {"version", 1},
+        {"kind", "graph"},
+        {"requestId", last_command.split(' ').at(1).trimmed().toInt()},
+        {"status", "ok"},
+        {"stage", 0},
+        {"generation", 1},
+        {"nodes", nodes}};
+    return inspector.handleBackendLine(
+        "HSTREAM_PIPELINE_INSPECTOR " + QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact)));
+  };
+  bool ok = expect(graph_response(), "large graph must load");
+  auto* view = require_child<QGraphicsView>(&inspector, "pipelineInspectorGraphView");
+  auto* fit = require_child<QPushButton>(&inspector, "pipelineInspectorFitButton");
+  auto* zoom_in = require_child<QPushButton>(&inspector, "pipelineInspectorZoomInButton");
+  auto* actual = require_child<QPushButton>(&inspector, "pipelineInspectorActualSizeButton");
+  auto* focus = require_child<QPushButton>(&inspector, "pipelineInspectorFocusSelectionButton");
+  auto* zoom_label = require_child<QLabel>(&inspector, "pipelineInspectorZoomLabel");
+  auto* selected_label = require_child<QLabel>(&inspector, "pipelineInspectorSelectedNode");
+  auto* search = require_child<QLineEdit>(&inspector, "pipelineInspectorNodeSearch");
+  if (!view || !fit || !zoom_in || !actual || !focus || !zoom_label || !selected_label || !search) {
+    return false;
+  }
+  const qreal overview = view->transform().m11();
+  ok &= expect(overview < 0.08, "large graph must reproduce a fit below the old 8% zoom limit");
+  ok &= expect(!focus->isEnabled(), "focus must be disabled without a selection");
+  const QPoint center = view->viewport()->rect().center();
+  send_wheel(view, center, 120);
+  ok &= expect(
+      view->transform().m11() > overview && view->transform().m11() < 0.08,
+      "wheel must zoom incrementally out of a very small fitted overview");
+  send_wheel(view, center, -120);
+  ok &= expect(std::abs(view->transform().m11() - overview) < 0.001, "reverse wheel must return to overview");
+  zoom_in->click();
+  ok &= expect(view->transform().m11() > overview, "toolbar zoom must escape the old minimum too");
+  const qreal before_pixels = view->transform().m11();
+  send_wheel(view, center, 0, 30);
+  ok &= expect(view->transform().m11() > before_pixels, "pixel-only trackpad wheel must zoom");
+  send_wheel(view, center, 12000);
+  ok &= expect(std::abs(view->transform().m11() - 8.0) < 0.001, "large wheel deltas must clamp to maximum");
+  send_wheel(view, center, -120);
+  ok &= expect(view->transform().m11() < 8.0, "zoom must reverse from the maximum");
+  actual->click();
+  ok &= expect(
+      std::abs(view->transform().m11() - 1.0) < 0.001 && zoom_label->text() == "100%",
+      "actual size must reset the transform and zoom readout");
+
+  QGraphicsItem* node = nullptr;
+  QGraphicsItem* bin = nullptr;
+  for (QGraphicsItem* item : view->scene()->items()) {
+    if (item->data(1).toString() == "node075")
+      node = item;
+    if (item->data(1).toString() == "bin")
+      bin = item;
+  }
+  if (!node || !bin)
+    return false;
+  view->centerOn(node);
+  QApplication::processEvents();
+  const QPoint anchor = view->viewport()->rect().center() + QPoint(0, 100);
+  const QPointF before_anchor = view->mapToScene(anchor);
+  send_wheel(view, anchor, 120);
+  ok &= expect(
+      QLineF(view->mapFromScene(before_anchor), anchor).length() <= 3.0,
+      "wheel zoom must keep the scene point under the actual event position");
+  click_graph(view, view->mapFromScene(node->sceneBoundingRect().center()));
+  ok &= expect(
+      inspector.selectedNodeId() == "node075" && selected_label->text().contains("node075") && focus->isEnabled(),
+      "click must immediately identify the node before properties arrive");
+  focus->click();
+  ok &= expect(view->transform().m11() >= 1.0, "focus selected must make the node readable");
+  const QPoint drag_start = view->mapFromScene(node->sceneBoundingRect().center());
+  const int before_pan = view->verticalScrollBar()->value();
+  send_mouse(view, QEvent::MouseButtonPress, drag_start, Qt::MiddleButton, Qt::MiddleButton);
+  send_mouse(view, QEvent::MouseMove, drag_start + QPoint(0, 50), Qt::NoButton, Qt::MiddleButton);
+  send_mouse(view, QEvent::MouseButtonRelease, drag_start + QPoint(0, 50), Qt::MiddleButton, Qt::NoButton);
+  ok &= expect(
+      view->verticalScrollBar()->value() != before_pan && inspector.selectedNodeId() == "node075",
+      "middle-drag over a node must pan while preserving selection");
+  const qreal refresh_zoom = view->transform().m11();
+  const QPointF refresh_center = view->mapToScene(view->viewport()->rect().center());
+  inspector.requestRefresh();
+  ok &= expect(graph_response(), "refresh must load");
+  ok &= expect(
+      inspector.selectedNodeId() == "node075" && view->transform().m11() == refresh_zoom &&
+          QLineF(refresh_center, view->mapToScene(view->viewport()->rect().center())).length() < 2.0,
+      "same-session refresh must preserve selection, zoom, and position");
+  fit->click();
+  ok &= expect(selection_pixel_count(view) >= 6, "selected node must have visible colored pixels at overview scale");
+  send_key(view, Qt::Key_Escape);
+  ok &= expect(inspector.selectedNodeId().isEmpty() && !focus->isEnabled(), "Escape must clear selection");
+  // Reacquire items after the graph refresh.
+  for (QGraphicsItem* item : view->scene()->items()) {
+    if (item->data(1).toString() == "bin")
+      bin = item;
+  }
+  send_wheel(view, view->viewport()->rect().center(), 600);
+  view->centerOn(bin->sceneBoundingRect().topLeft());
+  QApplication::processEvents();
+  const QPoint bin_point = view->mapFromScene(bin->sceneBoundingRect().topLeft() + QPointF(120, 20));
+  click_graph(view, bin_point);
+  ok &= expect(
+      inspector.selectedNodeId() == "bin" && selection_pixel_count(view) > 300,
+      "selected bin must have a prominent outline at overview scale");
+  search->setText("node075");
+  send_key(search, Qt::Key_Return);
+  ok &= expect(
+      inspector.selectedNodeId() == "node075" && view->transform().m11() >= 1.0,
+      "search must select and zoom to a readable match");
+  send_key(view, Qt::Key_F);
+  ok &= expect(view->transform().m11() < 0.08, "F must restore whole-graph overview");
+  send_key(view, Qt::Key_S);
+  ok &= expect(view->transform().m11() >= 1.0, "S must focus the selection");
+  send_key(view, Qt::Key_1);
+  ok &= expect(zoom_label->text() == "100%", "1 must reset zoom");
+  send_key(view, Qt::Key_Plus);
+  ok &= expect(view->transform().m11() > 1.0, "keyboard plus must zoom in");
+  send_key(view, Qt::Key_Home);
+  for (QGraphicsItem* item : view->scene()->items()) {
+    if (item->data(1).toString() == "node075")
+      node = item;
+  }
+  send_mouse(
+      view,
+      QEvent::MouseButtonDblClick,
+      view->mapFromScene(node->sceneBoundingRect().center()),
+      Qt::LeftButton,
+      Qt::LeftButton);
+  send_mouse(view, QEvent::MouseButtonRelease, view->viewport()->rect().center(), Qt::LeftButton, Qt::NoButton);
+  ok &= expect(view->transform().m11() >= 1.0, "double-click must focus a node");
+  view->setFocus();
+  send_key(view, Qt::Key_F, Qt::ControlModifier);
+  ok &= expect(search->hasFocus(), "Ctrl+F must focus node search");
+  return ok;
 }
 
 } // namespace
@@ -515,5 +734,6 @@ int main(int argc, char** argv) {
       "malformed protocol lines must be contained and reported");
   inspector.setPipelineRunning(false);
   ok &= expect(inspector.nodeCount() == 0, "stopped inspector must clear stale live topology");
+  ok &= test_large_graph_navigation();
   return ok ? 0 : 1;
 }
