@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,14 @@ struct RinkCornerLevelingEstimate {
 // project; never publish it over the game's project. Translated cameras are
 // unsupported because their mapping is not a rotation of viewing rays.
 absl::StatusOr<RinkLevelingProject> PrepareRinkLevelingProject(const std::string& pto);
+
+// Validate the ordered left.png/right.png references against the source game
+// directory, then make them relative to a private preview snapshot. Absolute
+// paths emitted by Hugin/HockeyMON are valid, but must not escape the snapshot
+// when the renderer runs. Never publish the returned project over the source.
+absl::StatusOr<std::string> LocalizeCalibrationPreviewImages(
+    const std::string& pto,
+    const std::filesystem::path& source_directory);
 
 // Formats pano_trafo's camera-index/x/y stdin triplets after validating marks
 // against the dimensions returned by PrepareRinkLevelingProject.

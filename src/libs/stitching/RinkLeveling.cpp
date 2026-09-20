@@ -179,6 +179,63 @@ absl::StatusOr<RinkLevelingProject> PrepareRinkLevelingProject(const std::string
   return result;
 }
 
+absl::StatusOr<std::string> LocalizeCalibrationPreviewImages(
+    const std::string& pto,
+    const std::filesystem::path& source_directory) {
+  if (pto.empty() || pto.size() > 16 * 1024 * 1024)
+    return absl::InvalidArgumentError("The stitching project is empty or too large");
+  std::error_code error;
+  const auto directory = std::filesystem::absolute(source_directory, error).lexically_normal();
+  if (error || source_directory.empty())
+    return absl::InvalidArgumentError("The calibration source directory is invalid");
+  constexpr std::array<const char*, 2> names{"left.png", "right.png"};
+  size_t image_index = 0;
+  std::istringstream input(pto);
+  std::string line;
+  std::string result;
+  while (std::getline(input, line)) {
+    const size_t start = line.find_first_not_of(" \t\r");
+    if (start == std::string::npos || start + 1 >= line.size() || line[start] != 'i' ||
+        (line[start + 1] != ' ' && line[start + 1] != '\t')) {
+      result += line + '\n';
+      continue;
+    }
+    if (image_index >= names.size())
+      return absl::InvalidArgumentError("The preview requires exactly two calibrated camera images");
+    auto tokens = fields(line.substr(start));
+    if (!tokens.ok())
+      return tokens.status();
+    bool have_name = false;
+    for (auto& token : *tokens) {
+      if (token.front() != 'n')
+        continue;
+      if (have_name || token.size() < 3 || token[1] != '"' || token.back() != '"')
+        return absl::InvalidArgumentError("The stitching project has an invalid camera image reference");
+      std::istringstream name_input(token.substr(1));
+      std::string name;
+      if (!(name_input >> std::quoted(name)) || !(name_input >> std::ws).eof() || name.find('\0') != std::string::npos)
+        return absl::InvalidArgumentError("The stitching project has an invalid camera image reference");
+      const std::filesystem::path image_path(name);
+      if ((directory / image_path).lexically_normal() != directory / names[image_index])
+        return absl::InvalidArgumentError("The saved project does not reference the calibrated camera images");
+      token = std::string("n\"") + names[image_index] + '"';
+      have_name = true;
+    }
+    if (!have_name)
+      return absl::InvalidArgumentError("The stitching project is missing a camera image reference");
+    for (size_t index = 0; index < tokens->size(); ++index) {
+      if (index)
+        result += ' ';
+      result += (*tokens)[index];
+    }
+    result += '\n';
+    ++image_index;
+  }
+  if (image_index != names.size())
+    return absl::InvalidArgumentError("The preview requires exactly two calibrated camera images");
+  return result;
+}
+
 absl::StatusOr<std::string> FormatRinkLevelingPoints(
     const std::vector<RinkLevelingLine>& lines,
     const std::vector<std::array<size_t, 2>>& image_sizes,

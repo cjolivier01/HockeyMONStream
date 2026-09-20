@@ -524,15 +524,20 @@ void ProjectionCropDialog::loadPreview() {
   }
   const QByteArray pto = readFile(temporary_.filePath("autooptimiser_out.pto"));
   const auto prepared = hm::stitching::PrepareRinkLevelingProject(pto.toStdString());
-  QStringList images;
-  for (const auto& line : pto.split('\n'))
-    if (line.trimmed().startsWith("i "))
-      images.push_back(QString::fromUtf8(line));
-  if (!prepared.ok() || images.size() != 2 || !images[0].contains(" n\"left.png\"") ||
-      !images[1].contains(" n\"right.png\"")) {
+  const auto localized =
+      hm::stitching::LocalizeCalibrationPreviewImages(pto.toStdString(), game_directory_.toStdString());
+  if (!prepared.ok() || !localized.ok()) {
     previewFailed("The saved project does not reference the calibrated camera images.");
     return;
   }
+  QFile preview_project(temporary_.filePath("autooptimiser_out.pto"));
+  if (!preview_project.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+      preview_project.write(QByteArray::fromStdString(*localized)) != static_cast<qint64>(localized->size()) ||
+      !preview_project.flush()) {
+    previewFailed("Could not prepare the temporary crop preview project.");
+    return;
+  }
+  preview_project.close();
   geometry_ = hm::stitching::projection_crop_geometry(pto.toStdString(), initial_);
   const auto dimensions = QRegularExpression("(?m)^p .*?\\bw(\\d+) .*?\\bh(\\d+)").match(QString::fromUtf8(pto));
   const int width = dimensions.captured(1).toInt(), height = dimensions.captured(2).toInt();

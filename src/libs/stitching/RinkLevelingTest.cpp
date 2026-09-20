@@ -129,6 +129,39 @@ bool test_absolute_geometry() {
   return ok;
 }
 
+bool test_preview_image_paths() {
+  const std::string header = "# snapshot\np f19 w400 h200 v180 S0,400,50,200\n";
+  const auto project = [&](const std::string& left, const std::string& right) {
+    return header + "i w100 h100 f0 v90 n\"" + left + "\"\n" + "i w100 h100 f0 v=0 n\"" + right + "\"\n";
+  };
+  const std::string relative = project("left.png", "right.png");
+  const std::filesystem::path directory("/games/season final");
+  const auto absolute = leveling::LocalizeCalibrationPreviewImages(
+      project("/games/season final/left.png", "/games/season final/right.png"), directory);
+  bool ok = expect(
+      absolute.ok() && *absolute == relative,
+      "Absolute camera paths with spaces must use private snapshot images without changing geometry");
+  const auto local = leveling::LocalizeCalibrationPreviewImages(relative, directory);
+  ok &= expect(local.ok() && *local == relative, "Relative native calibration references must be preserved");
+  const auto dotted = leveling::LocalizeCalibrationPreviewImages(project("./left.png", "./right.png"), directory);
+  ok &= expect(dotted.ok() && *dotted == relative, "Equivalent local camera references must be accepted");
+  for (const auto& invalid :
+       {project("/different/game/left.png", "right.png"),
+        project("../left.png", "right.png"),
+        project("right.png", "left.png"),
+        project("left.png", "another.png"),
+        project("left.png\" n\"/different/left.png", "right.png"),
+        project("left.png", "right.png") + "i w100 h100 n\"extra.png\"\n",
+        header + "i w100 h100 n\"left.png\"\n",
+        header + "i w100 h100\ni w100 h100 n\"right.png\"\n",
+        header + "i w100 h100 n\"left.png\ni w100 h100 n\"right.png\"\n"}) {
+    ok &= expect(
+        !leveling::LocalizeCalibrationPreviewImages(invalid, directory).ok(),
+        "Foreign, reordered, duplicate, missing, or malformed camera references must be rejected");
+  }
+  return ok;
+}
+
 bool test_degeneracy() {
   bool ok = true;
   const Vec desired{0, -25, 3};
@@ -442,6 +475,7 @@ bool test_real_hugin() {
 
 int main() {
   bool ok = test_absolute_geometry();
+  ok &= test_preview_image_paths();
   ok &= test_degeneracy();
   ok &= test_corner_geometry();
   ok &= test_corner_transport();

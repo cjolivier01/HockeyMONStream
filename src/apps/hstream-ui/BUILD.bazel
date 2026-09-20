@@ -137,6 +137,21 @@ cc_library(
 )
 
 cc_test(
+    name = "calibration_preview_test",
+    srcs = ["CalibrationPreviewTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":projection_crop_dialog",
+        ":rink_leveling_dialog",
+        "//src/libs/stitching:game_config",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
     name = "camera_experiment_source_test",
     srcs = ["CameraExperimentSourceTest.cpp"],
     copts = COMMON_COPTS,
