@@ -42,3 +42,16 @@ match the current camera/projection settings, the editor explains why its previe
 and numeric trims remain available; save and calibrate the current geometry to enable the preview.
 An incomplete or failed calibration is reported directly in the empty preview area, with instructions to finish
 calibration and reopen Adjust crop. Missing calibration files and image-loading errors are reported separately.
+
+Camera image references may be relative (`left.png`, `right.png`) or absolute paths into the same game folder,
+as emitted by Hugin/HockeyMON. Crop and leveling previews validate the ordered references and rewrite them
+only in their temporary projects so rendering always uses the copied snapshot images. Published projects and
+calibration generation/revision identities remain unchanged.
+Leveling also accepts the current version-9 canvas metadata, which adds the control-point resolution.
+
+Run the preview path regression, or a read-only crop/leveling smoke against a configured game, with:
+
+```sh
+bazelisk test --config=opt --cpu=k8 //src/apps/hstream-ui:calibration_preview_test
+QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/calibration_preview_test "$HOME/Videos/gse-16a"
+```

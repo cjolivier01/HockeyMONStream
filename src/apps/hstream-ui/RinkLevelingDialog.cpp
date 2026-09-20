@@ -277,6 +277,22 @@ void RinkLevelingDialog::loadSnapshot() {
       return;
     }
   }
+  const QStringList preview_projects = in_progress_calibration_
+      ? QStringList{"autooptimiser_out.pto", ".autooptimiser_out.aligned.pto"}
+      : QStringList{"autooptimiser_out.pto"};
+  for (const auto& name : preview_projects) {
+    const auto localized = hm::stitching::LocalizeCalibrationPreviewImages(
+        readFile(temporary_.filePath(name)).toStdString(), game_directory_.toStdString());
+    if (!localized.ok()) {
+      load_error_ =
+          "The saved project does not reference the expected left and right camera images. Recalibrate first.";
+      return;
+    }
+    if (!writeFile(temporary_.filePath(name), QByteArray::fromStdString(*localized))) {
+      load_error_ = "Could not prepare the temporary calibration preview project.";
+      return;
+    }
+  }
   const auto prepared =
       hm::stitching::PrepareRinkLevelingProject(readFile(temporary_.filePath("autooptimiser_out.pto")).toStdString());
   if (!prepared.ok() || prepared->image_sizes.size() != 2) {
@@ -285,17 +301,6 @@ void RinkLevelingDialog::loadSnapshot() {
     return;
   }
   project_ = *prepared;
-  // Saved HStream PTOs use these ordered image names. Refuse a project that
-  // would make the renderer read different source images from the snapshot.
-  QStringList image_records;
-  for (const auto& line : QByteArray::fromStdString(project_.pto).split('\n'))
-    if (line.trimmed().startsWith("i "))
-      image_records.push_back(QString::fromUtf8(line));
-  if (image_records.size() != 2 || !image_records[0].contains(" n\"left.png\"") ||
-      !image_records[1].contains(" n\"right.png\"")) {
-    load_error_ = "The saved project does not reference the expected left and right camera images. Recalibrate first.";
-    return;
-  }
   if (!in_progress_calibration_) {
     QMap<QString, QString> fields;
     for (const QByteArray& line : readFile(temporary_.filePath("stitching_canvas_provenance")).split('\n')) {
@@ -310,7 +315,7 @@ void RinkLevelingDialog::loadSnapshot() {
       fields[key] = QString::fromUtf8(line.mid(separator + 1));
     }
     const int version = fields.value("version").toInt();
-    if (version < 2 || version > 8 || fields.value("mapping-backend") != "nona") {
+    if (version < 2 || version > 9 || fields.value("mapping-backend") != "nona") {
       load_error_ = "Leveling requires saved NONA calibration metadata. Run stitching calibration first.";
       return;
     }
