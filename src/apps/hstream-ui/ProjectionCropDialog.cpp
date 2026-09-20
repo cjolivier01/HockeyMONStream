@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <stdexcept>
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
@@ -31,6 +32,9 @@
 
 namespace {
 constexpr int kLeft = 1, kRight = 2, kTop = 4, kBottom = 8, kMove = 16;
+constexpr int kRendererTimeoutMs = 20 * 60 * 1000;
+constexpr int kRendererDiagnosticTailBytes = 64 * 1024;
+constexpr int kRendererProgressPartialBytes = 4 * 1024;
 constexpr double kMinimumSpan = 0.0001;
 constexpr std::array<double, 4> kFullCrop{0, 1, 0, 1};
 
@@ -238,6 +242,13 @@ ProjectionCropDialog::ProjectionCropDialog(
   mode_->setCurrentIndex(initial_.auto_crop ? 0 : initial_.crop == kFullCrop ? 1 : 2);
   displayed_mode_ = mode_->currentData().toString();
   layout->addWidget(mode_);
+  blend_preview_ = new QCheckBox("Blend preview seams (slower)");
+  blend_preview_->setObjectName("projectionCropBlendPreview");
+  blend_preview_->setChecked(false);
+  blend_preview_->setEnabled(false);
+  blend_preview_->setToolTip(
+      "Rerender the crop preview with NONA's slower blended seam. The default hard seam renders faster.");
+  layout->addWidget(blend_preview_);
   canvas_ = new ProjectionCropCanvas();
   layout->addWidget(canvas_, 1);
   auto* controls = new QGridLayout();
@@ -295,6 +306,10 @@ ProjectionCropDialog::ProjectionCropDialog(
       seedManualFromMode(displayed_mode_);
     displayed_mode_ = next_mode;
     syncControls();
+  });
+  connect(blend_preview_, &QCheckBox::toggled, this, [this]() {
+    if (preview_ready_ && !process_)
+      renderPreview(false);
   });
   connect(keep_width_, &QCheckBox::toggled, this, [this](bool keep) {
     if (keep) {
@@ -575,77 +590,185 @@ void ProjectionCropDialog::loadPreview() {
        "-o",
        "full.pto",
        "autooptimiser_out.pto"},
-      [this]() {
-        runTool("nona", {"-m", "PNG", "--ignore-exposure", "--seam=blend", "-o", "full.png", "full.pto"}, [this]() {
-          QImageReader reader(temporary_.filePath("full.png"));
-          const QImage image = reader.read();
-          if (image.isNull()) {
-            previewFailed("The rendered crop preview could not be loaded: " + reader.errorString());
-            return;
-          }
-          if (image.size() != preview_size_) {
-            previewFailed("The preview does not cover the full projection canvas.");
-            return;
-          }
-          canvas_->setImage(image);
-          preview_ready_ = true;
+      [this]() { renderPreview(true); });
+}
+
+void ProjectionCropDialog::renderPreview(bool calculate_auto_crop) {
+  if (process_)
+    return;
+  const bool requested_blend = blend_preview_->isChecked();
+  const bool previous_blend = rendered_blend_;
+  blend_preview_->setEnabled(false);
+  accept_->setEnabled(false);
+  status_->setText(requested_blend ? "Rendering blended crop preview…" : "Rendering fast hard-seam crop preview…");
+  QFile::remove(temporary_.filePath("full.png"));
+  const auto render_failed = [this, previous_blend](const QString& message) {
+    const QSignalBlocker blocker(blend_preview_);
+    blend_preview_->setChecked(previous_blend);
+    blend_preview_->setEnabled(preview_ready_);
+    accept_->setEnabled(true);
+    if (preview_ready_) {
+      status_->setText(message + " Keeping the previous preview.");
+    } else {
+      previewFailed(message);
+    }
+  };
+  runTool(
+      "nona",
+      {"-v",
+       "-m",
+       "PNG",
+       "--ignore-exposure",
+       requested_blend ? "--seam=blend" : "--seam=hard",
+       "-o",
+       "full.png",
+       "full.pto"},
+      [this, calculate_auto_crop, requested_blend, render_failed]() {
+        QImageReader reader(temporary_.filePath("full.png"));
+        const QImage image = reader.read();
+        if (image.isNull()) {
+          render_failed("The rendered crop preview could not be loaded: " + reader.errorString());
+          return;
+        }
+        if (image.size() != preview_size_) {
+          render_failed("The preview does not cover the full projection canvas.");
+          return;
+        }
+        canvas_->setImage(image);
+        preview_ready_ = true;
+        rendered_blend_ = requested_blend;
+        const auto finish = [this]() {
+          blend_preview_->setEnabled(true);
+          accept_->setEnabled(true);
           status_->setText("Preview of the full projection. Changes to the rectangle update immediately.");
-          runTool("pano_modify", {"--crop=AUTO", "-o", "auto.pto", "full.pto"}, [this]() {
-            const auto crop = QRegularExpression("(?m)^p .*?\\bS(\\d+),(\\d+),(\\d+),(\\d+)")
-                                  .match(QString::fromUtf8(readFile(temporary_.filePath("auto.pto"))));
-            if (!crop.hasMatch()) {
-              status_->setText("Full preview ready; Auto crop will be calculated during calibration.");
-              return;
-            }
-            for (int index = 0; index < 4; ++index)
-              auto_crop_[index] =
-                  crop.captured(index + 1).toDouble() / (index < 2 ? preview_size_.width() : preview_size_.height());
-            auto_ready_ = auto_crop_[0] >= 0 && auto_crop_[1] <= 1 && auto_crop_[2] >= 0 && auto_crop_[3] <= 1 &&
-                auto_crop_[0] < auto_crop_[1] && auto_crop_[2] < auto_crop_[3];
-            seedManualFromAuto();
-            syncControls();
-          });
-        });
-      });
+        };
+        if (!calculate_auto_crop) {
+          finish();
+          return;
+        }
+        runTool(
+            "pano_modify",
+            {"--crop=AUTO", "-o", "auto.pto", "full.pto"},
+            [this, finish]() {
+              const auto crop = QRegularExpression("(?m)^p .*?\\bS(\\d+),(\\d+),(\\d+),(\\d+)")
+                                    .match(QString::fromUtf8(readFile(temporary_.filePath("auto.pto"))));
+              if (!crop.hasMatch()) {
+                blend_preview_->setEnabled(true);
+                accept_->setEnabled(true);
+                status_->setText("Full preview ready; Auto crop will be calculated during calibration.");
+                return;
+              }
+              for (int index = 0; index < 4; ++index)
+                auto_crop_[index] =
+                    crop.captured(index + 1).toDouble() / (index < 2 ? preview_size_.width() : preview_size_.height());
+              auto_ready_ = auto_crop_[0] >= 0 && auto_crop_[1] <= 1 && auto_crop_[2] >= 0 && auto_crop_[3] <= 1 &&
+                  auto_crop_[0] < auto_crop_[1] && auto_crop_[2] < auto_crop_[3];
+              seedManualFromAuto();
+              syncControls();
+              finish();
+            },
+            [this](const QString& message) {
+              blend_preview_->setEnabled(true);
+              accept_->setEnabled(true);
+              status_->setText("Full preview ready; Auto crop could not be previewed. " + message);
+            });
+      },
+      render_failed);
 }
 
 void ProjectionCropDialog::runTool(
     const QString& program,
     const QStringList& arguments,
-    std::function<void()> completed) {
+    std::function<void()> completed,
+    std::function<void(const QString&)> failed) {
   const QString executable = QStandardPaths::findExecutable(program);
   if (executable.isEmpty()) {
-    previewFailed(program + " is not installed.");
+    const QString message = program + " is not installed.";
+    if (failed)
+      failed(message);
+    else
+      previewFailed(message);
     return;
   }
+  const bool renderer = program == "nona";
   auto* process = new QProcess(this);
   process_ = process;
+  process_output_tail_.clear();
+  process_progress_partial_.clear();
   process->setWorkingDirectory(temporary_.path());
+  if (renderer)
+    process->setProcessChannelMode(QProcess::MergedChannels);
   auto* timeout = new QTimer(process);
+  auto terminal_handled = std::make_shared<bool>(false);
   timeout->setSingleShot(true);
   connect(timeout, &QTimer::timeout, process, [process]() { process->kill(); });
-  connect(process, &QProcess::started, this, [process, timeout]() {
+  connect(process, &QProcess::started, this, [process, timeout, renderer]() {
     process->closeWriteChannel();
-    timeout->start(60000);
+    timeout->start(renderer ? kRendererTimeoutMs : 60000);
   });
-  connect(process, &QProcess::errorOccurred, this, [this, process, program](QProcess::ProcessError error) {
-    if (error == QProcess::FailedToStart) {
-      process_ = nullptr;
-      process->deleteLater();
-      previewFailed("Could not start " + program + ".");
+  auto collect_output = [this, process, renderer]() {
+    if (!renderer || process != process_)
+      return;
+    const QByteArray chunk = process->readAllStandardOutput();
+    process_output_tail_ += chunk;
+    if (process_output_tail_.size() > kRendererDiagnosticTailBytes)
+      process_output_tail_.remove(0, process_output_tail_.size() - kRendererDiagnosticTailBytes);
+    QByteArray progress = process_progress_partial_ + chunk;
+    progress.replace('\r', '\n');
+    const auto lines = progress.split('\n');
+    for (auto line = lines.crbegin(); line != lines.crend(); ++line) {
+      const QString stage = QString::fromUtf8(*line).trimmed();
+      if (!stage.isEmpty()) {
+        status_->setText(QString("Rendering crop preview — %1…").arg(stage));
+        break;
+      }
     }
-  });
+    const qsizetype newline = progress.lastIndexOf('\n');
+    process_progress_partial_ = newline < 0 ? progress : progress.mid(newline + 1);
+    if (process_progress_partial_.size() > kRendererProgressPartialBytes)
+      process_progress_partial_ = process_progress_partial_.right(kRendererProgressPartialBytes);
+  };
+  connect(process, &QProcess::readyReadStandardOutput, this, collect_output);
+  connect(
+      process,
+      &QProcess::errorOccurred,
+      this,
+      [this, process, program, failed, terminal_handled](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) {
+          if (*terminal_handled)
+            return;
+          *terminal_handled = true;
+          process_ = nullptr;
+          process->deleteLater();
+          const QString message = "Could not start " + program + ".";
+          if (failed)
+            failed(message);
+          else
+            previewFailed(message);
+        }
+      });
   connect(
       process,
       qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
       this,
-      [this, process, timeout, program, completed](int code, QProcess::ExitStatus status) {
+      [this, process, timeout, program, completed, failed, renderer, collect_output, terminal_handled](
+          int code, QProcess::ExitStatus status) {
+        if (*terminal_handled)
+          return;
+        *terminal_handled = true;
         timeout->stop();
-        const QString error = QString::fromUtf8(process->readAllStandardError()).right(500);
+        collect_output();
+        const QString error = renderer ? QString::fromUtf8(process_output_tail_).right(1500)
+                                       : QString::fromUtf8(process->readAllStandardError()).right(500);
         process_ = nullptr;
         process->deleteLater();
         if (code || status != QProcess::NormalExit) {
-          previewFailed(program + " failed or timed out. " + error);
+          const QString message = program +
+              (renderer ? " failed or exceeded the 20-minute preview limit. " : " failed or timed out. ") + error;
+          if (failed)
+            failed(message);
+          else
+            previewFailed(message);
           return;
         }
         completed();
