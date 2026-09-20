@@ -425,23 +425,29 @@ absl::StatusOr<RinkCornerLevelingEstimate> EstimateRinkLevelingFromCorners(
   // points. Especially at a low camera height, small ray errors can produce a
   // large angle mismatch while the ice normal remains usable. Report it for
   // preview inspection instead of treating it as proof of incorrect marks.
-  Vector up = across->cross(*along);
-  const double up_length = cv::norm(up);
+  Vector plane_normal = across->cross(*along);
+  const double up_length = cv::norm(plane_normal);
   if (up_length < 0.01)
     return absl::InvalidArgumentError("These corners are too nearly aligned to determine the ice plane");
-  up /= up_length;
+  plane_normal /= up_length;
   // All four intersections with the ice must be in front of the camera.
-  // Choosing the normal away from the selected rays makes the camera above it.
+  // Orient a temporary normal away from the selected rays for this validation.
+  // A plane normal has no intrinsic sign, so the ray half-space cannot decide
+  // which physical direction is up.
   Vector center(0, 0, 0);
   for (const auto& ray : rays)
     center += ray;
-  if (up.dot(center) > 0)
-    up = -up;
+  Vector validation_normal = plane_normal;
+  if (validation_normal.dot(center) > 0)
+    validation_normal = -validation_normal;
   for (const auto& ray : rays) {
-    if (up.dot(ray) > -std::sin(0.25 * kRadians))
+    if (validation_normal.dot(ray) > -std::sin(0.25 * kRadians))
       return absl::InvalidArgumentError(
           "The corner order crosses the rectangle or lies too close to the horizon. Select the same side board first in both images");
   }
+  Vector up = plane_normal;
+  if (up[2] < 0)
+    up = -up;
   return RinkCornerLevelingEstimate{
       {preserved_yaw_degrees,
        std::atan2(up[0], std::hypot(up[1], up[2])) / kRadians,

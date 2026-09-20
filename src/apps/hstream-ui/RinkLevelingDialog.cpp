@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -514,9 +515,12 @@ void RinkLevelingDialog::startTool(
     return;
   }
   const QString executable = QString::fromStdString(*resolved);
+  const bool renderer = program == "nona";
   setBusy(true);
   auto* process = new QProcess(this);
   process_ = process;
+  process_stdout_.clear();
+  process_stderr_.clear();
   process->setWorkingDirectory(temporary_.path());
   QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
   environment.insert("LC_ALL", "C");
@@ -524,11 +528,32 @@ void RinkLevelingDialog::startTool(
   auto* timeout = new QTimer(process);
   timeout->setSingleShot(true);
   connect(timeout, &QTimer::timeout, process, [process]() { process->kill(); });
-  connect(process, &QProcess::started, this, [process, input, timeout]() {
+  connect(process, &QProcess::started, this, [process, input, timeout, renderer]() {
     process->write(input);
     process->closeWriteChannel();
-    timeout->start(60000);
+    if (!renderer)
+      timeout->start(60000);
   });
+  auto collect_output = [this, process, renderer]() {
+    if (process != process_)
+      return;
+    process_stdout_ += process->readAllStandardOutput();
+    process_stderr_ += process->readAllStandardError();
+    if (!renderer)
+      return;
+    QByteArray progress = process_stdout_ + '\n' + process_stderr_;
+    progress.replace('\r', '\n');
+    const auto lines = progress.split('\n');
+    for (auto line = lines.crbegin(); line != lines.crend(); ++line) {
+      const QString stage = QString::fromUtf8(*line).trimmed();
+      if (!stage.isEmpty()) {
+        status_->setText(QString("Rendering preview — %1…").arg(stage));
+        break;
+      }
+    }
+  };
+  connect(process, &QProcess::readyReadStandardOutput, this, collect_output);
+  connect(process, &QProcess::readyReadStandardError, this, collect_output);
   connect(process, &QProcess::errorOccurred, this, [this, process, program](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
       process_ = nullptr;
@@ -540,14 +565,16 @@ void RinkLevelingDialog::startTool(
       process,
       qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
       this,
-      [this, process, program, completed, timeout](int code, QProcess::ExitStatus status) {
+      [this, process, program, completed, timeout, renderer](int code, QProcess::ExitStatus status) {
         timeout->stop();
-        const QByteArray output = process->readAllStandardOutput();
-        const QString error = QString::fromUtf8(process->readAllStandardError()).right(1500);
+        process_stdout_ += process->readAllStandardOutput();
+        process_stderr_ += process->readAllStandardError();
+        const QByteArray output = std::move(process_stdout_);
+        const QString error = QString::fromUtf8(std::move(process_stderr_)).right(1500);
         process_ = nullptr;
         process->deleteLater();
         if (code != 0 || status != QProcess::NormalExit) {
-          fail(QString("%1 failed or timed out. %2").arg(program, error));
+          fail(QString("%1 %2. %3").arg(program, renderer ? "failed" : "failed or timed out", error));
           return;
         }
         setBusy(false);
@@ -708,7 +735,7 @@ void RinkLevelingDialog::preview() {
           QFile::remove(temporary_.filePath("preview.png"));
           startTool(
               "nona",
-              {"-m", "PNG", "--ignore-exposure", "--seam=blend", "-o", "preview.png", "preview.pto"},
+              {"-v", "-m", "PNG", "--ignore-exposure", "--seam=blend", "-o", "preview.png", "preview.pto"},
               {},
               [this](const QByteArray&) {
                 if (!preview_canvas_->setImage(temporary_.filePath("preview.png"))) {

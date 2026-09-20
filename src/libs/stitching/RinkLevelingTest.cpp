@@ -189,9 +189,11 @@ bool test_degeneracy() {
   return ok;
 }
 
-std::vector<leveling::RinkLevelingRayLine> corners(const Vec& desired, const Vec& published) {
+std::vector<leveling::RinkLevelingRayLine> corners(const Vec& desired, const Vec& published, double plane_height = -5) {
   const auto ray = [&](Vec point) { return rotate(rotate(unit(point), desired, true), published); };
-  return {{ray({8, -12, -5}), ray({8, 12, -5})}, {ray({28, -12, -5}), ray({28, 12, -5})}};
+  return {
+      {ray({8, -12, plane_height}), ray({8, 12, plane_height})},
+      {ray({28, -12, plane_height}), ray({28, 12, plane_height})}};
 }
 
 bool test_corner_geometry() {
@@ -214,6 +216,11 @@ bool test_corner_geometry() {
   ok &= expect(
       reversed_fit.ok() && near(reversed_fit->rotation_degrees, desired),
       "Either side-board order works when both camera selections agree");
+  const auto opposite_halfspace =
+      leveling::EstimateRinkLevelingFromCorners(corners(desired, published, 5), published, desired[0]);
+  ok &= expect(
+      opposite_halfspace.ok() && near(opposite_halfspace->rotation_degrees, desired),
+      "The ray half-space must not select the downward plane normal and flip the panorama");
   auto noisy = edges;
   noisy[0].first[0] += 0.0002;
   noisy[1].second[1] -= 0.0002;

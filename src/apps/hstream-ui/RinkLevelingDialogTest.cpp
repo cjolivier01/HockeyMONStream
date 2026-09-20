@@ -162,18 +162,24 @@ int main(int argc, char** argv) {
       "  case \"$argument\" in --output=*) output=${argument#--output=} ;; -o) expect_output=1 ;; -*) ;; *) input=$argument ;; esac\n"
       "done\n"
       "cp \"$input\" \"$output\"\n");
-  ok &= script(bin.filePath("nona"), "cp left.png preview.png\n");
+  const QByteArray nona_script =
+      "if [ -n \"$RINK_NONA_ARGS\" ]; then printf '%s\\n' \"$@\" >\"$RINK_NONA_ARGS\"; fi\n"
+      "printf 'Remapping and stitching\\nloading left.png\\nremapping left.png\\nblending left.png\\n'\n"
+      "cp left.png preview.png\n";
+  ok &= script(bin.filePath("nona"), nona_script);
   if (!ok)
     return 1;
   const QByteArray old_path = qgetenv("PATH");
   const QByteArray old_pano_trafo = qgetenv("HM_PANO_TRAFO");
   const QByteArray old_pano_modify = qgetenv("HM_PANO_MODIFY");
   const QByteArray old_nona = qgetenv("HM_NONA");
+  const QByteArray old_nona_args = qgetenv("RINK_NONA_ARGS");
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
   qputenv("HM_PANO_TRAFO", bin.filePath("pano_trafo").toUtf8());
   qputenv("HM_PANO_MODIFY", bin.filePath("pano_modify").toUtf8());
   qputenv("HM_NONA", bin.filePath("nona").toUtf8());
   qputenv("RINK_PREVIEW_ARGS", bin.filePath("rink-preview-arguments").toUtf8());
+  qputenv("RINK_NONA_ARGS", bin.filePath("rink-nona-arguments").toUtf8());
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
   {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
@@ -196,6 +202,10 @@ int main(int argc, char** argv) {
     ok &= expect(
         waitUntil([&]() { return accept->isEnabled(); }) && tabs->currentIndex() == 2,
         "Prev wraps from Left to Preview and renders the current angles");
+    const QByteArray nona_arguments = read(bin.filePath("rink-nona-arguments"));
+    ok &= expect(
+        nona_arguments.contains("-v\n") && nona_arguments.contains("--seam=blend\n"),
+        "Leveling preview reports NONA stages and retains blended-seam composition");
     const auto rendered_arguments = read(bin.filePath("rink-preview-arguments"));
     next->click();
     ok &= expect(tabs->currentIndex() == 0, "Next wraps from Preview to Left");
@@ -572,11 +582,14 @@ int main(int argc, char** argv) {
         read(game.filePath("config.yaml")) == config, "dialog acceptance stages values without publishing config");
   }
   {
-    ok &= script(bin.filePath("nona"), "exec sleep 30\n");
+    ok &= script(bin.filePath("nona"), "printf 'remapping left.png\\n'\nexec sleep 30\n");
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     dialog.show();
     advanceToPreview(dialog);
-    QTest::qWait(100);
+    auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
+    ok &= expect(
+        status && waitUntil([&]() { return status->text().contains("remapping left.png"); }),
+        "An active NONA renderer streams its current stage into the dialog");
     QElapsedTimer elapsed;
     elapsed.start();
     dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
@@ -584,7 +597,7 @@ int main(int argc, char** argv) {
         elapsed.elapsed() < 4000 && dialog.result() == QDialog::Rejected &&
             read(game.filePath("config.yaml")) == config && RinkLevelingDialog::sourceRevision(game.path()) == revision,
         "cancel stops an active renderer promptly without changing game artifacts");
-    ok &= script(bin.filePath("nona"), "cp left.png preview.png\n");
+    ok &= script(bin.filePath("nona"), nona_script);
   }
   {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
@@ -768,6 +781,10 @@ int main(int argc, char** argv) {
     qunsetenv("HM_NONA");
   else
     qputenv("HM_NONA", old_nona);
+  if (old_nona_args.isNull())
+    qunsetenv("RINK_NONA_ARGS");
+  else
+    qputenv("RINK_NONA_ARGS", old_nona_args);
   qputenv("PATH", old_path);
   return ok ? 0 : 1;
 }
