@@ -582,7 +582,8 @@ int main(int argc, char** argv) {
         read(game.filePath("config.yaml")) == config, "dialog acceptance stages values without publishing config");
   }
   {
-    ok &= script(bin.filePath("nona"), "printf 'remapping left.png\\n'\nexec sleep 30\n");
+    ok &= script(
+        bin.filePath("nona"), "printf 'startup warning\\n' >&2\nprintf 'remapping left.png\\n'\nexec sleep 30\n");
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     dialog.show();
     advanceToPreview(dialog);
