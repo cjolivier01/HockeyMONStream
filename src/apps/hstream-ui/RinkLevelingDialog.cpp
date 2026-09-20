@@ -390,6 +390,7 @@ void RinkLevelingDialog::setBusy(bool busy) {
   for (auto* spin : angle_spins_)
     spin->setEnabled(enabled);
   post_method_check_->setEnabled(enabled);
+  blend_preview_check_->setEnabled(enabled);
   previous_button_->setEnabled(enabled);
   next_button_->setEnabled(enabled);
   accept_button_->setEnabled(enabled && previewed_);

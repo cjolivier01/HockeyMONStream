@@ -596,9 +596,14 @@ int main(int argc, char** argv) {
     dialog.show();
     advanceToPreview(dialog);
     auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
+    auto* blend_preview = dialog.findChild<QCheckBox*>("blendRinkLevelingPreviewCheck");
     ok &= expect(
         status && waitUntil([&]() { return status->text().contains("remapping left.png"); }),
         "An active NONA renderer streams its current stage into the dialog");
+    blend_preview->click();
+    ok &= expect(
+        !blend_preview->isEnabled() && !blend_preview->isChecked(),
+        "The seam choice cannot change while its preview render is active");
     QElapsedTimer elapsed;
     elapsed.start();
     dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
