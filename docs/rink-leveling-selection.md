@@ -66,8 +66,9 @@ using a private equirectangular project. Each upright post defines a plane throu
 finds the shared vertical direction from those planes, estimates pitch and roll, and preserves yaw. It removes the
 published project's previous rotation using matrices before fitting; it never subtracts Euler angles or rotates
 the two registered cameras independently. The corner method intersects the planes of opposite rectangle edges
-to find two horizontal vanishing directions, then uses their cross product as the ice-plane normal. It assumes
-the camera is above level ice and uses the same calibrated rays and rotation handling as posts.
+to find two horizontal vanishing directions, then uses their cross product as the ice-plane normal. It resolves the
+normal's sign toward the upright panorama hemisphere; the selected-ray half-space only rejects crossed or near-horizon
+marks. It assumes the camera is above level ice and uses the same calibrated rays and rotation handling as posts.
 Unsupported translated-camera projects and mismatched image sizes fail
 with an explanation. Older NONA provenance (versions 2–7) predates this common rotation and implies zero.
 The desktop selector requires camera metadata (version 7 or newer) to verify the selected model; older games
@@ -79,7 +80,9 @@ and 1.32° RMS angular residual. That differs from the visually tuned −35°/+3
 accepting a fit, especially with rough marks or posts that are not actually vertical.
 
 The preview uses `pano_modify` and `nona` on temporary still files, at a maximum full-canvas width of 1600 pixels.
-It preserves source bit depth so 16-bit camera stills display correctly, and bounds renderer execution to 60 seconds.
+It preserves source bit depth so 16-bit camera stills display correctly. Verbose remapping and blending stages appear in
+the dialog while it renders. The renderer remains cancellable but has no fixed timeout, while the other Hugin helper
+processes are bounded to 60 seconds.
 This is an offline calibration operation; playback continues to use the existing GPU remap path with no added
 per-frame CPU readback. Hugin tools must be available on PATH. The repository's Qt frontend is currently excluded
 from the Jetson build; the geometry helper is included in cross-platform validation.

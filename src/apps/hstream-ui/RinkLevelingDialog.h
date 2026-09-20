@@ -106,6 +106,9 @@ class RinkLevelingDialog : public QDialog {
   QPushButton* accept_button_{nullptr};
   QTimer estimate_timer_;
   QProcess* process_{nullptr};
+  QByteArray process_stdout_;
+  QByteArray process_stderr_;
+  QByteArray process_progress_partial_;
   QPointer<QMessageBox> rectangle_confirmation_;
   bool busy_{false};
   bool estimated_{false};

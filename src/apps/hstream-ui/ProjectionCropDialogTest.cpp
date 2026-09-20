@@ -3,6 +3,7 @@
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
 #include <QtCore/QFile>
+#include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
@@ -97,7 +98,8 @@ int main(int argc, char** argv) {
     auto* left = dialog.findChild<QDoubleSpinBox*>("projectionCropLeft");
     auto* right = dialog.findChild<QDoubleSpinBox*>("projectionCropRight");
     ok &= expect(
-        mode->currentData() == "manual" && dialog.framing() == framing, "existing manual crop must load exactly");
+        mode->currentData() == "manual" && dialog.framing() == framing && !keep->isChecked(),
+        "existing manual crop must load exactly with Keep full width unchecked");
     keep->setChecked(true);
     ok &= expect(
         dialog.framing().crop == std::array<double, 4>{0, 1, 0.20, 0.90} && !left->isEnabled() && !right->isEnabled(),
@@ -107,7 +109,6 @@ int main(int argc, char** argv) {
     right->setValue(90);
     left->setValue(99);
     ok &= expect(dialog.framing().crop[0] < dialog.framing().crop[1], "opposite edges cannot cross");
-    const auto manual = dialog.framing().crop;
     mode->setCurrentIndex(mode->findData("auto"));
     ok &= expect(
         dialog.framing().auto_crop && dialog.framing().crop == hm::stitching::StitchProjectionFraming{}.crop &&
@@ -118,13 +119,16 @@ int main(int argc, char** argv) {
         !dialog.framing().auto_crop && dialog.framing().crop == hm::stitching::StitchProjectionFraming{}.crop,
         "Full canvas disables Auto and removes all edge trims");
     mode->setCurrentIndex(mode->findData("manual"));
-    ok &= expect(dialog.framing().crop == manual, "mode changes must preserve the in-dialog manual selection");
+    ok &= expect(
+        dialog.framing().crop == hm::stitching::StitchProjectionFraming{}.crop && !keep->isChecked(),
+        "Manual must start from the currently shown Full canvas rectangle with Keep full width unchecked");
     auto* canvas = static_cast<ProjectionCropCanvas*>(dialog.findChild<QWidget*>("projectionCropCanvas"));
     QImage image(800, 400, QImage::Format_RGB32);
     image.fill(Qt::gray);
     canvas->setImage(image);
     left->setValue(10);
     right->setValue(10);
+    dialog.findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(20);
     QTest::qWait(20);
     const auto bounds = canvas->imageRect();
     const QPoint start = (bounds.topLeft() + QPointF(bounds.width() * 0.10, bounds.height() * 0.20)).toPoint();
@@ -216,16 +220,36 @@ int main(int argc, char** argv) {
     // Loading is asynchronous: changing mode early must still seed Auto's bounds,
     // but a late preview must never overwrite a selection the user already edited.
     ok &= expect(waitUntil([&]() { return !dialog.sourceRevision().isEmpty(); }), "full preview must become available");
-    if (edit_before_preview)
-      mode->setCurrentIndex(mode->findData("auto"));
-    ok &= expect(
-        waitUntil([&]() { return dialog.findChild<QLabel*>("projectionCropCoverage")->text().contains("80.0%"); }),
-        "automatic bounds must become available");
-    mode->setCurrentIndex(mode->findData("manual"));
+    const auto auto_ready = [&]() {
+      for (auto* process : dialog.findChildren<QProcess*>()) {
+        if (process->state() != QProcess::NotRunning)
+          return false;
+      }
+      return true;
+    };
+    ok &= expect(waitUntil(auto_ready), "automatic bounds must become available");
     ok &= expect(
         dialog.framing().crop ==
             (edit_before_preview ? std::array<double, 4>{0, 1, 0.3, 1} : std::array<double, 4>{0.1, 0.9, 0.2, 0.9}),
         "late Auto bounds must seed only an untouched manual selection");
+    dialog.close();
+  }
+  {
+    hm::stitching::StitchProjectionFraming full;
+    ProjectionCropDialog dialog(game.path(), full, "general-panini", {100, 0, 0}, camera);
+    dialog.show();
+    auto* mode = dialog.findChild<QComboBox*>("projectionCropMode");
+    auto* keep = dialog.findChild<QCheckBox*>("projectionCropKeepWidth");
+    ok &= expect(
+        mode->currentData() == "full" && !keep->isChecked(), "Full canvas must open with Keep full width unchecked");
+    mode->setCurrentIndex(mode->findData("auto"));
+    ok &= expect(
+        waitUntil([&]() { return dialog.findChild<QLabel*>("projectionCropCoverage")->text().contains("80.0%"); }),
+        "Auto selected after opening must show its calculated rectangle");
+    mode->setCurrentIndex(mode->findData("manual"));
+    ok &= expect(
+        dialog.framing().crop == std::array<double, 4>{0.1, 0.9, 0.2, 0.9} && !keep->isChecked(),
+        "Manual must start from the Auto rectangle currently on screen");
     dialog.close();
   }
   {
@@ -240,9 +264,11 @@ int main(int argc, char** argv) {
     if (dialog.sourceRevision().isEmpty())
       std::cerr << dialog.findChild<QLabel*>("projectionCropStatus")->text().toStdString() << '\n';
     auto* mode = dialog.findChild<QComboBox*>("projectionCropMode");
+    auto* keep = dialog.findChild<QCheckBox*>("projectionCropKeepWidth");
     mode->setCurrentIndex(mode->findData("manual"));
     ok &= expect(
-        dialog.framing().crop == std::array<double, 4>{0.1, 0.9, 0.2, 0.9}, "Manual can start from the Auto rectangle");
+        dialog.framing().crop == std::array<double, 4>{0.1, 0.9, 0.2, 0.9} && !keep->isChecked(),
+        "Manual can start from the Auto rectangle with Keep full width unchecked");
     write(game.filePath("config.yaml"), "changed: true\n");
     dialog.findChild<QPushButton*>("acceptProjectionCropButton")->click();
     ok &= expect(dialog.result() != QDialog::Accepted, "a stale calibration preview cannot be applied");

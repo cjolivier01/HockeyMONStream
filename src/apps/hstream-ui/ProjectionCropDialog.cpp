@@ -236,6 +236,7 @@ ProjectionCropDialog::ProjectionCropDialog(
   mode_->addItem("Full canvas — no cropping", "full");
   mode_->addItem("Manual", "manual");
   mode_->setCurrentIndex(initial_.auto_crop ? 0 : initial_.crop == kFullCrop ? 1 : 2);
+  displayed_mode_ = mode_->currentData().toString();
   layout->addWidget(mode_);
   canvas_ = new ProjectionCropCanvas();
   layout->addWidget(canvas_, 1);
@@ -243,7 +244,7 @@ ProjectionCropDialog::ProjectionCropDialog(
   keep_width_ = new QCheckBox("Keep full width");
   keep_width_->setObjectName("projectionCropKeepWidth");
   keep_width_->setToolTip("Uncheck this in Manual mode to adjust the left and right edges.");
-  keep_width_->setChecked(manual_crop_[0] == 0 && manual_crop_[1] == 1);
+  keep_width_->setChecked(false);
   controls->addWidget(keep_width_, 0, 0, 1, 4);
   const std::array<QString, 4> names{"Left", "Right", "Top", "Bottom"};
   for (size_t index = 0; index < edges_.size(); ++index) {
@@ -261,6 +262,7 @@ ProjectionCropDialog::ProjectionCropDialog(
     connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, index](double trim) {
       manual_crop_[index] = (index == 1 || index == 3) ? 1 - trim / 100 : trim / 100;
       manual_edited_ = true;
+      manual_waiting_for_auto_ = false;
       syncControls();
     });
   }
@@ -288,7 +290,10 @@ ProjectionCropDialog::ProjectionCropDialog(
   connect(buttons, &QDialogButtonBox::rejected, this, &ProjectionCropDialog::reject);
   connect(accept_, &QPushButton::clicked, this, [this]() { acceptCrop(); });
   connect(mode_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() {
-    seedManualFromAuto();
+    const QString next_mode = mode_->currentData().toString();
+    if (next_mode == "manual" && displayed_mode_ != "manual")
+      seedManualFromMode(displayed_mode_);
+    displayed_mode_ = next_mode;
     syncControls();
   });
   connect(keep_width_, &QCheckBox::toggled, this, [this](bool keep) {
@@ -301,11 +306,13 @@ ProjectionCropDialog::ProjectionCropDialog(
       manual_crop_[1] = saved_horizontal_[1];
     }
     manual_edited_ = true;
+    manual_waiting_for_auto_ = false;
     syncControls();
   });
   canvas_->cropChanged = [this](const auto& crop) {
     manual_crop_ = crop;
     manual_edited_ = true;
+    manual_waiting_for_auto_ = false;
     syncControls();
   };
   syncControls();
@@ -326,13 +333,25 @@ hm::stitching::StitchProjectionFraming ProjectionCropDialog::framing() const {
   return result;
 }
 
+void ProjectionCropDialog::seedManualFromMode(const QString& source_mode) {
+  if (mode_->currentData() != "manual" || (source_mode != "auto" && source_mode != "full"))
+    return;
+  manual_crop_ = source_mode == "auto" && auto_ready_ ? auto_crop_ : kFullCrop;
+  saved_horizontal_ = {manual_crop_[0], manual_crop_[1]};
+  manual_edited_ = false;
+  manual_waiting_for_auto_ = source_mode == "auto" && !auto_ready_;
+  const QSignalBlocker blocker(keep_width_);
+  keep_width_->setChecked(false);
+}
+
 void ProjectionCropDialog::seedManualFromAuto() {
-  if (mode_->currentData() != "manual" || !initial_.auto_crop || !auto_ready_ || manual_edited_)
+  if (mode_->currentData() != "manual" || !manual_waiting_for_auto_ || !auto_ready_ || manual_edited_)
     return;
   manual_crop_ = auto_crop_;
   saved_horizontal_ = {manual_crop_[0], manual_crop_[1]};
+  manual_waiting_for_auto_ = false;
   const QSignalBlocker blocker(keep_width_);
-  keep_width_->setChecked(manual_crop_[0] == 0 && manual_crop_[1] == 1);
+  keep_width_->setChecked(false);
 }
 
 void ProjectionCropDialog::syncControls() {

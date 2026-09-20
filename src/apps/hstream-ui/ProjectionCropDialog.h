@@ -81,6 +81,7 @@ class ProjectionCropDialog : public QDialog {
 
  private:
   void syncControls();
+  void seedManualFromMode(const QString& source_mode);
   void seedManualFromAuto();
   void loadPreview();
   void runTool(const QString& program, const QStringList& arguments, std::function<void()> completed);
@@ -101,7 +102,9 @@ class ProjectionCropDialog : public QDialog {
   std::array<double, 4> manual_crop_;
   std::array<double, 4> auto_crop_{0, 1, 0, 1};
   std::array<double, 2> saved_horizontal_{};
+  QString displayed_mode_;
   bool manual_edited_{false};
+  bool manual_waiting_for_auto_{false};
   bool preview_ready_{false};
   bool auto_ready_{false};
   ProjectionCropCanvas* canvas_{nullptr};
