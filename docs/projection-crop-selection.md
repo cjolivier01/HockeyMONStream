@@ -12,11 +12,14 @@ playback before editing. This control is available with the Nona mapping backend
   an estimate of that rectangle when a saved calibration is available.
 - **Full canvas — no cropping** removes all cropping, including any saved manual trim.
 - **Manual** lets you drag the rectangle's edges or corners, move it by dragging inside, or enter the percentage
-  trimmed from each side. **Keep full width** sets left and right trim to zero while preserving the top and bottom.
-  Turn it off again to restore the previous horizontal trim.
+  trimmed from each side. When selected, Manual starts with the rectangle currently shown by Auto or Full canvas.
+  **Keep full width** is unchecked by default; selecting it sets left and right trim to zero while preserving the top
+  and bottom. Turn it off again to restore the previous horizontal trim.
 
 If Auto cuts off too much horizontally, switch to Manual and select Keep full width. Adjust the top and bottom
-to taste. A game currently using Auto starts Manual from the estimated Auto rectangle when the preview is ready.
+to taste. Manual starts from the estimated Auto rectangle currently on screen, including when Auto was selected only
+after opening the dialog. If the estimate is still being calculated, it replaces the untouched initial rectangle when
+ready.
 Black corners can remain when keeping more coverage; the rectangle shows exactly which area will be retained.
 
 ![Manual crop retaining the full rink width](images/projection-crop/manual.jpg)
