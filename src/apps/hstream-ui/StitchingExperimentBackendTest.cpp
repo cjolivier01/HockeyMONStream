@@ -40,7 +40,7 @@ bool inherited_camera_handoff(const fs::path& root) {
   if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
       !write(game / "config.yaml", "game:\n  videos:\n    left: [cam1/left.mp4]\n    right: [cam2/right.mp4]\n"))
     return false;
-  const StitchingExperimentSettings settings{900, 2, "00:00:00", std::nullopt};
+  const StitchingExperimentSettings settings{900, 2, "00:00:08", std::nullopt};
   const auto baseline = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 1);
   const auto candidate = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 2);
   if (!baseline.ok() || !candidate.ok())
@@ -94,13 +94,16 @@ bool inherited_camera_handoff(const fs::path& root) {
   // the sibling candidate still has only the original game's explicit values.
   const StitchCameraSelection camera{"custom-user-camera", 112.5, 88.0};
   write_stitch_camera_selection(resolved, camera);
+  // The CLI removes this key when 00:00:08 equals the inherited user setting.
+  // Its absence must not conflict with the candidate's explicit reference time.
+  resolved["stitching"].remove("stitch_frame_time");
   resolved["game"]["stitching"]["frame_offsets"]["left"] = 0;
   resolved["game"]["stitching"]["frame_offsets"]["right"] = 1;
   resolved["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   resolved["rink"]["stitched_output_generation"] = *output_generation;
   if (!write(directory / "config.yaml", YAML::Dump(resolved)))
     return false;
-  const auto context = player_frame_source_context(resolved, 0);
+  const auto context = player_frame_source_context(resolved, 8 * kPlayerFrameSecond);
   if (!context.ok())
     return false;
   PlayerFrameSelectionPlan plan;
@@ -114,7 +117,7 @@ bool inherited_camera_handoff(const fs::path& root) {
       {"rink_mask_revision", "fixture"},
       {"fieldmask_settings", "fixture"},
       {"output_rotation_degrees", "0"},
-      {"decode_anchor_ns", "0"}};
+      {"decode_anchor_ns", "8000000000"}};
   for (const fs::path& path : {game / "cam1" / "left.mp4", game / "cam2" / "right.mp4"}) {
     const auto source = BindPlayerFrameSource(path);
     if (!source.ok())
@@ -125,7 +128,7 @@ bool inherited_camera_handoff(const fs::path& root) {
     PlayerFrameObservation frame;
     frame.pair.timeline_pts_ns = index * kPlayerFrameSecond;
     for (size_t camera_index = 0; camera_index < 2; ++camera_index)
-      frame.pair.cameras[camera_index] = {plan.sources[camera_index].path, index * kPlayerFrameSecond};
+      frame.pair.cameras[camera_index] = {plan.sources[camera_index].path, (8 + index) * kPlayerFrameSecond};
     frame.coverage = {5};
     frame.eligible_people = 1;
     frame.size_band_counts = {1, 0, 0};
@@ -151,7 +154,7 @@ bool inherited_camera_handoff(const fs::path& root) {
   const YAML::Node frozen = YAML::LoadFile((candidate->game_directory / "config.yaml").string());
   const auto frozen_camera = read_stitch_camera_selection(frozen);
   return prepared->available && frozen_camera.ok() && *frozen_camera == camera &&
-      validate_player_frame_selection_sources(frozen).ok();
+      !frozen["stitching"]["stitch_frame_time"].IsDefined() && validate_player_frame_selection_sources(frozen).ok();
 }
 
 } // namespace

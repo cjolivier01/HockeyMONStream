@@ -281,8 +281,12 @@ PR review round 1 used two independent xhigh reviewers. They found three necessa
 fixes: preserve the plan fingerprint from capture through publication even without
 a UI generation owner; freeze inherited baseline camera settings before candidate
 handoff; and clear a promoted plan when ordinary reference-time/frame-count controls
-change. Each fix includes a regression. A second independent review round follows
-the fixes and platform validation. A user run on `mini` additionally exposed a cold-start
+change. Each fix includes a regression. Round 2 found one additional handoff edge case:
+a baseline can omit a reference time inherited from user settings while the new
+candidate still stores it explicitly. Handoff now preserves the baseline’s stored
+form, including absence, after separately validating the actual decode anchor.
+The inherited-time regression and full platform builds passed; round 2’s runtime
+review found no necessary fixes. A third independent review round follows. A user run on `mini` additionally exposed a cold-start
 timing defect: the first detector engine build was followed by a queried absolute
 seek position being treated as completed scan time, so the scan stopped at zero
 inferred frames. Scan completion must use only samples that finish inference and
