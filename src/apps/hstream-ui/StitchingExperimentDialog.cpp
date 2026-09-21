@@ -240,10 +240,12 @@ struct StitchingExperimentDialog::Impl {
   bool preview_completion_pending{false};
   bool preview_replay_pending{false};
   bool current_candidate_workspace_unsafe{false};
+  bool session_retained{false};
   int pending_candidate_row{-1};
   int pending_candidate_exit_code{-1};
   QProcess::ExitStatus pending_candidate_exit_status{QProcess::CrashExit};
   QString pending_candidate_startup_error;
+  int preview_candidate_row{-1};
   bool close_completion_scheduled{false};
   int pending_dialog_result{QDialog::Rejected};
 
@@ -372,6 +374,7 @@ struct StitchingExperimentDialog::Impl {
       preview_process.reset();
       preview_process_group = 0;
       preview_completion_pending = false;
+      preview_candidate_row = -1;
       update_controls();
       if (replay)
         start_preview();
@@ -399,13 +402,21 @@ struct StitchingExperimentDialog::Impl {
     qint64& process_group = calibration ? calibration_process_group : preview_process_group;
     process_group = 0;
     if (retain_workspace) {
-      if (session)
+      if (session) {
         session->setAutoRemove(false);
+        session_retained = true;
+      }
       if (calibration) {
         current_candidate_workspace_unsafe = true;
         cancelling = true;
       } else {
         preview_replay_pending = false;
+        if (preview_candidate_row >= 0 && preview_candidate_row < static_cast<int>(candidates.size())) {
+          Candidate& candidate = candidates[preview_candidate_row];
+          candidate.complete = false;
+          candidate.failure = "Preview process group still active; workspace retained";
+          table->item(candidate.row, 5)->setText(candidate.failure);
+        }
       }
     }
     QProcess* process = calibration ? calibration_process.get() : preview_process.get();
@@ -716,9 +727,12 @@ struct StitchingExperimentDialog::Impl {
   void clear_candidate_batch() {
     if (batch_active)
       return;
+    const bool retained = session_retained && session;
+    const QString retained_path = retained ? session->path() : QString();
     candidates.clear();
     table->setRowCount(0);
     session.reset();
+    session_retained = false;
     next_candidate_sequence = 0;
     running_candidate = -1;
     batch_started = false;
@@ -726,7 +740,16 @@ struct StitchingExperimentDialog::Impl {
     cancelling = false;
     progress->setRange(0, 0);
     progress->setValue(0);
-    show_status("Private experiment batch discarded. No additional changes were made to the main Program.");
+    if (retained) {
+      show_status(
+          QString(
+              "Batch cleared. An unconfirmed process workspace remains at %1 until it is safe to remove; the main "
+              "Program was not changed.")
+              .arg(retained_path),
+          true);
+    } else {
+      show_status("Private experiment batch discarded. No additional changes were made to the main Program.");
+    }
     update_controls();
   }
 
@@ -753,6 +776,7 @@ struct StitchingExperimentDialog::Impl {
     stopping_preview = false;
     preview_completion_pending = false;
     preview_replay_pending = false;
+    preview_candidate_row = row;
     Candidate& candidate = candidates[row];
     preview_process = std::make_unique<QProcess>();
     preview_process_group = 0;
