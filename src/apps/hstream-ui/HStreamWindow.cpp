@@ -171,6 +171,26 @@ bool is_cuda_out_of_memory_diagnostic(const QString& diagnostic) {
       (normalized.startsWith("cuda error at ") && normalized.contains(": out of memory"));
 }
 
+QString calibration_status_detail(const QString& message) {
+  static const QRegularExpression status(
+      R"(\b(?:CANCELLED|UNKNOWN|INVALID_ARGUMENT|DEADLINE_EXCEEDED|NOT_FOUND|ALREADY_EXISTS|PERMISSION_DENIED|)"
+      R"(RESOURCE_EXHAUSTED|FAILED_PRECONDITION|ABORTED|OUT_OF_RANGE|UNIMPLEMENTED|INTERNAL|UNAVAILABLE|DATA_LOSS|UNAUTHENTICATED):\s*)");
+  // Candidate-exhaustion summaries can wrap another status. The innermost
+  // status tells us whether the final message already supplies a concrete cause.
+  auto matches = status.globalMatch(message);
+  qsizetype detail_begin = -1;
+  while (matches.hasNext())
+    detail_begin = matches.next().capturedEnd();
+  return detail_begin < 0 ? QString() : message.mid(detail_begin).trimmed();
+}
+
+bool is_specific_calibration_status_detail(const QString& detail) {
+  const QString normalized = detail.toLower();
+  return !normalized.isEmpty() && normalized != "app run failed" &&
+      normalized != "pipeline failed during stitching calibration" &&
+      !normalized.startsWith("no stitching calibration frame pair");
+}
+
 QString stitching_oom_width_guidance(int current_max_output_width) {
   if (current_max_output_width <= 0) {
     return QString(
@@ -8636,11 +8656,8 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
       diagnostic.startsWith("Skipping stitching calibration frame pair");
   const bool useful = cuda_out_of_memory || gpu_buffer_allocation_failure || rejected_hypothesis ||
       rejected_candidate || diagnostic.startsWith("Trying ") || diagnostic.startsWith("OpenCV mapping backend ") ||
-      diagnostic.contains("FAILED_PRECONDITION:") || diagnostic.contains("INVALID_ARGUMENT:") ||
-      diagnostic.contains("NOT_FOUND:") || diagnostic.contains("RESOURCE_EXHAUSTED:") ||
-      diagnostic.contains("INTERNAL:") || diagnostic.contains("HSTREAM_CALIBRATION") ||
-      diagnostic.contains("enblend", Qt::CaseInsensitive) ||
-      diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
+      !calibration_status_detail(diagnostic).isEmpty() || diagnostic.contains("HSTREAM_CALIBRATION") ||
+      diagnostic.contains("enblend", Qt::CaseInsensitive) || diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
   if (!useful)
     return;
   if (rejected_hypothesis)
@@ -8683,17 +8700,25 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
         ? "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while activating hmstitcher's pre-stitch "
           "input-conversion buffer pool."
         : "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while allocating a calibration GPU buffer.";
-  } else {
+  } else if (!is_specific_calibration_status_detail(calibration_status_detail(root_cause))) {
+    QString fallback;
     for (auto diagnostic = calibration_diagnostic_lines_.crbegin(); diagnostic != calibration_diagnostic_lines_.crend();
          ++diagnostic) {
-      if (!diagnostic->startsWith("HSTREAM_CALIBRATION") &&
-          (diagnostic->contains("FAILED_PRECONDITION:") || diagnostic->contains("INVALID_ARGUMENT:") ||
-           diagnostic->contains("NOT_FOUND:") || diagnostic->contains("RESOURCE_EXHAUSTED:") ||
-           diagnostic->contains("INTERNAL:"))) {
-        root_cause = *diagnostic;
+      if (diagnostic->startsWith("HSTREAM_CALIBRATION"))
+        continue;
+      const QString detail = calibration_status_detail(*diagnostic);
+      if (detail.isEmpty())
+        continue;
+      if (fallback.isEmpty())
+        fallback = *diagnostic;
+      // Generic runner/teardown summaries must not hide a more useful error.
+      if (is_specific_calibration_status_detail(detail)) {
+        fallback = *diagnostic;
         break;
       }
     }
+    if (!fallback.isEmpty())
+      root_cause = fallback;
   }
   if (root_cause.isEmpty())
     root_cause = "The calibration process ended without reporting a specific cause.";
