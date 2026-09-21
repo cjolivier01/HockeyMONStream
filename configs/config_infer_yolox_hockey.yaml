@@ -12,7 +12,8 @@ property:
   model-color-format: 1
   # Relative to this config file's directory.
   onnx-file: ../pretrained/deepstream/yolox/yolox_s_dynamic.onnx
-  # Avoid writing large engines into the repo; keep it in /tmp.
+  # Legacy engine seed. When absent, hstream-cli redirects both ONNX and engine
+  # to ~/.cache/hstream/tensorrt (override with HSTREAM_TENSORRT_CACHE_DIR).
   model-engine-file: /tmp/hstream_yolox_s_b2_gpu0_fp32.engine
   labelfile-path: ../pretrained/deepstream/yolox/labels_coco.txt
   batch-size: 2

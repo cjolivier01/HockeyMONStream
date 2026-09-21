@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
     std::ofstream(models / "detector_bf16.engine") << "prebuilt BF16 engine\n";
     std::ofstream(models / "detector_int8_calib.table") << "prebuilt INT8 calibration table\n";
     std::ofstream(home_models / "home-detector.onnx") << "user-cache ONNX model\n";
+    std::ofstream(home_models / "home-detector.engine") << "explicit prebuilt engine\n";
     fs::create_symlink("detector.onnx", models / "linked-detector.onnx");
     write_inference_config(configs / "infer.yaml", 0);
     std::ofstream(configs / "loader.yaml") << "property:\n"
@@ -347,17 +348,18 @@ int main(int argc, char** argv) {
       "a writable model must still receive a runtime inference config for its staged custom library");
   if (fs::is_regular_file(writable_loader_runtime)) {
     const YAML::Node writable_loader_cached = YAML::LoadFile(writable_loader_runtime.string());
+    const fs::path writable_cached_onnx = writable_loader_cached["property"]["onnx-file"].as<std::string>();
+    const fs::path writable_cached_engine = writable_loader_cached["property"]["model-engine-file"].as<std::string>();
     ok &= expect(
         writable_loader_cached["property"]["custom-lib-path"].as<std::string>() == staged_yolo.string(),
         "the writable-model runtime config must use the staged custom library path");
     ok &= expect(
-        writable_loader_cached["property"]["onnx-file"].as<std::string>() ==
-            fs::absolute(configs / "writable-detector.onnx").lexically_normal().string(),
-        "moving a staged-parser config must preserve its relative ONNX path");
+        writable_cached_onnx.parent_path().parent_path() == cache &&
+            fs::equivalent(writable_cached_onnx, configs / "writable-detector.onnx"),
+        "writable models must also be staged in the shared engine cache");
     ok &= expect(
-        writable_loader_cached["property"]["model-engine-file"].as<std::string>() ==
-            fs::absolute(configs / "writable-detector.engine").lexically_normal().string(),
-        "moving a staged-parser config must preserve its relative engine path");
+        writable_cached_engine == fs::path(writable_cached_onnx.string() + "_b2_gpu0_fp32.engine"),
+        "writable models must load the same engine path that DeepStream serializes");
     ok &= expect(
         writable_loader_cached["property"]["custom-network-config"].as<std::string>() ==
             (models / "network.cfg").string(),
@@ -535,10 +537,62 @@ int main(int argc, char** argv) {
       hm::pipeline::PrepareTensorRtModelCache(writable, configs).ok(),
       "writable development model directory must remain supported");
   ok &= expect(
-      writable["primary-gie"]["config-file"].as<std::string>() == "infer.yaml",
-      "development inference config must not be redirected unnecessarily");
+      writable["primary-gie"]["config-file"].as<std::string>() == changed_network_config_runtime.string(),
+      "model directory writability must not change the shared engine cache identity");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+
+  // Reproduce the default detector setup: the ONNX is writable under HOME,
+  // while the configured engine seed differs from DeepStream's output path.
+  fs::remove(home_models / "home-detector.engine");
+  YAML::Node cold_pipeline = pipeline_for("home-dollar.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(cold_pipeline, configs).ok(),
+      "a writable user model with a missing engine must use the shared cache");
+  const fs::path cold_runtime = cold_pipeline["primary-gie"]["config-file"].as<std::string>();
+  const YAML::Node cold_config = YAML::LoadFile(cold_runtime.string());
+  const fs::path cold_onnx = cold_config["property"]["onnx-file"].as<std::string>();
+  const fs::path cold_engine = cold_config["property"]["model-engine-file"].as<std::string>();
+  const fs::path serialized_engine = cold_onnx.string() + "_b1_gpu0_fp32.engine";
+  ok &= expect(
+      cold_engine == serialized_engine && cold_engine.parent_path().parent_path() == cache,
+      "generated engine lookup and serialization must agree inside the shared cache");
+  std::ofstream(serialized_engine) << "engine serialized by DeepStream\n";
+  const auto engine_write_time = fs::last_write_time(serialized_engine);
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+
+  YAML::Node warm_pipeline = pipeline_for("home-dollar.yaml");
+  warm_pipeline["source0"]["uri"] = "file:///different-game/cam1.mp4";
+  warm_pipeline["sink0"]["output-file"] = "/different-output/game.mkv";
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(warm_pipeline, configs).ok(),
+      "a later run for another game must prepare successfully");
+  const YAML::Node warm_config = YAML::LoadFile(warm_pipeline["primary-gie"]["config-file"].as<std::string>());
+  ok &= expect(
+      warm_config["property"]["model-engine-file"].as<std::string>() == serialized_engine.string() &&
+          fs::last_write_time(serialized_engine) == engine_write_time && fs::file_size(serialized_engine) != 0,
+      "a later run must reuse the persisted engine without touching it");
+  ok &= expect(
+      !fs::exists(home_models / "home-detector.onnx_b1_gpu0_fp32.engine"),
+      "engine generation must not write beside the source ONNX model");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
 
   ::unsetenv("HSTREAM_TENSORRT_CACHE_DIR");
+  for (bool use_xdg : {true, false}) {
+    const fs::path xdg_cache = root / "xdg-cache";
+    if (use_xdg)
+      ::setenv("XDG_CACHE_HOME", xdg_cache.c_str(), 1);
+    else
+      ::unsetenv("XDG_CACHE_HOME");
+    YAML::Node default_pipeline = pipeline_for("home-dollar.yaml");
+    ok &= expect(
+        hm::pipeline::PrepareTensorRtModelCache(default_pipeline, configs).ok(),
+        "the default shared engine cache must prepare successfully");
+    const fs::path default_runtime = default_pipeline["primary-gie"]["config-file"].as<std::string>();
+    ok &= expect(
+        default_runtime.parent_path().parent_path() == (use_xdg ? xdg_cache : home / ".cache") / "hstream/tensorrt",
+        "the default cache must honor XDG_CACHE_HOME and fall back to ~/.cache/hstream/tensorrt");
+    hm::pipeline::ReleaseTensorRtModelCacheLocks();
+  }
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
   fs::remove_all(root);
   return ok ? 0 : 1;

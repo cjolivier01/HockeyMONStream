@@ -621,9 +621,9 @@ absl::Status prepare_inference_config(
         "Configured prebuilt BF16 TensorRT engine is unavailable: " + configured_engine.string() +
         "; run ./run.sh --models-bf16-build first");
   }
-  if (::access(onnx_path.parent_path().c_str(), W_OK) == 0)
-    return publish_relocated_config();
-
+  // model-engine-file is a load path, not DeepStream's serialization target.
+  // Even when the source ONNX directory is writable, stage it in the shared
+  // cache and load the filename DeepStream derives from that staged path.
   auto build_digest = inference_build_digest(inference, section, pipeline, section_name, inference_path);
   if (!build_digest.ok())
     return build_digest.status();
@@ -677,7 +677,11 @@ absl::Status prepare_inference_config(
     return publish_status;
   }
   section["config-file"] = runtime_config.string();
-  std::cout << "TensorRT writable model cache: " << cached_engine << '\n';
+  error.clear();
+  const bool engine_exists = fs::is_regular_file(cached_engine, error) && !error;
+  std::cout << "TensorRT engine cache " << (engine_exists ? "hit: " : "miss: ") << cached_engine << '\n';
+  if (!engine_exists)
+    std::cout << "DeepStream will build and save this engine before video starts; later runs reuse it.\n";
   return absl::OkStatus();
 }
 

@@ -206,6 +206,35 @@ To understand and edit `config_infer_primary.txt` file, read the [DeepStream Plu
 
 * model-engine-file 
 
+  HStream's CLI (also used by the desktop UI and exported jobs) prepares missing
+  engines for YAML ONNX inference configs in a persistent cache shared across
+  games and output directories. This applies to both writable model directories
+  and read-only packaged models. The default is `~/.cache/hstream/tensorrt/`, or
+  `$XDG_CACHE_HOME/hstream/tensorrt/` when `XDG_CACHE_HOME` is set. To place it
+  under the top-level working directory instead, launch with:
+
+  ```sh
+  export HSTREAM_TENSORRT_CACHE_DIR="$HOME/hstream_output/tensorrt"
+  ./run.sh --game-id=<game_id> -t=5
+  ```
+
+  DeepStream loads `model-engine-file` but generates new engines beside the
+  ONNX using its own derived filename. HStream stages the ONNX in the cache
+  (hard link when possible, otherwise a copy) and rewrites the runtime config
+  so engine loading and generation use the same persistent path. The source
+  config is unchanged. Cache identity includes model and inference input
+  contents, inference settings, and application GPU/batch overrides; changing
+  these can require a new engine. Builds are locked across HStream processes
+  until inference initialization completes. The runner logs the resolved cache
+  path and whether an engine already exists there.
+
+  An existing explicitly configured engine is preserved. BF16 engines still
+  require `./run.sh --models-bf16-build`; missing INT8 calibration tables require
+  `./run.sh --models-int8-calibrate`. Legacy INI inference configs retain their
+  configured behavior. TensorRT can rebuild an engine it cannot deserialize
+  after a GPU/runtime change. Removing the cache forces regeneration on the
+  next run.
+
   * Example for `batch-size=1` and `network-mode=2`
 
     ```

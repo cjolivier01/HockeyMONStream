@@ -13794,8 +13794,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   const QRegularExpression issue_pattern(
       R"((warning|error|critical|failed))", QRegularExpression::CaseInsensitiveOption);
   for (const QString& line : final_log.split('\n')) {
-    const bool expected_control_line =
-        line.contains("may also log a model-engine-file open/deserialize warning") || line.contains("User Interrupted");
+    const bool expected_control_line = line.contains("User Interrupted");
     if (!expected_control_line && issue_pattern.match(line).hasMatch()) {
       log_issues += line + '\n';
       ++log_issue_count;
