@@ -32,6 +32,7 @@ gboolean parse_sink_yaml(
   config->encoder_config.codec = NV_DS_ENCODER_H264;
   config->encoder_config.container = NV_DS_CONTAINER_MP4;
   config->encoder_config.compute_hw = 0;
+  config->encoder_config.interpolation_method_set = FALSE;
   config->encoder_config.iframeinterval = 30;
   config->encoder_config.width = 0;
   config->encoder_config.height = 0;
@@ -79,6 +80,17 @@ gboolean parse_sink_yaml(
       config->encoder_config.codec = (NvDsEncoderType)itr->second.as<int>();
     } else if (paramKey == "compute-hw") {
       config->encoder_config.compute_hw = itr->second.as<int>();
+    } else if (paramKey == "interpolation-method") {
+      const auto interpolation = hm::interpolation_method_from_string(itr->second.as<std::string>());
+      if (!interpolation.has_value()) {
+        g_printerr(
+            "Invalid sink interpolation-method '%s'; expected default, nearest, bilinear, cubic/bicubic, super, "
+            "lanczos, nicest, or 0-6\n",
+            itr->second.as<std::string>().c_str());
+        goto done;
+      }
+      config->encoder_config.interpolation_method = *interpolation;
+      config->encoder_config.interpolation_method_set = TRUE;
     } else if (paramKey == "enc-type") {
       config->encoder_config.enc_type = (NvDsEncHwSwType)itr->second.as<int>();
     } else if (paramKey == "bitrate") {

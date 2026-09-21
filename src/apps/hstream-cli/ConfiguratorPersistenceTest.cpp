@@ -528,6 +528,7 @@ play-tracker:
           mapped_defaults["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.1 &&
           !mapped_defaults["sink0"]["bitrate"].IsDefined() && !mapped_defaults["sink0"]["output-file"].IsDefined() &&
           !mapped_defaults["sink0"]["width"].IsDefined() && !mapped_defaults["sink0"]["height"].IsDefined() &&
+          mapped_defaults["sink6"]["interpolation-method"].as<int>() == 6 &&
           mapped_defaults["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
           mapped_defaults["ds-playtracker"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
           mapped_defaults["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%10" &&
@@ -916,6 +917,7 @@ play-tracker:
   structural_custom["sink0"]["bitrate"] = 999999;
   structural_custom["sink0"]["output-file"] = "structural.mkv";
   structural_custom["sink0"]["width"] = 999;
+  structural_custom["sink6"]["interpolation-method"] = "cubic";
   std::ofstream(structural_custom_path) << YAML::Dump(structural_custom) << '\n';
   fs::create_directories(games / "mapping-structural");
   hm::Configurator mapping_structural(
@@ -942,7 +944,8 @@ play-tracker:
           mapped_structural["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%77" &&
           mapped_structural["sink0"]["bitrate"].as<int>() == 999999 &&
           mapped_structural["sink0"]["output-file"].as<std::string>() == "structural.mkv" &&
-          mapped_structural["sink0"]["width"].as<int>() == 999,
+          mapped_structural["sink0"]["width"].as<int>() == 999 &&
+          mapped_structural["sink6"]["interpolation-method"].as<int>() == 2,
       "Bundled defaults must fill omissions without replacing custom structural native values");
 
   const fs::path no_application_structure_path = root / "mapping-no-application-structure.yaml";
@@ -998,6 +1001,7 @@ play-tracker:
   canonical_overrides["video_out"]["output_video_path"] = "/tmp/canonical.mkv";
   canonical_overrides["video_out"]["output_width"] = 1280;
   canonical_overrides["video_out"]["output_height"] = 720;
+  canonical_overrides["video_out"]["program_4k_interpolation"] = "lanczos";
   std::ofstream(canonical_game_dir / "config.yaml") << YAML::Dump(canonical_overrides) << '\n';
   hm::Configurator mapping_canonical("mapping-canonical", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool mapping_canonical_loaded = mapping_canonical.configure().ok() &&
@@ -1010,8 +1014,9 @@ play-tracker:
       mapping_canonical_status.ok() &&
           mapped_canonical["sink6"]["output-file"].as<std::string>() == "program_4k_output.mkv" &&
           mapped_canonical["sink6"]["bitrate"].as<int>() == 45000000 &&
+          mapped_canonical["sink6"]["interpolation-method"].as<int>() == 4 &&
           !mapped_canonical["sink6"]["width"].IsDefined() && !mapped_canonical["sink6"]["height"].IsDefined(),
-      "Canonical Program path, bitrate, and dimensions must not override the independent 4K upload sink");
+      "Only the Program 4K interpolation key may configure the independent 4K upload sink");
   ok &= expect(
       mapping_canonical_status.ok() && mapped_canonical["hmstitcher"]["enable"].as<int>() == 0 &&
           mapped_canonical["application"]["video-converter"].as<std::string>() == "nvvideoconvert" &&
@@ -1286,6 +1291,13 @@ play-tracker:
           mapping_canonical.apply_supported_baseline_mappings().ok() &&
           mapping_canonical.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 1,
       "A higher-ranked direct native value must win, and direct native must win a same-rank canonical tie");
+
+  ok &= expect(
+      mapping_canonical.apply_config_item("video_out.program_4k_interpolation", "cubic").ok() &&
+          mapping_canonical.apply_config_item("pipeline.sink6.interpolation-method", "bilinear").ok() &&
+          mapping_canonical.apply_supported_baseline_mappings().ok() &&
+          mapping_canonical.config()["pipeline"]["sink6"]["interpolation-method"].as<int>() == 1,
+      "A direct native Program 4K interpolation must win a same-rank canonical tie");
 
   fs::create_directories(games / "mapping-video-converter-cli");
   hm::Configurator mapping_video_converter_cli(

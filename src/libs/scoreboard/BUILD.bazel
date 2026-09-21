@@ -25,3 +25,12 @@ cc_binary(
         ":scoreboard",
     ],
 )
+
+cc_test(
+    name = "scoreboard_interpolation_test",
+    srcs = ["ScoreboardInterpolationTest.cpp"],
+    deps = [
+        ":scoreboard",
+        "@opencv_linux//:opencv",
+    ],
+)

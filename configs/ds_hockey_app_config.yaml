@@ -291,6 +291,9 @@ sink6:
   sync: 0
   profile: 0
   source-id: 0
+  # Optional sink-local GPU scaling override. Values may be symbolic
+  # (default/nearest/bilinear/cubic/bicubic/super/lanczos/nicest) or numeric 0-6.
+  # interpolation-method: default
   # Fallback when source bitrate metadata is unavailable.
   bitrate: 45000000
 

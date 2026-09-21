@@ -1026,6 +1026,26 @@ std::optional<NvDsSinkType> sink_type_from_string(const std::string& str) {
   // Return an empty optional if no match was found.
   return std::nullopt;
 }
+
+std::optional<gint> interpolation_method_from_string(const std::string& value) {
+  const std::string normalized = normalize_type_string(value);
+  if (normalized == "NEAREST" || normalized == "0")
+    return NvBufSurfTransformInter_Nearest;
+  if (normalized == "BILINEAR" || normalized == "1")
+    return NvBufSurfTransformInter_Bilinear;
+  if (normalized == "CUBIC" || normalized == "BICUBIC" || normalized == "ALGO1" || normalized == "ALGO_1" ||
+      normalized == "2")
+    return NvBufSurfTransformInter_Algo1;
+  if (normalized == "SUPER" || normalized == "ALGO2" || normalized == "ALGO_2" || normalized == "3")
+    return NvBufSurfTransformInter_Algo2;
+  if (normalized == "LANCZOS" || normalized == "ALGO3" || normalized == "ALGO_3" || normalized == "4")
+    return NvBufSurfTransformInter_Algo3;
+  if (normalized == "NICEST" || normalized == "ALGO4" || normalized == "ALGO_4" || normalized == "5")
+    return NvBufSurfTransformInter_Algo4;
+  if (normalized == "DEFAULT" || normalized == "6")
+    return NvBufSurfTransformInter_Default;
+  return std::nullopt;
+}
 } // namespace hm
 
 gboolean create_fakesink_bin(const NvDsSinkRenderConfig* config, NvDsSinkBinSubBin* bin) {
@@ -1601,11 +1621,8 @@ static gboolean create_encode_file_bin(
     goto done;
   }
   g_object_set(G_OBJECT(bin->transform), "compute-hw", config->compute_hw, NULL);
-  if (program_4k_output) {
-    // Algo1 selects cubic interpolation on the CUDA converter used by this branch.
-    g_object_set(
-        G_OBJECT(bin->transform), "interpolation-method", static_cast<gint>(NvBufSurfTransformInter_Algo1), NULL);
-  }
+  if (config->interpolation_method_set)
+    g_object_set(G_OBJECT(bin->transform), "interpolation-method", config->interpolation_method, NULL);
 
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
   /* For Jetson, with copy-hw=1 and memory-type=nvbuf-mem-surface-array,

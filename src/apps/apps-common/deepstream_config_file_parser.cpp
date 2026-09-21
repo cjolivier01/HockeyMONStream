@@ -170,6 +170,7 @@ GST_DEBUG_CATEGORY(APP_CFG_PARSER_CAT);
 #define CONFIG_GROUP_SINK_SET_MODE "set-mode"
 #define CONFIG_GROUP_SINK_ONLY_FOR_DEMUX "link-to-demux"
 #define CONFIG_GROUP_SINK_COMPUTE_HW "compute-hw"
+#define CONFIG_GROUP_SINK_INTERPOLATION_METHOD "interpolation-method"
 
 #define CONFIG_GROUP_SINK_MSG_CONV_CONFIG "msg-conv-config"
 #define CONFIG_GROUP_SINK_MSG_CONV_PAYLOAD_TYPE "msg-conv-payload-type"
@@ -1433,6 +1434,7 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
   config->encoder_config.codec = NV_DS_ENCODER_H264;
   config->encoder_config.container = NV_DS_CONTAINER_MP4;
   config->encoder_config.compute_hw = 0;
+  config->encoder_config.interpolation_method_set = FALSE;
   config->encoder_config.iframeinterval = 30;
   config->encoder_config.width = 0;
   config->encoder_config.height = 0;
@@ -1551,6 +1553,21 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_COMPUTE_HW)) {
       config->encoder_config.compute_hw = g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_COMPUTE_HW, &error);
       CHECK_ERROR(error);
+    } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_INTERPOLATION_METHOD)) {
+      gchar* value = g_key_file_get_string(key_file, group, CONFIG_GROUP_SINK_INTERPOLATION_METHOD, &error);
+      CHECK_ERROR(error);
+      const auto interpolation = hm::interpolation_method_from_string(value ? value : "");
+      if (!interpolation.has_value()) {
+        NVGSTDS_ERR_MSG_V(
+            "Invalid sink interpolation-method '%s'; expected default, nearest, bilinear, cubic/bicubic, super, "
+            "lanczos, nicest, or 0-6",
+            value ? value : "");
+        g_free(value);
+        goto done;
+      }
+      config->encoder_config.interpolation_method = *interpolation;
+      config->encoder_config.interpolation_method_set = TRUE;
+      g_free(value);
     } else if (!g_strcmp0(*key, CONFIG_GPU_ID)) {
       config->encoder_config.gpu_id = config->render_config.gpu_id =
           g_key_file_get_integer(key_file, group, CONFIG_GPU_ID, &error);

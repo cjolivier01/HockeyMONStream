@@ -193,7 +193,11 @@ cv::Mat Scoreboard<T_pixel>::forward_cv(const cv::Mat& inputImage) {
 
   // Resize the source image to the intermediate dimensions.
   cv::Mat resizedImage;
-  cv::resize(srcImage, resizedImage, cv::Size(destW_, destH_), 0, 0, cv::INTER_NEAREST);
+  // The scoreboard commonly contains an LED matrix whose fine grid aliases
+  // badly when the extracted ROI is enlarged with nearest-neighbor sampling.
+  // Match the production CUDA path's bilinear reconstruction so the
+  // perspective warp starts from a smoothly sampled image.
+  cv::resize(srcImage, resizedImage, cv::Size(destW_, destH_), 0, 0, cv::INTER_LINEAR);
 
   // Apply the perspective transformation.
   cv::Mat warpedImage;
@@ -242,7 +246,10 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         working_image_->width(),
         working_image_->height(),
         source_surface.get_image_format(),
-        FILTER_POINT,
+        // Smooth the high-frequency LED grid while enlarging the scoreboard
+        // ROI.  The following perspective warp is also bilinear, so this
+        // avoids baking nearest-neighbor checker artifacts into the overlay.
+        FILTER_LINEAR,
         stream);
     if (cuerr != cudaSuccess) {
       return absl::InternalError(TO_STRING("Scoreboard cudaResizeROI failed: " << cudaGetErrorString(cuerr)));
