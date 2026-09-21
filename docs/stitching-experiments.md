@@ -26,7 +26,9 @@ the batch finishes or is cancelled.
 
 Adding, running, cancelling, previewing, or discarding a batch never modifies the selected game's stitching config or
 artifacts. **Discard batch** and closing the dialog remove the private candidate data. The only operation that changes
-the main game's stitching state is the explicit **Use selected in main Program** action described below.
+the main game's stitching state is the explicit **Use selected in main Program** action described below. If a stopped
+runner's process group cannot be confirmed dead, the tool reports and retains its temporary workspace path instead of
+risking deletion while a descendant still uses it; that retained directory can be removed after the process exits.
 
 ## Comparing candidates
 

@@ -2,6 +2,7 @@
 
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 
+#include <QtCore/QDebug>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QPointer>
@@ -362,9 +363,14 @@ struct StitchingExperimentDialog::Impl {
       kill_process(guarded_process.data(), effective_group);
       QTimer::singleShot(100, dialog, [this, calibration, ticket, effective_group]() {
         const bool descendants_remain = process_group_alive(effective_group);
-        if (descendants_remain)
-          append_output_message(
-              "A stopped experiment process group did not exit; retaining its temporary workspace.\n");
+        if (descendants_remain) {
+          const QString retained_path = session ? session->path() : QString("(unknown path)");
+          const QString message =
+              QString("A stopped experiment process group did not exit; retaining its temporary workspace at %1.")
+                  .arg(retained_path);
+          append_output_message(message + "\n");
+          qWarning().noquote() << "Stitching Experiments:" << message;
+        }
         finish_shutdown_ticket(calibration, ticket, descendants_remain);
       });
     });
@@ -556,21 +562,19 @@ struct StitchingExperimentDialog::Impl {
             });
             const bool already_adding = std::any_of(
                 additions.begin(), additions.end(), [&](const auto& item) { return same_settings(item, settings); });
-            if (!already_queued && !already_adding)
+            if (!already_queued && !already_adding) {
               additions.push_back(std::move(settings));
+              if (candidates.size() + additions.size() > 64) {
+                show_status("Adding these options would exceed the 64-candidate batch limit.", true);
+                return;
+              }
+            }
           }
         }
       }
     }
     if (additions.empty()) {
       show_status("Every combination from these options is already in the batch.");
-      return;
-    }
-    if (candidates.size() + additions.size() > 64) {
-      show_status(
-          QString("Adding these options would create %1 total candidates; limit the batch to 64 or fewer.")
-              .arg(candidates.size() + additions.size()),
-          true);
       return;
     }
     if (!session) {
@@ -611,9 +615,14 @@ struct StitchingExperimentDialog::Impl {
     table->removeRow(row);
     for (int index = row; index < static_cast<int>(candidates.size()); ++index)
       candidates[index].row = index;
-    if (!candidates.empty())
+    if (!candidates.empty()) {
       table->selectRow(std::min(row, static_cast<int>(candidates.size()) - 1));
-    show_status(QString("Removed the candidate. %1 remain in the batch.").arg(candidates.size()));
+      show_status(QString("Removed the candidate. %1 remain in the batch.").arg(candidates.size()));
+    } else {
+      session.reset();
+      next_candidate_sequence = 0;
+      show_status("Removed the last candidate and discarded its private experiment data.");
+    }
     update_controls();
   }
 
