@@ -34,9 +34,19 @@ int main(int argc, char** argv) {
     NvDsSinkBin sinks{};
     if (!create_sink_bin(2, configs, &sinks, 0))
       return 1;
-    gint interpolation_method = NvBufSurfTransformInter_Default;
-    g_object_get(G_OBJECT(sinks.sub_bins[1].transform), "interpolation-method", &interpolation_method, NULL);
-    ok &= interpolation_method == NvBufSurfTransformInter_Algo1;
+    gint full_resolution_interpolation = NvBufSurfTransformInter_Nearest;
+    gint upload_interpolation = NvBufSurfTransformInter_Default;
+    gint upload_compute_hw = 0;
+    g_object_get(G_OBJECT(sinks.sub_bins[0].transform), "interpolation-method", &full_resolution_interpolation, NULL);
+    g_object_get(
+        G_OBJECT(sinks.sub_bins[1].transform),
+        "interpolation-method",
+        &upload_interpolation,
+        "compute-hw",
+        &upload_compute_hw,
+        NULL);
+    ok &= full_resolution_interpolation == NvBufSurfTransformInter_Default &&
+        upload_interpolation == NvBufSurfTransformInter_Algo1 && upload_compute_hw == 1;
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
     const char* upload_properties = "compute-hw=1 copy-hw=2";
 #else
