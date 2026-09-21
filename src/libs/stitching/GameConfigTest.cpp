@@ -55,6 +55,13 @@ bool test_player_frame_selection_state(const fs::path& root) {
     plan.sources.push_back(*binding);
     anchor.pair.cameras[index] = {binding->path, 7000000003ULL + index, static_cast<uint32_t>(index), 17};
     config["game"]["videos"][index ? "right" : "left"].push_back(source.string());
+    const fs::path later_source = root / (index ? "right-later.mp4" : "left-later.mp4");
+    std::ofstream(later_source) << "later local camera chapter";
+    const auto later_binding = BindPlayerFrameSource(later_source);
+    if (!later_binding.ok())
+      return expect(false, "later player source fixture must bind");
+    plan.sources.push_back(*later_binding);
+    config["game"]["videos"][index ? "right" : "left"].push_back(later_source.string());
     config["game"]["stitching"]["frame_offsets"][index ? "right" : "left"] = index ? 0.1250000001 : 0.0;
   }
   plan.selected.push_back(anchor);
@@ -85,20 +92,68 @@ bool test_player_frame_selection_state(const fs::path& root) {
           decoded_context["decode_anchor_ns"].as<uint64_t>() == anchor.pair.timeline_pts_ns &&
           decoded_context["right"]["frame_offset"].as<double>() == 0.1250000001,
       "generated plan must not perturb camera context or lose integer anchor/fractional offset precision");
-  for (int change = 0; change < 4; ++change) {
+  const std::string original_plan = YAML::Dump(config["stitching"]["calibration_frame_selection"]);
+  for (int change = 0; change < 5; ++change) {
+    YAML::Node changed = YAML::Clone(config);
+    if (change == 0) {
+      changed["stitching"]["camera_fov"]["horizontal_fov"] = 126.0;
+    } else if (change == 1) {
+      write_stitch_camera_selection(changed, {"another-camera", 110.0, 80.0});
+    } else if (change == 2) {
+      changed["stitching"]["control_point_matcher"] = "akaze-hamming";
+      changed["stitching"]["control_point_resolution"] = "2k";
+      changed["hstream_ui"]["stitching_calibration"]["control_points"] = 500;
+    } else if (change == 3) {
+      changed["stitching"]["projection"] = "rectilinear";
+      changed["stitching"]["mapping_backend"] = "opencv-magsac";
+    } else {
+      changed["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, -5, 2]");
+      changed["stitching"]["projection_framing"]["crop"] = YAML::Load("[0.1, 0.9, 0.2, 0.8]");
+    }
+    const auto retained_fingerprint = player_frame_selection_fingerprint(changed);
+    ok &= expect(
+        validate_player_frame_selection_sources(changed).ok() && retained_fingerprint.ok() &&
+            *retained_fingerprint == plan.fingerprint &&
+            YAML::Dump(changed["stitching"]["calibration_frame_selection"]) == original_plan,
+        "solve geometry changes must replay the same player plan without rewriting its provenance or fingerprint");
+    if (change <= 1) {
+      const auto changed_context = player_frame_source_context(changed, anchor.pair.timeline_pts_ns);
+      ok &= expect(
+          changed_context.ok() && !ValidatePlayerFrameSourceContext(plan, *changed_context).ok(),
+          "scan completion and initial candidate handoff must still reject a changed baseline camera geometry");
+    }
+  }
+  for (int change = 0; change < 5; ++change) {
     YAML::Node changed = YAML::Clone(config);
     if (change == 0)
       changed["game"]["stitching"]["frame_offsets"]["right"] = 0.1250000002;
-    else if (change == 1)
-      changed["stitching"]["camera_fov"]["horizontal_fov"] = 126.0;
-    else if (change == 2)
+    else if (change == 1) {
+      YAML::Node reversed(YAML::NodeType::Sequence);
+      reversed.push_back((root / "left-later.mp4").string());
+      reversed.push_back((root / "left.mp4").string());
+      changed["game"]["videos"]["left"] = reversed;
+    } else if (change == 2)
       changed["game"]["videos"]["left"].push_back("a-later-chapter.mp4");
-    else
+    else if (change == 3)
       changed["stitching"]["stitch_frame_time"] = "00:00:12";
-    ok &= expect(!validate_player_frame_selection_sources(changed).ok(), "changed replay source context must fail");
+    else
+      changed["game"]["videos"]["left"][0] = (root / "right.mp4").string();
+    const auto validated = validate_player_frame_selection_sources(changed);
+    ok &= expect(
+        !validated.ok() && validated.message().find("saved player frames were preserved") != std::string::npos &&
+            YAML::Dump(changed["stitching"]["calibration_frame_selection"]) == original_plan,
+        "changed replay sources, chapter order, synchronization or anchor must fail without discarding the plan");
   }
   const auto moved_anchor = player_frame_source_context(config, anchor.pair.timeline_pts_ns + 1);
   ok &= expect(moved_anchor.ok() && *moved_anchor != *context, "one nanosecond of decode anchor must change context");
+  PlayerFrameSelectionPlan changed_anchor = plan;
+  changed_anchor.context["decode_anchor_ns"] = std::to_string(anchor.pair.timeline_pts_ns + 1);
+  changed_anchor.fingerprint = PlayerFrameSelectionFingerprint(changed_anchor).value();
+  YAML::Node inconsistent_anchor = YAML::Clone(config);
+  inconsistent_anchor["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(changed_anchor);
+  ok &= expect(
+      !validate_player_frame_selection_sources(inconsistent_anchor).ok(),
+      "the saved decode anchor must match the immutable source context even with a recomputed plan fingerprint");
   YAML::Node invalid = YAML::Clone(config);
   invalid["stitching"]["calibration_frame_selection"]["selected"][0]["timeline_pts_ns"] = 9;
   ok &= expect(!player_frame_selection_fingerprint(invalid).ok(), "edited plans must not retain their old fingerprint");

@@ -113,7 +113,10 @@ struct StitchingBackendChoices {
 // the plan's contents/fingerprint; source files are checked when extracting a new
 // generation, so an archive remains playable after its original media moves.
 absl::StatusOr<std::string> player_frame_selection_fingerprint(const YAML::Node& config);
+// Full scan/handoff provenance, including the baseline camera geometry.
 absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config, uint64_t anchor_ns);
+// Replay retains the frozen plan when solve geometry changes. Physical media,
+// ordered chapters, synchronization and the saved anchor must still match.
 absl::Status validate_player_frame_selection_sources(const YAML::Node& config);
 
 // Camera configuration definitions live in the shared baseline under

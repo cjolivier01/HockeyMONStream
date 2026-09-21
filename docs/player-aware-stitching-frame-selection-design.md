@@ -162,8 +162,12 @@ the shared baseline remains byte-for-byte unchanged.
 
 Bind a deterministic selection fingerprint into `StitchingBackendChoices`, worker
 generation claims, and canvas provenance. New ordinary experiment workspaces clear
-any inherited plan. Changing the plan invalidates geometry; clearing it restores
-ordinary selection. Promotion copies the inline provenance through the existing
+any inherited plan. Once promoted, exact pairs persist across subsequent solve-parameter changes, including lens/FOV,
+matcher, resolution, projection, crop and leveling. Replay validates media, ordered chapters, synchronization and the
+saved anchor; the original scoring geometry remains provenance rather than a restriction on later solves. A conflicting
+reference-time edit fails without changing the plan. Only an explicit replacement (including changing the requested
+frame count or promoting another candidate) changes the frame policy. Unavailable or mismatched selected pairs fail;
+there is no fallback to ordinary frames. Promotion copies the inline provenance through the existing
 config allowlist and publishes no temporary paths. Avoid making normal loading of
 already-generated artifacts depend on the original media's current location; exact
 source validation applies when re-extracting or creating a selected-frame generation.
@@ -280,13 +284,15 @@ separately. Preserve panorama quality and the existing complete artifact set.
 PR review round 1 used two independent xhigh reviewers. They found three necessary
 fixes: preserve the plan fingerprint from capture through publication even without
 a UI generation owner; freeze inherited baseline camera settings before candidate
-handoff; and clear a promoted plan when ordinary reference-time/frame-count controls
-change. Each fix includes a regression. Round 2 found one additional handoff edge case:
+handoff; and reconcile ordinary reference-time/frame-count controls with a promoted plan. Each fix includes a regression.
+The final persistence policy rejects reference-only changes and preserves the plan across solve-parameter edits;
+changing the frame count explicitly requests replacement. Round 2 found one additional handoff edge case:
 a baseline can omit a reference time inherited from user settings while the new
 candidate still stores it explicitly. Handoff now preserves the baseline’s stored
 form, including absence, after separately validating the actual decode anchor.
 The inherited-time regression and full platform builds passed; round 2’s runtime
-review found no necessary fixes. A third independent review round follows. A user run on `mini` additionally exposed a cold-start
+review found no necessary fixes. Round 3 found a promotion mismatch between absolute/aliased input paths and
+the candidate’s relative paths; promotion now normalizes only proven-equivalent sources. A user run on `mini` additionally exposed a cold-start
 timing defect: the first detector engine build was followed by a queried absolute
 seek position being treated as completed scan time, so the scan stopped at zero
 inferred frames. Scan completion must use only samples that finish inference and
@@ -333,3 +339,24 @@ position queries must not consume the scan window.
   used isolated caches and a private copy of the baseline, preserving the open UI
   session and the original game. Full x86/Jetson builds and focused tests passed
   after the review and timing fixes.
+
+A subsequent main Program run on `mini` exposed an NFS snapshot validation defect: the private artifact snapshot
+did not contain the selected-plan configuration. Validation now checks snapshot artifacts against the source game
+configuration, retaining rejection of a replaced or cleared plan. Promotion also binds crop-review state to the
+selected candidate’s actual geometry. Main Program startup after promotion must be included in integration
+validation; calibration-only previews do not exercise this path.
+
+The broader reuse audit found and corrected two UI false-change paths: inherited projection parameters were compared
+against built-in defaults on Play, and two-decimal spin boxes rounded stored geometry on load. The UI now compares
+effective inherited values and retains calibrated precision until an actual edit. Logs identify changed inputs and
+the actual rebuild scope. Intentional canvas changes can still rebuild the full solve with the same selected pairs;
+there is no separate map-only resume phase today. A byte-identical PTO restored with a newer timestamp can also
+invalidate older maps. That conservative timestamp check remains: the current generation sidecar can adopt changed
+content and cannot alone prove that the maps were generated from it. Bypassing the check requires stronger persisted
+validity evidence.
+
+The expanded real GPU workflow passed baseline generation, player selection, exact-pair solve, both previews,
+inspection, promotion, automatic dialog closure and then five seconds of main Program video. Main Program reused
+the exact canvas provenance without new captures or feature matching. A separate NFS run on `mini` also processed
+video successfully with an identical saved frame plan and canvas provenance. Scoreboard overlay was disabled in these
+headless Program checks to avoid an unrelated manual scoreboard-selection prompt.

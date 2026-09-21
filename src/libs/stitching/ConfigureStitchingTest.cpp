@@ -114,6 +114,21 @@ bool write_canvas_provenance(
                            : ""));
 }
 
+bool write_player_frame_canvas_provenance(const fs::path& directory, const std::string& fingerprint) {
+  if (!write_canvas_provenance(directory, 0, 160, 32, 0, 0, 0, false, false, "nona", "equirectangular", "none"))
+    return false;
+  std::ifstream input(directory / "stitching_canvas_provenance");
+  std::string provenance((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  provenance.replace(0, std::string("version=7").size(), "version=10");
+  provenance +=
+      "projection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n"
+      "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0\nprojection-crop-3=1\n"
+      "control-point-resolution=native\ncalibration-frame-selection=";
+  provenance += fingerprint.empty() ? "none" : fingerprint;
+  provenance += "\ncalibration-frame-diagnostics=none\n";
+  return write_text_file(directory / "stitching_canvas_provenance", provenance);
+}
+
 bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, float x_px, float y_px) {
   TIFF* tif = TIFFOpen(path.c_str(), "w");
   if (!tif) {
@@ -352,20 +367,10 @@ bool expect_cleared_player_plan_invalidates_geometry(const fs::path& tmpdir) {
   for (bool selected : {false, true}) {
     const fs::path directory = tmpdir / (selected ? "cleared-player-plan" : "ordinary-player-provenance");
     if (!write_valid_stitching_artifacts(directory) ||
-        !write_canvas_provenance(directory, 0, 160, 32, 0, 0, 0, false, false, "nona", "equirectangular", "none") ||
+        !write_player_frame_canvas_provenance(directory, selected ? std::string(64, 'a') : "") ||
         !write_text_file(directory / "config.yaml", "stitching: {}\n"))
       return false;
-    std::ifstream input(directory / "stitching_canvas_provenance");
-    std::string provenance((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    provenance.replace(0, std::string("version=7").size(), "version=10");
-    provenance +=
-        "projection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n"
-        "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0\nprojection-crop-3=1\n"
-        "control-point-resolution=native\ncalibration-frame-selection=";
-    provenance += selected ? std::string(64, 'a') : "none";
-    provenance += "\ncalibration-frame-diagnostics=none\n";
-    if (!write_text_file(directory / "stitching_canvas_provenance", provenance) ||
-        !expect_configured(
+    if (!expect_configured(
             directory,
             !selected,
             "clearing a selected frame plan must invalidate its geometry even without explicit algorithm overrides"))
@@ -1998,6 +2003,96 @@ bool expect_validation_rejects_pre_generation_replacement(const fs::path& tmpdir
   return true;
 }
 
+bool expect_unreliable_load_preserves_player_plan_validation(const fs::path& tmpdir) {
+  using namespace hm::stitching;
+  const fs::path directory = tmpdir / "unreliable-player-plan";
+  if (!write_valid_stitching_artifacts(directory))
+    return false;
+  PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 1;
+  PlayerFrameObservation anchor;
+  for (size_t index = 0; index < 2; ++index) {
+    // Loading published maps must not require the original media to be present.
+    const auto source = directory / (index ? "unavailable-right.mp4" : "unavailable-left.mp4");
+    plan.sources.push_back({source.string(), 1024, 1});
+    anchor.pair.cameras[index] = {source.string(), 0, static_cast<uint32_t>(index), 0};
+  }
+  plan.selected.push_back(anchor);
+  for (const char* key :
+       {"source_context",
+        "baseline_generation",
+        "output_generation",
+        "detector_identity",
+        "rink_mask_sha256",
+        "rink_mask_revision",
+        "fieldmask_settings",
+        "output_rotation_degrees"})
+    plan.context[key] = "fixture";
+  const auto fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok())
+    return false;
+  plan.fingerprint = *fingerprint;
+  YAML::Node config;
+  config["stitching"]["mapping_backend"] = "nona";
+  config["stitching"]["projection"] = "equirectangular";
+  config["stitching"]["control_point_resolution"] = "native";
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  const std::string selected_config = YAML::Dump(config) + "\n";
+  if (!write_player_frame_canvas_provenance(directory, plan.fingerprint) ||
+      !write_text_file(directory / "config.yaml", selected_config))
+    return false;
+
+  ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  auto load = lock_stitching_artifacts_for_load(directory.string());
+  const bool verified = load.ok() && load->artifact_lock && load->load_snapshot && load->load_snapshot->verify().ok();
+  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+  if (!verified) {
+    std::cerr << "Stable snapshot loading must retain the selected player plan without source media: " << load.status()
+              << '\n';
+    return false;
+  }
+  load->artifact_lock.reset();
+  load->load_snapshot.reset();
+
+  plan.context["detector_identity"] = "replacement-plan";
+  const auto replacement_fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!replacement_fingerprint.ok() || *replacement_fingerprint == plan.fingerprint)
+    return false;
+  plan.fingerprint = *replacement_fingerprint;
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  const std::string replacement_config = YAML::Dump(config) + "\n";
+  config["stitching"].remove("calibration_frame_selection");
+  const std::string cleared_config = YAML::Dump(config) + "\n";
+
+  for (const auto& changed_config : {replacement_config, cleared_config}) {
+    if (!write_text_file(directory / "config.yaml", selected_config))
+      return false;
+    const fs::path marker = directory / ".stable-validation-ready";
+    const fs::path release = directory / ".stable-validation-release";
+    fs::remove(marker);
+    fs::remove(release);
+    ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+    ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS", "3000", 1);
+    ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER", marker.c_str(), 1);
+    ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_RELEASE", release.c_str(), 1);
+    std::thread loader([&] { load = lock_stitching_artifacts_for_load(directory.string()); });
+    const bool reached_snapshot = wait_for_test_marker(marker);
+    const bool changed = reached_snapshot && write_text_file(directory / "config.yaml", changed_config);
+    std::ofstream(release) << "continue\n";
+    loader.join();
+    ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_RELEASE");
+    ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER");
+    ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS");
+    ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+    if (!changed || !load.ok() || load->artifact_lock || load->load_snapshot) {
+      std::cerr << "Stable snapshot validation must reject a replaced or cleared player plan: " << load.status()
+                << '\n';
+      return false;
+    }
+  }
+  return true;
+}
+
 bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "unreliable_validation_pinned_generation";
   fs::remove_all(dir);
@@ -2454,6 +2549,10 @@ int main() {
 
   if (!expect_unreliable_validation_uses_pinned_generation(tmpdir)) {
     finish(tmpdir, 44);
+  }
+
+  if (!expect_unreliable_load_preserves_player_plan_validation(tmpdir)) {
+    finish(tmpdir, 52);
   }
 
   if (!expect_unreliable_load_refreshes_legacy_identity_revision(tmpdir)) {

@@ -3,6 +3,7 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
@@ -62,6 +63,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -12344,6 +12346,38 @@ bool test_control_point_resolution(const QString& source_game_directory) {
   return true;
 }
 
+YAML::Node test_selected_frame_plan(size_t count) {
+  hm::stitching::PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = count;
+  for (const char* key :
+       {"source_context",
+        "baseline_generation",
+        "output_generation",
+        "detector_identity",
+        "rink_mask_sha256",
+        "rink_mask_revision",
+        "fieldmask_settings",
+        "output_rotation_degrees"})
+    plan.context[key] = "ui-test";
+  plan.sources = {{"/ui-test/left.mp4", 1, 0}, {"/ui-test/right.mp4", 1, 0}};
+  for (size_t index = 0; index < count; ++index) {
+    hm::stitching::PlayerFrameObservation frame;
+    frame.pair.timeline_pts_ns = index * hm::stitching::kPlayerFrameSecond;
+    for (size_t camera = 0; camera < 2; ++camera)
+      frame.pair.cameras[camera] = {plan.sources[camera].path, frame.pair.timeline_pts_ns};
+    frame.coverage = {0};
+    frame.eligible_people = 1;
+    frame.size_band_counts = {1, 0, 0};
+    frame.quality = 1;
+    plan.selected.push_back(frame);
+  }
+  const auto fingerprint = hm::stitching::PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok())
+    throw std::runtime_error(fingerprint.status().ToString());
+  plan.fingerprint = *fingerprint;
+  return hm::stitching::PlayerFrameSelectionPlanYaml(plan);
+}
+
 bool test_stitching_iteration_controls(const QString& source_game_directory) {
   const fs::path source(source_game_directory.toStdString());
   const fs::path fixture = source.parent_path() / "ui-stitching-iterations";
@@ -12360,10 +12394,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   config["stitching"]["stitch_frame_time"] = "00:00:07";
   config["stitching"]["calibration_frame_count"] = 2;
   config["hstream_ui"]["stitching_calibration"]["frame_count"] = 2;
-  // UI persistence owns this generated node's lifetime, not its parsing. Keep
-  // an opaque sentinel so unrelated saves must preserve its complete contents.
-  const YAML::Node selected_frame_plan =
-      YAML::Load("{fingerprint: promoted-player-selection, selected: [left, right]}");
+  const YAML::Node selected_frame_plan = test_selected_frame_plan(2);
   config["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_frame_plan);
   config["hstream_ui"]["show_crop_dialog"] = false;
   config["hstream_ui"]["show_leveling_dialog"] = true;
@@ -12385,12 +12416,13 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   auto* playback = require_child<QTimeEdit>(&window, "playbackStartTimeEdit");
   auto* reference = require_child<QTimeEdit>(&window, "stitchFrameTimeEdit");
   auto* frames = require_child<QSpinBox>(&window, "calibrationFrameCountSpin");
+  auto* control_points = require_child<QSpinBox>(&window, "controlPointsSpin");
   auto* seek = require_child<QSlider>(&window, "playbackSeekSlider");
   auto* forward = require_child<QPushButton>(&window, "playbackSeekForward10Button");
   auto* clean = require_child<QPushButton>(&window, "cleanStitchingButton");
   auto* archive = require_child<QCheckBox>(&window, "outputToggle_archive-file");
   if (!game_id || !create || !save || !reset || !start || !stop || !mode || !gyro || !crop || !posts || !playback ||
-      !reference || !frames || !seek || !forward || !archive || !clean)
+      !reference || !frames || !control_points || !seek || !forward || !archive || !clean)
     return false;
   game_id->setText("ui-stitching-iterations");
   activate(create);
@@ -12406,6 +12438,38 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
           YAML::Dump(config["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_frame_plan),
           "Saving unrelated playback settings with unchanged reference/count must retain the promoted frame plan"))
     return false;
+  control_points->setValue(control_points->value() + 1);
+  activate(save);
+  config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          YAML::Dump(config["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_frame_plan) &&
+              config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "features" &&
+              window.logText().contains("stitching calibration marked stale: control-point limit"),
+          "Changing stitching feature settings must regenerate from the same selected frame pairs"))
+    return false;
+  const std::string saved_config = YAML::Dump(config);
+  reference->setTime(QTime(0, 0, 8));
+  activate(save);
+  if (!expect(
+          YAML::Dump(YAML::LoadFile(config_path.string())) == saved_config && save->isEnabled() &&
+              window.logText().contains(
+                  "Cannot change the reference time while keeping the selected calibration frames"),
+          "Save must reject a reference-time change without changing the selected frame plan or game config"))
+    return false;
+  const int launched_before = window.logText().count("pipeline started pid=");
+  const int conflicts_before = window.logText().count("Cannot change the reference time");
+  activate(start);
+  if (!expect(
+          YAML::Dump(YAML::LoadFile(config_path.string())) == saved_config && window.pipelineStateText() == "STOPPED" &&
+              window.logText().count("pipeline started pid=") == launched_before &&
+              window.logText().count("Cannot change the reference time") > conflicts_before,
+          "Play must reject a conflicting reference time before modifying config or launching a runner"))
+    return false;
+  auto* calibration_ok = require_child<QPushButton>(&window, "stitchCalibrationOkButton");
+  if (!calibration_ok)
+    return false;
+  activate(calibration_ok);
+  reference->setTime(QTime(0, 0, 7));
   frames->setValue(3);
   if (!expect(
           playback->isEnabled() && reference->isEnabled(),
@@ -12490,7 +12554,12 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   bool ok = true;
   for (int selection = 0; selection < 4 && ok; ++selection) {
     config = YAML::LoadFile(config_path.string());
-    config["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_frame_plan);
+    // The first two cases only change the reference time and use ordinary
+    // frames. The last two explicitly change the count, authorizing a new set.
+    if (selection >= 2)
+      config["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_frame_plan);
+    else
+      config["stitching"].remove("calibration_frame_selection");
     std::ofstream(config_path) << YAML::Dump(config) << '\n';
     crop->setChecked((selection & 1) != 0);
     posts->setChecked((selection & 2) != 0);
@@ -12583,6 +12652,24 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
             "Invalid iteration YAML must fail the staged load without partially applying controls"))
       return false;
   }
+  YAML::Node malformed_plan = YAML::Clone(config);
+  malformed_plan["stitching"].remove("calibration_frame_count");
+  malformed_plan["hstream_ui"]["stitching_calibration"].remove("frame_count");
+  malformed_plan["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_frame_plan);
+  malformed_plan["stitching"]["calibration_frame_selection"]["fingerprint"] = "invalid";
+  const std::string malformed_config = YAML::Dump(malformed_plan);
+  std::ofstream(config_path) << malformed_config << '\n';
+  activate(create);
+  control_points->setValue(control_points->value() + 1);
+  activate(save);
+  const int started_before_invalid_plan = window.logText().count("pipeline started pid=");
+  activate(start);
+  if (!expect(
+          YAML::Dump(YAML::LoadFile(config_path.string())) == malformed_config &&
+              window.logText().count("pipeline started pid=") == started_before_invalid_plan &&
+              window.pipelineStateText() == "STOPPED" && window.logText().contains("Player frame selection:"),
+          "An invalid selected plan without count bookkeeping must fail Save and Play without clearing or replacing it"))
+    return false;
   return true;
 }
 
@@ -12823,6 +12910,131 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       activate(stop);
       qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
     }
+  }
+  // A promoted plan freezes the exact private timestamp spelling (including
+  // absence), even when the effective reference is inherited from user YAML.
+  for (const bool explicit_reference : {false, true}) {
+    copied_config_node = YAML::LoadFile(copied_config.string());
+    copied_config_node["stitching"].remove("stitch_frame_time");
+    if (explicit_reference)
+      copied_config_node["stitching"]["stitch_frame_time"] = "00:00:08.000";
+    const auto selected_plan = test_selected_frame_plan(2);
+    copied_config_node["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_plan);
+    copied_config_node["stitching"].remove("calibration_frame_count");
+    copied_config_node["hstream_ui"]["stitching_calibration"].remove("frame_count");
+    copied_config_node["hstream_ui"].remove("generated_stitching_backend_choices");
+    std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+    HStreamWindow selected_window;
+    selected_window.show();
+    auto* game_id = require_child<QLineEdit>(&selected_window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&selected_window, "createGameButton");
+    auto* save = require_child<QPushButton>(&selected_window, "savePresetButton");
+    auto* start = require_child<QPushButton>(&selected_window, "startPipelineButton");
+    auto* stop = require_child<QPushButton>(&selected_window, "stopPipelineButton");
+    auto* frames = require_child<QSpinBox>(&selected_window, "calibrationFrameCountSpin");
+    auto* points = require_child<QSpinBox>(&selected_window, "controlPointsSpin");
+    auto* reference = require_child<QTimeEdit>(&selected_window, "stitchFrameTimeEdit");
+    if (!game_id || !create || !save || !start || !stop || !frames || !points || !reference) {
+      ok = false;
+      break;
+    }
+    game_id->setText("ui-user-stitch-default");
+    activate(create);
+    ok &= expect(
+        frames->value() == 2 && reference->time() == QTime(0, 0, 8),
+        "A plan without saved frame-count bookkeeping must load its own count and the effective inherited reference");
+    const auto selected_state_preserved = [&](const YAML::Node& state) {
+      const YAML::Node timestamp = state["stitching"]["stitch_frame_time"];
+      return YAML::Dump(state["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_plan) &&
+          (explicit_reference ? timestamp && timestamp.as<std::string>() == "00:00:08.000" : !timestamp);
+    };
+    points->setValue(points->value() + 1);
+    activate(save);
+    copied_config_node = YAML::LoadFile(copied_config.string());
+    ok &= expect(
+        selected_state_preserved(copied_config_node),
+        "Saving other calibration edits must preserve the plan and the original private reference node or absence");
+    // Exercise Play's independent fallback as well as the UI load fallback.
+    copied_config_node["stitching"].remove("calibration_frame_count");
+    copied_config_node["hstream_ui"]["stitching_calibration"].remove("frame_count");
+    std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+    qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+    activate(start);
+    ok &= expect(
+        selected_state_preserved(YAML::LoadFile(copied_config.string())) &&
+            HStreamWindowTestAccess::pipelineArguments(&selected_window)
+                .contains("--options=pipeline.hmstitcher.calibration-frame-count=2"),
+        "Play must retain the plan and private timestamp without treating missing count bookkeeping as replacement");
+    activate(stop);
+    qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  }
+  copied_config_node = YAML::LoadFile(copied_config.string());
+  copied_config_node["stitching"].remove("calibration_frame_selection");
+  std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+  {
+    const YAML::Node original_config = YAML::Clone(copied_config_node);
+    const std::vector<double> inherited_parameters{120.12, 15.34, -20.56};
+    user_config["stitching"]["projection_parameters"]["general-panini"] = inherited_parameters;
+    std::ofstream(QDir(user_config_directory).filePath("hstream.yaml").toStdString()) << user_config << '\n';
+    copied_config_node["stitching"]["mapping_backend"] = "nona";
+    copied_config_node["stitching"]["run_autooptimizer"] = true;
+    copied_config_node["stitching"]["projection"] = "general-panini";
+    copied_config_node["stitching"].remove("projection_parameters");
+    copied_config_node["stitching"]["camera_fov"]["horizontal_fov"] = 126.1234;
+    copied_config_node["stitching"]["camera_fov"]["vertical_fov"] = 84.9876;
+    copied_config_node["stitching"]["projection_framing"] =
+        YAML::Load("{auto_fov: false, horizontal_fov: 126.1234, auto_canvas: true, auto_crop: false}");
+    copied_config_node["hstream_ui"]["show_crop_dialog"] = false;
+    copied_config_node["hstream_ui"]["show_leveling_dialog"] = false;
+    copied_config_node["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    copied_config_node["hstream_ui"]["stitching_calibration"].remove("stale_from");
+    copied_config_node["hstream_ui"]["stitching_calibration"].remove("artifacts_invalidated");
+    std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+    HStreamWindow precise_window;
+    precise_window.show();
+    auto* game_id = require_child<QLineEdit>(&precise_window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&precise_window, "createGameButton");
+    auto* save = require_child<QPushButton>(&precise_window, "savePresetButton");
+    auto* start = require_child<QPushButton>(&precise_window, "startPipelineButton");
+    auto* stop = require_child<QPushButton>(&precise_window, "stopPipelineButton");
+    auto* camera_fov = require_child<QDoubleSpinBox>(&precise_window, "cameraHorizontalFovSpin");
+    auto* panorama_fov = require_child<QDoubleSpinBox>(&precise_window, "projectionHorizontalFovSpin");
+    auto* compression = require_child<QDoubleSpinBox>(&precise_window, "generalPaniniCompressionSpin");
+    if (game_id && create && save && start && stop && camera_fov && panorama_fov && compression) {
+      game_id->setText("ui-user-stitch-default");
+      activate(create);
+      ok &= expect(!save->isEnabled(), "Loading precise geometry must not dirty the displayed controls");
+      activate(start);
+      const auto played = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          !precise_window.logText().contains("stitching calibration required:") &&
+              !precise_window.logText().contains("stitching calibration clean command") &&
+              played["stitching"]["projection_parameters"]["general-panini"].as<std::vector<double>>() ==
+                  inherited_parameters &&
+              played["stitching"]["camera_fov"]["horizontal_fov"].as<double>() == 126.1234 &&
+              played["stitching"]["camera_fov"]["vertical_fov"].as<double>() == 84.9876 &&
+              played["stitching"]["projection_framing"]["horizontal_fov"].as<double>() == 126.1234,
+          "Untouched Play must reuse complete inherited projection parameters and exact calibrated FOVs");
+      activate(stop);
+      for (int i = 0; i < 200 && precise_window.pipelineStateText() != "STOPPED"; ++i)
+        QTest::qWait(10);
+      camera_fov->setValue(127.5);
+      panorama_fov->setValue(128.5);
+      compression->setValue(121.5);
+      activate(save);
+      const auto edited = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          edited["stitching"]["camera_fov"]["horizontal_fov"].as<double>() == 127.5 &&
+              edited["stitching"]["projection_framing"]["horizontal_fov"].as<double>() == 128.5 &&
+              edited["stitching"]["projection_parameters"]["general-panini"][0].as<double>() == 121.5 &&
+              precise_window.logText().contains("projection framing: horizontal FOV"),
+          "Actual spin edits must replace preserved precision and report the changed geometry inputs");
+    } else {
+      ok = false;
+    }
+    user_config["stitching"].remove("projection_parameters");
+    std::ofstream(QDir(user_config_directory).filePath("hstream.yaml").toStdString()) << user_config << '\n';
+    std::ofstream(copied_config) << YAML::Dump(original_config) << '\n';
   }
   user_config["stitching"].remove("max_output_width");
   user_config["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 4321;

@@ -81,13 +81,20 @@ interruption before the selected config is durable restores the prior artifact g
 it is durable retains the matching promoted generation.
 
 Validation and durable publication run on a worker so the desktop remains responsive; conflicting experiment actions
-and dialog closure wait for that transaction to finish.
+and dialog closure wait for that transaction to finish. Successful selection closes the dialog automatically and
+returns to the main Program. Selection also accepts the candidate’s existing crop geometry, so the next Play does
+not prompt for an unrelated crop review against the previous calibration. Failed publication leaves the dialog open with the error. Publishing large generations
+to network storage can take time because it copies and validates artifacts and prepares durable rollback backups.
 
 Selection does not rerun feature matching, optimization, map generation, or seam generation. The next Program run
 therefore loads the chosen artifact generation directly. Discarding the private batch afterward does not affect that
 promoted copy; camera videos are never copied or modified.
-Changing **Reference frame** or **Frames** in the main UI replaces the promoted frame-selection plan with ordinary
-frame selection. An explicit CLI reference-time or frame-count change does the same; unchanged values retain the plan.
+The selected pairs remain fixed across later stitching changes: control-point count, matcher, resolution, camera
+lens/FOV, projection, crop and leveling all reuse the same pairs when recalibrating. A changed **Reference frame**
+conflicts with the saved anchor and fails explicitly without discarding the selection. Changing **Frames** explicitly
+requests a replacement frame set; the CLI follows the same rules. Missing, changed or unreplayable source frames
+are errors, never permission to substitute generic frames. Selecting another candidate explicitly replaces the
+calibration with that candidate’s frame policy.
 
 ## Focused validation
 
@@ -111,7 +118,9 @@ QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/stitching_experiment_dialog_te
 
 This runs two calibrations and two five-second previews, checks GPU presentation, clock pacing, successful runner
 exit, and reuse without recalibration, verifies that the source config/artifacts stay unchanged before selection,
-then explicitly promotes a candidate into the disposable game. It saves the runner log and attempts one bounded
+then explicitly promotes a candidate into the disposable game, checks automatic dialog closure, and runs five seconds
+of main Program video with scoreboard overlay disabled. It requires unchanged calibration provenance and no new
+frame capture or feature matching. It saves the runner log and attempts one bounded
 display capture per passage. Desktop captures may be black under Xwayland even when the OpenGL framebuffer contains
 video; the existing `@capture-preview-frame stitched /path/to/frame.png` runner command can verify the presented
 frame directly. These one-shot diagnostic readbacks are not part of steady-state production playback.

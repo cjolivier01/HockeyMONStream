@@ -4313,6 +4313,53 @@ bool generated_stitching_backend_choices_match_private(
   return true;
 }
 
+void set_calibration_spin_value(QDoubleSpinBox* spin, double value) {
+  spin->setValue(value);
+  // Two decimal places keep the editor readable; loading a calibrated double
+  // must not make the displayed rounding an implicit geometry edit.
+  spin->setProperty("calibrationExactValue", value);
+  spin->setProperty("calibrationDisplayedValue", spin->value());
+}
+
+double calibration_spin_value(const QDoubleSpinBox* spin) {
+  const QVariant exact = spin->property("calibrationExactValue");
+  if (exact.isValid() && spin->property("calibrationDisplayedValue").toDouble() == spin->value())
+    return exact.toDouble();
+  return spin->value();
+}
+
+QString projection_framing_change_reason(
+    const hm::stitching::StitchProjectionFraming& previous,
+    const hm::stitching::StitchProjectionFraming& selected) {
+  QStringList fields;
+  if (previous.auto_fov != selected.auto_fov)
+    fields << "auto FOV";
+  if (previous.horizontal_fov != selected.horizontal_fov)
+    fields << "horizontal FOV";
+  if (previous.auto_canvas != selected.auto_canvas)
+    fields << "auto canvas";
+  if (previous.auto_crop != selected.auto_crop)
+    fields << "auto crop";
+  if (previous.crop != selected.crop)
+    fields << "crop";
+  if (previous.rotation_degrees != selected.rotation_degrees)
+    fields << "leveling rotation";
+  return "projection framing: " + fields.join(", ");
+}
+
+absl::StatusOr<std::optional<int>> selected_calibration_frame_count(const YAML::Node& config) {
+  const auto fingerprint = hm::stitching::player_frame_selection_fingerprint(config);
+  if (!fingerprint.ok())
+    return fingerprint.status();
+  if (fingerprint->empty())
+    return std::optional<int>();
+  // Fingerprint validation has already checked the complete plan, its bounded
+  // count, and every selected pair without requiring the media to be present.
+  YAML::Node selected;
+  lookup_yaml_path(config, "stitching.calibration_frame_selection.selected", &selected);
+  return std::optional<int>(static_cast<int>(selected.size()));
+}
+
 bool read_stitch_frame_time(
     YAML::Node config,
     QString* normalized,
@@ -5498,7 +5545,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   camera_horizontal_fov_spin_->setRange(0.01, 359.99);
   camera_horizontal_fov_spin_->setSingleStep(0.1);
   camera_horizontal_fov_spin_->setSuffix(QString::fromUtf8("\u00b0"));
-  camera_horizontal_fov_spin_->setValue(default_camera_selection_.horizontal_fov);
+  set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
   set_control_help(
       camera_horizontal_fov_spin_,
       "Horizontal field of view of each source camera. Hugin receives this value as its input-image HFOV.");
@@ -5509,7 +5556,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   camera_vertical_fov_spin_->setRange(0.01, 180.0);
   camera_vertical_fov_spin_->setSingleStep(0.1);
   camera_vertical_fov_spin_->setSuffix(QString::fromUtf8("\u00b0"));
-  camera_vertical_fov_spin_->setValue(default_camera_selection_.vertical_fov);
+  set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
   set_control_help(
       camera_vertical_fov_spin_,
       "Vertical field of view retained with the source-camera mapping configuration and calibration provenance.");
@@ -5519,9 +5566,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     updatePresetDirtyState();
   });
   connect(camera_horizontal_fov_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
+    camera_horizontal_fov_spin_->setProperty("calibrationExactValue", QVariant());
     updatePresetDirtyState();
   });
   connect(camera_vertical_fov_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
+    camera_vertical_fov_spin_->setProperty("calibrationExactValue", QVariant());
     updatePresetDirtyState();
   });
 
@@ -5561,11 +5610,16 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       // The numeric value remains the shared storage for projection parameters.
       projection_parameter_spins_[index]->setValue(checked ? 1 : 0);
     });
-    connect(projection_parameter_spins_[index], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
-      storeProjectionParameterControls();
-      updateProjectionFramingControls();
-      updatePresetDirtyState();
-    });
+    connect(
+        projection_parameter_spins_[index],
+        qOverload<double>(&QDoubleSpinBox::valueChanged),
+        this,
+        [this, index](double) {
+          projection_parameter_spins_[index]->setProperty("calibrationExactValue", QVariant());
+          storeProjectionParameterControls();
+          updateProjectionFramingControls();
+          updatePresetDirtyState();
+        });
   }
 
   projection_auto_fov_check_ = new QCheckBox("Auto FOV");
@@ -5581,7 +5635,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   projection_fov_spin_->setDecimals(2);
   projection_fov_spin_->setSingleStep(1.0);
   projection_fov_spin_->setSuffix(QString::fromUtf8("\u00b0"));
-  projection_fov_spin_->setValue(default_projection_framing_.horizontal_fov);
+  set_calibration_spin_value(projection_fov_spin_, default_projection_framing_.horizontal_fov);
   projection_fov_spin_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   set_control_help(
       projection_fov_spin_,
@@ -5606,6 +5660,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     updatePresetDirtyState();
   });
   connect(projection_fov_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+    projection_fov_spin_->setProperty("calibrationExactValue", QVariant());
     if (!projection_fov_controls_projection_.isEmpty())
       projection_fov_values_[projection_fov_controls_projection_] = value;
     updatePresetDirtyState();
@@ -7167,9 +7222,9 @@ hm::stitching::StitchCameraSelection HStreamWindow::stitchCameraSelection() cons
   if (camera_configuration_combo_)
     selection.configuration = camera_configuration_combo_->currentData().toString().toStdString();
   if (camera_horizontal_fov_spin_)
-    selection.horizontal_fov = camera_horizontal_fov_spin_->value();
+    selection.horizontal_fov = calibration_spin_value(camera_horizontal_fov_spin_);
   if (camera_vertical_fov_spin_)
-    selection.vertical_fov = camera_vertical_fov_spin_->value();
+    selection.vertical_fov = calibration_spin_value(camera_vertical_fov_spin_);
   return selection;
 }
 
@@ -7207,9 +7262,9 @@ void HStreamWindow::applyCameraConfigurationDefaults() {
   if (configuration == camera_configurations_.end())
     return;
   if (camera_horizontal_fov_spin_)
-    camera_horizontal_fov_spin_->setValue(configuration->horizontal_fov);
+    set_calibration_spin_value(camera_horizontal_fov_spin_, configuration->horizontal_fov);
   if (camera_vertical_fov_spin_)
-    camera_vertical_fov_spin_->setValue(configuration->vertical_fov);
+    set_calibration_spin_value(camera_vertical_fov_spin_, configuration->vertical_fov);
 }
 
 QString HStreamWindow::stitchProjection() const {
@@ -7495,7 +7550,7 @@ hm::stitching::StitchProjectionFraming HStreamWindow::stitchProjectionFraming() 
   if (projection_auto_fov_check_)
     framing.auto_fov = projection_auto_fov_check_->isChecked();
   if (projection_fov_spin_)
-    framing.horizontal_fov = projection_fov_spin_->value();
+    framing.horizontal_fov = calibration_spin_value(projection_fov_spin_);
   if (projection_auto_canvas_check_)
     framing.auto_canvas = projection_auto_canvas_check_->isChecked();
   if (projection_auto_crop_check_)
@@ -7519,7 +7574,7 @@ void HStreamWindow::storeProjectionParameterControls() {
   for (size_t index = 0; index < count; ++index) {
     if (!projection_parameter_spins_[index])
       return;
-    values.push_back(projection_parameter_spins_[index]->value());
+    values.push_back(calibration_spin_value(projection_parameter_spins_[index]));
   }
   projection_parameter_values_[projection_parameter_controls_projection_] = std::move(values);
 }
@@ -7556,7 +7611,7 @@ void HStreamWindow::updateProjectionParameterControls() {
     label->setText(QString::fromLatin1(definition.display_name));
     spin->setDecimals(integral ? 0 : 2);
     spin->setRange(definition.minimum, definition.maximum);
-    spin->setValue(index < values.size() ? values[index] : definition.default_value);
+    set_calibration_spin_value(spin, index < values.size() ? values[index] : definition.default_value);
     spin->setEnabled(enabled);
     label->setEnabled(enabled);
     const QSignalBlocker checkbox_blocker(checkbox);
@@ -7605,7 +7660,7 @@ void HStreamWindow::updateProjectionFramingControls() {
     const QString projection = stitchProjection();
     const bool projection_changed = projection_fov_controls_projection_ != projection;
     if (projection_changed && !projection_fov_controls_projection_.isEmpty()) {
-      projection_fov_values_[projection_fov_controls_projection_] = projection_fov_spin_->value();
+      projection_fov_values_[projection_fov_controls_projection_] = calibration_spin_value(projection_fov_spin_);
     }
     // The configured value initializes the configured projection. Other
     // projections begin at the requested half-circle view unless the user
@@ -7617,8 +7672,8 @@ void HStreamWindow::updateProjectionFramingControls() {
     const QSignalBlocker blocker(projection_fov_spin_);
     projection_fov_spin_->setRange(0.01, control_maximum_fov);
     if (projection_changed)
-      projection_fov_spin_->setValue(selected_fov);
-    projection_fov_values_[projection] = projection_fov_spin_->value();
+      set_calibration_spin_value(projection_fov_spin_, selected_fov);
+    projection_fov_values_[projection] = calibration_spin_value(projection_fov_spin_);
     projection_fov_controls_projection_ = projection;
     const bool fov_enabled = nona && !running && !finalizing && projection_auto_fov_check_ && !automatic_fov;
     projection_fov_spin_->setEnabled(fov_enabled);
@@ -7829,8 +7884,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
                     .arg(parsed_current_projection.status().ToString().c_str()));
       return false;
     }
-    auto current_projection_parameters =
-        hm::stitching::read_stitch_projection_parameters(config, *parsed_current_projection);
+    auto current_projection_parameters = hm::stitching::read_stitch_projection_parameters(
+        merge_yaml_maps(baseline_config_, config), *parsed_current_projection);
     if (!current_projection_parameters.ok()) {
       appendLog(QString("invalid current stitching projection parameters: %1")
                     .arg(current_projection_parameters.status().ToString().c_str()));
@@ -7970,6 +8025,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   int saved_control_points = 0;
   int saved_frame_count = kDefaultStitchCalibrationFrameCount;
   bool saved_frame_count_found = false;
+  std::optional<int> selected_plan_frame_count;
   QString saved_stitch_frame_time = default_stitch_frame_time_;
   bool saved_stitch_frame_time_valid = true;
   int saved_max_output_width = default_stitch_max_output_width_;
@@ -7986,6 +8042,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   bool saved_artifacts_invalidated = false;
   bool clean_all = false;
   bool clean_from_control_points = false;
+  bool replay_selected_frames = false;
   auto width_constraint_check = lockStitchingCanvasConstraint(active_run_game_id_);
   if (!width_constraint_check.has_value())
     return false;
@@ -8002,6 +8059,10 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         config = YAML::LoadFile(config_path.string());
       if (!yaml_defined(config) || config.IsNull())
         config = YAML::Node(YAML::NodeType::Map);
+      const auto plan_count = selected_calibration_frame_count(config);
+      if (!plan_count.ok())
+        throw std::invalid_argument(plan_count.status().ToString());
+      selected_plan_frame_count = *plan_count;
       YAML::Node saved;
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &saved) && saved.IsScalar()) {
         saved_control_points = saved.as<int>();
@@ -8011,6 +8072,14 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.frame_count", &saved_frame_count_node) &&
           saved_frame_count_node.IsScalar()) {
         saved_frame_count = saved_frame_count_node.as<int>();
+        saved_frame_count_found = true;
+      } else if (
+          lookup_yaml_path(config, "stitching.calibration_frame_count", &saved_frame_count_node) &&
+          saved_frame_count_node.IsScalar()) {
+        saved_frame_count = saved_frame_count_node.as<int>();
+        saved_frame_count_found = true;
+      } else if (selected_plan_frame_count.has_value()) {
+        saved_frame_count = *selected_plan_frame_count;
         saved_frame_count_found = true;
       }
       saved_stitch_frame_time_valid =
@@ -8040,7 +8109,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       const auto parsed_saved_projection = hm::stitching::ParseStitchProjection(saved_projection.toStdString());
       if (!parsed_saved_projection.ok())
         throw std::invalid_argument(std::string(parsed_saved_projection.status().message()));
-      auto parameters = hm::stitching::read_stitch_projection_parameters(config, *parsed_saved_projection);
+      auto parameters = hm::stitching::read_stitch_projection_parameters(
+          merge_yaml_maps(baseline_config_, config), *parsed_saved_projection);
       if (!parameters.ok())
         throw std::invalid_argument(std::string(parameters.status().message()));
       saved_projection_parameters = *parameters;
@@ -8110,11 +8180,21 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         saved_projection_framing != active_projection_framing_;
     const bool stitch_frame_time_changed =
         !saved_stitch_frame_time_valid || saved_stitch_frame_time != active_stitch_frame_time_;
-    // An explicit ordinary frame choice replaces the experiment's frozen plan.
-    // Publish its removal with the new input settings and invalidation owner.
-    if (stitch_frame_time_changed || frame_count_changed)
+    const bool retain_selected_frames = selected_plan_frame_count.has_value() && saved_frame_count == frame_count;
+    replay_selected_frames = retain_selected_frames;
+    if (stitch_frame_time_changed && retain_selected_frames) {
+      calibration_failure_message_ =
+          "Cannot change the reference time while keeping the selected calibration frames. Restore the saved "
+          "reference time, or explicitly change the frame count to select a new frame set.";
+      appendLog(calibration_failure_message_);
+      return false;
+    }
+    // Changing the count explicitly requests a new set; other stitching edits
+    // must retain the experiment's exact chosen pairs.
+    if (saved_frame_count != frame_count)
       remove_yaml_path(config, {"stitching", "calibration_frame_selection"});
-    remove_yaml_path(config, {"stitching", "stitch_frame_time"});
+    if (!retain_selected_frames)
+      remove_yaml_path(config, {"stitching", "stitch_frame_time"});
     remove_yaml_path(config, {"stitching", "control_point_matcher"});
     remove_yaml_path(config, {"stitching", "mapping_backend"});
     remove_yaml_path(config, {"stitching", "camera_config"});
@@ -8126,7 +8206,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     remove_yaml_path(config, {"stitching", "calibration_frame_count"});
     remove_stitch_max_output_width_native_aliases(config);
     remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
-    if (active_stitch_frame_time_ != default_stitch_frame_time_) {
+    if (!retain_selected_frames && active_stitch_frame_time_ != default_stitch_frame_time_) {
       config["stitching"]["stitch_frame_time"] = active_stitch_frame_time_.toStdString();
     }
     write_stitching_iteration_settings(config, active_iteration_settings_);
@@ -8182,6 +8262,43 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       }
       return true;
     }
+
+    QStringList reasons;
+    if (active_force_reconfigure_)
+      reasons << "explicit restart";
+    if (control_points_changed)
+      reasons << QString("control-point limit %1 -> %2")
+                     .arg(saved_found ? QString::number(saved_control_points) : "missing")
+                     .arg(control_points);
+    if (frame_count_changed)
+      reasons << QString("frame count %1 -> %2")
+                     .arg(saved_frame_count_found ? QString::number(saved_frame_count) : "missing")
+                     .arg(frame_count);
+    if (stitch_frame_time_changed)
+      reasons << QString("reference time %1 -> %2").arg(saved_stitch_frame_time, active_stitch_frame_time_);
+    if (saved_control_point_matcher != active_control_point_matcher_)
+      reasons << QString("matcher %1 -> %2").arg(saved_control_point_matcher, active_control_point_matcher_);
+    if (saved_resolution != active_control_point_resolution_)
+      reasons << QString("resolution %1 -> %2").arg(saved_resolution, active_control_point_resolution_);
+    if (mapping_backend_changed)
+      reasons << QString("mapping backend %1 -> %2").arg(saved_mapping_backend, active_mapping_backend_);
+    if (camera_changed)
+      reasons << "camera configuration/FOV";
+    if (projection_changed)
+      reasons << QString("projection %1 -> %2").arg(saved_projection, active_projection_);
+    if (projection_parameters_changed)
+      reasons << "projection parameters";
+    if (projection_framing_changed)
+      reasons << projection_framing_change_reason(saved_projection_framing, active_projection_framing_);
+    if (run_autooptimizer_changed)
+      reasons << QString("autooptimizer %1 -> %2").arg(saved_run_autooptimizer).arg(active_run_autooptimizer_);
+    if (canvas_constraint.calibration_required)
+      reasons << QString("effective canvas width limit %1 -> %2")
+                     .arg(saved_max_output_width)
+                     .arg(active_stitch_max_output_width_);
+    if (saved_status != "complete")
+      reasons << QString("saved calibration status=%1").arg(saved_status.isEmpty() ? "missing" : saved_status);
+    appendLog("stitching calibration required: " + reasons.join("; "));
 
     QString stale_from = saved_stale_from;
     if (!calibration_stage_index(stale_from).has_value()) {
@@ -8250,8 +8367,10 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
                   .arg(saved_stitch_frame_time_valid ? saved_stitch_frame_time : QString("invalid"))
                   .arg(active_stitch_frame_time_));
   }
+  if (replay_selected_frames)
+    appendLog("stitching calibration will replay the saved frame selection");
   if (clean_all) {
-    appendLog(QString("stitching calibration dependency %1 is stale; cleaning it and all downstream artifacts")
+    appendLog(QString("rebuilding the full stitching calibration because dependency %1 is stale")
                   .arg(active_calibration_start_stage_));
     if (!runStitchingClean(
             runner,
@@ -9456,7 +9575,9 @@ void HStreamWindow::startPipeline() {
   if (!prepareStitchingCalibrationRun(runner, working_dir, env, &calibration_required)) {
     abandon_archive_start("stitching setup failed");
     showStitchingCalibrationDialog();
-    failStitchingCalibration("Could not prepare the game for stitching calibration.");
+    failStitchingCalibration(
+        calibration_failure_message_.isEmpty() ? QString("Could not prepare the game for stitching calibration.")
+                                               : calibration_failure_message_);
     calibration_pending_ = false;
     active_run_game_id_.clear();
     active_run_is_calibration_ = false;
@@ -15429,9 +15550,9 @@ void HStreamWindow::resetCameraControls() {
   if (!pipeline_running && camera_configuration_combo_) {
     set_combo_to_data(camera_configuration_combo_, QString::fromStdString(default_camera_selection_.configuration));
     if (camera_horizontal_fov_spin_)
-      camera_horizontal_fov_spin_->setValue(default_camera_selection_.horizontal_fov);
+      set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
     if (camera_vertical_fov_spin_)
-      camera_vertical_fov_spin_->setValue(default_camera_selection_.vertical_fov);
+      set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
   }
   if (!pipeline_running && projection_combo_) {
     projection_parameter_controls_projection_.clear();
@@ -15449,7 +15570,7 @@ void HStreamWindow::resetCameraControls() {
       projection_auto_fov_check_->setChecked(default_projection_framing_.auto_fov);
     updateProjectionFramingControls();
     if (projection_fov_spin_)
-      projection_fov_spin_->setValue(default_projection_framing_.horizontal_fov);
+      set_calibration_spin_value(projection_fov_spin_, default_projection_framing_.horizontal_fov);
     if (projection_auto_canvas_check_)
       projection_auto_canvas_check_->setChecked(default_projection_framing_.auto_canvas);
     if (projection_auto_crop_check_)
@@ -15876,12 +15997,12 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   if (camera_horizontal_fov_spin_) {
     const bool blocked = camera_horizontal_fov_spin_->blockSignals(true);
-    camera_horizontal_fov_spin_->setValue(default_camera_selection_.horizontal_fov);
+    set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
     camera_horizontal_fov_spin_->blockSignals(blocked);
   }
   if (camera_vertical_fov_spin_) {
     const bool blocked = camera_vertical_fov_spin_->blockSignals(true);
-    camera_vertical_fov_spin_->setValue(default_camera_selection_.vertical_fov);
+    set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
     camera_vertical_fov_spin_->blockSignals(blocked);
   }
   if (projection_combo_) {
@@ -15905,7 +16026,7 @@ void HStreamWindow::loadSavedControlConfig() {
   updateProjectionFramingControls();
   if (projection_fov_spin_) {
     const bool blocked = projection_fov_spin_->blockSignals(true);
-    projection_fov_spin_->setValue(default_projection_framing_.horizontal_fov);
+    set_calibration_spin_value(projection_fov_spin_, default_projection_framing_.horizontal_fov);
     projection_fov_spin_->blockSignals(blocked);
   }
   if (projection_auto_canvas_check_) {
@@ -16131,6 +16252,9 @@ void HStreamWindow::loadSavedControlConfig() {
       staged_control_points = control_points.as<int>();
     }
     YAML::Node frame_count;
+    const auto selected_plan_frame_count = selected_calibration_frame_count(config);
+    if (!selected_plan_frame_count.ok())
+      throw std::invalid_argument(selected_plan_frame_count.status().ToString());
     if (calibration_frame_count_spin_) {
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.frame_count", &frame_count) &&
           frame_count.IsScalar()) {
@@ -16138,6 +16262,8 @@ void HStreamWindow::loadSavedControlConfig() {
       } else if (
           lookup_yaml_path(config, "stitching.calibration_frame_count", &frame_count) && frame_count.IsScalar()) {
         staged_frame_count = frame_count.as<int>();
+      } else if (selected_plan_frame_count->has_value()) {
+        staged_frame_count = **selected_plan_frame_count;
       }
     }
     if (stitch_max_output_width_spin_) {
@@ -16480,12 +16606,12 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     if (camera_horizontal_fov_spin_) {
       const bool blocked = camera_horizontal_fov_spin_->blockSignals(true);
-      camera_horizontal_fov_spin_->setValue(staged_camera_selection.horizontal_fov);
+      set_calibration_spin_value(camera_horizontal_fov_spin_, staged_camera_selection.horizontal_fov);
       camera_horizontal_fov_spin_->blockSignals(blocked);
     }
     if (camera_vertical_fov_spin_) {
       const bool blocked = camera_vertical_fov_spin_->blockSignals(true);
-      camera_vertical_fov_spin_->setValue(staged_camera_selection.vertical_fov);
+      set_calibration_spin_value(camera_vertical_fov_spin_, staged_camera_selection.vertical_fov);
       camera_vertical_fov_spin_->blockSignals(blocked);
     }
     projection_parameter_controls_projection_.clear();
@@ -16509,7 +16635,7 @@ void HStreamWindow::loadSavedControlConfig() {
     updateProjectionFramingControls();
     if (projection_fov_spin_) {
       const bool blocked = projection_fov_spin_->blockSignals(true);
-      projection_fov_spin_->setValue(staged_projection_framing.horizontal_fov);
+      set_calibration_spin_value(projection_fov_spin_, staged_projection_framing.horizontal_fov);
       projection_fov_spin_->blockSignals(blocked);
     }
     if (projection_auto_canvas_check_) {
@@ -16621,6 +16747,28 @@ bool HStreamWindow::applySavedControlConfig(
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
   }
+  const auto selected_plan_frame_count = selected_calibration_frame_count(config);
+  if (!selected_plan_frame_count.ok()) {
+    appendLog(QString("could not save preset: %1").arg(selected_plan_frame_count.status().ToString().c_str()));
+    return false;
+  }
+  const QString stitch_frame_time = stitchFrameTime();
+  const int selected_control_points = stitchingCalibrationControlPoints();
+  const int selected_frame_count = stitchingCalibrationFrameCount();
+  QString previous_stitch_frame_time = default_stitch_frame_time_;
+  const bool previous_stitch_frame_time_valid =
+      read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
+  const bool stitch_frame_time_changed =
+      !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
+  const bool frame_count_changed =
+      saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
+  const bool retain_selected_frames = selected_plan_frame_count->has_value() && !frame_count_changed;
+  if (stitch_frame_time_changed && retain_selected_frames) {
+    appendLog(
+        "Cannot change the reference time while keeping the selected calibration frames. Restore the saved "
+        "reference time, or explicitly change the frame count to select a new frame set.");
+    return false;
+  }
   const YAML::Node unavailable_tracker_snapshot =
       unavailable_playtracker_config_error_.isEmpty() ? YAML::Node() : YAML::Clone(config);
   YAML::Node previous_hstream_ui = map_value(config, "hstream_ui");
@@ -16697,9 +16845,6 @@ bool HStreamWindow::applySavedControlConfig(
   } catch (const std::exception& ex) {
     qWarning() << "Ignoring malformed existing stitch max output width while saving preset:" << ex.what();
   }
-  QString previous_stitch_frame_time = default_stitch_frame_time_;
-  const bool previous_stitch_frame_time_valid =
-      read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
   bool previous_run_autooptimizer = default_run_autooptimizer_;
   try {
     previous_run_autooptimizer = read_run_autooptimizer_from_config(config, default_run_autooptimizer_);
@@ -16795,16 +16940,9 @@ bool HStreamWindow::applySavedControlConfig(
   }
   config["hstream_ui"]["job"]["arguments"] = job_arguments;
 
-  const QString stitch_frame_time = stitchFrameTime();
-  const int selected_control_points = stitchingCalibrationControlPoints();
-  const int selected_frame_count = stitchingCalibrationFrameCount();
-  const bool stitch_frame_time_changed =
-      !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
   const bool control_points_changed =
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;
-  const bool frame_count_changed =
-      saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
-  if (stitch_frame_time_changed || frame_count_changed)
+  if (frame_count_changed)
     remove_yaml_path(config, {"stitching", "calibration_frame_selection"});
   const bool max_output_width_changed = previous_max_output_width != selected_max_output_width;
   const auto canvas_constraint = max_output_width_changed
@@ -16858,9 +16996,10 @@ bool HStreamWindow::applySavedControlConfig(
   const bool projection_parameters_changed = previous_projection_parameters != selected_projection_parameters;
   const bool projection_framing_changed = (previous_mapping_backend == "nona" || selected_mapping_backend == "nona") &&
       saved_projection_framing_ != selected_projection_framing;
-  remove_yaml_path(config, {"stitching", "stitch_frame_time"});
+  if (!retain_selected_frames)
+    remove_yaml_path(config, {"stitching", "stitch_frame_time"});
   remove_yaml_path(config, {"stitching", "calibration_frame_count"});
-  if (stitch_frame_time != default_stitch_frame_time_) {
+  if (!retain_selected_frames && stitch_frame_time != default_stitch_frame_time_) {
     config["stitching"]["stitch_frame_time"] = stitch_frame_time.toStdString();
   }
   if (selected_frame_count != kDefaultStitchCalibrationFrameCount) {
@@ -16900,7 +17039,36 @@ bool HStreamWindow::applySavedControlConfig(
         !run_autooptimizer_changed;
     calibration["artifacts_invalidated"] = only_width_changed && !canvas_constraint.cleanup_required;
     calibration["invalidation_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-    appendLog("stitching calibration settings changed; stitching calibration marked stale");
+    QStringList reasons;
+    if (control_points_changed)
+      reasons
+          << QString("control-point limit %1 -> %2").arg(saved_stitching_control_points_).arg(selected_control_points);
+    if (frame_count_changed)
+      reasons
+          << QString("frame count %1 -> %2").arg(saved_stitching_calibration_frame_count_).arg(selected_frame_count);
+    if (stitch_frame_time_changed)
+      reasons << QString("reference time %1 -> %2").arg(previous_stitch_frame_time, stitch_frame_time);
+    if (previous_control_point_matcher != selected_control_point_matcher)
+      reasons << QString("matcher %1 -> %2").arg(previous_control_point_matcher, selected_control_point_matcher);
+    if (saved_control_point_resolution_ != control_point_resolution_)
+      reasons << QString("resolution %1 -> %2").arg(saved_control_point_resolution_, control_point_resolution_);
+    if (mapping_backend_changed)
+      reasons << QString("mapping backend %1 -> %2").arg(previous_mapping_backend, selected_mapping_backend);
+    if (camera_changed)
+      reasons << "camera configuration/FOV";
+    if (projection_changed)
+      reasons << QString("projection %1 -> %2").arg(previous_projection, selected_projection);
+    if (projection_parameters_changed)
+      reasons << "projection parameters";
+    if (projection_framing_changed)
+      reasons << projection_framing_change_reason(saved_projection_framing_, selected_projection_framing);
+    if (run_autooptimizer_changed)
+      reasons << QString("autooptimizer %1 -> %2").arg(previous_run_autooptimizer).arg(selected_run_autooptimizer);
+    if (canvas_constraint.calibration_required)
+      reasons << QString("effective canvas width limit %1 -> %2")
+                     .arg(previous_max_output_width)
+                     .arg(selected_max_output_width);
+    appendLog("stitching calibration marked stale: " + reasons.join("; "));
   } else if (max_output_width_changed || had_conflicting_max_output_width_native_alias) {
     appendLog("maximum stitched width changed without changing the effective canvas; reusing existing maps");
   }

@@ -1287,10 +1287,10 @@ struct StitchingExperimentDialog::Impl {
                         .arg(sequence));
         if (selection_applied)
           selection_applied();
+        request_close(QDialog::Accepted);
+        return;
       }
       update_controls();
-      if (result->ok())
-        apply->setEnabled(false);
       maybe_finish_close();
     });
     QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);

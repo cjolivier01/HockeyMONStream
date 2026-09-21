@@ -2188,16 +2188,17 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
 }
 
 static absl::StatusOr<bool> validate_stitching_artifacts_locked(
+    const std::string& artifact_dir,
     const std::string& game_dir,
     size_t max_output_width,
     SeamValidationMode seam_validation,
     const HuginProject::ArtifactLock& artifact_lock,
     CanvasSize* validated_canvas = nullptr) {
-  bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
+  bool up_to_date = test_dependency_tree(artifact_dir, /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
   }
-  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(game_dir);
+  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(artifact_dir);
   if (!artifact_bounds.ok()) {
     std::cout << "Stitching artifacts are unsafe or exceed parser byte limits: " << artifact_bounds << std::endl;
     if (absl::IsNotFound(artifact_bounds) || absl::IsFailedPrecondition(artifact_bounds) ||
@@ -2209,8 +2210,8 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
   CanvasSize canvas_size;
   TiffPlacement p0;
   TiffPlacement p1;
-  auto p0_status = read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif");
-  auto p1_status = read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif");
+  auto p0_status = read_tiff_placement(fs::path(artifact_dir) / "mapping_0000.tif");
+  auto p1_status = read_tiff_placement(fs::path(artifact_dir) / "mapping_0001.tif");
   if (!p0_status.ok() || !p1_status.ok()) {
     const absl::Status placement_status = !p0_status.ok() ? p0_status.status() : p1_status.status();
     std::cout << "Stitching artifacts exist but mapping TIFF placement metadata is invalid: " << placement_status
@@ -2234,7 +2235,7 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     return canvas_status.status();
   }
   canvas_size = *canvas_status;
-  auto provenance = HuginProject::ReadCanvasProvenance(game_dir, artifact_lock);
+  auto provenance = HuginProject::ReadCanvasProvenance(artifact_dir, artifact_lock);
   if (!provenance.ok()) {
     if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status()) ||
         absl::IsNotFound(provenance.status())) {
@@ -2250,20 +2251,22 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     return false;
   }
   CanvasProvenanceCompatibility algorithm_compatibility;
+  // Stable load snapshots contain only artifacts. Check their provenance against
+  // the source game's configuration, including any selected calibration plan.
   HM_ASSIGN_OR_RETURN(algorithm_compatibility, check_stitch_algorithm_provenance_compatibility(game_dir, *provenance));
   if (!algorithm_compatibility.compatible) {
     std::cout << "Stitching artifacts require mapping regeneration because " << algorithm_compatibility.reason
               << std::endl;
     return false;
   }
-  const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
+  const absl::Status remap_status = validate_remap_artifact_headers(fs::path(artifact_dir), p0, p1);
   if (absl::IsFailedPrecondition(remap_status) || absl::IsInvalidArgument(remap_status) ||
       absl::IsNotFound(remap_status)) {
     std::cout << "Stitching artifacts exist but remap TIFF metadata is invalid: " << remap_status << std::endl;
     return false;
   }
   HM_RETURN_IF_ERROR(remap_status);
-  const fs::path seam_path = fs::path(game_dir) / "seam_file.png";
+  const fs::path seam_path = fs::path(artifact_dir) / "seam_file.png";
   absl::Status seam_status;
   switch (seam_validation) {
     case SeamValidationMode::kLayoutOnly:
@@ -2310,7 +2313,8 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
-  return validate_stitching_artifacts_locked(game_dir, max_output_width, SeamValidationMode::kContent, **artifact_lock);
+  return validate_stitching_artifacts_locked(
+      game_dir, game_dir, max_output_width, SeamValidationMode::kContent, **artifact_lock);
 }
 
 struct StitchingArtifactLoadSnapshot::Impl {
@@ -2488,6 +2492,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
         configured,
         validate_stitching_artifacts_locked(
             game_dir,
+            game_dir,
             max_output_width,
             validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
             **artifact_lock,
@@ -2537,6 +2542,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
           snapshot_configured,
           validate_stitching_artifacts_locked(
               snapshot->directory(),
+              game_dir,
               max_output_width,
               validate_generation_content ? SeamValidationMode::kContent : SeamValidationMode::kLayoutOnly,
               **artifact_lock,
@@ -4309,9 +4315,11 @@ bool is_field_mask_configured_for_stitching_config(
     double post_stitch_rotate_degrees,
     const std::string& expected_invalidation_id,
     const std::optional<ValidatedStitchingArtifacts>& previously_validated) {
-  return load_field_mask_impl(
-             game_dir, {}, expected_invalidation_id, max_output_width, post_stitch_rotate_degrees, previously_validated)
-      .ok();
+  const auto mask = load_field_mask_impl(
+      game_dir, {}, expected_invalidation_id, max_output_width, post_stitch_rotate_degrees, previously_validated);
+  if (!mask.ok())
+    std::cout << "Rink mask cannot be reused: " << mask.status() << std::endl;
+  return mask.ok();
 }
 
 namespace {

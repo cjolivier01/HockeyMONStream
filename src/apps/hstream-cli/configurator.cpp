@@ -6324,7 +6324,7 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
     return absl::OkStatus();
   }
 
-  std::cout << "Stitching canvas requires regeneration for the active size constraints; clearing canvas-dependent "
+  std::cout << "Stitching artifacts failed reuse validation (see preceding diagnostics); clearing canvas-dependent "
                "cached rink geometry"
             << std::endl;
   remove_rotation_dependent_rink_cache_keys(config_);
@@ -7694,9 +7694,16 @@ absl::Status Configurator::persist_stitch_frame_time_override(const std::string&
   HM_ASSIGN_OR_RETURN(lower_layer_time_ns, private_stitch_frame_time(lower_layer_config_));
   uint64_t previous_time_ns = 0;
   HM_ASSIGN_OR_RETURN(previous_time_ns, private_stitch_frame_time(config_));
-  if (previous_time_ns != requested_time_ns) {
-    remove_yaml_key_path(private_config_, {"stitching", "calibration_frame_selection"});
-    remove_yaml_key_path(config_, {"stitching", "calibration_frame_selection"});
+  std::string selected_fingerprint;
+  HM_ASSIGN_OR_RETURN(selected_fingerprint, stitching::player_frame_selection_fingerprint(private_config_));
+  if (!selected_fingerprint.empty()) {
+    if (previous_time_ns != requested_time_ns)
+      return absl::FailedPreconditionError(
+          "The saved player-rich frames fix the reference time. Restore that time or explicitly change the frame "
+          "count to replace the selection; the saved frames have been preserved.");
+    // The plan binds the persisted anchor spelling as well as its effective
+    // decode time. Do not remove a redundant override from a frozen selection.
+    return absl::OkStatus();
   }
   config_["stitching"]["stitch_frame_time"] = requested;
   if (requested_time_ns == lower_layer_time_ns) {
@@ -8371,8 +8378,8 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError("Invalid stitch-frame override: " + std::string(error.what()));
   }
-  // Reconcile both explicit inputs before the time change clears the selected
-  // plan. Keep the same owner across their separately locked publications.
+  // Changing the frame count explicitly replaces the selected plan. Other
+  // settings, including reference time, must never silently discard it.
   std::string reconciled_invalidation_id = expected_invalidation_id;
   HM_RETURN_IF_ERROR(reconcile_selected_frame_count_override(expected_invalidation_id, &reconciled_invalidation_id));
 
@@ -8407,6 +8414,17 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   if (private_value_present)
     HM_ASSIGN_OR_RETURN(current_time_ns, private_stitch_frame_time(latest));
   const bool changed = current_time_ns != requested_time_ns;
+  std::string selected_fingerprint;
+  HM_ASSIGN_OR_RETURN(selected_fingerprint, stitching::player_frame_selection_fingerprint(latest));
+  if (!selected_fingerprint.empty()) {
+    if (changed)
+      return absl::FailedPreconditionError(
+          "The saved player-rich frames fix the reference time. Restore that time or explicitly change the frame "
+          "count to replace the selection; the saved frames have been preserved.");
+    // Keep the stored form used by the plan's source context, even when the
+    // inherited value currently makes the game-private override redundant.
+    return false;
+  }
   const bool should_persist = requested_time_ns != lower_layer_time_ns;
   const bool persistence_changed = private_value_present != should_persist;
   if (changed || persistence_changed) {
@@ -8437,8 +8455,6 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       remove_yaml_key_path(latest, {"stitching", "stitch_frame_time"});
 
     if (changed) {
-      if (remove_yaml_key_path(latest, {"stitching", "calibration_frame_selection"}))
-        remove_yaml_key_path(latest, {"hstream_ui", "stitching_calibration", "backend_generation"});
       size_t control_points = kDefaultStitchingControlPoints;
       if (get_node(latest, "hstream_ui.stitching_calibration.control_points").has_value()) {
         HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(latest));
@@ -8483,8 +8499,6 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   private_config_ = YAML::Clone(latest);
   persisted_private_config_ = YAML::Clone(latest);
   config_["stitching"]["stitch_frame_time"] = requested;
-  if (changed)
-    remove_yaml_key_path(config_, {"stitching", "calibration_frame_selection"});
   const auto calibration = get_node(latest, "hstream_ui.stitching_calibration");
   if (calibration.has_value()) {
     config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(*calibration);
@@ -8523,12 +8537,15 @@ absl::Status Configurator::reconcile_selected_frame_count_override(
   count_config["stitching"]["calibration_frame_count"] = *requested_value;
   size_t requested_count;
   HM_ASSIGN_OR_RETURN(requested_count, persisted_stitching_calibration_frame_count(count_config));
+  std::string previous_selection;
+  HM_ASSIGN_OR_RETURN(previous_selection, stitching::player_frame_selection_fingerprint(private_config_));
+  // The validated plan owns its count even when optional saved bookkeeping is
+  // absent. This check deliberately does not require the original media.
+  const size_t previous_count = (*selection)["selected"].size();
   config_["stitching"]["calibration_frame_count"] = requested_count;
   config_["hstream_ui"]["stitching_calibration"]["frame_count"] = requested_count;
   config_["pipeline"]["hmstitcher"]["calibration-frame-count"] = requested_count;
   remove_yaml_key_path(config_, {"pipeline", "hmstitcher", "calibration_frame_count"});
-  size_t previous_count;
-  HM_ASSIGN_OR_RETURN(previous_count, persisted_stitching_calibration_frame_count(private_config_));
   if (requested_count == previous_count)
     return absl::OkStatus();
   const char* environment_count = g_getenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
@@ -8539,8 +8556,6 @@ absl::Status Configurator::reconcile_selected_frame_count_override(
       return absl::InvalidArgumentError(
           "Explicit calibration frame count conflicts with HM_STITCH_CALIBRATION_FRAME_COUNT");
   }
-  std::string previous_selection;
-  HM_ASSIGN_OR_RETURN(previous_selection, stitching::player_frame_selection_fingerprint(private_config_));
   const fs::path game_dir = resolved_game_dir();
   auto transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
   if (!transaction.ok())

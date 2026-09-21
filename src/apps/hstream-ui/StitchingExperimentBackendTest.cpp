@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 
 #include "yaml-cpp/yaml.h"
 
@@ -37,8 +38,13 @@ bool write(const fs::path& path, const std::string& contents) {
 bool inherited_camera_handoff(const fs::path& root) {
   using namespace hm::stitching;
   const fs::path game = root / "inherited-camera-game";
+  YAML::Node original;
+  for (const auto& section : {std::make_pair("game", "videos"), std::make_pair("hstream_ui", "video_roles")}) {
+    original[section.first][section.second]["left"].push_back((game / "cam1" / "left.mp4").string());
+    original[section.first][section.second]["right"].push_back((game / "cam2" / "right.mp4").string());
+  }
   if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
-      !write(game / "config.yaml", "game:\n  videos:\n    left: [cam1/left.mp4]\n    right: [cam2/right.mp4]\n"))
+      !write(game / "config.yaml", YAML::Dump(original)))
     return false;
   const StitchingExperimentSettings settings{900, 2, "00:00:08", std::nullopt};
   const auto baseline = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 1);
@@ -153,8 +159,71 @@ bool inherited_camera_handoff(const fs::path& root) {
   }
   const YAML::Node frozen = YAML::LoadFile((candidate->game_directory / "config.yaml").string());
   const auto frozen_camera = read_stitch_camera_selection(frozen);
-  return prepared->available && frozen_camera.ok() && *frozen_camera == camera &&
-      !frozen["stitching"]["stitch_frame_time"].IsDefined() && validate_player_frame_selection_sources(frozen).ok();
+  if (!prepared->available || !frozen_camera.ok() || *frozen_camera != camera ||
+      frozen["stitching"]["stitch_frame_time"].IsDefined() || !validate_player_frame_selection_sources(frozen).ok())
+    return false;
+
+  const auto promote = [&] {
+    return BuildStitchingExperimentSelectionConfig(candidate->game_directory / "config.yaml", game / "config.yaml");
+  };
+  const auto validates_after_promotion = [&](const absl::StatusOr<std::string>& promoted) {
+    if (!promoted.ok()) {
+      std::cerr << promoted.status() << '\n';
+      return false;
+    }
+    const YAML::Node config = YAML::Load(*promoted);
+    for (const auto& section : {std::make_pair("game", "videos"), std::make_pair("hstream_ui", "video_roles")}) {
+      if (config[section.first][section.second]["left"][0].as<std::string>() != "cam1/left.mp4" ||
+          config[section.first][section.second]["right"][0].as<std::string>() != "cam2/right.mp4")
+        return false;
+    }
+    return config["stitching"]["calibration_frame_selection"]["fingerprint"].as<std::string>() == plan.fingerprint &&
+        validate_player_frame_selection_sources(config).ok();
+  };
+  if (!expect(validates_after_promotion(promote()), "absolute roles must replay the same frozen plan after promotion"))
+    return false;
+
+  std::error_code error;
+  fs::create_symlink(game / "cam1" / "left.mp4", game / "left-alias.mp4", error);
+  if (error)
+    return false;
+  YAML::Node alias = YAML::Clone(original);
+  alias["game"]["videos"]["left"][0] = "left-alias.mp4";
+  alias["hstream_ui"]["video_roles"]["left"][0] = (game / "left-alias.mp4").string();
+  if (!write(game / "config.yaml", YAML::Dump(alias)) ||
+      !expect(validates_after_promotion(promote()), "equivalent camera aliases must preserve the frozen plan"))
+    return false;
+
+  YAML::Node changed = YAML::Clone(original);
+  changed["hstream_ui"]["video_roles"]["left"][0] = (game / "cam2" / "right.mp4").string();
+  if (!write(game / "config.yaml", YAML::Dump(changed)))
+    return false;
+  const auto rejected = promote();
+  if (!expect(
+          !rejected.ok() && absl::IsAborted(rejected.status()), "promotion must not rewrite a different camera input"))
+    return false;
+
+  YAML::Node ordinary = YAML::Clone(frozen);
+  ordinary["stitching"].remove("calibration_frame_selection");
+  if (!write(candidate->game_directory / "ordinary.yaml", YAML::Dump(ordinary)))
+    return false;
+  const auto ordinary_promotion =
+      BuildStitchingExperimentSelectionConfig(candidate->game_directory / "ordinary.yaml", game / "config.yaml");
+  if (!expect(
+          ordinary_promotion.ok() &&
+              YAML::Dump(YAML::Load(*ordinary_promotion)["hstream_ui"]["video_roles"]) ==
+                  YAML::Dump(changed["hstream_ui"]["video_roles"]),
+          "ordinary promotion must preserve the destination's camera roles"))
+    return false;
+
+  if (!write(game / "config.yaml", YAML::Dump(original)) || !fs::remove(game / "cam1" / "left.mp4") ||
+      !fs::remove(game / "cam2" / "right.mp4"))
+    return false;
+  if (!expect(promote().ok(), "identical destination paths must not require available media for artifact promotion"))
+    return false;
+  return expect(
+      BuildStitchingExperimentSelectionConfig(candidate->game_directory / "ordinary.yaml", game / "config.yaml").ok(),
+      "ordinary artifact promotion must not require available media");
 }
 
 } // namespace
@@ -186,6 +255,8 @@ int main() {
           "    right: [cam2/right.mp4]\n"
           "  stitching:\n"
           "    control_points: [old-game-cache]\n"
+          "hstream_ui:\n"
+          "  projection_crop_geometry: inherited-old-alignment\n"
           "stitching:\n"
           "  control_points: [old-cache]\n"
           "  calibration_frame_selection: {fingerprint: old-player-plan}\n"
@@ -262,12 +333,22 @@ int main() {
       calibration["invalidation_id"].as<std::string>() == workspace->invalidation_id &&
           !calibration["backend_generation"].IsDefined(),
       "candidate must leave backend reservation to the runner after inherited settings resolve");
+  const std::string selected_pto = "p f19 v180\ni w3840 h2160 f0 v108 y-25\ni w3840 h2160 f0 v108 y25\n";
+  ok &= expect(
+      write(workspace->game_directory / "autooptimiser_out.pto", selected_pto),
+      "selected candidate geometry fixture must publish");
   const auto selected_config =
       BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
   ok &= expect(selected_config.ok(), "selected candidate config must be mergeable");
   if (selected_config.ok()) {
     const YAML::Node selected = YAML::Load(*selected_config);
     const YAML::Node selected_rink = selected["rink"];
+    const auto selected_framing = hm::stitching::read_stitch_projection_framing(selected);
+    ok &= expect(
+        selected_framing.ok() &&
+            hm::stitching::projection_crop_reviewed(
+                selected, hm::stitching::projection_crop_geometry(selected_pto, *selected_framing)),
+        "explicit candidate selection must accept its actual crop geometry so first Play reuses the chosen maps");
     ok &= expect(
         !selected["stitching"]["calibration_frame_selection"].IsDefined(),
         "promoting an ordinary candidate must remove the previous player plan");

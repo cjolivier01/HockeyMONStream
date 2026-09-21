@@ -3,6 +3,8 @@
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QProcess>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
@@ -420,14 +422,57 @@ void exercise(
     if (!selected)
       throw std::runtime_error("Candidate promotion failed: " + status->text().toStdString());
     require(read(game + "/config.yaml") != original_config, "Explicit selection did not publish config");
+    require(
+        wait_until([&] { return !dialog.isVisible(); }, 1000) && dialog.result() == QDialog::Accepted,
+        "Successful publication must close the dialog and accept the selection");
+    const QByteArray promoted_provenance = read(game + "/stitching_canvas_provenance");
+    QProcess program;
+    QProcessEnvironment program_environment = QProcessEnvironment::systemEnvironment();
+    program_environment.insert("HM_GAME_DIR", QFileInfo(game).absolutePath());
+    program_environment.insert("HSTREAM_UI_PARENT_PID", QString::number(QCoreApplication::applicationPid()));
+    program.setProcessEnvironment(program_environment);
+    program.setWorkingDirectory(repo);
+    program.setProcessChannelMode(QProcess::MergedChannels);
+    QString program_output;
+    QObject::connect(&program, &QProcess::readyReadStandardOutput, &program, [&] {
+      const QString chunk = QString::fromLocal8Bit(program.readAllStandardOutput());
+      program_output += chunk;
+      log->appendPlainText(chunk);
+    });
+    program.start(
+        runner,
+        {"-g",
+         QFileInfo(game).fileName(),
+         "--enable-sources=URI-MULTIPLE",
+         "--enable-sinks=FAKE",
+         "-c",
+         repo + "/configs/ds_hockey_app_config.yaml",
+         "--start-time=" + anchor,
+         "--stitch-frame-time=" + anchor,
+         "--options=pipeline.hmaudio.enable=0,pipeline.hmplaycropper.show-scoreboard=0",
+         "-t=5"});
+    require(
+        wait_until([&] { return program.state() == QProcess::NotRunning; }, 180000), "Main Program startup timed out");
+    program_output += QString::fromLocal8Bit(program.readAllStandardOutput());
+    require(
+        program.exitStatus() == QProcess::NormalExit && program.exitCode() == 0 &&
+            program_output.contains("App run successful") &&
+            QRegularExpression("\\bfps(?:_avg)?=[1-9][0-9]*(?:\\.[0-9]+)?").match(program_output).hasMatch(),
+        "Main Program must process video after promotion");
+    require(
+        !program_output.contains("stage=features status=started") &&
+            !program_output.contains("captured stitching calibration frame pair") &&
+            read(game + "/stitching_canvas_provenance") == promoted_provenance,
+        "Main Program must reuse the promoted calibration without selecting or solving new frames");
   } else {
     require(
         table->item(0, 5)->text() == "Runner exited 1" && table->item(1, 5)->text() == "Runner exited 1",
         "Failed candidate must not prevent the next queued run");
+    dialog.reject();
+    require(
+        wait_until([&] { return !dialog.isVisible(); }, 1000),
+        "Completed dialog must close without a forced-stop delay");
   }
-  dialog.reject();
-  require(
-      wait_until([&] { return !dialog.isVisible(); }, 1000), "Completed dialog must close without a forced-stop delay");
 }
 
 } // namespace

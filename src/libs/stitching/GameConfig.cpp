@@ -114,7 +114,22 @@ absl::Status validate_player_frame_selection_sources(const YAML::Node& config) {
       return absl::InvalidArgumentError("Player frame selection has an invalid decode anchor");
     std::string context;
     HM_ASSIGN_OR_RETURN(context, player_frame_source_context(config, anchor_ns));
-    return ValidatePlayerFrameSourceContext(plan, context);
+    YAML::Node expected = YAML::Load(plan.context.at("source_context"));
+    YAML::Node actual = YAML::Load(context);
+    if (!expected.IsMap())
+      return absl::InvalidArgumentError("Player frame selection has an invalid source context");
+    // Camera geometry describes the baseline that scored these pairs, not the
+    // physical frames themselves. Keep that original provenance/fingerprint,
+    // but permit a later solve to use the same pairs with another lens/FOV.
+    // Scan completion and candidate handoff still compare the full context.
+    for (const char* key : {"camera_config", "horizontal_fov", "vertical_fov"}) {
+      expected.remove(key);
+      actual.remove(key);
+    }
+    if (YAML::Dump(expected) != YAML::Dump(actual))
+      return absl::FailedPreconditionError(
+          "Player-selection chapters/synchronization/anchor context changed; saved player frames were preserved");
+    return absl::OkStatus();
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Invalid calibration frame selection: " + std::string(error.what()));
   }

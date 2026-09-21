@@ -272,6 +272,74 @@ void copy_node(YAML::Node destination, const YAML::Node& source, const char* key
     destination.remove(key);
 }
 
+absl::Status reconcile_selected_video_paths(
+    YAML::Node current,
+    const YAML::Node& selected,
+    const fs::path& game_directory) {
+  const YAML::Node selection = selected["stitching"]["calibration_frame_selection"];
+  if (!selection || selection.IsNull())
+    return absl::OkStatus();
+  std::error_code error;
+  const fs::path directory = fs::absolute(game_directory, error).lexically_normal();
+  if (error)
+    return absl::InvalidArgumentError("Unable to resolve the selected game's directory: " + error.message());
+  for (const char* role : {"left", "right"}) {
+    const YAML::Node selected_paths = selected["game"]["videos"][role];
+    if (!selected_paths.IsSequence() || selected_paths.size() == 0)
+      return absl::InvalidArgumentError("Selected player frames require a resolved camera playlist");
+    std::vector<fs::path> relative_paths;
+    for (const auto& value : selected_paths) {
+      if (!value.IsScalar())
+        return absl::InvalidArgumentError("Selected camera chapters must be paths");
+      const fs::path relative = fs::path(value.as<std::string>()).lexically_normal();
+      if (relative.empty() || relative == "." || relative.is_absolute() || *relative.begin() == "..")
+        return absl::InvalidArgumentError("Selected camera chapters must remain inside the game");
+      relative_paths.push_back(relative);
+    }
+    for (const auto& section : {std::make_pair("game", "videos"), std::make_pair("hstream_ui", "video_roles")}) {
+      const YAML::Node values = current;
+      const YAML::Node root = values[section.first];
+      if (!root || !root.IsMap())
+        continue;
+      const YAML::Node roles = root[section.second];
+      if (!roles || !roles.IsMap())
+        continue;
+      YAML::Node paths = roles[role];
+      if (!paths || paths.IsNull() || (paths.IsSequence() && paths.size() == 0))
+        continue;
+      if (!paths.IsSequence() || paths.size() != relative_paths.size())
+        return absl::AbortedError("The selected game's camera playlist differs from the player-frame candidate");
+      const bool preserve_order = std::string(section.first) == "game";
+      std::set<size_t> matched;
+      for (size_t index = 0; index < paths.size(); ++index) {
+        if (!paths[index].IsScalar())
+          return absl::InvalidArgumentError("The selected game's camera chapters must be paths");
+        const fs::path path = (directory / paths[index].as<std::string>()).lexically_normal();
+        std::optional<size_t> match;
+        for (size_t candidate = 0; candidate < relative_paths.size(); ++candidate) {
+          // Preserve resolved playlist order. UI roles may precede the runner's
+          // chapter sorting, so only normalize their spellings, never their order.
+          if (matched.count(candidate) || (preserve_order && candidate != index))
+            continue;
+          const fs::path expected = directory / relative_paths[candidate];
+          // Identical paths need no media access: existing artifacts can still
+          // be promoted while their original recordings are unavailable.
+          error.clear();
+          if (path == expected || (fs::equivalent(path, expected, error) && !error)) {
+            match = candidate;
+            break;
+          }
+        }
+        if (!match)
+          return absl::AbortedError("The selected game's camera input differs from the player-frame candidate");
+        matched.insert(*match);
+        paths[index] = relative_paths[*match].generic_string();
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
 } // namespace
 
 absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
@@ -359,6 +427,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
   try {
     YAML::Node selected = YAML::LoadFile(experiment_config.string());
     YAML::Node current = YAML::LoadFile(game_config.string());
+    HM_RETURN_IF_ERROR(reconcile_selected_video_paths(current, selected, game_config.parent_path()));
     YAML::Node selected_stitching = selected["stitching"];
     YAML::Node current_stitching = current["stitching"];
     for (const char* key :
@@ -386,6 +455,34 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
+    // Choosing this candidate accepts its existing crop as seen in the preview.
+    // Its alignment may differ from the inherited game's crop-review marker.
+    // Bind the review to the promoted geometry so first Play reuses these maps.
+    current["hstream_ui"].remove("projection_crop_geometry");
+    const fs::path project_path = experiment_config.parent_path() / "autooptimiser_out.pto";
+    std::error_code project_error;
+    const bool has_project = fs::is_regular_file(project_path, project_error);
+    if (project_error && project_error != std::errc::no_such_file_or_directory)
+      return absl::InternalError(
+          "Unable to inspect the selected candidate's crop geometry: " + project_error.message());
+    if (has_project) {
+      std::ifstream project(project_path);
+      if (!project)
+        return absl::InternalError("Unable to open the selected candidate's crop geometry");
+      std::string pto(1024 * 1024 + 1, '\0');
+      project.read(pto.data(), pto.size());
+      pto.resize(project.gcount());
+      if (project.bad())
+        return absl::InternalError("Unable to read the selected candidate's crop geometry");
+      if (pto.size() > 1024 * 1024)
+        return absl::FailedPreconditionError("Selected candidate project exceeds the crop-review size limit");
+      hm::stitching::StitchProjectionFraming framing;
+      HM_ASSIGN_OR_RETURN(framing, hm::stitching::read_stitch_projection_framing(selected));
+      const std::string geometry = hm::stitching::projection_crop_geometry(pto, framing);
+      if (geometry.empty())
+        return absl::FailedPreconditionError("Selected candidate has no valid crop geometry");
+      hm::stitching::write_projection_crop_review(current, geometry);
+    }
     remove_downstream_generation(current);
     return YAML::Dump(current) + "\n";
   } catch (const YAML::Exception& exception) {
