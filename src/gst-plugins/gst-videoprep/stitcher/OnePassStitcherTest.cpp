@@ -287,6 +287,64 @@ bool expect_output_capacity_is_stable_across_batches() {
   return true;
 }
 
+bool expect_calibration_sampling_starts_at_anchor() {
+  constexpr uint64_t kAnchor = 750 * GST_SECOND;
+  constexpr uint64_t kSpan = 120 * GST_SECOND;
+  constexpr size_t kRequiredPairs = 4;
+  if (!hm::stitcher::should_select_calibration_pair(
+          kAnchor,
+          /*selected_pair_count=*/0,
+          kRequiredPairs,
+          kSpan,
+          std::nullopt)) {
+    std::cerr << "The first synchronized pair at the requested calibration anchor must always be selected\n";
+    return false;
+  }
+  if (hm::stitcher::should_select_calibration_pair(
+          kAnchor,
+          /*selected_pair_count=*/1,
+          kRequiredPairs,
+          kSpan,
+          kAnchor) ||
+      hm::stitcher::should_select_calibration_pair(
+          kAnchor + 46 * GST_SECOND,
+          /*selected_pair_count=*/1,
+          kRequiredPairs,
+          kSpan,
+          kAnchor) ||
+      !hm::stitcher::should_select_calibration_pair(
+          kAnchor + 46 * GST_SECOND + 500 * GST_MSECOND,
+          /*selected_pair_count=*/1,
+          kRequiredPairs,
+          kSpan,
+          kAnchor)) {
+    std::cerr << "Later calibration samples must be spaced forward relative to the selected anchor pair\n";
+    return false;
+  }
+  if (hm::stitcher::should_select_calibration_pair(
+          kAnchor,
+          /*selected_pair_count=*/1,
+          kRequiredPairs,
+          /*sample_span_ns=*/0,
+          kAnchor) ||
+      !hm::stitcher::should_select_calibration_pair(
+          kAnchor + 1,
+          /*selected_pair_count=*/1,
+          kRequiredPairs,
+          /*sample_span_ns=*/0,
+          kAnchor) ||
+      hm::stitcher::should_select_calibration_pair(
+          kAnchor + GST_SECOND,
+          /*selected_pair_count=*/kRequiredPairs,
+          kRequiredPairs,
+          kSpan,
+          kAnchor)) {
+    std::cerr << "Consecutive calibration pairs must follow the anchor and stop at the configured count\n";
+    return false;
+  }
+  return true;
+}
+
 bool expect_resumed_calibration_progress_contract() {
   if (!hm::stitcher::should_attempt_one_pass_field_mask(false, {}, "generation-a") ||
       hm::stitcher::should_attempt_one_pass_field_mask(true, "generation-a", "generation-a") ||
@@ -608,6 +666,9 @@ int main() {
   }
   if (!expect_output_capacity_is_stable_across_batches()) {
     return 29;
+  }
+  if (!expect_calibration_sampling_starts_at_anchor()) {
+    return 38;
   }
   if (!expect_resumed_calibration_progress_contract()) {
     return 33;

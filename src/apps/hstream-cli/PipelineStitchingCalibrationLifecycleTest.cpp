@@ -842,7 +842,7 @@ int main(int argc, char** argv) {
                   /*enabled_source_type=*/"URI"),
               "ordinary URI calibration pipeline must start") ||
           !expect(
-              ordinary_uri.WaitFor("A nonzero stitch-frame time requires exactly two URI-MULTIPLE camera sources"),
+              ordinary_uri.WaitFor("A nonzero calibration start requires exactly two URI-MULTIPLE camera sources"),
               "unsupported ordinary URI calibration must fail before preroll")) {
         return false;
       }

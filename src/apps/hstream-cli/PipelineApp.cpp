@@ -1545,7 +1545,7 @@ absl::Status PipelineApplication::createPipelines(
     if (app_contexts[i]->configurator().stitching_calibration_required() && initial_position_ns != 0 &&
         !app_contexts[i]->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {
       return absl::FailedPreconditionError(
-          "A nonzero stitch-frame time requires exactly two URI-MULTIPLE camera sources so calibration can be "
+          "A nonzero calibration start requires exactly two URI-MULTIPLE camera sources so calibration can be "
           "positioned before preroll");
     }
     HM_RETURN_IF_ERROR(
