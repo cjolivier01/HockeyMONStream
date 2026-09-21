@@ -38,33 +38,37 @@ bool is_video(const fs::path& path) {
   return kVideoExtensions.count(extension) != 0;
 }
 
-absl::StatusOr<fs::path> normalized_source(const fs::path& source_game_directory, const std::string& configured) {
+absl::StatusOr<fs::path> normalized_source(
+    const fs::path& source_game_directory,
+    const fs::path& configured,
+    const char* description = "video") {
   if (configured.empty())
-    return absl::InvalidArgumentError("Configured experiment video path must not be empty");
+    return absl::InvalidArgumentError("Configured experiment input path must not be empty");
   fs::path source = configured;
   if (source.is_relative())
     source = source_game_directory / source;
   std::error_code error;
   const fs::path canonical_source = fs::canonical(source, error);
   if (error || !fs::is_regular_file(canonical_source))
-    return absl::NotFoundError("Experiment input video is missing: " + source.string());
+    return absl::NotFoundError("Experiment input " + std::string(description) + " is missing: " + source.string());
   const fs::path canonical_game = fs::canonical(source_game_directory, error);
   if (error)
     return absl::NotFoundError("Experiment game directory is unavailable");
   fs::path relative = canonical_source.lexically_relative(canonical_game);
   if (relative.empty() || relative == "." || relative.is_absolute() || *relative.begin() == "..")
-    return absl::InvalidArgumentError("Experiment input video must be inside the selected game: " + configured);
+    return absl::InvalidArgumentError(
+        "Experiment input " + std::string(description) + " must be inside the selected game: " + configured.string());
   return relative;
 }
 
-absl::Status link_input(const fs::path& source, const fs::path& destination) {
+absl::Status link_input(const fs::path& canonical_source, const fs::path& destination) {
   std::error_code error;
   fs::create_directories(destination.parent_path(), error);
   if (error)
     return absl::InternalError("Unable to create experiment input directory: " + error.message());
   if (fs::exists(destination, error) || fs::is_symlink(destination, error))
     return absl::AlreadyExistsError("Duplicate experiment input destination: " + destination.string());
-  fs::create_symlink(fs::canonical(source), destination, error);
+  fs::create_symlink(canonical_source, destination, error);
   return error ? absl::InternalError("Unable to link experiment input: " + error.message()) : absl::OkStatus();
 }
 
@@ -120,9 +124,10 @@ absl::Status link_auto_videos(
            !std::regex_match(entry.path().filename().string(), kRootCameraVideo))) {
         continue;
       }
-      const fs::path relative = entry.path().lexically_relative(source_game_directory);
+      fs::path relative;
+      HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, entry.path(), "video"));
       if (linked->insert(relative).second)
-        HM_RETURN_IF_ERROR(link_input(entry.path(), candidate_game_directory / relative));
+        HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory / relative));
     }
   }
   return absl::OkStatus();
@@ -145,9 +150,10 @@ absl::Status link_calibration_assets(
       if (!entry.is_regular_file() || !std::regex_match(entry.path().filename().string(), kCalibrationAsset)) {
         continue;
       }
-      const fs::path relative = entry.path().lexically_relative(source_game_directory);
+      fs::path relative;
+      HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, entry.path(), "calibration asset"));
       if (linked_assets.insert(relative).second)
-        HM_RETURN_IF_ERROR(link_input(entry.path(), candidate_game_directory / relative));
+        HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory / relative));
     }
   }
   return absl::OkStatus();
@@ -314,47 +320,44 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
 absl::Status PromoteStitchingExperiment(
     const StitchingExperimentWorkspace& experiment,
     const fs::path& game_directory) {
-  HM_RETURN_IF_ERROR(hm::stitching::HuginProject::PromoteArtifacts(experiment.game_directory, game_directory));
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(game_directory);
-  if (!config_lock.ok())
-    return config_lock.status();
-  try {
-    YAML::Node selected = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
-    YAML::Node current = YAML::LoadFile((game_directory / "config.yaml").string());
-    YAML::Node selected_stitching = selected["stitching"];
-    YAML::Node current_stitching = current["stitching"];
-    for (const char* key :
-         {"calibration_frame_count",
-          "camera_config",
-          "camera_fov",
-          "control_point_execution_provider",
-          "control_point_matcher",
-          "control_point_resolution",
-          "mapping_backend",
-          "max_output_width",
-          "projection",
-          "projection_framing",
-          "projection_parameters",
-          "run_autooptimizer",
-          "stitch_frame_time"}) {
-      copy_node(current_stitching, selected_stitching, key);
-    }
-    copy_node(current["game"]["stitching"], selected["game"]["stitching"], "frame_offsets");
-    current["hstream_ui"]["stitching_calibration"] = YAML::Clone(selected["hstream_ui"]["stitching_calibration"]);
-    YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
-    calibration["status"] = "complete";
-    calibration["rink_mask_status"] = "pending";
-    calibration.remove("stale_from");
-    calibration.remove("artifacts_invalidated");
-    copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
-    remove_downstream_generation(current);
-    auto published = hm::stitching::publish_game_config_without_rink_masks(
-        game_directory, YAML::Dump(current) + "\n", /*remove_stitched_snapshot=*/true);
-    return published.ok() ? absl::OkStatus() : published.status();
-  } catch (const YAML::Exception& exception) {
-    return absl::InvalidArgumentError(
-        "Unable to promote stitching experiment config: " + std::string(exception.what()));
-  }
+  return hm::stitching::HuginProject::PromoteArtifactsAndConfig(
+      experiment.game_directory, game_directory, [&]() -> absl::StatusOr<std::string> {
+        try {
+          YAML::Node selected = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
+          YAML::Node current = YAML::LoadFile((game_directory / "config.yaml").string());
+          YAML::Node selected_stitching = selected["stitching"];
+          YAML::Node current_stitching = current["stitching"];
+          for (const char* key :
+               {"calibration_frame_count",
+                "camera_config",
+                "camera_fov",
+                "control_point_execution_provider",
+                "control_point_matcher",
+                "control_point_resolution",
+                "mapping_backend",
+                "max_output_width",
+                "projection",
+                "projection_framing",
+                "projection_parameters",
+                "run_autooptimizer",
+                "stitch_frame_time"}) {
+            copy_node(current_stitching, selected_stitching, key);
+          }
+          copy_node(current["game"]["stitching"], selected["game"]["stitching"], "frame_offsets");
+          current["hstream_ui"]["stitching_calibration"] = YAML::Clone(selected["hstream_ui"]["stitching_calibration"]);
+          YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
+          calibration["status"] = "complete";
+          calibration["rink_mask_status"] = "pending";
+          calibration.remove("stale_from");
+          calibration.remove("artifacts_invalidated");
+          copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
+          remove_downstream_generation(current);
+          return YAML::Dump(current) + "\n";
+        } catch (const YAML::Exception& exception) {
+          return absl::InvalidArgumentError(
+              "Unable to promote stitching experiment config: " + std::string(exception.what()));
+        }
+      });
 }
 
 absl::Status ValidateStitchingExperimentWorkspace(const StitchingExperimentWorkspace& experiment) {

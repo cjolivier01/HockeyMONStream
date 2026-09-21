@@ -7,8 +7,8 @@ the same moving playback passage. It runs only while the main pipeline is stoppe
 
 Enter comma-separated values for:
 
-- control-point limits;
-- calibration frame counts; and
+- control-point limits (20–5000);
+- calibration frame counts (1–16); and
 - first calibration-frame timestamps (`HH:MM:SS` or `HH:MM:SS.mmm`).
 
 The tool generates the Cartesian product, with a maximum of 64 candidates. By default every candidate reuses the
@@ -32,7 +32,9 @@ candidate's maps and seam. Video surfaces remain GPU-resident.
 **Use selected in main Program** validates and transactionally republishes the candidate's existing Hugin project,
 mapping TIFFs, seam, panorama, source stills, and canvas provenance under a fresh destination generation identity. It
 then merges the candidate's stitching-owned settings into the selected game's `config.yaml` and invalidates dependent
-rink-mask/output state.
+rink-mask/output state. Artifact and config publication share their locks and a durable recovery boundary: an
+interruption before the selected config is durable restores the prior artifact generation, while an interruption after
+it is durable retains the matching promoted generation.
 
 Selection does not rerun feature matching, optimization, map generation, or seam generation. The next Program run
 therefore loads the chosen artifact generation directly. Closing the dialog removes unselected temporary candidates;

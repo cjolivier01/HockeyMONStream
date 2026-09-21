@@ -73,6 +73,7 @@ std::optional<QTime> parse_time(const QString& value) {
 
 std::optional<std::vector<int>> parse_positive_list(
     const QString& text,
+    int minimum,
     int maximum,
     const QString& label,
     QString* error) {
@@ -81,9 +82,10 @@ std::optional<std::vector<int>> parse_positive_list(
   for (const QString& item : text.split(',', Qt::SkipEmptyParts)) {
     bool ok = false;
     const int value = item.trimmed().toInt(&ok);
-    if (!ok || value <= 0 || value > maximum) {
-      *error = QString("%1 must be comma-separated integers from 1 through %2, not ‘%3’.")
+    if (!ok || value < minimum || value > maximum) {
+      *error = QString("%1 must be comma-separated integers from %2 through %3, not ‘%4’.")
                    .arg(label)
+                   .arg(minimum)
                    .arg(maximum)
                    .arg(item.trimmed());
       return std::nullopt;
@@ -152,6 +154,17 @@ void interrupt_process(QProcess* process) {
 #else
   process->terminate();
 #endif
+}
+
+void kill_process(QProcess* process) {
+  if (!process || process->state() == QProcess::NotRunning)
+    return;
+#ifdef Q_OS_UNIX
+  const qint64 pid = process->processId();
+  if (pid > 0)
+    (void)::kill(static_cast<pid_t>(-pid), SIGKILL);
+#endif
+  process->kill();
 }
 
 } // namespace
@@ -265,6 +278,25 @@ struct StitchingExperimentDialog::Impl {
     preview_process->write("q");
     if (!preview_process->waitForBytesWritten(250))
       interrupt_process(preview_process.get());
+    schedule_forced_stop(preview_process.get());
+  }
+
+  void schedule_forced_stop(QProcess* process) {
+    if (!process || process->state() == QProcess::NotRunning)
+      return;
+    QTimer::singleShot(3000, dialog, [this, process]() {
+      const bool still_owned = (calibration_process && calibration_process.get() == process) ||
+          (preview_process && preview_process.get() == process);
+      if (still_owned && process->state() != QProcess::NotRunning)
+        kill_process(process);
+    });
+  }
+
+  void stop_calibration_process() {
+    if (!calibration_process || calibration_process->state() == QProcess::NotRunning)
+      return;
+    interrupt_process(calibration_process.get());
+    schedule_forced_stop(calibration_process.get());
   }
 
   void maybe_finish_close() {
@@ -378,8 +410,8 @@ struct StitchingExperimentDialog::Impl {
 
   void generate_candidates() {
     QString error;
-    auto points = parse_positive_list(control_points->text(), 5000, "Control-point counts", &error);
-    auto frames = parse_positive_list(frame_counts->text(), 64, "Frame counts", &error);
+    auto points = parse_positive_list(control_points->text(), 20, 5000, "Control-point counts", &error);
+    auto frames = parse_positive_list(frame_counts->text(), 1, 16, "Frame counts", &error);
     auto starts = parse_time_list(start_frames->text(), &error);
     std::optional<std::vector<std::array<double, 3>>> rink_rotations;
     if (!shared_rotation->isChecked())
@@ -552,7 +584,7 @@ struct StitchingExperimentDialog::Impl {
     closing = true;
     cancelling = true;
     stop_preview_process();
-    interrupt_process(calibration_process.get());
+    stop_calibration_process();
     update_controls();
     maybe_finish_close();
   }
@@ -565,8 +597,8 @@ struct StitchingExperimentDialog::Impl {
   void abort_for_destruction() {
     closing = true;
     cancelling = true;
-    interrupt_process(preview_process.get());
-    interrupt_process(calibration_process.get());
+    kill_process(preview_process.get());
+    kill_process(calibration_process.get());
   }
 };
 
@@ -712,7 +744,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   connect(s.cancel, &QPushButton::clicked, this, [&s]() {
     s.cancelling = true;
     s.show_status("Cancelling candidate generation…");
-    interrupt_process(s.calibration_process.get());
+    s.stop_calibration_process();
   });
   connect(s.table, &QTableWidget::itemSelectionChanged, this, [&s]() { s.update_controls(); });
   connect(s.table, &QTableWidget::cellDoubleClicked, this, [&s](int, int) { s.start_preview(); });

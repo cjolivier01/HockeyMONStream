@@ -1354,6 +1354,8 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
     return std::string("BACKED_UP");
   if (contents == "LEGACY_MIGRATE\n")
     return std::string("LEGACY_MIGRATE");
+  if (contents == "AWAITING_CONFIG\n")
+    return std::string("AWAITING_CONFIG");
   if (contents == "ROLLING_BACK\n")
     return std::string("ROLLING_BACK");
   if (contents == "RESTORED\n")
@@ -1839,6 +1841,28 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       status = mark_stitch_transaction_rolled_back(transaction);
       if (!status.ok())
         return status;
+    }
+    if (*state == "AWAITING_CONFIG") {
+      auto selected_config = read_bounded_regular_file_no_follow(
+          transaction / "selection_config.yaml", 16ULL * 1024ULL * 1024ULL, "selected stitching config");
+      if (!selected_config.ok())
+        return selected_config.status();
+      const fs::path current_config_path = root_directory.path() / "config.yaml";
+      const bool current_config_exists = fs::exists(current_config_path, error);
+      if (error) {
+        return absl::InternalError("Unable to inspect the published game config: " + error.message());
+      } else if (current_config_exists) {
+        auto current_config = read_bounded_regular_file_no_follow(
+            current_config_path, 16ULL * 1024ULL * 1024ULL, "published game config");
+        if (!current_config.ok())
+          return current_config.status();
+        state = *current_config == *selected_config ? std::string("COMMITTED") : std::string("BACKED_UP");
+      } else {
+        // The selected config was not durably published, so the artifact
+        // backups remain authoritative and recovery follows the normal
+        // BACKED_UP rollback path below.
+        state = std::string("BACKED_UP");
+      }
     }
     if (*state == "PREPARED" || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "LEGACY_MIGRATE" ||
         *state == "ROLLING_BACK") {

@@ -45,8 +45,7 @@ int main() {
   const fs::path game = root / "game";
   const fs::path experiments = root / "experiments";
   if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
-      !write(game / "program-output.mp4", "not a camera input") ||
-      !write(game / "left_calibration.json", "{}") ||
+      !write(game / "program-output.mp4", "not a camera input") || !write(game / "left_calibration.json", "{}") ||
       !write(game / "cam2" / "right-calibration.yaml", "camera: right") ||
       !write(
           game / "config.yaml",
@@ -87,6 +86,16 @@ int main() {
       fs::is_symlink(workspace->game_directory / "cam2" / "right-calibration.yaml"),
       "camera-directory calibration must be linked");
 
+  const fs::path outside = root / "outside.mp4";
+  if (!write(outside, "outside"))
+    return 4;
+  std::error_code symlink_error;
+  fs::create_symlink(outside, game / "cam1" / "escaped.mp4", symlink_error);
+  const auto escaped_workspace = CreateStitchingExperimentWorkspace(game, experiments, settings, 2);
+  ok &= expect(
+      !escaped_workspace.ok() && absl::IsInvalidArgument(escaped_workspace.status()),
+      "auto-discovered video symlinks must not escape the selected game");
+
   const YAML::Node config = YAML::LoadFile((workspace->game_directory / "config.yaml").string());
   const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   const YAML::Node rotation = config["stitching"]["projection_framing"]["rotation_degrees"];
@@ -103,5 +112,5 @@ int main() {
   ok &= expect(
       calibration["backend_generation"]["invalidation_id"].as<std::string>() == workspace->invalidation_id,
       "candidate backend generation must be fenced by its invalidation id");
-  return ok ? 0 : 4;
+  return ok ? 0 : 5;
 }

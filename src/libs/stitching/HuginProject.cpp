@@ -85,7 +85,7 @@ absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t
       ::close(descriptor);
     }
   } close{descriptor};
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     return absl::FailedPreconditionError("Invalid or oversized Hugin file: " + path.string());
@@ -100,7 +100,7 @@ absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t
       return absl::InternalError("Failed reading Hugin file: " + path.string());
     offset += static_cast<size_t>(count);
   }
-  struct stat verified {};
+  struct stat verified{};
   if (::fstat(descriptor, &verified) != 0 || metadata.st_dev != verified.st_dev || metadata.st_ino != verified.st_ino ||
       metadata.st_mode != verified.st_mode || metadata.st_size != verified.st_size ||
       metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec || metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
@@ -119,7 +119,7 @@ struct OpenedTiff {
   }
   int descriptor{-1};
   TIFF* tiff{nullptr};
-  struct stat metadata {};
+  struct stat metadata{};
 };
 
 absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& path, uint64_t maximum_bytes) {
@@ -147,7 +147,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
 }
 
 absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
-  struct stat verified {};
+  struct stat verified{};
   if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
       opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
       opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
@@ -700,7 +700,7 @@ absl::Status publish_normalized_seam(const fs::path& path, const cv::Mat& seam, 
     }
   } cleanup{descriptor, temporary};
 
-  struct stat source_metadata {};
+  struct stat source_metadata{};
   if (::stat(path.c_str(), &source_metadata) != 0)
     return absl::InternalError("Unable to read normalized seam source mode: " + std::string(std::strerror(errno)));
   if (!S_ISREG(source_metadata.st_mode))
@@ -1328,7 +1328,8 @@ absl::Status publish_artifacts(
     const fs::path& staging,
     const fs::path& game_dir,
     PreparedStitchGenerationPublication& prepared_publication,
-    bool* prepared) {
+    bool* prepared,
+    const std::optional<std::string>& selected_config = std::nullopt) {
   const std::vector<std::string>& names = stitch_artifact_names();
   const fs::path backups = staging / "previous";
   std::error_code error;
@@ -1343,7 +1344,7 @@ absl::Status publish_artifacts(
   if (!status.ok())
     return status;
   for (const std::string& name : names) {
-    struct stat metadata {};
+    struct stat metadata{};
     if (::lstat((game_dir / name).c_str(), &metadata) == 0) {
       if (!S_ISREG(metadata.st_mode)) {
         return absl::FailedPreconditionError("Previous stitch artifact is not a regular file: " + name);
@@ -1392,7 +1393,7 @@ absl::Status publish_artifacts(
     return status;
   size_t backup_count = 0;
   for (const std::string& name : names) {
-    struct stat metadata {};
+    struct stat metadata{};
     if (::lstat((game_dir / name).c_str(), &metadata) != 0) {
       if (errno != ENOENT) {
         return rollback_error(
@@ -1451,6 +1452,23 @@ absl::Status publish_artifacts(
   status = rebind_published_stitch_generation_artifact(prepared_publication, game_dir);
   if (!status.ok())
     return rollback_error(std::string(status.message()));
+  if (selected_config.has_value()) {
+    status = publish_transaction_state(staging, "AWAITING_CONFIG\n");
+    if (!status.ok())
+      return rollback_error(std::string(status.message()));
+    if (const char* interrupt = std::getenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG");
+        interrupt != nullptr && std::string(interrupt) == "1") {
+      return rollback_error("Injected stitching promotion failure before config publication");
+    }
+    auto config_publication =
+        publish_game_config_without_rink_masks(game_dir, *selected_config, /*remove_stitched_snapshot=*/true);
+    if (!config_publication.ok())
+      return rollback_error(std::string(config_publication.status().message()));
+    if (const char* interrupt = std::getenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG");
+        interrupt != nullptr && std::string(interrupt) == "1") {
+      return absl::InternalError("Injected stitching promotion interruption after config publication");
+    }
+  }
   status = write_stitch_transaction_file(staging / "state.committed", "COMMITTED\n");
   if (!status.ok())
     return rollback_error(std::string(status.message()));
@@ -2505,6 +2523,13 @@ absl::Status HuginProject::Configure(
 }
 
 absl::Status HuginProject::PromoteArtifacts(const fs::path& experiment_game_dir, const fs::path& game_dir) {
+  return PromoteArtifactsAndConfig(experiment_game_dir, game_dir, {});
+}
+
+absl::Status HuginProject::PromoteArtifactsAndConfig(
+    const fs::path& experiment_game_dir,
+    const fs::path& game_dir,
+    const std::function<absl::StatusOr<std::string>()>& build_config) {
   std::error_code error;
   if (fs::equivalent(experiment_game_dir, game_dir, error) && !error)
     return absl::InvalidArgumentError("Stitching experiment source and destination must be different directories");
@@ -2559,10 +2584,21 @@ absl::Status HuginProject::PromoteArtifacts(const fs::path& experiment_game_dir,
   if (!config_transaction.ok())
     return config_transaction.status();
   HM_RETURN_IF_ERROR(validate_no_pending_live_stitched_output_authorization_file_locked(game_dir / "config.yaml"));
+  std::optional<std::string> selected_config;
+  if (build_config) {
+    auto contents = build_config();
+    if (!contents.ok())
+      return contents.status();
+    if (contents->size() > 16ULL * 1024ULL * 1024ULL)
+      return absl::ResourceExhaustedError("Selected stitching config exceeds the recovery journal limit");
+    selected_config = std::move(*contents);
+    HM_RETURN_IF_ERROR(write_stitch_transaction_file(staging / "selection_config.yaml", *selected_config));
+    HM_RETURN_IF_ERROR(fsync_stitch_path(staging, true));
+  }
   auto prepared_publication = prepare_stitch_generation_publication(staging, game_dir);
   if (!prepared_publication.ok())
     return prepared_publication.status();
-  return publish_artifacts(staging, game_dir, *prepared_publication, &cleanup.prepared);
+  return publish_artifacts(staging, game_dir, *prepared_publication, &cleanup.prepared, selected_config);
 }
 
 } // namespace hm::stitching
