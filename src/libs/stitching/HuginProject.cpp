@@ -1507,6 +1507,13 @@ absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> HuginProject::Recove
   if (!descriptor.ok())
     return descriptor.status();
   auto lock = std::unique_ptr<ArtifactLock>(new ArtifactLock(*descriptor));
+  // Selection promotion nests the rink/config transaction inside the stitch
+  // journal. Recover that inner transaction first so an AWAITING_CONFIG
+  // stitch journal never decides from a config rename that the rink journal
+  // would subsequently roll back.
+  auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_transaction.ok())
+    return config_transaction.status();
   auto recovery = recover_stitch_transactions_locked(game_dir);
   if (!recovery.ok())
     return recovery;
