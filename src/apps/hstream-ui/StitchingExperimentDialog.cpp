@@ -239,6 +239,11 @@ struct StitchingExperimentDialog::Impl {
   bool candidate_completion_pending{false};
   bool preview_completion_pending{false};
   bool preview_replay_pending{false};
+  bool current_candidate_workspace_unsafe{false};
+  int pending_candidate_row{-1};
+  int pending_candidate_exit_code{-1};
+  QProcess::ExitStatus pending_candidate_exit_status{QProcess::CrashExit};
+  QString pending_candidate_startup_error;
   bool close_completion_scheduled{false};
   int pending_dialog_result{QDialog::Rejected};
 
@@ -315,9 +320,42 @@ struct StitchingExperimentDialog::Impl {
     QTimer::singleShot(0, dialog, [this]() {
       if (!candidate_completion_pending)
         return;
+      Candidate& finished = candidates[pending_candidate_row];
+      absl::Status configured = absl::OkStatus();
+      const bool may_be_complete = !current_candidate_workspace_unsafe && !cancelling &&
+          pending_candidate_startup_error.isEmpty() && pending_candidate_exit_status == QProcess::NormalExit &&
+          pending_candidate_exit_code == 0;
+      if (may_be_complete)
+        configured = ValidateStitchingExperimentWorkspace(finished.workspace);
+      finished.complete = may_be_complete && configured.ok();
+      if (finished.complete) {
+        finished.failure.clear();
+        table->item(pending_candidate_row, 5)->setText("Ready");
+      } else {
+        if (current_candidate_workspace_unsafe)
+          finished.failure = "Process group still active; workspace retained";
+        else if (cancelling)
+          finished.failure = "Cancelled";
+        else if (!pending_candidate_startup_error.isEmpty())
+          finished.failure = pending_candidate_startup_error;
+        else if (pending_candidate_exit_status != QProcess::NormalExit)
+          finished.failure = "Runner crashed";
+        else if (pending_candidate_exit_code != 0)
+          finished.failure = QString("Runner exited %1").arg(pending_candidate_exit_code);
+        else if (!configured.ok())
+          finished.failure = QString::fromStdString(configured.ToString());
+        else
+          finished.failure = "Calibration failed";
+        table->item(pending_candidate_row, 5)->setText(finished.failure);
+      }
       calibration_process.reset();
       calibration_process_group = 0;
       candidate_completion_pending = false;
+      current_candidate_workspace_unsafe = false;
+      pending_candidate_row = -1;
+      pending_candidate_exit_code = -1;
+      pending_candidate_exit_status = QProcess::CrashExit;
+      pending_candidate_startup_error.clear();
       launch_next_candidate();
       maybe_finish_close();
     });
@@ -363,10 +401,12 @@ struct StitchingExperimentDialog::Impl {
     if (retain_workspace) {
       if (session)
         session->setAutoRemove(false);
-      if (calibration)
+      if (calibration) {
+        current_candidate_workspace_unsafe = true;
         cancelling = true;
-      else
+      } else {
         preview_replay_pending = false;
+      }
     }
     QProcess* process = calibration ? calibration_process.get() : preview_process.get();
     const bool process_finished = !process || process->state() == QProcess::NotRunning;
@@ -466,20 +506,10 @@ struct StitchingExperimentDialog::Impl {
       return;
     candidate_completion_pending = true;
     append_output(calibration_process.get());
-    Candidate& finished = candidates[row];
-    const absl::Status configured = startup_error.isEmpty() ? ValidateStitchingExperimentWorkspace(finished.workspace)
-                                                            : absl::UnavailableError(startup_error.toStdString());
-    finished.complete = !cancelling && startup_error.isEmpty() && exit_status == QProcess::NormalExit &&
-        exit_code == 0 && configured.ok();
-    if (finished.complete) {
-      table->item(row, 5)->setText("Ready");
-    } else {
-      finished.failure = cancelling  ? "Cancelled"
-          : !startup_error.isEmpty() ? startup_error
-          : configured.ok()          ? QString("Runner exited %1").arg(exit_code)
-                                     : QString::fromStdString(configured.ToString());
-      table->item(row, 5)->setText(finished.failure);
-    }
+    pending_candidate_row = row;
+    pending_candidate_exit_code = exit_code;
+    pending_candidate_exit_status = exit_status;
+    pending_candidate_startup_error = startup_error;
     settle_finished_process(/*calibration=*/true);
   }
 
@@ -505,6 +535,7 @@ struct StitchingExperimentDialog::Impl {
 
     calibration_process = std::make_unique<QProcess>();
     calibration_process_group = 0;
+    current_candidate_workspace_unsafe = false;
     calibration_process->setProcessChannelMode(QProcess::MergedChannels);
     calibration_process->setWorkingDirectory(working_directory);
     QProcessEnvironment env = candidate_environment(candidate);
