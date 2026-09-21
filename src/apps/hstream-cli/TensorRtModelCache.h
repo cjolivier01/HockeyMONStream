@@ -8,8 +8,9 @@
 namespace hm::pipeline {
 
 // DeepStream derives the output engine path from the ONNX path after an
-// engine-cache miss. Redirect inference configs backed by read-only packaged
-// models through a writable per-user cache before parsing the pipeline.
+// engine-cache miss. Redirect YAML ONNX inference configs without an existing
+// engine through a persistent per-user cache before parsing the pipeline,
+// including models in writable development and downloaded-asset directories.
 absl::Status PrepareTensorRtModelCache(YAML::Node pipeline, const std::filesystem::path& config_directory);
 
 // DeepStream writes engines non-atomically while nvinfer initializes. The

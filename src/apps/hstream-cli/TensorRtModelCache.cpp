@@ -1,5 +1,7 @@
 #include "TensorRtModelCache.h"
 
+#include "OnnxExternalData.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -31,6 +33,12 @@ namespace fs = std::filesystem;
 struct HeldEngineLock {
   fs::path path;
   int descriptor{-1};
+};
+
+struct ExternalModelFile {
+  fs::path relative_path;
+  fs::path source;
+  std::string sha256;
 };
 
 std::vector<HeldEngineLock>& held_engine_locks() {
@@ -315,7 +323,8 @@ absl::StatusOr<std::string> inference_build_digest(
     const YAML::Node& section,
     const YAML::Node& pipeline,
     const std::string& section_name,
-    const fs::path& inference_path) {
+    const fs::path& inference_path,
+    const std::vector<ExternalModelFile>& external_files) {
   std::ostringstream fingerprint;
   fingerprint << "inference:\n"
               << inference << "\npipeline-section:\n"
@@ -364,6 +373,8 @@ absl::StatusOr<std::string> inference_build_digest(
       }
     }
   }
+  for (const auto& file : external_files)
+    fingerprint << "external-tensor:" << file.relative_path << '\n' << file.sha256 << '\n';
   return hm::assets::AssetManager::Sha256Bytes(fingerprint.str());
 }
 
@@ -621,13 +632,35 @@ absl::Status prepare_inference_config(
         "Configured prebuilt BF16 TensorRT engine is unavailable: " + configured_engine.string() +
         "; run ./run.sh --models-bf16-build first");
   }
-  if (::access(onnx_path.parent_path().c_str(), W_OK) == 0)
-    return publish_relocated_config();
-
-  auto build_digest = inference_build_digest(inference, section, pipeline, section_name, inference_path);
+  // model-engine-file is a load path, not DeepStream's serialization target.
+  // Even when the source ONNX directory is writable, stage it in the shared
+  // cache and load the filename DeepStream derives from that staged path.
+  fs::path model_source = onnx_path;
+  if (::access(onnx_path.parent_path().c_str(), W_OK) == 0) {
+    // Development aliases were supported before writable models were cached.
+    // Resolve them before linking so the cached ONNX is never itself a symlink.
+    model_source = fs::canonical(onnx_path, error);
+    if (error)
+      return absl::NotFoundError("Unable to resolve ONNX model: " + error.message());
+  }
+  auto external_paths = OnnxExternalDataFiles(model_source);
+  if (!external_paths.ok())
+    return external_paths.status();
+  std::vector<ExternalModelFile> external_files;
+  for (const auto& relative : *external_paths) {
+    const fs::path source = fs::canonical(model_source.parent_path() / relative, error);
+    if (error || !fs::is_regular_file(source, error) || error)
+      return absl::NotFoundError("ONNX external tensor file is unavailable: " + relative.string());
+    auto hash = hm::assets::AssetManager::Sha256(source);
+    if (!hash.ok())
+      return hash.status();
+    external_files.push_back({relative, source, *hash});
+  }
+  auto build_digest =
+      inference_build_digest(inference, section, pipeline, section_name, inference_path, external_files);
   if (!build_digest.ok())
     return build_digest.status();
-  auto model_hash = hm::assets::AssetManager::Sha256(onnx_path);
+  auto model_hash = hm::assets::AssetManager::Sha256(model_source);
   if (!model_hash.ok())
     return model_hash.status();
   auto root = cache_root();
@@ -642,7 +675,7 @@ absl::Status prepare_inference_config(
     return directory_status;
 
   const fs::path cached_onnx = model_directory / onnx_path.filename();
-  auto model_status = publish_model_file(onnx_path, cached_onnx, *model_hash);
+  auto model_status = publish_model_file(model_source, cached_onnx, *model_hash);
   if (!model_status.ok())
     return model_status;
 
@@ -650,6 +683,27 @@ absl::Status prepare_inference_config(
   properties["onnx-file"] = cached_onnx.string();
   const bool secondary = section_name.rfind("secondary-gie", 0) == 0;
   fs::path cached_engine = derived_engine_path(cached_onnx, properties, section, pipeline, secondary);
+  const fs::path runtime_config = model_directory / (inference_path.stem().string() + ".runtime.yaml");
+  for (const auto& file : external_files) {
+    const fs::path target = model_directory / file.relative_path;
+    const auto overlaps = [&](const fs::path& output) {
+      const fs::path relative = target.lexically_relative(output);
+      return !relative.empty() && *relative.begin() != "..";
+    };
+    bool conflict = overlaps(cached_onnx) || overlaps(runtime_config) || overlaps(cached_engine) ||
+        overlaps(model_directory / ("." + runtime_config.filename().string() + "." + std::to_string(::getpid()) + ".tmp"));
+    for (const char* mode : {"fp32", "fp16", "int8"})
+      conflict |= overlaps(derived_engine_path(cached_onnx, properties, section, pipeline, secondary, mode));
+    if (conflict)
+      return absl::InvalidArgumentError(
+          "ONNX external tensor location conflicts with cache output: " + target.string());
+    auto status = ensure_private_directory(target.parent_path());
+    if (!status.ok())
+      return status;
+    status = publish_model_file(file.source, target, file.sha256);
+    if (!status.ok())
+      return status;
+  }
   auto lock_status = acquire_engine_lock(*root / "engine-build.lock");
   if (!lock_status.ok())
     return lock_status;
@@ -670,14 +724,17 @@ absl::Status prepare_inference_config(
   if (section_engine_override)
     section["model-engine-file"] = cached_engine.string();
 
-  const fs::path runtime_config = model_directory / (inference_path.stem().string() + ".runtime.yaml");
   auto publish_status = publish_yaml(runtime_config, inference);
   if (!publish_status.ok()) {
     release_engine_locks();
     return publish_status;
   }
   section["config-file"] = runtime_config.string();
-  std::cout << "TensorRT writable model cache: " << cached_engine << '\n';
+  error.clear();
+  const bool engine_exists = fs::is_regular_file(cached_engine, error) && !error;
+  std::cout << "TensorRT engine cache " << (engine_exists ? "hit: " : "miss: ") << cached_engine << '\n';
+  if (!engine_exists)
+    std::cout << "DeepStream will build and save this engine before video starts; later runs reuse it.\n";
   return absl::OkStatus();
 }
 

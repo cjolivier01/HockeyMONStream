@@ -299,6 +299,8 @@ cc_test(
 cc_test(
     name = "tensorrt_model_cache_test",
     srcs = [
+        "OnnxExternalData.cpp",
+        "OnnxExternalData.h",
         "TensorRtModelCache.cpp",
         "TensorRtModelCache.h",
         "TensorRtModelCacheTest.cpp",

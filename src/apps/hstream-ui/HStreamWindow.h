@@ -391,7 +391,6 @@ class HStreamWindow : public QMainWindow {
   QString highBitDepthMode() const;
   void setHighBitDepthMode(const QString& mode);
   bool setupPretrainedAssets(const QStringList& pipeline_args);
-  void logMissingTensorRtEngineCaches(const QStringList& pipeline_args);
   int stitchingCalibrationControlPoints() const;
   int stitchingCalibrationFrameCount() const;
   int stitchingMaxOutputWidth() const;
