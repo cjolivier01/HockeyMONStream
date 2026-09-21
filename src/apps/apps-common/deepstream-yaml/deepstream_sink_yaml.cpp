@@ -84,8 +84,8 @@ gboolean parse_sink_yaml(
       const auto interpolation = hm::interpolation_method_from_string(itr->second.as<std::string>());
       if (!interpolation.has_value()) {
         g_printerr(
-            "Invalid sink interpolation-method '%s'; expected default, nearest, bilinear, cubic/bicubic, super, "
-            "lanczos, nicest, or 0-6\n",
+            "Invalid sink interpolation-method '%s'; expected default, nearest, bilinear, algo1-algo4, "
+            "cubic/bicubic, super, lanczos, nicest, or 0-6\n",
             itr->second.as<std::string>().c_str());
         goto done;
       }

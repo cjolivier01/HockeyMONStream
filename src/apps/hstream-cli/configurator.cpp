@@ -5823,7 +5823,7 @@ absl::Status Configurator::map_common_config_keys() {
       if (!selected.IsDefined() || selected.IsNull() || !selected.IsScalar()) {
         return absl::InvalidArgumentError(
             std::string(interpolation.has_value() ? kCanonicalPath : destination_path) +
-            " must be default, nearest, bilinear, cubic/bicubic, super, lanczos, nicest, or 0-6");
+            " must be default, nearest, bilinear, algo1-algo4, cubic/bicubic, super, lanczos, nicest, or 0-6");
       }
       const std::string value = selected.as<std::string>();
       const std::optional<gint> parsed = interpolation_method_from_string(value);

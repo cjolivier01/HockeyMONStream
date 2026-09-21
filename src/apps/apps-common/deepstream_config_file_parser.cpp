@@ -1559,8 +1559,8 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
       const auto interpolation = hm::interpolation_method_from_string(value ? value : "");
       if (!interpolation.has_value()) {
         NVGSTDS_ERR_MSG_V(
-            "Invalid sink interpolation-method '%s'; expected default, nearest, bilinear, cubic/bicubic, super, "
-            "lanczos, nicest, or 0-6",
+            "Invalid sink interpolation-method '%s'; expected default, nearest, bilinear, algo1-algo4, "
+            "cubic/bicubic, super, lanczos, nicest, or 0-6",
             value ? value : "");
         g_free(value);
         goto done;

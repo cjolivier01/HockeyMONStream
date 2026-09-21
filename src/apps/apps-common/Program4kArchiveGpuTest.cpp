@@ -18,10 +18,14 @@ int main(int argc, char** argv) {
       hm::interpolation_method_from_string("default") == NvBufSurfTransformInter_Default &&
       hm::interpolation_method_from_string("nearest") == NvBufSurfTransformInter_Nearest &&
       hm::interpolation_method_from_string("bilinear") == NvBufSurfTransformInter_Bilinear &&
+      hm::interpolation_method_from_string("algo1") == NvBufSurfTransformInter_Algo1 &&
       hm::interpolation_method_from_string("cubic") == NvBufSurfTransformInter_Algo1 &&
       hm::interpolation_method_from_string("bicubic") == NvBufSurfTransformInter_Algo1 &&
+      hm::interpolation_method_from_string("algo2") == NvBufSurfTransformInter_Algo2 &&
       hm::interpolation_method_from_string("super") == NvBufSurfTransformInter_Algo2 &&
+      hm::interpolation_method_from_string("algo3") == NvBufSurfTransformInter_Algo3 &&
       hm::interpolation_method_from_string("lanczos") == NvBufSurfTransformInter_Algo3 &&
+      hm::interpolation_method_from_string("algo4") == NvBufSurfTransformInter_Algo4 &&
       hm::interpolation_method_from_string("nicest") == NvBufSurfTransformInter_Algo4 &&
       !hm::interpolation_method_from_string("bogus").has_value();
   for (const auto& size : {std::make_pair(4096, 2304), std::make_pair(4096, 2048), std::make_pair(1920, 1080)}) {
