@@ -60,6 +60,15 @@ cc_library(
   ]
 )
 
+cc_test(
+    name = "pipeline_yaml_lookup_test",
+    srcs = ["PipelineYamlLookupTest.cpp"],
+    deps = [
+        ":utils",
+        "@yaml-cpp",
+    ],
+)
+
 cc_library(
   name = "fs",
   srcs = [],

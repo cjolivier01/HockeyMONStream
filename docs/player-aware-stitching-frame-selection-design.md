@@ -355,6 +355,12 @@ invalidate older maps. That conservative timestamp check remains: the current ge
 content and cannot alone prove that the maps were generated from it. Bypassing the check requires stronger persisted
 validity evidence.
 
+The audit also found dangling pointers to loop-local YAML handles in the shared `get_node` and `has_node` helpers.
+AddressSanitizer reproduced stack-use-after-scope in both; traversal now retains a live handle and uses `reset` to
+avoid mutating aliased configuration. Regression coverage checks nested/sequence paths, absent and null values,
+and unchanged source documents. This was a verified configuration-read defect, not the established cause of the
+reported NFS failure.
+
 The expanded real GPU workflow passed baseline generation, player selection, exact-pair solve, both previews,
 inspection, promotion, automatic dialog closure and then five seconds of main Program video. Main Program reused
 the exact canvas provenance without new captures or feature matching. A separate NFS run on `mini` also processed
