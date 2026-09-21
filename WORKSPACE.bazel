@@ -201,7 +201,7 @@ git_repository(
 
 git_repository(
     name = "jetson-utils",
-    commit = "546099786d351b7633686c72e44f6e10aea136b8",
+    commit = "c34f73a80ee39093f749b01293cd9bed9ef0eaca",
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
 
