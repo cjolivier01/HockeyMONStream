@@ -6,6 +6,8 @@
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QScreen>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -14,11 +16,13 @@
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
 
 #include <functional>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -59,6 +63,87 @@ void write(const QString& path, const QByteArray& contents) {
   require(file.write(contents) == contents.size(), "Incomplete fixture write");
 }
 
+void check_preview_layout(StitchingExperimentDialog& dialog) {
+  auto* panel = widget<QWidget>(dialog, "stitchExperimentPreviewPanel");
+  const std::vector<const char*> names = {
+      "stitchExperimentVideo",
+      "stitchExperimentPreviewStartLabel",
+      "stitchExperimentPreviewStart",
+      "stitchExperimentPreviewDurationLabel",
+      "stitchExperimentPreviewDuration",
+      "stitchExperimentLoop",
+      "previewStitchExperimentButton",
+      "stopStitchExperimentPreviewButton",
+      "maximizeStitchExperimentButton"};
+  std::vector<QRect> rectangles;
+  for (const char* name : names) {
+    auto* control = widget<QWidget>(dialog, name);
+    const QRect rectangle(control->mapTo(panel, QPoint()), control->size());
+    if (!control->isVisible() || !panel->rect().contains(rectangle) ||
+        control->width() < control->minimumSizeHint().width() ||
+        control->height() < control->minimumSizeHint().height())
+      throw std::runtime_error(std::string("Clipped preview control: ") + name);
+    for (const QRect& other : rectangles)
+      if (rectangle.intersects(other))
+        throw std::runtime_error(std::string("Overlapping preview control: ") + name);
+    rectangles.push_back(rectangle);
+  }
+}
+
+void exercise_layout(StitchingExperimentDialog& dialog) {
+  require(dialog.windowFlags().testFlag(Qt::WindowMaximizeButtonHint), "Dialog must offer title-bar maximize");
+  const QSize original_size = dialog.size();
+  for (const QSize size : {QSize(1280, 820), QSize(1024, 720)}) {
+    dialog.resize(size);
+    QCoreApplication::processEvents();
+    require(dialog.size() == size, "Dialog minimum size must fit a 1024x720 desktop");
+    check_preview_layout(dialog);
+  }
+  auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
+  auto* candidate_panel = widget<QWidget>(dialog, "stitchExperimentCandidatePanel");
+  auto* splitter = widget<QSplitter>(dialog, "stitchExperimentSplitter");
+  auto* expand = widget<QPushButton>(dialog, "maximizeStitchExperimentButton");
+  const WId original_target = video->winId();
+  const QSize normal_video_size = video->size();
+  const QList<int> normal_splitter_sizes = splitter->sizes();
+  const QString screenshot_dir = qEnvironmentVariable("HSTREAM_TEST_SCREENSHOT_DIR");
+  if (!screenshot_dir.isEmpty())
+    dialog.grab().save(screenshot_dir + "/stitch-layout-normal.png");
+  expand->click();
+  QCoreApplication::processEvents();
+  require(!candidate_panel->isVisible() && expand->text() == "Restore layout", "Expand must focus the preview");
+  require(video->width() > normal_video_size.width(), "Focused preview must gain horizontal space");
+  require(video->winId() == original_target, "Expanding must not replace the GPU target");
+  check_preview_layout(dialog);
+  if (!screenshot_dir.isEmpty())
+    dialog.grab().save(screenshot_dir + "/stitch-layout-expanded.png");
+  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+  QApplication::sendEvent(&dialog, &escape);
+  QCoreApplication::processEvents();
+  require(dialog.isVisible() && candidate_panel->isVisible(), "Escape must restore layout without closing");
+  require(splitter->sizes() == normal_splitter_sizes, "Restore must preserve the candidate/preview split");
+  QMouseEvent double_click(
+      QEvent::MouseButtonDblClick,
+      QPointF(10, 10),
+      QPointF(video->mapToGlobal(QPoint(10, 10))),
+      Qt::LeftButton,
+      Qt::LeftButton,
+      Qt::NoModifier);
+  QApplication::sendEvent(video, &double_click);
+  QCoreApplication::processEvents();
+  require(!candidate_panel->isVisible(), "Double-click must expand the preview");
+  expand->click();
+  QCoreApplication::processEvents();
+  require(candidate_panel->isVisible() && video->winId() == original_target, "Button must restore the same target");
+  dialog.showMaximized();
+  QCoreApplication::processEvents();
+  require(dialog.isMaximized(), "Dialog must maximize");
+  check_preview_layout(dialog);
+  dialog.showNormal();
+  dialog.resize(original_size);
+  QCoreApplication::processEvents();
+}
+
 void exercise(const QString& game, const QString& runner, const QString& repo, bool gpu, const QString& log_path) {
   const QByteArray original_config = read(game + "/config.yaml");
   const QStringList original_files = QDir(game).entryList(QDir::Files);
@@ -89,6 +174,8 @@ void exercise(const QString& game, const QString& runner, const QString& repo, b
   dialog.show();
   dialog.raise();
   QCoreApplication::processEvents();
+  if (!gpu)
+    exercise_layout(dialog);
   widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
   widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText("1");
   widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText("00:00:00");

@@ -35,9 +35,14 @@ process exits. A retained candidate is quarantined from preview and promotion.
 ## Comparing candidates
 
 Select a ready row and choose **Play selected** (or double-click it). The existing GPU-native stitched preview replays
-the configured passage start and duration; Loop restarts that exact passage. Use **Maximize for seam inspection** to
-give the moving stitched canvas more screen space. Switching candidates starts the same passage against that
-candidate's maps and seam. Video surfaces remain GPU-resident.
+the configured passage start and duration; Loop restarts that exact passage. The candidate matrix and results sit
+beside the preview, with passage start and duration on separate labeled rows below it.
+
+Use the title-bar maximize button to enlarge the whole dialog. **Expand preview** (or double-click the video) hides
+the candidate panel and log to give the moving canvas more space while keeping playback controls available.
+**Restore layout**, another double-click, or **Escape** returns to the previous split without restarting playback
+or replacing its native GPU window. Switching candidates starts the same passage against that candidate's maps and
+seam. Video surfaces remain GPU-resident.
 Calibration-only embedded playback retains the render sink's configured clock pacing, so a passage plays at normal
 speed. Ordinary Program previews keep their existing processing/encoding timing.
 
@@ -61,7 +66,9 @@ promoted copy; camera videos are never copied or modified.
 
 `//src/apps/hstream-ui:stitching_experiment_backend_test` checks workspace isolation and the selection configuration.
 `//src/apps/hstream-ui:stitching_experiment_dialog_test` normally uses a failing stub runner to check queue
-deduplication, serial continuation after failure, source-config isolation, and prompt closure without GPU use.
+deduplication, serial continuation after failure, source-config isolation, and prompt closure without GPU use. It
+also checks non-overlapping preview controls at 1280×820 and 1024×720, dialog maximization, and preview expand/restore
+through the button, double-click, and Escape, preserving the splitter sizes and native window identity.
 
 For a real GPU check, build the dialog test and CLI with the host's CUDA architecture configuration (for example,
 `--config=opt --cpu=k8 --config=blackwell` on an RTX 5090). The opt-in mode requires an X11 display and a **disposable

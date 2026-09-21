@@ -13,6 +13,8 @@
 #include <QtCore/QUuid>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QTextCursor>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -62,12 +64,26 @@ class StitchingExperimentVideoTarget : public QWidget {
       setAttribute(Qt::WA_PaintOnScreen);
       setAttribute(Qt::WA_NoSystemBackground);
     }
-    setMinimumSize(640, 360);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    setMinimumSize(320, 180);
+    QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    policy.setRetainSizeWhenHidden(true);
+    setSizePolicy(policy);
     setAutoFillBackground(false);
   }
   QPaintEngine* paintEngine() const override {
     return nullptr;
+  }
+
+  std::function<void()> toggle_focus;
+
+ protected:
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && toggle_focus) {
+      toggle_focus();
+      event->accept();
+      return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
   }
 };
 
@@ -312,6 +328,11 @@ struct StitchingExperimentDialog::Impl {
   QCheckBox* loop{nullptr};
   QPushButton* preview{nullptr};
   QPushButton* stop_preview{nullptr};
+  QPushButton* expand_preview{nullptr};
+  QSplitter* splitter{nullptr};
+  std::vector<QWidget*> preview_focus_siblings;
+  QList<int> normal_splitter_sizes;
+  bool preview_focused{false};
   QPushButton* apply{nullptr};
   QLabel* status{nullptr};
   QProgressBar* progress{nullptr};
@@ -350,6 +371,33 @@ struct StitchingExperimentDialog::Impl {
   int pending_dialog_result{QDialog::Rejected};
 
   explicit Impl(StitchingExperimentDialog* owner) : dialog(owner) {}
+
+  void set_preview_focus(bool focused) {
+    if (focused == preview_focused)
+      return;
+    // Keep the native target and its XID intact. Unmap it only while the
+    // surrounding layout settles, just as the main UI's preview focus does.
+    const bool remap_video = video->isVisible();
+    if (remap_video)
+      video->hide();
+    if (focused)
+      normal_splitter_sizes = splitter->sizes();
+    preview_focused = focused;
+    for (QWidget* sibling : preview_focus_siblings)
+      sibling->setVisible(!focused);
+    expand_preview->setText(focused ? "Restore layout" : "Expand preview");
+    expand_preview->setToolTip(
+        focused ? "Restore the candidate controls (Escape or double-click the preview)."
+                : "Expand the preview within this dialog (or double-click the preview).");
+    dialog->layout()->activate();
+    if (!focused)
+      splitter->setSizes(normal_splitter_sizes);
+    QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    if (remap_video) {
+      video->show();
+      video->raise();
+    }
+  }
 
   QStringList base_arguments(const Candidate& candidate) const {
     return {
@@ -1040,6 +1088,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     : QDialog(parent), impl_(std::make_unique<Impl>(this)) {
   setObjectName("stitchingExperimentDialog");
   setWindowTitle("Stitching Experiments");
+  setWindowFlag(Qt::WindowMaximizeButtonHint, true);
+  setWindowFlag(Qt::WindowContextHelpButtonHint, false);
   resize(1280, 820);
   auto& s = *impl_;
   s.game_directory = game_directory;
@@ -1059,6 +1109,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   root->addWidget(intro);
 
   auto* matrix_group = new QGroupBox("Candidate matrix");
+  matrix_group->setObjectName("stitchExperimentMatrix");
   auto* matrix_layout = new QFormLayout(matrix_group);
   s.control_points = new QLineEdit(QString::number(control_points));
   s.control_points->setObjectName("stitchExperimentControlPoints");
@@ -1097,13 +1148,20 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_actions->addWidget(s.add_to_batch);
   matrix_actions->addWidget(s.remove_from_batch);
   matrix_actions->addWidget(s.clear_batch);
-  matrix_actions->addStretch(1);
-  matrix_actions->addWidget(s.start_batch);
-  matrix_actions->addWidget(s.cancel);
   matrix_layout->addRow(matrix_actions);
-  root->addWidget(matrix_group);
+  auto* batch_actions = new QHBoxLayout();
+  batch_actions->addWidget(s.start_batch);
+  batch_actions->addWidget(s.cancel);
+  matrix_layout->addRow(batch_actions);
 
-  auto* splitter = new QSplitter(Qt::Horizontal);
+  auto* splitter = s.splitter = new QSplitter(Qt::Horizontal);
+  splitter->setObjectName("stitchExperimentSplitter");
+  splitter->setChildrenCollapsible(false);
+  auto* candidate_panel = new QWidget();
+  candidate_panel->setObjectName("stitchExperimentCandidatePanel");
+  auto* candidate_layout = new QVBoxLayout(candidate_panel);
+  candidate_layout->setContentsMargins(0, 0, 0, 0);
+  candidate_layout->addWidget(matrix_group);
   s.table = new QTableWidget(0, 6);
   s.table->setObjectName("stitchExperimentCandidates");
   s.table->setHorizontalHeaderLabels({"Candidate", "CP", "Frames", "First frame", "Rink pitch / roll", "Status"});
@@ -1111,14 +1169,17 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.table->setSelectionMode(QAbstractItemView::SingleSelection);
   s.table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
   s.table->horizontalHeader()->setStretchLastSection(true);
-  splitter->addWidget(s.table);
+  candidate_layout->addWidget(s.table, 1);
+  splitter->addWidget(candidate_panel);
 
   auto* preview_panel = new QWidget();
+  preview_panel->setObjectName("stitchExperimentPreviewPanel");
   auto* preview_layout = new QVBoxLayout(preview_panel);
   s.video = new StitchingExperimentVideoTarget(preview_panel);
   s.video->setObjectName("stitchExperimentVideo");
   preview_layout->addWidget(s.video, 1);
-  auto* preview_controls = new QHBoxLayout();
+  auto* preview_controls = new QFormLayout();
+  preview_controls->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
   s.preview_start = new QTimeEdit();
   s.preview_start->setObjectName("stitchExperimentPreviewStart");
   s.preview_start->setDisplayFormat("HH:mm:ss.zzz");
@@ -1136,19 +1197,26 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.preview->setObjectName("previewStitchExperimentButton");
   s.stop_preview = new QPushButton("Stop");
   s.stop_preview->setObjectName("stopStitchExperimentPreviewButton");
-  auto* maximize = new QPushButton("Maximize for seam inspection");
-  maximize->setObjectName("maximizeStitchExperimentButton");
-  preview_controls->addWidget(new QLabel("Passage start"));
-  preview_controls->addWidget(s.preview_start);
-  preview_controls->addWidget(new QLabel("Duration"));
-  preview_controls->addWidget(s.preview_duration);
-  preview_controls->addWidget(s.loop);
-  preview_controls->addStretch(1);
+  s.expand_preview = new QPushButton("Expand preview");
+  s.expand_preview->setObjectName("maximizeStitchExperimentButton");
+  s.expand_preview->setAutoDefault(false);
+  s.expand_preview->setToolTip("Expand the preview within this dialog (or double-click the preview).");
+  auto* start_label = new QLabel("Passage start");
+  start_label->setObjectName("stitchExperimentPreviewStartLabel");
+  start_label->setBuddy(s.preview_start);
+  auto* duration_label = new QLabel("Duration");
+  duration_label->setObjectName("stitchExperimentPreviewDurationLabel");
+  duration_label->setBuddy(s.preview_duration);
+  auto* duration_controls = new QHBoxLayout();
+  duration_controls->addWidget(s.preview_duration);
+  duration_controls->addWidget(s.loop);
+  preview_controls->addRow(start_label, s.preview_start);
+  preview_controls->addRow(duration_label, duration_controls);
   preview_layout->addLayout(preview_controls);
   auto* preview_actions = new QHBoxLayout();
   preview_actions->addWidget(s.preview);
   preview_actions->addWidget(s.stop_preview);
-  preview_actions->addWidget(maximize);
+  preview_actions->addWidget(s.expand_preview);
   preview_layout->addLayout(preview_actions);
   splitter->addWidget(preview_panel);
   splitter->setStretchFactor(0, 2);
@@ -1169,6 +1237,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   root->addWidget(s.progress);
   root->addWidget(s.status);
   root->addWidget(s.log);
+  s.preview_focus_siblings = {intro, candidate_panel, s.log};
   auto* bottom = new QHBoxLayout();
   s.apply = new QPushButton("Use selected in main Program");
   s.apply->setObjectName("applyStitchExperimentButton");
@@ -1195,7 +1264,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     s.stop_preview_process();
     s.show_status("Stopping preview…");
   });
-  connect(maximize, &QPushButton::clicked, this, [this]() { isMaximized() ? showNormal() : showMaximized(); });
+  s.video->toggle_focus = [&s]() { s.set_preview_focus(!s.preview_focused); };
+  connect(s.expand_preview, &QPushButton::clicked, this, s.video->toggle_focus);
   connect(s.apply, &QPushButton::clicked, this, [&s]() { s.apply_selected(); });
   connect(close, &QPushButton::clicked, this, [this]() { this->close(); });
   s.update_controls();
@@ -1212,4 +1282,13 @@ void StitchingExperimentDialog::done(int result) {
 void StitchingExperimentDialog::closeEvent(QCloseEvent* event) {
   event->ignore();
   impl_->request_close(QDialog::Rejected);
+}
+
+void StitchingExperimentDialog::keyPressEvent(QKeyEvent* event) {
+  if (event->key() == Qt::Key_Escape && impl_->preview_focused) {
+    impl_->set_preview_focus(false);
+    event->accept();
+    return;
+  }
+  QDialog::keyPressEvent(event);
 }
