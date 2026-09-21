@@ -34,6 +34,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":player_frame_selection",
     ":control_point_matcher",
     ":stitching_algorithms",
     ":transaction_state",
@@ -245,6 +246,7 @@ cc_test(
     srcs = ["GameConfigTest.cpp"],
     deps = [
         ":game_config",
+        ":player_frame_selection",
         ":transaction_state",
         "@yaml-cpp",
     ],
@@ -369,6 +371,7 @@ cc_test(
   deps = [
     ":game_config",
     ":hugin_project",
+    ":player_frame_selection",
     "@opencv_linux//:opencv",
   ],
 )
@@ -634,4 +637,46 @@ cc_test(
         "@bazel_tools//tools/cpp/runfiles",
         "@yaml-cpp",
     ],
+)
+
+cc_library(
+  name = "player_frame_selection",
+  srcs = ["PlayerFrameSelection.cpp"],
+  hdrs = ["PlayerFrameSelection.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-lcrypto"],
+  deps = [
+    "@yaml-cpp",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "player_frame_selection_test",
+  srcs = ["PlayerFrameSelectionTest.cpp"],
+  deps = [":player_frame_selection"],
+)
+
+cc_library(
+  name = "player_frame_overlap",
+  srcs = ["PlayerFrameOverlap.cpp"],
+  hdrs = ["PlayerFrameOverlap.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-ltiff"],
+  deps = [
+    ":stitching",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "player_frame_overlap_test",
+  srcs = ["PlayerFrameOverlapTest.cpp"],
+  deps = [":player_frame_overlap"],
 )

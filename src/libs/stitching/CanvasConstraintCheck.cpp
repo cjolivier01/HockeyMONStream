@@ -727,12 +727,30 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool view_aware = lines.size() == 28 && lines[0] == "version=8";
+  const bool selection_aware = lines.size() == 31 && lines[0] == "version=10";
+  const bool resolution_aware = (lines.size() == 29 && lines[0] == "version=9") || selection_aware;
+  const bool view_aware = (lines.size() == 28 && lines[0] == "version=8") || resolution_aware;
   const bool camera_aware = (lines.size() == 21 && lines[0] == "version=7") || view_aware;
   if (!input.eof() ||
       (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware && !camera_aware))
     return absl::FailedPreconditionError("Invalid canvas provenance format");
   CanvasProvenance provenance;
+  if (resolution_aware && lines[28] != "control-point-resolution=native" &&
+      lines[28] != "control-point-resolution=2k" && lines[28] != "control-point-resolution=auto")
+    return absl::FailedPreconditionError("Invalid canvas provenance control-point resolution");
+  if (selection_aware &&
+      (lines[29].rfind("calibration-frame-selection=", 0) != 0 ||
+       lines[29].size() <= std::strlen("calibration-frame-selection=") ||
+       lines[30].rfind("calibration-frame-diagnostics=", 0) != 0 ||
+       lines[30].size() <= std::strlen("calibration-frame-diagnostics=")))
+    return absl::FailedPreconditionError("Invalid canvas provenance calibration frame fields");
+  if (selection_aware) {
+    const std::string selection = lines[29].substr(std::strlen("calibration-frame-selection="));
+    if (selection != "none" && (selection.size() != 64 || !std::all_of(selection.begin(), selection.end(), [](char c) {
+                                  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                                })))
+      return absl::FailedPreconditionError("Invalid canvas provenance calibration frame selection fingerprint");
+  }
   auto assign = [&](size_t* destination, size_t line, const char* key) -> absl::Status {
     auto parsed = parse_provenance_value(lines[line], key);
     if (!parsed.ok())

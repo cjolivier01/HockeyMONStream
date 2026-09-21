@@ -4,6 +4,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/cudaHighBitStitch.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/StitchingFramePairMeta.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
@@ -325,6 +326,15 @@ bool StitcherPriv::HandleEvent(GstEvent* event) {
       pipeline_eos_seen_ = true;
     }
     const bool handled = Super::HandleEvent(event);
+    // The base handler drains and joins the output worker. Earlier checks could
+    // reject a selected pair that is still waiting in its lossless queue.
+    if (calibration_frame_selector_ && !calibration_cancelled_.load(std::memory_order_acquire)) {
+      const absl::Status complete = calibration_frame_selector_->Finish();
+      if (!complete.ok()) {
+        (void)report_fatal_calibration_failure(complete);
+        return false;
+      }
+    }
     return handled;
   }
   return Super::HandleEvent(event);
@@ -812,6 +822,14 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
     }
   }
 
+  bool needs_calibration_frames = configure_only_;
+  {
+    absl::MutexLock lk(&stitcher_mu_);
+    needs_calibration_frames = needs_calibration_frames || (one_pass_mode_ && !has_stitcher());
+  }
+  if (needs_calibration_frames)
+    HM_RETURN_IF_ERROR(initialize_calibration_frame_selection());
+
   // Not an in-place transform
   m_transformMode = true;
 
@@ -1043,7 +1061,56 @@ std::vector<hm::stitching::StitchingCalibrationFramePair> StitcherPriv::captured
   return frame_pairs;
 }
 
-bool StitcherPriv::should_capture_calibration_pair(uint64_t pair_pts_ns) const {
+absl::Status StitcherPriv::initialize_calibration_frame_selection() {
+  if (config_file_.empty())
+    return absl::OkStatus();
+  std::optional<YAML::Node> config;
+  HM_ASSIGN_OR_RETURN(config, stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml"));
+  if (!config)
+    return absl::OkStatus();
+  const YAML::Node stitching_config = (*config)["stitching"];
+  if (!stitching_config || !stitching_config.IsMap())
+    return absl::OkStatus();
+  const YAML::Node selection = stitching_config["calibration_frame_selection"];
+  if (!selection || selection.IsNull())
+    return absl::OkStatus();
+  stitching::PlayerFrameSelectionPlan plan;
+  HM_ASSIGN_OR_RETURN(plan, stitching::ParsePlayerFrameSelectionPlan(selection));
+  HM_RETURN_IF_ERROR(stitching::validate_player_frame_selection_sources(*config));
+  if (plan.selected.size() != calibration_frame_count_)
+    return absl::FailedPreconditionError("Selected-frame plan count differs from requested calibration-frame-count");
+  HM_ASSIGN_OR_RETURN(calibration_frame_selector_, stitching::PlayerFrameReplaySelector::Create(plan));
+  return absl::OkStatus();
+}
+
+absl::StatusOr<bool> StitcherPriv::should_capture_calibration_pair(
+    uint64_t pair_pts_ns,
+    const NvDsFrameMeta* left_meta,
+    const NvDsFrameMeta* right_meta) {
+  if (calibration_frame_selector_) {
+    if (calibration_frame_selector_->complete())
+      return false;
+    const std::array<std::optional<DecodedFrameSequence>, 2> inputs{
+        decoded_frame_sequence(left_meta), decoded_frame_sequence(right_meta)};
+    stitching::PlayerFramePairIdentity actual;
+    actual.timeline_pts_ns = pair_pts_ns;
+    for (size_t index = 0; index < inputs.size(); ++index) {
+      const auto& input = inputs[index];
+      if (!input || !input->source_uri || !GST_CLOCK_TIME_IS_VALID(input->source_pts))
+        return absl::FailedPreconditionError("Selected-frame replay requires both physical decoded source identities");
+      gchar* hostname = nullptr;
+      gchar* filename = g_filename_from_uri(g_quark_to_string(input->source_uri), &hostname, nullptr);
+      const bool local = filename && (!hostname || !*hostname || g_strcmp0(hostname, "localhost") == 0);
+      if (local)
+        actual.cameras[index] = {filename, input->source_pts, input->source_id, input->sequence};
+      g_free(filename);
+      g_free(hostname);
+      if (!local)
+        return absl::InvalidArgumentError("Selected-frame replay requires local physical camera recordings");
+    }
+    HM_RETURN_IF_ERROR(stitching::CanonicalizePlayerFramePair(&actual));
+    return calibration_frame_selector_->Observe(actual);
+  }
   return should_select_calibration_pair(
       pair_pts_ns,
       captured_calibration_frame_pairs_.size(),
@@ -1053,6 +1120,9 @@ bool StitcherPriv::should_capture_calibration_pair(uint64_t pair_pts_ns) const {
 }
 
 bool StitcherPriv::calibration_input_exhausted(const EosSnapshot& eos_snapshot) {
+  // Exact replay is finalized after EOS drains the queue in HandleEvent().
+  if (calibration_frame_selector_)
+    return false;
   if (eos_snapshot.pipeline_eos_seen || !eos_snapshot.source_ids.empty()) {
     return true;
   }
@@ -1258,6 +1328,9 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
       eos_snapshot.pipeline_eos_seen,
       /*require_initial_continuity=*/false);
   if (!selected_pair.ok()) {
+    if (calibration_frame_selector_ && absl::IsCancelled(selected_pair.status()) &&
+        !calibration_frame_selector_->complete())
+      return report_fatal_calibration_failure(calibration_frame_selector_->Finish());
     return selected_pair.status();
   }
   std::map<gint, std::map<guint, size_t>> frame_indices;
@@ -1273,7 +1346,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
       continue;
     }
     selected_pairs.emplace_back(by_source.begin()->second, by_source.rbegin()->second);
-    if (selected_pairs.size() == required_frame_count) {
+    if (!calibration_frame_selector_ && selected_pairs.size() == required_frame_count) {
       break;
     }
   }
@@ -1288,7 +1361,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
         ? std::min<uint64_t>(selected_left.buf_pts, selected_right.buf_pts)
         : GST_CLOCK_TIME_NONE;
 
-    if (!should_capture_calibration_pair(pair_pts_ns)) {
+    bool capture_pair = false;
+    HM_ASSIGN_OR_RETURN(
+        capture_pair,
+        should_capture_calibration_pair(pair_pts_ns, selected_left.frame_meta, selected_right.frame_meta));
+    if (!capture_pair) {
       continue;
     }
 #ifdef __aarch64__
@@ -1354,7 +1431,10 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
 }
 
 bool StitcherPriv::SetProperty(const Property& prop) {
-  if (prop.key == "expected-artifact-revision") {
+  if (prop.key == "emit-frame-pair-meta") {
+    if (caps_initialized_ || !parse_strict_bool(prop.value, emit_frame_pair_meta_))
+      return false;
+  } else if (prop.key == "expected-artifact-revision") {
     if (caps_initialized_)
       return false;
     expected_artifact_revision_ = prop.value;
@@ -1820,6 +1900,8 @@ absl::Status StitcherPriv::GenerateOutput(
         eos_snapshot.pipeline_eos_seen && metadata_valid_unpairable_batch,
         eos_snapshot.pipeline_eos_seen);
     if (source_eos_explains_unpairable_batch) {
+      if (calibration_frame_selector_ && !calibration_frame_selector_->complete())
+        return report_fatal_calibration_failure(calibration_frame_selector_->Finish());
       // URI-MULTIPLE suppresses chapter-boundary EOS before nvstreammux. A source EOS observed here therefore means
       // that a camera has permanently ended, so stop stitched output instead of discarding frames and continuing.
       return absl::CancelledError(mismatch_status.message());
@@ -1881,7 +1963,11 @@ absl::Status StitcherPriv::GenerateOutput(
               GST_CLOCK_TIME_IS_VALID(frame_info_right.frame_meta->buf_pts)
           ? std::min<uint64_t>(frame_info_left.frame_meta->buf_pts, frame_info_right.frame_meta->buf_pts)
           : GST_CLOCK_TIME_NONE;
-      if (!should_capture_calibration_pair(pair_pts_ns)) {
+      bool capture_pair = false;
+      HM_ASSIGN_OR_RETURN(
+          capture_pair,
+          should_capture_calibration_pair(pair_pts_ns, frame_info_left.frame_meta, frame_info_right.frame_meta));
+      if (!capture_pair) {
         continue;
       }
 #ifdef __aarch64__
@@ -1988,6 +2074,26 @@ absl::Status StitcherPriv::GenerateOutput(
       assert(!right_frame_offset_ns_);
       reuse_frame_meta = frame_info_right.frame_meta;
       remove_frame_metas.emplace_back(frame_info_left.frame_meta);
+    }
+
+    if (emit_frame_pair_meta_) {
+      const auto left = decoded_frame_sequence(frame_info_left.frame_meta);
+      const auto right = decoded_frame_sequence(frame_info_right.frame_meta);
+      if (!left || !right || !left->source_uri || !right->source_uri || !GST_CLOCK_TIME_IS_VALID(left->source_pts) ||
+          !GST_CLOCK_TIME_IS_VALID(right->source_pts) ||
+          !GST_CLOCK_TIME_IS_VALID(frame_info_left.frame_meta->buf_pts) ||
+          !GST_CLOCK_TIME_IS_VALID(frame_info_right.frame_meta->buf_pts))
+        return absl::FailedPreconditionError("Frame-pair analysis requires both complete decoded source identities");
+      const StitchingFramePair pair{
+          *left,
+          *right,
+          std::min(frame_info_left.frame_meta->buf_pts, frame_info_right.frame_meta->buf_pts),
+          frame_info_left.surface_params->width,
+          frame_info_left.surface_params->height,
+          frame_info_right.surface_params->width,
+          frame_info_right.surface_params->height};
+      if (!add_stitching_frame_pair_meta(reuse_frame_meta, pair))
+        return absl::ResourceExhaustedError("Could not preserve stitched frame-pair metadata");
     }
 
 #ifdef __aarch64__

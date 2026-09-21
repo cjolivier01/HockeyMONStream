@@ -34,6 +34,7 @@
 
 // Application and common headers.
 #include "PlaybackProgress.h"
+#include "PlayerFrameScan.h"
 #include "PreviewOverlayRuntime.h"
 #include "TerminalProgressUi.h"
 #include "configurator.h"
@@ -265,6 +266,14 @@ class PipelineApplication {
   gint64 render_window_id_{0};
   gboolean headless_render_video_{FALSE};
   gboolean stitching_calibration_only_{FALSE};
+  gboolean stitching_calibration_with_ice_mask_{FALSE};
+  gchar* stitching_player_scan_output_{nullptr};
+  gint stitching_player_scan_interval_ms_{500};
+  gint stitching_player_scan_frame_count_{4};
+  std::unique_ptr<hm::pipeline::PlayerFrameScan> player_frame_scan_;
+  bool player_scan_time_limit_reached_{false};
+  bool player_scan_clean_completion_{false};
+  volatile sig_atomic_t player_scan_interrupted_{false};
   std::vector<guint64> source_render_window_ids_;
   std::map<std::string, guint64> ui_preview_window_ids_;
   std::string initial_ui_preview_channel_{"program"};

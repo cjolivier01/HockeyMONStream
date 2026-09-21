@@ -48,6 +48,7 @@ enum {
   PROP_UNIQUE_ID,
   PROP_GPU_DEVICE_ID,
   PROP_DETECTION_MASK_FILE,
+  PROP_REQUIRE_EXISTING_MASK,
   PROP_RAISE_BBOX_CENTER_BY_HEIGHT_RATIO,
   PROP_LOWER_BBOX_BOTTOM_BY_HEIGHT_RATIO,
 };
@@ -194,6 +195,16 @@ static void gst_dsfieldmask_class_init(GstDsFieldMaskClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_REQUIRE_EXISTING_MASK,
+      g_param_spec_boolean(
+          "require-existing-mask",
+          "Require existing mask",
+          "Fail unless a current generation-bound mask is available; never regenerate or skip pruning",
+          FALSE,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_GPU_DEVICE_ID,
       g_param_spec_uint(
           "gpu-id",
@@ -259,6 +270,7 @@ static void gst_dsfieldmask_init(GstDsFieldMask* dsfieldmask) {
   dsfieldmask->gpu_id = DEFAULT_GPU_ID;
   dsfieldmask->raise_bbox_center_by_height_ratio = 0.0F;
   dsfieldmask->lower_bbox_bottom_by_height_ratio = 0.0F;
+  dsfieldmask->require_existing_mask = FALSE;
 
   /* This quark is required to identify NvDsMeta when iterating through
    * the buffer metadatas */
@@ -275,6 +287,9 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
   switch (prop_id) {
     case PROP_UNIQUE_ID:
       dsfieldmask->unique_id = g_value_get_uint(value);
+      break;
+    case PROP_REQUIRE_EXISTING_MASK:
+      dsfieldmask->require_existing_mask = g_value_get_boolean(value);
       break;
     case PROP_GPU_DEVICE_ID:
       dsfieldmask->gpu_id = g_value_get_uint(value);
@@ -306,6 +321,9 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
   GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(object);
   assert(dsfieldmask);
   switch (prop_id) {
+    case PROP_REQUIRE_EXISTING_MASK:
+      g_value_set_boolean(value, dsfieldmask->require_existing_mask);
+      break;
     case PROP_UNIQUE_ID:
       g_value_set_uint(value, dsfieldmask->unique_id);
       break;
@@ -337,6 +355,7 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
       .detection_mask_file = dsfieldmask->detection_mask_file,
       .raise_bbox_center_by_height_ratio = dsfieldmask->raise_bbox_center_by_height_ratio,
       .lower_bbox_bottom_by_height_ratio = dsfieldmask->lower_bbox_bottom_by_height_ratio,
+      .require_existing_mask = static_cast<bool>(dsfieldmask->require_existing_mask),
   };
 
   /* Algorithm specific initializations and resource allocation. */
@@ -444,7 +463,8 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
     absl::Status status =
         DsFieldMaskProcessFrame(surface, frame_index, frame_meta, dsfieldmask->dsfieldmasklib_ctx, kDraw);
     if (!status.ok()) {
-      std::cerr << status << std::endl;
+      GST_ELEMENT_ERROR(
+          dsfieldmask, STREAM, FAILED, ("Field-mask processing failed: %s", status.ToString().c_str()), (NULL));
       goto error;
     }
   }

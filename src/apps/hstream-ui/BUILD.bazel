@@ -221,6 +221,7 @@ cc_library(
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:player_frame_selection",
         "//src/libs/stitching:stitching",
         "@yaml-cpp",
     ],
@@ -255,6 +256,7 @@ cc_test(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":stitching_experiment_backend",
+        "//src/libs/stitching:player_frame_selection",
         "@yaml-cpp",
     ],
 )

@@ -211,12 +211,30 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool resolution_aware = lines.size() == 29 && lines[0] == "version=9";
+  const bool selection_aware = lines.size() == 31 && lines[0] == "version=10";
+  const bool resolution_aware = (lines.size() == 29 && lines[0] == "version=9") || selection_aware;
   const bool view_aware = (lines.size() == 28 && lines[0] == "version=8") || resolution_aware;
   const bool camera_aware = (lines.size() == 21 && lines[0] == "version=7") || view_aware;
   if (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware && !camera_aware)
     return absl::FailedPreconditionError("Invalid stitching canvas provenance format");
   HuginProject::CanvasProvenance provenance;
+  if (selection_aware) {
+    HM_ASSIGN_OR_RETURN(
+        provenance.calibration_frame_selection_fingerprint,
+        parse_canvas_provenance_string(lines[29], "calibration-frame-selection"));
+    if (provenance.calibration_frame_selection_fingerprint == "none")
+      provenance.calibration_frame_selection_fingerprint.clear();
+    else if (
+        provenance.calibration_frame_selection_fingerprint.size() != 64 ||
+        !std::all_of(
+            provenance.calibration_frame_selection_fingerprint.begin(),
+            provenance.calibration_frame_selection_fingerprint.end(),
+            [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+      return absl::FailedPreconditionError("Invalid stitching calibration frame selection fingerprint");
+    HM_ASSIGN_OR_RETURN(
+        provenance.calibration_frame_diagnostics,
+        parse_canvas_provenance_string(lines[30], "calibration-frame-diagnostics"));
+  }
   if (resolution_aware) {
     std::string resolution;
     HM_ASSIGN_OR_RETURN(resolution, parse_canvas_provenance_string(lines[28], "control-point-resolution"));
@@ -2456,7 +2474,7 @@ absl::Status HuginProject::Configure(
       : options.projection_parameters;
   HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*generated_projection, generated_projection_parameters));
   provenance.imbue(std::locale::classic());
-  provenance << std::setprecision(std::numeric_limits<double>::max_digits10) << "version=9\n"
+  provenance << std::setprecision(std::numeric_limits<double>::max_digits10) << "version=10\n"
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -2496,6 +2514,14 @@ absl::Status HuginProject::Configure(
   for (size_t index = 0; index < effective_projection_framing.crop.size(); ++index)
     provenance << "projection-crop-" << index << '=' << effective_projection_framing.crop[index] << '\n';
   provenance << "control-point-resolution=" << ControlPointResolutionName(options.control_point_resolution) << '\n';
+  provenance << "calibration-frame-selection="
+             << (options.calibration_frame_selection_fingerprint.empty()
+                     ? "none"
+                     : options.calibration_frame_selection_fingerprint)
+             << '\n';
+  provenance << "calibration-frame-diagnostics="
+             << (options.calibration_frame_diagnostics.empty() ? "none" : options.calibration_frame_diagnostics)
+             << '\n';
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;
@@ -2522,6 +2548,24 @@ absl::Status HuginProject::Configure(
       if (!status.ok())
         return status;
     }
+  }
+  try {
+    const fs::path config_path = game_dir / "config.yaml";
+    std::error_code error;
+    const bool has_config = fs::exists(config_path, error);
+    if (error)
+      return absl::InternalError("Unable to inspect calibration frame selection: " + error.message());
+    const YAML::Node current_config = has_config ? YAML::LoadFile(config_path.string()) : YAML::Node();
+    std::string current_selection;
+    HM_ASSIGN_OR_RETURN(current_selection, player_frame_selection_fingerprint(current_config));
+    // Compare even an ordinary worker's empty fingerprint: a newly added plan
+    // also invalidates the generation that this worker just extracted.
+    if (current_selection != options.calibration_frame_selection_fingerprint)
+      return absl::AbortedError("Calibration frame selection changed before publication");
+    if (!current_selection.empty())
+      HM_RETURN_IF_ERROR(validate_player_frame_selection_sources(current_config));
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Unable to validate calibration frame selection: " + std::string(error.what()));
   }
   auto prepared_publication = prepare_stitch_generation_publication(staging, game_dir);
   if (!prepared_publication.ok())

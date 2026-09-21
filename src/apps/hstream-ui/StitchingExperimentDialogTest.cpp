@@ -6,8 +6,10 @@
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
+#include <QtCore/QTimer>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
+#include <QtGui/QPixmap>
 #include <QtGui/QScreen>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -144,7 +146,113 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
   QCoreApplication::processEvents();
 }
 
-void exercise(const QString& game, const QString& runner, const QString& repo, bool gpu, const QString& log_path) {
+void exercise_player_queue(const QString& game, const QString& root) {
+  const QString runner = root + "/record-runner.sh";
+  const QString arguments = root + "/runner-arguments.txt";
+  write(runner, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HSTREAM_TEST_ARGUMENTS\"\nexit 1\n");
+  require(
+      QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot make test runner executable");
+  QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
+  StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 4, "00:00:00");
+  dialog.show();
+  QCoreApplication::processEvents();
+  auto* players = widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames");
+  auto* duration = widget<QSpinBox>(dialog, "stitchExperimentPlayerScanDuration");
+  auto* add = widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton");
+  auto* remove = widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton");
+  auto* clear = widget<QPushButton>(dialog, "clearStitchExperimentBatchButton");
+  auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
+  require(
+      !players->isChecked() && !duration->isEnabled() && duration->value() == 60 && duration->maximum() == 300,
+      "Player selection must be opt-in with bounded search controls");
+  add->click();
+  players->setChecked(true);
+  add->click();
+  add->click();
+  require(
+      table->rowCount() == 2 && table->item(0, 0)->text().startsWith("Baseline") &&
+          table->item(1, 0)->text().startsWith("Players"),
+      "Automatic selection must reuse and upgrade an already queued ordinary baseline");
+  duration->setValue(120);
+  add->click();
+  require(table->rowCount() == 3, "Different search durations must share one baseline");
+  table->selectRow(0);
+  remove->click();
+  require(table->rowCount() == 0, "Removing a baseline must remove all dependent candidates");
+  widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText("1,4");
+  add->click();
+  require(table->rowCount() == 3, "A one-frame candidate must not add a redundant scan or baseline");
+  table->selectRow(2);
+  remove->click();
+  require(
+      table->rowCount() == 2 && table->item(1, 0)->text().startsWith("Candidate"),
+      "Removing the last automatic dependency must leave an ordinary baseline");
+  clear->click();
+  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150,200");
+  widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText("1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16");
+  add->click();
+  require(
+      table->rowCount() == 0 && status->text().contains("64-candidate"),
+      "The queue limit must count baselines and automatic rows without partially adding them");
+  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100");
+  widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText("2");
+  add->click();
+  widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
+  require(
+      wait_until([&] { return status->text().startsWith("Batch complete."); }, 10000),
+      "Failed automatic bootstrap did not finish its dependent queue");
+  const QByteArray args = read(arguments);
+  require(
+      args.contains("--stitching-calibration-only\n") && args.contains("--stitching-calibration-with-ice-mask\n") &&
+          !args.contains("--stitching-player-scan-output"),
+      "Associated baseline must prepare its rink mask before any player scan");
+  require(
+      table->item(0, 5)->text() == "Runner exited 1" &&
+          table->item(1, 5)->text().contains("baseline calibration failed"),
+      "A failed bootstrap must prevent its dependent scan from launching");
+  dialog.reject();
+  require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Player queue dialog did not close");
+}
+
+void exercise_player_cancellation(const QString& game, const QString& root) {
+  // A shell fixture remains running without interpreting the runner arguments.
+  const QString runner = root + "/waiting-runner.sh";
+  write(runner, "#!/bin/sh\nexec sleep 30\n");
+  require(
+      QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot make waiting runner executable");
+  StitchingExperimentDialog waiting(
+      game, runner, root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 100, 2, "00:00:00");
+  waiting.show();
+  widget<QCheckBox>(waiting, "stitchExperimentPreferPlayerFrames")->setChecked(true);
+  widget<QPushButton>(waiting, "addStitchExperimentsToBatchButton")->click();
+  widget<QPushButton>(waiting, "startStitchExperimentBatchButton")->click();
+  auto* cancel = widget<QPushButton>(waiting, "cancelStitchExperimentsButton");
+  require(wait_until([&] { return cancel->isEnabled(); }, 1000), "Bootstrap never became cancellable");
+  cancel->click();
+  auto* status = widget<QLabel>(waiting, "stitchExperimentStatus");
+  require(
+      wait_until([&] { return status->text().startsWith("Batch cancelled."); }, 10000),
+      "Cancellation did not stop the owned process session");
+  auto* table = widget<QTableWidget>(waiting, "stitchExperimentCandidates");
+  require(
+      table->item(0, 5)->text() == "Cancelled" && table->item(1, 5)->text() == "Cancelled",
+      "Cancelled bootstrap must never advance its automatic candidate");
+  waiting.reject();
+  require(wait_until([&] { return !waiting.isVisible(); }, 1000), "Cancelled player dialog did not close");
+}
+
+void exercise(
+    const QString& game,
+    const QString& runner,
+    const QString& repo,
+    bool gpu,
+    const QString& log_path,
+    bool player_selection = false) {
+  const QString anchor = player_selection ? qEnvironmentVariable("HSTREAM_TEST_PLAYER_ANCHOR", "00:00:00") : "00:00:00";
   const QByteArray original_config = read(game + "/config.yaml");
   const QStringList original_files = QDir(game).entryList(QDir::Files);
   bool selected = false;
@@ -156,29 +264,40 @@ void exercise(const QString& game, const QString& runner, const QString& repo, b
       QProcessEnvironment::systemEnvironment(),
       100,
       1,
-      "00:00:00",
+      anchor,
       nullptr,
       [&] { selected = true; });
   auto* log = widget<QPlainTextEdit>(dialog, "stitchExperimentLog");
   struct SaveLog {
     QPlainTextEdit* log;
     QString path;
-    ~SaveLog() {
+    void save() const {
       if (!path.isEmpty()) {
         QFile file(path);
         if (file.open(QIODevice::WriteOnly))
           file.write(log->toPlainText().toUtf8());
       }
     }
+    ~SaveLog() {
+      save();
+    }
   } save_log{log, log_path};
+  QTimer log_timer;
+  QObject::connect(&log_timer, &QTimer::timeout, &dialog, [&] { save_log.save(); });
+  if (!log_path.isEmpty())
+    log_timer.start(2000);
   dialog.show();
   dialog.raise();
   QCoreApplication::processEvents();
   if (!gpu)
     exercise_layout(dialog);
-  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
-  widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText("1");
-  widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText("00:00:00");
+  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText(player_selection ? "100" : "100,150");
+  widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText(player_selection ? "2" : "1");
+  widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText(anchor);
+  if (player_selection) {
+    widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(true);
+    widget<QSpinBox>(dialog, "stitchExperimentPlayerScanDuration")->setValue(10);
+  }
   auto* add = widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton");
   auto* start = widget<QPushButton>(dialog, "startStitchExperimentBatchButton");
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
@@ -197,7 +316,9 @@ void exercise(const QString& game, const QString& runner, const QString& repo, b
     widget<QSpinBox>(dialog, "stitchExperimentPreviewDuration")->setValue(5);
     auto* play = widget<QPushButton>(dialog, "previewStitchExperimentButton");
     for (int row = 0; row < 2; ++row) {
-      require(table->item(row, 5)->text() == "Ready", "Real calibration failed");
+      if (table->item(row, 5)->text() != "Ready")
+        throw std::runtime_error(
+            QString("Candidate %1 failed: %2").arg(row + 1).arg(table->item(row, 5)->text()).toStdString());
       table->selectRow(row);
       QCoreApplication::processEvents();
       require(play->isEnabled(), "Ready candidate cannot preview");
@@ -250,6 +371,48 @@ void exercise(const QString& game, const QString& runner, const QString& repo, b
     require(read(game + "/config.yaml") == original_config, "Preview changed source config");
     require(
         QDir(game).entryList(QDir::Files) == original_files, "Experiments published source artifacts before selection");
+    if (player_selection) {
+      auto* inspect = widget<QPushButton>(dialog, "inspectStitchExperimentFramesButton");
+      require(inspect->isEnabled(), "Selected frame inspection must be available for the automatic candidate");
+      bool inspected = false;
+      QTimer::singleShot(0, &dialog, [&] {
+        auto* viewer = dialog.findChild<QDialog*>("stitchExperimentFrameInspector");
+        if (!viewer)
+          return;
+        auto* frames = viewer->findChild<QTableWidget*>("stitchExperimentSelectedFrames");
+        auto* identity = viewer->findChild<QPlainTextEdit*>("stitchExperimentSelectedFrameIdentity");
+        auto* left = viewer->findChild<QLabel*>("stitchExperimentSelectedLeft");
+        auto* right = viewer->findChild<QLabel*>("stitchExperimentSelectedRight");
+        if (frames && frames->rowCount() == 2)
+          frames->selectRow(1);
+        const auto thumbnail_has_tones = [](const QLabel* label) {
+          if (!label)
+            return false;
+          const QPixmap pixmap = label->property("pixmap").value<QPixmap>();
+          if (pixmap.isNull())
+            return false;
+          const QImage sample = pixmap.scaled(64, 36).toImage();
+          size_t midtones = 0;
+          for (int y = 0; y < sample.height(); ++y) {
+            for (int x = 0; x < sample.width(); ++x) {
+              const int gray = qGray(sample.pixel(x, y));
+              midtones += gray >= 16 && gray <= 239;
+            }
+          }
+          // This real hockey fixture has gray ice and players. A 16-bit still
+          // written directly to JPEG clips almost every pixel to white/cyan.
+          return midtones * 10 >= static_cast<size_t>(sample.width() * sample.height());
+        };
+        inspected = frames && frames->rowCount() == 2 && identity && identity->toPlainText().contains("Source PTS:") &&
+            identity->toPlainText().contains("Selection fingerprint:") && thumbnail_has_tones(left) &&
+            thumbnail_has_tones(right);
+        if (!log_path.isEmpty())
+          viewer->grab().save(log_path + ".selected-frames.png");
+        viewer->accept();
+      });
+      inspect->click();
+      require(inspected, "Frame inspection must show exact identities and both thumbnails with preserved image tones");
+    }
     auto* apply = widget<QPushButton>(dialog, "applyStitchExperimentButton");
     require(apply->isEnabled(), "Ready candidate cannot be selected");
     apply->click();
@@ -273,14 +436,15 @@ int main(int argc, char** argv) {
   QApplication application(argc, argv);
   try {
     // Real mode requires a disposable game copy: explicit selection changes it.
-    if (argc == 5 && QString(argv[1]) == "--gpu-smoke") {
+    if (argc == 5 && (QString(argv[1]) == "--gpu-smoke" || QString(argv[1]) == "--gpu-player-smoke")) {
       const QString repo = QString::fromLocal8Bit(argv[3]);
       exercise(
           QString::fromLocal8Bit(argv[2]),
           repo + "/bazel-bin/src/apps/hstream-cli/hstream-cli",
           repo,
           true,
-          QString::fromLocal8Bit(argv[4]));
+          QString::fromLocal8Bit(argv[4]),
+          QString(argv[1]) == "--gpu-player-smoke");
     } else {
       QTemporaryDir fixture;
       require(fixture.isValid(), "Cannot create test workspace");
@@ -289,6 +453,8 @@ int main(int argc, char** argv) {
       write(game + "/config.yaml", "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n");
       write(game + "/left.mp4", "left");
       write(game + "/right.mp4", "right");
+      exercise_player_queue(game, fixture.path());
+      exercise_player_cancellation(game, fixture.path());
       exercise(game, "/bin/false", fixture.path(), false, {});
     }
     std::cout << "Stitching experiment workflow passed\n";

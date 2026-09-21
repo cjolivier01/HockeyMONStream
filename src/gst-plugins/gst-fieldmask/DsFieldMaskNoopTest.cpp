@@ -14,7 +14,8 @@ int main() {
     return 1;
   }
 
-  const absl::Status status = DsFieldMaskProcessFrame(/*surface=*/nullptr, /*frame_index=*/0, /*frame_meta=*/nullptr, ctx, /*draw=*/false);
+  const absl::Status status =
+      DsFieldMaskProcessFrame(/*surface=*/nullptr, /*frame_index=*/0, /*frame_meta=*/nullptr, ctx, /*draw=*/false);
   if (!status.ok()) {
     std::cerr << "Expected no-op OK status, got: " << status << std::endl;
     DsFieldMaskCtxDeinit(ctx);
@@ -22,6 +23,13 @@ int main() {
   }
 
   DsFieldMaskCtxDeinit(ctx);
+  params.require_existing_mask = true;
+  ctx = DsFieldMaskCtxInit(&params);
+  const auto required = DsFieldMaskProcessFrame(nullptr, 0, nullptr, ctx, false);
+  DsFieldMaskCtxDeinit(ctx);
+  if (!absl::IsFailedPrecondition(required)) {
+    std::cerr << "Require-existing-mask must reject an empty mask path, got: " << required << '\n';
+    return 3;
+  }
   return 0;
 }
-

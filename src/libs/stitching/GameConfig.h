@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -105,7 +106,15 @@ struct StitchingBackendChoices {
   StitchCameraSelection camera;
   ControlPointResolution control_point_resolution{DefaultControlPointResolution()};
   hm::onnx::ExecutionProvider control_point_execution_provider{hm::onnx::ExecutionProvider::kCuda};
+  std::string calibration_frame_selection_fingerprint;
 };
+
+// Generated exact-pair plans are optional. Loading existing maps only validates
+// the plan's contents/fingerprint; source files are checked when extracting a new
+// generation, so an archive remains playable after its original media moves.
+absl::StatusOr<std::string> player_frame_selection_fingerprint(const YAML::Node& config);
+absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config, uint64_t anchor_ns);
+absl::Status validate_player_frame_selection_sources(const YAML::Node& config);
 
 // Camera configuration definitions live in the shared baseline under
 // stitching.camera_configs. A game selects one with stitching.camera_config

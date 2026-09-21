@@ -31,8 +31,7 @@ namespace {
 bool expect_candidate_retry_policy_preserves_late_failure() {
   const absl::Status geometry_failure = absl::FailedPreconditionError("candidate geometry rejected");
   const absl::Status missing_candidate_input = absl::NotFoundError("candidate input unavailable");
-  const absl::Status missing_hugin_executable =
-      absl::NotFoundError("Required Hugin executable not found: pto_gen");
+  const absl::Status missing_hugin_executable = absl::NotFoundError("Required Hugin executable not found: pto_gen");
   const absl::Status invalid_hugin_override = absl::NotFoundError("HM_PTO_GEN is not executable: /bad/pto_gen");
   const absl::Status seam_failure = absl::FailedPreconditionError("enblend failed to generate seam_file.png");
   const absl::Status dimension_failure = absl::ResourceExhaustedError("mapping canvas exceeds dimension limit");
@@ -348,6 +347,32 @@ bool expect_configured(const fs::path& dir, bool expected, const std::string& la
   return true;
 }
 
+bool expect_cleared_player_plan_invalidates_geometry(const fs::path& tmpdir) {
+  for (bool selected : {false, true}) {
+    const fs::path directory = tmpdir / (selected ? "cleared-player-plan" : "ordinary-player-provenance");
+    if (!write_valid_stitching_artifacts(directory) ||
+        !write_canvas_provenance(directory, 0, 160, 32, 0, 0, 0, false, false, "nona", "equirectangular", "none") ||
+        !write_text_file(directory / "config.yaml", "stitching: {}\n"))
+      return false;
+    std::ifstream input(directory / "stitching_canvas_provenance");
+    std::string provenance((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    provenance.replace(0, std::string("version=7").size(), "version=10");
+    provenance +=
+        "projection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n"
+        "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0\nprojection-crop-3=1\n"
+        "control-point-resolution=native\ncalibration-frame-selection=";
+    provenance += selected ? std::string(64, 'a') : "none";
+    provenance += "\ncalibration-frame-diagnostics=none\n";
+    if (!write_text_file(directory / "stitching_canvas_provenance", provenance) ||
+        !expect_configured(
+            directory,
+            !selected,
+            "clearing a selected frame plan must invalidate its geometry even without explicit algorithm overrides"))
+      return false;
+  }
+  return true;
+}
+
 bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "mapping-algorithm-provenance";
   fs::remove_all(dir);
@@ -356,6 +381,7 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   YAML::Node config;
   config["stitching"]["mapping_backend"] = "nona";
   config["stitching"]["projection"] = "cylindrical";
+  config["stitching"]["control_point_resolution"] = "native";
   if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
     return false;
   if (!expect_configured(dir, false, "legacy provenance must not mask a selected projection"))
@@ -2358,5 +2384,7 @@ int main() {
     finish(tmpdir, 46);
   }
 
+  if (!expect_cleared_player_plan_invalidates_geometry(tmpdir))
+    finish(tmpdir, 47);
   finish(tmpdir, 0);
 }

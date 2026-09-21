@@ -25,6 +25,18 @@ configuration stay isolated. Workspace preparation is deferred so adding a large
 Program crop, inference, rink masking, and play tracking. Completed candidates remain available for comparison after
 the batch finishes or is cancelled.
 
+Enable **Prefer player-rich frames** to add an automatic candidate alongside its ordinary baseline. The search starts
+at the first calibration frame and defaults to 60 seconds, bounded to 300 seconds. It samples every 500 ms through
+the existing detector and Program ice-mask pruning; people surviving that filter include players and referees.
+Tracking is not required. The baseline prepares its rink mask before scanning, while the scan requires that exact
+existing mask and adds no video readbacks. Selected synchronized pairs are replayed exactly for a separate calibration.
+The first pair remains the anchor, and a one-frame candidate needs no scan. Different search durations reuse the same
+baseline. Baselines count toward the 64-row limit; removing one removes its dependent automatic rows.
+
+An empty passage or insufficient separated people leaves the automatic row unavailable with a reason. Source,
+model, inference, or mask failures are errors. The ordinary baseline remains available. Automatic frame selection
+does not guarantee improved alignment or that the feature matcher uses player points; compare the moving results.
+
 Adding, running, cancelling, previewing, or discarding a batch never modifies the selected game's stitching config or
 artifacts. **Discard batch** and closing the dialog remove the private candidate data. The only operation that changes
 the main game's stitching state is the explicit **Use selected in main Program** action described below. If a stopped
@@ -45,6 +57,19 @@ or replacing its native GPU window. Switching candidates starts the same passage
 seam. Video surfaces remain GPU-resident.
 Calibration-only embedded playback retains the render sink's configured clock pacing, so a passage plays at normal
 speed. Ordinary Program previews keep their existing processing/encoding timing.
+
+After an automatic scan has selected frames, **Inspect selected frames** opens its ordered frame list, including the
+anchor, exact physical source files and nanosecond timestamps, decoded sequences, eligible-person counts, apparent
+far/middle/near counts, and selection quality. It also checks whether the source files still match their recorded
+identities. The colored 16×9 grid shows scoring coverage in the **baseline stitched canvas**; it does not overlay
+stitched detections onto raw-camera images or imply metric depth.
+
+Each pair has left/right thumbnails from the exact images extracted for matching. They become available when that
+pair is extracted and remain inspectable if solving subsequently fails. Thumbnail creation reuses the CPU images
+already required by calibration, without another video-surface readback or a separate approximate seek. Each is at
+most 1024 pixels on its longest edge; only the selected set of at most 16 pairs is retained privately under
+`player-frame-inspection/<selection fingerprint>/`. These inspection images are discarded with the experiment and
+are not promoted into the game. Missing thumbnails are shown explicitly rather than replaced with nearby frames.
 
 ## Selecting the Program calibration
 
@@ -69,6 +94,9 @@ promoted copy; camera videos are never copied or modified.
 deduplication, serial continuation after failure, source-config isolation, and prompt closure without GPU use. It
 also checks non-overlapping preview controls at 1280×820 and 1024×720, dialog maximization, and preview expand/restore
 through the button, double-click, and Escape, preserving the splitter sizes and native window identity.
+It also checks automatic baseline reuse, dependency removal, the full queue bound, bootstrap failure and cancellation,
+and opt-in controls. Backend tests distinguish invalid reports from unavailable coverage and preserve selection
+provenance through promotion.
 
 For a real GPU check, build the dialog test and CLI with the host's CUDA architecture configuration (for example,
 `--config=opt --cpu=k8 --config=blackwell` on an RTX 5090). The opt-in mode requires an X11 display and a **disposable
@@ -85,3 +113,8 @@ then explicitly promotes a candidate into the disposable game. It saves the runn
 display capture per passage. Desktop captures may be black under Xwayland even when the OpenGL framebuffer contains
 video; the existing `@capture-preview-frame stitched /path/to/frame.png` runner command can verify the presented
 frame directly. These one-shot diagnostic readbacks are not part of steady-state production playback.
+
+Use `--gpu-player-smoke` instead of `--gpu-smoke` to exercise a baseline with rink-mask preparation, a ten-second
+player scan, exact selected-pair replay, frame inspection with thumbnails, moving comparison and final promotion.
+`HSTREAM_TEST_PLAYER_ANCHOR=HH:MM:SS[.mmm]` selects the action passage for that mode. The input must contain enough
+on-ice people for the requested pair count; unavailable coverage is intentionally a failed smoke test.

@@ -5932,8 +5932,7 @@ absl::Status Configurator::map_common_config_keys() {
   stitching::MappingBackend crop_rotation_backend;
   HM_ASSIGN_OR_RETURN(
       crop_rotation_backend,
-      stitching::ParseMappingBackend(
-          get_node_value(config_, "stitching.mapping_backend", std::string("nona"))));
+      stitching::ParseMappingBackend(get_node_value(config_, "stitching.mapping_backend", std::string("nona"))));
   bool suppress_crop_rotation = false;
   if (crop_rotation_backend == stitching::MappingBackend::kNona) {
     stitching::StitchProjectionFraming framing;
@@ -6464,7 +6463,8 @@ absl::Status Configurator::gather_stitching_videos(
   try {
     HM_ASSIGN_OR_RETURN(
         sync_method,
-        stitching::parse_synchronization_method(get_node_value<std::string>(config_, "stitching.sync_method", "audio")));
+        stitching::parse_synchronization_method(
+            get_node_value<std::string>(config_, "stitching.sync_method", "audio")));
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Invalid stitching.sync_method: " + std::string(error.what()));
   }
@@ -6583,8 +6583,9 @@ absl::Status Configurator::gather_stitching_videos(
         !has_node(config_, "game.stitching.frame_offsets.right", /*non_null=*/true) || force) {
       stitching::Synchronization sync;
       HM_ASSIGN_OR_RETURN(
-          sync, stitching::calculate_stitching_synchronization(
-                    game_dir / left_files[0], game_dir / right_files[0], sync_method));
+          sync,
+          stitching::calculate_stitching_synchronization(
+              game_dir / left_files[0], game_dir / right_files[0], sync_method));
       offsets["left"] = std::to_string(sync.video1_frame_offset);
       offsets["right"] = std::to_string(sync.video2_frame_offset);
       private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
@@ -8131,6 +8132,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   HM_ASSIGN_OR_RETURN(resolution, stitching::read_control_point_resolution(config_));
   hm::onnx::ExecutionProvider provider;
   HM_ASSIGN_OR_RETURN(provider, stitching::read_control_point_execution_provider(config_));
+  std::string calibration_frame_selection_fingerprint;
+  HM_ASSIGN_OR_RETURN(calibration_frame_selection_fingerprint, stitching::player_frame_selection_fingerprint(config_));
   const stitching::StitchingBackendChoices backend_choices{
       matcher_name,
       backend_name,
@@ -8140,7 +8143,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       projection_framing,
       camera,
       resolution,
-      provider};
+      provider,
+      calibration_frame_selection_fingerprint};
 
   bool provider_changed = false;
   HM_ASSIGN_OR_RETURN(
@@ -8788,6 +8792,8 @@ absl::Status Configurator::complete_configuration(
         HM_ASSIGN_OR_RETURN(expected_resolution, stitching::read_control_point_resolution(config_));
         hm::onnx::ExecutionProvider expected_provider;
         HM_ASSIGN_OR_RETURN(expected_provider, stitching::read_control_point_execution_provider(config_));
+        std::string expected_selection_fingerprint;
+        HM_ASSIGN_OR_RETURN(expected_selection_fingerprint, stitching::player_frame_selection_fingerprint(config_));
         const stitching::StitchingBackendChoices expected_backend_choices{
             get_node_value(config_, "stitching.control_point_matcher", std::string()),
             get_node_value(config_, "stitching.mapping_backend", std::string()),
@@ -8797,7 +8803,8 @@ absl::Status Configurator::complete_configuration(
             expected_projection_framing,
             expected_camera,
             expected_resolution,
-            expected_provider};
+            expected_provider,
+            expected_selection_fingerprint};
         HM_RETURN_IF_ERROR(
             stitching::validate_stitching_backend_generation(
                 current, effective_invalidation_id, expected_backend_choices));

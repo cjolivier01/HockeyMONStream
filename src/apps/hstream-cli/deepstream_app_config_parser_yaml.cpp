@@ -233,6 +233,7 @@ gboolean parse_dsfieldmask_yaml(
     const std::string& config_dir) {
   hm::utils::ConfigLocator locator{.ignored = {"detection-mask", "properties"}};
   SET_LOCATOR(locator, *config, enable);
+  SET_LOCATOR(locator, *config, require_existing_mask);
   SET_LOCATOR(locator, *config, unique_id);
   SET_LOCATOR(locator, *config, gpu_id);
   SET_LOCATOR(locator, *config, nvbuf_memory_type);

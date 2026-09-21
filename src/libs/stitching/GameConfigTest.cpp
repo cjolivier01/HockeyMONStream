@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <atomic>
@@ -37,6 +38,112 @@ int update_key(const fs::path& root, const std::string& key) {
   return hm::stitching::publish_game_config(root, YAML::Dump(config) + "\n").ok() ? 0 : 2;
 }
 
+bool test_player_frame_selection_state(const fs::path& root) {
+  using namespace hm::stitching;
+  fs::create_directories(root);
+  YAML::Node config;
+  PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 1;
+  PlayerFrameObservation anchor;
+  anchor.pair.timeline_pts_ns = 9007199254740993ULL; // Integer precision beyond a double's exact range.
+  for (size_t index = 0; index < 2; ++index) {
+    const fs::path source = root / (index ? "right.mp4" : "left.mp4");
+    std::ofstream(source) << "local camera chapter";
+    auto binding = BindPlayerFrameSource(source);
+    if (!binding.ok())
+      return expect(false, "player source fixture must bind");
+    plan.sources.push_back(*binding);
+    anchor.pair.cameras[index] = {binding->path, 7000000003ULL + index, static_cast<uint32_t>(index), 17};
+    config["game"]["videos"][index ? "right" : "left"].push_back(source.string());
+    config["game"]["stitching"]["frame_offsets"][index ? "right" : "left"] = index ? 0.1250000001 : 0.0;
+  }
+  plan.selected.push_back(anchor);
+  for (const char* key :
+       {"baseline_generation",
+        "output_generation",
+        "detector_identity",
+        "rink_mask_sha256",
+        "rink_mask_revision",
+        "fieldmask_settings",
+        "output_rotation_degrees"})
+    plan.context[key] = "fixture";
+  plan.context["decode_anchor_ns"] = std::to_string(anchor.pair.timeline_pts_ns);
+  const auto context = player_frame_source_context(config, anchor.pair.timeline_pts_ns);
+  if (!context.ok())
+    return expect(false, "player context must accept frozen fractional synchronization offsets");
+  plan.context["source_context"] = *context;
+  auto fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok())
+    return expect(false, "player plan fixture must fingerprint");
+  plan.fingerprint = *fingerprint;
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  bool ok = expect(validate_player_frame_selection_sources(config).ok(), "unchanged selected sources must validate");
+  const auto with_plan_context = player_frame_source_context(config, anchor.pair.timeline_pts_ns);
+  const auto decoded_context = YAML::Load(*context);
+  ok &= expect(
+      with_plan_context.ok() && *with_plan_context == *context &&
+          decoded_context["decode_anchor_ns"].as<uint64_t>() == anchor.pair.timeline_pts_ns &&
+          decoded_context["right"]["frame_offset"].as<double>() == 0.1250000001,
+      "generated plan must not perturb camera context or lose integer anchor/fractional offset precision");
+  for (int change = 0; change < 4; ++change) {
+    YAML::Node changed = YAML::Clone(config);
+    if (change == 0)
+      changed["game"]["stitching"]["frame_offsets"]["right"] = 0.1250000002;
+    else if (change == 1)
+      changed["stitching"]["camera_fov"]["horizontal_fov"] = 126.0;
+    else if (change == 2)
+      changed["game"]["videos"]["left"].push_back("a-later-chapter.mp4");
+    else
+      changed["stitching"]["stitch_frame_time"] = "00:00:12";
+    ok &= expect(!validate_player_frame_selection_sources(changed).ok(), "changed replay source context must fail");
+  }
+  const auto moved_anchor = player_frame_source_context(config, anchor.pair.timeline_pts_ns + 1);
+  ok &= expect(moved_anchor.ok() && *moved_anchor != *context, "one nanosecond of decode anchor must change context");
+  YAML::Node invalid = YAML::Clone(config);
+  invalid["stitching"]["calibration_frame_selection"]["selected"][0]["timeline_pts_ns"] = 9;
+  ok &= expect(!player_frame_selection_fingerprint(invalid).ok(), "edited plans must not retain their old fingerprint");
+
+  config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  config["stitching"]["mapping_backend"] = "opencv-magsac";
+  config["stitching"]["projection"] = "rectilinear";
+  config["stitching"]["run_autooptimizer"] = false;
+  config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "player-plan-generation";
+  StitchingBackendChoices choices{"superpoint-lightglue", "opencv-magsac", "rectilinear", false};
+  choices.calibration_frame_selection_fingerprint = plan.fingerprint;
+  ok &= expect(
+      reserve_stitching_backend_generation_in_config(config, "player-plan-generation", choices).ok() &&
+          validate_stitching_backend_generation(config, "player-plan-generation", choices).ok(),
+      "worker generation must reserve the exact selected plan fingerprint");
+  PlayerFrameSelectionPlan replacement = plan;
+  replacement.context["detector_identity"] = "a-different-detector";
+  replacement.fingerprint = PlayerFrameSelectionFingerprint(replacement).value();
+  YAML::Node changed_plan = YAML::Clone(config);
+  changed_plan["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(replacement);
+  ok &= expect(
+      absl::IsAborted(validate_stitching_backend_generation(changed_plan, "player-plan-generation", choices)),
+      "a worker must not publish after its selected frame plan changed");
+  auto changed_choices = choices;
+  changed_choices.calibration_frame_selection_fingerprint = replacement.fingerprint;
+  ok &= expect(
+      absl::IsAborted(
+          reserve_stitching_backend_generation_in_config(changed_plan, "player-plan-generation", changed_choices)),
+      "a competing selection must not replace an existing worker claim");
+  YAML::Node cleared = YAML::Clone(config);
+  cleared["stitching"].remove("calibration_frame_selection");
+  ok &= expect(
+      player_frame_selection_fingerprint(cleared).ok() && player_frame_selection_fingerprint(cleared)->empty() &&
+          validate_player_frame_selection_sources(cleared).ok() &&
+          absl::IsAborted(validate_stitching_backend_generation(cleared, "player-plan-generation", choices)),
+      "clearing a plan restores ordinary selection while fencing an active selected-frame worker");
+  fs::remove(plan.sources.front().path);
+  const auto loaded = player_frame_selection_fingerprint(config);
+  ok &= expect(
+      loaded.ok() && *loaded == plan.fingerprint && !validate_player_frame_selection_sources(config).ok(),
+      "loading existing artifact provenance must not require media; extracting a selected generation must");
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -46,6 +153,7 @@ int main() {
   fs::remove_all(root);
   fs::create_directories(root);
   std::ofstream(root / "config.yaml") << "unrelated:\n  keep: true\n";
+  ok &= test_player_frame_selection_state(root / "player-selection");
 
   using hm::stitching::ControlPointResolution;
   YAML::Node resolution_private(YAML::NodeType::Map);
@@ -64,7 +172,8 @@ int main() {
   ok &= expect(
       hm::stitching::restore_generated_control_point_resolution(resolution_private) &&
           hm::stitching::read_control_point_resolution(resolution_private).value() ==
-              hm::stitching::DefaultControlPointResolution(),
+              hm::stitching::DefaultControlPointResolution() &&
+          !resolution_private["stitching"]["control_point_resolution"].IsDefined(),
       "generated resolution must not pin an inherited setting as a game override");
   resolution_private["stitching"]["control_point_resolution"] = alternate_name;
   auto displaced = hm::stitching::materialize_control_point_resolution(resolution_private, YAML::Node());

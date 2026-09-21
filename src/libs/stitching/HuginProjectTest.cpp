@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
@@ -293,6 +294,131 @@ bool move_png_pixel_offset_after_first_image_data(const std::filesystem::path& p
   return output.good();
 }
 
+bool test_player_selection_provenance(const std::filesystem::path& source, const std::filesystem::path& directory) {
+  namespace fs = std::filesystem;
+  fs::copy(source, directory, fs::copy_options::recursive);
+  for (const auto& item : fs::directory_iterator(source)) {
+    if (item.is_regular_file())
+      fs::last_write_time(directory / item.path().filename(), item.last_write_time());
+  }
+  fs::remove(directory / hm::stitching::kStitchGenerationArtifact);
+  std::istringstream input(read_text_file(directory / "stitching_canvas_provenance"));
+  std::vector<std::string> lines;
+  for (std::string line; std::getline(input, line);)
+    lines.push_back(std::move(line));
+  if (!expect(lines.size() == 31 && lines[0] == "version=10", "new Hugin output must write v10 provenance"))
+    return false;
+  // Keep this parser fixture compatible with the generated mapping dimensions
+  // independently of the machine's optional live canvas cap.
+  lines[1] = "max-output-width=0";
+  lines[2] = "max-canvas-dimension=0";
+  lines[7] = "max-output-width-applied=0";
+  lines[8] = "max-canvas-dimension-applied=0";
+  const std::string fingerprint(64, 'a');
+  const std::string diagnostics = "representative=1;pooled=0;accepted=42,87,31";
+  lines[29] = "calibration-frame-selection=" + fingerprint;
+  lines[30] = "calibration-frame-diagnostics=" + diagnostics;
+  auto check = [&](const std::vector<std::string>& fields, bool valid, bool selected) {
+    {
+      std::ofstream output(directory / "stitching_canvas_provenance", std::ios::trunc);
+      for (const auto& field : fields)
+        output << field << '\n';
+    }
+    auto lock = hm::stitching::HuginProject::RecoverAndLock(directory);
+    if (!lock.ok())
+      return expect(false, "provenance parser fixture must lock");
+    const auto parsed = hm::stitching::HuginProject::ReadCanvasProvenance(directory, **lock);
+    const auto constraints = hm::stitching::check_canvas_constraint_locked(directory, 0);
+    if (valid && (!parsed.ok() || !constraints.ok() || !constraints->artifacts_compatible)) {
+      std::cerr << "Provenance fixture " << fields.front() << ": parser=" << parsed.status()
+                << ", constraints=" << constraints.status();
+      if (constraints.ok())
+        std::cerr << ", regeneration=" << constraints->requires_regeneration;
+      std::cerr << '\n';
+    }
+    if (!valid)
+      return expect(
+          !parsed.ok() && constraints.ok() && constraints->requires_regeneration,
+          "both provenance readers must reject malformed selected-frame state");
+    return expect(
+        parsed.ok() && parsed->has_value() && constraints.ok() && constraints->artifacts_compatible &&
+            (*parsed)->calibration_frame_selection_fingerprint == (selected ? fingerprint : std::string()) &&
+            (!selected || (*parsed)->calibration_frame_diagnostics == diagnostics),
+        "both readers must accept supported provenance and preserve the exact plan identity/diagnostics");
+  };
+  bool ok = check(lines, true, true);
+  auto ordinary = lines;
+  ordinary[29] = "calibration-frame-selection=none";
+  ordinary[30] = "calibration-frame-diagnostics=none";
+  ok &= check(ordinary, true, false);
+  for (int version : {8, 9}) {
+    auto legacy = lines;
+    legacy.resize(version == 8 ? 28 : 29);
+    legacy[0] = "version=" + std::to_string(version);
+    ok &= check(legacy, true, false);
+  }
+  for (int corruption = 0; corruption < 6; ++corruption) {
+    auto malformed = lines;
+    if (corruption == 0)
+      malformed[0] = "version=11";
+    else if (corruption == 1)
+      malformed[28] = "control-point-resolution=unknown";
+    else if (corruption == 2)
+      malformed[29] = "calibration-frame-selection=not-a-fingerprint";
+    else if (corruption == 3)
+      malformed[30] = "calibration-frame-diagnostics=";
+    else if (corruption == 4)
+      malformed.pop_back();
+    else
+      malformed.push_back("unexpected=value");
+    ok &= check(malformed, false, false);
+  }
+  fs::remove_all(directory);
+  return ok;
+}
+
+absl::StatusOr<YAML::Node> selected_frame_config(
+    const std::filesystem::path& left,
+    const std::filesystem::path& right) {
+  using namespace hm::stitching;
+  YAML::Node config;
+  PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 1;
+  PlayerFrameObservation observation;
+  size_t index = 0;
+  for (const auto& path : {left, right}) {
+    auto source = BindPlayerFrameSource(path);
+    if (!source.ok())
+      return source.status();
+    plan.sources.push_back(*source);
+    observation.pair.cameras[index] = {source->path, 0, static_cast<uint32_t>(index), 0};
+    config["game"]["videos"][index ? "right" : "left"].push_back(path.string());
+    config["game"]["stitching"]["frame_offsets"][index ? "right" : "left"] = 0.0;
+    ++index;
+  }
+  plan.selected.push_back(observation);
+  for (const char* key :
+       {"baseline_generation",
+        "output_generation",
+        "detector_identity",
+        "rink_mask_sha256",
+        "rink_mask_revision",
+        "fieldmask_settings",
+        "output_rotation_degrees"})
+    plan.context[key] = "fixture";
+  plan.context["decode_anchor_ns"] = "0";
+  const auto context = player_frame_source_context(config, 0);
+  if (!context.ok())
+    return context.status();
+  plan.context["source_context"] = *context;
+  const auto fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok())
+    return fingerprint.status();
+  plan.fingerprint = *fingerprint;
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  return config;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -577,6 +703,7 @@ int main(int argc, char** argv) {
     matches.push_back({{i + 0.25f, i + 1.5f}, {i + 2.75f, i + 3.125f}, 0.9f});
   }
   hm::stitching::HuginProject::Options options;
+  options.calibration_frame_diagnostics = "representative=0;pooled=1;accepted=16";
   options.max_canvas_dimension = 64;
   options.mapping_backend = hm::stitching::MappingBackend::kNona;
   options.run_autooptimizer = true;
@@ -839,10 +966,30 @@ int main(int argc, char** argv) {
             (*provenance)->camera == hm::stitching::StitchCameraSelection{"gopro-mission-1", 127.2, 95.0} &&
             (*provenance)->control_point_matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue &&
             (*provenance)->control_point_resolution == hm::stitching::ControlPointResolution::kNative &&
+            (*provenance)->calibration_frame_selection_fingerprint.empty() &&
+            (*provenance)->calibration_frame_diagnostics == options.calibration_frame_diagnostics &&
             (*provenance)->akaze_calibration_fingerprint == "not-applicable",
         "published Hugin provenance must record canvas, camera/FOV, matcher, calibration, algorithm, parameters, and "
         "framing");
     provenance_lock->reset();
+  }
+  ok &= test_player_selection_provenance(root / "game", root / "player-provenance-formats");
+  const fs::path changed_plan_game = root / "ordinary-worker-changed-plan";
+  fs::create_directories(changed_plan_game);
+  const auto selected_config =
+      selected_frame_config(root / "private-inputs" / "left.png", root / "private-inputs" / "right.png");
+  ok &= expect(selected_config.ok(), "changed selected-frame publication fixture must validate");
+  if (selected_config.ok()) {
+    std::ofstream(changed_plan_game / "config.yaml") << YAML::Dump(*selected_config);
+    const auto rejected = hm::stitching::HuginProject::Configure(
+        changed_plan_game,
+        root / "private-inputs" / "left.png",
+        root / "private-inputs" / "right.png",
+        matches,
+        options);
+    ok &= expect(
+        absl::IsAborted(rejected) && !fs::exists(changed_plan_game / "hm_project.pto"),
+        "an ordinary worker must not publish geometry after a selected-frame plan was added");
   }
 
   const fs::path promoted_game = root / "promoted-game";

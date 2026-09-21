@@ -122,7 +122,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat before {};
+  struct stat before{};
   if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
       static_cast<uint64_t>(before.st_size) > kMaximumAkazeCalibrationBytes) {
     return absl::FailedPreconditionError(
@@ -142,7 +142,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
       return absl::AbortedError("AKAZE lens calibration changed while being read: " + path.string());
     offset += static_cast<size_t>(count);
   }
-  struct stat after {};
+  struct stat after{};
   if (::fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
       before.st_size != after.st_size || before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
       before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
@@ -405,7 +405,7 @@ absl::StatusOr<std::string> read_selection_response_file(const fs::path& path) {
         ::close(descriptor);
     }
   } close_descriptor{descriptor};
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0)
     return absl::InternalError("Unable to inspect the rink leveling response: " + std::string(std::strerror(errno)));
   if (!S_ISREG(metadata.st_mode))
@@ -756,7 +756,7 @@ struct OpenedTiff {
   }
   int descriptor{-1};
   TIFF* tiff{nullptr};
-  struct stat metadata {};
+  struct stat metadata{};
 };
 
 absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& path, uint64_t maximum_bytes) {
@@ -785,7 +785,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
 }
 
 absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
-  struct stat verified {};
+  struct stat verified{};
   if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
       opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
       opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
@@ -831,7 +831,7 @@ struct PinnedLoadArtifact {
 
   std::string name;
   int descriptor{-1};
-  struct stat metadata {};
+  struct stat metadata{};
 };
 
 absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& path) {
@@ -885,7 +885,7 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
       return absl::NotFoundError("Stitch snapshot artifact is missing: " + path.string());
     return absl::FailedPreconditionError("Unable to pin stitch snapshot artifact: " + path.string());
   }
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
       static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     ::close(descriptor);
@@ -974,7 +974,7 @@ absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, cons
       offset += static_cast<uint64_t>(count);
     }
   }
-  struct stat verified {};
+  struct stat verified{};
   if (::fstat(artifact->descriptor, &verified) != 0 || !same_load_artifact_snapshot(artifact->metadata, verified)) {
     return absl::AbortedError("Stitch validation artifact changed while it was snapshotted: " + artifact->name);
   }
@@ -1010,8 +1010,8 @@ absl::Status verify_pinned_load_artifacts(
   if (!opened_root.ok())
     return opened_root.status();
   for (const PinnedLoadArtifact& artifact : artifacts) {
-    struct stat descriptor_metadata {};
-    struct stat path_metadata {};
+    struct stat descriptor_metadata{};
+    struct stat path_metadata{};
     if (::fstat(artifact.descriptor, &descriptor_metadata) != 0 ||
         !same_load_artifact_snapshot(artifact.metadata, descriptor_metadata)) {
       return absl::AbortedError("Control-mask artifact changed while being loaded: " + artifact.name);
@@ -2041,6 +2041,7 @@ struct ConfiguredStitchAlgorithms {
   std::vector<double> projection_parameters;
   StitchProjectionFraming projection_framing;
   StitchCameraSelection camera;
+  std::string calibration_frame_selection_fingerprint;
 };
 
 absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algorithms(const std::string& game_dir) {
@@ -2073,8 +2074,10 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     const bool camera_fov_present = camera_fov_node && !camera_fov_node.IsNull();
     const bool resolution_present =
         stitching["control_point_resolution"] && !stitching["control_point_resolution"].IsNull();
+    const bool selection_present =
+        stitching["calibration_frame_selection"] && !stitching["calibration_frame_selection"].IsNull();
     if (!matcher_present && !backend_present && !projection_present && !camera_present && !camera_fov_present &&
-        !resolution_present)
+        !resolution_present && !selection_present)
       return std::nullopt;
     if ((matcher_present && !matcher_node.IsScalar()) || (backend_present && !backend_node.IsScalar()) ||
         (projection_present && !projection_node.IsScalar()) || (camera_present && !camera_node.IsScalar())) {
@@ -2111,6 +2114,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
       HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
     ControlPointResolution resolution;
     HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(**loaded));
+    std::string frame_selection;
+    HM_ASSIGN_OR_RETURN(frame_selection, player_frame_selection_fingerprint(**loaded));
     return ConfiguredStitchAlgorithms{
         .control_point_resolution = resolution,
         .control_point_matcher = matcher,
@@ -2118,7 +2123,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
         .projection = projection,
         .projection_parameters = std::move(projection_parameters),
         .projection_framing = projection_framing,
-        .camera = camera};
+        .camera = camera,
+        .calibration_frame_selection_fingerprint = std::move(frame_selection)};
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching mapping choices: " + std::string(exception.what()));
   }
@@ -2129,8 +2135,11 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
     const std::optional<HuginProject::CanvasProvenance>& provenance) {
   std::optional<ConfiguredStitchAlgorithms> configured;
   HM_ASSIGN_OR_RETURN(configured, configured_stitch_algorithms(game_dir));
-  if (!configured.has_value())
+  if (!configured.has_value()) {
+    if (provenance && !provenance->calibration_frame_selection_fingerprint.empty())
+      return CanvasProvenanceCompatibility{false, "the selected calibration frame plan was cleared"};
     return CanvasProvenanceCompatibility{true, {}};
+  }
   if (!provenance.has_value() || !provenance->mapping_backend.has_value() || !provenance->projection.has_value()) {
     return CanvasProvenanceCompatibility{
         false, "mapping algorithm provenance is missing; the selected backend and projection cannot be verified"};
@@ -2139,6 +2148,8 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
     return CanvasProvenanceCompatibility{
         false, "control-point matcher provenance is missing; calibration inputs cannot be verified"};
   }
+  if (provenance->calibration_frame_selection_fingerprint != configured->calibration_frame_selection_fingerprint)
+    return CanvasProvenanceCompatibility{false, "the selected calibration frame plan changed"};
   if (*provenance->control_point_matcher != configured->control_point_matcher)
     return CanvasProvenanceCompatibility{false, "the selected control-point matcher changed"};
   if (configured->control_point_matcher == ControlPointMatcher::kSuperPointLightGlue &&
@@ -2895,6 +2906,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
   HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(config));
   hm::onnx::ExecutionProvider provider;
   HM_ASSIGN_OR_RETURN(provider, read_control_point_execution_provider(config));
+  std::string frame_selection;
+  HM_ASSIGN_OR_RETURN(frame_selection, player_frame_selection_fingerprint(config));
   return StitchingBackendChoices{
       std::string(ControlPointMatcherName(control_point_matcher)),
       std::string(MappingBackendName(mapping_backend)),
@@ -2904,7 +2917,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
       projection_framing,
       camera,
       resolution,
-      provider};
+      provider,
+      std::move(frame_selection)};
 }
 
 bool is_missing_hugin_executable(const absl::Status& status) {
@@ -3107,6 +3121,7 @@ absl::Status create_control_points(
   cv::Size right_source_size;
   size_t matched_frame_pairs = 0;
   size_t skipped_frame_pairs = 0;
+  std::vector<size_t> frame_match_counts(input_files.size(), 0);
   for (size_t index = 0; index < input_files.size(); ++index) {
     auto left_or = load_feature_image(input_files[index].first);
     if (!left_or.ok())
@@ -3116,6 +3131,29 @@ absl::Status create_control_points(
       return right_or.status();
     cv::Mat left = std::move(*left_or);
     cv::Mat right = std::move(*right_or);
+    if (!backend_choices.calibration_frame_selection_fingerprint.empty()) {
+      // Inspection reuses the CPU stills that matching already requires. This
+      // bounded private diagnostic never adds readback to scan or Program video.
+      const fs::path inspection =
+          fs::path(game_dir) / "player-frame-inspection" / backend_choices.calibration_frame_selection_fingerprint;
+      std::error_code inspection_error;
+      fs::create_directories(inspection, inspection_error);
+      if (inspection_error)
+        return absl::InternalError("Cannot create selected-frame inspection directory: " + inspection_error.message());
+      for (const auto& item : {std::make_pair("left", left), std::make_pair("right", right)}) {
+        cv::Mat thumbnail;
+        const double scale = std::min(1.0, 1024.0 / std::max(item.second.cols, item.second.rows));
+        cv::resize(item.second, thumbnail, cv::Size(), scale, scale, cv::INTER_AREA);
+        // High-bit-depth GPU snapshots are expanded to the full uint16 range.
+        // JPEG only stores 8-bit channels; implicit imwrite conversion saturates
+        // almost every nonblack pixel instead of preserving its brightness.
+        if (thumbnail.depth() == CV_16U)
+          thumbnail.convertTo(thumbnail, CV_8U, 255.0 / 65535.0);
+        const auto path = inspection / (std::string(item.first) + "_" + std::to_string(index) + ".jpg");
+        if (!cv::imwrite(path.string(), thumbnail, {cv::IMWRITE_JPEG_QUALITY, 88}))
+          return absl::InternalError("Cannot save selected-frame inspection thumbnail");
+      }
+    }
     if (index == 0) {
       left_source_size = left.size();
       right_source_size = right.size();
@@ -3133,6 +3171,7 @@ absl::Status create_control_points(
       return frame_matches_or.status();
     }
     FeatureMatchResult frame_matches = std::move(*frame_matches_or);
+    frame_match_counts[index] = frame_matches.accepted.size();
     ++matched_frame_pairs;
     candidates.push_back(CandidateFramePair{.index = index, .accepted = frame_matches.accepted});
     pooled_accepted.insert(pooled_accepted.end(), frame_matches.accepted.begin(), frame_matches.accepted.end());
@@ -3188,6 +3227,7 @@ absl::Status create_control_points(
     options.max_output_width = max_output_width;
   options.control_point_matcher = control_point_matcher;
   options.control_point_resolution = backend_choices.control_point_resolution;
+  options.calibration_frame_selection_fingerprint = backend_choices.calibration_frame_selection_fingerprint;
   StitchProjection projection;
   HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(backend_choices.projection));
   options.mapping_backend = mapping_backend;
@@ -3232,6 +3272,12 @@ absl::Status create_control_points(
               << " with " << selected.size() << " selected control points" << std::endl;
     bool alignment_complete = false;
     HuginProject::Options candidate_options = options;
+    std::ostringstream frame_diagnostics;
+    frame_diagnostics << "representative=" << candidate.index << ";pooled=" << (candidate.pooled ? 1 : 0)
+                      << ";accepted=";
+    for (size_t i = 0; i < frame_match_counts.size(); ++i)
+      frame_diagnostics << (i ? "," : "") << frame_match_counts[i];
+    candidate_options.calibration_frame_diagnostics = frame_diagnostics.str();
     candidate_options.progress = [&](const std::string& stage, const std::string& status, const std::string& message) {
       if (options.progress)
         options.progress(stage, status, message);
@@ -3341,7 +3387,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable rink transaction state file");
@@ -3909,7 +3955,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 29)
     return absl::FailedPreconditionError("Invalid field-mask PNG: " + path);
 
@@ -3980,7 +4026,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
       return absl::FailedPreconditionError("Unable to read field-mask PNG: " + path);
     offset += static_cast<size_t>(count);
   }
-  struct stat verified_metadata {};
+  struct stat verified_metadata{};
   if (::fstat(descriptor, &verified_metadata) != 0 || metadata.st_dev != verified_metadata.st_dev ||
       metadata.st_ino != verified_metadata.st_ino || metadata.st_mode != verified_metadata.st_mode ||
       metadata.st_size != verified_metadata.st_size || metadata.st_mtim.tv_sec != verified_metadata.st_mtim.tv_sec ||

@@ -1,7 +1,10 @@
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
+#include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 #include "absl/status/status.h"
 #include "gst-nvevent.h"
+#include "gstnvdsmeta.h"
 #include "nvdsmeta.h"
 
 #include <algorithm>
@@ -31,6 +34,12 @@ bool run_precaps(
     size_t expected_width,
     size_t expected_height) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  if (stitcher.SetProperty({"emit-frame-pair-meta", "yes"}) ||
+      !stitcher.SetProperty({"emit-frame-pair-meta", "true"}) ||
+      !stitcher.SetProperty({"emit-frame-pair-meta", "false"})) {
+    std::cerr << "Frame-pair metadata emission must be a strict opt-in boolean\n";
+    return false;
+  }
   if (one_pass_mode) {
     stitcher.SetProperty({"one-pass-mode", "1"});
   }
@@ -471,6 +480,114 @@ bool expect_prepare_runtime_partial_fails() {
   return true;
 }
 
+bool expect_exact_plan_replay_fails_before_capture(const fs::path& parent_dir) {
+  const fs::path root = parent_dir / "exact-plan";
+  fs::create_directories(root);
+  YAML::Node config;
+  hm::stitching::PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 1;
+  hm::stitching::PlayerFrameObservation anchor;
+  anchor.pair.timeline_pts_ns = 10 * GST_SECOND;
+  for (size_t index = 0; index < 2; ++index) {
+    const auto path = root / (index ? "right.mp4" : "left.mp4");
+    std::ofstream(path) << "media fixture";
+    const auto binding = hm::stitching::BindPlayerFrameSource(path);
+    if (!binding.ok())
+      return false;
+    plan.sources.push_back(*binding);
+    anchor.pair.cameras[index] = {binding->path, (3 + index) * GST_SECOND, static_cast<uint32_t>(index), 0};
+    const char* role = index ? "right" : "left";
+    config["game"]["videos"][role].push_back(path.string());
+    config["game"]["stitching"]["frame_offsets"][role] = 0;
+  }
+  for (const char* key :
+       {"baseline_generation",
+        "output_generation",
+        "detector_identity",
+        "rink_mask_sha256",
+        "rink_mask_revision",
+        "fieldmask_settings",
+        "output_rotation_degrees"})
+    plan.context[key] = "test";
+  plan.context["output_rotation_degrees"] = "0";
+  plan.context["decode_anchor_ns"] = std::to_string(anchor.pair.timeline_pts_ns);
+  const auto context = hm::stitching::player_frame_source_context(config, anchor.pair.timeline_pts_ns);
+  if (!context.ok()) {
+    std::cerr << "Could not build replay fixture context: " << context.status() << '\n';
+    return false;
+  }
+  plan.context["source_context"] = *context;
+  plan.selected.push_back(anchor);
+  const auto fingerprint = hm::stitching::PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok()) {
+    std::cerr << "Could not fingerprint replay fixture: " << fingerprint.status() << '\n';
+    return false;
+  }
+  plan.fingerprint = *fingerprint;
+  config["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);
+  std::ofstream(root / "config.yaml") << YAML::Dump(config);
+
+  for (bool source_eos : {false, true}) {
+    hm::stitcher::StitcherPriv stitcher(0, 2);
+    stitcher.SetProperty({"one-pass-mode", "1"});
+    stitcher.SetProperty({"calibration-run-generation", "1"});
+    stitcher.SetProperty({"calibration-frame-count", "1"});
+    std::string directory = root.string();
+    hm::DSCustom_CreateParams params{};
+    params.config_file = directory.data();
+    params.m_inCaps = gst_caps_from_string("video/x-raw,format=RGBA,width=1280,height=720");
+    const auto initialized = stitcher.PreCapsInit(&params);
+    gst_caps_unref(params.m_inCaps);
+    if (!initialized.ok() || stitcher.SetProperty({"emit-frame-pair-meta", "1"})) {
+      std::cerr << "Could not initialize frozen replay fixture: " << initialized << '\n';
+      return false;
+    }
+    if (source_eos) {
+      GstEvent* eos = gst_nvevent_new_stream_eos(1);
+      stitcher.HandleEvent(eos);
+      gst_event_unref(eos);
+    }
+    NvDsBatchMeta* batch = nvds_create_batch_meta(2);
+    std::vector<GstBuffer*> decoded_buffers;
+    const size_t count = source_eos ? 1 : 2;
+    for (size_t index = 0; index < count; ++index) {
+      auto* frame = nvds_acquire_frame_meta_from_pool(batch);
+      frame->frame_num = 0;
+      frame->source_id = index;
+      frame->num_surfaces_per_frame = 1;
+      frame->buf_pts = anchor.pair.timeline_pts_ns;
+      nvds_add_frame_meta_to_batch(batch, frame);
+      GstBuffer* decoded = gst_buffer_new();
+      decoded_buffers.push_back(decoded);
+      gchar* uri = g_filename_to_uri(anchor.pair.cameras[index].path.c_str(), nullptr, nullptr);
+      // The replay starts one nanosecond after the physical anchor, which must
+      // fail instead of silently capturing this different pair.
+      hm::add_decoded_frame_sequence_meta(
+          decoded, index, 0, g_quark_from_string(uri), anchor.pair.cameras[index].source_pts_ns + 1);
+      g_free(uri);
+      auto* user = nvds_acquire_user_meta_from_pool(batch);
+      user->base_meta.meta_type = static_cast<NvDsMetaType>(NVDS_BUFFER_GST_AS_FRAME_USER_META);
+      user->user_meta_data = decoded;
+      nvds_add_user_meta_to_frame(frame, user);
+    }
+    NvBufSurfaceParams surfaces[2]{};
+    NvBufSurface surface{};
+    surface.batchSize = 2;
+    surface.numFilled = count;
+    surface.surfaceList = surfaces;
+    const auto selected = stitcher.PrepareRuntimeOutputSize(batch, &surface);
+    nvds_destroy_batch_meta(batch);
+    for (GstBuffer* decoded : decoded_buffers)
+      gst_buffer_unref(decoded);
+    if (!absl::IsFailedPrecondition(selected.status())) {
+      std::cerr << "Exact replay must fail mismatched anchor or incomplete EOS before surface capture: "
+                << selected.status() << '\n';
+      return false;
+    }
+  }
+  return true;
+}
+
 bool expect_prepare_runtime_invalid_envelopes_fail() {
   auto expect_failed = [](guint batch_size, guint num_filled, const std::string& label) {
     hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
@@ -617,6 +734,8 @@ int main() {
   fs::create_directories(tmpdir);
 
   const std::string config_dir = tmpdir.string();
+  if (!expect_exact_plan_replay_fails_before_capture(tmpdir))
+    return 38;
   if (!expect_missing_experiment_revision_rejected(config_dir))
     return 37;
   if (!run_precaps(

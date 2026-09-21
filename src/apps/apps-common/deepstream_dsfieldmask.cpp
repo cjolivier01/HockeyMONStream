@@ -919,6 +919,7 @@ gboolean create_dsfieldmask_bin(const NvDsDsFieldMaskConfig* config, NvDsDsField
   // assert(strlen(config->detection_mask_file) > 0);
   g_object_set(G_OBJECT(bin->elem_dsfieldmask), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_dsfieldmask), "detection-mask", config->detection_mask_file, NULL);
+  g_object_set(G_OBJECT(bin->elem_dsfieldmask), "require-existing-mask", config->require_existing_mask, NULL);
   if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->elem_dsfieldmask), config->plugin_properties)) {
     goto done;
   }

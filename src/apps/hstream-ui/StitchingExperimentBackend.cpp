@@ -6,6 +6,7 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
 #include <unistd.h>
 
@@ -219,6 +220,10 @@ absl::Status configure_candidate(
     const std::string& invalidation_id) {
   config["stitching"]["calibration_frame_count"] = settings.frame_count;
   config["stitching"]["stitch_frame_time"] = settings.stitch_frame_time;
+  // Every ordinary baseline starts independently of any selection previously
+  // promoted into the game. Automatic candidates receive their plan only after
+  // their own baseline scan has completed and validated.
+  config["stitching"].remove("calibration_frame_selection");
   if (settings.rink_rotation_degrees.has_value()) {
     auto framing = hm::stitching::read_stitch_projection_framing(config);
     if (!framing.ok())
@@ -358,6 +363,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     YAML::Node current_stitching = current["stitching"];
     for (const char* key :
          {"calibration_frame_count",
+          "calibration_frame_selection",
           "camera_config",
           "camera_fov",
           "control_point_execution_provider",
@@ -388,7 +394,17 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
   }
 }
 
-absl::Status CompleteStitchingExperimentWorkspace(const StitchingExperimentWorkspace& experiment) {
+absl::Status CompleteStitchingExperimentWorkspace(
+    const StitchingExperimentWorkspace& experiment,
+    bool require_ice_mask) {
+  std::optional<std::string> mask_generation;
+  if (require_ice_mask) {
+    HM_ASSIGN_OR_RETURN(
+        mask_generation, hm::stitching::current_stitched_output_generation_id(experiment.game_directory));
+    auto mask = hm::stitching::load_field_mask(experiment.game_directory, *mask_generation, experiment.invalidation_id);
+    if (!mask.ok())
+      return mask.status();
+  }
   auto lock = hm::stitching::HuginProject::RecoverAndLock(experiment.game_directory);
   if (!lock.ok())
     return lock.status();
@@ -402,15 +418,188 @@ absl::Status CompleteStitchingExperimentWorkspace(const StitchingExperimentWorks
   try {
     YAML::Node config = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
     HM_RETURN_IF_ERROR(hm::stitching::validate_stitching_generation_owner(config, experiment.invalidation_id));
+    if (mask_generation) {
+      HM_RETURN_IF_ERROR(hm::stitching::validate_stitched_output_generation_hugin(*mask_generation, *generation));
+      if (config["rink"]["stitched_output_generation"].as<std::string>("") != *mask_generation)
+        return absl::AbortedError("The experiment rink mask changed before bootstrap completion");
+    }
     // Calibration-only runners leave UI completion persistence to their owner.
     // Leaving this pending makes the next preview clean and regenerate its maps.
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     calibration["status"] = "complete";
-    calibration["rink_mask_status"] = "omitted";
+    calibration["rink_mask_status"] = require_ice_mask ? "complete" : "omitted";
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
     return hm::stitching::publish_game_config(experiment.game_directory, YAML::Dump(config) + "\n");
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to complete stitching experiment: " + std::string(exception.what()));
+  }
+}
+
+absl::StatusOr<StitchingExperimentPlayerSelection> PreparePlayerSelectedStitchingExperiment(
+    const StitchingExperimentWorkspace& baseline,
+    const StitchingExperimentWorkspace& candidate,
+    const fs::path& report_path,
+    int search_duration_seconds) {
+  if (search_duration_seconds < 1 || search_duration_seconds > 300)
+    return absl::InvalidArgumentError("Player search duration must be between 1 and 300 seconds");
+  hm::stitching::PlayerFrameSelectionReport report;
+  HM_ASSIGN_OR_RETURN(report, hm::stitching::LoadPlayerFrameSelectionReport(report_path));
+  if (!report.plan)
+    return StitchingExperimentPlayerSelection{false, report.unavailable_reason};
+  const auto& plan = *report.plan;
+  if (plan.settings.frame_count != static_cast<size_t>(candidate.settings.frame_count) ||
+      plan.settings.duration_ns != static_cast<uint64_t>(search_duration_seconds) * hm::stitching::kPlayerFrameSecond ||
+      plan.settings.interval_ns != hm::stitching::kPlayerFrameSecond / 2 ||
+      baseline.settings.frame_count != candidate.settings.frame_count ||
+      baseline.settings.control_points != candidate.settings.control_points ||
+      baseline.settings.stitch_frame_time != candidate.settings.stitch_frame_time ||
+      baseline.settings.rink_rotation_degrees != candidate.settings.rink_rotation_degrees) {
+    return absl::InvalidArgumentError("Player scan and candidate calibration settings differ");
+  }
+  HM_RETURN_IF_ERROR(hm::stitching::ValidatePlayerFrameSources(plan));
+  const auto anchor_value = plan.context.find("decode_anchor_ns");
+  if (anchor_value == plan.context.end() || anchor_value->second.empty() ||
+      !std::all_of(anchor_value->second.begin(), anchor_value->second.end(), [](unsigned char value) {
+        return std::isdigit(value);
+      })) {
+    return absl::InvalidArgumentError("Player scan does not identify its decode anchor");
+  }
+  uint64_t anchor_ns = 0;
+  try {
+    anchor_ns = std::stoull(anchor_value->second);
+  } catch (const std::exception&) {
+    return absl::InvalidArgumentError("Player scan decode anchor is out of range");
+  }
+  try {
+    if (anchor_ns != hm::stitch_frame_time_to_nanoseconds(candidate.settings.stitch_frame_time))
+      return absl::AbortedError("Player scan used a different anchor from its candidate");
+  } catch (const std::exception&) {
+    return absl::InvalidArgumentError("The candidate has an invalid calibration anchor");
+  }
+
+  // Validate the existing mask through its publication locks before taking the
+  // artifact/config locks below; the field-mask reader acquires those itself.
+  auto mask = hm::stitching::load_field_mask(
+      baseline.game_directory, plan.context.at("output_generation"), baseline.invalidation_id);
+  if (!mask.ok())
+    return mask.status();
+  std::string mask_fingerprint;
+  HM_ASSIGN_OR_RETURN(mask_fingerprint, hm::stitching::PlayerFrameMaskFingerprint(*mask));
+  if (mask_fingerprint != plan.context.at("rink_mask_sha256"))
+    return absl::AbortedError("The baseline rink mask changed after player scanning");
+
+  auto artifact_lock = hm::stitching::HuginProject::RecoverAndLock(baseline.game_directory);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  std::string baseline_generation;
+  HM_ASSIGN_OR_RETURN(
+      baseline_generation, hm::stitching::HuginProject::GenerationId(baseline.game_directory, **artifact_lock));
+  if (baseline_generation != plan.context.at("baseline_generation"))
+    return absl::AbortedError("The baseline geometry changed after player scanning");
+  auto baseline_config_lock = hm::stitching::GameConfigTransactionLock::Acquire(baseline.game_directory);
+  if (!baseline_config_lock.ok())
+    return baseline_config_lock.status();
+  auto candidate_config_lock = hm::stitching::GameConfigTransactionLock::Acquire(candidate.game_directory);
+  if (!candidate_config_lock.ok())
+    return candidate_config_lock.status();
+  try {
+    const YAML::Node source_config = YAML::LoadFile((baseline.game_directory / "config.yaml").string());
+    YAML::Node config = YAML::LoadFile((candidate.game_directory / "config.yaml").string());
+    HM_RETURN_IF_ERROR(hm::stitching::validate_stitching_generation_owner(source_config, baseline.invalidation_id));
+    HM_RETURN_IF_ERROR(hm::stitching::validate_pending_stitching_invalidation(config, candidate.invalidation_id));
+    if (source_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") != "complete" ||
+        source_config["rink"]["stitched_output_generation"].as<std::string>("") !=
+            plan.context.at("output_generation")) {
+      return absl::AbortedError("The baseline is no longer complete for the player scan geometry");
+    }
+    std::string expected_context;
+    HM_ASSIGN_OR_RETURN(expected_context, hm::stitching::player_frame_source_context(source_config, anchor_ns));
+    HM_RETURN_IF_ERROR(hm::stitching::ValidatePlayerFrameSourceContext(plan, expected_context));
+
+    YAML::Node videos = YAML::Clone(source_config["game"]["videos"]);
+    for (const char* role : {"left", "right"}) {
+      YAML::Node paths = videos[role];
+      if (!paths.IsSequence() || paths.size() == 0)
+        return absl::InvalidArgumentError("The baseline has no resolved camera playlist");
+      for (size_t index = 0; index < paths.size(); ++index) {
+        const fs::path path = paths[index].as<std::string>();
+        const fs::path relative = path.is_absolute() ? path.lexically_relative(baseline.game_directory) : path;
+        if (relative.empty() || relative.is_absolute() || *relative.begin() == "..")
+          return absl::InvalidArgumentError("A baseline camera path cannot be localized to the candidate");
+        std::error_code error;
+        if (!fs::equivalent(baseline.game_directory / relative, candidate.game_directory / relative, error) || error)
+          return absl::AbortedError("Candidate media differ from the scanned baseline");
+        paths[index] = relative.generic_string();
+      }
+      config["hstream_ui"]["video_roles"][role] = YAML::Clone(paths);
+    }
+    config["game"]["videos"] = videos;
+    const YAML::Node offsets = source_config["game"]["stitching"]["frame_offsets"]
+        ? source_config["game"]["stitching"]["frame_offsets"]
+        : source_config["stitching"]["frame_offsets"];
+    config["game"]["stitching"]["frame_offsets"] = YAML::Clone(offsets);
+    config["stitching"].remove("frame_offsets");
+    HM_ASSIGN_OR_RETURN(expected_context, hm::stitching::player_frame_source_context(config, anchor_ns));
+    HM_RETURN_IF_ERROR(hm::stitching::ValidatePlayerFrameSourceContext(plan, expected_context));
+    config["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);
+    HM_RETURN_IF_ERROR(hm::stitching::publish_game_config(candidate.game_directory, YAML::Dump(config) + "\n"));
+    return StitchingExperimentPlayerSelection{
+        true,
+        "Selected " + std::to_string(plan.selected.size()) + " synchronized pairs from " +
+            std::to_string(report.observation_count) +
+            " samples; far/middle/near observations: " + std::to_string(report.observed_size_band_counts[0]) + "/" +
+            std::to_string(report.observed_size_band_counts[1]) + "/" +
+            std::to_string(report.observed_size_band_counts[2])};
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to freeze player frame selection: " + std::string(exception.what()));
+  }
+}
+
+absl::StatusOr<StitchingExperimentFrameInspection> InspectStitchingExperimentFrames(
+    const StitchingExperimentWorkspace& experiment) {
+  auto lock = hm::stitching::GameConfigTransactionLock::Acquire(experiment.game_directory);
+  if (!lock.ok())
+    return lock.status();
+  try {
+    const YAML::Node config = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
+    // A failed or cancelled solve still has useful frozen choices to inspect.
+    // Unlike publication, this read-only path only needs the workspace identity.
+    if (experiment.invalidation_id.empty() ||
+        config["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>("") !=
+            experiment.invalidation_id)
+      return absl::AbortedError("Selected frame workspace was superseded");
+    hm::stitching::PlayerFrameSelectionPlan plan;
+    HM_ASSIGN_OR_RETURN(
+        plan, hm::stitching::ParsePlayerFrameSelectionPlan(config["stitching"]["calibration_frame_selection"]));
+    StitchingExperimentFrameInspection result;
+    const auto anchor = plan.context.find("decode_anchor_ns");
+    if (anchor == plan.context.end())
+      return absl::InvalidArgumentError("Selected frames do not identify their decode anchor");
+    result.anchor_ns = std::stoull(anchor->second);
+    result.fingerprint = plan.fingerprint;
+    const absl::Status sources = hm::stitching::ValidatePlayerFrameSources(plan);
+    result.source_validation =
+        sources.ok() ? "Source files still match the recorded selection." : "Source validation: " + sources.ToString();
+    const fs::path images = experiment.game_directory / "player-frame-inspection" / plan.fingerprint;
+    for (size_t index = 0; index < plan.selected.size(); ++index) {
+      const auto& selected = plan.selected[index];
+      StitchingExperimentSelectedFrame frame;
+      frame.timeline_ns = selected.pair.timeline_pts_ns;
+      frame.eligible_people = selected.eligible_people;
+      frame.size_band_counts = selected.size_band_counts;
+      frame.quality = selected.quality;
+      frame.coverage = selected.coverage;
+      for (size_t camera = 0; camera < 2; ++camera) {
+        frame.camera_paths[camera] = selected.pair.cameras[camera].path;
+        frame.source_pts_ns[camera] = selected.pair.cameras[camera].source_pts_ns;
+        frame.decoded_sequences[camera] = selected.pair.cameras[camera].sequence;
+        frame.thumbnails[camera] = images / ((camera == 0 ? "left_" : "right_") + std::to_string(index) + ".jpg");
+      }
+      result.frames.push_back(std::move(frame));
+    }
+    return result;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Unable to inspect selected frames: " + std::string(error.what()));
   }
 }

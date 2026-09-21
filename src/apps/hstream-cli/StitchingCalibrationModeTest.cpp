@@ -133,5 +133,31 @@ pipeline:
             asset_names.count("dedode-lightglue") == 0 && asset_names.count("efficient-loftr-outdoor") == 1,
         "real calibration discovery must retain orientation/matching models and omit Program detector assets");
   }
+  hm::pipeline_internal::configure_stitching_calibration_pipeline(pipeline, true);
+  ok &= expect(hm::StitcherCalibratesFieldMask(pipeline), "analysis baseline explicitly prepares the rink mask");
+  pipeline["ds-fieldmask"]["properties"]["require-existing-mask"] = false;
+  pipeline["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"] = -0.25;
+  pipeline["sink2"]["enable"] = 1;
+  pipeline["sink2"]["type"] = 3;
+  pipeline["tests"]["file-loop"] = 1;
+  pipeline["tests"]["pipeline-recreate-sec"] = 5;
+  hm::pipeline_internal::configure_stitching_player_scan_pipeline(pipeline);
+  ok &= expect(
+      enabled(pipeline, "primary-gie") && enabled(pipeline, "ds-fieldmask") && !enabled(pipeline, "tracker") &&
+          !enabled(pipeline, "ds-playtracker") && !enabled(pipeline, "hmplaycropper"),
+      "scan enables ordinary inference/masking with no Program consumers");
+  ok &= expect(
+      pipeline["ds-fieldmask"]["properties"]["require-existing-mask"].as<bool>() &&
+          pipeline["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"].as<double>() == -0.25,
+      "scan enforces strict mask loading while preserving native pruning settings");
+  ok &= expect(
+      !enabled(pipeline, "hmaudio0") && !enabled(pipeline, "sink2") && enabled(pipeline, "sink0") &&
+          pipeline["sink0"]["type"].as<int>() == 1,
+      "scan outputs metadata through FAKE only");
+  ok &= expect(
+      pipeline["primary-gie"]["interval"].as<int>() == 0 && pipeline["streammux"]["batch-size"].as<int>() == 2 &&
+          pipeline["tests"]["file-loop"].as<int>() == 0 && pipeline["tests"]["pipeline-recreate-sec"].as<int>() == 0 &&
+          !hm::StitcherCalibratesFieldMask(pipeline),
+      "scan preserves single forward sampled decode without rewinds");
   return ok ? 0 : 1;
 }

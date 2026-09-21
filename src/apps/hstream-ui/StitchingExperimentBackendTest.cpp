@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+
 #include <unistd.h>
 
 #include <filesystem>
@@ -57,6 +59,7 @@ int main() {
           "    control_points: [old-game-cache]\n"
           "stitching:\n"
           "  control_points: [old-cache]\n"
+          "  calibration_frame_selection: {fingerprint: old-player-plan}\n"
           "  mapping_backend: nona\n"
           "  projection: general-panini\n"
           "  projection_framing:\n"
@@ -116,6 +119,9 @@ int main() {
   ok &= expect(calibration["frame_count"].as<int>() == 4, "candidate frame count must be saved");
   ok &= expect(calibration["status"].as<std::string>() == "pending", "candidate calibration must be pending");
   ok &= expect(
+      !config["stitching"]["calibration_frame_selection"].IsDefined(),
+      "ordinary workspaces must clear inherited player frame selection");
+  ok &= expect(
       config["stitching"]["stitch_frame_time"].as<std::string>() == "00:01:02.500",
       "candidate first frame must be saved");
   ok &= expect(
@@ -133,6 +139,9 @@ int main() {
     const YAML::Node selected = YAML::Load(*selected_config);
     const YAML::Node selected_rink = selected["rink"];
     ok &= expect(
+        !selected["stitching"]["calibration_frame_selection"].IsDefined(),
+        "promoting an ordinary candidate must remove the previous player plan");
+    ok &= expect(
         !selected["stitching"]["control_points"].IsDefined() &&
             !selected["game"]["stitching"]["control_points"].IsDefined() &&
             !selected_rink["scoreboard"]["perspective_polygon"].IsDefined() &&
@@ -145,5 +154,106 @@ int main() {
             !selected_rink["stitched_output_pending_completed_scoreboard_polygon"].IsDefined(),
         "selection must remove every geometry-dependent rink cache and pending recovery field");
   }
+
+  const fs::path report = root / "player-report.yaml";
+  const auto missing_report = PreparePlayerSelectedStitchingExperiment(*workspace, *workspace, report);
+  ok &= expect(!missing_report.ok(), "a missing player report must be an error");
+  if (!write(report, "schema_version: 999\nobservation_count: 0\n"))
+    return 6;
+  const auto unknown_report = PreparePlayerSelectedStitchingExperiment(*workspace, *workspace, report);
+  ok &= expect(!unknown_report.ok(), "unknown player report versions must not become ordinary fallback candidates");
+  ok &= expect(
+      YAML::Dump(YAML::LoadFile((workspace->game_directory / "config.yaml").string())) == YAML::Dump(config),
+      "invalid reports must leave the pending candidate unchanged");
+  hm::stitching::PlayerFrameSelectionReport empty_scan;
+  empty_scan.observation_count = 4;
+  empty_scan.unavailable_reason = "No separated on-ice people in the searched passage";
+  if (!write(report, YAML::Dump(hm::stitching::PlayerFrameSelectionReportYaml(empty_scan))))
+    return 7;
+  const auto unavailable = PreparePlayerSelectedStitchingExperiment(*workspace, *workspace, report);
+  ok &= expect(
+      unavailable.ok() && !unavailable->available && unavailable->diagnostic == empty_scan.unavailable_reason,
+      "clean insufficient coverage must retain its diagnostic as a quality outcome");
+  ok &= expect(
+      YAML::Dump(YAML::LoadFile((workspace->game_directory / "config.yaml").string())) == YAML::Dump(config),
+      "insufficient coverage must not freeze a plan or change pending calibration");
+
+  YAML::Node selected_with_plan = YAML::Clone(config);
+  hm::stitching::PlayerFrameSelectionPlan plan;
+  plan.context = {
+      {"source_context", "fixture"},
+      {"baseline_generation", "fixture"},
+      {"output_generation", "fixture"},
+      {"detector_identity", "fixture"},
+      {"rink_mask_sha256", "fixture"},
+      {"rink_mask_revision", "fixture"},
+      {"fieldmask_settings", "fixture"},
+      {"output_rotation_degrees", "0"},
+      {"decode_anchor_ns", "62500000000"}};
+  for (const fs::path& camera : {game / "cam1" / "left.mp4", game / "cam2" / "right.mp4"}) {
+    auto source = hm::stitching::BindPlayerFrameSource(camera);
+    if (!source.ok())
+      return 8;
+    plan.sources.push_back(*source);
+  }
+  for (uint64_t index = 0; index < 4; ++index) {
+    hm::stitching::PlayerFrameObservation frame;
+    frame.pair.timeline_pts_ns = index * hm::stitching::kPlayerFrameSecond;
+    for (size_t camera = 0; camera < 2; ++camera)
+      frame.pair.cameras[camera] = {
+          plan.sources[camera].path, frame.pair.timeline_pts_ns, static_cast<uint32_t>(camera), index * 30};
+    frame.coverage = {5, 388};
+    frame.eligible_people = 2;
+    frame.size_band_counts = {1, 0, 1};
+    frame.quality = 1.25;
+    plan.selected.push_back(frame);
+  }
+  auto fingerprint = hm::stitching::PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok())
+    return 9;
+  plan.fingerprint = *fingerprint;
+  selected_with_plan["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);
+  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(selected_with_plan)))
+    return 7;
+  const auto selected_plan_config =
+      BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+  ok &= expect(selected_plan_config.ok(), "selection provenance must be included in the promotion merge");
+  if (selected_plan_config.ok())
+    ok &= expect(
+        YAML::Load(*selected_plan_config)["stitching"]["calibration_frame_selection"]["fingerprint"]
+                .as<std::string>() == plan.fingerprint,
+        "selected inline player provenance must replace the old game's plan");
+  const auto inspected = InspectStitchingExperimentFrames(*workspace);
+  ok &= expect(inspected.ok(), "frozen frame choices must remain inspectable before a successful solve");
+  if (inspected.ok()) {
+    ok &= expect(
+        inspected->frames.size() == 4 && inspected->anchor_ns == 62500000000ULL &&
+            inspected->frames[1].source_pts_ns[0] == hm::stitching::kPlayerFrameSecond &&
+            inspected->frames[1].decoded_sequences[1] == 30 &&
+            inspected->frames[1].coverage == plan.selected[1].coverage,
+        "inspection must preserve exact raw identities and scoring coverage");
+    ok &= expect(
+        inspected->frames[1].thumbnails[0] ==
+            workspace->game_directory / "player-frame-inspection" / plan.fingerprint / "left_1.jpg",
+        "inspection thumbnail paths must belong to the selected fingerprint");
+  }
+  if (!write(game / "cam2" / "right.mp4", "changed-source"))
+    return 10;
+  const auto changed_source = InspectStitchingExperimentFrames(*workspace);
+  ok &= expect(
+      changed_source.ok() && changed_source->source_validation.find("Source validation:") == 0,
+      "inspection must expose changed sources while retaining the recorded choices");
+  selected_with_plan["hstream_ui"]["stitching_calibration"]["status"] = "failed";
+  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(selected_with_plan)))
+    return 11;
+  ok &=
+      expect(InspectStitchingExperimentFrames(*workspace).ok(), "failed solves must retain inspectable frozen choices");
+  selected_with_plan["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "superseding-generation";
+  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(selected_with_plan)))
+    return 12;
+  const auto superseded = InspectStitchingExperimentFrames(*workspace);
+  ok &= expect(
+      !superseded.ok() && absl::IsAborted(superseded.status()),
+      "inspection must reject a workspace replaced by another generation");
   return ok ? 0 : 5;
 }

@@ -59,6 +59,8 @@ class HuginProject {
     std::optional<ControlPointResolution> control_point_resolution;
     std::optional<std::string> akaze_calibration_fingerprint;
     std::optional<StitchCameraSelection> camera;
+    std::string calibration_frame_selection_fingerprint;
+    std::string calibration_frame_diagnostics;
   };
 
   struct Options {
@@ -75,6 +77,8 @@ class HuginProject {
     std::optional<size_t> max_output_width;
     ControlPointMatcher control_point_matcher{ControlPointMatcher::kSuperPointLightGlue};
     ControlPointResolution control_point_resolution{ControlPointResolution::kNative};
+    std::string calibration_frame_selection_fingerprint;
+    std::string calibration_frame_diagnostics;
     MappingBackend mapping_backend{MappingBackend::kNona};
     bool run_autooptimizer{true};
     std::optional<StitchProjection> projection;

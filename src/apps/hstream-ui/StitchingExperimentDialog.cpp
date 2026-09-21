@@ -5,6 +5,7 @@
 #include <QtCore/QDebug>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
@@ -13,8 +14,11 @@
 #include <QtCore/QUuid>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QImageReader>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
+#include <QtGui/QPainter>
+#include <QtGui/QResizeEvent>
 #include <QtGui/QTextCursor>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -86,6 +90,103 @@ class StitchingExperimentVideoTarget : public QWidget {
     QWidget::mouseDoubleClickEvent(event);
   }
 };
+
+class SelectedFrameImage : public QLabel {
+ public:
+  explicit SelectedFrameImage(QWidget* parent) : QLabel(parent) {
+    setAlignment(Qt::AlignCenter);
+    setMinimumSize(180, 160);
+    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+    setWordWrap(true);
+  }
+
+  void load(const std::filesystem::path& path) {
+    original_ = {};
+    clear();
+    const QString file = QString::fromStdString(path.string());
+    const QFileInfo info(file);
+    if (!info.isFile()) {
+      setText("Thumbnail becomes available when this pair is extracted for calibration.");
+      return;
+    }
+    QImageReader reader(file);
+    const QSize size = reader.size();
+    if (info.isSymLink() || info.size() > 5 * 1024 * 1024 || !size.isValid() || size.width() > 1024 ||
+        size.height() > 1024) {
+      setText("Thumbnail exceeds the inspection limits.");
+      return;
+    }
+    original_ = QPixmap::fromImage(reader.read());
+    if (original_.isNull())
+      setText("Thumbnail could not be read.");
+    else
+      update_image();
+  }
+
+ protected:
+  void resizeEvent(QResizeEvent* event) override {
+    QLabel::resizeEvent(event);
+    update_image();
+  }
+
+ private:
+  void update_image() {
+    if (!original_.isNull())
+      setPixmap(original_.scaled(size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+  }
+  QPixmap original_;
+};
+
+class SelectedFrameCoverage : public QWidget {
+ public:
+  explicit SelectedFrameCoverage(QWidget* parent) : QWidget(parent) {
+    setMinimumSize(240, 135);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  }
+  void set_coverage(const std::vector<uint16_t>& cells) {
+    cells_ = cells;
+    update();
+  }
+
+ protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    constexpr std::array<Qt::GlobalColor, 3> colors{Qt::blue, Qt::darkGreen, Qt::darkYellow};
+    const double cell_width = static_cast<double>(width()) / 16;
+    const double cell_height = static_cast<double>(height()) / 9;
+    painter.fillRect(rect(), QColor("#f3f4f6"));
+    for (const uint16_t value : cells_) {
+      if (value >= 3 * 16 * 9)
+        continue;
+      const unsigned band = value / (16 * 9);
+      const unsigned cell = value % (16 * 9);
+      painter.fillRect(
+          QRectF(
+              (cell % 16 + static_cast<double>(band) / 3) * cell_width,
+              cell / 16 * cell_height,
+              cell_width / 3,
+              cell_height),
+          colors[band]);
+    }
+    painter.setPen(QColor("#d1d5db"));
+    for (int column = 0; column <= 16; ++column)
+      painter.drawLine(QPointF(column * cell_width, 0), QPointF(column * cell_width, height()));
+    for (int row = 0; row <= 9; ++row)
+      painter.drawLine(QPointF(0, row * cell_height), QPointF(width(), row * cell_height));
+  }
+
+ private:
+  std::vector<uint16_t> cells_;
+};
+
+QString exact_frame_time(uint64_t nanoseconds) {
+  const uint64_t seconds = nanoseconds / 1000000000ULL;
+  return QString("%1:%2:%3.%4")
+      .arg(seconds / 3600, 2, 10, QLatin1Char('0'))
+      .arg(seconds / 60 % 60, 2, 10, QLatin1Char('0'))
+      .arg(seconds % 60, 2, 10, QLatin1Char('0'))
+      .arg(nanoseconds % 1000000000ULL, 9, 10, QLatin1Char('0'));
+}
 
 QString format_time(const QTime& time) {
   return time.msec() == 0 ? time.toString("HH:mm:ss") : time.toString("HH:mm:ss.zzz");
@@ -295,11 +396,18 @@ void kill_process(QProcess* process, qint64 session_id, const QString& token) {
 } // namespace
 
 struct StitchingExperimentDialog::Impl {
+  enum class CandidatePhase { kCalibration, kScan };
+
   struct Candidate {
     StitchingExperimentSettings settings;
     std::optional<StitchingExperimentWorkspace> workspace;
     int sequence{0};
     int row{-1};
+    int baseline_sequence{0};
+    int scan_duration_seconds{60};
+    bool requires_ice_mask{false};
+    CandidatePhase phase{CandidatePhase::kCalibration};
+    bool has_selected_frames{false};
     bool complete{false};
     QString failure;
   };
@@ -316,6 +424,8 @@ struct StitchingExperimentDialog::Impl {
   QLineEdit* start_frames{nullptr};
   QCheckBox* shared_rotation{nullptr};
   QLineEdit* rotations{nullptr};
+  QCheckBox* prefer_player_frames{nullptr};
+  QSpinBox* scan_duration{nullptr};
   QPushButton* add_to_batch{nullptr};
   QPushButton* remove_from_batch{nullptr};
   QPushButton* clear_batch{nullptr};
@@ -334,6 +444,7 @@ struct StitchingExperimentDialog::Impl {
   QList<int> normal_splitter_sizes;
   bool preview_focused{false};
   QPushButton* apply{nullptr};
+  QPushButton* inspect_frames{nullptr};
   QLabel* status{nullptr};
   QProgressBar* progress{nullptr};
   QPlainTextEdit* log{nullptr};
@@ -363,6 +474,7 @@ struct StitchingExperimentDialog::Impl {
   bool current_candidate_workspace_unsafe{false};
   bool session_retained{false};
   int pending_candidate_row{-1};
+  uint64_t process_generation{0};
   int pending_candidate_exit_code{-1};
   QProcess::ExitStatus pending_candidate_exit_status{QProcess::CrashExit};
   QString pending_candidate_startup_error;
@@ -413,6 +525,11 @@ struct StitchingExperimentDialog::Impl {
 
   QProcessEnvironment candidate_environment(const Candidate& candidate) const {
     QProcessEnvironment result = environment;
+    // These belong only to a particular calibration process. Inheriting them
+    // into a scan or preview can trigger cleanup or a calibration rewind.
+    for (const char* name :
+         {"HSTREAM_CALIBRATION_PENDING", "HSTREAM_CALIBRATION_START_STAGE", "HSTREAM_CALIBRATION_INVALIDATION_ID"})
+      result.remove(name);
     result.insert("HM_GAME_DIR", QString::fromStdString(candidate.workspace->root.string()));
     result.insert("HM_MAX_CONTROL_POINTS", QString::number(candidate.settings.control_points));
     result.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(candidate.settings.frame_count));
@@ -443,8 +560,13 @@ struct StitchingExperimentDialog::Impl {
     preview->setEnabled(selected && !batch_active && !previewing && !promoting && !stopping && !closing);
     stop_preview->setEnabled(previewing && !closing);
     apply->setEnabled(selected && !batch_active && !previewing && !promoting && !closing);
+    inspect_frames->setEnabled(
+        row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].has_selected_frames && !batch_active &&
+        !previewing && !promoting && !stopping && !closing);
     shared_rotation->setEnabled(editing_batch);
     rotations->setEnabled(editing_batch && !shared_rotation->isChecked());
+    prefer_player_frames->setEnabled(editing_batch);
+    scan_duration->setEnabled(editing_batch && prefer_player_frames->isChecked());
     for (QWidget* input : std::array<QWidget*, 3>{control_points, frame_counts, start_frames})
       input->setEnabled(editing_batch);
     progress->setVisible(batch_started);
@@ -465,27 +587,62 @@ struct StitchingExperimentDialog::Impl {
     log->moveCursor(QTextCursor::End);
   }
 
+  Candidate* baseline_for(const Candidate& candidate) {
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const Candidate& baseline) {
+      return baseline.sequence == candidate.baseline_sequence && baseline.baseline_sequence == 0;
+    });
+    return found == candidates.end() ? nullptr : &*found;
+  }
+
+  std::filesystem::path scan_report_path(const Candidate& candidate) const {
+    return std::filesystem::path(session->path().toStdString()) /
+        ("player-scan-" + std::to_string(candidate.sequence) + ".yaml");
+  }
+
   void finalize_candidate_completion() {
     if (!candidate_completion_pending)
       return;
-    QTimer::singleShot(0, dialog, [this]() {
-      if (!candidate_completion_pending)
+    const uint64_t generation = process_generation;
+    QTimer::singleShot(0, dialog, [this, generation]() {
+      if (!candidate_completion_pending || generation != process_generation)
         return;
       Candidate& finished = candidates[pending_candidate_row];
       absl::Status configured = absl::OkStatus();
-      const bool may_be_complete = !current_candidate_workspace_unsafe && !cancelling &&
+      bool continue_with_solve = false;
+      const bool may_be_complete = !current_candidate_workspace_unsafe && !cancelling && !closing &&
           pending_candidate_startup_error.isEmpty() && pending_candidate_exit_status == QProcess::NormalExit &&
           pending_candidate_exit_code == 0;
-      if (may_be_complete)
-        configured = CompleteStitchingExperimentWorkspace(*finished.workspace);
-      finished.complete = may_be_complete && configured.ok();
+      if (may_be_complete && finished.phase == CandidatePhase::kScan) {
+        Candidate* baseline = baseline_for(finished);
+        if (!baseline || !baseline->complete || !baseline->workspace) {
+          configured = absl::FailedPreconditionError("The scan baseline is no longer available");
+        } else {
+          auto selection = PreparePlayerSelectedStitchingExperiment(
+              *baseline->workspace, *finished.workspace, scan_report_path(finished), finished.scan_duration_seconds);
+          if (!selection.ok()) {
+            configured = selection.status();
+          } else {
+            append_output_message(QString::fromStdString(selection->diagnostic) + "\n");
+            if (selection->available) {
+              continue_with_solve = true;
+              finished.has_selected_frames = true;
+              finished.phase = CandidatePhase::kCalibration;
+            } else {
+              configured = absl::FailedPreconditionError("Unavailable: " + selection->diagnostic);
+            }
+          }
+        }
+      } else if (may_be_complete) {
+        configured = CompleteStitchingExperimentWorkspace(*finished.workspace, finished.requires_ice_mask);
+        finished.complete = configured.ok();
+      }
       if (finished.complete) {
         finished.failure.clear();
         table->item(pending_candidate_row, 5)->setText("Ready");
-      } else {
+      } else if (!continue_with_solve) {
         if (current_candidate_workspace_unsafe)
           finished.failure = "Process group still active; workspace retained";
-        else if (cancelling)
+        else if (cancelling || closing)
           finished.failure = "Cancelled";
         else if (!pending_candidate_startup_error.isEmpty())
           finished.failure = pending_candidate_startup_error;
@@ -498,6 +655,7 @@ struct StitchingExperimentDialog::Impl {
         else
           finished.failure = "Calibration failed";
         table->item(pending_candidate_row, 5)->setText(finished.failure);
+        table->item(pending_candidate_row, 5)->setToolTip(finished.failure);
       }
       calibration_process.reset();
       calibration_process_group = 0;
@@ -508,7 +666,10 @@ struct StitchingExperimentDialog::Impl {
       pending_candidate_exit_code = -1;
       pending_candidate_exit_status = QProcess::CrashExit;
       pending_candidate_startup_error.clear();
-      launch_next_candidate();
+      if (continue_with_solve)
+        launch_candidate_phase();
+      else
+        launch_next_candidate();
       maybe_finish_close();
     });
   }
@@ -672,8 +833,13 @@ struct StitchingExperimentDialog::Impl {
     QTimer::singleShot(0, dialog, [this, result]() { dialog->QDialog::done(result); });
   }
 
-  void finish_candidate(int row, int exit_code, QProcess::ExitStatus exit_status, const QString& startup_error = {}) {
-    if (candidate_completion_pending)
+  void finish_candidate(
+      int row,
+      uint64_t generation,
+      int exit_code,
+      QProcess::ExitStatus exit_status,
+      const QString& startup_error = {}) {
+    if (candidate_completion_pending || generation != process_generation || row != running_candidate)
       return;
     candidate_completion_pending = true;
     append_output(calibration_process.get());
@@ -686,20 +852,33 @@ struct StitchingExperimentDialog::Impl {
 
   void launch_next_candidate() {
     ++running_candidate;
-    if (cancelling || running_candidate >= static_cast<int>(candidates.size())) {
+    if (cancelling || closing || running_candidate >= static_cast<int>(candidates.size())) {
       calibration_process.reset();
       calibration_process_group = 0;
       calibration_process_token.clear();
       batch_active = false;
-      progress->setValue(cancelling ? running_candidate : static_cast<int>(candidates.size()));
+      for (int row = running_candidate; row < static_cast<int>(candidates.size()); ++row)
+        table->item(row, 5)->setText("Cancelled");
+      progress->setValue(std::min(running_candidate, static_cast<int>(candidates.size())));
       show_status(
-          cancelling ? "Batch cancelled. Completed candidates remain available; the main Program is unchanged."
-                     : "Batch complete. Select a successful row and preview the seam in motion.");
+          cancelling || closing
+              ? "Batch cancelled. Completed candidates remain available; the main Program is unchanged."
+              : "Batch complete. Select a successful row and preview the seam in motion.");
       cancelling = false;
       update_controls();
       return;
     }
     Candidate& candidate = candidates[running_candidate];
+    if (candidate.baseline_sequence != 0) {
+      Candidate* baseline = baseline_for(candidate);
+      if (!baseline || !baseline->complete || !baseline->workspace) {
+        candidate.failure = "Unavailable: baseline calibration failed";
+        table->item(candidate.row, 5)->setText(candidate.failure);
+        QTimer::singleShot(0, dialog, [this]() { launch_next_candidate(); });
+        return;
+      }
+      candidate.phase = CandidatePhase::kScan;
+    }
     if (!candidate.workspace.has_value()) {
       auto workspace = CreateStitchingExperimentWorkspace(
           game_directory.toStdString(), session->path().toStdString(), candidate.settings, candidate.sequence);
@@ -713,31 +892,65 @@ struct StitchingExperimentDialog::Impl {
       }
       candidate.workspace = std::move(*workspace);
     }
-    table->item(candidate.row, 5)->setText("Running…");
+    launch_candidate_phase();
+  }
+
+  void launch_candidate_phase() {
+    if (cancelling || closing) {
+      launch_next_candidate();
+      return;
+    }
+    Candidate& candidate = candidates[running_candidate];
+    const bool scanning = candidate.phase == CandidatePhase::kScan;
+    Candidate* source = scanning ? baseline_for(candidate) : &candidate;
+    if (!source || !source->workspace) {
+      candidate.failure = "Unavailable: missing baseline workspace";
+      table->item(candidate.row, 5)->setText(candidate.failure);
+      QTimer::singleShot(0, dialog, [this]() { launch_next_candidate(); });
+      return;
+    }
+    table->item(candidate.row, 5)->setText(scanning ? "Scanning players…" : "Calibrating…");
     table->selectRow(candidate.row);
     progress->setValue(running_candidate);
-    show_status(QString("Calibrating candidate %1 of %2…").arg(running_candidate + 1).arg(candidates.size()));
+    show_status(
+        QString(scanning ? "Selecting player-rich frames for candidate %1 of %2…" : "Calibrating candidate %1 of %2…")
+            .arg(running_candidate + 1)
+            .arg(candidates.size()));
 
     calibration_process = std::make_unique<QProcess>();
+    const uint64_t generation = ++process_generation;
     calibration_process_group = 0;
     calibration_process_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
     current_candidate_workspace_unsafe = false;
     calibration_process->setProcessChannelMode(QProcess::MergedChannels);
     calibration_process->setWorkingDirectory(working_directory);
-    QProcessEnvironment env = candidate_environment(candidate);
+    QProcessEnvironment env = candidate_environment(*source);
     env.insert("HSTREAM_EXPERIMENT_PROCESS_TOKEN", calibration_process_token);
-    env.insert("HSTREAM_CALIBRATION_PENDING", "1");
-    env.insert("HSTREAM_CALIBRATION_START_STAGE", "input");
-    env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", QString::fromStdString(candidate.workspace->invalidation_id));
+    QStringList args = base_arguments(*source);
+    args << "--enable-sinks=FAKE";
+    if (scanning) {
+      args.removeAll("--stitching-calibration-only");
+      args << QString("--stitching-player-scan-output=%1")
+                  .arg(QString::fromStdString(scan_report_path(candidate).string()))
+           << "--stitching-player-scan-interval-ms=500"
+           << QString("--stitching-player-scan-frame-count=%1").arg(candidate.settings.frame_count)
+           << QString("--start-time=%1").arg(QString::fromStdString(candidate.settings.stitch_frame_time))
+           << QString("-t=%1").arg(candidate.scan_duration_seconds);
+    } else {
+      env.insert("HSTREAM_CALIBRATION_PENDING", "1");
+      env.insert("HSTREAM_CALIBRATION_START_STAGE", "input");
+      env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", QString::fromStdString(candidate.workspace->invalidation_id));
+      if (candidate.baseline_sequence == 0)
+        args << "--force-reconfigure";
+      args << QString("--clean-expected-invalidation-id=%1")
+                  .arg(QString::fromStdString(candidate.workspace->invalidation_id))
+           << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1").arg(candidate.settings.frame_count)
+           << QString("--stitch-frame-time=%1").arg(QString::fromStdString(candidate.settings.stitch_frame_time))
+           << "-t=1";
+      if (candidate.requires_ice_mask)
+        args << "--stitching-calibration-with-ice-mask";
+    }
     calibration_process->setProcessEnvironment(env);
-    QStringList args = base_arguments(candidate);
-    args << "--force-reconfigure"
-         << QString("--clean-expected-invalidation-id=%1")
-                .arg(QString::fromStdString(candidate.workspace->invalidation_id))
-         << "--enable-sinks=FAKE"
-         << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1").arg(candidate.settings.frame_count)
-         << QString("--stitch-frame-time=%1").arg(QString::fromStdString(candidate.settings.stitch_frame_time))
-         << "-t=1";
     bool uses_process_group = false;
 #ifdef Q_OS_UNIX
     uses_process_group = true;
@@ -747,27 +960,28 @@ struct StitchingExperimentDialog::Impl {
     calibration_process->setProgram(runner);
 #endif
     calibration_process->setArguments(args);
-    QObject::connect(calibration_process.get(), &QProcess::started, dialog, [this, uses_process_group]() {
-      if (uses_process_group)
+    QObject::connect(calibration_process.get(), &QProcess::started, dialog, [this, uses_process_group, generation]() {
+      if (uses_process_group && generation == process_generation)
         calibration_process_group = calibration_process->processId();
     });
-    QObject::connect(calibration_process.get(), &QProcess::readyReadStandardOutput, dialog, [this]() {
-      append_output(calibration_process.get());
+    QObject::connect(calibration_process.get(), &QProcess::readyReadStandardOutput, dialog, [this, generation]() {
+      if (generation == process_generation)
+        append_output(calibration_process.get());
     });
     QObject::connect(
         calibration_process.get(),
         qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
         dialog,
-        [this, row = candidate.row](int exit_code, QProcess::ExitStatus exit_status) {
-          finish_candidate(row, exit_code, exit_status);
+        [this, row = candidate.row, generation](int exit_code, QProcess::ExitStatus exit_status) {
+          finish_candidate(row, generation, exit_code, exit_status);
         });
     QObject::connect(
         calibration_process.get(),
         &QProcess::errorOccurred,
         dialog,
-        [this, row = candidate.row](QProcess::ProcessError error) {
-          if (error == QProcess::FailedToStart)
-            finish_candidate(row, -1, QProcess::CrashExit, calibration_process->errorString());
+        [this, row = candidate.row, generation](QProcess::ProcessError error) {
+          if (error == QProcess::FailedToStart && generation == process_generation)
+            finish_candidate(row, generation, -1, QProcess::CrashExit, calibration_process->errorString());
         });
     calibration_process->start();
     update_controls();
@@ -788,7 +1002,9 @@ struct StitchingExperimentDialog::Impl {
                                                                   .arg((*settings.rink_rotation_degrees)[2], 0, 'g', 6)
                                                             : "Saved setting";
     const QStringList columns = {
-        QString("Candidate %1").arg(candidate.sequence),
+        candidate.baseline_sequence != 0
+            ? QString("Players %1").arg(candidate.sequence)
+            : QString(candidate.requires_ice_mask ? "Baseline %1" : "Candidate %1").arg(candidate.sequence),
         QString::number(settings.control_points),
         QString::number(settings.frame_count),
         QString::fromStdString(settings.stitch_frame_time),
@@ -816,7 +1032,20 @@ struct StitchingExperimentDialog::Impl {
       return;
     }
     const size_t rotation_count = shared_rotation->isChecked() ? 1 : rink_rotations->size();
-    std::vector<StitchingExperimentSettings> additions;
+    std::vector<Candidate> additions;
+    std::set<int> required_baselines;
+    int sequence = next_candidate_sequence;
+    const auto find = [&](const StitchingExperimentSettings& settings, bool automatic) -> const Candidate* {
+      const auto matches = [&](const Candidate& item) {
+        return same_settings(item.settings, settings) && (item.baseline_sequence != 0) == automatic &&
+            (!automatic || item.scan_duration_seconds == scan_duration->value());
+      };
+      const auto existing = std::find_if(candidates.begin(), candidates.end(), matches);
+      if (existing != candidates.end())
+        return &*existing;
+      const auto pending = std::find_if(additions.begin(), additions.end(), matches);
+      return pending == additions.end() ? nullptr : &*pending;
+    };
     for (int point_count : *points) {
       for (int frame_count : *frames) {
         for (const QString& start : *starts) {
@@ -829,17 +1058,27 @@ struct StitchingExperimentDialog::Impl {
                     ? std::nullopt
                     : std::optional<std::array<double, 3>>(rink_rotations->at(rotation_index)),
             };
-            const bool already_queued = std::any_of(candidates.begin(), candidates.end(), [&](const Candidate& item) {
-              return same_settings(item.settings, settings);
-            });
-            const bool already_adding = std::any_of(
-                additions.begin(), additions.end(), [&](const auto& item) { return same_settings(item, settings); });
-            if (!already_queued && !already_adding) {
-              additions.push_back(std::move(settings));
-              if (candidates.size() + additions.size() > 64) {
-                show_status("Adding these options would exceed the 64-candidate batch limit.", true);
-                return;
+            const bool automatic = prefer_player_frames->isChecked() && frame_count > 1;
+            const Candidate* baseline = find(settings, false);
+            int baseline_sequence = baseline ? baseline->sequence : ++sequence;
+            if (!baseline)
+              additions.push_back(Candidate{.settings = settings, .sequence = baseline_sequence});
+            if (automatic) {
+              required_baselines.insert(baseline_sequence);
+              if (!find(settings, true)) {
+                additions.push_back(
+                    Candidate{
+                        .settings = settings,
+                        .sequence = ++sequence,
+                        .baseline_sequence = baseline_sequence,
+                        .scan_duration_seconds = scan_duration->value(),
+                    });
               }
+            }
+            if (candidates.size() + additions.size() > 64) {
+              show_status(
+                  "Adding these options, including their baselines, would exceed the 64-candidate batch limit.", true);
+              return;
             }
           }
         }
@@ -849,8 +1088,17 @@ struct StitchingExperimentDialog::Impl {
       show_status("Every combination from these options is already in the batch.");
       return;
     }
-    for (StitchingExperimentSettings& settings : additions)
-      append_candidate(Candidate{.settings = std::move(settings), .sequence = ++next_candidate_sequence});
+    for (Candidate& baseline : candidates) {
+      if (required_baselines.count(baseline.sequence)) {
+        baseline.requires_ice_mask = true;
+        table->item(baseline.row, 0)->setText(QString("Baseline %1").arg(baseline.sequence));
+      }
+    }
+    next_candidate_sequence = sequence;
+    for (Candidate& candidate : additions) {
+      candidate.requires_ice_mask = required_baselines.count(candidate.sequence) != 0;
+      append_candidate(std::move(candidate));
+    }
     table->selectRow(table->rowCount() - 1);
     show_status(QString("Added %1 candidate%2. The batch now contains %3; add more options or start it.")
                     .arg(additions.size())
@@ -863,10 +1111,26 @@ struct StitchingExperimentDialog::Impl {
     const int row = table->currentRow();
     if (batch_started || row < 0 || row >= static_cast<int>(candidates.size()))
       return;
-    candidates.erase(candidates.begin() + row);
-    table->removeRow(row);
-    for (int index = row; index < static_cast<int>(candidates.size()); ++index)
-      candidates[index].row = index;
+    const int sequence = candidates[row].sequence;
+    // Removing a baseline also removes every dependent automatic candidate;
+    // stable sequence identities keep other dependencies intact as rows shift.
+    for (int index = static_cast<int>(candidates.size()) - 1; index >= 0; --index) {
+      if (candidates[index].sequence == sequence || candidates[index].baseline_sequence == sequence) {
+        candidates.erase(candidates.begin() + index);
+        table->removeRow(index);
+      }
+    }
+    for (int index = 0; index < static_cast<int>(candidates.size()); ++index) {
+      Candidate& candidate = candidates[index];
+      candidate.row = index;
+      if (candidate.baseline_sequence == 0) {
+        candidate.requires_ice_mask = std::any_of(candidates.begin(), candidates.end(), [&](const Candidate& item) {
+          return item.baseline_sequence == candidate.sequence;
+        });
+        table->item(index, 0)->setText(
+            QString(candidate.requires_ice_mask ? "Baseline %1" : "Candidate %1").arg(candidate.sequence));
+      }
+    }
     if (!candidates.empty()) {
       table->selectRow(std::min(row, static_cast<int>(candidates.size()) - 1));
       show_status(QString("Removed the candidate. %1 remain in the batch.").arg(candidates.size()));
@@ -1034,6 +1298,115 @@ struct StitchingExperimentDialog::Impl {
     update_controls();
   }
 
+  void inspect_selected_frames() {
+    const int row = table->currentRow();
+    if (row < 0 || row >= static_cast<int>(candidates.size()) || !candidates[row].has_selected_frames ||
+        !candidates[row].workspace)
+      return;
+    auto inspection = InspectStitchingExperimentFrames(*candidates[row].workspace);
+    if (!inspection.ok()) {
+      show_status(QString::fromStdString(inspection.status().ToString()), true);
+      return;
+    }
+    QDialog viewer(dialog);
+    viewer.setObjectName("stitchExperimentFrameInspector");
+    viewer.setWindowTitle(QString("Selected frames — Candidate %1").arg(candidates[row].sequence));
+    viewer.setWindowFlag(Qt::WindowMaximizeButtonHint, true);
+    viewer.resize(1180, 780);
+    auto* layout = new QVBoxLayout(&viewer);
+    auto* explanation = new QLabel(
+        "These are the exact synchronized camera pairs selected for calibration. Thumbnails come from the same "
+        "extracted images used by the matcher. The coverage grid summarizes people surviving the Program ice mask "
+        "in the baseline stitched view; it is not an overlay on the raw cameras.");
+    explanation->setWordWrap(true);
+    layout->addWidget(explanation);
+    auto* validation = new QLabel(QString::fromStdString(inspection->source_validation));
+    validation->setTextFormat(Qt::PlainText);
+    validation->setWordWrap(true);
+    layout->addWidget(validation);
+    auto* choices = new QTableWidget(static_cast<int>(inspection->frames.size()), 5);
+    choices->setObjectName("stitchExperimentSelectedFrames");
+    choices->setHorizontalHeaderLabels(
+        {"Pair", "Time after anchor", "People in overlap", "Far / middle / near", "Quality"});
+    choices->setSelectionBehavior(QAbstractItemView::SelectRows);
+    choices->setSelectionMode(QAbstractItemView::SingleSelection);
+    choices->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    choices->setMaximumHeight(190);
+    for (size_t index = 0; index < inspection->frames.size(); ++index) {
+      const auto& frame = inspection->frames[index];
+      const QStringList values = {
+          index == 0 ? "1 (anchor)" : QString::number(index + 1),
+          exact_frame_time(frame.timeline_ns - inspection->frames.front().timeline_ns),
+          QString::number(frame.eligible_people),
+          QString("%1 / %2 / %3")
+              .arg(frame.size_band_counts[0])
+              .arg(frame.size_band_counts[1])
+              .arg(frame.size_band_counts[2]),
+          QString::number(frame.quality, 'g', 6),
+      };
+      for (int column = 0; column < values.size(); ++column) {
+        auto* item = new QTableWidgetItem(values[column]);
+        item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+        choices->setItem(static_cast<int>(index), column, item);
+      }
+    }
+    layout->addWidget(choices);
+    auto* images = new QHBoxLayout();
+    std::array<SelectedFrameImage*, 2> camera_images;
+    for (size_t camera = 0; camera < camera_images.size(); ++camera) {
+      auto* group = new QGroupBox(camera == 0 ? "Left camera" : "Right camera");
+      auto* image_layout = new QVBoxLayout(group);
+      camera_images[camera] = new SelectedFrameImage(group);
+      camera_images[camera]->setObjectName(
+          camera == 0 ? "stitchExperimentSelectedLeft" : "stitchExperimentSelectedRight");
+      image_layout->addWidget(camera_images[camera]);
+      images->addWidget(group, 2);
+    }
+    auto* coverage_group = new QGroupBox("Baseline stitched scoring coverage");
+    auto* coverage_layout = new QVBoxLayout(coverage_group);
+    auto* coverage = new SelectedFrameCoverage(coverage_group);
+    coverage->setObjectName("stitchExperimentSelectedCoverage");
+    coverage_layout->addWidget(coverage, 1);
+    auto* legend = new QLabel("Blue: far · Green: middle · Amber: near\nApparent size bands, not measured distances");
+    legend->setWordWrap(true);
+    coverage_layout->addWidget(legend);
+    images->addWidget(coverage_group, 1);
+    layout->addLayout(images, 1);
+    auto* detail = new QPlainTextEdit();
+    detail->setObjectName("stitchExperimentSelectedFrameIdentity");
+    detail->setReadOnly(true);
+    detail->setMaximumHeight(150);
+    layout->addWidget(detail);
+    const auto show_pair = [&]() {
+      const int selected_row = choices->currentRow();
+      if (selected_row < 0 || selected_row >= static_cast<int>(inspection->frames.size()))
+        return;
+      const auto& frame = inspection->frames[selected_row];
+      QString identity = QString("Decode anchor: %1 (%2 ns)\nPair timeline: %3 ns\n")
+                             .arg(exact_frame_time(inspection->anchor_ns))
+                             .arg(inspection->anchor_ns)
+                             .arg(frame.timeline_ns);
+      for (size_t camera = 0; camera < camera_images.size(); ++camera) {
+        camera_images[camera]->load(frame.thumbnails[camera]);
+        identity += QString("%1: %2\n  Source PTS: %3 (%4 ns); decoded sequence: %5\n")
+                        .arg(camera == 0 ? "Left" : "Right")
+                        .arg(QString::fromStdString(frame.camera_paths[camera]))
+                        .arg(exact_frame_time(frame.source_pts_ns[camera]))
+                        .arg(frame.source_pts_ns[camera])
+                        .arg(frame.decoded_sequences[camera]);
+      }
+      identity += "Selection fingerprint: " + QString::fromStdString(inspection->fingerprint);
+      detail->setPlainText(identity);
+      coverage->set_coverage(frame.coverage);
+    };
+    QObject::connect(choices, &QTableWidget::itemSelectionChanged, &viewer, show_pair);
+    auto* close = new QPushButton("Close");
+    QObject::connect(close, &QPushButton::clicked, &viewer, &QDialog::accept);
+    layout->addWidget(close, 0, Qt::AlignRight);
+    choices->selectRow(0);
+    viewer.exec();
+  }
+
   void shutdown() {
     closing = true;
     cancelling = true;
@@ -1103,8 +1476,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   auto* intro = new QLabel(
       "Add as many option combinations as you want to the batch, start it when ready, and leave it running. When "
       "you return, replay the same moving passage across each completed seam. Nothing changes the main stitching "
-      "configuration unless you explicitly choose Use selected in main Program. Experiments do not run crop, "
-      "inference, or play tracking.");
+      "configuration unless you explicitly choose Use selected in main Program. Optional player selection uses "
+      "the same ice filtering as Program; moving previews do not run crop or tracking.");
   intro->setWordWrap(true);
   root->addWidget(intro);
 
@@ -1133,6 +1506,22 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_layout->addRow("First calibration frames", s.start_frames);
   matrix_layout->addRow(s.shared_rotation);
   matrix_layout->addRow("Rink pitch/roll variants", s.rotations);
+  s.prefer_player_frames = new QCheckBox("Prefer player-rich frames");
+  s.prefer_player_frames->setObjectName("stitchExperimentPreferPlayerFrames");
+  s.prefer_player_frames->setToolTip(
+      "Add an automatic candidate alongside its ordinary baseline. People are filtered by the Program ice mask. "
+      "One-frame candidates keep only the anchor.");
+  s.scan_duration = new QSpinBox();
+  s.scan_duration->setObjectName("stitchExperimentPlayerScanDuration");
+  s.scan_duration->setRange(1, 300);
+  s.scan_duration->setValue(60);
+  s.scan_duration->setSuffix(" s");
+  s.scan_duration->setEnabled(false);
+  auto* player_options = new QHBoxLayout();
+  player_options->addWidget(s.prefer_player_frames);
+  player_options->addWidget(s.scan_duration);
+  matrix_layout->addRow("Player search", player_options);
+  connect(s.prefer_player_frames, &QCheckBox::toggled, this, [&s]() { s.update_controls(); });
   auto* matrix_actions = new QHBoxLayout();
   s.add_to_batch = new QPushButton("Add options to batch");
   s.add_to_batch->setObjectName("addStitchExperimentsToBatchButton");
@@ -1241,9 +1630,12 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   auto* bottom = new QHBoxLayout();
   s.apply = new QPushButton("Use selected in main Program");
   s.apply->setObjectName("applyStitchExperimentButton");
+  s.inspect_frames = new QPushButton("Inspect selected frames");
+  s.inspect_frames->setObjectName("inspectStitchExperimentFramesButton");
   auto* close = new QPushButton("Close");
   close->setObjectName("closeStitchExperimentButton");
   bottom->addWidget(s.apply);
+  bottom->addWidget(s.inspect_frames);
   bottom->addStretch(1);
   bottom->addWidget(close);
   root->addLayout(bottom);
@@ -1267,6 +1659,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.video->toggle_focus = [&s]() { s.set_preview_focus(!s.preview_focused); };
   connect(s.expand_preview, &QPushButton::clicked, this, s.video->toggle_focus);
   connect(s.apply, &QPushButton::clicked, this, [&s]() { s.apply_selected(); });
+  connect(s.inspect_frames, &QPushButton::clicked, this, [&s]() { s.inspect_selected_frames(); });
   connect(close, &QPushButton::clicked, this, [this]() { this->close(); });
   s.update_controls();
 }

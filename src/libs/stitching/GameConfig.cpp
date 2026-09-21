@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
@@ -28,6 +29,97 @@
 #include <unistd.h>
 
 namespace hm::stitching {
+
+absl::StatusOr<std::string> player_frame_selection_fingerprint(const YAML::Node& config) {
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    const YAML::Node selection =
+        stitching && stitching.IsMap() ? stitching["calibration_frame_selection"] : YAML::Node();
+    if (!selection || selection.IsNull())
+      return std::string();
+    PlayerFrameSelectionPlan plan;
+    HM_ASSIGN_OR_RETURN(plan, ParsePlayerFrameSelectionPlan(selection));
+    return plan.fingerprint;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid calibration frame selection: " + std::string(error.what()));
+  }
+}
+
+absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config, uint64_t anchor_ns) {
+  try {
+    const auto baseline = hm::baseline_config::load();
+    if (!baseline.ok())
+      return baseline.status();
+    YAML::Node camera_config = YAML::Clone(baseline->values);
+    const YAML::Node stitching = config["stitching"];
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
+      if (stitching && stitching.IsMap() && stitching[key] && !stitching[key].IsNull())
+        camera_config["stitching"][key] = YAML::Clone(stitching[key]);
+    }
+    StitchCameraSelection camera;
+    HM_ASSIGN_OR_RETURN(camera, read_stitch_camera_selection(camera_config));
+    YAML::Node context(YAML::NodeType::Map);
+    context["version"] = 1;
+    context["decode_anchor_ns"] = anchor_ns;
+    context["camera_config"] = camera.configuration;
+    context["horizontal_fov"] = camera.horizontal_fov;
+    context["vertical_fov"] = camera.vertical_fov;
+    context["stitch_frame_time"] =
+        stitching && stitching["stitch_frame_time"] ? stitching["stitch_frame_time"].as<std::string>() : "00:00:00";
+    const YAML::Node game = config["game"];
+    const YAML::Node videos = game && game.IsMap() ? game["videos"] : YAML::Node();
+    const YAML::Node game_stitching = game && game.IsMap() ? game["stitching"] : YAML::Node();
+    YAML::Node offsets = game_stitching && game_stitching.IsMap() ? game_stitching["frame_offsets"] : YAML::Node();
+    if ((!offsets || offsets.IsNull()) && stitching && stitching.IsMap())
+      offsets = stitching["frame_offsets"];
+    for (const char* role : {"left", "right"}) {
+      if (!videos || !videos.IsMap() || !videos[role] || !videos[role].IsSequence() || videos[role].size() == 0 ||
+          !offsets || !offsets.IsMap() || !offsets[role] || !offsets[role].IsScalar())
+        return absl::FailedPreconditionError("Player frame selection requires frozen camera chapters and offsets");
+      YAML::Node chapters(YAML::NodeType::Sequence);
+      for (const auto& chapter : videos[role]) {
+        if (!chapter.IsScalar())
+          return absl::InvalidArgumentError("Player frame selection chapters must be paths");
+        chapters.push_back(std::filesystem::path(chapter.as<std::string>()).lexically_normal().generic_string());
+      }
+      context[role]["chapters"] = chapters;
+      const double offset = offsets[role].as<double>();
+      if (!std::isfinite(offset))
+        return absl::InvalidArgumentError("Player frame selection offsets must be finite");
+      context[role]["frame_offset"] = offset;
+    }
+    return YAML::Dump(context);
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid player-frame source context: " + std::string(error.what()));
+  }
+}
+
+absl::Status validate_player_frame_selection_sources(const YAML::Node& config) {
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    const YAML::Node selection =
+        stitching && stitching.IsMap() ? stitching["calibration_frame_selection"] : YAML::Node();
+    if (!selection || selection.IsNull())
+      return absl::OkStatus();
+    PlayerFrameSelectionPlan plan;
+    HM_ASSIGN_OR_RETURN(plan, ParsePlayerFrameSelectionPlan(selection));
+    HM_RETURN_IF_ERROR(ValidatePlayerFrameSources(plan));
+    const auto anchor = plan.context.find("decode_anchor_ns");
+    uint64_t anchor_ns = 0;
+    if (anchor == plan.context.end())
+      return absl::InvalidArgumentError("Player frame selection is missing its decode anchor");
+    const auto parsed =
+        std::from_chars(anchor->second.data(), anchor->second.data() + anchor->second.size(), anchor_ns);
+    if (parsed.ec != std::errc() || parsed.ptr != anchor->second.data() + anchor->second.size())
+      return absl::InvalidArgumentError("Player frame selection has an invalid decode anchor");
+    std::string context;
+    HM_ASSIGN_OR_RETURN(context, player_frame_source_context(config, anchor_ns));
+    return ValidatePlayerFrameSourceContext(plan, context);
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid calibration frame selection: " + std::string(error.what()));
+  }
+}
+
 namespace {
 
 constexpr std::string_view kOwnedDirectoryMarkerName = "journal_version";
@@ -914,7 +1006,8 @@ absl::StatusOr<bool> materialize_control_point_resolution(YAML::Node& config, co
     YAML::Node marker(YAML::NodeType::Map);
     const YAML::Node values = config;
     const YAML::Node stitching = values && values.IsMap() ? values["stitching"] : YAML::Node();
-    const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_resolution"] : YAML::Node();
+    const YAML::Node value =
+        stitching && stitching.IsMap() ? stitching["control_point_resolution"] : YAML::Node(YAML::NodeType::Undefined);
     if (value)
       marker["previous"] = YAML::Clone(value);
     marker["generated"] = ControlPointResolutionName(resolution);
@@ -1779,7 +1872,11 @@ absl::Status validate_backend_generation_claim(
     YAML::Node claim_config;
     claim_config["stitching"] = claim;
     HM_ASSIGN_OR_RETURN(claim_provider, read_control_point_execution_provider(claim_config));
+    const std::string claimed_selection = claim["calibration_frame_selection_fingerprint"]
+        ? claim["calibration_frame_selection_fingerprint"].as<std::string>()
+        : std::string();
     const bool claim_matches = claim_provider == expected_choices.control_point_execution_provider &&
+        claimed_selection == expected_choices.calibration_frame_selection_fingerprint &&
         claim_resolution == expected_choices.control_point_resolution &&
         claim["invalidation_id"].as<std::string>() == expected_invalidation_id &&
         claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
@@ -1858,7 +1955,10 @@ absl::Status validate_backend_generation_claim(
     HM_ASSIGN_OR_RETURN(worker_resolution, read_control_point_resolution(config));
     hm::onnx::ExecutionProvider worker_provider;
     HM_ASSIGN_OR_RETURN(worker_provider, read_control_point_execution_provider(config));
+    std::string worker_selection;
+    HM_ASSIGN_OR_RETURN(worker_selection, player_frame_selection_fingerprint(config));
     const bool worker_tuple_matches = worker_provider == expected_choices.control_point_execution_provider &&
+        worker_selection == expected_choices.calibration_frame_selection_fingerprint &&
         worker_resolution == expected_choices.control_point_resolution &&
         stitching["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         stitching["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
@@ -1920,6 +2020,7 @@ absl::Status reserve_stitching_backend_generation_in_config(
       claim["control_point_resolution"] = ControlPointResolutionName(expected_choices.control_point_resolution);
       claim["control_point_execution_provider"] =
           hm::onnx::ExecutionProviderName(expected_choices.control_point_execution_provider);
+      claim["calibration_frame_selection_fingerprint"] = expected_choices.calibration_frame_selection_fingerprint;
       claim["mapping_backend"] = expected_choices.mapping_backend;
       claim["projection"] = expected_choices.projection;
       claim["run_autooptimizer"] = expected_choices.run_autooptimizer;

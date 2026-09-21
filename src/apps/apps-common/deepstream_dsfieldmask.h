@@ -35,6 +35,7 @@
 struct NvDsDsFieldMaskConfig {
   // Create a bin for the element only if enabled
   gboolean enable;
+  gboolean require_existing_mask{FALSE};
   // Struct members to store config / properties for the element
   guint unique_id;
   guint gpu_id;

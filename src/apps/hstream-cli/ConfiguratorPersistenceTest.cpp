@@ -25,12 +25,16 @@
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
 GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace hm {
 
 struct ConfiguratorTestAccess {
+  static const std::string& active_stitching_generation(const Configurator& configurator) {
+    return configurator.active_stitching_invalidation_id_;
+  }
   static absl::Status configure_source_bit_depth(Configurator* configurator, bool stitching_calibration_only) {
     YAML::Node pipeline = configurator->config_["pipeline"];
     return configurator->configure_source_bit_depth(pipeline, {}, stitching_calibration_only);
@@ -61,6 +65,48 @@ bool expect(bool condition, const char* message) {
   if (!condition)
     std::cerr << "FAIL: " << message << '\n';
   return condition;
+}
+
+absl::StatusOr<YAML::Node> player_selection_fixture(const fs::path& directory) {
+  using namespace hm::stitching;
+  YAML::Node config;
+  config["stitching"]["stitch_frame_time"] = "00:00:08";
+  PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 1;
+  PlayerFrameObservation anchor;
+  anchor.pair.timeline_pts_ns = 8 * kPlayerFrameSecond;
+  for (size_t index = 0; index < 2; ++index) {
+    const auto source_path = directory / (index ? "source-right.bin" : "source-left.bin");
+    std::ofstream(source_path) << "physical source binding fixture";
+    const auto source = BindPlayerFrameSource(source_path);
+    if (!source.ok())
+      return source.status();
+    plan.sources.push_back(*source);
+    anchor.pair.cameras[index] = {source->path, 8 * kPlayerFrameSecond, static_cast<uint32_t>(index), 0};
+    config["game"]["videos"][index ? "right" : "left"].push_back(source->path);
+    config["game"]["stitching"]["frame_offsets"][index ? "right" : "left"] = 0.0;
+  }
+  plan.selected.push_back(anchor);
+  for (const char* key :
+       {"baseline_generation",
+        "output_generation",
+        "detector_identity",
+        "rink_mask_sha256",
+        "rink_mask_revision",
+        "fieldmask_settings",
+        "output_rotation_degrees"})
+    plan.context[key] = "fixture";
+  plan.context["decode_anchor_ns"] = std::to_string(anchor.pair.timeline_pts_ns);
+  const auto context = player_frame_source_context(config, anchor.pair.timeline_pts_ns);
+  if (!context.ok())
+    return context.status();
+  plan.context["source_context"] = *context;
+  const auto fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok())
+    return fingerprint.status();
+  plan.fingerprint = *fingerprint;
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  return config;
 }
 
 } // namespace
@@ -528,7 +574,7 @@ play-tracker:
           mapped_defaults["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.1 &&
           !mapped_defaults["sink0"]["bitrate"].IsDefined() && !mapped_defaults["sink0"]["output-file"].IsDefined() &&
           !mapped_defaults["sink0"]["width"].IsDefined() && !mapped_defaults["sink0"]["height"].IsDefined() &&
-          mapped_defaults["sink6"]["interpolation-method"].as<int>() == 6 &&
+          mapped_defaults["sink6"]["interpolation-method"].as<int>() == 1 &&
           mapped_defaults["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
           mapped_defaults["ds-playtracker"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
           mapped_defaults["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%10" &&
@@ -2420,6 +2466,64 @@ play-tracker:
                   .as<std::string>() == "opencv-magsac",
       "Backend provenance, worker tuple, and generation claim must publish atomically, and preloaded configurators "
       "must not share one invalidation ID with different backend tuples");
+
+  const fs::path selected_generation_dir = games / "selected-frame-generation";
+  fs::create_directories(selected_generation_dir);
+  const auto selected_fixture = player_selection_fixture(selected_generation_dir);
+  ok &= expect(selected_fixture.ok(), "selected-frame Configurator fixture must bind real local source paths");
+  if (selected_fixture.ok()) {
+    YAML::Node selected_private = YAML::Clone(*selected_fixture);
+    const std::string generation = "selected-frame-generation-a";
+    selected_private["pipeline"]["application"]["complete-configuration"] = 1;
+    selected_private["pipeline"]["hmstitcher"]["enable"] = 1;
+    selected_private["pipeline"]["hmplaycropper"]["enable"] = 0;
+    selected_private["pipeline"]["ds-playtracker"]["enable"] = 0;
+    selected_private["pipeline"]["vpplaytracker"]["enable"] = 0;
+    selected_private["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+    selected_private["hstream_ui"]["stitching_calibration"]["invalidation_id"] = generation;
+    selected_private["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
+    selected_private["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
+    selected_private["hstream_ui"]["stitching_calibration"]["frame_count"] = 1;
+    selected_private["stitching"]["calibration_frame_count"] = 1;
+    // Stop after launch claim validation and before media decoding/model work.
+    selected_private["stitching"]["sync_method"] = "invalid-after-generation-validation";
+    const auto published =
+        hm::stitching::publish_game_config(selected_generation_dir, YAML::Dump(selected_private) + "\n");
+    hm::Configurator selected_generation(
+        "selected-frame-generation", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const auto loaded = selected_generation.configure();
+    const auto persisted = selected_generation.persist_effective_stitching_backend_choices(generation);
+    const auto persisted_again = selected_generation.persist_effective_stitching_backend_choices(generation);
+    const auto after = hm::stitching::load_game_config_file(selected_generation_dir / "config.yaml");
+    const auto expected_fingerprint = hm::stitching::player_frame_selection_fingerprint(selected_private);
+    const auto claimed = after.ok() && after->has_value()
+        ? hm::get_node(
+              **after, "hstream_ui.stitching_calibration.backend_generation.calibration_frame_selection_fingerprint")
+        : std::optional<YAML::Node>();
+    ok &= expect(
+        published.ok() && loaded.ok() && persisted.ok() && persisted_again.ok() && claimed &&
+            expected_fingerprint.ok() && claimed->as<std::string>() == *expected_fingerprint,
+        "Configurator must preserve the selected plan fingerprint in repeated worker generation claims");
+    std::map<std::string, std::optional<std::string>> saved_environment;
+    for (const char* key : {"HM_MAX_CONTROL_POINTS", "HM_STITCH_CALIBRATION_FRAME_COUNT"}) {
+      const char* value = g_getenv(key);
+      saved_environment[key] = value ? std::optional<std::string>(value) : std::nullopt;
+      g_unsetenv(key);
+    }
+    const auto launch = selected_generation.complete_configuration(false, false, false, {}, false, -1.0);
+    for (const auto& [key, value] : saved_environment) {
+      if (value)
+        g_setenv(key.c_str(), value->c_str(), TRUE);
+      else
+        g_unsetenv(key.c_str());
+    }
+    if (hm::ConfiguratorTestAccess::active_stitching_generation(selected_generation) != generation)
+      std::cerr << "Selected-frame launch stopped before validating its generation: " << launch << '\n';
+    ok &= expect(
+        absl::IsInvalidArgument(launch) &&
+            hm::ConfiguratorTestAccess::active_stitching_generation(selected_generation) == generation,
+        "launch-time backend validation must include the same selected plan fingerprint as worker publication");
+  }
 
   const fs::path invalid_backend_dir = games / "invalid-backend-cli";
   fs::create_directories(invalid_backend_dir);
