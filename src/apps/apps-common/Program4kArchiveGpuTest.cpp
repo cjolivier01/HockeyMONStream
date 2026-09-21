@@ -1,6 +1,7 @@
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 
 #include <gst/gst.h>
+#include <nvbufsurftransform.h>
 #include <unistd.h>
 
 #include <iostream>
@@ -33,6 +34,9 @@ int main(int argc, char** argv) {
     NvDsSinkBin sinks{};
     if (!create_sink_bin(2, configs, &sinks, 0))
       return 1;
+    gint interpolation_method = NvBufSurfTransformInter_Default;
+    g_object_get(G_OBJECT(sinks.sub_bins[1].transform), "interpolation-method", &interpolation_method, NULL);
+    ok &= interpolation_method == NvBufSurfTransformInter_Algo1;
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
     const char* upload_properties = "compute-hw=1 copy-hw=2";
 #else

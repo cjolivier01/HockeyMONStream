@@ -31,6 +31,7 @@
 #include <gst/webrtc/webrtc.h>
 #include <json-glib/json-glib.h>
 #include <libsoup/soup.h>
+#include <nvbufsurftransform.h>
 #include "deepstream_common.h"
 #include "deepstream_sinks.h"
 
@@ -1600,6 +1601,15 @@ static gboolean create_encode_file_bin(
     goto done;
   }
   g_object_set(G_OBJECT(bin->transform), "compute-hw", config->compute_hw, NULL);
+  if (program_4k_output) {
+    if (!g_object_class_find_property(G_OBJECT_GET_CLASS(bin->transform), "interpolation-method")) {
+      NVGSTDS_ERR_MSG_V("The selected video converter does not support cubic interpolation for the 4K archive");
+      goto done;
+    }
+    // Algo1 selects cubic interpolation on the CUDA converter used by this branch.
+    g_object_set(
+        G_OBJECT(bin->transform), "interpolation-method", static_cast<gint>(NvBufSurfTransformInter_Algo1), NULL);
+  }
 
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
   /* For Jetson, with copy-hw=1 and memory-type=nvbuf-mem-surface-array,
