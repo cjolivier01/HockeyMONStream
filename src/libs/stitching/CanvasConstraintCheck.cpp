@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
@@ -35,6 +36,8 @@
 #include <sys/vfs.h>
 #include <tiffio.h>
 #include <unistd.h>
+
+#include "yaml-cpp/yaml.h"
 
 #include "absl/status/status.h"
 
@@ -281,6 +284,16 @@ absl::StatusOr<int> lock_canvas_constraint_artifacts_impl(const fs::path& game_d
     if (!wait && (lock_error == EWOULDBLOCK || lock_error == EAGAIN))
       return -1;
     return absl::InternalError("Unable to lock stitching artifacts: " + std::string(std::strerror(lock_error)));
+  }
+  // Selection promotion nests the rink/config journal inside the stitch
+  // journal. Recover the inner transaction before the outer stitch journal
+  // decides whether an AWAITING_CONFIG publication committed or rolled back.
+  auto config_transaction =
+      wait ? GameConfigTransactionLock::Acquire(game_dir) : GameConfigTransactionLock::TryAcquire(game_dir);
+  if (!config_transaction.ok()) {
+    ::flock(descriptor, LOCK_UN);
+    ::close(descriptor);
+    return config_transaction.status();
   }
   auto recovery = recover_stitch_transactions_locked(game_dir);
   if (!recovery.ok()) {
@@ -867,6 +880,24 @@ bool is_stitch_partial_artifact_name(const std::string& name) {
   return false;
 }
 
+absl::StatusOr<std::string> selection_invalidation_id(const std::string& contents, const std::string& description) {
+  try {
+    const YAML::Node config = YAML::Load(contents);
+    const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    if (!calibration || !calibration.IsMap() || !calibration["invalidation_id"] ||
+        !calibration["invalidation_id"].IsScalar() || !calibration["status"] || !calibration["status"].IsScalar() ||
+        calibration["status"].as<std::string>() != "complete") {
+      return absl::FailedPreconditionError(description + " has no complete stitching selection identity");
+    }
+    const std::string invalidation_id = calibration["invalidation_id"].as<std::string>();
+    if (invalidation_id.empty())
+      return absl::FailedPreconditionError(description + " has an empty stitching selection identity");
+    return invalidation_id;
+  } catch (const YAML::Exception& exception) {
+    return absl::FailedPreconditionError(description + " is invalid YAML: " + exception.what());
+  }
+}
+
 absl::StatusOr<std::vector<fs::directory_entry>> stitch_directory_entries(
     const fs::path& directory,
     const std::string& description,
@@ -1354,6 +1385,8 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
     return std::string("BACKED_UP");
   if (contents == "LEGACY_MIGRATE\n")
     return std::string("LEGACY_MIGRATE");
+  if (contents == "AWAITING_CONFIG\n")
+    return std::string("AWAITING_CONFIG");
   if (contents == "ROLLING_BACK\n")
     return std::string("ROLLING_BACK");
   if (contents == "RESTORED\n")
@@ -1839,6 +1872,35 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       status = mark_stitch_transaction_rolled_back(transaction);
       if (!status.ok())
         return status;
+    }
+    if (*state == "AWAITING_CONFIG") {
+      auto selected_config = read_bounded_regular_file_no_follow(
+          transaction / "selection_config.yaml", 16ULL * 1024ULL * 1024ULL, "selected stitching config");
+      if (!selected_config.ok())
+        return selected_config.status();
+      const fs::path current_config_path = root_directory.path() / "config.yaml";
+      const bool current_config_exists = fs::exists(current_config_path, error);
+      if (error) {
+        return absl::InternalError("Unable to inspect the published game config: " + error.message());
+      } else if (current_config_exists) {
+        auto current_config = read_bounded_regular_file_no_follow(
+            current_config_path, 16ULL * 1024ULL * 1024ULL, "published game config");
+        if (!current_config.ok())
+          return current_config.status();
+        auto expected_identity = selection_invalidation_id(*selected_config, "selected stitching config");
+        if (!expected_identity.ok())
+          return expected_identity.status();
+        auto current_identity = selection_invalidation_id(*current_config, "published game config");
+        if (!current_identity.ok() && !absl::IsFailedPrecondition(current_identity.status()))
+          return current_identity.status();
+        state = current_identity.ok() && *current_identity == *expected_identity ? std::string("COMMITTED")
+                                                                                 : std::string("BACKED_UP");
+      } else {
+        // The selected config was not durably published, so the artifact
+        // backups remain authoritative and recovery follows the normal
+        // BACKED_UP rollback path below.
+        state = std::string("BACKED_UP");
+      }
     }
     if (*state == "PREPARED" || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "LEGACY_MIGRATE" ||
         *state == "ROLLING_BACK") {

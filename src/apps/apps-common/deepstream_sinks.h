@@ -186,7 +186,9 @@ void set_rtsp_udp_port_num(guint rtsp_port_num, guint udp_port_num);
 void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids);
 // Preserve render-type audio routing while replacing only the render video
 // sink with a non-rendering terminator for the GPU-native hstream-ui preview.
-void set_embedded_gpu_preview_video_mode(gboolean enabled);
+// Calibration-only playback can retain the configured render clock to make
+// moving seam comparisons run at playback speed.
+void set_embedded_gpu_preview_video_mode(gboolean enabled, gboolean preserve_render_timing = FALSE);
 gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncoderConfig* config);
 gboolean link_webrtc_rtp_src_to_sink(
     GstElement* webrtc,

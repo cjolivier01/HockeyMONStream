@@ -431,7 +431,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable rink transaction state file");
@@ -1469,6 +1469,10 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   status = fsync_path(game_dir, true);
   if (!status.ok())
     return rollback_error(std::string(status.message()));
+  if (const char* interrupt = std::getenv("HM_TEST_RINK_INVALIDATION_INTERRUPT_AFTER_CONFIG_SYNC");
+      interrupt != nullptr && std::string(interrupt) == "1") {
+    return absl::InternalError("Injected rink invalidation interruption after config publication");
+  }
   status = write_transaction_file(staging / "state.committed", "COMMITTED\n");
   if (!status.ok())
     return rollback_error(std::string(status.message()));

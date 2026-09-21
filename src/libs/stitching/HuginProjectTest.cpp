@@ -192,7 +192,7 @@ std::string generation_stat_identity(const std::filesystem::path& directory, boo
   };
   std::ostringstream identity;
   for (size_t index = 0; index < names.size(); ++index) {
-    struct stat metadata {};
+    struct stat metadata{};
     if (::stat((directory / names[index]).c_str(), &metadata) != 0) {
       if (index + 1 == names.size() && errno == ENOENT)
         continue;
@@ -844,6 +844,111 @@ int main(int argc, char** argv) {
         "framing");
     provenance_lock->reset();
   }
+
+  const fs::path promoted_game = root / "promoted-game";
+  fs::create_directories(promoted_game);
+  std::ofstream(promoted_game / "config.yaml") << "{}\n";
+  auto source_generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  absl::StatusOr<std::string> source_generation = absl::NotFoundError("source generation was not read");
+  if (source_generation_lock.ok()) {
+    source_generation = hm::stitching::stitch_artifact_generation_id_locked(root / "game");
+    source_generation_lock->reset();
+  }
+  const auto promoted = hm::stitching::HuginProject::PromoteArtifacts(root / "game", promoted_game);
+  auto promoted_generation_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
+  absl::StatusOr<std::string> promoted_generation = absl::NotFoundError("promoted generation was not read");
+  if (promoted_generation_lock.ok()) {
+    promoted_generation = hm::stitching::stitch_artifact_generation_id_locked(promoted_game);
+    promoted_generation_lock->reset();
+  }
+  ok &= expect(
+      source_generation_lock.ok() && source_generation.ok() && promoted.ok() && promoted_generation_lock.ok() &&
+          promoted_generation.ok() && *source_generation != *promoted_generation &&
+          read_binary_file(root / "game" / "seam_file.png") == read_binary_file(promoted_game / "seam_file.png") &&
+          read_binary_file(root / "game" / "panorama.tif") == read_binary_file(promoted_game / "panorama.tif"),
+      "experiment promotion must republish validated maps and seam under a fresh generation without rerendering");
+
+  const std::string config_before_failed_selection = read_text_file(promoted_game / "config.yaml");
+  const std::string generation_before_failed_selection = promoted_generation.ok() ? *promoted_generation : "";
+  ::setenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG", "1", 1);
+  const auto failed_selection = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
+      root / "game", promoted_game, []() -> absl::StatusOr<std::string> {
+        return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: failed\n    status: complete\n";
+      });
+  ::unsetenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG");
+  auto failed_selection_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
+  absl::StatusOr<std::string> generation_after_failed_selection = absl::NotFoundError("generation was not read");
+  if (failed_selection_lock.ok()) {
+    generation_after_failed_selection = hm::stitching::stitch_artifact_generation_id_locked(promoted_game);
+    failed_selection_lock->reset();
+  }
+  ok &= expect(
+      !failed_selection.ok() && failed_selection_lock.ok() && generation_after_failed_selection.ok() &&
+          *generation_after_failed_selection == generation_before_failed_selection &&
+          read_text_file(promoted_game / "config.yaml") == config_before_failed_selection,
+      "failed experiment selection must preserve the previous complete artifact and config generation");
+
+  std::ofstream(promoted_game / "rink_mask_0.png") << "previous mask\n";
+  ::setenv("HM_TEST_RINK_INVALIDATION_INTERRUPT_AFTER_CONFIG_SYNC", "1", 1);
+  const auto interrupted_rink_selection = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
+      root / "game", promoted_game, []() -> absl::StatusOr<std::string> {
+        return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: interrupted-rink\n    status: complete\n";
+      });
+  ::unsetenv("HM_TEST_RINK_INVALIDATION_INTERRUPT_AFTER_CONFIG_SYNC");
+  auto interrupted_rink_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
+  absl::StatusOr<std::string> generation_after_rink_recovery = absl::NotFoundError("generation was not read");
+  if (interrupted_rink_lock.ok()) {
+    generation_after_rink_recovery = hm::stitching::stitch_artifact_generation_id_locked(promoted_game);
+    interrupted_rink_lock->reset();
+  }
+  ok &= expect(
+      !interrupted_rink_selection.ok() && interrupted_rink_lock.ok() && generation_after_rink_recovery.ok() &&
+          *generation_after_rink_recovery == generation_before_failed_selection &&
+          read_text_file(promoted_game / "config.yaml") == config_before_failed_selection &&
+          read_text_file(promoted_game / "rink_mask_0.png") == "previous mask\n",
+      "stitch recovery must resolve an interrupted nested config/rink publication before choosing artifacts");
+
+  const auto selected = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
+      root / "game", promoted_game, []() -> absl::StatusOr<std::string> {
+        return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: selected\n    status: complete\n";
+      });
+  auto selected_generation_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
+  absl::StatusOr<std::string> selected_generation = absl::NotFoundError("selected generation was not read");
+  if (selected_generation_lock.ok()) {
+    selected_generation = hm::stitching::stitch_artifact_generation_id_locked(promoted_game);
+    selected_generation_lock->reset();
+  }
+  ok &= expect(
+      selected.ok() && selected_generation_lock.ok() && selected_generation.ok() &&
+          *selected_generation != generation_before_failed_selection &&
+          YAML::LoadFile(
+              (promoted_game / "config.yaml").string())["hstream_ui"]["stitching_calibration"]["invalidation_id"]
+                  .as<std::string>() == "selected",
+      "successful experiment selection must publish config and artifacts as one recoverable generation");
+
+  const std::string generation_before_recovery = selected_generation.ok() ? *selected_generation : "";
+  ::setenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG", "1", 1);
+  const auto interrupted_selection = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
+      root / "game", promoted_game, []() -> absl::StatusOr<std::string> {
+        return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: recovered\n    status: complete\n";
+      });
+  ::unsetenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG");
+  std::ofstream(promoted_game / "config.yaml", std::ios::app) << "unrelated: changed\n";
+  auto recovered_selection_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
+  absl::StatusOr<std::string> recovered_selection_generation = absl::NotFoundError("generation was not read");
+  if (recovered_selection_lock.ok()) {
+    recovered_selection_generation = hm::stitching::stitch_artifact_generation_id_locked(promoted_game);
+    recovered_selection_lock->reset();
+  }
+  ok &= expect(
+      !interrupted_selection.ok() && recovered_selection_lock.ok() && recovered_selection_generation.ok() &&
+          *recovered_selection_generation != generation_before_recovery &&
+          YAML::LoadFile(
+              (promoted_game / "config.yaml").string())["hstream_ui"]["stitching_calibration"]["invalidation_id"]
+                  .as<std::string>() == "recovered" &&
+          YAML::LoadFile((promoted_game / "config.yaml").string())["unrelated"].as<std::string>() == "changed",
+      "recovery must retain promoted artifacts when the selected config identity survives an unrelated save");
+
   options.camera_configuration = "gopro-hero-11";
   options.horizontal_fov = 108.0;
   options.vertical_fov = 90.0;
@@ -2257,7 +2362,7 @@ int main(int argc, char** argv) {
       const auto unreliable_before = hm::stitching::HuginProject::GenerationId(unreliable_root, **unreliable_lock);
       const std::string old_bindings = generation_stat_identity(unreliable_root, false);
       const fs::path unreliable_target = unreliable_root / "hm_project.pto";
-      struct stat unreliable_metadata {};
+      struct stat unreliable_metadata{};
       const bool unreliable_metadata_read = ::stat(unreliable_target.c_str(), &unreliable_metadata) == 0;
       std::fstream changed_file(unreliable_target, std::ios::in | std::ios::out | std::ios::binary);
       char first_byte = '\0';
@@ -2298,7 +2403,7 @@ int main(int argc, char** argv) {
     fs::remove_all(unreliable_root);
 
     const fs::path target = replacement_root / "hm_project.pto";
-    struct stat metadata {};
+    struct stat metadata{};
     const std::string original = read_text_file(target);
     std::string changed = original;
     if (!changed.empty())

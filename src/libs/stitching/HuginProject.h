@@ -193,6 +193,22 @@ class HuginProject {
       const std::vector<FeatureMatch>& matches,
       const Options& options);
 
+  // Transactionally republishes one validated experiment generation into a
+  // game directory. The destination receives a fresh generation identity;
+  // no feature matching, optimization, mapping, or seam generation is rerun.
+  static absl::Status PromoteArtifacts(
+      const std::filesystem::path& experiment_game_dir,
+      const std::filesystem::path& game_dir);
+
+  // Promotes the artifact generation and publishes the selected config/rink
+  // invalidation under the same artifact/config locks. The durable artifact
+  // journal uses the expected config contents to finish or roll back an
+  // interrupted selection as one generation.
+  static absl::Status PromoteArtifactsAndConfig(
+      const std::filesystem::path& experiment_game_dir,
+      const std::filesystem::path& game_dir,
+      const std::function<absl::StatusOr<std::string>()>& build_config);
+
   // Recover an interrupted durable publication before opening the flat Hugin
   // artifact set from game_dir.
   static absl::Status Recover(const std::filesystem::path& game_dir);
