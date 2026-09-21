@@ -53,7 +53,10 @@ int main() {
           "  videos:\n"
           "    left: [cam1/left.mp4]\n"
           "    right: [cam2/right.mp4]\n"
+          "  stitching:\n"
+          "    control_points: [old-game-cache]\n"
           "stitching:\n"
+          "  control_points: [old-cache]\n"
           "  mapping_backend: nona\n"
           "  projection: general-panini\n"
           "  projection_framing:\n"
@@ -129,7 +132,9 @@ int main() {
     const YAML::Node selected = YAML::Load(*selected_config);
     const YAML::Node selected_rink = selected["rink"];
     ok &= expect(
-        !selected_rink["scoreboard"]["perspective_polygon"].IsDefined() &&
+        !selected["stitching"]["control_points"].IsDefined() &&
+            !selected["game"]["stitching"]["control_points"].IsDefined() &&
+            !selected_rink["scoreboard"]["perspective_polygon"].IsDefined() &&
             !selected_rink["ice_contours_mask_count"].IsDefined() &&
             !selected_rink["ice_contours_mask_centroid"].IsDefined() &&
             !selected_rink["ice_contours_combined_bbox"].IsDefined() &&

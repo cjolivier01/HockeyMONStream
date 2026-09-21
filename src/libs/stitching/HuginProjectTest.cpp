@@ -872,7 +872,9 @@ int main(int argc, char** argv) {
   const std::string generation_before_failed_selection = promoted_generation.ok() ? *promoted_generation : "";
   ::setenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG", "1", 1);
   const auto failed_selection = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
-      root / "game", promoted_game, []() -> absl::StatusOr<std::string> { return "selected: failed\n"; });
+      root / "game", promoted_game, []() -> absl::StatusOr<std::string> {
+        return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: failed\n    status: complete\n";
+      });
   ::unsetenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG");
   auto failed_selection_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
   absl::StatusOr<std::string> generation_after_failed_selection = absl::NotFoundError("generation was not read");
@@ -889,7 +891,9 @@ int main(int argc, char** argv) {
   std::ofstream(promoted_game / "rink_mask_0.png") << "previous mask\n";
   ::setenv("HM_TEST_RINK_INVALIDATION_INTERRUPT_AFTER_CONFIG_SYNC", "1", 1);
   const auto interrupted_rink_selection = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
-      root / "game", promoted_game, []() -> absl::StatusOr<std::string> { return "selected: interrupted-rink\n"; });
+      root / "game", promoted_game, []() -> absl::StatusOr<std::string> {
+        return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: interrupted-rink\n    status: complete\n";
+      });
   ::unsetenv("HM_TEST_RINK_INVALIDATION_INTERRUPT_AFTER_CONFIG_SYNC");
   auto interrupted_rink_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
   absl::StatusOr<std::string> generation_after_rink_recovery = absl::NotFoundError("generation was not read");
@@ -905,7 +909,9 @@ int main(int argc, char** argv) {
       "stitch recovery must resolve an interrupted nested config/rink publication before choosing artifacts");
 
   const auto selected = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
-      root / "game", promoted_game, []() -> absl::StatusOr<std::string> { return "selected: true\n"; });
+      root / "game", promoted_game, []() -> absl::StatusOr<std::string> {
+        return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: selected\n    status: complete\n";
+      });
   auto selected_generation_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
   absl::StatusOr<std::string> selected_generation = absl::NotFoundError("selected generation was not read");
   if (selected_generation_lock.ok()) {
@@ -915,14 +921,19 @@ int main(int argc, char** argv) {
   ok &= expect(
       selected.ok() && selected_generation_lock.ok() && selected_generation.ok() &&
           *selected_generation != generation_before_failed_selection &&
-          read_text_file(promoted_game / "config.yaml") == "selected: true\n",
+          YAML::LoadFile(
+              (promoted_game / "config.yaml").string())["hstream_ui"]["stitching_calibration"]["invalidation_id"]
+                  .as<std::string>() == "selected",
       "successful experiment selection must publish config and artifacts as one recoverable generation");
 
   const std::string generation_before_recovery = selected_generation.ok() ? *selected_generation : "";
   ::setenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG", "1", 1);
   const auto interrupted_selection = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
-      root / "game", promoted_game, []() -> absl::StatusOr<std::string> { return "selected: recovered\n"; });
+      root / "game", promoted_game, []() -> absl::StatusOr<std::string> {
+        return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: recovered\n    status: complete\n";
+      });
   ::unsetenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG");
+  std::ofstream(promoted_game / "config.yaml", std::ios::app) << "unrelated: changed\n";
   auto recovered_selection_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
   absl::StatusOr<std::string> recovered_selection_generation = absl::NotFoundError("generation was not read");
   if (recovered_selection_lock.ok()) {
@@ -932,8 +943,11 @@ int main(int argc, char** argv) {
   ok &= expect(
       !interrupted_selection.ok() && recovered_selection_lock.ok() && recovered_selection_generation.ok() &&
           *recovered_selection_generation != generation_before_recovery &&
-          read_text_file(promoted_game / "config.yaml") == "selected: recovered\n",
-      "recovery must retain promoted artifacts when the selected config was already durable");
+          YAML::LoadFile(
+              (promoted_game / "config.yaml").string())["hstream_ui"]["stitching_calibration"]["invalidation_id"]
+                  .as<std::string>() == "recovered" &&
+          YAML::LoadFile((promoted_game / "config.yaml").string())["unrelated"].as<std::string>() == "changed",
+      "recovery must retain promoted artifacts when the selected config identity survives an unrelated save");
 
   options.camera_configuration = "gopro-hero-11";
   options.horizontal_fov = 108.0;

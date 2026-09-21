@@ -36,6 +36,8 @@
 #include <tiffio.h>
 #include <unistd.h>
 
+#include "yaml-cpp/yaml.h"
+
 #include "absl/status/status.h"
 
 namespace hm::stitching {
@@ -865,6 +867,24 @@ bool is_stitch_partial_artifact_name(const std::string& name) {
       return true;
   }
   return false;
+}
+
+absl::StatusOr<std::string> selection_invalidation_id(const std::string& contents, const std::string& description) {
+  try {
+    const YAML::Node config = YAML::Load(contents);
+    const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    if (!calibration || !calibration.IsMap() || !calibration["invalidation_id"] ||
+        !calibration["invalidation_id"].IsScalar() || !calibration["status"] || !calibration["status"].IsScalar() ||
+        calibration["status"].as<std::string>() != "complete") {
+      return absl::FailedPreconditionError(description + " has no complete stitching selection identity");
+    }
+    const std::string invalidation_id = calibration["invalidation_id"].as<std::string>();
+    if (invalidation_id.empty())
+      return absl::FailedPreconditionError(description + " has an empty stitching selection identity");
+    return invalidation_id;
+  } catch (const YAML::Exception& exception) {
+    return absl::FailedPreconditionError(description + " is invalid YAML: " + exception.what());
+  }
 }
 
 absl::StatusOr<std::vector<fs::directory_entry>> stitch_directory_entries(
@@ -1856,7 +1876,14 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
             current_config_path, 16ULL * 1024ULL * 1024ULL, "published game config");
         if (!current_config.ok())
           return current_config.status();
-        state = *current_config == *selected_config ? std::string("COMMITTED") : std::string("BACKED_UP");
+        auto expected_identity = selection_invalidation_id(*selected_config, "selected stitching config");
+        if (!expected_identity.ok())
+          return expected_identity.status();
+        auto current_identity = selection_invalidation_id(*current_config, "published game config");
+        if (!current_identity.ok() && !absl::IsFailedPrecondition(current_identity.status()))
+          return current_identity.status();
+        state = current_identity.ok() && *current_identity == *expected_identity ? std::string("COMMITTED")
+                                                                                 : std::string("BACKED_UP");
       } else {
         // The selected config was not durably published, so the artifact
         // backups remain authoritative and recovery follows the normal

@@ -173,6 +173,14 @@ void promote_generated_video_roles(YAML::Node config) {
 }
 
 void remove_downstream_generation(YAML::Node config) {
+  YAML::Node stitching = config["stitching"];
+  if (stitching && stitching.IsMap()) {
+    stitching.remove("control_points");
+    stitching.remove("generated_field_mask_post_stitch_rotate_degrees");
+  }
+  YAML::Node game_stitching = config["game"]["stitching"];
+  if (game_stitching && game_stitching.IsMap())
+    game_stitching.remove("control_points");
   YAML::Node rink = config["rink"];
   if (rink && rink.IsMap()) {
     for (const char* key :
@@ -194,9 +202,6 @@ void remove_downstream_generation(YAML::Node config) {
     if (scoreboard && scoreboard.IsMap())
       scoreboard.remove("perspective_polygon");
   }
-  YAML::Node stitching = config["stitching"];
-  if (stitching && stitching.IsMap())
-    stitching.remove("generated_field_mask_post_stitch_rotate_degrees");
 }
 
 absl::Status configure_candidate(
