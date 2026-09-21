@@ -585,6 +585,37 @@ absl::Status prepare_stitch_output_surface(NvBufSurface* output_surface, size_t 
   return absl::OkStatus();
 }
 
+bool should_select_calibration_pair(
+    uint64_t pair_pts_ns,
+    size_t selected_pair_count,
+    size_t required_pair_count,
+    uint64_t sample_span_ns,
+    std::optional<uint64_t> first_pair_pts_ns) {
+  if (selected_pair_count >= required_pair_count) {
+    return false;
+  }
+  if (selected_pair_count == 0) {
+    return true;
+  }
+  if (pair_pts_ns != GST_CLOCK_TIME_NONE && first_pair_pts_ns.has_value() && pair_pts_ns <= *first_pair_pts_ns) {
+    return false;
+  }
+  if (sample_span_ns == 0 || pair_pts_ns == GST_CLOCK_TIME_NONE || !first_pair_pts_ns.has_value() ||
+      required_pair_count <= 1) {
+    return true;
+  }
+
+  constexpr long double kUsableStartFraction = 0.05L;
+  constexpr long double kUsableEndFraction = 0.95L;
+  const long double usable_start = static_cast<long double>(sample_span_ns) * kUsableStartFraction;
+  const long double usable_end = static_cast<long double>(sample_span_ns) * kUsableEndFraction;
+  const long double segment_width = (usable_end - usable_start) / static_cast<long double>(required_pair_count);
+  const long double target_offset =
+      usable_start + segment_width * (static_cast<long double>(selected_pair_count) + 0.5L);
+  const long double elapsed = static_cast<long double>(pair_pts_ns - *first_pair_pts_ns);
+  return elapsed >= target_offset;
+}
+
 absl::Status StitcherPriv::ensure_stitcher() {
   if (configure_only_ && !one_pass_mode_) {
     return absl::OkStatus();
@@ -977,7 +1008,8 @@ absl::Status StitcherPriv::capture_calibration_pair(
     hm::surface::Surface left,
     hm::surface::Surface right,
     const NvDsFrameMeta* left_meta,
-    const NvDsFrameMeta* right_meta) {
+    const NvDsFrameMeta* right_meta,
+    uint64_t pair_pts_ns) {
   const size_t required_frame_count = calibration_frame_count_;
   if (captured_calibration_frame_pairs_.size() >= required_frame_count) {
     return absl::OkStatus();
@@ -988,6 +1020,9 @@ absl::Status StitcherPriv::capture_calibration_pair(
   HM_ASSIGN_OR_RETURN(snapshot.left, capture_calibration_surface(left));
   HM_ASSIGN_OR_RETURN(snapshot.right, capture_calibration_surface(right));
   captured_calibration_frame_pairs_.push_back(std::move(snapshot));
+  if (captured_calibration_frame_pairs_.size() == 1 && pair_pts_ns != GST_CLOCK_TIME_NONE) {
+    first_calibration_pair_pts_ns_ = pair_pts_ns;
+  }
   g_print(
       "hmstitcher: captured stitching calibration frame pair %zu/%zu\n",
       captured_calibration_frame_pairs_.size(),
@@ -1009,21 +1044,12 @@ std::vector<hm::stitching::StitchingCalibrationFramePair> StitcherPriv::captured
 }
 
 bool StitcherPriv::should_capture_calibration_pair(uint64_t pair_pts_ns) const {
-  const size_t required_frame_count = calibration_frame_count_;
-  if (captured_calibration_frame_pairs_.size() >= required_frame_count) {
-    return false;
-  }
-  if (calibration_sample_span_ns_ == 0 || pair_pts_ns == GST_CLOCK_TIME_NONE || required_frame_count <= 1) {
-    return true;
-  }
-  constexpr long double kUsableStartFraction = 0.05L;
-  constexpr long double kUsableEndFraction = 0.95L;
-  const long double usable_start = static_cast<long double>(calibration_sample_span_ns_) * kUsableStartFraction;
-  const long double usable_end = static_cast<long double>(calibration_sample_span_ns_) * kUsableEndFraction;
-  const long double segment_width = (usable_end - usable_start) / static_cast<long double>(required_frame_count);
-  const long double target =
-      usable_start + segment_width * (static_cast<long double>(captured_calibration_frame_pairs_.size()) + 0.5L);
-  return static_cast<long double>(pair_pts_ns) >= target;
+  return should_select_calibration_pair(
+      pair_pts_ns,
+      captured_calibration_frame_pairs_.size(),
+      calibration_frame_count_,
+      calibration_sample_span_ns_,
+      first_calibration_pair_pts_ns_);
 }
 
 bool StitcherPriv::calibration_input_exhausted(const EosSnapshot& eos_snapshot) {
@@ -1045,6 +1071,7 @@ absl::Status StitcherPriv::report_fatal_calibration_failure(const absl::Status& 
 
 void StitcherPriv::release_captured_calibration_surfaces() {
   captured_calibration_frame_pairs_.clear();
+  first_calibration_pair_pts_ns_.reset();
 }
 
 void StitcherPriv::release_high_bit_field_mask_canvas() {
@@ -1274,13 +1301,18 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
     HM_RETURN_IF_ERROR(to_status(incoming_right_egl_surface_mapper->status()));
     hm::surface::Surface incoming_surface_right = incoming_right_egl_surface_mapper->get_surface();
     HM_RETURN_IF_ERROR(capture_calibration_pair(
-        incoming_surface_left, incoming_surface_right, selected_left.frame_meta, selected_right.frame_meta));
+        incoming_surface_left,
+        incoming_surface_right,
+        selected_left.frame_meta,
+        selected_right.frame_meta,
+        pair_pts_ns));
 #else
     HM_RETURN_IF_ERROR(capture_calibration_pair(
         hm::surface::Surface(selected_left.surface_params),
         hm::surface::Surface(selected_right.surface_params),
         selected_left.frame_meta,
-        selected_right.frame_meta));
+        selected_right.frame_meta,
+        pair_pts_ns));
 #endif
     if (captured_calibration_frame_pairs_.size() >= required_frame_count) {
       break;
@@ -1864,13 +1896,18 @@ absl::Status StitcherPriv::GenerateOutput(
       hm::surface::Surface incoming_surface_right = incoming_right_egl_surface_mapper->get_surface();
       calibration_egl_surface_mappers.push_back(std::move(incoming_right_egl_surface_mapper));
       HM_RETURN_IF_ERROR(capture_calibration_pair(
-          incoming_surface_left, incoming_surface_right, frame_info_left.frame_meta, frame_info_right.frame_meta));
+          incoming_surface_left,
+          incoming_surface_right,
+          frame_info_left.frame_meta,
+          frame_info_right.frame_meta,
+          pair_pts_ns));
 #else
       HM_RETURN_IF_ERROR(capture_calibration_pair(
           hm::surface::Surface(frame_info_left.surface_params),
           hm::surface::Surface(frame_info_right.surface_params),
           frame_info_left.frame_meta,
-          frame_info_right.frame_meta));
+          frame_info_right.frame_meta,
+          pair_pts_ns));
 #endif
     }
     batch_calibration_frame_pairs = captured_calibration_frame_pairs();

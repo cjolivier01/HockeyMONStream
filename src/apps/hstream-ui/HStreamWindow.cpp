@@ -5688,7 +5688,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   set_control_help(
       playback_start_time_edit_,
       "Start synchronized playback at this timestamp, after calibration if needed. Applies to both run modes "
-      "and all outputs. The calibration reference frame is selected separately.");
+      "and all outputs. It also anchors new calibration frame sets unless Reference frame overrides it.");
   connect(playback_start_time_edit_, &QTimeEdit::timeChanged, this, [this](const QTime& value) {
     playback_start_time_edit_->setDisplayFormat(
         value.msec() == 0 && !playback_start_time_edit_->hasFocus() ? kStitchFrameTimeFormat
@@ -5705,7 +5705,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stitch_frame_time_edit_->setWrapping(false);
   stitch_frame_time_edit_->installEventFilter(this);
   stitch_frame_time_edit_->setToolTip(
-      "Frame timestamp used to calibrate stitching. Playback resumes at Playback start after calibration.");
+      "First frame timestamp for stitching calibration. Additional selected frames follow it; playback resumes at "
+      "Playback start after calibration.");
   connect(stitch_frame_time_edit_, &QTimeEdit::timeChanged, this, [this](const QTime& value) {
     stitch_frame_time_edit_->setDisplayFormat(
         value.msec() == 0 && !stitch_frame_time_edit_->hasFocus() ? kStitchFrameTimeFormat
@@ -15609,17 +15610,14 @@ void HStreamWindow::updateStitchFrameTimeAvailability() {
   }
   if (auto* label = findChild<QLabel*>("playbackStartTimeLabel"))
     label->setEnabled(!running && !finalizing);
-  const bool single_frame = calibration_frame_count_spin_ && calibration_frame_count_spin_->value() == 1;
-  const bool enabled = !running && !finalizing && single_frame;
+  const bool enabled = !running && !finalizing;
   stitch_frame_time_edit_->setEnabled(enabled);
   if (auto* label = findChild<QLabel*>("stitchFrameTimeLabel"))
     label->setEnabled(enabled);
   set_control_help(
       stitch_frame_time_edit_,
-      single_frame
-          ? "Choose the video timestamp used as the single stitching calibration reference frame."
-          : "Reference frame is editable only when stitching calibration uses one frame; multi-frame calibration "
-            "samples synchronized frames automatically.");
+      "Choose the first video timestamp in the stitching calibration frame set. Additional synchronized frames "
+      "are selected after it.");
 }
 
 void HStreamWindow::captureSavedControlState() {

@@ -78,8 +78,11 @@ valid pixels**, which controls the crop itself.
 Set **Playback start** beside Play to a timestamp such as `00:12:30`. Playback
 starts there in both Program and Stitching mode, after calibration when needed.
 This applies to every selected output, including recordings, and to exported
-jobs. **Reference frame** independently selects the single frame used for
-calibration; changing Playback start does not invalidate stitching.
+jobs. When new control points are needed, Playback start is also the first frame
+in the calibration frame set. A nonzero **Reference frame** overrides that
+calibration anchor. Any additional calibration frames are selected after the
+anchor. Changing Playback start does not invalidate existing stitching; the new
+anchor applies the next time control points are generated.
 
 The settings can also be placed in `~/.hstream/hstream.yaml` for defaults or in
 the game's `config.yaml` for overrides:

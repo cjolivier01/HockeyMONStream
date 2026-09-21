@@ -50,6 +50,17 @@ absl::StatusOr<gint> validate_stitch_frame_continuity(
 /** Resets output occupancy for a new stitched batch without changing the pool's allocation capacity. */
 absl::Status prepare_stitch_output_surface(NvBufSurface* output_surface, size_t planned_frames);
 
+/**
+ * Returns whether a synchronized pair has reached the next calibration sampling target. The first pair is always
+ * selected; an optional span only spaces later pairs forward from that first pair.
+ */
+bool should_select_calibration_pair(
+    uint64_t pair_pts_ns,
+    size_t selected_pair_count,
+    size_t required_pair_count,
+    uint64_t sample_span_ns,
+    std::optional<uint64_t> first_pair_pts_ns);
+
 struct OnePassCalibrationProgressPlan {
   bool report;
   bool create_mask;
@@ -181,7 +192,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
       hm::surface::Surface left,
       hm::surface::Surface right,
       const NvDsFrameMeta* left_meta,
-      const NvDsFrameMeta* right_meta);
+      const NvDsFrameMeta* right_meta,
+      uint64_t pair_pts_ns);
   std::vector<hm::stitching::StitchingCalibrationFramePair> captured_calibration_frame_pairs();
   bool should_capture_calibration_pair(uint64_t pair_pts_ns) const;
   bool calibration_input_exhausted(const EosSnapshot& eos_snapshot);
@@ -259,6 +271,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::unique_ptr<hm::CudaMat<uchar4>> high_bit_calibration_left_;
   std::unique_ptr<hm::CudaMat<uchar4>> high_bit_calibration_right_;
   std::vector<CalibrationFramePairSnapshot> captured_calibration_frame_pairs_;
+  std::optional<uint64_t> first_calibration_pair_pts_ns_;
   std::unique_ptr<hm::CudaMat<uchar4>> high_bit_field_mask_canvas_;
   NvBufSurfaceParams high_bit_calibration_left_params_{};
   NvBufSurfaceParams high_bit_calibration_right_params_{};

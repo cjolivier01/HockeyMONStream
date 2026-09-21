@@ -35,10 +35,10 @@ int main() {
 
   constexpr uint64_t kLaterPlaybackNs = 750'000'000'000ULL;
   ok &= expect(
-      hm::pipeline_internal::stitch_frame_initial_position(kLaterPlaybackNs, 0, true, false) == 0 &&
+      hm::pipeline_internal::stitch_frame_initial_position(kLaterPlaybackNs, 0, true, false) == kLaterPlaybackNs &&
           hm::pipeline_internal::stitch_frame_initial_position(kLaterPlaybackNs, 0, true, true) == kLaterPlaybackNs &&
           hm::pipeline_internal::stitch_frame_initial_position(kLaterPlaybackNs, 0, false, false) == kLaterPlaybackNs,
-      "A zero calibration reference must remain independent of later playback, including after restart");
+      "Playback start must anchor calibration when no later stitch-frame override is set");
   ok &= expect(
       hm::pipeline_internal::stitch_frame_rewind_candidates(kLaterPlaybackNs, 0, {{true, false, false}}) ==
               std::vector<size_t>({0}) &&

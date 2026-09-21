@@ -19,7 +19,10 @@ inline uint64_t stitch_frame_initial_position(
     uint64_t stitch_frame_time_ns,
     bool calibration_required,
     bool rewind_complete) {
-  return calibration_required && !rewind_complete ? stitch_frame_time_ns : start_time_ns;
+  if (!calibration_required || rewind_complete) {
+    return start_time_ns;
+  }
+  return stitch_frame_time_ns != 0 ? stitch_frame_time_ns : start_time_ns;
 }
 
 inline std::vector<size_t> stitch_frame_rewind_candidates(

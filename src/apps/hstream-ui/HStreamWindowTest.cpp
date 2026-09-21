@@ -3688,7 +3688,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               projection_label->text() == "Projection" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
-              clean_stitching->text() == "Clean Stitching" && stitch_frame_time->isEnabled() == false &&
+              clean_stitching->text() == "Clean Stitching" && stitch_frame_time->isEnabled() &&
               !run_autooptimizer->isChecked() && !run_autooptimizer->isEnabled() &&
               mapping_backend->currentData().toString() == "opencv-magsac" && control_point_matcher->count() == 4 &&
               control_point_matcher->itemText(0) == "SuperPoint + LightGlue" &&
@@ -3783,8 +3783,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   calibration_frame_count->setValue(4);
   QApplication::processEvents();
   if (!expect(
-          !stitch_frame_time->isEnabled() && !reference_frame_label->isEnabled(),
-          "Multi-frame stitching calibration should gray out reference-frame time and its label")) {
+          stitch_frame_time->isEnabled() && reference_frame_label->isEnabled(),
+          "Multi-frame stitching calibration should keep its first-frame time and label editable")) {
     return false;
   }
 
@@ -3998,7 +3998,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   drivegpt_csv->setChecked(false);
   if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500") ||
       !expect(
-          stitch_frame_time->time() == QTime(0, 0, 0) && !stitch_frame_time->isEnabled() &&
+          stitch_frame_time->time() == QTime(0, 0, 0) && stitch_frame_time->isEnabled() &&
               stitched_controls->isAncestorOf(stitch_frame_time),
           "Stitch-frame time should default to 00:00:00 inside the stitched calibration controls")) {
     return false;
@@ -12387,8 +12387,8 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     return false;
   frames->setValue(3);
   if (!expect(
-          playback->isEnabled() && !reference->isEnabled(),
-          "Multi-frame calibration must leave playback start editable"))
+          playback->isEnabled() && reference->isEnabled(),
+          "Multi-frame calibration must leave both playback start and its first-frame override editable"))
     return false;
   playback->setTime(QTime(0, 13, 45, 250));
   activate(save);
@@ -12397,12 +12397,12 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
           config["hstream_ui"]["playback_start_time"].as<std::string>() == "00:13:45.250" &&
               config["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:07" &&
               config["stitching"]["calibration_frame_count"].as<int>() == 3,
-          "Saving multiple stitching frames must persist playback start and the disabled reference time"))
+          "Saving multiple stitching frames must persist playback start and the first-frame override"))
     return false;
   activate(create);
   if (!expect(
           frames->value() == 3 && playback->time() == QTime(0, 13, 45, 250) && reference->time() == QTime(0, 0, 7) &&
-              !reference->isEnabled(),
+              reference->isEnabled(),
           "Reloading a multi-frame game must restore both timestamps independently"))
     return false;
   frames->setValue(1);
