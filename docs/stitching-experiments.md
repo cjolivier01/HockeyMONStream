@@ -11,14 +11,22 @@ Enter comma-separated values for:
 - calibration frame counts (1–16); and
 - first calibration-frame timestamps (`HH:MM:SS` or `HH:MM:SS.mmm`).
 
-The tool generates the Cartesian product, with a maximum of 64 candidates. By default every candidate reuses the
-game's saved rink-leveling rotation. Clear that option to add pitch/roll variants as comma-separated `pitch/roll`
-pairs, for example `0/0,-1.5/0.5`. Explicit variants preserve the game's saved yaw.
+**Add options to batch** adds the Cartesian product to a visible queue without starting calibration. Change the
+fields and add more combinations, or remove individual queued rows, until the batch is ready. Duplicate combinations
+are ignored and a batch can contain at most 64 candidates. By default every candidate reuses the game's saved
+rink-leveling rotation. Clear that option to add pitch/roll variants as comma-separated `pitch/roll` pairs, for
+example `0/0,-1.5/0.5`. Explicit variants preserve the game's saved yaw.
 
 Each candidate receives a private temporary game directory. Camera chapters and matching camera-calibration sidecars
 are read-only symlinks to the selected game, while generated stitching artifacts and configuration stay isolated.
-Candidates run serially through `hstream-cli --stitching-calibration-only` with a fake sink. This graph omits Program
-crop, inference, rink masking, and play tracking.
+**Start batch** locks the queue and runs its candidates serially through
+`hstream-cli --stitching-calibration-only` with a fake sink, so the batch can be left unattended. This graph omits
+Program crop, inference, rink masking, and play tracking. Completed candidates remain available for comparison after
+the batch finishes or is cancelled.
+
+Adding, running, cancelling, previewing, or discarding a batch never modifies the selected game's stitching config or
+artifacts. **Discard batch** and closing the dialog remove the private candidate data. The only operation that changes
+the main game's stitching state is the explicit **Use selected in main Program** action described below.
 
 ## Comparing candidates
 
@@ -37,5 +45,5 @@ interruption before the selected config is durable restores the prior artifact g
 it is durable retains the matching promoted generation.
 
 Selection does not rerun feature matching, optimization, map generation, or seam generation. The next Program run
-therefore loads the chosen artifact generation directly. Closing the dialog removes unselected temporary candidates;
-camera videos are never copied or modified.
+therefore loads the chosen artifact generation directly. Discarding the private batch afterward does not affect that
+promoted copy; camera videos are never copied or modified.

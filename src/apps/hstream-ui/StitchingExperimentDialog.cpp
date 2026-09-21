@@ -186,6 +186,7 @@ void kill_process(QProcess* process, qint64 process_group) {
 struct StitchingExperimentDialog::Impl {
   struct Candidate {
     StitchingExperimentWorkspace workspace;
+    int sequence{0};
     int row{-1};
     bool complete{false};
     QString failure;
@@ -203,7 +204,10 @@ struct StitchingExperimentDialog::Impl {
   QLineEdit* start_frames{nullptr};
   QCheckBox* shared_rotation{nullptr};
   QLineEdit* rotations{nullptr};
-  QPushButton* generate{nullptr};
+  QPushButton* add_to_batch{nullptr};
+  QPushButton* remove_from_batch{nullptr};
+  QPushButton* clear_batch{nullptr};
+  QPushButton* start_batch{nullptr};
   QPushButton* cancel{nullptr};
   QTableWidget* table{nullptr};
   StitchingExperimentVideoTarget* video{nullptr};
@@ -226,7 +230,10 @@ struct StitchingExperimentDialog::Impl {
   std::optional<uint64_t> preview_shutdown_ticket;
   uint64_t next_shutdown_ticket{0};
   int pending_group_shutdowns{0};
+  int next_candidate_sequence{0};
   int running_candidate{-1};
+  bool batch_started{false};
+  bool batch_active{false};
   bool cancelling{false};
   bool stopping_preview{false};
   bool closing{false};
@@ -265,22 +272,26 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void update_controls() {
-    const bool generating = calibration_process && calibration_process->state() != QProcess::NotRunning;
     const bool previewing = preview_process && preview_process->state() != QProcess::NotRunning;
     const bool stopping = pending_group_shutdowns > 0;
     const int row = table->currentRow();
     const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete;
-    generate->setEnabled(!generating && !previewing && !stopping && !closing);
-    cancel->setEnabled(generating && !closing);
-    table->setEnabled(!generating && !previewing && !closing);
-    preview->setEnabled(selected && !generating && !previewing && !stopping && !closing);
+    const bool selected_queued = row >= 0 && row < static_cast<int>(candidates.size()) && !batch_started;
+    const bool editing_batch = !batch_active && !batch_started && !previewing && !stopping && !closing;
+    add_to_batch->setEnabled(editing_batch && candidates.size() < 64);
+    remove_from_batch->setEnabled(editing_batch && selected_queued);
+    clear_batch->setEnabled(!batch_active && !previewing && !stopping && !closing && !candidates.empty());
+    start_batch->setEnabled(editing_batch && !candidates.empty());
+    cancel->setEnabled(batch_active && !closing);
+    table->setEnabled(!batch_active && !previewing && !closing);
+    preview->setEnabled(selected && !batch_active && !previewing && !stopping && !closing);
     stop_preview->setEnabled(previewing && !closing);
-    apply->setEnabled(selected && !generating && !previewing && !closing);
-    shared_rotation->setEnabled(!generating && !closing);
-    rotations->setEnabled(!generating && !closing && !shared_rotation->isChecked());
+    apply->setEnabled(selected && !batch_active && !previewing && !closing);
+    shared_rotation->setEnabled(editing_batch);
+    rotations->setEnabled(editing_batch && !shared_rotation->isChecked());
     for (QWidget* input : std::array<QWidget*, 3>{control_points, frame_counts, start_frames})
-      input->setEnabled(!generating && !closing);
-    progress->setVisible(generating);
+      input->setEnabled(editing_batch);
+    progress->setVisible(batch_started);
   }
 
   void append_output(QProcess* process) {
@@ -410,10 +421,11 @@ struct StitchingExperimentDialog::Impl {
     ++running_candidate;
     if (cancelling || running_candidate >= static_cast<int>(candidates.size())) {
       calibration_process.reset();
+      batch_active = false;
       progress->setValue(cancelling ? running_candidate : static_cast<int>(candidates.size()));
       show_status(
-          cancelling ? "Candidate generation cancelled. Completed candidates remain available."
-                     : "Candidate generation complete. Select a successful row and preview the seam in motion.");
+          cancelling ? "Batch cancelled. Completed candidates remain available; the main Program is unchanged."
+                     : "Batch complete. Select a successful row and preview the seam in motion.");
       cancelling = false;
       update_controls();
       return;
@@ -483,7 +495,37 @@ struct StitchingExperimentDialog::Impl {
     update_controls();
   }
 
-  void generate_candidates() {
+  static bool same_settings(const StitchingExperimentSettings& left, const StitchingExperimentSettings& right) {
+    return left.control_points == right.control_points && left.frame_count == right.frame_count &&
+        left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees;
+  }
+
+  void append_candidate(Candidate candidate) {
+    const int row = table->rowCount();
+    candidate.row = row;
+    table->insertRow(row);
+    const StitchingExperimentSettings& settings = candidate.workspace.settings;
+    const QString rotation = settings.rink_rotation_degrees ? QString("%1 / %2")
+                                                                  .arg((*settings.rink_rotation_degrees)[1], 0, 'g', 6)
+                                                                  .arg((*settings.rink_rotation_degrees)[2], 0, 'g', 6)
+                                                            : "Saved setting";
+    const QStringList columns = {
+        QString("Candidate %1").arg(candidate.sequence),
+        QString::number(settings.control_points),
+        QString::number(settings.frame_count),
+        QString::fromStdString(settings.stitch_frame_time),
+        rotation,
+        "Queued",
+    };
+    for (int column = 0; column < columns.size(); ++column) {
+      auto* item = new QTableWidgetItem(columns[column]);
+      item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+      table->setItem(row, column, item);
+    }
+    candidates.push_back(std::move(candidate));
+  }
+
+  void add_candidates_to_batch() {
     QString error;
     auto points = parse_positive_list(control_points->text(), 20, 5000, "Control-point counts", &error);
     auto frames = parse_positive_list(frame_counts->text(), 1, 16, "Frame counts", &error);
@@ -496,20 +538,7 @@ struct StitchingExperimentDialog::Impl {
       return;
     }
     const size_t rotation_count = shared_rotation->isChecked() ? 1 : rink_rotations->size();
-    const size_t count = points->size() * frames->size() * starts->size() * rotation_count;
-    if (count > 64) {
-      show_status(QString("This creates %1 candidates; limit the matrix to 64 or fewer.").arg(count), true);
-      return;
-    }
-    stop_preview_process();
-    session = std::make_unique<QTemporaryDir>(QDir::tempPath() + "/hstream-stitch-experiments-XXXXXX");
-    if (!session->isValid()) {
-      show_status("Could not create a private stitching experiment directory.", true);
-      return;
-    }
-    candidates.clear();
-    table->setRowCount(0);
-    int sequence = 0;
+    std::vector<StitchingExperimentSettings> additions;
     for (int point_count : *points) {
       for (int frame_count : *frames) {
         for (const QString& start : *starts) {
@@ -522,44 +551,100 @@ struct StitchingExperimentDialog::Impl {
                     ? std::nullopt
                     : std::optional<std::array<double, 3>>(rink_rotations->at(rotation_index)),
             };
-            auto workspace = CreateStitchingExperimentWorkspace(
-                game_directory.toStdString(), session->path().toStdString(), settings, ++sequence);
-            if (!workspace.ok()) {
-              show_status(QString::fromStdString(workspace.status().ToString()), true);
-              candidates.clear();
-              table->setRowCount(0);
-              session.reset();
-              return;
-            }
-            const int row = table->rowCount();
-            table->insertRow(row);
-            const QString rotation = settings.rink_rotation_degrees
-                ? QString("%1 / %2")
-                      .arg((*settings.rink_rotation_degrees)[1], 0, 'g', 6)
-                      .arg((*settings.rink_rotation_degrees)[2], 0, 'g', 6)
-                : "Saved setting";
-            const QStringList columns = {
-                QString("Candidate %1").arg(sequence),
-                QString::number(point_count),
-                QString::number(frame_count),
-                start,
-                rotation,
-                "Queued",
-            };
-            for (int column = 0; column < columns.size(); ++column) {
-              auto* item = new QTableWidgetItem(columns[column]);
-              item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-              table->setItem(row, column, item);
-            }
-            candidates.push_back(Candidate{.workspace = std::move(*workspace), .row = row});
+            const bool already_queued = std::any_of(candidates.begin(), candidates.end(), [&](const Candidate& item) {
+              return same_settings(item.workspace.settings, settings);
+            });
+            const bool already_adding = std::any_of(
+                additions.begin(), additions.end(), [&](const auto& item) { return same_settings(item, settings); });
+            if (!already_queued && !already_adding)
+              additions.push_back(std::move(settings));
           }
         }
       }
     }
+    if (additions.empty()) {
+      show_status("Every combination from these options is already in the batch.");
+      return;
+    }
+    if (candidates.size() + additions.size() > 64) {
+      show_status(
+          QString("Adding these options would create %1 total candidates; limit the batch to 64 or fewer.")
+              .arg(candidates.size() + additions.size()),
+          true);
+      return;
+    }
+    if (!session) {
+      session = std::make_unique<QTemporaryDir>(QDir::tempPath() + "/hstream-stitch-experiments-XXXXXX");
+      if (!session->isValid()) {
+        show_status("Could not create a private stitching experiment directory.", true);
+        session.reset();
+        return;
+      }
+    }
+    std::vector<Candidate> prepared;
+    prepared.reserve(additions.size());
+    for (const StitchingExperimentSettings& settings : additions) {
+      const int sequence = ++next_candidate_sequence;
+      auto workspace = CreateStitchingExperimentWorkspace(
+          game_directory.toStdString(), session->path().toStdString(), settings, sequence);
+      if (!workspace.ok()) {
+        show_status(QString::fromStdString(workspace.status().ToString()), true);
+        return;
+      }
+      prepared.push_back(Candidate{.workspace = std::move(*workspace), .sequence = sequence});
+    }
+    for (Candidate& candidate : prepared)
+      append_candidate(std::move(candidate));
+    table->selectRow(table->rowCount() - 1);
+    show_status(QString("Added %1 candidate%2. The batch now contains %3; add more options or start it.")
+                    .arg(prepared.size())
+                    .arg(prepared.size() == 1 ? "" : "s")
+                    .arg(candidates.size()));
+    update_controls();
+  }
+
+  void remove_selected_from_batch() {
+    const int row = table->currentRow();
+    if (batch_started || row < 0 || row >= static_cast<int>(candidates.size()))
+      return;
+    candidates.erase(candidates.begin() + row);
+    table->removeRow(row);
+    for (int index = row; index < static_cast<int>(candidates.size()); ++index)
+      candidates[index].row = index;
+    if (!candidates.empty())
+      table->selectRow(std::min(row, static_cast<int>(candidates.size()) - 1));
+    show_status(QString("Removed the candidate. %1 remain in the batch.").arg(candidates.size()));
+    update_controls();
+  }
+
+  void clear_candidate_batch() {
+    if (batch_active)
+      return;
+    candidates.clear();
+    table->setRowCount(0);
+    session.reset();
+    next_candidate_sequence = 0;
+    running_candidate = -1;
+    batch_started = false;
+    batch_active = false;
+    cancelling = false;
+    progress->setRange(0, 0);
+    progress->setValue(0);
+    show_status("Private experiment batch discarded. No additional changes were made to the main Program.");
+    update_controls();
+  }
+
+  void start_candidate_batch() {
+    if (batch_active || batch_started || candidates.empty())
+      return;
+    batch_started = true;
+    batch_active = true;
     running_candidate = -1;
     cancelling = false;
     progress->setRange(0, static_cast<int>(candidates.size()));
     progress->setValue(0);
+    show_status(QString("Starting %1 queued calibration candidates…").arg(candidates.size()));
+    update_controls();
     launch_next_candidate();
   }
 
@@ -637,7 +722,7 @@ struct StitchingExperimentDialog::Impl {
         maybe_finish_close();
       });
     });
-    show_status(QString("Previewing Candidate %1 without crop or play tracking.").arg(row + 1));
+    show_status(QString("Previewing Candidate %1 without crop or play tracking.").arg(candidate.sequence));
     preview_process->start();
     update_controls();
   }
@@ -646,9 +731,10 @@ struct StitchingExperimentDialog::Impl {
     const int row = table->currentRow();
     if (row < 0 || row >= static_cast<int>(candidates.size()) || !candidates[row].complete)
       return;
-    show_status(QString("Publishing Candidate %1 to the main Program…").arg(row + 1));
+    Candidate& candidate = candidates[row];
+    show_status(QString("Publishing Candidate %1 to the main Program…").arg(candidate.sequence));
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const absl::Status promoted = PromoteStitchingExperiment(candidates[row].workspace, game_directory.toStdString());
+    const absl::Status promoted = PromoteStitchingExperiment(candidate.workspace, game_directory.toStdString());
     QApplication::restoreOverrideCursor();
     if (!promoted.ok()) {
       show_status(QString::fromStdString(promoted.ToString()), true);
@@ -657,7 +743,7 @@ struct StitchingExperimentDialog::Impl {
     show_status(
         QString(
             "Candidate %1 selected. Its maps and seam will be used by the next main Program run without recalibration.")
-            .arg(row + 1));
+            .arg(candidate.sequence));
     if (selection_applied)
       selection_applied();
     apply->setEnabled(false);
@@ -712,8 +798,10 @@ StitchingExperimentDialog::StitchingExperimentDialog(
 
   auto* root = new QVBoxLayout(this);
   auto* intro = new QLabel(
-      "Generate independent calibration candidates, replay the same moving passage across each seam, then publish "
-      "the selected maps directly to the main Program. Experiments do not run crop, inference, or play tracking.");
+      "Add as many option combinations as you want to the batch, start it when ready, and leave it running. When "
+      "you return, replay the same moving passage across each completed seam. Nothing changes the main stitching "
+      "configuration unless you explicitly choose Use selected in main Program. Experiments do not run crop, "
+      "inference, or play tracking.");
   intro->setWordWrap(true);
   root->addWidget(intro);
 
@@ -742,14 +830,23 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_layout->addRow(s.shared_rotation);
   matrix_layout->addRow("Rink pitch/roll variants", s.rotations);
   auto* matrix_actions = new QHBoxLayout();
-  s.generate = new QPushButton("Generate candidates");
-  s.generate->setObjectName("generateStitchExperimentsButton");
-  s.cancel = new QPushButton("Cancel generation");
+  s.add_to_batch = new QPushButton("Add options to batch");
+  s.add_to_batch->setObjectName("addStitchExperimentsToBatchButton");
+  s.remove_from_batch = new QPushButton("Remove selected");
+  s.remove_from_batch->setObjectName("removeStitchExperimentFromBatchButton");
+  s.clear_batch = new QPushButton("Discard batch");
+  s.clear_batch->setObjectName("clearStitchExperimentBatchButton");
+  s.start_batch = new QPushButton("Start batch");
+  s.start_batch->setObjectName("startStitchExperimentBatchButton");
+  s.cancel = new QPushButton("Cancel batch");
   s.cancel->setObjectName("cancelStitchExperimentsButton");
   s.cancel->setEnabled(false);
-  matrix_actions->addWidget(s.generate);
-  matrix_actions->addWidget(s.cancel);
+  matrix_actions->addWidget(s.add_to_batch);
+  matrix_actions->addWidget(s.remove_from_batch);
+  matrix_actions->addWidget(s.clear_batch);
   matrix_actions->addStretch(1);
+  matrix_actions->addWidget(s.start_batch);
+  matrix_actions->addWidget(s.cancel);
   matrix_layout->addRow(matrix_actions);
   root->addWidget(matrix_group);
 
@@ -804,7 +901,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
 
   s.progress = new QProgressBar();
   s.progress->setVisible(false);
-  s.status = new QLabel("Choose the candidate combinations to generate.");
+  s.status = new QLabel("Choose options and add their combinations to the batch. The main Program remains unchanged.");
   s.status->setObjectName("stitchExperimentStatus");
   s.status->setWordWrap(true);
   s.log = new QPlainTextEdit();
@@ -825,10 +922,13 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   bottom->addWidget(close);
   root->addLayout(bottom);
 
-  connect(s.generate, &QPushButton::clicked, this, [&s]() { s.generate_candidates(); });
+  connect(s.add_to_batch, &QPushButton::clicked, this, [&s]() { s.add_candidates_to_batch(); });
+  connect(s.remove_from_batch, &QPushButton::clicked, this, [&s]() { s.remove_selected_from_batch(); });
+  connect(s.clear_batch, &QPushButton::clicked, this, [&s]() { s.clear_candidate_batch(); });
+  connect(s.start_batch, &QPushButton::clicked, this, [&s]() { s.start_candidate_batch(); });
   connect(s.cancel, &QPushButton::clicked, this, [&s]() {
     s.cancelling = true;
-    s.show_status("Cancelling candidate generation…");
+    s.show_status("Cancelling batch…");
     s.stop_calibration_process();
   });
   connect(s.table, &QTableWidget::itemSelectionChanged, this, [&s]() { s.update_controls(); });
