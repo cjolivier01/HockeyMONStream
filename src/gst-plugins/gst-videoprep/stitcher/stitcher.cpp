@@ -1080,6 +1080,7 @@ absl::Status StitcherPriv::initialize_calibration_frame_selection() {
   if (plan.selected.size() != calibration_frame_count_)
     return absl::FailedPreconditionError("Selected-frame plan count differs from requested calibration-frame-count");
   HM_ASSIGN_OR_RETURN(calibration_frame_selector_, stitching::PlayerFrameReplaySelector::Create(plan));
+  captured_frame_selection_fingerprint_ = plan.fingerprint;
   return absl::OkStatus();
 }
 
@@ -1192,7 +1193,8 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
           frame_pairs,
           calibration_invalidation_id_,
           [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
-          max_output_width_);
+          max_output_width_,
+          captured_frame_selection_fingerprint_);
       release_high_bit_calibration_surfaces();
       if (!configure_status.ok()) {
         std::cerr << configure_status << "\n" << std::flush;
@@ -2143,7 +2145,8 @@ absl::Status StitcherPriv::GenerateOutput(
               batch_calibration_frame_pairs,
               calibration_invalidation_id_,
               [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
-              max_output_width_);
+              max_output_width_,
+              captured_frame_selection_fingerprint_);
           release_high_bit_calibration_surfaces();
           if (!configure_status.ok()) {
             std::cerr << configure_status << "\n" << std::flush;

@@ -370,6 +370,16 @@ cc_test(
 )
 
 cc_test(
+    name = "player_frame_scan_timing_test",
+    srcs = ["PlayerFrameScanTiming.h", "PlayerFrameScanTimingTest.cpp"],
+    copts = HSTREAM_CLI_COPTS,
+    deps = [
+        "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
     name = "player_frame_scan_mask_test",
     srcs = ["PlayerFrameScanMask.h", "PlayerFrameScanMaskTest.cpp"],
     deps = [

@@ -12358,6 +12358,13 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   config["stitching"]["mapping_backend"] = "nona";
   config["stitching"]["run_autooptimizer"] = true;
   config["stitching"]["stitch_frame_time"] = "00:00:07";
+  config["stitching"]["calibration_frame_count"] = 2;
+  config["hstream_ui"]["stitching_calibration"]["frame_count"] = 2;
+  // UI persistence owns this generated node's lifetime, not its parsing. Keep
+  // an opaque sentinel so unrelated saves must preserve its complete contents.
+  const YAML::Node selected_frame_plan =
+      YAML::Load("{fingerprint: promoted-player-selection, selected: [left, right]}");
+  config["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_frame_plan);
   config["hstream_ui"]["show_crop_dialog"] = false;
   config["hstream_ui"]["show_leveling_dialog"] = true;
   config["hstream_ui"]["playback_start_time"] = "00:12:30.125";
@@ -12392,6 +12399,13 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
               reference->time() == QTime(0, 0, 7),
           "Game YAML must independently initialize sync, automatic dialogs, playback and reference times"))
     return false;
+  playback->setTime(QTime(0, 12, 31, 125));
+  activate(save);
+  config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          YAML::Dump(config["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_frame_plan),
+          "Saving unrelated playback settings with unchanged reference/count must retain the promoted frame plan"))
+    return false;
   frames->setValue(3);
   if (!expect(
           playback->isEnabled() && reference->isEnabled(),
@@ -12403,8 +12417,9 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   if (!expect(
           config["hstream_ui"]["playback_start_time"].as<std::string>() == "00:13:45.250" &&
               config["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:07" &&
-              config["stitching"]["calibration_frame_count"].as<int>() == 3,
-          "Saving multiple stitching frames must persist playback start and the first-frame override"))
+              config["stitching"]["calibration_frame_count"].as<int>() == 3 &&
+              !config["stitching"]["calibration_frame_selection"].IsDefined(),
+          "Saving a changed frame count must persist both timestamps and replace the promoted frame plan"))
     return false;
   activate(create);
   if (!expect(
@@ -12429,6 +12444,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   // Workflow preferences must not invalidate completed geometry or saved synchronization.
   config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   config["game"]["stitching"]["frame_offsets"]["left"] = "3";
+  config["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_frame_plan);
   std::ofstream(config_path) << YAML::Dump(config) << '\n';
   activate(create);
   playback->setTime(QTime(0, 15, 0));
@@ -12438,8 +12454,9 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   if (!expect(
           config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
               config["game"]["stitching"]["frame_offsets"]["left"].as<std::string>() == "3" &&
-              config["stitching"]["sync_method"].as<std::string>() == "audio",
-          "Iteration-only edits must retain complete calibration and saved/manual offsets"))
+              config["stitching"]["sync_method"].as<std::string>() == "audio" &&
+              YAML::Dump(config["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_frame_plan),
+          "Iteration-only edits must retain complete calibration, saved/manual offsets and the selected-frame plan"))
     return false;
   activate(create);
   gyro->setChecked(true);
@@ -12472,6 +12489,9 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   qputenv("HSTREAM_PROJECTION_CROP_FLOW", "stale");
   bool ok = true;
   for (int selection = 0; selection < 4 && ok; ++selection) {
+    config = YAML::LoadFile(config_path.string());
+    config["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_frame_plan);
+    std::ofstream(config_path) << YAML::Dump(config) << '\n';
     crop->setChecked((selection & 1) != 0);
     posts->setChecked((selection & 2) != 0);
     // A changed reference also ensures enabled crop review waits for fresh calibration.
@@ -12494,6 +12514,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
             QString::fromStdString(launched_config["hstream_ui"]["playback_start_time"].as<std::string>()) ==
                 selected_playback &&
             launched_config["stitching"]["calibration_frame_count"].as<int>() == frames->value() &&
+            !launched_config["stitching"]["calibration_frame_selection"].IsDefined() &&
             QString::fromStdString(launched_config["stitching"]["stitch_frame_time"].as<std::string>("00:00:00")) ==
                 reference->time().toString("HH:mm:ss") &&
             HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_PROJECTION_CROP_FLOW") ==

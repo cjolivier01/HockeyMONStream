@@ -2633,12 +2633,12 @@ absl::Status PipelineApplication::playPipelines(
   g_main_loop_run(main_loop_);
   if (player_frame_scan_) {
     // Inspect natural EOS before graceful shutdown synthesizes EOS for a user
-    // stop. The ordinary signal/time-limit flags are consumed by loop callbacks,
-    // so dedicated latches preserve the reason the analysis actually ended.
-    player_scan_clean_completion_ = !player_scan_interrupted_ &&
-        (player_scan_time_limit_reached_ ||
-         std::all_of(
-             app_contexts.begin(), app_contexts.end(), [](const auto& context) { return context->eos_received; }));
+    // stop. Only the inferred boundary frame can complete a timed scan.
+    player_scan_clean_completion_ = hm::pipeline::PlayerFrameScanCompletedCleanly(
+        player_frame_scan_->progress(),
+        player_scan_interrupted_,
+        std::all_of(
+            app_contexts.begin(), app_contexts.end(), [](const auto& context) { return context->eos_received; }));
   }
   changemode(0);
 
@@ -3482,7 +3482,9 @@ void PipelineApplication::reset_playback_timing_state(long stage) {
   first_frame_numbers_by_source_.fill(0);
   timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
   timed_run_stop_requested_.store(false, std::memory_order_release);
-  timed_run_last_progress_wall_ = time_limit_seconds_ > 0 &&
+  // Scans may spend longer than the watchdog interval building their detector.
+  // Arm their no-progress watchdog only after the first validated observation.
+  timed_run_last_progress_wall_ = time_limit_seconds_ > 0 && !player_frame_scan_ &&
           hm::pipeline_internal::stitch_frame_should_account_playback(
                                       stitching_calibration_blocks_playback_accounting())
       ? std::chrono::steady_clock::now()
@@ -3580,7 +3582,13 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
 
   gint64 queried_position = 0;
   uint64_t processed_ns = GST_CLOCK_TIME_NONE;
-  if (gst_element_query_position(app_ctx->pipeline.pipeline, GST_FORMAT_TIME, &queried_position) &&
+  if (player_frame_scan_) {
+    // During cold detector startup an upstream position query can expose the
+    // absolute source seek (e.g. 09:42), before even one inferred frame exists.
+    // The observer's relative timeline is the sole scan progress authority.
+    processed_ns = player_frame_scan_->progress().elapsed_ns.value_or(GST_CLOCK_TIME_NONE);
+  } else if (
+      gst_element_query_position(app_ctx->pipeline.pipeline, GST_FORMAT_TIME, &queried_position) &&
       queried_position >= 0) {
     processed_ns = static_cast<uint64_t>(queried_position);
     if (app_ctx->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured) {
@@ -7036,12 +7044,18 @@ gboolean PipelineApplication::event_thread_func() {
   if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
     return TRUE;
   }
+  if (player_frame_scan_) {
+    const auto progress = player_frame_scan_->progress();
+    if (progress.elapsed_ns)
+      record_timed_run_progress(*progress.elapsed_ns);
+    if (progress.boundary_observed)
+      request_timed_run_stop();
+  }
   if (timed_run_stop_requested_.exchange(false, std::memory_order_acq_rel)) {
     if (stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
       reset_playback_timing_state(current_stage_);
       return TRUE;
     }
-    player_scan_time_limit_reached_ = true;
     if (runtime_seek_pending_) {
       finish_runtime_seek("failed", "pipeline-stopped");
     }
@@ -7377,7 +7391,7 @@ gboolean PipelineApplication::overlay_graphics(
       gst_structure_free(structure);
     }
   }
-  if (time_limit_seconds_ > 0 && batch_meta &&
+  if (time_limit_seconds_ > 0 && batch_meta && !player_frame_scan_ &&
       hm::pipeline_internal::stitch_frame_should_account_playback(stitching_calibration_blocks_playback_accounting())) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (buf) {

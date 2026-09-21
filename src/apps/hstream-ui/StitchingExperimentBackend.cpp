@@ -540,6 +540,11 @@ absl::StatusOr<StitchingExperimentPlayerSelection> PreparePlayerSelectedStitchin
         : source_config["stitching"]["frame_offsets"];
     config["game"]["stitching"]["frame_offsets"] = YAML::Clone(offsets);
     config["stitching"].remove("frame_offsets");
+    // The baseline runner has already resolved inherited camera settings. The
+    // pending candidate has not run yet, so freeze that same effective selection
+    // before validating its context instead of falling back to bundled defaults.
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov"})
+      copy_node(config["stitching"], source_config["stitching"], key);
     HM_ASSIGN_OR_RETURN(expected_context, hm::stitching::player_frame_source_context(config, anchor_ns));
     HM_RETURN_IF_ERROR(hm::stitching::ValidatePlayerFrameSourceContext(plan, expected_context));
     config["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);

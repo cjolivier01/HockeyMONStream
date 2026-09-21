@@ -1,7 +1,13 @@
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
+#include <opencv2/imgcodecs.hpp>
+#include <tiffio.h>
 #include <unistd.h>
 
 #include <filesystem>
@@ -26,6 +32,126 @@ bool write(const fs::path& path, const std::string& contents) {
   std::ofstream output(path);
   output << contents;
   return output.good();
+}
+
+bool inherited_camera_handoff(const fs::path& root) {
+  using namespace hm::stitching;
+  const fs::path game = root / "inherited-camera-game";
+  if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
+      !write(game / "config.yaml", "game:\n  videos:\n    left: [cam1/left.mp4]\n    right: [cam2/right.mp4]\n"))
+    return false;
+  const StitchingExperimentSettings settings{900, 2, "00:00:00", std::nullopt};
+  const auto baseline = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 1);
+  const auto candidate = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 2);
+  if (!baseline.ok() || !candidate.ok())
+    return false;
+  const fs::path directory = baseline->game_directory;
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
+    if (!write(directory / name, "fixture"))
+      return false;
+  for (const char* name :
+       {"mapping_0000.tif",
+        "mapping_0000_x.tif",
+        "mapping_0000_y.tif",
+        "mapping_0001.tif",
+        "mapping_0001_x.tif",
+        "mapping_0001_y.tif"})
+    if (!cv::imwrite((directory / name).string(), cv::Mat(8, 8, CV_16UC1, cv::Scalar(1))))
+      return false;
+  for (const char* name : {"mapping_0000.tif", "mapping_0001.tif"}) {
+    TIFF* tiff = TIFFOpen((directory / name).c_str(), "r+");
+    if (!tiff)
+      return false;
+    TIFFSetField(tiff, TIFFTAG_XRESOLUTION, 1.0f);
+    TIFFSetField(tiff, TIFFTAG_YRESOLUTION, 1.0f);
+    TIFFSetField(tiff, TIFFTAG_XPOSITION, 0.0f);
+    TIFFSetField(tiff, TIFFTAG_YPOSITION, 0.0f);
+    const bool written = TIFFRewriteDirectory(tiff);
+    TIFFClose(tiff);
+    if (!written)
+      return false;
+  }
+  const cv::Mat mask(8, 8, CV_8UC1, cv::Scalar(255));
+  if (!cv::imwrite((directory / "seam_file.png").string(), mask) ||
+      !cv::imwrite((directory / "rink_mask_0.png").string(), mask))
+    return false;
+  std::string generation;
+  {
+    auto lock = HuginProject::RecoverAndLock(directory);
+    if (!lock.ok())
+      return false;
+    auto identity = HuginProject::GenerationId(directory, **lock);
+    if (!identity.ok())
+      return false;
+    generation = *identity;
+  }
+  const auto output_generation = stitched_output_generation_id(generation, 0);
+  const auto mask_fingerprint = PlayerFrameMaskFingerprint(mask);
+  if (!output_generation.ok() || !mask_fingerprint.ok())
+    return false;
+  YAML::Node resolved = YAML::LoadFile((directory / "config.yaml").string());
+  // Mimic the baseline runner materializing a user-level camera/FOV override;
+  // the sibling candidate still has only the original game's explicit values.
+  const StitchCameraSelection camera{"custom-user-camera", 112.5, 88.0};
+  write_stitch_camera_selection(resolved, camera);
+  resolved["game"]["stitching"]["frame_offsets"]["left"] = 0;
+  resolved["game"]["stitching"]["frame_offsets"]["right"] = 1;
+  resolved["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  resolved["rink"]["stitched_output_generation"] = *output_generation;
+  if (!write(directory / "config.yaml", YAML::Dump(resolved)))
+    return false;
+  const auto context = player_frame_source_context(resolved, 0);
+  if (!context.ok())
+    return false;
+  PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 2;
+  plan.context = {
+      {"source_context", *context},
+      {"baseline_generation", generation},
+      {"output_generation", *output_generation},
+      {"detector_identity", "fixture"},
+      {"rink_mask_sha256", *mask_fingerprint},
+      {"rink_mask_revision", "fixture"},
+      {"fieldmask_settings", "fixture"},
+      {"output_rotation_degrees", "0"},
+      {"decode_anchor_ns", "0"}};
+  for (const fs::path& path : {game / "cam1" / "left.mp4", game / "cam2" / "right.mp4"}) {
+    const auto source = BindPlayerFrameSource(path);
+    if (!source.ok())
+      return false;
+    plan.sources.push_back(*source);
+  }
+  for (uint64_t index = 0; index < 2; ++index) {
+    PlayerFrameObservation frame;
+    frame.pair.timeline_pts_ns = index * kPlayerFrameSecond;
+    for (size_t camera_index = 0; camera_index < 2; ++camera_index)
+      frame.pair.cameras[camera_index] = {plan.sources[camera_index].path, index * kPlayerFrameSecond};
+    frame.coverage = {5};
+    frame.eligible_people = 1;
+    frame.size_band_counts = {1, 0, 0};
+    frame.quality = 1;
+    plan.selected.push_back(frame);
+  }
+  const auto fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok())
+    return false;
+  plan.fingerprint = *fingerprint;
+  PlayerFrameSelectionReport report;
+  report.observation_count = 2;
+  report.observed_size_band_counts = {2, 0, 0};
+  report.plan = plan;
+  const fs::path report_path = root / "inherited-camera-report.yaml";
+  if (!write(report_path, YAML::Dump(PlayerFrameSelectionReportYaml(report))))
+    return false;
+  const auto prepared = PreparePlayerSelectedStitchingExperiment(*baseline, *candidate, report_path);
+  if (!prepared.ok()) {
+    std::cerr << prepared.status() << '\n';
+    return false;
+  }
+  const YAML::Node frozen = YAML::LoadFile((candidate->game_directory / "config.yaml").string());
+  const auto frozen_camera = read_stitch_camera_selection(frozen);
+  return prepared->available && frozen_camera.ok() && *frozen_camera == camera &&
+      validate_player_frame_selection_sources(frozen).ok();
 }
 
 } // namespace
@@ -91,6 +217,7 @@ int main() {
   }
 
   bool ok = true;
+  ok &= expect(inherited_camera_handoff(root), "candidate handoff must freeze inherited baseline camera and FOV");
   ok &= expect(fs::is_symlink(workspace->game_directory / "cam1" / "left.mp4"), "left video must be linked");
   ok &= expect(fs::is_symlink(workspace->game_directory / "cam2" / "right.mp4"), "right video must be linked");
   ok &= expect(

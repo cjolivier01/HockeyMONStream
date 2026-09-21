@@ -104,7 +104,10 @@ absl::StatusOr<stitching::PlayerFramePairIdentity> pair_identity(const hm::Stitc
 } // namespace
 
 PlayerFrameScan::PlayerFrameScan(AppCtx* app, fs::path game_directory, stitching::PlayerFrameSelectionSettings settings)
-    : app_(app), game_directory_(std::move(game_directory)), settings_(settings) {}
+    : app_(app),
+      game_directory_(std::move(game_directory)),
+      settings_(settings),
+      timing_(settings.duration_ns, settings.interval_ns) {}
 
 absl::StatusOr<std::unique_ptr<PlayerFrameScan>> PlayerFrameScan::Create(
     AppCtx* app,
@@ -218,24 +221,7 @@ absl::StatusOr<bool> PlayerFrameScan::GateFrame(GstBuffer* buffer) {
   const auto pair = hm::stitching_frame_pair(frame);
   if (!pair || !GST_CLOCK_TIME_IS_VALID(pair->timeline_pts))
     return error("stitcher did not preserve the synchronized raw camera pair");
-  const uint64_t pts = pair->timeline_pts;
-  if (!first_pts_)
-    first_pts_ = pts;
-  if (pts < *first_pts_ || (last_sample_pts_ && pts < *last_sample_pts_))
-    return error("source timeline went backwards");
-  // Pass one boundary frame so the existing time-limit path sees its horizon.
-  // The scorer ignores it. Drop later buffers while the main loop handles the
-  // stop request, so buffered decoding cannot add a burst of extra inference.
-  if (pts - *first_pts_ >= settings_.duration_ns) {
-    if (boundary_sample_sent_)
-      return false;
-    boundary_sample_sent_ = true;
-    return true;
-  }
-  if (last_sample_pts_ && pts - *last_sample_pts_ < settings_.interval_ns)
-    return false;
-  last_sample_pts_ = pts;
-  return true;
+  return timing_.Select(pair->timeline_pts);
 }
 
 absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
@@ -243,16 +229,18 @@ absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
   HM_ASSIGN_OR_RETURN(frame, single_frame(buffer));
   HM_RETURN_IF_ERROR(ValidatePlayerFrameScanMask(frame));
   const auto pair = hm::stitching_frame_pair(frame);
-  if (!pair || !first_pts_)
+  if (!pair || !GST_CLOCK_TIME_IS_VALID(pair->timeline_pts))
     return error("sample lost its camera pair metadata");
-  if (pair->timeline_pts - *first_pts_ >= settings_.duration_ns)
-    return absl::OkStatus();
-  if (observations_.size() >= settings_.maximum_observations)
-    return error("observation limit exceeded");
+  uint64_t elapsed_ns;
+  HM_ASSIGN_OR_RETURN(elapsed_ns, timing_.Elapsed(pair->timeline_pts));
   const auto* output = stitching::find_stitched_output_generation_meta(frame);
   const auto* mask = hm::UserApplicationPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame);
   if (output->generation() != expected_output_generation_ || output->hugin_generation() != initial_generation_)
     return error("baseline geometry changed during the scan");
+  if (elapsed_ns >= settings_.duration_ns)
+    return timing_.Observe(pair->timeline_pts);
+  if (observations_.size() >= settings_.maximum_observations)
+    return error("observation limit exceeded");
   if (runtime_detector_identity_.empty()) {
     // Engine construction during preroll is expected. Bind the actual loaded
     // engine only after inference, then require these same bytes at shutdown.
@@ -322,7 +310,7 @@ absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
   stitching::PlayerFrameObservation observation;
   HM_ASSIGN_OR_RETURN(observation, stitching::ScorePlayerFrame(identity, boxes, overlap_->mask, overlap_->canvas_size));
   observations_.push_back(std::move(observation));
-  return absl::OkStatus();
+  return timing_.Observe(pair->timeline_pts);
 }
 
 absl::Status PlayerFrameScan::Finish(const fs::path& report_path) {

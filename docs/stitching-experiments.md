@@ -86,6 +86,8 @@ and dialog closure wait for that transaction to finish.
 Selection does not rerun feature matching, optimization, map generation, or seam generation. The next Program run
 therefore loads the chosen artifact generation directly. Discarding the private batch afterward does not affect that
 promoted copy; camera videos are never copied or modified.
+Changing **Reference frame** or **Frames** in the main UI replaces the promoted frame-selection plan with ordinary
+frame selection. An explicit CLI reference-time or frame-count change does the same; unchanged values retain the plan.
 
 ## Focused validation
 

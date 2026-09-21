@@ -32,6 +32,11 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 namespace hm {
 
 struct ConfiguratorTestAccess {
+  static absl::Status reconcile_selected_frame_count_override(
+      Configurator* configurator,
+      const std::string& expected_invalidation_id = {}) {
+    return configurator->reconcile_selected_frame_count_override(expected_invalidation_id);
+  }
   static const std::string& active_stitching_generation(const Configurator& configurator) {
     return configurator.active_stitching_invalidation_id_;
   }
@@ -2472,6 +2477,151 @@ play-tracker:
   const auto selected_fixture = player_selection_fixture(selected_generation_dir);
   ok &= expect(selected_fixture.ok(), "selected-frame Configurator fixture must bind real local source paths");
   if (selected_fixture.ok()) {
+    const fs::path input_override_dir = games / "selected-frame-input-overrides";
+    fs::create_directories(input_override_dir);
+    YAML::Node promoted = YAML::Clone(*selected_fixture);
+    promoted["stitching"]["calibration_frame_count"] = 1;
+    promoted["hstream_ui"]["stitching_calibration"]["frame_count"] = 1;
+    promoted["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
+    promoted["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    promoted["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "promoted-selection";
+    const auto reset_promoted = [&]() {
+      return hm::stitching::publish_game_config(input_override_dir, YAML::Dump(promoted) + "\n").ok();
+    };
+    for (const bool changed : {false, true}) {
+      ok &= expect(reset_promoted(), "selected reference-time fixture must publish");
+      hm::Configurator overridden(
+          "selected-frame-input-overrides", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+      const auto loaded = overridden.configure();
+      const auto reconciled = overridden.reconcile_stitch_frame_time_override(changed ? "00:00:09" : "00:00:08");
+      const auto saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+      ok &= expect(
+          loaded.ok() && reconciled.ok() && *reconciled == changed &&
+              hm::get_node(saved, "stitching.calibration_frame_selection").has_value() == !changed &&
+              hm::get_node(overridden.config(), "stitching.calibration_frame_selection").has_value() == !changed &&
+              saved["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() ==
+                  (changed ? "pending" : "complete") &&
+              (!changed || saved["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input"),
+          "An explicit reference-time change must clear the plan with input invalidation; the same time must retain it");
+    }
+    const char* previous_environment_count = g_getenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
+    const std::optional<std::string> saved_environment_count =
+        previous_environment_count ? std::optional<std::string>(previous_environment_count) : std::nullopt;
+    g_unsetenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
+    for (const char* path : {"stitching.calibration_frame_count", "pipeline.hmstitcher.calibration-frame-count"}) {
+      for (const bool changed : {false, true}) {
+        ok &= expect(reset_promoted(), "selected frame-count fixture must publish");
+        hm::Configurator overridden(
+            "selected-frame-input-overrides", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+        const auto loaded = overridden.configure();
+        const auto applied = overridden.apply_config_item(path, changed ? "4" : "1");
+        const auto reconciled = hm::ConfiguratorTestAccess::reconcile_selected_frame_count_override(&overridden);
+        const auto saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+        ok &= expect(
+            loaded.ok() && applied.ok() && reconciled.ok() &&
+                hm::get_node(saved, "stitching.calibration_frame_selection").has_value() == !changed &&
+                hm::get_node(overridden.config(), "stitching.calibration_frame_selection").has_value() == !changed &&
+                saved["stitching"]["calibration_frame_count"].as<int>() == (changed ? 4 : 1) &&
+                saved["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == (changed ? 4 : 1) &&
+                saved["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() ==
+                    (changed ? "pending" : "complete") &&
+                (!changed || saved["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input"),
+            "Canonical/native CLI frame-count changes must atomically clear the plan and synchronize both saved counts");
+      }
+    }
+    for (const char* path : {"stitching.calibration_frame_count", "pipeline.hmstitcher.calibration-frame-count"}) {
+      for (const bool explicit_owner : {false, true}) {
+        for (const bool changed_time : {false, true}) {
+          ok &= expect(reset_promoted(), "combined selected-frame input fixture must publish");
+          hm::Configurator combined(
+              "selected-frame-input-overrides", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+          const auto loaded = combined.configure();
+          const auto applied = combined.apply_config_item(path, "4");
+          const auto mapped = combined.apply_supported_baseline_mappings();
+          const std::string expected_owner = explicit_owner ? "promoted-selection" : "";
+          const std::string requested_time = changed_time ? "00:00:09" : "00:00:08";
+          // PipelineApp reconciles the reference time before complete_configuration().
+          const auto reconciled = combined.reconcile_stitch_frame_time_override(requested_time, expected_owner);
+          const auto saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+          // The unchanged time matches the user overlay, so reconciliation removes
+          // its redundant game override while keeping the effective timestamp.
+          const auto saved_time = hm::get_node(saved, "stitching.stitch_frame_time");
+          const std::string owner = saved["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>();
+          const auto repeated = combined.reconcile_stitch_frame_time_override(requested_time, expected_owner);
+          const auto after_repeat = YAML::LoadFile((input_override_dir / "config.yaml").string());
+          ok &= expect(
+              loaded.ok() && applied.ok() && mapped.ok() && reconciled.ok() && *reconciled == changed_time &&
+                  repeated.ok() && !*repeated &&
+                  !hm::get_node(saved, "stitching.calibration_frame_selection").has_value() &&
+                  !hm::get_node(combined.config(), "stitching.calibration_frame_selection").has_value() &&
+                  saved_time.has_value() == changed_time &&
+                  (!saved_time || saved_time->as<std::string>() == requested_time) &&
+                  combined.config()["stitching"]["stitch_frame_time"].as<std::string>() == requested_time &&
+                  saved["stitching"]["calibration_frame_count"].as<int>() == 4 &&
+                  saved["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 4 &&
+                  combined.config()["stitching"]["calibration_frame_count"].as<int>() == 4 &&
+                  combined.config()["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 4 &&
+                  combined.config()["pipeline"]["hmstitcher"]["calibration-frame-count"].as<int>() == 4 &&
+                  saved["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
+                  saved["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input" &&
+                  !owner.empty() && (explicit_owner ? owner == expected_owner : owner != "promoted-selection") &&
+                  after_repeat["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() == owner,
+              "Combined reference/count overrides must synchronize counts before clearing the plan and retain their "
+              "generation owner on retry");
+        }
+      }
+    }
+    ok &= expect(reset_promoted(), "superseded combined input fixture must publish");
+    hm::Configurator stale_combined(
+        "selected-frame-input-overrides", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const auto stale_combined_loaded = stale_combined.configure();
+    const auto stale_combined_applied = stale_combined.apply_config_item("stitching.calibration_frame_count", "4");
+    const auto stale_combined_result =
+        stale_combined.reconcile_stitch_frame_time_override("00:00:09", "superseded-selection");
+    const auto stale_combined_saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+    ok &= expect(
+        stale_combined_loaded.ok() && stale_combined_applied.ok() && absl::IsAborted(stale_combined_result.status()) &&
+            stale_combined_saved["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
+            stale_combined_saved["stitching"]["calibration_frame_count"].as<int>() == 1 &&
+            hm::get_node(stale_combined_saved, "stitching.calibration_frame_selection").has_value(),
+        "A superseded owner must not publish either combined input override");
+    for (const bool changed : {false, true}) {
+      ok &= expect(reset_promoted(), "conflicting CLI alias fixture must publish");
+      hm::Configurator aliases(
+          "selected-frame-input-overrides", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+      const auto loaded = aliases.configure();
+      const auto canonical = aliases.apply_config_item("stitching.calibration_frame_count", "ignored-invalid-value");
+      const auto native = aliases.apply_config_item("pipeline.hmstitcher.calibration-frame-count", changed ? "4" : "1");
+      const auto reconciled = hm::ConfiguratorTestAccess::reconcile_selected_frame_count_override(&aliases);
+      const auto saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+      ok &= expect(
+          loaded.ok() && canonical.ok() && native.ok() && reconciled.ok() &&
+              aliases.config()["stitching"]["calibration_frame_count"].as<int>() == (changed ? 4 : 1) &&
+              aliases.config()["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == (changed ? 4 : 1) &&
+              hm::get_node(saved, "stitching.calibration_frame_selection").has_value() == !changed,
+          "A same-layer native count must win over the canonical alias, parsing only the winning value");
+    }
+    ok &= expect(reset_promoted(), "concurrent selected-frame override fixture must publish");
+    hm::Configurator superseded(
+        "selected-frame-input-overrides", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const auto superseded_loaded = superseded.configure();
+    const auto superseded_applied = superseded.apply_config_item("stitching.calibration_frame_count", "4");
+    YAML::Node replacement = YAML::Clone(promoted);
+    replacement["stitching"].remove("calibration_frame_selection");
+    ok &= expect(
+        hm::stitching::publish_game_config(input_override_dir, YAML::Dump(replacement) + "\n").ok(),
+        "concurrent plan replacement must publish");
+    const auto superseded_status = hm::ConfiguratorTestAccess::reconcile_selected_frame_count_override(&superseded);
+    const auto after_superseded = YAML::LoadFile((input_override_dir / "config.yaml").string());
+    ok &= expect(
+        superseded_loaded.ok() && superseded_applied.ok() && absl::IsAborted(superseded_status) &&
+            after_superseded["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 1,
+        "A stale CLI count override must not overwrite a concurrently replaced selected plan");
+    if (saved_environment_count)
+      g_setenv("HM_STITCH_CALIBRATION_FRAME_COUNT", saved_environment_count->c_str(), TRUE);
+    else
+      g_unsetenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
+
     YAML::Node selected_private = YAML::Clone(*selected_fixture);
     const std::string generation = "selected-frame-generation-a";
     selected_private["pipeline"]["application"]["complete-configuration"] = 1;

@@ -253,10 +253,16 @@ cc_test(
     name = "stitching_experiment_backend_test",
     srcs = ["StitchingExperimentBackendTest.cpp"],
     copts = COMMON_COPTS,
+    linkopts = ["-ltiff"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":stitching_experiment_backend",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:hugin_project",
         "//src/libs/stitching:player_frame_selection",
+        "//src/libs/stitching:stitching",
+        "@opencv_linux//:opencv",
         "@yaml-cpp",
     ],
 )

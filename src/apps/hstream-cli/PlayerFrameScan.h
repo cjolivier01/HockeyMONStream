@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "PlayerFrameScanMask.h"
+#include "PlayerFrameScanTiming.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/stitching/PlayerFrameOverlap.h"
@@ -28,6 +29,9 @@ class PlayerFrameScan {
       uint64_t decode_anchor_ns);
   ~PlayerFrameScan();
   absl::Status Attach();
+  PlayerFrameScanProgress progress() const {
+    return timing_.progress();
+  }
   // Called only after successful, quiescent pipeline shutdown.
   absl::Status Finish(const std::filesystem::path& report_path);
 
@@ -42,13 +46,11 @@ class PlayerFrameScan {
   AppCtx* app_;
   std::filesystem::path game_directory_;
   stitching::PlayerFrameSelectionSettings settings_;
+  PlayerFrameScanTiming timing_;
   stitching::PlayerFrameSelectionContext context_;
   std::vector<stitching::PlayerFrameObservation> observations_;
   std::vector<stitching::PlayerFrameSourceBinding> sources_;
   std::optional<stitching::PlayerFrameOverlap> overlap_;
-  std::optional<uint64_t> first_pts_;
-  std::optional<uint64_t> last_sample_pts_;
-  bool boundary_sample_sent_{false};
   uint64_t decode_anchor_ns_{0};
   size_t max_output_width_{0};
   double rotation_degrees_{0};

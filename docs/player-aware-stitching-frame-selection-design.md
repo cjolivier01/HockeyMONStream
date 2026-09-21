@@ -277,14 +277,26 @@ separately. Preserve panorama quality and the existing complete artifact set.
 
 ## Implementation validation
 
+PR review round 1 used two independent xhigh reviewers. They found three necessary
+fixes: preserve the plan fingerprint from capture through publication even without
+a UI generation owner; freeze inherited baseline camera settings before candidate
+handoff; and clear a promoted plan when ordinary reference-time/frame-count controls
+change. Each fix includes a regression. A second independent review round follows
+the fixes and platform validation. A user run on `mini` additionally exposed a cold-start
+timing defect: the first detector engine build was followed by a queried absolute
+seek position being treated as completed scan time, so the scan stopped at zero
+inferred frames. Scan completion must use only samples that finish inference and
+rink filtering, including the duration boundary; engine preparation and upstream
+position queries must not consume the scan window.
+
 - Full x86 build: `bazelisk build --config=opt --cpu=k8 --config=blackwell --jobs=4 --spawn_strategy=local //...`.
   Local spawning avoided an intermittent nvcc temporary-file collision in sandboxed parallel compilation.
-- All 16 focused x86 tests pass: selection, overlap, detector identity, scan mask
-  validation, graph policy, Configurator persistence, experiment backend/dialog,
+- All 17 focused x86 tests plus the focused main-UI regression suite pass: selection, overlap, detector identity, scan mask
+  validation, observed-frame timing, graph policy, Configurator persistence, experiment backend/dialog,
   paired metadata, three fieldmask fixtures, one-pass replay, GameConfig,
   ConfigureStitching and Hugin provenance.
 - Full native Jetson build on `stubby` passes with `--config=jetson --jobs=6`;
-  all 14 compatible focused tests pass. The two Qt UI tests are incompatible with
+  all 15 compatible focused tests pass. The two Qt UI tests are incompatible with
   that platform. A separate output base and symlink prefix isolate remote builds.
   Native non-Jetson SBSA execution was not available.
 - A disposable real 3840×2160 hockey recording passed the complete GPU experiment:
@@ -297,8 +309,9 @@ separately. Preserve panorama quality and the existing complete artifact set.
   The repeated workflow passed with clear camera images and an added tonal-content
   assertion. Xwayland root screenshots of the GPU preview were blank; renderer
   first-frame acknowledgments and five-second clock-pacing assertions passed.
-- Real SIGINT cancellation returned an error without a selection report. Dedicated
-  completion latches distinguish natural EOS/time limits from shutdown-generated EOS.
+- Real SIGINT cancellation returned an error without a selection report. The scan
+  requires an observed inference boundary or natural EOS before graceful shutdown;
+  an interruption latch prevents shutdown-generated EOS from authorizing a report.
 - Nsight Systems profiling of the final 10-second scan observed 21 D2H transfers,
   each 0.719 MB (detector outputs: 20 samples plus one time-limit boundary frame),
   and no video-sized D2H transfers. Observed process peaks under profiling were
@@ -309,3 +322,10 @@ separately. Preserve panorama quality and the existing complete artifact set.
   bug: restoring an absent game override installed null over the inherited user
   setting. The narrow fix preserves absence, with a regression. Test fixtures also
   state legacy native-resolution assumptions explicitly across platforms.
+
+- Cold-cache regression on `mini` with the user’s 8K footage at 00:09:42:
+  the old runner reproduced zero observations; the fixed runner built a fresh
+  detector engine, then processed 120 samples and selected four pairs. Both tests
+  used isolated caches and a private copy of the baseline, preserving the open UI
+  session and the original game. Full x86/Jetson builds and focused tests passed
+  after the review and timing fixes.

@@ -2,6 +2,7 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -369,6 +370,82 @@ bool expect_cleared_player_plan_invalidates_geometry(const fs::path& tmpdir) {
             !selected,
             "clearing a selected frame plan must invalidate its geometry even without explicit algorithm overrides"))
       return false;
+  }
+  return true;
+}
+
+bool expect_capture_plan_changes_abort_before_extraction(const fs::path& tmpdir) {
+  using namespace hm::stitching;
+  const fs::path directory = tmpdir / "capture-plan-identity";
+  fs::create_directories(directory);
+  YAML::Node config;
+  PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 1;
+  PlayerFrameObservation anchor;
+  anchor.pair.timeline_pts_ns = 10 * kPlayerFrameSecond;
+  for (size_t index = 0; index < 2; ++index) {
+    const fs::path source = directory / (index ? "right.mp4" : "left.mp4");
+    if (!write_text_file(source, "physical source fixture"))
+      return false;
+    const auto binding = BindPlayerFrameSource(source);
+    if (!binding.ok())
+      return false;
+    plan.sources.push_back(*binding);
+    anchor.pair.cameras[index] = {binding->path, anchor.pair.timeline_pts_ns, static_cast<uint32_t>(index), 0};
+    config["game"]["videos"][index ? "right" : "left"].push_back(source.string());
+    config["game"]["stitching"]["frame_offsets"][index ? "right" : "left"] = 0.0;
+  }
+  plan.selected.push_back(anchor);
+  for (const char* key :
+       {"baseline_generation",
+        "output_generation",
+        "detector_identity",
+        "rink_mask_sha256",
+        "rink_mask_revision",
+        "fieldmask_settings",
+        "output_rotation_degrees"})
+    plan.context[key] = "fixture";
+  plan.context["decode_anchor_ns"] = std::to_string(anchor.pair.timeline_pts_ns);
+  const auto context = player_frame_source_context(config, anchor.pair.timeline_pts_ns);
+  if (!context.ok())
+    return false;
+  plan.context["source_context"] = *context;
+  const auto captured_fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!captured_fingerprint.ok())
+    return false;
+  plan.context["detector_identity"] = "replacement-plan";
+  const auto replacement_fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!replacement_fingerprint.ok() || *replacement_fingerprint == *captured_fingerprint)
+    return false;
+  plan.fingerprint = *replacement_fingerprint;
+
+  // These surfaces intentionally have no pixels: every mismatch must be rejected
+  // before save_image can perform any GPU readback or write calibration PNGs.
+  NvBufSurfaceParams left{};
+  NvBufSurfaceParams right{};
+  const std::vector<StitchingCalibrationFramePair> frame_pairs{
+      {hm::surface::Surface(&left), hm::surface::Surface(&right)}};
+  for (int change = 0; change < 3; ++change) {
+    if (change == 1)
+      config["stitching"].remove("calibration_frame_selection");
+    else
+      config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+    if (!write_text_file(directory / "config.yaml", YAML::Dump(config) + "\n"))
+      return false;
+    const auto status = change == 1
+        ? configure_stitching(
+              directory.string(), frame_pairs[0].left, frame_pairs[0].right, {}, {}, 0, *captured_fingerprint)
+        : change == 2 ? configure_stitching(directory.string(), frame_pairs)
+                      : configure_stitching(directory.string(), frame_pairs, {}, {}, 0, *captured_fingerprint);
+    if (!absl::IsAborted(status) ||
+        status.message().find("selection changed after frame capture began") == std::string::npos) {
+      std::cerr << "Capture identity must reject "
+                << (change == 0       ? "plan replacement"
+                        : change == 1 ? "plan clearing"
+                                      : "a newly added plan")
+                << " without an invalidation owner: " << status << '\n';
+      return false;
+    }
   }
   return true;
 }
@@ -2196,6 +2273,9 @@ int main() {
       fs::temp_directory_path() / ("configure_stitching_canvas_cap_test_" + std::to_string(::getpid()));
   fs::remove_all(tmpdir);
   fs::create_directories(tmpdir);
+  if (!expect_capture_plan_changes_abort_before_extraction(tmpdir)) {
+    finish(tmpdir, 51);
+  }
   if (!expect_rink_leveling_response_reader_is_bounded(tmpdir)) {
     finish(tmpdir, 48);
   }

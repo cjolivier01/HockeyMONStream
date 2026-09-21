@@ -271,7 +271,6 @@ class PipelineApplication {
   gint stitching_player_scan_interval_ms_{500};
   gint stitching_player_scan_frame_count_{4};
   std::unique_ptr<hm::pipeline::PlayerFrameScan> player_frame_scan_;
-  bool player_scan_time_limit_reached_{false};
   bool player_scan_clean_completion_{false};
   volatile sig_atomic_t player_scan_interrupted_{false};
   std::vector<guint64> source_render_window_ids_;

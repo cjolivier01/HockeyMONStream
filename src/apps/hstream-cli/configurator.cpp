@@ -7692,6 +7692,12 @@ absl::Status Configurator::persist_stitch_frame_time_override(const std::string&
     return absl::InvalidArgumentError("Invalid stitch-frame override: " + std::string(error.what()));
   }
   HM_ASSIGN_OR_RETURN(lower_layer_time_ns, private_stitch_frame_time(lower_layer_config_));
+  uint64_t previous_time_ns = 0;
+  HM_ASSIGN_OR_RETURN(previous_time_ns, private_stitch_frame_time(config_));
+  if (previous_time_ns != requested_time_ns) {
+    remove_yaml_key_path(private_config_, {"stitching", "calibration_frame_selection"});
+    remove_yaml_key_path(config_, {"stitching", "calibration_frame_selection"});
+  }
   config_["stitching"]["stitch_frame_time"] = requested;
   if (requested_time_ns == lower_layer_time_ns) {
     remove_yaml_key_path(private_config_, {"stitching", "stitch_frame_time"});
@@ -8365,6 +8371,10 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError("Invalid stitch-frame override: " + std::string(error.what()));
   }
+  // Reconcile both explicit inputs before the time change clears the selected
+  // plan. Keep the same owner across their separately locked publications.
+  std::string reconciled_invalidation_id = expected_invalidation_id;
+  HM_RETURN_IF_ERROR(reconcile_selected_frame_count_override(expected_invalidation_id, &reconciled_invalidation_id));
 
   // A config-only invocation can use the CLI timestamp for positioning, but
   // has no game-private config.yaml to own. Avoid treating the game-root
@@ -8400,7 +8410,7 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   const bool should_persist = requested_time_ns != lower_layer_time_ns;
   const bool persistence_changed = private_value_present != should_persist;
   if (changed || persistence_changed) {
-    std::string invalidation_id = expected_invalidation_id;
+    std::string invalidation_id = reconciled_invalidation_id;
     if (!invalidation_id.empty()) {
       const YAML::Node current_calibration = latest["hstream_ui"]["stitching_calibration"];
       const std::string current_status = current_calibration["status"] && current_calibration["status"].IsScalar()
@@ -8427,6 +8437,8 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       remove_yaml_key_path(latest, {"stitching", "stitch_frame_time"});
 
     if (changed) {
+      if (remove_yaml_key_path(latest, {"stitching", "calibration_frame_selection"}))
+        remove_yaml_key_path(latest, {"hstream_ui", "stitching_calibration", "backend_generation"});
       size_t control_points = kDefaultStitchingControlPoints;
       if (get_node(latest, "hstream_ui.stitching_calibration.control_points").has_value()) {
         HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(latest));
@@ -8471,6 +8483,8 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   private_config_ = YAML::Clone(latest);
   persisted_private_config_ = YAML::Clone(latest);
   config_["stitching"]["stitch_frame_time"] = requested;
+  if (changed)
+    remove_yaml_key_path(config_, {"stitching", "calibration_frame_selection"});
   const auto calibration = get_node(latest, "hstream_ui.stitching_calibration");
   if (calibration.has_value()) {
     config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(*calibration);
@@ -8478,6 +8492,99 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
     remove_yaml_key_path(config_, {"hstream_ui", "stitching_calibration"});
   }
   return changed;
+}
+
+absl::Status Configurator::reconcile_selected_frame_count_override(
+    const std::string& expected_invalidation_id,
+    std::string* changed_invalidation_id) {
+  // Ordinary runs keep their existing count policy. A promoted selection needs
+  // an explicit way back to ordinary capture before its immutable claim is made.
+  const auto selection = get_node(private_config_, "stitching.calibration_frame_selection");
+  if (!selection || selection->IsNull() || game_id_.empty())
+    return absl::OkStatus();
+  std::optional<YAML::Node> requested_value;
+  // Only CLI-explicit entries participate (rank 3). At that same layer,
+  // the native property wins over the canonical mapping; prefer its dashed spelling.
+  for (const char* path :
+       {"stitching.calibration_frame_count",
+        "hstream_ui.stitching_calibration.frame_count",
+        "pipeline.hmstitcher.calibration_frame_count",
+        "pipeline.hmstitcher.calibration-frame-count"}) {
+    if (explicit_value_rank(path) < 3)
+      continue;
+    const auto value = get_node(config_, path);
+    if (!value)
+      return absl::InvalidArgumentError("Missing explicit calibration frame count");
+    requested_value = YAML::Clone(*value);
+  }
+  if (!requested_value)
+    return absl::OkStatus();
+  YAML::Node count_config;
+  count_config["stitching"]["calibration_frame_count"] = *requested_value;
+  size_t requested_count;
+  HM_ASSIGN_OR_RETURN(requested_count, persisted_stitching_calibration_frame_count(count_config));
+  config_["stitching"]["calibration_frame_count"] = requested_count;
+  config_["hstream_ui"]["stitching_calibration"]["frame_count"] = requested_count;
+  config_["pipeline"]["hmstitcher"]["calibration-frame-count"] = requested_count;
+  remove_yaml_key_path(config_, {"pipeline", "hmstitcher", "calibration_frame_count"});
+  size_t previous_count;
+  HM_ASSIGN_OR_RETURN(previous_count, persisted_stitching_calibration_frame_count(private_config_));
+  if (requested_count == previous_count)
+    return absl::OkStatus();
+  const char* environment_count = g_getenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
+  if (environment_count && *environment_count) {
+    size_t count;
+    HM_ASSIGN_OR_RETURN(count, configured_stitching_calibration_frame_count_from_environment());
+    if (count != requested_count)
+      return absl::InvalidArgumentError(
+          "Explicit calibration frame count conflicts with HM_STITCH_CALIBRATION_FRAME_COUNT");
+  }
+  std::string previous_selection;
+  HM_ASSIGN_OR_RETURN(previous_selection, stitching::player_frame_selection_fingerprint(private_config_));
+  const fs::path game_dir = resolved_game_dir();
+  auto transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+  if (!transaction.ok())
+    return transaction.status();
+  YAML::Node latest;
+  try {
+    latest = YAML::LoadFile((game_dir / "config.yaml").string());
+  } catch (const YAML::Exception& error) {
+    return absl::AbortedError(
+        "Cannot read selected-frame configuration before changing the frame count: " + std::string(error.what()));
+  }
+  std::string current_selection;
+  HM_ASSIGN_OR_RETURN(current_selection, stitching::player_frame_selection_fingerprint(latest));
+  if (current_selection != previous_selection)
+    return absl::AbortedError("Selected-frame configuration changed before changing the frame count");
+  if (!expected_invalidation_id.empty())
+    HM_RETURN_IF_ERROR(stitching::validate_stitching_generation_owner(latest, expected_invalidation_id));
+  std::string invalidation_id = expected_invalidation_id;
+  if (invalidation_id.empty()) {
+    gchar* generated = g_uuid_string_random();
+    if (!generated)
+      return absl::InternalError("Unable to create a frame-count invalidation ID");
+    invalidation_id = generated;
+    g_free(generated);
+  }
+  remove_yaml_key_path(latest, {"stitching", "calibration_frame_selection"});
+  latest["stitching"]["calibration_frame_count"] = requested_count;
+  YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
+  calibration["frame_count"] = requested_count;
+  calibration["status"] = "pending";
+  calibration["rink_mask_status"] = "pending";
+  calibration["stale_from"] = "input";
+  calibration["artifacts_invalidated"] = false;
+  calibration["invalidation_id"] = invalidation_id;
+  calibration.remove("backend_generation");
+  HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n"));
+  private_config_ = YAML::Clone(latest);
+  persisted_private_config_ = YAML::Clone(latest);
+  remove_yaml_key_path(config_, {"stitching", "calibration_frame_selection"});
+  config_["stitching"]["calibration_frame_count"] = requested_count;
+  config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(calibration);
+  if (changed_invalidation_id)
+    *changed_invalidation_id = invalidation_id;
+  return absl::OkStatus();
 }
 
 absl::StatusOr<YAML::Node> Configurator::load_config() {
@@ -8718,6 +8825,8 @@ absl::Status Configurator::complete_configuration(
   if (clean_requested && !has_stitching_cleanup_owner) {
     return absl::FailedPreconditionError("No active hmstitcher configuration is eligible for cleaning");
   }
+  if (!clean_requested && has_active_hmstitcher)
+    HM_RETURN_IF_ERROR(reconcile_selected_frame_count_override(clean_expected_invalidation_id));
   const std::string loaded_invalidation_id =
       get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string());
   const std::string loaded_status = get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string());

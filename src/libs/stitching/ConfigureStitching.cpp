@@ -2968,10 +2968,59 @@ absl::Status create_control_points(
     const std::vector<StitchingCalibrationFramePair>& frame_pairs,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
-    size_t max_output_width) {
+    size_t max_output_width,
+    const std::string& captured_frame_selection_fingerprint) {
   if (frame_pairs.empty()) {
     return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
   }
+  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
+  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
+  StitchingBackendChoices backend_choices;
+  const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
+  try {
+    if (fs::exists(game_config_path)) {
+      const YAML::Node config = YAML::LoadFile(game_config_path.string());
+      const auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      YAML::Node effective_config = YAML::Clone(config);
+      const YAML::Node baseline_stitching = baseline->values["stitching"];
+      if (baseline_stitching && baseline_stitching.IsMap()) {
+        for (const char* key : {"camera_configs", "camera_config"}) {
+          const YAML::Node private_value = config["stitching"][key];
+          const YAML::Node default_value = baseline_stitching[key];
+          if ((!private_value || !private_value.IsDefined()) && default_value && default_value.IsDefined())
+            effective_config["stitching"][key] = YAML::Clone(default_value);
+        }
+      }
+      const YAML::Node private_stitching = config["stitching"];
+      if (private_stitching && !private_stitching.IsNull() && !private_stitching.IsMap())
+        return absl::InvalidArgumentError("stitching must be a map");
+      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(effective_config));
+    } else {
+      const auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(baseline->values));
+    }
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(TO_STRING(
+        "Failed to read stitching backend choices from " << game_config_path.string() << ": " << exception.what()));
+  }
+  if (backend_choices.calibration_frame_selection_fingerprint != captured_frame_selection_fingerprint)
+    return absl::AbortedError("Calibration frame selection changed after frame capture began");
+  if (!expected_invalidation_id.empty()) {
+    YAML::Node config;
+    try {
+      config = YAML::LoadFile(game_config_path.string());
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError(TO_STRING(
+          "Failed to validate stitching backend generation from " << game_config_path.string() << ": "
+                                                                  << exception.what()));
+    }
+    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, backend_choices));
+  }
+
   std::string pattern = (fs::path(game_dir) / "hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -3015,51 +3064,6 @@ absl::Status create_control_points(
     if (!metadata_statuses[i].ok())
       std::cerr << "Calibration PNG metadata unavailable for " << metadata_frames[i].first << ": "
                 << metadata_statuses[i] << "\n";
-  }
-  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
-  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
-  StitchingBackendChoices backend_choices;
-  const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
-  try {
-    if (fs::exists(game_config_path)) {
-      const YAML::Node config = YAML::LoadFile(game_config_path.string());
-      const auto baseline = hm::baseline_config::load();
-      if (!baseline.ok())
-        return baseline.status();
-      YAML::Node effective_config = YAML::Clone(config);
-      const YAML::Node baseline_stitching = baseline->values["stitching"];
-      if (baseline_stitching && baseline_stitching.IsMap()) {
-        for (const char* key : {"camera_configs", "camera_config"}) {
-          const YAML::Node private_value = config["stitching"][key];
-          const YAML::Node default_value = baseline_stitching[key];
-          if ((!private_value || !private_value.IsDefined()) && default_value && default_value.IsDefined())
-            effective_config["stitching"][key] = YAML::Clone(default_value);
-        }
-      }
-      const YAML::Node private_stitching = config["stitching"];
-      if (private_stitching && !private_stitching.IsNull() && !private_stitching.IsMap())
-        return absl::InvalidArgumentError("stitching must be a map");
-      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(effective_config));
-    } else {
-      const auto baseline = hm::baseline_config::load();
-      if (!baseline.ok())
-        return baseline.status();
-      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(baseline->values));
-    }
-  } catch (const YAML::Exception& exception) {
-    return absl::InvalidArgumentError(TO_STRING(
-        "Failed to read stitching backend choices from " << game_config_path.string() << ": " << exception.what()));
-  }
-  if (!expected_invalidation_id.empty()) {
-    YAML::Node config;
-    try {
-      config = YAML::LoadFile(game_config_path.string());
-    } catch (const YAML::Exception& exception) {
-      return absl::InvalidArgumentError(TO_STRING(
-          "Failed to validate stitching backend generation from " << game_config_path.string() << ": "
-                                                                  << exception.what()));
-    }
-    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, backend_choices));
   }
 
   report_calibration_progress(
@@ -3227,7 +3231,7 @@ absl::Status create_control_points(
     options.max_output_width = max_output_width;
   options.control_point_matcher = control_point_matcher;
   options.control_point_resolution = backend_choices.control_point_resolution;
-  options.calibration_frame_selection_fingerprint = backend_choices.calibration_frame_selection_fingerprint;
+  options.calibration_frame_selection_fingerprint = captured_frame_selection_fingerprint;
   StitchProjection projection;
   HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(backend_choices.projection));
   options.mapping_backend = mapping_backend;
@@ -5093,13 +5097,15 @@ absl::Status configure_stitching(
     surface::Surface right_surface,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
-    size_t max_output_width) {
+    size_t max_output_width,
+    const std::string& captured_frame_selection_fingerprint) {
   return configure_stitching(
       game_dir,
       std::vector<StitchingCalibrationFramePair>{{left_surface, right_surface}},
       expected_invalidation_id,
       is_cancelled,
-      max_output_width);
+      max_output_width,
+      captured_frame_selection_fingerprint);
 }
 
 absl::Status configure_stitching(
@@ -5107,9 +5113,15 @@ absl::Status configure_stitching(
     const std::vector<StitchingCalibrationFramePair>& frame_pairs,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
-    size_t max_output_width) {
-  HM_RETURN_IF_ERROR(
-      create_control_points(game_dir, frame_pairs, expected_invalidation_id, is_cancelled, max_output_width));
+    size_t max_output_width,
+    const std::string& captured_frame_selection_fingerprint) {
+  HM_RETURN_IF_ERROR(create_control_points(
+      game_dir,
+      frame_pairs,
+      expected_invalidation_id,
+      is_cancelled,
+      max_output_width,
+      captured_frame_selection_fingerprint));
   return absl::OkStatus();
 }
 

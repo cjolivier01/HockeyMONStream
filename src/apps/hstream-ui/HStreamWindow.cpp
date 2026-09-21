@@ -8110,6 +8110,10 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         saved_projection_framing != active_projection_framing_;
     const bool stitch_frame_time_changed =
         !saved_stitch_frame_time_valid || saved_stitch_frame_time != active_stitch_frame_time_;
+    // An explicit ordinary frame choice replaces the experiment's frozen plan.
+    // Publish its removal with the new input settings and invalidation owner.
+    if (stitch_frame_time_changed || frame_count_changed)
+      remove_yaml_path(config, {"stitching", "calibration_frame_selection"});
     remove_yaml_path(config, {"stitching", "stitch_frame_time"});
     remove_yaml_path(config, {"stitching", "control_point_matcher"});
     remove_yaml_path(config, {"stitching", "mapping_backend"});
@@ -16800,6 +16804,8 @@ bool HStreamWindow::applySavedControlConfig(
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;
   const bool frame_count_changed =
       saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
+  if (stitch_frame_time_changed || frame_count_changed)
+    remove_yaml_path(config, {"stitching", "calibration_frame_selection"});
   const bool max_output_width_changed = previous_max_output_width != selected_max_output_width;
   const auto canvas_constraint = max_output_width_changed
       ? max_width_decision.value_or(hm::ui_internal::decide_stitching_canvas_constraint_change(

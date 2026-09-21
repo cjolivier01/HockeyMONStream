@@ -326,20 +326,25 @@ bool is_scoreboard_configured(const std::string& game_dir);
 
 absl::Status configure_scoreboard(const std::string& game_dir);
 
+// The fingerprint is frozen before frame capture. Empty explicitly identifies ordinary
+// frame spacing; a changed, cleared, or newly added selection aborts before extraction
+// and is checked again at publication.
 absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface,
     const std::string& expected_invalidation_id = {},
     const std::function<bool()>& is_cancelled = {},
-    size_t max_output_width = 0);
+    size_t max_output_width = 0,
+    const std::string& captured_frame_selection_fingerprint = {});
 
 absl::Status configure_stitching(
     const std::string& game_dir,
     const std::vector<StitchingCalibrationFramePair>& frame_pairs,
     const std::string& expected_invalidation_id = {},
     const std::function<bool()>& is_cancelled = {},
-    size_t max_output_width = 0);
+    size_t max_output_width = 0,
+    const std::string& captured_frame_selection_fingerprint = {});
 
 // Validate that `${game_dir}/seam_file.png` exists.
 //
