@@ -4,7 +4,6 @@
 
 #include <QtCore/QDebug>
 #include <QtCore/QDir>
-#include <QtCore/QFileInfo>
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
@@ -160,15 +159,14 @@ bool process_group_alive(qint64 process_group) {
 }
 
 void interrupt_process(QProcess* process, qint64 process_group) {
-  if (!process || process->state() == QProcess::NotRunning)
-    return;
 #ifdef Q_OS_UNIX
-  if (process_group <= 0 || ::kill(static_cast<pid_t>(-process_group), SIGINT) != 0)
-    process->terminate();
+  if (process_group > 0 && ::kill(static_cast<pid_t>(-process_group), SIGINT) == 0)
+    return;
 #else
   (void)process_group;
-  process->terminate();
 #endif
+  if (process && process->state() != QProcess::NotRunning)
+    process->terminate();
 }
 
 void kill_process(QProcess* process, qint64 process_group) {
@@ -240,6 +238,7 @@ struct StitchingExperimentDialog::Impl {
   bool closing{false};
   bool candidate_completion_pending{false};
   bool preview_completion_pending{false};
+  bool preview_replay_pending{false};
   bool close_completion_scheduled{false};
   int pending_dialog_result{QDialog::Rejected};
 
@@ -310,12 +309,45 @@ struct StitchingExperimentDialog::Impl {
     log->moveCursor(QTextCursor::End);
   }
 
+  void finalize_candidate_completion() {
+    if (!candidate_completion_pending)
+      return;
+    QTimer::singleShot(0, dialog, [this]() {
+      if (!candidate_completion_pending)
+        return;
+      calibration_process.reset();
+      calibration_process_group = 0;
+      candidate_completion_pending = false;
+      launch_next_candidate();
+      maybe_finish_close();
+    });
+  }
+
+  void finalize_preview_completion() {
+    if (!preview_completion_pending)
+      return;
+    QTimer::singleShot(0, dialog, [this]() {
+      if (!preview_completion_pending)
+        return;
+      const bool replay = preview_replay_pending;
+      preview_replay_pending = false;
+      preview_process.reset();
+      preview_process_group = 0;
+      preview_completion_pending = false;
+      update_controls();
+      if (replay)
+        start_preview();
+      else
+        maybe_finish_close();
+    });
+  }
+
   void stop_preview_process() {
-    if (!preview_process || preview_process->state() == QProcess::NotRunning)
+    const bool process_running = preview_process && preview_process->state() != QProcess::NotRunning;
+    if (!process_running && !process_group_alive(preview_process_group))
       return;
     stopping_preview = true;
-    preview_process->write("q");
-    if (!preview_process->waitForBytesWritten(250))
+    if (!process_running || preview_process->write("q") < 0 || !preview_process->waitForBytesWritten(250))
       interrupt_process(preview_process.get(), preview_process_group);
     schedule_forced_stop(/*calibration=*/false);
   }
@@ -326,29 +358,58 @@ struct StitchingExperimentDialog::Impl {
       return;
     active.reset();
     --pending_group_shutdowns;
-    if (retain_workspace && session)
-      session->setAutoRemove(false);
+    qint64& process_group = calibration ? calibration_process_group : preview_process_group;
+    process_group = 0;
+    if (retain_workspace) {
+      if (session)
+        session->setAutoRemove(false);
+      if (calibration)
+        cancelling = true;
+      else
+        preview_replay_pending = false;
+    }
+    QProcess* process = calibration ? calibration_process.get() : preview_process.get();
+    const bool process_finished = !process || process->state() == QProcess::NotRunning;
+    if (process_finished) {
+      if (calibration)
+        finalize_candidate_completion();
+      else
+        finalize_preview_completion();
+    }
     update_controls();
     maybe_finish_close();
   }
 
-  void resolve_shutdown_if_group_gone(bool calibration) {
+  void settle_finished_process(bool calibration) {
     std::optional<uint64_t>& active = calibration ? calibration_shutdown_ticket : preview_shutdown_ticket;
-    const qint64 process_group = calibration ? calibration_process_group : preview_process_group;
-    if (active.has_value() && !process_group_alive(process_group))
-      finish_shutdown_ticket(calibration, *active);
+    qint64& process_group = calibration ? calibration_process_group : preview_process_group;
+    if (active.has_value()) {
+      if (!process_group_alive(process_group))
+        finish_shutdown_ticket(calibration, *active);
+      return;
+    }
+    if (process_group_alive(process_group)) {
+      QProcess* process = calibration ? calibration_process.get() : preview_process.get();
+      interrupt_process(process, process_group);
+      schedule_forced_stop(calibration);
+      return;
+    }
+    process_group = 0;
+    if (calibration)
+      finalize_candidate_completion();
+    else
+      finalize_preview_completion();
   }
 
   void schedule_forced_stop(bool calibration) {
     QProcess* process = calibration ? calibration_process.get() : preview_process.get();
-    if (!process || process->state() == QProcess::NotRunning)
+    qint64& process_group = calibration ? calibration_process_group : preview_process_group;
+    const bool process_running = process && process->state() != QProcess::NotRunning;
+    if (!process_running && !process_group_alive(process_group))
       return;
     std::optional<uint64_t>& active = calibration ? calibration_shutdown_ticket : preview_shutdown_ticket;
     if (active.has_value())
       return;
-    qint64& process_group = calibration ? calibration_process_group : preview_process_group;
-    if (process_group <= 0)
-      process_group = process->processId();
     const uint64_t ticket = ++next_shutdown_ticket;
     active = ticket;
     ++pending_group_shutdowns;
@@ -362,11 +423,14 @@ struct StitchingExperimentDialog::Impl {
           captured_group > 0 ? captured_group : (calibration ? calibration_process_group : preview_process_group);
       kill_process(guarded_process.data(), effective_group);
       QTimer::singleShot(100, dialog, [this, calibration, ticket, effective_group]() {
-        const bool descendants_remain = process_group_alive(effective_group);
+        const bool group_unverified = effective_group <= 0;
+        const bool descendants_remain = group_unverified || process_group_alive(effective_group);
         if (descendants_remain) {
           const QString retained_path = session ? session->path() : QString("(unknown path)");
           const QString message =
-              QString("A stopped experiment process group did not exit; retaining its temporary workspace at %1.")
+              QString(
+                  "An experiment process group could not be confirmed stopped; retaining its temporary workspace "
+                  "at %1.")
                   .arg(retained_path);
           append_output_message(message + "\n");
           qWarning().noquote() << "Stitching Experiments:" << message;
@@ -377,7 +441,8 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void stop_calibration_process() {
-    if (!calibration_process || calibration_process->state() == QProcess::NotRunning)
+    const bool process_running = calibration_process && calibration_process->state() != QProcess::NotRunning;
+    if (!process_running && !process_group_alive(calibration_process_group))
       return;
     interrupt_process(calibration_process.get(), calibration_process_group);
     schedule_forced_stop(/*calibration=*/true);
@@ -415,18 +480,14 @@ struct StitchingExperimentDialog::Impl {
                                      : QString::fromStdString(configured.ToString());
       table->item(row, 5)->setText(finished.failure);
     }
-    QTimer::singleShot(0, dialog, [this]() {
-      calibration_process.reset();
-      candidate_completion_pending = false;
-      launch_next_candidate();
-      maybe_finish_close();
-    });
+    settle_finished_process(/*calibration=*/true);
   }
 
   void launch_next_candidate() {
     ++running_candidate;
     if (cancelling || running_candidate >= static_cast<int>(candidates.size())) {
       calibration_process.reset();
+      calibration_process_group = 0;
       batch_active = false;
       progress->setValue(cancelling ? running_candidate : static_cast<int>(candidates.size()));
       show_status(
@@ -463,13 +524,9 @@ struct StitchingExperimentDialog::Impl {
         << "-t=1";
     bool uses_process_group = false;
 #ifdef Q_OS_UNIX
-    uses_process_group = QFileInfo::exists("/usr/bin/setsid");
-    if (uses_process_group) {
-      args.push_front(runner);
-      calibration_process->setProgram("/usr/bin/setsid");
-    } else {
-      calibration_process->setProgram(runner);
-    }
+    uses_process_group = true;
+    args.push_front(runner);
+    calibration_process->setProgram("/usr/bin/setsid");
 #else
     calibration_process->setProgram(runner);
 #endif
@@ -487,7 +544,6 @@ struct StitchingExperimentDialog::Impl {
         dialog,
         [this, row = candidate.row](int exit_code, QProcess::ExitStatus exit_status) {
           finish_candidate(row, exit_code, exit_status);
-          resolve_shutdown_if_group_gone(/*calibration=*/true);
         });
     QObject::connect(
         calibration_process.get(),
@@ -665,6 +721,7 @@ struct StitchingExperimentDialog::Impl {
       return;
     stopping_preview = false;
     preview_completion_pending = false;
+    preview_replay_pending = false;
     Candidate& candidate = candidates[row];
     preview_process = std::make_unique<QProcess>();
     preview_process_group = 0;
@@ -679,13 +736,9 @@ struct StitchingExperimentDialog::Impl {
          << "--ui-preview-active=stitched";
     bool uses_process_group = false;
 #ifdef Q_OS_UNIX
-    uses_process_group = QFileInfo::exists("/usr/bin/setsid");
-    if (uses_process_group) {
-      args.push_front(runner);
-      preview_process->setProgram("/usr/bin/setsid");
-    } else {
-      preview_process->setProgram(runner);
-    }
+    uses_process_group = true;
+    args.push_front(runner);
+    preview_process->setProgram("/usr/bin/setsid");
 #else
     preview_process->setProgram(runner);
 #endif
@@ -705,31 +758,18 @@ struct StitchingExperimentDialog::Impl {
           if (preview_completion_pending)
             return;
           preview_completion_pending = true;
-          resolve_shutdown_if_group_gone(/*calibration=*/false);
           append_output(preview_process.get());
-          const bool replay = !stopping_preview && !closing && loop->isChecked() &&
+          preview_replay_pending = !stopping_preview && !closing && loop->isChecked() &&
               exit_status == QProcess::NormalExit && exit_code == 0;
-          QTimer::singleShot(0, dialog, [this, replay]() {
-            preview_process.reset();
-            preview_completion_pending = false;
-            update_controls();
-            if (replay)
-              start_preview();
-            else
-              maybe_finish_close();
-          });
+          settle_finished_process(/*calibration=*/false);
         });
     QObject::connect(preview_process.get(), &QProcess::errorOccurred, dialog, [this](QProcess::ProcessError error) {
       if (error != QProcess::FailedToStart || preview_completion_pending)
         return;
       preview_completion_pending = true;
+      preview_replay_pending = false;
       show_status("Could not start the stitched preview: " + preview_process->errorString(), true);
-      QTimer::singleShot(0, dialog, [this]() {
-        preview_process.reset();
-        preview_completion_pending = false;
-        update_controls();
-        maybe_finish_close();
-      });
+      settle_finished_process(/*calibration=*/false);
     });
     show_status(QString("Previewing Candidate %1 without crop or play tracking.").arg(candidate.sequence));
     preview_process->start();
@@ -775,9 +815,19 @@ struct StitchingExperimentDialog::Impl {
   void abort_for_destruction() {
     closing = true;
     cancelling = true;
-    kill_process(preview_process.get(), preview_process_group);
-    kill_process(calibration_process.get(), calibration_process_group);
-    if (session && (process_group_alive(preview_process_group) || process_group_alive(calibration_process_group)))
+    const bool preview_owned = (preview_process && preview_process->state() != QProcess::NotRunning) ||
+        preview_shutdown_ticket.has_value() || process_group_alive(preview_process_group);
+    const bool calibration_owned = (calibration_process && calibration_process->state() != QProcess::NotRunning) ||
+        calibration_shutdown_ticket.has_value() || process_group_alive(calibration_process_group);
+    if (preview_owned)
+      kill_process(preview_process.get(), preview_process_group);
+    if (calibration_owned)
+      kill_process(calibration_process.get(), calibration_process_group);
+    const bool unverified_process =
+        (preview_owned && preview_process_group <= 0) || (calibration_owned && calibration_process_group <= 0);
+    if (session &&
+        (unverified_process || process_group_alive(preview_process_group) ||
+         process_group_alive(calibration_process_group)))
       session->setAutoRemove(false);
   }
 };
