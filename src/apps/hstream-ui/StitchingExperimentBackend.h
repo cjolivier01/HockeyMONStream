@@ -35,6 +35,12 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
 // artifact set before the UI offers preview or promotion.
 absl::Status ValidateStitchingExperimentWorkspace(const StitchingExperimentWorkspace& experiment);
 
+// Builds the exact config document published by selection. Exposed so the
+// geometry invalidation contract can be checked without generating images.
+absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
+    const std::filesystem::path& experiment_config,
+    const std::filesystem::path& game_config);
+
 // Publishes the already-generated candidate maps/seam without recalibrating,
 // then updates only stitching-owned config and invalidates dependent rink data.
 absl::Status PromoteStitchingExperiment(

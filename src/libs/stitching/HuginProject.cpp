@@ -1463,7 +1463,10 @@ absl::Status publish_artifacts(
     auto config_publication =
         publish_game_config_without_rink_masks(game_dir, *selected_config, /*remove_stitched_snapshot=*/true);
     if (!config_publication.ok())
-      return rollback_error(std::string(config_publication.status().message()));
+      // The nested rink journal may itself be awaiting recovery. Leave the
+      // outer stitch journal at AWAITING_CONFIG; RecoverAndLock resolves the
+      // rink journal first and then makes the matching artifact decision.
+      return config_publication.status();
     if (const char* interrupt = std::getenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG");
         interrupt != nullptr && std::string(interrupt) == "1") {
       return absl::InternalError("Injected stitching promotion interruption after config publication");

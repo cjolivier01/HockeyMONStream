@@ -886,6 +886,24 @@ int main(int argc, char** argv) {
           read_text_file(promoted_game / "config.yaml") == config_before_failed_selection,
       "failed experiment selection must preserve the previous complete artifact and config generation");
 
+  std::ofstream(promoted_game / "rink_mask_0.png") << "previous mask\n";
+  ::setenv("HM_TEST_RINK_INVALIDATION_INTERRUPT_AFTER_CONFIG_SYNC", "1", 1);
+  const auto interrupted_rink_selection = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
+      root / "game", promoted_game, []() -> absl::StatusOr<std::string> { return "selected: interrupted-rink\n"; });
+  ::unsetenv("HM_TEST_RINK_INVALIDATION_INTERRUPT_AFTER_CONFIG_SYNC");
+  auto interrupted_rink_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
+  absl::StatusOr<std::string> generation_after_rink_recovery = absl::NotFoundError("generation was not read");
+  if (interrupted_rink_lock.ok()) {
+    generation_after_rink_recovery = hm::stitching::stitch_artifact_generation_id_locked(promoted_game);
+    interrupted_rink_lock->reset();
+  }
+  ok &= expect(
+      !interrupted_rink_selection.ok() && interrupted_rink_lock.ok() && generation_after_rink_recovery.ok() &&
+          *generation_after_rink_recovery == generation_before_failed_selection &&
+          read_text_file(promoted_game / "config.yaml") == config_before_failed_selection &&
+          read_text_file(promoted_game / "rink_mask_0.png") == "previous mask\n",
+      "stitch recovery must resolve an interrupted nested config/rink publication before choosing artifacts");
+
   const auto selected = hm::stitching::HuginProject::PromoteArtifactsAndConfig(
       root / "game", promoted_game, []() -> absl::StatusOr<std::string> { return "selected: true\n"; });
   auto selected_generation_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);

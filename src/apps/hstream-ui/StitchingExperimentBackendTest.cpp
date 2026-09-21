@@ -57,7 +57,17 @@ int main() {
           "  mapping_backend: nona\n"
           "  projection: general-panini\n"
           "  projection_framing:\n"
-          "    rotation_degrees: [7, -2, 1]\n")) {
+          "    rotation_degrees: [7, -2, 1]\n"
+          "rink:\n"
+          "  scoreboard:\n"
+          "    perspective_polygon: [[1, 2], [3, 4]]\n"
+          "  ice_contours_mask_count: 2\n"
+          "  ice_contours_mask_centroid: [10, 20]\n"
+          "  ice_contours_combined_bbox: [0, 0, 100, 50]\n"
+          "  stitched_output_pending_previous_generation: old\n"
+          "  stitched_output_pending_previous_authorization_id: auth\n"
+          "  stitched_output_pending_previous_owner_process: 123\n"
+          "  stitched_output_pending_completed_scoreboard_polygon: [[5, 6], [7, 8]]\n")) {
     return 2;
   }
 
@@ -112,5 +122,22 @@ int main() {
   ok &= expect(
       calibration["backend_generation"]["invalidation_id"].as<std::string>() == workspace->invalidation_id,
       "candidate backend generation must be fenced by its invalidation id");
+  const auto selected_config =
+      BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+  ok &= expect(selected_config.ok(), "selected candidate config must be mergeable");
+  if (selected_config.ok()) {
+    const YAML::Node selected = YAML::Load(*selected_config);
+    const YAML::Node selected_rink = selected["rink"];
+    ok &= expect(
+        !selected_rink["scoreboard"]["perspective_polygon"].IsDefined() &&
+            !selected_rink["ice_contours_mask_count"].IsDefined() &&
+            !selected_rink["ice_contours_mask_centroid"].IsDefined() &&
+            !selected_rink["ice_contours_combined_bbox"].IsDefined() &&
+            !selected_rink["stitched_output_pending_previous_generation"].IsDefined() &&
+            !selected_rink["stitched_output_pending_previous_authorization_id"].IsDefined() &&
+            !selected_rink["stitched_output_pending_previous_owner_process"].IsDefined() &&
+            !selected_rink["stitched_output_pending_completed_scoreboard_polygon"].IsDefined(),
+        "selection must remove every geometry-dependent rink cache and pending recovery field");
+  }
   return ok ? 0 : 5;
 }

@@ -180,9 +180,19 @@ void remove_downstream_generation(YAML::Node config) {
           "stitched_output_persisted_rotation_degrees",
           "stitched_output_pending_generation",
           "stitched_output_pending_authorization_id",
-          "stitched_output_pending_owner_process"}) {
+          "stitched_output_pending_owner_process",
+          "stitched_output_pending_previous_generation",
+          "stitched_output_pending_previous_authorization_id",
+          "stitched_output_pending_previous_owner_process",
+          "stitched_output_pending_completed_scoreboard_polygon",
+          "ice_contours_mask_count",
+          "ice_contours_mask_centroid",
+          "ice_contours_combined_bbox"}) {
       rink.remove(key);
     }
+    YAML::Node scoreboard = rink["scoreboard"];
+    if (scoreboard && scoreboard.IsMap())
+      scoreboard.remove("perspective_polygon");
   }
   YAML::Node stitching = config["stitching"];
   if (stitching && stitching.IsMap())
@@ -322,42 +332,49 @@ absl::Status PromoteStitchingExperiment(
     const fs::path& game_directory) {
   return hm::stitching::HuginProject::PromoteArtifactsAndConfig(
       experiment.game_directory, game_directory, [&]() -> absl::StatusOr<std::string> {
-        try {
-          YAML::Node selected = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
-          YAML::Node current = YAML::LoadFile((game_directory / "config.yaml").string());
-          YAML::Node selected_stitching = selected["stitching"];
-          YAML::Node current_stitching = current["stitching"];
-          for (const char* key :
-               {"calibration_frame_count",
-                "camera_config",
-                "camera_fov",
-                "control_point_execution_provider",
-                "control_point_matcher",
-                "control_point_resolution",
-                "mapping_backend",
-                "max_output_width",
-                "projection",
-                "projection_framing",
-                "projection_parameters",
-                "run_autooptimizer",
-                "stitch_frame_time"}) {
-            copy_node(current_stitching, selected_stitching, key);
-          }
-          copy_node(current["game"]["stitching"], selected["game"]["stitching"], "frame_offsets");
-          current["hstream_ui"]["stitching_calibration"] = YAML::Clone(selected["hstream_ui"]["stitching_calibration"]);
-          YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
-          calibration["status"] = "complete";
-          calibration["rink_mask_status"] = "pending";
-          calibration.remove("stale_from");
-          calibration.remove("artifacts_invalidated");
-          copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
-          remove_downstream_generation(current);
-          return YAML::Dump(current) + "\n";
-        } catch (const YAML::Exception& exception) {
-          return absl::InvalidArgumentError(
-              "Unable to promote stitching experiment config: " + std::string(exception.what()));
-        }
+        return BuildStitchingExperimentSelectionConfig(
+            experiment.game_directory / "config.yaml", game_directory / "config.yaml");
       });
+}
+
+absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
+    const fs::path& experiment_config,
+    const fs::path& game_config) {
+  try {
+    YAML::Node selected = YAML::LoadFile(experiment_config.string());
+    YAML::Node current = YAML::LoadFile(game_config.string());
+    YAML::Node selected_stitching = selected["stitching"];
+    YAML::Node current_stitching = current["stitching"];
+    for (const char* key :
+         {"calibration_frame_count",
+          "camera_config",
+          "camera_fov",
+          "control_point_execution_provider",
+          "control_point_matcher",
+          "control_point_resolution",
+          "mapping_backend",
+          "max_output_width",
+          "projection",
+          "projection_framing",
+          "projection_parameters",
+          "run_autooptimizer",
+          "stitch_frame_time"}) {
+      copy_node(current_stitching, selected_stitching, key);
+    }
+    copy_node(current["game"]["stitching"], selected["game"]["stitching"], "frame_offsets");
+    current["hstream_ui"]["stitching_calibration"] = YAML::Clone(selected["hstream_ui"]["stitching_calibration"]);
+    YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
+    calibration["status"] = "complete";
+    calibration["rink_mask_status"] = "pending";
+    calibration.remove("stale_from");
+    calibration.remove("artifacts_invalidated");
+    copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
+    remove_downstream_generation(current);
+    return YAML::Dump(current) + "\n";
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to promote stitching experiment config: " + std::string(exception.what()));
+  }
 }
 
 absl::Status ValidateStitchingExperimentWorkspace(const StitchingExperimentWorkspace& experiment) {
