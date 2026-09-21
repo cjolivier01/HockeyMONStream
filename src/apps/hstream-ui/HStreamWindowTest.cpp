@@ -78,6 +78,9 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool configuredDrivegptDatabaseDefault(HStreamWindow* window) {
+    return window->baseline_config_["hstream_ui"]["drivegpt_database"]["enabled"].as<bool>();
+  }
   static QStringList standaloneArguments(HStreamWindow* window) {
     return window->pipelineArguments(true);
   }
@@ -3964,9 +3967,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   game_id->setText(valid_game_id);
   if (!expect(
-          !drivegpt_csv->isChecked(), "DriveGPT database export must default off so Program seeking is available")) {
+          drivegpt_csv->isChecked() == HStreamWindowTestAccess::configuredDrivegptDatabaseDefault(window),
+          "DriveGPT database export must honor the configured initial checkbox state")) {
     return false;
   }
+  drivegpt_csv->setChecked(false);
   const QString telemetry_option_prefix = "--options=pipeline.ds-playtracker.private-properties.telemetry-db-dir=";
   const QStringList telemetry_disabled_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   if (!expect(
@@ -3976,7 +3981,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               [&telemetry_option_prefix](const QString& argument) {
                 return argument.startsWith(telemetry_option_prefix);
               }),
-          "The default Program run must leave DriveGPT database disabled so seeking remains available")) {
+          "Disabling DriveGPT database capture must omit its output argument so seeking remains available")) {
     return false;
   }
   drivegpt_csv->setChecked(true);
@@ -8780,6 +8785,8 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
   load("null", "17");
   ok &= expect(pitch->value() == -23.8 && suppressed(), "Inherited Vallco pitch must suppress crop rotation");
   pitch->setValue(0);
+  ok &= expect(suppressed(), "Inherited Vallco roll must keep crop rotation suppressed after clearing pitch");
+  roll->setValue(0);
   ok &= expect(
       left->value() == 170 && right->value() == 170 && link->isChecked(),
       "A new preset must replace the previous game's dormant angles");
@@ -14464,6 +14471,50 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
       invalid_nona_analysis.contains("Hugin/NONA command-line toolchain is incomplete") &&
       invalid_nona_analysis.contains("HM_NONA is not executable") &&
       !invalid_nona_analysis.contains("active calibration stage returned a terminal error");
+
+  HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+  const QString old_geometry_error = "FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent";
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(window, old_geometry_error);
+  const auto reported_cause = [](const QString& analysis) {
+    return analysis.section("\nReported cause\n", 1, 1).section("\n\nWhat to try\n", 0, 0);
+  };
+  for (const QString& final_error : {
+           QString("NOT_FOUND: HM_PTO_GEN is not executable: /bad/pto_gen"),
+           QString("INVALID_ARGUMENT: camera profile is invalid"),
+           QString("PERMISSION_DENIED: publish stitch artifact failed: /readonly/panorama.tif"),
+           QString("INTERNAL: enblend failed to generate seam_file.png"),
+           QString(
+               "No stitching calibration frame pair produced a usable Hugin solution after 5 candidate attempts: "
+               "NOT_FOUND: HM_NONA is not executable: /bad/nona"),
+       }) {
+    const QString final_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(window, final_error);
+    if (!expect(
+            reported_cause(final_analysis) == final_error && final_analysis.contains(old_geometry_error),
+            "A concrete final error must remain the reported cause while earlier diagnostics remain visible"))
+      return false;
+  }
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(window, "INTERNAL: App run failed");
+  for (const QString& generic_error : {
+           QString(),
+           QString("Pipeline failed during stitching calibration"),
+           QString("INTERNAL: App run failed"),
+           QString("FAILED_PRECONDITION: No stitching calibration frame pair produced a usable Hugin solution"),
+       }) {
+    const QString generic_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(window, generic_error);
+    if (!expect(
+            reported_cause(generic_analysis) == old_geometry_error &&
+                generic_analysis.contains("unsafe or implausibly large canvas"),
+            "Generic failure summaries and teardown diagnostics must retain the concrete calibration cause"))
+      return false;
+  }
+  const QString permission_error = "PERMISSION_DENIED: publish stitch artifact failed: /readonly/panorama.tif";
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(window, permission_error);
+  const QString permission_analysis =
+      HStreamWindowTestAccess::calibrationFailureAnalysis(window, "Pipeline failed during stitching calibration");
+  if (!expect(
+          reported_cause(permission_analysis) == permission_error,
+          "Generic failure summaries must recover concrete diagnostics for every Abseil status code"))
+    return false;
   HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
   HStreamWindowTestAccess::setActiveCalibrationControlPoints(window, 250);
   HStreamWindowTestAccess::setActiveCameraSelection(window, {"gopro-hero-11", 108.0, 90.0});
