@@ -1,6 +1,9 @@
 #include "TensorRtModelCache.h"
 
+#include "OnnxExternalData.h"
+
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -20,6 +23,31 @@ bool expect(bool condition, const char* message) {
   if (!condition)
     std::cerr << "FAIL: " << message << '\n';
   return condition;
+}
+
+std::string varint(uint64_t value) {
+  std::string result;
+  do {
+    const unsigned char byte = value & 0x7f;
+    value >>= 7;
+    result += static_cast<char>(byte | (value ? 0x80 : 0));
+  } while (value);
+  return result;
+}
+
+std::string protobuf_bytes(unsigned field, const std::string& bytes) {
+  return varint((field << 3) | 2) + varint(bytes.size()) + bytes;
+}
+
+std::string external_tensor(const std::string& location) {
+  // data_location may precede external_data; unrelated map entries may follow.
+  return varint(14 << 3) + varint(1) + protobuf_bytes(13, protobuf_bytes(1, "location") + protobuf_bytes(2, location)) +
+      protobuf_bytes(13, protobuf_bytes(1, "offset") + protobuf_bytes(2, "0"));
+}
+
+void write_model(const fs::path& path, const std::string& description, const std::string& graph = {}) {
+  std::ofstream(path, std::ios::binary) << varint(1 << 3) << varint(8) << protobuf_bytes(6, description)
+                                        << protobuf_bytes(7, graph);
 }
 
 void write_inference_config(const fs::path& path, int network_mode) {
@@ -70,7 +98,7 @@ int main(int argc, char** argv) {
   fs::create_directories(models);
   fs::create_directories(home_models);
   {
-    std::ofstream(models / "detector.onnx") << "test onnx model\n";
+    write_model(models / "detector.onnx", "test onnx model");
     std::ofstream(models / "labels.txt") << "person\n";
     std::ofstream(models / "custom.so") << "test library\n";
     std::ofstream(models / "network.cfg") << "test network config\n";
@@ -79,7 +107,7 @@ int main(int argc, char** argv) {
     std::ofstream(models / "output-1.tensor") << "test output tensor one\n";
     std::ofstream(models / "detector_bf16.engine") << "prebuilt BF16 engine\n";
     std::ofstream(models / "detector_int8_calib.table") << "prebuilt INT8 calibration table\n";
-    std::ofstream(home_models / "home-detector.onnx") << "user-cache ONNX model\n";
+    write_model(home_models / "home-detector.onnx", "user-cache ONNX model");
     std::ofstream(home_models / "home-detector.engine") << "explicit prebuilt engine\n";
     fs::create_symlink("detector.onnx", models / "linked-detector.onnx");
     write_inference_config(configs / "infer.yaml", 0);
@@ -90,7 +118,7 @@ int main(int argc, char** argv) {
                                               "  batch-size: 2\n"
                                               "  gpu-id: 0\n"
                                               "  network-mode: 0\n";
-    std::ofstream(configs / "writable-detector.onnx") << "writable test model\n";
+    write_model(configs / "writable-detector.onnx", "writable test model");
     std::ofstream(configs / "loader-writable.yaml")
         << "property:\n"
            "  onnx-file: writable-detector.onnx\n"
@@ -540,6 +568,89 @@ int main(int argc, char** argv) {
       writable["primary-gie"]["config-file"].as<std::string>() == changed_network_config_runtime.string(),
       "model directory writability must not change the shared engine cache identity");
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
+
+  YAML::Node writable_linked = pipeline_for("linked.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(writable_linked, configs).ok(),
+      "writable ONNX aliases must remain supported");
+  const YAML::Node linked_config = YAML::LoadFile(writable_linked["primary-gie"]["config-file"].as<std::string>());
+  const fs::path linked_onnx = linked_config["property"]["onnx-file"].as<std::string>();
+  const fs::path linked_engine = linked_config["property"]["model-engine-file"].as<std::string>();
+  ok &= expect(
+      fs::is_regular_file(fs::symlink_status(linked_onnx)) && fs::equivalent(linked_onnx, models / "detector.onnx") &&
+          linked_onnx.parent_path() == linked_engine.parent_path(),
+      "a writable alias must stage a regular file, keeping DeepStream serialization in the cache");
+  std::ofstream(linked_engine) << "cached alias engine";
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+  YAML::Node warm_linked = pipeline_for("linked.yaml");
+  ok &= expect(hm::pipeline::PrepareTensorRtModelCache(warm_linked, configs).ok(), "warm ONNX alias must prepare");
+  const YAML::Node warm_linked_config = YAML::LoadFile(warm_linked["primary-gie"]["config-file"].as<std::string>());
+  ok &= expect(
+      warm_linked_config["property"]["model-engine-file"].as<std::string>() == linked_engine.string(),
+      "writable ONNX aliases must reuse the persisted engine");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+
+  // External tensors can occur in initializers, nested graphs and attributes.
+  const fs::path external_model = configs / "external.onnx";
+  const std::string tensor = external_tensor("weights/data.bin");
+  const std::string nested_graph = protobuf_bytes(5, tensor);
+  const std::string attributes =
+      protobuf_bytes(6, nested_graph) + protobuf_bytes(10, tensor) + protobuf_bytes(22, protobuf_bytes(1, tensor));
+  const std::string graph = protobuf_bytes(5, tensor) + protobuf_bytes(1, protobuf_bytes(5, attributes)) +
+      protobuf_bytes(5, protobuf_bytes(9, external_tensor("not-a-real-dependency")));
+  write_model(external_model, "external weights model", graph);
+  const auto dependencies = hm::pipeline::OnnxExternalDataFiles(external_model);
+  ok &= expect(
+      dependencies.ok() && dependencies->size() == 1 && dependencies->front() == "weights/data.bin",
+      "external tensor discovery must traverse nested metadata, deduplicate files, and skip raw tensor bytes");
+  fs::create_directories(configs / "weights");
+  std::ofstream(configs / "weights/data.bin", std::ios::binary) << "initial external weights";
+  std::ofstream(configs / "external.yaml") << "property:\n  onnx-file: external.onnx\n"
+                                              "  model-engine-file: missing-external.engine\n";
+  YAML::Node external_pipeline = pipeline_for("external.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(external_pipeline, configs).ok(),
+      "ONNX models with external weights must prepare successfully");
+  const YAML::Node external_config = YAML::LoadFile(external_pipeline["primary-gie"]["config-file"].as<std::string>());
+  const fs::path cached_external_model = external_config["property"]["onnx-file"].as<std::string>();
+  const fs::path external_engine = external_config["property"]["model-engine-file"].as<std::string>();
+  ok &= expect(
+      fs::is_regular_file(fs::symlink_status(cached_external_model.parent_path() / "weights/data.bin")) &&
+          fs::equivalent(cached_external_model.parent_path() / "weights/data.bin", configs / "weights/data.bin"),
+      "the cache must preserve the external tensor's relative location with a regular file");
+  std::ofstream(external_engine) << "cached external engine";
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+  YAML::Node warm_external = pipeline_for("external.yaml");
+  ok &=
+      expect(hm::pipeline::PrepareTensorRtModelCache(warm_external, configs).ok(), "warm external model must prepare");
+  const YAML::Node warm_external_config = YAML::LoadFile(warm_external["primary-gie"]["config-file"].as<std::string>());
+  ok &= expect(
+      warm_external_config["property"]["model-engine-file"].as<std::string>() == external_engine.string(),
+      "unchanged external weights must reuse the persisted engine");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+  std::ofstream(configs / "weights/data.bin", std::ios::binary) << "updated external weights";
+  YAML::Node changed_external = pipeline_for("external.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(changed_external, configs).ok(), "changed external model must prepare");
+  const YAML::Node changed_external_config =
+      YAML::LoadFile(changed_external["primary-gie"]["config-file"].as<std::string>());
+  ok &= expect(
+      changed_external_config["property"]["model-engine-file"].as<std::string>() != external_engine.string(),
+      "external weight contents must invalidate the engine even when ONNX bytes are unchanged");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+  fs::remove(configs / "weights/data.bin");
+  YAML::Node missing_external = pipeline_for("external.yaml");
+  ok &= expect(
+      !hm::pipeline::PrepareTensorRtModelCache(missing_external, configs).ok(),
+      "missing external weights must fail before publishing an incomplete model");
+  for (const char* unsafe_location : {"../weights.bin", "/absolute/weights.bin", ""}) {
+    write_model(external_model, "unsafe external weights", protobuf_bytes(5, external_tensor(unsafe_location)));
+    ok &= expect(
+        !hm::pipeline::OnnxExternalDataFiles(external_model).ok(),
+        "external weights must not escape the model cache directory");
+  }
+  std::ofstream(external_model, std::ios::binary) << '\x3a' << '\x7f' << 'x';
+  ok &= expect(!hm::pipeline::OnnxExternalDataFiles(external_model).ok(), "truncated ONNX metadata must be rejected");
 
   // Reproduce the default detector setup: the ONNX is writable under HOME,
   // while the configured engine seed differs from DeepStream's output path.

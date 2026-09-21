@@ -224,8 +224,11 @@ To understand and edit `config_infer_primary.txt` file, read the [DeepStream Plu
   so engine loading and generation use the same persistent path. The source
   config is unchanged. Cache identity includes model and inference input
   contents, inference settings, and application GPU/batch overrides; changing
-  these can require a new engine. Builds are locked across HStream processes
-  until inference initialization completes. The runner logs the resolved cache
+  these can require a new engine. Writable development aliases are resolved to
+  regular cached model files. ONNX external tensor files are staged at their
+  relative locations and their contents also participate in cache identity;
+  locations must stay within the model directory. Builds are locked across
+  HStream processes until inference initialization completes. The runner logs the resolved cache
   path and whether an engine already exists there.
 
   An existing explicitly configured engine is preserved. BF16 engines still
