@@ -2504,4 +2504,65 @@ absl::Status HuginProject::Configure(
   return status;
 }
 
+absl::Status HuginProject::PromoteArtifacts(const fs::path& experiment_game_dir, const fs::path& game_dir) {
+  std::error_code error;
+  if (fs::equivalent(experiment_game_dir, game_dir, error) && !error)
+    return absl::InvalidArgumentError("Stitching experiment source and destination must be different directories");
+  error.clear();
+
+  auto source_lock = RecoverAndLock(experiment_game_dir);
+  if (!source_lock.ok())
+    return source_lock.status();
+  auto provenance = ReadCanvasProvenance(experiment_game_dir, **source_lock);
+  if (!provenance.ok())
+    return provenance.status();
+  const std::optional<size_t> maximum_dimension = provenance->has_value() && (**provenance).max_canvas_dimension > 0
+      ? std::optional<size_t>((**provenance).max_canvas_dimension)
+      : std::nullopt;
+  const std::optional<size_t> maximum_width = provenance->has_value() && (**provenance).max_output_width > 0
+      ? std::optional<size_t>((**provenance).max_output_width)
+      : std::nullopt;
+  HM_RETURN_IF_ERROR(validate_staged_artifacts(experiment_game_dir, maximum_dimension, maximum_width));
+
+  auto destination_lock = RecoverAndLock(game_dir);
+  if (!destination_lock.ok())
+    return destination_lock.status();
+  auto staging_result = make_staging_directory(game_dir);
+  if (!staging_result.ok())
+    return staging_result.status();
+  const fs::path staging = *staging_result;
+  struct Cleanup {
+    fs::path path;
+    bool prepared{false};
+    ~Cleanup() {
+      if (!prepared)
+        (void)remove_owned_directory(path, "journal_version", "2\n");
+    }
+  } cleanup{staging};
+
+  for (const std::string& name : stitch_artifact_names()) {
+    if (name == kStitchGenerationArtifact)
+      continue;
+    const fs::path source = experiment_game_dir / name;
+    if (!fs::exists(source, error)) {
+      if (error)
+        return absl::InternalError("Unable to inspect experiment artifact " + name + ": " + error.message());
+      continue;
+    }
+    HM_RETURN_IF_ERROR(clone_or_copy_stitch_rollback_file(source, staging / name));
+    HM_RETURN_IF_ERROR(fsync_stitch_path(staging / name));
+  }
+  HM_RETURN_IF_ERROR(fsync_stitch_path(staging, true));
+  HM_RETURN_IF_ERROR(validate_staged_artifacts(staging, maximum_dimension, maximum_width));
+
+  auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  HM_RETURN_IF_ERROR(validate_no_pending_live_stitched_output_authorization_file_locked(game_dir / "config.yaml"));
+  auto prepared_publication = prepare_stitch_generation_publication(staging, game_dir);
+  if (!prepared_publication.ok())
+    return prepared_publication.status();
+  return publish_artifacts(staging, game_dir, *prepared_publication, &cleanup.prepared);
+}
+
 } // namespace hm::stitching

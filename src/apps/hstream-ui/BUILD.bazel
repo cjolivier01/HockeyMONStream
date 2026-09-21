@@ -41,6 +41,10 @@ filegroup(
         "PipelineInspectorWidget.h",
         "ScoreboardSelectionDialog.cpp",
         "ScoreboardSelectionDialog.h",
+        "StitchingExperimentBackend.cpp",
+        "StitchingExperimentBackend.h",
+        "StitchingExperimentDialog.cpp",
+        "StitchingExperimentDialog.h",
         "TelemetryCsvPublisher.cpp",
         "TelemetryCsvPublisher.h",
         "hstream-ui.desktop",
@@ -205,6 +209,48 @@ cc_library(
 )
 
 cc_library(
+    name = "stitching_experiment_backend",
+    srcs = ["StitchingExperimentBackend.cpp"],
+    hdrs = ["StitchingExperimentBackend.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/common:status",
+        "//src/libs/common:utils",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:stitching",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "stitching_experiment_dialog",
+    srcs = ["StitchingExperimentDialog.cpp"],
+    hdrs = ["StitchingExperimentDialog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":stitching_experiment_backend",
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_test(
+    name = "stitching_experiment_backend_test",
+    srcs = ["StitchingExperimentBackendTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":stitching_experiment_backend",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "application_identity",
     srcs = ["ApplicationIdentity.cpp"],
     hdrs = ["ApplicationIdentity.h"],
@@ -237,6 +283,7 @@ cc_library(
         ":projection_crop_dialog",
         ":rink_leveling_dialog",
         ":scoreboard_selection_dialog",
+        ":stitching_experiment_dialog",
         ":telemetry_csv_publisher",
         "//src/libs/common:baseline_config",
         "//src/libs/common:playtracker_config_roles",

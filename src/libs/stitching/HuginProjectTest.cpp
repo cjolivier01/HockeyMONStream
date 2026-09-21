@@ -844,6 +844,32 @@ int main(int argc, char** argv) {
         "framing");
     provenance_lock->reset();
   }
+
+  const fs::path promoted_game = root / "promoted-game";
+  fs::create_directories(promoted_game);
+  std::ofstream(promoted_game / "config.yaml") << "{}\n";
+  auto source_generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  absl::StatusOr<std::string> source_generation = absl::NotFoundError("source generation was not read");
+  if (source_generation_lock.ok()) {
+    source_generation = hm::stitching::stitch_artifact_generation_id_locked(root / "game");
+    source_generation_lock->reset();
+  }
+  const auto promoted = hm::stitching::HuginProject::PromoteArtifacts(root / "game", promoted_game);
+  auto promoted_generation_lock = hm::stitching::HuginProject::RecoverAndLock(promoted_game);
+  absl::StatusOr<std::string> promoted_generation = absl::NotFoundError("promoted generation was not read");
+  if (promoted_generation_lock.ok()) {
+    promoted_generation = hm::stitching::stitch_artifact_generation_id_locked(promoted_game);
+    promoted_generation_lock->reset();
+  }
+  ok &= expect(
+      source_generation_lock.ok() && source_generation.ok() && promoted.ok() && promoted_generation_lock.ok() &&
+          promoted_generation.ok() && *source_generation != *promoted_generation &&
+          read_binary_file(root / "game" / "seam_file.png") ==
+              read_binary_file(promoted_game / "seam_file.png") &&
+          read_binary_file(root / "game" / "panorama.tif") ==
+              read_binary_file(promoted_game / "panorama.tif"),
+      "experiment promotion must republish validated maps and seam under a fresh generation without rerendering");
+
   options.camera_configuration = "gopro-hero-11";
   options.horizontal_fov = 108.0;
   options.vertical_fov = 90.0;

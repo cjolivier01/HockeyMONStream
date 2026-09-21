@@ -614,6 +614,7 @@ class HStreamWindow : public QMainWindow {
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
   QPushButton* save_preset_button_{nullptr};
+  QPushButton* stitching_experiments_button_{nullptr};
   QPushButton* clean_stitching_button_{nullptr};
   QPushButton* stop_button_{nullptr};
   QCheckBox* render_video_toggle_{nullptr};

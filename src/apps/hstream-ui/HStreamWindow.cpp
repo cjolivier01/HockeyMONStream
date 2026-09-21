@@ -6,6 +6,7 @@
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
+#include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
 #include "src/apps/hstream-ui/TelemetryDbPublisher.h"
 
@@ -5277,7 +5278,11 @@ void HStreamWindow::buildUi() {
     button_action(run_menu, name);
   auto* tools_menu = menuBar()->addMenu("&Tools");
   for (const char* name :
-       {"cameraExperimentsButton", "resetCameraButton", "selectRinkLevelingButton", "projectionCropButton"})
+       {"cameraExperimentsButton",
+        "stitchingExperimentsButton",
+        "resetCameraButton",
+        "selectRinkLevelingButton",
+        "projectionCropButton"})
     button_action(tools_menu, name);
   setCentralWidget(central);
   configureControlHelp();
@@ -5806,6 +5811,71 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     dialog->show();
   });
   action_bar->addWidget(experiments);
+  stitching_experiments_button_ = new QPushButton("Stitching experiments…");
+  stitching_experiments_button_->setObjectName("stitchingExperimentsButton");
+  stitching_experiments_button_->setToolTip(
+      "Generate stitching candidates, replay one moving passage across their seams, and use the selected maps "
+      "without recalibrating.");
+  connect(stitching_experiments_button_, &QPushButton::clicked, this, [this]() {
+    if (auto* existing = findChild<QDialog*>("stitchingExperimentDialog")) {
+      existing->show();
+      existing->raise();
+      existing->activateWindow();
+      return;
+    }
+    if ((pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing()) {
+      QMessageBox::information(
+          this, "Stitching Experiments", "Stop the pipeline and wait for archive finalization before experimenting.");
+      return;
+    }
+    const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+    const QString game_directory = gameDirectory(game_id);
+    if (game_id.isEmpty() || !QFileInfo::exists(QDir(game_directory).filePath("config.yaml"))) {
+      QMessageBox::information(
+          this, "Stitching Experiments", "Select a saved game with two camera videos before experimenting.");
+      return;
+    }
+    if (save_preset_button_ && save_preset_button_->isEnabled()) {
+      QMessageBox::information(
+          this,
+          "Stitching Experiments",
+          "Save the current preset first so every candidate starts from the displayed stitching and rink settings.");
+      return;
+    }
+    const QString runner = pipelineRunnerPath();
+    if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
+      QMessageBox::warning(this, "Stitching Experiments", "The hstream-cli runner is unavailable: " + runner);
+      return;
+    }
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (!baseline_config_root_.isEmpty())
+      env.insert("HM_CONFIG_ROOT", baseline_config_root_);
+    const QString working_directory = pipelineWorkingDirectory();
+    const QString runtime_error =
+        configure_pipeline_runtime_environment(env, working_directory, development_bazel_bin_);
+    if (!runtime_error.isEmpty()) {
+      QMessageBox::warning(this, "Stitching Experiments", runtime_error);
+      return;
+    }
+    auto* dialog = new StitchingExperimentDialog(
+        game_directory,
+        runner,
+        working_directory,
+        pipelineConfigPath("ds_hockey_app_config.yaml"),
+        env,
+        stitchingCalibrationControlPoints(),
+        stitchingCalibrationFrameCount(),
+        stitchFrameTime(),
+        this,
+        [this]() {
+          loadSavedControlConfig();
+          appendLog("selected stitching experiment published; main Program will reuse its maps and seam");
+        });
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->show();
+  });
+  action_bar->addWidget(stitching_experiments_button_);
   action_bar->addStretch(1);
   auto* playback_start_label = new QLabel("Playback start");
   playback_start_label->setObjectName("playbackStartTimeLabel");
@@ -9158,6 +9228,10 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 }
 
 void HStreamWindow::startPipeline() {
+  if (findChild<QDialog*>("stitchingExperimentDialog")) {
+    appendLog("close Stitching Experiments before starting the main pipeline");
+    return;
+  }
   if (!pending_leveling_revision_.isEmpty() || hasPendingCropSelection()) {
     savePreset();
     if (!pending_leveling_revision_.isEmpty() || hasPendingCropSelection()) {
@@ -14902,6 +14976,8 @@ void HStreamWindow::updateRunControls() {
   if (run_mode_selector_) {
     run_mode_selector_->setEnabled(!running && !finalizing);
   }
+  if (stitching_experiments_button_)
+    stitching_experiments_button_->setEnabled(!running && !finalizing);
   if (const auto copy = output_toggles_.find("archive-program-4k"); copy != output_toggles_.end() && copy->second) {
     copy->second->setEnabled(!running && !finalizing && !isCalibrationRun());
     set_control_help(
