@@ -136,3 +136,7 @@ camera files / live sources -> decode and batch -> hmstitcher
 - Keep this file a concise navigation map with stable paths, ownership, and invariants. Put detailed algorithms, schemas, experiments, and troubleshooting in focused `docs/` files and link them here. Replace stale statements and links when code moves or behavior changes; avoid accumulating parallel descriptions, transient commit hashes, or session logs.
 - When configuration or persistence changes span HockeyMON, hm-cupano, or jetson-utils, check the corresponding shared defaults/schema and dependency pins, then update the relevant documentation in each affected repository. Preserve the baseline synchronization requirement above.
 - During validation/review, check that every new architectural path exists and that the documented flow, configuration precedence, and completion semantics still match the code. Include the documentation update in the PR description, or explain why an architecture-affecting change leaves this map accurate. Keep the existing Commit & PR Guidelines review cycle unchanged unless explicitly asked to revise it.
+
+## Large, unstable, hard-to-maintain changes
+- Warn me if a request, or particular specifics of a request, require a large architectural change so that I can evaluate if it si worth it. if possible, offer alternatives which fit better into the architecture. It may be ok if the new architecture is sound, i just want to avoid creating hacky and brittle architecture to satisfy a trivial request.
+
