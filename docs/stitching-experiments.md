@@ -38,6 +38,8 @@ Select a ready row and choose **Play selected** (or double-click it). The existi
 the configured passage start and duration; Loop restarts that exact passage. Use **Maximize for seam inspection** to
 give the moving stitched canvas more screen space. Switching candidates starts the same passage against that
 candidate's maps and seam. Video surfaces remain GPU-resident.
+Calibration-only embedded playback retains the render sink's configured clock pacing, so a passage plays at normal
+speed. Ordinary Program previews keep their existing processing/encoding timing.
 
 ## Selecting the Program calibration
 
@@ -54,3 +56,25 @@ and dialog closure wait for that transaction to finish.
 Selection does not rerun feature matching, optimization, map generation, or seam generation. The next Program run
 therefore loads the chosen artifact generation directly. Discarding the private batch afterward does not affect that
 promoted copy; camera videos are never copied or modified.
+
+## Focused validation
+
+`//src/apps/hstream-ui:stitching_experiment_backend_test` checks workspace isolation and the selection configuration.
+`//src/apps/hstream-ui:stitching_experiment_dialog_test` normally uses a failing stub runner to check queue
+deduplication, serial continuation after failure, source-config isolation, and prompt closure without GPU use.
+
+For a real GPU check, build the dialog test and CLI with the host's CUDA architecture configuration (for example,
+`--config=opt --cpu=k8 --config=blackwell` on an RTX 5090). The opt-in mode requires an X11 display and a **disposable
+game copy** with local camera inputs and relative `game.videos` paths:
+
+```bash
+QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/stitching_experiment_dialog_test \
+  --gpu-smoke /path/to/disposable-game /path/to/hstream /tmp/stitch-experiment-pipeline.log
+```
+
+This runs two calibrations and two five-second previews, checks GPU presentation, clock pacing, successful runner
+exit, and reuse without recalibration, verifies that the source config/artifacts stay unchanged before selection,
+then explicitly promotes a candidate into the disposable game. It saves the runner log and attempts one bounded
+display capture per passage. Desktop captures may be black under Xwayland even when the OpenGL framebuffer contains
+video; the existing `@capture-preview-frame stitched /path/to/frame.png` runner command can verify the presented
+frame directly. These one-shot diagnostic readbacks are not part of steady-state production playback.

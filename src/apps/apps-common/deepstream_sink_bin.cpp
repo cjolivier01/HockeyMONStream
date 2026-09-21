@@ -46,6 +46,7 @@ static guint server_count = 0;
 static GMutex server_cnt_lock;
 static std::set<guint> rtsp_audio_sink_ids;
 static std::atomic<bool> embedded_gpu_preview_video_mode{false};
+static std::atomic<bool> embedded_gpu_preview_preserve_timing{false};
 
 void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids) {
   rtsp_audio_sink_ids.clear();
@@ -56,7 +57,8 @@ void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids) {
   }
 }
 
-void set_embedded_gpu_preview_video_mode(gboolean enabled) {
+void set_embedded_gpu_preview_video_mode(gboolean enabled, gboolean preserve_render_timing) {
+  embedded_gpu_preview_preserve_timing = preserve_render_timing != FALSE;
   embedded_gpu_preview_video_mode = enabled != FALSE;
 }
 
@@ -1119,6 +1121,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   const bool use_xvideo = use_xvideo_render_sink();
 #endif
   const bool gpu_preview_fake = embedded_gpu_preview_video_mode.load();
+  const bool unsynchronized_gpu_preview = gpu_preview_fake && !embedded_gpu_preview_preserve_timing.load();
 #ifdef IS_TEGRA
   const bool scaled_nv3d_render =
       !gpu_preview_fake && config->type == NV_DS_SINK_RENDER_3D && config->width > 0 && config->height > 0;
@@ -1211,15 +1214,16 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     goto done;
   }
 
-  // Embedded/headless render-video terminators are observational and must never throttle the processing/encode
+  // Ordinary embedded/headless render-video terminators must never throttle the processing/encode
   // branch. A synchronized application-owned ximagesink can reject every late frame when inference falls behind,
   // while a synchronized fakesink needlessly clock-paces an otherwise headless render branch. Encoded and
-  // self-managed render sinks retain their configured timing behavior.
+  // self-managed render sinks retain their configured timing behavior. Calibration-only embedded playback
+  // preserves the configured render clock so seam comparisons are presented at normal playback speed.
 #ifndef IS_TEGRA
   g_object_set(
       G_OBJECT(bin->sink),
       "sync",
-      gpu_preview_fake || use_xvideo ? FALSE : config->sync,
+      unsynchronized_gpu_preview || (!gpu_preview_fake && use_xvideo) ? FALSE : config->sync,
       "max-lateness",
       -1,
       "async",
@@ -1231,7 +1235,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   g_object_set(
       G_OBJECT(bin->sink),
       "sync",
-      gpu_preview_fake ? FALSE : config->sync,
+      unsynchronized_gpu_preview ? FALSE : config->sync,
       "max-lateness",
       -1,
       "async",

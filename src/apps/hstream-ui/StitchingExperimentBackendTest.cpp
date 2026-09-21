@@ -123,8 +123,9 @@ int main() {
           rotation[2].as<double>() == 0.5,
       "candidate rink pitch and roll must override the saved setting while preserving yaw");
   ok &= expect(
-      calibration["backend_generation"]["invalidation_id"].as<std::string>() == workspace->invalidation_id,
-      "candidate backend generation must be fenced by its invalidation id");
+      calibration["invalidation_id"].as<std::string>() == workspace->invalidation_id &&
+          !calibration["backend_generation"].IsDefined(),
+      "candidate must leave backend reservation to the runner after inherited settings resolve");
   const auto selected_config =
       BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
   ok &= expect(selected_config.ok(), "selected candidate config must be mergeable");

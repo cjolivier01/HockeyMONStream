@@ -59,6 +59,12 @@ int main() {
 
   const fs::path owned = root / "hstream-stitch-ABC123";
   fs::create_directory(owned);
+  const auto awaiting = hm::stitching::publish_transaction_state(owned, "AWAITING_CONFIG\n");
+  std::ifstream state_file(owned / "state");
+  std::string state;
+  std::getline(state_file, state);
+  ok &= expect(awaiting.ok() && state == "AWAITING_CONFIG", "selection publication must durably enter AWAITING_CONFIG");
+  ok &= expect(!hm::stitching::publish_transaction_state(owned, "UNKNOWN\n").ok(), "unknown journal states must fail");
   std::ofstream(owned / "first") << "first\n";
   std::ofstream(owned / "second") << "second\n";
   auto owner_status = hm::stitching::write_owned_directory_marker(owned, "journal_version", "2\n");

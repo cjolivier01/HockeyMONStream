@@ -667,6 +667,18 @@ int run_headless_render_video_sink() {
       return 3;
     }
     gst_object_unref(GST_OBJECT(sink_bin.bin));
+    sink_bin = {};
+    set_embedded_gpu_preview_video_mode(TRUE, TRUE);
+    const bool paced_created = create_sink_bin(1, &sink_config, &sink_bin, 0);
+    set_embedded_gpu_preview_video_mode(FALSE);
+    if (!paced_created || !sink_bin.sub_bins[0].sink)
+      return 4;
+    g_object_get(G_OBJECT(sink_bin.sub_bins[0].sink), "sync", &sync, "qos", &qos, NULL);
+    gst_object_unref(GST_OBJECT(sink_bin.bin));
+    if (!sync || qos) {
+      std::cerr << "Calibration-only embedded render must preserve sync without QoS\n";
+      return 5;
+    }
   }
   return 0;
 }
@@ -1272,6 +1284,8 @@ int main(int argc, char** argv) {
   g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
+  if (argc == 2 && std::string(argv[1]) == "--render-video-sink-only")
+    return run_headless_render_video_sink();
 
   const fs::path tmpdir = fs::temp_directory_path() / ("uri_multiple_pipeline_test_" + std::to_string(::getpid()));
   fs::remove_all(tmpdir);

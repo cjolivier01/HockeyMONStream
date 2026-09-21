@@ -43,6 +43,7 @@
 #include <vector>
 
 #ifdef Q_OS_UNIX
+#include <sys/syscall.h>
 #include <unistd.h>
 #endif
 
@@ -63,7 +64,7 @@ class StitchingExperimentVideoTarget : public QWidget {
     }
     setMinimumSize(640, 360);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    setStyleSheet("background:#101820;");
+    setAutoFillBackground(false);
   }
   QPaintEngine* paintEngine() const override {
     return nullptr;
@@ -154,52 +155,113 @@ std::optional<std::vector<std::array<double, 3>>> parse_rotations(const QString&
   return values;
 }
 
-std::vector<qint64> experiment_session_processes(qint64 session_id, const QString& token) {
+struct ExperimentSessionInspection {
+  std::vector<int> pidfds;
+  bool unverified{false};
+
+  ~ExperimentSessionInspection() {
 #ifdef Q_OS_UNIX
-  if (session_id <= 0 || token.isEmpty())
-    return {};
+    for (int descriptor : pidfds)
+      ::close(descriptor);
+#endif
+  }
+  ExperimentSessionInspection() = default;
+  ExperimentSessionInspection(ExperimentSessionInspection&& other) noexcept : unverified(other.unverified) {
+    pidfds.swap(other.pidfds);
+  }
+  ExperimentSessionInspection& operator=(ExperimentSessionInspection&&) = delete;
+  ExperimentSessionInspection(const ExperimentSessionInspection&) = delete;
+  ExperimentSessionInspection& operator=(const ExperimentSessionInspection&) = delete;
+};
+
+ExperimentSessionInspection inspect_experiment_session(qint64 session_id, const QString& token) {
+  ExperimentSessionInspection inspection;
+  if (session_id == 0 && token.isEmpty())
+    return inspection;
+#if defined(Q_OS_UNIX) && defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+  if (session_id <= 0 || token.isEmpty()) {
+    inspection.unverified = true;
+    return inspection;
+  }
+  QDir proc("/proc");
+  if (!proc.exists() || !proc.isReadable()) {
+    inspection.unverified = true;
+    return inspection;
+  }
   const QByteArray expected = "HSTREAM_EXPERIMENT_PROCESS_TOKEN=" + token.toUtf8();
-  std::vector<qint64> matches;
-  const QStringList entries = QDir("/proc").entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+  const QStringList entries = proc.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::NoSort);
+  // Our own PID must be visible even when there are no experiment processes.
+  if (!entries.contains(QString::number(::getpid())))
+    inspection.unverified = true;
   for (const QString& entry : entries) {
     bool numeric = false;
     const qint64 parsed = entry.toLongLong(&numeric);
     if (!numeric || parsed <= 0)
       continue;
     const pid_t pid = static_cast<pid_t>(parsed);
-    if (::getsid(pid) != static_cast<pid_t>(session_id))
+    const int pidfd = static_cast<int>(::syscall(SYS_pidfd_open, pid, 0));
+    if (pidfd < 0) {
+      if (errno != ESRCH)
+        inspection.unverified = true;
       continue;
+    }
+    const pid_t observed_session = ::getsid(pid);
+    if (observed_session != static_cast<pid_t>(session_id)) {
+      if (observed_session < 0 && errno != ESRCH)
+        inspection.unverified = true;
+      ::close(pidfd);
+      continue;
+    }
     QFile environment(QString("/proc/%1/environ").arg(entry));
-    if (!environment.open(QIODevice::ReadOnly))
+    if (!environment.open(QIODevice::ReadOnly)) {
+      if (::syscall(SYS_pidfd_send_signal, pidfd, 0, nullptr, 0) == 0 || errno != ESRCH)
+        inspection.unverified = true;
+      ::close(pidfd);
       continue;
+    }
     const QList<QByteArray> variables = environment.readAll().split('\0');
-    if (variables.contains(expected))
-      matches.push_back(static_cast<qint64>(pid));
+    if (::syscall(SYS_pidfd_send_signal, pidfd, 0, nullptr, 0) != 0) {
+      if (errno != ESRCH)
+        inspection.unverified = true;
+      ::close(pidfd);
+      continue;
+    }
+    if (environment.error() != QFileDevice::NoError) {
+      inspection.unverified = true;
+      ::close(pidfd);
+      continue;
+    }
+    if (!variables.contains(expected)) {
+      ::close(pidfd);
+      continue;
+    }
+    inspection.pidfds.push_back(pidfd);
   }
-  return matches;
 #else
   (void)session_id;
   (void)token;
-  return {};
+  inspection.unverified = session_id > 0 || !token.isEmpty();
 #endif
+  return inspection;
 }
 
 bool experiment_session_alive(qint64 session_id, const QString& token) {
-  return !experiment_session_processes(session_id, token).empty();
+  ExperimentSessionInspection inspection = inspect_experiment_session(session_id, token);
+  return inspection.unverified || !inspection.pidfds.empty();
 }
 
 bool signal_experiment_session(qint64 session_id, const QString& token, int signal) {
-#ifdef Q_OS_UNIX
+  ExperimentSessionInspection inspection = inspect_experiment_session(session_id, token);
   bool signalled = false;
-  for (qint64 pid : experiment_session_processes(session_id, token))
-    signalled = ::kill(static_cast<pid_t>(pid), signal) == 0 || signalled;
-  return signalled;
+  for (int pidfd : inspection.pidfds) {
+#if defined(Q_OS_UNIX) && defined(SYS_pidfd_send_signal)
+    signalled = ::syscall(SYS_pidfd_send_signal, pidfd, signal, nullptr, 0) == 0 || signalled;
 #else
-  (void)session_id;
-  (void)token;
-  (void)signal;
-  return false;
+    (void)pidfd;
+    (void)signal;
 #endif
+  }
+  return signalled;
 }
 
 void interrupt_process(QProcess* process, qint64 session_id, const QString& token) {
@@ -367,7 +429,7 @@ struct StitchingExperimentDialog::Impl {
           pending_candidate_startup_error.isEmpty() && pending_candidate_exit_status == QProcess::NormalExit &&
           pending_candidate_exit_code == 0;
       if (may_be_complete)
-        configured = ValidateStitchingExperimentWorkspace(*finished.workspace);
+        configured = CompleteStitchingExperimentWorkspace(*finished.workspace);
       finished.complete = may_be_complete && configured.ok();
       if (finished.complete) {
         finished.failure.clear();
@@ -425,11 +487,11 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void stop_preview_process() {
+    stopping_preview = true;
+    preview_replay_pending = false;
     const bool process_running = preview_process && preview_process->state() != QProcess::NotRunning;
     if (!process_running && !experiment_session_alive(preview_process_group, preview_process_token))
       return;
-    stopping_preview = true;
-    preview_replay_pending = false;
     if (!process_running || preview_process->write("q") < 0 || !preview_process->waitForBytesWritten(250))
       interrupt_process(preview_process.get(), preview_process_group, preview_process_token);
     schedule_forced_stop(/*calibration=*/false);
@@ -443,6 +505,7 @@ struct StitchingExperimentDialog::Impl {
     --pending_group_shutdowns;
     qint64& process_group = calibration ? calibration_process_group : preview_process_group;
     process_group = 0;
+    (calibration ? calibration_process_token : preview_process_token).clear();
     if (retain_workspace) {
       if (session) {
         session->setAutoRemove(false);
@@ -489,6 +552,7 @@ struct StitchingExperimentDialog::Impl {
       return;
     }
     process_group = 0;
+    (calibration ? calibration_process_token : preview_process_token).clear();
     if (calibration)
       finalize_candidate_completion();
     else
@@ -903,6 +967,7 @@ struct StitchingExperimentDialog::Impl {
       QApplication::restoreOverrideCursor();
       if (!result->ok()) {
         show_status(QString::fromStdString(result->ToString()), true);
+        append_output_message("Candidate publication failed: " + QString::fromStdString(result->ToString()) + "\n");
       } else {
         show_status(QString(
                         "Candidate %1 selected. Its maps and seam will be used by the next main Program run without "
@@ -1078,13 +1143,17 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   preview_controls->addWidget(new QLabel("Duration"));
   preview_controls->addWidget(s.preview_duration);
   preview_controls->addWidget(s.loop);
-  preview_controls->addWidget(s.preview);
-  preview_controls->addWidget(s.stop_preview);
-  preview_controls->addWidget(maximize);
+  preview_controls->addStretch(1);
   preview_layout->addLayout(preview_controls);
+  auto* preview_actions = new QHBoxLayout();
+  preview_actions->addWidget(s.preview);
+  preview_actions->addWidget(s.stop_preview);
+  preview_actions->addWidget(maximize);
+  preview_layout->addLayout(preview_actions);
   splitter->addWidget(preview_panel);
   splitter->setStretchFactor(0, 2);
   splitter->setStretchFactor(1, 3);
+  splitter->setSizes({520, 760});
   root->addWidget(splitter, 1);
 
   s.progress = new QProgressBar();

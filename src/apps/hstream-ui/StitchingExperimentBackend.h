@@ -31,9 +31,9 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
     const StitchingExperimentSettings& settings,
     int sequence);
 
-// Confirms that the candidate process published a complete, generation-bound
-// artifact set before the UI offers preview or promotion.
-absl::Status ValidateStitchingExperimentWorkspace(const StitchingExperimentWorkspace& experiment);
+// After the runner and its helpers stop, validates the generation and durably
+// marks the private calibration complete before offering preview or promotion.
+absl::Status CompleteStitchingExperimentWorkspace(const StitchingExperimentWorkspace& experiment);
 
 // Builds the exact config document published by selection. Exposed so the
 // geometry invalidation contract can be checked without generating images.

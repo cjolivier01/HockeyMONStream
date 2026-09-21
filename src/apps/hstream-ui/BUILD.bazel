@@ -240,6 +240,15 @@ cc_library(
 )
 
 cc_test(
+    name = "stitching_experiment_dialog_test",
+    srcs = ["StitchingExperimentDialogTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":stitching_experiment_dialog", "@qt//:qt_widgets"],
+)
+
+cc_test(
     name = "stitching_experiment_backend_test",
     srcs = ["StitchingExperimentBackendTest.cpp"],
     copts = COMMON_COPTS,

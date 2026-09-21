@@ -3064,7 +3064,9 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     active_ui_preview_channel_ = ui_preview_channel_explicitly_disabled_ ? std::string() : initial_ui_preview_channel_;
     active_ui_preview_generation_ = 1;
   }
-  set_embedded_gpu_preview_video_mode(headless_render_video_ || !ui_preview_window_ids_.empty());
+  set_embedded_gpu_preview_video_mode(
+      headless_render_video_ || !ui_preview_window_ids_.empty(),
+      stitching_calibration_only_ && !headless_render_video_ && !ui_preview_window_ids_.empty());
 
   constexpr const char* kCalibrationInvalidationEnvironment = "HSTREAM_CALIBRATION_INVALIDATION_ID";
   if (clean_stitching_expected_invalidation_id_ != nullptr) {

@@ -238,18 +238,20 @@ absl::Status configure_candidate(
   calibration["invalidation_id"] = invalidation_id;
   remove_downstream_generation(config);
 
-  auto choices = hm::stitching::read_stitching_backend_choices(config);
-  if (!choices.ok())
-    return choices.status();
-  return hm::stitching::reserve_stitching_backend_generation_in_config(config, invalidation_id, *choices);
+  // The CLI reserves the immutable backend generation only after baseline,
+  // user, game, and command-line layers have resolved to one effective tuple.
+  // A copied game config alone cannot safely pre-reserve inherited choices.
+  calibration.remove("backend_generation");
+  return absl::OkStatus();
 }
 
 absl::Status write_config(const fs::path& path, const YAML::Node& config) {
   std::error_code error;
-  if (fs::exists(path, error) || fs::is_symlink(path, error))
-    return absl::AlreadyExistsError("Experiment config destination already exists: " + path.string());
-  if (error)
+  const fs::file_status destination = fs::symlink_status(path, error);
+  if (error && error != std::errc::no_such_file_or_directory)
     return absl::InternalError("Unable to inspect experiment config destination: " + error.message());
+  if (!error && destination.type() != fs::file_type::not_found)
+    return absl::AlreadyExistsError("Experiment config destination already exists: " + path.string());
   std::ofstream output(path, std::ios::out | std::ios::trunc);
   if (!output)
     return absl::InternalError("Unable to create experiment config: " + path.string());
@@ -386,11 +388,29 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
   }
 }
 
-absl::Status ValidateStitchingExperimentWorkspace(const StitchingExperimentWorkspace& experiment) {
+absl::Status CompleteStitchingExperimentWorkspace(const StitchingExperimentWorkspace& experiment) {
   auto lock = hm::stitching::HuginProject::RecoverAndLock(experiment.game_directory);
   if (!lock.ok())
     return lock.status();
   HM_RETURN_IF_ERROR(hm::stitching::validate_stitch_generation_artifact_bounds_locked(experiment.game_directory));
   auto generation = hm::stitching::stitch_artifact_generation_id_locked(experiment.game_directory);
-  return generation.ok() ? absl::OkStatus() : generation.status();
+  if (!generation.ok())
+    return generation.status();
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(experiment.game_directory);
+  if (!config_lock.ok())
+    return config_lock.status();
+  try {
+    YAML::Node config = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
+    HM_RETURN_IF_ERROR(hm::stitching::validate_stitching_generation_owner(config, experiment.invalidation_id));
+    // Calibration-only runners leave UI completion persistence to their owner.
+    // Leaving this pending makes the next preview clean and regenerate its maps.
+    YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    calibration["status"] = "complete";
+    calibration["rink_mask_status"] = "omitted";
+    calibration.remove("stale_from");
+    calibration.remove("artifacts_invalidated");
+    return hm::stitching::publish_game_config(experiment.game_directory, YAML::Dump(config) + "\n");
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to complete stitching experiment: " + std::string(exception.what()));
+  }
 }
