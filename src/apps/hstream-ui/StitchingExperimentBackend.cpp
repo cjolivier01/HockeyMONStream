@@ -91,6 +91,9 @@ absl::Status link_configured_videos(
           return absl::InvalidArgumentError("Experiment video roles must contain path strings");
         fs::path relative;
         HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, values[index].as<std::string>()));
+        if (!is_video(relative))
+          return absl::InvalidArgumentError(
+              "Configured experiment video is not a supported video file: " + relative.string());
         if (linked->insert(relative).second)
           HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory / relative));
         values[index] = relative.generic_string();
@@ -126,6 +129,9 @@ absl::Status link_auto_videos(
       }
       fs::path relative;
       HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, entry.path(), "video"));
+      if (!is_video(relative))
+        return absl::InvalidArgumentError(
+            "Auto-discovered experiment video resolves to a non-video file: " + entry.path().string());
       if (linked->insert(relative).second)
         HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory / relative));
     }
@@ -152,6 +158,9 @@ absl::Status link_calibration_assets(
       }
       fs::path relative;
       HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, entry.path(), "calibration asset"));
+      if (!std::regex_match(relative.filename().string(), kCalibrationAsset))
+        return absl::InvalidArgumentError(
+            "Experiment calibration asset resolves to a reserved file: " + entry.path().string());
       if (linked_assets.insert(relative).second)
         HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory / relative));
     }
@@ -232,20 +241,15 @@ absl::Status configure_candidate(
   auto choices = hm::stitching::read_stitching_backend_choices(config);
   if (!choices.ok())
     return choices.status();
-  YAML::Node generation = calibration["backend_generation"];
-  generation["invalidation_id"] = invalidation_id;
-  generation["control_point_matcher"] = choices->control_point_matcher;
-  generation["mapping_backend"] = choices->mapping_backend;
-  generation["projection"] = choices->projection;
-  generation["run_autooptimizer"] = choices->run_autooptimizer;
-  generation["projection_parameters"] = choices->projection_parameters;
-  YAML::Node effective(YAML::NodeType::Map);
-  hm::stitching::write_stitch_projection_framing(effective, choices->projection_framing);
-  generation["projection_framing"] = YAML::Clone(effective["stitching"]["projection_framing"]);
-  return absl::OkStatus();
+  return hm::stitching::reserve_stitching_backend_generation_in_config(config, invalidation_id, *choices);
 }
 
 absl::Status write_config(const fs::path& path, const YAML::Node& config) {
+  std::error_code error;
+  if (fs::exists(path, error) || fs::is_symlink(path, error))
+    return absl::AlreadyExistsError("Experiment config destination already exists: " + path.string());
+  if (error)
+    return absl::InternalError("Unable to inspect experiment config destination: " + error.message());
   std::ofstream output(path, std::ios::out | std::ios::trunc);
   if (!output)
     return absl::InternalError("Unable to create experiment config: " + path.string());

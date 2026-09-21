@@ -17,8 +17,9 @@ are ignored and a batch can contain at most 64 candidates. By default every cand
 rink-leveling rotation. Clear that option to add pitch/roll variants as comma-separated `pitch/roll` pairs, for
 example `0/0,-1.5/0.5`. Explicit variants preserve the game's saved yaw.
 
-Each candidate receives a private temporary game directory. Camera chapters and matching camera-calibration sidecars
-are read-only symlinks to the selected game, while generated stitching artifacts and configuration stay isolated.
+When **Start batch** reaches a candidate, it prepares a private temporary game directory. Camera chapters and matching
+camera-calibration sidecars are input symlinks to the selected game, while generated stitching artifacts and
+configuration stay isolated. Workspace preparation is deferred so adding a large option matrix remains immediate.
 **Start batch** locks the queue and runs its candidates serially through
 `hstream-cli --stitching-calibration-only` with a fake sink, so the batch can be left unattended. This graph omits
 Program crop, inference, rink masking, and play tracking. Completed candidates remain available for comparison after
@@ -27,8 +28,9 @@ the batch finishes or is cancelled.
 Adding, running, cancelling, previewing, or discarding a batch never modifies the selected game's stitching config or
 artifacts. **Discard batch** and closing the dialog remove the private candidate data. The only operation that changes
 the main game's stitching state is the explicit **Use selected in main Program** action described below. If a stopped
-runner's process group cannot be confirmed dead, the tool reports and retains its temporary workspace path instead of
-risking deletion while a descendant still uses it; that retained directory can be removed after the process exits.
+runner's isolated process session cannot be confirmed dead, the tool reports and retains its temporary workspace path
+instead of risking deletion while a descendant still uses it; that retained directory can be removed after the
+process exits. A retained candidate is quarantined from preview and promotion.
 
 ## Comparing candidates
 
@@ -45,6 +47,9 @@ then merges the candidate's stitching-owned settings into the selected game's `c
 rink-mask/output state. Artifact and config publication share their locks and a durable recovery boundary: an
 interruption before the selected config is durable restores the prior artifact generation, while an interruption after
 it is durable retains the matching promoted generation.
+
+Validation and durable publication run on a worker so the desktop remains responsive; conflicting experiment actions
+and dialog closure wait for that transaction to finish.
 
 Selection does not rerun feature matching, optimization, map generation, or seam generation. The next Program run
 therefore loads the chosen artifact generation directly. Discarding the private batch afterward does not affect that

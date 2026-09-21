@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
@@ -283,6 +284,16 @@ absl::StatusOr<int> lock_canvas_constraint_artifacts_impl(const fs::path& game_d
     if (!wait && (lock_error == EWOULDBLOCK || lock_error == EAGAIN))
       return -1;
     return absl::InternalError("Unable to lock stitching artifacts: " + std::string(std::strerror(lock_error)));
+  }
+  // Selection promotion nests the rink/config journal inside the stitch
+  // journal. Recover the inner transaction before the outer stitch journal
+  // decides whether an AWAITING_CONFIG publication committed or rolled back.
+  auto config_transaction =
+      wait ? GameConfigTransactionLock::Acquire(game_dir) : GameConfigTransactionLock::TryAcquire(game_dir);
+  if (!config_transaction.ok()) {
+    ::flock(descriptor, LOCK_UN);
+    ::close(descriptor);
+    return config_transaction.status();
   }
   auto recovery = recover_stitch_transactions_locked(game_dir);
   if (!recovery.ok()) {

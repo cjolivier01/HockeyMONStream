@@ -4,10 +4,13 @@
 
 #include <QtCore/QDebug>
 #include <QtCore/QDir>
+#include <QtCore/QFile>
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
+#include <QtCore/QThread>
 #include <QtCore/QTimer>
+#include <QtCore/QUuid>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QTextCursor>
@@ -38,6 +41,10 @@
 #include <set>
 #include <utility>
 #include <vector>
+
+#ifdef Q_OS_UNIX
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -147,35 +154,62 @@ std::optional<std::vector<std::array<double, 3>>> parse_rotations(const QString&
   return values;
 }
 
-bool process_group_alive(qint64 process_group) {
+std::vector<qint64> experiment_session_processes(qint64 session_id, const QString& token) {
 #ifdef Q_OS_UNIX
-  if (process_group > 0 && ::kill(static_cast<pid_t>(-process_group), 0) == 0)
-    return true;
-  return process_group > 0 && errno == EPERM;
+  if (session_id <= 0 || token.isEmpty())
+    return {};
+  const QByteArray expected = "HSTREAM_EXPERIMENT_PROCESS_TOKEN=" + token.toUtf8();
+  std::vector<qint64> matches;
+  const QStringList entries = QDir("/proc").entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+  for (const QString& entry : entries) {
+    bool numeric = false;
+    const qint64 parsed = entry.toLongLong(&numeric);
+    if (!numeric || parsed <= 0)
+      continue;
+    const pid_t pid = static_cast<pid_t>(parsed);
+    if (::getsid(pid) != static_cast<pid_t>(session_id))
+      continue;
+    QFile environment(QString("/proc/%1/environ").arg(entry));
+    if (!environment.open(QIODevice::ReadOnly))
+      continue;
+    const QList<QByteArray> variables = environment.readAll().split('\0');
+    if (variables.contains(expected))
+      matches.push_back(static_cast<qint64>(pid));
+  }
+  return matches;
 #else
-  (void)process_group;
+  (void)session_id;
+  (void)token;
+  return {};
+#endif
+}
+
+bool experiment_session_alive(qint64 session_id, const QString& token) {
+  return !experiment_session_processes(session_id, token).empty();
+}
+
+bool signal_experiment_session(qint64 session_id, const QString& token, int signal) {
+#ifdef Q_OS_UNIX
+  bool signalled = false;
+  for (qint64 pid : experiment_session_processes(session_id, token))
+    signalled = ::kill(static_cast<pid_t>(pid), signal) == 0 || signalled;
+  return signalled;
+#else
+  (void)session_id;
+  (void)token;
+  (void)signal;
   return false;
 #endif
 }
 
-void interrupt_process(QProcess* process, qint64 process_group) {
-#ifdef Q_OS_UNIX
-  if (process_group > 0 && ::kill(static_cast<pid_t>(-process_group), SIGINT) == 0)
-    return;
-#else
-  (void)process_group;
-#endif
-  if (process && process->state() != QProcess::NotRunning)
+void interrupt_process(QProcess* process, qint64 session_id, const QString& token) {
+  const bool signalled = signal_experiment_session(session_id, token, SIGINT);
+  if (!signalled && process && process->state() != QProcess::NotRunning)
     process->terminate();
 }
 
-void kill_process(QProcess* process, qint64 process_group) {
-#ifdef Q_OS_UNIX
-  if (process_group > 0)
-    (void)::kill(static_cast<pid_t>(-process_group), SIGKILL);
-#else
-  (void)process_group;
-#endif
+void kill_process(QProcess* process, qint64 session_id, const QString& token) {
+  (void)signal_experiment_session(session_id, token, SIGKILL);
   if (process && process->state() != QProcess::NotRunning)
     process->kill();
 }
@@ -184,7 +218,8 @@ void kill_process(QProcess* process, qint64 process_group) {
 
 struct StitchingExperimentDialog::Impl {
   struct Candidate {
-    StitchingExperimentWorkspace workspace;
+    StitchingExperimentSettings settings;
+    std::optional<StitchingExperimentWorkspace> workspace;
     int sequence{0};
     int row{-1};
     bool complete{false};
@@ -223,8 +258,11 @@ struct StitchingExperimentDialog::Impl {
   std::vector<Candidate> candidates;
   std::unique_ptr<QProcess> calibration_process;
   std::unique_ptr<QProcess> preview_process;
+  QThread* promotion_worker{nullptr};
   qint64 calibration_process_group{0};
   qint64 preview_process_group{0};
+  QString calibration_process_token;
+  QString preview_process_token;
   std::optional<uint64_t> calibration_shutdown_ticket;
   std::optional<uint64_t> preview_shutdown_ticket;
   uint64_t next_shutdown_ticket{0};
@@ -254,7 +292,7 @@ struct StitchingExperimentDialog::Impl {
   QStringList base_arguments(const Candidate& candidate) const {
     return {
         "-g",
-        QString::fromStdString(candidate.workspace.game_id),
+        QString::fromStdString(candidate.workspace->game_id),
         "--enable-sources=URI-MULTIPLE",
         "--stitching-calibration-only",
         "-c",
@@ -265,9 +303,9 @@ struct StitchingExperimentDialog::Impl {
 
   QProcessEnvironment candidate_environment(const Candidate& candidate) const {
     QProcessEnvironment result = environment;
-    result.insert("HM_GAME_DIR", QString::fromStdString(candidate.workspace.root.string()));
-    result.insert("HM_MAX_CONTROL_POINTS", QString::number(candidate.workspace.settings.control_points));
-    result.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(candidate.workspace.settings.frame_count));
+    result.insert("HM_GAME_DIR", QString::fromStdString(candidate.workspace->root.string()));
+    result.insert("HM_MAX_CONTROL_POINTS", QString::number(candidate.settings.control_points));
+    result.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(candidate.settings.frame_count));
     result.insert("HSTREAM_RENDER_AUDIO_MUTED", "1");
     result.insert("USE_NEW_NVSTREAMMUX", "yes");
     return result;
@@ -280,20 +318,21 @@ struct StitchingExperimentDialog::Impl {
 
   void update_controls() {
     const bool previewing = preview_process && preview_process->state() != QProcess::NotRunning;
+    const bool promoting = promotion_worker != nullptr;
     const bool stopping = pending_group_shutdowns > 0;
     const int row = table->currentRow();
     const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete;
     const bool selected_queued = row >= 0 && row < static_cast<int>(candidates.size()) && !batch_started;
-    const bool editing_batch = !batch_active && !batch_started && !previewing && !stopping && !closing;
+    const bool editing_batch = !batch_active && !batch_started && !previewing && !promoting && !stopping && !closing;
     add_to_batch->setEnabled(editing_batch && candidates.size() < 64);
     remove_from_batch->setEnabled(editing_batch && selected_queued);
-    clear_batch->setEnabled(!batch_active && !previewing && !stopping && !closing && !candidates.empty());
+    clear_batch->setEnabled(!batch_active && !previewing && !promoting && !stopping && !closing && !candidates.empty());
     start_batch->setEnabled(editing_batch && !candidates.empty());
     cancel->setEnabled(batch_active && !closing);
-    table->setEnabled(!batch_active && !previewing && !closing);
-    preview->setEnabled(selected && !batch_active && !previewing && !stopping && !closing);
+    table->setEnabled(!batch_active && !previewing && !promoting && !closing);
+    preview->setEnabled(selected && !batch_active && !previewing && !promoting && !stopping && !closing);
     stop_preview->setEnabled(previewing && !closing);
-    apply->setEnabled(selected && !batch_active && !previewing && !closing);
+    apply->setEnabled(selected && !batch_active && !previewing && !promoting && !closing);
     shared_rotation->setEnabled(editing_batch);
     rotations->setEnabled(editing_batch && !shared_rotation->isChecked());
     for (QWidget* input : std::array<QWidget*, 3>{control_points, frame_counts, start_frames})
@@ -328,7 +367,7 @@ struct StitchingExperimentDialog::Impl {
           pending_candidate_startup_error.isEmpty() && pending_candidate_exit_status == QProcess::NormalExit &&
           pending_candidate_exit_code == 0;
       if (may_be_complete)
-        configured = ValidateStitchingExperimentWorkspace(finished.workspace);
+        configured = ValidateStitchingExperimentWorkspace(*finished.workspace);
       finished.complete = may_be_complete && configured.ok();
       if (finished.complete) {
         finished.failure.clear();
@@ -352,6 +391,7 @@ struct StitchingExperimentDialog::Impl {
       }
       calibration_process.reset();
       calibration_process_group = 0;
+      calibration_process_token.clear();
       candidate_completion_pending = false;
       current_candidate_workspace_unsafe = false;
       pending_candidate_row = -1;
@@ -369,10 +409,11 @@ struct StitchingExperimentDialog::Impl {
     QTimer::singleShot(0, dialog, [this]() {
       if (!preview_completion_pending)
         return;
-      const bool replay = preview_replay_pending;
+      const bool replay = preview_replay_pending && !stopping_preview && !closing;
       preview_replay_pending = false;
       preview_process.reset();
       preview_process_group = 0;
+      preview_process_token.clear();
       preview_completion_pending = false;
       preview_candidate_row = -1;
       update_controls();
@@ -385,11 +426,12 @@ struct StitchingExperimentDialog::Impl {
 
   void stop_preview_process() {
     const bool process_running = preview_process && preview_process->state() != QProcess::NotRunning;
-    if (!process_running && !process_group_alive(preview_process_group))
+    if (!process_running && !experiment_session_alive(preview_process_group, preview_process_token))
       return;
     stopping_preview = true;
+    preview_replay_pending = false;
     if (!process_running || preview_process->write("q") < 0 || !preview_process->waitForBytesWritten(250))
-      interrupt_process(preview_process.get(), preview_process_group);
+      interrupt_process(preview_process.get(), preview_process_group, preview_process_token);
     schedule_forced_stop(/*calibration=*/false);
   }
 
@@ -434,14 +476,15 @@ struct StitchingExperimentDialog::Impl {
   void settle_finished_process(bool calibration) {
     std::optional<uint64_t>& active = calibration ? calibration_shutdown_ticket : preview_shutdown_ticket;
     qint64& process_group = calibration ? calibration_process_group : preview_process_group;
+    const QString& process_token = calibration ? calibration_process_token : preview_process_token;
     if (active.has_value()) {
-      if (!process_group_alive(process_group))
+      if (!experiment_session_alive(process_group, process_token))
         finish_shutdown_ticket(calibration, *active);
       return;
     }
-    if (process_group_alive(process_group)) {
+    if (experiment_session_alive(process_group, process_token)) {
       QProcess* process = calibration ? calibration_process.get() : preview_process.get();
-      interrupt_process(process, process_group);
+      interrupt_process(process, process_group, process_token);
       schedule_forced_stop(calibration);
       return;
     }
@@ -455,8 +498,9 @@ struct StitchingExperimentDialog::Impl {
   void schedule_forced_stop(bool calibration) {
     QProcess* process = calibration ? calibration_process.get() : preview_process.get();
     qint64& process_group = calibration ? calibration_process_group : preview_process_group;
+    const QString& process_token = calibration ? calibration_process_token : preview_process_token;
     const bool process_running = process && process->state() != QProcess::NotRunning;
-    if (!process_running && !process_group_alive(process_group))
+    if (!process_running && !experiment_session_alive(process_group, process_token))
       return;
     std::optional<uint64_t>& active = calibration ? calibration_shutdown_ticket : preview_shutdown_ticket;
     if (active.has_value())
@@ -465,17 +509,21 @@ struct StitchingExperimentDialog::Impl {
     active = ticket;
     ++pending_group_shutdowns;
     const qint64 captured_group = process_group;
+    const QString captured_token = process_token;
     const QPointer<QProcess> guarded_process(process);
-    QTimer::singleShot(3000, dialog, [this, calibration, ticket, captured_group, guarded_process]() {
+    QTimer::singleShot(3000, dialog, [this, calibration, ticket, captured_group, captured_token, guarded_process]() {
       const std::optional<uint64_t>& current = calibration ? calibration_shutdown_ticket : preview_shutdown_ticket;
       if (!current.has_value() || *current != ticket)
         return;
       const qint64 effective_group =
           captured_group > 0 ? captured_group : (calibration ? calibration_process_group : preview_process_group);
-      kill_process(guarded_process.data(), effective_group);
-      QTimer::singleShot(100, dialog, [this, calibration, ticket, effective_group]() {
-        const bool group_unverified = effective_group <= 0;
-        const bool descendants_remain = group_unverified || process_group_alive(effective_group);
+      const QString effective_token = !captured_token.isEmpty()
+          ? captured_token
+          : (calibration ? calibration_process_token : preview_process_token);
+      kill_process(guarded_process.data(), effective_group, effective_token);
+      QTimer::singleShot(100, dialog, [this, calibration, ticket, effective_group, effective_token]() {
+        const bool group_unverified = effective_group <= 0 || effective_token.isEmpty();
+        const bool descendants_remain = group_unverified || experiment_session_alive(effective_group, effective_token);
         if (descendants_remain) {
           const QString retained_path = session ? session->path() : QString("(unknown path)");
           const QString message =
@@ -493,9 +541,9 @@ struct StitchingExperimentDialog::Impl {
 
   void stop_calibration_process() {
     const bool process_running = calibration_process && calibration_process->state() != QProcess::NotRunning;
-    if (!process_running && !process_group_alive(calibration_process_group))
+    if (!process_running && !experiment_session_alive(calibration_process_group, calibration_process_token))
       return;
-    interrupt_process(calibration_process.get(), calibration_process_group);
+    interrupt_process(calibration_process.get(), calibration_process_group, calibration_process_token);
     schedule_forced_stop(/*calibration=*/true);
   }
 
@@ -504,7 +552,7 @@ struct StitchingExperimentDialog::Impl {
       return;
     const bool calibrating = calibration_process && calibration_process->state() != QProcess::NotRunning;
     const bool previewing = preview_process && preview_process->state() != QProcess::NotRunning;
-    if (calibrating || previewing || pending_group_shutdowns > 0 || candidate_completion_pending ||
+    if (calibrating || previewing || promotion_worker || pending_group_shutdowns > 0 || candidate_completion_pending ||
         preview_completion_pending || close_completion_scheduled)
       return;
     close_completion_scheduled = true;
@@ -529,6 +577,7 @@ struct StitchingExperimentDialog::Impl {
     if (cancelling || running_candidate >= static_cast<int>(candidates.size())) {
       calibration_process.reset();
       calibration_process_group = 0;
+      calibration_process_token.clear();
       batch_active = false;
       progress->setValue(cancelling ? running_candidate : static_cast<int>(candidates.size()));
       show_status(
@@ -539,6 +588,19 @@ struct StitchingExperimentDialog::Impl {
       return;
     }
     Candidate& candidate = candidates[running_candidate];
+    if (!candidate.workspace.has_value()) {
+      auto workspace = CreateStitchingExperimentWorkspace(
+          game_directory.toStdString(), session->path().toStdString(), candidate.settings, candidate.sequence);
+      if (!workspace.ok()) {
+        candidate.failure = QString::fromStdString(workspace.status().ToString());
+        table->item(candidate.row, 5)->setText(candidate.failure);
+        progress->setValue(running_candidate + 1);
+        show_status(QString("Could not prepare Candidate %1: %2").arg(candidate.sequence).arg(candidate.failure), true);
+        QTimer::singleShot(0, dialog, [this]() { launch_next_candidate(); });
+        return;
+      }
+      candidate.workspace = std::move(*workspace);
+    }
     table->item(candidate.row, 5)->setText("Running…");
     table->selectRow(candidate.row);
     progress->setValue(running_candidate);
@@ -546,24 +608,24 @@ struct StitchingExperimentDialog::Impl {
 
     calibration_process = std::make_unique<QProcess>();
     calibration_process_group = 0;
+    calibration_process_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
     current_candidate_workspace_unsafe = false;
     calibration_process->setProcessChannelMode(QProcess::MergedChannels);
     calibration_process->setWorkingDirectory(working_directory);
     QProcessEnvironment env = candidate_environment(candidate);
+    env.insert("HSTREAM_EXPERIMENT_PROCESS_TOKEN", calibration_process_token);
     env.insert("HSTREAM_CALIBRATION_PENDING", "1");
     env.insert("HSTREAM_CALIBRATION_START_STAGE", "input");
-    env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", QString::fromStdString(candidate.workspace.invalidation_id));
+    env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", QString::fromStdString(candidate.workspace->invalidation_id));
     calibration_process->setProcessEnvironment(env);
     QStringList args = base_arguments(candidate);
-    args
-        << "--force-reconfigure"
-        << QString("--clean-expected-invalidation-id=%1")
-               .arg(QString::fromStdString(candidate.workspace.invalidation_id))
-        << "--enable-sinks=FAKE"
-        << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1")
-               .arg(candidate.workspace.settings.frame_count)
-        << QString("--stitch-frame-time=%1").arg(QString::fromStdString(candidate.workspace.settings.stitch_frame_time))
-        << "-t=1";
+    args << "--force-reconfigure"
+         << QString("--clean-expected-invalidation-id=%1")
+                .arg(QString::fromStdString(candidate.workspace->invalidation_id))
+         << "--enable-sinks=FAKE"
+         << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1").arg(candidate.settings.frame_count)
+         << QString("--stitch-frame-time=%1").arg(QString::fromStdString(candidate.settings.stitch_frame_time))
+         << "-t=1";
     bool uses_process_group = false;
 #ifdef Q_OS_UNIX
     uses_process_group = true;
@@ -608,7 +670,7 @@ struct StitchingExperimentDialog::Impl {
     const int row = table->rowCount();
     candidate.row = row;
     table->insertRow(row);
-    const StitchingExperimentSettings& settings = candidate.workspace.settings;
+    const StitchingExperimentSettings& settings = candidate.settings;
     const QString rotation = settings.rink_rotation_degrees ? QString("%1 / %2")
                                                                   .arg((*settings.rink_rotation_degrees)[1], 0, 'g', 6)
                                                                   .arg((*settings.rink_rotation_degrees)[2], 0, 'g', 6)
@@ -656,7 +718,7 @@ struct StitchingExperimentDialog::Impl {
                     : std::optional<std::array<double, 3>>(rink_rotations->at(rotation_index)),
             };
             const bool already_queued = std::any_of(candidates.begin(), candidates.end(), [&](const Candidate& item) {
-              return same_settings(item.workspace.settings, settings);
+              return same_settings(item.settings, settings);
             });
             const bool already_adding = std::any_of(
                 additions.begin(), additions.end(), [&](const auto& item) { return same_settings(item, settings); });
@@ -675,32 +737,12 @@ struct StitchingExperimentDialog::Impl {
       show_status("Every combination from these options is already in the batch.");
       return;
     }
-    if (!session) {
-      session = std::make_unique<QTemporaryDir>(QDir::tempPath() + "/hstream-stitch-experiments-XXXXXX");
-      if (!session->isValid()) {
-        show_status("Could not create a private stitching experiment directory.", true);
-        session.reset();
-        return;
-      }
-    }
-    std::vector<Candidate> prepared;
-    prepared.reserve(additions.size());
-    for (const StitchingExperimentSettings& settings : additions) {
-      const int sequence = ++next_candidate_sequence;
-      auto workspace = CreateStitchingExperimentWorkspace(
-          game_directory.toStdString(), session->path().toStdString(), settings, sequence);
-      if (!workspace.ok()) {
-        show_status(QString::fromStdString(workspace.status().ToString()), true);
-        return;
-      }
-      prepared.push_back(Candidate{.workspace = std::move(*workspace), .sequence = sequence});
-    }
-    for (Candidate& candidate : prepared)
-      append_candidate(std::move(candidate));
+    for (StitchingExperimentSettings& settings : additions)
+      append_candidate(Candidate{.settings = std::move(settings), .sequence = ++next_candidate_sequence});
     table->selectRow(table->rowCount() - 1);
     show_status(QString("Added %1 candidate%2. The batch now contains %3; add more options or start it.")
-                    .arg(prepared.size())
-                    .arg(prepared.size() == 1 ? "" : "s")
+                    .arg(additions.size())
+                    .arg(additions.size() == 1 ? "" : "s")
                     .arg(candidates.size()));
     update_controls();
   }
@@ -756,6 +798,12 @@ struct StitchingExperimentDialog::Impl {
   void start_candidate_batch() {
     if (batch_active || batch_started || candidates.empty())
       return;
+    session = std::make_unique<QTemporaryDir>(QDir::tempPath() + "/hstream-stitch-experiments-XXXXXX");
+    if (!session->isValid()) {
+      show_status("Could not create a private stitching experiment directory.", true);
+      session.reset();
+      return;
+    }
     batch_started = true;
     batch_active = true;
     running_candidate = -1;
@@ -780,9 +828,12 @@ struct StitchingExperimentDialog::Impl {
     Candidate& candidate = candidates[row];
     preview_process = std::make_unique<QProcess>();
     preview_process_group = 0;
+    preview_process_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
     preview_process->setProcessChannelMode(QProcess::MergedChannels);
     preview_process->setWorkingDirectory(working_directory);
-    preview_process->setProcessEnvironment(candidate_environment(candidate));
+    QProcessEnvironment preview_environment = candidate_environment(candidate);
+    preview_environment.insert("HSTREAM_EXPERIMENT_PROCESS_TOKEN", preview_process_token);
+    preview_process->setProcessEnvironment(preview_environment);
     QStringList args = base_arguments(candidate);
     args << "--enable-sinks=RENDER"
          << "--show" << QString("--start-time=%1").arg(format_time(preview_start->time()))
@@ -838,19 +889,36 @@ struct StitchingExperimentDialog::Impl {
     Candidate& candidate = candidates[row];
     show_status(QString("Publishing Candidate %1 to the main Program…").arg(candidate.sequence));
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const absl::Status promoted = PromoteStitchingExperiment(candidate.workspace, game_directory.toStdString());
-    QApplication::restoreOverrideCursor();
-    if (!promoted.ok()) {
-      show_status(QString::fromStdString(promoted.ToString()), true);
-      return;
-    }
-    show_status(
-        QString(
-            "Candidate %1 selected. Its maps and seam will be used by the next main Program run without recalibration.")
-            .arg(candidate.sequence));
-    if (selection_applied)
-      selection_applied();
-    apply->setEnabled(false);
+    auto result = std::make_shared<absl::Status>(absl::UnknownError("Promotion did not complete"));
+    const StitchingExperimentWorkspace workspace = *candidate.workspace;
+    const std::string destination = game_directory.toStdString();
+    const int sequence = candidate.sequence;
+    QThread* worker = QThread::create(
+        [workspace, destination, result]() { *result = PromoteStitchingExperiment(workspace, destination); });
+    promotion_worker = worker;
+    QObject::connect(worker, &QThread::finished, dialog, [this, worker, result, sequence]() {
+      if (promotion_worker != worker)
+        return;
+      promotion_worker = nullptr;
+      QApplication::restoreOverrideCursor();
+      if (!result->ok()) {
+        show_status(QString::fromStdString(result->ToString()), true);
+      } else {
+        show_status(QString(
+                        "Candidate %1 selected. Its maps and seam will be used by the next main Program run without "
+                        "recalibration.")
+                        .arg(sequence));
+        if (selection_applied)
+          selection_applied();
+      }
+      update_controls();
+      if (result->ok())
+        apply->setEnabled(false);
+      maybe_finish_close();
+    });
+    QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
+    update_controls();
   }
 
   void shutdown() {
@@ -871,19 +939,25 @@ struct StitchingExperimentDialog::Impl {
     closing = true;
     cancelling = true;
     const bool preview_owned = (preview_process && preview_process->state() != QProcess::NotRunning) ||
-        preview_shutdown_ticket.has_value() || process_group_alive(preview_process_group);
+        preview_shutdown_ticket.has_value() || experiment_session_alive(preview_process_group, preview_process_token);
     const bool calibration_owned = (calibration_process && calibration_process->state() != QProcess::NotRunning) ||
-        calibration_shutdown_ticket.has_value() || process_group_alive(calibration_process_group);
+        calibration_shutdown_ticket.has_value() ||
+        experiment_session_alive(calibration_process_group, calibration_process_token);
     if (preview_owned)
-      kill_process(preview_process.get(), preview_process_group);
+      kill_process(preview_process.get(), preview_process_group, preview_process_token);
     if (calibration_owned)
-      kill_process(calibration_process.get(), calibration_process_group);
+      kill_process(calibration_process.get(), calibration_process_group, calibration_process_token);
     const bool unverified_process =
         (preview_owned && preview_process_group <= 0) || (calibration_owned && calibration_process_group <= 0);
     if (session &&
-        (unverified_process || process_group_alive(preview_process_group) ||
-         process_group_alive(calibration_process_group)))
+        (unverified_process || experiment_session_alive(preview_process_group, preview_process_token) ||
+         experiment_session_alive(calibration_process_group, calibration_process_token)))
       session->setAutoRemove(false);
+    if (promotion_worker) {
+      promotion_worker->wait();
+      delete promotion_worker;
+      promotion_worker = nullptr;
+    }
   }
 };
 
