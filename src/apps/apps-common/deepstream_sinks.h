@@ -58,6 +58,9 @@ typedef struct {
   NvDsEncoderType codec;
   NvDsEncHwSwType enc_type;
   guint compute_hw;
+  /** Optional NvBufSurfTransform_Inter value for the sink-local converter. */
+  gint interpolation_method;
+  gboolean interpolation_method_set;
   gint bitrate;
   /** Optional reduced source-bitrate/source-pixel-count ratio used by encode-file sinks. */
   guint64 bitrate_per_pixel_numerator;
@@ -206,6 +209,7 @@ constexpr guint kRtspAudioChannels = 2;
 
 std::optional<NvDsSinkType> sink_type_from_string(const std::string& str);
 std::string to_string(const NvDsSinkType& type);
+std::optional<gint> interpolation_method_from_string(const std::string& value);
 
 } // namespace hm
 

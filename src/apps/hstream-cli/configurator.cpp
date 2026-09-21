@@ -5812,10 +5812,35 @@ absl::Status Configurator::map_common_config_keys() {
     } catch (const YAML::Exception&) {
       continue;
     }
+    const std::string sink_path = "pipeline." + section_name + ".";
+    if (sink_type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) {
+      constexpr const char* kCanonicalPath = "video_out.program_4k_interpolation";
+      constexpr const char* kNativeKey = "interpolation-method";
+      const std::string destination_path = sink_path + kNativeKey;
+      std::optional<YAML::Node> interpolation;
+      HM_ASSIGN_OR_RETURN(interpolation, canonical_source(kCanonicalPath, destination_path, sink[kNativeKey], true));
+      const YAML::Node selected = interpolation.has_value() ? *interpolation : sink[kNativeKey];
+      if (!selected.IsDefined() || selected.IsNull() || !selected.IsScalar()) {
+        return absl::InvalidArgumentError(
+            std::string(interpolation.has_value() ? kCanonicalPath : destination_path) +
+            " must be default, nearest, bilinear, algo1-algo4, cubic/bicubic, super, lanczos, nicest, or 0-6");
+      }
+      const std::string value = selected.as<std::string>();
+      const std::optional<gint> parsed = interpolation_method_from_string(value);
+      if (!parsed.has_value()) {
+        return absl::InvalidArgumentError(
+            "Invalid " + std::string(interpolation.has_value() ? kCanonicalPath : destination_path) + ": " + value);
+      }
+      sink[kNativeKey] = *parsed;
+      if (interpolation.has_value()) {
+        const int source_rank = explicit_value_rank(kCanonicalPath);
+        if (source_rank >= 1)
+          explicit_value_ranks_[destination_path] = source_rank;
+      }
+    }
     if (sink_type != NV_DS_SINK_ENCODE_FILE)
       continue;
 
-    const std::string sink_path = "pipeline." + section_name + ".";
     std::optional<YAML::Node> bitrate;
     HM_ASSIGN_OR_RETURN(bitrate, canonical_source("video_out.bit_rate", sink_path + "bitrate", sink["bitrate"], true));
     if (bitrate.has_value() && bitrate->IsNull()) {

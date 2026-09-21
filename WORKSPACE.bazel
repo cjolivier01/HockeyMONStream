@@ -195,13 +195,13 @@ git_repository(
 ################################ HockeyMON Sub-Modules ################################
 git_repository(
     name = "hm-cupano",
-    commit = "54ccbe3981c0008aa2fb2e08b089a38062321c1f",
+    commit = "f7dca49f0fae67ae70ef1dee475c2ec3f886ee0f",
     remote = "ssh://git@github.com/cjolivier01/hm-cupano",
 )
 
 git_repository(
     name = "jetson-utils",
-    commit = "7efddeb92797c15a6a2dfea67244013b2c05b53d",
+    commit = "c34f73a80ee39093f749b01293cd9bed9ef0eaca",
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
 

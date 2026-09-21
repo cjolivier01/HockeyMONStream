@@ -14,8 +14,22 @@ int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = hm::sink_type_from_string("ENCODE_PROGRAM_4K_FILE") == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE &&
-      hm::to_string(NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) == "ENCODE_PROGRAM_4K_FILE";
+      hm::to_string(NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) == "ENCODE_PROGRAM_4K_FILE" &&
+      hm::interpolation_method_from_string("default") == NvBufSurfTransformInter_Default &&
+      hm::interpolation_method_from_string("nearest") == NvBufSurfTransformInter_Nearest &&
+      hm::interpolation_method_from_string("bilinear") == NvBufSurfTransformInter_Bilinear &&
+      hm::interpolation_method_from_string("algo1") == NvBufSurfTransformInter_Algo1 &&
+      hm::interpolation_method_from_string("cubic") == NvBufSurfTransformInter_Algo1 &&
+      hm::interpolation_method_from_string("bicubic") == NvBufSurfTransformInter_Algo1 &&
+      hm::interpolation_method_from_string("algo2") == NvBufSurfTransformInter_Algo2 &&
+      hm::interpolation_method_from_string("super") == NvBufSurfTransformInter_Algo2 &&
+      hm::interpolation_method_from_string("algo3") == NvBufSurfTransformInter_Algo3 &&
+      hm::interpolation_method_from_string("lanczos") == NvBufSurfTransformInter_Algo3 &&
+      hm::interpolation_method_from_string("algo4") == NvBufSurfTransformInter_Algo4 &&
+      hm::interpolation_method_from_string("nicest") == NvBufSurfTransformInter_Algo4 &&
+      !hm::interpolation_method_from_string("bogus").has_value();
   for (const auto& size : {std::make_pair(4096, 2304), std::make_pair(4096, 2048), std::make_pair(1920, 1080)}) {
+    const bool override_with_cubic = size == std::make_pair(4096, 2304);
     gchar* paths[2]{};
     NvDsSinkSubBinConfig configs[2]{};
     for (int i = 0; i < 2; ++i) {
@@ -30,6 +44,10 @@ int main(int argc, char** argv) {
       configs[i].encoder_config.container = NV_DS_CONTAINER_MKV;
       configs[i].encoder_config.bitrate = 45000000;
       configs[i].encoder_config.output_file_path = paths[i];
+      if (i == 1 && override_with_cubic) {
+        configs[i].encoder_config.interpolation_method = NvBufSurfTransformInter_Algo1;
+        configs[i].encoder_config.interpolation_method_set = TRUE;
+      }
     }
     NvDsSinkBin sinks{};
     if (!create_sink_bin(2, configs, &sinks, 0))
@@ -46,7 +64,9 @@ int main(int argc, char** argv) {
         &upload_compute_hw,
         NULL);
     ok &= full_resolution_interpolation == NvBufSurfTransformInter_Default &&
-        upload_interpolation == NvBufSurfTransformInter_Algo1 && upload_compute_hw == 1;
+        upload_interpolation ==
+            (override_with_cubic ? NvBufSurfTransformInter_Algo1 : NvBufSurfTransformInter_Default) &&
+        upload_compute_hw == 1;
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
     const char* upload_properties = "compute-hw=1 copy-hw=2";
 #else

@@ -291,6 +291,10 @@ sink6:
   sync: 0
   profile: 0
   source-id: 0
+  # Optional NVIDIA scaling override: default/nearest/bilinear/algo1-algo4 or
+  # numeric 0-6. CUDA aliases: cubic/bicubic, super, lanczos; VIC uses
+  # 5-tap/10-tap/smart instead. Nicest means algo4 (ignored on CUDA, nicest on VIC).
+  # interpolation-method: default
   # Fallback when source bitrate metadata is unavailable.
   bitrate: 45000000
 

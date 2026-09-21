@@ -311,6 +311,15 @@ cc_test(
 )
 
 cc_test(
+    name = "sink_interpolation_parser_test",
+    srcs = ["SinkInterpolationParserTest.cpp"],
+    deps = [
+        ":deepstream_apps_common",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
     name = "uri_multiple_pipeline_test",
     srcs = ["UriMultiplePipelineTest.cpp"],
     size = "medium",
