@@ -103,9 +103,12 @@ def run_variant(args: argparse.Namespace, variant: str, precision: str, out_dir:
   cmd.extend(args.extra_run_arg)
 
   env = dict(os.environ)
-  # Force, not setdefault: the picker is only disabled on exactly "1", so an
-  # inherited HM_NO_SCOREBOARD=0 would leave it live and block indefinitely.
-  env["HM_NO_SCOREBOARD"] = "1"
+  if args.disable_scoreboard:
+    # Not merely "skip the picker": ScoreboardSelector::Run() short-circuits to
+    # Save(game_dir, {}), which PERSISTS an empty rink.scoreboard.
+    # perspective_polygon into the game's config.yaml. Behind a flag for that
+    # reason. Forced, not setdefault, because only exactly "1" disables it.
+    env["HM_NO_SCOREBOARD"] = "1"
 
   log_path = out_dir / variant / "run.log"
   print(f"[{variant}] {' '.join(cmd)}", flush=True)
@@ -156,10 +159,20 @@ def load_detections(bbox_dir: Path) -> dict[tuple[int, int], list[Detection]]:
 
 
 def match_frame(ref: list[Detection], cand: list[Detection], iou_threshold: float):
-  """Greedily pair boxes by descending IoU. Returns (pairs, missed, extra)."""
+  """Greedily pair same-class boxes by descending IoU. Returns (pairs, missed, extra).
+
+  Pairs must agree on class: without that, a label flip on an otherwise
+  identical box scores as a perfect IoU-1.0 match. Every box is `person` with
+  today's checkpoint, but the config declares num-detected-classes: 80.
+  """
   pairs: list[tuple[Detection, Detection, float]] = []
   candidates = sorted(
-      ((iou(r, c), ri, ci) for ri, r in enumerate(ref) for ci, c in enumerate(cand)),
+      (
+          (iou(r, c), ri, ci)
+          for ri, r in enumerate(ref)
+          for ci, c in enumerate(cand)
+          if r.label == c.label
+      ),
       key=lambda t: t[0],
       reverse=True,
   )
@@ -183,7 +196,7 @@ def compare(ref_frames, cand_frames, iou_threshold: float, min_confidence: float
     return [d for d in dets if d.confidence >= min_confidence]
 
   common = sorted(set(ref_frames) & set(cand_frames))
-  n_ref = n_cand = n_matched = n_missed = n_extra = 0
+  n_ref = n_cand = n_matched = n_missed = n_extra = n_frames_count_delta = 0
   iou_sum = conf_abs_sum = conf_signed_sum = 0.0
   missed_conf: list[float] = []
   extra_conf: list[float] = []
@@ -193,6 +206,9 @@ def compare(ref_frames, cand_frames, iou_threshold: float, min_confidence: float
     cand = keep(cand_frames[key])
     n_ref += len(ref)
     n_cand += len(cand)
+    if len(ref) != len(cand):
+      # The count-delta frame share is what the tracker actually sees.
+      n_frames_count_delta += 1
     pairs, missed, extra = match_frame(ref, cand, iou_threshold)
     n_matched += len(pairs)
     n_missed += len(missed)
@@ -218,10 +234,16 @@ def compare(ref_frames, cand_frames, iou_threshold: float, min_confidence: float
       "matched": n_matched,
       "missed": n_missed,
       "extra": n_extra,
-      # Fraction of reference boxes the candidate reproduced.
+      # Recall alone rewards a candidate that simply emits more boxes, so
+      # precision and F1 are reported too. F1 is the threshold-robust summary.
       "recall_vs_ref_pct": (100.0 * n_matched / n_ref) if n_ref else None,
+      "precision_vs_ref_pct": (100.0 * n_matched / n_cand) if n_cand else None,
+      "f1_vs_ref_pct": (100.0 * 2 * n_matched / (n_ref + n_cand)) if (n_ref + n_cand) else None,
+      # Misses and extras are errors at different locations: they add, not cancel.
+      "total_disagreements": n_missed + n_extra,
       "missed_pct": (100.0 * n_missed / n_ref) if n_ref else None,
       "extra_pct": (100.0 * n_extra / n_ref) if n_ref else None,
+      "frames_with_count_delta": n_frames_count_delta,
       "mean_iou_matched": (iou_sum / n_matched) if n_matched else None,
       "mean_abs_confidence_delta": (conf_abs_sum / n_matched) if n_matched else None,
       "mean_signed_confidence_delta": (conf_signed_sum / n_matched) if n_matched else None,
@@ -240,16 +262,17 @@ def _num(value: float | None, width: int, precision: int, sign: str = "") -> str
 def format_row(variant: str, m: dict) -> str:
   return (
       f"{variant:<16} {m['frames_compared']:>7} {m['ref_detections']:>8} {m['cand_detections']:>8} "
-      f"{_num(m['detection_count_delta_pct'], 8, 2, '+')} {_num(m['recall_vs_ref_pct'], 8, 2)} "
-      f"{_num(m['missed_pct'], 8, 2)} "
-      f"{_num(m['extra_pct'], 8, 2)} {_num(m['mean_iou_matched'], 8, 4)} "
+      f"{_num(m['recall_vs_ref_pct'], 8, 2)} {_num(m['precision_vs_ref_pct'], 9, 2)} "
+      f"{_num(m['f1_vs_ref_pct'], 7, 2)} {m['missed']:>7} {m['extra']:>6} "
+      f"{m['frames_with_count_delta']:>8} {_num(m['mean_iou_matched'], 8, 4)} "
       f"{_num(m['mean_abs_confidence_delta'], 9, 4)}"
   )
 
 
 HEADER = (
-    f"{'variant':<16} {'frames':>7} {'ref det':>8} {'cand det':>8} {'count%':>8} "
-    f"{'recall%':>8} {'missed%':>8} {'extra%':>8} {'meanIoU':>8} {'|dconf|':>9}"
+    f"{'variant':<16} {'frames':>7} {'ref det':>8} {'cand det':>8} {'recall%':>8} "
+    f"{'precis%':>9} {'F1%':>7} {'missed':>7} {'extra':>6} {'dframes':>8} "
+    f"{'meanIoU':>8} {'|dconf|':>9}"
 )
 
 
@@ -274,6 +297,13 @@ def main() -> int:
   parser.add_argument(
       "--run-timeout", type=float, default=1800.0, help="per-variant wall-clock limit in seconds"
   )
+  parser.add_argument(
+      "--disable-scoreboard",
+      action="store_true",
+      help="set HM_NO_SCOREBOARD=1 so runs are unattended. This WRITES an empty "
+      "rink.scoreboard.perspective_polygon into the game's config.yaml and does not undo it. "
+      "Without it, a game lacking scoreboard corners will block on an interactive picker.",
+  )
   parser.add_argument("--extra-run-arg", action="append", default=[])
   args = parser.parse_args()
 
@@ -295,9 +325,17 @@ def main() -> int:
     return 2
 
   # The reference is always a dedicated fp32 run; listed variants are candidates.
+  # Names are de-duplicated so a repeated precision means "run it again and
+  # compare" -- `--variants=fp16,fp16` is the FP16-vs-rebuilt-FP16 control,
+  # which matters because TensorRT tactic selection is timing-dependent and
+  # FP16 builds are not bit-reproducible.
   plan = [("reference", "fp32")]
+  seen: dict[str, int] = {}
   for precision in precisions:
     name = "control-fp32" if precision == "fp32" else precision
+    seen[name] = seen.get(name, 0) + 1
+    if seen[name] > 1:
+      name = f"{name}-{seen[name]}"
     plan.append((name, precision))
 
   failed: list[str] = []
@@ -318,18 +356,27 @@ def main() -> int:
     print(f"no reference detections under {out_dir / 'reference' / 'kitti'}", file=sys.stderr)
     return 1
 
+  # Parse each candidate once, not once per confidence floor.
+  candidates = {v: load_detections(out_dir / v / "kitti") for v, _ in plan[1:]}
+
   report: dict[str, dict] = {}
   for floor in floors:
     print(f"\n=== detection agreement vs fp32 reference (IoU>={args.iou_threshold}, conf>={floor}) ===")
     print(HEADER)
     for variant, _ in plan[1:]:
-      cand_frames = load_detections(out_dir / variant / "kitti")
+      cand_frames = candidates[variant]
       if not cand_frames:
         print(f"{variant:<16} (no detections)")
         continue
       metrics = compare(ref_frames, cand_frames, args.iou_threshold, floor)
       report.setdefault(variant, {})[f"conf_{floor}"] = metrics
       print(format_row(variant, metrics))
+      # The headline is an intersection; say so when the runs differ in length.
+      if metrics["frames_ref_only"] or metrics["frames_cand_only"]:
+        print(
+            f"{'':<16} (compared the intersection; {metrics['frames_ref_only']} ref-only "
+            f"and {metrics['frames_cand_only']} candidate-only frames excluded)"
+        )
 
   report_path = out_dir / "accuracy_report.json"
   report_path.write_text(json.dumps(report, indent=2))
