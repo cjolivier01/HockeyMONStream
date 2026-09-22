@@ -30,6 +30,7 @@
 #     visibility = ["//visibility:public"],
 # )
 exports_files([
+    "quantize_detector_onnx.py",
     "capture_stitching_projection_frames.py",
     "deploy.sh",
     "install_deb.sh",
@@ -44,6 +45,12 @@ exports_files([
     "remove_deb_dependencies.py",
     "test_hstream_ui_e2e.sh",
 ])
+
+py_test(
+    name = "quantize_detector_onnx_test",
+    srcs = ["quantize_detector_onnx.py", "quantize_detector_onnx_test.py"],
+    main = "quantize_detector_onnx_test.py",
+)
 
 py_test(
     name = "run_stitching_calibration_matrix_test",
@@ -76,6 +83,7 @@ py_test(
         "compare_detection_accuracy_test.py",
     ],
     data = [
+        "//configs:config_infer_yolov8_hockey.yaml",
         "//configs:config_infer_yolov8_hockey_bf16.yaml",
         "//configs:config_infer_yolov8_hockey_fp16.yaml",
         "//configs:config_infer_yolov8_hockey_int8.yaml",

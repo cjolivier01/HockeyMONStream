@@ -37,7 +37,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+  from benchmark_model_precision import configured_inference_path
+except ModuleNotFoundError:
+  from scripts.benchmark_model_precision import configured_inference_path
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+FP32_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey.yaml"
 FP16_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_fp16.yaml"
 INT8_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_int8.yaml"
 BF16_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_bf16.yaml"
@@ -73,9 +79,9 @@ def iou(a: Detection, b: Detection) -> float:
 
 
 def infer_config_for(precision: str) -> Path | None:
-  """Return the nvinfer config for `precision`, or None to use the default."""
+  """Pin every variant, including FP32, independently of the saved UI selection."""
   if precision == "fp32":
-    return None
+    return FP32_CONFIG
   if precision == "fp16":
     return FP16_CONFIG
   if precision == "int8":
@@ -140,6 +146,7 @@ def run_variant(args: argparse.Namespace, variant: str, precision: str, out_dir:
   infer_config = infer_config_for(precision)
   if infer_config is not None:
     cmd.append(f"--options=pipeline.primary-gie.config-file={infer_config}")
+    cmd.append(f"--options=pipeline.primary-gie.model-engine-file={configured_inference_path(infer_config, 'model-engine-file')}")
   cmd.extend(args.extra_run_arg)
 
   env = dict(os.environ)

@@ -1,3 +1,6 @@
+# Never rebuild a failed BF16 engine as FP32 from the original ONNX.
+hstream-prebuilt-precision: bf16
+
 pretrained-assets:
   - property: onnx-file
     # Checkpoint redistribution is blocked pending a model-rights record.

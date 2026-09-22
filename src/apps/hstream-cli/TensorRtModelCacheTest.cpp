@@ -145,17 +145,18 @@ int main(int argc, char** argv) {
                                                     "  model-engine-file: ../packaged-models/missing_bf16.engine\n"
                                                     "  network-mode: 0\n";
     std::ofstream(configs / "int8.yaml") << "property:\n"
-                                           "  onnx-file: ../packaged-models/detector.onnx\n"
-                                           "  model-engine-file: ../packaged-models/missing_int8.engine\n"
-                                           "  int8-calib-file: ../packaged-models/detector_int8_calib.table\n"
-                                           "  network-mode: 1\n"
-                                           "  batch-size: 2\n"
-                                           "  gpu-id: 0\n";
-    std::ofstream(configs / "missing-int8-calib.yaml") << "property:\n"
-                                                         "  onnx-file: ../packaged-models/detector.onnx\n"
-                                                         "  model-engine-file: ../packaged-models/missing_int8.engine\n"
-                                                         "  int8-calib-file: ../packaged-models/missing_calib.table\n"
-                                                         "  network-mode: 1\n";
+                                            "  onnx-file: ../packaged-models/detector.onnx\n"
+                                            "  model-engine-file: ../packaged-models/missing_int8.engine\n"
+                                            "  int8-calib-file: ../packaged-models/detector_int8_calib.table\n"
+                                            "  network-mode: 1\n"
+                                            "  batch-size: 2\n"
+                                            "  gpu-id: 0\n";
+    std::ofstream(configs / "missing-int8-calib.yaml")
+        << "property:\n"
+           "  onnx-file: ../packaged-models/detector.onnx\n"
+           "  model-engine-file: ../packaged-models/missing_int8.engine\n"
+           "  int8-calib-file: ../packaged-models/missing_calib.table\n"
+           "  network-mode: 1\n";
     for (const auto& [name, prefix] : {
              std::pair{"home-dollar.yaml", "$HOME"},
              std::pair{"home-braced.yaml", "${HOME}"},
@@ -208,9 +209,38 @@ int main(int argc, char** argv) {
   ok &= expect(
       hm::pipeline::PrepareTensorRtModelCache(prebuilt_pipeline, configs).ok(),
       "an existing prebuilt BF16 engine must remain usable from a read-only package");
+  const auto prebuilt_config = YAML::LoadFile(prebuilt_pipeline["primary-gie"]["config-file"].as<std::string>());
   ok &= expect(
-      prebuilt_pipeline["primary-gie"]["config-file"].as<std::string>() == "bf16.yaml",
-      "prebuilt engine config must not be silently redirected to an FP32 rebuild");
+      !prebuilt_config["property"]["onnx-file"] &&
+          prebuilt_config["property"]["model-engine-file"].as<std::string>() ==
+              (models / "detector_bf16.engine").string(),
+      "BF16 runtime must be engine-only so a failed deserialization cannot rebuild FP32");
+  // Explicit quantization has no legacy table and an engine can be deployed
+  // without the original model. Metadata must not reach DeepStream's parser.
+  std::ofstream(configs / "explicit-int8.yaml")
+      << "hstream-prebuilt-precision: int8\n"
+         "property:\n  model-engine-file: ../packaged-models/detector_bf16.engine\n"
+         "  onnx-file: does-not-exist.onnx\n  int8-calib-file: does-not-exist.table\n"
+         "  engine-create-func-name: OldBuilder\n  network-mode: 1\n";
+  auto explicit_int8 = pipeline_for("explicit-int8.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(explicit_int8, configs).ok(),
+      "a prepared INT8 engine needs neither source model nor legacy calibration table");
+  const auto explicit_config = YAML::LoadFile(explicit_int8["primary-gie"]["config-file"].as<std::string>());
+  ok &= expect(
+      !explicit_config["property"]["onnx-file"] && !explicit_config["property"]["int8-calib-file"] &&
+          !explicit_config["property"]["engine-create-func-name"] && !explicit_config["hstream-prebuilt-precision"],
+      "prebuilt runtime config must remove every available rebuild path");
+  auto missing_explicit_int8 = pipeline_for("explicit-int8.yaml");
+  missing_explicit_int8["primary-gie"]["model-engine-file"] = "missing.engine";
+  ok &= expect(
+      !hm::pipeline::PrepareTensorRtModelCache(missing_explicit_int8, configs).ok(),
+      "a missing explicit INT8 engine must fail instead of building uncalibrated inference");
+  std::ofstream(configs / "empty.engine");
+  auto empty_engine = pipeline_for("explicit-int8.yaml");
+  empty_engine["primary-gie"]["model-engine-file"] = "empty.engine";
+  ok &= expect(
+      !hm::pipeline::PrepareTensorRtModelCache(empty_engine, configs).ok(), "empty prebuilt engines must be rejected");
   YAML::Node missing_bf16_pipeline = pipeline_for("missing-bf16.yaml");
   ok &= expect(
       !hm::pipeline::PrepareTensorRtModelCache(missing_bf16_pipeline, configs).ok(),
@@ -228,8 +258,7 @@ int main(int argc, char** argv) {
             "detector.onnx_b2_gpu0_int8.engine",
         "cached INT8 engine path must preserve the configured network mode");
     ok &= expect(
-        int8_cached["property"]["int8-calib-file"].as<std::string>() ==
-            (models / "detector_int8_calib.table").string(),
+        int8_cached["property"]["int8-calib-file"].as<std::string>() == (models / "detector_int8_calib.table").string(),
         "cached INT8 runtime config must preserve the calibration table path");
   }
   hm::pipeline::ReleaseTensorRtModelCacheLocks();

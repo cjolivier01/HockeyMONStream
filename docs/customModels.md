@@ -232,8 +232,10 @@ To understand and edit `config_infer_primary.txt` file, read the [DeepStream Plu
   path and whether an engine already exists there.
 
   An existing explicitly configured engine is preserved. BF16 engines still
-  require `./run.sh --models-bf16-build`; missing INT8 calibration tables require
-  `./run.sh --models-int8-calibrate`. FP16 needs neither: `./run.sh --models-fp16`
+  require offline preparation with a matching TensorRT SDK. INT8 can use
+  calibrated explicit Q/DQ engines without a legacy calibration table. See
+  [Detection precision](detection-precision.md) for the UI selector, SDK selection,
+  BF16/INT8 preparation, and accuracy validation. FP16 needs neither: `./run.sh --models-fp16`
   selects `configs/config_infer_yolov8_hockey_fp16.yaml` and nvinfer builds the
   engine from the ONNX on first run, then caches it. The precision flags are
   mutually exclusive, and the default remains FP32. Note these flags are
@@ -242,8 +244,9 @@ To understand and edit `config_infer_primary.txt` file, read the [DeepStream Plu
   precision with
   `--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml`.
   Legacy INI inference configs retain their
-  configured behavior. TensorRT can rebuild an engine it cannot deserialize
-  after a GPU/runtime change. Removing the cache forces regeneration on the
+  configured behavior. TensorRT can rebuild ordinary cached FP32/FP16 engines
+  after a GPU/runtime change. Prepared BF16/INT8 engines instead fail loading and
+  require preparation for the new runtime, preventing a different-precision rebuild. Removing the cache forces regeneration on the
   next run.
 
   * Example for `batch-size=1` and `network-mode=2`

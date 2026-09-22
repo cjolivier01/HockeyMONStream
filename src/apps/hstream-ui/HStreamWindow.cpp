@@ -6623,8 +6623,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   auto* layout = new QVBoxLayout(group);
   auto* association = new QLabel(
       program_stage
-          ? "These controls affect Program frames after stitching. Changes are applied live while the pipeline is "
-            "running; Save Preset keeps them for the next run."
+          ? "These controls affect Program frames after stitching. Detection precision applies on the next run; "
+            "other controls apply live. Save Preset keeps the settings."
           : "Stitch rotation affects the stitched canvas before play tracking. It applies live while the pipeline "
             "is running; Save Preset keeps it for the next run.");
   association->setObjectName(program_stage ? "programControlAssociation" : "stitchedControlAssociation");
@@ -6722,6 +6722,25 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   };
 
   if (program_stage) {
+    auto* detection_page = new QWidget();
+    auto* detection_layout = new QVBoxLayout(detection_page);
+    detection_layout->addWidget(new QLabel("Detection precision (next run)"));
+    detector_precision_combo_ = new QComboBox();
+    detector_precision_combo_->setObjectName("detectorPrecisionCombo");
+    detector_precision_combo_->addItem("Use saved detector configuration", "");
+    for (const QString mode : {"fp32", "fp16", "bf16", "int8"})
+      detector_precision_combo_->addItem(mode.toUpper(), mode);
+    detection_layout->addWidget(detector_precision_combo_);
+    detector_precision_status_ = new QLabel();
+    detector_precision_status_->setObjectName("detectorPrecisionStatus");
+    detector_precision_status_->setWordWrap(true);
+    detection_layout->addWidget(detector_precision_status_);
+    detection_layout->addStretch();
+    connect(detector_precision_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+      updateDetectorPrecisionStatus();
+      updatePresetDirtyState();
+    });
+    loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
     control_tabs->addTab(add_slider_tab(tracking_controls, false), "Tracking");
     control_tabs->addTab(add_slider_tab(motion_controls, false), "Motion");
     control_tabs->addTab(add_slider_tab(color_controls, true), "Color");
@@ -6734,6 +6753,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     crop_rotation_explanation_->hide();
     crop_page->layout()->addWidget(crop_rotation_explanation_);
     control_tabs->addTab(crop_page, "Crop Rotation");
+    control_tabs->addTab(detection_page, "Detection");
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
     control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
@@ -9351,6 +9371,10 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
               .arg(cameraControlValue("Lift_Shadow_Black_Point"));
   args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
   if (!isCalibrationRun()) {
+    if (!detectorPrecision().isEmpty() && detectorPrecision() != saved_detector_precision_) {
+      args << QString("--options=pipeline.primary-gie.config-file=%1").arg(detectorConfigName());
+      args << QString("--options=pipeline.primary-gie.model-engine-file=%1").arg(detectorEnginePath());
+    }
     args << QString("--options=rink.tracking.cam_ignore_largest=%1")
                 .arg(cameraControlValue("Ignore_Largest_Count") != 0 ? "true" : "false")
          << QString("--options=rink.tracking.cam_ignore_largest_count=%1")
@@ -9373,6 +9397,85 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
   }
   args << "--options=pipeline.hmaudio.enable=1";
   return args;
+}
+
+QString HStreamWindow::detectorPrecision() const {
+  return detector_precision_combo_ ? detector_precision_combo_->currentData().toString() : QString();
+}
+
+QString HStreamWindow::detectorConfigName() const {
+  const QString precision = detectorPrecision();
+  return precision == "fp32" ? "config_infer_yolov8_hockey.yaml"
+                             : QString("config_infer_yolov8_hockey_%1.yaml").arg(precision);
+}
+
+QString HStreamWindow::detectorEnginePath() const {
+  const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(detectorConfigName()).toStdString());
+  return QString::fromStdString(inference["property"]["model-engine-file"].as<std::string>());
+}
+
+void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
+  if (!detector_precision_combo_)
+    return;
+  const QSignalBlocker blocker(detector_precision_combo_);
+  const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
+  YAML::Node configured;
+  QString file;
+  if (lookup_yaml_path(effective, "pipeline.primary-gie.config-file", &configured))
+    file = QString::fromStdString(configured.as<std::string>());
+  else {
+    try {
+      const YAML::Node app = YAML::LoadFile(pipelineConfigPath("ds_hockey_app_config.yaml").toStdString());
+      file = QString::fromStdString(app["primary-gie"]["config-file"].as<std::string>());
+    } catch (const std::exception&) {
+      file.clear();
+    }
+  }
+  QString selected;
+  for (const QString mode : {"fp32", "fp16", "bf16", "int8"}) {
+    const QString name =
+        mode == "fp32" ? "config_infer_yolov8_hockey.yaml" : QString("config_infer_yolov8_hockey_%1.yaml").arg(mode);
+    if (file != name && !same_file_path(file, pipelineConfigPath(name)))
+      continue;
+    // An explicit engine is part of the custom detector choice. Preserve it
+    // even when its inference config has a familiar filename.
+    YAML::Node engine;
+    if (lookup_yaml_path(effective, "pipeline.primary-gie.model-engine-file", &engine)) {
+      try {
+        const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(name).toStdString());
+        if (engine.as<std::string>() != inference["property"]["model-engine-file"].as<std::string>())
+          continue;
+      } catch (const std::exception&) {
+        continue;
+      }
+    }
+    selected = mode;
+    break;
+  }
+  set_combo_to_data(detector_precision_combo_, selected);
+  updateDetectorPrecisionStatus();
+}
+
+void HStreamWindow::updateDetectorPrecisionStatus() {
+  if (!detector_precision_status_)
+    return;
+  const QString precision = detectorPrecision();
+  QString status;
+  if (precision.isEmpty()) {
+    status = "Keeps the saved or inherited detector configuration, including custom models and engines.";
+  } else if (precision == "fp32" || precision == "fp16") {
+    status = precision == "fp32" ? "FP32 is the default detector precision. "
+                                 : "FP16 allows faster half-precision inference. ";
+    status += "The engine is built and cached on first use. Selecting a precision uses the bundled detector.";
+  } else {
+    status = precision.toUpper() + " requires a prepared engine for this GPU and inference runtime. ";
+    status += precision == "bf16" ? "BF16 needs no calibration images. "
+                                  : "INT8 requires a calibrated model; validate detection accuracy before use. ";
+    status +=
+        "See the detection precision documentation for preparation. Selecting a precision uses the bundled detector.";
+  }
+  status += " Changes take effect on the next run; Save Preset keeps the selection.";
+  detector_precision_status_->setText(status);
 }
 
 QString HStreamWindow::highBitDepthMode() const {
@@ -15650,6 +15753,7 @@ bool HStreamWindow::savePreset() {
     appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)")
                   .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
   }
+  loadDetectorPrecision(config);
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
   if (game_id_edit_) {
     preset_save_retry_game_ids_.erase(game_id_edit_->text().trimmed());
@@ -15693,6 +15797,8 @@ void HStreamWindow::resetCameraControls() {
     }
   }
   synchronizeStitchedColorControls();
+  if (!pipeline_running && detector_precision_combo_)
+    set_combo_to_data(detector_precision_combo_, "fp32");
   if (!pipeline_running)
     setStitchingIterationSettings(default_iteration_settings_);
   if (!pipeline_running && stitch_frame_time_edit_) {
@@ -15929,6 +16035,7 @@ void HStreamWindow::captureSavedControlState() {
     saved_camera_controls_[id] = cameraPresetControlValue(id);
   }
   saved_high_bit_depth_mode_ = highBitDepthMode();
+  saved_detector_precision_ = detectorPrecision();
   saved_stitch_frame_time_ = stitchFrameTime();
   saved_iteration_settings_ = stitchingIterationSettings();
   saved_stitching_control_points_ = stitchingCalibrationControlPoints();
@@ -15970,8 +16077,8 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
-  bool dirty = retry_required || saved_iteration_settings_ != stitchingIterationSettings() ||
-      !pending_crop_geometry_.empty() ||
+  bool dirty = retry_required || saved_detector_precision_ != detectorPrecision() ||
+      saved_iteration_settings_ != stitchingIterationSettings() || !pending_crop_geometry_.empty() ||
       (rink_configuration_combo_ && saved_rink_configuration_ != rink_configuration_combo_->currentData().toString()) ||
       saved_projection_framing_.rotation_inherited != loaded_projection_framing_.rotation_inherited ||
       saved_camera_controls_.size() != camera_defaults_.size() || saved_high_bit_depth_mode_ != highBitDepthMode() ||
@@ -16123,8 +16230,18 @@ std::map<QString, double> HStreamWindow::readPlayerSizeControls(
 }
 
 bool HStreamWindow::ensureSavedControlConfigLoaded() {
-  if (saved_control_config_load_error_.isEmpty())
+  if (saved_control_config_load_error_.isEmpty()) {
+    if (!detectorPrecision().isEmpty() && detectorPrecision() != saved_detector_precision_) {
+      try {
+        if (detectorEnginePath().isEmpty())
+          throw std::runtime_error("bundled detector config has no engine path");
+      } catch (const std::exception& exc) {
+        appendLog(QString("Could not select detector precision: %1").arg(exc.what()));
+        return false;
+      }
+    }
     return true;
+  }
   appendLog(
       "Game settings could not be loaded. Correct config.yaml and reload the game before saving, playing, "
       "cleaning or experimenting: " +
@@ -16135,6 +16252,7 @@ bool HStreamWindow::ensureSavedControlConfigLoaded() {
 void HStreamWindow::loadSavedControlConfig() {
   saved_control_config_load_error_ = "Game settings are still loading";
   control_point_resolution_ = default_control_point_resolution_;
+  loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
   setStitchingIterationSettings(default_iteration_settings_);
   inherited_player_size_controls_.clear();
   unavailable_playtracker_config_error_.clear();
@@ -16882,6 +17000,7 @@ void HStreamWindow::loadSavedControlConfig() {
     if (!unavailable_playtracker_config_error_.isEmpty())
       appendLog(QString("Loaded saved settings, but tracker defaults are unavailable: %1")
                     .arg(unavailable_playtracker_config_error_));
+    loadDetectorPrecision(config);
     saved_control_config_load_error_.clear();
     captureSavedControlState();
     if (normalized_nona_without_autooptimizer) {
@@ -16923,6 +17042,18 @@ bool HStreamWindow::applySavedControlConfig(
   }
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
+  }
+  if (!detectorPrecision().isEmpty() && detectorPrecision() != saved_detector_precision_) {
+    try {
+      const QString engine = detectorEnginePath();
+      config["pipeline"]["primary-gie"]["config-file"] = detectorConfigName().toStdString();
+      // Shadow an inherited engine override too; removing the game key alone
+      // would allow an old precision's engine to win again.
+      config["pipeline"]["primary-gie"]["model-engine-file"] = engine.toStdString();
+    } catch (const std::exception& exc) {
+      appendLog(QString("could not save detector precision: %1").arg(exc.what()));
+      return false;
+    }
   }
   const auto selected_plan_frame_count = selected_calibration_frame_count(config);
   if (!selected_plan_frame_count.ok()) {

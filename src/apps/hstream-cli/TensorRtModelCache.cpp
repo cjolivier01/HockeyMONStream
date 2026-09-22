@@ -578,6 +578,52 @@ absl::Status prepare_inference_config(
         "Unable to read inference config " + inference_path.string() + ": " + exception.what());
   }
   YAML::Node properties = inference["property"];
+  const YAML::Node required_precision = inference["hstream-prebuilt-precision"];
+  if (required_precision &&
+      (!required_precision.IsScalar() ||
+       (required_precision.as<std::string>() != "bf16" && required_precision.as<std::string>() != "int8"))) {
+    return absl::InvalidArgumentError("hstream-prebuilt-precision must be bf16 or int8");
+  }
+  if (required_precision &&
+      (!properties || !properties.IsMap() || !properties["model-engine-file"] ||
+       !properties["model-engine-file"].IsScalar()))
+    return absl::InvalidArgumentError("hstream-prebuilt-precision requires property.model-engine-file");
+  if (properties && properties.IsMap() && properties["model-engine-file"] &&
+      properties["model-engine-file"].IsScalar()) {
+    const bool overridden = section["model-engine-file"] && section["model-engine-file"].IsScalar();
+    const fs::path engine = overridden
+        ? resolve_path(section["model-engine-file"].as<std::string>(), config_directory)
+        : resolve_path(properties["model-engine-file"].as<std::string>(), inference_path.parent_path());
+    const bool legacy_bf16 = lowercase(engine.filename().string()).find("_bf16.engine") != std::string::npos;
+    if (required_precision || legacy_bf16) {
+      const std::string precision = required_precision ? required_precision.as<std::string>() : "bf16";
+      std::error_code error;
+      if (!fs::is_regular_file(engine, error) || error || fs::file_size(engine, error) == 0 || error) {
+        return absl::NotFoundError(
+            "Prepared " + precision + " detector engine is missing or empty: " + engine.string() +
+            "; see docs/detection-precision.md for preparation with the matching TensorRT runtime");
+      }
+      // A prebuilt precision is a contract. On a deserialization failure,
+      // nvinfer must fail instead of rebuilding FP32 from the original ONNX.
+      relocate_inference_paths(properties, inference_path.parent_path(), true);
+      properties["model-engine-file"] = engine.string();
+      for (const char* key :
+           {"onnx-file",
+            "model-file",
+            "proto-file",
+            "uff-file",
+            "tlt-encoded-model",
+            "custom-network-config",
+            "engine-create-func-name",
+            "int8-calib-file"})
+        properties.remove(key);
+      inference.remove("pretrained-assets");
+      inference.remove("hstream-prebuilt-precision");
+      if (overridden)
+        section["model-engine-file"] = engine.string();
+      return publish_relocated_runtime_config(section, inference, inference_path);
+    }
+  }
   std::optional<fs::path> staged_custom_library;
   if (properties && properties.IsMap() && properties["custom-lib-path"] && properties["custom-lib-path"].IsScalar()) {
     staged_custom_library =
@@ -691,7 +737,8 @@ absl::Status prepare_inference_config(
       return !relative.empty() && *relative.begin() != "..";
     };
     bool conflict = overlaps(cached_onnx) || overlaps(runtime_config) || overlaps(cached_engine) ||
-        overlaps(model_directory / ("." + runtime_config.filename().string() + "." + std::to_string(::getpid()) + ".tmp"));
+        overlaps(model_directory /
+                 ("." + runtime_config.filename().string() + "." + std::to_string(::getpid()) + ".tmp"));
     for (const char* mode : {"fp32", "fp16", "int8"})
       conflict |= overlaps(derived_engine_path(cached_onnx, properties, section, pipeline, secondary, mode));
     if (conflict)

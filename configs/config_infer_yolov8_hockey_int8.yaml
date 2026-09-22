@@ -1,3 +1,7 @@
+# Accept legacy-calibrated or explicit Q/DQ engines; runtime loading needs
+# neither the original ONNX nor a legacy calibration table.
+hstream-prebuilt-precision: int8
+
 pretrained-assets:
   - property: onnx-file
     # Checkpoint redistribution is blocked pending a model-rights record.

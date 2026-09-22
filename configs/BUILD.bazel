@@ -1,5 +1,6 @@
 exports_files([
     "baseline.yaml",
+    "config_infer_yolov8_hockey.yaml",
     "config_infer_yolov8_hockey_bf16.yaml",
     "config_infer_yolov8_hockey_fp16.yaml",
     "config_infer_yolov8_hockey_int8.yaml",

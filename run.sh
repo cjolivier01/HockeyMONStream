@@ -33,8 +33,7 @@ Pipeline staging:
 
 Model precision:
   --models-int8, --int8-models,
-  --quant-int8                         Use INT8 model config. Requires existing calibrated INT8 engine and
-                                       non-empty calibration table.
+  --quant-int8                         Use INT8 model config. Requires a prepared calibrated INT8 engine.
   --models-int8-calibrate,
   --int8-calibrate, --calibrate-int8   Extract calibration frames, build a TensorRT INT8 calibration table and
                                        engine offline, then run from timestamp zero.
@@ -757,14 +756,9 @@ bf16_artifact_paths() {
 }
 
 require_calibrated_int8_artifacts() {
-  if [ ! -s "${int8_calib_table}" ]; then
-    echo "INT8 requested but calibration table is missing or empty: ${int8_calib_table}"
-    echo "Provide a pre-generated non-empty calibration table and INT8 engine; uncalibrated INT8 is not allowed."
-    exit 2
-  fi
   if [ ! -s "${int8_engine_file}" ]; then
     echo "INT8 requested but engine is missing or empty: ${int8_engine_file}"
-    echo "Provide a pre-generated non-empty calibration table and INT8 engine; uncalibrated INT8 is not allowed."
+    echo "Prepare a calibrated INT8 engine first; see docs/detection-precision.md."
     exit 2
   fi
 }
@@ -929,6 +923,7 @@ build_int8_calibration_artifacts() {
 EOF
 
   mv -f "${tmp_calib_table}" "${int8_calib_table}"
+  mv -f "${tmp_engine}.layers.json" "${int8_engine_file}.layers.json"
   mv -f "${tmp_engine}" "${int8_engine_file}"
   mv -f "${tmp_manifest_file}" "${manifest_file}"
 }
@@ -988,6 +983,7 @@ build_bf16_engine_artifact() {
 }
 EOF
 
+  mv -f "${tmp_engine}.layers.json" "${bf16_engine_file}.layers.json"
   mv -f "${tmp_engine}" "${bf16_engine_file}"
   mv -f "${tmp_manifest_file}" "${manifest_file}"
 }

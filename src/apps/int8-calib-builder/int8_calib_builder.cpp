@@ -1,11 +1,15 @@
-#include <cuda_runtime_api.h>
 #include <NvInfer.h>
 #include <NvInferVersion.h>
 #include <NvOnnxParser.h>
+#include <cuda_runtime_api.h>
 #include <opencv2/opencv.hpp>
+#include "EnginePrecision.h"
 
+#include <unistd.h>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -16,13 +20,12 @@
 
 namespace {
 
-#if NV_TENSORRT_MAJOR < 10
+#if NV_TENSORRT_MAJOR < 11
 #define HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR 1
 #else
 #define HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR 0
 #endif
 
-#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
 class Logger : public nvinfer1::ILogger {
  public:
   void log(Severity severity, const char* msg) noexcept override {
@@ -31,7 +34,6 @@ class Logger : public nvinfer1::ILogger {
     }
   }
 };
-#endif
 
 struct Args {
   std::string onnx;
@@ -46,6 +48,7 @@ struct Args {
   float scale = 1.0f / 255.0f;
   bool rgb = true;
   bool fp16 = true;
+  bool explicit_precision = false;
 };
 
 std::string require_value(int& i, int argc, char** argv) {
@@ -73,6 +76,7 @@ Args parse_args(int argc, char** argv) {
           << "Options:\n"
           << "  --precision P        Engine precision to build: int8 or bf16. Default: int8\n"
           << "                       INT8 calibration requires TensorRT's legacy calibrator API.\n"
+          << "  --explicit-precision Use an already typed BF16 or calibrated INT8 Q/DQ ONNX (required on TRT 11+)\n"
           << "  --image-list FILE    Required for int8 calibration\n"
           << "  --calib-table FILE   Required for int8 calibration\n"
           << "  --batch-size N       Calibration/build batch size. Default: 2\n"
@@ -105,6 +109,8 @@ Args parse_args(int argc, char** argv) {
       args.scale = std::stof(value_after_equals());
     } else if (arg == "--bgr") {
       args.rgb = false;
+    } else if (arg == "--explicit-precision") {
+      args.explicit_precision = true;
     } else if (arg == "--no-fp16") {
       args.fp16 = false;
     } else {
@@ -118,9 +124,22 @@ Args parse_args(int argc, char** argv) {
   if (args.onnx.empty() || args.engine.empty()) {
     throw std::runtime_error("--onnx and --engine are required");
   }
-  if (args.precision == "int8" && (args.image_list.empty() || args.calib_table.empty())) {
+  if (args.precision == "int8" && !args.explicit_precision && (args.image_list.empty() || args.calib_table.empty())) {
     throw std::runtime_error("--image-list and --calib-table are required for --precision=int8");
   }
+  if (args.explicit_precision && (!args.image_list.empty() || !args.calib_table.empty())) {
+    throw std::runtime_error("--explicit-precision consumes a prepared ONNX; do not supply legacy calibration inputs");
+  }
+  if (args.workspace_mb <= 0) {
+    throw std::runtime_error("--workspace-mb must be positive");
+  }
+#if !HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
+  if (!args.explicit_precision) {
+    throw std::runtime_error(
+        "TensorRT 11+ requires --explicit-precision with a typed BF16 or calibrated INT8 Q/DQ ONNX. "
+        "For DeepStream using TensorRT 10, build this tool with its matching TensorRT SDK.");
+  }
+#endif
   if (args.batch_size <= 0) {
     throw std::runtime_error("--batch-size must be positive");
   }
@@ -254,8 +273,9 @@ class ImageEntropyCalibrator : public nvinfer1::IInt8EntropyCalibrator2 {
         std::cout << "Calibrating image " << image_index_ << "/" << image_paths_.size() << ": " << image_path << "\n";
       }
 
-      check_cuda(cudaMemcpy(device_input_, host_batch_.data(), input_count_ * sizeof(float), cudaMemcpyHostToDevice),
-                 "cudaMemcpy calibration input");
+      check_cuda(
+          cudaMemcpy(device_input_, host_batch_.data(), input_count_ * sizeof(float), cudaMemcpyHostToDevice),
+          "cudaMemcpy calibration input");
 
       for (int i = 0; i < nb_bindings; ++i) {
         if (names[i] && input_name_ == names[i]) {
@@ -317,12 +337,7 @@ class ImageEntropyCalibrator : public nvinfer1::IInt8EntropyCalibrator2 {
   std::string error_;
 };
 
-int dim_or_default(const nvinfer1::Dims& dims, int index, int fallback) {
-  if (index >= dims.nbDims || dims.d[index] <= 0) {
-    return fallback;
-  }
-  return dims.d[index];
-}
+#endif
 
 void write_file(const std::string& path, const void* data, size_t size) {
   std::ofstream output(path, std::ios::binary);
@@ -334,18 +349,23 @@ void write_file(const std::string& path, const void* data, size_t size) {
     throw std::runtime_error("failed to write output file: " + path);
   }
 }
-#endif
 
 } // namespace
 
-#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
 int main(int argc, char** argv) {
   try {
     Args args = parse_args(argc, argv);
+    const int runtime_version = getInferLibVersion();
+    if (runtime_version / 10000 != NV_TENSORRT_MAJOR || (runtime_version / 100) % 100 != NV_TENSORRT_MINOR)
+      throw std::runtime_error(
+          "TensorRT SDK headers and loaded runtime differ; select a matching HSTREAM_TENSORRT_SDK_ROOT");
+    std::cout << "TensorRT runtime version: " << getInferLibVersion() << " (SDK " << NV_TENSORRT_MAJOR << '.'
+              << NV_TENSORRT_MINOR << ")\n";
+#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
     std::vector<std::string> image_paths;
-    if (args.precision == "int8") {
+    if (args.precision == "int8" && !args.explicit_precision)
       image_paths = read_lines(args.image_list);
-    }
+#endif
 
     Logger logger;
     std::unique_ptr<nvinfer1::IBuilder> builder(nvinfer1::createInferBuilder(logger));
@@ -354,7 +374,12 @@ int main(int argc, char** argv) {
     }
 
     nvinfer1::NetworkDefinitionCreationFlags flags = 0;
+#if NV_TENSORRT_MAJOR < 10
     flags |= 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+#elif NV_TENSORRT_MAJOR < 11
+    if (args.explicit_precision)
+      flags |= 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kSTRONGLY_TYPED);
+#endif
     std::unique_ptr<nvinfer1::INetworkDefinition> network(builder->createNetworkV2(flags));
     if (!network) {
       throw std::runtime_error("failed to create TensorRT network");
@@ -372,36 +397,74 @@ int main(int argc, char** argv) {
     const char* trt_input_name = input->getName();
     std::string input_name = args.input_name.empty() ? trt_input_name : args.input_name;
     nvinfer1::Dims input_dims = input->getDimensions();
-    const int channels = dim_or_default(input_dims, 1, 3);
-    const int height = dim_or_default(input_dims, 2, 736);
-    const int width = dim_or_default(input_dims, 3, 1984);
+    if (input_name != trt_input_name)
+      throw std::runtime_error("--input-name must match the ONNX input tensor name");
+    if (input_dims.nbDims != 4 || input_dims.d[1] != 3 || input_dims.d[2] <= 0 || input_dims.d[3] <= 0)
+      throw std::runtime_error("expected NCHW input with three channels and fixed spatial dimensions");
+    if (input_dims.d[0] != -1 && (input_dims.d[0] != args.batch_size || args.min_batch_size != args.batch_size))
+      throw std::runtime_error("static ONNX batch must equal both --batch-size and --min-batch-size");
+    if (input->getType() != nvinfer1::DataType::kFLOAT)
+      throw std::runtime_error("detector input must remain FP32");
+    for (int i = 0; i < network->getNbOutputs(); ++i) {
+      if (network->getOutput(i)->getType() != nvinfer1::DataType::kFLOAT)
+        throw std::runtime_error("detector output must remain FP32 for NvDsInferParseYolo");
+    }
+    if (args.explicit_precision) {
+      bool quantize = false, dequantize = false, bf16 = false;
+      for (int i = 0; i < network->getNbLayers(); ++i) {
+        auto* layer = network->getLayer(i);
+        quantize |= layer->getType() == nvinfer1::LayerType::kQUANTIZE &&
+            layer->getOutput(0)->getType() == nvinfer1::DataType::kINT8;
+        dequantize |= layer->getType() == nvinfer1::LayerType::kDEQUANTIZE;
+#if NV_TENSORRT_MAJOR >= 9
+        for (int j = 0; j < layer->getNbOutputs(); ++j)
+          bf16 |= layer->getOutput(j)->getType() == nvinfer1::DataType::kBF16;
+#endif
+      }
+      if (args.precision == "int8" ? !(quantize && dequantize) : !bf16)
+        throw std::runtime_error("ONNX does not contain the requested explicit precision; prepare the model first");
+    }
+    const int channels = input_dims.d[1];
+    const int height = input_dims.d[2];
+    const int width = input_dims.d[3];
 
     std::unique_ptr<nvinfer1::IBuilderConfig> config(builder->createBuilderConfig());
     if (!config) {
       throw std::runtime_error("failed to create TensorRT builder config");
     }
-    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, static_cast<size_t>(args.workspace_mb) * 1024 * 1024);
-    if (args.precision == "int8") {
-      config->setFlag(nvinfer1::BuilderFlag::kINT8);
-    } else {
-      config->setFlag(nvinfer1::BuilderFlag::kBF16);
+    config->setMemoryPoolLimit(
+        nvinfer1::MemoryPoolType::kWORKSPACE, static_cast<size_t>(args.workspace_mb) * 1024 * 1024);
+    config->setProfilingVerbosity(nvinfer1::ProfilingVerbosity::kDETAILED);
+#if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
+    if (!args.explicit_precision) {
+      if (args.precision == "int8") {
+        config->setFlag(nvinfer1::BuilderFlag::kINT8);
+        if (args.fp16 && builder->platformHasFastFp16())
+          config->setFlag(nvinfer1::BuilderFlag::kFP16);
+      } else {
+#if NV_TENSORRT_MAJOR >= 9
+        config->setFlag(nvinfer1::BuilderFlag::kBF16);
+#else
+        throw std::runtime_error("BF16 requires TensorRT 9 or newer");
+#endif
+      }
     }
-    if (args.precision == "int8" && args.fp16 && builder->platformHasFastFp16()) {
-      config->setFlag(nvinfer1::BuilderFlag::kFP16);
-    }
+#endif
 
     nvinfer1::IOptimizationProfile* profile = nullptr;
     if (input_dims.d[0] < 0) {
       profile = builder->createOptimizationProfile();
       nvinfer1::Dims dims = input_dims;
       dims.d[0] = args.min_batch_size;
-      profile->setDimensions(trt_input_name, nvinfer1::OptProfileSelector::kMIN, dims);
+      if (!profile || !profile->setDimensions(trt_input_name, nvinfer1::OptProfileSelector::kMIN, dims))
+        throw std::runtime_error("invalid minimum batch profile");
       dims.d[0] = args.batch_size;
-      profile->setDimensions(trt_input_name, nvinfer1::OptProfileSelector::kOPT, dims);
-      profile->setDimensions(trt_input_name, nvinfer1::OptProfileSelector::kMAX, dims);
-      config->addOptimizationProfile(profile);
+      if (!profile->setDimensions(trt_input_name, nvinfer1::OptProfileSelector::kOPT, dims) ||
+          !profile->setDimensions(trt_input_name, nvinfer1::OptProfileSelector::kMAX, dims) ||
+          config->addOptimizationProfile(profile) < 0)
+        throw std::runtime_error("invalid runtime batch profile");
 #if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
-      if (args.precision == "int8") {
+      if (args.precision == "int8" && !args.explicit_precision) {
         config->setCalibrationProfile(profile);
       }
 #endif
@@ -409,24 +472,36 @@ int main(int argc, char** argv) {
 
 #if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
     std::unique_ptr<ImageEntropyCalibrator> calibrator;
-    if (args.precision == "int8") {
+    if (args.precision == "int8" && !args.explicit_precision) {
       calibrator = std::make_unique<ImageEntropyCalibrator>(
-          args.batch_size, channels, height, width, input_name, std::move(image_paths), args.calib_table, args.rgb, args.scale);
+          args.batch_size,
+          channels,
+          height,
+          width,
+          input_name,
+          std::move(image_paths),
+          args.calib_table,
+          args.rgb,
+          args.scale);
       config->setInt8Calibrator(calibrator.get());
     }
 #endif
 
     std::cout << "Building " << args.precision << " engine from " << args.onnx << "\n"
-              << "  input: " << input_name << " batch=" << args.batch_size << " chw=" << channels << "x" << height << "x"
-              << width << "\n";
-    if (args.precision == "int8") {
+              << "  input: " << input_name << " batch=" << args.batch_size << " chw=" << channels << "x" << height
+              << "x" << width << "\n";
+    if (args.precision == "int8" && !args.explicit_precision) {
       std::cout << "  calibration cache: " << args.calib_table << "\n";
     }
     std::cout << "  engine: " << args.engine << "\n";
 
     std::unique_ptr<nvinfer1::IHostMemory> serialized(builder->buildSerializedNetwork(*network, *config));
     if (!serialized) {
-      throw std::runtime_error("TensorRT failed to build serialized " + args.precision + " network");
+      throw std::runtime_error(
+          "TensorRT failed to build serialized " + args.precision + " network" +
+          (args.precision == "int8" && !args.explicit_precision
+               ? "; use a calibrated Q/DQ ONNX with --explicit-precision when legacy calibration is unsupported"
+               : ""));
     }
 #if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
     if (calibrator) {
@@ -434,7 +509,27 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    write_file(args.engine, serialized->data(), serialized->size());
+    // Deserialize and inspect before publishing, keeping an existing engine
+    // intact if build/validation fails. Detailed layer types aid accuracy audits.
+    std::unique_ptr<nvinfer1::IRuntime> runtime(nvinfer1::createInferRuntime(logger));
+    std::unique_ptr<nvinfer1::ICudaEngine> engine(
+        runtime ? runtime->deserializeCudaEngine(serialized->data(), serialized->size()) : nullptr);
+    if (!engine)
+      throw std::runtime_error("could not deserialize the generated engine");
+    std::unique_ptr<nvinfer1::IEngineInspector> inspector(engine->createEngineInspector());
+    const char* details =
+        inspector ? inspector->getEngineInformation(nvinfer1::LayerInformationFormat::kJSON) : nullptr;
+    if (!details)
+      throw std::runtime_error("could not inspect the generated engine");
+    if (!hm::inference::EngineUsesPrecision(YAML::Load(details), args.precision))
+      throw std::runtime_error(
+          "engine inspection found no " + args.precision +
+          " tensors; refusing to publish an engine that fell back to another precision");
+    const std::string temporary = args.engine + ".tmp." + std::to_string(::getpid());
+    write_file(temporary, serialized->data(), serialized->size());
+    write_file(temporary + ".layers.json", details, std::strlen(details));
+    std::filesystem::rename(temporary + ".layers.json", args.engine + ".layers.json");
+    std::filesystem::rename(temporary, args.engine);
     std::cout << "Wrote " << args.precision << " engine: " << args.engine << " (" << serialized->size() << " bytes)\n";
     return 0;
   } catch (const std::exception& exc) {
@@ -442,17 +537,3 @@ int main(int argc, char** argv) {
     return 2;
   }
 }
-#else
-int main(int argc, char** argv) {
-  try {
-    (void)parse_args(argc, argv);
-    throw std::runtime_error(
-        "this utility currently uses TensorRT 9.x builder/calibration APIs and is not supported with TensorRT " +
-        std::to_string(NV_TENSORRT_MAJOR) + "." + std::to_string(NV_TENSORRT_MINOR) +
-        ". Use TensorRT 9.x or older, or update this utility to TensorRT's explicit quantization APIs.");
-  } catch (const std::exception& exc) {
-    std::cerr << "int8-calib-builder: " << exc.what() << "\n";
-    return 2;
-  }
-}
-#endif
