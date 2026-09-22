@@ -221,7 +221,40 @@ cc_library(
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:player_frame_input_store",
+        "//src/libs/stitching:player_frame_selection",
         "//src/libs/stitching:stitching",
+        "//src/libs/stitching:transaction_state",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "stitching_experiment_store",
+    srcs = ["StitchingExperimentStore.cpp"],
+    hdrs = ["StitchingExperimentStore.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":stitching_experiment_backend",
+        "//src/libs/common:status",
+        "//src/libs/common:utils",
+        "//src/libs/stitching:player_frame_selection",
+        "//src/libs/stitching:transaction_state",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "stitching_experiment_store_test",
+    srcs = ["StitchingExperimentStoreTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":stitching_experiment_backend",
+        ":stitching_experiment_store",
+        "//src/libs/stitching:player_frame_selection",
         "@yaml-cpp",
     ],
 )
@@ -235,7 +268,13 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":stitching_experiment_backend",
+        ":stitching_experiment_store",
+        "//src/libs/common:utils",
+        "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:player_frame_selection",
+        "//src/libs/stitching:transaction_state",
         "@qt//:qt_widgets",
+        "@yaml-cpp",
     ],
 )
 
@@ -245,16 +284,33 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":stitching_experiment_dialog", "@qt//:qt_widgets"],
+    deps = [
+        ":stitching_experiment_dialog",
+        ":stitching_experiment_store",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:player_frame_input_store",
+        "//src/libs/stitching:player_frame_selection",
+        "@opencv_linux//:opencv",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
 )
 
 cc_test(
     name = "stitching_experiment_backend_test",
     srcs = ["StitchingExperimentBackendTest.cpp"],
     copts = COMMON_COPTS,
+    linkopts = ["-ltiff", "-Wl,--export-dynamic-symbol=fsync"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":stitching_experiment_backend",
+        ":stitching_experiment_store",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:player_frame_selection",
+        "//src/libs/stitching:stitching",
+        "@opencv_linux//:opencv",
         "@yaml-cpp",
     ],
 )
@@ -303,6 +359,7 @@ cc_library(
         "//src/libs/stitching:live_output_epoch",
         "//src/libs/stitching:live_stitching_generation",
         "//src/libs/stitching:stitching_algorithms",
+        "//src/libs/stitching:stitching_reframe",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
@@ -390,6 +447,7 @@ cc_test(
         ":scoreboard_selection_dialog",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
         "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:player_frame_selection",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
         "@yaml-cpp",

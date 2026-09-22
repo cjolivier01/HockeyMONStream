@@ -786,6 +786,28 @@ int main(int argc, char** argv) {
       write_playlist_error_config(error_config, video, root / "missing-second-chapter.mp4"),
       "hstream-cli error test config must be written");
 
+  PipelineProcess shared_output_timed_process;
+  if (ok) {
+    ok &= expect(
+        shared_output_timed_process.Start(
+            argv[1],
+            config,
+            "URI",
+            "FAKE",
+            false,
+            {{"HM_TEST_PROCESSED_OUTPUT_SHARED_BUFFER", "1"}},
+            {"-t=2"}),
+        "timed playback with shared output buffers must start");
+    ok &= expect(
+        shared_output_timed_process.WaitFor("HSTREAM_TEST_PROCESSED_OUTPUT shared-buffer=enabled"),
+        "timed playback regression must exercise nonwritable completed output");
+    int timed_exit_code = -1;
+    ok &= expect(
+        shared_output_timed_process.WaitForExit(&timed_exit_code, std::chrono::seconds(8)),
+        "shared completed buffers must advance the two-second limit before the long input reaches EOS");
+    ok &= expect(timed_exit_code == 0, "shared-buffer timed playback must complete successfully");
+  }
+
   PipelineProcess process;
   ok &= expect(process.Start(argv[1], config), "hstream-cli process must start");
   ok &= expect(process.WaitFor("Pipeline running"), "hstream-cli must reach PLAYING");
@@ -1724,6 +1746,8 @@ int main(int argc, char** argv) {
   }
 
   if (!ok) {
+    if (!shared_output_timed_process.output().empty())
+      shared_output_timed_process.DumpOutput();
     process.DumpOutput();
     if (!relaunched_process.output().empty()) {
       relaunched_process.DumpOutput();

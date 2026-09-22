@@ -9,6 +9,12 @@ This applies to angles selected from posts or corners, manually entered angles, 
 angles are retained and restored when pitch and roll are both zero or the mapping backend changes to OpenCV.
 Yaw alone does not disable crop rotation. Final stitched-output rotation remains a separate setting.
 
+For an already completed NONA calibration, saved angle changes reuse its optimized alignment and control points.
+Only projection, maps, seam, panorama, and downstream rink data regenerate. The old result remains published until
+the edited view commits. Cancel/retry retains the original alignment and request, and does not repeat leveling or
+crop questions for accepted settings. Legacy projects require AUTO canvas; unverifiable or missing source artifacts
+fail without falling back to a new solve. See [alignment preservation](preserve-stitching-alignment-design.md).
+
 During a NONA stitching calibration, HStream now opens the post selector immediately after panorama alignment. This
 step is optional: **Skip leveling** continues with the configured angles. It is not shown for the OpenCV mapping
 backends because their planar transforms do not consume Hugin's shared camera-space rotation.

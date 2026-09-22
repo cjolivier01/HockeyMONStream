@@ -35,11 +35,16 @@ HSTREAM_CLI_DEPS = [
     "//src/libs/common:fs",
     "//src/libs/common:baseline_config",
     "//src/libs/common:detection_snapshot_meta",
+    "//src/libs/common:stitching_frame_pair_meta",
+    "//src/libs/stitching:player_frame_selection",
+    "//src/libs/stitching:player_frame_overlap",
+    "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
     "//src/libs/common:playtracker_config_roles",
     "//src/libs/common:preview_overlay_meta",
     "//src/libs/common:user_config",
     "//src/libs/pipeline_controller:gst_property_service",
     "//src/libs/stitching",
+    "//src/libs/stitching:stitching_reframe",
     "//src/libs/wireless:stream_control",
     "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
     "//src/apps/apps-common:deepstream_apps_common",
@@ -362,5 +367,44 @@ cc_test(
     ],
     deps = [
         "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "player_frame_scan_timing_test",
+    srcs = ["PlayerFrameScanTiming.h", "PlayerFrameScanTimingTest.cpp"],
+    copts = HSTREAM_CLI_COPTS,
+    deps = [
+        "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "player_frame_scan_mask_test",
+    srcs = ["PlayerFrameScanMask.h", "PlayerFrameScanMaskTest.cpp"],
+    deps = [
+        "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
+        "//src/libs/stitching",
+        "@com_google_absl//absl/status:status",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "player_frame_detector_identity_test",
+    srcs = [
+        "PlayerFrameDetectorIdentity.h",
+        "PlayerFrameDetectorIdentity.cpp",
+        "PlayerFrameDetectorIdentityTest.cpp",
+        "OnnxExternalData.h",
+        "OnnxExternalData.cpp",
+    ],
+    linkopts = ["-lcrypto", "-ldl"],
+    deps = [
+        "@yaml-cpp",
+        "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/status:statusor",
     ],
 )

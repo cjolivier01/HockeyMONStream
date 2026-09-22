@@ -4,11 +4,14 @@
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/cudaHighBitStitch.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/StitchingFramePairMeta.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
+#include "hstream/src/libs/stitching/StitchingReframe.h"
 
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
@@ -256,6 +259,7 @@ void StitcherPriv::Shutdown() {
   high_bit_right_.reset();
   high_bit_canvas_.reset();
   release_high_bit_calibration_surfaces();
+  release_captured_calibration_surfaces();
   release_high_bit_field_mask_canvas();
   calibration_invalidation_id_.clear();
   calibration_run_generation_.clear();
@@ -325,6 +329,15 @@ bool StitcherPriv::HandleEvent(GstEvent* event) {
       pipeline_eos_seen_ = true;
     }
     const bool handled = Super::HandleEvent(event);
+    // The base handler drains and joins the output worker. Earlier checks could
+    // reject a selected pair that is still waiting in its lossless queue.
+    if (calibration_frame_selector_ && !calibration_cancelled_.load(std::memory_order_acquire)) {
+      const absl::Status complete = calibration_frame_selector_->Finish();
+      if (!complete.ok()) {
+        (void)report_fatal_calibration_failure(complete);
+        return false;
+      }
+    }
     return handled;
   }
   return Super::HandleEvent(event);
@@ -797,7 +810,16 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   }
   const char* calibration_invalidation_id = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
   calibration_invalidation_id_ = calibration_invalidation_id ? calibration_invalidation_id : "";
-  absl::Status status = ensure_stitcher_with_artifact_lock();
+  std::optional<YAML::Node> saved_config;
+  if (!config_file_.empty())
+    HM_ASSIGN_OR_RETURN(
+        saved_config, stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml"));
+  reframe_pending_ = saved_config && stitching::HasStitchingReframeIntent(*saved_config);
+  if (reframe_pending_ && !one_pass_mode_ && !configure_only_)
+    return absl::FailedPreconditionError("The saved view edit requires calibration before loading stitch maps");
+  // The old generation remains published for rollback. Loading it under the
+  // requested view could repair its seam or incorrectly skip the pending edit.
+  absl::Status status = reframe_pending_ ? absl::OkStatus() : ensure_stitcher_with_artifact_lock();
   if (!status.ok()) {
     if (one_pass_mode_ && !calibration_run_generation_.empty() && absl::IsNotFound(status)) {
       if (!logged_missing_masks_) {
@@ -811,6 +833,14 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
       return status;
     }
   }
+
+  bool needs_calibration_frames = configure_only_;
+  {
+    absl::MutexLock lk(&stitcher_mu_);
+    needs_calibration_frames = needs_calibration_frames || (one_pass_mode_ && !has_stitcher());
+  }
+  if (needs_calibration_frames && !reframe_pending_)
+    HM_RETURN_IF_ERROR(initialize_calibration_frame_selection());
 
   // Not an in-place transform
   m_transformMode = true;
@@ -854,7 +884,7 @@ absl::Status StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
 }
 
 bool StitcherPriv::UsesRuntimeOutputSize() const {
-  return one_pass_mode_ && (!canvas_width_hint_ || !canvas_height_hint_);
+  return reframe_pending_ || (one_pass_mode_ && (!canvas_width_hint_ || !canvas_height_hint_));
 }
 
 guint StitcherPriv::GetOutputBatchSize(guint input_batch_size, guint configured_batch_size) const {
@@ -1043,7 +1073,97 @@ std::vector<hm::stitching::StitchingCalibrationFramePair> StitcherPriv::captured
   return frame_pairs;
 }
 
-bool StitcherPriv::should_capture_calibration_pair(uint64_t pair_pts_ns) const {
+absl::Status StitcherPriv::initialize_calibration_frame_selection() {
+  calibration_frame_selector_.reset();
+  cached_calibration_frame_pairs_.clear();
+  captured_frame_selection_fingerprint_.clear();
+  if (config_file_.empty())
+    return absl::OkStatus();
+  std::optional<YAML::Node> config;
+  HM_ASSIGN_OR_RETURN(config, stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml"));
+  if (!config)
+    return absl::OkStatus();
+  const YAML::Node stitching_config = (*config)["stitching"];
+  if (!stitching_config || !stitching_config.IsMap())
+    return absl::OkStatus();
+  const YAML::Node cached_marker = stitching_config["calibration_frame_inputs_fingerprint"];
+  if (cached_marker && !cached_marker.IsNull() && !cached_marker.IsScalar())
+    return absl::InvalidArgumentError("Selected-frame input cache reference must be a fingerprint");
+  const std::string required_cache = cached_marker && !cached_marker.IsNull() ? cached_marker.as<std::string>() : "";
+  const YAML::Node selection = stitching_config["calibration_frame_selection"];
+  if (!selection || selection.IsNull()) {
+    if (!required_cache.empty())
+      return absl::FailedPreconditionError("Selected-frame input cache reference has no matching frame plan");
+    return absl::OkStatus();
+  }
+  stitching::PlayerFrameSelectionPlan plan;
+  HM_ASSIGN_OR_RETURN(plan, stitching::ParsePlayerFrameSelectionPlan(selection));
+  HM_RETURN_IF_ERROR(stitching::validate_player_frame_selection_sources(*config));
+  if (plan.selected.size() != calibration_frame_count_)
+    return absl::FailedPreconditionError("Selected-frame plan count differs from requested calibration-frame-count");
+  if (!required_cache.empty() && required_cache != plan.fingerprint)
+    return absl::FailedPreconditionError("Selected-frame input cache reference differs from the frame plan");
+  std::optional<stitching::PlayerFrameInputSet> cached;
+  HM_ASSIGN_OR_RETURN(cached, stitching::LoadPlayerFrameInputs(config_file_, plan));
+  if (!cached && !required_cache.empty())
+    return absl::FailedPreconditionError("The selected frame inputs were previously retained but are now missing");
+  captured_frame_selection_fingerprint_ = plan.fingerprint;
+  if (cached) {
+    if (cached->images.size() != plan.selected.size())
+      return absl::FailedPreconditionError("Selected-frame input cache has an incomplete pair set");
+    for (size_t index = 0; index < plan.selected.size(); ++index) {
+      const auto& cameras = plan.selected[index].pair.cameras;
+      cached_calibration_frame_pairs_.push_back({
+          .left = surface::Surface(&cached_calibration_surface_placeholder_),
+          .right = surface::Surface(&cached_calibration_surface_placeholder_),
+          .left_source = {cameras[0].path, static_cast<double>(cameras[0].source_pts_ns) / GST_SECOND},
+          .right_source = {cameras[1].path, static_cast<double>(cameras[1].source_pts_ns) / GST_SECOND},
+          .left_image = cached->images[index][0],
+          .right_image = cached->images[index][1],
+      });
+    }
+    // Full cached inputs satisfy capture before the first ordinary input batch.
+    // In particular, EOS must not finalize an unused exact-replay selector.
+    g_print(
+        "hmstitcher: reusing %zu retained calibration frame pairs (selection %s) without recapture\n",
+        cached_calibration_frame_pairs_.size(),
+        captured_frame_selection_fingerprint_.c_str());
+    return absl::OkStatus();
+  }
+  HM_ASSIGN_OR_RETURN(calibration_frame_selector_, stitching::PlayerFrameReplaySelector::Create(plan));
+  return absl::OkStatus();
+}
+
+absl::StatusOr<bool> StitcherPriv::should_capture_calibration_pair(
+    uint64_t pair_pts_ns,
+    const NvDsFrameMeta* left_meta,
+    const NvDsFrameMeta* right_meta) {
+  if (!cached_calibration_frame_pairs_.empty())
+    return false;
+  if (calibration_frame_selector_) {
+    if (calibration_frame_selector_->complete())
+      return false;
+    const std::array<std::optional<DecodedFrameSequence>, 2> inputs{
+        decoded_frame_sequence(left_meta), decoded_frame_sequence(right_meta)};
+    stitching::PlayerFramePairIdentity actual;
+    actual.timeline_pts_ns = pair_pts_ns;
+    for (size_t index = 0; index < inputs.size(); ++index) {
+      const auto& input = inputs[index];
+      if (!input || !input->source_uri || !GST_CLOCK_TIME_IS_VALID(input->source_pts))
+        return absl::FailedPreconditionError("Selected-frame replay requires both physical decoded source identities");
+      gchar* hostname = nullptr;
+      gchar* filename = g_filename_from_uri(g_quark_to_string(input->source_uri), &hostname, nullptr);
+      const bool local = filename && (!hostname || !*hostname || g_strcmp0(hostname, "localhost") == 0);
+      if (local)
+        actual.cameras[index] = {filename, input->source_pts, input->source_id, input->sequence};
+      g_free(filename);
+      g_free(hostname);
+      if (!local)
+        return absl::InvalidArgumentError("Selected-frame replay requires local physical camera recordings");
+    }
+    HM_RETURN_IF_ERROR(stitching::CanonicalizePlayerFramePair(&actual));
+    return calibration_frame_selector_->Observe(actual);
+  }
   return should_select_calibration_pair(
       pair_pts_ns,
       captured_calibration_frame_pairs_.size(),
@@ -1053,6 +1173,9 @@ bool StitcherPriv::should_capture_calibration_pair(uint64_t pair_pts_ns) const {
 }
 
 bool StitcherPriv::calibration_input_exhausted(const EosSnapshot& eos_snapshot) {
+  // Exact replay is finalized after EOS drains the queue in HandleEvent().
+  if (calibration_frame_selector_)
+    return false;
   if (eos_snapshot.pipeline_eos_seen || !eos_snapshot.source_ids.empty()) {
     return true;
   }
@@ -1071,6 +1194,7 @@ absl::Status StitcherPriv::report_fatal_calibration_failure(const absl::Status& 
 
 void StitcherPriv::release_captured_calibration_surfaces() {
   captured_calibration_frame_pairs_.clear();
+  cached_calibration_frame_pairs_.clear();
   first_calibration_pair_pts_ns_.reset();
 }
 
@@ -1103,8 +1227,17 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
       }
       g_print("hmstitcher: configuring stitching in one-pass mode\n");
       if (!calibration_starts_from_control_points()) {
-        report_calibration_progress("input", "started", "Waiting for synchronized frames from both cameras");
-        report_calibration_progress("input", "complete", "Captured synchronized frames from both cameras");
+        const bool retained_inputs = !cached_calibration_frame_pairs_.empty();
+        report_calibration_progress(
+            "input",
+            "started",
+            retained_inputs ? "Loading retained calibration frames"
+                            : "Waiting for synchronized frames from both cameras");
+        report_calibration_progress(
+            "input",
+            "complete",
+            retained_inputs ? "Retained calibration frames are ready"
+                            : "Captured synchronized frames from both cameras");
       }
       if (!orientation_ran_) {
         // Configurator resolves auto camera orientation and synchronization before
@@ -1122,7 +1255,8 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
           frame_pairs,
           calibration_invalidation_id_,
           [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
-          max_output_width_);
+          max_output_width_,
+          captured_frame_selection_fingerprint_);
       release_high_bit_calibration_surfaces();
       if (!configure_status.ok()) {
         std::cerr << configure_status << "\n" << std::flush;
@@ -1182,6 +1316,33 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   }
   if (!batch_meta || !in_surface) {
     return absl::InvalidArgumentError("Cannot determine stitched canvas size without batch metadata and input surface");
+  }
+  if (reframe_pending_) {
+    // Runs on the existing cancellable output worker, before inspecting or
+    // capturing camera surfaces. A failed explicit request cannot fall through
+    // to ordinary calibration or substitute different frames.
+    {
+      std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
+      const auto status = stitching::reframe_stitching(
+          config_file_,
+          calibration_invalidation_id_,
+          [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+          max_output_width_);
+      if (!status.ok())
+        return absl::IsCancelled(status) ? status : report_fatal_calibration_failure(status);
+    }
+    reframe_pending_ = false;
+    configured_during_run_ = true;
+    if (configure_only_) {
+      if (!post_force_pipeline_eos(GST_ELEMENT(m_element)))
+        return absl::InternalError("Could not finish the edited-view calibration");
+      return absl::CancelledError("Stitching view has been configured from the saved alignment");
+    }
+    HM_RETURN_IF_ERROR(reload_stitcher_with_artifact_lock());
+    if (!canvas_width_hint_ || !canvas_height_hint_)
+      return report_fatal_calibration_failure(absl::FailedPreconditionError("Edited view has no usable stitch canvas"));
+    return videoprep::RuntimeOutputSize{
+        canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
   }
   bool retry_validated_artifacts = false;
   {
@@ -1258,7 +1419,18 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
       eos_snapshot.pipeline_eos_seen,
       /*require_initial_continuity=*/false);
   if (!selected_pair.ok()) {
+    if (calibration_frame_selector_ && absl::IsCancelled(selected_pair.status()) &&
+        !calibration_frame_selector_->complete())
+      return report_fatal_calibration_failure(calibration_frame_selector_->Finish());
     return selected_pair.status();
+  }
+  if (!cached_calibration_frame_pairs_.empty()) {
+    // Preserve validation of the incoming synchronized batch, but solve from
+    // already extracted CPU images without mapping or capturing these surfaces.
+    const auto cached_frame_pairs = cached_calibration_frame_pairs_;
+    HM_RETURN_IF_ERROR(configure_one_pass_from_frame_pairs(cached_frame_pairs));
+    return videoprep::RuntimeOutputSize{
+        canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
   }
   std::map<gint, std::map<guint, size_t>> frame_indices;
   for (size_t index = 0; index < runtime_frame_keys.size(); ++index) {
@@ -1273,7 +1445,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
       continue;
     }
     selected_pairs.emplace_back(by_source.begin()->second, by_source.rbegin()->second);
-    if (selected_pairs.size() == required_frame_count) {
+    if (!calibration_frame_selector_ && selected_pairs.size() == required_frame_count) {
       break;
     }
   }
@@ -1288,7 +1460,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
         ? std::min<uint64_t>(selected_left.buf_pts, selected_right.buf_pts)
         : GST_CLOCK_TIME_NONE;
 
-    if (!should_capture_calibration_pair(pair_pts_ns)) {
+    bool capture_pair = false;
+    HM_ASSIGN_OR_RETURN(
+        capture_pair,
+        should_capture_calibration_pair(pair_pts_ns, selected_left.frame_meta, selected_right.frame_meta));
+    if (!capture_pair) {
       continue;
     }
 #ifdef __aarch64__
@@ -1354,7 +1530,10 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
 }
 
 bool StitcherPriv::SetProperty(const Property& prop) {
-  if (prop.key == "expected-artifact-revision") {
+  if (prop.key == "emit-frame-pair-meta") {
+    if (caps_initialized_ || !parse_strict_bool(prop.value, emit_frame_pair_meta_))
+      return false;
+  } else if (prop.key == "expected-artifact-revision") {
     if (caps_initialized_)
       return false;
     expected_artifact_revision_ = prop.value;
@@ -1820,6 +1999,8 @@ absl::Status StitcherPriv::GenerateOutput(
         eos_snapshot.pipeline_eos_seen && metadata_valid_unpairable_batch,
         eos_snapshot.pipeline_eos_seen);
     if (source_eos_explains_unpairable_batch) {
+      if (calibration_frame_selector_ && !calibration_frame_selector_->complete())
+        return report_fatal_calibration_failure(calibration_frame_selector_->Finish());
       // URI-MULTIPLE suppresses chapter-boundary EOS before nvstreammux. A source EOS observed here therefore means
       // that a camera has permanently ended, so stop stitched output instead of discarding frames and continuing.
       return absl::CancelledError(mismatch_status.message());
@@ -1864,7 +2045,9 @@ absl::Status StitcherPriv::GenerateOutput(
     }
     first_pass_will_configure_stitching = configure_only_ || (!first_pass_stitcher_ready && one_pass_mode_);
   }
-  if (first_pass_will_configure_stitching) {
+  if (first_pass_will_configure_stitching && !cached_calibration_frame_pairs_.empty()) {
+    batch_calibration_frame_pairs = cached_calibration_frame_pairs_;
+  } else if (first_pass_will_configure_stitching) {
     const size_t required_frame_count = calibration_frame_count_;
     batch_calibration_frame_pairs.reserve(std::min(required_frame_count, frame_source_surfaces.size()));
     for (const auto& [frame_number, source_to_surface] : frame_source_surfaces) {
@@ -1881,7 +2064,11 @@ absl::Status StitcherPriv::GenerateOutput(
               GST_CLOCK_TIME_IS_VALID(frame_info_right.frame_meta->buf_pts)
           ? std::min<uint64_t>(frame_info_left.frame_meta->buf_pts, frame_info_right.frame_meta->buf_pts)
           : GST_CLOCK_TIME_NONE;
-      if (!should_capture_calibration_pair(pair_pts_ns)) {
+      bool capture_pair = false;
+      HM_ASSIGN_OR_RETURN(
+          capture_pair,
+          should_capture_calibration_pair(pair_pts_ns, frame_info_left.frame_meta, frame_info_right.frame_meta));
+      if (!capture_pair) {
         continue;
       }
 #ifdef __aarch64__
@@ -1990,6 +2177,26 @@ absl::Status StitcherPriv::GenerateOutput(
       remove_frame_metas.emplace_back(frame_info_left.frame_meta);
     }
 
+    if (emit_frame_pair_meta_) {
+      const auto left = decoded_frame_sequence(frame_info_left.frame_meta);
+      const auto right = decoded_frame_sequence(frame_info_right.frame_meta);
+      if (!left || !right || !left->source_uri || !right->source_uri || !GST_CLOCK_TIME_IS_VALID(left->source_pts) ||
+          !GST_CLOCK_TIME_IS_VALID(right->source_pts) ||
+          !GST_CLOCK_TIME_IS_VALID(frame_info_left.frame_meta->buf_pts) ||
+          !GST_CLOCK_TIME_IS_VALID(frame_info_right.frame_meta->buf_pts))
+        return absl::FailedPreconditionError("Frame-pair analysis requires both complete decoded source identities");
+      const StitchingFramePair pair{
+          *left,
+          *right,
+          std::min(frame_info_left.frame_meta->buf_pts, frame_info_right.frame_meta->buf_pts),
+          frame_info_left.surface_params->width,
+          frame_info_left.surface_params->height,
+          frame_info_right.surface_params->width,
+          frame_info_right.surface_params->height};
+      if (!add_stitching_frame_pair_meta(reuse_frame_meta, pair))
+        return absl::ResourceExhaustedError("Could not preserve stitched frame-pair metadata");
+    }
+
 #ifdef __aarch64__
     hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
         in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
@@ -2037,7 +2244,8 @@ absl::Status StitcherPriv::GenerateOutput(
               batch_calibration_frame_pairs,
               calibration_invalidation_id_,
               [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
-              max_output_width_);
+              max_output_width_,
+              captured_frame_selection_fingerprint_);
           release_high_bit_calibration_surfaces();
           if (!configure_status.ok()) {
             std::cerr << configure_status << "\n" << std::flush;

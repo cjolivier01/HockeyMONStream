@@ -19,6 +19,80 @@ bool near(double lhs, double rhs) {
   return std::abs(lhs - rhs) < 0.0001;
 }
 
+bool test_timed_progress_requires_completed_output() {
+  constexpr uint64_t kSecond = 1000000000ULL;
+  hm::ObservedPlaybackProgress progress;
+  bool ok = expect(
+      progress.processed_ns() == hm::kUnknownPlaybackTime &&
+          progress.processed_ns(582 * kSecond) == hm::kUnknownPlaybackTime,
+      "an initial source seek must not count as processed video before any output");
+  progress.observe_pts(hm::kUnknownPlaybackTime);
+  ok &= expect(progress.processed_ns() == hm::kUnknownPlaybackTime, "missing timestamps must not fabricate progress");
+
+  progress.observe_pts(582 * kSecond);
+  ok &= expect(progress.processed_ns() == 0, "the first output at 09:42 must start a fresh relative timeline");
+  progress.observe_pts(583 * kSecond);
+  ok &= expect(progress.processed_ns() == kSecond, "only the completed second may advance timed-run accounting");
+  progress.observe_pts(587 * kSecond);
+  ok &= expect(progress.processed_ns() == 5 * kSecond, "five seconds of output must still reach a five-second limit");
+  return ok;
+}
+
+bool test_timed_progress_instances_and_generations_are_independent() {
+  constexpr uint64_t kSecond = 1000000000ULL;
+  std::map<unsigned, hm::ObservedPlaybackProgress> instances;
+  instances[0].observe_pts(582 * kSecond);
+  instances[0].observe_pts(584 * kSecond);
+  bool ok = expect(
+      instances[1].processed_ns() == hm::kUnknownPlaybackTime,
+      "one pipeline's completed output must not make another pipeline ready");
+  instances[1].observe_pts(900 * kSecond);
+  ok &= expect(
+      instances[0].processed_ns() == 2 * kSecond && instances[1].processed_ns() == 0,
+      "each pipeline must anchor its own PTS clock");
+
+  // Stage changes, calibration completion and runtime seeks clear the same
+  // instance map before admitting output from the replacement generation.
+  instances.clear();
+  ok &= expect(
+      instances[0].processed_ns(3 * kSecond) == hm::kUnknownPlaybackTime,
+      "a replacement's seek offset must not publish progress before replacement output");
+  instances[0].observe_pts(1000 * kSecond);
+  ok &= expect(
+      instances[0].processed_ns(3 * kSecond) == 3 * kSecond,
+      "completed replacement output must preserve the logical runtime seek offset");
+  instances[0].observe_pts(1002 * kSecond);
+  ok &= expect(
+      instances[0].processed_ns(3 * kSecond) == 5 * kSecond,
+      "the original time limit must include the runtime seek offset");
+  return ok;
+}
+
+bool test_timed_progress_keeps_frame_count_fallback() {
+  constexpr uint64_t kSecond = 1000000000ULL;
+  hm::ObservedPlaybackProgress progress;
+  progress.observe_frame(0, 1000, 0, 1);
+  progress.observe_frame(0, 1000, 30, 0);
+  bool ok = expect(
+      progress.processed_ns() == hm::kUnknownPlaybackTime, "unknown frame rates must not produce elapsed video time");
+  progress.observe_frame(0, 1000, 30000, 1001);
+  ok &= expect(progress.processed_ns() == 0, "the first frame number must be relative even after a long source seek");
+  progress.observe_frame(1, 2000, 30000, 1001);
+  ok &= expect(progress.processed_ns() == 0, "each source needs an independent frame-number baseline");
+  progress.observe_frame(0, 1150, 30000, 1001);
+  ok &= expect(progress.processed_ns() == 5005000000ULL, "frame fallback must preserve fractional frame rates");
+  progress.observe_pts(582 * kSecond);
+  progress.observe_pts(583 * kSecond);
+  ok &=
+      expect(progress.processed_ns() == 5005000000ULL, "lagging timestamps must not regress completed-frame progress");
+  progress.observe_frame(0, 0, 30000, 1001);
+  ok &= expect(progress.processed_ns() == 5005000000ULL, "a frame-number reset must not underflow elapsed time");
+  ok &= expect(
+      progress.processed_ns(hm::kUnknownPlaybackTime - kSecond) == hm::kUnknownPlaybackTime - 1,
+      "offset addition must saturate without wrapping or turning valid progress into unknown time");
+  return ok;
+}
+
 bool test_rate_recovers_after_pause() {
   hm::PlaybackRateEstimator estimator;
   const auto start = std::chrono::steady_clock::time_point{};
@@ -147,6 +221,9 @@ bool test_ui_launch_enables_progress_sampling() {
 
 int main() {
   bool ok = true;
+  ok &= test_timed_progress_requires_completed_output();
+  ok &= test_timed_progress_instances_and_generations_are_independent();
+  ok &= test_timed_progress_keeps_frame_count_fallback();
   ok &= test_rate_recovers_after_pause();
   ok &= test_multi_instance_aggregate_uses_slowest_pipeline();
   ok &= test_multi_instance_short_pause_requires_fresh_samples();

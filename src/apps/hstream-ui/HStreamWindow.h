@@ -278,7 +278,7 @@ class HStreamWindow : public QMainWindow {
   bool releaseArchiveFinalizeTarget(bool remove_guard);
   bool isArchiveFinalizing() const;
   void showStitchingCalibrationDialog();
-  bool beginObservedStitchingCalibration(const QString& reported_stage);
+  bool beginObservedStitchingCalibration(const QString& reported_stage, bool terminal_failure = false);
   void handleStitchingCalibrationOutput(const QString& line);
   void setStitchingCalibrationStage(const QString& stage, const QString& status, const QString& message);
   void completeStitchingCalibration();
@@ -416,6 +416,7 @@ class HStreamWindow : public QMainWindow {
   bool cropRotationSuppressed() const;
   void updateCropRotationControls();
   double cameraPresetControlValue(const QString& id) const;
+  void openPromotedStitchingLeveling(const QString& game_directory);
   void selectRinkLeveling();
   void selectProjectionCrop();
   bool ensureProjectionCropReviewed();
@@ -470,6 +471,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, double> readPlayerSizeControls(
       const YAML::Node& game_config, bool inherited, QString* native_error = nullptr) const;
   void loadSavedControlConfig();
+  bool ensureSavedControlConfigLoaded();
   bool sendLiveCameraControl(const QString& id, double value);
   bool publishRuntimeControlBatch(
       const std::map<QString, double>& controls,
@@ -781,6 +783,7 @@ class HStreamWindow : public QMainWindow {
   QString active_calibration_invalidation_id_;
   bool calibration_restart_requested_{false};
   bool active_force_reconfigure_{false};
+  bool active_stitching_reframe_{false};
   QString pipeline_stdout_buffer_;
   QString pipeline_stderr_buffer_;
   bool capture_complete_log_{false};
@@ -809,6 +812,9 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QDoubleSpinBox*> camera_double_spinboxes_;
   std::map<QString, double> inherited_player_size_controls_;
   QString unavailable_playtracker_config_error_;
+  // Defaulted controls after a failed load must never replace authoritative
+  // game settings (in particular the attached calibration frame selection).
+  QString saved_control_config_load_error_;
   std::map<QString, QCheckBox*> camera_checkboxes_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, QSlider*> stitched_color_sliders_;

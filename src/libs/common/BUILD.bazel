@@ -60,6 +60,15 @@ cc_library(
   ]
 )
 
+cc_test(
+    name = "pipeline_yaml_lookup_test",
+    srcs = ["PipelineYamlLookupTest.cpp"],
+    deps = [
+        ":utils",
+        "@yaml-cpp",
+    ],
+)
+
 cc_library(
   name = "fs",
   srcs = [],
@@ -133,6 +142,40 @@ cc_library(
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ],
+)
+
+cc_library(
+    name = "stitching_frame_pair_meta",
+    srcs = ["StitchingFramePairMeta.cpp"],
+    hdrs = ["StitchingFramePairMeta.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":decoded_frame_sequence_meta"],
+)
+
+cc_test(
+    name = "stitching_frame_pair_meta_test",
+    srcs = ["StitchingFramePairMetaTest.cpp"],
+    data = [
+        ":stitching_frame_pair_meta_dso_a.so",
+        ":stitching_frame_pair_meta_dso_b.so",
+    ],
+    linkopts = ["-ldl"],
+    deps = [":stitching_frame_pair_meta"],
+)
+
+cc_binary(
+    name = "stitching_frame_pair_meta_dso_a.so",
+    srcs = ["StitchingFramePairMetaDsoTestLibrary.cpp"],
+    linkshared = True,
+    deps = [":stitching_frame_pair_meta"],
+)
+
+cc_binary(
+    name = "stitching_frame_pair_meta_dso_b.so",
+    srcs = ["StitchingFramePairMetaDsoTestLibrary.cpp"],
+    linkshared = True,
+    deps = [":stitching_frame_pair_meta"],
 )
 
 cc_library(

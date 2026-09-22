@@ -1293,8 +1293,22 @@ static GstPadProbeReturn gie_processing_done_buf_prob(GstPad* pad, GstPadProbeIn
   guint index = bin->index;
   AppCtx* appCtx = bin->appCtx;
 
+  // Regression injection models a preview/tee retaining an output reference.
+  // It changes only the refcount; observation never maps or copies video data.
+  static const bool force_shared_output = [] {
+    const bool enabled = g_getenv("HM_TEST_PROCESSED_OUTPUT_SHARED_BUFFER") != nullptr;
+    if (enabled)
+      g_print("HSTREAM_TEST_PROCESSED_OUTPUT shared-buffer=enabled\n");
+    return enabled;
+  }();
+  GstBuffer* shared_for_test = force_shared_output ? gst_buffer_ref(buf) : nullptr;
+
+  if (appCtx->processed_output_cb) {
+    appCtx->processed_output_cb(appCtx, buf, gst_buffer_get_nvds_batch_meta(buf));
+  }
   if (gst_buffer_is_writable(buf))
     process_buffer(buf, appCtx, index);
+  gst_clear_buffer(&shared_for_test);
   return GST_PAD_PROBE_OK;
 }
 
@@ -1926,7 +1940,8 @@ gboolean create_pipeline(
     bbox_generated_callback bbox_generated_post_analytics_cb,
     bbox_generated_callback all_bbox_generated_cb,
     perf_callback perf_cb,
-    overlay_graphics_callback overlay_graphics_cb) {
+    overlay_graphics_callback overlay_graphics_cb,
+    processed_output_callback processed_output_cb) {
   if (!appCtx || !appCtx->pipeline_cleanup_complete) {
     NVGSTDS_ERR_MSG_V("Cannot create a pipeline before its previous generation is cleaned up");
     return FALSE;
@@ -1975,6 +1990,7 @@ gboolean create_pipeline(
   appCtx->all_bbox_generated_cb = all_bbox_generated_cb;
   appCtx->bbox_generated_post_analytics_cb = bbox_generated_post_analytics_cb;
   appCtx->overlay_graphics_cb = overlay_graphics_cb;
+  appCtx->processed_output_cb = processed_output_cb;
   appCtx->sensorInfoHash = g_hash_table_new(NULL, NULL);
   appCtx->perf_struct.FPSInfoHash = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, NULL);
 

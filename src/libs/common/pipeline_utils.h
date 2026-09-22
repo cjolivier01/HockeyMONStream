@@ -14,6 +14,8 @@ namespace hm {
 
 bool has_node(const YAML::Node& n, const std::string& dot_string, bool non_null);
 
+// Dot-separated map keys, optionally followed by :index to select a sequence
+// item. A bare :index selects from the current sequence. Lookups never modify n.
 std::optional<YAML::Node> get_node(const YAML::Node& n, const std::string& dot_string);
 
 void save_dot_file(GstElement* pipeline, GstDebugGraphDetails details, const std::string& filename);

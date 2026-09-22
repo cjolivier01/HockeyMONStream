@@ -16,6 +16,7 @@ typedef struct {
   std::string detection_mask_file;
   float raise_bbox_center_by_height_ratio{0.0F};
   float lower_bbox_bottom_by_height_ratio{0.0F};
+  bool require_existing_mask{false};
 } DsFieldMaskInitParams;
 
 // Initialize library context

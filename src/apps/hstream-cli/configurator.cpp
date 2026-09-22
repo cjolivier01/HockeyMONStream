@@ -65,6 +65,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/stitching/StitchingReframe.h"
 
 namespace fs = std::filesystem;
 
@@ -5375,7 +5376,16 @@ absl::Status Configurator::setup_stitcher_and_masks(
     const bool enabled = get_node_value(pipeline, "hmstitcher.enable", FALSE);
     const bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", FALSE);
     const bool one_pass_mode = get_node_value(pipeline, "hmstitcher.one-pass-mode", FALSE);
-    if (enabled && (configure_only || one_pass_mode)) {
+    if (enabled && stitching::HasStitchingReframeIntent(config_)) {
+      if (!configure_only && !one_pass_mode)
+        return absl::FailedPreconditionError("The pending view edit requires a calibration-capable stitcher");
+      // Keep the old maps untouched until the worker commits their replacement.
+      // Reframing needs neither matcher models nor decoded calibration samples.
+      stitching_matcher_model_required_ = false;
+      stitching_calibration_required_ = true;
+      stitching_calibration_start_stage_ = "canvas";
+      validated_stitching_artifacts_.reset();
+    } else if (enabled && (configure_only || one_pass_mode)) {
       int max_output_width = 0;
       HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(pipeline));
       stitching::LockedStitchingArtifacts artifacts;
@@ -5417,6 +5427,122 @@ absl::Status Configurator::setup_stitcher_and_masks(
   }
   if (pipeline["ds-fieldmask"].IsDefined()) {
     pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
+  }
+  return absl::OkStatus();
+}
+
+absl::Status Configurator::map_stitch_max_output_width() {
+  YAML::Node stitcher = config_["pipeline"]["hmstitcher"];
+  if (!stitcher.IsMap())
+    return absl::OkStatus();
+  if (!stitcher["properties"].IsDefined() || stitcher["properties"].IsNull())
+    stitcher["properties"] = YAML::Node(YAML::NodeType::Map);
+  else if (!stitcher["properties"].IsMap())
+    return absl::InvalidArgumentError("pipeline.hmstitcher.properties must be a map");
+  YAML::Node stitcher_properties = stitcher["properties"];
+  YAML::Node stitcher_private_properties = stitcher["private-properties"];
+  struct MaxOutputWidthCandidate {
+    std::string path;
+    YAML::Node node;
+    YAML::Node container;
+    std::string key;
+    int rank;
+    int effective_rank;
+    int priority;
+    bool canonical;
+    bool private_property;
+  };
+  std::vector<MaxOutputWidthCandidate> max_output_width_candidates;
+  auto add_max_output_width_candidate = [&](const std::string& path,
+                                            const YAML::Node& node,
+                                            YAML::Node container,
+                                            const std::string& key,
+                                            int priority,
+                                            bool canonical,
+                                            bool private_property) {
+    if (!node.IsDefined())
+      return;
+    const int rank = explicit_value_rank(path);
+    if (rank < 1 && node.IsNull())
+      priority = -1;
+    max_output_width_candidates.push_back(
+        {path, node, container, key, rank, std::max(0, rank), priority, canonical, private_property});
+  };
+  if (const std::optional<YAML::Node> canonical = get_node(config_, "stitching.max_output_width");
+      canonical.has_value() && canonical->IsDefined()) {
+    add_max_output_width_candidate("stitching.max_output_width", *canonical, YAML::Node(), "", 4, true, false);
+  }
+  for (const char* alias :
+       {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
+    const std::string path = std::string("pipeline.hmstitcher.properties.") + alias;
+    const std::optional<YAML::Node> node = get_node(config_, path);
+    if (!node.has_value() || !node->IsDefined())
+      continue;
+    add_max_output_width_candidate(
+        path, *node, stitcher_properties, alias, std::string(alias) == "max-output-width" ? 3 : 2, false, false);
+  }
+  if (stitcher_private_properties.IsMap()) {
+    for (const char* alias :
+         {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
+      const std::string path = std::string("pipeline.hmstitcher.private-properties.") + alias;
+      const std::optional<YAML::Node> node = get_node(config_, path);
+      if (!node.has_value() || !node->IsDefined())
+        continue;
+      add_max_output_width_candidate(path, *node, stitcher_private_properties, alias, 1, false, true);
+    }
+  }
+  auto parse_max_output_width = [](const YAML::Node& node,
+                                   const std::string& path) -> absl::StatusOr<std::optional<int>> {
+    if (node.IsNull())
+      return std::optional<int>();
+    if (!node.IsScalar())
+      return absl::InvalidArgumentError(path + " must be null or a non-negative integer");
+    try {
+      const int value = node.as<int>();
+      if (value < 0)
+        return absl::InvalidArgumentError(path + " must be null or a non-negative integer");
+      return value;
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Invalid " + path + ": " + std::string(error.what()));
+    }
+  };
+  if (!max_output_width_candidates.empty()) {
+    const MaxOutputWidthCandidate* winner = &max_output_width_candidates.front();
+    for (const MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
+      if (candidate.effective_rank > winner->effective_rank ||
+          (candidate.effective_rank == winner->effective_rank && candidate.priority > winner->priority)) {
+        winner = &candidate;
+      }
+    }
+    std::optional<int> value;
+    HM_ASSIGN_OR_RETURN(value, parse_max_output_width(winner->node, winner->path));
+    auto remove_lower_ranked_aliases = [&](bool preserve_public_property) {
+      for (MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
+        if (candidate.canonical || !candidate.container.IsMap()) {
+          continue;
+        }
+        if (preserve_public_property && !candidate.private_property && candidate.key == "max-output-width")
+          continue;
+        if (candidate.effective_rank <= winner->effective_rank)
+          candidate.container.remove(candidate.key);
+      }
+    };
+    if (!value.has_value()) {
+      stitcher_properties.remove("max-output-width");
+      remove_lower_ranked_aliases(false);
+    } else if (winner->private_property && winner->rank < 1) {
+      for (MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
+        if (&candidate != winner && !candidate.canonical && candidate.container.IsMap() &&
+            candidate.effective_rank <= winner->effective_rank) {
+          candidate.container.remove(candidate.key);
+        }
+      }
+    } else {
+      stitcher_properties["max-output-width"] = *value;
+      if (winner->rank >= 1)
+        explicit_value_ranks_["pipeline.hmstitcher.properties.max-output-width"] = winner->rank;
+      remove_lower_ranked_aliases(true);
+    }
   }
   return absl::OkStatus();
 }
@@ -5560,113 +5686,10 @@ absl::Status Configurator::map_common_config_keys() {
       return absl::InvalidArgumentError("pipeline.hmstitcher.properties must be a map");
     }
     YAML::Node stitcher_properties = stitcher["properties"];
-    YAML::Node stitcher_private_properties = stitcher["private-properties"];
     HM_RETURN_IF_ERROR(map_bool("stitching.enabled", "pipeline.hmstitcher.enable", stitcher, "enable"));
     HM_RETURN_IF_ERROR(
         map_bool("stitching.minimize_blend", "pipeline.hmstitcher.minimize-blend", stitcher, "minimize-blend"));
-    struct MaxOutputWidthCandidate {
-      std::string path;
-      YAML::Node node;
-      YAML::Node container;
-      std::string key;
-      int rank;
-      int effective_rank;
-      int priority;
-      bool canonical;
-      bool private_property;
-    };
-    std::vector<MaxOutputWidthCandidate> max_output_width_candidates;
-    auto add_max_output_width_candidate = [&](const std::string& path,
-                                              const YAML::Node& node,
-                                              YAML::Node container,
-                                              const std::string& key,
-                                              int priority,
-                                              bool canonical,
-                                              bool private_property) {
-      if (!node.IsDefined())
-        return;
-      const int rank = explicit_value_rank(path);
-      if (rank < 1 && node.IsNull())
-        priority = -1;
-      max_output_width_candidates.push_back(
-          {path, node, container, key, rank, std::max(0, rank), priority, canonical, private_property});
-    };
-    if (const std::optional<YAML::Node> canonical = get_node(config_, "stitching.max_output_width");
-        canonical.has_value() && canonical->IsDefined()) {
-      add_max_output_width_candidate("stitching.max_output_width", *canonical, YAML::Node(), "", 4, true, false);
-    }
-    for (const char* alias :
-         {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
-      const std::string path = std::string("pipeline.hmstitcher.properties.") + alias;
-      const std::optional<YAML::Node> node = get_node(config_, path);
-      if (!node.has_value() || !node->IsDefined())
-        continue;
-      add_max_output_width_candidate(
-          path, *node, stitcher_properties, alias, std::string(alias) == "max-output-width" ? 3 : 2, false, false);
-    }
-    if (stitcher_private_properties.IsMap()) {
-      for (const char* alias :
-           {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
-        const std::string path = std::string("pipeline.hmstitcher.private-properties.") + alias;
-        const std::optional<YAML::Node> node = get_node(config_, path);
-        if (!node.has_value() || !node->IsDefined())
-          continue;
-        add_max_output_width_candidate(path, *node, stitcher_private_properties, alias, 1, false, true);
-      }
-    }
-    auto parse_max_output_width = [](const YAML::Node& node,
-                                     const std::string& path) -> absl::StatusOr<std::optional<int>> {
-      if (node.IsNull())
-        return std::optional<int>();
-      if (!node.IsScalar())
-        return absl::InvalidArgumentError(path + " must be null or a non-negative integer");
-      try {
-        const int value = node.as<int>();
-        if (value < 0)
-          return absl::InvalidArgumentError(path + " must be null or a non-negative integer");
-        return value;
-      } catch (const YAML::Exception& error) {
-        return absl::InvalidArgumentError("Invalid " + path + ": " + std::string(error.what()));
-      }
-    };
-    if (!max_output_width_candidates.empty()) {
-      const MaxOutputWidthCandidate* winner = &max_output_width_candidates.front();
-      for (const MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
-        if (candidate.effective_rank > winner->effective_rank ||
-            (candidate.effective_rank == winner->effective_rank && candidate.priority > winner->priority)) {
-          winner = &candidate;
-        }
-      }
-      std::optional<int> value;
-      HM_ASSIGN_OR_RETURN(value, parse_max_output_width(winner->node, winner->path));
-      auto remove_lower_ranked_aliases = [&](bool preserve_public_property) {
-        for (MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
-          if (candidate.canonical || !candidate.container.IsMap()) {
-            continue;
-          }
-          if (preserve_public_property && !candidate.private_property && candidate.key == "max-output-width")
-            continue;
-          if (candidate.effective_rank <= winner->effective_rank)
-            candidate.container.remove(candidate.key);
-        }
-      };
-      if (!value.has_value()) {
-        stitcher_properties.remove("max-output-width");
-        remove_lower_ranked_aliases(false);
-      } else if (winner->private_property && winner->rank < 1) {
-        for (MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
-          if (&candidate != winner && !candidate.canonical && candidate.container.IsMap() &&
-              candidate.effective_rank <= winner->effective_rank) {
-            candidate.container.remove(candidate.key);
-          }
-        }
-      } else {
-        stitcher_properties["max-output-width"] = *value;
-        if (winner->rank >= 1)
-          explicit_value_ranks_["pipeline.hmstitcher.properties.max-output-width"] = winner->rank;
-        remove_lower_ranked_aliases(true);
-      }
-    }
+    HM_RETURN_IF_ERROR(map_stitch_max_output_width());
 
     std::optional<YAML::Node> dtype;
     HM_ASSIGN_OR_RETURN(
@@ -5932,8 +5955,7 @@ absl::Status Configurator::map_common_config_keys() {
   stitching::MappingBackend crop_rotation_backend;
   HM_ASSIGN_OR_RETURN(
       crop_rotation_backend,
-      stitching::ParseMappingBackend(
-          get_node_value(config_, "stitching.mapping_backend", std::string("nona"))));
+      stitching::ParseMappingBackend(get_node_value(config_, "stitching.mapping_backend", std::string("nona"))));
   bool suppress_crop_rotation = false;
   if (crop_rotation_backend == stitching::MappingBackend::kNona) {
     stitching::StitchProjectionFraming framing;
@@ -6325,7 +6347,7 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
     return absl::OkStatus();
   }
 
-  std::cout << "Stitching canvas requires regeneration for the active size constraints; clearing canvas-dependent "
+  std::cout << "Stitching artifacts failed reuse validation (see preceding diagnostics); clearing canvas-dependent "
                "cached rink geometry"
             << std::endl;
   remove_rotation_dependent_rink_cache_keys(config_);
@@ -6464,7 +6486,8 @@ absl::Status Configurator::gather_stitching_videos(
   try {
     HM_ASSIGN_OR_RETURN(
         sync_method,
-        stitching::parse_synchronization_method(get_node_value<std::string>(config_, "stitching.sync_method", "audio")));
+        stitching::parse_synchronization_method(
+            get_node_value<std::string>(config_, "stitching.sync_method", "audio")));
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Invalid stitching.sync_method: " + std::string(error.what()));
   }
@@ -6583,8 +6606,9 @@ absl::Status Configurator::gather_stitching_videos(
         !has_node(config_, "game.stitching.frame_offsets.right", /*non_null=*/true) || force) {
       stitching::Synchronization sync;
       HM_ASSIGN_OR_RETURN(
-          sync, stitching::calculate_stitching_synchronization(
-                    game_dir / left_files[0], game_dir / right_files[0], sync_method));
+          sync,
+          stitching::calculate_stitching_synchronization(
+              game_dir / left_files[0], game_dir / right_files[0], sync_method));
       offsets["left"] = std::to_string(sync.video1_frame_offset);
       offsets["right"] = std::to_string(sync.video2_frame_offset);
       private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
@@ -7691,6 +7715,19 @@ absl::Status Configurator::persist_stitch_frame_time_override(const std::string&
     return absl::InvalidArgumentError("Invalid stitch-frame override: " + std::string(error.what()));
   }
   HM_ASSIGN_OR_RETURN(lower_layer_time_ns, private_stitch_frame_time(lower_layer_config_));
+  uint64_t previous_time_ns = 0;
+  HM_ASSIGN_OR_RETURN(previous_time_ns, private_stitch_frame_time(config_));
+  std::string selected_fingerprint;
+  HM_ASSIGN_OR_RETURN(selected_fingerprint, stitching::player_frame_selection_fingerprint(private_config_));
+  if (!selected_fingerprint.empty()) {
+    if (previous_time_ns != requested_time_ns)
+      return absl::FailedPreconditionError(
+          "The saved player-rich frames fix the reference time. Restore that time or explicitly change the frame "
+          "count to replace the selection; the saved frames have been preserved.");
+    // The plan binds the persisted anchor spelling as well as its effective
+    // decode time. Do not remove a redundant override from a frozen selection.
+    return absl::OkStatus();
+  }
   config_["stitching"]["stitch_frame_time"] = requested;
   if (requested_time_ns == lower_layer_time_ns) {
     remove_yaml_key_path(private_config_, {"stitching", "stitch_frame_time"});
@@ -8131,6 +8168,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   HM_ASSIGN_OR_RETURN(resolution, stitching::read_control_point_resolution(config_));
   hm::onnx::ExecutionProvider provider;
   HM_ASSIGN_OR_RETURN(provider, stitching::read_control_point_execution_provider(config_));
+  std::string calibration_frame_selection_fingerprint;
+  HM_ASSIGN_OR_RETURN(calibration_frame_selection_fingerprint, stitching::player_frame_selection_fingerprint(config_));
   const stitching::StitchingBackendChoices backend_choices{
       matcher_name,
       backend_name,
@@ -8140,7 +8179,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       projection_framing,
       camera,
       resolution,
-      provider};
+      provider,
+      calibration_frame_selection_fingerprint};
 
   bool provider_changed = false;
   HM_ASSIGN_OR_RETURN(
@@ -8361,6 +8401,10 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError("Invalid stitch-frame override: " + std::string(error.what()));
   }
+  // Changing the frame count explicitly replaces the selected plan. Other
+  // settings, including reference time, must never silently discard it.
+  std::string reconciled_invalidation_id = expected_invalidation_id;
+  HM_RETURN_IF_ERROR(reconcile_selected_frame_count_override(expected_invalidation_id, &reconciled_invalidation_id));
 
   // A config-only invocation can use the CLI timestamp for positioning, but
   // has no game-private config.yaml to own. Avoid treating the game-root
@@ -8393,10 +8437,21 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   if (private_value_present)
     HM_ASSIGN_OR_RETURN(current_time_ns, private_stitch_frame_time(latest));
   const bool changed = current_time_ns != requested_time_ns;
+  std::string selected_fingerprint;
+  HM_ASSIGN_OR_RETURN(selected_fingerprint, stitching::player_frame_selection_fingerprint(latest));
+  if (!selected_fingerprint.empty()) {
+    if (changed)
+      return absl::FailedPreconditionError(
+          "The saved player-rich frames fix the reference time. Restore that time or explicitly change the frame "
+          "count to replace the selection; the saved frames have been preserved.");
+    // Keep the stored form used by the plan's source context, even when the
+    // inherited value currently makes the game-private override redundant.
+    return false;
+  }
   const bool should_persist = requested_time_ns != lower_layer_time_ns;
   const bool persistence_changed = private_value_present != should_persist;
   if (changed || persistence_changed) {
-    std::string invalidation_id = expected_invalidation_id;
+    std::string invalidation_id = reconciled_invalidation_id;
     if (!invalidation_id.empty()) {
       const YAML::Node current_calibration = latest["hstream_ui"]["stitching_calibration"];
       const std::string current_status = current_calibration["status"] && current_calibration["status"].IsScalar()
@@ -8457,6 +8512,7 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       calibration["stale_from"] = "input";
       calibration["artifacts_invalidated"] = false;
       calibration["invalidation_id"] = invalidation_id;
+      stitching::ClearStitchingReframeIntent(latest);
     }
 
     const absl::Status publish = stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n");
@@ -8474,6 +8530,103 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
     remove_yaml_key_path(config_, {"hstream_ui", "stitching_calibration"});
   }
   return changed;
+}
+
+absl::Status Configurator::reconcile_selected_frame_count_override(
+    const std::string& expected_invalidation_id,
+    std::string* changed_invalidation_id) {
+  // Ordinary runs keep their existing count policy. A promoted selection needs
+  // an explicit way back to ordinary capture before its immutable claim is made.
+  const auto selection = get_node(private_config_, "stitching.calibration_frame_selection");
+  if (!selection || selection->IsNull() || game_id_.empty())
+    return absl::OkStatus();
+  std::optional<YAML::Node> requested_value;
+  // Only CLI-explicit entries participate (rank 3). At that same layer,
+  // the native property wins over the canonical mapping; prefer its dashed spelling.
+  for (const char* path :
+       {"stitching.calibration_frame_count",
+        "hstream_ui.stitching_calibration.frame_count",
+        "pipeline.hmstitcher.calibration_frame_count",
+        "pipeline.hmstitcher.calibration-frame-count"}) {
+    if (explicit_value_rank(path) < 3)
+      continue;
+    const auto value = get_node(config_, path);
+    if (!value)
+      return absl::InvalidArgumentError("Missing explicit calibration frame count");
+    requested_value = YAML::Clone(*value);
+  }
+  if (!requested_value)
+    return absl::OkStatus();
+  YAML::Node count_config;
+  count_config["stitching"]["calibration_frame_count"] = *requested_value;
+  size_t requested_count;
+  HM_ASSIGN_OR_RETURN(requested_count, persisted_stitching_calibration_frame_count(count_config));
+  std::string previous_selection;
+  HM_ASSIGN_OR_RETURN(previous_selection, stitching::player_frame_selection_fingerprint(private_config_));
+  // The validated plan owns its count even when optional saved bookkeeping is
+  // absent. This check deliberately does not require the original media.
+  const size_t previous_count = (*selection)["selected"].size();
+  config_["stitching"]["calibration_frame_count"] = requested_count;
+  config_["hstream_ui"]["stitching_calibration"]["frame_count"] = requested_count;
+  config_["pipeline"]["hmstitcher"]["calibration-frame-count"] = requested_count;
+  remove_yaml_key_path(config_, {"pipeline", "hmstitcher", "calibration_frame_count"});
+  if (requested_count == previous_count)
+    return absl::OkStatus();
+  const char* environment_count = g_getenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
+  if (environment_count && *environment_count) {
+    size_t count;
+    HM_ASSIGN_OR_RETURN(count, configured_stitching_calibration_frame_count_from_environment());
+    if (count != requested_count)
+      return absl::InvalidArgumentError(
+          "Explicit calibration frame count conflicts with HM_STITCH_CALIBRATION_FRAME_COUNT");
+  }
+  const fs::path game_dir = resolved_game_dir();
+  auto transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+  if (!transaction.ok())
+    return transaction.status();
+  YAML::Node latest;
+  try {
+    latest = YAML::LoadFile((game_dir / "config.yaml").string());
+  } catch (const YAML::Exception& error) {
+    return absl::AbortedError(
+        "Cannot read selected-frame configuration before changing the frame count: " + std::string(error.what()));
+  }
+  std::string current_selection;
+  HM_ASSIGN_OR_RETURN(current_selection, stitching::player_frame_selection_fingerprint(latest));
+  if (current_selection != previous_selection)
+    return absl::AbortedError("Selected-frame configuration changed before changing the frame count");
+  if (!expected_invalidation_id.empty())
+    HM_RETURN_IF_ERROR(stitching::validate_stitching_generation_owner(latest, expected_invalidation_id));
+  std::string invalidation_id = expected_invalidation_id;
+  if (invalidation_id.empty()) {
+    gchar* generated = g_uuid_string_random();
+    if (!generated)
+      return absl::InternalError("Unable to create a frame-count invalidation ID");
+    invalidation_id = generated;
+    g_free(generated);
+  }
+  remove_yaml_key_path(latest, {"stitching", "calibration_frame_selection"});
+  remove_yaml_key_path(latest, {"stitching", "calibration_frame_inputs_fingerprint"});
+  latest["stitching"]["calibration_frame_count"] = requested_count;
+  YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
+  calibration["frame_count"] = requested_count;
+  calibration["status"] = "pending";
+  calibration["rink_mask_status"] = "pending";
+  calibration["stale_from"] = "input";
+  calibration["artifacts_invalidated"] = false;
+  calibration["invalidation_id"] = invalidation_id;
+  calibration.remove("backend_generation");
+  stitching::ClearStitchingReframeIntent(latest);
+  HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n"));
+  private_config_ = YAML::Clone(latest);
+  persisted_private_config_ = YAML::Clone(latest);
+  remove_yaml_key_path(config_, {"stitching", "calibration_frame_selection"});
+  remove_yaml_key_path(config_, {"stitching", "calibration_frame_inputs_fingerprint"});
+  config_["stitching"]["calibration_frame_count"] = requested_count;
+  config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(calibration);
+  if (changed_invalidation_id)
+    *changed_invalidation_id = invalidation_id;
+  return absl::OkStatus();
 }
 
 absl::StatusOr<YAML::Node> Configurator::load_config() {
@@ -8714,6 +8867,131 @@ absl::Status Configurator::complete_configuration(
   if (clean_requested && !has_stitching_cleanup_owner) {
     return absl::FailedPreconditionError("No active hmstitcher configuration is eligible for cleaning");
   }
+  if (!clean_requested && has_active_hmstitcher)
+    HM_RETURN_IF_ERROR(reconcile_selected_frame_count_override(clean_expected_invalidation_id));
+  if (has_stitching_cleanup_owner && (clean_requested || force) && stitching::HasStitchingReframeIntent(config_)) {
+    // Explicit clean/force supersedes the view request. Clear it before any
+    // deletion under the same artifact -> config lock order as publication.
+    auto artifacts = stitching::HuginProject::RecoverAndLock(game_dir);
+    if (!artifacts.ok())
+      return artifacts.status();
+    auto transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+    if (!transaction.ok())
+      return transaction.status();
+    try {
+      YAML::Node latest = YAML::LoadFile((game_dir / "config.yaml").string());
+      if (YAML::Dump(latest["hstream_ui"]["stitching_calibration"]) !=
+          YAML::Dump(private_config_["hstream_ui"]["stitching_calibration"]))
+        return absl::AbortedError("Calibration changed before explicit recalibration");
+      stitching::ClearStitchingReframeIntent(latest);
+      latest["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
+      HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n"));
+      config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(latest["hstream_ui"]["stitching_calibration"]);
+      private_config_ = YAML::Clone(latest);
+      persisted_private_config_ = YAML::Clone(latest);
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot cancel the pending view edit: " + std::string(error.what()));
+    }
+  }
+  if (!clean_requested && !force && has_active_hmstitcher &&
+      (get_node_value(private_config_, "hstream_ui.stitching_calibration.status", std::string()) == "complete" ||
+       stitching::HasStitchingReframeIntent(config_))) {
+    // Direct CLI geometry overrides need the same before-edit binding as the
+    // desktop controls. Capture before persisting the effective backend tuple.
+    auto artifacts = stitching::HuginProject::RecoverAndLock(game_dir);
+    if (!artifacts.ok())
+      return artifacts.status();
+    auto transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+    if (!transaction.ok())
+      return transaction.status();
+    try {
+      YAML::Node latest = YAML::LoadFile((game_dir / "config.yaml").string());
+      const std::string previous = YAML::Dump(latest);
+      const bool had_intent = stitching::HasStitchingReframeIntent(latest);
+      YAML::Node before = merge_nodes(YAML::Clone(lower_layer_config_), YAML::Clone(latest), false);
+      // Resolve the saved native aliases with the same layer precedence as
+      // launch, excluding this launch's CLI overrides. Comparing an unresolved
+      // canonical default to a saved native width would invent a view change.
+      Configurator saved_width_config(game_id_, config_root_dir_, override_gpu_id_);
+      saved_width_config.config_ = YAML::Clone(before);
+      // Structural app files are unranked defaults and may own native width
+      // aliases. Replay their already-loaded underlays without CLI mutations.
+      for (const auto& document : recording_config_documents_) {
+        const std::string role = document["role"].as<std::string>("");
+        if (!absl::StartsWith(role, "underlay:"))
+          continue;
+        const std::string node = role.substr(std::string("underlay:").size());
+        YAML::Node underlay = YAML::Clone(document["values"]);
+        if (node.empty())
+          saved_width_config.config_ = merge_nodes(underlay, saved_width_config.config_, false);
+        else
+          saved_width_config.config_[node] = merge_nodes(underlay, saved_width_config.config_[node], false);
+      }
+      if (!saved_width_config.config_["pipeline"]["hmstitcher"].IsDefined() ||
+          saved_width_config.config_["pipeline"]["hmstitcher"].IsNull())
+        saved_width_config.config_["pipeline"]["hmstitcher"] = YAML::Node(YAML::NodeType::Map);
+      if (user_config_snapshot_)
+        saved_width_config.record_explicit_overlay(*user_config_snapshot_, {}, 1);
+      saved_width_config.record_explicit_overlay(latest, {}, 2);
+      HM_RETURN_IF_ERROR(saved_width_config.map_stitch_max_output_width());
+      int previous_width = 0;
+      HM_ASSIGN_OR_RETURN(
+          previous_width, effective_hmstitcher_max_output_width(saved_width_config.config_["pipeline"]));
+      before["stitching"]["max_output_width"] = previous_width;
+      YAML::Node desired = YAML::Clone(config_);
+      int width = 0;
+      HM_ASSIGN_OR_RETURN(width, effective_hmstitcher_max_output_width(pipeline));
+      desired["stitching"]["max_output_width"] = width;
+      gchar* generated = g_uuid_string_random();
+      if (!generated)
+        return absl::InternalError("Unable to create a stitching view owner");
+      const std::string owner = !clean_expected_invalidation_id.empty() ? clean_expected_invalidation_id
+          : had_intent ? get_node_value(latest, "hstream_ui.stitching_calibration.invalidation_id", std::string())
+                       : generated;
+      g_free(generated);
+      bool reframe = false;
+      HM_ASSIGN_OR_RETURN(
+          reframe, stitching::PrepareStitchingReframeIntentLocked(game_dir, before, desired, owner, latest));
+      if (reframe || (had_intent && !stitching::HasStitchingReframeIntent(latest))) {
+        if (previous != YAML::Dump(persisted_private_config_))
+          return absl::AbortedError("Game settings changed before preparing the requested stitching view");
+        for (const char* key :
+             {"projection",
+              "projection_parameters",
+              "projection_framing",
+              "max_output_width",
+              "control_point_matcher",
+              "control_point_resolution",
+              "control_point_execution_provider",
+              "mapping_backend",
+              "run_autooptimizer",
+              "camera_config",
+              "camera_fov"})
+          latest["stitching"][key] = YAML::Clone(desired["stitching"][key]);
+        // Record resolved framing even when the request inherited a rink angle.
+        stitching::StitchProjectionFraming framing;
+        HM_ASSIGN_OR_RETURN(framing, stitching::read_stitch_projection_framing(desired));
+        stitching::write_stitch_projection_framing(latest, framing);
+        latest["hstream_ui"].remove("generated_stitching_backend_choices");
+        YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
+        calibration["status"] = "pending";
+        calibration["rink_mask_status"] = "pending";
+        calibration["stale_from"] = reframe ? "canvas" : "input";
+        calibration["artifacts_invalidated"] = reframe;
+        calibration["invalidation_id"] = owner;
+        calibration.remove("backend_generation");
+        HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n"));
+        private_config_ = YAML::Clone(latest);
+        persisted_private_config_ = YAML::Clone(latest);
+        config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(calibration);
+        config_["hstream_ui"].remove("generated_stitching_backend_choices");
+        config_["stitching"]["max_output_width"] = width;
+        loaded_generated_stitching_backend_choices_ = false;
+      }
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot prepare the saved stitching alignment: " + std::string(error.what()));
+    }
+  }
   const std::string loaded_invalidation_id =
       get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string());
   const std::string loaded_status = get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string());
@@ -8729,6 +9007,20 @@ absl::Status Configurator::complete_configuration(
   bool frame_count_environment_enforced = false;
   bool stitching_artifacts_precleaned = false;
   const bool has_cleanup_owner = clean_requested ? has_stitching_cleanup_owner : has_active_hmstitcher;
+  const bool reframe_requested = has_active_hmstitcher && stitching::HasStitchingReframeIntent(config_);
+  if (reframe_requested) {
+    auto artifacts = stitching::HuginProject::RecoverAndLock(game_dir);
+    if (!artifacts.ok())
+      return artifacts.status();
+    auto transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+    if (!transaction.ok())
+      return transaction.status();
+    const auto intent = stitching::ValidateStitchingReframeIntentLocked(game_dir, config_);
+    if (!intent.ok())
+      return intent.status();
+    if (intent->desired_owner != effective_invalidation_id)
+      return absl::AbortedError("The pending view edit belongs to a different calibration owner");
+  }
   if (!clean_requested && has_active_hmstitcher) {
     HM_RETURN_IF_ERROR(persist_effective_stitching_backend_choices(effective_invalidation_id));
   }
@@ -8788,6 +9080,8 @@ absl::Status Configurator::complete_configuration(
         HM_ASSIGN_OR_RETURN(expected_resolution, stitching::read_control_point_resolution(config_));
         hm::onnx::ExecutionProvider expected_provider;
         HM_ASSIGN_OR_RETURN(expected_provider, stitching::read_control_point_execution_provider(config_));
+        std::string expected_selection_fingerprint;
+        HM_ASSIGN_OR_RETURN(expected_selection_fingerprint, stitching::player_frame_selection_fingerprint(config_));
         const stitching::StitchingBackendChoices expected_backend_choices{
             get_node_value(config_, "stitching.control_point_matcher", std::string()),
             get_node_value(config_, "stitching.mapping_backend", std::string()),
@@ -8797,7 +9091,8 @@ absl::Status Configurator::complete_configuration(
             expected_projection_framing,
             expected_camera,
             expected_resolution,
-            expected_provider};
+            expected_provider,
+            expected_selection_fingerprint};
         HM_RETURN_IF_ERROR(
             stitching::validate_stitching_backend_generation(
                 current, effective_invalidation_id, expected_backend_choices));
@@ -8866,8 +9161,11 @@ absl::Status Configurator::complete_configuration(
   // launches: a direct CLI stitch-frame change can reuse the caller's owner
   // while still requiring a full input-stage invalidation.
   const bool auto_clean_pending_invalidation = has_active_hmstitcher && loaded_status == "pending" &&
-      !effective_invalidation_id.empty() && !stitching_artifacts_precleaned;
-  const bool effective_clean_from_control_points =
+      !effective_invalidation_id.empty() && !stitching_artifacts_precleaned && !reframe_requested;
+  std::string retained_selection_fingerprint;
+  if (has_cleanup_owner)
+    HM_ASSIGN_OR_RETURN(retained_selection_fingerprint, stitching::player_frame_selection_fingerprint(config_));
+  const bool effective_clean_from_control_points = !retained_selection_fingerprint.empty() ||
       clean_from_control_points_only || (auto_clean_pending_invalidation && loaded_stale_from == "features");
   const bool should_clean_stitching =
       clean_requested || auto_clean_pending_invalidation || (force && !stitching_artifacts_precleaned);
@@ -8915,7 +9213,7 @@ absl::Status Configurator::complete_configuration(
   const bool is_camera_source = !camera_sources.empty();
 
   bool pipeline_has_hmstitcher = has_active_hmstitcher;
-  if (pipeline_has_hmstitcher) {
+  if (pipeline_has_hmstitcher && !reframe_requested) {
     HM_RETURN_IF_ERROR(invalidate_rotation_dependent_cache_if_needed(game_dir));
     HM_RETURN_IF_ERROR(invalidate_canvas_dependent_cache_if_needed(game_dir));
   }
@@ -8963,9 +9261,15 @@ absl::Status Configurator::complete_configuration(
         if (!current_invalidation_id.empty()) {
           YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
           if (!matching_pending_claim) {
-            calibration["status"] = "pending";
+            // A missing rink mask does not invalidate an already solved
+            // alignment. Keeping complete makes cancel/reopen followed by a
+            // view edit eligible to reuse that exact solve.
+            calibration["status"] = calibration_start_stage == "rink-mask" ? "complete" : "pending";
             calibration["rink_mask_status"] = "pending";
-            calibration["stale_from"] = calibration_start_stage;
+            if (calibration_start_stage == "rink-mask")
+              calibration.remove("stale_from");
+            else
+              calibration["stale_from"] = calibration_start_stage;
             calibration["artifacts_invalidated"] = true;
             HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(current) + "\n"));
           }

@@ -4,6 +4,40 @@
 
 namespace hm {
 
+void ObservedPlaybackProgress::observe_pts(uint64_t pts_ns) {
+  if (pts_ns == kUnknownPlaybackTime) {
+    return;
+  }
+  if (first_pts_ns_ == kUnknownPlaybackTime || pts_ns < first_pts_ns_) {
+    first_pts_ns_ = pts_ns;
+  }
+  elapsed_ns_ = std::max(elapsed_ns_ == kUnknownPlaybackTime ? 0 : elapsed_ns_, pts_ns - first_pts_ns_);
+}
+
+void ObservedPlaybackProgress::observe_frame(
+    uint32_t source_id,
+    uint64_t frame_number,
+    uint32_t fps_n,
+    uint32_t fps_d) {
+  if (fps_n == 0 || fps_d == 0) {
+    return;
+  }
+  auto [first, inserted] = first_frame_by_source_.emplace(source_id, frame_number);
+  if (!inserted && frame_number < first->second) {
+    first->second = frame_number;
+  }
+  const uint64_t elapsed_ns = ((frame_number - first->second) * 1000000000ULL * fps_d) / fps_n;
+  elapsed_ns_ = std::max(elapsed_ns_ == kUnknownPlaybackTime ? 0 : elapsed_ns_, elapsed_ns);
+}
+
+uint64_t ObservedPlaybackProgress::processed_ns(uint64_t runtime_offset_ns) const {
+  if (elapsed_ns_ == kUnknownPlaybackTime) {
+    return kUnknownPlaybackTime;
+  }
+  constexpr uint64_t kMaxKnownTime = kUnknownPlaybackTime - 1;
+  return runtime_offset_ns > kMaxKnownTime - elapsed_ns_ ? kMaxKnownTime : runtime_offset_ns + elapsed_ns_;
+}
+
 PlaybackRateEstimator::Estimate PlaybackRateEstimator::sample(
     uint64_t processed_ns,
     uint64_t remaining_ns,

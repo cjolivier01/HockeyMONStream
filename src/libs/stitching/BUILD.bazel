@@ -14,7 +14,7 @@ cc_library(
   srcs = ["TransactionState.cpp"],
   hdrs = ["TransactionState.h"],
   include_prefix = INCLUDE_PREFIX,
-  visibility = ["//visibility:private"],
+  visibility = ["//src/apps/hstream-ui:__pkg__"],
   deps = [
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
@@ -34,6 +34,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":player_frame_selection",
     ":control_point_matcher",
     ":stitching_algorithms",
     ":transaction_state",
@@ -114,7 +115,9 @@ cc_library(
   visibility = ["//visibility:public"],
   implementation_deps = [":orientation_internal"],
   deps = [
+    ":stitching_reframe",
     ":calibration_frame_exif",
+    ":player_frame_input_store",
     ":imu_synchronization",
     ":canvas_constraint_check",
     ":game_config",
@@ -245,6 +248,7 @@ cc_test(
     srcs = ["GameConfigTest.cpp"],
     deps = [
         ":game_config",
+        ":player_frame_selection",
         ":transaction_state",
         "@yaml-cpp",
     ],
@@ -329,9 +333,11 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     ":canvas_constraint_check",
+    ":player_frame_input_store",
     ":feature_matcher",
     ":game_config",
     ":homography_maps",
+    ":rink_leveling",
     ":transaction_state",
     "//src/libs/common:status",
     "//src/libs/common:utils",
@@ -369,6 +375,7 @@ cc_test(
   deps = [
     ":game_config",
     ":hugin_project",
+    ":player_frame_selection",
     "@opencv_linux//:opencv",
   ],
 )
@@ -555,7 +562,9 @@ cc_test(
   deps = [
     "@hm-cupano//src/pano:canvas",
     ":canvas_constraint_check",
+    ":player_frame_selection",
     ":stitching",
+    "//src/libs/common:baseline_config",
     "@opencv_linux//:opencv",
   ],
 )
@@ -634,4 +643,100 @@ cc_test(
         "@bazel_tools//tools/cpp/runfiles",
         "@yaml-cpp",
     ],
+)
+
+cc_library(
+  name = "player_frame_selection",
+  srcs = ["PlayerFrameSelection.cpp"],
+  hdrs = ["PlayerFrameSelection.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-lcrypto"],
+  deps = [
+    "@yaml-cpp",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "player_frame_selection_test",
+  srcs = ["PlayerFrameSelectionTest.cpp"],
+  deps = [":player_frame_selection"],
+)
+
+cc_library(
+  name = "player_frame_input_store",
+  srcs = ["PlayerFrameInputStore.cpp"],
+  hdrs = ["PlayerFrameInputStore.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-lcrypto"],
+  deps = [
+    ":player_frame_selection",
+    ":canvas_constraint_check",
+    ":transaction_state",
+    "//src/libs/common:status",
+    "@opencv_linux//:opencv",
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "player_frame_input_store_test",
+  srcs = ["PlayerFrameInputStoreTest.cpp"],
+  deps = [":player_frame_input_store"],
+)
+
+cc_library(
+  name = "player_frame_overlap",
+  srcs = ["PlayerFrameOverlap.cpp"],
+  hdrs = ["PlayerFrameOverlap.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-ltiff"],
+  deps = [
+    ":stitching",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "player_frame_overlap_test",
+  srcs = ["PlayerFrameOverlapTest.cpp"],
+  deps = [":player_frame_overlap"],
+)
+
+cc_library(
+  name = "stitching_reframe",
+  srcs = ["StitchingReframe.cpp"],
+  hdrs = ["StitchingReframe.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-lcrypto"],
+  deps = [
+    ":hugin_project",
+    ":game_config",
+    ":canvas_constraint_check",
+    ":player_frame_input_store",
+    ":player_frame_selection",
+    ":transaction_state",
+    "//src/libs/common:baseline_config",
+    "//src/libs/common:user_config",
+    "//src/libs/common:status",
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "stitching_reframe_test",
+  srcs = ["StitchingReframeTest.cpp"],
+  deps = [":stitching_reframe"],
 )

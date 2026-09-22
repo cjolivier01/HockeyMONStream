@@ -43,6 +43,8 @@ struct DsFieldMaskCtx {
   std::string superseded_output_authorization_id;
   std::unique_ptr<hm::stitching::FieldMaskPublicationAuthorityMonitor> superseded_authority_monitor;
   std::string calibration_invalidation_id;
+  std::optional<fs::file_time_type> required_mask_mtime;
+  uintmax_t required_mask_size{0};
 };
 
 namespace {
@@ -266,9 +268,13 @@ absl::Status DsFieldMaskProcessFrame(
     DsFieldMaskCtx* ctx,
     bool draw) {
   if (ctx->initParams.detection_mask_file.empty()) {
+    if (ctx->initParams.require_existing_mask)
+      return absl::FailedPreconditionError("Analysis requires a configured existing rink mask");
     // We are a No-op
     return absl::OkStatus();
   }
+  if (!frame_meta)
+    return absl::InvalidArgumentError("Field-mask processing requires frame metadata");
 
   std::string output_generation;
   std::string output_authorization_id;
@@ -280,6 +286,32 @@ absl::Status DsFieldMaskProcessFrame(
   }
   if (ctx->total_frame_count > 0 && !ctx->loaded_output_generation.empty() && output_generation.empty()) {
     return absl::FailedPreconditionError("Stitched-output generation metadata disappeared after mask loading");
+  }
+
+  if (ctx->initParams.require_existing_mask) {
+    if (output_generation.empty() || loaded_hugin_generation.empty())
+      return absl::FailedPreconditionError("Analysis requires stitched-output generation metadata for rink pruning");
+    const fs::path mask_path(ctx->initParams.detection_mask_file);
+    std::error_code error;
+    if (!fs::is_regular_file(mask_path, error) ||
+        !fs::equivalent(mask_path, mask_path.parent_path() / "rink_mask_0.png", error))
+      return absl::FailedPreconditionError("Analysis requires the existing generation-bound rink_mask_0.png");
+    // The scan caches immutable mask pixels. Stat and authority checks catch
+    // replacement without repeated PNG decode/packing on large native canvases.
+    // The scan owner also binds the exact content hash at startup/completion.
+    const auto mask_mtime = fs::last_write_time(mask_path, error);
+    if (error)
+      return absl::FailedPreconditionError("Could not inspect required rink mask: " + error.message());
+    const auto mask_size = fs::file_size(mask_path, error);
+    if (error)
+      return absl::FailedPreconditionError("Could not inspect required rink mask: " + error.message());
+    if (ctx->required_mask_mtime && (*ctx->required_mask_mtime != mask_mtime || ctx->required_mask_size != mask_size))
+      return absl::FailedPreconditionError("Required rink mask changed during analysis");
+    ctx->required_mask_mtime = mask_mtime;
+    ctx->required_mask_size = mask_size;
+    HM_RETURN_IF_ERROR(
+        hm::stitching::validate_field_mask_publication_authority(
+            mask_path.parent_path().string(), output_generation, output_authorization_id));
   }
 
   // Only consider the mask "obsolete" if we've already loaded one but it no longer matches the current frame size.
@@ -294,6 +326,10 @@ absl::Status DsFieldMaskProcessFrame(
 
   const bool output_generation_changed = output_generation != ctx->loaded_output_generation ||
       output_authorization_id != ctx->loaded_output_authorization_id;
+  if (ctx->initParams.require_existing_mask &&
+      (is_obsolete_detection_mask || (ctx->total_frame_count > 0 && output_generation_changed)))
+    return absl::FailedPreconditionError(
+        "Analysis stitched-output generation or dimensions changed after mask loading");
   if (ctx->superseded_output_generation.has_value() &&
       (*ctx->superseded_output_generation != output_generation ||
        ctx->superseded_output_authorization_id != output_authorization_id)) {
@@ -323,6 +359,9 @@ absl::Status DsFieldMaskProcessFrame(
     }
     auto loaded_mask = load_current_mask();
     if (is_obsolete_detection_mask || !loaded_mask.ok()) {
+      if (ctx->initParams.require_existing_mask)
+        return loaded_mask.ok() ? absl::FailedPreconditionError("Required rink mask has obsolete dimensions")
+                                : loaded_mask.status();
       if (!surface) {
         return absl::FailedPreconditionError("Cannot create field mask without an input surface");
       }
@@ -354,11 +393,21 @@ absl::Status DsFieldMaskProcessFrame(
       loaded_mask = load_current_mask();
     }
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, std::move(loaded_mask));
+    if (ctx->initParams.require_existing_mask &&
+        (ctx->detection_u8_mask.empty() || ctx->detection_u8_mask.type() != CV_8UC1 ||
+         cv::countNonZero(ctx->detection_u8_mask) == 0))
+      return absl::FailedPreconditionError("Analysis requires a nonempty CV_8UC1 rink mask with ice pixels");
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
     ctx->loaded_output_generation = output_generation;
     ctx->loaded_output_authorization_id = output_authorization_id;
   }
+  if (ctx->initParams.require_existing_mask &&
+      (static_cast<guint>(ctx->detection_u8_mask.cols) != frame_meta->source_frame_width ||
+       static_cast<guint>(ctx->detection_u8_mask.rows) != frame_meta->source_frame_height ||
+       frame_meta->pipeline_width != frame_meta->source_frame_width ||
+       frame_meta->pipeline_height != frame_meta->source_frame_height))
+    return absl::FailedPreconditionError("Analysis rink-mask dimensions do not match the stitched frame");
   prune_detection_boxes(frame_meta, ctx, draw);
 #ifdef HAS_NVDS_CUSTOMUSERMETA
   if (frame_meta && frame_meta->base_meta.batch_meta) {

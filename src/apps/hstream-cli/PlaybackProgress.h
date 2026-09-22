@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <vector>
 
 namespace hm {
@@ -19,6 +20,21 @@ struct PlaybackProgressMetrics {
   double fraction{0.0};
   double output_fps{0.0};
   double output_fps_average{0.0};
+};
+
+// Timing from completed output only. Source position queries can report an
+// absolute initial seek before the pipeline has processed any video. Keep one
+// instance per pipeline and reset it at playback generation boundaries.
+class ObservedPlaybackProgress {
+ public:
+  void observe_pts(uint64_t pts_ns);
+  void observe_frame(uint32_t source_id, uint64_t frame_number, uint32_t fps_n, uint32_t fps_d);
+  uint64_t processed_ns(uint64_t runtime_offset_ns = 0) const;
+
+ private:
+  uint64_t first_pts_ns_{kUnknownPlaybackTime};
+  uint64_t elapsed_ns_{kUnknownPlaybackTime};
+  std::map<uint32_t, uint64_t> first_frame_by_source_;
 };
 
 class PlaybackRateEstimator {

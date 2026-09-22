@@ -55,6 +55,7 @@ typedef struct _AppCtx AppCtx;
 
 typedef void (*bbox_generated_callback)(AppCtx* appCtx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
 typedef gboolean (*overlay_graphics_callback)(AppCtx* appCtx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
+typedef void (*processed_output_callback)(AppCtx* appCtx, const GstBuffer* buf, const NvDsBatchMeta* batch_meta);
 typedef gboolean (*element_message_callback)(AppCtx* appCtx, GstMessage* message);
 typedef void (*bus_message_callback)(AppCtx* appCtx, GstMessage* message);
 typedef gboolean (*defer_eos_callback)(AppCtx* appCtx);
@@ -228,6 +229,9 @@ struct _AppCtx {
   overlay_graphics_callback overlay_graphics_cb{
       0,
   };
+  // Observes CPU metadata for every completed output, including shared buffers
+  // whose metadata cannot be modified by the overlay callbacks.
+  processed_output_callback processed_output_cb{nullptr};
   element_message_callback element_message_cb{nullptr};
   bus_message_callback bus_message_cb{nullptr};
   defer_eos_callback defer_eos_cb{nullptr};
@@ -347,13 +351,15 @@ class HmApp : public _AppCtx {
  * @param  all_bbox_generated_cb [IN]
  * @param  perf_cb [IN]
  * @param  overlay_graphics_cb [IN]
+ * @param  processed_output_cb [IN] Read-only completed-output observation
  */
 gboolean create_pipeline(
     AppCtx* appCtx,
     bbox_generated_callback bbox_generated_post_analytics_cb,
     bbox_generated_callback all_bbox_generated_cb,
     perf_callback perf_cb,
-    overlay_graphics_callback overlay_graphics_cb);
+    overlay_graphics_callback overlay_graphics_cb,
+    processed_output_callback processed_output_cb = nullptr);
 
 gboolean pause_pipeline(AppCtx* appCtx);
 gboolean resume_pipeline(AppCtx* appCtx);

@@ -82,7 +82,8 @@ int main() {
   cv::Mat seam(64, 64, CV_8UC1, cv::Scalar(0));
   seam.colRange(32, seam.cols).setTo(255);
   cv::imwrite((tmpdir / "seam_file.png").string(), seam);
-  cv::Mat mask(64, 64, CV_8UC1, cv::Scalar(255));
+  cv::Mat mask(64, 64, CV_8UC1, cv::Scalar(0));
+  mask(cv::Rect(8, 16, 48, 33)).setTo(255);
   hm::stitching::RinkProfile profile;
   profile.masks = {mask};
   profile.centroid = {32.0, 32.0};
@@ -178,6 +179,8 @@ int main() {
   }
   frame_meta->source_frame_width = 64;
   frame_meta->source_frame_height = 64;
+  frame_meta->pipeline_width = 64;
+  frame_meta->pipeline_height = 64;
   frame_meta->bInferDone = 0;
   frame_meta->obj_meta_list = nullptr;
 
@@ -199,6 +202,79 @@ int main() {
   }
 #endif
 
+  // Exercise the actual Program pruning function. An upper player whose center
+  // is outside ice survives by their feet; a lower player whose feet are outside
+  // survives by their center. Spectators outside both regions are removed.
+  DsFieldMaskInitParams required_params = params;
+  required_params.require_existing_mask = true;
+  auto required_ctx = std::unique_ptr<DsFieldMaskCtx, decltype(&DsFieldMaskCtxDeinit)>(
+      DsFieldMaskCtxInit(&required_params), DsFieldMaskCtxDeinit);
+  frame_meta->bInferDone = TRUE;
+  for (const auto& box : std::vector<NvBbox_Coords>{{28, 0, 8, 20}, {28, 0, 8, 10}, {28, 36, 8, 20}, {28, 50, 8, 10}}) {
+    NvDsObjectMeta* object = nvds_acquire_obj_meta_from_pool(batch_meta);
+    object->class_id = 0;
+    object->detector_bbox_info.org_bbox_coords = box;
+    nvds_add_obj_meta_to_frame(frame_meta, object, nullptr);
+  }
+  const auto pruned = DsFieldMaskProcessFrame(nullptr, 0, frame_meta, required_ctx.get(), false);
+  if (!pruned.ok() || frame_meta->num_obj_meta != 2) {
+    std::cerr << "Required mask must retain the exact Program upper/lower-ice pruning rules: " << pruned << '\n';
+    return 17;
+  }
+  for (auto* item = frame_meta->obj_meta_list; item; item = item->next) {
+    const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
+    if (object->detector_bbox_info.org_bbox_coords.height != 20) {
+      std::cerr << "Spectator survived real rink pruning\n";
+      return 18;
+    }
+  }
+  frame_meta->source_frame_width = 32;
+  const auto wrong_size = DsFieldMaskProcessFrame(nullptr, 0, frame_meta, required_ctx.get(), false);
+  frame_meta->source_frame_width = 64;
+  if (!absl::IsFailedPrecondition(wrong_size)) {
+    std::cerr << "Required cached mask must reject a frame-size change\n";
+    return 19;
+  }
+
+  // Preserve native adjustment properties in the scan. These boundary boxes
+  // all survive with zero adjustment; Program's configured center/bottom
+  // adjustments must reject exactly two, with identical results in strict mode.
+  for (bool strict : {false, true}) {
+    NvDsBatchMeta* adjusted_batch = nvds_create_batch_meta(1);
+    NvDsFrameMeta* adjusted_frame = nvds_acquire_frame_meta_from_pool(adjusted_batch);
+    nvds_add_frame_meta_to_batch(adjusted_batch, adjusted_frame);
+    adjusted_frame->source_frame_width = adjusted_frame->pipeline_width = 64;
+    adjusted_frame->source_frame_height = adjusted_frame->pipeline_height = 64;
+    adjusted_frame->bInferDone = TRUE;
+    hm::stitching::add_stitched_output_generation_meta(
+        adjusted_frame, initial_output_generation, {}, {}, *hugin_generation);
+    DsFieldMaskInitParams adjusted_params = params;
+    adjusted_params.require_existing_mask = strict;
+    adjusted_params.raise_bbox_center_by_height_ratio = -0.25F;
+    adjusted_params.lower_bbox_bottom_by_height_ratio = 0.2F;
+    auto adjusted_ctx = std::unique_ptr<DsFieldMaskCtx, decltype(&DsFieldMaskCtxDeinit)>(
+        DsFieldMaskCtxInit(&adjusted_params), DsFieldMaskCtxDeinit);
+    for (const auto& box :
+         std::vector<NvBbox_Coords>{{28, 0, 8, 18}, {28, 4, 8, 20}, {28, 32, 8, 24}, {28, 28, 8, 24}}) {
+      auto* object = nvds_acquire_obj_meta_from_pool(adjusted_batch);
+      object->class_id = 0; // Players and referees share the primary detector's person class.
+      object->detector_bbox_info.org_bbox_coords = box;
+      nvds_add_obj_meta_to_frame(adjusted_frame, object, nullptr);
+    }
+    const auto adjusted = DsFieldMaskProcessFrame(nullptr, 0, adjusted_frame, adjusted_ctx.get(), false);
+    bool expected = adjusted.ok() && adjusted_frame->num_obj_meta == 2;
+    for (auto* item = adjusted_frame->obj_meta_list; item; item = item->next) {
+      const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
+      const auto& box = object->detector_bbox_info.org_bbox_coords;
+      expected = expected && (box.top == 4 || box.top == 28);
+    }
+    nvds_destroy_batch_meta(adjusted_batch);
+    if (!expected) {
+      std::cerr << "Analysis and Program must preserve native rink-mask adjustments: " << adjusted << '\n';
+      return 22;
+    }
+  }
+
   NvDsFrameMeta* rotated_frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
   rotated_frame_meta->base_meta.batch_meta = batch_meta;
   rotated_frame_meta->source_frame_width = 64;
@@ -219,6 +295,21 @@ int main() {
     DsFieldMaskCtxDeinit(ctx);
     nvds_destroy_batch_meta(batch_meta);
     return 8;
+  }
+  const auto required_rotated = DsFieldMaskProcessFrame(nullptr, 0, rotated_frame_meta, required_ctx.get(), false);
+  if (!absl::IsFailedPrecondition(required_rotated)) {
+    std::cerr << "Required mask must reject stale output generations\n";
+    return 20;
+  }
+
+  // A strict context must reject a missing mask even when its old pixels are
+  // still cached, and must never enter the mask-creation surface path.
+  fs::rename(mask_path, tmpdir / "saved-mask.png");
+  const auto required_missing = DsFieldMaskProcessFrame(nullptr, 0, frame_meta, required_ctx.get(), false);
+  fs::rename(tmpdir / "saved-mask.png", mask_path);
+  if (!absl::IsFailedPrecondition(required_missing)) {
+    std::cerr << "Required mask must reject removal after loading\n";
+    return 21;
   }
 
   {

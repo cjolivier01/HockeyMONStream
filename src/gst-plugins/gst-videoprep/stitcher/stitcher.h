@@ -9,6 +9,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/stitching/CalibrationFrameExif.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
 #include <atomic>
 #include <memory>
@@ -195,7 +196,11 @@ class StitcherPriv : public STITCH_PRIV_BASE {
       const NvDsFrameMeta* right_meta,
       uint64_t pair_pts_ns);
   std::vector<hm::stitching::StitchingCalibrationFramePair> captured_calibration_frame_pairs();
-  bool should_capture_calibration_pair(uint64_t pair_pts_ns) const;
+  absl::Status initialize_calibration_frame_selection();
+  absl::StatusOr<bool> should_capture_calibration_pair(
+      uint64_t pair_pts_ns,
+      const NvDsFrameMeta* left_meta,
+      const NvDsFrameMeta* right_meta);
   bool calibration_input_exhausted(const EosSnapshot& eos_snapshot);
   absl::Status report_fatal_calibration_failure(const absl::Status& status);
   void release_high_bit_calibration_surfaces();
@@ -225,6 +230,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   size_t canvas_width_hint_{0};
   size_t canvas_height_hint_{0};
   bool configured_during_run_{false};
+  bool reframe_pending_{false};
   bool logged_missing_masks_{false};
   bool orientation_ran_{false};
   bool field_mask_attempted_{false};
@@ -244,6 +250,13 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   int max_output_width_{0};
   std::string expected_artifact_revision_;
   bool require_decoded_frame_sequence_meta_{false};
+  bool emit_frame_pair_meta_{false};
+  std::optional<stitching::PlayerFrameReplaySelector> calibration_frame_selector_;
+  // Surface wrappers require backing metadata even when the pair uses PNGs.
+  NvBufSurfaceParams cached_calibration_surface_placeholder_{};
+  std::vector<stitching::StitchingCalibrationFramePair> cached_calibration_frame_pairs_;
+  // Frozen before capture; empty binds ordinary spacing just as a plan hash binds replay.
+  std::string captured_frame_selection_fingerprint_;
   bool high_bit_depth_{false};
   bool high_bit_depth_output_{false};
   bool caps_initialized_{false};

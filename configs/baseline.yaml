@@ -121,8 +121,8 @@ stitching:
       vertical_fov: 90
     gopro-mission-1:
       display_name: "GoPro Mission 1"
-      horizontal_fov: 127.2
-      vertical_fov: 95
+      horizontal_fov: 109
+      vertical_fov: 64
     insta-ace-pro-2:
       display_name: "Insta Ace Pro 2"
       horizontal_fov: 108

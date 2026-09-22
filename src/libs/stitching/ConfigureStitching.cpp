@@ -8,8 +8,10 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
+#include "hstream/src/libs/stitching/StitchingReframe.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
@@ -122,7 +124,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat before {};
+  struct stat before{};
   if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
       static_cast<uint64_t>(before.st_size) > kMaximumAkazeCalibrationBytes) {
     return absl::FailedPreconditionError(
@@ -142,7 +144,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
       return absl::AbortedError("AKAZE lens calibration changed while being read: " + path.string());
     offset += static_cast<size_t>(count);
   }
-  struct stat after {};
+  struct stat after{};
   if (::fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
       before.st_size != after.st_size || before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
       before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
@@ -405,7 +407,7 @@ absl::StatusOr<std::string> read_selection_response_file(const fs::path& path) {
         ::close(descriptor);
     }
   } close_descriptor{descriptor};
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0)
     return absl::InternalError("Unable to inspect the rink leveling response: " + std::string(std::strerror(errno)));
   if (!S_ISREG(metadata.st_mode))
@@ -756,7 +758,7 @@ struct OpenedTiff {
   }
   int descriptor{-1};
   TIFF* tiff{nullptr};
-  struct stat metadata {};
+  struct stat metadata{};
 };
 
 absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& path, uint64_t maximum_bytes) {
@@ -785,7 +787,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
 }
 
 absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
-  struct stat verified {};
+  struct stat verified{};
   if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
       opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
       opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
@@ -831,7 +833,7 @@ struct PinnedLoadArtifact {
 
   std::string name;
   int descriptor{-1};
-  struct stat metadata {};
+  struct stat metadata{};
 };
 
 absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& path) {
@@ -885,7 +887,7 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
       return absl::NotFoundError("Stitch snapshot artifact is missing: " + path.string());
     return absl::FailedPreconditionError("Unable to pin stitch snapshot artifact: " + path.string());
   }
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
       static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     ::close(descriptor);
@@ -974,7 +976,7 @@ absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, cons
       offset += static_cast<uint64_t>(count);
     }
   }
-  struct stat verified {};
+  struct stat verified{};
   if (::fstat(artifact->descriptor, &verified) != 0 || !same_load_artifact_snapshot(artifact->metadata, verified)) {
     return absl::AbortedError("Stitch validation artifact changed while it was snapshotted: " + artifact->name);
   }
@@ -1010,8 +1012,8 @@ absl::Status verify_pinned_load_artifacts(
   if (!opened_root.ok())
     return opened_root.status();
   for (const PinnedLoadArtifact& artifact : artifacts) {
-    struct stat descriptor_metadata {};
-    struct stat path_metadata {};
+    struct stat descriptor_metadata{};
+    struct stat path_metadata{};
     if (::fstat(artifact.descriptor, &descriptor_metadata) != 0 ||
         !same_load_artifact_snapshot(artifact.metadata, descriptor_metadata)) {
       return absl::AbortedError("Control-mask artifact changed while being loaded: " + artifact.name);
@@ -1950,6 +1952,30 @@ absl::Status clean_stitching_artifacts_impl(
     return config_transaction.status();
 
   const fs::path cfg_file_path = game_dir_path / "config.yaml";
+  if (fs::exists(cfg_file_path)) {
+    try {
+      if (HasStitchingReframeIntent(YAML::LoadFile(cfg_file_path.string())))
+        return absl::FailedPreconditionError(
+            "Cannot clean the saved alignment while a view edit is pending. Explicitly cancel that edit "
+            "before requesting a new solve; the existing calibration has been preserved.");
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError(
+          "Cannot validate pending view edit before cleanup: " + std::string(error.what()));
+    }
+  }
+  // A retained plan binds the camera offsets and exact paired inputs. Even an
+  // explicit clean only invalidates the solve until that plan is replaced.
+  if (!preserve_synchronized_inputs && fs::exists(cfg_file_path)) {
+    try {
+      std::string selected_fingerprint;
+      HM_ASSIGN_OR_RETURN(
+          selected_fingerprint, player_frame_selection_fingerprint(YAML::LoadFile(cfg_file_path.string())));
+      preserve_synchronized_inputs = !selected_fingerprint.empty();
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError(
+          "Cannot validate selected frames before cleanup: " + std::string(exception.what()));
+    }
+  }
   if (!expected_invalidation_id.empty()) {
     bool artifacts_invalidated = false;
     HM_ASSIGN_OR_RETURN(
@@ -2041,6 +2067,7 @@ struct ConfiguredStitchAlgorithms {
   std::vector<double> projection_parameters;
   StitchProjectionFraming projection_framing;
   StitchCameraSelection camera;
+  std::string calibration_frame_selection_fingerprint;
 };
 
 absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algorithms(const std::string& game_dir) {
@@ -2073,8 +2100,10 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     const bool camera_fov_present = camera_fov_node && !camera_fov_node.IsNull();
     const bool resolution_present =
         stitching["control_point_resolution"] && !stitching["control_point_resolution"].IsNull();
+    const bool selection_present =
+        stitching["calibration_frame_selection"] && !stitching["calibration_frame_selection"].IsNull();
     if (!matcher_present && !backend_present && !projection_present && !camera_present && !camera_fov_present &&
-        !resolution_present)
+        !resolution_present && !selection_present)
       return std::nullopt;
     if ((matcher_present && !matcher_node.IsScalar()) || (backend_present && !backend_node.IsScalar()) ||
         (projection_present && !projection_node.IsScalar()) || (camera_present && !camera_node.IsScalar())) {
@@ -2111,6 +2140,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
       HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
     ControlPointResolution resolution;
     HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(**loaded));
+    std::string frame_selection;
+    HM_ASSIGN_OR_RETURN(frame_selection, player_frame_selection_fingerprint(**loaded));
     return ConfiguredStitchAlgorithms{
         .control_point_resolution = resolution,
         .control_point_matcher = matcher,
@@ -2118,7 +2149,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
         .projection = projection,
         .projection_parameters = std::move(projection_parameters),
         .projection_framing = projection_framing,
-        .camera = camera};
+        .camera = camera,
+        .calibration_frame_selection_fingerprint = std::move(frame_selection)};
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching mapping choices: " + std::string(exception.what()));
   }
@@ -2129,8 +2161,11 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
     const std::optional<HuginProject::CanvasProvenance>& provenance) {
   std::optional<ConfiguredStitchAlgorithms> configured;
   HM_ASSIGN_OR_RETURN(configured, configured_stitch_algorithms(game_dir));
-  if (!configured.has_value())
+  if (!configured.has_value()) {
+    if (provenance && !provenance->calibration_frame_selection_fingerprint.empty())
+      return CanvasProvenanceCompatibility{false, "the selected calibration frame plan was cleared"};
     return CanvasProvenanceCompatibility{true, {}};
+  }
   if (!provenance.has_value() || !provenance->mapping_backend.has_value() || !provenance->projection.has_value()) {
     return CanvasProvenanceCompatibility{
         false, "mapping algorithm provenance is missing; the selected backend and projection cannot be verified"};
@@ -2139,6 +2174,8 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
     return CanvasProvenanceCompatibility{
         false, "control-point matcher provenance is missing; calibration inputs cannot be verified"};
   }
+  if (provenance->calibration_frame_selection_fingerprint != configured->calibration_frame_selection_fingerprint)
+    return CanvasProvenanceCompatibility{false, "the selected calibration frame plan changed"};
   if (*provenance->control_point_matcher != configured->control_point_matcher)
     return CanvasProvenanceCompatibility{false, "the selected control-point matcher changed"};
   if (configured->control_point_matcher == ControlPointMatcher::kSuperPointLightGlue &&
@@ -2177,16 +2214,17 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
 }
 
 static absl::StatusOr<bool> validate_stitching_artifacts_locked(
+    const std::string& artifact_dir,
     const std::string& game_dir,
     size_t max_output_width,
     SeamValidationMode seam_validation,
     const HuginProject::ArtifactLock& artifact_lock,
     CanvasSize* validated_canvas = nullptr) {
-  bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
+  bool up_to_date = test_dependency_tree(artifact_dir, /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
   }
-  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(game_dir);
+  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(artifact_dir);
   if (!artifact_bounds.ok()) {
     std::cout << "Stitching artifacts are unsafe or exceed parser byte limits: " << artifact_bounds << std::endl;
     if (absl::IsNotFound(artifact_bounds) || absl::IsFailedPrecondition(artifact_bounds) ||
@@ -2198,8 +2236,8 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
   CanvasSize canvas_size;
   TiffPlacement p0;
   TiffPlacement p1;
-  auto p0_status = read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif");
-  auto p1_status = read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif");
+  auto p0_status = read_tiff_placement(fs::path(artifact_dir) / "mapping_0000.tif");
+  auto p1_status = read_tiff_placement(fs::path(artifact_dir) / "mapping_0001.tif");
   if (!p0_status.ok() || !p1_status.ok()) {
     const absl::Status placement_status = !p0_status.ok() ? p0_status.status() : p1_status.status();
     std::cout << "Stitching artifacts exist but mapping TIFF placement metadata is invalid: " << placement_status
@@ -2223,7 +2261,7 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     return canvas_status.status();
   }
   canvas_size = *canvas_status;
-  auto provenance = HuginProject::ReadCanvasProvenance(game_dir, artifact_lock);
+  auto provenance = HuginProject::ReadCanvasProvenance(artifact_dir, artifact_lock);
   if (!provenance.ok()) {
     if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status()) ||
         absl::IsNotFound(provenance.status())) {
@@ -2239,20 +2277,22 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     return false;
   }
   CanvasProvenanceCompatibility algorithm_compatibility;
+  // Stable load snapshots contain only artifacts. Check their provenance against
+  // the source game's configuration, including any selected calibration plan.
   HM_ASSIGN_OR_RETURN(algorithm_compatibility, check_stitch_algorithm_provenance_compatibility(game_dir, *provenance));
   if (!algorithm_compatibility.compatible) {
     std::cout << "Stitching artifacts require mapping regeneration because " << algorithm_compatibility.reason
               << std::endl;
     return false;
   }
-  const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
+  const absl::Status remap_status = validate_remap_artifact_headers(fs::path(artifact_dir), p0, p1);
   if (absl::IsFailedPrecondition(remap_status) || absl::IsInvalidArgument(remap_status) ||
       absl::IsNotFound(remap_status)) {
     std::cout << "Stitching artifacts exist but remap TIFF metadata is invalid: " << remap_status << std::endl;
     return false;
   }
   HM_RETURN_IF_ERROR(remap_status);
-  const fs::path seam_path = fs::path(game_dir) / "seam_file.png";
+  const fs::path seam_path = fs::path(artifact_dir) / "seam_file.png";
   absl::Status seam_status;
   switch (seam_validation) {
     case SeamValidationMode::kLayoutOnly:
@@ -2299,7 +2339,8 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
-  return validate_stitching_artifacts_locked(game_dir, max_output_width, SeamValidationMode::kContent, **artifact_lock);
+  return validate_stitching_artifacts_locked(
+      game_dir, game_dir, max_output_width, SeamValidationMode::kContent, **artifact_lock);
 }
 
 struct StitchingArtifactLoadSnapshot::Impl {
@@ -2477,6 +2518,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
         configured,
         validate_stitching_artifacts_locked(
             game_dir,
+            game_dir,
             max_output_width,
             validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
             **artifact_lock,
@@ -2526,6 +2568,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
           snapshot_configured,
           validate_stitching_artifacts_locked(
               snapshot->directory(),
+              game_dir,
               max_output_width,
               validate_generation_content ? SeamValidationMode::kContent : SeamValidationMode::kLayoutOnly,
               **artifact_lock,
@@ -2895,6 +2938,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
   HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(config));
   hm::onnx::ExecutionProvider provider;
   HM_ASSIGN_OR_RETURN(provider, read_control_point_execution_provider(config));
+  std::string frame_selection;
+  HM_ASSIGN_OR_RETURN(frame_selection, player_frame_selection_fingerprint(config));
   return StitchingBackendChoices{
       std::string(ControlPointMatcherName(control_point_matcher)),
       std::string(MappingBackendName(mapping_backend)),
@@ -2904,7 +2949,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
       projection_framing,
       camera,
       resolution,
-      provider};
+      provider,
+      std::move(frame_selection)};
 }
 
 bool is_missing_hugin_executable(const absl::Status& status) {
@@ -2949,15 +2995,202 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
   };
 }
 
+absl::Status write_stitching_calibration_frame_inspection(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id,
+    size_t index,
+    size_t expected_pair_count,
+    const std::array<cv::Mat, 2>& images,
+    const std::array<CalibrationFrameSource, 2>& sources) {
+  static const std::regex safe_owner("^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$");
+  if (!std::regex_match(expected_invalidation_id, safe_owner) || expected_pair_count == 0 || expected_pair_count > 16 ||
+      index >= expected_pair_count)
+    return absl::InvalidArgumentError("Invalid ordinary calibration inspection owner or pair count");
+  for (size_t camera = 0; camera < images.size(); ++camera) {
+    const cv::Mat& image = images[camera];
+    if (image.empty() || (image.depth() != CV_8U && image.depth() != CV_16U) ||
+        (image.channels() != 1 && image.channels() != 3 && image.channels() != 4) ||
+        !std::isfinite(sources[camera].seconds) || sources[camera].seconds < 0 ||
+        sources[camera].video.string().size() > 4096)
+      return absl::InvalidArgumentError("Invalid ordinary calibration inspection image or source metadata");
+  }
+  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
+  HM_RETURN_IF_ERROR(
+      validate_stitching_generation_owner_file_locked(fs::path(game_dir) / "config.yaml", expected_invalidation_id));
+
+  const fs::path root = fs::path(game_dir) / "calibration-frame-inspection";
+  const fs::path inspection = root / expected_invalidation_id;
+  std::error_code error;
+  for (const fs::path& directory : {root, inspection}) {
+    fs::create_directory(directory, error);
+    if (error || fs::symlink_status(directory, error).type() != fs::file_type::directory || error)
+      return absl::FailedPreconditionError("Calibration inspection requires private regular directories");
+  }
+  try {
+    YAML::Node manifest(YAML::NodeType::Map);
+    if (index != 0) {
+      std::string contents;
+      HM_ASSIGN_OR_RETURN(
+          contents, read_bounded_regular_file_no_follow(inspection / "frames.yaml", 64 * 1024, "frame inspection"));
+      manifest = YAML::Load(contents);
+      if (!manifest.IsMap() || manifest["version"].as<int>() != 1 ||
+          manifest["invalidation_id"].as<std::string>() != expected_invalidation_id ||
+          manifest["expected_pair_count"].as<size_t>() != expected_pair_count || !manifest["pairs"].IsSequence() ||
+          manifest["pairs"].size() != index)
+        return absl::AbortedError("Calibration inspection pairs must remain in capture order");
+    } else {
+      // A retry with the same owner replaces these fixed thumbnail filenames.
+      // Withdraw its previous manifest before replacing either image so a
+      // failed retry cannot expose an old manifest with a mixed old/new pair.
+      fs::remove(inspection / "frames.yaml", error);
+      if (error)
+        return absl::InternalError("Cannot reset calibration frame inspection: " + error.message());
+      HM_RETURN_IF_ERROR(fsync_stitch_path(inspection, true));
+      manifest["version"] = 1;
+      manifest["invalidation_id"] = expected_invalidation_id;
+      manifest["expected_pair_count"] = expected_pair_count;
+      manifest["pairs"] = YAML::Node(YAML::NodeType::Sequence);
+    }
+    std::string pattern = (inspection / ".pair-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    const char* created = ::mkdtemp(writable.data());
+    if (!created)
+      return absl::InternalError("Unable to stage calibration frame inspection");
+    struct RemoveStaging {
+      fs::path path;
+      ~RemoveStaging() {
+        std::error_code ignored;
+        fs::remove_all(path, ignored);
+      }
+    } staging{created};
+    YAML::Node pair(YAML::NodeType::Map);
+    pair["index"] = index;
+    for (size_t camera = 0; camera < images.size(); ++camera) {
+      const char* role = camera == 0 ? "left" : "right";
+      cv::Mat thumbnail;
+      const double scale = std::min(1.0, 1024.0 / std::max(images[camera].cols, images[camera].rows));
+      cv::resize(images[camera], thumbnail, cv::Size(), scale, scale, cv::INTER_AREA);
+      if (thumbnail.depth() == CV_16U)
+        thumbnail.convertTo(thumbnail, CV_8U, 255.0 / 65535.0);
+      const std::string filename = std::string(role) + "_" + std::to_string(index) + ".jpg";
+      if (!cv::imwrite((staging.path / filename).string(), thumbnail, {cv::IMWRITE_JPEG_QUALITY, 88}))
+        return absl::InternalError("Cannot save calibration frame inspection thumbnail");
+      HM_RETURN_IF_ERROR(fsync_stitch_path(staging.path / filename));
+      fs::rename(staging.path / filename, inspection / filename, error);
+      if (error)
+        return absl::InternalError("Cannot publish calibration frame inspection thumbnail: " + error.message());
+      pair[role]["path"] = sources[camera].video.string();
+      pair[role]["source_seconds"] = sources[camera].seconds;
+    }
+    manifest["pairs"].push_back(pair);
+    YAML::Emitter emitter;
+    emitter.SetDoublePrecision(std::numeric_limits<double>::max_digits10);
+    emitter << manifest;
+    if (!emitter.good() || emitter.size() > 64 * 1024)
+      return absl::ResourceExhaustedError("Calibration frame inspection manifest exceeds its size limit");
+    const fs::path staged_manifest = staging.path / "frames.yaml";
+    std::ofstream output(staged_manifest);
+    output << emitter.c_str() << '\n';
+    output.close();
+    if (!output)
+      return absl::InternalError("Cannot write calibration frame inspection manifest");
+    HM_RETURN_IF_ERROR(fsync_stitch_path(staged_manifest));
+    fs::rename(staged_manifest, inspection / "frames.yaml", error);
+    if (error)
+      return absl::InternalError("Cannot publish calibration frame inspection manifest: " + error.message());
+    HM_RETURN_IF_ERROR(fsync_stitch_path(inspection, true));
+    HM_RETURN_IF_ERROR(fsync_stitch_path(root, true));
+    return fsync_stitch_path(game_dir, true);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Invalid calibration frame inspection: " + std::string(exception.what()));
+  } catch (const cv::Exception& exception) {
+    return absl::InternalError("Cannot encode calibration frame inspection: " + std::string(exception.what()));
+  }
+}
+
 absl::Status create_control_points(
     const std::string& game_dir,
     const std::vector<StitchingCalibrationFramePair>& frame_pairs,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
-    size_t max_output_width) {
+    size_t max_output_width,
+    const std::string& captured_frame_selection_fingerprint) {
   if (frame_pairs.empty()) {
     return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
   }
+  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
+  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
+  StitchingBackendChoices backend_choices;
+  std::optional<PlayerFrameSelectionPlan> selected_plan;
+  const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
+  try {
+    if (fs::exists(game_config_path)) {
+      const YAML::Node config = YAML::LoadFile(game_config_path.string());
+      const auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      YAML::Node effective_config = YAML::Clone(config);
+      const YAML::Node baseline_stitching = baseline->values["stitching"];
+      if (baseline_stitching && baseline_stitching.IsMap()) {
+        for (const char* key : {"camera_configs", "camera_config"}) {
+          const YAML::Node private_value = config["stitching"][key];
+          const YAML::Node default_value = baseline_stitching[key];
+          if ((!private_value || !private_value.IsDefined()) && default_value && default_value.IsDefined())
+            effective_config["stitching"][key] = YAML::Clone(default_value);
+        }
+      }
+      const YAML::Node private_stitching = config["stitching"];
+      if (private_stitching && !private_stitching.IsNull() && !private_stitching.IsMap())
+        return absl::InvalidArgumentError("stitching must be a map");
+      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(effective_config));
+      if (!backend_choices.calibration_frame_selection_fingerprint.empty()) {
+        PlayerFrameSelectionPlan plan;
+        HM_ASSIGN_OR_RETURN(plan, ParsePlayerFrameSelectionPlan(config["stitching"]["calibration_frame_selection"]));
+        selected_plan = std::move(plan);
+      }
+    } else {
+      const auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(baseline->values));
+    }
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(TO_STRING(
+        "Failed to read stitching backend choices from " << game_config_path.string() << ": " << exception.what()));
+  }
+  if (backend_choices.calibration_frame_selection_fingerprint != captured_frame_selection_fingerprint)
+    return absl::AbortedError("Calibration frame selection changed after frame capture began");
+  if (!expected_invalidation_id.empty()) {
+    YAML::Node config;
+    try {
+      config = YAML::LoadFile(game_config_path.string());
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError(TO_STRING(
+          "Failed to validate stitching backend generation from " << game_config_path.string() << ": "
+                                                                  << exception.what()));
+    }
+    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, backend_choices));
+  }
+
+  const bool using_cached_inputs = !frame_pairs.front().left_image.empty() || !frame_pairs.front().right_image.empty();
+  if (using_cached_inputs) {
+    if (!selected_plan)
+      return absl::FailedPreconditionError("Cached calibration requires a selected frame plan");
+    auto retained = LoadPlayerFrameInputs(game_dir, *selected_plan);
+    if (!retained.ok())
+      return retained.status();
+    if (!retained->has_value() || (**retained).images.size() != frame_pairs.size())
+      return absl::FailedPreconditionError("Required retained calibration inputs are missing");
+    for (size_t index = 0; index < frame_pairs.size(); ++index) {
+      if (frame_pairs[index].left_image != (**retained).images[index][0] ||
+          frame_pairs[index].right_image != (**retained).images[index][1])
+        return absl::FailedPreconditionError("Cached calibration paths do not identify the selected input bundle");
+    }
+  }
+
   std::string pattern = (fs::path(game_dir) / "hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -2983,14 +3216,24 @@ absl::Status create_control_points(
   std::vector<std::pair<fs::path, CalibrationFrameSource>> metadata_frames;
   metadata_frames.reserve(frame_pairs.size() * 2);
   for (size_t index = 0; index < frame_pairs.size(); ++index) {
+    const auto& pair = frame_pairs[index];
+    if (using_cached_inputs) {
+      // Feature matching and Hugin staging only read these immutable PNGs.
+      // Reuse them directly instead of copying gigabytes into another scratch
+      // directory or rewriting their existing EXIF metadata.
+      input_files.emplace_back(pair.left_image, pair.right_image);
+      continue;
+    }
     const fs::path left_file = input_dir /
         (index == 0 ? "left.png" : TO_STRING("left_" << std::setw(4) << std::setfill('0') << index << ".png"));
     const fs::path right_file = input_dir /
         (index == 0 ? "right.png" : TO_STRING("right_" << std::setw(4) << std::setfill('0') << index << ".png"));
-    HM_RETURN_IF_ERROR(save_image(frame_pairs[index].left, left_file));
-    HM_RETURN_IF_ERROR(save_image(frame_pairs[index].right, right_file));
-    metadata_frames.emplace_back(left_file, frame_pairs[index].left_source);
-    metadata_frames.emplace_back(right_file, frame_pairs[index].right_source);
+    if (!pair.left_image.empty() || !pair.right_image.empty())
+      return absl::FailedPreconditionError("Calibration cannot mix retained inputs and captured surfaces");
+    HM_RETURN_IF_ERROR(save_image(pair.left, left_file));
+    HM_RETURN_IF_ERROR(save_image(pair.right, right_file));
+    metadata_frames.emplace_back(left_file, pair.left_source);
+    metadata_frames.emplace_back(right_file, pair.right_source);
     input_files.emplace_back(left_file, right_file);
   }
   CalibrationFrameExifWriter exif_writer(is_cancelled);
@@ -3002,50 +3245,31 @@ absl::Status create_control_points(
       std::cerr << "Calibration PNG metadata unavailable for " << metadata_frames[i].first << ": "
                 << metadata_statuses[i] << "\n";
   }
-  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
-  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
-  StitchingBackendChoices backend_choices;
-  const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
-  try {
-    if (fs::exists(game_config_path)) {
-      const YAML::Node config = YAML::LoadFile(game_config_path.string());
-      const auto baseline = hm::baseline_config::load();
-      if (!baseline.ok())
-        return baseline.status();
-      YAML::Node effective_config = YAML::Clone(config);
-      const YAML::Node baseline_stitching = baseline->values["stitching"];
-      if (baseline_stitching && baseline_stitching.IsMap()) {
-        for (const char* key : {"camera_configs", "camera_config"}) {
-          const YAML::Node private_value = config["stitching"][key];
-          const YAML::Node default_value = baseline_stitching[key];
-          if ((!private_value || !private_value.IsDefined()) && default_value && default_value.IsDefined())
-            effective_config["stitching"][key] = YAML::Clone(default_value);
-        }
-      }
-      const YAML::Node private_stitching = config["stitching"];
-      if (private_stitching && !private_stitching.IsNull() && !private_stitching.IsMap())
-        return absl::InvalidArgumentError("stitching must be a map");
-      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(effective_config));
-    } else {
-      const auto baseline = hm::baseline_config::load();
-      if (!baseline.ok())
-        return baseline.status();
-      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(baseline->values));
-    }
-  } catch (const YAML::Exception& exception) {
-    return absl::InvalidArgumentError(TO_STRING(
-        "Failed to read stitching backend choices from " << game_config_path.string() << ": " << exception.what()));
-  }
-  if (!expected_invalidation_id.empty()) {
-    YAML::Node config;
+
+  if (selected_plan) {
+    std::vector<std::array<fs::path, 2>> images;
+    for (const auto& pair : input_files)
+      images.push_back({pair.first, pair.second});
+    // Retain every extracted pair before model creation or matching can fail.
+    // Neither artifact invalidation nor a failed solve deletes this bundle.
+    if (!using_cached_inputs)
+      HM_RETURN_IF_ERROR(PublishPlayerFrameInputs(game_dir, *selected_plan, images));
+    auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+    if (!config_lock.ok())
+      return config_lock.status();
     try {
-      config = YAML::LoadFile(game_config_path.string());
+      YAML::Node current = YAML::LoadFile(game_config_path.string());
+      std::string current_fingerprint;
+      HM_ASSIGN_OR_RETURN(current_fingerprint, player_frame_selection_fingerprint(current));
+      if (current_fingerprint != selected_plan->fingerprint)
+        return absl::AbortedError("Selected frame plan changed while its inputs were saved");
+      if (!expected_invalidation_id.empty())
+        HM_RETURN_IF_ERROR(validate_stitching_backend_generation(current, expected_invalidation_id, backend_choices));
+      current["stitching"]["calibration_frame_inputs_fingerprint"] = selected_plan->fingerprint;
+      HM_RETURN_IF_ERROR(publish_game_config(game_dir, YAML::Dump(current) + "\n"));
     } catch (const YAML::Exception& exception) {
-      return absl::InvalidArgumentError(TO_STRING(
-          "Failed to validate stitching backend generation from " << game_config_path.string() << ": "
-                                                                  << exception.what()));
+      return absl::InvalidArgumentError("Cannot retain saved frame reference: " + std::string(exception.what()));
     }
-    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, backend_choices));
   }
 
   report_calibration_progress(
@@ -3107,6 +3331,7 @@ absl::Status create_control_points(
   cv::Size right_source_size;
   size_t matched_frame_pairs = 0;
   size_t skipped_frame_pairs = 0;
+  std::vector<size_t> frame_match_counts(input_files.size(), 0);
   for (size_t index = 0; index < input_files.size(); ++index) {
     auto left_or = load_feature_image(input_files[index].first);
     if (!left_or.ok())
@@ -3116,6 +3341,38 @@ absl::Status create_control_points(
       return right_or.status();
     cv::Mat left = std::move(*left_or);
     cv::Mat right = std::move(*right_or);
+    if (!backend_choices.calibration_frame_selection_fingerprint.empty()) {
+      // Inspection reuses the CPU stills that matching already requires. This
+      // bounded private diagnostic never adds readback to scan or Program video.
+      const fs::path inspection =
+          fs::path(game_dir) / "player-frame-inspection" / backend_choices.calibration_frame_selection_fingerprint;
+      std::error_code inspection_error;
+      fs::create_directories(inspection, inspection_error);
+      if (inspection_error)
+        return absl::InternalError("Cannot create selected-frame inspection directory: " + inspection_error.message());
+      for (const auto& item : {std::make_pair("left", left), std::make_pair("right", right)}) {
+        cv::Mat thumbnail;
+        const double scale = std::min(1.0, 1024.0 / std::max(item.second.cols, item.second.rows));
+        cv::resize(item.second, thumbnail, cv::Size(), scale, scale, cv::INTER_AREA);
+        // High-bit-depth GPU snapshots are expanded to the full uint16 range.
+        // JPEG only stores 8-bit channels; implicit imwrite conversion saturates
+        // almost every nonblack pixel instead of preserving its brightness.
+        if (thumbnail.depth() == CV_16U)
+          thumbnail.convertTo(thumbnail, CV_8U, 255.0 / 65535.0);
+        const auto path = inspection / (std::string(item.first) + "_" + std::to_string(index) + ".jpg");
+        if (!cv::imwrite(path.string(), thumbnail, {cv::IMWRITE_JPEG_QUALITY, 88}))
+          return absl::InternalError("Cannot save selected-frame inspection thumbnail");
+      }
+    } else if (const char* enabled = std::getenv("HSTREAM_STITCH_CALIBRATION_INSPECTION");
+               enabled && std::string(enabled) == "1") {
+      HM_RETURN_IF_ERROR(write_stitching_calibration_frame_inspection(
+          game_dir,
+          expected_invalidation_id,
+          index,
+          frame_pairs.size(),
+          {left, right},
+          {frame_pairs[index].left_source, frame_pairs[index].right_source}));
+    }
     if (index == 0) {
       left_source_size = left.size();
       right_source_size = right.size();
@@ -3133,6 +3390,7 @@ absl::Status create_control_points(
       return frame_matches_or.status();
     }
     FeatureMatchResult frame_matches = std::move(*frame_matches_or);
+    frame_match_counts[index] = frame_matches.accepted.size();
     ++matched_frame_pairs;
     candidates.push_back(CandidateFramePair{.index = index, .accepted = frame_matches.accepted});
     pooled_accepted.insert(pooled_accepted.end(), frame_matches.accepted.begin(), frame_matches.accepted.end());
@@ -3188,6 +3446,7 @@ absl::Status create_control_points(
     options.max_output_width = max_output_width;
   options.control_point_matcher = control_point_matcher;
   options.control_point_resolution = backend_choices.control_point_resolution;
+  options.calibration_frame_selection_fingerprint = captured_frame_selection_fingerprint;
   StitchProjection projection;
   HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(backend_choices.projection));
   options.mapping_backend = mapping_backend;
@@ -3232,6 +3491,12 @@ absl::Status create_control_points(
               << " with " << selected.size() << " selected control points" << std::endl;
     bool alignment_complete = false;
     HuginProject::Options candidate_options = options;
+    std::ostringstream frame_diagnostics;
+    frame_diagnostics << "representative=" << candidate.index << ";pooled=" << (candidate.pooled ? 1 : 0)
+                      << ";accepted=";
+    for (size_t i = 0; i < frame_match_counts.size(); ++i)
+      frame_diagnostics << (i ? "," : "") << frame_match_counts[i];
+    candidate_options.calibration_frame_diagnostics = frame_diagnostics.str();
     candidate_options.progress = [&](const std::string& stage, const std::string& status, const std::string& message) {
       if (options.progress)
         options.progress(stage, status, message);
@@ -3341,7 +3606,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable rink transaction state file");
@@ -3909,7 +4174,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat metadata {};
+  struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 29)
     return absl::FailedPreconditionError("Invalid field-mask PNG: " + path);
 
@@ -3980,7 +4245,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
       return absl::FailedPreconditionError("Unable to read field-mask PNG: " + path);
     offset += static_cast<size_t>(count);
   }
-  struct stat verified_metadata {};
+  struct stat verified_metadata{};
   if (::fstat(descriptor, &verified_metadata) != 0 || metadata.st_dev != verified_metadata.st_dev ||
       metadata.st_ino != verified_metadata.st_ino || metadata.st_mode != verified_metadata.st_mode ||
       metadata.st_size != verified_metadata.st_size || metadata.st_mtim.tv_sec != verified_metadata.st_mtim.tv_sec ||
@@ -4259,9 +4524,11 @@ bool is_field_mask_configured_for_stitching_config(
     double post_stitch_rotate_degrees,
     const std::string& expected_invalidation_id,
     const std::optional<ValidatedStitchingArtifacts>& previously_validated) {
-  return load_field_mask_impl(
-             game_dir, {}, expected_invalidation_id, max_output_width, post_stitch_rotate_degrees, previously_validated)
-      .ok();
+  const auto mask = load_field_mask_impl(
+      game_dir, {}, expected_invalidation_id, max_output_width, post_stitch_rotate_degrees, previously_validated);
+  if (!mask.ok())
+    std::cout << "Rink mask cannot be reused: " << mask.status() << std::endl;
+  return mask.ok();
 }
 
 namespace {
@@ -5041,19 +5308,105 @@ absl::Status configure_scoreboard(const std::string& game_dir) {
   return absl::OkStatus();
 }
 
+absl::Status reframe_stitching(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled,
+    size_t max_output_width) {
+  if (expected_invalidation_id.empty())
+    return absl::FailedPreconditionError("Reusing the saved alignment requires a pending calibration owner");
+  const fs::path config_path = fs::path(game_dir) / "config.yaml";
+  StitchingReframeIntent intent;
+  std::string request;
+  {
+    auto artifacts = HuginProject::RecoverAndLock(game_dir);
+    if (!artifacts.ok())
+      return artifacts.status();
+    auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+    if (!config_lock.ok())
+      return config_lock.status();
+    try {
+      const YAML::Node config = YAML::LoadFile(config_path.string());
+      HM_ASSIGN_OR_RETURN(intent, ValidateStitchingReframeIntentLocked(game_dir, config));
+      request = YAML::Dump(config["hstream_ui"]["stitching_calibration"]["reframe"]);
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot read saved alignment request: " + std::string(error.what()));
+    }
+  }
+  if (intent.desired_owner != expected_invalidation_id || intent.desired_max_output_width != max_output_width)
+    return absl::AbortedError("The requested view or calibration owner changed before reusing the saved alignment");
+  HuginProject::ReframeOptions options;
+  options.expected_source_generation = intent.source_generation;
+  HM_ASSIGN_OR_RETURN(options.projection, ParseStitchProjection(intent.desired_choices.projection));
+  options.projection_parameters = intent.desired_choices.projection_parameters;
+  options.projection_framing = intent.desired_choices.projection_framing;
+  if (intent.desired_max_output_width)
+    options.max_output_width = intent.desired_max_output_width;
+  if (intent.desired_max_output_dimension)
+    options.max_canvas_dimension = intent.desired_max_output_dimension;
+  options.progress = report_calibration_progress;
+  options.is_cancelled = is_cancelled;
+  options.validate_source = [&]() -> absl::Status {
+    try {
+      const YAML::Node current = YAML::LoadFile(config_path.string());
+      HM_RETURN_IF_ERROR(validate_pending_stitching_invalidation(current, expected_invalidation_id));
+      if (YAML::Dump(current["hstream_ui"]["stitching_calibration"]["reframe"]) != request)
+        return absl::AbortedError("Saved alignment request changed while generating the view");
+      const auto validated = ValidateStitchingReframeIntentLocked(game_dir, current);
+      return validated.ok() ? absl::OkStatus() : validated.status();
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot validate saved alignment request: " + std::string(error.what()));
+    }
+  };
+  options.build_config = [&](const fs::path& staging) -> absl::StatusOr<std::string> {
+    HM_RETURN_IF_ERROR(options.validate_source());
+    try {
+      YAML::Node current = YAML::LoadFile(config_path.string());
+      std::ifstream project(staging / "autooptimiser_out.pto", std::ios::binary);
+      if (!project)
+        return absl::InternalError("Cannot read reframed project for accepted crop");
+      std::string pto(1024 * 1024 + 1, '\0');
+      project.read(pto.data(), pto.size());
+      pto.resize(project.gcount());
+      if (project.bad() || pto.size() > 1024 * 1024)
+        return absl::FailedPreconditionError("Reframed project exceeds the accepted crop size limit");
+      const std::string geometry = projection_crop_geometry(pto, options.projection_framing);
+      if (geometry.empty())
+        return absl::FailedPreconditionError("Reframed project has no valid crop geometry");
+      write_projection_crop_review(current, geometry);
+      remove_control_point_dependent_cache_keys(current);
+      YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
+      calibration["status"] = "complete";
+      calibration["rink_mask_status"] = "pending";
+      calibration["artifacts_invalidated"] = true;
+      calibration.remove("stale_from");
+      ClearStitchingReframeIntent(current);
+      HM_RETURN_IF_ERROR(
+          reserve_stitching_backend_generation_in_config(current, expected_invalidation_id, intent.desired_choices));
+      return YAML::Dump(current) + "\n";
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot commit edited view settings: " + std::string(error.what()));
+    }
+  };
+  report_calibration_progress("canvas", "started", "Reusing saved alignment to generate the edited view");
+  return HuginProject::Reframe(game_dir, options);
+}
+
 absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
-    size_t max_output_width) {
+    size_t max_output_width,
+    const std::string& captured_frame_selection_fingerprint) {
   return configure_stitching(
       game_dir,
       std::vector<StitchingCalibrationFramePair>{{left_surface, right_surface}},
       expected_invalidation_id,
       is_cancelled,
-      max_output_width);
+      max_output_width,
+      captured_frame_selection_fingerprint);
 }
 
 absl::Status configure_stitching(
@@ -5061,9 +5414,19 @@ absl::Status configure_stitching(
     const std::vector<StitchingCalibrationFramePair>& frame_pairs,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
-    size_t max_output_width) {
-  HM_RETURN_IF_ERROR(
-      create_control_points(game_dir, frame_pairs, expected_invalidation_id, is_cancelled, max_output_width));
+    size_t max_output_width,
+    const std::string& captured_frame_selection_fingerprint) {
+  std::optional<YAML::Node> config;
+  HM_ASSIGN_OR_RETURN(config, load_game_config_file(fs::path(game_dir) / "config.yaml"));
+  if (config && HasStitchingReframeIntent(*config))
+    return reframe_stitching(game_dir, expected_invalidation_id, is_cancelled, max_output_width);
+  HM_RETURN_IF_ERROR(create_control_points(
+      game_dir,
+      frame_pairs,
+      expected_invalidation_id,
+      is_cancelled,
+      max_output_width,
+      captured_frame_selection_fingerprint));
   return absl::OkStatus();
 }
 
