@@ -41,6 +41,8 @@ Model precision:
   --int8-calib-frames N                Number of frames to sample for INT8 calibration. Default: 64.
   --int8-calib-batch-size N            INT8 calibration batch size. Default: 2.
   --int8-calib-start-seconds S         Start offset for calibration frame extraction. Default: 0.
+  --models-fp16, --fp16-models         Use the FP16 detector config. Needs no prebuilt engine; nvinfer
+                                       builds and caches it on first run.
   --models-bf16, --bf16-models         Use a prebuilt BF16 TensorRT detector engine.
   --models-bf16-build, --bf16-build    Build the BF16 detector engine offline, then run from timestamp zero.
 
@@ -238,6 +240,7 @@ rewritten_args=()
 extra_options=()
 models_int8=0
 models_int8_calibrate=0
+models_fp16=0
 models_bf16=0
 models_bf16_build=0
 int8_calib_frames=64
@@ -269,6 +272,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --models-int8-calibrate|--int8-calibrate|--calibrate-int8)
       models_int8=1
       models_int8_calibrate=1
+      ;;
+    --models-fp16|--fp16-models)
+      models_fp16=1
       ;;
     --models-bf16|--bf16-models)
       models_bf16=1
@@ -395,7 +401,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     continue
   fi
   case "$arg" in
-    --one-pass-only|--stage0-only|--two-stage|--configure-first|--models-int8|--int8-models|--quant-int8|--models-int8-calibrate|--int8-calibrate|--calibrate-int8|--models-bf16|--bf16-models|--models-bf16-build|--bf16-build|--stitcher-minimize-blend|--minimize-blend)
+    --one-pass-only|--stage0-only|--two-stage|--configure-first|--models-int8|--int8-models|--quant-int8|--models-int8-calibrate|--int8-calibrate|--calibrate-int8|--models-fp16|--fp16-models|--models-bf16|--bf16-models|--models-bf16-build|--bf16-build|--stitcher-minimize-blend|--minimize-blend)
       # run.sh-only flag; do not forward to hstream-cli
       continue
       ;;
@@ -660,14 +666,17 @@ else
   fi
 fi
 
-if [ "${models_int8}" -eq 1 ] && [ "${models_bf16}" -eq 1 ]; then
-  echo "--models-int8 and --models-bf16 are mutually exclusive"
+if [ $((models_int8 + models_fp16 + models_bf16)) -gt 1 ]; then
+  echo "--models-int8, --models-fp16 and --models-bf16 are mutually exclusive"
   exit 2
 fi
 
 if [ "${models_int8}" -eq 1 ]; then
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_int8.yaml)
   int8_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_int8.yaml"
+elif [ "${models_fp16}" -eq 1 ]; then
+  # FP16 needs no offline artifact: nvinfer builds and caches the engine itself.
+  extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml)
 elif [ "${models_bf16}" -eq 1 ]; then
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_bf16.yaml)
   bf16_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_bf16.yaml"

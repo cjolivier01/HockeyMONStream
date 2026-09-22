@@ -18,6 +18,7 @@ from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FP32_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey.yaml"
+FP16_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_fp16.yaml"
 INT8_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_int8.yaml"
 BF16_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_bf16.yaml"
 PERF_RE = re.compile(r"\*\*PERF:\s+[-0-9.]+\s+\(([-0-9.]+)\)")
@@ -69,7 +70,9 @@ def replace_yaml_scalar(text: str, key: str, value: str) -> str:
   pattern = re.compile(rf"^(\s*{re.escape(key)}:\s*).*$", re.MULTILINE)
   if not pattern.search(text):
     raise ValueError(f"could not find YAML key '{key}'")
-  return pattern.sub(rf"\1{value}", text)
+  # A replacement function, not a \1 template: a numeric value such as the "2"
+  # written for network-mode would otherwise be read as part of the group reference.
+  return pattern.sub(lambda m: m.group(1) + value, text)
 
 
 def infer_config_for_variant(variant: Variant, out_dir: Path) -> Path | None:
@@ -79,7 +82,9 @@ def infer_config_for_variant(variant: Variant, out_dir: Path) -> Path | None:
   out_path.parent.mkdir(parents=True, exist_ok=True)
 
   if variant.model_precision == "fp16":
-    text = FP32_CONFIG.read_text()
+    # network-mode already comes from the committed config; only the artifact
+    # paths are rewritten to the repo-local copies this benchmark runs against.
+    text = FP16_CONFIG.read_text()
     text = replace_yaml_scalar(
         text,
         "onnx-file",
@@ -96,7 +101,6 @@ def infer_config_for_variant(variant: Variant, out_dir: Path) -> Path | None:
         str((REPO_ROOT / "pretrained/deepstream/yolov8/labels_coco.txt").resolve()),
     )
     text = replace_yaml_scalar(text, "custom-lib-path", str((REPO_ROOT / "lib/libnvdsinfer_custom_impl_Yolo.so").resolve()))
-    text = replace_yaml_scalar(text, "network-mode", "2")
   elif variant.model_precision == "int8":
     text = INT8_CONFIG.read_text()
     text = replace_yaml_scalar(
