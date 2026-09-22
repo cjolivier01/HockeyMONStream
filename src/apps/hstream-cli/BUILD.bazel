@@ -303,6 +303,10 @@ cc_test(
 
 cc_test(
     name = "tensorrt_model_cache_test",
+    data = [
+        "//configs:config_infer_yolov8_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8_hockey_int8.yaml",
+    ],
     srcs = [
         "OnnxExternalData.cpp",
         "OnnxExternalData.h",

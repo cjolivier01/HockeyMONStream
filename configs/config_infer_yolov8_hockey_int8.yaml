@@ -4,6 +4,8 @@ hstream-prebuilt-precision: int8
 
 pretrained-assets:
   - property: onnx-file
+    # Only offline preparation needs the source; engine-only playback works offline.
+    on-demand: true
     # Checkpoint redistribution is blocked pending a model-rights record.
     redistributable: false
     url: https://api.github.com/repos/cjolivier01/hstream/releases/assets/501508436

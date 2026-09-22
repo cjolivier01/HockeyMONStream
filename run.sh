@@ -670,15 +670,19 @@ if [ $((models_int8 + models_fp16 + models_bf16)) -gt 1 ]; then
   exit 2
 fi
 
+detector_config_file=""
 if [ "${models_int8}" -eq 1 ]; then
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_int8.yaml)
   int8_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_int8.yaml"
+  detector_config_file="${int8_asset_config_file}"
 elif [ "${models_fp16}" -eq 1 ]; then
   # FP16 needs no offline artifact: nvinfer builds and caches the engine itself.
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml)
+  detector_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_fp16.yaml"
 elif [ "${models_bf16}" -eq 1 ]; then
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_bf16.yaml)
   bf16_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_bf16.yaml"
+  detector_config_file="${bf16_asset_config_file}"
 fi
 
 if [ -n "${stitcher_compute_precision}" ]; then
@@ -743,6 +747,13 @@ abs_cwd_path() {
     *) realpath -m "${PWD}/${value}" ;;
   esac
 }
+
+if [ -n "${detector_config_file}" ]; then
+  # Override the engine saved by the UI along with its config. Explicit user
+  # --options remain later in pipeline_args and retain their usual precedence.
+  detector_engine_file="$(abs_config_path "${detector_config_file}" "$(yaml_property "${detector_config_file}" model-engine-file)")"
+  extra_options+=(--options=pipeline.primary-gie.model-engine-file="${detector_engine_file}")
+fi
 
 int8_artifact_paths() {
   int8_config_file="${int8_asset_config_file}"
@@ -875,6 +886,8 @@ build_int8_calibration_artifacts() {
   fi
 
   echo "Building INT8 calibration builder"
+  # Explicit preparation acquires on-demand ONNX assets; playback does not.
+  bazelisk run --config=opt //src/apps/hstream-assets:hstream-assets -- "${int8_config_file}"
   bazelisk build --config=opt //src/apps/int8-calib-builder:int8-calib-builder
 
   echo "Building calibrated INT8 engine from ${int8_calib_frames} sampled frame(s); normal run will still start at timestamp zero"
@@ -949,6 +962,7 @@ build_bf16_engine_artifact() {
   fi
 
   echo "Building BF16 engine builder"
+  bazelisk run --config=opt //src/apps/hstream-assets:hstream-assets -- "${bf16_asset_config_file}"
   bazelisk build --config=opt //src/apps/int8-calib-builder:int8-calib-builder
 
   echo "Building BF16 detector engine; normal run will still start at timestamp zero"

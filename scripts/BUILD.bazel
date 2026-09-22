@@ -47,6 +47,18 @@ exports_files([
 ])
 
 py_test(
+    name = "run_detector_precision_test",
+    size = "small",
+    srcs = ["run_detector_precision_test.py"],
+    data = [
+        "//:run.sh",
+        "//configs:config_infer_yolov8_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8_hockey_fp16.yaml",
+        "//configs:config_infer_yolov8_hockey_int8.yaml",
+    ],
+)
+
+py_test(
     name = "quantize_detector_onnx_test",
     srcs = ["quantize_detector_onnx.py", "quantize_detector_onnx_test.py"],
     main = "quantize_detector_onnx_test.py",

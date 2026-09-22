@@ -356,7 +356,7 @@ int main(int argc, char** argv) {
   try {
     Args args = parse_args(argc, argv);
     const int runtime_version = getInferLibVersion();
-    if (runtime_version / 10000 != NV_TENSORRT_MAJOR || (runtime_version / 100) % 100 != NV_TENSORRT_MINOR)
+    if (!hm::inference::TensorRtVersionMatches(runtime_version, NV_TENSORRT_MAJOR, NV_TENSORRT_MINOR))
       throw std::runtime_error(
           "TensorRT SDK headers and loaded runtime differ; select a matching HSTREAM_TENSORRT_SDK_ROOT");
     std::cout << "TensorRT runtime version: " << getInferLibVersion() << " (SDK " << NV_TENSORRT_MAJOR << '.'

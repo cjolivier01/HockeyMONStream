@@ -1,6 +1,7 @@
 #include "TensorRtModelCache.h"
 
 #include "OnnxExternalData.h"
+#include "hstream/src/libs/assets/AssetManager.h"
 
 #include <chrono>
 #include <cstdint>
@@ -175,6 +176,32 @@ int main(int argc, char** argv) {
           fs::perms::others_read | fs::perms::others_exec);
   ::setenv("HSTREAM_TENSORRT_CACHE_DIR", cache.c_str(), 1);
   ::setenv("HOME", home.c_str(), 1);
+
+  fs::copy_file(models / "labels.txt", home_models / "labels_coco.txt");
+  for (const char* precision : {"bf16", "int8"}) {
+    auto bundled = YAML::LoadFile(
+        std::string("configs/config_infer_yolov8_hockey_") + precision + ".yaml");
+    // Exercise startup asset acquisition before cache preparation, as the CLI
+    // does. No source model is installed and a download would fail immediately.
+    bundled["property"]["model-engine-file"] = (models / "detector_bf16.engine").string();
+    for (auto asset : bundled["pretrained-assets"]) {
+      asset["url"] = "https://127.0.0.1:1/must-not-download";
+      if (asset["property"].as<std::string>() == "labelfile-path")
+        asset["sha256"] = *hm::assets::AssetManager::Sha256(models / "labels.txt");
+    }
+    const auto config_path = configs / (std::string("bundled-") + precision + ".yaml");
+    std::ofstream(config_path) << bundled;
+    const auto asset_status = hm::assets::AssetManager::EnsureRequired({config_path});
+    if (!asset_status.ok())
+      std::cerr << asset_status << '\n';
+    ok &= expect(
+        asset_status.ok(),
+        "prepared detector startup must acquire labels without requiring the offline source model");
+    auto pipeline = pipeline_for(config_path.string());
+    ok &= expect(
+        hm::pipeline::PrepareTensorRtModelCache(pipeline, configs).ok(),
+        "bundled prepared detector config must load with only an engine and labels installed");
+  }
 
   for (const char* home_config : {"home-dollar.yaml", "home-braced.yaml", "home-tilde.yaml"}) {
     YAML::Node home_pipeline = pipeline_for(home_config);

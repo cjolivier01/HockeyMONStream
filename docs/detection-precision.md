@@ -56,6 +56,9 @@ bazel-bin/src/apps/int8-calib-builder/int8-calib-builder \
 ```
 
 The source wrapper also supports `./run.sh --game-id=GAME --models-bf16-build`.
+Preparation explicitly downloads declared source assets; playback only requires
+the prepared engine and labels. Wrapper precision flags replace saved UI engine
+selections; later explicit `--options` retain their usual precedence.
 Keep `HSTREAM_TENSORRT_SDK_ROOT` set when the wrapper rebuilds the tool.
 
 TensorRT 11 removes the weakly typed precision flags. It requires an already

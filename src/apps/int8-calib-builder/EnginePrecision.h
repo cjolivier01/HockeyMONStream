@@ -7,6 +7,12 @@
 
 namespace hm::inference {
 
+inline bool TensorRtVersionMatches(int runtime, int sdk_major, int sdk_minor) {
+  // TensorRT 10 expanded the major field to accommodate two-digit minors.
+  const int major_scale = sdk_major >= 10 ? 10000 : 1000;
+  return runtime / major_scale == sdk_major && (runtime % major_scale) / 100 == sdk_minor;
+}
+
 inline bool EngineUsesPrecision(const YAML::Node& inspector, const std::string& precision) {
   const auto layers = inspector["Layers"];
   if (!layers || !layers.IsSequence())
