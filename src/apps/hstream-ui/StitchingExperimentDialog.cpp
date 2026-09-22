@@ -753,6 +753,24 @@ struct StitchingExperimentDialog::Impl {
           continue;
         }
         candidate.workspace = *workspace;
+        // Add's earlier main lookup may race a config update before this copy.
+        // Bind both the queue expectation and catalog to the snapshot we own.
+        const auto fingerprint =
+            ReusableStitchingExperimentSelectionFingerprint(workspace->game_directory, candidate.settings);
+        if (!fingerprint.ok()) {
+          candidate.failure = QString::fromStdString(fingerprint.status().ToString());
+          candidate.queued = false;
+          result->status = fingerprint.status();
+          continue;
+        }
+        if (!candidate.saved_selection_fingerprint.empty() && *fingerprint != candidate.saved_selection_fingerprint) {
+          result->status =
+              absl::AbortedError("The saved frame selection changed while this candidate was being prepared");
+          candidate.failure = QString::fromStdString(result->status.ToString());
+          candidate.queued = false;
+          continue;
+        }
+        candidate.saved_selection_fingerprint = *fingerprint;
         const auto workspace_key = workspace->game_directory.lexically_relative(persistent.directory).generic_string();
         StoredStitchingExperiment record;
         record.workspace = *workspace;
@@ -790,6 +808,8 @@ struct StitchingExperimentDialog::Impl {
       for (size_t index = 0; index < result->rows.size(); ++index) {
         const int row = first_row + static_cast<int>(index);
         candidates[row] = std::move(result->rows[index]);
+        if (candidates[row].has_selected_frames)
+          table->item(row, 0)->setText(QString("Players %1").arg(candidates[row].sequence));
         table->item(row, 5)->setText(candidates[row].queued ? "Queued" : candidates[row].failure);
       }
       if (!result->status.ok()) {
@@ -944,7 +964,7 @@ struct StitchingExperimentDialog::Impl {
             record.state == "complete" && !record.artifact_generation_id.empty() && !candidate.selection_reuse_blocked;
         bool recovered_selection = false;
         if (!candidate.queued && !candidate.has_selected_frames &&
-            candidate.selection_owner_sequence == candidate.sequence) {
+            (pending_owner || record.state == "failed" || candidate.selection_owner_sequence == candidate.sequence)) {
           const auto fingerprint = recover_selection_fingerprint(*store, *candidate.workspace);
           if (!fingerprint.ok()) {
             candidate.selection_reuse_blocked = true;
@@ -972,12 +992,16 @@ struct StitchingExperimentDialog::Impl {
             }
           }
         }
-        if (pending_owner && !recovered_selection && !candidate.selection_reuse_blocked) {
-          candidate.failure = record.state == "complete" ? QString() : "Previous run stopped before durable completion";
-          auto reconciled_record = candidate_record(candidate, record.state == "complete" ? "complete" : "failed");
-          reconciled_record.process_session_id = 0;
-          reconciled_record.process_token.clear();
-          const auto reconciled = SaveStitchingExperiment(*store, reconciled_record);
+        // Process death and selected-input integrity are independent. Retain a
+        // corrupt count's reservation, but clear confirmed-dead runner intent
+        // so an explicit discard can still remove that unusable history.
+        if (pending_owner && !recovered_selection) {
+          if (!candidate.selection_reuse_blocked)
+            candidate.failure =
+                record.state == "complete" ? QString() : "Previous run stopped before durable completion";
+          auto reconciled_record = *candidate.stored;
+          const auto reconciled =
+              MarkStitchingExperimentProcessStopped(*store, reconciled_record, candidate.failure.toStdString());
           if (reconciled.ok())
             candidate.stored = std::move(reconciled_record);
           if (!reconciled.ok()) {
@@ -995,6 +1019,8 @@ struct StitchingExperimentDialog::Impl {
             candidate.reservation_token.clear();
         }
       }
+      if (candidate.selection_reuse_blocked && !candidate.has_selected_frames)
+        candidate.selection_owner_sequence = candidate.sequence;
       if (!candidate.queued && !candidate.selection_reuse_blocked &&
           candidate.selection_owner_sequence == candidate.sequence)
         candidate.selection_owner_sequence = 0;
@@ -1400,7 +1426,8 @@ struct StitchingExperimentDialog::Impl {
     }
     Candidate& candidate = candidates[running_candidate];
     candidate.queued = false;
-    if (candidate.baseline_sequence != 0 && candidate.selection_owner_sequence == candidate.sequence) {
+    if (!candidate.has_selected_frames && candidate.baseline_sequence != 0 &&
+        candidate.selection_owner_sequence == candidate.sequence) {
       Candidate* baseline = baseline_for(candidate);
       if (!baseline || !baseline->complete || !baseline->workspace) {
         candidate.failure = "Unavailable: baseline calibration failed";
@@ -1419,7 +1446,8 @@ struct StitchingExperimentDialog::Impl {
       return;
     }
     std::optional<StitchingExperimentWorkspace> owner_workspace;
-    if (candidate.selection_owner_sequence != 0 && candidate.selection_owner_sequence != candidate.sequence) {
+    if (!candidate.has_selected_frames && candidate.selection_owner_sequence != 0 &&
+        candidate.selection_owner_sequence != candidate.sequence) {
       Candidate* owner = selection_owner_for(candidate);
       if (!owner || !owner->has_selected_frames || !owner->workspace || owner->selection_reuse_blocked) {
         candidate.failure = "Unavailable: the shared frame selection was not safely frozen";
@@ -1462,12 +1490,13 @@ struct StitchingExperimentDialog::Impl {
       Candidate& prepared = candidates[row];
       if (!result->ok() || cancelling || closing) {
         prepared.failure = result->ok() ? "Cancelled" : QString::fromStdString(result->status().ToString());
-        if (!result->ok() && prepared.selection_owner_sequence == prepared.sequence) {
+        if (!result->ok()) {
           // A changed main selection can enter the workspace during Add. Do
           // not free its count when preparation discovers those frozen inputs.
           const auto fingerprint = recover_selection_fingerprint(*store, *prepared.workspace);
           if (!fingerprint.ok() || !fingerprint->empty()) {
             prepared.selection_reuse_blocked = true;
+            prepared.selection_owner_sequence = prepared.sequence;
             prepared.failure = "Unavailable: saved frame selection requires recovery; " + prepared.failure;
           }
         }

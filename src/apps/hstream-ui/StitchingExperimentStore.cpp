@@ -643,6 +643,41 @@ absl::StatusOr<StitchingExperimentCatalog> LoadStitchingExperimentStore(const St
   }
 }
 
+absl::Status MarkStitchingExperimentProcessStopped(
+    const StitchingExperimentStore& store,
+    StoredStitchingExperiment& experiment,
+    const std::string& failure) {
+  try {
+    auto lock = acquire(store);
+    if (!lock.ok())
+      return lock.status();
+    Index index;
+    HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
+    const auto found =
+        std::find_if(index.catalog.experiments.begin(), index.catalog.experiments.end(), [&](const auto& record) {
+          return record.workspace.game_directory == experiment.workspace.game_directory;
+        });
+    if (found == index.catalog.experiments.end() || found->revision != experiment.revision ||
+        found->revision == std::numeric_limits<uint64_t>::max() ||
+        found->workspace.invalidation_id != experiment.workspace.invalidation_id ||
+        found->process_session_id != experiment.process_session_id || found->process_token != experiment.process_token)
+      return absl::AbortedError("Saved experiment process ownership changed before shutdown reconciliation");
+    // Process death is independent of calibration validity. Never require a
+    // readable config merely to make an explicitly discarded cache removable.
+    found->state = found->state == "complete" ? "complete" : "failed";
+    found->process_session_id = 0;
+    found->process_token.clear();
+    found->failure = failure;
+    ++found->revision;
+    validate_record(store, *found);
+    HM_RETURN_IF_ERROR(write_index(**lock, store, index));
+    experiment = *found;
+    return absl::OkStatus();
+  } catch (const std::exception& error) {
+    return invalid_catalog(error);
+  }
+}
+
 absl::Status SaveStitchingExperiment(
     const StitchingExperimentStore& store,
     StoredStitchingExperiment& experiment,

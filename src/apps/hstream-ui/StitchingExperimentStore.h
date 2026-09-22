@@ -71,6 +71,14 @@ absl::Status SaveStitchingExperiment(
     bool publish_selection = false,
     const std::string& authoritative_main_fingerprint = {});
 
+// The caller must prove this exact persisted process session/token has stopped.
+// Reconciles only process intent and failure status through revision CAS; retains
+// selections/reservations without reading possibly corrupt workspace config.
+absl::Status MarkStitchingExperimentProcessStopped(
+    const StitchingExperimentStore& store,
+    StoredStitchingExperiment& experiment,
+    const std::string& failure);
+
 // A reservation prevents duplicate baseline/scan work for a new count. Its token
 // is a group nonce, independent of individual runner process/session tokens.
 // Returns the existing frozen record when this count has already been selected,

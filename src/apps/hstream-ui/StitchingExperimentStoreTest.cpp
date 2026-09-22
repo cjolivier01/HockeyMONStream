@@ -219,6 +219,48 @@ bool deletion_recovery(const fs::path& root) {
   return ok;
 }
 
+bool stopped_process_with_corrupt_config(const fs::path& root) {
+  auto store = open_store(root);
+  auto owner = make_record(store, "interrupted", 1);
+  owner.state = "scan";
+  owner.process_session_id = 2147483647;
+  owner.process_token = "stopped-process";
+  owner.reservation_token = "retain-corrupt-selection";
+  bool ok = expect(SaveStitchingExperiment(store, owner).ok(), "persist interrupted process ownership");
+  const auto reservation =
+      ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, owner.workspace, owner.reservation_token);
+  ok &= expect(reservation.ok() && !reservation->has_value(), "retain the interrupted selection reservation");
+  write_file(owner.workspace.game_directory / "config.yaml", "stitching: [invalid yaml");
+  ok &= expect(!DiscardStitchingExperimentStore(store).ok(), "unreconciled process intent prevents discard");
+  auto wrong_process = owner;
+  wrong_process.process_token = "different-process";
+  ok &= expect(
+      absl::IsAborted(MarkStitchingExperimentProcessStopped(store, wrong_process, "stopped")),
+      "shutdown proof must match the exact persisted process identity");
+  auto stale = owner;
+  ok &= expect(
+      MarkStitchingExperimentProcessStopped(store, owner, "Selection metadata is corrupt").ok(),
+      "confirmed shutdown can be recorded despite an unreadable config");
+  const auto stopped_index = read_file(store.directory / "index.yaml");
+  ok &= expect(
+      absl::IsAborted(MarkStitchingExperimentProcessStopped(store, stale, "stale shutdown")) &&
+          read_file(store.directory / "index.yaml") == stopped_index,
+      "stale shutdown reconciliation cannot overwrite newer row state");
+  const auto restored = LoadStitchingExperimentStore(store);
+  ok &= expect(
+      restored.ok() && restored->experiments.size() == 1 && restored->experiments[0].state == "failed" &&
+          restored->experiments[0].process_session_id == 0 && restored->experiments[0].process_token.empty() &&
+          restored->experiments[0].reservation_token == "retain-corrupt-selection" &&
+          YAML::Load(stopped_index)["reservations"].size() == 1,
+      "clearing process intent preserves the blocked count's reservation");
+  write_file(store.game_directory / "main-artifact", "main survives explicit discard");
+  ok &= expect(
+      DiscardStitchingExperimentStore(store).ok() &&
+          read_file(store.game_directory / "main-artifact") == "main survives explicit discard",
+      "explicit discard removes corrupt stopped history while preserving main data");
+  return ok;
+}
+
 bool retained_main_counts(const fs::path& root) {
   bool ok = true;
   for (const std::string scenario : {"single", "newer", "reserved"}) {
@@ -311,6 +353,7 @@ bool retained_main_counts(const fs::path& root) {
 
 bool run(const fs::path& root) {
   bool ok = true;
+  ok &= stopped_process_with_corrupt_config(root / "stopped-corrupt-config");
   ok &= retained_main_counts(root / "retained-main-counts");
   {
     auto interrupted = open_store(root / "partial-preparation");

@@ -11,6 +11,9 @@ reopen, including dependencies between sessions. `ConfigureStitching` materializ
 set before model creation, and `HuginProject` copies that immutable bundle with the promoted plan.
 Queue preparation stops at its first failure; dependent rows require durably saved workspace keys, and reopening
 rejects missing dependency records instead of treating a Players row as an ordinary calibration.
+Each queued selection fingerprint describes the configuration actually copied into its private workspace, even
+if Main changes while asynchronous preparation is underway. If Add already observed a selected set, its
+replacement or disappearance before copying fails preparation instead of downgrading the request.
 
 The published `left.png`/`right.png` still represent the accepted solve's reference pair; they do not replace the
 complete multi-frame bundle. Ordinary calibration inspection uses its bounded manifest and JPEGs, which are
@@ -132,6 +135,8 @@ Before releasing a stopped selection owner's reservation, reopening checks its b
 a plan published before a crash or failed catalog write. A valid frozen plan is recovered into the catalog;
 invalid or uncertain metadata keeps that count unavailable. Cancelling before a runner starts releases an unused
 reservation so the same dialog can retry.
+Confirmed-dead process ownership is reconciled even when selection recovery fails, so explicit discard remains
+available for corrupt data. Unconfirmed processes continue to prevent discard.
 Persist the existing process-session ID and unpredictable process token, not only a PID or generation counter.
 PID reuse cannot prove an old owner stopped; an owner whose identity cannot be established remains quarantined.
 
