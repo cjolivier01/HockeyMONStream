@@ -22,6 +22,10 @@ FP16_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_fp16.yaml"
 INT8_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_int8.yaml"
 BF16_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_bf16.yaml"
 PERF_RE = re.compile(r"\*\*PERF:\s+[-0-9.]+\s+\(([-0-9.]+)\)")
+# write_kitti_track_output writes "label id 0.0 0 0.0 l t r b 0.0x7 conf"; an
+# object with no assigned track id is written with an empty label and this id.
+TRACK_FIELD_COUNT = 17
+UNTRACKED_OBJECT_ID = "18446744073709551615"
 INT8_ENGINE = REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx_b2_gpu0_int8.engine"
 INT8_CALIB_TABLE = REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_int8_calib.table"
 BF16_ENGINE = REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx_b2_gpu0_bf16.engine"
@@ -224,9 +228,16 @@ def summarize_tracks(track_dir: Path) -> dict[str, object]:
     count = 0
     for line in path.read_text(errors="replace").splitlines():
       fields = line.split()
-      if len(fields) < 2:
+      # An object the tracker did not assign an id to is written with an empty
+      # label and id == UINT64_MAX, so the empty label shifts every column left
+      # and fields[1] becomes a float filler. Counting those added a phantom
+      # "0.0" track to every run, inflating unique_tracked_objects by one and
+      # shrinking the gate's effective resolution.
+      if len(fields) < TRACK_FIELD_COUNT or fields[0] == UNTRACKED_OBJECT_ID:
         continue
       label, track_id = fields[0], fields[1]
+      if not track_id.isdigit() or track_id == UNTRACKED_OBJECT_ID:
+        continue
       unique_ids.add(track_id)
       class_counts[label] = class_counts.get(label, 0) + 1
       count += 1
