@@ -88,6 +88,22 @@ int main() {
           names.count("default detector") == 0,
       "asset discovery must follow runtime primary-gie config-file overrides while retaining direct app assets");
 
+  const auto initial_assets = hm::assets::AssetManager::Discover(
+      {root / "configs" / "app.yaml"},
+      hm::pipeline_internal::defer_inference_asset_discovery);
+  ok &= expect(
+      initial_assets.ok() && initial_assets->size() == 1 && initial_assets->front().name == "calibration model",
+      "initial discovery must defer the default detector until saved game/user overrides are resolved");
+  auto nested = YAML::Load(
+      "pipeline:\n  primary-gie:\n    config-file: default.yaml\n"
+      "  secondary-gie0:\n    config-file: secondary.yaml\n  hmstitcher:\n    config-file: calibration.yaml\n");
+  hm::pipeline_internal::defer_inference_asset_discovery(nested);
+  ok &= expect(
+      !nested["pipeline"]["primary-gie"]["config-file"] &&
+          !nested["pipeline"]["secondary-gie0"]["config-file"] &&
+          nested["pipeline"]["hmstitcher"]["config-file"].as<std::string>() == "calibration.yaml",
+      "deferred discovery must cover nested primary/secondary detectors and preserve calibration children");
+
   YAML::Node inference = YAML::Load("property:\n  onnx-file: model.onnx\n");
   hm::pipeline_internal::apply_pipeline_options_for_asset_discovery(inference, options);
   ok &= expect(

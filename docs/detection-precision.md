@@ -27,7 +27,9 @@ output for the current `NvDsInferParseYolo` parser.
 `HSTREAM_TENSORRT_SDK_ROOT` (an SDK directory containing `include/` and `lib/` or
 `lib64/`; a distribution `/usr` layout is also supported). The default is `/usr`,
 or the Jetson sysroot for `--config=jetson`. The builder rejects headers and
-loaded libraries with different major/minor versions.
+loaded libraries with different major/minor versions. If the selected SDK is not
+on the system loader path, include its library directory in `LD_LIBRARY_PATH`
+when invoking the builder; the SDK selection alone configures build dependencies.
 
 Use the SDK corresponding to **DeepStream's loaded inference runtime**. A newer
 system TensorRT installation or Python package is not necessarily compatible.
@@ -113,8 +115,9 @@ convenience for experiments, not a qualified production calibration set.
 The BF16/INT8 inference YAMLs declare `hstream-prebuilt-precision`.
 `TensorRtModelCache` requires a nonempty engine and gives DeepStream an
 engine-only runtime config, removing ONNX/calibration/custom-builder fallback
-inputs. Missing or incompatible engines therefore fail rather than silently
-rebuilding a different precision. Existing custom configurations without this
+inputs. Source ONNX assets are on-demand; runtime acquires detector assets only
+after resolving game/user/CLI configuration layers. Missing or incompatible
+engines therefore fail rather than silently rebuilding a different precision. Existing custom configurations without this
 marker retain their behavior; legacy `_bf16.engine` names also receive this
 protection. No inference precision is changed live or during calibration-only
 playback.

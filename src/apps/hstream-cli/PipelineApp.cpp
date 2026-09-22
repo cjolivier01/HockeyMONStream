@@ -3319,6 +3319,11 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         hm::pipeline_internal::configure_stitching_player_scan_pipeline(
             hm::pipeline_internal::pipeline_asset_root(config));
       }
+      // Game/user detector overrides are resolved later by Configurator. Do
+      // not fetch a structural default detector that the saved choice replaces;
+      // ensure_effective_inference_assets acquires the selected assets before
+      // cache preparation, after all configuration layers have been applied.
+      hm::pipeline_internal::defer_inference_asset_discovery(config);
     }));
   }
 
