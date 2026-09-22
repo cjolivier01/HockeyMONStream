@@ -229,6 +229,19 @@ QString stitching_oom_width_guidance(int current_max_output_width) {
       .arg(retry_guidance);
 }
 
+struct IceBoundaryControl {
+  const char* id;
+  const char* key;
+  const char* property;
+  const char* label;
+};
+constexpr IceBoundaryControl kIceBoundaryControls[] = {
+    {"Rink_Top_Inset", "mask_top_inset", "mask-top-inset", "Top mask inset"},
+    {"Rink_Bottom_Inset", "mask_bottom_inset", "mask-bottom-inset", "Bottom mask inset"},
+    {"Rink_Left_Inset", "mask_left_inset", "mask-left-inset", "Left mask inset"},
+    {"Rink_Right_Inset", "mask_right_inset", "mask-right-inset", "Right mask inset"},
+};
+
 template <typename Receiver, typename Slot>
 QMetaObject::Connection connect_check_state_changed(QCheckBox* checkbox, Receiver* receiver, Slot&& slot) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
@@ -4978,6 +4991,17 @@ void HStreamWindow::loadBaselineDefaults() {
     }
   }
   checked("Stitch_Rotate_Degrees", rotation_slider, 0, 180);
+  for (const auto& control : kIceBoundaryControls) {
+    YAML::Node value = require(QString("ice_boundaries.%1").arg(control.key));
+    YAML::Node native;
+    if (lookup_yaml_path(
+            baseline_config_, QString("pipeline.ds-fieldmask.properties.%1").arg(control.property), &native))
+      value = native;
+    const double inset = value.as<double>();
+    if (!std::isfinite(inset) || std::trunc(inset) != inset || std::abs(inset) > 4096)
+      throw std::runtime_error("Rink mask insets must be whole pixels between -4096 and 4096");
+    camera_defaults_[control.id] = inset;
+  }
 
   const YAML::Node fixed_rotation = require("rink.camera.fixed_edge_rotation_angle");
   try {
@@ -6762,6 +6786,62 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
     control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
+
+    auto* rink_page = new QWidget();
+    rink_page->setObjectName("rinkExtentsTab");
+    auto* rink_page_layout = new QVBoxLayout(rink_page);
+    rink_page_layout->setContentsMargins(0, 0, 0, 0);
+    auto* rink_scroll = new QScrollArea();
+    rink_scroll->setObjectName("rinkExtentsScrollArea");
+    rink_scroll->setFrameShape(QFrame::NoFrame);
+    rink_scroll->setWidgetResizable(true);
+    auto* rink_content = new QWidget();
+    auto* rink_layout = new QVBoxLayout(rink_content);
+    auto* rink_help = new QLabel("Native stitched pixels: positive shrinks the allowed ice; negative expands it.");
+    rink_help->setWordWrap(true);
+    rink_layout->addWidget(rink_help);
+    for (const auto& control : kIceBoundaryControls) {
+      auto* spin = addCameraSpinBox(rink_layout, control.id, control.label, camera_defaults_.at(control.id));
+      spin->setSuffix(" px");
+      spin->setSingleStep(1);
+      const QString help =
+          "Move this rink-mask edge in native stitched pixels. Positive excludes more ice; negative expands the "
+          "allowed area. Applies live during Program playback. Save Preset keeps this game's offset without "
+          "invalidating calibration or modifying the original mask.";
+      spin->setToolTip(help);
+      spin->setStatusTip(help);
+    }
+    auto* show_limits = new QCheckBox("Show mask and test points");
+    show_limits->setToolTip(
+        "Show the original and adjusted rink masks, tracked boxes, and sampling points in Stitched view.");
+    show_limits->setStatusTip(show_limits->toolTip());
+    rink_extents_toggle_ = show_limits;
+    show_limits->setObjectName("showRinkExtentsCheck");
+    rink_layout->addWidget(show_limits);
+    connect(show_limits, &QCheckBox::toggled, this, [this](bool checked) {
+      if (show_rink_mask_toggle_ && show_rink_mask_toggle_->isEnabled())
+        show_rink_mask_toggle_->setChecked(checked);
+      else if (show_rink_mask_toggle_) {
+        const QSignalBlocker blocker(rink_extents_toggle_);
+        rink_extents_toggle_->setChecked(show_rink_mask_toggle_->isChecked());
+      }
+    });
+    connect(show_rink_mask_toggle_, &QCheckBox::toggled, show_limits, &QCheckBox::setChecked);
+    auto* guide_help = new QLabel(
+        "Green: original mask. Magenta: adjusted mask. Tracked boxes show a blue triangle at the foot test point "
+        "and a yellow circle at the center test point. Filled = active test; outline = other test. "
+        "Top-half players use adjusted feet (also for the side edges); bottom-half players use the adjusted center. "
+        "Overlays appear only in Stitched during Program playback. Hide the mask to disable overlay work.");
+    guide_help->setWordWrap(true);
+    rink_layout->addWidget(guide_help);
+    rink_extents_status_ = new QLabel("Save Preset keeps these independent rink-filter offsets for this game.");
+    rink_extents_status_->setObjectName("rinkExtentsStatus");
+    rink_extents_status_->setWordWrap(true);
+    rink_layout->addWidget(rink_extents_status_);
+    rink_layout->addStretch();
+    rink_scroll->setWidget(rink_content);
+    rink_page_layout->addWidget(rink_scroll);
+    control_tabs->addTab(rink_page, "Rink extents");
 
     auto* color_page = new QWidget();
     color_page->setObjectName("stitchedColorPrecisionTab");
@@ -9375,6 +9455,10 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
   args << QString("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=%1")
               .arg(cameraControlValue("Lift_Shadow_Black_Point"));
   args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
+  for (const auto& control : kIceBoundaryControls)
+    args << QString("--options=ice_boundaries.%1=%2")
+                .arg(control.key)
+                .arg(QString::number(cameraControlValue(control.id)));
   if (!isCalibrationRun()) {
     if (!detectorPrecision().isEmpty() && detectorSelectionChanged()) {
       args << QString("--options=pipeline.primary-gie.config-file=%1").arg(detectorConfigName());
@@ -10236,6 +10320,9 @@ void HStreamWindow::handlePipelineStarted() {
 }
 
 void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
+  ++scheduled_ice_boundary_generation_;
+  scheduled_ice_boundary_controls_.clear();
+  scheduled_ice_boundary_ready_ = false;
   ++scheduled_rotation_control_generation_;
   scheduled_rotation_controls_.clear();
   scheduled_rotation_controls_ready_ = false;
@@ -10471,6 +10558,9 @@ void HStreamWindow::updatePreviewTabResolution(const QString& channel, int width
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
+  ++scheduled_ice_boundary_generation_;
+  scheduled_ice_boundary_controls_.clear();
+  scheduled_ice_boundary_ready_ = false;
   ++scheduled_rotation_control_generation_;
   scheduled_rotation_controls_.clear();
   scheduled_rotation_controls_ready_ = false;
@@ -14908,6 +14998,10 @@ void HStreamWindow::setRuntimePreviewOverlays(bool reconciliation) {
 }
 
 void HStreamWindow::setConfirmedPreviewOverlays(bool players, bool play, bool rink) {
+  if (rink_extents_toggle_) {
+    const QSignalBlocker blocker(rink_extents_toggle_);
+    rink_extents_toggle_->setChecked(rink);
+  }
   confirmed_show_player_tracking_ = players;
   confirmed_show_play_tracking_ = play;
   confirmed_show_rink_mask_ = rink;
@@ -14961,6 +15055,10 @@ bool HStreamWindow::adoptPreviewOverlayReconciliationFallback(const QString& rea
 }
 
 void HStreamWindow::restoreConfirmedPreviewOverlays(const QString& reason) {
+  if (rink_extents_toggle_) {
+    const QSignalBlocker blocker(rink_extents_toggle_);
+    rink_extents_toggle_->setChecked(confirmed_show_rink_mask_);
+  }
   const QSignalBlocker player_blocker(show_player_tracking_toggle_);
   const QSignalBlocker play_blocker(show_play_tracking_toggle_);
   const QSignalBlocker rink_blocker(show_rink_mask_toggle_);
@@ -15270,6 +15368,8 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
 }
 
 void HStreamWindow::updateRunControls() {
+  if (rink_extents_toggle_ && show_rink_mask_toggle_)
+    rink_extents_toggle_->setEnabled(show_rink_mask_toggle_->isEnabled());
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = isArchiveFinalizing();
   const bool archive_recovery_was_cleared =
@@ -16547,6 +16647,17 @@ void HStreamWindow::loadSavedControlConfig() {
       stage_control(id, forced > 0 ? 1 : 0);
     };
     inherited_player_size_controls_ = readPlayerSizeControls(config, true, &unavailable_playtracker_config_error_);
+    for (const auto& control : kIceBoundaryControls) {
+      YAML::Node value;
+      const bool native =
+          lookup_yaml_path(config, QString("pipeline.ds-fieldmask.properties.%1").arg(control.property), &value);
+      if (native || lookup_yaml_path(config, QString("ice_boundaries.%1").arg(control.key), &value)) {
+        const double inset = value.as<double>();
+        if (!std::isfinite(inset) || std::trunc(inset) != inset || std::abs(inset) > 4096)
+          throw std::invalid_argument("Rink mask insets must be whole pixels between -4096 and 4096");
+        stage_control(control.id, inset);
+      }
+    }
     for (const auto& [id, value] : readPlayerSizeControls(config, false, &unavailable_playtracker_config_error_))
       stage_control(id, value);
     stage_integer_path("rink.camera.stop_on_dir_change_delay", "Stop_Direction_Change_Delay_Frames");
@@ -16894,6 +17005,8 @@ void HStreamWindow::loadSavedControlConfig() {
     if (controls && controls.IsMap()) {
       for (const auto& entry : controls) {
         const QString id = QString::fromStdString(entry.first.as<std::string>());
+        if (id.startsWith("Rink_"))
+          continue; // ice_boundaries is authoritative, including manual edits.
         if (id == "Use_10_Bit_Grading" && native_high_bit_depth_mode_present)
           continue;
         double value = id == "Oversized_Player_Percent" ? nonnegative_percentage(entry.second)
@@ -17291,6 +17404,8 @@ bool HStreamWindow::applySavedControlConfig(
   for (const auto& [id, default_value] : camera_defaults_) {
     if (id == "Use_10_Bit_Grading")
       continue;
+    if (id.startsWith("Rink_"))
+      continue; // Persist only canonical ice_boundaries, independently of stitching.
     const double value = cameraPresetControlValue(id);
     const auto inherited_size = inherited_player_size_controls_.find(id);
     if (value == default_value &&
@@ -17465,6 +17580,18 @@ bool HStreamWindow::applySavedControlConfig(
   }
 
   auto slider_value = [this](const QString& id) -> int { return cameraPresetControlValue(id); };
+  for (const auto& control : kIceBoundaryControls) {
+    // These are independent private overrides, never calibration inputs or
+    // generated stitching keys. An explicit default can override an inherited
+    // native property, so keep it when an operator changed this control.
+    const auto previous = saved_camera_controls_.find(control.id);
+    const double value = cameraPresetControlValue(control.id);
+    if (value != camera_defaults_.at(control.id) ||
+        (previous != saved_camera_controls_.end() && previous->second != value)) {
+      config["ice_boundaries"][control.key] = static_cast<int>(value);
+      remove_yaml_path(config, QString("pipeline.ds-fieldmask.properties.%1").arg(control.property));
+    }
+  }
   const auto saved_stitch_rotation = saved_camera_controls_.find("Stitch_Rotate_Degrees");
   const auto stitch_rotation_slider = camera_sliders_.find("Stitch_Rotate_Degrees");
   const bool preserve_stitch_rotation_null = previous_stitch_rotation_was_null &&
@@ -19354,6 +19481,10 @@ void HStreamWindow::finishRuntimeControlBatch(quint64 batch_id, bool failed, con
     return;
   const QString suffix = failed && !reason.isEmpty() ? " reason=" + reason : QString();
   for (const auto& [control_id, control_value] : batch->second.controls) {
+    if (control_id.startsWith("Rink_") && rink_extents_status_)
+      rink_extents_status_->setText(
+          failed ? "Live update failed. See the log; Save Preset can keep it for the next run."
+                 : "Applied during playback. Save Preset keeps these offsets for the next run.");
     appendLog(QString("camera control %1=%2 apply=%3%4")
                   .arg(control_id)
                   .arg(control_value)
@@ -19509,6 +19640,22 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, double value) {
   }
   const bool tone_control = id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point" || id == "Exposure_x100";
   if (active_run_is_calibration_ && id != "Stitch_Rotate_Degrees" && !(tone_control && active_run_high_bit_depth_)) {
+    return false;
+  }
+  if (id.startsWith("Rink_")) {
+    if (rink_extents_status_)
+      rink_extents_status_->setText("Applying rink controls…");
+    scheduled_ice_boundary_controls_[id] = value;
+    scheduled_ice_boundary_ready_ = false;
+    const quint64 generation = ++scheduled_ice_boundary_generation_;
+    appendLog(QString("rink control %1=%2 apply=scheduled").arg(id).arg(value));
+    QTimer::singleShot(120, this, [this, generation] {
+      if (generation != scheduled_ice_boundary_generation_ || !pipeline_process_ ||
+          pipeline_process_->state() == QProcess::NotRunning)
+        return;
+      scheduled_ice_boundary_ready_ = true;
+      flushScheduledRuntimeControls();
+    });
     return false;
   }
   if (id == "Stitch_Rotate_Degrees") {
@@ -19869,6 +20016,20 @@ void HStreamWindow::flushScheduledRuntimeControls() {
       playback_seek_recovery_generation_ != 0) {
     return;
   }
+  if (scheduled_ice_boundary_ready_ && !scheduled_ice_boundary_controls_.empty()) {
+    const auto controls = std::move(scheduled_ice_boundary_controls_);
+    scheduled_ice_boundary_controls_.clear();
+    scheduled_ice_boundary_ready_ = false;
+    std::vector<RuntimePropertyCommand> commands;
+    for (const auto& control : kIceBoundaryControls) {
+      if (controls.count(control.id))
+        commands.push_back({"dsfieldmask0", control.property, QString::number(controls.at(control.id))});
+    }
+    if (publishRuntimeControlBatch(controls, commands))
+      return;
+    if (rink_extents_status_)
+      rink_extents_status_->setText("Live update failed. See the log; Save Preset can keep it for the next run.");
+  }
   if (scheduled_rotation_controls_ready_ && !scheduled_rotation_controls_.empty()) {
     const auto stitch_rotation_slider = camera_sliders_.find("Stitch_Rotate_Degrees");
     if (scheduled_rotation_controls_.count("Stitch_Rotate_Degrees") &&
@@ -20034,7 +20195,10 @@ QSpinBox* HStreamWindow::addCameraSpinBox(QVBoxLayout* layout, const QString& id
   name->setObjectName("cameraLabel_" + id);
   auto* spin = new QSpinBox();
   spin->setObjectName("cameraSpin_" + id);
-  spin->setRange(0, std::numeric_limits<int>::max());
+  if (id.startsWith("Rink_"))
+    spin->setRange(-4096, 4096);
+  else
+    spin->setRange(0, std::numeric_limits<int>::max());
   spin->setKeyboardTracking(false);
   spin->setValue(value);
   name->setBuddy(spin);

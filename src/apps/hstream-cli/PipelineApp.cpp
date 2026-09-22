@@ -237,7 +237,7 @@ unsigned preview_overlay_producer_flags(
   const bool tracked_preview = active_channel == "program" || active_channel == "stitched";
   if (!tracked_preview)
     return 0;
-  unsigned flags = selection.players ? kPreviewOverlayPlayers : 0;
+  unsigned flags = (selection.players || (selection.rink && active_channel == "stitched")) ? kPreviewOverlayPlayers : 0;
   flags |= selection.play ? kPreviewOverlayPlay : 0;
   if (active_channel == "program" && selection.any())
     flags |= kPreviewOverlayTransformRequired;

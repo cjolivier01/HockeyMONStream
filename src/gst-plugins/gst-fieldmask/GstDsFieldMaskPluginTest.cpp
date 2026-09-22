@@ -21,6 +21,12 @@ int main(int argc, char** argv) {
               {"require-existing-mask", G_TYPE_BOOLEAN, true},
               {"raise-bbox-center-by-height-ratio", G_TYPE_FLOAT, true},
               {"lower-bbox-bottom-by-height-ratio", G_TYPE_FLOAT, true},
+              {"left-bbox-by-half-width-ratio", G_TYPE_FLOAT, true},
+              {"right-bbox-by-half-width-ratio", G_TYPE_FLOAT, true},
+              {"mask-top-inset", G_TYPE_INT, true},
+              {"mask-bottom-inset", G_TYPE_INT, true},
+              {"mask-left-inset", G_TYPE_INT, true},
+              {"mask-right-inset", G_TYPE_INT, true},
           },
           {
               {"sink", GST_PAD_SINK, GST_PAD_ALWAYS},
@@ -43,12 +49,33 @@ int main(int argc, char** argv) {
               {"require-existing-mask", "true"},
               {"raise-bbox-center-by-height-ratio", "-0.1"},
               {"lower-bbox-bottom-by-height-ratio", "0.1"},
+              {"left-bbox-by-half-width-ratio", "0.4"},
+              {"right-bbox-by-half-width-ratio", "-0.3"},
+              {"mask-top-inset", "25"},
+              {"mask-bottom-inset", "-35"},
+              {"mask-left-inset", "40"},
+              {"mask-right-inset", "-20"},
           })) {
     gst_object_unref(element);
     return 1;
   }
 
   guint unique_id = 0;
+  for (const char* property :
+       {"raise-bbox-center-by-height-ratio",
+        "lower-bbox-bottom-by-height-ratio",
+        "left-bbox-by-half-width-ratio",
+        "right-bbox-by-half-width-ratio",
+        "mask-top-inset",
+        "mask-bottom-inset",
+        "mask-left-inset",
+        "mask-right-inset"}) {
+    const auto* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property);
+    if (!spec || !(spec->flags & GST_PARAM_MUTABLE_PLAYING)) {
+      std::cerr << property << " must be writable while playing\n";
+      return 1;
+    }
+  }
   gfloat raise_center_ratio = 0.0F;
   gfloat lower_bottom_ratio = 0.0F;
   gchar* detection_mask = nullptr;

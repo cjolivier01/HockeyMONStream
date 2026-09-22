@@ -80,6 +80,9 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static void reloadControls(HStreamWindow* window) {
+    window->loadSavedControlConfig();
+  }
   static void preparedInt8(HStreamWindow* window, const QString& engine) {
     window->prepared_int8_engine_ = engine;
     window->prepared_int8_manifest_ = engine + ".json";
@@ -3558,7 +3561,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const QString original_projection = projection->currentData().toString();
   window->resize(1440, 900);
   preview_tabs->setCurrentIndex(1);
-  stitched_control_tabs->setCurrentIndex(2);
+  stitched_control_tabs->setCurrentIndex(3);
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   if (!expect(
@@ -3768,8 +3771,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitched_controls->isAncestorOf(control_points) && stitched_controls->isAncestorOf(stitch_frame_time) &&
               stitched_controls->isAncestorOf(stitch_max_output_width) &&
               stitched_controls->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 5 &&
-              stitched_control_tabs->count() == 3 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
-              stitched_control_tabs->tabText(2) == "Algorithms" &&
+              stitched_control_tabs->count() == 4 && stitched_control_tabs->tabText(1) == "Rink extents" &&
+              stitched_control_tabs->tabText(2) == "Color & Precision" &&
+              stitched_control_tabs->tabText(3) == "Algorithms" &&
               program_controls_splitter->orientation() == Qt::Horizontal &&
               stitched_controls_splitter->orientation() == Qt::Horizontal &&
               control_point_matcher_label->text() == "Control-point matcher" &&
@@ -3901,7 +3905,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   preview_tabs->setCurrentIndex(1);
-  stitched_control_tabs->setCurrentIndex(2);
+  stitched_control_tabs->setCurrentIndex(3);
   QApplication::processEvents();
   if (!capture_interaction_artifact(window, "stitching-algorithms-controls.png"))
     return false;
@@ -4121,7 +4125,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   QApplication::processEvents();
 
   preview_tabs->setCurrentIndex(1);
-  stitched_control_tabs->setCurrentIndex(2);
+  stitched_control_tabs->setCurrentIndex(3);
   QApplication::processEvents();
   window->activateWindow();
   stitch_frame_time->setFocus(Qt::OtherFocusReason);
@@ -10242,7 +10246,7 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() == 8, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 9, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -10341,6 +10345,11 @@ bool test_camera_controls(HStreamWindow* window) {
       "projectionAutoCanvasCheck",
       "projectionAutoCropCheck",
       "cameraSlider_Stitch_Rotate_Degrees",
+      "cameraSpin_Rink_Top_Inset",
+      "cameraSpin_Rink_Bottom_Inset",
+      "cameraSpin_Rink_Left_Inset",
+      "cameraSpin_Rink_Right_Inset",
+      "showRinkExtentsCheck",
       "playbackSeekSlider",
       "playbackSeekBack10Button",
       "playbackSeekForward10Button",
@@ -12654,6 +12663,125 @@ bool test_camera_controls(HStreamWindow* window) {
              "Preset GC should never delete the aged playtracker sidecar referenced by the committed config") &&
       expect(!lookup_yaml_path(after_aged_active_save, {"stitching", "stitch_frame_time"}, nullptr),
              "Saving the default stitch-frame time should omit stitching.stitch_frame_time");
+}
+
+bool test_rink_extents(HStreamWindow* window) {
+  auto* top = require_child<QSpinBox>(window, "cameraSpin_Rink_Top_Inset");
+  auto* bottom = require_child<QSpinBox>(window, "cameraSpin_Rink_Bottom_Inset");
+  auto* left = require_child<QSpinBox>(window, "cameraSpin_Rink_Left_Inset");
+  auto* right = require_child<QSpinBox>(window, "cameraSpin_Rink_Right_Inset");
+  auto* show = require_child<QCheckBox>(window, "showRinkExtentsCheck");
+  auto* mask = require_child<QCheckBox>(window, "showRinkMaskCheck");
+  auto* status = require_child<QLabel>(window, "rinkExtentsStatus");
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  if (!top || !bottom || !left || !right || !show || !mask || !status || !start || !stop || !mode)
+    return false;
+  if (!expect(
+          top->value() == 0 && bottom->value() == 0 && left->value() == 0 && right->value() == 0,
+          "Rink controls must load baseline defaults"))
+    return false;
+  if (!HStreamWindowTestAccess::savePreset(window))
+    return false;
+  const fs::path path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  auto config = YAML::LoadFile(path.string());
+  config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "rink-offset-test";
+  config["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+  const std::string calibration = YAML::Dump(config["hstream_ui"]["stitching_calibration"]);
+  std::ofstream(path) << YAML::Dump(config);
+  const fs::path mask_path = path.parent_path() / "rink_mask_0.png";
+  std::ofstream(mask_path) << "unchanged-mask";
+  HStreamWindowTestAccess::reloadControls(window);
+  top->setValue(25);
+  bottom->setValue(-35);
+  left->setValue(40);
+  right->setValue(-20);
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(window).contains("--options=ice_boundaries.mask_top_inset=25"),
+          "Unsaved offsets must reach startup through canonical CLI overrides") ||
+      !HStreamWindowTestAccess::savePreset(window))
+    return false;
+  config = YAML::LoadFile(path.string());
+  if (!expect(
+          config["ice_boundaries"]["mask_top_inset"].as<int>() == 25 &&
+              config["ice_boundaries"]["mask_bottom_inset"].as<int>() == -35 &&
+              config["ice_boundaries"]["mask_left_inset"].as<int>() == 40 &&
+              config["ice_boundaries"]["mask_right_inset"].as<int>() == -20 &&
+              YAML::Dump(config["hstream_ui"]["stitching_calibration"]) == calibration && fs::exists(mask_path),
+          "Saving offsets must create private config without invalidating calibration/mask"))
+    return false;
+  HStreamWindowTestAccess::reloadControls(window);
+  if (!expect(
+          top->value() == 25 && bottom->value() == -35 && left->value() == 40 && right->value() == -20,
+          "Private offsets must reload"))
+    return false;
+  // Simulate a completed calibration cleanup; these independent overrides must survive reload.
+  config.remove("stitching");
+  config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  std::ofstream(path) << YAML::Dump(config);
+  HStreamWindowTestAccess::reloadControls(window);
+  if (!expect(top->value() == 25 && left->value() == 40, "Calibration state changes must preserve rink offsets"))
+    return false;
+  config["pipeline"]["ds-fieldmask"]["properties"]["mask-top-inset"] = 17;
+  std::ofstream(path) << YAML::Dump(config);
+  HStreamWindowTestAccess::reloadControls(window);
+  if (!expect(top->value() == 17, "An explicit native inset must win a same-layer canonical tie"))
+    return false;
+  top->setValue(0);
+  if (!HStreamWindowTestAccess::savePreset(window))
+    return false;
+  config = YAML::LoadFile(path.string());
+  if (!expect(
+          config["ice_boundaries"]["mask_top_inset"].as<int>() == 0 &&
+              !lookup_yaml_path(config, {"pipeline", "ds-fieldmask", "properties", "mask-top-inset"}, nullptr) &&
+              !lookup_yaml_path(config, {"hstream_ui", "camera_controls", "Rink_Top_Inset"}, nullptr),
+          "Saving a reset must replace the native alias with a canonical zero, without a duplicate UI override"))
+    return false;
+  HStreamWindowTestAccess::reloadControls(window);
+  if (!expect(top->value() == 0, "A saved zero must survive reload"))
+    return false;
+  top->setValue(25);
+  mode->setCurrentIndex(mode->findData("program"));
+  show->setChecked(true);
+  if (!expect(mask->isChecked(), "Rink pane toggle must control the existing GPU overlay"))
+    return false;
+  if (const QByteArray artifact = qgetenv("HSTREAM_UI_RINK_CONTROLS_IMAGE"); !artifact.isEmpty()) {
+    window->show();
+    require_child<QTabWidget>(window, "previewTabs")->setCurrentIndex(1);
+    require_child<QTabWidget>(window, "stitchedControlTabs")->setCurrentIndex(1);
+    QTest::qWait(100);
+    if (!window->grab().save(QString::fromLocal8Bit(artifact)))
+      return expect(false, "Could not save rink-control layout evidence");
+  }
+  activate(start);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i)
+    QTest::qWait(10);
+  if (!expect(window->pipelineStateText() == "PLAYING", "Fake runner must start for rink live-control check"))
+    return false;
+  top->setValue(30);
+  for (int i = 0; i < 200 && !status->text().startsWith("Applied"); ++i)
+    QTest::qWait(10);
+  const bool live = expect(
+      status->text().startsWith("Applied") &&
+          window->logText().contains("runtime property dsfieldmask0 mask-top-inset=30"),
+      "Live edits must wait for the runner acknowledgement");
+  auto* process = window->findChild<QProcess*>();
+  if (process) {
+    process->write("@test-reject-runtime-control\n");
+    process->waitForBytesWritten(1000);
+    QTest::qWait(30);
+  }
+  bottom->setValue(-25);
+  for (int i = 0; i < 200 && !status->text().startsWith("Live update failed"); ++i)
+    QTest::qWait(10);
+  const bool rejected =
+      expect(status->text().startsWith("Live update failed"), "Rejected edits must not report success");
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i)
+    QTest::qWait(10);
+  return live && rejected;
 }
 
 bool test_detector_precision() {
@@ -15574,6 +15702,10 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RINK_EXTENTS_ONLY")) {
+    HStreamWindow window;
+    return test_game_setup(&window, source_root.path()) && test_rink_extents(&window) ? 0 : 1;
+  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
     return test_detector_precision() ? 0 : 1;
   if (!test_detector_precision())
@@ -15710,5 +15842,12 @@ int main(int argc, char** argv) {
     std::cerr << "test_window_close_stops_pipeline failed\n";
     return 1;
   }
+  QTemporaryDir rink_games;
+  if (!rink_games.isValid())
+    return 1;
+  qputenv("HM_GAME_DIR", rink_games.path().toLocal8Bit());
+  HStreamWindow rink_window;
+  if (!test_game_setup(&rink_window, source_root.path()) || !test_rink_extents(&rink_window))
+    return 1;
   return 0;
 }

@@ -273,6 +273,48 @@ int main() {
       std::cerr << "Analysis and Program must preserve native rink-mask adjustments: " << adjusted << '\n';
       return 22;
     }
+    // Reuse the loaded context and change filtering without replacing any
+    // calibration artifact or reinitializing the element.
+    DsFieldMaskSetOffsets(adjusted_ctx.get(), {0.0F, -0.25F, 0.2F, 0.2F});
+    auto* live_batch = nvds_create_batch_meta(1);
+    auto* live_frame = nvds_acquire_frame_meta_from_pool(live_batch);
+    nvds_add_frame_meta_to_batch(live_batch, live_frame);
+    live_frame->source_frame_width = live_frame->pipeline_width = 64;
+    live_frame->source_frame_height = live_frame->pipeline_height = 64;
+    live_frame->bInferDone = TRUE;
+    hm::stitching::add_stitched_output_generation_meta(
+        live_frame, initial_output_generation, {}, {}, *hugin_generation);
+    auto* object = nvds_acquire_obj_meta_from_pool(live_batch);
+    object->detector_bbox_info.org_bbox_coords = {28, 0, 8, 18};
+    nvds_add_obj_meta_to_frame(live_frame, object, nullptr);
+    const auto live = DsFieldMaskProcessFrame(nullptr, 0, live_frame, adjusted_ctx.get(), false);
+    const bool retained = live.ok() && live_frame->num_obj_meta == 1;
+    nvds_destroy_batch_meta(live_batch);
+    if (!retained) {
+      std::cerr << "Live offsets must affect the next frame using the existing mask: " << live << '\n';
+      return 23;
+    }
+    for (int top_inset : {10, -10, 0}) {
+      DsFieldMaskSetInsets(adjusted_ctx.get(), {top_inset, 0, 0, 0});
+      auto* inset_batch = nvds_create_batch_meta(1);
+      auto* inset_frame = nvds_acquire_frame_meta_from_pool(inset_batch);
+      nvds_add_frame_meta_to_batch(inset_batch, inset_frame);
+      inset_frame->source_frame_width = inset_frame->pipeline_width = 64;
+      inset_frame->source_frame_height = inset_frame->pipeline_height = 64;
+      inset_frame->bInferDone = TRUE;
+      hm::stitching::add_stitched_output_generation_meta(
+          inset_frame, initial_output_generation, {}, {}, *hugin_generation);
+      auto* player = nvds_acquire_obj_meta_from_pool(inset_batch);
+      player->detector_bbox_info.org_bbox_coords = {28, 0, 8, 18};
+      nvds_add_obj_meta_to_frame(inset_frame, player, nullptr);
+      const auto inset_status = DsFieldMaskProcessFrame(nullptr, 0, inset_frame, adjusted_ctx.get(), false);
+      const bool matched = inset_status.ok() && inset_frame->num_obj_meta == (top_inset > 0 ? 0U : 1U);
+      nvds_destroy_batch_meta(inset_batch);
+      if (!matched) {
+        std::cerr << "Live mask inset must shrink/expand without reloading calibration: " << inset_status << '\n';
+        return 24;
+      }
+    }
   }
 
   NvDsFrameMeta* rotated_frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);

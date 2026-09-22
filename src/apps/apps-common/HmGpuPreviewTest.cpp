@@ -1,4 +1,5 @@
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -781,6 +782,8 @@ bool make_rink_mask_fixture(const fs::path& root, std::string* output_generation
 
 struct GenerationProbeState {
   std::string generation;
+  cv::Mat mask;
+  cv::Mat adjusted_mask;
 };
 
 GstPadProbeReturn attach_stitched_generation(GstPad*, GstPadProbeInfo* info, gpointer user_data) noexcept {
@@ -806,6 +809,27 @@ GstPadProbeReturn attach_stitched_generation(GstPad*, GstPadProbeInfo* info, gpo
     frame->source_frame_width = 320;
     frame->source_frame_height = 180;
     nvds_add_frame_meta_to_batch(batch, frame);
+    if (!state->mask.empty()) {
+      hm::fieldmask::FieldMaskPayload::create_and_add<hm::fieldmask::FieldMaskPayload>(
+          frame,
+          cv::Point2f(320, 180),
+          cv::Rect(80, 60, 480, 240),
+          state->mask,
+          state->generation,
+          hm::fieldmask::IceBoundaryOffsets{-0.1F, 0.1F, 0.2F, 0.2F},
+          state->adjusted_mask);
+      for (const auto& rect : {cv::Rect(100, 30, 20, 30), cv::Rect(190, 105, 20, 30)}) {
+        auto* player = nvds_acquire_obj_meta_from_pool(batch);
+        player->object_id = rect.x;
+        player->class_id = 0;
+        player->rect_params.left = rect.x;
+        player->rect_params.top = rect.y;
+        player->rect_params.width = rect.width;
+        player->rect_params.height = rect.height;
+        nvds_add_obj_meta_to_frame(frame, player, nullptr);
+      }
+      hm::preview_overlay::add_overlay_snapshot_meta(frame);
+    }
     if (!hm::stitching::add_stitched_output_generation_meta(frame, state->generation)) {
       nvds_destroy_batch_meta(batch);
       return GST_PAD_PROBE_OK;
@@ -836,7 +860,7 @@ bool wait_for_condition(Predicate predicate, std::chrono::seconds timeout) {
   return predicate();
 }
 
-bool run_rink_mask_reactivation_test(Window window) {
+bool run_rink_mask_reactivation_test(Window window, bool extents = false) {
   TempDirectory fixture("hstream-preview-rink-reactivation");
   std::string output_generation;
   if (!make_rink_mask_fixture(fixture.path(), &output_generation))
@@ -860,6 +884,12 @@ bool run_rink_mask_reactivation_test(Window window) {
   GstElement* sink = pipeline ? gst_bin_get_by_name(GST_BIN(pipeline), "preview") : nullptr;
   GstPad* gate_sink = gate ? gst_element_get_static_pad(gate, "sink") : nullptr;
   GenerationProbeState probe_state{output_generation};
+  if (extents) {
+    probe_state.mask = cv::Mat(360, 640, CV_8UC1, cv::Scalar(0));
+    probe_state.mask(cv::Rect(80, 60, 480, 240)).setTo(255);
+    probe_state.adjusted_mask = hm::fieldmask::inset_rink_mask(probe_state.mask, {30, -15, 20, -10});
+    cv::imwrite((fixture.path() / "rink_mask_0.png").string(), probe_state.mask);
+  }
   const gulong probe = gate_sink
       ? gst_pad_add_probe(gate_sink, GST_PAD_PROBE_TYPE_BUFFER, attach_stitched_generation, &probe_state, nullptr)
       : 0;
@@ -913,6 +943,21 @@ bool run_rink_mask_reactivation_test(Window window) {
     const auto green = rink_rgba[center + 1];
     const auto blue = rink_rgba[center + 2];
     rink_visible = green > 40 && green > red + 20 && green > blue + 20;
+    if (extents) {
+      unsigned magenta = 0, triangles = 0, circles = 0;
+      for (size_t i = 0; i + 3 < rink_rgba.size(); i += 4) {
+        magenta += rink_rgba[i] > 180 && rink_rgba[i + 1] < 60 && rink_rgba[i + 2] > 150;
+        triangles += rink_rgba[i] < 80 && rink_rgba[i + 1] > 60 && rink_rgba[i + 1] < 160 && rink_rgba[i + 2] > 180;
+        circles += rink_rgba[i] > 180 && rink_rgba[i + 1] > 130 && rink_rgba[i + 2] < 50;
+      }
+      rink_visible = magenta > 20 && triangles > 20 && circles > 20;
+      if (const char* artifact = g_getenv("HSTREAM_RINK_OVERLAY_TEST_IMAGE")) {
+        cv::Mat rgba(rink_height, rink_width, CV_8UC4, rink_rgba.data());
+        cv::Mat bgr;
+        cv::cvtColor(rgba, bgr, cv::COLOR_RGBA2BGR);
+        cv::imwrite(artifact, bgr);
+      }
+    }
   }
 
   hm::gpu_preview::set_isolation_active(gate, false, 17);
@@ -922,6 +967,23 @@ bool run_rink_mask_reactivation_test(Window window) {
   const bool reloaded = wait_for_condition(
       [&] { return hm::gpu_preview::renderer_rink_mask_loaded_for_test(sink, output_generation, 640, 360); },
       std::chrono::seconds(10));
+  bool hidden = true;
+  if (extents) {
+    g_object_set(sink, "show-rink-mask", FALSE, nullptr);
+    hidden = wait_for_condition(
+        [&] {
+          std::vector<std::uint8_t> rgba;
+          unsigned width = 0, height = 0;
+          std::string error;
+          if (!hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &error))
+            return false;
+          for (size_t i = 0; i + 3 < rgba.size(); i += 4)
+            if (rgba[i] > 10 || rgba[i + 1] > 10 || rgba[i + 2] > 10)
+              return false;
+          return true;
+        },
+        std::chrono::seconds(10));
+  }
 
   hm::gpu_preview::set_isolation_active(gate, false, 17);
   gst_element_set_state(pipeline, GST_STATE_NULL);
@@ -934,7 +996,8 @@ bool run_rink_mask_reactivation_test(Window window) {
     g_setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", saved_invalidation.c_str(), TRUE);
   else
     g_unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
-  const bool passed = initially_loaded && rink_captured && rink_visible && quiesced && cache_cleared && reloaded;
+  const bool passed =
+      initially_loaded && rink_captured && rink_visible && quiesced && cache_cleared && reloaded && hidden;
   if (!passed) {
     std::cerr << "Rink mask did not reload after same-generation renderer quiesce/reactivation: initial="
               << initially_loaded << " captured=" << rink_captured << " visible=" << rink_visible
@@ -1122,6 +1185,7 @@ int main(int argc, char** argv) {
   Window rink_window = create_window("hstream-rink-mask-reactivation-test");
   XSync(display, False);
   const bool rink_reactivation_passed = run_rink_mask_reactivation_test(rink_window);
+  const bool rink_extents_passed = run_rink_mask_reactivation_test(rink_window, true);
   XDestroyWindow(display, rink_window);
   XSync(display, False);
 
@@ -1129,5 +1193,5 @@ int main(int argc, char** argv) {
   XSync(display, False);
   const bool renderer_passed = run_renderer_test(display, renderer_window);
   XCloseDisplay(display);
-  return rink_reactivation_passed && renderer_passed ? 0 : 1;
+  return rink_reactivation_passed && rink_extents_passed && renderer_passed ? 0 : 1;
 }
