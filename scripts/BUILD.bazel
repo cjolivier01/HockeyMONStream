@@ -67,6 +67,22 @@ py_test(
     main = "capture_stitching_projection_frames_test.py",
 )
 
+py_test(
+    name = "compare_detection_accuracy_test",
+    size = "small",
+    srcs = [
+        "benchmark_model_precision.py",
+        "compare_detection_accuracy.py",
+        "compare_detection_accuracy_test.py",
+    ],
+    data = [
+        "//configs:config_infer_yolov8_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8_hockey_fp16.yaml",
+        "//configs:config_infer_yolov8_hockey_int8.yaml",
+    ],
+    main = "compare_detection_accuracy_test.py",
+)
+
 sh_test(
     name = "deploy_test",
     size = "small",
