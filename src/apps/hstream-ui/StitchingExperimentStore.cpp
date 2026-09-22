@@ -628,6 +628,15 @@ absl::StatusOr<StitchingExperimentCatalog> LoadStitchingExperimentStore(const St
       return lock.status();
     Index index;
     HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
+    for (auto row = index.catalog.experiments.rbegin(); row != index.catalog.experiments.rend(); ++row) {
+      const int count = row->workspace.settings.frame_count;
+      if (!row->saved_selection_fingerprint.empty() && row->saved_selection_fingerprint == row->selection_fingerprint &&
+          !index.catalog.selected_by_count.count(count) && !index.reservations.count(count)) {
+        // Insertion order records when each immutable main snapshot was queued;
+        // later runner state revisions must not make an older snapshot current.
+        index.catalog.retained_by_count.emplace(count, path_key(store, row->workspace.game_directory));
+      }
+    }
     return std::move(index.catalog);
   } catch (const std::exception& error) {
     return invalid_catalog(error);
@@ -699,17 +708,28 @@ absl::Status SaveStitchingExperiment(
         require(
             authoritative_main_fingerprint == experiment.selection_fingerprint,
             "The requested main authority does not match the experiment selection");
-        // A queued solve owns its frozen inputs even if the main calibration
-        // changes before it finishes. Retain that result without making its
-        // superseded selection the count's default again.
+        // A queued solve owns its frozen inputs even if main changes before it
+        // finishes. A different main count leaves this count available, but a
+        // newer same-count default/reservation must never be overwritten.
         publish_selection = false;
         const auto main = read_config(store.game_directory / "config.yaml");
         if (main.ok()) {
           const auto plan = selected_plan(*main);
-          publish_selection = plan.ok() && plan->fingerprint == authoritative_main_fingerprint &&
-              plan->selected.size() == static_cast<size_t>(experiment.workspace.settings.frame_count);
+          const int count = experiment.workspace.settings.frame_count;
+          const auto latest = std::find_if(
+              index.catalog.experiments.rbegin(), index.catalog.experiments.rend(), [&](const auto& record) {
+                return record.workspace.settings.frame_count == count && !record.saved_selection_fingerprint.empty() &&
+                    record.saved_selection_fingerprint == record.selection_fingerprint;
+              });
+          const bool latest_snapshot = found == index.catalog.experiments.end() ||
+              latest == index.catalog.experiments.rend() ||
+              latest->selection_fingerprint == experiment.selection_fingerprint;
+          main_authority = plan.ok() && plan->fingerprint == authoritative_main_fingerprint &&
+              plan->selected.size() == static_cast<size_t>(count);
+          publish_selection = main_authority ||
+              (plan.ok() && plan->selected.size() != static_cast<size_t>(count) && latest_snapshot &&
+               !index.catalog.selected_by_count.count(count) && !index.reservations.count(count));
         }
-        main_authority = publish_selection;
       }
     }
     if (publish_selection) {

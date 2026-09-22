@@ -219,8 +219,85 @@ bool deletion_recovery(const fs::path& root) {
   return ok;
 }
 
+bool retained_main_counts(const fs::path& root) {
+  bool ok = true;
+  for (const std::string scenario : {"single", "newer", "reserved"}) {
+    auto store = open_store(root / scenario);
+    auto plan = make_plan(store.game_directory, 2);
+    auto first = make_record(store, "session-a", 1);
+    first.saved_selection_fingerprint = plan.fingerprint;
+    install_plan(first, plan);
+    ok &= expect(SaveStitchingExperiment(store, first).ok(), "queue a frozen main-derived row before any solve");
+    YAML::Node main;
+    main["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(make_plan(store.game_directory, 3));
+    write_file(store.game_directory / "config.yaml", YAML::Dump(main));
+    const auto first_key = first.workspace.game_directory.lexically_relative(store.directory).generic_string();
+    auto restored = LoadStitchingExperimentStore(store);
+    ok &= expect(
+        restored.ok() && restored->selected_by_count.empty() && restored->retained_by_count.at(2) == first_key,
+        "unstarted frozen frames remain discoverable after main switches counts");
+    if (scenario == "newer") {
+      auto replacement = plan;
+      replacement.selected[1].pair.cameras[0].source_pts_ns += 123;
+      replacement.fingerprint = *PlayerFrameSelectionFingerprint(replacement);
+      auto second = make_record(store, "session-b", 1);
+      second.saved_selection_fingerprint = replacement.fingerprint;
+      install_plan(second, replacement);
+      ok &=
+          expect(SaveStitchingExperiment(store, second).ok(), "queue a later main-derived snapshot of the same count");
+      const auto second_key = second.workspace.game_directory.lexically_relative(store.directory).generic_string();
+      first.state = "failed";
+      ok &= expect(
+          SaveStitchingExperiment(store, first, true, plan.fingerprint).ok(),
+          "the older snapshot can finish after a newer snapshot was queued");
+      restored = LoadStitchingExperimentStore(store);
+      ok &= expect(
+          restored.ok() && restored->selected_by_count.empty() && restored->retained_by_count.at(2) == second_key,
+          "late revisions cannot revive the older snapshot or replace the newest queued fallback");
+      second.state = "failed";
+      ok &= expect(
+          SaveStitchingExperiment(store, second, true, replacement.fingerprint).ok(),
+          "the latest retained snapshot fills its count's otherwise empty default");
+      ok &=
+          expect(SaveStitchingExperiment(store, first, true, plan.fingerprint).ok(), "older history remains writable");
+      restored = LoadStitchingExperimentStore(store);
+      ok &= expect(
+          restored.ok() && restored->selected_by_count.at(2) == second_key && restored->retained_by_count.empty(),
+          "an existing newer default cannot be overwritten by stale-main completion");
+    } else if (scenario == "reserved") {
+      auto owner = make_record(store, "reservation", 1);
+      const auto reservation =
+          ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, owner.workspace, "newer-selection");
+      ok &= expect(reservation.ok() && !reservation->has_value(), "reserve an unselected count in another dialog");
+      first.state = "failed";
+      ok &= expect(
+          SaveStitchingExperiment(store, first, true, plan.fingerprint).ok(),
+          "stale completion remains durable beside a newer count reservation");
+      restored = LoadStitchingExperimentStore(store);
+      ok &= expect(
+          restored.ok() && restored->selected_by_count.empty() && restored->retained_by_count.empty(),
+          "reserved counts cannot lend stale fallback frames or receive an old default");
+      ok &= expect(
+          !ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, first.workspace, "old-selection")
+               .ok(),
+          "stale completion preserves the existing reservation");
+    } else {
+      first.state = "failed";
+      ok &= expect(
+          SaveStitchingExperiment(store, first, true, plan.fingerprint).ok(),
+          "completion preserves a retained count when main now selects a different count");
+      restored = LoadStitchingExperimentStore(store);
+      ok &= expect(
+          restored.ok() && restored->selected_by_count.at(2) == first_key,
+          "completion publishes the retained count without requiring it to be current main");
+    }
+  }
+  return ok;
+}
+
 bool run(const fs::path& root) {
   bool ok = true;
+  ok &= retained_main_counts(root / "retained-main-counts");
   {
     auto interrupted = open_store(root / "partial-preparation");
     auto baseline = make_record(interrupted, "session-a", 1);

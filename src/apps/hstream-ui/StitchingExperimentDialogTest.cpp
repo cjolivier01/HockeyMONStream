@@ -624,6 +624,106 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     reopened.reject();
     require(wait_until([&] { return !reopened.isVisible(); }, 1000), "Main-only reopened dialog did not close");
   }
+  // A main-derived queued row must retain its count even if main switches to a
+  // different count before any solve publishes selected_by_count for this one.
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  PlayerFrameSelectionPlan three = plan;
+  three.settings.frame_count = 3;
+  auto third = three.selected.back();
+  third.pair.timeline_pts_ns = 2 * kPlayerFrameSecond;
+  for (auto& camera : third.pair.cameras)
+    camera.source_pts_ns = 2 * kPlayerFrameSecond;
+  three.selected.push_back(third);
+  const auto three_fingerprint = PlayerFrameSelectionFingerprint(three);
+  require(three_fingerprint.ok(), "Cannot fingerprint alternate main frame count");
+  three.fingerprint = *three_fingerprint;
+  auto three_inputs = inputs;
+  three_inputs.push_back(inputs.back());
+  require(
+      PublishPlayerFrameInputs(game.toStdString(), three, three_inputs).ok(), "Cannot publish alternate main count");
+  {
+    StitchingExperimentDialog observer(
+        game,
+        root + "/record-runner.sh",
+        root,
+        root + "/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        200,
+        2,
+        "00:00:00");
+    observer.show();
+    StitchingExperimentDialog queued(
+        game,
+        root + "/record-runner.sh",
+        root,
+        root + "/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        100,
+        2,
+        "00:00:00");
+    queued.show();
+    add_options(queued);
+    config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(three);
+    config["stitching"]["calibration_frame_inputs_fingerprint"] = three.fingerprint;
+    config["hstream_ui"]["stitching_calibration"]["frame_count"] = 3;
+    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+    widget<QLineEdit>(queued, "stitchExperimentControlPoints")->setText("150");
+    add_options(queued);
+    auto* table = widget<QTableWidget>(queued, "stitchExperimentCandidates");
+    require(
+        table->rowCount() == 3 && table->item(2, 0)->text().startsWith("Players"),
+        "In-memory Add must reuse the queued main-derived count after main switches counts");
+    add_options(observer);
+    require(
+        widget<QTableWidget>(observer, "stitchExperimentCandidates")->rowCount() == 1 &&
+            widget<QLabel>(observer, "stitchExperimentStatus")
+                ->text()
+                .contains("Another dialog saved this frame count"),
+        "A newly discovered count owner requires reload instead of falling through to an ordinary solve");
+    observer.reject();
+    answer_close_guard(queued, "stitchExperimentCloseDiscard", false);
+    require(wait_until([&] { return !queued.isVisible(); }, 1000), "Retained-count queue did not close");
+  }
+  {
+    auto environment = QProcessEnvironment::systemEnvironment();
+    const QString arguments = root + "/retained-count-runner-arguments.txt";
+    environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
+    StitchingExperimentDialog reopened(
+        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 200, 2, "00:00:00");
+    reopened.show();
+    auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
+    add_options(reopened);
+    require(
+        table->rowCount() == 4 && table->item(3, 0)->text().startsWith("Players"),
+        "Reopening an unstarted frozen count must add only a solve, without a new baseline");
+    widget<QPushButton>(reopened, "startStitchExperimentBatchButton")->click();
+    require(
+        wait_until(
+            [&] { return widget<QLabel>(reopened, "stitchExperimentStatus")->text().startsWith("Batch complete."); },
+            10000),
+        "Retained count solve queue did not finish");
+    require(
+        table->item(3, 5)->text().contains("Player overlap mapping canvas mismatch") &&
+            !read(arguments).contains("--force-reconfigure") &&
+            !read(arguments).contains("--stitching-player-scan-output"),
+        "Retained count variants must run directly using their frozen inputs");
+    const auto opened = OpenStitchingExperimentStore(game.toStdString());
+    require(opened.ok(), "Cannot open retained-count results");
+    const auto catalog = LoadStitchingExperimentStore(*opened);
+    require(catalog.ok() && catalog->experiments.size() == 3, "Every retained-count solve must remain durable");
+    for (const auto& row : catalog->experiments) {
+      const auto retained = LoadPlayerFrameInputs(row.workspace.game_directory, plan);
+      require(
+          row.selection_fingerprint == plan.fingerprint && retained.ok() && retained->has_value(),
+          "Every retained-count solve must preserve the original exact pairs and full PNG bundle");
+    }
+    require(
+        catalog->selected_by_count.count(2), "Completed retained count must remain indexed beside main's other count");
+    discard_experiments(reopened);
+    reopened.reject();
+  }
   write(game + "/config.yaml", original);
 }
 

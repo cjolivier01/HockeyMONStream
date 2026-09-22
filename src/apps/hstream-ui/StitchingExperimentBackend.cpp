@@ -8,11 +8,13 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <unistd.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -296,12 +298,61 @@ absl::Status write_config(const fs::path& path, const YAML::Node& config) {
     return absl::InternalError("Unable to inspect experiment config destination: " + error.message());
   if (!error && destination.type() != fs::file_type::not_found)
     return absl::AlreadyExistsError("Experiment config destination already exists: " + path.string());
-  std::ofstream output(path, std::ios::out | std::ios::trunc);
-  if (!output)
-    return absl::InternalError("Unable to create experiment config: " + path.string());
-  output << YAML::Dump(config) << '\n';
-  output.flush();
-  return output ? absl::OkStatus() : absl::InternalError("Unable to write experiment config: " + path.string());
+  // Initial workspace publication must remain exclusive. The shared owned-file
+  // writer uses O_EXCL/O_NOFOLLOW, writes every byte, and fsyncs the same inode.
+  // Its parent entry is made durable by the workspace directory barrier below.
+  return hm::stitching::write_owned_directory_marker(
+      path.parent_path(), path.filename().string(), YAML::Dump(config) + '\n');
+}
+
+absl::Status sync_workspace_directory(const hm::stitching::PinnedDirectory& directory) {
+  if (::fsync(directory.descriptor()) != 0)
+    return absl::InternalError(
+        "Unable to sync experiment workspace directory: " + std::system_category().message(errno));
+  return absl::OkStatus();
+}
+
+absl::Status sync_workspace_directory_tree(const hm::stitching::PinnedDirectory& directory) {
+  std::error_code error;
+  for (fs::directory_iterator entry(directory.path(), error), end; entry != end && !error; entry.increment(error)) {
+    const auto type = entry->symlink_status(error).type();
+    if (error)
+      break;
+    // Media and calibration sidecars are links. Sync their directory entries,
+    // never open, read, or sync the original recording/sidecar targets.
+    if (type != fs::file_type::directory)
+      continue;
+    auto child = directory.OpenChild(entry->path().filename().string(), "experiment workspace subdirectory");
+    if (!child.ok())
+      return child.status();
+    if (!child->has_value())
+      return absl::AbortedError("Experiment workspace directory changed before durable publication");
+    HM_RETURN_IF_ERROR(sync_workspace_directory_tree(**child));
+  }
+  if (error)
+    return absl::InternalError("Unable to inspect experiment workspace directories: " + error.message());
+  return sync_workspace_directory(directory);
+}
+
+absl::StatusOr<std::vector<hm::stitching::PinnedDirectory>> pin_workspace_ancestors(const fs::path& experiment_root) {
+  std::error_code error;
+  const fs::path root = fs::canonical(experiment_root, error);
+  if (error)
+    return absl::InternalError("Unable to resolve experiment workspace root: " + error.message());
+  auto filesystem_root = hm::stitching::PinnedDirectory::Open(root.root_path(), "experiment filesystem root");
+  if (!filesystem_root.ok())
+    return filesystem_root.status();
+  std::vector<hm::stitching::PinnedDirectory> ancestors;
+  ancestors.push_back(std::move(*filesystem_root));
+  for (const auto& component : root.relative_path()) {
+    auto child = ancestors.back().OpenChild(component.string(), "experiment workspace ancestor");
+    if (!child.ok())
+      return child.status();
+    if (!child->has_value())
+      return absl::AbortedError("Experiment workspace ancestor disappeared before publication");
+    ancestors.push_back(std::move(**child));
+  }
+  return ancestors;
 }
 
 void copy_node(YAML::Node destination, const YAML::Node& source, const char* key) {
@@ -659,41 +710,57 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
   fs::create_directories(experiment_root, error);
   if (error)
     return absl::InternalError("Unable to create stitching experiment root: " + error.message());
+  std::vector<hm::stitching::PinnedDirectory> ancestors;
+  HM_ASSIGN_OR_RETURN(ancestors, pin_workspace_ancestors(experiment_root));
+  const auto& session = ancestors.back();
 
   const std::string game_id = source_game_directory.filename().string() + "-stitch-exp-" + std::to_string(sequence);
   const fs::path candidate = experiment_root / game_id;
-  if (fs::exists(candidate, error))
+  const fs::path pinned_candidate_path = session.path() / game_id;
+  const bool created = fs::create_directory(pinned_candidate_path, error);
+  if (!created && !error)
     return absl::AlreadyExistsError("Duplicate stitching experiment workspace: " + candidate.string());
-  fs::create_directory(candidate, error);
   if (error)
     return absl::InternalError("Unable to create stitching experiment workspace: " + error.message());
+  auto pinned_candidate = session.OpenChild(game_id, "new experiment workspace");
+  if (!pinned_candidate.ok())
+    return pinned_candidate.status();
+  if (!pinned_candidate->has_value())
+    return absl::AbortedError("New experiment workspace disappeared before publication");
+  const fs::path workspace_path = (**pinned_candidate).path();
   struct CleanupCandidate {
-    fs::path path;
+    const hm::stitching::PinnedDirectory& parent;
+    const hm::stitching::PinnedDirectory& directory;
+    std::string name;
     bool retain{false};
     ~CleanupCandidate() {
-      if (!retain) {
-        std::error_code ignored;
-        fs::remove_all(path, ignored);
-      }
+      if (!retain)
+        (void)hm::stitching::remove_pinned_directory(parent, name, directory);
     }
-  } cleanup{candidate};
+  } cleanup{session, **pinned_candidate, game_id};
 
   try {
     YAML::Node config = YAML::LoadFile(source_config.string());
     if (!config || !config.IsMap())
       return absl::InvalidArgumentError("The selected game config must contain a YAML map");
     std::set<fs::path> linked;
-    HM_RETURN_IF_ERROR(link_configured_videos(config, source_game_directory, candidate, &linked));
-    HM_RETURN_IF_ERROR(link_auto_videos(source_game_directory, candidate, &linked));
+    HM_RETURN_IF_ERROR(link_configured_videos(config, source_game_directory, workspace_path, &linked));
+    HM_RETURN_IF_ERROR(link_auto_videos(source_game_directory, workspace_path, &linked));
     if (linked.size() < 2)
       return absl::FailedPreconditionError("Stitching experiments require at least two camera videos");
-    HM_RETURN_IF_ERROR(link_calibration_assets(source_game_directory, candidate, linked));
+    HM_RETURN_IF_ERROR(link_calibration_assets(source_game_directory, workspace_path, linked));
     promote_generated_video_roles(config);
     const std::string invalidation_id = "stitch-experiment-" + std::to_string(::getpid()) + "-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(sequence);
     HM_RETURN_IF_ERROR(configure_candidate(config, settings, invalidation_id));
-    HM_RETURN_IF_ERROR(copy_selected_input_bundle(source_game_directory, candidate, config));
-    HM_RETURN_IF_ERROR(write_config(candidate / "config.yaml", config));
+    HM_RETURN_IF_ERROR(copy_selected_input_bundle(source_game_directory, workspace_path, config));
+    HM_RETURN_IF_ERROR(write_config(workspace_path / "config.yaml", config));
+    HM_RETURN_IF_ERROR(sync_workspace_directory_tree(**pinned_candidate));
+    // Candidate and session names must survive with their config and media-link
+    // hierarchy before a later catalog Save may advertise the queued row. Qt
+    // can create the session itself, so sync its existing parent links too.
+    for (auto ancestor = ancestors.rbegin(); ancestor != ancestors.rend(); ++ancestor)
+      HM_RETURN_IF_ERROR(sync_workspace_directory(*ancestor));
     cleanup.retain = true;
     return StitchingExperimentWorkspace{
         .root = experiment_root,

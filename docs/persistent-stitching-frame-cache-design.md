@@ -31,7 +31,8 @@ also copied on promotion.
 - Retained rows provide frozen inputs without suppressing an intentional rerun of the same matrix after reopening.
   Repeated Add requests in one dialog are deduplicated while the source game configuration remains unchanged.
 - Queued solves retain their frozen inputs when the main selection changes before completion. Their results remain
-  durable, but a superseded main selection cannot replace the current count's default when the old solve finishes.
+  durable and reusable for their count, including before the solve starts. A superseded main selection cannot
+  replace a newer same-count default, reservation, or queued main snapshot when the old solve finishes.
 - An unsuccessful solve does not discard a successfully frozen frame set. An unconfirmed running process group
   cannot lend its workspace to another solve.
 
@@ -105,6 +106,8 @@ The game directory determines ownership; working-output overrides do not relocat
 records the version and full canonical game directory, which must match on load. Private directories and owned
 regular manifests must not resolve through arbitrary symlinks. The stable lock sits outside the removable store,
 so concurrent open/discard operations cannot accidentally acquire different lock inodes.
+Queue preparation fsyncs the exclusive configuration file, owned media-link directory hierarchy, and session
+ancestor links before catalog publication. Directory traversal never follows or syncs source-media targets.
 `index.yaml` is a bounded, atomically replaced catalog, protected by the stable game-level experiment lock. It references safe relative
 session/candidate identifiers, workspace invalidation IDs, and selected count records containing the plan
 fingerprint and numeric decode anchor. Candidate configuration remains the owner of actual solve settings and
@@ -145,6 +148,8 @@ Resolve inputs in this order:
    absence are preserved. A changed main plan supersedes a historical default for that count.
 2. Otherwise, the per-count cache supplies its previously frozen plan and complete bundle. Validate canonical
    game ownership, physical chapter identities/order, synchronization and numeric reference before reuse.
+   If no default or reservation exists, the most recently queued immutable main snapshot supplies the retained
+   set for that count. Runner completion order does not reorder these snapshots.
 3. Otherwise, a newly requested player selection creates one baseline and one selection owner. An unchecked
    fresh count creates an ordinary candidate. The first successful plan becomes the cache entry for that count.
 
@@ -216,3 +221,9 @@ successful transactional promotion. Cache retention is independent of whether th
 - Promote an ordinary baseline, reopen it, and inspect that baseline's actual complete captured set.
 - Exercise game-local ownership regardless of output-root overrides, distinct same-named games, explicit and
   interrupted cache removal, main-plan precedence and numeric reference conflicts. Preserve existing x86/Jetson builds, real GPU promotion-to-Program reuse, and review cycles.
+
+The real GPU persistence workflow passes on a disposable game on NFS: baseline generation, one search with
+20 observations and two selected pairs, two solves sharing those pairs, per-row inspection, paced previews,
+promotion and automatic close, and five seconds of Main Program without recalibration. Reopening inspects Main
+without a runner and completes another same-count control-point variant from retained PNGs. The test checks
+every full-resolution input digest, rejects any new scan or capture, and verifies unchanged Main provenance.

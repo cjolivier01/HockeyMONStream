@@ -50,6 +50,10 @@ struct StitchingExperimentCatalog {
   std::vector<StoredStitchingExperiment> experiments;
   // Count -> sessions/<session-id>/<candidate-game-id>, never an absolute path.
   std::map<int, std::string> selected_by_count;
+  // Read-only fallback for counts without a selected owner or reservation:
+  // the most recently inserted main-derived frozen row, including queued rows.
+  // Process ownership and input integrity still require validation before reuse.
+  std::map<int, std::string> retained_by_count;
 };
 
 // Call these outside artifact/config transactions. Only the catalog lock is
@@ -58,8 +62,9 @@ struct StitchingExperimentCatalog {
 absl::StatusOr<StitchingExperimentStore> OpenStitchingExperimentStore(const std::filesystem::path& game_directory);
 absl::StatusOr<StitchingExperimentCatalog> LoadStitchingExperimentStore(const StitchingExperimentStore& store);
 // A main-derived row remains durable if main changes before completion; a
-// superseded authoritative_main_fingerprint saves history without publishing it
-// as the count's current selection. The fingerprint must match the row itself.
+// superseded authoritative_main_fingerprint only fills an unclaimed count when
+// main moved to another count. Existing defaults/reservations remain unchanged.
+// The supplied fingerprint must match the row itself.
 absl::Status SaveStitchingExperiment(
     const StitchingExperimentStore& store,
     StoredStitchingExperiment& experiment,

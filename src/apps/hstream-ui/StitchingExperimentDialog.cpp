@@ -729,6 +729,7 @@ struct StitchingExperimentDialog::Impl {
           candidate.queued = false;
           result->status = saved;
         } else {
+          candidate.has_selected_frames = !record.selection_fingerprint.empty();
           candidate.stored = std::move(record);
           workspace_keys[candidate.sequence] = workspace_key;
         }
@@ -920,8 +921,11 @@ struct StitchingExperimentDialog::Impl {
       if (!candidate.queued && candidate.selection_owner_sequence == candidate.sequence)
         candidate.selection_owner_sequence = 0;
       const auto selected = catalog->selected_by_count.find(candidate.settings.frame_count);
-      if (selected != catalog->selected_by_count.end() &&
-          record.workspace.game_directory.lexically_relative(store->directory).generic_string() == selected->second)
+      const auto retained = catalog->retained_by_count.find(candidate.settings.frame_count);
+      const std::string owner_key = selected != catalog->selected_by_count.end() ? selected->second
+          : retained != catalog->retained_by_count.end()                         ? retained->second
+                                                                                 : std::string();
+      if (record.workspace.game_directory.lexically_relative(store->directory).generic_string() == owner_key)
         candidate.selection_owner_sequence = candidate.sequence;
       append_candidate(std::move(candidate));
     }
@@ -1585,6 +1589,11 @@ struct StitchingExperimentDialog::Impl {
       return;
     }
     const QByteArray config_revision = QCryptographicHash::hash(config_bytes, QCryptographicHash::Sha256);
+    const auto catalog = LoadStitchingExperimentStore(*store);
+    if (!catalog.ok()) {
+      show_status(QString::fromStdString(catalog.status().ToString()), true);
+      return;
+    }
     const size_t rotation_count = shared_rotation->isChecked() ? 1 : rink_rotations->size();
     std::vector<Candidate> additions;
     const auto append_addition = [&](Candidate candidate) {
@@ -1617,9 +1626,26 @@ struct StitchingExperimentDialog::Impl {
               show_status(QString::fromStdString(saved.status().ToString()), true);
               return;
             }
-            const Candidate* same_count = find([&](const Candidate& item) {
-              return item.settings.frame_count == frame_count && !item.main_calibration &&
-                  (item.queued || item.selection_owner_sequence == item.sequence);
+            const auto cached = catalog->selected_by_count.find(frame_count);
+            const auto retained = catalog->retained_by_count.find(frame_count);
+            const std::string owner_key = cached != catalog->selected_by_count.end() ? cached->second
+                : retained != catalog->retained_by_count.end()                       ? retained->second
+                                                                                     : std::string();
+            const Candidate* owner = find([&](const Candidate& item) {
+              if (item.main_calibration || item.settings.frame_count != frame_count)
+                return false;
+              if (!owner_key.empty())
+                return item.workspace &&
+                    item.workspace->game_directory.lexically_relative(store->directory).generic_string() == owner_key;
+              return item.selection_owner_sequence == item.sequence && item.saved_selection_fingerprint.empty() &&
+                  !item.has_selected_frames && (item.queued || item.selection_reuse_blocked);
+            });
+            if (saved->empty() && !owner_key.empty() && !owner) {
+              show_status("Another dialog saved this frame count. Reopen experiments to reuse its frames.", true);
+              return;
+            }
+            const Candidate* same_count = owner ? owner : find([&](const Candidate& item) {
+              return item.settings.frame_count == frame_count && !item.main_calibration && item.queued;
             });
             if (saved->empty() && same_count &&
                 hm::stitch_frame_time_to_nanoseconds(same_count->settings.stitch_frame_time) !=
@@ -1630,10 +1656,6 @@ struct StitchingExperimentDialog::Impl {
                   true);
               return;
             }
-            const Candidate* owner = find([&](const Candidate& item) {
-              return item.settings.frame_count == frame_count && item.selection_owner_sequence == item.sequence &&
-                  (item.queued || item.has_selected_frames || item.selection_reuse_blocked);
-            });
             const bool selected = !saved->empty() || owner || (prefer_player_frames->isChecked() && frame_count > 1);
             const Candidate* duplicate = find([&](const Candidate& item) {
               const bool item_selected = item.has_selected_frames || item.selection_owner_sequence != 0 ||

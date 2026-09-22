@@ -224,6 +224,7 @@ cc_library(
         "//src/libs/stitching:player_frame_input_store",
         "//src/libs/stitching:player_frame_selection",
         "//src/libs/stitching:stitching",
+        "//src/libs/stitching:transaction_state",
         "@yaml-cpp",
     ],
 )
@@ -296,10 +297,11 @@ cc_test(
     name = "stitching_experiment_backend_test",
     srcs = ["StitchingExperimentBackendTest.cpp"],
     copts = COMMON_COPTS,
-    linkopts = ["-ltiff"],
+    linkopts = ["-ltiff", "-Wl,--export-dynamic-symbol=fsync"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":stitching_experiment_backend",
+        ":stitching_experiment_store",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",

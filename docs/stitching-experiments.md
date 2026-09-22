@@ -12,14 +12,16 @@ Enter comma-separated values for:
 - first calibration-frame timestamps (`HH:MM:SS` or `HH:MM:SS.mmm`).
 
 **Add options to batch** adds the Cartesian product to a visible queue without starting calibration. Change the
-fields and add more combinations, or remove individual queued rows, until the batch is ready. Duplicate combinations
-are ignored and a batch can contain at most 64 candidates. By default every candidate reuses the game's saved
+fields and add more combinations, or remove individual queued rows, until the batch is ready. Identical additions
+in one dialog are ignored while the main configuration is unchanged; reopening allows another solve. A batch can
+contain at most 64 queued candidates. By default every candidate reuses the game's saved
 rink-leveling rotation. Clear that option to add pitch/roll variants as comma-separated `pitch/roll` pairs, for
 example `0/0,-1.5/0.5`. Explicit variants preserve the game's saved yaw.
 
-When **Start batch** reaches a candidate, it prepares a private game directory in the persistent experiment cache. Camera chapters and matching
+Adding options prepares each private game directory on a worker and saves the queued configuration in the
+persistent experiment cache. Camera chapters and matching
 camera-calibration sidecars are input symlinks to the selected game, while generated stitching artifacts and
-configuration stay isolated. Workspace preparation is deferred so adding a large option matrix remains immediate.
+configuration stay isolated. The dialog remains responsive during preparation; queued rows survive closing it.
 **Start batch** locks the queue and runs its candidates serially through
 `hstream-cli --stitching-calibration-only` with a fake sink, so the batch can be left unattended. This graph omits
 Program crop, inference, rink masking, and play tracking. Completed candidates remain available for comparison after

@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
+#include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
@@ -7,18 +8,55 @@
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
 #include <opencv2/imgcodecs.hpp>
+#include <sys/syscall.h>
 #include <tiffio.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "yaml-cpp/yaml.h"
 
 namespace fs = std::filesystem;
+
+namespace {
+
+std::mutex fsync_probe_mutex;
+bool fsync_probe_active = false;
+fs::path fsync_failure_path;
+int fsync_failures = 0;
+std::vector<fs::path> fsync_paths;
+
+} // namespace
+
+// Interpose only in this test executable so the production durability barriers
+// experience a real EIO return without adding production failure switches.
+extern "C" int fsync(int descriptor) {
+  {
+    std::lock_guard<std::mutex> lock(fsync_probe_mutex);
+    if (fsync_probe_active) {
+      char target[4096];
+      const auto count = ::readlink(("/proc/self/fd/" + std::to_string(descriptor)).c_str(), target, sizeof(target));
+      if (count > 0 && count < static_cast<ssize_t>(sizeof(target))) {
+        const fs::path path(std::string(target, static_cast<size_t>(count)));
+        fsync_paths.push_back(path);
+        if (path == fsync_failure_path && fsync_failures == 0) {
+          ++fsync_failures;
+          errno = EIO;
+          return -1;
+        }
+      }
+    }
+  }
+  return static_cast<int>(::syscall(SYS_fsync, descriptor));
+}
 
 namespace {
 
@@ -33,6 +71,116 @@ bool write(const fs::path& path, const std::string& contents) {
   std::ofstream output(path);
   output << contents;
   return output.good();
+}
+
+struct FsyncProbe {
+  explicit FsyncProbe(const fs::path& fail_at = {}) {
+    std::lock_guard<std::mutex> lock(fsync_probe_mutex);
+    fsync_failure_path = fail_at;
+    fsync_failures = 0;
+    fsync_paths.clear();
+    fsync_probe_active = true;
+  }
+  ~FsyncProbe() {
+    std::lock_guard<std::mutex> lock(fsync_probe_mutex);
+    fsync_probe_active = false;
+  }
+};
+
+bool durable_workspace_publication(const fs::path& root) {
+  const fs::path game = root / "durable-game";
+  const fs::path left = game / "cam1" / "chapters" / "left.mp4";
+  const fs::path right = game / "cam2" / "right.mp4";
+  const fs::path sidecar = game / "cam1" / "chapters" / "left-calibration.yaml";
+  if (!write(left, "left recording") || !write(right, "right recording") || !write(sidecar, "camera: left") ||
+      !write(
+          game / "config.yaml", "game:\n  videos:\n    left: [cam1/chapters/left.mp4]\n    right: [cam2/right.mp4]\n"))
+    return false;
+  auto store = OpenStitchingExperimentStore(game);
+  if (!expect(store.ok(), "durable workspace fixture store must open"))
+    return false;
+  const StitchingExperimentSettings settings{100, 2, "00:00:00", std::nullopt};
+  const auto create_queued = [&](const fs::path& session, int sequence) -> absl::Status {
+    auto workspace = CreateStitchingExperimentWorkspace(game, session, settings, sequence);
+    if (!workspace.ok())
+      return workspace.status();
+    StoredStitchingExperiment record;
+    record.workspace = *workspace;
+    record.state = "queued";
+    record.sequence = sequence;
+    return SaveStitchingExperiment(*store, record);
+  };
+  bool ok = true;
+  for (int stage = 0; stage < 6; ++stage) {
+    const fs::path session = store->directory / "sessions" / ("failed-session-" + std::to_string(stage));
+    const fs::path candidate = session / ("durable-game-stitch-exp-" + std::to_string(stage + 1));
+    const std::vector<fs::path> barriers{
+        candidate / "config.yaml",
+        candidate / "cam1" / "chapters",
+        candidate,
+        session,
+        session.parent_path(),
+        store->directory};
+    absl::Status created;
+    {
+      FsyncProbe probe(barriers[stage]);
+      created = create_queued(session, stage + 1);
+      ok &= expect(fsync_failures == 1, "the selected config or directory fsync failure must be exercised");
+      ok &= expect(
+          std::find(fsync_paths.begin(), fsync_paths.end(), left) == fsync_paths.end() &&
+              std::find(fsync_paths.begin(), fsync_paths.end(), right) == fsync_paths.end() &&
+              std::find(fsync_paths.begin(), fsync_paths.end(), sidecar) == fsync_paths.end(),
+          "workspace durability must never fsync linked source recordings or sidecars");
+    }
+    ok &= expect(!created.ok(), "a failed workspace durability barrier must abort queued publication");
+    const auto catalog = LoadStitchingExperimentStore(*store);
+    ok &= expect(
+        catalog.ok() && catalog->experiments.empty(),
+        "a config, media-directory, candidate, or session sync failure must never advertise a queued row");
+    ok &= expect(!fs::exists(candidate), "failed initial workspace creation must remove only its private candidate");
+    ok &= expect(
+        fs::is_regular_file(left) && fs::is_regular_file(right) && fs::is_regular_file(sidecar),
+        "failed workspace cleanup must preserve linked inputs");
+  }
+  const fs::path session = store->directory / "sessions" / "successful-session";
+  const fs::path candidate = session / "durable-game-stitch-exp-10";
+  {
+    FsyncProbe probe;
+    ok &= expect(create_queued(session, 10).ok(), "a completely synced workspace must become a queued row");
+    const std::vector<fs::path> required{
+        candidate / "config.yaml",
+        candidate / "cam1" / "chapters",
+        candidate / "cam1",
+        candidate,
+        session,
+        session.parent_path(),
+        store->directory};
+    auto previous = fsync_paths.begin();
+    for (const auto& path : required) {
+      const auto found = std::find(previous, fsync_paths.end(), path);
+      ok &= expect(
+          found != fsync_paths.end(),
+          "config and child-to-parent durability barriers must precede catalog publication");
+      if (found == fsync_paths.end())
+        break;
+      previous = std::next(found);
+    }
+    ok &= expect(
+        std::find_if(
+            previous,
+            fsync_paths.end(),
+            [&](const fs::path& path) {
+              return path.parent_path() == store->directory && path.filename().string().find(".write-") == 0;
+            }) != fsync_paths.end(),
+        "the catalog may be fsynced only after every workspace and session barrier");
+  }
+  const auto catalog = LoadStitchingExperimentStore(*store);
+  ok &=
+      expect(catalog.ok() && catalog->experiments.size() == 1, "reopening must retain exactly the durable queued row");
+  const auto duplicate = CreateStitchingExperimentWorkspace(game, session, settings, 10);
+  ok &= expect(
+      !duplicate.ok() && absl::IsAlreadyExists(duplicate.status()), "initial workspace creation must remain exclusive");
+  return ok;
 }
 
 bool ordinary_frame_inspection(const StitchingExperimentWorkspace& workspace) {
@@ -410,6 +558,7 @@ int main() {
   }
 
   bool ok = true;
+  ok &= expect(durable_workspace_publication(root), "queued workspaces must be durable before catalog publication");
   ok &= expect(ordinary_frame_inspection(*workspace), "ordinary calibration inspection must remain bound to its row");
   ok &= expect(inherited_camera_handoff(root), "candidate handoff must freeze inherited baseline camera and FOV");
   ok &= expect(fs::is_symlink(workspace->game_directory / "cam1" / "left.mp4"), "left video must be linked");
