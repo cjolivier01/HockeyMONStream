@@ -166,6 +166,38 @@ class CompareTest(unittest.TestCase):
     self.assertEqual(m["frames_cand_only"], 0)
 
 
+class SummarizeTracksTest(unittest.TestCase):
+  """The gate's own metric counted a phantom track on every run."""
+
+  def _summarize(self, lines):
+    with tempfile.TemporaryDirectory() as tmp:
+      Path(tmp, "00_000_000001.txt").write_text("\n".join(lines) + "\n")
+      return benchmark.summarize_tracks(Path(tmp))
+
+  def tracked(self, label, track_id):
+    return f"{label} {track_id} 0.0 0 0.0 1 2 3 4 " + " ".join(["0.0"] * 7) + " 0.9"
+
+  def untracked(self):
+    # Empty label + UINT64_MAX id: every column shifts left, so a naive
+    # fields[1] reads the float filler "0.0" and counts it as a track.
+    return f" {benchmark.UNTRACKED_OBJECT_ID} 0.0 0 0.0 1 2 3 4 " + " ".join(["0.0"] * 7) + " 0.0"
+
+  def test_untracked_objects_do_not_create_a_phantom_track(self):
+    s = self._summarize([self.tracked("person", 2), self.untracked(), self.untracked()])
+    self.assertEqual(s["unique_tracked_objects"], 1)
+    self.assertEqual(s["tracked_observations"], 1)
+    self.assertEqual(list(s["class_counts"]), ["person"])
+
+  def test_distinct_ids_are_counted_once_each(self):
+    s = self._summarize([self.tracked("person", 2), self.tracked("person", 3), self.tracked("person", 2)])
+    self.assertEqual(s["unique_tracked_objects"], 2)
+    self.assertEqual(s["tracked_observations"], 3)
+
+  def test_empty_directory(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      self.assertEqual(benchmark.summarize_tracks(Path(tmp))["unique_tracked_objects"], 0)
+
+
 class BuildPlanTest(unittest.TestCase):
   """Variant names key both the output directory and the results dict, so
   uniqueness is load-bearing: a collision silently overwrites a run."""
