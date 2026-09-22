@@ -82,25 +82,14 @@ def infer_config_for_variant(variant: Variant, out_dir: Path) -> Path | None:
   out_path.parent.mkdir(parents=True, exist_ok=True)
 
   if variant.model_precision == "fp16":
-    # network-mode already comes from the committed config; only the artifact
-    # paths are rewritten to the repo-local copies this benchmark runs against.
-    text = FP16_CONFIG.read_text()
-    text = replace_yaml_scalar(
-        text,
-        "onnx-file",
-        str((REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx").resolve()),
-    )
-    text = replace_yaml_scalar(
-        text,
-        "model-engine-file",
-        str((REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx_b2_gpu0_fp16.engine").resolve()),
-    )
-    text = replace_yaml_scalar(
-        text,
-        "labelfile-path",
-        str((REPO_ROOT / "pretrained/deepstream/yolov8/labels_coco.txt").resolve()),
-    )
-    text = replace_yaml_scalar(text, "custom-lib-path", str((REPO_ROOT / "lib/libnvdsinfer_custom_impl_Yolo.so").resolve()))
+    # Deliberately NOT rewritten to the repo-local pretrained/ copies. The fp32
+    # baseline returns None above and therefore runs the committed config with
+    # the dynamic b1-b2 ONNX; rewriting fp16 to the static b2 ONNX would make
+    # the two arms differ by model file as well as by precision, which is not a
+    # precision measurement. (int8/bf16 below still rewrite, because they need
+    # prebuilt artifacts that only exist there -- so those arms remain
+    # confounded against this baseline. See PR #190.)
+    return FP16_CONFIG
   elif variant.model_precision == "int8":
     text = INT8_CONFIG.read_text()
     text = replace_yaml_scalar(
@@ -395,11 +384,17 @@ def run_variant(args: argparse.Namespace, variant: Variant, out_dir: Path) -> di
       result["status"] = "failed"
       result["reason"] = f"BF16 run did not log loading expected engine {expected_engine}; see {log_path}"
   elif variant.model_precision == "fp16":
-    # Without this, a TensorRT fallback to FP32 would publish an fp16 row that
-    # is really fp32 and pass the drift gate trivially.
+    # Two distinct failures. The engine name only proves the config was applied:
+    # it is derived from the REQUESTED network-mode, so a platform fallback
+    # still produces a file called ..._fp16.engine. The warning below is what
+    # actually catches a silent fallback, which would otherwise publish an fp16
+    # row that is really fp32 and pass the drift gate trivially.
     if "_b2_gpu0_fp16.engine" not in log_text:
       result["status"] = "failed"
-      result["reason"] = f"FP16 run did not log an fp16 engine; TensorRT may have fallen back. See {log_path}"
+      result["reason"] = f"FP16 run did not log an fp16 engine; config may not have applied. See {log_path}"
+    elif "FP16 not supported by platform" in log_text:
+      result["status"] = "failed"
+      result["reason"] = f"TensorRT fell back to FP32; the fp16 result would be mislabeled. See {log_path}"
   elif variant.model_precision == "int8" and args.calibrate_int8:
     args._int8_calibration_completed = True
   if result["status"] == "ok" and variant.model_precision == "int8" and args.calibrate_int8:

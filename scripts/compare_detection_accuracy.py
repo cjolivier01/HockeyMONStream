@@ -31,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -84,6 +85,45 @@ def infer_config_for(precision: str) -> Path | None:
   raise ValueError(f"unsupported precision '{precision}'")
 
 
+def terminate_process_group(proc: subprocess.Popen, grace_seconds: float = 10.0) -> None:
+  """SIGTERM then SIGKILL the run's whole process group, so nothing is orphaned."""
+  try:
+    pgid = os.getpgid(proc.pid)
+  except ProcessLookupError:
+    return
+  for sig in (signal.SIGTERM, signal.SIGKILL):
+    try:
+      os.killpg(pgid, sig)
+    except ProcessLookupError:
+      return
+    try:
+      proc.wait(timeout=grace_seconds)
+      return
+    except subprocess.TimeoutExpired:
+      continue
+
+
+def build_plan(precisions: list[str]) -> list[tuple[str, str]]:
+  """Map requested precisions to unique (variant_name, precision) pairs.
+
+  The reference is always a dedicated fp32 run; listed precisions are
+  candidates. Names are de-duplicated so a repeated precision means "run it
+  again and compare" -- `--variants=fp16,fp16` is the FP16-vs-rebuilt-FP16
+  control, which matters because TensorRT tactic selection is timing-dependent
+  and FP16 engine builds are not bit-reproducible. Uniqueness is also load
+  bearing: variant names key both the output directory and the results dict.
+  """
+  plan = [("reference", "fp32")]
+  seen: dict[str, int] = {}
+  for precision in precisions:
+    name = "control-fp32" if precision == "fp32" else precision
+    seen[name] = seen.get(name, 0) + 1
+    if seen[name] > 1:
+      name = f"{name}-{seen[name]}"
+    plan.append((name, precision))
+  return plan
+
+
 def run_variant(args: argparse.Namespace, variant: str, precision: str, out_dir: Path) -> dict:
   bbox_dir = out_dir / variant / "kitti"
   if bbox_dir.exists():
@@ -112,15 +152,20 @@ def run_variant(args: argparse.Namespace, variant: str, precision: str, out_dir:
 
   log_path = out_dir / variant / "run.log"
   print(f"[{variant}] {' '.join(cmd)}", flush=True)
-  try:
-    with log_path.open("w") as log:
-      proc = subprocess.run(
-          cmd, stdout=log, stderr=subprocess.STDOUT, env=env, cwd=REPO_ROOT, timeout=args.run_timeout
-      )
-    returncode = proc.returncode
-  except subprocess.TimeoutExpired:
-    returncode = -1
-    print(f"[{variant}] timed out after {args.run_timeout}s", file=sys.stderr)
+  with log_path.open("w") as log:
+    # start_new_session puts the run in its own process group. run.sh does not
+    # exec hstream-cli, so a plain subprocess timeout would kill only bash and
+    # leave the pipeline running -- against the same game directory the next
+    # variant is about to use.
+    proc = subprocess.Popen(
+        cmd, stdout=log, stderr=subprocess.STDOUT, env=env, cwd=REPO_ROOT, start_new_session=True
+    )
+    try:
+      returncode = proc.wait(timeout=args.run_timeout)
+    except subprocess.TimeoutExpired:
+      returncode = -1
+      print(f"[{variant}] timed out after {args.run_timeout}s; killing process group", file=sys.stderr)
+      terminate_process_group(proc)
   return {"variant": variant, "precision": precision, "returncode": returncode, "log": str(log_path)}
 
 
@@ -146,9 +191,9 @@ def load_detections(bbox_dir: Path) -> dict[tuple[int, int], list[Detection]]:
       fields = line.split()
       if len(fields) < NUM_KITTI_FIELDS:
         continue
+      # The length guard above already rejects the C++ empty-label form, which
+      # writes only the 15 numeric fields.
       label = " ".join(fields[:-NUM_KITTI_NUMERIC])
-      if not label:
-        continue
       try:
         left, top, right, bottom = (float(v) for v in fields[-12:-8])
         dets.append(Detection(label, left, top, right, bottom, float(fields[-1])))
@@ -252,11 +297,11 @@ def compare(ref_frames, cand_frames, iou_threshold: float, min_confidence: float
   }
 
 
-def _num(value: float | None, width: int, precision: int, sign: str = "") -> str:
+def _num(value: float | None, width: int, precision: int) -> str:
   """Render a metric, or a right-aligned n/a when it was undefined."""
   if value is None:
     return f"{'n/a':>{width}}"
-  return f"{value:>{sign}{width}.{precision}f}"
+  return f"{value:>{width}.{precision}f}"
 
 
 def format_row(variant: str, m: dict) -> str:
@@ -324,19 +369,7 @@ def main() -> int:
     )
     return 2
 
-  # The reference is always a dedicated fp32 run; listed variants are candidates.
-  # Names are de-duplicated so a repeated precision means "run it again and
-  # compare" -- `--variants=fp16,fp16` is the FP16-vs-rebuilt-FP16 control,
-  # which matters because TensorRT tactic selection is timing-dependent and
-  # FP16 builds are not bit-reproducible.
-  plan = [("reference", "fp32")]
-  seen: dict[str, int] = {}
-  for precision in precisions:
-    name = "control-fp32" if precision == "fp32" else precision
-    seen[name] = seen.get(name, 0) + 1
-    if seen[name] > 1:
-      name = f"{name}-{seen[name]}"
-    plan.append((name, precision))
+  plan = build_plan(precisions)
 
   failed: list[str] = []
   if not args.skip_run:
@@ -360,6 +393,7 @@ def main() -> int:
   candidates = {v: load_detections(out_dir / v / "kitti") for v, _ in plan[1:]}
 
   report: dict[str, dict] = {}
+  no_detections = [v for v, _ in plan[1:] if not candidates[v]]
   for floor in floors:
     print(f"\n=== detection agreement vs fp32 reference (IoU>={args.iou_threshold}, conf>={floor}) ===")
     print(HEADER)
@@ -378,8 +412,17 @@ def main() -> int:
             f"and {metrics['frames_cand_only']} candidate-only frames excluded)"
         )
 
+  # Record what was requested and what actually produced data, so a consumer
+  # cannot read a partial sweep as a clean comparison.
+  document = {
+      "requested_variants": [v for v, _ in plan[1:]],
+      "failed_variants": failed,
+      "no_detection_variants": no_detections,
+      "complete": not failed and not no_detections,
+      "results": report,
+  }
   report_path = out_dir / "accuracy_report.json"
-  report_path.write_text(json.dumps(report, indent=2))
+  report_path.write_text(json.dumps(document, indent=2))
   print(f"\nwrote {report_path}")
 
   # Interpretation: a candidate is only suspect if it drifts more than the control.
@@ -388,8 +431,13 @@ def main() -> int:
         "\nRead 'control-fp32' as the run-to-run noise floor. A candidate is "
         "indistinguishable from FP32 if its drift is within that row."
     )
-  if failed:
-    print(f"\nincomplete: {', '.join(failed)} did not run; report covers the rest", file=sys.stderr)
+  if failed or no_detections:
+    detail = []
+    if failed:
+      detail.append(f"failed: {', '.join(failed)}")
+    if no_detections:
+      detail.append(f"no detections: {', '.join(no_detections)}")
+    print(f"\nincomplete ({'; '.join(detail)}); report covers the rest", file=sys.stderr)
     return 1
   return 0
 
