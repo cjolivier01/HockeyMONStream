@@ -11,6 +11,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
+#include "hstream/src/libs/stitching/StitchingReframe.h"
 
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
@@ -809,7 +810,16 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   }
   const char* calibration_invalidation_id = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
   calibration_invalidation_id_ = calibration_invalidation_id ? calibration_invalidation_id : "";
-  absl::Status status = ensure_stitcher_with_artifact_lock();
+  std::optional<YAML::Node> saved_config;
+  if (!config_file_.empty())
+    HM_ASSIGN_OR_RETURN(
+        saved_config, stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml"));
+  reframe_pending_ = saved_config && stitching::HasStitchingReframeIntent(*saved_config);
+  if (reframe_pending_ && !one_pass_mode_ && !configure_only_)
+    return absl::FailedPreconditionError("The saved view edit requires calibration before loading stitch maps");
+  // The old generation remains published for rollback. Loading it under the
+  // requested view could repair its seam or incorrectly skip the pending edit.
+  absl::Status status = reframe_pending_ ? absl::OkStatus() : ensure_stitcher_with_artifact_lock();
   if (!status.ok()) {
     if (one_pass_mode_ && !calibration_run_generation_.empty() && absl::IsNotFound(status)) {
       if (!logged_missing_masks_) {
@@ -829,7 +839,7 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
     absl::MutexLock lk(&stitcher_mu_);
     needs_calibration_frames = needs_calibration_frames || (one_pass_mode_ && !has_stitcher());
   }
-  if (needs_calibration_frames)
+  if (needs_calibration_frames && !reframe_pending_)
     HM_RETURN_IF_ERROR(initialize_calibration_frame_selection());
 
   // Not an in-place transform
@@ -874,7 +884,7 @@ absl::Status StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
 }
 
 bool StitcherPriv::UsesRuntimeOutputSize() const {
-  return one_pass_mode_ && (!canvas_width_hint_ || !canvas_height_hint_);
+  return reframe_pending_ || (one_pass_mode_ && (!canvas_width_hint_ || !canvas_height_hint_));
 }
 
 guint StitcherPriv::GetOutputBatchSize(guint input_batch_size, guint configured_batch_size) const {
@@ -1306,6 +1316,33 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   }
   if (!batch_meta || !in_surface) {
     return absl::InvalidArgumentError("Cannot determine stitched canvas size without batch metadata and input surface");
+  }
+  if (reframe_pending_) {
+    // Runs on the existing cancellable output worker, before inspecting or
+    // capturing camera surfaces. A failed explicit request cannot fall through
+    // to ordinary calibration or substitute different frames.
+    {
+      std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
+      const auto status = stitching::reframe_stitching(
+          config_file_,
+          calibration_invalidation_id_,
+          [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+          max_output_width_);
+      if (!status.ok())
+        return absl::IsCancelled(status) ? status : report_fatal_calibration_failure(status);
+    }
+    reframe_pending_ = false;
+    configured_during_run_ = true;
+    if (configure_only_) {
+      if (!post_force_pipeline_eos(GST_ELEMENT(m_element)))
+        return absl::InternalError("Could not finish the edited-view calibration");
+      return absl::CancelledError("Stitching view has been configured from the saved alignment");
+    }
+    HM_RETURN_IF_ERROR(reload_stitcher_with_artifact_lock());
+    if (!canvas_width_hint_ || !canvas_height_hint_)
+      return report_fatal_calibration_failure(absl::FailedPreconditionError("Edited view has no usable stitch canvas"));
+    return videoprep::RuntimeOutputSize{
+        canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
   }
   bool retry_validated_artifacts = false;
   {

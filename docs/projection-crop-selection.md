@@ -25,7 +25,11 @@ Black corners can remain when keeping more coverage; the rectangle shows exactly
 ![Manual crop retaining the full rink width](images/projection-crop/manual.jpg)
 
 **Use crop** returns the selection to the main controls. **Save Preset** saves it in the game's private config and
-invalidates the old stitching maps; the next calibration regenerates them. **Cancel** discards the dialog's edits.
+requests an edited view from the saved optimized NONA alignment. The next calibration regenerates projection,
+maps, seam, and panorama without repeating control-point matching or optimization. Published artifacts remain
+available until the replacement commits, and cancellation preserves the request for retry. Legacy projects require
+AUTO canvas; unsupported or missing source geometry produces an error while preserving the existing result.
+**Cancel** discards the dialog's edits.
 The existing Auto checkbox remains available in the main controls.
 
 Percentages refer to the **full projected canvas**, not the previously cropped image. For example, left/right

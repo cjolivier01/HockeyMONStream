@@ -44,6 +44,7 @@ HSTREAM_CLI_DEPS = [
     "//src/libs/common:user_config",
     "//src/libs/pipeline_controller:gst_property_service",
     "//src/libs/stitching",
+    "//src/libs/stitching:stitching_reframe",
     "//src/libs/wireless:stream_control",
     "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
     "//src/apps/apps-common:deepstream_apps_common",

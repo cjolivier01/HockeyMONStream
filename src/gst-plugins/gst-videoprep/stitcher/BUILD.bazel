@@ -53,6 +53,7 @@ cc_library(
         "//src/libs/stitching:calibration_frame_exif",
         "//src/libs/stitching:live_output_epoch",
         "//src/libs/stitching:player_frame_input_store",
+        "//src/libs/stitching:stitching_reframe",
         "//src/libs/stitching:player_frame_selection",
         "@com_google_absl//absl/strings",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",

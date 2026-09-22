@@ -11,6 +11,7 @@
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
+#include "hstream/src/libs/stitching/StitchingReframe.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
@@ -1951,6 +1952,17 @@ absl::Status clean_stitching_artifacts_impl(
     return config_transaction.status();
 
   const fs::path cfg_file_path = game_dir_path / "config.yaml";
+  if (fs::exists(cfg_file_path)) {
+    try {
+      if (HasStitchingReframeIntent(YAML::LoadFile(cfg_file_path.string())))
+        return absl::FailedPreconditionError(
+            "Cannot clean the saved alignment while a view edit is pending. Explicitly cancel that edit "
+            "before requesting a new solve; the existing calibration has been preserved.");
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError(
+          "Cannot validate pending view edit before cleanup: " + std::string(error.what()));
+    }
+  }
   // A retained plan binds the camera offsets and exact paired inputs. Even an
   // explicit clean only invalidates the solve until that plan is replaced.
   if (!preserve_synchronized_inputs && fs::exists(cfg_file_path)) {
@@ -5296,6 +5308,90 @@ absl::Status configure_scoreboard(const std::string& game_dir) {
   return absl::OkStatus();
 }
 
+absl::Status reframe_stitching(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled,
+    size_t max_output_width) {
+  if (expected_invalidation_id.empty())
+    return absl::FailedPreconditionError("Reusing the saved alignment requires a pending calibration owner");
+  const fs::path config_path = fs::path(game_dir) / "config.yaml";
+  StitchingReframeIntent intent;
+  std::string request;
+  {
+    auto artifacts = HuginProject::RecoverAndLock(game_dir);
+    if (!artifacts.ok())
+      return artifacts.status();
+    auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+    if (!config_lock.ok())
+      return config_lock.status();
+    try {
+      const YAML::Node config = YAML::LoadFile(config_path.string());
+      HM_ASSIGN_OR_RETURN(intent, ValidateStitchingReframeIntentLocked(game_dir, config));
+      request = YAML::Dump(config["hstream_ui"]["stitching_calibration"]["reframe"]);
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot read saved alignment request: " + std::string(error.what()));
+    }
+  }
+  if (intent.desired_owner != expected_invalidation_id || intent.desired_max_output_width != max_output_width)
+    return absl::AbortedError("The requested view or calibration owner changed before reusing the saved alignment");
+  HuginProject::ReframeOptions options;
+  options.expected_source_generation = intent.source_generation;
+  HM_ASSIGN_OR_RETURN(options.projection, ParseStitchProjection(intent.desired_choices.projection));
+  options.projection_parameters = intent.desired_choices.projection_parameters;
+  options.projection_framing = intent.desired_choices.projection_framing;
+  if (intent.desired_max_output_width)
+    options.max_output_width = intent.desired_max_output_width;
+  if (intent.desired_max_output_dimension)
+    options.max_canvas_dimension = intent.desired_max_output_dimension;
+  options.progress = report_calibration_progress;
+  options.is_cancelled = is_cancelled;
+  options.validate_source = [&]() -> absl::Status {
+    try {
+      const YAML::Node current = YAML::LoadFile(config_path.string());
+      HM_RETURN_IF_ERROR(validate_pending_stitching_invalidation(current, expected_invalidation_id));
+      if (YAML::Dump(current["hstream_ui"]["stitching_calibration"]["reframe"]) != request)
+        return absl::AbortedError("Saved alignment request changed while generating the view");
+      const auto validated = ValidateStitchingReframeIntentLocked(game_dir, current);
+      return validated.ok() ? absl::OkStatus() : validated.status();
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot validate saved alignment request: " + std::string(error.what()));
+    }
+  };
+  options.build_config = [&](const fs::path& staging) -> absl::StatusOr<std::string> {
+    HM_RETURN_IF_ERROR(options.validate_source());
+    try {
+      YAML::Node current = YAML::LoadFile(config_path.string());
+      std::ifstream project(staging / "autooptimiser_out.pto", std::ios::binary);
+      if (!project)
+        return absl::InternalError("Cannot read reframed project for accepted crop");
+      std::string pto(1024 * 1024 + 1, '\0');
+      project.read(pto.data(), pto.size());
+      pto.resize(project.gcount());
+      if (project.bad() || pto.size() > 1024 * 1024)
+        return absl::FailedPreconditionError("Reframed project exceeds the accepted crop size limit");
+      const std::string geometry = projection_crop_geometry(pto, options.projection_framing);
+      if (geometry.empty())
+        return absl::FailedPreconditionError("Reframed project has no valid crop geometry");
+      write_projection_crop_review(current, geometry);
+      remove_control_point_dependent_cache_keys(current);
+      YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
+      calibration["status"] = "complete";
+      calibration["rink_mask_status"] = "pending";
+      calibration["artifacts_invalidated"] = true;
+      calibration.remove("stale_from");
+      ClearStitchingReframeIntent(current);
+      HM_RETURN_IF_ERROR(
+          reserve_stitching_backend_generation_in_config(current, expected_invalidation_id, intent.desired_choices));
+      return YAML::Dump(current) + "\n";
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot commit edited view settings: " + std::string(error.what()));
+    }
+  };
+  report_calibration_progress("canvas", "started", "Reusing saved alignment to generate the edited view");
+  return HuginProject::Reframe(game_dir, options);
+}
+
 absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
@@ -5320,6 +5416,10 @@ absl::Status configure_stitching(
     const std::function<bool()>& is_cancelled,
     size_t max_output_width,
     const std::string& captured_frame_selection_fingerprint) {
+  std::optional<YAML::Node> config;
+  HM_ASSIGN_OR_RETURN(config, load_game_config_file(fs::path(game_dir) / "config.yaml"));
+  if (config && HasStitchingReframeIntent(*config))
+    return reframe_stitching(game_dir, expected_invalidation_id, is_cancelled, max_output_width);
   HM_RETURN_IF_ERROR(create_control_points(
       game_dir,
       frame_pairs,

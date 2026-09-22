@@ -115,6 +115,7 @@ cc_library(
   visibility = ["//visibility:public"],
   implementation_deps = [":orientation_internal"],
   deps = [
+    ":stitching_reframe",
     ":calibration_frame_exif",
     ":player_frame_input_store",
     ":imu_synchronization",
@@ -336,6 +337,7 @@ cc_library(
     ":feature_matcher",
     ":game_config",
     ":homography_maps",
+    ":rink_leveling",
     ":transaction_state",
     "//src/libs/common:status",
     "//src/libs/common:utils",
@@ -708,4 +710,33 @@ cc_test(
   name = "player_frame_overlap_test",
   srcs = ["PlayerFrameOverlapTest.cpp"],
   deps = [":player_frame_overlap"],
+)
+
+cc_library(
+  name = "stitching_reframe",
+  srcs = ["StitchingReframe.cpp"],
+  hdrs = ["StitchingReframe.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-lcrypto"],
+  deps = [
+    ":hugin_project",
+    ":game_config",
+    ":canvas_constraint_check",
+    ":player_frame_input_store",
+    ":player_frame_selection",
+    ":transaction_state",
+    "//src/libs/common:baseline_config",
+    "//src/libs/common:user_config",
+    "//src/libs/common:status",
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "stitching_reframe_test",
+  srcs = ["StitchingReframeTest.cpp"],
+  deps = [":stitching_reframe"],
 )

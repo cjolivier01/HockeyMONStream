@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -419,6 +420,298 @@ absl::StatusOr<YAML::Node> selected_frame_config(
   return config;
 }
 
+bool test_owned_solve_publication(
+    const std::filesystem::path& root,
+    const std::vector<hm::stitching::FeatureMatch>& matches,
+    hm::stitching::HuginProject::Options options) {
+  namespace fs = std::filesystem;
+  using namespace hm::stitching;
+  const fs::path game = root / "owned-solve-game";
+  fs::create_directory(game);
+  if (!expect(HuginProject::PromoteArtifacts(root / "game", game).ok(), "owned solve fixture must promote artifacts"))
+    return false;
+  const std::string previous_project = read_text_file(game / "autooptimiser_out.pto");
+  const std::string optimizer = std::getenv("HM_AUTOOPTIMISER");
+  const fs::path owned_optimizer = root / "owned-solve-autooptimiser";
+  if (!expect(
+          write_tool(
+              owned_optimizer,
+              "'" + optimizer +
+                  "' \"$@\"\n"
+                  "printf '%s\\n' 'i w64 h48 f0 v127.2 r0 p0 y10 n\"left.png\"' "
+                  "'i w64 h48 f0 v127.2 r0 p0 y30 n\"right.png\"' >> autooptimiser_out.pto\n"),
+          "owned solve optimizer must retain representative camera geometry"))
+    return false;
+  StitchingBackendChoices choices{
+      ControlPointMatcherName(options.control_point_matcher),
+      "nona",
+      "general-panini",
+      true,
+      DefaultStitchProjectionParameters(*options.projection),
+      options.projection_framing};
+  choices.camera = {options.camera_configuration, options.horizontal_fov, options.vertical_fov};
+  choices.control_point_resolution = options.control_point_resolution;
+  options.expected_invalidation_id = "owned-solve";
+  options.expected_backend_choices = choices;
+  options.projection_parameters = choices.projection_parameters;
+  YAML::Node config = YAML::Load(
+      "unrelated: preserved\n"
+      "stitching: {control_points: [old], frame_offsets: [0, 1]}\n"
+      "game: {stitching: {control_points: [old]}}\n"
+      "rink:\n"
+      "  scoreboard: {perspective_polygon: [old], name: retained}\n"
+      "  ice_contours_mask_count: 1\n"
+      "  ice_contours_mask_centroid: [1, 2]\n"
+      "  ice_contours_combined_bbox: [0, 0, 3, 4]\n"
+      "  stitched_output_generation: old\n"
+      "  stitched_output_persisted_rotation_degrees: 0\n"
+      "hstream_ui:\n"
+      "  stitching_calibration:\n"
+      "    status: pending\n"
+      "    rink_mask_status: complete\n"
+      "    invalidation_id: owned-solve\n"
+      "    stale_from: input\n"
+      "    reframe: null\n"
+      "    control_point_count: 20\n"
+      "    calibration_frame_count: 3\n");
+  config["stitching"]["control_point_matcher"] = choices.control_point_matcher;
+  config["stitching"]["control_point_resolution"] = ControlPointResolutionName(choices.control_point_resolution);
+  config["stitching"]["mapping_backend"] = choices.mapping_backend;
+  config["stitching"]["projection"] = choices.projection;
+  config["stitching"]["run_autooptimizer"] = true;
+  config["stitching"]["camera_config"] = choices.camera.configuration;
+  config["stitching"]["camera_fov"]["horizontal_fov"] = choices.camera.horizontal_fov;
+  config["stitching"]["camera_fov"]["vertical_fov"] = choices.camera.vertical_fov;
+  write_stitch_projection_framing(config, choices.projection_framing);
+  const auto claimed = reserve_stitching_backend_generation_in_config(config, "owned-solve", choices);
+  if (!expect(claimed.ok(), "owned solve fixture must reserve the full worker tuple")) {
+    std::cerr << claimed << '\n';
+    return false;
+  }
+  const std::string previous_config = YAML::Dump(config) + "\n";
+  std::ofstream(game / "config.yaml") << previous_config;
+  std::ofstream(game / "rink_mask_0.png") << "previous mask";
+  std::ofstream(game / "s.png") << "previous snapshot";
+  ::setenv("HM_AUTOOPTIMISER", owned_optimizer.c_str(), 1);
+  ::setenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG", "1", 1);
+  const auto failed = HuginProject::Configure(game, matches, options);
+  ::unsetenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG");
+  bool ok = expect(
+      !failed.ok() && HuginProject::Recover(game).ok() && read_text_file(game / "config.yaml") == previous_config &&
+          read_text_file(game / "autooptimiser_out.pto") == previous_project && fs::exists(game / "rink_mask_0.png"),
+      "owned solve publication failure rolls back maps, config, and the previous rink mask");
+  ::setenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG", "1", 1);
+  const auto interrupted = HuginProject::Configure(game, matches, options);
+  ::unsetenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG");
+  const auto recovered = HuginProject::Recover(game);
+  ::setenv("HM_AUTOOPTIMISER", optimizer.c_str(), 1);
+  const bool interrupted_at_commit =
+      interrupted.message().find("Injected stitching promotion interruption after config") != std::string::npos;
+  if (!interrupted_at_commit)
+    std::cerr << "Owned solve publication did not reach commit: " << interrupted << '\n';
+  ok &= expect(interrupted_at_commit && recovered.ok(), "owned solve recovery completes config-aware publication");
+  const YAML::Node saved = YAML::LoadFile((game / "config.yaml").string());
+  const YAML::Node calibration = saved["hstream_ui"]["stitching_calibration"];
+  const std::string geometry =
+      projection_crop_geometry(read_text_file(game / "autooptimiser_out.pto"), options.projection_framing);
+  ok &= expect(
+      calibration["status"].as<std::string>("") == "complete" &&
+          calibration["rink_mask_status"].as<std::string>("") == "pending" &&
+          calibration["artifacts_invalidated"].as<bool>(false) && !calibration["stale_from"] &&
+          !calibration["reframe"] && calibration["control_point_count"].as<int>(0) == 20 &&
+          calibration["calibration_frame_count"].as<int>(0) == 3 &&
+          validate_stitching_backend_generation(saved, "owned-solve", choices).ok() &&
+          projection_crop_reviewed(saved, geometry),
+      "a published owned solve remains complete and keeps its accepted crop while rink-mask work is pending");
+  ok &= expect(
+      !saved["stitching"]["control_points"] && !saved["game"]["stitching"]["control_points"] &&
+          saved["stitching"]["frame_offsets"].size() == 2 && !saved["rink"]["scoreboard"]["perspective_polygon"] &&
+          !saved["rink"]["ice_contours_mask_count"] && !saved["rink"]["ice_contours_mask_centroid"] &&
+          !saved["rink"]["ice_contours_combined_bbox"] && !saved["rink"]["stitched_output_generation"] &&
+          !saved["rink"]["stitched_output_persisted_rotation_degrees"] &&
+          saved["rink"]["scoreboard"]["name"].as<std::string>("") == "retained" &&
+          saved["unrelated"].as<std::string>("") == "preserved" && !fs::exists(game / "rink_mask_0.png") &&
+          !fs::exists(game / "s.png"),
+      "owned solve publication removes only geometry and masks tied to the previous canvas");
+  return ok;
+}
+
+bool test_reframe_publication(const std::filesystem::path& root) {
+  namespace fs = std::filesystem;
+  using hm::stitching::HuginProject;
+  bool ok = true;
+  const fs::path game = root / "reframe-game";
+  fs::create_directory(game);
+  auto promoted = HuginProject::PromoteArtifacts(root / "game", game);
+  if (!expect(promoted.ok(), "reframe fixture must promote a complete version-10 generation"))
+    return false;
+  std::ofstream(game / "autooptimiser_out.pto", std::ios::app) << "i w64 h48 f0 v100 r0 p0 y10 n\"left.png\"\n"
+                                                                  "i w64 h48 f0 v100 r0 p0 y30 n\"right.png\"\n";
+  std::string provenance = read_text_file(game / "stitching_canvas_provenance");
+  for (size_t index = 0; index < 3; ++index) {
+    const std::string key = "projection-rotation-" + std::to_string(index) + '=';
+    const size_t start = provenance.find(key);
+    if (!expect(start != std::string::npos, "reframe source must record its published rotation"))
+      return false;
+    provenance.replace(start, provenance.find('\n', start) - start, key + (index == 0 ? "10" : "0"));
+  }
+  std::ofstream(game / "stitching_canvas_provenance") << provenance;
+  const std::string pending_config =
+      "hstream_ui:\n  stitching_calibration:\n    invalidation_id: reframe-fixture\n    status: pending\n"
+      "    reframe: {version: 1}\n";
+  std::ofstream(game / "config.yaml") << pending_config;
+  auto lock = HuginProject::RecoverAndLock(game);
+  if (!expect(lock.ok(), "reframe source must be locked"))
+    return false;
+  auto source_generation = HuginProject::GenerationId(game, **lock);
+  lock->reset();
+  if (!expect(source_generation.ok(), "reframe fixture must have a content-bound generation"))
+    return false;
+
+  std::map<std::string, std::vector<unsigned char>> original;
+  for (const auto& name : hm::stitching::stitch_artifact_names()) {
+    if (name != hm::stitching::kStitchGenerationArtifact)
+      original.emplace(name, read_binary_file(game / name));
+  }
+  auto unchanged = [&] {
+    for (const auto& [name, bytes] : original) {
+      if (read_binary_file(game / name) != bytes)
+        return false;
+    }
+    return read_text_file(game / "config.yaml") == pending_config;
+  };
+  const std::string previous_pano = std::getenv("HM_PANO_MODIFY");
+  const std::string previous_pto = std::getenv("HM_PTO_GEN");
+  const std::string previous_optimizer = std::getenv("HM_AUTOOPTIMISER");
+  const std::string previous_nona = std::getenv("HM_NONA");
+  const fs::path tool = root / "reframe-pano-modify";
+  ok &= expect(
+      write_tool(
+          tool,
+          "projection=; canvas=; output=; input=; yaw=0\n"
+          "while test \"$#\" -gt 0; do case \"$1\" in --projection=*) projection=${1#*=} ;; --canvas=*) canvas=${1#*=} ;; "
+          "--output=*) output=${1#*=} ;; --rotate=*) rotation=${1#*=}; yaw=${rotation%%,*} ;; "
+          "--*) ;; -o) shift; output=$1 ;; *) input=$1 ;; esac; shift; done\n"
+          "if test -n \"$projection\"; then\n"
+          "  awk '/^p / { print \"p f19 w100 h50 v180 P\\\"100 0 0\\\"\"; next } {print}' \"$input\" > \"$output\"\n"
+          "elif test -n \"$canvas\"; then\n"
+          "  width=${canvas%x*}; height=${canvas#*x}\n"
+          "  awk -v width=$width -v height=$height '/^p / {sub(/w[0-9]+/, \"w\" width); "
+          "sub(/h[0-9]+/, \"h\" height)} {print}' \"$input\" > \"$output\"\n"
+          "else cp \"$input\" \"$output\"; fi\n"
+          "awk -v yaw=$yaw '/^i / {for (i=1;i<=NF;i++) if ($i ~ /^y[-+0-9.]+$/) $i=\"y\" (substr($i,2)+yaw)} "
+          "{print}' \"$output\" > .rotated.pto\nmv .rotated.pto \"$output\"\n"),
+      "reframe-only pano_modify fixture must be created");
+  const fs::path reframe_nona = root / "reframe-nona";
+  ok &= expect(
+      write_tool(
+          reframe_nona,
+          "for file in mapping_0000.tif mapping_0000_x.tif mapping_0000_y.tif mapping_0001.tif "
+          "mapping_0001_x.tif mapping_0001_y.tif; do cp '" +
+              (root / "fixtures").string() + "/'\"$file\" \"$file\"; done\n"),
+      "reframe-only NONA fixture must be created");
+  ::setenv("HM_PANO_MODIFY", tool.c_str(), 1);
+  ::setenv("HM_NONA", reframe_nona.c_str(), 1);
+  ::setenv("HM_PTO_GEN", (root / "forbidden-reframe-pto-gen").c_str(), 1);
+  ::setenv("HM_AUTOOPTIMISER", (root / "forbidden-reframe-autooptimiser").c_str(), 1);
+  std::vector<hm::stitching::FeatureMatch> forbidden_matches(16, {{10, 12}, {11, 12}, 1.0f});
+  const auto forbidden_solve = HuginProject::Configure(game, forbidden_matches, HuginProject::Options{});
+  ok &= expect(
+      absl::IsFailedPrecondition(forbidden_solve) &&
+          forbidden_solve.message().find("pending reframe") != std::string::npos && unchanged(),
+      "full Hugin calibration cannot bypass an active reframe request");
+  std::ofstream(game / "config.yaml") << "hstream_ui: {stitching_calibration: {reframe: null}}\n";
+  const auto no_request = HuginProject::Configure(game, forbidden_matches, HuginProject::Options{});
+  std::ofstream(game / "config.yaml") << pending_config;
+  ok &= expect(
+      absl::IsNotFound(no_request) && no_request.message().find("pending reframe") == std::string::npos && unchanged(),
+      "a null reframe marker permits ordinary calibration to reach the unavailable optimizer tools");
+
+  HuginProject::ReframeOptions request;
+  request.expected_source_generation = *source_generation;
+  request.projection = hm::stitching::StitchProjection::kGeneralPanini;
+  request.projection_parameters = {100, 0, 0};
+  request.projection_framing.auto_canvas = true;
+  request.projection_framing.rotation_degrees = {25, 0, 0};
+  request.max_canvas_dimension = 64;
+  size_t validations = 0;
+  bool reject_commit = false;
+  request.validate_source = [&]() -> absl::Status {
+    ++validations;
+    if (reject_commit && validations == 2)
+      return absl::AbortedError("Reframe request superseded during rendering");
+    return absl::OkStatus();
+  };
+  bool config_saw_final_geometry = false;
+  request.build_config = [&](const fs::path& staging) -> absl::StatusOr<std::string> {
+    const auto pose = HuginProject::ParseCameraPose(read_text_file(staging / "autooptimiser_out.pto"), 0);
+    config_saw_final_geometry = pose.ok() && std::abs(pose->yaw - 25) < 1e-9 && fs::exists(staging / "panorama.tif");
+    return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: reframe-fixture\n    status: complete\n"
+           "    rink_mask_status: pending\n";
+  };
+  auto rejected = request;
+  rejected.projection_framing.auto_canvas = false;
+  ok &= expect(
+      absl::IsFailedPrecondition(HuginProject::Reframe(game, rejected)) && unchanged(),
+      "unsupported legacy fixed-canvas reframing preserves all published artifacts");
+  rejected = request;
+  rejected.expected_source_generation += "-superseded";
+  ok &= expect(
+      absl::IsAborted(HuginProject::Reframe(game, rejected)) && unchanged(),
+      "reframing rejects a replaced source generation before running tools");
+  reject_commit = true;
+  validations = 0;
+  const auto superseded = HuginProject::Reframe(game, request);
+  ok &= expect(
+      absl::IsAborted(superseded) && validations == 2 && unchanged(),
+      "reframing revalidates ownership after rendering and preserves the complete source on conflict");
+  if (!superseded.ok() && !absl::IsAborted(superseded))
+    std::cerr << "Reframe fixture failed before commit validation: " << superseded << '\n';
+  reject_commit = false;
+  bool cancelled = false;
+  auto cancel_request = request;
+  cancel_request.is_cancelled = [&] { return cancelled; };
+  cancel_request.progress = [&](const std::string& stage, const std::string& phase, const std::string&) {
+    if (stage == "projection" && phase == "complete")
+      cancelled = true;
+  };
+  ok &= expect(
+      absl::IsCancelled(HuginProject::Reframe(game, cancel_request)) && unchanged(),
+      "cancelling the staged view preserves every source artifact and pending request");
+  ::setenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG", "1", 1);
+  const auto failed = HuginProject::Reframe(game, request);
+  ::unsetenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG");
+  ok &= expect(
+      !failed.ok() && HuginProject::Recover(game).ok() && unchanged(),
+      "reframe publication failure rolls back maps and config together");
+  ::setenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG", "1", 1);
+  const auto interrupted = HuginProject::Reframe(game, request);
+  ::unsetenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG");
+  const auto recovered = HuginProject::Recover(game);
+  ok &= expect(
+      !interrupted.ok() && recovered.ok() && config_saw_final_geometry,
+      "reframe recovery commits the complete view after interrupted config-aware publication");
+  const std::string reframed = read_text_file(game / "autooptimiser_out.pto");
+  const auto left = HuginProject::ParseCameraPose(reframed, 0);
+  const auto right = HuginProject::ParseCameraPose(reframed, 1);
+  ok &= expect(
+      left.ok() && right.ok() && left->yaw == 25 && right->yaw == 45 &&
+          read_binary_file(game / "hm_project.pto") == original["hm_project.pto"] &&
+          read_binary_file(game / "left.png") == original["left.png"] &&
+          read_binary_file(game / "right.png") == original["right.png"] &&
+          YAML::LoadFile((game / "config.yaml").string())["hstream_ui"]["stitching_calibration"]["status"]
+                  .as<std::string>() == "complete",
+      "reframing retains solved alignment and exact inputs without calling pto_gen or autooptimiser");
+  ok &= expect(
+      absl::IsAborted(HuginProject::Reframe(game, request)),
+      "a consumed source generation cannot authorize another reframe after commit");
+  ::setenv("HM_PANO_MODIFY", previous_pano.c_str(), 1);
+  ::setenv("HM_PTO_GEN", previous_pto.c_str(), 1);
+  ::setenv("HM_AUTOOPTIMISER", previous_optimizer.c_str(), 1);
+  ::setenv("HM_NONA", previous_nona.c_str(), 1);
+  return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -426,6 +719,38 @@ int main(int argc, char** argv) {
     return write_native_enblend_fixture() ? 0 : 1;
   ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   bool ok = true;
+  const std::string alignment_source =
+      "p f2 w100 h50 v180\n"
+      "i w64 h48 f0 v100 r0 p0 y10 n\"left.png\"\n"
+      "i w64 h48 f0 v100 r0 p0 y30 n\"right.png\"\n"
+      "c n0 N1 x10 y12 X11 Y12 t0\n";
+  // Recorded output from pano_modify --rotate=7,-4,3. Noncommuting rotations
+  // exercise the matrix convention rather than comparing Euler differences.
+  const std::string alignment_rotated =
+      "p f2 w200 h100 v180\n"
+      "i w64 h48 f0 v100 r2.25927630047816 p-4.45997267347576 y17.0167980111179 n\"left.png\"\n"
+      "i w64 h48 f0 v100 r0.594426988455201 p-4.96315542054792 y37.0790242342401 n\"right.png\"\n"
+      "c n0 N1 x10 y12 X11 Y12 t0\n";
+  ok &= expect(
+      hm::stitching::HuginProject::ValidateReframeAlignment(alignment_source, alignment_rotated, {0, 0, 0}, {7, -4, 3})
+          .ok(),
+      "reframe validation accepts a common Hugin rotation without changing relative camera alignment");
+  ok &= expect(
+      hm::stitching::HuginProject::ValidateReframeAlignment(alignment_rotated, alignment_source, {7, -4, 3}, {0, 0, 0})
+          .ok(),
+      "reframe validation accepts undoing a noncommuting published rotation");
+  ok &= expect(
+      !hm::stitching::HuginProject::ValidateReframeAlignment(alignment_source, alignment_source, {0, 0, 0}, {7, -4, 3})
+           .ok(),
+      "a projection tool that ignores requested view rotation is rejected");
+  for (const auto& change : std::vector<std::pair<std::string, std::string>>{
+           {"v100", "v101"}, {"x10", "x11"}, {"y30", "y31"}, {"right.png", "wrong.png"}}) {
+    std::string changed = alignment_source;
+    changed.replace(changed.find(change.first), change.first.size(), change.second);
+    ok &= expect(
+        !hm::stitching::HuginProject::ValidateReframeAlignment(alignment_source, changed, {0, 0, 0}, {0, 0, 0}).ok(),
+        "reframe validation rejects changed intrinsics, control points, relative pose, or image identity");
+  }
   std::vector<hm::stitching::FeatureMatch> matches;
   for (int i = 0; i < 16; ++i) {
     matches.push_back({{i + 0.25f, i + 1.5f}, {i + 2.75f, i + 3.125f}, 0.9f});
@@ -676,7 +1001,7 @@ int main(int argc, char** argv) {
               "fixtures='" +
               fixtures.string() +
               "'\n"
-              "if grep -q ' w64 ' autooptimiser_out.pto; then fixtures='" +
+              "if grep -q '^p .* w64 ' autooptimiser_out.pto; then fixtures='" +
               rounding_overflow_fixtures.string() +
               "'; fi\n"
               "for file in mapping_0000.tif mapping_0000_x.tif mapping_0000_y.tif mapping_0001.tif "
@@ -831,6 +1156,8 @@ int main(int argc, char** argv) {
         !published_right.empty() && published_right.at<cv::Vec3b>(0, 0) == cv::Vec3b(21, 22, 23),
         "Hugin publication must atomically install its private right input");
   }
+
+  ok &= test_owned_solve_publication(root, matches, options);
 
   const fs::path leveling_selection_game = root / "leveling-selection-game";
   fs::create_directories(leveling_selection_game);
@@ -1014,6 +1341,8 @@ int main(int argc, char** argv) {
           read_binary_file(root / "game" / "seam_file.png") == read_binary_file(promoted_game / "seam_file.png") &&
           read_binary_file(root / "game" / "panorama.tif") == read_binary_file(promoted_game / "panorama.tif"),
       "experiment promotion must republish validated maps and seam under a fresh generation without rerendering");
+
+  ok &= test_reframe_publication(root);
 
   const std::string config_before_failed_selection = read_text_file(promoted_game / "config.yaml");
   const std::string generation_before_failed_selection = promoted_generation.ok() ? *promoted_generation : "";

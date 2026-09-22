@@ -2545,7 +2545,8 @@ play-tracker:
           loaded.ok() &&
               (changed ? absl::IsFailedPrecondition(reconciled.status()) : reconciled.ok() && !*reconciled) &&
               (changed ? absl::IsFailedPrecondition(persisted) : persisted.ok()) &&
-              YAML::Dump(saved) == YAML::Dump(before_override) && YAML::Dump(after_persist) == YAML::Dump(before_override) &&
+              YAML::Dump(saved) == YAML::Dump(before_override) &&
+              YAML::Dump(after_persist) == YAML::Dump(before_override) &&
               hm::get_node(overridden.config(), "stitching.calibration_frame_selection").has_value() &&
               overridden.config()["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08",
           "Reference-time changes must fail without changing the saved player frames; unchanged overrides must "
@@ -5054,6 +5055,38 @@ play-tracker:
       "Forced configuration must abort before using or deleting a superseding artifact generation");
 
   const fs::path runtime_claim_dir = games / "runtime-claim";
+  {
+    const fs::path reframe_dir = games / "protected-reframe";
+    fs::create_directories(reframe_dir);
+    YAML::Node protected_config = YAML::Clone(stale_force_config);
+    auto calibration = protected_config["hstream_ui"]["stitching_calibration"];
+    calibration["invalidation_id"] = "protected-view";
+    calibration["frame_count"] = 4;
+    calibration["stale_from"] = "canvas";
+    calibration["artifacts_invalidated"] = false;
+    calibration["reframe"] = "malformed-but-must-preserve-the-alignment";
+    const std::string saved = YAML::Dump(protected_config) + "\n";
+    ok &= expect(hm::stitching::publish_game_config(reframe_dir, saved).ok(), "pending view fixture must publish");
+    std::ofstream(reframe_dir / "autooptimiser_out.pto") << "saved accepted alignment\n";
+    hm::Configurator protected_view("protected-reframe", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    ok &= expect(protected_view.configure().ok(), "pending view must load without triggering cleanup");
+    const auto launch = protected_view.complete_configuration(false, false, false, "protected-view");
+    std::ifstream after_file(reframe_dir / "config.yaml");
+    const std::string after((std::istreambuf_iterator<char>(after_file)), std::istreambuf_iterator<char>());
+    ok &= expect(
+        !launch.ok() && after == saved && fs::exists(reframe_dir / "autooptimiser_out.pto"),
+        "invalid reframe must fail before pending-generation auto-clean or settings publication");
+    ok &= expect(
+        !hm::stitching::clean_stitching_artifacts(reframe_dir.string(), "protected-view").ok() &&
+            fs::exists(reframe_dir / "autooptimiser_out.pto"),
+        "native cleanup cannot remove the source of a pending view request");
+    const auto explicitly_cleaned = protected_view.complete_configuration(false, true, false, "protected-view");
+    const auto cleaned = YAML::LoadFile((reframe_dir / "config.yaml").string());
+    ok &= expect(
+        absl::IsCancelled(explicitly_cleaned) && !fs::exists(reframe_dir / "autooptimiser_out.pto") &&
+            !cleaned["hstream_ui"]["stitching_calibration"]["reframe"].IsDefined(),
+        "explicit CLI Clean must clear pending intent before intentionally deleting its source");
+  }
   fs::create_directories(runtime_claim_dir);
   YAML::Node runtime_claim_config(YAML::NodeType::Map);
   runtime_claim_config["pipeline"]["application"]["complete-configuration"] = "1";

@@ -154,5 +154,10 @@ checking every input digest and requiring no new player search or frame capture.
 on-ice people for the requested pair count; unavailable coverage is intentionally a failed smoke test.
 
 Re-leveling remains available for completed calibration, including the current version-10 metadata. Saving revised
-angles invalidates downstream canvas and rink artifacts while retaining the selected frame plan and input bundle.
-The current rebuild path can repeat feature matching on those saved PNGs; it has no separate post-matching resume.
+angles retains the selected frame plan, input bundle, and optimized NONA alignment. Rebuilding the view runs only
+projection, maps, seam, panorama, and dependent rink work. Cancel/retry keeps that source alignment; it cannot fall
+back to matching. Legacy projects require AUTO canvas for this operation. Changing a solve input, such as the
+control-point budget, requests a new solve using the retained frames. Selecting an ordinary historical candidate
+at the same frame count cannot silently remove Main's player selection.
+
+See [the alignment preservation design](preserve-stitching-alignment-design.md) for ownership and retry behavior.

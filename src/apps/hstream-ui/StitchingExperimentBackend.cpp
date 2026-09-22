@@ -275,6 +275,8 @@ absl::Status configure_candidate(
     hm::stitching::write_stitch_projection_framing(config, *framing);
   }
   YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+  // A new candidate owns its own solve, never Main's pending view edit.
+  calibration.remove("reframe");
   calibration["control_points"] = settings.control_points;
   calibration["frame_count"] = settings.frame_count;
   calibration["status"] = "pending";
@@ -780,6 +782,15 @@ absl::Status PromoteStitchingExperiment(
     const fs::path& game_directory) {
   return hm::stitching::HuginProject::PromoteArtifactsAndConfig(
       experiment.game_directory, game_directory, [&]() -> absl::StatusOr<std::string> {
+        try {
+          const YAML::Node source = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
+          const YAML::Node calibration = source["hstream_ui"]["stitching_calibration"];
+          const YAML::Node request = calibration["reframe"];
+          if (calibration["status"].as<std::string>("") != "complete" || (request && !request.IsNull()))
+            return absl::FailedPreconditionError("Only a completed experiment without a pending view edit can be used");
+        } catch (const YAML::Exception& error) {
+          return absl::InvalidArgumentError("Invalid experiment calibration state: " + std::string(error.what()));
+        }
         std::string selected;
         HM_ASSIGN_OR_RETURN(
             selected,
@@ -804,6 +815,21 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     HM_RETURN_IF_ERROR(reconcile_selected_video_paths(current, selected, game_config.parent_path()));
     YAML::Node selected_stitching = selected["stitching"];
     YAML::Node current_stitching = current["stitching"];
+    const YAML::Node request = selected["hstream_ui"]["stitching_calibration"]["reframe"];
+    if (request && !request.IsNull())
+      return absl::FailedPreconditionError("The selected experiment still has a pending view edit");
+    const YAML::Node retained_plan = current_stitching["calibration_frame_selection"];
+    const YAML::Node selected_plan = selected_stitching["calibration_frame_selection"];
+    if (retained_plan && !retained_plan.IsNull() && (!selected_plan || selected_plan.IsNull())) {
+      hm::stitching::PlayerFrameSelectionPlan plan;
+      HM_ASSIGN_OR_RETURN(plan, hm::stitching::ParsePlayerFrameSelectionPlan(retained_plan));
+      const size_t selected_count = selected_stitching["calibration_frame_count"].as<size_t>(
+          selected["hstream_ui"]["stitching_calibration"]["frame_count"].as<size_t>(0));
+      if (selected_count == 0 || selected_count == plan.selected.size())
+        return absl::FailedPreconditionError(
+            "This ordinary candidate would replace the saved player-rich frames at the same frame count. "
+            "Choose a candidate using those frames, or explicitly forget the selection first.");
+    }
     for (const char* key :
          {"calibration_frame_count",
           "calibration_frame_selection",
@@ -827,6 +853,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
     calibration["status"] = "complete";
     calibration["rink_mask_status"] = "pending";
+    calibration.remove("reframe");
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");

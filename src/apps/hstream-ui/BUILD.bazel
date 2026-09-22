@@ -359,6 +359,7 @@ cc_library(
         "//src/libs/stitching:live_output_epoch",
         "//src/libs/stitching:live_stitching_generation",
         "//src/libs/stitching:stitching_algorithms",
+        "//src/libs/stitching:stitching_reframe",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],

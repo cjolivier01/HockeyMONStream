@@ -83,13 +83,23 @@ struct HStreamWindowTestAccess {
   static bool configuredDrivegptDatabaseDefault(HStreamWindow* window) {
     return window->baseline_config_["hstream_ui"]["drivegpt_database"]["enabled"].as<bool>();
   }
+  static hm::stitching::StitchCameraSelection defaultCameraSelection(HStreamWindow* window) {
+    return window->default_camera_selection_;
+  }
   static QStringList standaloneArguments(HStreamWindow* window) {
     return window->pipelineArguments(true);
+  }
+  static bool savedControlConfigLoaded(HStreamWindow* window) {
+    return window->saved_control_config_load_error_.isEmpty();
+  }
+  static void setActiveStitchingReframe(HStreamWindow* window, bool active) {
+    window->active_stitching_reframe_ = active;
   }
   static void setTestLevelingRotation(HStreamWindow* window, double pitch) {
     window->loaded_projection_framing_.rotation_degrees = {0.0, pitch, 0.0};
     window->loaded_projection_framing_.rotation_inherited = false;
     window->updateRinkLevelingControls();
+    window->updatePresetDirtyState();
   }
   static bool rinkLevelingInputsUnchanged(HStreamWindow* window) {
     return window->rinkLevelingInputsUnchanged();
@@ -387,20 +397,22 @@ SliderStyleGeometry slider_style_geometry(const QSlider* slider) {
   };
 }
 
-bool write_tiff_fixture(const fs::path& path) {
+bool write_tiff_fixture(const fs::path& path, uint32_t width = 1, uint32_t height = 1) {
   TIFF* tiff = TIFFOpen(path.c_str(), "w");
   if (tiff == nullptr)
     return false;
-  TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, 1);
-  TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, 1);
+  TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, height);
   TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, 1);
   TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, 16);
   TIFFSetField(tiff, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_UINT);
   TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
   TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
   TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
-  uint16_t value = 0;
-  const bool written = TIFFWriteScanline(tiff, &value, 0, 0) >= 0;
+  std::vector<uint16_t> values(width, 0);
+  bool written = true;
+  for (uint32_t row = 0; row < height && written; ++row)
+    written = TIFFWriteScanline(tiff, values.data(), row, 0) >= 0;
   TIFFClose(tiff);
   return written;
 }
@@ -3161,6 +3173,64 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_PRECALIBRATION_STDERR");
   qunsetenv("HSTREAM_UI_TEST_AFTER_PRECALIBRATION_STDERR_DELAY_MS");
 
+  // A completed solve can still need a Program rink mask. Drive the real
+  // launch/stop path while supplying only those downstream backend milestones.
+  for (const std::string terminal : {"failure", "cancel", "success", "reframe-failure", "failure-before-start"}) {
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i)
+      QTest::qWait(10);
+    const fs::path mask_config_path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    YAML::Node published_solve = YAML::LoadFile(mask_config_path.string());
+    published_solve["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "pending";
+    // Native artifact publication retains this cleanup-satisfied marker even
+    // though the solve itself is complete.
+    published_solve["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
+    const auto publish =
+        hm::stitching::publish_game_config(mask_config_path.parent_path(), YAML::Dump(published_solve) + "\n");
+    if (!publish.ok()) {
+      activate(stop);
+      return expect(false, "Could not prepare the completed-solve rink-mask fixture");
+    }
+    HStreamWindowTestAccess::calibrationOutput(
+        window,
+        terminal == "failure-before-start" ? "HSTREAM_CALIBRATION stage=calibration status=failed"
+                                           : "HSTREAM_CALIBRATION stage=rink-mask status=started");
+    const auto mask_started = YAML::LoadFile(mask_config_path.string());
+    if (!expect(
+            dialog->isVisible() &&
+                (terminal == "failure-before-start" ||
+                 rink_stage->property("calibrationState").toString() == "active") &&
+                YAML::Dump(mask_started) == YAML::Dump(published_solve),
+            "Starting downstream rink-mask work must retain the published complete solve and its reframe eligibility")) {
+      activate(stop);
+      return false;
+    }
+    if (terminal == "cancel") {
+      activate(cancel);
+    } else if (terminal == "success") {
+      HStreamWindowTestAccess::calibrationOutput(window, "HSTREAM_CALIBRATION stage=rink-mask status=complete");
+      HStreamWindowTestAccess::calibrationOutput(window, "HSTREAM_CALIBRATION stage=calibration status=complete");
+      HStreamWindowTestAccess::calibrationOutput(window, "HSTREAM_CALIBRATION stage=playback-restart status=complete");
+      published_solve["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+    } else {
+      // Reframe publication may finish before mask generation fails. The
+      // active operation flag must not override the newer complete disk state.
+      HStreamWindowTestAccess::setActiveStitchingReframe(window, terminal == "reframe-failure");
+      HStreamWindowTestAccess::calibrationOutput(
+          window, "HSTREAM_CALIBRATION stage=calibration status=failed message=Rink-mask generation failed");
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i)
+      QTest::qWait(10);
+    const auto mask_finished = YAML::LoadFile(mask_config_path.string());
+    if (!expect(
+            YAML::Dump(mask_finished) == YAML::Dump(published_solve),
+            "Rink-mask failure/cancellation must preserve the completed source; success changes only mask completion"))
+      return false;
+    if (dialog->isVisible())
+      activate(ok);
+  }
+
   if (!set_test_calibration_status(window, "complete"))
     return false;
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
@@ -3692,7 +3762,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               camera_configuration->itemText(2) == "Insta Ace Pro 2" &&
               camera_configuration->itemData(2).toString() == "insta-ace-pro-2" &&
               camera_configuration->currentData().toString() == "gopro-mission-1" &&
-              camera_horizontal_fov->value() == 127.2 && camera_vertical_fov->value() == 95.0 &&
+              camera_horizontal_fov->value() ==
+                  HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
+              camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov &&
               projection_label->text() == "Projection" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
@@ -3714,6 +3786,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               !projection_auto_crop->isEnabled() && all_projection_layouts_legible && all_projection_artifacts_captured,
           "Algorithm controls must expose compatible projections in the earliest preview tab whose frames reflect "
           "their pipeline stage")) {
+    std::cerr << "algorithm state: camera=" << camera_configuration->currentData().toString().toStdString()
+              << " horizontal-fov=" << camera_horizontal_fov->value()
+              << " vertical-fov=" << camera_vertical_fov->value()
+              << " backend=" << mapping_backend->currentData().toString().toStdString()
+              << " autooptimizer=" << run_autooptimizer->isChecked() << "," << run_autooptimizer->isEnabled()
+              << " frame-time-enabled=" << stitch_frame_time->isEnabled()
+              << " max-width=" << stitch_max_output_width->value() << " cameras=" << camera_configuration->count()
+              << " program-tabs=" << program_control_tabs->count()
+              << " stitched-tabs=" << stitched_control_tabs->count() << " all-matchers=" << all_matchers_enabled
+              << " all-nona=" << all_nona_projections_enabled << " rect-only=" << only_rectilinear_enabled << '\n';
     return false;
   }
   auto controls_drawer_reclaims_preview_space =
@@ -4145,8 +4227,27 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       return false;
     }
   }
-  const int max_width_clean_commands = window->logText().count("stitching calibration clean command");
   stitch_max_output_width->setValue(4096);
+  const std::string unsupported_alignment = YAML::Dump(YAML::LoadFile(stitch_time_transition_config.string()));
+  const int unsupported_clean_commands = window->logText().count("stitching calibration clean command");
+  const int unsupported_launches = window->logText().count("pipeline started pid=");
+  qputenv("HSTREAM_UI_TEST_CANVAS_CHECK", "regenerate");
+  activate(start);
+  qunsetenv("HSTREAM_UI_TEST_CANVAS_CHECK");
+  if (!expect(
+          YAML::Dump(YAML::LoadFile(stitch_time_transition_config.string())) == unsupported_alignment &&
+              window->logText().count("stitching calibration clean command") == unsupported_clean_commands &&
+              window->logText().count("pipeline started pid=") == unsupported_launches &&
+              window->logText().contains("requires an optimized NONA alignment"),
+          "A view edit of an unsupported completed alignment must fail before cleanup or implicit matching"))
+    return false;
+  if (auto* result = window->findChild<QPushButton*>("stitchCalibrationOkButton"))
+    activate(result);
+  // Explicit Clean authorizes an ordinary solve for this synthetic OpenCV
+  // fixture, which has no optimized NONA source to reframe.
+  activate(clean_stitching);
+  stitch_max_output_width->setValue(4096);
+  const int max_width_clean_commands = window->logText().count("stitching calibration clean command");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "500");
   qputenv("HSTREAM_UI_TEST_CANVAS_CHECK", "regenerate");
@@ -4163,10 +4264,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               pending_max_width_calibration["stale_from"].as<std::string>() == "canvas" &&
               pending_max_width_calibration["artifacts_invalidated"].as<bool>() &&
               pending_max_width_calibration["invalidation_id"].IsScalar(),
-          "Changing max stitched width from a legacy completed config must invalidate canvas artifacts before playback") &&
+          "Changing max stitched width after an explicit clean must prepare canvas calibration before playback") &&
       expect(
           window->logText().count("stitching calibration clean command") == max_width_clean_commands + 1 &&
-              window->logText().contains("stitching calibration dependency canvas is stale"),
+              window->logText().contains(
+                  "rebuilding the full stitching calibration because dependency canvas is stale"),
           "Max stitched width changes must clean cached canvas-dependent artifacts");
   activate(stop);
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -4195,17 +4297,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
   }
   stitch_max_output_width->setValue(2048);
+  const std::string malformed_width_config = YAML::Dump(YAML::LoadFile(stitch_time_transition_config.string()));
+  const int malformed_width_launches = window->logText().count("pipeline started pid=");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "500");
   activate(start);
   const YAML::Node repaired_max_width = YAML::LoadFile(stitch_time_transition_config.string());
-  const bool malformed_max_width_repaired =
-      expect(
-          repaired_max_width["stitching"]["max_output_width"].as<int>() == 2048,
-          "Play must replace malformed existing max stitched width with the active UI value") &&
-      expect(
-          repaired_max_width["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending",
-          "Play must invalidate calibration after replacing malformed max stitched width");
+  const bool malformed_max_width_rejected = expect(
+      YAML::Dump(repaired_max_width) == malformed_width_config &&
+          window->logText().count("pipeline started pid=") == malformed_width_launches,
+      "Malformed completed source settings must reject the view edit without silently replacing or rematching it");
   activate(stop);
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
@@ -4213,8 +4314,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
-  if (!malformed_max_width_repaired)
+  if (!malformed_max_width_rejected)
     return false;
+  if (auto* result = window->findChild<QPushButton*>("stitchCalibrationOkButton"))
+    activate(result);
 
   {
     YAML::Node conflicting_width = YAML::LoadFile(stitch_time_transition_config.string());
@@ -4262,6 +4365,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
 
   stitch_max_output_width->setValue(0);
+  // The transport tests below start from a separate completed uncapped canvas;
+  // they do not request another view edit of the synthetic OpenCV fixture.
+  {
+    YAML::Node transport_config = YAML::LoadFile(stitch_time_transition_config.string());
+    transport_config["stitching"].remove("max_output_width");
+    const auto published = hm::stitching::publish_game_config(
+        stitch_time_transition_config.parent_path(), YAML::Dump(transport_config) + "\n");
+    if (!published.ok())
+      return expect(false, "Could not prepare the completed transport fixture");
+  }
   QApplication::processEvents();
 
   mode->setCurrentIndex(mode->findData("program"));
@@ -8860,7 +8973,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(create);
   const bool camera_defaults_available = expect(
       camera_configuration->count() == 3 && camera_configuration->currentData().toString() == "gopro-mission-1" &&
-          camera_horizontal_fov->value() == 127.2 && camera_vertical_fov->value() == 95.0,
+          camera_horizontal_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
+          camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov,
       "A new game must expose all three camera presets and select the baseline GoPro Mission 1 defaults");
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   QApplication::processEvents();
@@ -9095,6 +9209,28 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(save);
   auto crop_preview_config = YAML::LoadFile(config_path.string());
   crop_preview_config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  crop_preview_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "ui-crop-completed-source";
+  crop_preview_config["hstream_ui"]["stitching_calibration"].remove("stale_from");
+  crop_preview_config["hstream_ui"]["stitching_calibration"].remove("artifacts_invalidated");
+  crop_preview_config["stitching"]["control_point_execution_provider"] = "cpu";
+  hm::stitching::StitchingBackendChoices crop_choices;
+  crop_choices.control_point_matcher = control_point_matcher->currentData().toString().toStdString();
+  crop_choices.mapping_backend = "nona";
+  crop_choices.projection = "cylindrical";
+  crop_choices.run_autooptimizer = true;
+  crop_choices.camera = {"gopro-mission-1", 126.5, 94.5};
+  const auto crop_framing = hm::stitching::read_stitch_projection_framing(crop_preview_config);
+  const auto crop_resolution = hm::stitching::read_control_point_resolution(crop_preview_config);
+  const auto crop_provider = hm::stitching::read_control_point_execution_provider(crop_preview_config);
+  if (!crop_framing.ok() || !crop_resolution.ok() || !crop_provider.ok())
+    return expect(false, "Completed crop source must have valid effective alignment settings");
+  crop_choices.projection_framing = *crop_framing;
+  crop_choices.control_point_resolution = *crop_resolution;
+  crop_choices.control_point_execution_provider = *crop_provider;
+  const auto crop_claim = hm::stitching::reserve_stitching_backend_generation_in_config(
+      crop_preview_config, "ui-crop-completed-source", crop_choices);
+  if (!expect(crop_claim.ok(), "Completed crop source must own its backend generation"))
+    return false;
   std::ofstream(config_path) << YAML::Dump(crop_preview_config) << '\n';
   activate(create);
   QTemporaryDir crop_tools;
@@ -9107,13 +9243,23 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   QImage crop_image(800, 400, QImage::Format_RGB32);
   crop_image.fill(Qt::gray);
   const QByteArray crop_provenance =
-      "version=8\nmapping-backend=nona\nprojection=cylindrical\nprojection-parameters=none\n"
+      "version=10\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=800\nsource-canvas-height=400\n"
+      "canvas-width=800\ncanvas-height=240\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n"
+      "mapping-backend=nona\nprojection=cylindrical\nprojection-parameters=none\n"
       "projection-auto-fov=" +
       QByteArray::number(auto_fov->isChecked()) +
-      "\nprojection-auto-canvas=" + QByteArray::number(auto_canvas->isChecked()) +
       "\nprojection-horizontal-fov=" + QByteArray::number(horizontal_fov->value()) +
+      "\nprojection-auto-canvas=" + QByteArray::number(auto_canvas->isChecked()) +
+      "\nprojection-auto-crop=" + QByteArray::number(auto_crop->isChecked()) +
+      "\ncamera-configuration=gopro-mission-1\ncamera-horizontal-fov=126.5\ncamera-vertical-fov=94.5\n"
+      "control-point-matcher=" +
+      QByteArray::fromStdString(crop_choices.control_point_matcher) +
+      "\nakaze-calibration-fingerprint=not-applicable"
       "\nprojection-rotation-0=0\nprojection-rotation-1=-35\nprojection-rotation-2=3\n"
-      "camera-configuration=gopro-mission-1\ncamera-horizontal-fov=126.5\ncamera-vertical-fov=94.5\n";
+      "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0.3\nprojection-crop-3=0.9\n"
+      "control-point-resolution=" +
+      QByteArray(hm::stitching::ControlPointResolutionName(*crop_resolution)) +
+      "\ncalibration-frame-selection=none\ncalibration-frame-diagnostics=none\n";
   if (!expect(
           crop_tools.isValid() && crop_image.save(crop_game.filePath("left.png")) &&
               crop_image.save(crop_game.filePath("right.png")) &&
@@ -9131,6 +9277,19 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
               write_crop_fixture(crop_tools.filePath("nona"), "#!/bin/sh\ncp left.png full.png\n", true),
           "Crop preview fixture must be available"))
     return false;
+  if (!QFile::copy(crop_game.filePath("autooptimiser_out.pto"), crop_game.filePath("hm_project.pto")) ||
+      !crop_image.save(crop_game.filePath("seam_file.png")) ||
+      !write_tiff_fixture(fs::path(crop_game.path().toStdString()) / "panorama.tif", 800, 240))
+    return expect(false, "Completed crop source must contain its original project, seam and panorama");
+  for (const char* name :
+       {"mapping_0000.tif",
+        "mapping_0000_x.tif",
+        "mapping_0000_y.tif",
+        "mapping_0001.tif",
+        "mapping_0001_x.tif",
+        "mapping_0001_y.tif"})
+    if (!write_tiff_fixture(fs::path(crop_game.path().toStdString()) / name, 800, 240))
+      return expect(false, "Completed crop source must contain its published mapping TIFFs");
   const QByteArray crop_original_path = qgetenv("PATH");
   qputenv("PATH", crop_tools.path().toUtf8() + ":/usr/bin:/bin");
   // Editing an inactive projection must not bypass review of the unchanged,
@@ -9261,6 +9420,53 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     }
   }
   qputenv("PATH", crop_original_path);
+  HStreamWindowTestAccess::setTestLevelingRotation(window, -36);
+  if (!expect(save->isEnabled(), "Changing the completed view must enable Save before capturing a reframe"))
+    return false;
+  activate(save);
+  const auto saved_reframe = YAML::LoadFile(config_path.string());
+  YAML::Node saved_intent;
+  lookup_yaml_path(saved_reframe, {"hstream_ui", "stitching_calibration", "reframe"}, &saved_intent);
+  if (!expect(
+          !save->isEnabled() && saved_intent.IsMap() && saved_intent["source_generation"].IsScalar() &&
+              saved_reframe["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending",
+          "Saving a view edit of a valid completed NONA source must capture its reframe intent"))
+    return false;
+  auto* reframe_start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* reframe_stop = require_child<QPushButton>(window, "stopPipelineButton");
+  if (!reframe_start || !reframe_stop)
+    return false;
+  const int clean_commands_before_reframe = window->logText().count("stitching calibration clean command");
+  activate(reframe_start);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i)
+    QTest::qWait(10);
+  const auto launched_reframe = YAML::LoadFile(config_path.string());
+  const auto launched_intent = launched_reframe["hstream_ui"]["stitching_calibration"]["reframe"];
+  const bool reframe_launched = expect(
+      window->pipelineStateText() == "PLAYING" && launched_intent.IsMap() &&
+          launched_intent["desired_owner"].as<std::string>() != saved_intent["desired_owner"].as<std::string>() &&
+          launched_intent["source_generation"].as<std::string>() ==
+              saved_intent["source_generation"].as<std::string>() &&
+          YAML::Dump(launched_intent["source_image_sha256"]) == YAML::Dump(saved_intent["source_image_sha256"]) &&
+          window->logText().count("stitching calibration clean command") == clean_commands_before_reframe &&
+          HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_RINK_LEVELING_FLOW").isEmpty() &&
+          HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_PROJECTION_CROP_FLOW").isEmpty(),
+      "Play must rebind the saved view request to a fresh owner without cleaning or reopening accepted geometry");
+  activate(reframe_stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i)
+    QTest::qWait(10);
+  const auto cancelled_reframe = YAML::LoadFile(config_path.string());
+  auto preserved_artifacts = hm::stitching::lock_canvas_constraint_artifacts(config_path.parent_path());
+  if (!preserved_artifacts.ok())
+    return expect(false, "Could not inspect the cancelled reframe source generation");
+  const auto preserved_generation = hm::stitching::stitch_artifact_generation_id_locked(config_path.parent_path());
+  preserved_artifacts->reset();
+  if (!reframe_launched ||
+      !expect(
+          YAML::Dump(cancelled_reframe) == YAML::Dump(launched_reframe) && preserved_generation.ok() &&
+              *preserved_generation == saved_intent["source_generation"].as<std::string>(),
+          "Cancelling the launched reframe must preserve its original published generation and pending request"))
+    return false;
   camera_horizontal_fov->setValue(126.75);
   activate(save);
   if (!expect(
@@ -10288,6 +10494,27 @@ bool test_camera_controls(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_CANVAS_CHECK", "compatible");
   activate(save);
   qunsetenv("HSTREAM_UI_TEST_CANVAS_CHECK");
+  if (!expect(
+          save->isEnabled() && YAML::Dump(YAML::LoadFile(config.string())) == YAML::Dump(after_conflicting_width_save),
+          "Even a compatible cap edit must preserve an unverifiable completed source without silently rematching"))
+    return false;
+  // Continue alias-migration coverage with an explicitly unsolved fixture.
+  // It has no completed alignment that a geometry save could adopt.
+  {
+    YAML::Node unsolved = YAML::Clone(after_conflicting_width_save);
+    auto pending = unsolved["hstream_ui"]["stitching_calibration"];
+    pending["status"] = "pending";
+    pending["rink_mask_status"] = "pending";
+    pending["stale_from"] = "canvas";
+    pending["artifacts_invalidated"] = true;
+    std::ofstream(config) << YAML::Dump(unsolved) << '\n';
+  }
+  activate(create);
+  bring_up_shadows->setValue(35);
+  stitch_max_output_width->setValue(0);
+  qputenv("HSTREAM_UI_TEST_CANVAS_CHECK", "compatible");
+  activate(save);
+  qunsetenv("HSTREAM_UI_TEST_CANVAS_CHECK");
   const YAML::Node after_max_width_auto = YAML::LoadFile(config.string());
   const YAML::Node after_max_width_auto_calibration = after_max_width_auto["hstream_ui"]["stitching_calibration"];
   if (!expect(
@@ -10298,19 +10525,20 @@ bool test_camera_controls(HStreamWindow* window) {
                   after_max_width_auto,
                   {"pipeline", "hmstitcher", "private-properties", "stitch_max_output_width"},
                   nullptr) &&
-              after_max_width_auto_calibration["status"].as<std::string>() == "complete" &&
-              !after_max_width_auto_calibration["stale_from"].IsDefined() &&
-              after_max_width_auto_calibration["rink_mask_status"].as<std::string>() == "complete" &&
-              !after_max_width_auto_calibration["artifacts_invalidated"].IsDefined(),
-          "Saving a nonbinding 4096 -> Auto change must preserve compatible canvas artifacts")) {
+              after_max_width_auto_calibration["status"].as<std::string>() == "pending" &&
+              after_max_width_auto_calibration["stale_from"].as<std::string>() == "canvas" &&
+              after_max_width_auto_calibration["rink_mask_status"].as<std::string>() == "pending" &&
+              after_max_width_auto_calibration["artifacts_invalidated"].as<bool>(),
+          "Saving an unsolved 4096 -> Auto change must normalize aliases while retaining its pending work")) {
     return false;
   }
   {
     YAML::Node native_only(YAML::NodeType::Map);
     native_only["pipeline"]["hmstitcher"]["properties"]["max_output_width"] = 2048;
     native_only["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 2048;
-    native_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
-    native_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+    native_only["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+    native_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "pending";
+    native_only["hstream_ui"]["stitching_calibration"]["stale_from"] = "canvas";
     std::ofstream out(config);
     out << native_only << "\n";
   }
@@ -10334,9 +10562,9 @@ bool test_camera_controls(HStreamWindow* window) {
                   after_native_width_auto,
                   {"pipeline", "hmstitcher", "private-properties", "stitch_max_output_width"},
                   nullptr) &&
-              after_native_width_auto_calibration["status"].as<std::string>() == "complete" &&
-              !after_native_width_auto_calibration["stale_from"].IsDefined(),
-          "Saving a compatible legacy native-only cap to Auto must migrate aliases without invalidating maps")) {
+              after_native_width_auto_calibration["status"].as<std::string>() == "pending" &&
+              after_native_width_auto_calibration["stale_from"].as<std::string>() == "canvas",
+          "Saving an unsolved legacy native-only cap to Auto must migrate aliases without completing its solve")) {
     return false;
   }
   {
@@ -12503,6 +12731,14 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
               window.logText().contains("stitching calibration marked stale: control-point limit"),
           "Changing stitching feature settings must regenerate from the same selected frame pairs"))
     return false;
+  HStreamWindowTestAccess::setTestLevelingRotation(&window, 0.25);
+  activate(save);
+  config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "features" &&
+              YAML::Dump(config["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_frame_plan),
+          "Saving a view edit after feature changes must preserve the earlier feature invalidation and selected plan"))
+    return false;
   const std::string saved_config = YAML::Dump(config);
   reference->setTime(QTime(0, 0, 8));
   activate(save);
@@ -12540,6 +12776,13 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
               config["stitching"]["calibration_frame_count"].as<int>() == 3 &&
               !config["stitching"]["calibration_frame_selection"].IsDefined(),
           "Saving a changed frame count must persist both timestamps and replace the promoted frame plan"))
+    return false;
+  HStreamWindowTestAccess::setTestLevelingRotation(&window, 0.5);
+  activate(save);
+  config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input",
+          "Saving a view edit after a count change must preserve the earlier input invalidation"))
     return false;
   activate(create);
   if (!expect(
@@ -12696,6 +12939,15 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
         YAML::Load("{hstream_ui: {show_leveling_dialog: []}}"),
         YAML::Load("{hstream_ui: {playback_start_time: '00:99:00'}}")}) {
     YAML::Node bad = YAML::Clone(config);
+    const YAML::Node retained_plan = test_selected_frame_plan(5);
+    const std::string retained_fingerprint = retained_plan["fingerprint"].as<std::string>();
+    bad["stitching"]["calibration_frame_selection"] = YAML::Clone(retained_plan);
+    bad["stitching"]["calibration_frame_count"] = 5;
+    bad["stitching"]["calibration_frame_inputs_fingerprint"] = retained_fingerprint;
+    bad["hstream_ui"]["stitching_calibration"]["frame_count"] = 5;
+    const fs::path retained_image = fixture / "player-frame-inputs" / retained_fingerprint / "left.png";
+    fs::create_directories(retained_image.parent_path());
+    std::ofstream(retained_image) << "retained selected image\n";
     for (const auto& group : invalid)
       for (const auto& value : group.second)
         bad[group.first.as<std::string>()][value.first.as<std::string>()] = value.second;
@@ -12706,6 +12958,64 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
             window.logText().count("could not load saved camera controls") == failures + 1 &&
                 playback->time() == QTime(0, 0) && !gyro->isChecked() && crop->isChecked(),
             "Invalid iteration YAML must fail the staged load without partially applying controls"))
+      return false;
+    QFile config_file(QString::fromStdString(config_path.string()));
+    if (!config_file.open(QIODevice::ReadOnly))
+      return false;
+    const QByteArray original_contents = config_file.readAll();
+    config_file.close();
+    const int launches_before = window.logText().count("pipeline started pid=");
+    const int rejected_before = window.logText().count("Game settings could not be loaded.");
+    control_points->setValue(control_points->value() + 1);
+    activate(save);
+    activate(start);
+    activate(clean);
+    for (const char* name : {"cameraExperimentsButton", "stitchingExperimentsButton"}) {
+      auto* experiments = require_child<QPushButton>(&window, name);
+      if (!experiments)
+        return false;
+      activate(experiments);
+    }
+    auto* export_job = require_child<QAction>(&window, "saveJobScriptAction");
+    if (!export_job)
+      return false;
+    export_job->trigger();
+    if (!config_file.open(QIODevice::ReadOnly))
+      return false;
+    const QByteArray resulting_contents = config_file.readAll();
+    config_file.close();
+    if (!expect(
+            resulting_contents == original_contents && fs::is_regular_file(retained_image) &&
+                window.logText().count("pipeline started pid=") == launches_before &&
+                window.logText().count("Game settings could not be loaded.") == rejected_before + 6 &&
+                !window.findChild<QDialog*>("cameraExperimentDialog") &&
+                !window.findChild<QDialog*>("stitchingExperimentDialog"),
+            "Failed YAML loading must block Save, Play, Clean, export and experiments without changing retained inputs"))
+      return false;
+    game_id->setText(QString::fromStdString(source.filename().string()));
+    activate(create);
+    if (!expect(
+            HStreamWindowTestAccess::savedControlConfigLoaded(&window),
+            "Switching to a valid game must clear the failed-load guard from the previous game"))
+      return false;
+    // A successful reload restores the authoritative count and clears the gate.
+    bad["stitching"]["sync_method"] = "audio";
+    bad["hstream_ui"]["show_crop_dialog"] = false;
+    bad["hstream_ui"]["show_leveling_dialog"] = false;
+    bad["hstream_ui"]["playback_start_time"] = "00:00:00";
+    std::ofstream(config_path) << YAML::Dump(bad) << '\n';
+    game_id->setText("ui-stitching-iterations");
+    activate(create);
+    playback->setTime(QTime(0, 0, 1));
+    activate(save);
+    const auto repaired = YAML::LoadFile(config_path.string());
+    if (!expect(
+            frames->value() == 5 && !save->isEnabled() &&
+                YAML::Dump(repaired["stitching"]["calibration_frame_selection"]) == YAML::Dump(retained_plan) &&
+                repaired["stitching"]["calibration_frame_inputs_fingerprint"].as<std::string>() ==
+                    retained_fingerprint &&
+                repaired["hstream_ui"]["playback_start_time"].as<std::string>() == "00:00:01",
+            "Repairing and reloading YAML must restore the retained count and permit unrelated saves"))
       return false;
   }
   YAML::Node malformed_plan = YAML::Clone(config);
@@ -12725,6 +13035,41 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
               window.logText().count("pipeline started pid=") == started_before_invalid_plan &&
               window.pipelineStateText() == "STOPPED" && window.logText().contains("Player frame selection:"),
           "An invalid selected plan without count bookkeeping must fail Save and Play without clearing or replacing it"))
+    return false;
+  YAML::Node malformed_reframe = YAML::Clone(config);
+  malformed_reframe["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_frame_plan);
+  malformed_reframe["stitching"]["calibration_frame_count"] = 2;
+  malformed_reframe["hstream_ui"]["stitching_calibration"]["frame_count"] = 2;
+  malformed_reframe["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  malformed_reframe["hstream_ui"]["stitching_calibration"]["stale_from"] = "canvas";
+  malformed_reframe["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "malformed-reframe-owner";
+  malformed_reframe["hstream_ui"]["stitching_calibration"]["reframe"]["version"] = 999;
+  std::ofstream(config_path) << YAML::Dump(malformed_reframe) << '\n';
+  const fs::path protected_source = fixture / "autooptimiser_out.pto";
+  std::ofstream(protected_source) << "preserved alignment\n";
+  activate(create);
+  playback->setTime(QTime(0, 0, 2));
+  activate(save);
+  const int launched_before_reframe = window.logText().count("pipeline started pid=");
+  activate(start);
+  std::ifstream source_file(protected_source);
+  const std::string protected_contents((std::istreambuf_iterator<char>(source_file)), std::istreambuf_iterator<char>());
+  if (!expect(
+          YAML::Dump(YAML::LoadFile(config_path.string())) == YAML::Dump(malformed_reframe) &&
+              protected_contents == "preserved alignment\n" &&
+              window.logText().count("pipeline started pid=") == launched_before_reframe &&
+              window.logText().contains("could not preserve the saved stitching alignment"),
+          "An invalid reframe must reject Save and Play before cleanup, preserving its request and alignment"))
+    return false;
+  activate(calibration_ok);
+  frames->setValue(3);
+  activate(save);
+  const auto replacement = YAML::LoadFile(config_path.string());
+  if (!expect(
+          !replacement["hstream_ui"]["stitching_calibration"]["reframe"].IsDefined() &&
+              !replacement["stitching"]["calibration_frame_selection"].IsDefined() &&
+              replacement["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input",
+          "An explicit count change must cancel even an invalid reframe while replacing the selected frame plan"))
     return false;
   return true;
 }

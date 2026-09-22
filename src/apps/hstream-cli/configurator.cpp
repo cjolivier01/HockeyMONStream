@@ -65,6 +65,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/stitching/StitchingReframe.h"
 
 namespace fs = std::filesystem;
 
@@ -5375,7 +5376,16 @@ absl::Status Configurator::setup_stitcher_and_masks(
     const bool enabled = get_node_value(pipeline, "hmstitcher.enable", FALSE);
     const bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", FALSE);
     const bool one_pass_mode = get_node_value(pipeline, "hmstitcher.one-pass-mode", FALSE);
-    if (enabled && (configure_only || one_pass_mode)) {
+    if (enabled && stitching::HasStitchingReframeIntent(config_)) {
+      if (!configure_only && !one_pass_mode)
+        return absl::FailedPreconditionError("The pending view edit requires a calibration-capable stitcher");
+      // Keep the old maps untouched until the worker commits their replacement.
+      // Reframing needs neither matcher models nor decoded calibration samples.
+      stitching_matcher_model_required_ = false;
+      stitching_calibration_required_ = true;
+      stitching_calibration_start_stage_ = "canvas";
+      validated_stitching_artifacts_.reset();
+    } else if (enabled && (configure_only || one_pass_mode)) {
       int max_output_width = 0;
       HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(pipeline));
       stitching::LockedStitchingArtifacts artifacts;
@@ -8489,6 +8499,7 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       calibration["stale_from"] = "input";
       calibration["artifacts_invalidated"] = false;
       calibration["invalidation_id"] = invalidation_id;
+      stitching::ClearStitchingReframeIntent(latest);
     }
 
     const absl::Status publish = stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n");
@@ -8592,6 +8603,7 @@ absl::Status Configurator::reconcile_selected_frame_count_override(
   calibration["artifacts_invalidated"] = false;
   calibration["invalidation_id"] = invalidation_id;
   calibration.remove("backend_generation");
+  stitching::ClearStitchingReframeIntent(latest);
   HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n"));
   private_config_ = YAML::Clone(latest);
   persisted_private_config_ = YAML::Clone(latest);
@@ -8844,6 +8856,100 @@ absl::Status Configurator::complete_configuration(
   }
   if (!clean_requested && has_active_hmstitcher)
     HM_RETURN_IF_ERROR(reconcile_selected_frame_count_override(clean_expected_invalidation_id));
+  if (has_stitching_cleanup_owner && (clean_requested || force) && stitching::HasStitchingReframeIntent(config_)) {
+    // Explicit clean/force supersedes the view request. Clear it before any
+    // deletion under the same artifact -> config lock order as publication.
+    auto artifacts = stitching::HuginProject::RecoverAndLock(game_dir);
+    if (!artifacts.ok())
+      return artifacts.status();
+    auto transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+    if (!transaction.ok())
+      return transaction.status();
+    try {
+      YAML::Node latest = YAML::LoadFile((game_dir / "config.yaml").string());
+      if (YAML::Dump(latest["hstream_ui"]["stitching_calibration"]) !=
+          YAML::Dump(private_config_["hstream_ui"]["stitching_calibration"]))
+        return absl::AbortedError("Calibration changed before explicit recalibration");
+      stitching::ClearStitchingReframeIntent(latest);
+      latest["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
+      HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n"));
+      config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(latest["hstream_ui"]["stitching_calibration"]);
+      private_config_ = YAML::Clone(latest);
+      persisted_private_config_ = YAML::Clone(latest);
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot cancel the pending view edit: " + std::string(error.what()));
+    }
+  }
+  if (!clean_requested && !force && has_active_hmstitcher &&
+      (get_node_value(private_config_, "hstream_ui.stitching_calibration.status", std::string()) == "complete" ||
+       stitching::HasStitchingReframeIntent(config_))) {
+    // Direct CLI geometry overrides need the same before-edit binding as the
+    // desktop controls. Capture before persisting the effective backend tuple.
+    auto artifacts = stitching::HuginProject::RecoverAndLock(game_dir);
+    if (!artifacts.ok())
+      return artifacts.status();
+    auto transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+    if (!transaction.ok())
+      return transaction.status();
+    try {
+      YAML::Node latest = YAML::LoadFile((game_dir / "config.yaml").string());
+      const std::string previous = YAML::Dump(latest);
+      const bool had_intent = stitching::HasStitchingReframeIntent(latest);
+      const YAML::Node before = merge_nodes(YAML::Clone(lower_layer_config_), YAML::Clone(latest), false);
+      YAML::Node desired = YAML::Clone(config_);
+      int width = 0;
+      HM_ASSIGN_OR_RETURN(width, effective_hmstitcher_max_output_width(pipeline));
+      desired["stitching"]["max_output_width"] = width;
+      gchar* generated = g_uuid_string_random();
+      if (!generated)
+        return absl::InternalError("Unable to create a stitching view owner");
+      const std::string owner = !clean_expected_invalidation_id.empty() ? clean_expected_invalidation_id
+          : had_intent ? get_node_value(latest, "hstream_ui.stitching_calibration.invalidation_id", std::string())
+                       : generated;
+      g_free(generated);
+      bool reframe = false;
+      HM_ASSIGN_OR_RETURN(
+          reframe, stitching::PrepareStitchingReframeIntentLocked(game_dir, before, desired, owner, latest));
+      if (reframe || (had_intent && !stitching::HasStitchingReframeIntent(latest))) {
+        if (previous != YAML::Dump(persisted_private_config_))
+          return absl::AbortedError("Game settings changed before preparing the requested stitching view");
+        for (const char* key :
+             {"projection",
+              "projection_parameters",
+              "projection_framing",
+              "max_output_width",
+              "control_point_matcher",
+              "control_point_resolution",
+              "control_point_execution_provider",
+              "mapping_backend",
+              "run_autooptimizer",
+              "camera_config",
+              "camera_fov"})
+          latest["stitching"][key] = YAML::Clone(desired["stitching"][key]);
+        // Record resolved framing even when the request inherited a rink angle.
+        stitching::StitchProjectionFraming framing;
+        HM_ASSIGN_OR_RETURN(framing, stitching::read_stitch_projection_framing(desired));
+        stitching::write_stitch_projection_framing(latest, framing);
+        latest["hstream_ui"].remove("generated_stitching_backend_choices");
+        YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
+        calibration["status"] = "pending";
+        calibration["rink_mask_status"] = "pending";
+        calibration["stale_from"] = reframe ? "canvas" : "input";
+        calibration["artifacts_invalidated"] = reframe;
+        calibration["invalidation_id"] = owner;
+        calibration.remove("backend_generation");
+        HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(latest) + "\n"));
+        private_config_ = YAML::Clone(latest);
+        persisted_private_config_ = YAML::Clone(latest);
+        config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(calibration);
+        config_["hstream_ui"].remove("generated_stitching_backend_choices");
+        config_["stitching"]["max_output_width"] = width;
+        loaded_generated_stitching_backend_choices_ = false;
+      }
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Cannot prepare the saved stitching alignment: " + std::string(error.what()));
+    }
+  }
   const std::string loaded_invalidation_id =
       get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string());
   const std::string loaded_status = get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string());
@@ -8859,6 +8965,20 @@ absl::Status Configurator::complete_configuration(
   bool frame_count_environment_enforced = false;
   bool stitching_artifacts_precleaned = false;
   const bool has_cleanup_owner = clean_requested ? has_stitching_cleanup_owner : has_active_hmstitcher;
+  const bool reframe_requested = has_active_hmstitcher && stitching::HasStitchingReframeIntent(config_);
+  if (reframe_requested) {
+    auto artifacts = stitching::HuginProject::RecoverAndLock(game_dir);
+    if (!artifacts.ok())
+      return artifacts.status();
+    auto transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
+    if (!transaction.ok())
+      return transaction.status();
+    const auto intent = stitching::ValidateStitchingReframeIntentLocked(game_dir, config_);
+    if (!intent.ok())
+      return intent.status();
+    if (intent->desired_owner != effective_invalidation_id)
+      return absl::AbortedError("The pending view edit belongs to a different calibration owner");
+  }
   if (!clean_requested && has_active_hmstitcher) {
     HM_RETURN_IF_ERROR(persist_effective_stitching_backend_choices(effective_invalidation_id));
   }
@@ -8999,7 +9119,7 @@ absl::Status Configurator::complete_configuration(
   // launches: a direct CLI stitch-frame change can reuse the caller's owner
   // while still requiring a full input-stage invalidation.
   const bool auto_clean_pending_invalidation = has_active_hmstitcher && loaded_status == "pending" &&
-      !effective_invalidation_id.empty() && !stitching_artifacts_precleaned;
+      !effective_invalidation_id.empty() && !stitching_artifacts_precleaned && !reframe_requested;
   std::string retained_selection_fingerprint;
   if (has_cleanup_owner)
     HM_ASSIGN_OR_RETURN(retained_selection_fingerprint, stitching::player_frame_selection_fingerprint(config_));
@@ -9051,7 +9171,7 @@ absl::Status Configurator::complete_configuration(
   const bool is_camera_source = !camera_sources.empty();
 
   bool pipeline_has_hmstitcher = has_active_hmstitcher;
-  if (pipeline_has_hmstitcher) {
+  if (pipeline_has_hmstitcher && !reframe_requested) {
     HM_RETURN_IF_ERROR(invalidate_rotation_dependent_cache_if_needed(game_dir));
     HM_RETURN_IF_ERROR(invalidate_canvas_dependent_cache_if_needed(game_dir));
   }
@@ -9099,9 +9219,15 @@ absl::Status Configurator::complete_configuration(
         if (!current_invalidation_id.empty()) {
           YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
           if (!matching_pending_claim) {
-            calibration["status"] = "pending";
+            // A missing rink mask does not invalidate an already solved
+            // alignment. Keeping complete makes cancel/reopen followed by a
+            // view edit eligible to reuse that exact solve.
+            calibration["status"] = calibration_start_stage == "rink-mask" ? "complete" : "pending";
             calibration["rink_mask_status"] = "pending";
-            calibration["stale_from"] = calibration_start_stage;
+            if (calibration_start_stage == "rink-mask")
+              calibration.remove("stale_from");
+            else
+              calibration["stale_from"] = calibration_start_stage;
             calibration["artifacts_invalidated"] = true;
             HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(current) + "\n"));
           }

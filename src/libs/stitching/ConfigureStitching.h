@@ -26,6 +26,13 @@
 
 namespace hm {
 namespace stitching {
+// Rebuild only the stitched view from the saved optimized alignment. Requires
+// a validated pending reframe intent; errors never authorize a new solve.
+absl::Status reframe_stitching(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled,
+    size_t max_output_width);
 
 struct RinkProfile;
 

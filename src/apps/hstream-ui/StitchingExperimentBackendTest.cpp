@@ -423,6 +423,45 @@ bool inherited_camera_handoff(const fs::path& root) {
   const auto promoted = promote();
   if (!promoted.ok() || !write(game / "config.yaml", *promoted))
     return false;
+  YAML::Node old_baseline = YAML::LoadFile((candidate->game_directory / "config.yaml").string());
+  old_baseline["stitching"].remove("calibration_frame_selection");
+  old_baseline["stitching"].remove("calibration_frame_inputs_fingerprint");
+  if (!write(candidate->game_directory / "old-baseline.yaml", YAML::Dump(old_baseline)))
+    return false;
+  const auto replaced_selection =
+      BuildStitchingExperimentSelectionConfig(candidate->game_directory / "old-baseline.yaml", game / "config.yaml");
+  if (!expect(
+          !replaced_selection.ok() && absl::IsFailedPrecondition(replaced_selection.status()),
+          "a same-count ordinary historical baseline must not silently replace Main's selected player frames"))
+    return false;
+  old_baseline["stitching"]["calibration_frame_count"] = plan.selected.size() + 1;
+  old_baseline["hstream_ui"]["stitching_calibration"]["frame_count"] = plan.selected.size() + 1;
+  if (!write(candidate->game_directory / "old-baseline.yaml", YAML::Dump(old_baseline)) ||
+      !expect(
+          BuildStitchingExperimentSelectionConfig(candidate->game_directory / "old-baseline.yaml", game / "config.yaml")
+              .ok(),
+          "selecting an explicitly different frame count may replace the old selection"))
+    return false;
+  YAML::Node pending_view = YAML::Load(*promoted);
+  pending_view["hstream_ui"]["stitching_calibration"]["reframe"]["source_generation"] = "old-source";
+  if (!write(game / "config.yaml", YAML::Dump(pending_view)))
+    return false;
+  const auto over_pending_view = promote();
+  if (!expect(
+          over_pending_view.ok() &&
+              !YAML::Load(*over_pending_view)["hstream_ui"]["stitching_calibration"]["reframe"].IsDefined(),
+          "promoting a complete candidate must replace Main's pending view request"))
+    return false;
+  const auto fresh_candidate = CreateStitchingExperimentWorkspace(game, root / "pending-view-candidate", varied, 1);
+  if (!expect(
+          fresh_candidate.ok() &&
+              !YAML::LoadFile((fresh_candidate->game_directory / "config.yaml")
+                                  .string())["hstream_ui"]["stitching_calibration"]["reframe"]
+                   .IsDefined(),
+          "new candidates must not inherit a reframe request bound to Main"))
+    return false;
+  if (!write(game / "config.yaml", *promoted))
+    return false;
   const auto retained = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", varied, 4);
   if (!expect(retained.ok(), "a promoted plan must be retained by later experiment candidates"))
     return false;

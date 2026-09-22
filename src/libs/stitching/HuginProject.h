@@ -103,6 +103,24 @@ class HuginProject {
     std::function<bool()> is_cancelled;
   };
 
+  struct ReframeOptions {
+    std::string expected_source_generation;
+    StitchProjection projection{StitchProjection::kGeneralPanini};
+    std::vector<double> projection_parameters;
+    StitchProjectionFraming projection_framing;
+    std::optional<size_t> max_canvas_dimension;
+    std::optional<size_t> max_output_width;
+    Options::ProgressCallback progress;
+    std::function<bool()> is_cancelled;
+    // Both callbacks run with artifact -> config locks already held. They
+    // must not reacquire either lock. Source validation runs before staging
+    // and again immediately before publication, including cancellation/retry.
+    std::function<absl::Status()> validate_source;
+    // Called with the fully rendered, validated staging directory. Return a
+    // complete calibration config with pending rink work and no reframe intent.
+    std::function<absl::StatusOr<std::string>(const std::filesystem::path& staging)> build_config;
+  };
+
   // Pure helpers exposed for focused contract tests.
   static absl::StatusOr<std::string> InsertControlPoints(
       const std::string& pto,
@@ -181,6 +199,8 @@ class HuginProject {
 
   // Builds all Hugin products in a private same-filesystem directory and only
   // publishes them into game_dir after every required mapping has validated.
+  // An owned solve publishes matching complete calibration state and pending
+  // rink-mask work in the same transaction, independently of later segmentation.
   static absl::Status Configure(
       const std::filesystem::path& game_dir,
       const std::vector<FeatureMatch>& matches,
@@ -196,6 +216,20 @@ class HuginProject {
       const std::filesystem::path& right_image,
       const std::vector<FeatureMatch>& matches,
       const Options& options);
+
+  // Reprojects a published NONA solve without extracting frames, matching, or
+  // optimizing. The existing generation remains authoritative until maps and
+  // config commit together. Requires AUTO canvas for legacy capped projects.
+  static absl::Status Reframe(const std::filesystem::path& game_dir, const ReframeOptions& options);
+
+  // Checks that reprojecting applied only the requested shared view rotation:
+  // source image geometry and control points stay fixed, and both camera poses
+  // receive the same rotation within Hugin's serialization precision.
+  static absl::Status ValidateReframeAlignment(
+      const std::string& source_pto,
+      const std::string& reframed_pto,
+      const std::array<double, 3>& published_rotation,
+      const std::array<double, 3>& desired_rotation);
 
   // Transactionally republishes one validated experiment generation into a
   // game directory. The destination receives a fresh generation identity;
@@ -231,6 +265,10 @@ class HuginProject {
   static absl::StatusOr<std::optional<CanvasProvenance>> ReadCanvasProvenance(
       const std::filesystem::path& game_dir,
       const ArtifactLock& lock);
+  // As above for callers holding the shared artifact lock through another
+  // lock wrapper (for example CanvasConstraintArtifactLock). Does not lock.
+  static absl::StatusOr<std::optional<CanvasProvenance>> ReadCanvasProvenanceLocked(
+      const std::filesystem::path& game_dir);
 };
 
 } // namespace hm::stitching

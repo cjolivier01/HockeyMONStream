@@ -40,6 +40,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HomographyMaps.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
+#include "hstream/src/libs/stitching/RinkLeveling.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 extern "C" char** environ;
@@ -109,6 +110,165 @@ absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t
     return absl::AbortedError("Hugin file changed while being read: " + path.string());
   }
   return contents;
+}
+
+using PtoFields = std::map<std::string, std::string>;
+
+absl::StatusOr<PtoFields> alignment_fields(const std::string& line) {
+  PtoFields fields;
+  size_t cursor = 1;
+  while (cursor < line.size()) {
+    while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor])))
+      ++cursor;
+    if (cursor == line.size())
+      break;
+    const size_t start = cursor;
+    while (cursor < line.size() && std::isalpha(static_cast<unsigned char>(line[cursor])))
+      ++cursor;
+    if (cursor == start)
+      return absl::FailedPreconditionError("Invalid field in calibrated Hugin image/control point");
+    const std::string key = line.substr(start, cursor - start);
+    const size_t value_start = cursor;
+    bool quoted = false;
+    bool escaped = false;
+    while (cursor < line.size()) {
+      const char character = line[cursor];
+      if (!quoted && std::isspace(static_cast<unsigned char>(character)))
+        break;
+      if (character == '"' && !escaped)
+        quoted = !quoted;
+      escaped = character == '\\' && !escaped;
+      ++cursor;
+    }
+    if (quoted || cursor == value_start || !fields.emplace(key, line.substr(value_start, cursor - value_start)).second)
+      return absl::FailedPreconditionError("Invalid or duplicate calibrated Hugin image/control-point field");
+  }
+  return fields;
+}
+
+struct AlignmentFields {
+  std::vector<PtoFields> images;
+  std::vector<PtoFields> control_points;
+};
+
+absl::StatusOr<AlignmentFields> read_alignment_fields(const std::string& pto) {
+  if (pto.empty() || pto.size() > 64ULL * 1024ULL * 1024ULL)
+    return absl::FailedPreconditionError("Invalid or oversized calibrated Hugin project");
+  AlignmentFields result;
+  std::istringstream input(pto);
+  for (std::string line; std::getline(input, line);) {
+    const auto first = line.find_first_not_of(" \t\r");
+    if (first == std::string::npos || first + 1 == line.size() ||
+        !std::isspace(static_cast<unsigned char>(line[first + 1])) || (line[first] != 'i' && line[first] != 'c'))
+      continue;
+    PtoFields fields;
+    HM_ASSIGN_OR_RETURN(fields, alignment_fields(line.substr(first)));
+    (line[first] == 'i' ? result.images : result.control_points).push_back(std::move(fields));
+  }
+  if (result.images.size() != 2 || result.control_points.empty())
+    return absl::FailedPreconditionError("Reframing requires two solved camera images and retained control points");
+  return result;
+}
+
+std::optional<double> alignment_number(const std::string& value) {
+  std::istringstream input(value);
+  input.imbue(std::locale::classic());
+  double number = 0;
+  if (!(input >> number) || !input.eof() || !std::isfinite(number))
+    return std::nullopt;
+  return number;
+}
+
+bool equal_alignment_fields(const PtoFields& before, const PtoFields& after) {
+  if (before.size() != after.size())
+    return false;
+  for (const auto& [key, value] : before) {
+    const auto found = after.find(key);
+    if (found == after.end())
+      return false;
+    if (value == found->second)
+      continue;
+    const auto left = alignment_number(value);
+    const auto right = alignment_number(found->second);
+    if (!left || !right || std::abs(*left - *right) > 1e-9 * std::max({1.0, std::abs(*left), std::abs(*right)}))
+      return false;
+  }
+  return true;
+}
+
+cv::Matx33d alignment_rotation(const std::array<double, 3>& angles) {
+  constexpr double radians = 3.14159265358979323846 / 180.0;
+  const double yaw = -angles[0] * radians;
+  const double pitch = -angles[1] * radians;
+  const double roll = angles[2] * radians;
+  const cv::Matx33d yaw_matrix(std::cos(yaw), -std::sin(yaw), 0, std::sin(yaw), std::cos(yaw), 0, 0, 0, 1);
+  const cv::Matx33d pitch_matrix(std::cos(pitch), 0, std::sin(pitch), 0, 1, 0, -std::sin(pitch), 0, std::cos(pitch));
+  const cv::Matx33d roll_matrix(1, 0, 0, 0, std::cos(roll), -std::sin(roll), 0, std::sin(roll), std::cos(roll));
+  return yaw_matrix * pitch_matrix * roll_matrix;
+}
+
+absl::Status compare_staged_input(const fs::path& source, const fs::path& staged) {
+  std::ifstream left(source, std::ios::binary);
+  std::ifstream right(staged, std::ios::binary);
+  if (!left || !right)
+    return absl::FailedPreconditionError("Reframe source/staged input is missing: " + source.filename().string());
+  std::array<char, 64 * 1024> left_bytes{};
+  std::array<char, 64 * 1024> right_bytes{};
+  do {
+    left.read(left_bytes.data(), left_bytes.size());
+    right.read(right_bytes.data(), right_bytes.size());
+    if (left.bad() || right.bad())
+      return absl::InternalError("Unable to verify retained reframe input: " + source.filename().string());
+    if (left.gcount() != right.gcount() ||
+        !std::equal(left_bytes.begin(), left_bytes.begin() + left.gcount(), right_bytes.begin()))
+      return absl::AbortedError("Retained reframe input changed: " + source.filename().string());
+  } while (!left.eof() && !right.eof());
+  return left.eof() && right.eof() ? absl::OkStatus() : absl::AbortedError("Retained reframe input size changed");
+}
+
+absl::Status validate_no_reframe_request_locked(const fs::path& game_dir) {
+  std::error_code error;
+  if (!fs::exists(game_dir / "config.yaml", error))
+    return error ? absl::InternalError("Unable to inspect calibration config: " + error.message()) : absl::OkStatus();
+  std::string contents;
+  HM_ASSIGN_OR_RETURN(contents, read_bounded_hugin_file(game_dir / "config.yaml", 16ULL * 1024ULL * 1024ULL));
+  try {
+    const YAML::Node config = YAML::Load(contents);
+    const YAML::Node ui = config && config.IsMap() ? config["hstream_ui"] : YAML::Node();
+    const YAML::Node calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
+    const YAML::Node request = calibration && calibration.IsMap() ? calibration["reframe"] : YAML::Node();
+    if (request && !request.IsNull())
+      return absl::FailedPreconditionError("A pending reframe request cannot run feature matching or optimization");
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid calibration config: " + std::string(error.what()));
+  }
+  return absl::OkStatus();
+}
+
+void clear_previous_calibration_geometry(YAML::Node& config) {
+  if (config["stitching"].IsMap())
+    config["stitching"].remove("control_points");
+  if (config["game"].IsMap() && config["game"]["stitching"].IsMap())
+    config["game"]["stitching"].remove("control_points");
+  YAML::Node rink = config["rink"];
+  if (!rink.IsMap())
+    return;
+  if (rink["scoreboard"].IsMap())
+    rink["scoreboard"].remove("perspective_polygon");
+  for (const char* key :
+       {"ice_contours_mask_count",
+        "ice_contours_mask_centroid",
+        "ice_contours_combined_bbox",
+        "stitched_output_generation",
+        "stitched_output_persisted_rotation_degrees",
+        "stitched_output_pending_generation",
+        "stitched_output_pending_authorization_id",
+        "stitched_output_pending_owner_process",
+        "stitched_output_pending_previous_generation",
+        "stitched_output_pending_previous_authorization_id",
+        "stitched_output_pending_previous_owner_process",
+        "stitched_output_pending_completed_scoreboard_polygon"})
+    rink.remove(key);
 }
 
 struct OpenedTiff {
@@ -1343,6 +1503,12 @@ absl::Status run_nona(
       is_cancelled);
 }
 
+absl::Status render_staged_project(
+    const fs::path& staging,
+    const std::vector<FeatureMatch>& matches,
+    const HuginProject::Options& options,
+    const StitchProjectionFraming& effective_projection_framing);
+
 absl::Status publish_artifacts(
     const fs::path& staging,
     const fs::path& game_dir,
@@ -1601,6 +1767,11 @@ absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir,
 absl::StatusOr<std::optional<HuginProject::CanvasProvenance>> HuginProject::ReadCanvasProvenance(
     const fs::path& game_dir,
     const ArtifactLock&) {
+  return ReadCanvasProvenanceLocked(game_dir);
+}
+
+absl::StatusOr<std::optional<HuginProject::CanvasProvenance>> HuginProject::ReadCanvasProvenanceLocked(
+    const fs::path& game_dir) {
   const fs::path path = game_dir / kStitchCanvasProvenanceArtifact;
   std::error_code error;
   if (!fs::exists(path, error)) {
@@ -2020,6 +2191,51 @@ absl::StatusOr<HuginProject::CameraPose> HuginProject::ParseCameraPose(const std
   return absl::InvalidArgumentError("Hugin PTO has no requested image line");
 }
 
+absl::Status HuginProject::ValidateReframeAlignment(
+    const std::string& source_pto,
+    const std::string& reframed_pto,
+    const std::array<double, 3>& published_rotation,
+    const std::array<double, 3>& desired_rotation) {
+  // Validate angle bounds using the shared Hugin rotation convention.
+  HM_RETURN_IF_ERROR(RinkLevelingRotationDelta(published_rotation, desired_rotation).status());
+  AlignmentFields source;
+  AlignmentFields reframed;
+  HM_ASSIGN_OR_RETURN(source, read_alignment_fields(source_pto));
+  HM_ASSIGN_OR_RETURN(reframed, read_alignment_fields(reframed_pto));
+  if (source.control_points.size() != reframed.control_points.size())
+    return absl::FailedPreconditionError("Reframing changed the solved control-point count");
+  for (size_t index = 0; index < source.control_points.size(); ++index) {
+    if (!equal_alignment_fields(source.control_points[index], reframed.control_points[index]))
+      return absl::FailedPreconditionError("Reframing changed the solved control points");
+  }
+  const cv::Matx33d delta = alignment_rotation(desired_rotation) * alignment_rotation(published_rotation).t();
+  std::array<cv::Matx33d, 2> source_poses;
+  std::array<cv::Matx33d, 2> reframed_poses;
+  for (size_t index = 0; index < source.images.size(); ++index) {
+    CameraPose original;
+    CameraPose transformed;
+    HM_ASSIGN_OR_RETURN(original, ParseCameraPose(source_pto, index));
+    HM_ASSIGN_OR_RETURN(transformed, ParseCameraPose(reframed_pto, index));
+    source_poses[index] = alignment_rotation({original.yaw, original.pitch, original.roll});
+    reframed_poses[index] = alignment_rotation({transformed.yaw, transformed.pitch, transformed.roll});
+    // Hugin rewrites decimal Euler angles. This allows less than 0.00001
+    // degrees of roundoff, without accepting a changed geometric solve.
+    if (cv::norm(cv::Mat(reframed_poses[index] - delta * source_poses[index]), cv::NORM_INF) > 1e-7)
+      return absl::FailedPreconditionError("Reframing did not apply the requested shared camera rotation");
+    for (const char* key : {"r", "p", "y"}) {
+      source.images[index].erase(key);
+      reframed.images[index].erase(key);
+    }
+    if (!equal_alignment_fields(source.images[index], reframed.images[index]))
+      return absl::FailedPreconditionError("Reframing changed camera images, lens parameters, or intrinsic geometry");
+  }
+  if (cv::norm(
+          cv::Mat(source_poses[0].t() * source_poses[1] - reframed_poses[0].t() * reframed_poses[1]), cv::NORM_INF) >
+      2e-7)
+    return absl::FailedPreconditionError("Reframing changed the relative camera alignment");
+  return absl::OkStatus();
+}
+
 absl::Status HuginProject::Configure(
     const fs::path& game_dir,
     const std::vector<FeatureMatch>& matches,
@@ -2084,6 +2300,12 @@ absl::Status HuginProject::Configure(
   auto transaction_lock = RecoverAndLock(game_dir);
   if (!transaction_lock.ok())
     return transaction_lock.status();
+  {
+    auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+    if (!config_lock.ok())
+      return config_lock.status();
+    HM_RETURN_IF_ERROR(validate_no_reframe_request_locked(game_dir));
+  }
 
   fs::path staging;
   auto staging_result = make_staging_directory(game_dir);
@@ -2239,6 +2461,93 @@ absl::Status HuginProject::Configure(
           options.is_cancelled));
     }
   }
+  HM_RETURN_IF_ERROR(render_staged_project(staging, matches, options, effective_projection_framing));
+  auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  HM_RETURN_IF_ERROR(validate_no_reframe_request_locked(game_dir));
+  status = validate_no_pending_live_stitched_output_authorization_file_locked(game_dir / "config.yaml");
+  if (!status.ok())
+    return status;
+  if (!options.expected_invalidation_id.empty()) {
+    status =
+        validate_pending_stitching_invalidation_file_locked(game_dir / "config.yaml", options.expected_invalidation_id);
+    if (!status.ok())
+      return status;
+    if (effective_expected_backend_choices.has_value()) {
+      status = validate_stitching_backend_generation_file_locked(
+          game_dir / "config.yaml", options.expected_invalidation_id, *effective_expected_backend_choices);
+      if (!status.ok())
+        return status;
+    }
+  }
+  std::optional<std::string> selected_config;
+  try {
+    const fs::path config_path = game_dir / "config.yaml";
+    std::error_code error;
+    const bool has_config = fs::exists(config_path, error);
+    if (error)
+      return absl::InternalError("Unable to inspect calibration frame selection: " + error.message());
+    YAML::Node current_config = has_config ? YAML::LoadFile(config_path.string()) : YAML::Node();
+    std::string current_selection;
+    HM_ASSIGN_OR_RETURN(current_selection, player_frame_selection_fingerprint(current_config));
+    // Compare even an ordinary worker's empty fingerprint: a newly added plan
+    // also invalidates the generation that this worker just extracted.
+    if (current_selection != options.calibration_frame_selection_fingerprint)
+      return absl::AbortedError("Calibration frame selection changed before publication");
+    if (!current_selection.empty())
+      HM_RETURN_IF_ERROR(validate_player_frame_selection_sources(current_config));
+    if (!options.expected_invalidation_id.empty()) {
+      // A solved generation is durable before downstream segmentation begins.
+      // Cancelling rink-mask work must leave this exact alignment reusable.
+      std::string project;
+      HM_ASSIGN_OR_RETURN(project, read_bounded_hugin_file(staging / "autooptimiser_out.pto", 1024 * 1024));
+      const std::string geometry = projection_crop_geometry(project, effective_projection_framing);
+      if (geometry.empty())
+        return absl::FailedPreconditionError("Solved project has no valid accepted crop geometry");
+      write_projection_crop_review(current_config, geometry);
+      clear_previous_calibration_geometry(current_config);
+      YAML::Node calibration = current_config["hstream_ui"]["stitching_calibration"];
+      calibration["status"] = "complete";
+      calibration["rink_mask_status"] = "pending";
+      calibration["artifacts_invalidated"] = true;
+      calibration.remove("stale_from");
+      calibration.remove("reframe");
+      if (effective_expected_backend_choices.has_value()) {
+        HM_RETURN_IF_ERROR(reserve_stitching_backend_generation_in_config(
+            current_config, options.expected_invalidation_id, *effective_expected_backend_choices));
+      }
+      selected_config = YAML::Dump(current_config) + "\n";
+      if (selected_config->size() > 16ULL * 1024ULL * 1024ULL)
+        return absl::ResourceExhaustedError("Solved configuration exceeds the recovery journal limit");
+    }
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Unable to validate calibration frame selection: " + std::string(error.what()));
+  }
+  if (selected_config.has_value()) {
+    HM_RETURN_IF_ERROR(write_stitch_transaction_file(staging / "selection_config.yaml", *selected_config));
+    HM_RETURN_IF_ERROR(fsync_stitch_path(staging, true));
+  }
+  if (options.is_cancelled && options.is_cancelled())
+    return absl::CancelledError("Hugin calibration cancelled before publication");
+  auto prepared_publication = prepare_stitch_generation_publication(staging, game_dir);
+  if (!prepared_publication.ok())
+    return prepared_publication.status();
+  status = publish_artifacts(staging, game_dir, *prepared_publication, &cleanup.prepared, selected_config);
+  if (status.ok() && options.progress)
+    options.progress("canvas", "complete", "Stitch maps and panorama preview are ready");
+  return status;
+}
+
+namespace {
+
+absl::Status render_staged_project(
+    const fs::path& staging,
+    const std::vector<FeatureMatch>& matches,
+    const HuginProject::Options& options,
+    const StitchProjectionFraming& effective_projection_framing) {
+  absl::Status status;
+  std::error_code error;
   if (options.progress)
     options.progress("canvas", "started", "Building stitch maps and panorama preview");
   std::optional<double> output_scale;
@@ -2286,7 +2595,7 @@ absl::Status HuginProject::Configure(
     auto optimized = read_file(staging / "autooptimiser_out.pto");
     if (!optimized.ok())
       return optimized.status();
-    auto dimensions = ParseCanvasSize(*optimized);
+    auto dimensions = HuginProject::ParseCanvasSize(*optimized);
     if (!dimensions.ok())
       return dimensions.status();
     source_canvas = *dimensions;
@@ -2299,7 +2608,7 @@ absl::Status HuginProject::Configure(
         optimized = read_file(staging / "autooptimiser_out.pto");
         if (!optimized.ok())
           return optimized.status();
-        dimensions = ParseCanvasSize(*optimized);
+        dimensions = HuginProject::ParseCanvasSize(*optimized);
         if (!dimensions.ok())
           return dimensions.status();
       }
@@ -2342,7 +2651,7 @@ absl::Status HuginProject::Configure(
       auto optimized = read_file(staging / "autooptimiser_out.pto");
       if (!optimized.ok())
         return optimized.status();
-      auto dimensions = ParseCanvasSize(*optimized);
+      auto dimensions = HuginProject::ParseCanvasSize(*optimized);
       if (!dimensions.ok())
         return dimensions.status();
       auto remap_canvas = measure_staged_remap_canvas(staging, std::nullopt);
@@ -2460,7 +2769,7 @@ absl::Status HuginProject::Configure(
     if (!optimized.ok())
       return optimized.status();
     int hugin_projection = 0;
-    HM_ASSIGN_OR_RETURN(hugin_projection, ParseProjection(*optimized));
+    HM_ASSIGN_OR_RETURN(hugin_projection, HuginProject::ParseProjection(*optimized));
     const auto& projections = SupportedStitchProjections();
     const auto projection = std::find_if(projections.begin(), projections.end(), [hugin_projection](const auto& info) {
       return info.hugin_projection == hugin_projection;
@@ -2532,49 +2841,171 @@ absl::Status HuginProject::Configure(
     return status;
   if (options.is_cancelled && options.is_cancelled())
     return absl::CancelledError("Hugin calibration cancelled before publication");
-  auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
-  if (!config_transaction.ok())
-    return config_transaction.status();
-  status = validate_no_pending_live_stitched_output_authorization_file_locked(game_dir / "config.yaml");
-  if (!status.ok())
-    return status;
-  if (!options.expected_invalidation_id.empty()) {
-    status =
-        validate_pending_stitching_invalidation_file_locked(game_dir / "config.yaml", options.expected_invalidation_id);
-    if (!status.ok())
-      return status;
-    if (effective_expected_backend_choices.has_value()) {
-      status = validate_stitching_backend_generation_file_locked(
-          game_dir / "config.yaml", options.expected_invalidation_id, *effective_expected_backend_choices);
-      if (!status.ok())
-        return status;
+  return absl::OkStatus();
+}
+
+} // namespace
+
+absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOptions& request) {
+  if (request.expected_source_generation.empty() || !request.validate_source || !request.build_config)
+    return absl::InvalidArgumentError("Reframing requires a source generation and locked validation/config callbacks");
+  if (!request.projection_framing.auto_canvas)
+    return absl::FailedPreconditionError("Reframing an existing optimized project requires automatic canvas sizing");
+  HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(MappingBackend::kNona, request.projection));
+  const auto parameters = request.projection_parameters.empty() ? DefaultStitchProjectionParameters(request.projection)
+                                                                : request.projection_parameters;
+  HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(request.projection, parameters, request.projection_framing));
+  if (request.is_cancelled && request.is_cancelled())
+    return absl::CancelledError("Reframing cancelled before source validation");
+  auto artifact_lock = RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  const auto validate_source_generation = [&]() -> absl::Status {
+    HM_RETURN_IF_ERROR(validate_stitch_generation_artifact_bounds_locked(game_dir));
+    std::string generation;
+    HM_ASSIGN_OR_RETURN(generation, stitch_artifact_generation_id_locked(game_dir));
+    if (generation != request.expected_source_generation)
+      return absl::AbortedError("The solved stitching generation changed before reframing");
+    HM_RETURN_IF_ERROR(validate_no_pending_live_stitched_output_authorization_file_locked(game_dir / "config.yaml"));
+    return request.validate_source();
+  };
+  std::optional<CanvasProvenance> provenance;
+  std::string original_project;
+  auto source_config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!source_config_lock.ok())
+    return source_config_lock.status();
+  {
+    HM_RETURN_IF_ERROR(validate_source_generation());
+    HM_ASSIGN_OR_RETURN(provenance, ReadCanvasProvenanceLocked(game_dir));
+    if (!provenance || provenance->mapping_backend != MappingBackend::kNona || !provenance->projection ||
+        !provenance->projection_framing || !provenance->camera || !provenance->control_point_matcher ||
+        !provenance->control_point_resolution || !provenance->akaze_calibration_fingerprint)
+      return absl::FailedPreconditionError("Reframing requires complete solved NONA camera and view provenance");
+    const std::string expected_calibration =
+        *provenance->control_point_matcher == ControlPointMatcher::kAkazeHamming ? "absent" : "not-applicable";
+    if (*provenance->akaze_calibration_fingerprint != expected_calibration)
+      return absl::FailedPreconditionError("Reframing cannot reinterpret calibrated OpenCV camera geometry as NONA");
+    HM_ASSIGN_OR_RETURN(
+        original_project, read_bounded_hugin_file(game_dir / "autooptimiser_out.pto", 64ULL * 1024 * 1024));
+    HM_ASSIGN_OR_RETURN(original_project, LocalizeCalibrationPreviewImages(original_project, game_dir));
+    HM_RETURN_IF_ERROR(ValidateReframeAlignment(
+        original_project,
+        original_project,
+        provenance->projection_framing->rotation_degrees,
+        provenance->projection_framing->rotation_degrees));
+  }
+
+  fs::path staging;
+  HM_ASSIGN_OR_RETURN(staging, make_staging_directory(game_dir));
+  struct Cleanup {
+    fs::path path;
+    bool prepared{false};
+    ~Cleanup() {
+      if (!prepared)
+        (void)remove_owned_directory(path, "journal_version", "2\n");
     }
+  } cleanup{staging};
+  for (const char* name : {"left.png", "right.png", "hm_project.pto"}) {
+    HM_RETURN_IF_ERROR(clone_or_copy_stitch_rollback_file(game_dir / name, staging / name));
+    HM_RETURN_IF_ERROR(compare_staged_input(game_dir / name, staging / name));
   }
+  HM_RETURN_IF_ERROR(write_file(staging / "autooptimiser_out.pto", original_project));
+  source_config_lock->reset();
+
+  Options options;
+  options.camera_configuration = provenance->camera->configuration;
+  options.horizontal_fov = provenance->camera->horizontal_fov;
+  options.vertical_fov = provenance->camera->vertical_fov;
+  options.control_point_matcher = *provenance->control_point_matcher;
+  options.control_point_resolution = *provenance->control_point_resolution;
+  options.calibration_frame_selection_fingerprint = provenance->calibration_frame_selection_fingerprint;
+  options.calibration_frame_diagnostics = provenance->calibration_frame_diagnostics;
+  options.mapping_backend = MappingBackend::kNona;
+  options.projection = request.projection;
+  options.projection_parameters = parameters;
+  options.projection_framing = request.projection_framing;
+  options.max_canvas_dimension = request.max_canvas_dimension;
+  options.max_output_width = request.max_output_width;
+  options.progress = request.progress;
+  options.is_cancelled = request.is_cancelled;
+  if (request.progress)
+    request.progress("projection", "started", "Reusing saved camera alignment to generate the edited view");
+
+  // Undo only the recorded view rotation. The optimizer's own global leveling
+  // stays part of the accepted solve. Both operations are private and neither
+  // can replace a published artifact until the complete result is validated.
+  std::array<double, 3> undo;
+  HM_ASSIGN_OR_RETURN(undo, RinkLevelingRotationDelta(provenance->projection_framing->rotation_degrees, {0, 0, 0}));
+  if (undo != std::array<double, 3>{0, 0, 0}) {
+    auto pano_modify = executable("HM_PANO_MODIFY", "pano_modify");
+    if (!pano_modify.ok())
+      return pano_modify.status();
+    std::ostringstream rotation;
+    rotation.imbue(std::locale::classic());
+    rotation << std::setprecision(std::numeric_limits<double>::max_digits10) << undo[0] << ',' << undo[1] << ','
+             << undo[2];
+    HM_RETURN_IF_ERROR(run_checked(
+        {*pano_modify, "--rotate=" + rotation.str(), "--output=.reframe-neutral.pto", "autooptimiser_out.pto"},
+        staging,
+        nullptr,
+        request.is_cancelled));
+    std::string neutral;
+    HM_ASSIGN_OR_RETURN(neutral, read_bounded_hugin_file(staging / ".reframe-neutral.pto", 64ULL * 1024 * 1024));
+    HM_RETURN_IF_ERROR(ValidateReframeAlignment(
+        original_project, neutral, provenance->projection_framing->rotation_degrees, {0, 0, 0}));
+    HM_RETURN_IF_ERROR(write_file(staging / "autooptimiser_out.pto", neutral));
+  }
+  HM_RETURN_IF_ERROR(
+      ApplyProjection(staging, request.projection, parameters, request.projection_framing, request.is_cancelled));
+  if (request.progress)
+    request.progress("projection", "complete", "Edited projection is ready; saved alignment was retained");
+  HM_RETURN_IF_ERROR(render_staged_project(staging, {}, options, request.projection_framing));
+  std::string reframed_project;
+  HM_ASSIGN_OR_RETURN(
+      reframed_project, read_bounded_hugin_file(staging / "autooptimiser_out.pto", 64ULL * 1024 * 1024));
+  HM_RETURN_IF_ERROR(ValidateReframeAlignment(
+      original_project,
+      reframed_project,
+      provenance->projection_framing->rotation_degrees,
+      request.projection_framing.rotation_degrees));
+  if (request.is_cancelled && request.is_cancelled())
+    return absl::CancelledError("Reframing cancelled before publication");
+
+  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
+  HM_RETURN_IF_ERROR(validate_source_generation());
+  for (const char* name : {"left.png", "right.png", "hm_project.pto"})
+    HM_RETURN_IF_ERROR(compare_staged_input(game_dir / name, staging / name));
+  std::string selected_config;
+  HM_ASSIGN_OR_RETURN(selected_config, request.build_config(staging));
+  if (selected_config.size() > 16ULL * 1024ULL * 1024ULL)
+    return absl::ResourceExhaustedError("Reframed configuration exceeds the recovery journal limit");
   try {
-    const fs::path config_path = game_dir / "config.yaml";
-    std::error_code error;
-    const bool has_config = fs::exists(config_path, error);
-    if (error)
-      return absl::InternalError("Unable to inspect calibration frame selection: " + error.message());
-    const YAML::Node current_config = has_config ? YAML::LoadFile(config_path.string()) : YAML::Node();
-    std::string current_selection;
-    HM_ASSIGN_OR_RETURN(current_selection, player_frame_selection_fingerprint(current_config));
-    // Compare even an ordinary worker's empty fingerprint: a newly added plan
-    // also invalidates the generation that this worker just extracted.
-    if (current_selection != options.calibration_frame_selection_fingerprint)
-      return absl::AbortedError("Calibration frame selection changed before publication");
-    if (!current_selection.empty())
-      HM_RETURN_IF_ERROR(validate_player_frame_selection_sources(current_config));
+    const YAML::Node config = YAML::Load(selected_config);
+    const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    if (calibration["status"].as<std::string>("") != "complete" ||
+        calibration["invalidation_id"].as<std::string>("").empty() || calibration["reframe"])
+      return absl::FailedPreconditionError(
+          "Reframe publication requires a completed calibration without pending intent");
+    std::string selection;
+    HM_ASSIGN_OR_RETURN(selection, player_frame_selection_fingerprint(config));
+    if (selection != options.calibration_frame_selection_fingerprint)
+      return absl::AbortedError("Reframe publication changed the retained frame selection");
   } catch (const YAML::Exception& error) {
-    return absl::InvalidArgumentError("Unable to validate calibration frame selection: " + std::string(error.what()));
+    return absl::InvalidArgumentError("Invalid reframed configuration: " + std::string(error.what()));
   }
-  auto prepared_publication = prepare_stitch_generation_publication(staging, game_dir);
-  if (!prepared_publication.ok())
-    return prepared_publication.status();
-  status = publish_artifacts(staging, game_dir, *prepared_publication, &cleanup.prepared);
-  if (status.ok() && options.progress)
-    options.progress("canvas", "complete", "Stitch maps and panorama preview are ready");
-  return status;
+  HM_RETURN_IF_ERROR(write_stitch_transaction_file(staging / "selection_config.yaml", selected_config));
+  HM_RETURN_IF_ERROR(fsync_stitch_path(staging, true));
+  if (request.is_cancelled && request.is_cancelled())
+    return absl::CancelledError("Reframing cancelled before transaction preparation");
+  auto prepared = prepare_stitch_generation_publication(staging, game_dir);
+  if (!prepared.ok())
+    return prepared.status();
+  const auto published = publish_artifacts(staging, game_dir, *prepared, &cleanup.prepared, selected_config);
+  if (published.ok() && request.progress)
+    request.progress("canvas", "complete", "Edited stitch maps published with the saved camera alignment");
+  return published;
 }
 
 absl::Status HuginProject::PromoteArtifacts(const fs::path& experiment_game_dir, const fs::path& game_dir) {
