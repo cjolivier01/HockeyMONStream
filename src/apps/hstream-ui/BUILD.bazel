@@ -24,6 +24,8 @@ filegroup(
         "ApplicationIdentity.h",
         "HStreamWindow.cpp",
         "HStreamWindow.h",
+        "Int8PreparationDialog.cpp",
+        "Int8PreparationDialog.h",
         "CameraControlSpecs.h",
         "CameraExperimentDialog.cpp",
         "CameraExperimentDialog.h",
@@ -335,8 +337,8 @@ cc_test(
 
 cc_library(
     name = "hstream_window",
-    srcs = ["HStreamWindow.cpp"],
-    hdrs = ["HStreamWindow.h"],
+    srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp"],
+    hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h"],
     copts = COMMON_COPTS,
     linkopts = ["-lxcb"],
     target_compatible_with = QT_UI_COMPATIBILITY,
@@ -434,6 +436,15 @@ cc_binary(
 cc_test(
     name = "hstream_ui_test",
     srcs = ["HStreamWindowTest.cpp"],
+    data = [
+        "//configs:play_tracker_config.yaml",
+        "//configs:ds_hockey_app_config.yaml",
+        "//configs:ds_hockey_configure_stitching.yaml",
+        "//configs:config_infer_yolov8_hockey.yaml",
+        "//configs:config_infer_yolov8_hockey_fp16.yaml",
+        "//configs:config_infer_yolov8_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8_hockey_int8.yaml",
+    ],
     copts = COMMON_COPTS,
     linkopts = ["-lX11"],
     env = {
@@ -452,6 +463,15 @@ cc_test(
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "int8_preparation_dialog_test",
+    srcs = ["Int8PreparationDialogTest.cpp", "Int8PreparationDialog.cpp", "Int8PreparationDialog.h"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_test", "@qt//:qt_widgets"],
 )
 
 cc_test(

@@ -22,11 +22,11 @@ class DetectorWrapperTest(unittest.TestCase):
         (root / "configs" / name).write_text(contents.replace("$HOME", str(root)))
         models = root / ".cache/hstream/models"
         models.mkdir(parents=True, exist_ok=True)
-        engine = models / f"hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx_b2_gpu0_{precision}.engine"
+        engine = models / f"hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx_b2_gpu0_NVIDIA_Test_GPU_{precision}.engine"
         engine.write_text("prepared test engine")
       runner = root / "bazel-bin/src/apps/hstream-cli/hstream-cli"
       runner.parent.mkdir(parents=True)
-      runner.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_ARGUMENTS"\n')
+      runner.write_text('#!/bin/sh\nif [ "$1" = "--resolve-engine-path" ]; then printf "%s\\n" "$2" | sed "s/{gpu}/NVIDIA_Test_GPU/g"; exit 0; fi\nprintf "%s\\n" "$@" > "$TEST_ARGUMENTS"\n')
       runner.chmod(0o755)
       capture = root / "arguments.txt"
       environment = dict(os.environ, TEST_ARGUMENTS=str(capture))
@@ -49,7 +49,7 @@ class DetectorWrapperTest(unittest.TestCase):
             if override:
               self.assertEqual(selected, override)
             else:
-              self.assertTrue(selected.endswith(f"_b2_gpu0_{precision}.engine"), selected)
+              self.assertTrue(selected.endswith(f"_b2_gpu0_NVIDIA_Test_GPU_{precision}.engine"), selected)
 
 
 if __name__ == "__main__":

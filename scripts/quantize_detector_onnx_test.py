@@ -40,6 +40,15 @@ class QuantizationTest(unittest.TestCase):
     self.assertFalse(tensor[0, :, (0, 3)].any())
 
   @unittest.skipIf(onnx is None, "offline quantization dependencies are not installed")
+  def test_native_samples_preserve_pixels_and_require_exact_dimensions(self):
+    image = np.arange(5 * 7 * 3, dtype=np.uint8).reshape(5, 7, 3)
+    actual = quantizer.prepare_image(image, 5, 7, 1 / 255, preprocessed=True)
+    expected = image[:, :, ::-1].astype(np.float32).transpose(2, 0, 1)[None] / 255
+    np.testing.assert_allclose(actual, expected, atol=1e-7)
+    with self.assertRaises(ValueError):
+      quantizer.prepare_image(image, 6, 7, 1 / 255, preprocessed=True)
+
+  @unittest.skipIf(onnx is None, "offline quantization dependencies are not installed")
   def test_qdq_preserves_float_io_and_avoids_int32_bias_dequantization(self):
     with tempfile.TemporaryDirectory() as root:
       root = Path(root)

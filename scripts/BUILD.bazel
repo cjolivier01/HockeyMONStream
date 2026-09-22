@@ -30,6 +30,7 @@
 #     visibility = ["//visibility:public"],
 # )
 exports_files([
+    "prepare_recording_int8.py",
     "quantize_detector_onnx.py",
     "capture_stitching_projection_frames.py",
     "deploy.sh",
@@ -45,6 +46,16 @@ exports_files([
     "remove_deb_dependencies.py",
     "test_hstream_ui_e2e.sh",
 ])
+
+py_test(
+    name = "prepare_recording_int8_test",
+    size = "small",
+    srcs = ["prepare_recording_int8.py", "prepare_recording_int8_test.py", "quantize_detector_onnx.py", "benchmark_model_precision.py"],
+    data = [
+        "//configs:config_infer_yolov8_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8_hockey_int8.yaml",
+    ],
+)
 
 py_test(
     name = "run_detector_precision_test",

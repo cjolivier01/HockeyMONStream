@@ -1,6 +1,19 @@
 INCLUDE_PREFIX = "hstream/src/libs/common/"
 
 cc_library(
+    name = "tensorrt_gpu_identity",
+    srcs = ["TensorRtGpuIdentity.cpp"],
+    hdrs = ["TensorRtGpuIdentity.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/status:statusor",
+        "@local_cuda//:cuda",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+)
+
+cc_library(
     name = "utils",
     srcs = [
         "ApplicationPayload.cpp",

@@ -423,6 +423,12 @@ std::string network_mode_name(unsigned mode) {
   }
 }
 
+unsigned inference_gpu(const YAML::Node& properties, const YAML::Node& section, const YAML::Node& pipeline) {
+  unsigned gpu = scalar_unsigned({}, properties, "gpu-id", 0);
+  gpu = scalar_unsigned(pipeline["application"], {}, "global-gpu-id", gpu);
+  return scalar_unsigned(section, {}, "gpu-id", gpu);
+}
+
 fs::path derived_engine_path(
     const fs::path& cached_onnx,
     const YAML::Node& properties,
@@ -564,7 +570,8 @@ absl::Status prepare_inference_config(
     YAML::Node section,
     const YAML::Node& pipeline,
     const std::string& section_name,
-    const fs::path& config_directory) {
+    const fs::path& config_directory,
+    const GpuNameProvider& gpu_name) {
   if (!enabled(section) || !section["config-file"] || !section["config-file"].IsScalar())
     return absl::OkStatus();
   const fs::path inference_path = resolve_path(section["config-file"].as<std::string>(), config_directory);
@@ -578,6 +585,19 @@ absl::Status prepare_inference_config(
         "Unable to read inference config " + inference_path.string() + ": " + exception.what());
   }
   YAML::Node properties = inference["property"];
+  bool expanded_gpu_path = false;
+  for (auto node : {properties, section}) {
+    if (!node || !node["model-engine-file"] || !node["model-engine-file"].IsScalar())
+      continue;
+    const auto value = node["model-engine-file"].as<std::string>();
+    if (value.find("{gpu}") == std::string::npos)
+      continue;
+    auto name = gpu_name(inference_gpu(properties, section, pipeline));
+    if (!name.ok())
+      return name.status();
+    node["model-engine-file"] = hm::inference::ResolveGpuEnginePath(value, *name);
+    expanded_gpu_path = true;
+  }
   const YAML::Node required_precision = inference["hstream-prebuilt-precision"];
   if (required_precision &&
       (!required_precision.IsScalar() ||
@@ -630,7 +650,7 @@ absl::Status prepare_inference_config(
         staged_custom_library_path("custom-lib-path", properties["custom-lib-path"].as<std::string>());
   }
   const bool relocated_runtime_config_required =
-      staged_custom_library.has_value() || inference_paths_require_expansion(properties);
+      expanded_gpu_path || staged_custom_library.has_value() || inference_paths_require_expansion(properties);
   auto publish_relocated_config = [&]() -> absl::Status {
     if (!relocated_runtime_config_required)
       return absl::OkStatus();
@@ -715,12 +735,19 @@ absl::Status prepare_inference_config(
   auto root_status = ensure_private_directory(*root);
   if (!root_status.ok())
     return root_status;
-  const fs::path model_directory = *root / (model_hash->substr(0, 16) + "-" + build_digest->substr(0, 16));
+  auto device_name = gpu_name(inference_gpu(properties, section, pipeline));
+  if (!device_name.ok())
+    return device_name.status();
+  const fs::path model_directory =
+      *root / (model_hash->substr(0, 16) + "-" + build_digest->substr(0, 16) + "-" + *device_name);
   auto directory_status = ensure_private_directory(model_directory);
   if (!directory_status.ok())
     return directory_status;
 
-  const fs::path cached_onnx = model_directory / onnx_path.filename();
+  // DeepStream derives serialization from the ONNX name, so tag the staged
+  // model as well as its output. No engine for a different GPU is ever probed.
+  const fs::path cached_onnx =
+      model_directory / (onnx_path.stem().string() + "_" + *device_name + onnx_path.extension().string());
   auto model_status = publish_model_file(model_source, cached_onnx, *model_hash);
   if (!model_status.ok())
     return model_status;
@@ -787,7 +814,10 @@ absl::Status prepare_inference_config(
 
 } // namespace
 
-absl::Status PrepareTensorRtModelCache(YAML::Node pipeline, const fs::path& config_directory) {
+absl::Status PrepareTensorRtModelCache(
+    YAML::Node pipeline,
+    const fs::path& config_directory,
+    const GpuNameProvider& gpu_name) {
   if (!pipeline || !pipeline.IsMap())
     return absl::OkStatus();
   for (auto entry : pipeline) {
@@ -796,7 +826,7 @@ absl::Status PrepareTensorRtModelCache(YAML::Node pipeline, const fs::path& conf
     const std::string name = entry.first.as<std::string>();
     if (name.rfind("primary-gie", 0) != 0 && name.rfind("secondary-gie", 0) != 0)
       continue;
-    auto status = prepare_inference_config(entry.second, pipeline, name, config_directory);
+    auto status = prepare_inference_config(entry.second, pipeline, name, config_directory, gpu_name);
     if (!status.ok())
       return status;
   }

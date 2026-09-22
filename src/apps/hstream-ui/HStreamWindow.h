@@ -390,6 +390,8 @@ class HStreamWindow : public QMainWindow {
   QStringList pipelineArguments(bool standalone = false) const;
   QString highBitDepthMode() const;
   QString detectorPrecision() const;
+  void prepareRecordedInt8();
+  bool detectorSelectionChanged() const;
   QString detectorConfigName() const;
   QString detectorEnginePath() const;
   void loadDetectorPrecision(const YAML::Node& config);
@@ -612,6 +614,8 @@ class HStreamWindow : public QMainWindow {
   QComboBox* detector_precision_combo_{nullptr};
   QLabel* detector_precision_status_{nullptr};
   QString saved_detector_precision_;
+  QString prepared_int8_engine_, prepared_int8_manifest_;
+  QString saved_prepared_int8_engine_, saved_prepared_int8_manifest_;
   QTabWidget* stitched_control_tabs_{nullptr};
   std::vector<QWidget*> preview_hosts_;
   std::vector<QWidget*> associated_control_panels_;

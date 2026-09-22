@@ -19,7 +19,7 @@ property:
   onnx-file: $HOME/.cache/hstream/models/hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx
   # Unlike the BF16 config, nothing has to be built offline: DeepStream's nvinfer
   # builds this from the ONNX on first run and caches it. Do not commit the engine.
-  model-engine-file: $HOME/.cache/hstream/models/hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx_b2_gpu0_fp16.engine
+  model-engine-file: $HOME/.cache/hstream/models/hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx_b2_gpu0_{gpu}_fp16.engine
   labelfile-path: $HOME/.cache/hstream/models/labels_coco.txt
   batch-size: 2
   # 0=FP32, 1=INT8, 2=FP16.

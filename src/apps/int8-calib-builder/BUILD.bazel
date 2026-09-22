@@ -15,6 +15,7 @@ cc_binary(
     ],
     deps = [
         "@detector_tensorrt//:sdk",
+        "//src/libs/common:tensorrt_gpu_identity",
         "@local_cuda//:cuda",
         "@opencv_linux//:opencv",
         "@yaml-cpp",

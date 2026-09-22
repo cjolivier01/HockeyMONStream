@@ -215,7 +215,7 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
   prepend_path GST_PLUGIN_PATH "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
 fi
 
-HSTREAM_CLI_BIN="${SCRIPT_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
+HSTREAM_CLI_BIN="${HSTREAM_CLI_BIN:-${SCRIPT_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli}"
 if [ -x "${HSTREAM_CLI_BIN}" ]; then
   HSTREAM_CLI_BIN="$(readlink -f "${HSTREAM_CLI_BIN}")"
 fi
@@ -731,6 +731,9 @@ abs_config_path() {
     '~') value="${HOME}" ;;
     '~/'*) value="${HOME}/${value#'~/'}" ;;
   esac
+  if [[ "${value}" == *'{gpu}'* ]]; then
+    value="$("${HSTREAM_CLI_BIN}" --resolve-engine-path "${value}")" || return 1
+  fi
   case "${value}" in
     /*) realpath -m "${value}" ;;
     *) realpath -m "$(dirname "${config_file}")/${value}" ;;
@@ -779,6 +782,18 @@ require_bf16_artifacts() {
     echo "BF16 requested but engine is missing or empty: ${bf16_engine_file}"
     echo "Run with --models-bf16-build first."
     exit 2
+  fi
+}
+
+require_matching_tensorrt_runtime() {
+  local builder_runtime playback_runtime
+  builder_runtime="$("$1" --runtime-info)" || return 1
+  playback_runtime="$("${HSTREAM_CLI_BIN}" --tensorrt-runtime-info)" || return 1
+  if [ "${builder_runtime}" != "${playback_runtime}" ]; then
+    echo "Builder and DeepStream must use the same TensorRT version and GPU" >&2
+    echo "Builder: ${builder_runtime}" >&2
+    echo "Playback: ${playback_runtime}" >&2
+    return 1
   fi
 }
 
@@ -890,6 +905,8 @@ build_int8_calibration_artifacts() {
   bazelisk run --config=opt //src/apps/hstream-assets:hstream-assets -- "${int8_config_file}"
   bazelisk build --config=opt //src/apps/int8-calib-builder:int8-calib-builder
 
+  require_matching_tensorrt_runtime "${builder_bin}"
+
   echo "Building calibrated INT8 engine from ${int8_calib_frames} sampled frame(s); normal run will still start at timestamp zero"
   mkdir -p "$(dirname "${int8_calib_table}")" "$(dirname "${int8_engine_file}")"
   tmp_engine="${int8_engine_file}.tmp.$$"
@@ -964,6 +981,8 @@ build_bf16_engine_artifact() {
   echo "Building BF16 engine builder"
   bazelisk run --config=opt //src/apps/hstream-assets:hstream-assets -- "${bf16_asset_config_file}"
   bazelisk build --config=opt //src/apps/int8-calib-builder:int8-calib-builder
+
+  require_matching_tensorrt_runtime "${builder_bin}"
 
   echo "Building BF16 detector engine; normal run will still start at timestamp zero"
   mkdir -p "$(dirname "${bf16_engine_file}")"

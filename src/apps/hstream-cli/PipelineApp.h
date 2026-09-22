@@ -33,6 +33,7 @@
 #include "absl/synchronization/mutex.h"
 
 // Application and common headers.
+#include "Int8FrameSampler.h"
 #include "PlaybackProgress.h"
 #include "PlayerFrameScan.h"
 #include "PreviewOverlayRuntime.h"
@@ -273,6 +274,11 @@ class PipelineApplication {
   gint stitching_player_scan_interval_ms_{500};
   gint stitching_player_scan_frame_count_{4};
   std::unique_ptr<hm::pipeline::PlayerFrameScan> player_frame_scan_;
+  gchar* int8_sample_output_{nullptr};
+  gint int8_sample_count_{64};
+  gint int8_sample_width_{1984};
+  gint int8_sample_height_{736};
+  std::unique_ptr<hm::pipeline::Int8FrameSampler> int8_frame_sampler_;
   bool player_scan_clean_completion_{false};
   volatile sig_atomic_t player_scan_interrupted_{false};
   std::vector<guint64> source_render_window_ids_;

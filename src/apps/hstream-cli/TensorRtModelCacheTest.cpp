@@ -20,6 +20,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
+std::string gpu_model = "NVIDIA_Test_GPU";
+absl::Status prepare_cache(YAML::Node pipeline, const fs::path& directory) {
+  return hm::pipeline::PrepareTensorRtModelCache(pipeline, directory, [](unsigned gpu) -> absl::StatusOr<std::string> {
+    return gpu_model + (gpu ? "_" + std::to_string(gpu) : "");
+  });
+}
+
 bool expect(bool condition, const char* message) {
   if (!condition)
     std::cerr << "FAIL: " << message << '\n';
@@ -82,7 +89,7 @@ int main(int argc, char** argv) {
     const fs::path root = argv[2];
     std::ofstream(root / "lock-probe-ready") << "ready\n";
     YAML::Node pipeline = pipeline_for("infer.yaml");
-    const auto status = hm::pipeline::PrepareTensorRtModelCache(pipeline, root / "configs");
+    const auto status = prepare_cache(pipeline, root / "configs");
     hm::pipeline::ReleaseTensorRtModelCacheLocks();
     return status.ok() ? 0 : 1;
   }
@@ -199,14 +206,14 @@ int main(int argc, char** argv) {
         "prepared detector startup must acquire labels without requiring the offline source model");
     auto pipeline = pipeline_for(config_path.string());
     ok &= expect(
-        hm::pipeline::PrepareTensorRtModelCache(pipeline, configs).ok(),
+        prepare_cache(pipeline, configs).ok(),
         "bundled prepared detector config must load with only an engine and labels installed");
   }
 
   for (const char* home_config : {"home-dollar.yaml", "home-braced.yaml", "home-tilde.yaml"}) {
     YAML::Node home_pipeline = pipeline_for(home_config);
     ok &= expect(
-        hm::pipeline::PrepareTensorRtModelCache(home_pipeline, configs).ok(),
+        prepare_cache(home_pipeline, configs).ok(),
         "HOME-prefixed paths in inference configs must resolve to the user model cache");
     const fs::path home_runtime = home_pipeline["primary-gie"]["config-file"].as<std::string>();
     ok &= expect(
@@ -225,16 +232,14 @@ int main(int argc, char** argv) {
   }
 
   YAML::Node ini_pipeline = pipeline_for("infer.txt");
-  ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(ini_pipeline, configs).ok(),
-      "standard DeepStream INI inference config must be preserved");
+  ok &= expect(prepare_cache(ini_pipeline, configs).ok(), "standard DeepStream INI inference config must be preserved");
   ok &= expect(
       ini_pipeline["primary-gie"]["config-file"].as<std::string>() == "infer.txt",
       "non-YAML inference config must not be rewritten");
 
   YAML::Node prebuilt_pipeline = pipeline_for("bf16.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(prebuilt_pipeline, configs).ok(),
+      prepare_cache(prebuilt_pipeline, configs).ok(),
       "an existing prebuilt BF16 engine must remain usable from a read-only package");
   const auto prebuilt_config = YAML::LoadFile(prebuilt_pipeline["primary-gie"]["config-file"].as<std::string>());
   ok &= expect(
@@ -251,7 +256,7 @@ int main(int argc, char** argv) {
          "  engine-create-func-name: OldBuilder\n  network-mode: 1\n";
   auto explicit_int8 = pipeline_for("explicit-int8.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(explicit_int8, configs).ok(),
+      prepare_cache(explicit_int8, configs).ok(),
       "a prepared INT8 engine needs neither source model nor legacy calibration table");
   const auto explicit_config = YAML::LoadFile(explicit_int8["primary-gie"]["config-file"].as<std::string>());
   ok &= expect(
@@ -261,28 +266,27 @@ int main(int argc, char** argv) {
   auto missing_explicit_int8 = pipeline_for("explicit-int8.yaml");
   missing_explicit_int8["primary-gie"]["model-engine-file"] = "missing.engine";
   ok &= expect(
-      !hm::pipeline::PrepareTensorRtModelCache(missing_explicit_int8, configs).ok(),
+      !prepare_cache(missing_explicit_int8, configs).ok(),
       "a missing explicit INT8 engine must fail instead of building uncalibrated inference");
   std::ofstream(configs / "empty.engine");
   auto empty_engine = pipeline_for("explicit-int8.yaml");
   empty_engine["primary-gie"]["model-engine-file"] = "empty.engine";
-  ok &= expect(
-      !hm::pipeline::PrepareTensorRtModelCache(empty_engine, configs).ok(), "empty prebuilt engines must be rejected");
+  ok &= expect(!prepare_cache(empty_engine, configs).ok(), "empty prebuilt engines must be rejected");
   YAML::Node missing_bf16_pipeline = pipeline_for("missing-bf16.yaml");
   ok &= expect(
-      !hm::pipeline::PrepareTensorRtModelCache(missing_bf16_pipeline, configs).ok(),
+      !prepare_cache(missing_bf16_pipeline, configs).ok(),
       "a missing BF16-only prebuilt engine must fail instead of silently rebuilding FP32");
 
   YAML::Node int8_pipeline = pipeline_for("int8.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(int8_pipeline, configs).ok(),
+      prepare_cache(int8_pipeline, configs).ok(),
       "an INT8 inference config with a calibration table may prepare a cached engine");
   const fs::path int8_runtime = int8_pipeline["primary-gie"]["config-file"].as<std::string>();
   if (fs::is_regular_file(int8_runtime)) {
     const YAML::Node int8_cached = YAML::LoadFile(int8_runtime.string());
     ok &= expect(
         fs::path(int8_cached["property"]["model-engine-file"].as<std::string>()).filename() ==
-            "detector.onnx_b2_gpu0_int8.engine",
+            "detector_NVIDIA_Test_GPU.onnx_b2_gpu0_int8.engine",
         "cached INT8 engine path must preserve the configured network mode");
     ok &= expect(
         int8_cached["property"]["int8-calib-file"].as<std::string>() == (models / "detector_int8_calib.table").string(),
@@ -291,16 +295,16 @@ int main(int argc, char** argv) {
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
   YAML::Node missing_int8_calib_pipeline = pipeline_for("missing-int8-calib.yaml");
   ok &= expect(
-      !hm::pipeline::PrepareTensorRtModelCache(missing_int8_calib_pipeline, configs).ok(),
+      !prepare_cache(missing_int8_calib_pipeline, configs).ok(),
       "a missing INT8 calibration table must fail before DeepStream inference setup");
 
   YAML::Node linked_pipeline = pipeline_for("linked.yaml");
   ok &= expect(
-      !hm::pipeline::PrepareTensorRtModelCache(linked_pipeline, configs).ok(),
+      !prepare_cache(linked_pipeline, configs).ok(),
       "packaged ONNX symlinks must be rejected instead of reproduced in the cache");
 
   YAML::Node pipeline = pipeline_for("infer.yaml");
-  const auto status = hm::pipeline::PrepareTensorRtModelCache(pipeline, configs);
+  const auto status = prepare_cache(pipeline, configs);
   ok &= expect(status.ok(), "read-only packaged ONNX must be redirected to a writable cache");
   const fs::path runtime_config = pipeline["primary-gie"]["config-file"].as<std::string>();
   ok &= expect(runtime_config != configs / "infer.yaml", "pipeline must use the cached runtime inference config");
@@ -320,7 +324,7 @@ int main(int argc, char** argv) {
         cached_engine.parent_path() == cached_onnx.parent_path(),
         "DeepStream engine and cached ONNX must share a writable directory");
     ok &= expect(
-        cached_engine.filename() == "detector.onnx_b2_gpu0_fp32.engine",
+        cached_engine.filename() == "detector_NVIDIA_Test_GPU.onnx_b2_gpu0_fp32.engine",
         "engine path must use DeepStream's ONNX-derived filename rather than the configured seed name");
     ok &= expect(
         cached["property"]["labelfile-path"].as<std::string>() == (models / "labels.txt").string(),
@@ -369,7 +373,7 @@ int main(int argc, char** argv) {
   std::ofstream(models / "output-0.tensor", std::ios::trunc) << "changed output tensor zero\n";
   YAML::Node changed_first_tensor_pipeline = pipeline_for("infer.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(changed_first_tensor_pipeline, configs).ok(),
+      prepare_cache(changed_first_tensor_pipeline, configs).ok(),
       "a changed first output tensor must prepare successfully");
   const fs::path changed_first_tensor_runtime =
       changed_first_tensor_pipeline["primary-gie"]["config-file"].as<std::string>();
@@ -381,7 +385,7 @@ int main(int argc, char** argv) {
   std::ofstream(models / "output-1.tensor", std::ios::trunc) << "changed output tensor one\n";
   YAML::Node changed_second_tensor_pipeline = pipeline_for("infer.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(changed_second_tensor_pipeline, configs).ok(),
+      prepare_cache(changed_second_tensor_pipeline, configs).ok(),
       "a changed second output tensor must prepare successfully");
   const fs::path changed_second_tensor_runtime =
       changed_second_tensor_pipeline["primary-gie"]["config-file"].as<std::string>();
@@ -393,7 +397,7 @@ int main(int argc, char** argv) {
   std::ofstream(models / "network.cfg", std::ios::trunc) << "changed network config\n";
   YAML::Node changed_network_config_pipeline = pipeline_for("infer.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(changed_network_config_pipeline, configs).ok(),
+      prepare_cache(changed_network_config_pipeline, configs).ok(),
       "a changed custom network config must prepare successfully");
   const fs::path changed_network_config_runtime =
       changed_network_config_pipeline["primary-gie"]["config-file"].as<std::string>();
@@ -411,7 +415,7 @@ int main(int argc, char** argv) {
   fs::create_symlink(parser_binary, staged_yolo);
   ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", runtime_libraries.c_str(), 1);
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(loader_pipeline, configs).ok(),
+      prepare_cache(loader_pipeline, configs).ok(),
       "a loader-resolved custom inference library must prepare successfully");
   const fs::path loader_runtime = loader_pipeline["primary-gie"]["config-file"].as<std::string>();
   fs::path loader_engine;
@@ -424,7 +428,7 @@ int main(int argc, char** argv) {
   }
   YAML::Node writable_loader_pipeline = pipeline_for("loader-writable.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(writable_loader_pipeline, configs).ok(),
+      prepare_cache(writable_loader_pipeline, configs).ok(),
       "a staged custom library must prepare even when the ONNX model directory is writable");
   const fs::path writable_loader_runtime = writable_loader_pipeline["primary-gie"]["config-file"].as<std::string>();
   ok &= expect(
@@ -468,7 +472,7 @@ int main(int argc, char** argv) {
   ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", second_runtime_libraries.c_str(), 1);
   YAML::Node second_loader_pipeline = pipeline_for("loader.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(second_loader_pipeline, configs).ok(),
+      prepare_cache(second_loader_pipeline, configs).ok(),
       "the same parser staged for a second launch must prepare successfully");
   const fs::path second_loader_runtime = second_loader_pipeline["primary-gie"]["config-file"].as<std::string>();
   if (fs::is_regular_file(second_loader_runtime)) {
@@ -490,7 +494,7 @@ int main(int argc, char** argv) {
   ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", third_runtime_libraries.c_str(), 1);
   YAML::Node changed_parser_pipeline = pipeline_for("loader.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(changed_parser_pipeline, configs).ok(),
+      prepare_cache(changed_parser_pipeline, configs).ok(),
       "a changed parser staged for another launch must prepare successfully");
   const fs::path changed_parser_runtime = changed_parser_pipeline["primary-gie"]["config-file"].as<std::string>();
   if (fs::is_regular_file(changed_parser_runtime)) {
@@ -505,9 +509,8 @@ int main(int argc, char** argv) {
   const fs::path fp32_runtime_directory = runtime_config.parent_path();
   write_inference_config(configs / "infer.yaml", 2);
   YAML::Node changed_pipeline = pipeline_for("infer.yaml");
-  ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(changed_pipeline, configs).ok(),
-      "changed inference build config must prepare successfully");
+  ok &=
+      expect(prepare_cache(changed_pipeline, configs).ok(), "changed inference build config must prepare successfully");
   const fs::path changed_runtime = changed_pipeline["primary-gie"]["config-file"].as<std::string>();
   ok &= expect(
       changed_runtime.parent_path() != fp32_runtime_directory,
@@ -516,7 +519,7 @@ int main(int argc, char** argv) {
     const YAML::Node changed = YAML::LoadFile(changed_runtime.string());
     ok &= expect(
         fs::path(changed["property"]["model-engine-file"].as<std::string>()).filename() ==
-            "detector.onnx_b2_gpu0_fp16.engine",
+            "detector_NVIDIA_Test_GPU.onnx_b2_gpu0_fp16.engine",
         "effective network mode must be reflected in DeepStream's derived engine filename");
   }
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
@@ -529,14 +532,14 @@ int main(int argc, char** argv) {
   overridden_pipeline["primary-gie"]["batch-size"] = 2;
   overridden_pipeline["primary-gie"]["model-engine-file"] = "/tmp/section-seed.engine";
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(overridden_pipeline, configs).ok(),
+      prepare_cache(overridden_pipeline, configs).ok(),
       "application and section-level GIE overrides must prepare successfully");
   const fs::path overridden_runtime = overridden_pipeline["primary-gie"]["config-file"].as<std::string>();
   if (fs::is_regular_file(overridden_runtime)) {
     const YAML::Node overridden = YAML::LoadFile(overridden_runtime.string());
     const fs::path effective_engine = overridden["property"]["model-engine-file"].as<std::string>();
     ok &= expect(
-        effective_engine.filename() == "detector.onnx_b4_gpu1_fp32.engine",
+        effective_engine.filename() == "detector_NVIDIA_Test_GPU_1.onnx_b4_gpu1_fp32.engine",
         "global GPU and nvmultiurisrc batch overrides must determine DeepStream's engine filename");
     ok &= expect(
         overridden_pipeline["primary-gie"]["model-engine-file"].as<std::string>() == effective_engine.string(),
@@ -555,14 +558,13 @@ int main(int argc, char** argv) {
   secondary_pipeline["secondary-gie0"]["batch-size"] = 16;
   secondary_pipeline["secondary-gie0"]["config-file"] = "infer.yaml";
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(secondary_pipeline, configs).ok(),
-      "secondary GIE application overrides must prepare successfully");
+      prepare_cache(secondary_pipeline, configs).ok(), "secondary GIE application overrides must prepare successfully");
   const fs::path secondary_runtime = secondary_pipeline["secondary-gie0"]["config-file"].as<std::string>();
   if (fs::is_regular_file(secondary_runtime)) {
     const YAML::Node secondary = YAML::LoadFile(secondary_runtime.string());
     ok &= expect(
         fs::path(secondary["property"]["model-engine-file"].as<std::string>()).filename() ==
-            "detector.onnx_b8_gpu2_fp32.engine",
+            "detector_NVIDIA_Test_GPU_2.onnx_b8_gpu2_fp32.engine",
         "nvmultiurisrc SGIE batch and global GPU overrides must determine the secondary engine filename");
     ok &= expect(
         secondary_runtime.parent_path() != overridden_runtime.parent_path(),
@@ -574,14 +576,14 @@ int main(int argc, char** argv) {
   primary_omitted_batch["application"]["use-nvmultiurisrcbin"] = 1;
   primary_omitted_batch["application"]["max-batch-size"] = 4;
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(primary_omitted_batch, configs).ok(),
+      prepare_cache(primary_omitted_batch, configs).ok(),
       "primary GIE without a section batch override must prepare successfully");
   const fs::path primary_omitted_runtime = primary_omitted_batch["primary-gie"]["config-file"].as<std::string>();
   if (fs::is_regular_file(primary_omitted_runtime)) {
     const YAML::Node primary_omitted = YAML::LoadFile(primary_omitted_runtime.string());
     ok &= expect(
         fs::path(primary_omitted["property"]["model-engine-file"].as<std::string>()).filename() ==
-            "detector.onnx_b2_gpu0_fp32.engine",
+            "detector_NVIDIA_Test_GPU.onnx_b2_gpu0_fp32.engine",
         "nvmultiurisrc must retain the inference batch when the primary section does not enable its override");
   }
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
@@ -592,14 +594,14 @@ int main(int argc, char** argv) {
   secondary_omitted_batch["secondary-gie0"]["enable"] = 1;
   secondary_omitted_batch["secondary-gie0"]["config-file"] = "infer.yaml";
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(secondary_omitted_batch, configs).ok(),
+      prepare_cache(secondary_omitted_batch, configs).ok(),
       "secondary GIE without a section batch override must prepare successfully");
   const fs::path secondary_omitted_runtime = secondary_omitted_batch["secondary-gie0"]["config-file"].as<std::string>();
   if (fs::is_regular_file(secondary_omitted_runtime)) {
     const YAML::Node secondary_omitted = YAML::LoadFile(secondary_omitted_runtime.string());
     ok &= expect(
         fs::path(secondary_omitted["property"]["model-engine-file"].as<std::string>()).filename() ==
-            "detector.onnx_b2_gpu0_fp32.engine",
+            "detector_NVIDIA_Test_GPU.onnx_b2_gpu0_fp32.engine",
         "nvmultiurisrc must retain the inference batch when a secondary section does not enable its override");
   }
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
@@ -607,8 +609,7 @@ int main(int argc, char** argv) {
   YAML::Node disabled;
   disabled["primary-gie"]["enable"] = 0;
   disabled["primary-gie"]["config-file"] = "infer.yaml";
-  ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(disabled, configs).ok(), "disabled inference section must be ignored");
+  ok &= expect(prepare_cache(disabled, configs).ok(), "disabled inference section must be ignored");
   ok &= expect(
       disabled["primary-gie"]["config-file"].as<std::string>() == "infer.yaml",
       "disabled inference config must not be rewritten");
@@ -617,18 +618,14 @@ int main(int argc, char** argv) {
   YAML::Node writable;
   writable["primary-gie"]["enable"] = 1;
   writable["primary-gie"]["config-file"] = "infer.yaml";
-  ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(writable, configs).ok(),
-      "writable development model directory must remain supported");
+  ok &= expect(prepare_cache(writable, configs).ok(), "writable development model directory must remain supported");
   ok &= expect(
       writable["primary-gie"]["config-file"].as<std::string>() == changed_network_config_runtime.string(),
       "model directory writability must not change the shared engine cache identity");
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
 
   YAML::Node writable_linked = pipeline_for("linked.yaml");
-  ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(writable_linked, configs).ok(),
-      "writable ONNX aliases must remain supported");
+  ok &= expect(prepare_cache(writable_linked, configs).ok(), "writable ONNX aliases must remain supported");
   const YAML::Node linked_config = YAML::LoadFile(writable_linked["primary-gie"]["config-file"].as<std::string>());
   const fs::path linked_onnx = linked_config["property"]["onnx-file"].as<std::string>();
   const fs::path linked_engine = linked_config["property"]["model-engine-file"].as<std::string>();
@@ -639,7 +636,7 @@ int main(int argc, char** argv) {
   std::ofstream(linked_engine) << "cached alias engine";
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
   YAML::Node warm_linked = pipeline_for("linked.yaml");
-  ok &= expect(hm::pipeline::PrepareTensorRtModelCache(warm_linked, configs).ok(), "warm ONNX alias must prepare");
+  ok &= expect(prepare_cache(warm_linked, configs).ok(), "warm ONNX alias must prepare");
   const YAML::Node warm_linked_config = YAML::LoadFile(warm_linked["primary-gie"]["config-file"].as<std::string>());
   ok &= expect(
       warm_linked_config["property"]["model-engine-file"].as<std::string>() == linked_engine.string(),
@@ -665,8 +662,7 @@ int main(int argc, char** argv) {
                                               "  model-engine-file: missing-external.engine\n";
   YAML::Node external_pipeline = pipeline_for("external.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(external_pipeline, configs).ok(),
-      "ONNX models with external weights must prepare successfully");
+      prepare_cache(external_pipeline, configs).ok(), "ONNX models with external weights must prepare successfully");
   const YAML::Node external_config = YAML::LoadFile(external_pipeline["primary-gie"]["config-file"].as<std::string>());
   const fs::path cached_external_model = external_config["property"]["onnx-file"].as<std::string>();
   const fs::path external_engine = external_config["property"]["model-engine-file"].as<std::string>();
@@ -677,8 +673,7 @@ int main(int argc, char** argv) {
   std::ofstream(external_engine) << "cached external engine";
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
   YAML::Node warm_external = pipeline_for("external.yaml");
-  ok &=
-      expect(hm::pipeline::PrepareTensorRtModelCache(warm_external, configs).ok(), "warm external model must prepare");
+  ok &= expect(prepare_cache(warm_external, configs).ok(), "warm external model must prepare");
   const YAML::Node warm_external_config = YAML::LoadFile(warm_external["primary-gie"]["config-file"].as<std::string>());
   ok &= expect(
       warm_external_config["property"]["model-engine-file"].as<std::string>() == external_engine.string(),
@@ -686,8 +681,7 @@ int main(int argc, char** argv) {
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
   std::ofstream(configs / "weights/data.bin", std::ios::binary) << "updated external weights";
   YAML::Node changed_external = pipeline_for("external.yaml");
-  ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(changed_external, configs).ok(), "changed external model must prepare");
+  ok &= expect(prepare_cache(changed_external, configs).ok(), "changed external model must prepare");
   const YAML::Node changed_external_config =
       YAML::LoadFile(changed_external["primary-gie"]["config-file"].as<std::string>());
   ok &= expect(
@@ -697,7 +691,7 @@ int main(int argc, char** argv) {
   fs::remove(configs / "weights/data.bin");
   YAML::Node missing_external = pipeline_for("external.yaml");
   ok &= expect(
-      !hm::pipeline::PrepareTensorRtModelCache(missing_external, configs).ok(),
+      !prepare_cache(missing_external, configs).ok(),
       "missing external weights must fail before publishing an incomplete model");
   for (const char* unsafe_location : {"../weights.bin", "/absolute/weights.bin", ""}) {
     write_model(external_model, "unsafe external weights", protobuf_bytes(5, external_tensor(unsafe_location)));
@@ -713,7 +707,7 @@ int main(int argc, char** argv) {
   fs::remove(home_models / "home-detector.engine");
   YAML::Node cold_pipeline = pipeline_for("home-dollar.yaml");
   ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(cold_pipeline, configs).ok(),
+      prepare_cache(cold_pipeline, configs).ok(),
       "a writable user model with a missing engine must use the shared cache");
   const fs::path cold_runtime = cold_pipeline["primary-gie"]["config-file"].as<std::string>();
   const YAML::Node cold_config = YAML::LoadFile(cold_runtime.string());
@@ -730,9 +724,7 @@ int main(int argc, char** argv) {
   YAML::Node warm_pipeline = pipeline_for("home-dollar.yaml");
   warm_pipeline["source0"]["uri"] = "file:///different-game/cam1.mp4";
   warm_pipeline["sink0"]["output-file"] = "/different-output/game.mkv";
-  ok &= expect(
-      hm::pipeline::PrepareTensorRtModelCache(warm_pipeline, configs).ok(),
-      "a later run for another game must prepare successfully");
+  ok &= expect(prepare_cache(warm_pipeline, configs).ok(), "a later run for another game must prepare successfully");
   const YAML::Node warm_config = YAML::LoadFile(warm_pipeline["primary-gie"]["config-file"].as<std::string>());
   ok &= expect(
       warm_config["property"]["model-engine-file"].as<std::string>() == serialized_engine.string() &&
@@ -743,6 +735,46 @@ int main(int argc, char** argv) {
       "engine generation must not write beside the source ONNX model");
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
 
+  // Reusing ordinal zero on a different GPU must neither load nor overwrite
+  // the first device's engine or runtime YAML.
+  write_inference_config(configs / "gpu-cache.yaml", 0);
+  auto gpu_first = pipeline_for("gpu-cache.yaml");
+  ok &= expect(prepare_cache(gpu_first, configs).ok(), "first GPU cache must prepare");
+  const auto first_config = gpu_first["primary-gie"]["config-file"].as<std::string>();
+  const auto first_engine = YAML::LoadFile(first_config)["property"]["model-engine-file"].as<std::string>();
+  std::ofstream(first_engine) << "first GPU engine";
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+  gpu_model = "NVIDIA_Other_GPU";
+  auto gpu_second = pipeline_for("gpu-cache.yaml");
+  ok &= expect(prepare_cache(gpu_second, configs).ok(), "second GPU cache must prepare");
+  const auto second_config = gpu_second["primary-gie"]["config-file"].as<std::string>();
+  const auto second_engine = YAML::LoadFile(second_config)["property"]["model-engine-file"].as<std::string>();
+  ok &= expect(
+      first_config != second_config && first_engine != second_engine && !fs::exists(second_engine) &&
+          fs::file_size(first_engine) == 16,
+      "GPU models must have independent engine and runtime config paths");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+  for (const char* model : {"NVIDIA_Test_GPU", "NVIDIA_Other_GPU"}) {
+    const auto engine = home_models / (std::string("prepared_") + model + "_int8.engine");
+    std::ofstream(engine) << model;
+  }
+  std::ofstream(configs / "gpu-prebuilt.yaml") << "hstream-prebuilt-precision: int8\nproperty:\n  model-engine-file: "
+                                               << (home_models / "prepared_{gpu}_int8.engine").string() << '\n';
+  for (const char* model : {"NVIDIA_Test_GPU", "NVIDIA_Other_GPU"}) {
+    gpu_model = model;
+    auto selected = pipeline_for("gpu-prebuilt.yaml");
+    ok &= expect(prepare_cache(selected, configs).ok(), "prebuilt GPU template must resolve");
+    const auto prepared = YAML::LoadFile(selected["primary-gie"]["config-file"].as<std::string>());
+    ok &= expect(
+        prepared["property"]["model-engine-file"].as<std::string>() ==
+            (home_models / (std::string("prepared_") + model + "_int8.engine")).string(),
+        "prebuilt selection must use the actual GPU model");
+  }
+  gpu_model = "NVIDIA_Test_GPU";
+  ok &= expect(
+      hm::inference::SanitizeGpuName("NVIDIA GeForce RTX-5090") == "NVIDIA_GeForce_RTX_5090",
+      "GPU names must be safe filename components");
+
   ::unsetenv("HSTREAM_TENSORRT_CACHE_DIR");
   for (bool use_xdg : {true, false}) {
     const fs::path xdg_cache = root / "xdg-cache";
@@ -752,8 +784,7 @@ int main(int argc, char** argv) {
       ::unsetenv("XDG_CACHE_HOME");
     YAML::Node default_pipeline = pipeline_for("home-dollar.yaml");
     ok &= expect(
-        hm::pipeline::PrepareTensorRtModelCache(default_pipeline, configs).ok(),
-        "the default shared engine cache must prepare successfully");
+        prepare_cache(default_pipeline, configs).ok(), "the default shared engine cache must prepare successfully");
     const fs::path default_runtime = default_pipeline["primary-gie"]["config-file"].as<std::string>();
     ok &= expect(
         default_runtime.parent_path().parent_path() == (use_xdg ? xdg_cache : home / ".cache") / "hstream/tensorrt",

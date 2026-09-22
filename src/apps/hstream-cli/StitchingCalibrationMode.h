@@ -82,4 +82,12 @@ inline void configure_stitching_player_scan_pipeline(YAML::Node pipeline) {
   pipeline["tests"]["file-loop"] = 0;
 }
 
+inline void configure_int8_sampling_pipeline(YAML::Node pipeline) {
+  configure_stitching_player_scan_pipeline(pipeline);
+  if (!pipeline || !pipeline.IsMap())
+    return;
+  pipeline["primary-gie"]["enable"] = 0;
+  pipeline["ds-fieldmask"]["enable"] = 0;
+}
+
 } // namespace hm::pipeline_internal

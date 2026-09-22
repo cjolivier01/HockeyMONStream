@@ -355,7 +355,7 @@ def run_variant(args: argparse.Namespace, variant: Variant, out_dir: Path) -> di
     # still produces a file called ..._fp16.engine. The warning below is what
     # actually catches a silent fallback, which would otherwise publish an fp16
     # row that is really fp32 and pass the drift gate trivially.
-    if "_b2_gpu0_fp16.engine" not in log_text:
+    if "_fp16.engine" not in log_text:
       result["status"] = "failed"
       result["reason"] = f"FP16 run did not log an fp16 engine; config may not have applied. See {log_path}"
     elif "FP16 not supported by platform" in log_text:
@@ -438,6 +438,13 @@ def main() -> int:
   )
   parser.add_argument("--extra-run-arg", action="append", default=[])
   args = parser.parse_args()
+  global INT8_ENGINE, BF16_ENGINE
+  runner = os.environ.get("HSTREAM_CLI_BIN", str(REPO_ROOT / "bazel-bin/src/apps/hstream-cli/hstream-cli"))
+  def resolve_engine(path):
+    if "{gpu}" not in str(path):
+      return path
+    return Path(subprocess.check_output([runner, "--resolve-engine-path", str(path)], text=True).strip())
+  INT8_ENGINE, BF16_ENGINE = resolve_engine(INT8_ENGINE), resolve_engine(BF16_ENGINE)
   args._int8_calibration_completed = False
   args._bf16_build_completed = False
 

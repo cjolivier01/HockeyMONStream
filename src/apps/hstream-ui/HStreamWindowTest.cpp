@@ -80,6 +80,11 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static void preparedInt8(HStreamWindow* window, const QString& engine) {
+    window->prepared_int8_engine_ = engine;
+    window->prepared_int8_manifest_ = engine + ".json";
+    window->updatePresetDirtyState();
+  }
   static bool savePreset(HStreamWindow* window) {
     return window->savePreset();
   }
@@ -12728,6 +12733,32 @@ bool test_detector_precision() {
             YAML::LoadFile(custom_path)["pipeline"]["primary-gie"]["config-file"].as<std::string>() ==
                 name.toStdString(),
             "repeated saves must preserve the detector selection"))
+      return false;
+  }
+  precision->setCurrentIndex(precision->findData("int8"));
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  const QString prepared_engine = QDir(root).filePath("prepared-int8.engine");
+  HStreamWindowTestAccess::preparedInt8(&window, prepared_engine);
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(&window).contains(
+              "--options=pipeline.primary-gie.model-engine-file=" + prepared_engine),
+          "new preparation must reach the runner even when INT8 was already selected") ||
+      !HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  {
+    HStreamWindow reload;
+    auto* selector = require_child<QComboBox>(&reload, "gameSelector");
+    selector->setCurrentIndex(selector->findText(custom_game));
+    if (!expect(
+            require_child<QComboBox>(&reload, "detectorPrecisionCombo")->currentData().toString() == "int8",
+            "prepared INT8 must reload as INT8 rather than a custom detector") ||
+        !HStreamWindowTestAccess::savePreset(&reload))
+      return false;
+    const auto saved = YAML::LoadFile(custom_path);
+    if (!expect(
+            saved["pipeline"]["primary-gie"]["model-engine-file"].as<std::string>() == prepared_engine.toStdString(),
+            "saving prepared INT8 must preserve its selected engine"))
       return false;
   }
   precision->setCurrentIndex(precision->findData("bf16"));

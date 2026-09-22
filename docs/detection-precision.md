@@ -46,6 +46,101 @@ Engine preparation is currently a source-checkout tool. Installed UI/CLI runs
 can consume prepared engines at the paths in the inference YAMLs. Build engines
 on the target GPU/runtime; do not copy desktop engines to Jetson.
 
+The recording preparation helper and wrapper build commands compare the
+builder's `--runtime-info` with `hstream-cli --tensorrt-runtime-info` **before
+building**. The CLI resolves `getInferLibVersion` through DeepStream's
+`libnvds_infer.so` dependency handle, rather than opening the system's
+unversioned `libnvinfer.so`. The full TensorRT version and CUDA GPU UUID must
+match. This catches a coherent TensorRT 11 builder paired with TensorRT 10
+playback, in addition to the builder's SDK/header check. The CLI also prints
+the library path to stderr. Inspect both executables with `ldd` when diagnosing
+loader overrides.
+
+## Engine names and GPU selection
+
+Generated engine names include a sanitized CUDA GPU model and precision, for
+example `detector_NVIDIA_GeForce_RTX_5090_int8.engine`. CUDA device properties
+honor `CUDA_VISIBLE_DEVICES`; `gpu0` alone cannot distinguish different GPUs.
+FP32/FP16 cache builds tag the staged ONNX name, so DeepStream's derived engine
+name also contains the GPU model. Separate cache directories prevent one GPU
+from overwriting another GPU's engine or runtime configuration.
+
+Bundled inference paths contain `{gpu}` plus the precision suffix. The native
+runner resolves the token using the effective inference GPU, preserving engines
+for other GPUs and precisions. UI presets retain that token for ordinary bundled
+choices. Recording preparation saves an explicit, immutable engine path and
+provenance for that particular build. Explicit custom paths remain explicit;
+incompatible prepared engines fail instead of being rebuilt over an existing
+file. Resolve a template for CUDA GPU 0 with:
+
+```sh
+bazel-bin/src/apps/hstream-cli/hstream-cli --resolve-engine-path '/path/detector_{gpu}_bf16.engine'
+```
+
+## Prepare INT8 from a recording
+
+Complete stitching calibration, stop playback, then open **Program Controls →
+Detection → Prepare INT8 from recording**. Choose 16–256 samples (default 64).
+The preparer samples stitched panoramas at evenly spaced interior timestamps
+across the complete synchronized recording. This currently decodes/stitches the
+recording once; it does not seek directly to the selected times. Detection,
+tracking, audio and production outputs are disabled for this pass.
+
+Only selected images cross to host memory, after GPU conversion to the exact
+detector input dimensions (at most four megapixels). Source ROI alignment,
+default NVIDIA resize filtering, truncation and symmetric black padding match
+the bundled nvinfer preprocessing. The optional CPU ONNX Runtime quantizer
+consumes these prepared PNGs without a second resize. Ordinary playback does
+not acquire a video readback path.
+
+Build the native tools with the SDK selected above, and install the optional
+offline Python environment:
+
+```sh
+bazelisk build --config=opt //src/apps/hstream-cli:hstream-cli \
+  //src/apps/hstream-ui:hstream-ui //src/apps/hstream-assets:hstream-assets \
+  //src/apps/int8-calib-builder:int8-calib-builder
+python3 -m venv /path/to/precision-tools
+/path/to/precision-tools/bin/pip install onnx onnxruntime numpy opencv-python-headless
+HSTREAM_INT8_PYTHON=/path/to/precision-tools/bin/python bazel-bin/src/apps/hstream-ui/hstream-ui
+```
+
+`HSTREAM_INT8_PREPARER` and `HSTREAM_INT8_BUILDER` optionally override source
+tool paths. Automatic preparation currently supports the bundled self-contained
+FP32 NCHW detector and CUDA GPU 0; unsupported inputs fail before publication.
+Installed native packages do not include Python or the quantizer; they can
+play previously prepared engines.
+
+The dialog selects and saves INT8 only after capture, quantization, engine
+inspection and source/geometry verification succeed. **Play from the beginning
+when ready** starts Program playback at zero using the new engine. Cancellation
+stops preparation children and preserves the prior detector selection. Failed
+or partial capture cannot publish an engine. This is an offline preparation
+pass; it does not rebuild the inference element during live playback.
+
+Bundles live under `${HSTREAM_TENSORRT_CACHE_DIR}/recording-int8` (or the normal
+per-user TensorRT cache). Each immutable bundle retains PNGs, exact paired source
+timestamps, recording file bindings, stitching generation, model/config/image
+hashes, GPU/runtime identity, quantized ONNX, engine and layer inspection. Game
+YAML stores the engine/manifest in `hstream_ui.detector_int8` and selects the
+engine through the normal `pipeline.primary-gie` overrides; exported jobs use
+that same path. Keep the selected bundle available until its preset is changed.
+
+For unattended preparation, which prints `HSTREAM_INT8_READY` and does not edit
+the game configuration:
+
+```sh
+/path/to/precision-tools/bin/python scripts/prepare_recording_int8.py \
+  --cli bazel-bin/src/apps/hstream-cli/hstream-cli \
+  --builder bazel-bin/src/apps/int8-calib-builder/int8-calib-builder \
+  --assets bazel-bin/src/apps/hstream-assets/hstream-assets \
+  --app-config configs/ds_hockey_app_config.yaml \
+  --detector-config configs/config_infer_yolov8_hockey_int8.yaml \
+  --game-id GAME --samples 64
+```
+
+Evaluate accuracy on separate frames/games before choosing INT8 for production.
+
 ## BF16
 
 TensorRT 9/10 supports the BF16 builder flag on Ampere and later GPUs:
@@ -54,7 +149,7 @@ TensorRT 9/10 supports the BF16 builder flag on Ampere and later GPUs:
 MODEL="$HOME/.cache/hstream/models/hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx"
 bazel-bin/src/apps/int8-calib-builder/int8-calib-builder \
   --precision=bf16 --onnx="$MODEL" \
-  --engine="${MODEL}_b2_gpu0_bf16.engine" --batch-size=2 --min-batch-size=1
+  --engine="${MODEL}_b2_gpu0_{gpu}_bf16.engine" --batch-size=2 --min-batch-size=1
 ```
 
 The source wrapper also supports `./run.sh --game-id=GAME --models-bf16-build`.
@@ -86,16 +181,18 @@ python3 -m venv /path/to/precision-tools
   --output=/path/to/detector-int8-qdq.onnx
 bazel-bin/src/apps/int8-calib-builder/int8-calib-builder \
   --precision=int8 --explicit-precision --onnx=/path/to/detector-int8-qdq.onnx \
-  --engine="${MODEL}_b2_gpu0_int8.engine" --batch-size=2 --min-batch-size=1
+  --engine="${MODEL}_b2_gpu0_{gpu}_int8.engine" --batch-size=2 --min-batch-size=1
 ```
 
-The quantizer uses RGB, centered black padding, bilinear resize, NCHW FP32 and
+The manual image-list quantizer uses RGB, centered black padding, bilinear resize, NCHW FP32 and
 normalization matching the bundled inference config. It quantizes Conv/MatMul
 weights and activations symmetrically to INT8 with per-channel weights and keeps
 biases floating point because TensorRT cannot consume ORT's INT32 bias DQ nodes.
 It supports dynamic or batch-one FP32 input with fixed spatial dimensions. A
 custom model with different preprocessing needs a matching calibration path.
 The source model and an existing destination remain intact on failed conversion.
+Use `--preprocessed` with the native sampler's detector-sized images to preserve
+the runtime's exact GPU resize/padding instead of the manual bilinear path.
 
 The builder validates Q/DQ presence and FP32 I/O, builds the dynamic batch
 profile, deserializes and inspects the result, and publishes the engine via a

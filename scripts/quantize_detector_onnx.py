@@ -27,10 +27,15 @@ def image_paths(list_path):
   return paths
 
 
-def prepare_image(image, height, width, scale):
+def prepare_image(image, height, width, scale, preprocessed=False):
   import cv2
   import numpy as np
 
+  if preprocessed:
+    if image.shape[:2] != (height, width):
+      raise ValueError("Native calibration image must already match the network dimensions")
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    return np.ascontiguousarray((rgb.astype(np.float32) * scale).transpose(2, 0, 1)[None])
   ratio = min(width / image.shape[1], height / image.shape[0])
   resized_width = min(width, max(1, int(image.shape[1] * ratio + 0.5)))
   resized_height = min(height, max(1, int(image.shape[0] * ratio + 0.5)))
@@ -78,7 +83,7 @@ def quantize(args):
         raise ValueError(f"Could not decode calibration image: {path}")
       self.index += 1
       print(f"Calibrating {self.index}/{len(paths)}: {path}", flush=True)
-      return {inputs[0].name: prepare_image(image, height, width, args.scale)}
+      return {inputs[0].name: prepare_image(image, height, width, args.scale, getattr(args, "preprocessed", False))}
 
   # Keep the previous model intact on failure or cancellation. TensorRT's
   # existing engine builder consumes this graph separately with --explicit-precision.
@@ -114,6 +119,7 @@ def main():
   parser.add_argument("--onnx", type=Path, required=True)
   parser.add_argument("--image-list", type=Path, required=True)
   parser.add_argument("--output", type=Path, required=True)
+  parser.add_argument("--preprocessed", action="store_true", help="Images already have the detector's resize and padding")
   parser.add_argument("--scale", type=float, default=0.0039215697906911373,
             help="Detector input scale (default matches bundled RGB/symmetric-padding config)")
   args = parser.parse_args()

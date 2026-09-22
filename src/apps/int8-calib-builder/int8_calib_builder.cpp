@@ -4,6 +4,7 @@
 #include <cuda_runtime_api.h>
 #include <opencv2/opencv.hpp>
 #include "EnginePrecision.h"
+#include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 
 #include <unistd.h>
 #include <algorithm>
@@ -354,11 +355,28 @@ void write_file(const std::string& path, const void* data, size_t size) {
 
 int main(int argc, char** argv) {
   try {
-    Args args = parse_args(argc, argv);
+    if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h"))
+      parse_args(argc, argv);
     const int runtime_version = getInferLibVersion();
     if (!hm::inference::TensorRtVersionMatches(runtime_version, NV_TENSORRT_MAJOR, NV_TENSORRT_MINOR))
       throw std::runtime_error(
           "TensorRT SDK headers and loaded runtime differ; select a matching HSTREAM_TENSORRT_SDK_ROOT");
+    if (argc == 2 && std::string(argv[1]) == "--runtime-info") {
+      cudaDeviceProp device{};
+      if (cudaGetDeviceProperties(&device, 0) != cudaSuccess)
+        throw std::runtime_error("cannot inspect detector GPU 0");
+      std::cout << "HSTREAM_TENSORRT_RUNTIME version=" << runtime_version << " gpu_uuid=";
+      const char* hex = "0123456789abcdef";
+      for (unsigned char byte : device.uuid.bytes)
+        std::cout << hex[byte >> 4] << hex[byte & 15];
+      std::cout << " gpu_name=" << hm::inference::SanitizeGpuName(device.name) << '\n';
+      return 0;
+    }
+    Args args = parse_args(argc, argv);
+    auto gpu_name = hm::inference::TensorRtGpuName(0);
+    if (!gpu_name.ok())
+      throw std::runtime_error(gpu_name.status().ToString());
+    args.engine = hm::inference::ResolveGpuEnginePath(args.engine, *gpu_name);
     std::cout << "TensorRT runtime version: " << getInferLibVersion() << " (SDK " << NV_TENSORRT_MAJOR << '.'
               << NV_TENSORRT_MINOR << ")\n";
 #if HSTREAM_HAS_TRT_LEGACY_INT8_CALIBRATOR
