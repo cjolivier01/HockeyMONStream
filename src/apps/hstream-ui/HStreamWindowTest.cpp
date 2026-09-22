@@ -9467,6 +9467,88 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
               *preserved_generation == saved_intent["source_generation"].as<std::string>(),
           "Cancelling the launched reframe must preserve its original published generation and pending request"))
     return false;
+
+  // Source-role edits explicitly replace this pending geometry request. Exercise
+  // both mutations through their real actions, including Save and the next Play.
+  auto* video_path = require_child<QLineEdit>(window, "videoPathEdit");
+  auto* add_video = require_child<QPushButton>(window, "addVideoButton");
+  auto* remove_video = require_child<QPushButton>(window, "removeVideoButton");
+  auto* left_role = require_child<QRadioButton>(window, "videoRole_left");
+  auto* video_list = require_child<QListWidget>(window, "videoSetList");
+  QTemporaryDir reframe_video_source;
+  const QString reframe_video = reframe_video_source.filePath("GX010007.MP4");
+  if (!video_path || !add_video || !remove_video || !left_role || !video_list || !reframe_video_source.isValid() ||
+      !write_fake_video(reframe_video))
+    return false;
+  const auto verify_input_recalibration = [&]() {
+    const auto invalidated = YAML::LoadFile(config_path.string());
+    const auto state = invalidated["hstream_ui"]["stitching_calibration"];
+    if (!expect(
+            !state["reframe"] && state["status"].as<std::string>() == "pending" &&
+                state["stale_from"].as<std::string>() == "input" &&
+                state["rink_mask_status"].as<std::string>() == "pending" &&
+                !state["artifacts_invalidated"].as<bool>() && !state["invalidation_id"] &&
+                state["frame_count"].as<int>() ==
+                    cancelled_reframe["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() &&
+                !invalidated["stitching"]["calibration_frame_selection"],
+            "Changing a video role must atomically clear the pending view and invalidate its input generation"))
+      return false;
+    automatic_crop_dialog->setChecked(!automatic_crop_dialog->isChecked());
+    activate(save);
+    const auto saved_input = YAML::LoadFile(config_path.string())["hstream_ui"]["stitching_calibration"];
+    if (!expect(
+            !save->isEnabled() && !saved_input["reframe"] && saved_input["stale_from"].as<std::string>() == "input",
+            "Saving after a video-role edit must preserve input invalidation without validating the old view"))
+      return false;
+    const int cleanup_before_input = window->logText().count("stitching calibration clean command");
+    activate(reframe_start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i)
+      QTest::qWait(10);
+    const auto playing_input = YAML::LoadFile(config_path.string())["hstream_ui"]["stitching_calibration"];
+    const bool ordinary_input = expect(
+        window->pipelineStateText() == "PLAYING" && !playing_input["reframe"] &&
+            playing_input["stale_from"].as<std::string>() == "input" &&
+            window->logText().count("stitching calibration clean command") == cleanup_before_input + 1 &&
+            HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_CALIBRATION_START_STAGE") == "input",
+        "Play after a video-role edit must take ordinary input cleanup and calibration");
+    activate(reframe_stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i)
+      QTest::qWait(10);
+    return ordinary_input;
+  };
+  activate(left_role);
+  video_path->setText(reframe_video);
+  activate(add_video);
+  const auto added_video_config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          list_contains(video_list, "Left  hstream-ui/left/GX010007.MP4"),
+          "Adding a Left video must exercise the source-role transaction") ||
+      !verify_input_recalibration())
+    return false;
+
+  // The single Left role does not replace runtime playlists until Right is
+  // present. Restore the still-valid request with its imported-role metadata
+  // and confirm a normal Save accepts it before removing that role.
+  auto before_remove = YAML::Clone(cancelled_reframe);
+  before_remove["hstream_ui"]["video_roles"] = YAML::Clone(added_video_config["hstream_ui"]["video_roles"]);
+  std::ofstream(config_path) << YAML::Dump(before_remove) << '\n';
+  activate(create);
+  automatic_crop_dialog->setChecked(!automatic_crop_dialog->isChecked());
+  activate(save);
+  if (!expect(
+          !save->isEnabled() &&
+              YAML::LoadFile(config_path.string())["hstream_ui"]["stitching_calibration"]["reframe"].IsMap() &&
+              select_list_item(video_list, "Left  hstream-ui/left/GX010007.MP4"),
+          "The removal fixture must retain a valid saved view request and imported Left role"))
+    return false;
+  activate(remove_video);
+  if (!expect(
+          !list_contains(video_list, "Left  hstream-ui/left/GX010007.MP4"),
+          "Removing the Left video must exercise the source-role transaction") ||
+      !verify_input_recalibration())
+    return false;
+  std::ofstream(config_path) << YAML::Dump(cancelled_reframe) << '\n';
+  activate(create);
   camera_horizontal_fov->setValue(126.75);
   activate(save);
   if (!expect(

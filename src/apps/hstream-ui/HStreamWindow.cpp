@@ -3749,13 +3749,16 @@ bool invalidate_stitching_calibration(YAML::Node& config, const char* stale_from
       ? calibration["rink_mask_status"].as<std::string>()
       : "";
   const bool had_invalidation_id = calibration["invalidation_id"] && calibration["invalidation_id"].IsScalar();
+  const bool had_reframe = hm::stitching::HasStitchingReframeIntent(config);
+  // Source edits supersede the saved view request in the same config transaction.
+  hm::stitching::ClearStitchingReframeIntent(config);
   calibration["status"] = "pending";
   calibration["rink_mask_status"] = "pending";
   calibration["stale_from"] = stale_from;
   calibration["artifacts_invalidated"] = false;
   calibration.remove("invalidation_id");
   return previous_status != "pending" || previous_stale != stale_from || previous_invalidated ||
-      previous_rink_status != "pending" || had_invalidation_id;
+      previous_rink_status != "pending" || had_invalidation_id || had_reframe;
 }
 
 bool yaml_defined(YAML::Node node) {
