@@ -8914,6 +8914,19 @@ absl::Status Configurator::complete_configuration(
       // canonical default to a saved native width would invent a view change.
       Configurator saved_width_config(game_id_, config_root_dir_, override_gpu_id_);
       saved_width_config.config_ = YAML::Clone(before);
+      // Structural app files are unranked defaults and may own native width
+      // aliases. Replay their already-loaded underlays without CLI mutations.
+      for (const auto& document : recording_config_documents_) {
+        const std::string role = document["role"].as<std::string>("");
+        if (!absl::StartsWith(role, "underlay:"))
+          continue;
+        const std::string node = role.substr(std::string("underlay:").size());
+        YAML::Node underlay = YAML::Clone(document["values"]);
+        if (node.empty())
+          saved_width_config.config_ = merge_nodes(underlay, saved_width_config.config_, false);
+        else
+          saved_width_config.config_[node] = merge_nodes(underlay, saved_width_config.config_[node], false);
+      }
       if (!saved_width_config.config_["pipeline"]["hmstitcher"].IsDefined() ||
           saved_width_config.config_["pipeline"]["hmstitcher"].IsNull())
         saved_width_config.config_["pipeline"]["hmstitcher"] = YAML::Node(YAML::NodeType::Map);

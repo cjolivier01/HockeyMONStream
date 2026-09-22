@@ -5056,7 +5056,7 @@ play-tracker:
 
   // A persisted native width is the old view, not a new CLI geometry edit.
   // OpenCV makes a false reframe immediately observable without native tools.
-  for (int width_case = 0; width_case < 8; ++width_case) {
+  for (int width_case = 0; width_case < 10; ++width_case) {
     const std::string name = "saved-native-width-" + std::to_string(width_case);
     const fs::path directory = games / name;
     fs::create_directories(directory);
@@ -5091,10 +5091,12 @@ play-tracker:
       saved["stitching"]["max_output_width"] = 2048;
     }
     const fs::path structural_path = directory / "pipeline.yaml";
-    if (width_case == 7) {
-      saved["stitching"]["max_output_width"] = 4096;
+    if (width_case >= 7) {
       YAML::Node structural = YAML::Clone(saved["pipeline"]);
-      structural["hmstitcher"].remove("properties");
+      if (width_case == 7) {
+        saved["stitching"]["max_output_width"] = 4096;
+        structural["hmstitcher"].remove("properties");
+      }
       std::ofstream(structural_path) << YAML::Dump(structural) << '\n';
       saved["pipeline"].remove("hmstitcher");
     }
@@ -5103,16 +5105,16 @@ play-tracker:
     std::ofstream(directory / "config.yaml") << contents;
     hm::Configurator width_config(name, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     ok &= expect(width_config.configure().ok(), "Saved native-width fixture must load");
-    if (width_case == 7)
+    if (width_case >= 7)
       ok &= expect(width_config.underlay_config("pipeline", structural_path.string()), "Structural stitcher must load");
-    if (width_case == 5 || width_case == 6)
+    if (width_case == 5 || width_case == 6 || width_case == 9)
       ok &= expect(
           width_config.apply_config_item("stitching.max_output_width", width_case == 5 ? "4096" : "3072").ok(),
           "CLI width override fixture must apply");
     const auto result = width_config.complete_configuration(false, false, false, name);
     const auto after = YAML::LoadFile((directory / "config.yaml").string());
     const auto after_state = after["hstream_ui"]["stitching_calibration"];
-    if (width_case == 6) {
+    if (width_case == 6 || width_case == 9) {
       ok &= expect(
           !result.ok() && result.message().find("Reframing requires an optimized NONA") != std::string::npos &&
               YAML::Dump(after) == YAML::Dump(saved),
