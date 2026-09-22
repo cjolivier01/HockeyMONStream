@@ -92,6 +92,22 @@ bool writeInProgressSnapshot(const QTemporaryDir& staging, const QImage& source,
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--inspect-snapshot") {
+    RinkLevelingDialog dialog(QString::fromLocal8Bit(argv[2]), {0, 0, 0});
+    if (!expect(dialog.loadError().isEmpty(), qPrintable(dialog.loadError())))
+      return 1;
+    dialog.show();
+    QApplication::processEvents();
+    for (int camera = 0; camera < 2; ++camera) {
+      auto* canvas = static_cast<ScoreboardSelectionCanvas*>(
+          dialog.findChild<QWidget*>(QString("rinkLevelingCamera%1").arg(camera)));
+      if (!expect(canvas && !canvas->imageSize().isEmpty(), "saved camera image loads without recalibration"))
+        return 1;
+      std::cout << "Loaded camera " << camera << ": " << canvas->imageSize().width() << 'x'
+                << canvas->imageSize().height() << '\n';
+    }
+    return dialog.grab().save(QString::fromLocal8Bit(argv[3])) ? 0 : 1;
+  }
   // Manual integration/visual check uses real saved Sabercats images and the
   // installed Hugin tools; no production config/artifacts are modified.
   if (argc == 3) {
@@ -630,6 +646,27 @@ int main(int argc, char** argv) {
     changed_camera.vertical_fov = 90;
     RinkLevelingDialog matching(game.path(), {0, -33, 2}, nullptr, changed_camera);
     ok &= expect(matching.loadError().isEmpty(), "matching camera metadata allows leveling");
+    QByteArray selected_provenance = provenance;
+    selected_provenance.replace("version=8", "version=10");
+    selected_provenance +=
+        "control-point-resolution=native\ncalibration-frame-selection-policy=players\n"
+        "calibration-frame-selection-fingerprint=saved-frames\n";
+    write(game.filePath("stitching_canvas_provenance"), selected_provenance);
+    {
+      RinkLevelingDialog selected(game.path(), {0, -33, 2}, nullptr, changed_camera);
+      auto* left = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera0"));
+      auto* right = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera1"));
+      ok &= expect(
+          selected.loadError().isEmpty() && left->imageSize() == source.size() && right->imageSize() == source.size(),
+          "a promoted version-10 selected-frame calibration loads both camera images for re-leveling");
+      advanceToPreview(selected);
+      auto* accept = selected.findChild<QPushButton*>("acceptRinkLevelingButton");
+      ok &= expect(
+          waitUntil([&]() { return accept->isEnabled(); }), "selected-frame calibration can preview new leveling");
+      accept->click();
+      ok &= expect(selected.result() == QDialog::Accepted, "re-leveling selected frames returns the revised angles");
+    }
+    write(game.filePath("stitching_canvas_provenance"), provenance);
     changed_camera.configuration = "different-camera";
     RinkLevelingDialog mismatched(game.path(), {0, -33, 2}, nullptr, changed_camera);
     ok &= expect(!mismatched.loadError().isEmpty(), "published camera metadata must match the selected camera model");

@@ -47,6 +47,20 @@ int main() {
       "holes survive conservative effective-canvas downscaling");
   auto bounded = BuildPlayerFrameOverlap(maps, {12, 8}, 0, 3);
   ok &= expect(bounded.ok() && bounded->mask.cols <= 3 && bounded->mask.rows <= 3, "CPU mask dimension is bounded");
+  // TIFF rational tags decode to floats just above an integer. Production
+  // normalizes and measures in float; double arithmetic incorrectly loses a
+  // pixel when the resulting extent is truncated to an integer.
+  const std::array<PlayerFrameRemap, 2> fractional_positions{
+      map(8, 8, 1.0000001192092896, 0), map(8, 8, 5, 0)};
+  auto rounded = BuildPlayerFrameOverlap(fractional_positions, {12, 8}, 0, 100);
+  ok &= expect(
+      rounded.ok() && cv::countNonZero(rounded->mask) == 32,
+      "fractional TIFF positions must use the same float normalization as production");
+  const std::array<PlayerFrameRemap, 2> mini_positions{
+      map(8, 8, 1207.0001220703125, 3581), map(8, 8, 5601, 3581)};
+  ok &= expect(
+      BuildPlayerFrameOverlap(mini_positions, {4402, 8}, 0, 100).ok(),
+      "real mini TIFF placement rounding must not reject a validated canvas");
   std::array<PlayerFrameRemap, 2> square{map(9, 9, 0, 0), map(9, 9, 0, 0)};
   square[0].x.at<uint16_t>(2, 5) = 65535;
   auto rotated = BuildPlayerFrameOverlap(square, {9, 9}, 90, 9);

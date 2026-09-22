@@ -94,6 +94,9 @@ struct HStreamWindowTestAccess {
   static bool rinkLevelingInputsUnchanged(HStreamWindow* window) {
     return window->rinkLevelingInputsUnchanged();
   }
+  static void openPromotedStitchingLeveling(HStreamWindow* window, const QString& game_directory) {
+    window->openPromotedStitchingLeveling(game_directory);
+  }
   static void stageTestLeveling(HStreamWindow* window, const QByteArray& revision = "test-selection") {
     window->pending_leveling_revision_ = revision;
   }
@@ -9572,6 +9575,59 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       projection_parameter_reset_clears_cache;
 }
 
+bool test_promoted_stitching_leveling(HStreamWindow* window) {
+  auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* save = require_child<QPushButton>(window, "savePresetButton");
+  auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* automatic = require_child<QCheckBox>(window, "showLevelingDialogCheck");
+  if (!game_id || !create || !save || !mapping_backend || !automatic)
+    return false;
+  const QString original_game_id = game_id->text();
+  game_id->setText("ui-promoted-stitching-leveling-game");
+  activate(create);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  automatic->setChecked(true);
+  activate(save);
+  const QString promoted_game = window->gameDirectoryText();
+
+  bool opened = false;
+  QTimer dismiss;
+  QObject::connect(&dismiss, &QTimer::timeout, [&]() {
+    auto* dialog = window->findChild<QDialog*>("rinkLevelingDialog");
+    if (dialog && dialog->isVisible()) {
+      opened = true;
+      dialog->reject();
+    }
+  });
+  dismiss.start(5);
+  HStreamWindowTestAccess::openPromotedStitchingLeveling(window, promoted_game);
+  bool ok = expect(!opened, "Promotion must return before opening the optional leveling modal");
+  QTest::qWait(30);
+  ok &= expect(opened, "A promoted NONA calibration opens leveling when its preference is enabled");
+
+  opened = false;
+  HStreamWindowTestAccess::openPromotedStitchingLeveling(window, promoted_game);
+  automatic->setChecked(false);
+  QTest::qWait(30);
+  ok &= expect(!opened, "The deferred leveling callback must honor the current disabled preference");
+
+  automatic->setChecked(true);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
+  HStreamWindowTestAccess::openPromotedStitchingLeveling(window, promoted_game);
+  QTest::qWait(30);
+  ok &= expect(!opened, "An OpenCV candidate must not open the NONA leveling editor");
+
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  HStreamWindowTestAccess::openPromotedStitchingLeveling(window, promoted_game + "-different");
+  QTest::qWait(30);
+  ok &= expect(!opened, "Promotion from another game must not open the current game's leveling editor");
+  dismiss.stop();
+  game_id->setText(original_game_id);
+  activate(create);
+  return ok;
+}
+
 bool test_rink_leveling_save_retry(HStreamWindow* window) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -12920,6 +12976,8 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       copied_config_node["stitching"]["stitch_frame_time"] = "00:00:08.000";
     const auto selected_plan = test_selected_frame_plan(2);
     copied_config_node["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_plan);
+    copied_config_node["stitching"]["calibration_frame_inputs_fingerprint"] = selected_plan["fingerprint"].as<std::string>();
+    copied_config_node["game"]["stitching"]["frame_offsets"]["left"] = 3.0;
     copied_config_node["stitching"].remove("calibration_frame_count");
     copied_config_node["hstream_ui"]["stitching_calibration"].remove("frame_count");
     copied_config_node["hstream_ui"].remove("generated_stitching_backend_choices");
@@ -12946,6 +13004,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     const auto selected_state_preserved = [&](const YAML::Node& state) {
       const YAML::Node timestamp = state["stitching"]["stitch_frame_time"];
       return YAML::Dump(state["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_plan) &&
+          state["stitching"]["calibration_frame_inputs_fingerprint"].as<std::string>("") ==
+              selected_plan["fingerprint"].as<std::string>() &&
+          state["game"]["stitching"]["frame_offsets"]["left"].as<double>(-1) == 3.0 &&
           (explicit_reference ? timestamp && timestamp.as<std::string>() == "00:00:08.000" : !timestamp);
     };
     points->setValue(points->value() + 1);
@@ -12957,19 +13018,26 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     // Exercise Play's independent fallback as well as the UI load fallback.
     copied_config_node["stitching"].remove("calibration_frame_count");
     copied_config_node["hstream_ui"]["stitching_calibration"].remove("frame_count");
+    // Re-leveling marks the canvas stale. Its cleanup still owns the same
+    // selected images and synchronization, including nonzero camera offsets.
+    copied_config_node["hstream_ui"]["stitching_calibration"]["stale_from"] = "canvas";
+    copied_config_node["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
     std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
     qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
     activate(start);
     ok &= expect(
         selected_state_preserved(YAML::LoadFile(copied_config.string())) &&
+            selected_window.logText().contains("--clean-from-control-points") &&
+            !selected_window.logText().contains(" --clean --clean-expected-invalidation-id=") &&
             HStreamWindowTestAccess::pipelineArguments(&selected_window)
                 .contains("--options=pipeline.hmstitcher.calibration-frame-count=2"),
-        "Play must retain the plan and private timestamp without treating missing count bookkeeping as replacement");
+        "Canvas recalibration must retain selected inputs, synchronization and timestamp, including without saved count bookkeeping");
     activate(stop);
     qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
   }
   copied_config_node = YAML::LoadFile(copied_config.string());
   copied_config_node["stitching"].remove("calibration_frame_selection");
+  copied_config_node["stitching"].remove("calibration_frame_inputs_fingerprint");
   std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
   {
     const YAML::Node original_config = YAML::Clone(copied_config_node);
@@ -14894,7 +14962,8 @@ int main(int argc, char** argv) {
   if (rink_leveling_flow_only) {
     if (!test_window_title_tracks_selected_game(&window) || !test_cuda_oom_calibration_failure_analysis(&window) ||
         !test_game_setup(&window, source_root.path()) || !test_rink_leveling_response_protocol(&window) ||
-        !test_calibration_progress_dialog(&window) || !test_clean_stitching_calibration(&window)) {
+        !test_promoted_stitching_leveling(&window) || !test_calibration_progress_dialog(&window) ||
+        !test_clean_stitching_calibration(&window)) {
       std::cerr << "focused rink-leveling flow tests failed\n";
       return 1;
     }
@@ -14956,7 +15025,7 @@ int main(int argc, char** argv) {
     std::cerr << "test_leveled_crop_rotation failed\n";
     return 1;
   }
-  if (!test_rink_leveling_save_retry(&window)) {
+  if (!test_promoted_stitching_leveling(&window) || !test_rink_leveling_save_retry(&window)) {
     std::cerr << "test_rink_leveling_save_retry failed\n";
     return 1;
   }

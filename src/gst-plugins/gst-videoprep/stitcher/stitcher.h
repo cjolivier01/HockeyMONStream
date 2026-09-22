@@ -251,6 +251,9 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool require_decoded_frame_sequence_meta_{false};
   bool emit_frame_pair_meta_{false};
   std::optional<stitching::PlayerFrameReplaySelector> calibration_frame_selector_;
+  // Surface wrappers require backing metadata even when the pair uses PNGs.
+  NvBufSurfaceParams cached_calibration_surface_placeholder_{};
+  std::vector<stitching::StitchingCalibrationFramePair> cached_calibration_frame_pairs_;
   // Frozen before capture; empty binds ordinary spacing just as a plan hash binds replay.
   std::string captured_frame_selection_fingerprint_;
   bool high_bit_depth_{false};

@@ -936,6 +936,14 @@ void CustomAlgorithmBase::OutputThread(void) {
         if (!cuda_status.ok()) {
           std::cerr << cuda_status << std::endl;
           update_last_flow_ret(GST_FLOW_ERROR);
+          // Runtime sizing can run calibration on this private worker before
+          // any output exists. A flow flag alone needs another upstream input
+          // to reach the bus, and queued inputs must not retry a failed solve.
+          // Deferred sampling and terminal cancellation were consumed above.
+          if (!shutdown_requested_.load(std::memory_order_acquire)) {
+            videoprep::post_fatal_output_error(GST_ELEMENT(m_element), cuda_status);
+          }
+          RequestShutdown();
         }
         if (last_flow_ret_ != GST_FLOW_OK) {
           gst_buffer_unref(packetInfo.inbuf);

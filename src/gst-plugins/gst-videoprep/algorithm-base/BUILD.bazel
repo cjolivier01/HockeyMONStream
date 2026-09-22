@@ -70,3 +70,17 @@ cc_test(
         "@gstreamer",
     ],
 )
+
+cc_test(
+    name = "runtime_output_failure_test",
+    srcs = ["RuntimeOutputFailureTest.cpp"],
+    linkopts = ["-lnvdsbufferpool"],
+    deps = [
+        ":algorithm-base",
+        "//toolchains/jetson:cuda_runtime",
+        "@com_google_absl//absl/status",
+        "@gstreamer",
+        "@local_cuda//:nppc",
+        "@local_cuda//:nppig",
+    ],
+)

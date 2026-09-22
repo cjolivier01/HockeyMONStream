@@ -8582,6 +8582,7 @@ absl::Status Configurator::reconcile_selected_frame_count_override(
     g_free(generated);
   }
   remove_yaml_key_path(latest, {"stitching", "calibration_frame_selection"});
+  remove_yaml_key_path(latest, {"stitching", "calibration_frame_inputs_fingerprint"});
   latest["stitching"]["calibration_frame_count"] = requested_count;
   YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
   calibration["frame_count"] = requested_count;
@@ -8595,6 +8596,7 @@ absl::Status Configurator::reconcile_selected_frame_count_override(
   private_config_ = YAML::Clone(latest);
   persisted_private_config_ = YAML::Clone(latest);
   remove_yaml_key_path(config_, {"stitching", "calibration_frame_selection"});
+  remove_yaml_key_path(config_, {"stitching", "calibration_frame_inputs_fingerprint"});
   config_["stitching"]["calibration_frame_count"] = requested_count;
   config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(calibration);
   if (changed_invalidation_id)
@@ -8998,7 +9000,10 @@ absl::Status Configurator::complete_configuration(
   // while still requiring a full input-stage invalidation.
   const bool auto_clean_pending_invalidation = has_active_hmstitcher && loaded_status == "pending" &&
       !effective_invalidation_id.empty() && !stitching_artifacts_precleaned;
-  const bool effective_clean_from_control_points =
+  std::string retained_selection_fingerprint;
+  if (has_cleanup_owner)
+    HM_ASSIGN_OR_RETURN(retained_selection_fingerprint, stitching::player_frame_selection_fingerprint(config_));
+  const bool effective_clean_from_control_points = !retained_selection_fingerprint.empty() ||
       clean_from_control_points_only || (auto_clean_pending_invalidation && loaded_stale_from == "features");
   const bool should_clean_stitching =
       clean_requested || auto_clean_pending_invalidation || (force && !stitching_artifacts_precleaned);

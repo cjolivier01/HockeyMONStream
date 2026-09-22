@@ -3,6 +3,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -67,6 +68,81 @@ bool write_text_file(const fs::path& path, const std::string& contents) {
   }
   out << contents;
   return true;
+}
+
+bool expect_ordinary_frame_inspection_is_bounded_and_owned(const fs::path& tmpdir) {
+  using hm::stitching::CalibrationFrameSource;
+  using hm::stitching::write_stitching_calibration_frame_inspection;
+  const fs::path game = tmpdir / "ordinary-frame-inspection";
+  fs::create_directory(game);
+  YAML::Node config;
+  config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "ordinary-row-1";
+  if (!write_text_file(game / "config.yaml", YAML::Dump(config)))
+    return false;
+  const cv::Mat left(1000, 2000, CV_16UC3, cv::Scalar(32768, 32768, 32768));
+  const cv::Mat right(480, 640, CV_8UC3, cv::Scalar(64, 64, 64));
+  const std::array<CalibrationFrameSource, 2> sources{{{"left chapter.mp4", 12.125}, {"right.mp4", 12.25}}};
+  const auto first =
+      write_stitching_calibration_frame_inspection(game.string(), "ordinary-row-1", 0, 2, {left, right}, sources);
+  if (!first.ok()) {
+    std::cerr << "Cannot retain ordinary frame inspection: " << first << '\n';
+    return false;
+  }
+  const fs::path directory = game / "calibration-frame-inspection" / "ordinary-row-1";
+  const fs::path manifest_path = directory / "frames.yaml";
+  YAML::Node manifest = YAML::LoadFile(manifest_path.string());
+  const cv::Mat thumb = cv::imread((directory / "left_0.jpg").string());
+  const double brightness = thumb.empty() ? 0 : cv::mean(thumb)[0];
+  if (thumb.cols != 1024 || thumb.rows != 512 || brightness < 126 || brightness > 130 ||
+      manifest["version"].as<int>() != 1 || manifest["invalidation_id"].as<std::string>() != "ordinary-row-1" ||
+      manifest["expected_pair_count"].as<size_t>() != 2 || manifest["pairs"].size() != 1 ||
+      manifest["pairs"][0]["left"]["path"].as<std::string>() != "left chapter.mp4" ||
+      manifest["pairs"][0]["left"]["source_seconds"].as<double>() != 12.125 ||
+      manifest["pairs"][0]["timeline_ns"].IsDefined()) {
+    std::cerr << "Inspection must preserve actual source identity and bounded nonsaturated images\n";
+    return false;
+  }
+  const auto second = write_stitching_calibration_frame_inspection(
+      game.string(), "ordinary-row-1", 1, 2, {right, left}, std::array<CalibrationFrameSource, 2>{});
+  if (!second.ok())
+    return false;
+  manifest = YAML::LoadFile(manifest_path.string());
+  if (manifest["pairs"].size() != 2 || manifest["pairs"][1]["index"].as<size_t>() != 1 ||
+      !manifest["pairs"][1]["left"]["path"].as<std::string>().empty() ||
+      !fs::is_regular_file(directory / "right_1.jpg"))
+    return false;
+  const std::string complete = YAML::Dump(manifest);
+  if (!absl::IsInvalidArgument(
+          write_stitching_calibration_frame_inspection(game.string(), "../outside", 0, 2, {left, right}, sources)) ||
+      !absl::IsInvalidArgument(write_stitching_calibration_frame_inspection(
+          game.string(), "ordinary-row-1", 0, 17, {left, right}, sources)) ||
+      !absl::IsAborted(
+          write_stitching_calibration_frame_inspection(game.string(), "ordinary-row-1", 1, 2, {left, right}, sources)))
+    return false;
+  config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "new-owner";
+  if (!write_text_file(game / "config.yaml", YAML::Dump(config)) ||
+      !absl::IsAborted(write_stitching_calibration_frame_inspection(
+          game.string(), "ordinary-row-1", 0, 2, {left, right}, sources)) ||
+      YAML::Dump(YAML::LoadFile(manifest_path.string())) != complete)
+    return false;
+
+  // Parent directories cannot redirect thumbnail writes outside the private row.
+  fs::create_directory_symlink(tmpdir, game / "calibration-frame-inspection" / "new-owner");
+  if (!absl::IsFailedPrecondition(
+          write_stitching_calibration_frame_inspection(game.string(), "new-owner", 0, 1, {left, right}, sources)))
+    return false;
+
+  // If restarting an existing owner fails after replacing the left image, its
+  // previous complete manifest must not expose mixed old and new thumbnails.
+  config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "ordinary-row-1";
+  if (!write_text_file(game / "config.yaml", YAML::Dump(config)))
+    return false;
+  fs::remove(directory / "right_0.jpg");
+  fs::create_directory(directory / "right_0.jpg");
+  const auto retry =
+      write_stitching_calibration_frame_inspection(game.string(), "ordinary-row-1", 0, 2, {right, left}, sources);
+  return !retry.ok() && !fs::exists(manifest_path);
 }
 
 bool write_canvas_provenance(
@@ -777,6 +853,61 @@ bool expect_dependency_invalidation_report(const fs::path& tmpdir) {
       std::cerr << "dependency invalidation report: missing \"" << needle << "\" in output:\n" << output << std::endl;
       return false;
     }
+  }
+  return true;
+}
+
+bool expect_clean_preserves_selected_inputs(const fs::path& tmpdir) {
+  using namespace hm::stitching;
+  const fs::path dir = tmpdir / "clean-selected-inputs";
+  fs::create_directories(dir);
+  YAML::Node config;
+  PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 1;
+  PlayerFrameObservation anchor;
+  for (size_t camera = 0; camera < 2; ++camera) {
+    const fs::path source = dir / (camera ? "right.mp4" : "left.mp4");
+    if (!write_text_file(source, "source") || !write_text_file(dir / (camera ? "right.png" : "left.png"), "input"))
+      return false;
+    const auto bound = BindPlayerFrameSource(source);
+    if (!bound.ok())
+      return false;
+    plan.sources.push_back(*bound);
+    anchor.pair.cameras[camera] = {bound->path, 0, static_cast<uint32_t>(camera), 0};
+    config["game"]["videos"][camera ? "right" : "left"].push_back(bound->path);
+    config["game"]["stitching"]["frame_offsets"][camera ? "right" : "left"] = camera ? 0.0 : 3.0;
+  }
+  plan.selected.push_back(anchor);
+  for (const char* key : {"baseline_generation", "output_generation", "detector_identity", "rink_mask_sha256",
+                          "rink_mask_revision", "fieldmask_settings", "output_rotation_degrees"})
+    plan.context[key] = "fixture";
+  const auto source_context = player_frame_source_context(config, 0);
+  if (!source_context.ok())
+    return false;
+  plan.context["source_context"] = *source_context;
+  plan.context["decode_anchor_ns"] = "0";
+  const auto fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok())
+    return false;
+  plan.fingerprint = *fingerprint;
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
+  const fs::path saved_inputs = dir / "player-frame-inputs" / plan.fingerprint;
+  fs::create_directories(saved_inputs);
+  if (!write_text_file(saved_inputs / "retained-input", "bundle") ||
+      !write_text_file(dir / "seam_file.png", "stale") ||
+      !write_text_file(dir / "config.yaml", YAML::Dump(config)))
+    return false;
+  const auto cleaned = clean_stitching_artifacts(dir.string());
+  const YAML::Node saved = YAML::LoadFile((dir / "config.yaml").string());
+  if (!cleaned.ok() || fs::exists(dir / "seam_file.png") || !fs::exists(dir / "left.png") ||
+      !fs::exists(dir / "right.png") || !fs::exists(saved_inputs / "retained-input") ||
+      saved["game"]["stitching"]["frame_offsets"]["left"].as<double>(-1) != 3.0 ||
+      saved["stitching"]["calibration_frame_inputs_fingerprint"].as<std::string>("") != plan.fingerprint ||
+      !validate_player_frame_selection_sources(saved).ok()) {
+    std::cerr << "Full cleanup must retain the selected input bundle and its synchronized source identity: " << cleaned
+              << '\n';
+    return false;
   }
   return true;
 }
@@ -2368,6 +2499,22 @@ int main() {
       fs::temp_directory_path() / ("configure_stitching_canvas_cap_test_" + std::to_string(::getpid()));
   fs::remove_all(tmpdir);
   fs::create_directories(tmpdir);
+  // These synthetic provenance fixtures deliberately describe this camera
+  // geometry. Keep their defaults explicit when the shipped presets change.
+  const auto baseline = hm::baseline_config::load();
+  if (!baseline.ok())
+    finish(tmpdir, 53);
+  YAML::Node fixture_baseline = YAML::Clone(baseline->values);
+  fixture_baseline["stitching"]["camera_configs"]["gopro-mission-1"]["horizontal_fov"] = 127.2;
+  fixture_baseline["stitching"]["camera_configs"]["gopro-mission-1"]["vertical_fov"] = 95.0;
+  const fs::path fixture_config_root = tmpdir / "baseline";
+  fs::create_directory(fixture_config_root);
+  if (!write_text_file(fixture_config_root / "baseline.yaml", YAML::Dump(fixture_baseline)))
+    finish(tmpdir, 53);
+  ::setenv("HM_CONFIG_ROOT", fixture_config_root.c_str(), 1);
+  if (!expect_ordinary_frame_inspection_is_bounded_and_owned(tmpdir)) {
+    finish(tmpdir, 52);
+  }
   if (!expect_capture_plan_changes_abort_before_extraction(tmpdir)) {
     finish(tmpdir, 51);
   }
@@ -2414,7 +2561,7 @@ int main() {
     finish(tmpdir, 49);
   }
 
-  if (!expect_clean_preserves_unrelated_config(tmpdir)) {
+  if (!expect_clean_preserves_unrelated_config(tmpdir) || !expect_clean_preserves_selected_inputs(tmpdir)) {
     finish(tmpdir, 8);
   }
 

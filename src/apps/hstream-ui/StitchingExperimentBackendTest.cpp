@@ -35,6 +35,58 @@ bool write(const fs::path& path, const std::string& contents) {
   return output.good();
 }
 
+bool ordinary_frame_inspection(const StitchingExperimentWorkspace& workspace) {
+  const fs::path config_path = workspace.game_directory / "config.yaml";
+  const YAML::Node original = YAML::LoadFile(config_path.string());
+  const fs::path manifest_path =
+      workspace.game_directory / "calibration-frame-inspection" / workspace.invalidation_id / "frames.yaml";
+  YAML::Node manifest;
+  manifest["version"] = 1;
+  manifest["invalidation_id"] = workspace.invalidation_id;
+  manifest["expected_pair_count"] = workspace.settings.frame_count;
+  for (int index = 0; index < workspace.settings.frame_count; ++index) {
+    YAML::Node pair;
+    pair["index"] = index;
+    pair["left"]["path"] = "left.mp4";
+    pair["left"]["source_seconds"] = 62.5 + index;
+    pair["right"]["path"] = "";
+    pair["right"]["source_seconds"] = 0;
+    manifest["pairs"].push_back(pair);
+    if (index == 1) {
+      if (!write(manifest_path, YAML::Dump(manifest)))
+        return false;
+      const auto partial = InspectStitchingExperimentFrames(workspace);
+      if (!expect(
+              partial.ok() && !partial->player_selected && partial->frames.size() == 2 &&
+                  partial->source_validation.find("Partial capture") != std::string::npos &&
+                  partial->frames.front().camera_paths[1].empty() && partial->frames.front().coverage.empty(),
+              "ordinary inspection must identify partial captures and never invent player scores or source identity"))
+        return false;
+      YAML::Node complete = YAML::Clone(original);
+      complete["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+      if (!write(config_path, YAML::Dump(complete)) ||
+          !expect(
+              !InspectStitchingExperimentFrames(workspace).ok(),
+              "a complete candidate must not present an incomplete inspection manifest"))
+        return false;
+    }
+  }
+  if (!write(manifest_path, YAML::Dump(manifest)))
+    return false;
+  const auto complete = InspectStitchingExperimentFrames(workspace);
+  if (!expect(
+          complete.ok() && !complete->player_selected && complete->frames.size() == 4 &&
+              complete->frames[1].source_seconds[0] == 63.5 &&
+              complete->frames[1].thumbnails[0] == manifest_path.parent_path() / "left_1.jpg",
+          "ordinary inspection must read the highlighted candidate's captured source time and private stills"))
+    return false;
+  manifest["invalidation_id"] = "another-owner";
+  if (!write(manifest_path, YAML::Dump(manifest)) ||
+      !expect(!InspectStitchingExperimentFrames(workspace).ok(), "inspection must reject a stale capture owner"))
+    return false;
+  return write(config_path, YAML::Dump(original));
+}
+
 bool inherited_camera_handoff(const fs::path& root) {
   using namespace hm::stitching;
   const fs::path game = root / "inherited-camera-game";
@@ -48,7 +100,10 @@ bool inherited_camera_handoff(const fs::path& root) {
     return false;
   const StitchingExperimentSettings settings{900, 2, "00:00:08", std::nullopt};
   const auto baseline = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 1);
-  const auto candidate = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 2);
+  StitchingExperimentSettings varied = settings;
+  varied.control_points = 1200;
+  varied.rink_rotation_degrees = std::array<double, 3>{0, 1, 2};
+  const auto candidate = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", varied, 2);
   if (!baseline.ok() || !candidate.ok())
     return false;
   const fs::path directory = baseline->game_directory;
@@ -163,6 +218,41 @@ bool inherited_camera_handoff(const fs::path& root) {
       frozen["stitching"]["stitch_frame_time"].IsDefined() || !validate_player_frame_selection_sources(frozen).ok())
     return false;
 
+  varied.control_points = 1500;
+  varied.stitch_frame_time = "00:00:08.000";
+  varied.rink_rotation_degrees = std::array<double, 3>{0, -2, 3};
+  const auto reused = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", varied, 3);
+  if (!reused.ok() ||
+      !expect(
+          ReuseStitchingExperimentPlayerSelection(*candidate, *reused).ok(),
+          "a frozen selection must be reusable before its owner's solve completes"))
+    return false;
+  const YAML::Node reused_config = YAML::LoadFile((reused->game_directory / "config.yaml").string());
+  if (!expect(
+          reused_config["stitching"]["calibration_frame_selection"]["fingerprint"].as<std::string>() ==
+                  plan.fingerprint &&
+              !reused_config["stitching"]["stitch_frame_time"].IsDefined() &&
+              reused_config["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 1500 &&
+              reused_config["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -2,
+          "reuse must preserve exact frames and reference spelling while changing only solve settings"))
+    return false;
+  YAML::Node conflicting = YAML::Clone(reused_config);
+  conflicting["game"]["stitching"]["frame_offsets"]["left"] = 3;
+  if (!write(reused->game_directory / "config.yaml", YAML::Dump(conflicting)) ||
+      !expect(
+          !ReuseStitchingExperimentPlayerSelection(*candidate, *reused).ok(),
+          "reuse must reject changed synchronization instead of replacing it"))
+    return false;
+  conflicting = YAML::Clone(reused_config);
+  conflicting["game"]["videos"]["left"][0] = "cam2/right.mp4";
+  if (!write(reused->game_directory / "config.yaml", YAML::Dump(conflicting)) ||
+      !expect(
+          !ReuseStitchingExperimentPlayerSelection(*candidate, *reused).ok(),
+          "reuse must reject changed source roles instead of replacing them"))
+    return false;
+  if (!write(reused->game_directory / "config.yaml", YAML::Dump(reused_config)))
+    return false;
+
   const auto promote = [&] {
     return BuildStitchingExperimentSelectionConfig(candidate->game_directory / "config.yaml", game / "config.yaml");
   };
@@ -181,6 +271,36 @@ bool inherited_camera_handoff(const fs::path& root) {
         validate_player_frame_selection_sources(config).ok();
   };
   if (!expect(validates_after_promotion(promote()), "absolute roles must replay the same frozen plan after promotion"))
+    return false;
+  const auto promoted = promote();
+  if (!promoted.ok() || !write(game / "config.yaml", *promoted))
+    return false;
+  const auto retained = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", varied, 4);
+  if (!expect(retained.ok(), "a promoted plan must be retained by later experiment candidates"))
+    return false;
+  const auto retained_fingerprint = ReusableStitchingExperimentSelectionFingerprint(retained->game_directory, varied);
+  if (!expect(
+          retained_fingerprint.ok() && *retained_fingerprint == plan.fingerprint,
+          "new candidates must retain the promoted fingerprint"))
+    return false;
+  StitchingExperimentSettings changed_reference = varied;
+  changed_reference.stitch_frame_time = "00:00:09";
+  if (!expect(
+          !CreateStitchingExperimentWorkspace(game, root / "inherited-camera", changed_reference, 5).ok(),
+          "same-count candidates must reject a reference conflict"))
+    return false;
+  StitchingExperimentSettings changed_count = changed_reference;
+  changed_count.frame_count = 3;
+  const auto replacement = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", changed_count, 6);
+  if (!expect(replacement.ok(), "an explicit different count may start a fresh selection"))
+    return false;
+  const auto replacement_fingerprint =
+      ReusableStitchingExperimentSelectionFingerprint(replacement->game_directory, changed_count);
+  if (!expect(
+          replacement_fingerprint.ok() && replacement_fingerprint->empty(),
+          "only an explicit different count clears the inherited plan"))
+    return false;
+  if (!write(game / "config.yaml", YAML::Dump(original)))
     return false;
 
   std::error_code error;
@@ -259,7 +379,6 @@ int main() {
           "  projection_crop_geometry: inherited-old-alignment\n"
           "stitching:\n"
           "  control_points: [old-cache]\n"
-          "  calibration_frame_selection: {fingerprint: old-player-plan}\n"
           "  mapping_backend: nona\n"
           "  projection: general-panini\n"
           "  projection_framing:\n"
@@ -291,6 +410,7 @@ int main() {
   }
 
   bool ok = true;
+  ok &= expect(ordinary_frame_inspection(*workspace), "ordinary calibration inspection must remain bound to its row");
   ok &= expect(inherited_camera_handoff(root), "candidate handoff must freeze inherited baseline camera and FOV");
   ok &= expect(fs::is_symlink(workspace->game_directory / "cam1" / "left.mp4"), "left video must be linked");
   ok &= expect(fs::is_symlink(workspace->game_directory / "cam2" / "right.mp4"), "right video must be linked");
@@ -321,7 +441,7 @@ int main() {
   ok &= expect(calibration["status"].as<std::string>() == "pending", "candidate calibration must be pending");
   ok &= expect(
       !config["stitching"]["calibration_frame_selection"].IsDefined(),
-      "ordinary workspaces must clear inherited player frame selection");
+      "ordinary workspaces without a saved selection must remain ordinary");
   ok &= expect(
       config["stitching"]["stitch_frame_time"].as<std::string>() == "00:01:02.500",
       "candidate first frame must be saved");

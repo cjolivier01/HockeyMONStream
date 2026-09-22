@@ -416,6 +416,7 @@ class HStreamWindow : public QMainWindow {
   bool cropRotationSuppressed() const;
   void updateCropRotationControls();
   double cameraPresetControlValue(const QString& id) const;
+  void openPromotedStitchingLeveling(const QString& game_directory);
   void selectRinkLeveling();
   void selectProjectionCrop();
   bool ensureProjectionCropReviewed();

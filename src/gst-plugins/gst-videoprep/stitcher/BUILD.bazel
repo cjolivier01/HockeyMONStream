@@ -52,6 +52,7 @@ cc_library(
         "//src/libs/stitching",
         "//src/libs/stitching:calibration_frame_exif",
         "//src/libs/stitching:live_output_epoch",
+        "//src/libs/stitching:player_frame_input_store",
         "//src/libs/stitching:player_frame_selection",
         "@com_google_absl//absl/strings",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
@@ -82,6 +83,7 @@ cc_test(
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/libs/common:utils",
         "//src/libs/stitching",
+        "//src/libs/stitching:player_frame_input_store",
         "@deepstream//:deepstream_lib",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
         "@hm-cupano//src/pano:cuda_pano",
@@ -89,6 +91,7 @@ cc_test(
         "@local_cuda//:nppc",
         "@local_cuda//:nppig",
         "@gstreamer",
+        "@opencv_linux//:opencv",
     ],
     copts = [
         "-x",

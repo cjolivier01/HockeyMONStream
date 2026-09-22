@@ -3882,8 +3882,13 @@ int remove_manual_stitching_clean_config_keys(YAML::Node& config) {
             config, {"hstream_ui", "generated_stitching_backend_choices", "previous_projection_framing", key}))
       ++removed;
   }
-  removed += remove_yaml_path(config, {"stitching", "frame_offsets"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"game", "stitching", "frame_offsets"}) ? 1 : 0;
+  YAML::Node stitching_config;
+  YAML::Node selected_frames;
+  if (!lookup_yaml_key(config, "stitching", &stitching_config) ||
+      !lookup_yaml_key(stitching_config, "calibration_frame_selection", &selected_frames) || selected_frames.IsNull()) {
+    removed += remove_yaml_path(config, {"stitching", "frame_offsets"}) ? 1 : 0;
+    removed += remove_yaml_path(config, {"game", "stitching", "frame_offsets"}) ? 1 : 0;
+  }
   removed += remove_yaml_path(config, {"stitching", "control_points"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"game", "stitching", "control_points"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"stitching", "generated_field_mask_post_stitch_rotate_degrees"}) ? 1 : 0;
@@ -5901,6 +5906,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       QMessageBox::warning(this, "Stitching Experiments", runtime_error);
       return;
     }
+    auto selection_applied = std::make_shared<bool>(false);
     auto* dialog = new StitchingExperimentDialog(
         game_directory,
         runner,
@@ -5911,10 +5917,15 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         stitchingCalibrationFrameCount(),
         stitchFrameTime(),
         this,
-        [this]() {
+        [this, selection_applied]() {
+          *selection_applied = true;
           loadSavedControlConfig();
           appendLog("selected stitching experiment published; main Program will reuse its maps and seam");
         });
+    connect(dialog, &QDialog::finished, this, [this, game_directory, selection_applied](int) {
+      if (*selection_applied)
+        openPromotedStitchingLeveling(game_directory);
+    });
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowModality(Qt::WindowModal);
     dialog->show();
@@ -7400,6 +7411,19 @@ bool HStreamWindow::rinkLevelingInputsUnchanged() const {
       saved_stitching_calibration_frame_count_ == stitchingCalibrationFrameCount();
 }
 
+void HStreamWindow::openPromotedStitchingLeveling(const QString& game_directory) {
+  // Promotion first closes its modal dialog and drains its workers. Start this
+  // optional editor on the next event-loop turn, after that close has completed.
+  QTimer::singleShot(0, this, [this, game_directory]() {
+    if (!same_file_path(gameDirectoryText(), game_directory) || mappingBackend() != "nona" ||
+        !stitchingIterationSettings().show_leveling_dialog ||
+        (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
+        QApplication::activeModalWidget())
+      return;
+    selectRinkLeveling();
+  });
+}
+
 void HStreamWindow::selectRinkLeveling() {
   if (!rink_leveling_button_ || !rink_leveling_button_->isEnabled() || !game_id_edit_)
     return;
@@ -8191,8 +8215,10 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
     // Changing the count explicitly requests a new set; other stitching edits
     // must retain the experiment's exact chosen pairs.
-    if (saved_frame_count != frame_count)
+    if (saved_frame_count != frame_count) {
       remove_yaml_path(config, {"stitching", "calibration_frame_selection"});
+      remove_yaml_path(config, {"stitching", "calibration_frame_inputs_fingerprint"});
+    }
     if (!retain_selected_frames)
       remove_yaml_path(config, {"stitching", "stitch_frame_time"});
     remove_yaml_path(config, {"stitching", "control_point_matcher"});
@@ -8341,6 +8367,12 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         !projection_parameters_changed && !projection_framing_changed && !run_autooptimizer_changed;
     if (width_only_change_from_complete_state && !canvas_constraint.cleanup_required)
       clean_all = false;
+    if (retain_selected_frames && clean_all) {
+      // The frozen plan owns synchronization as well as its exact input images.
+      // Geometry edits still rerun matching, but must not discard those offsets.
+      clean_all = false;
+      clean_from_control_points = true;
+    }
 
     active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
@@ -8368,7 +8400,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
                   .arg(active_stitch_frame_time_));
   }
   if (replay_selected_frames)
-    appendLog("stitching calibration will replay the saved frame selection");
+    appendLog("stitching calibration will reuse the saved frame selection");
   if (clean_all) {
     appendLog(QString("rebuilding the full stitching calibration because dependency %1 is stale")
                   .arg(active_calibration_start_stage_));
@@ -8382,10 +8414,14 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
   } else if (clean_from_control_points) {
     const QString previous = saved_found ? QString::number(saved_control_points) : QString("unset");
-    appendLog(QString("stitching calibration control points changed %1 -> %2; invalidating control points and "
-                      "downstream artifacts")
-                  .arg(previous)
-                  .arg(control_points));
+    if (replay_selected_frames) {
+      appendLog("rebuilding stitching from the retained frame selection and synchronization");
+    } else {
+      appendLog(QString("stitching calibration control points changed %1 -> %2; invalidating control points and "
+                        "downstream artifacts")
+                    .arg(previous)
+                    .arg(control_points));
+    }
     if (!runStitchingClean(
             runner,
             working_dir,
@@ -16942,8 +16978,10 @@ bool HStreamWindow::applySavedControlConfig(
 
   const bool control_points_changed =
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;
-  if (frame_count_changed)
+  if (frame_count_changed) {
     remove_yaml_path(config, {"stitching", "calibration_frame_selection"});
+    remove_yaml_path(config, {"stitching", "calibration_frame_inputs_fingerprint"});
+  }
   const bool max_output_width_changed = previous_max_output_width != selected_max_output_width;
   const auto canvas_constraint = max_output_width_changed
       ? max_width_decision.value_or(hm::ui_internal::decide_stitching_canvas_constraint_change(

@@ -211,6 +211,8 @@ class PipelineApplication {
   gpointer nvds_x_event_thread();
   static gboolean overlay_graphics_static(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   gboolean overlay_graphics(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
+  static void observe_processed_output_static(AppCtx* app_ctx, const GstBuffer* buf, const NvDsBatchMeta* batch_meta);
+  void observe_processed_output(AppCtx* app_ctx, const GstBuffer* buf, const NvDsBatchMeta* batch_meta);
   static gboolean recreate_pipeline_thread_func_static(gpointer arg);
   gboolean recreate_pipeline_thread_func(gpointer arg);
   gboolean recreate_pipeline_impl(
@@ -350,10 +352,7 @@ class PipelineApplication {
   bool clean_only_eligible_context_seen_{false};
   bool clean_only_action_completed_{false};
   uint64_t main_loop_generation_{0};
-  uint64_t first_pts_ns_{0};
-  bool have_first_pts_{false};
-  std::array<uint64_t, MAX_SOURCE_BINS> first_frame_numbers_by_source_{};
-  std::array<bool, MAX_SOURCE_BINS> have_first_frame_by_source_{};
+  std::map<guint, hm::ObservedPlaybackProgress> observed_playback_by_instance_;
   bool runtime_command_active_{false};
   bool config_selection_active_{false};
   std::string runtime_command_buffer_;

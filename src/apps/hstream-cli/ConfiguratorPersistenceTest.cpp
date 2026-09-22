@@ -72,7 +72,10 @@ bool expect(bool condition, const char* message) {
   return condition;
 }
 
-absl::StatusOr<YAML::Node> player_selection_fixture(const fs::path& directory, size_t frame_count = 1) {
+absl::StatusOr<YAML::Node> player_selection_fixture(
+    const fs::path& directory,
+    size_t frame_count = 1,
+    double left_frame_offset = 0.0) {
   using namespace hm::stitching;
   YAML::Node config;
   config["stitching"]["stitch_frame_time"] = "00:00:08";
@@ -89,7 +92,7 @@ absl::StatusOr<YAML::Node> player_selection_fixture(const fs::path& directory, s
     plan.sources.push_back(*source);
     anchor.pair.cameras[index] = {source->path, 8 * kPlayerFrameSecond, static_cast<uint32_t>(index), 0};
     config["game"]["videos"][index ? "right" : "left"].push_back(source->path);
-    config["game"]["stitching"]["frame_offsets"][index ? "right" : "left"] = 0.0;
+    config["game"]["stitching"]["frame_offsets"][index ? "right" : "left"] = index ? 0.0 : left_frame_offset;
   }
   plan.selected.push_back(anchor);
   for (size_t index = 1; index < frame_count; ++index) {
@@ -1569,6 +1572,35 @@ play-tracker:
       canonical_clean_stitching_status.code() == absl::StatusCode::kCancelled &&
           !fs::exists(canonical_clean_game_dir / "seam_file.png"),
       "canonical stitching.enabled=true must own direct clean-only artifact cleanup");
+
+  const fs::path selected_clean_game_dir = games / "selected-clean-stitching";
+  fs::create_directories(selected_clean_game_dir);
+  auto selected_clean_fixture = player_selection_fixture(selected_clean_game_dir, 1, 3.0);
+  if (!expect(selected_clean_fixture.ok(), "selected clean fixture must bind synchronized source identities"))
+    return 1;
+  const std::string clean_fingerprint =
+      (*selected_clean_fixture)["stitching"]["calibration_frame_selection"]["fingerprint"].as<std::string>();
+  (*selected_clean_fixture)["stitching"]["calibration_frame_inputs_fingerprint"] = clean_fingerprint;
+  std::ofstream(selected_clean_game_dir / "config.yaml") << YAML::Dump(*selected_clean_fixture) << '\n';
+  for (const char* artifact : {"left.png", "right.png", "seam_file.png"})
+    std::ofstream(selected_clean_game_dir / artifact) << "selected clean fixture\n";
+  hm::Configurator selected_clean_stitching(
+      "selected-clean-stitching", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool selected_clean_loaded = selected_clean_stitching.configure().ok() &&
+      selected_clean_stitching.underlay_config("pipeline", canonical_clean_pipeline_path.string());
+  const absl::Status selected_clean_status = selected_clean_loaded
+      ? selected_clean_stitching.complete_configuration(true, true, false, {}, false, -1.0, root)
+      : absl::InternalError("selected clean fixture did not load");
+  const YAML::Node selected_clean_saved = YAML::LoadFile((selected_clean_game_dir / "config.yaml").string());
+  ok &= expect(
+      absl::IsCancelled(selected_clean_status) && !fs::exists(selected_clean_game_dir / "seam_file.png") &&
+          fs::exists(selected_clean_game_dir / "left.png") && fs::exists(selected_clean_game_dir / "right.png") &&
+          selected_clean_saved["game"]["stitching"]["frame_offsets"]["left"].as<double>(-1) == 3.0 &&
+          selected_clean_stitching.config()["game"]["stitching"]["frame_offsets"]["left"].as<double>(-1) == 3.0 &&
+          selected_clean_saved["stitching"]["calibration_frame_inputs_fingerprint"].as<std::string>("") ==
+              clean_fingerprint &&
+          hm::stitching::validate_player_frame_selection_sources(selected_clean_saved).ok(),
+      "Explicit clean must preserve selected inputs and synchronization in the saved and in-memory configuration");
 
   const fs::path zero_sample_span_game_dir = games / "zero-sample-span";
   fs::create_directories(zero_sample_span_game_dir);

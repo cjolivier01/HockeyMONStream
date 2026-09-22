@@ -14,7 +14,7 @@ cc_library(
   srcs = ["TransactionState.cpp"],
   hdrs = ["TransactionState.h"],
   include_prefix = INCLUDE_PREFIX,
-  visibility = ["//visibility:private"],
+  visibility = ["//src/apps/hstream-ui:__pkg__"],
   deps = [
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
@@ -116,6 +116,7 @@ cc_library(
   implementation_deps = [":orientation_internal"],
   deps = [
     ":calibration_frame_exif",
+    ":player_frame_input_store",
     ":imu_synchronization",
     ":canvas_constraint_check",
     ":game_config",
@@ -331,6 +332,7 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     ":canvas_constraint_check",
+    ":player_frame_input_store",
     ":feature_matcher",
     ":game_config",
     ":homography_maps",
@@ -560,6 +562,7 @@ cc_test(
     ":canvas_constraint_check",
     ":player_frame_selection",
     ":stitching",
+    "//src/libs/common:baseline_config",
     "@opencv_linux//:opencv",
   ],
 )
@@ -659,6 +662,31 @@ cc_test(
   name = "player_frame_selection_test",
   srcs = ["PlayerFrameSelectionTest.cpp"],
   deps = [":player_frame_selection"],
+)
+
+cc_library(
+  name = "player_frame_input_store",
+  srcs = ["PlayerFrameInputStore.cpp"],
+  hdrs = ["PlayerFrameInputStore.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-lcrypto"],
+  deps = [
+    ":player_frame_selection",
+    ":canvas_constraint_check",
+    ":transaction_state",
+    "//src/libs/common:status",
+    "@opencv_linux//:opencv",
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "player_frame_input_store_test",
+  srcs = ["PlayerFrameInputStoreTest.cpp"],
+  deps = [":player_frame_input_store"],
 )
 
 cc_library(

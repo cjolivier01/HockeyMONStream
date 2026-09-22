@@ -573,7 +573,8 @@ bool write_game_config(
     int frame_count = 0,
     const std::string& control_point_matcher = std::string()) {
   std::ofstream output(path);
-  const bool has_stitching_section = frame_count > 0 || !control_point_matcher.empty();
+  // The synthetic views were generated for this geometry. Keep the fixture
+  // independent of changes to the shipped physical-camera defaults.
   output << "game:\n"
          << "  videos:\n"
          << "    left: [cam1/GX010001.MP4]\n"
@@ -582,7 +583,11 @@ bool write_game_config(
          << "    frame_offsets:\n"
          << "      left: 0\n"
          << "      right: 0\n"
-         << (has_stitching_section ? "stitching:\n" : "");
+         << "stitching:\n"
+         << "  camera_config: gopro-mission-1\n"
+         << "  camera_fov:\n"
+         << "    horizontal_fov: 127.2\n"
+         << "    vertical_fov: 95.0\n";
   if (frame_count > 0)
     output << "  calibration_frame_count: " << frame_count << "\n";
   if (!control_point_matcher.empty())

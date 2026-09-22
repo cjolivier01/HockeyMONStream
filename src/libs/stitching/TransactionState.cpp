@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include <dirent.h>
@@ -29,6 +31,7 @@ namespace fs = std::filesystem;
 constexpr size_t kMaximumRinkConfigRollbackBytes = 16ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumRinkMaskRollbackBytes = 128ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumStitchedSnapshotRollbackBytes = 512ULL * 1024ULL * 1024ULL;
+constexpr size_t kMaximumOwnershipMarkerBytes = 16 * 1024;
 
 struct RecoveryMarkerNames {
   const char* protocol;
@@ -225,6 +228,128 @@ absl::Status verify_directory_binding(int parent_descriptor, const std::string& 
   return absl::OkStatus();
 }
 
+bool is_nfs_tombstone_name(const std::string& name) {
+  return name.size() > 4 && name.compare(0, 4, ".nfs") == 0 &&
+      std::all_of(name.begin() + 4, name.end(), [](unsigned char value) { return std::isxdigit(value); });
+}
+
+enum class CleanedDirectoryContents { kEmpty, kNfsTombstones, kOtherEntries };
+
+absl::StatusOr<CleanedDirectoryContents> inspect_cleaned_directory(int directory_descriptor) {
+  // Open a fresh file description so enumeration cannot inherit a previous
+  // cleanup iterator's offset or buffered directory entries.
+  const int iterator_descriptor =
+      ::openat(directory_descriptor, ".", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
+  if (iterator_descriptor < 0)
+    return absl::InternalError("Unable to inspect cleaned transaction directory: " + std::string(std::strerror(errno)));
+  DIR* iterator = ::fdopendir(iterator_descriptor);
+  if (iterator == nullptr) {
+    const int saved_errno = errno;
+    ::close(iterator_descriptor);
+    return absl::InternalError(
+        "Unable to enumerate cleaned transaction directory: " + std::string(std::strerror(saved_errno)));
+  }
+  struct IteratorCleanup {
+    DIR* iterator;
+    ~IteratorCleanup() {
+      ::closedir(iterator);
+    }
+  } cleanup{iterator};
+  CleanedDirectoryContents contents = CleanedDirectoryContents::kEmpty;
+  while (true) {
+    errno = 0;
+    dirent* entry = ::readdir(iterator);
+    if (entry == nullptr) {
+      if (errno != 0)
+        return absl::InternalError(
+            "Unable to enumerate cleaned transaction directory: " + std::string(std::strerror(errno)));
+      return contents;
+    }
+    const std::string name(entry->d_name);
+    if (name == "." || name == "..")
+      continue;
+    if (!is_nfs_tombstone_name(name))
+      return CleanedDirectoryContents::kOtherEntries;
+    struct stat metadata{};
+    if (::fstatat(directory_descriptor, name.c_str(), &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
+      if (errno == ENOENT)
+        continue;
+      return absl::InternalError("Unable to inspect remaining NFS entry: " + std::string(std::strerror(errno)));
+    }
+    if (!S_ISREG(metadata.st_mode))
+      return CleanedDirectoryContents::kOtherEntries;
+    contents = CleanedDirectoryContents::kNfsTombstones;
+  }
+}
+
+absl::Status remove_empty_pinned_directory(int parent_descriptor, const std::string& name, int directory_descriptor) {
+  constexpr size_t kMaximumAttempts = 4;
+  const auto started = std::chrono::steady_clock::now();
+  const auto empty_deadline = started + std::chrono::milliseconds(500);
+  // Desktop file-monitor references have kept deleted NFS markers alive for
+  // over five seconds. Give only regular NFS tombstones a longer, bounded grace.
+  const auto nfs_deadline = started + std::chrono::seconds(8);
+  const auto wait_until_empty = [&]() -> absl::Status {
+    while (true) {
+      auto binding = verify_directory_binding(parent_descriptor, name, directory_descriptor);
+      if (!binding.ok())
+        return binding;
+      auto contents = inspect_cleaned_directory(directory_descriptor);
+      if (!contents.ok())
+        return contents.status();
+      if (*contents == CleanedDirectoryContents::kEmpty)
+        return absl::OkStatus();
+      const auto deadline = *contents == CleanedDirectoryContents::kNfsTombstones ? nfs_deadline : empty_deadline;
+      if (std::chrono::steady_clock::now() >= deadline)
+        return absl::AbortedError("Transaction directory remains nonempty after cleanup: " + name);
+      // NFS may retain a silly-renamed .nfs entry while another reader or a
+      // filesystem monitor releases its reference. Wait for it to disappear;
+      // never unlink entries that appeared after the original cleanup pass.
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  };
+  for (size_t attempt = 0; attempt < kMaximumAttempts; ++attempt) {
+    auto binding = verify_directory_binding(parent_descriptor, name, directory_descriptor);
+    if (!binding.ok())
+      return binding;
+    if (attempt != 0) {
+      auto empty = wait_until_empty();
+      if (!empty.ok())
+        return empty;
+      binding = verify_directory_binding(parent_descriptor, name, directory_descriptor);
+      if (!binding.ok())
+        return binding;
+    }
+    const char* failure = std::getenv("HM_TEST_TRANSACTION_RMDIR_FAILURE");
+    if (attempt == 0 && failure != nullptr && std::strcmp(failure, "nonempty") == 0) {
+      const int descriptor = ::openat(
+          directory_descriptor,
+          ".injected-concurrent-entry",
+          O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+          0600);
+      if (descriptor < 0)
+        return absl::InternalError("Unable to inject concurrent transaction entry");
+      ::close(descriptor);
+    }
+    const bool inject_not_empty = failure != nullptr &&
+        (std::strcmp(failure, "exhausted") == 0 || (attempt == 0 && std::strcmp(failure, "transient") == 0));
+    if (!inject_not_empty && ::unlinkat(parent_descriptor, name.c_str(), AT_REMOVEDIR) == 0)
+      return absl::OkStatus();
+    const int removal_errno = inject_not_empty ? ENOTEMPTY : errno;
+    if (removal_errno != ENOTEMPTY || attempt + 1 == kMaximumAttempts) {
+      return absl::InternalError(
+          "Unable to remove recovered transaction " + name + ": " + std::strerror(removal_errno));
+    }
+    // NFS can transiently report ENOTEMPTY after the last unlink. Retry only
+    // the empty-directory removal, never deletion of newly appearing entries.
+    auto empty = wait_until_empty();
+    if (!empty.ok())
+      return empty;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return absl::InternalError("Transaction directory removal exhausted retries");
+}
+
 absl::Status remove_directory_contents_no_follow(int directory_descriptor, std::string_view retained_entry_name = {}) {
   const int iterator_descriptor = ::dup(directory_descriptor);
   if (iterator_descriptor < 0)
@@ -260,6 +385,8 @@ absl::Status remove_directory_contents_no_follow(int directory_descriptor, std::
       continue;
     struct stat metadata{};
     if (::fstatat(directory_descriptor, name.c_str(), &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
+      if (errno == ENOENT && is_nfs_tombstone_name(name))
+        continue;
       return absl::AbortedError("Transaction entry changed during cleanup: " + name + ": " + std::strerror(errno));
     }
     if (S_ISDIR(metadata.st_mode)) {
@@ -279,14 +406,23 @@ absl::Status remove_directory_contents_no_follow(int directory_descriptor, std::
       auto status = remove_directory_contents_no_follow(child_descriptor);
       if (!status.ok())
         return status;
-      status = verify_directory_binding(directory_descriptor, name, child_descriptor);
+      status = remove_empty_pinned_directory(directory_descriptor, name, child_descriptor);
       if (!status.ok())
         return status;
-      if (::unlinkat(directory_descriptor, name.c_str(), AT_REMOVEDIR) != 0) {
-        return absl::InternalError("Unable to remove transaction directory " + name + ": " + std::strerror(errno));
+    } else {
+      const char* busy_entry = std::getenv("HM_TEST_TRANSACTION_BUSY_NFS_ENTRY");
+      const bool inject_busy = busy_entry != nullptr && name == busy_entry;
+      if (inject_busy || ::unlinkat(directory_descriptor, name.c_str(), 0) != 0) {
+        const int removal_errno = inject_busy ? EBUSY : errno;
+        if (S_ISREG(metadata.st_mode) && is_nfs_tombstone_name(name) &&
+            (removal_errno == EBUSY || removal_errno == ENOENT)) {
+          // A prior cleanup can leave an NFS silly-rename held by a reader.
+          // Let the kernel remove it, then use the bounded empty-directory
+          // check below (also for nested directories) before removing its parent.
+          continue;
+        }
+        return absl::InternalError("Unable to remove transaction entry " + name + ": " + std::strerror(removal_errno));
       }
-    } else if (::unlinkat(directory_descriptor, name.c_str(), 0) != 0) {
-      return absl::InternalError("Unable to remove transaction entry " + name + ": " + std::strerror(errno));
     }
     ++removed_entries;
     if (!retained_entry_name.empty()) {
@@ -403,26 +539,51 @@ absl::Status remove_pinned_directory(
   auto status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
   if (!status.ok())
     return status;
+  std::string marker_contents;
+  if (!ownership_marker_name.empty()) {
+    auto contents = read_bounded_regular_file_no_follow(
+        directory.path() / ownership_marker_name, kMaximumOwnershipMarkerBytes, "transaction ownership marker");
+    if (!contents.ok())
+      return contents.status();
+    marker_contents = std::move(*contents);
+  }
   status = remove_directory_contents_no_follow(directory.descriptor(), ownership_marker_name);
   if (!status.ok())
     return status;
   status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
   if (!status.ok())
     return status;
+  const auto restore_ownership = [&](const absl::Status& failure) {
+    if (ownership_marker_name.empty())
+      return failure;
+    auto restored = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
+    if (restored.ok())
+      restored = write_owned_directory_marker(directory.path(), ownership_marker_name, marker_contents);
+    if (restored.ok() && ::fsync(directory.descriptor()) != 0)
+      restored = absl::InternalError("Unable to sync restored ownership marker: " + std::string(std::strerror(errno)));
+    if (!restored.ok()) {
+      return absl::InternalError(
+          std::string(failure.message()) +
+          "; unable to restore transaction ownership: " + std::string(restored.message()));
+    }
+    return failure;
+  };
   if (!ownership_marker_name.empty()) {
     if (::unlinkat(directory.descriptor(), std::string(ownership_marker_name).c_str(), 0) != 0) {
       return absl::InternalError("Unable to remove transaction ownership marker: " + std::string(std::strerror(errno)));
     }
     if (::fsync(directory.descriptor()) != 0) {
-      return absl::InternalError(
-          "Unable to sync transaction ownership-marker removal: " + std::string(std::strerror(errno)));
+      return restore_ownership(
+          absl::InternalError(
+              "Unable to sync transaction ownership-marker removal: " + std::string(std::strerror(errno))));
     }
     status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
     if (!status.ok())
-      return status;
+      return restore_ownership(status);
   }
-  if (::unlinkat(parent.descriptor(), name.c_str(), AT_REMOVEDIR) != 0)
-    return absl::InternalError("Unable to remove recovered transaction " + name + ": " + std::strerror(errno));
+  status = remove_empty_pinned_directory(parent.descriptor(), name, directory.descriptor());
+  if (!status.ok())
+    return restore_ownership(status);
   if (::fsync(parent.descriptor()) != 0)
     return absl::InternalError("Unable to sync recovered transaction removal: " + std::string(std::strerror(errno)));
   return absl::OkStatus();

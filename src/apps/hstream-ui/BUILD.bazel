@@ -221,8 +221,39 @@ cc_library(
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:player_frame_input_store",
         "//src/libs/stitching:player_frame_selection",
         "//src/libs/stitching:stitching",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "stitching_experiment_store",
+    srcs = ["StitchingExperimentStore.cpp"],
+    hdrs = ["StitchingExperimentStore.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":stitching_experiment_backend",
+        "//src/libs/common:status",
+        "//src/libs/common:utils",
+        "//src/libs/stitching:player_frame_selection",
+        "//src/libs/stitching:transaction_state",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "stitching_experiment_store_test",
+    srcs = ["StitchingExperimentStoreTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":stitching_experiment_backend",
+        ":stitching_experiment_store",
+        "//src/libs/stitching:player_frame_selection",
         "@yaml-cpp",
     ],
 )
@@ -236,6 +267,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":stitching_experiment_backend",
+        ":stitching_experiment_store",
+        "//src/libs/stitching:hugin_project",
+        "//src/libs/common:utils",
         "@qt//:qt_widgets",
     ],
 )
@@ -246,7 +280,16 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":stitching_experiment_dialog", "@qt//:qt_widgets"],
+    deps = [
+        ":stitching_experiment_dialog",
+        ":stitching_experiment_store",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:player_frame_input_store",
+        "//src/libs/stitching:player_frame_selection",
+        "@opencv_linux//:opencv",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
 )
 
 cc_test(

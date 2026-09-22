@@ -8,6 +8,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
@@ -1950,6 +1951,19 @@ absl::Status clean_stitching_artifacts_impl(
     return config_transaction.status();
 
   const fs::path cfg_file_path = game_dir_path / "config.yaml";
+  // A retained plan binds the camera offsets and exact paired inputs. Even an
+  // explicit clean only invalidates the solve until that plan is replaced.
+  if (!preserve_synchronized_inputs && fs::exists(cfg_file_path)) {
+    try {
+      std::string selected_fingerprint;
+      HM_ASSIGN_OR_RETURN(
+          selected_fingerprint, player_frame_selection_fingerprint(YAML::LoadFile(cfg_file_path.string())));
+      preserve_synchronized_inputs = !selected_fingerprint.empty();
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError(
+          "Cannot validate selected frames before cleanup: " + std::string(exception.what()));
+    }
+  }
   if (!expected_invalidation_id.empty()) {
     bool artifacts_invalidated = false;
     HM_ASSIGN_OR_RETURN(
@@ -2969,6 +2983,122 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
   };
 }
 
+absl::Status write_stitching_calibration_frame_inspection(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id,
+    size_t index,
+    size_t expected_pair_count,
+    const std::array<cv::Mat, 2>& images,
+    const std::array<CalibrationFrameSource, 2>& sources) {
+  static const std::regex safe_owner("^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$");
+  if (!std::regex_match(expected_invalidation_id, safe_owner) || expected_pair_count == 0 || expected_pair_count > 16 ||
+      index >= expected_pair_count)
+    return absl::InvalidArgumentError("Invalid ordinary calibration inspection owner or pair count");
+  for (size_t camera = 0; camera < images.size(); ++camera) {
+    const cv::Mat& image = images[camera];
+    if (image.empty() || (image.depth() != CV_8U && image.depth() != CV_16U) ||
+        (image.channels() != 1 && image.channels() != 3 && image.channels() != 4) ||
+        !std::isfinite(sources[camera].seconds) || sources[camera].seconds < 0 ||
+        sources[camera].video.string().size() > 4096)
+      return absl::InvalidArgumentError("Invalid ordinary calibration inspection image or source metadata");
+  }
+  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
+  HM_RETURN_IF_ERROR(
+      validate_stitching_generation_owner_file_locked(fs::path(game_dir) / "config.yaml", expected_invalidation_id));
+
+  const fs::path root = fs::path(game_dir) / "calibration-frame-inspection";
+  const fs::path inspection = root / expected_invalidation_id;
+  std::error_code error;
+  for (const fs::path& directory : {root, inspection}) {
+    fs::create_directory(directory, error);
+    if (error || fs::symlink_status(directory, error).type() != fs::file_type::directory || error)
+      return absl::FailedPreconditionError("Calibration inspection requires private regular directories");
+  }
+  try {
+    YAML::Node manifest(YAML::NodeType::Map);
+    if (index != 0) {
+      std::string contents;
+      HM_ASSIGN_OR_RETURN(
+          contents, read_bounded_regular_file_no_follow(inspection / "frames.yaml", 64 * 1024, "frame inspection"));
+      manifest = YAML::Load(contents);
+      if (!manifest.IsMap() || manifest["version"].as<int>() != 1 ||
+          manifest["invalidation_id"].as<std::string>() != expected_invalidation_id ||
+          manifest["expected_pair_count"].as<size_t>() != expected_pair_count || !manifest["pairs"].IsSequence() ||
+          manifest["pairs"].size() != index)
+        return absl::AbortedError("Calibration inspection pairs must remain in capture order");
+    } else {
+      // A retry with the same owner replaces these fixed thumbnail filenames.
+      // Withdraw its previous manifest before replacing either image so a
+      // failed retry cannot expose an old manifest with a mixed old/new pair.
+      fs::remove(inspection / "frames.yaml", error);
+      if (error)
+        return absl::InternalError("Cannot reset calibration frame inspection: " + error.message());
+      HM_RETURN_IF_ERROR(fsync_stitch_path(inspection, true));
+      manifest["version"] = 1;
+      manifest["invalidation_id"] = expected_invalidation_id;
+      manifest["expected_pair_count"] = expected_pair_count;
+      manifest["pairs"] = YAML::Node(YAML::NodeType::Sequence);
+    }
+    std::string pattern = (inspection / ".pair-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    const char* created = ::mkdtemp(writable.data());
+    if (!created)
+      return absl::InternalError("Unable to stage calibration frame inspection");
+    struct RemoveStaging {
+      fs::path path;
+      ~RemoveStaging() {
+        std::error_code ignored;
+        fs::remove_all(path, ignored);
+      }
+    } staging{created};
+    YAML::Node pair(YAML::NodeType::Map);
+    pair["index"] = index;
+    for (size_t camera = 0; camera < images.size(); ++camera) {
+      const char* role = camera == 0 ? "left" : "right";
+      cv::Mat thumbnail;
+      const double scale = std::min(1.0, 1024.0 / std::max(images[camera].cols, images[camera].rows));
+      cv::resize(images[camera], thumbnail, cv::Size(), scale, scale, cv::INTER_AREA);
+      if (thumbnail.depth() == CV_16U)
+        thumbnail.convertTo(thumbnail, CV_8U, 255.0 / 65535.0);
+      const std::string filename = std::string(role) + "_" + std::to_string(index) + ".jpg";
+      if (!cv::imwrite((staging.path / filename).string(), thumbnail, {cv::IMWRITE_JPEG_QUALITY, 88}))
+        return absl::InternalError("Cannot save calibration frame inspection thumbnail");
+      HM_RETURN_IF_ERROR(fsync_stitch_path(staging.path / filename));
+      fs::rename(staging.path / filename, inspection / filename, error);
+      if (error)
+        return absl::InternalError("Cannot publish calibration frame inspection thumbnail: " + error.message());
+      pair[role]["path"] = sources[camera].video.string();
+      pair[role]["source_seconds"] = sources[camera].seconds;
+    }
+    manifest["pairs"].push_back(pair);
+    YAML::Emitter emitter;
+    emitter.SetDoublePrecision(std::numeric_limits<double>::max_digits10);
+    emitter << manifest;
+    if (!emitter.good() || emitter.size() > 64 * 1024)
+      return absl::ResourceExhaustedError("Calibration frame inspection manifest exceeds its size limit");
+    const fs::path staged_manifest = staging.path / "frames.yaml";
+    std::ofstream output(staged_manifest);
+    output << emitter.c_str() << '\n';
+    output.close();
+    if (!output)
+      return absl::InternalError("Cannot write calibration frame inspection manifest");
+    HM_RETURN_IF_ERROR(fsync_stitch_path(staged_manifest));
+    fs::rename(staged_manifest, inspection / "frames.yaml", error);
+    if (error)
+      return absl::InternalError("Cannot publish calibration frame inspection manifest: " + error.message());
+    HM_RETURN_IF_ERROR(fsync_stitch_path(inspection, true));
+    HM_RETURN_IF_ERROR(fsync_stitch_path(root, true));
+    return fsync_stitch_path(game_dir, true);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Invalid calibration frame inspection: " + std::string(exception.what()));
+  } catch (const cv::Exception& exception) {
+    return absl::InternalError("Cannot encode calibration frame inspection: " + std::string(exception.what()));
+  }
+}
+
 absl::Status create_control_points(
     const std::string& game_dir,
     const std::vector<StitchingCalibrationFramePair>& frame_pairs,
@@ -2982,6 +3112,7 @@ absl::Status create_control_points(
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   StitchingBackendChoices backend_choices;
+  std::optional<PlayerFrameSelectionPlan> selected_plan;
   const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
   try {
     if (fs::exists(game_config_path)) {
@@ -3003,6 +3134,11 @@ absl::Status create_control_points(
       if (private_stitching && !private_stitching.IsNull() && !private_stitching.IsMap())
         return absl::InvalidArgumentError("stitching must be a map");
       HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(effective_config));
+      if (!backend_choices.calibration_frame_selection_fingerprint.empty()) {
+        PlayerFrameSelectionPlan plan;
+        HM_ASSIGN_OR_RETURN(plan, ParsePlayerFrameSelectionPlan(config["stitching"]["calibration_frame_selection"]));
+        selected_plan = std::move(plan);
+      }
     } else {
       const auto baseline = hm::baseline_config::load();
       if (!baseline.ok())
@@ -3025,6 +3161,22 @@ absl::Status create_control_points(
                                                                   << exception.what()));
     }
     HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, backend_choices));
+  }
+
+  const bool using_cached_inputs = !frame_pairs.front().left_image.empty() || !frame_pairs.front().right_image.empty();
+  if (using_cached_inputs) {
+    if (!selected_plan)
+      return absl::FailedPreconditionError("Cached calibration requires a selected frame plan");
+    auto retained = LoadPlayerFrameInputs(game_dir, *selected_plan);
+    if (!retained.ok())
+      return retained.status();
+    if (!retained->has_value() || (**retained).images.size() != frame_pairs.size())
+      return absl::FailedPreconditionError("Required retained calibration inputs are missing");
+    for (size_t index = 0; index < frame_pairs.size(); ++index) {
+      if (frame_pairs[index].left_image != (**retained).images[index][0] ||
+          frame_pairs[index].right_image != (**retained).images[index][1])
+        return absl::FailedPreconditionError("Cached calibration paths do not identify the selected input bundle");
+    }
   }
 
   std::string pattern = (fs::path(game_dir) / "hstream-calibration-input-XXXXXX").string();
@@ -3052,14 +3204,24 @@ absl::Status create_control_points(
   std::vector<std::pair<fs::path, CalibrationFrameSource>> metadata_frames;
   metadata_frames.reserve(frame_pairs.size() * 2);
   for (size_t index = 0; index < frame_pairs.size(); ++index) {
+    const auto& pair = frame_pairs[index];
+    if (using_cached_inputs) {
+      // Feature matching and Hugin staging only read these immutable PNGs.
+      // Reuse them directly instead of copying gigabytes into another scratch
+      // directory or rewriting their existing EXIF metadata.
+      input_files.emplace_back(pair.left_image, pair.right_image);
+      continue;
+    }
     const fs::path left_file = input_dir /
         (index == 0 ? "left.png" : TO_STRING("left_" << std::setw(4) << std::setfill('0') << index << ".png"));
     const fs::path right_file = input_dir /
         (index == 0 ? "right.png" : TO_STRING("right_" << std::setw(4) << std::setfill('0') << index << ".png"));
-    HM_RETURN_IF_ERROR(save_image(frame_pairs[index].left, left_file));
-    HM_RETURN_IF_ERROR(save_image(frame_pairs[index].right, right_file));
-    metadata_frames.emplace_back(left_file, frame_pairs[index].left_source);
-    metadata_frames.emplace_back(right_file, frame_pairs[index].right_source);
+    if (!pair.left_image.empty() || !pair.right_image.empty())
+      return absl::FailedPreconditionError("Calibration cannot mix retained inputs and captured surfaces");
+    HM_RETURN_IF_ERROR(save_image(pair.left, left_file));
+    HM_RETURN_IF_ERROR(save_image(pair.right, right_file));
+    metadata_frames.emplace_back(left_file, pair.left_source);
+    metadata_frames.emplace_back(right_file, pair.right_source);
     input_files.emplace_back(left_file, right_file);
   }
   CalibrationFrameExifWriter exif_writer(is_cancelled);
@@ -3070,6 +3232,32 @@ absl::Status create_control_points(
     if (!metadata_statuses[i].ok())
       std::cerr << "Calibration PNG metadata unavailable for " << metadata_frames[i].first << ": "
                 << metadata_statuses[i] << "\n";
+  }
+
+  if (selected_plan) {
+    std::vector<std::array<fs::path, 2>> images;
+    for (const auto& pair : input_files)
+      images.push_back({pair.first, pair.second});
+    // Retain every extracted pair before model creation or matching can fail.
+    // Neither artifact invalidation nor a failed solve deletes this bundle.
+    if (!using_cached_inputs)
+      HM_RETURN_IF_ERROR(PublishPlayerFrameInputs(game_dir, *selected_plan, images));
+    auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+    if (!config_lock.ok())
+      return config_lock.status();
+    try {
+      YAML::Node current = YAML::LoadFile(game_config_path.string());
+      std::string current_fingerprint;
+      HM_ASSIGN_OR_RETURN(current_fingerprint, player_frame_selection_fingerprint(current));
+      if (current_fingerprint != selected_plan->fingerprint)
+        return absl::AbortedError("Selected frame plan changed while its inputs were saved");
+      if (!expected_invalidation_id.empty())
+        HM_RETURN_IF_ERROR(validate_stitching_backend_generation(current, expected_invalidation_id, backend_choices));
+      current["stitching"]["calibration_frame_inputs_fingerprint"] = selected_plan->fingerprint;
+      HM_RETURN_IF_ERROR(publish_game_config(game_dir, YAML::Dump(current) + "\n"));
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError("Cannot retain saved frame reference: " + std::string(exception.what()));
+    }
   }
 
   report_calibration_progress(
@@ -3163,6 +3351,15 @@ absl::Status create_control_points(
         if (!cv::imwrite(path.string(), thumbnail, {cv::IMWRITE_JPEG_QUALITY, 88}))
           return absl::InternalError("Cannot save selected-frame inspection thumbnail");
       }
+    } else if (const char* enabled = std::getenv("HSTREAM_STITCH_CALIBRATION_INSPECTION");
+               enabled && std::string(enabled) == "1") {
+      HM_RETURN_IF_ERROR(write_stitching_calibration_frame_inspection(
+          game_dir,
+          expected_invalidation_id,
+          index,
+          frame_pairs.size(),
+          {left, right},
+          {frame_pairs[index].left_source, frame_pairs[index].right_source}));
     }
     if (index == 0) {
       left_source_size = left.size();

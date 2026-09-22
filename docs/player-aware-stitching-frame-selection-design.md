@@ -366,3 +366,31 @@ inspection, promotion, automatic dialog closure and then five seconds of main Pr
 the exact canvas provenance without new captures or feature matching. A separate NFS run on `mini` also processed
 video successfully with an identical saved frame plan and canvas provenance. Scoreboard overlay was disabled in these
 headless Program checks to avoid an unrelated manual scoreboard-selection prompt.
+
+## Follow-up: shared frame inputs and per-row inspection
+
+Design approved by two xhigh reviewers and implemented. Durable game-local history and complete input bundles are
+described in [the persistence follow-up](persistent-stitching-frame-cache-design.md).
+
+The frame-count selection belongs to the experiment's input state, independently of control-point limits and other
+solve options. A fresh player-enabled count gets one ordinary baseline and one scan. The first Players candidate
+freezes the resulting plan; every later option with that count reuses it and performs only its own matching and
+calibration. A different count can create another selection. Conflicting reference times for an established count
+fail rather than silently creating a second set. The first scan duration remains authoritative for its count.
+
+A plan already promoted into the main game is inherited by same-count experiments, including when the preference
+checkbox is off. Preserve its fingerprint, source bindings and reference-time spelling/absence. A conflicting source
+or reference fails; changing the count explicitly permits a fresh set. A frozen plan remains reusable after its
+owner's subsequent matching/solve fails, provided the worker has stopped safely. Quarantined workspaces are never
+reused. Removing an input-owner row removes or safely reassigns its dependencies before the batch starts.
+
+Every row's inspector shows that row's actual input frames. The initial ordinary baseline can have different frames
+from its derived Players row; neither borrows the other's thumbnails. Ordinary input inspection retains bounded
+thumbnails and source metadata from the CPU stills already required for matching, with ownership tied to that
+candidate's generation. This adds no video-surface readback and cannot affect steady-state playback. Missing or
+unavailable metadata/images must be explicit; never substitute nearby frames. Player counts/coverage are shown only
+when a player scan produced them.
+
+Validation covers one scan across control-point/rotation variants, separate selections for different counts,
+same-count inheritance after reopening, owner solve failure, source/reference rejection, and inspecting each row's
+own images. The moving GPU workflow must still promote an existing generation and play it without recapture.

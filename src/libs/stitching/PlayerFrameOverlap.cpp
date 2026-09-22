@@ -67,19 +67,24 @@ absl::StatusOr<Placement> read_placement(const std::filesystem::path& path) {
 }
 
 absl::StatusOr<cv::Size> normalize_placements(std::array<Placement, 2>* placements) {
-  const double min_x = std::min((*placements)[0].position.x, (*placements)[1].position.x);
-  const double min_y = std::min((*placements)[0].position.y, (*placements)[1].position.y);
-  double width = 0, height = 0;
+  // Production keeps TIFF positions, normalized offsets and extent arithmetic
+  // in float. Widening before subtracting/adding can put an integer boundary
+  // just below its validated size (13009.999877 instead of 13010 on real maps).
+  const float min_x = std::min(
+      static_cast<float>((*placements)[0].position.x), static_cast<float>((*placements)[1].position.x));
+  const float min_y = std::min(
+      static_cast<float>((*placements)[0].position.y), static_cast<float>((*placements)[1].position.y));
+  float width = 0, height = 0;
   for (auto& placement : *placements) {
     auto status = validate_size(placement.size);
     if (!status.ok())
       return status;
-    placement.position.x -= min_x;
-    placement.position.y -= min_y;
+    placement.position.x = static_cast<float>(placement.position.x) - min_x;
+    placement.position.y = static_cast<float>(placement.position.y) - min_y;
     if (!std::isfinite(placement.position.x) || !std::isfinite(placement.position.y))
       return invalid("nonfinite mapping placement");
-    width = std::max(width, placement.position.x + placement.size.width);
-    height = std::max(height, placement.position.y + placement.size.height);
+    width = std::max(width, static_cast<float>(placement.position.x) + placement.size.width);
+    height = std::max(height, static_cast<float>(placement.position.y) + placement.size.height);
   }
   if (width < 1 || height < 1 || width > kMaximumDimension || height > kMaximumDimension)
     return invalid("placed mapping canvas exceeds bounds");
@@ -320,7 +325,10 @@ absl::StatusOr<PlayerFrameOverlap> LoadPlayerFrameOverlap(
     return native.status();
   if (artifacts->canvas_size.width != static_cast<size_t>(native->width) ||
       artifacts->canvas_size.height != static_cast<size_t>(native->height))
-    return invalid("mapping canvas must already match its validated effective canvas");
+    return invalid(
+        "mapping canvas " + std::to_string(native->width) + "x" + std::to_string(native->height) +
+        " differs from its validated effective canvas " + std::to_string(artifacts->canvas_size.width) + "x" +
+        std::to_string(artifacts->canvas_size.height));
   auto reduced = mask_size(*native, maximum_mask_dimension);
   if (!reduced.ok())
     return reduced.status();

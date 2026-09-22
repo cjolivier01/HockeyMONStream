@@ -1539,7 +1539,13 @@ absl::Status PipelineApplication::createPipelines(
     CleanupStack& cleanup_stack) {
   // Section 2: Create pipelines for each instance.
   for (guint i = 0; i < app_contexts.size(); i++) {
-    if (!create_pipeline(app_contexts[i].get(), nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
+    if (!create_pipeline(
+            app_contexts[i].get(),
+            nullptr,
+            all_bbox_generated,
+            perf_cb_static,
+            overlay_graphics_static,
+            observe_processed_output_static)) {
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
@@ -3476,10 +3482,7 @@ void PipelineApplication::reset_playback_timing_state(long stage) {
   ui_progress_by_stage_.erase(stage);
   g_mutex_unlock(&fps_lock_);
   std::lock_guard<std::mutex> lock(playback_timing_mu_);
-  have_first_pts_ = false;
-  first_pts_ns_ = 0;
-  have_first_frame_by_source_.fill(false);
-  first_frame_numbers_by_source_.fill(0);
+  observed_playback_by_instance_.clear();
   timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
   timed_run_stop_requested_.store(false, std::memory_order_release);
   // Scans may spend longer than the watchdog interval building their detector.
@@ -3587,6 +3590,15 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
     // absolute source seek (e.g. 09:42), before even one inferred frame exists.
     // The observer's relative timeline is the sole scan progress authority.
     processed_ns = player_frame_scan_->progress().elapsed_ns.value_or(GST_CLOCK_TIME_NONE);
+  } else if (time_limit_seconds_ > 0) {
+    // The same startup query ambiguity applies to ordinary Program playback.
+    // A timed run uses the completed-output clock for both reporting and stop
+    // accounting; another pipeline's first output cannot make this one ready.
+    std::lock_guard<std::mutex> lock(playback_timing_mu_);
+    const auto observed = observed_playback_by_instance_.find(app_ctx->index);
+    if (observed != observed_playback_by_instance_.end()) {
+      processed_ns = observed->second.processed_ns(runtime_playback_offset_ns_.load(std::memory_order_acquire));
+    }
   } else if (
       gst_element_query_position(app_ctx->pipeline.pipeline, GST_FORMAT_TIME, &queried_position) &&
       queried_position >= 0) {
@@ -3602,13 +3614,9 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
   if (processed_ns == GST_CLOCK_TIME_NONE) {
     return metrics;
   }
-  record_timed_run_progress(processed_ns);
-  if (time_limit_seconds_ > 0) {
-    const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
-    if (processed_ns >= limit_ns && !quit_) {
-      request_timed_run_stop();
-    }
-  }
+  // Only completed output (observe_processed_output or the scan observer) advances
+  // the timed-run watchdog and requests completion. Position queries are UI
+  // telemetry and must never consume the time limit during startup.
   if (state.total_video_ns != GST_CLOCK_TIME_NONE) {
     processed_ns = std::min(processed_ns, state.total_video_ns);
   }
@@ -7329,25 +7337,24 @@ gpointer PipelineApplication::nvds_x_event_thread() {
   return nullptr;
 }
 
-gboolean PipelineApplication::overlay_graphics_static(
+void PipelineApplication::observe_processed_output_static(
     AppCtx* app_ctx,
-    GstBuffer* buf,
-    NvDsBatchMeta* batch_meta,
-    guint index) {
-  return instance_ ? instance_->overlay_graphics(app_ctx, buf, batch_meta, index) : TRUE;
+    const GstBuffer* buf,
+    const NvDsBatchMeta* batch_meta) {
+  if (instance_)
+    instance_->observe_processed_output(app_ctx, buf, batch_meta);
 }
 
-gboolean PipelineApplication::overlay_graphics(
+void PipelineApplication::observe_processed_output(
     AppCtx* app_ctx,
-    GstBuffer* buf,
-    NvDsBatchMeta* batch_meta,
-    guint index) {
-  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
-    return TRUE;
+    const GstBuffer* buf,
+    const NvDsBatchMeta* batch_meta) {
+  if (!app_ctx || pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return;
   }
   std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
   if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
-    return TRUE;
+    return;
   }
   uint64_t seek_generation = runtime_seek_frame_generation_.load(std::memory_order_acquire);
   const GstClockTime seek_frame_pts = buf ? GST_BUFFER_PTS(buf) : GST_CLOCK_TIME_NONE;
@@ -7394,39 +7401,15 @@ gboolean PipelineApplication::overlay_graphics(
   if (time_limit_seconds_ > 0 && batch_meta && !player_frame_scan_ &&
       hm::pipeline_internal::stitch_frame_should_account_playback(stitching_calibration_blocks_playback_accounting())) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
-    if (buf) {
-      GstClockTime pts = GST_BUFFER_PTS(buf);
-      if (GST_CLOCK_TIME_IS_VALID(pts)) {
-        const uint64_t pts_ns = static_cast<uint64_t>(pts);
-        uint64_t elapsed_ns = 0;
-        bool have_elapsed = false;
-        {
-          std::lock_guard<std::mutex> lock(playback_timing_mu_);
-          if (!have_first_pts_) {
-            first_pts_ns_ = pts_ns;
-            have_first_pts_ = true;
-          } else if (pts_ns < first_pts_ns_) {
-            first_pts_ns_ = pts_ns;
-          } else {
-            elapsed_ns = pts_ns - first_pts_ns_;
-            have_elapsed = true;
-          }
-        }
-        if (have_elapsed) {
-          record_timed_run_progress(elapsed_ns);
-          if (elapsed_ns >= limit_ns) {
-            request_timed_run_stop();
-            return TRUE;
-          }
-        }
-      }
-    }
-
-    uint64_t elapsed_from_frames_ns = 0;
+    uint64_t processed_ns = GST_CLOCK_TIME_NONE;
     {
       std::lock_guard<std::mutex> lock(playback_timing_mu_);
-      for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
-        NvDsFrameMeta* frame_meta = reinterpret_cast<NvDsFrameMeta*>(l_frame->data);
+      auto& observed = observed_playback_by_instance_[app_ctx->index];
+      if (buf) {
+        observed.observe_pts(GST_BUFFER_PTS(buf));
+      }
+      for (const NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
+        const NvDsFrameMeta* frame_meta = reinterpret_cast<const NvDsFrameMeta*>(l_frame->data);
         if (!frame_meta || frame_meta->source_id >= MAX_SOURCE_BINS) {
           continue;
         }
@@ -7436,30 +7419,37 @@ gboolean PipelineApplication::overlay_graphics(
         if (fps_n <= 0 || fps_d <= 0 || frame_meta->frame_num < 0) {
           continue;
         }
-        const uint64_t frame_num = static_cast<uint64_t>(frame_meta->frame_num);
-        if (!have_first_frame_by_source_[source_id]) {
-          have_first_frame_by_source_[source_id] = true;
-          first_frame_numbers_by_source_[source_id] = frame_num;
-          continue;
-        }
-        if (frame_num < first_frame_numbers_by_source_[source_id]) {
-          first_frame_numbers_by_source_[source_id] = frame_num;
-          continue;
-        }
-        const uint64_t frame_delta = frame_num - first_frame_numbers_by_source_[source_id];
-        const uint64_t elapsed_ns = (frame_delta * static_cast<uint64_t>(GST_SECOND) * static_cast<uint64_t>(fps_d)) /
-            static_cast<uint64_t>(fps_n);
-        if (elapsed_ns > elapsed_from_frames_ns) {
-          elapsed_from_frames_ns = elapsed_ns;
-        }
+        observed.observe_frame(source_id, static_cast<uint64_t>(frame_meta->frame_num), fps_n, fps_d);
       }
+      processed_ns = observed.processed_ns(runtime_playback_offset_ns_.load(std::memory_order_acquire));
     }
-    record_timed_run_progress(elapsed_from_frames_ns);
-    if (elapsed_from_frames_ns >= limit_ns) {
+    record_timed_run_progress(processed_ns);
+    if (processed_ns != GST_CLOCK_TIME_NONE && processed_ns >= limit_ns) {
       request_timed_run_stop();
     }
   }
+}
 
+gboolean PipelineApplication::overlay_graphics_static(
+    AppCtx* app_ctx,
+    GstBuffer* buf,
+    NvDsBatchMeta* batch_meta,
+    guint index) {
+  return instance_ ? instance_->overlay_graphics(app_ctx, buf, batch_meta, index) : TRUE;
+}
+
+gboolean PipelineApplication::overlay_graphics(
+    AppCtx* app_ctx,
+    GstBuffer* buf,
+    NvDsBatchMeta* batch_meta,
+    guint index) {
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
+  }
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
+  }
   int src_index = app_ctx->active_source_index;
   if (src_index == -1)
     return TRUE;
@@ -7639,6 +7629,10 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   } else {
     destroy_pipeline(app_ctx_ptr);
   }
+  {
+    std::lock_guard<std::mutex> lock(playback_timing_mu_);
+    observed_playback_by_instance_.erase(app_ctx_ptr->index);
+  }
   if (topology_changed) {
     *topology_changed = true;
   }
@@ -7650,7 +7644,13 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     runtime_playback_offset_ns_.store(runtime_seek_target_ns, std::memory_order_release);
   }
   g_print("Recreate pipeline\n");
-  if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
+  if (!create_pipeline(
+          app_ctx_ptr,
+          nullptr,
+          all_bbox_generated,
+          perf_cb_static,
+          overlay_graphics_static,
+          observe_processed_output_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
     return FALSE;
   }

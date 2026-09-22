@@ -39,6 +39,7 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HomographyMaps.h"
+#include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 extern "C" char** environ;
@@ -2646,6 +2647,30 @@ absl::Status HuginProject::PromoteArtifactsAndConfig(
     if (contents->size() > 16ULL * 1024ULL * 1024ULL)
       return absl::ResourceExhaustedError("Selected stitching config exceeds the recovery journal limit");
     selected_config = std::move(*contents);
+    try {
+      YAML::Node selected = YAML::Load(*selected_config);
+      std::string fingerprint;
+      HM_ASSIGN_OR_RETURN(fingerprint, player_frame_selection_fingerprint(selected));
+      if (!fingerprint.empty()) {
+        PlayerFrameSelectionPlan plan;
+        HM_ASSIGN_OR_RETURN(plan, ParsePlayerFrameSelectionPlan(selected["stitching"]["calibration_frame_selection"]));
+        const std::string required = selected["stitching"]["calibration_frame_inputs_fingerprint"].as<std::string>("");
+        if (!required.empty() && required != fingerprint)
+          return absl::FailedPreconditionError("Saved frame reference differs from the promoted selection");
+        // Publish immutable inputs first, under the same source/destination
+        // locks. A crash may leave unreferenced inputs, never a partial set
+        // referenced by the committed maps/config generation.
+        const absl::Status copied = CopyPlayerFrameInputs(experiment_game_dir, game_dir, plan);
+        if (!copied.ok() && (!absl::IsNotFound(copied) || !required.empty()))
+          return copied;
+        if (copied.ok()) {
+          selected["stitching"]["calibration_frame_inputs_fingerprint"] = fingerprint;
+          selected_config = YAML::Dump(selected) + "\n";
+        }
+      }
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError("Invalid promoted frame input reference: " + std::string(exception.what()));
+    }
     HM_RETURN_IF_ERROR(write_stitch_transaction_file(staging / "selection_config.yaml", *selected_config));
     HM_RETURN_IF_ERROR(fsync_stitch_path(staging, true));
   }

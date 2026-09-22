@@ -11,6 +11,7 @@
 #include "src/libs/common/Status.h"
 /* clang-format on */
 
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -91,7 +92,24 @@ struct StitchingCalibrationFramePair {
   surface::Surface right;
   CalibrationFrameSource left_source;
   CalibrationFrameSource right_source;
+  // Validated immutable PNGs replace GPU surfaces when replaying a saved set.
+  // Both paths must be supplied together; no upload/readback is needed.
+  std::filesystem::path left_image;
+  std::filesystem::path right_image;
 };
+
+// Retains one ordinary calibration pair for private experiment inspection. CPU
+// images are the stills already loaded for feature matching, never video readback.
+// Pairs must be published in order; the atomic manifest lists only complete pairs
+// and belongs to the current invalidation owner. Unknown source metadata has an
+// empty path and must not be presented as a known timestamp by readers.
+absl::Status write_stitching_calibration_frame_inspection(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id,
+    size_t index,
+    size_t expected_pair_count,
+    const std::array<cv::Mat, 2>& images,
+    const std::array<CalibrationFrameSource, 2>& sources);
 
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
