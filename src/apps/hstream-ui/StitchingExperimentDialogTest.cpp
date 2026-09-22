@@ -395,10 +395,8 @@ void exercise_preparation_failure(const QString& game, const QString& root) {
   reopened.reject();
 }
 
-void exercise_saved_selection(const QString& game, const QString& root) {
+hm::stitching::PlayerFrameSelectionPlan selected_plan_fixture(const QString& game, YAML::Node& config) {
   using namespace hm::stitching;
-  const QByteArray original = read(game + "/config.yaml");
-  YAML::Node config = YAML::Load(original.toStdString());
   config["game"]["stitching"]["frame_offsets"]["left"] = 0;
   config["game"]["stitching"]["frame_offsets"]["right"] = 0;
   config["stitching"]["stitch_frame_time"] = "00:00:00.000";
@@ -435,6 +433,209 @@ void exercise_saved_selection(const QString& game, const QString& root) {
   auto fingerprint = PlayerFrameSelectionFingerprint(plan);
   require(fingerprint.ok(), "Saved-plan fingerprint failed");
   plan.fingerprint = *fingerprint;
+  return plan;
+}
+
+struct QueuedOwnerFixture {
+  StitchingExperimentStore store;
+  StoredStitchingExperiment baseline;
+  StoredStitchingExperiment owner;
+};
+
+QueuedOwnerFixture queued_owner_fixture(const QString& game, const QString& root) {
+  {
+    StitchingExperimentDialog queued(
+        game,
+        root + "/record-runner.sh",
+        root,
+        root + "/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        100,
+        2,
+        "00:00:00");
+    queued.show();
+    widget<QCheckBox>(queued, "stitchExperimentPreferPlayerFrames")->setChecked(true);
+    add_options(queued);
+    queued.reject();
+    require(wait_until([&] { return !queued.isVisible(); }, 1000), "Owner fixture queue did not close");
+  }
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open owner fixture store");
+  const auto catalog = LoadStitchingExperimentStore(*store);
+  require(catalog.ok() && catalog->experiments.size() == 2, "Owner fixture must contain baseline and owner");
+  QueuedOwnerFixture fixture{*store, catalog->experiments[0], catalog->experiments[1]};
+  // Reopening deliberately defers artifact validation until Play/Use. Neither
+  // regression reaches those paths or needs a GPU-generated panorama.
+  fixture.baseline.state = "complete";
+  fixture.baseline.artifact_generation_id = "completed-baseline-fixture";
+  require(SaveStitchingExperiment(fixture.store, fixture.baseline).ok(), "Cannot complete baseline fixture");
+  return fixture;
+}
+
+void exercise_pre_run_cancellation(const QString& game, const QString& root) {
+  const auto fixture = queued_owner_fixture(game, root);
+  const QString arguments = game + "/runner-arguments.txt";
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
+  StitchingExperimentDialog dialog(
+      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+  dialog.show();
+  auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  auto* cancel = widget<QPushButton>(dialog, "cancelStitchExperimentsButton");
+  bool cancelled_preparation = false;
+  QObject::connect(table, &QTableWidget::itemChanged, &dialog, [&](QTableWidgetItem* item) {
+    if (item->row() == 1 && item->column() == 5 && item->text() == "Preparing saved frames…") {
+      cancelled_preparation = cancel->isEnabled();
+      cancel->click();
+    }
+  });
+  widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
+  require(
+      wait_until(
+          [&] { return widget<QLabel>(dialog, "stitchExperimentStatus")->text().startsWith("Batch cancelled."); },
+          10000),
+      "Owner preparation cancellation did not finish");
+  require(
+      cancelled_preparation && table->item(1, 5)->text() == "Cancelled" && !QFile::exists(arguments),
+      "Cancellation must happen during saved-frame preparation before any runner starts");
+  const auto replacement = ReserveStitchingExperimentFrameCount(
+      fixture.store, 2, 0, fixture.baseline.workspace, "replacement-after-preparation-cancel");
+  require(
+      replacement.ok() && !replacement->has_value(), "A cancelled preparing owner must release its count reservation");
+  require(
+      ReleaseStitchingExperimentFrameCount(
+          fixture.store, 2, fixture.baseline.workspace, "replacement-after-preparation-cancel")
+          .ok(),
+      "Cannot release replacement test reservation");
+  table->selectRow(1);
+  answer_close_guard(dialog, "stitchExperimentCloseDiscard", false);
+  require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Cancelled preparation dialog did not close");
+}
+
+void exercise_unexpected_pre_run_selection(const QString& game, const QString& root) {
+  const auto fixture = queued_owner_fixture(game, root);
+  const QString arguments = game + "/runner-arguments.txt";
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
+  StitchingExperimentDialog dialog(
+      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 200, 2, "00:00:00");
+  dialog.show();
+  // Model main acquiring a selection between Add's initial fingerprint query
+  // and workspace creation, leaving the queued index unaware of that plan.
+  const QString path = QString::fromStdString((fixture.owner.workspace.game_directory / "config.yaml").string());
+  YAML::Node config = YAML::Load(read(path).toStdString());
+  const auto plan = selected_plan_fixture(game, config);
+  config["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);
+  write(path, QByteArray::fromStdString(YAML::Dump(config)));
+  widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
+  auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
+  require(
+      wait_until([&] { return status->text().startsWith("Batch complete."); }, 10000),
+      "Unexpected saved selection preparation did not finish");
+  require(
+      table->item(1, 5)->text().contains("Unavailable") && !QFile::exists(arguments),
+      "Unexpected saved frames must fail closed before launching a runner");
+  const auto conflicting = ReserveStitchingExperimentFrameCount(
+      fixture.store, 2, 0, fixture.baseline.workspace, "unexpected-plan-conflicting-reservation");
+  require(!conflicting.ok(), "Unexpected saved frames must retain their count reservation");
+  add_options(dialog);
+  require(
+      table->rowCount() == 2 && status->text().contains("unavailable") &&
+          !widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->isEnabled(),
+      "The same dialog must not queue a replacement scan after discovering unexpected frozen frames");
+  table->selectRow(1);
+  answer_close_guard(dialog, "stitchExperimentCloseDiscard", false);
+  require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Unexpected-plan dialog did not close");
+}
+
+void exercise_frozen_selection_recovery(const QString& game, const QString& root, const std::string& scenario) {
+  using namespace hm::stitching;
+  auto fixture = queued_owner_fixture(game, root);
+  auto& owner = fixture.owner;
+  owner.reservation_token = "frozen-selection-recovery-reservation";
+  owner.state = scenario == "failed" ? "failed" : "scan";
+  // No Linux process can use this session ID (above pid_max). A missing PID
+  // with a nonempty token is deliberately unconfirmed in the other scenario.
+  owner.process_session_id = scenario == "unconfirmed" || scenario == "failed" ? 0 : 2147483647;
+  owner.process_token = scenario == "failed" ? "" : "frozen-selection-recovery-process";
+  require(SaveStitchingExperiment(fixture.store, owner).ok(), "Cannot persist interrupted scan owner");
+  const auto reserved =
+      ReserveStitchingExperimentFrameCount(fixture.store, 2, 0, owner.workspace, owner.reservation_token);
+  require(reserved.ok() && !reserved->has_value(), "Cannot reserve interrupted scan count");
+  const QString config_path = QString::fromStdString((owner.workspace.game_directory / "config.yaml").string());
+  YAML::Node config = YAML::Load(read(config_path).toStdString());
+  const auto plan = selected_plan_fixture(game, config);
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  if (scenario == "corrupt")
+    config["stitching"]["calibration_frame_selection"]["fingerprint"] = std::string(64, '0');
+  write(config_path, QByteArray::fromStdString(YAML::Dump(config)));
+
+  const QString arguments = game + "/runner-arguments.txt";
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
+  StitchingExperimentDialog reopened(
+      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 200, 2, "00:00:00");
+  reopened.show();
+  auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
+  auto* status = widget<QLabel>(reopened, "stitchExperimentStatus");
+  require(table->rowCount() == 2, "Interrupted scan history must survive reopening");
+  const auto recovered = LoadStitchingExperimentStore(fixture.store);
+  require(recovered.ok(), "Cannot inspect recovered count owner");
+  if (scenario == "corrupt" || scenario == "unconfirmed") {
+    require(
+        table->item(1, 5)->text().contains("Unavailable") && recovered->selected_by_count.empty() &&
+            recovered->experiments[1].selection_fingerprint.empty(),
+        "Malformed plans and unconfirmed processes must remain unavailable without publishing a selection");
+    const auto conflicting = ReserveStitchingExperimentFrameCount(
+        fixture.store, 2, 0, fixture.baseline.workspace, "conflicting-recovery-reservation");
+    require(!conflicting.ok(), "Failed recovery must retain its count reservation");
+    add_options(reopened);
+    require(
+        table->rowCount() == 2 && status->text().contains("unavailable") &&
+            !widget<QPushButton>(reopened, "startStitchExperimentBatchButton")->isEnabled() &&
+            !QFile::exists(arguments),
+        "An unavailable count must not silently queue a replacement baseline or scan");
+  } else {
+    require(
+        recovered->experiments[1].state == "frozen" &&
+            recovered->experiments[1].selection_fingerprint == plan.fingerprint &&
+            recovered->experiments[1].process_session_id == 0 && recovered->experiments[1].process_token.empty() &&
+            recovered->selected_by_count.at(2) ==
+                owner.workspace.game_directory.lexically_relative(fixture.store.directory).generic_string(),
+        "Stopped config publication must atomically recover the exact frozen count owner");
+    table->selectRow(1);
+    require(
+        widget<QPushButton>(reopened, "inspectStitchExperimentFramesButton")->isEnabled(),
+        "A recovered selection must remain inspectable");
+    add_options(reopened);
+    require(
+        table->rowCount() == 3 && table->item(2, 0)->text().startsWith("Players"),
+        "An unchecked same-count option must reuse recovered frames without another baseline");
+    widget<QPushButton>(reopened, "startStitchExperimentBatchButton")->click();
+    require(
+        wait_until([&] { return status->text().startsWith("Batch complete."); }, 10000),
+        "Recovered-frame solve did not finish");
+    const auto completed = LoadStitchingExperimentStore(fixture.store);
+    require(
+        completed.ok() && completed->experiments.size() == 3 &&
+            completed->experiments.back().selection_fingerprint == plan.fingerprint &&
+            table->item(2, 5)->text().contains("Player overlap mapping canvas mismatch") &&
+            !read(arguments).contains("--force-reconfigure") &&
+            !read(arguments).contains("--stitching-player-scan-output"),
+        "Recovered exact frames must reach one direct solve without a baseline or player scan");
+  }
+  table->selectRow(1);
+  answer_close_guard(reopened, "stitchExperimentCloseDiscard", false);
+  require(wait_until([&] { return !reopened.isVisible(); }, 1000), "Recovery dialog did not close");
+}
+
+void exercise_saved_selection(const QString& game, const QString& root) {
+  using namespace hm::stitching;
+  const QByteArray original = read(game + "/config.yaml");
+  YAML::Node config = YAML::Load(original.toStdString());
+  auto plan = selected_plan_fixture(game, config);
+  const auto fingerprint = PlayerFrameSelectionFingerprint(plan);
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   std::vector<std::array<std::filesystem::path, 2>> inputs;
   for (size_t index = 0; index < plan.selected.size(); ++index) {
@@ -1176,6 +1377,12 @@ int main(int argc, char** argv) {
       exercise_player_queue(make_game("queue"), fixture.path());
       exercise_queued_reopen(make_game("queued-reopen"), fixture.path());
       exercise_preparation_failure(make_game("partial-preparation"), fixture.path());
+      exercise_pre_run_cancellation(make_game("pre-run-cancel"), fixture.path());
+      exercise_unexpected_pre_run_selection(make_game("unexpected-pre-run-plan"), fixture.path());
+      exercise_frozen_selection_recovery(make_game("scan-recovery"), fixture.path(), "scan");
+      exercise_frozen_selection_recovery(make_game("failed-recovery"), fixture.path(), "failed");
+      exercise_frozen_selection_recovery(make_game("corrupt-recovery"), fixture.path(), "corrupt");
+      exercise_frozen_selection_recovery(make_game("unconfirmed-recovery"), fixture.path(), "unconfirmed");
       exercise_saved_selection(make_game("saved"), fixture.path());
       exercise_close_promotion_failure(make_game("promotion"), fixture.path());
       exercise_player_cancellation(make_game("cancel"), fixture.path());

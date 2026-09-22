@@ -549,6 +549,15 @@ absl::StatusOr<Index> read_index(const StoreLock& lock, const StitchingExperimen
     (void)key_path(store, reservation.key);
     require(index.reservations.emplace(count, std::move(reservation)).second, "Duplicate count reservation");
   }
+  for (auto row = index.catalog.experiments.rbegin(); row != index.catalog.experiments.rend(); ++row) {
+    const int count = row->workspace.settings.frame_count;
+    if (!row->saved_selection_fingerprint.empty() && row->saved_selection_fingerprint == row->selection_fingerprint &&
+        !index.catalog.selected_by_count.count(count) && !index.reservations.count(count)) {
+      // Insertion order records when each immutable main snapshot was queued;
+      // later runner state revisions must not make an older snapshot current.
+      index.catalog.retained_by_count.emplace(count, path_key(store, row->workspace.game_directory));
+    }
+  }
   return index;
 }
 
@@ -628,15 +637,6 @@ absl::StatusOr<StitchingExperimentCatalog> LoadStitchingExperimentStore(const St
       return lock.status();
     Index index;
     HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
-    for (auto row = index.catalog.experiments.rbegin(); row != index.catalog.experiments.rend(); ++row) {
-      const int count = row->workspace.settings.frame_count;
-      if (!row->saved_selection_fingerprint.empty() && row->saved_selection_fingerprint == row->selection_fingerprint &&
-          !index.catalog.selected_by_count.count(count) && !index.reservations.count(count)) {
-        // Insertion order records when each immutable main snapshot was queued;
-        // later runner state revisions must not make an older snapshot current.
-        index.catalog.retained_by_count.emplace(count, path_key(store, row->workspace.game_directory));
-      }
-    }
     return std::move(index.catalog);
   } catch (const std::exception& error) {
     return invalid_catalog(error);
@@ -803,10 +803,17 @@ absl::StatusOr<std::optional<StoredStitchingExperiment>> ReserveStitchingExperim
     if (!config.ok())
       return config.status();
     const auto selected = index.catalog.selected_by_count.find(frame_count);
-    if (selected != index.catalog.selected_by_count.end()) {
+    const auto retained = index.catalog.retained_by_count.find(frame_count);
+    const std::string selected_key = selected != index.catalog.selected_by_count.end() ? selected->second
+        : retained != index.catalog.retained_by_count.end()                            ? retained->second
+                                                                                       : std::string();
+    // Recheck at Start under the same lock as reservation creation. A dialog
+    // may have queued its scan before another saved this count's exact inputs.
+    // Existing reservations already suppress the derived retained fallback.
+    if (!selected_key.empty()) {
       const auto found =
           std::find_if(index.catalog.experiments.begin(), index.catalog.experiments.end(), [&](const auto& value) {
-            return path_key(store, value.workspace.game_directory) == selected->second;
+            return path_key(store, value.workspace.game_directory) == selected_key;
           });
       if (found->state == "quarantined" || found->state == "running" || found->state == "scan")
         return absl::FailedPreconditionError("Saved selected-frame owner has unconfirmed process ownership");

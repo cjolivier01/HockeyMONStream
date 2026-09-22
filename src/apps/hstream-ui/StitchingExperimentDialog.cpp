@@ -5,6 +5,8 @@
 
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDebug>
@@ -43,6 +45,8 @@
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QVBoxLayout>
+
+#include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <array>
@@ -399,6 +403,49 @@ void kill_process(QProcess* process, qint64 session_id, const QString& token) {
   (void)signal_experiment_session(session_id, token, SIGKILL);
   if (process && process->state() != QProcess::NotRunning)
     process->kill();
+}
+
+// Read only bounded metadata here. Store publication revalidates workspace
+// ownership, count and anchor; source/input validation stays on the reuse worker.
+absl::StatusOr<std::string> recover_selection_fingerprint(
+    const StitchingExperimentStore& store,
+    const StitchingExperimentWorkspace& workspace) {
+  auto directory = hm::stitching::PinnedDirectory::Open(store.game_directory, "experiment game");
+  if (!directory.ok())
+    return directory.status();
+  for (const auto& component : workspace.game_directory.lexically_relative(store.game_directory)) {
+    auto child = directory->OpenChild(component.string(), "saved experiment directory");
+    if (!child.ok())
+      return child.status();
+    if (!child->has_value())
+      return absl::NotFoundError("Saved experiment directory is missing");
+    *directory = std::move(**child);
+  }
+  auto text = hm::stitching::read_bounded_regular_file_no_follow(
+      directory->path() / "config.yaml", 4 * 1024 * 1024, "saved experiment config");
+  if (!text.ok())
+    return text.status();
+  try {
+    const YAML::Node config = YAML::Load(*text);
+    const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    if (!calibration.IsMap() || calibration["invalidation_id"].as<std::string>("") != workspace.invalidation_id ||
+        calibration["control_points"].as<int>(0) != workspace.settings.control_points ||
+        calibration["frame_count"].as<int>(0) != workspace.settings.frame_count ||
+        config["stitching"]["calibration_frame_count"].as<int>(0) != workspace.settings.frame_count)
+      return absl::FailedPreconditionError("Saved experiment owner or settings changed");
+    const YAML::Node selection = config["stitching"]["calibration_frame_selection"];
+    const YAML::Node inputs = config["stitching"]["calibration_frame_inputs_fingerprint"];
+    if (!selection && !inputs)
+      return std::string();
+    auto plan = hm::stitching::ParsePlayerFrameSelectionPlan(selection);
+    if (!plan.ok())
+      return plan.status();
+    if (inputs && (!inputs.IsScalar() || inputs.as<std::string>() != plan->fingerprint))
+      return absl::FailedPreconditionError("Saved frame inputs do not match their selection");
+    return plan->fingerprint;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Invalid saved experiment config: " + std::string(error.what()));
+  }
 }
 
 } // namespace
@@ -895,7 +942,37 @@ struct StitchingExperimentDialog::Impl {
         // when this row is inspected, reused, previewed, or promoted.
         candidate.complete =
             record.state == "complete" && !record.artifact_generation_id.empty() && !candidate.selection_reuse_blocked;
-        if (pending_owner) {
+        bool recovered_selection = false;
+        if (!candidate.queued && !candidate.has_selected_frames &&
+            candidate.selection_owner_sequence == candidate.sequence) {
+          const auto fingerprint = recover_selection_fingerprint(*store, *candidate.workspace);
+          if (!fingerprint.ok()) {
+            candidate.selection_reuse_blocked = true;
+            candidate.failure = "Unavailable: saved frame selection recovery failed; " +
+                QString::fromStdString(fingerprint.status().ToString());
+          } else if (!fingerprint->empty()) {
+            auto recovered = candidate_record(candidate, candidate.complete ? "complete" : "frozen");
+            recovered.selection_fingerprint = *fingerprint;
+            recovered.process_session_id = 0;
+            recovered.process_token.clear();
+            const auto saved = SaveStitchingExperiment(*store, recovered, true);
+            if (saved.ok()) {
+              candidate.stored = std::move(recovered);
+              candidate.queued = false;
+              candidate.has_selected_frames = true;
+              candidate.reservation_token.clear();
+              candidate.failure = "Previous run stopped; saved frame selection recovered";
+              catalog->selected_by_count[candidate.settings.frame_count] =
+                  candidate.workspace->game_directory.lexically_relative(store->directory).generic_string();
+              recovered_selection = true;
+            } else {
+              candidate.selection_reuse_blocked = true;
+              candidate.failure =
+                  "Unavailable: saved frame selection recovery failed; " + QString::fromStdString(saved.ToString());
+            }
+          }
+        }
+        if (pending_owner && !recovered_selection && !candidate.selection_reuse_blocked) {
           candidate.failure = record.state == "complete" ? QString() : "Previous run stopped before durable completion";
           auto reconciled_record = candidate_record(candidate, record.state == "complete" ? "complete" : "failed");
           reconciled_record.process_session_id = 0;
@@ -918,7 +995,8 @@ struct StitchingExperimentDialog::Impl {
             candidate.reservation_token.clear();
         }
       }
-      if (!candidate.queued && candidate.selection_owner_sequence == candidate.sequence)
+      if (!candidate.queued && !candidate.selection_reuse_blocked &&
+          candidate.selection_owner_sequence == candidate.sequence)
         candidate.selection_owner_sequence = 0;
       const auto selected = catalog->selected_by_count.find(candidate.settings.frame_count);
       const auto retained = catalog->retained_by_count.find(candidate.settings.frame_count);
@@ -1384,9 +1462,21 @@ struct StitchingExperimentDialog::Impl {
       Candidate& prepared = candidates[row];
       if (!result->ok() || cancelling || closing) {
         prepared.failure = result->ok() ? "Cancelled" : QString::fromStdString(result->status().ToString());
+        if (!result->ok() && prepared.selection_owner_sequence == prepared.sequence) {
+          // A changed main selection can enter the workspace during Add. Do
+          // not free its count when preparation discovers those frozen inputs.
+          const auto fingerprint = recover_selection_fingerprint(*store, *prepared.workspace);
+          if (!fingerprint.ok() || !fingerprint->empty()) {
+            prepared.selection_reuse_blocked = true;
+            prepared.failure = "Unavailable: saved frame selection requires recovery; " + prepared.failure;
+          }
+        }
         const auto persisted = persist_candidate(prepared, "failed");
         if (!persisted.ok())
           prepared.failure += "; " + QString::fromStdString(persisted.ToString());
+        const auto released = release_reservation(prepared);
+        if (!released.ok())
+          prepared.failure += "; " + QString::fromStdString(released.ToString());
         table->item(row, 5)->setText(prepared.failure);
         launch_next_candidate();
         maybe_finish_close();
@@ -1642,6 +1732,10 @@ struct StitchingExperimentDialog::Impl {
             });
             if (saved->empty() && !owner_key.empty() && !owner) {
               show_status("Another dialog saved this frame count. Reopen experiments to reuse its frames.", true);
+              return;
+            }
+            if (saved->empty() && owner && owner->selection_reuse_blocked) {
+              show_status("This frame count is unavailable: " + owner->failure, true);
               return;
             }
             const Candidate* same_count = owner ? owner : find([&](const Candidate& item) {

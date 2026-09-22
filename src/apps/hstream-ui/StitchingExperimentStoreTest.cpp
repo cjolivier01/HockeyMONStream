@@ -227,6 +227,13 @@ bool retained_main_counts(const fs::path& root) {
     auto first = make_record(store, "session-a", 1);
     first.saved_selection_fingerprint = plan.fingerprint;
     install_plan(first, plan);
+    auto contender = make_record(store, "reservation", 1);
+    if (scenario == "reserved") {
+      const auto reservation = ReserveStitchingExperimentFrameCount(
+          store, 2, 10 * kPlayerFrameSecond, contender.workspace, "existing-selection");
+      ok &= expect(
+          reservation.ok() && !reservation->has_value(), "reserve a fresh count before another snapshot is saved");
+    }
     ok &= expect(SaveStitchingExperiment(store, first).ok(), "queue a frozen main-derived row before any solve");
     YAML::Node main;
     main["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(make_plan(store.game_directory, 3));
@@ -234,8 +241,19 @@ bool retained_main_counts(const fs::path& root) {
     const auto first_key = first.workspace.game_directory.lexically_relative(store.directory).generic_string();
     auto restored = LoadStitchingExperimentStore(store);
     ok &= expect(
-        restored.ok() && restored->selected_by_count.empty() && restored->retained_by_count.at(2) == first_key,
-        "unstarted frozen frames remain discoverable after main switches counts");
+        restored.ok() && restored->selected_by_count.empty() &&
+            (scenario == "reserved" ? restored->retained_by_count.empty()
+                                    : restored->retained_by_count.at(2) == first_key),
+        "unstarted frozen frames remain discoverable unless a reservation already exists");
+    if (scenario != "reserved") {
+      const auto before_start = read_file(store.directory / "index.yaml");
+      const auto stale_start =
+          ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, contender.workspace, "stale-search");
+      ok &= expect(
+          stale_start.ok() && stale_start->has_value() && (**stale_start).selection_fingerprint == plan.fingerprint &&
+              read_file(store.directory / "index.yaml") == before_start,
+          "starting an older queued search must return retained frames without creating a reservation");
+    }
     if (scenario == "newer") {
       auto replacement = plan;
       replacement.selected[1].pair.cameras[0].source_pts_ns += 123;
@@ -265,14 +283,10 @@ bool retained_main_counts(const fs::path& root) {
           restored.ok() && restored->selected_by_count.at(2) == second_key && restored->retained_by_count.empty(),
           "an existing newer default cannot be overwritten by stale-main completion");
     } else if (scenario == "reserved") {
-      auto owner = make_record(store, "reservation", 1);
-      const auto reservation =
-          ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, owner.workspace, "newer-selection");
-      ok &= expect(reservation.ok() && !reservation->has_value(), "reserve an unselected count in another dialog");
       first.state = "failed";
       ok &= expect(
           SaveStitchingExperiment(store, first, true, plan.fingerprint).ok(),
-          "stale completion remains durable beside a newer count reservation");
+          "stale completion remains durable beside an existing count reservation");
       restored = LoadStitchingExperimentStore(store);
       ok &= expect(
           restored.ok() && restored->selected_by_count.empty() && restored->retained_by_count.empty(),

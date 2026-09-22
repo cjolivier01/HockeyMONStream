@@ -73,7 +73,8 @@ absl::Status SaveStitchingExperiment(
 
 // A reservation prevents duplicate baseline/scan work for a new count. Its token
 // is a group nonce, independent of individual runner process/session tokens.
-// Returns the existing frozen record when this count has already been selected;
+// Returns the existing frozen record when this count has already been selected,
+// including a retained main snapshot saved after a dialog queued its scan;
 // nullopt means this owner now holds an idempotent reservation. Another live or
 // unconfirmed owner conflicts until explicitly released after shutdown proof.
 absl::StatusOr<std::optional<StoredStitchingExperiment>> ReserveStitchingExperimentFrameCount(

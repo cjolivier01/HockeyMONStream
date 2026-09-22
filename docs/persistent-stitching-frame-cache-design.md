@@ -119,6 +119,8 @@ publication. A second dialog cannot reserve another live owner for the same coun
 with its stale in-memory copy. Persist process-token/phase intent before launching a runner. Catalog capacity
 limits are explicit errors before adding a session/row; never truncate history or evict frame sets to satisfy a
 byte or entry bound. A failed catalog update is surfaced to the user rather than reported as durable success.
+Starting an older queued search rechecks retained count selections under the reservation lock. If another dialog
+has since saved those frames, Start requires reopening to reuse them instead of creating a new search reservation.
 
 Each saved candidate state distinguishes queued, running, frozen-selection, complete, failed and quarantined.
 On restart, a persisted `running` state is never assumed successful. The dialog checks process ownership before
@@ -126,6 +128,10 @@ allowing inspection/reuse; uncertain live ownership is unavailable. Initial row 
 full artifact-generation validation runs on a worker before preview or promotion. It does not
 automatically signal processes or restart old jobs. A stopped failed candidate may still own a valid frozen
 selection and complete bundle.
+Before releasing a stopped selection owner's reservation, reopening checks its bounded owned configuration for
+a plan published before a crash or failed catalog write. A valid frozen plan is recovered into the catalog;
+invalid or uncertain metadata keeps that count unavailable. Cancelling before a runner starts releases an unused
+reservation so the same dialog can retry.
 Persist the existing process-session ID and unpredictable process token, not only a PID or generation counter.
 PID reuse cannot prove an old owner stopped; an owner whose identity cannot be established remains quarantined.
 

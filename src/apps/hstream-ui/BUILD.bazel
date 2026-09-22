@@ -269,9 +269,12 @@ cc_library(
     deps = [
         ":stitching_experiment_backend",
         ":stitching_experiment_store",
-        "//src/libs/stitching:hugin_project",
         "//src/libs/common:utils",
+        "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:player_frame_selection",
+        "//src/libs/stitching:transaction_state",
         "@qt//:qt_widgets",
+        "@yaml-cpp",
     ],
 )
 
