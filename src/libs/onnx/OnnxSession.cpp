@@ -39,6 +39,9 @@ Ort::SessionOptions session_options(
     ExecutionProvider provider = ExecutionProvider::kCpu,
     const std::string& profile_prefix = {}) {
   Ort::SessionOptions options;
+  // Request deterministic GPU kernels where supported; this does not guarantee
+  // bitwise parity across providers, precision modes, or hardware.
+  options.SetDeterministicCompute(true);
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
   if (!use_cpu_memory_arena)
     options.DisableCpuMemArena();
