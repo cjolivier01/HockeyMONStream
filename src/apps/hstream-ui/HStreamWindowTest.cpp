@@ -80,6 +80,28 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static void preparedInt8(HStreamWindow* window, const QString& engine) {
+    window->prepared_int8_engine_ = engine;
+    window->prepared_int8_manifest_ = engine + ".json";
+    window->updatePresetDirtyState();
+  }
+  static bool savePreset(HStreamWindow* window) {
+    return window->savePreset();
+  }
+  static void inheritCustomDetector(HStreamWindow* window) {
+    window->baseline_config_["pipeline"]["primary-gie"]["config-file"] = "custom-detector.yaml";
+    window->baseline_config_["pipeline"]["primary-gie"]["model-engine-file"] = "custom.engine";
+    window->loadSavedControlConfig();
+  }
+  static QStringList calibrationArguments(HStreamWindow* window) {
+    auto* mode = window->run_mode_selector_;
+    const QSignalBlocker blocker(mode);
+    const int before = mode->currentIndex();
+    mode->setCurrentIndex(mode->findData("stitch-calibration"));
+    const auto result = window->pipelineArguments(true);
+    mode->setCurrentIndex(before);
+    return result;
+  }
   static bool configuredDrivegptDatabaseDefault(HStreamWindow* window) {
     return window->baseline_config_["hstream_ui"]["drivegpt_database"]["enabled"].as<bool>();
   }
@@ -3745,7 +3767,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitched_controls->isAncestorOf(camera_vertical_fov) && stitched_controls->isAncestorOf(projection) &&
               stitched_controls->isAncestorOf(control_points) && stitched_controls->isAncestorOf(stitch_frame_time) &&
               stitched_controls->isAncestorOf(stitch_max_output_width) &&
-              stitched_controls->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 4 &&
+              stitched_controls->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 5 &&
               stitched_control_tabs->count() == 3 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
               stitched_control_tabs->tabText(2) == "Algorithms" &&
               program_controls_splitter->orientation() == Qt::Horizontal &&
@@ -10220,7 +10242,7 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() == 7, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 8, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -12632,6 +12654,128 @@ bool test_camera_controls(HStreamWindow* window) {
              "Preset GC should never delete the aged playtracker sidecar referenced by the committed config") &&
       expect(!lookup_yaml_path(after_aged_active_save, {"stitching", "stitch_frame_time"}, nullptr),
              "Saving the default stitch-frame time should omit stitching.stitch_frame_time");
+}
+
+bool test_detector_precision() {
+  QTemporaryDir precision_games;
+  if (!precision_games.isValid())
+    return false;
+  struct RestoreGameRoot {
+    QByteArray previous{qgetenv("HM_GAME_DIR")};
+    ~RestoreGameRoot() {
+      qputenv("HM_GAME_DIR", previous);
+    }
+  } restore;
+  qputenv("HM_GAME_DIR", precision_games.path().toLocal8Bit());
+  const QString root = precision_games.path();
+  const QString custom_game = "precision-custom";
+  const QString plain_game = "precision-default";
+  QDir().mkpath(QDir(root).filePath(custom_game));
+  QDir().mkpath(QDir(root).filePath(plain_game));
+  const auto custom_path = QDir(root).filePath(custom_game + "/config.yaml").toStdString();
+  std::ofstream(custom_path) << "pipeline:\n  primary-gie:\n    config-file: custom-detector.yaml\n"
+                                "    model-engine-file: custom.engine\n";
+  HStreamWindow window;
+  auto* games = require_child<QComboBox>(&window, "gameSelector");
+  auto* precision = require_child<QComboBox>(&window, "detectorPrecisionCombo");
+  auto* status = require_child<QLabel>(&window, "detectorPrecisionStatus");
+  auto* save = require_child<QPushButton>(&window, "savePresetButton");
+  if (!games || !precision || !status || !save)
+    return false;
+  games->setCurrentIndex(games->findText(custom_game));
+  if (!expect(precision->currentData().toString().isEmpty(), "custom detector must remain selected") ||
+      !HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  auto config = YAML::LoadFile(custom_path);
+  if (!expect(
+          config["pipeline"]["primary-gie"]["model-engine-file"].as<std::string>() == "custom.engine" &&
+              config["pipeline"]["primary-gie"]["config-file"].as<std::string>() == "custom-detector.yaml",
+          "unrelated saves must preserve custom detector and engine paths"))
+    return false;
+  for (const QString mode : {"fp16", "bf16", "int8", "fp32"}) {
+    precision->setCurrentIndex(precision->findData(mode));
+    const QString name =
+        mode == "fp32" ? "config_infer_yolov8_hockey.yaml" : QString("config_infer_yolov8_hockey_%1.yaml").arg(mode);
+    const auto arguments = HStreamWindowTestAccess::standaloneArguments(&window);
+    if (!expect(
+            save->isEnabled() && arguments.contains("--options=pipeline.primary-gie.config-file=" + name),
+            "unsaved detector selection must mark the preset dirty and reach the runner"))
+      return false;
+    const auto calibration_args = HStreamWindowTestAccess::calibrationArguments(&window);
+    if (!expect(
+            !calibration_args.join(' ').contains("primary-gie.config-file"),
+            "calibration-only playback must not request detection precision"))
+      return false;
+    if ((mode == "bf16" || mode == "int8") &&
+        !expect(status->text().contains("prepared engine"), "offline precision requirements must be visible"))
+      return false;
+    if (!HStreamWindowTestAccess::savePreset(&window)) {
+      std::cerr << window.logText().toStdString() << '\n';
+      return false;
+    }
+    config = YAML::LoadFile(custom_path);
+    if (!expect(
+            config["pipeline"]["primary-gie"]["config-file"].as<std::string>() == name.toStdString() &&
+                QString::fromStdString(config["pipeline"]["primary-gie"]["model-engine-file"].as<std::string>())
+                    .endsWith("_" + mode + ".engine"),
+            "precision save must replace a conflicting engine along with its inference config"))
+      return false;
+    HStreamWindow reload;
+    auto* reload_games = require_child<QComboBox>(&reload, "gameSelector");
+    auto* reload_precision = require_child<QComboBox>(&reload, "detectorPrecisionCombo");
+    reload_games->setCurrentIndex(reload_games->findText(custom_game));
+    if (!expect(reload_precision->currentData().toString() == mode, "saved precision must survive a fresh UI load"))
+      return false;
+    // A subsequent unrelated save must not remove the native precision choice.
+    if (!HStreamWindowTestAccess::savePreset(&reload))
+      return false;
+    if (!expect(
+            YAML::LoadFile(custom_path)["pipeline"]["primary-gie"]["config-file"].as<std::string>() ==
+                name.toStdString(),
+            "repeated saves must preserve the detector selection"))
+      return false;
+  }
+  precision->setCurrentIndex(precision->findData("int8"));
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  const QString prepared_engine = QDir(root).filePath("prepared-int8.engine");
+  HStreamWindowTestAccess::preparedInt8(&window, prepared_engine);
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(&window).contains(
+              "--options=pipeline.primary-gie.model-engine-file=" + prepared_engine),
+          "new preparation must reach the runner even when INT8 was already selected") ||
+      !HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  {
+    HStreamWindow reload;
+    auto* selector = require_child<QComboBox>(&reload, "gameSelector");
+    selector->setCurrentIndex(selector->findText(custom_game));
+    if (!expect(
+            require_child<QComboBox>(&reload, "detectorPrecisionCombo")->currentData().toString() == "int8",
+            "prepared INT8 must reload as INT8 rather than a custom detector") ||
+        !HStreamWindowTestAccess::savePreset(&reload))
+      return false;
+    const auto saved = YAML::LoadFile(custom_path);
+    if (!expect(
+            saved["pipeline"]["primary-gie"]["model-engine-file"].as<std::string>() == prepared_engine.toStdString(),
+            "saving prepared INT8 must preserve its selected engine"))
+      return false;
+  }
+  precision->setCurrentIndex(precision->findData("bf16"));
+  games->setCurrentIndex(games->findText(plain_game));
+  if (!expect(precision->currentData().toString() == "fp32", "unsaved precision must not leak between games"))
+    return false;
+  HStreamWindowTestAccess::inheritCustomDetector(&window);
+  if (!expect(precision->currentData().toString().isEmpty(), "inherited custom engines must be preserved"))
+    return false;
+  precision->setCurrentIndex(precision->findData("fp16"));
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  const auto inherited_override = YAML::LoadFile(QDir(root).filePath(plain_game + "/config.yaml").toStdString());
+  return expect(
+      QString::fromStdString(inherited_override["pipeline"]["primary-gie"]["model-engine-file"].as<std::string>())
+          .endsWith("_fp16.engine"),
+      "explicit UI precision must shadow an inherited incompatible engine");
 }
 
 bool test_preset_reload_with_missing_tracker() {
@@ -15430,6 +15574,10 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
+    return test_detector_precision() ? 0 : 1;
+  if (!test_detector_precision())
+    return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RESOLUTION_ONLY")) {
     HStreamWindow window;
     return test_game_setup(&window, source_root.path()) && test_control_point_resolution(window.gameDirectoryText())

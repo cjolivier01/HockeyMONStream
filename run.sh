@@ -33,8 +33,7 @@ Pipeline staging:
 
 Model precision:
   --models-int8, --int8-models,
-  --quant-int8                         Use INT8 model config. Requires existing calibrated INT8 engine and
-                                       non-empty calibration table.
+  --quant-int8                         Use INT8 model config. Requires a prepared calibrated INT8 engine.
   --models-int8-calibrate,
   --int8-calibrate, --calibrate-int8   Extract calibration frames, build a TensorRT INT8 calibration table and
                                        engine offline, then run from timestamp zero.
@@ -216,7 +215,7 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
   prepend_path GST_PLUGIN_PATH "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
 fi
 
-HSTREAM_CLI_BIN="${SCRIPT_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
+HSTREAM_CLI_BIN="${HSTREAM_CLI_BIN:-${SCRIPT_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli}"
 if [ -x "${HSTREAM_CLI_BIN}" ]; then
   HSTREAM_CLI_BIN="$(readlink -f "${HSTREAM_CLI_BIN}")"
 fi
@@ -671,15 +670,19 @@ if [ $((models_int8 + models_fp16 + models_bf16)) -gt 1 ]; then
   exit 2
 fi
 
+detector_config_file=""
 if [ "${models_int8}" -eq 1 ]; then
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_int8.yaml)
   int8_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_int8.yaml"
+  detector_config_file="${int8_asset_config_file}"
 elif [ "${models_fp16}" -eq 1 ]; then
   # FP16 needs no offline artifact: nvinfer builds and caches the engine itself.
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml)
+  detector_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_fp16.yaml"
 elif [ "${models_bf16}" -eq 1 ]; then
   extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_bf16.yaml)
   bf16_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_bf16.yaml"
+  detector_config_file="${bf16_asset_config_file}"
 fi
 
 if [ -n "${stitcher_compute_precision}" ]; then
@@ -728,6 +731,9 @@ abs_config_path() {
     '~') value="${HOME}" ;;
     '~/'*) value="${HOME}/${value#'~/'}" ;;
   esac
+  if [[ "${value}" == *'{gpu}'* ]]; then
+    value="$("${HSTREAM_CLI_BIN}" --resolve-engine-path "${value}")" || return 1
+  fi
   case "${value}" in
     /*) realpath -m "${value}" ;;
     *) realpath -m "$(dirname "${config_file}")/${value}" ;;
@@ -745,6 +751,13 @@ abs_cwd_path() {
   esac
 }
 
+if [ -n "${detector_config_file}" ]; then
+  # Override the engine saved by the UI along with its config. Explicit user
+  # --options remain later in pipeline_args and retain their usual precedence.
+  detector_engine_file="$(abs_config_path "${detector_config_file}" "$(yaml_property "${detector_config_file}" model-engine-file)")"
+  extra_options+=(--options=pipeline.primary-gie.model-engine-file="${detector_engine_file}")
+fi
+
 int8_artifact_paths() {
   int8_config_file="${int8_asset_config_file}"
   int8_engine_file="$(abs_config_path "${int8_config_file}" "$(yaml_property "${int8_config_file}" model-engine-file)")"
@@ -757,14 +770,9 @@ bf16_artifact_paths() {
 }
 
 require_calibrated_int8_artifacts() {
-  if [ ! -s "${int8_calib_table}" ]; then
-    echo "INT8 requested but calibration table is missing or empty: ${int8_calib_table}"
-    echo "Provide a pre-generated non-empty calibration table and INT8 engine; uncalibrated INT8 is not allowed."
-    exit 2
-  fi
   if [ ! -s "${int8_engine_file}" ]; then
     echo "INT8 requested but engine is missing or empty: ${int8_engine_file}"
-    echo "Provide a pre-generated non-empty calibration table and INT8 engine; uncalibrated INT8 is not allowed."
+    echo "Prepare a calibrated INT8 engine first; see docs/detection-precision.md."
     exit 2
   fi
 }
@@ -774,6 +782,18 @@ require_bf16_artifacts() {
     echo "BF16 requested but engine is missing or empty: ${bf16_engine_file}"
     echo "Run with --models-bf16-build first."
     exit 2
+  fi
+}
+
+require_matching_tensorrt_runtime() {
+  local builder_runtime playback_runtime
+  builder_runtime="$("$1" --runtime-info)" || return 1
+  playback_runtime="$("${HSTREAM_CLI_BIN}" --tensorrt-runtime-info)" || return 1
+  if [ "${builder_runtime}" != "${playback_runtime}" ]; then
+    echo "Builder and DeepStream must use the same TensorRT version and GPU" >&2
+    echo "Builder: ${builder_runtime}" >&2
+    echo "Playback: ${playback_runtime}" >&2
+    return 1
   fi
 }
 
@@ -881,7 +901,11 @@ build_int8_calibration_artifacts() {
   fi
 
   echo "Building INT8 calibration builder"
+  # Explicit preparation acquires on-demand ONNX assets; playback does not.
+  bazelisk run --config=opt //src/apps/hstream-assets:hstream-assets -- "${int8_config_file}"
   bazelisk build --config=opt //src/apps/int8-calib-builder:int8-calib-builder
+
+  require_matching_tensorrt_runtime "${builder_bin}"
 
   echo "Building calibrated INT8 engine from ${int8_calib_frames} sampled frame(s); normal run will still start at timestamp zero"
   mkdir -p "$(dirname "${int8_calib_table}")" "$(dirname "${int8_engine_file}")"
@@ -929,6 +953,7 @@ build_int8_calibration_artifacts() {
 EOF
 
   mv -f "${tmp_calib_table}" "${int8_calib_table}"
+  mv -f "${tmp_engine}.layers.json" "${int8_engine_file}.layers.json"
   mv -f "${tmp_engine}" "${int8_engine_file}"
   mv -f "${tmp_manifest_file}" "${manifest_file}"
 }
@@ -954,7 +979,10 @@ build_bf16_engine_artifact() {
   fi
 
   echo "Building BF16 engine builder"
+  bazelisk run --config=opt //src/apps/hstream-assets:hstream-assets -- "${bf16_asset_config_file}"
   bazelisk build --config=opt //src/apps/int8-calib-builder:int8-calib-builder
+
+  require_matching_tensorrt_runtime "${builder_bin}"
 
   echo "Building BF16 detector engine; normal run will still start at timestamp zero"
   mkdir -p "$(dirname "${bf16_engine_file}")"
@@ -988,6 +1016,7 @@ build_bf16_engine_artifact() {
 }
 EOF
 
+  mv -f "${tmp_engine}.layers.json" "${bf16_engine_file}.layers.json"
   mv -f "${tmp_engine}" "${bf16_engine_file}"
   mv -f "${tmp_manifest_file}" "${manifest_file}"
 }

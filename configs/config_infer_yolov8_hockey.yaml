@@ -19,7 +19,7 @@ property:
   onnx-file: $HOME/.cache/hstream/models/hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx
   # Legacy engine seed. When absent, hstream-cli redirects both ONNX and engine
   # to ~/.cache/hstream/tensorrt (override with HSTREAM_TENSORRT_CACHE_DIR).
-  model-engine-file: /tmp/hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx_b2_gpu0_fp32.engine
+  model-engine-file: /tmp/hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx_b2_gpu0_{gpu}_fp32.engine
   labelfile-path: $HOME/.cache/hstream/models/labels_coco.txt
   batch-size: 2
   network-mode: 0

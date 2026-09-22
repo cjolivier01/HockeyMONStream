@@ -1,8 +1,10 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 
 #include "absl/status/status.h"
+#include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "yaml-cpp/yaml.h"
 
 namespace hm::pipeline {
@@ -11,7 +13,11 @@ namespace hm::pipeline {
 // engine-cache miss. Redirect YAML ONNX inference configs without an existing
 // engine through a persistent per-user cache before parsing the pipeline,
 // including models in writable development and downloaded-asset directories.
-absl::Status PrepareTensorRtModelCache(YAML::Node pipeline, const std::filesystem::path& config_directory);
+using GpuNameProvider = std::function<absl::StatusOr<std::string>(unsigned)>;
+absl::Status PrepareTensorRtModelCache(
+    YAML::Node pipeline,
+    const std::filesystem::path& config_directory,
+    const GpuNameProvider& gpu_name = hm::inference::TensorRtGpuName);
 
 // DeepStream writes engines non-atomically while nvinfer initializes. The
 // application keeps these interprocess locks through the pipeline's PAUSED

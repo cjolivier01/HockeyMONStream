@@ -20,6 +20,7 @@
 #include "hstream/src/libs/wireless/StreamControl.h"
 
 #include <cuda_runtime_api.h>
+#include <dlfcn.h>
 #include <gst/gstbin.h>
 #include <gst/video/video.h>
 #include <gst/video/videooverlay.h>
@@ -1283,6 +1284,8 @@ absl::Status PipelineApplication::configureInstances(
       if (stitching_player_scan_output_) {
         hm::pipeline_internal::configure_stitching_player_scan_pipeline(app_ctx->configurator().config()["pipeline"]);
       }
+      if (int8_sample_output_)
+        hm::pipeline_internal::configure_int8_sampling_pipeline(app_ctx->configurator().config()["pipeline"]);
 
       bool complete_configuration_enabled = false;
       try {
@@ -1348,7 +1351,7 @@ absl::Status PipelineApplication::configureInstances(
           clean_stitching_expected_invalidation_id_ ? clean_stitching_expected_invalidation_id_ : "",
           show_ || show_render_scale_ == 0.0,
           show_render_scale_,
-          stitching_calibration_only_);
+          stitching_calibration_only_ || int8_sample_output_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
         if (!clean_stitching_artifacts_ && !clean_stitching_from_control_points_) {
           return configuration_status;
@@ -1367,6 +1370,11 @@ absl::Status PipelineApplication::configureInstances(
         return absl::FailedPreconditionError("Player frame scanning requires a completed baseline calibration");
       if (stitching_player_scan_output_)
         hm::pipeline_internal::configure_stitching_player_scan_pipeline(app_ctx->configurator().config()["pipeline"]);
+      if (int8_sample_output_) {
+        if (app_ctx->configurator().stitching_calibration_required())
+          return absl::FailedPreconditionError("Complete stitching calibration before preparing INT8 samples");
+        hm::pipeline_internal::configure_int8_sampling_pipeline(app_ctx->configurator().config()["pipeline"]);
+      }
       // Matcher graphs are optional and large. Provision them only after
       // configuration inspection proves that this launch will regenerate
       // control points. Honor explicit local overrides before fetching an
@@ -1548,6 +1556,21 @@ absl::Status PipelineApplication::createPipelines(
             observe_processed_output_static)) {
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
+    }
+    if (int8_sample_output_) {
+      if (app_contexts.size() != 1)
+        return absl::InvalidArgumentError("INT8 sampling requires exactly one pipeline");
+      HM_ASSIGN_OR_RETURN(
+          int8_frame_sampler_,
+          hm::pipeline::Int8FrameSampler::Create(
+              app_contexts[i].get(),
+              hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : ""),
+              int8_sample_output_,
+              playback_horizon_ns(app_contexts[i].get()),
+              int8_sample_count_,
+              int8_sample_width_,
+              int8_sample_height_));
+      cleanup_stack.push([this] { int8_frame_sampler_.reset(); });
     }
     if (stitching_player_scan_output_) {
       if (app_contexts.size() != 1 || !app_contexts[i]->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled)
@@ -2828,6 +2851,28 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &stitching_player_scan_output_,
        "Analyze rink-filtered people and write a frame-selection report",
        "PATH"},
+      {"int8-sample-output",
+       0,
+       0,
+       G_OPTION_ARG_FILENAME,
+       &int8_sample_output_,
+       "Capture bounded stitched INT8 calibration images across the recording",
+       "DIRECTORY"},
+      {"int8-sample-count", 0, 0, G_OPTION_ARG_INT, &int8_sample_count_, "Number of INT8 samples (16..256)", "COUNT"},
+      {"int8-sample-width",
+       0,
+       0,
+       G_OPTION_ARG_INT,
+       &int8_sample_width_,
+       "Detector input width for bounded sampling",
+       "PIXELS"},
+      {"int8-sample-height",
+       0,
+       0,
+       G_OPTION_ARG_INT,
+       &int8_sample_height_,
+       "Detector input height for bounded sampling",
+       "PIXELS"},
       {"stitching-player-scan-interval-ms",
        0,
        0,
@@ -3124,6 +3169,17 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     return absl::InternalError(error->message);
   }
 
+  if (int8_sample_output_) {
+    global_cleanup_stack.push([this] {
+      g_free(int8_sample_output_);
+      int8_sample_output_ = nullptr;
+    });
+    if (!*int8_sample_output_ || stitching_calibration_only_ || stitching_player_scan_output_ || force_reconfigure_ ||
+        clean_stitching_artifacts_ || clean_stitching_from_control_points_ || stitch_frame_time ||
+        time_limit_seconds_ > 0 || start_time || !ui_preview_window_ids_.empty())
+      return absl::InvalidArgumentError(
+          "INT8 sampling requires completed stitching and the full recording without preview or time limits");
+  }
   if (stitching_calibration_with_ice_mask_ && !stitching_calibration_only_)
     return absl::InvalidArgumentError("--stitching-calibration-with-ice-mask requires --stitching-calibration-only");
   if (stitching_player_scan_output_) {
@@ -3319,6 +3375,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         hm::pipeline_internal::configure_stitching_player_scan_pipeline(
             hm::pipeline_internal::pipeline_asset_root(config));
       }
+      // Game/user detector overrides are resolved later by Configurator. Do
+      // not fetch a structural default detector that the saved choice replaces;
+      // ensure_effective_inference_assets acquires the selected assets before
+      // cache preparation, after all configuration layers have been applied.
+      hm::pipeline_internal::defer_inference_asset_discovery(config);
+      if (int8_sample_output_)
+        hm::pipeline_internal::configure_int8_sampling_pipeline(hm::pipeline_internal::pipeline_asset_root(config));
     }));
   }
 
@@ -3349,6 +3412,8 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   emit_ui_startup("configuration", "Loading game configuration and saved Left/Right video assignments");
   HM_RETURN_IF_ERROR(initializeInstances(global_cleanup_stack));
 
+  if (int8_sample_output_ && (stage_app_contexts_.size() != 1 || stage_app_contexts_.begin()->first < 0))
+    return absl::InvalidArgumentError("INT8 sampling requires one ordinary stage");
   if (stitching_player_scan_output_ &&
       (stage_app_contexts_.size() != 1 || stage_app_contexts_.begin()->first < 0 ||
        stage_app_contexts_.begin()->second.size() != 1))
@@ -3374,6 +3439,11 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         // editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
         emit_ui_startup("decoding", "Starting decoders and waiting for the first frame");
         HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
+        if (int8_frame_sampler_) {
+          if (player_scan_interrupted_)
+            return absl::CancelledError("INT8 sampling cancelled");
+          HM_RETURN_IF_ERROR(int8_frame_sampler_->Finish());
+        }
         if (player_frame_scan_) {
           if (!player_scan_clean_completion_ || player_scan_interrupted_)
             return absl::CancelledError("Player frame scan cancelled before completion");
@@ -5419,6 +5489,10 @@ bool PipelineApplication::reapply_runtime_properties() {
 }
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
+  if (int8_sample_output_) {
+    g_printerr("Runtime mutations are unavailable during INT8 sample capture\n");
+    return false;
+  }
   constexpr absl::string_view kResetProgressCommand = "reset-progress-rate";
   constexpr absl::string_view kSeekRelativeCommand = "seek-relative";
   constexpr absl::string_view kSeekCommand = "seek";
@@ -7043,6 +7117,8 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
 gboolean PipelineApplication::event_thread_func() {
   guint i;
   gboolean ret = TRUE;
+  if (int8_frame_sampler_ && int8_frame_sampler_->complete())
+    request_timed_run_stop();
 
   advance_runtime_seek();
   // The recreation worker exclusively owns the reused AppCtx and its old/new
@@ -7930,6 +8006,44 @@ int main(int argc, char* argv[]) {
     }
   }
   // Must precede GStreamer sinks or any other Xlib user in this process.
+  if (argc == 2 && std::string(argv[1]) == "--tensorrt-runtime-info") {
+    // Resolve through DeepStream's dependency handle, not the system's
+    // unversioned libnvinfer.so (which may select a different installed major).
+    void* library = dlopen("libnvds_infer.so", RTLD_NOW | RTLD_LOCAL);
+    auto version = library ? reinterpret_cast<int (*)()>(dlsym(library, "getInferLibVersion")) : nullptr;
+    cudaDeviceProp device{};
+    if (!version || cudaGetDeviceProperties(&device, 0) != cudaSuccess) {
+      std::cerr << "Cannot inspect DeepStream TensorRT runtime and GPU 0\n";
+      if (library)
+        dlclose(library);
+      return 1;
+    }
+    Dl_info location{};
+    if (dladdr(reinterpret_cast<void*>(version), &location) && location.dli_fname)
+      std::cerr << "DeepStream TensorRT library: " << location.dli_fname << '\n';
+    std::cout << "HSTREAM_TENSORRT_RUNTIME version=" << version() << " gpu_uuid=";
+    const char* hex = "0123456789abcdef";
+    for (unsigned char byte : device.uuid.bytes)
+      std::cout << hex[byte >> 4] << hex[byte & 15];
+    std::cout << " gpu_name=" << hm::inference::SanitizeGpuName(device.name) << '\n';
+    dlclose(library);
+    return 0;
+  }
+  if (argc == 3 && std::string(argv[1]) == "--resolve-engine-path") {
+    auto gpu = hm::inference::TensorRtGpuName(0);
+    if (!gpu.ok()) {
+      std::cerr << gpu.status() << '\n';
+      return gpu.status().raw_code();
+    }
+    std::cout << hm::inference::ResolveGpuEnginePath(argv[2], *gpu) << '\n';
+    return 0;
+  }
+  if (argc == 3 && std::string(argv[1]) == "--int8-sample-verify") {
+    const auto status = hm::pipeline::Int8FrameSampler::Verify(argv[2]);
+    if (!status.ok())
+      std::cerr << status << '\n';
+    return status.ok() ? 0 : status.raw_code();
+  }
   hm::gpu_preview::initialize_process();
   PipelineApplication app;
   absl::Status status = app.run(argc, argv);

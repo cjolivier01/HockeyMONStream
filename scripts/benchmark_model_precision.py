@@ -26,9 +26,20 @@ PERF_RE = re.compile(r"\*\*PERF:\s+[-0-9.]+\s+\(([-0-9.]+)\)")
 # object with no assigned track id is written with an empty label and this id.
 TRACK_FIELD_COUNT = 17
 UNTRACKED_OBJECT_ID = "18446744073709551615"
-INT8_ENGINE = REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx_b2_gpu0_int8.engine"
-INT8_CALIB_TABLE = REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_int8_calib.table"
-BF16_ENGINE = REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx_b2_gpu0_bf16.engine"
+
+
+def configured_inference_path(config: Path, key: str) -> Path:
+  # These are the bundled scalar path properties, not arbitrary user YAML.
+  match = re.search(rf"^  {re.escape(key)}: (.+)$", config.read_text(), re.MULTILINE)
+  if not match:
+    raise ValueError(f"{config} is missing {key}")
+  value = os.path.expandvars(os.path.expanduser(match.group(1).strip().strip("\"'")))
+  path = Path(value)
+  return path if path.is_absolute() else (config.parent / path).resolve()
+
+
+INT8_ENGINE = configured_inference_path(INT8_CONFIG, "model-engine-file")
+BF16_ENGINE = configured_inference_path(BF16_CONFIG, "model-engine-file")
 
 
 @dataclass(frozen=True)
@@ -79,67 +90,12 @@ def replace_yaml_scalar(text: str, key: str, value: str) -> str:
   return pattern.sub(lambda m: m.group(1) + value, text)
 
 
-def infer_config_for_variant(variant: Variant, out_dir: Path) -> Path | None:
-  if variant.model_precision == "fp32":
-    return None
-  out_path = out_dir / "configs" / f"config_infer_yolov8_hockey_{variant.model_precision}.yaml"
-  out_path.parent.mkdir(parents=True, exist_ok=True)
-
-  if variant.model_precision == "fp16":
-    # Deliberately NOT rewritten to the repo-local pretrained/ copies. The fp32
-    # baseline returns None above and therefore runs the committed config with
-    # the dynamic b1-b2 ONNX; rewriting fp16 to the static b2 ONNX would make
-    # the two arms differ by model file as well as by precision, which is not a
-    # precision measurement. (int8/bf16 below still rewrite, because they need
-    # prebuilt artifacts that only exist there -- so those arms remain
-    # confounded against this baseline. See PR #190.)
-    return FP16_CONFIG
-  elif variant.model_precision == "int8":
-    text = INT8_CONFIG.read_text()
-    text = replace_yaml_scalar(
-        text,
-        "onnx-file",
-        str((REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx").resolve()),
-    )
-    text = replace_yaml_scalar(
-        text,
-        "model-engine-file",
-        str(INT8_ENGINE.resolve()),
-    )
-    text = replace_yaml_scalar(
-        text,
-        "int8-calib-file",
-        str(INT8_CALIB_TABLE.resolve()),
-    )
-    text = replace_yaml_scalar(
-        text,
-        "labelfile-path",
-        str((REPO_ROOT / "pretrained/deepstream/yolov8/labels_coco.txt").resolve()),
-    )
-    text = replace_yaml_scalar(text, "custom-lib-path", str((REPO_ROOT / "lib/libnvdsinfer_custom_impl_Yolo.so").resolve()))
-  elif variant.model_precision == "bf16":
-    text = BF16_CONFIG.read_text()
-    text = replace_yaml_scalar(
-        text,
-        "onnx-file",
-        str((REPO_ROOT / "pretrained/deepstream/yolov8/hm_crowdhuman_e85_yolov8_m_1984_736_b2_1984x736.onnx").resolve()),
-    )
-    text = replace_yaml_scalar(
-        text,
-        "model-engine-file",
-        str(BF16_ENGINE.resolve()),
-    )
-    text = replace_yaml_scalar(
-        text,
-        "labelfile-path",
-        str((REPO_ROOT / "pretrained/deepstream/yolov8/labels_coco.txt").resolve()),
-    )
-    text = replace_yaml_scalar(text, "custom-lib-path", str((REPO_ROOT / "lib/libnvdsinfer_custom_impl_Yolo.so").resolve()))
-  else:
-    raise ValueError(f"unsupported model precision '{variant.model_precision}'")
-
-  out_path.write_text(text)
-  return out_path
+def infer_config_for_variant(variant: Variant, out_dir: Path) -> Path:
+  configs = {"fp32": FP32_CONFIG, "fp16": FP16_CONFIG, "int8": INT8_CONFIG, "bf16": BF16_CONFIG}
+  try:
+    return configs[variant.model_precision]
+  except KeyError:
+    raise ValueError(f"unsupported model precision '{variant.model_precision}'") from None
 
 
 def has_nonempty_file(path: Path) -> bool:
@@ -148,8 +104,6 @@ def has_nonempty_file(path: Path) -> bool:
 
 def calibrated_int8_ready() -> tuple[bool, str]:
   missing = []
-  if not has_nonempty_file(INT8_CALIB_TABLE):
-    missing.append(f"missing/empty calibration table: {INT8_CALIB_TABLE}")
   if not has_nonempty_file(INT8_ENGINE):
     missing.append(f"missing/empty INT8 engine: {INT8_ENGINE}")
   if missing:
@@ -165,8 +119,8 @@ def bf16_ready() -> tuple[bool, str]:
 
 def int8_artifact_requirement(reason: str) -> str:
   return (
-      f"calibrated INT8 artifacts required ({reason}); provide a pre-generated non-empty "
-      f"calibration table at {INT8_CALIB_TABLE} and INT8 engine at {INT8_ENGINE}, or rerun with --calibrate-int8"
+      f"calibrated INT8 engine required ({reason}); provide {INT8_ENGINE}; "
+      "see docs/detection-precision.md for explicit Q/DQ preparation"
   )
 
 
@@ -189,6 +143,7 @@ def build_command(args: argparse.Namespace, variant: Variant, run_dir: Path, inf
     cmd.append("--stitcher-minimize-blend")
   if infer_config is not None:
     cmd.append(f"--options=pipeline.primary-gie.config-file={infer_config}")
+    cmd.append(f"--options=pipeline.primary-gie.model-engine-file={configured_inference_path(infer_config, 'model-engine-file')}")
   if variant.model_precision == "int8" and args.calibrate_int8 and not args._int8_calibration_completed:
     cmd.append("--models-int8-calibrate")
     cmd.append(f"--int8-calib-frames={args.int8_calib_frames}")
@@ -400,7 +355,7 @@ def run_variant(args: argparse.Namespace, variant: Variant, out_dir: Path) -> di
     # still produces a file called ..._fp16.engine. The warning below is what
     # actually catches a silent fallback, which would otherwise publish an fp16
     # row that is really fp32 and pass the drift gate trivially.
-    if "_b2_gpu0_fp16.engine" not in log_text:
+    if "_fp16.engine" not in log_text:
       result["status"] = "failed"
       result["reason"] = f"FP16 run did not log an fp16 engine; config may not have applied. See {log_path}"
     elif "FP16 not supported by platform" in log_text:
@@ -483,6 +438,13 @@ def main() -> int:
   )
   parser.add_argument("--extra-run-arg", action="append", default=[])
   args = parser.parse_args()
+  global INT8_ENGINE, BF16_ENGINE
+  runner = os.environ.get("HSTREAM_CLI_BIN", str(REPO_ROOT / "bazel-bin/src/apps/hstream-cli/hstream-cli"))
+  def resolve_engine(path):
+    if "{gpu}" not in str(path):
+      return path
+    return Path(subprocess.check_output([runner, "--resolve-engine-path", str(path)], text=True).strip())
+  INT8_ENGINE, BF16_ENGINE = resolve_engine(INT8_ENGINE), resolve_engine(BF16_ENGINE)
   args._int8_calibration_completed = False
   args._bf16_build_completed = False
 

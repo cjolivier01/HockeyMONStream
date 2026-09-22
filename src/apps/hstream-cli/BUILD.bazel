@@ -30,6 +30,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 
 HSTREAM_CLI_DEPS = [
     "//src/libs/assets:asset_manager",
+    "//src/libs/common:tensorrt_gpu_identity",
     # "//src/libs/common:mod_pipeline",
     "//src/libs/common:utils",
     "//src/libs/common:fs",
@@ -78,6 +79,12 @@ cc_binary(
 )
 
 cc_test(
+    name = "int8_sample_plan_test",
+    srcs = ["Int8SamplePlanTest.cpp", "Int8SamplePlan.h"],
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
     name = "configurator_persistence_test",
     srcs = [
         "ConfiguratorPersistenceTest.cpp",
@@ -123,6 +130,7 @@ cc_test(
     copts = HSTREAM_CLI_COPTS,
     deps = [
         "//src/libs/assets:asset_manager",
+    "//src/libs/common:tensorrt_gpu_identity",
         "//src/libs/common:utils",
         "@yaml-cpp",
     ],
@@ -288,6 +296,7 @@ cc_test(
     data = ["//configs:ds_hockey_app_config.yaml"],
     deps = [
         "//src/libs/assets:asset_manager",
+    "//src/libs/common:tensorrt_gpu_identity",
         "//src/libs/stitching",
         "@yaml-cpp",
     ],
@@ -303,6 +312,10 @@ cc_test(
 
 cc_test(
     name = "tensorrt_model_cache_test",
+    data = [
+        "//configs:config_infer_yolov8_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8_hockey_int8.yaml",
+    ],
     srcs = [
         "OnnxExternalData.cpp",
         "OnnxExternalData.h",
@@ -313,6 +326,7 @@ cc_test(
     copts = HSTREAM_CLI_COPTS,
     deps = [
         "//src/libs/assets:asset_manager",
+    "//src/libs/common:tensorrt_gpu_identity",
         "@com_google_absl//absl/status",
         "@yaml-cpp",
     ],

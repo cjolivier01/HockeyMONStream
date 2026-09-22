@@ -233,8 +233,9 @@ class BuildPlanTest(unittest.TestCase):
 
 
 class InferConfigTest(unittest.TestCase):
-  def test_fp32_uses_the_pipeline_default(self):
-    self.assertIsNone(accuracy.infer_config_for("fp32"))
+  def test_fp32_pins_its_config_independently_of_saved_ui_selection(self):
+    self.assertEqual(accuracy.infer_config_for("fp32"), accuracy.FP32_CONFIG)
+    self.assertTrue(str(benchmark.configured_inference_path(accuracy.FP32_CONFIG, "model-engine-file")).endswith("_fp32.engine"))
 
   def test_each_precision_resolves_to_a_committed_config(self):
     for precision in ("fp16", "int8", "bf16"):

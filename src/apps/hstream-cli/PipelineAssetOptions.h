@@ -31,6 +31,19 @@ inline YAML::Node pipeline_asset_root(YAML::Node config) {
   return config;
 }
 
+inline void defer_inference_asset_discovery(YAML::Node config) {
+  if (!looks_like_pipeline_asset_root(config))
+    return;
+  auto pipeline = pipeline_asset_root(config);
+  for (auto entry : pipeline) {
+    if (!entry.first.IsScalar() || !entry.second.IsMap())
+      continue;
+    const auto name = entry.first.as<std::string>();
+    if (name.rfind("primary-gie", 0) == 0 || name.rfind("secondary-gie", 0) == 0)
+      entry.second.remove("config-file");
+  }
+}
+
 inline void apply_pipeline_options_for_asset_discovery(
     YAML::Node config,
     const std::vector<std::map<std::string, std::string>>& option_sets) {

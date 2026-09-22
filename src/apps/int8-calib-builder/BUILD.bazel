@@ -1,6 +1,6 @@
 cc_binary(
     name = "int8-calib-builder",
-    srcs = ["int8_calib_builder.cpp"],
+    srcs = ["int8_calib_builder.cpp", "EnginePrecision.h"],
     copts = [
         "-Wall",
         "-std=c++17",
@@ -9,16 +9,22 @@ cc_binary(
     linkopts = [
         "-Wno-error=deprecated-declarations",
         "-Wl,--start-group",
-        "-lnvinfer",
-        "-lnvonnxparser",
         "-L/usr/local/cuda/lib64",
         "-lcudart",
         "-Wl,--end-group",
     ],
     deps = [
-        "@deepstream//:deepstream_includes",
+        "@detector_tensorrt//:sdk",
+        "//src/libs/common:tensorrt_gpu_identity",
         "@local_cuda//:cuda",
         "@opencv_linux//:opencv",
+        "@yaml-cpp",
         "//toolchains/jetson:cuda_runtime",
     ],
+)
+
+cc_test(
+    name = "engine_precision_test",
+    srcs = ["EnginePrecisionTest.cpp", "EnginePrecision.h"],
+    deps = ["@yaml-cpp"],
 )
