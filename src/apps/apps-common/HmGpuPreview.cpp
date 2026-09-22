@@ -1,4 +1,6 @@
 #include "HmGpuPreview.h"
+#include "IceBoundaryGuide.h"
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 
 #include "hstream/src/apps/apps-common/RinkMaskImage.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
@@ -509,6 +511,7 @@ struct OverlayPath {
 };
 
 struct PreviewOverlays {
+  const hm::fieldmask::FieldMaskPayload* field_mask{nullptr}; // Owned by the current input buffer.
   std::vector<OverlayPath> paths;
   std::optional<hm::preview_overlay::PlayCropperTransform> program_transform;
   float coordinate_width{0.0F};
@@ -557,6 +560,10 @@ struct RendererState {
   std::atomic<bool> show_player_tracking{false};
   std::atomic<bool> show_play_tracking{false};
   std::atomic<bool> show_rink_mask{false};
+  GLuint exclusion_mask_texture{0};
+  cv::Mat guide_source_mask;
+  std::string guide_revision;
+  std::vector<std::vector<cv::Point2f>> guide_contours;
   std::string rink_mask_file;
   bool rink_mask_dirty{true};
   GLuint rink_mask_texture{0};
@@ -938,6 +945,8 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   auto* frame_meta = static_cast<NvDsFrameMeta*>(batch_meta->frame_meta_list->data);
   if (!frame_meta)
     return overlays;
+  if (state->channel == "stitched" && state->show_rink_mask.load())
+    overlays.field_mask = hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame_meta);
   if (const auto* generation = hm::stitching::find_stitched_output_generation_meta(frame_meta)) {
     overlays.stitched_output_generation = generation->generation();
   }
@@ -976,7 +985,7 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   }
   const auto* program_transform = overlays.program_transform ? &*overlays.program_transform : nullptr;
 
-  if (state->show_player_tracking.load()) {
+  if (state->show_player_tracking.load() || overlays.field_mask) {
     auto add_player_rect = [&](const NvOSD_RectParams& rect,
                                const hm::preview_overlay::PlayCropperTransform* transform) {
       add_rect_paths(
@@ -990,6 +999,39 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
           false,
           {},
           transform);
+      if (overlays.field_mask && rect.width > 0 && rect.height > 0) {
+        const auto* field = overlays.field_mask;
+        const float sx = overlays.stitched_surface_width / overlays.coordinate_width;
+        const float sy = overlays.stitched_surface_height / overlays.coordinate_height;
+        const auto samples = hm::fieldmask::ice_boundary_samples(
+            rect.left + rect.width * 0.5F,
+            rect.top + rect.height,
+            rect.width,
+            rect.height,
+            {field->centroid().x / sx, field->centroid().y / sy},
+            field->offsets());
+        const float rx = std::max(3.0F, 5.0F * overlays.coordinate_width / state->negotiated_width);
+        const float ry = std::max(3.0F, 5.0F * overlays.coordinate_height / state->negotiated_height);
+        const auto clamped = [&](hm::fieldmask::IceBoundaryPoint point) {
+          return hm::preview_overlay::Point{
+              std::clamp(point.x * sx, 0.0F, overlays.stitched_surface_width - 1) / sx,
+              std::clamp(point.y * sy, 0.0F, overlays.stitched_surface_height - 1) / sy};
+        };
+        const auto feet = clamped(samples.feet);
+        overlays.paths.push_back(
+            {{{feet.x, feet.y - ry}, {feet.x - rx, feet.y + ry}, {feet.x + rx, feet.y + ry}},
+             {0.15F, 0.45F, 1.0F, 1.0F},
+             2.0F,
+             true,
+             samples.uses_feet});
+        const auto center = clamped(samples.center);
+        OverlayPath circle{{}, {1.0F, 0.85F, 0.0F, 1.0F}, 2.0F, true, !samples.uses_feet};
+        for (int i = 0; i < 16; ++i) {
+          const float angle = i * 2.0F * 3.14159265F / 16;
+          circle.points.push_back({center.x + rx * std::cos(angle), center.y + ry * std::sin(angle)});
+        }
+        overlays.paths.push_back(std::move(circle));
+      }
     };
     if (snapshot) {
       for (const NvOSD_RectParams& rect : snapshot->player_rects)
@@ -1324,6 +1366,62 @@ void draw_rink_mask(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) 
   glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
 }
 
+void draw_ice_boundary_guide(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
+  auto* state = self->state;
+  const auto* field = overlays.field_mask;
+  if (!state->show_rink_mask.load() || state->channel != "stitched" || !field || field->mask().empty() ||
+      field->mask().cols != overlays.stitched_surface_width || field->mask().rows != overlays.stitched_surface_height)
+    return;
+  const auto& adjusted = field->exclusion_mask();
+  if (state->guide_source_mask.data != adjusted.data || state->guide_revision != field->revision()) {
+    const cv::Mat bounded = hm::gpu_preview::bounded_rink_mask(adjusted);
+    state->guide_contours = hm::gpu_preview::rink_mask_contours(bounded, adjusted.cols, adjusted.rows);
+    if (!state->exclusion_mask_texture)
+      glGenTextures(1, &state->exclusion_mask_texture);
+    glBindTexture(GL_TEXTURE_2D, state->exclusion_mask_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA8, bounded.cols, bounded.rows, 0, GL_ALPHA, GL_UNSIGNED_BYTE, bounded.data);
+    if (!state->exclusion_mask_texture || glGetError() != GL_NO_ERROR) {
+      post_sink_failure(self, "could not upload the adjusted rink-mask texture");
+      return;
+    }
+    state->guide_source_mask = adjusted;
+    state->guide_revision = field->revision();
+  }
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glEnable(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, state->exclusion_mask_texture);
+  glColor4f(1.0F, 0.05F, 0.8F, 0.22F);
+  glBegin(GL_QUADS);
+  glTexCoord2f(0, 1);
+  glVertex2f(-1, -1);
+  glTexCoord2f(1, 1);
+  glVertex2f(1, -1);
+  glTexCoord2f(1, 0);
+  glVertex2f(1, 1);
+  glTexCoord2f(0, 0);
+  glVertex2f(-1, 1);
+  glEnd();
+  glDisable(GL_TEXTURE_2D);
+  glColor4f(1.0F, 0.05F, 0.8F, 1.0F);
+  glLineWidth(2.0F);
+  const auto vertex = [&](float x, float y) {
+    glVertex2f(2.0F * x / overlays.stitched_surface_width - 1.0F, 1.0F - 2.0F * y / overlays.stitched_surface_height);
+  };
+  for (const auto& contour : state->guide_contours) {
+    glBegin(GL_LINE_LOOP);
+    for (const auto& point : contour)
+      vertex(point.x, point.y);
+    glEnd();
+  }
+  glColor4f(1, 1, 1, 1);
+}
+
 void draw_overlay_paths(const PreviewOverlays& overlays) {
   if (overlays.coordinate_width <= 0.0F || overlays.coordinate_height <= 0.0F)
     return;
@@ -1388,6 +1486,7 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   glVertex2f(-1.0F, 1.0F);
   glEnd();
   draw_rink_mask(self, overlays);
+  draw_ice_boundary_guide(self, overlays);
   draw_overlay_paths(overlays);
   current_x_error_target = state;
   glXSwapBuffers(state->display, static_cast<GLXDrawable>(state->window_id));
@@ -1735,6 +1834,9 @@ bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
     state->texture = 0;
     if (state->rink_mask_texture)
       glDeleteTextures(1, &state->rink_mask_texture);
+    if (state->exclusion_mask_texture)
+      glDeleteTextures(1, &state->exclusion_mask_texture);
+    state->exclusion_mask_texture = 0;
     state->rink_mask_texture = 0;
     release_context(state);
   }
@@ -1743,6 +1845,9 @@ bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
   // cannot mistake a deleted name for a clean cache hit.
   state->rink_mask_dirty = true;
   state->rink_mask_width = 0;
+  state->guide_source_mask.release();
+  state->guide_contours.clear();
+  state->guide_revision.clear();
   state->rink_mask_height = 0;
   state->rink_mask_canvas_width = 0;
   state->rink_mask_canvas_height = 0;
@@ -1819,6 +1924,12 @@ void preview_sink_set_property(GObject* object, guint property_id, const GValue*
     }
     if (property_id == kSinkPropertyShowRinkMask) {
       state->show_rink_mask = g_value_get_boolean(value);
+      if (!state->show_rink_mask.load()) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->guide_source_mask.release();
+        state->guide_contours.clear();
+        state->guide_revision.clear();
+      }
       return;
     }
     std::lock_guard<std::mutex> lock(state->mutex);

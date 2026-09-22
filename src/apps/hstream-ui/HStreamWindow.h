@@ -634,6 +634,8 @@ class HStreamWindow : public QMainWindow {
   QCheckBox* show_player_tracking_toggle_{nullptr};
   QCheckBox* show_play_tracking_toggle_{nullptr};
   QCheckBox* show_rink_mask_toggle_{nullptr};
+  QCheckBox* rink_extents_toggle_{nullptr};
+  QLabel* rink_extents_status_{nullptr};
   bool confirmed_show_player_tracking_{false};
   bool confirmed_show_play_tracking_{false};
   bool confirmed_show_rink_mask_{false};
@@ -880,6 +882,9 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> scheduled_rotation_controls_;
   std::map<QString, double> scheduled_playtracker_controls_;
   std::map<QString, int> scheduled_playcropper_controls_;
+  std::map<QString, double> scheduled_ice_boundary_controls_;
+  quint64 scheduled_ice_boundary_generation_{0};
+  bool scheduled_ice_boundary_ready_{false};
   bool scheduled_rotation_controls_ready_{false};
   bool live_rotation_authorization_pending_{false};
   bool deferred_restart_requested_{false};

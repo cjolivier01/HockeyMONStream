@@ -5804,6 +5804,12 @@ absl::Status Configurator::map_common_config_keys() {
                  "raise_bbox_center_by_height_ratio", "raise-bbox-center-by-height-ratio"),
              std::pair<const char*, const char*>(
                  "lower_bbox_bottom_by_height_ratio", "lower-bbox-bottom-by-height-ratio"),
+             std::pair<const char*, const char*>("left_bbox_by_half_width_ratio", "left-bbox-by-half-width-ratio"),
+             std::pair<const char*, const char*>("right_bbox_by_half_width_ratio", "right-bbox-by-half-width-ratio"),
+             std::pair<const char*, const char*>("mask_top_inset", "mask-top-inset"),
+             std::pair<const char*, const char*>("mask_bottom_inset", "mask-bottom-inset"),
+             std::pair<const char*, const char*>("mask_left_inset", "mask-left-inset"),
+             std::pair<const char*, const char*>("mask_right_inset", "mask-right-inset"),
          }) {
       const std::string source_path = std::string("ice_boundaries.") + canonical_key;
       const std::string destination_path = std::string("pipeline.ds-fieldmask.properties.") + native_key;
@@ -5817,7 +5823,13 @@ absl::Status Configurator::map_common_config_keys() {
         const double value = (*source).as<double>();
         if (!std::isfinite(value))
           return absl::InvalidArgumentError(source_path + " must be finite");
-        properties[native_key] = value;
+        if (std::string(canonical_key).rfind("mask_", 0) == 0) {
+          if (std::trunc(value) != value || value < -4096 || value > 4096)
+            return absl::InvalidArgumentError(source_path + " must be a whole number from -4096 to 4096");
+          properties[native_key] = static_cast<int>(value);
+        } else {
+          properties[native_key] = value;
+        }
       } catch (const YAML::Exception& error) {
         return absl::InvalidArgumentError("Invalid " + source_path + ": " + error.what());
       }

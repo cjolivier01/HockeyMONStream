@@ -588,6 +588,12 @@ play-tracker:
           mapped_defaults["ds-playtracker"]["draw"].as<int>() == 0 &&
           mapped_defaults["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"].as<double>() == -0.1 &&
           mapped_defaults["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.1 &&
+          mapped_defaults["ds-fieldmask"]["properties"]["left-bbox-by-half-width-ratio"].as<double>() == 0.2 &&
+          mapped_defaults["ds-fieldmask"]["properties"]["right-bbox-by-half-width-ratio"].as<double>() == 0.2 &&
+          mapped_defaults["ds-fieldmask"]["properties"]["mask-top-inset"].as<int>() == 0 &&
+          mapped_defaults["ds-fieldmask"]["properties"]["mask-bottom-inset"].as<int>() == 0 &&
+          mapped_defaults["ds-fieldmask"]["properties"]["mask-left-inset"].as<int>() == 0 &&
+          mapped_defaults["ds-fieldmask"]["properties"]["mask-right-inset"].as<int>() == 0 &&
           !mapped_defaults["sink0"]["bitrate"].IsDefined() && !mapped_defaults["sink0"]["output-file"].IsDefined() &&
           !mapped_defaults["sink0"]["width"].IsDefined() && !mapped_defaults["sink0"]["height"].IsDefined() &&
           mapped_defaults["sink6"]["interpolation-method"].as<int>() == 1 &&
@@ -1059,6 +1065,8 @@ play-tracker:
   canonical_overrides["plot"]["debug_play_tracker"] = false;
   canonical_overrides["ice_boundaries"]["raise_bbox_center_by_height_ratio"] = -0.4;
   canonical_overrides["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"] = 0.45;
+  canonical_overrides["ice_boundaries"]["mask_top_inset"] = 27;
+  canonical_overrides["ice_boundaries"]["mask_bottom_inset"] = -31;
   canonical_overrides["video_out"]["bit_rate"] = 123456;
   canonical_overrides["video_out"]["output_video_path"] = "/tmp/canonical.mkv";
   canonical_overrides["video_out"]["output_width"] = 1280;
@@ -1092,6 +1100,8 @@ play-tracker:
           mapped_canonical["ds-playtracker"]["draw"].as<int>() == 1 &&
           mapped_canonical["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"].as<double>() == -0.4 &&
           mapped_canonical["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.45 &&
+          mapped_canonical["ds-fieldmask"]["properties"]["mask-top-inset"].as<int>() == 27 &&
+          mapped_canonical["ds-fieldmask"]["properties"]["mask-bottom-inset"].as<int>() == -31 &&
           !mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle"].IsDefined() &&
           mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle-left"].as<double>() == 21.0 &&
           mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle-right"].as<double>() == 22.0 &&

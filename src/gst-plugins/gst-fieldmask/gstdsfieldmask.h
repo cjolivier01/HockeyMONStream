@@ -69,6 +69,12 @@ struct _GstDsFieldMask {
   gchar detection_mask_file[PATH_MAX * 4];
   gfloat raise_bbox_center_by_height_ratio;
   gfloat lower_bbox_bottom_by_height_ratio;
+  gfloat left_bbox_by_half_width_ratio;
+  gfloat right_bbox_by_half_width_ratio;
+  gint mask_top_inset;
+  gint mask_bottom_inset;
+  gint mask_left_inset;
+  gint mask_right_inset;
 };
 
 // Boiler plate stuff
