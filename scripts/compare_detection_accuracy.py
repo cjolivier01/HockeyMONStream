@@ -11,6 +11,13 @@ itself rather than the tracker's smoothing of it.
 Run-to-run drift is not zero even at identical precision (frame scheduling and
 near-threshold boxes both vary), so a `fp32` candidate is included by default as
 a control. A candidate is only meaningful if its drift exceeds that control.
+Note the control shares stitching state with the other runs, so it bounds
+detector plus stitcher variation, not the detector alone.
+
+WARNING: this drives the real pipeline against a real game directory. The
+default one-pass flow configures stitching in-process when control masks are
+missing, which REWRITES that game's calibration artifacts. Point it at a game
+whose stitching is already configured, or at a copy.
 
   scripts/compare_detection_accuracy.py --game-id=tv-14-1-p1 -t=30
   scripts/compare_detection_accuracy.py --game-id=tv-14-1-p1 --variants=fp16,int8
@@ -34,6 +41,10 @@ FP16_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_fp16.yaml"
 INT8_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_int8.yaml"
 BF16_CONFIG = REPO_ROOT / "configs" / "config_infer_yolov8_hockey_bf16.yaml"
 KITTI_NAME_RE = re.compile(r"^(\d+)_(\d+)_(\d+)\.txt$")
+# One label token plus 15 numeric fields; the label itself may be multi-word.
+NUM_KITTI_NUMERIC = 15
+NUM_KITTI_FIELDS = NUM_KITTI_NUMERIC + 1
+SUPPORTED_PRECISIONS = {"fp32", "fp16", "int8", "bf16"}
 
 
 @dataclass(frozen=True)
@@ -60,7 +71,7 @@ def iou(a: Detection, b: Detection) -> float:
   return inter / union if union > 0.0 else 0.0
 
 
-def infer_config_for(precision: str, out_dir: Path) -> Path | None:
+def infer_config_for(precision: str) -> Path | None:
   """Return the nvinfer config for `precision`, or None to use the default."""
   if precision == "fp32":
     return None
@@ -86,23 +97,41 @@ def run_variant(args: argparse.Namespace, variant: str, precision: str, out_dir:
       f"-t={args.time_limit}",
       f"--options=pipeline.application.bbox-dir-path={bbox_dir}",
   ]
-  infer_config = infer_config_for(precision, out_dir)
+  infer_config = infer_config_for(precision)
   if infer_config is not None:
     cmd.append(f"--options=pipeline.primary-gie.config-file={infer_config}")
   cmd.extend(args.extra_run_arg)
 
   env = dict(os.environ)
-  # The interactive scoreboard picker would block an unattended comparison.
-  env.setdefault("HM_NO_SCOREBOARD", "1")
+  # Force, not setdefault: the picker is only disabled on exactly "1", so an
+  # inherited HM_NO_SCOREBOARD=0 would leave it live and block indefinitely.
+  env["HM_NO_SCOREBOARD"] = "1"
 
   log_path = out_dir / variant / "run.log"
   print(f"[{variant}] {' '.join(cmd)}", flush=True)
-  with log_path.open("w") as log:
-    proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, env=env, cwd=REPO_ROOT)
-  return {"variant": variant, "precision": precision, "returncode": proc.returncode, "log": str(log_path)}
+  try:
+    with log_path.open("w") as log:
+      proc = subprocess.run(
+          cmd, stdout=log, stderr=subprocess.STDOUT, env=env, cwd=REPO_ROOT, timeout=args.run_timeout
+      )
+    returncode = proc.returncode
+  except subprocess.TimeoutExpired:
+    returncode = -1
+    print(f"[{variant}] timed out after {args.run_timeout}s", file=sys.stderr)
+  return {"variant": variant, "precision": precision, "returncode": returncode, "log": str(log_path)}
 
 
 def load_detections(bbox_dir: Path) -> dict[tuple[int, int], list[Detection]]:
+  """Parse the raw primary-GIE KITTI dump written by write_kitti_output().
+
+  Line layout is a label followed by exactly 15 numeric fields:
+    label  0.0 0 0.0  left top right bottom  0.0 x7  confidence
+
+  Fields are indexed from the END, because the label is a class name from the
+  labels file and COCO's has 13 multi-word entries ("traffic light", "sports
+  ball", ...). A two-token label yields 17 fields, which would still satisfy a
+  leading-index guard while silently shifting every column.
+  """
   frames: dict[tuple[int, int], list[Detection]] = {}
   for path in sorted(bbox_dir.glob("*.txt")):
     match = KITTI_NAME_RE.match(path.name)
@@ -112,11 +141,14 @@ def load_detections(bbox_dir: Path) -> dict[tuple[int, int], list[Detection]]:
     dets: list[Detection] = []
     for line in path.read_text(errors="replace").splitlines():
       fields = line.split()
-      # KITTI: label _ _ _ left top right bottom _ _ _ _ _ _ _ confidence
-      if len(fields) < 16:
+      if len(fields) < NUM_KITTI_FIELDS:
+        continue
+      label = " ".join(fields[:-NUM_KITTI_NUMERIC])
+      if not label:
         continue
       try:
-        dets.append(Detection(fields[0], *(float(fields[i]) for i in (4, 5, 6, 7)), float(fields[15])))
+        left, top, right, bottom = (float(v) for v in fields[-12:-8])
+        dets.append(Detection(label, left, top, right, bottom, float(fields[-1])))
       except ValueError:
         continue
     frames[(stream_id, frame_num)] = dets
@@ -179,27 +211,39 @@ def compare(ref_frames, cand_frames, iou_threshold: float, min_confidence: float
       "frames_cand_only": len(set(cand_frames) - set(ref_frames)),
       "ref_detections": n_ref,
       "cand_detections": n_cand,
-      "detection_count_delta_pct": (100.0 * (n_cand - n_ref) / n_ref) if n_ref else 0.0,
+      # None rather than 0.0 when the denominator is empty: a 0.00 here is
+      # indistinguishable from "the candidate detected nothing", which is a very
+      # different result. Raising --min-confidence above every score hits this.
+      "detection_count_delta_pct": (100.0 * (n_cand - n_ref) / n_ref) if n_ref else None,
       "matched": n_matched,
       "missed": n_missed,
       "extra": n_extra,
       # Fraction of reference boxes the candidate reproduced.
-      "recall_vs_ref_pct": (100.0 * n_matched / n_ref) if n_ref else 0.0,
-      "missed_pct": (100.0 * n_missed / n_ref) if n_ref else 0.0,
-      "extra_pct": (100.0 * n_extra / n_ref) if n_ref else 0.0,
-      "mean_iou_matched": (iou_sum / n_matched) if n_matched else 0.0,
-      "mean_abs_confidence_delta": (conf_abs_sum / n_matched) if n_matched else 0.0,
-      "mean_signed_confidence_delta": (conf_signed_sum / n_matched) if n_matched else 0.0,
-      "mean_missed_confidence": (sum(missed_conf) / len(missed_conf)) if missed_conf else 0.0,
-      "mean_extra_confidence": (sum(extra_conf) / len(extra_conf)) if extra_conf else 0.0,
+      "recall_vs_ref_pct": (100.0 * n_matched / n_ref) if n_ref else None,
+      "missed_pct": (100.0 * n_missed / n_ref) if n_ref else None,
+      "extra_pct": (100.0 * n_extra / n_ref) if n_ref else None,
+      "mean_iou_matched": (iou_sum / n_matched) if n_matched else None,
+      "mean_abs_confidence_delta": (conf_abs_sum / n_matched) if n_matched else None,
+      "mean_signed_confidence_delta": (conf_signed_sum / n_matched) if n_matched else None,
+      "mean_missed_confidence": (sum(missed_conf) / len(missed_conf)) if missed_conf else None,
+      "mean_extra_confidence": (sum(extra_conf) / len(extra_conf)) if extra_conf else None,
   }
+
+
+def _num(value: float | None, width: int, precision: int, sign: str = "") -> str:
+  """Render a metric, or a right-aligned n/a when it was undefined."""
+  if value is None:
+    return f"{'n/a':>{width}}"
+  return f"{value:>{sign}{width}.{precision}f}"
 
 
 def format_row(variant: str, m: dict) -> str:
   return (
       f"{variant:<16} {m['frames_compared']:>7} {m['ref_detections']:>8} {m['cand_detections']:>8} "
-      f"{m['detection_count_delta_pct']:>+8.2f} {m['recall_vs_ref_pct']:>8.2f} {m['missed_pct']:>8.2f} "
-      f"{m['extra_pct']:>8.2f} {m['mean_iou_matched']:>8.4f} {m['mean_abs_confidence_delta']:>9.4f}"
+      f"{_num(m['detection_count_delta_pct'], 8, 2, '+')} {_num(m['recall_vs_ref_pct'], 8, 2)} "
+      f"{_num(m['missed_pct'], 8, 2)} "
+      f"{_num(m['extra_pct'], 8, 2)} {_num(m['mean_iou_matched'], 8, 4)} "
+      f"{_num(m['mean_abs_confidence_delta'], 9, 4)}"
   )
 
 
@@ -227,13 +271,28 @@ def main() -> int:
       help="comma-separated confidence floors to report; near-threshold boxes flicker between runs",
   )
   parser.add_argument("--skip-run", action="store_true", help="reuse dumps already in --out-dir")
+  parser.add_argument(
+      "--run-timeout", type=float, default=1800.0, help="per-variant wall-clock limit in seconds"
+  )
   parser.add_argument("--extra-run-arg", action="append", default=[])
   args = parser.parse_args()
 
-  out_dir = args.out_dir
+  # Resolve before use: the child runs with cwd=REPO_ROOT, so a relative path
+  # would have the parent create one directory and the pipeline write to another.
+  out_dir = args.out_dir.resolve()
   out_dir.mkdir(parents=True, exist_ok=True)
   precisions = [p.strip() for p in args.variants.split(",") if p.strip()]
   floors = [float(c) for c in args.min_confidence.split(",") if c.strip()]
+
+  # Validate up front rather than failing partway through a multi-run sweep.
+  unsupported = [p for p in precisions if p not in SUPPORTED_PRECISIONS]
+  if unsupported:
+    print(
+        f"unsupported precision(s): {', '.join(unsupported)} "
+        f"(expected one of {', '.join(sorted(SUPPORTED_PRECISIONS))})",
+        file=sys.stderr,
+    )
+    return 2
 
   # The reference is always a dedicated fp32 run; listed variants are candidates.
   plan = [("reference", "fp32")]
@@ -241,12 +300,18 @@ def main() -> int:
     name = "control-fp32" if precision == "fp32" else precision
     plan.append((name, precision))
 
+  failed: list[str] = []
   if not args.skip_run:
     for variant, precision in plan:
       info = run_variant(args, variant, precision, out_dir)
       if info["returncode"] != 0:
+        # Keep going: a missing INT8/BF16 artifact should not throw away the
+        # reference and candidate runs that already completed.
         print(f"[{variant}] FAILED rc={info['returncode']}; see {info['log']}", file=sys.stderr)
-        return 1
+        failed.append(variant)
+        if variant == "reference":
+          print("reference run failed; nothing to compare against", file=sys.stderr)
+          return 1
 
   ref_frames = load_detections(out_dir / "reference" / "kitti")
   if not ref_frames:
@@ -276,6 +341,9 @@ def main() -> int:
         "\nRead 'control-fp32' as the run-to-run noise floor. A candidate is "
         "indistinguishable from FP32 if its drift is within that row."
     )
+  if failed:
+    print(f"\nincomplete: {', '.join(failed)} did not run; report covers the rest", file=sys.stderr)
+    return 1
   return 0
 
 

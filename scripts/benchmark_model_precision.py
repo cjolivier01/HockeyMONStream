@@ -394,6 +394,12 @@ def run_variant(args: argparse.Namespace, variant: Variant, out_dir: Path) -> di
     if expected_engine not in log_text or "Use deserialized engine model" not in log_text:
       result["status"] = "failed"
       result["reason"] = f"BF16 run did not log loading expected engine {expected_engine}; see {log_path}"
+  elif variant.model_precision == "fp16":
+    # Without this, a TensorRT fallback to FP32 would publish an fp16 row that
+    # is really fp32 and pass the drift gate trivially.
+    if "_b2_gpu0_fp16.engine" not in log_text:
+      result["status"] = "failed"
+      result["reason"] = f"FP16 run did not log an fp16 engine; TensorRT may have fallen back. See {log_path}"
   elif variant.model_precision == "int8" and args.calibrate_int8:
     args._int8_calibration_completed = True
   if result["status"] == "ok" and variant.model_precision == "int8" and args.calibrate_int8:
