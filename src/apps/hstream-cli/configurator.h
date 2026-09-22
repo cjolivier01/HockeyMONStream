@@ -196,6 +196,7 @@ class Configurator {
   std::filesystem::path resolved_game_dir();
   void record_explicit_overlay(const YAML::Node& overlay, const std::string& prefix, int rank);
   int explicit_value_rank(const std::string& path) const;
+  absl::Status map_stitch_max_output_width();
   absl::Status reconcile_selected_frame_count_override(
       const std::string& expected_invalidation_id,
       std::string* changed_invalidation_id = nullptr);

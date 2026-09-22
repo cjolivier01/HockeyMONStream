@@ -9474,11 +9474,13 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* add_video = require_child<QPushButton>(window, "addVideoButton");
   auto* remove_video = require_child<QPushButton>(window, "removeVideoButton");
   auto* left_role = require_child<QRadioButton>(window, "videoRole_left");
+  auto* right_role = require_child<QRadioButton>(window, "videoRole_right");
   auto* video_list = require_child<QListWidget>(window, "videoSetList");
   QTemporaryDir reframe_video_source;
   const QString reframe_video = reframe_video_source.filePath("GX010007.MP4");
-  if (!video_path || !add_video || !remove_video || !left_role || !video_list || !reframe_video_source.isValid() ||
-      !write_fake_video(reframe_video))
+  const QString reframe_right_video = reframe_video_source.filePath("GX010008.MP4");
+  if (!video_path || !add_video || !remove_video || !left_role || !right_role || !video_list ||
+      !reframe_video_source.isValid() || !write_fake_video(reframe_right_video) || !write_fake_video(reframe_video))
     return false;
   const auto verify_input_recalibration = [&]() {
     const auto invalidated = YAML::LoadFile(config_path.string());
@@ -9519,32 +9521,112 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(left_role);
   video_path->setText(reframe_video);
   activate(add_video);
-  const auto added_video_config = YAML::LoadFile(config_path.string());
   if (!expect(
           list_contains(video_list, "Left  hstream-ui/left/GX010007.MP4"),
           "Adding a Left video must exercise the source-role transaction") ||
       !verify_input_recalibration())
     return false;
 
-  // The single Left role does not replace runtime playlists until Right is
-  // present. Restore the still-valid request with its imported-role metadata
-  // and confirm a normal Save accepts it before removing that role.
-  auto before_remove = YAML::Clone(cancelled_reframe);
-  before_remove["hstream_ui"]["video_roles"] = YAML::Clone(added_video_config["hstream_ui"]["video_roles"]);
-  std::ofstream(config_path) << YAML::Dump(before_remove) << '\n';
+  // Capture a view request against complete explicit playlists with saved
+  // synchronization. Re-adding either imported role must be a true no-op.
+  activate(right_role);
+  video_path->setText(reframe_right_video);
+  activate(add_video);
+  auto duplicate_source = YAML::LoadFile(config_path.string());
+  duplicate_source["stitching"] = YAML::Clone(crop_preview_config["stitching"]);
+  duplicate_source["hstream_ui"]["stitching_calibration"] =
+      YAML::Clone(crop_preview_config["hstream_ui"]["stitching_calibration"]);
+  duplicate_source["game"]["stitching"]["frame_offsets"] = YAML::Load("{left: 5, right: 9}");
+  duplicate_source["stitching"]["frame_offsets"] = YAML::Load("{left: 5, right: 9}");
+  std::ofstream(config_path) << YAML::Dump(duplicate_source) << '\n';
   activate(create);
+  HStreamWindowTestAccess::setTestLevelingRotation(window, -36);
+  activate(save);
+  const auto before_duplicate = YAML::LoadFile(config_path.string());
+  const auto duplicate_intent = before_duplicate["hstream_ui"]["stitching_calibration"]["reframe"];
+  if (!expect(
+          !save->isEnabled() && duplicate_intent.IsMap(),
+          "Duplicate-add fixture must capture a valid view request against synchronized source playlists"))
+    return false;
+  QFile duplicate_config(QString::fromStdString(config_path.string()));
+  if (!duplicate_config.open(QIODevice::ReadOnly))
+    return false;
+  const QByteArray duplicate_config_bytes = duplicate_config.readAll();
+  duplicate_config.close();
+  for (const auto& [role, path] :
+       {std::make_pair(left_role, reframe_video), std::make_pair(right_role, reframe_right_video)}) {
+    activate(role);
+    video_path->setText(path);
+    activate(add_video);
+    if (!duplicate_config.open(QIODevice::ReadOnly))
+      return false;
+    const QByteArray after_duplicate_bytes = duplicate_config.readAll();
+    duplicate_config.close();
+    if (!expect(
+            after_duplicate_bytes == duplicate_config_bytes,
+            "Duplicate Add must preserve exact intent, offsets, playlists and owner without rewriting config"))
+      return false;
+  }
   automatic_crop_dialog->setChecked(!automatic_crop_dialog->isChecked());
   activate(save);
+  const auto after_duplicate_save = YAML::LoadFile(config_path.string());
   if (!expect(
           !save->isEnabled() &&
-              YAML::LoadFile(config_path.string())["hstream_ui"]["stitching_calibration"]["reframe"].IsMap() &&
-              select_list_item(video_list, "Left  hstream-ui/left/GX010007.MP4"),
-          "The removal fixture must retain a valid saved view request and imported Left role"))
+              YAML::Dump(after_duplicate_save["hstream_ui"]["stitching_calibration"]["reframe"]) ==
+                  YAML::Dump(duplicate_intent),
+          "Save after duplicate Add must accept and retain the same view request"))
+    return false;
+  const int duplicate_clean_count = window->logText().count("stitching calibration clean command");
+  activate(reframe_start);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i)
+    QTest::qWait(10);
+  const auto duplicate_play = YAML::LoadFile(config_path.string());
+  const auto duplicate_play_intent = duplicate_play["hstream_ui"]["stitching_calibration"]["reframe"];
+  const bool duplicate_rebound = expect(
+      window->pipelineStateText() == "PLAYING" && duplicate_play_intent.IsMap() &&
+          duplicate_play_intent["desired_owner"].as<std::string>() !=
+              duplicate_intent["desired_owner"].as<std::string>() &&
+          duplicate_play_intent["source_generation"].as<std::string>() ==
+              duplicate_intent["source_generation"].as<std::string>() &&
+          YAML::Dump(duplicate_play["game"]["stitching"]["frame_offsets"]) ==
+              YAML::Dump(before_duplicate["game"]["stitching"]["frame_offsets"]) &&
+          YAML::Dump(duplicate_play["stitching"]["frame_offsets"]) ==
+              YAML::Dump(before_duplicate["stitching"]["frame_offsets"]) &&
+          window->logText().count("stitching calibration clean command") == duplicate_clean_count,
+      "Play after duplicate Add must rebind the saved alignment without losing offsets or cleaning its source");
+  activate(reframe_stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i)
+    QTest::qWait(10);
+  if (!duplicate_rebound ||
+      !expect(
+          select_list_item(video_list, "Left  hstream-ui/left/GX010007.MP4"),
+          "The removal fixture must retain its imported Left role"))
     return false;
   activate(remove_video);
   if (!expect(
           !list_contains(video_list, "Left  hstream-ui/left/GX010007.MP4"),
           "Removing the Left video must exercise the source-role transaction") ||
+      !verify_input_recalibration())
+    return false;
+
+  // An orphan copied import has no role-list entry, but removing it can still
+  // clean stale runtime playlists and offsets; that mutation also ends reframe.
+  auto orphan_import = YAML::Clone(duplicate_play);
+  orphan_import["hstream_ui"]["video_roles"].remove("right");
+  orphan_import["hstream_ui"]["copied_imports"].push_back("hstream-ui/right/GX010008.MP4");
+  std::ofstream(config_path) << YAML::Dump(orphan_import) << '\n';
+  activate(create);
+  if (!expect(
+          select_list_item(video_list, "Right  hstream-ui/right/GX010008.MP4"),
+          "An orphan copied import must remain available for source cleanup"))
+    return false;
+  activate(remove_video);
+  const auto orphan_removed = YAML::LoadFile(config_path.string());
+  if (!expect(
+          !fs::exists(config_path.parent_path() / "hstream-ui/right/GX010008.MP4") &&
+              !orphan_removed["game"]["videos"]["left"] && !orphan_removed["game"]["videos"]["right"] &&
+              !orphan_removed["game"]["stitching"]["frame_offsets"] && !orphan_removed["stitching"]["frame_offsets"],
+          "Removing an orphan copied import must retain runtime-playlist and synchronization cleanup") ||
       !verify_input_recalibration())
     return false;
   std::ofstream(config_path) << YAML::Dump(cancelled_reframe) << '\n';

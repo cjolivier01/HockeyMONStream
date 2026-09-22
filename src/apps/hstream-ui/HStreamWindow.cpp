@@ -18530,11 +18530,13 @@ bool HStreamWindow::savePrivateConfigForRole(
       list.push_back(relative_path.toStdString());
       changed = true;
       video_inputs_changed = true;
+      changed = clear_stitching_frame_offsets(config) || changed;
     }
-    changed = clear_stitching_frame_offsets(config) || changed;
   }
 
-  if (role == "left" || role == "right") {
+  // Re-adding the same source to the same role must preserve its saved
+  // synchronization and any pending view derived from that alignment.
+  if (video_inputs_changed && (role == "left" || role == "right")) {
     changed = syncRuntimeExplicitVideoConfig(config) || changed;
   }
 
@@ -18670,8 +18672,14 @@ bool HStreamWindow::removePrivateConfigForRole(
     changed = remove_yaml_key(config["game"]["videos"], "right") || changed;
     changed = clear_stitching_frame_offsets(config) || changed;
   } else if (role == "left" || role == "right") {
+    const std::string previous_runtime_videos = YAML::Dump(config["game"]["videos"]);
     changed = syncRuntimeExplicitVideoConfig(config) || changed;
-    changed = clear_stitching_frame_offsets(config) || changed;
+    const bool cleared_offsets = clear_stitching_frame_offsets(config);
+    changed = cleared_offsets || changed;
+    // Orphan copied imports can lack a role entry but still clear runtime
+    // inputs. Invalidate that solver mutation together with normal removals.
+    video_inputs_changed =
+        video_inputs_changed || cleared_offsets || YAML::Dump(config["game"]["videos"]) != previous_runtime_videos;
   }
   if (video_inputs_changed) {
     changed = invalidate_stitching_calibration(config, "input") || changed;

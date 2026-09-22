@@ -5054,6 +5054,81 @@ play-tracker:
       forced_status.code() == absl::StatusCode::kAborted && fs::exists(superseded_force_dir / "seam_file.png"),
       "Forced configuration must abort before using or deleting a superseding artifact generation");
 
+  // A persisted native width is the old view, not a new CLI geometry edit.
+  // OpenCV makes a false reframe immediately observable without native tools.
+  for (int width_case = 0; width_case < 8; ++width_case) {
+    const std::string name = "saved-native-width-" + std::to_string(width_case);
+    const fs::path directory = games / name;
+    fs::create_directories(directory);
+    YAML::Node saved;
+    saved["pipeline"]["application"]["complete-configuration"] = 1;
+    saved["pipeline"]["hmstitcher"]["enable"] = 1;
+    saved["pipeline"]["hmstitcher"]["one-pass-mode"] = 1;
+    saved["pipeline"]["hmstitcher"][width_case == 1 ? "private-properties" : "properties"]
+         [width_case == 1 ? "stitch_max_output_width" : "max-output-width"] = 4096;
+    saved["stitching"]["control_point_matcher"] = "akaze-hamming";
+    saved["stitching"]["mapping_backend"] = "opencv-magsac";
+    saved["stitching"]["projection"] = "rectilinear";
+    saved["stitching"]["run_autooptimizer"] = false;
+    saved["stitching"]["control_point_execution_provider"] = "cpu";
+    saved["stitching"]["control_point_resolution"] = "native";
+    const auto saved_camera = hm::stitching::read_stitch_camera_selection(test_baseline);
+    if (!saved_camera.ok())
+      return 1;
+    hm::stitching::write_stitch_camera_selection(saved, *saved_camera);
+    auto state = saved["hstream_ui"]["stitching_calibration"];
+    state["status"] = "complete";
+    state["control_points"] = 1500;
+    state["frame_count"] = 4;
+    state["invalidation_id"] = name;
+    YAML::Node width_user = YAML::Clone(user_overlay);
+    if (width_case == 2) {
+      saved["stitching"]["max_output_width"] = YAML::Node(YAML::NodeType::Null);
+      width_user["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 3072;
+    } else if (width_case == 3) {
+      width_user["stitching"]["max_output_width"] = 3072;
+    } else if (width_case == 4) {
+      saved["stitching"]["max_output_width"] = 2048;
+    }
+    const fs::path structural_path = directory / "pipeline.yaml";
+    if (width_case == 7) {
+      saved["stitching"]["max_output_width"] = 4096;
+      YAML::Node structural = YAML::Clone(saved["pipeline"]);
+      structural["hmstitcher"].remove("properties");
+      std::ofstream(structural_path) << YAML::Dump(structural) << '\n';
+      saved["pipeline"].remove("hmstitcher");
+    }
+    std::ofstream(user_config_path) << YAML::Dump(width_user) << '\n';
+    const std::string contents = YAML::Dump(saved) + "\n";
+    std::ofstream(directory / "config.yaml") << contents;
+    hm::Configurator width_config(name, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    ok &= expect(width_config.configure().ok(), "Saved native-width fixture must load");
+    if (width_case == 7)
+      ok &= expect(width_config.underlay_config("pipeline", structural_path.string()), "Structural stitcher must load");
+    if (width_case == 5 || width_case == 6)
+      ok &= expect(
+          width_config.apply_config_item("stitching.max_output_width", width_case == 5 ? "4096" : "3072").ok(),
+          "CLI width override fixture must apply");
+    const auto result = width_config.complete_configuration(false, false, false, name);
+    const auto after = YAML::LoadFile((directory / "config.yaml").string());
+    const auto after_state = after["hstream_ui"]["stitching_calibration"];
+    if (width_case == 6) {
+      ok &= expect(
+          !result.ok() && result.message().find("Reframing requires an optimized NONA") != std::string::npos &&
+              YAML::Dump(after) == YAML::Dump(saved),
+          "A genuinely changed CLI width must still reject unsupported reframe without modifying the solve");
+    } else {
+      const bool ordinary = after_state["backend_generation"].IsDefined() &&
+          after_state["backend_generation"].IsMap() && !after_state["reframe"] &&
+          result.message().find("Reframing requires") == std::string::npos;
+      if (!ordinary)
+        std::cerr << name << ": " << result << "\n";
+      ok &= expect(
+          ordinary, "Unchanged saved native width must proceed through ordinary startup with normal layer precedence");
+    }
+  }
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+
   const fs::path runtime_claim_dir = games / "runtime-claim";
   {
     const fs::path reframe_dir = games / "protected-reframe";
