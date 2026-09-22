@@ -74,9 +74,23 @@ class LoadDetectionsTest(unittest.TestCase):
     self.assertAlmostEqual(parsed[0].confidence, 0.61)
     self.assertAlmostEqual(parsed[1].confidence, 0.52)
 
-  def test_short_and_unlabeled_lines_are_skipped(self):
+  def test_short_lines_are_skipped(self):
     self.assertEqual(self._load(["person 1 2 3", " 0.0 0.0", kitti_line("person", 0, 0, 1, 1, 0.5)]),
                      self._load([kitti_line("person", 0, 0, 1, 1, 0.5)]))
+
+  def test_empty_label_line_is_skipped(self):
+    """The C++ writer emits the 15 numeric fields alone when obj_label is empty."""
+    numeric_only = "0.0 0 0.0 1 2 3 4 " + " ".join(["0.0"] * 7) + " 0.9"
+    self.assertEqual(len(numeric_only.split()), accuracy.NUM_KITTI_NUMERIC)
+    self.assertEqual(self._load([numeric_only]), [])
+
+  def test_non_numeric_box_field_is_skipped(self):
+    self.assertEqual(self._load([kitti_line("person", "x", 2, 3, 4, 0.9)]), [])
+
+  def test_crlf_and_trailing_whitespace(self):
+    (parsed,) = self._load([kitti_line("person", 10, 20, 110, 220, 0.75) + " \r"])
+    self.assertEqual((parsed.left, parsed.right), (10, 110))
+    self.assertAlmostEqual(parsed.confidence, 0.75)
 
   def test_missing_directory_is_empty_not_an_error(self):
     self.assertEqual(accuracy.load_detections(Path("/nonexistent-xyz")), {})
@@ -120,8 +134,22 @@ class CompareTest(unittest.TestCase):
     # Recall alone would read 100% and hide the spurious box.
     self.assertEqual(m["recall_vs_ref_pct"], 100.0)
     self.assertEqual(m["precision_vs_ref_pct"], 50.0)
+    # Asserted at an asymmetric point: here recall, precision and F1 are all
+    # different, so this would fail if f1 silently returned either of them.
+    self.assertAlmostEqual(m["f1_vs_ref_pct"], 200.0 / 3.0)
     self.assertEqual(m["total_disagreements"], 1)
     self.assertEqual(m["frames_with_count_delta"], 1)
+
+  def test_f1_is_the_harmonic_mean_of_precision_and_recall(self):
+    # 3 reference, 5 candidate, 2 matching -> R=66.67, P=40, F1=50.
+    ref = {(0, 1): [det(left=x * 1000, right=x * 1000 + 100) for x in range(3)]}
+    cand = {(0, 1): [det(left=x * 1000, right=x * 1000 + 100) for x in (0, 1, 7, 8, 9)]}
+    m = accuracy.compare(ref, cand, 0.5, 0.25)
+    r, p = m["recall_vs_ref_pct"], m["precision_vs_ref_pct"]
+    self.assertAlmostEqual(r, 200.0 / 3.0)
+    self.assertAlmostEqual(p, 40.0)
+    self.assertAlmostEqual(m["f1_vs_ref_pct"], 2 * p * r / (p + r))
+    self.assertAlmostEqual(m["f1_vs_ref_pct"], 50.0)
 
   def test_confidence_floor_filters_both_sides(self):
     ref = {(0, 1): [det(confidence=0.30)]}
@@ -136,6 +164,72 @@ class CompareTest(unittest.TestCase):
     self.assertEqual(m["frames_compared"], 1)
     self.assertEqual(m["frames_ref_only"], 1)
     self.assertEqual(m["frames_cand_only"], 0)
+
+
+class SummarizeTracksTest(unittest.TestCase):
+  """The gate's own metric counted a phantom track on every run."""
+
+  def _summarize(self, lines):
+    with tempfile.TemporaryDirectory() as tmp:
+      Path(tmp, "00_000_000001.txt").write_text("\n".join(lines) + "\n")
+      return benchmark.summarize_tracks(Path(tmp))
+
+  def tracked(self, label, track_id):
+    return f"{label} {track_id} 0.0 0 0.0 1 2 3 4 " + " ".join(["0.0"] * 7) + " 0.9"
+
+  def untracked(self):
+    # Empty label + UINT64_MAX id: every column shifts left, so a naive
+    # fields[1] reads the float filler "0.0" and counts it as a track.
+    return f" {benchmark.UNTRACKED_OBJECT_ID} 0.0 0 0.0 1 2 3 4 " + " ".join(["0.0"] * 7) + " 0.0"
+
+  def test_untracked_objects_do_not_create_a_phantom_track(self):
+    s = self._summarize([self.tracked("person", 2), self.untracked(), self.untracked()])
+    self.assertEqual(s["unique_tracked_objects"], 1)
+    self.assertEqual(s["tracked_observations"], 1)
+    self.assertEqual(list(s["class_counts"]), ["person"])
+
+  def test_distinct_ids_are_counted_once_each(self):
+    s = self._summarize([self.tracked("person", 2), self.tracked("person", 3), self.tracked("person", 2)])
+    self.assertEqual(s["unique_tracked_objects"], 2)
+    self.assertEqual(s["tracked_observations"], 3)
+
+  def test_empty_directory(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      self.assertEqual(benchmark.summarize_tracks(Path(tmp))["unique_tracked_objects"], 0)
+
+
+class BuildPlanTest(unittest.TestCase):
+  """Variant names key both the output directory and the results dict, so
+  uniqueness is load-bearing: a collision silently overwrites a run."""
+
+  def names(self, variants):
+    return [name for name, _ in accuracy.build_plan(variants)]
+
+  def test_reference_is_always_first(self):
+    self.assertEqual(accuracy.build_plan(["fp16"])[0], ("reference", "fp32"))
+
+  def test_bare_fp32_becomes_the_control(self):
+    self.assertEqual(self.names(["fp32", "fp16"]), ["reference", "control-fp32", "fp16"])
+
+  def test_repeated_precision_gets_distinct_names(self):
+    # The FP16-vs-rebuilt-FP16 control; without this the second run would
+    # overwrite the first's output directory and report two identical rows.
+    self.assertEqual(self.names(["fp16", "fp16"]), ["reference", "fp16", "fp16-2"])
+
+  def test_repeated_fp32_control(self):
+    self.assertEqual(self.names(["fp32", "fp32"]), ["reference", "control-fp32", "control-fp32-2"])
+
+  def test_all_names_unique_under_heavy_repetition(self):
+    names = self.names(["fp32", "fp16", "fp32", "fp16", "fp16", "int8"])
+    self.assertEqual(len(names), len(set(names)))
+
+  def test_generated_suffix_cannot_shadow_a_real_precision(self):
+    for name in self.names(["fp16", "fp16", "int8", "int8"]):
+      if name not in ("reference", "control-fp32"):
+        self.assertTrue(name in accuracy.SUPPORTED_PRECISIONS or "-" in name)
+
+  def test_precision_is_preserved_for_renamed_variants(self):
+    self.assertEqual(accuracy.build_plan(["fp16", "fp16"])[2], ("fp16-2", "fp16"))
 
 
 class InferConfigTest(unittest.TestCase):
