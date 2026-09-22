@@ -105,6 +105,10 @@ source0:
   # uri: file:///home/colivier/Videos/foxes/left.mp4
   # uri: file:///home/colivier/Videos/ev-tv-1a/right.mp4
   num-sources: 1
+  # Was unset, silently defaulting to N_DECODE_SURFACES=16. At 8K 10-bit that
+  # is ~100 MB per surface per stream, so the default reserved ~3 GB across two
+  # cameras to hold frames the pipeline never queued that deep.
+  num-decode-surfaces: 6
   gpu-id: 0
   cuda-memory-type: 0
   source-id: 0
@@ -387,8 +391,12 @@ streammux:
   gpu-id: 0
   ##Boolean property to inform muxer that sources are live
   live-source: 0
-  buffer-pool-size: 8
-  batch-size: 4
+  # Pool depth buys nothing here and costs whole gigabytes: at two 8K sources,
+  # raising this to 16 (with matching downstream depths) added ~4 GB of VRAM for
+  # no measurable FPS change, and dropping to 4 gave the same FPS ~4 GB cheaper.
+  buffer-pool-size: 4
+  # Two camera sources. 4 only ever produced half-empty batches.
+  batch-size: 2
   num-surfaces-per-frame: 1
 
   ##time out in usec, to wait after the first buffer is available
@@ -447,6 +455,13 @@ dewarper0:
 primary-gie:
   enable: 1
   gpu-id: 0
+  # Left at 2 deliberately. hmstitcher collapses both cameras into a single
+  # surface upstream of this element, so the detector only ever sees batch 1 --
+  # measured identical FPS and VRAM at 1 vs 2. Lowering it here would not
+  # recover anything: the engine's optimization profile comes from the ONNX
+  # (min 1, opt 2, max 2), so TensorRT still tunes tactics for batch 2, and the
+  # engine filename encodes the batch, so the change would only force a rebuild.
+  # Realizing that win needs the ONNX re-exported with opt=1.
   batch-size: 2
   #Required by the app for OSD, not a plugin property
   bbox-border-color0: 1;0;0;1
@@ -481,8 +496,9 @@ hmplaycropper:
   show-scoreboard: 1
   plugin-type: playcropper
 
-  num-batch-buffers: 2
-  num-output-buffers: 6
+  # One stitched surface arrives per frame, so a batch depth of 2 was never used.
+  num-batch-buffers: 1
+  num-output-buffers: 3
 
 hmstitcher:
   gpu-id: 0
@@ -494,7 +510,9 @@ hmstitcher:
   show: 0
   # Stitching collapses the two camera surfaces into one stitched output surface.
   num-batch-buffers: 1
-  num-output-buffers: 4
+  # Each surface is the full stitched canvas (~13000x4200), so every buffer here
+  # is expensive. Depth beyond 2 measured as pure overhead.
+  num-output-buffers: 2
 
 ds-playtracker:
   enable: 1
