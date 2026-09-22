@@ -125,6 +125,23 @@ original graph's SHA-256 before transformation. The CPU setting retains the
 original float32 graph. Both keep 1024 keypoints per image and the same score
 threshold. Numerical differences may change the selected keypoints and matches.
 
+All sessions created through `src/libs/onnx/OnnxSession.cpp`, including CPU
+fallbacks and rink segmentation, request deterministic computation with
+`Ort::SessionOptions::SetDeterministicCompute(true)`. ONNX Runtime uses
+deterministic GPU kernels where supported; this is not a guarantee of bitwise
+equality across hardware, runtime versions, execution providers, or precision
+modes. In particular, a CPU fallback can still change keypoints and matches.
+ONNX Runtime 1.30's CUDA `TopK` implementation can also report
+`Non-deterministic TopKImpl kernel is called` for this graph even with the
+option enabled. Identical outputs in repeated tests therefore establish
+repeatability for those inputs and that environment, not a strict guarantee
+for every input on the same GPU.
+The shipped SuperPoint/LightGlue graphs contain no random operators, so setting
+a random seed alone does not address GPU numerical variability. Check
+repeatability using identical saved camera images, model files, resolution,
+and provider, comparing keypoints, match indices, scores, and selected control
+points both within a session and across fresh processes.
+
 On an RTX 5090, HStream's matcher processed a pair of 7680 × 4320 frames in
 0.995 seconds with 45 accepted matches; 2K took 0.294 seconds with 315 accepted
 matches on the same pair. The earlier 56.16 seconds / 39 matches
