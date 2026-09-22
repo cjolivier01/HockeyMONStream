@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hstream/src/libs/common/ApplicationPayload.h"
+#include "hstream/src/libs/common/IceBoundary.h"
 
 #include <opencv2/core.hpp>
 #include <memory>
@@ -16,8 +17,22 @@ class FieldMaskPayload : public UserApplicationPayload {
       cv::Point2f centroid,
       const cv::Rect2i& field_box,
       const cv::Mat& mask = {},
-      std::string revision = {})
-      : revision_(std::move(revision)), centroid_(centroid), field_box_(field_box), mask_(mask) {}
+      std::string revision = {},
+      IceBoundaryOffsets offsets = {},
+      const cv::Mat& exclusion_mask = {})
+      : revision_(std::move(revision)),
+        centroid_(centroid),
+        field_box_(field_box),
+        mask_(mask),
+        offsets_(offsets),
+        exclusion_mask_(exclusion_mask.empty() ? mask : exclusion_mask) {}
+
+  const IceBoundaryOffsets& offsets() const {
+    return offsets_;
+  }
+  const cv::Mat& exclusion_mask() const {
+    return exclusion_mask_;
+  }
 
   const std::string& revision() const {
     return revision_;
@@ -50,6 +65,8 @@ class FieldMaskPayload : public UserApplicationPayload {
   cv::Point2f centroid_;
   cv::Rect2i field_box_;
   cv::Mat mask_;
+  IceBoundaryOffsets offsets_;
+  cv::Mat exclusion_mask_;
 };
 #endif
 } // namespace fieldmask

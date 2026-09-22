@@ -31,6 +31,10 @@ using FieldMaskPayload = hm::fieldmask::FieldMaskPayload;
 
 struct DsFieldMaskCtx {
   DsFieldMaskInitParams initParams;
+  hm::fieldmask::IceBoundaryOffsets offsets;
+  hm::fieldmask::RinkMaskInsets mask_insets;
+  bool mask_insets_dirty{true};
+  cv::Mat exclusion_mask;
   size_t total_frame_count{0};
   cv::Mat detection_bit_mask;
   cv::Mat detection_u8_mask;
@@ -48,8 +52,6 @@ struct DsFieldMaskCtx {
 };
 
 namespace {
-
-constexpr float side_edges_bbox_by_half_width_ratio = 0.2;
 
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
   int byteIndex = (point.y * mask.cols + point.x / 8); // Byte index in the data
@@ -174,78 +176,20 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
       bbox_coords.width = obj_meta->rect_params.width;
       bbox_coords.height = obj_meta->rect_params.height;
     }
-    const float half_width = bbox_coords.width / 2;
-    const float bbox_center_x = bbox_coords.left + half_width;
-    const float half_height = bbox_coords.height / 2;
-
-    // Keep track of extremes for debugging
-    // max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
-    // max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
-
-    const int raise_center_height_amount =
-        float(bbox_coords.height) * ctx->initParams.raise_bbox_center_by_height_ratio;
-    const int lower_bottom_height_amount =
-        float(bbox_coords.height) * ctx->initParams.lower_bbox_bottom_by_height_ratio;
-
-    // Center of bounding box
-    cv::Point2f ptCenter = cv::Point2f(bbox_center_x, bbox_coords.top + half_height - raise_center_height_amount);
-
-    if (plot_context) {
-      plot_context->plot_circle(
-          hm::Point{.x = ptCenter.x, .y = ptCenter.y},
-          /*radius=*/std::abs(raise_center_height_amount),
-          /*thickness=*/std::max(1, std::abs(raise_center_height_amount) / 2),
-          hm::utils::ColorRGB{0, 255, 0});
-    }
-
-    // Bottom of bounding box (for testing if their feet are on the ice)
-    cv::Point2f ptBottom = cv::Point2f(bbox_center_x, bbox_coords.top + bbox_coords.height);
-
-    ptBottom.y -= lower_bottom_height_amount;
-
-    if (plot_context) {
-      plot_context->plot_circle(
-          hm::Point{.x = ptBottom.x, .y = ptBottom.y},
-          /*radius=*/std::abs(lower_bottom_height_amount),
-          /*thickness=*/std::max(1, std::abs(lower_bottom_height_amount) / 2),
-          hm::utils::ColorRGB{255, 0, 0});
-    }
-
-    if (ptBottom.x <= ctx->detection_mask_centroid.x) {
-      // left side, so move right just a little bit
-      ptBottom.x += half_width * side_edges_bbox_by_half_width_ratio;
-    } else {
-      // right side, so move left just a little bit
-      ptBottom.x -= half_width * side_edges_bbox_by_half_width_ratio;
-    }
-
-    ptBottom.x *= scale_width;
-    ptBottom.y *= scale_height;
-    ptCenter.x *= scale_width;
-    ptCenter.y *= scale_height;
-
-    // ok, well, let's just do bottoms against centroid y
-    if (ptBottom.y <= ctx->detection_mask_centroid.y) {
-      // It's in the top half of the ice, so we just look at the (adjusted) bottom in the mask
-      ptBottom.x = std::clamp(ptBottom.x, 0.0f, float(frame_meta->source_frame_width - 1));
-      ptBottom.y = std::clamp(ptBottom.y, 0.0f, float(frame_meta->source_frame_height - 1));
-      // if (ctx->detection_u8_mask.at<uchar>(ptBottom) == 0) {
-      //   remove_me = l_obj;
-      // }
-      if (!is_bit_set(ctx->detection_bit_mask, ptBottom)) {
-        remove_me = l_obj;
-      }
-    } else {
-      // It's in the bottom half of the ice, so we check center
-      ptCenter.x = std::clamp(ptCenter.x, 0.0f, float(frame_meta->source_frame_width - 1));
-      ptCenter.y = std::clamp(ptCenter.y, 0.0f, float(frame_meta->source_frame_height - 1));
-      // if (ctx->detection_u8_mask.at<uchar>(ptCenter) == 0) {
-      //   remove_me = l_obj;
-      // }
-      if (!is_bit_set(ctx->detection_bit_mask, ptCenter)) {
-        remove_me = l_obj;
-      }
-    }
+    const auto sample = hm::fieldmask::ice_boundary_sample(
+        bbox_coords.left + bbox_coords.width * 0.5F,
+        bbox_coords.top + bbox_coords.height,
+        bbox_coords.width,
+        bbox_coords.height,
+        {ctx->detection_mask_centroid.x / scale_width, ctx->detection_mask_centroid.y / scale_height},
+        ctx->offsets);
+    const cv::Point2f point(
+        std::clamp(sample.x * scale_width, 0.0F, float(frame_meta->source_frame_width - 1)),
+        std::clamp(sample.y * scale_height, 0.0F, float(frame_meta->source_frame_height - 1)));
+    if (plot_context)
+      plot_context->plot_circle({sample.x, sample.y}, 3, 2, hm::utils::ColorRGB{255, 0, 0});
+    if (!is_bit_set(ctx->detection_bit_mask, point))
+      remove_me = l_obj;
     if (remove_me) {
       nvds_remove_obj_meta_from_frame(frame_meta, obj_meta);
     }
@@ -256,9 +200,26 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
 DsFieldMaskCtx* DsFieldMaskCtxInit(DsFieldMaskInitParams* initParams) {
   DsFieldMaskCtx* ctx = new DsFieldMaskCtx();
   ctx->initParams = *initParams;
+  ctx->mask_insets = initParams->mask_insets;
+  ctx->offsets = {
+      initParams->raise_bbox_center_by_height_ratio,
+      initParams->lower_bbox_bottom_by_height_ratio,
+      initParams->left_bbox_by_half_width_ratio,
+      initParams->right_bbox_by_half_width_ratio};
   const char* calibration_invalidation_id = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
   ctx->calibration_invalidation_id = calibration_invalidation_id ? calibration_invalidation_id : "";
   return ctx;
+}
+
+void DsFieldMaskSetOffsets(DsFieldMaskCtx* ctx, const hm::fieldmask::IceBoundaryOffsets& offsets) {
+  ctx->offsets = offsets;
+}
+
+void DsFieldMaskSetInsets(DsFieldMaskCtx* ctx, const hm::fieldmask::RinkMaskInsets& insets) {
+  if (!(ctx->mask_insets == insets)) {
+    ctx->mask_insets = insets;
+    ctx->mask_insets_dirty = true;
+  }
 }
 
 absl::Status DsFieldMaskProcessFrame(
@@ -398,7 +359,7 @@ absl::Status DsFieldMaskProcessFrame(
          cv::countNonZero(ctx->detection_u8_mask) == 0))
       return absl::FailedPreconditionError("Analysis requires a nonempty CV_8UC1 rink mask with ice pixels");
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
-    ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
+    ctx->mask_insets_dirty = true;
     ctx->loaded_output_generation = output_generation;
     ctx->loaded_output_authorization_id = output_authorization_id;
   }
@@ -408,6 +369,15 @@ absl::Status DsFieldMaskProcessFrame(
        frame_meta->pipeline_width != frame_meta->source_frame_width ||
        frame_meta->pipeline_height != frame_meta->source_frame_height))
     return absl::FailedPreconditionError("Analysis rink-mask dimensions do not match the stitched frame");
+  if (ctx->mask_insets_dirty) {
+    try {
+      ctx->exclusion_mask = hm::fieldmask::inset_rink_mask(ctx->detection_u8_mask, ctx->mask_insets);
+      ctx->detection_bit_mask = convert_to_bit_mask(ctx->exclusion_mask);
+    } catch (const std::exception& error) {
+      return absl::InternalError(std::string("Could not adjust the rink exclusion mask: ") + error.what());
+    }
+    ctx->mask_insets_dirty = false;
+  }
   prune_detection_boxes(frame_meta, ctx, draw);
 #ifdef HAS_NVDS_CUSTOMUSERMETA
   if (frame_meta && frame_meta->base_meta.batch_meta) {
@@ -416,7 +386,9 @@ absl::Status DsFieldMaskProcessFrame(
         ctx->detection_mask_centroid,
         ctx->field_box,
         ctx->detection_u8_mask,
-        ctx->loaded_output_generation + ":" + ctx->loaded_output_authorization_id);
+        ctx->loaded_output_generation + ":" + ctx->loaded_output_authorization_id,
+        ctx->offsets,
+        ctx->exclusion_mask);
   }
 #endif
   ++ctx->total_frame_count;

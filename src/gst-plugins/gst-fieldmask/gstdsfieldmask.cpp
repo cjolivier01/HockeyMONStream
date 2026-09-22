@@ -51,6 +51,12 @@ enum {
   PROP_REQUIRE_EXISTING_MASK,
   PROP_RAISE_BBOX_CENTER_BY_HEIGHT_RATIO,
   PROP_LOWER_BBOX_BOTTOM_BY_HEIGHT_RATIO,
+  PROP_LEFT_BBOX_BY_HALF_WIDTH_RATIO,
+  PROP_RIGHT_BBOX_BY_HALF_WIDTH_RATIO,
+  PROP_MASK_TOP_INSET,
+  PROP_MASK_BOTTOM_INSET,
+  PROP_MASK_LEFT_INSET,
+  PROP_MASK_RIGHT_INSET,
 };
 
 #define CHECK_NVDS_MEMORY_AND_GPUID(object, surface)                                                       \
@@ -225,7 +231,7 @@ static void gst_dsfieldmask_class_init(GstDsFieldMaskClass* klass) {
           -G_MAXFLOAT,
           G_MAXFLOAT,
           0.0F,
-          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
 
   g_object_class_install_property(
       gobject_class,
@@ -237,7 +243,48 @@ static void gst_dsfieldmask_class_init(GstDsFieldMaskClass* klass) {
           -G_MAXFLOAT,
           G_MAXFLOAT,
           0.0F,
-          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_LEFT_BBOX_BY_HALF_WIDTH_RATIO,
+      g_param_spec_float(
+          "left-bbox-by-half-width-ratio",
+          "Left sample offset",
+          "Fraction of half box width added to far-half feet left of the rink centroid",
+          -G_MAXFLOAT,
+          G_MAXFLOAT,
+          0.2F,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+  g_object_class_install_property(
+      gobject_class,
+      PROP_RIGHT_BBOX_BY_HALF_WIDTH_RATIO,
+      g_param_spec_float(
+          "right-bbox-by-half-width-ratio",
+          "Right sample offset",
+          "Fraction of half box width subtracted from far-half feet right of the rink centroid",
+          -G_MAXFLOAT,
+          G_MAXFLOAT,
+          0.2F,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  for (const auto& spec :
+       {std::pair<guint, const char*>{PROP_MASK_TOP_INSET, "mask-top-inset"},
+        {PROP_MASK_BOTTOM_INSET, "mask-bottom-inset"},
+        {PROP_MASK_LEFT_INSET, "mask-left-inset"},
+        {PROP_MASK_RIGHT_INSET, "mask-right-inset"}}) {
+    g_object_class_install_property(
+        gobject_class,
+        spec.first,
+        g_param_spec_int(
+            spec.second,
+            spec.second,
+            "Stitched pixels excluded inward from this mask edge; negative expands outward",
+            -4096,
+            4096,
+            0,
+            GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+  }
 
   /* Set sink and src pad capabilities */
   gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_dsfieldmask_src_template));
@@ -270,6 +317,10 @@ static void gst_dsfieldmask_init(GstDsFieldMask* dsfieldmask) {
   dsfieldmask->gpu_id = DEFAULT_GPU_ID;
   dsfieldmask->raise_bbox_center_by_height_ratio = 0.0F;
   dsfieldmask->lower_bbox_bottom_by_height_ratio = 0.0F;
+  dsfieldmask->left_bbox_by_half_width_ratio = 0.2F;
+  dsfieldmask->right_bbox_by_half_width_ratio = 0.2F;
+  dsfieldmask->mask_top_inset = dsfieldmask->mask_bottom_inset = 0;
+  dsfieldmask->mask_left_inset = dsfieldmask->mask_right_inset = 0;
   dsfieldmask->require_existing_mask = FALSE;
 
   /* This quark is required to identify NvDsMeta when iterating through
@@ -284,7 +335,20 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
   GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(object);
   //_GstDsFieldMask* dsfieldmask = dynamic_cast<_GstDsFieldMask*>(object);
   assert(dsfieldmask);
+  GST_OBJECT_LOCK(dsfieldmask);
   switch (prop_id) {
+    case PROP_MASK_TOP_INSET:
+      dsfieldmask->mask_top_inset = g_value_get_int(value);
+      break;
+    case PROP_MASK_BOTTOM_INSET:
+      dsfieldmask->mask_bottom_inset = g_value_get_int(value);
+      break;
+    case PROP_MASK_LEFT_INSET:
+      dsfieldmask->mask_left_inset = g_value_get_int(value);
+      break;
+    case PROP_MASK_RIGHT_INSET:
+      dsfieldmask->mask_right_inset = g_value_get_int(value);
+      break;
     case PROP_UNIQUE_ID:
       dsfieldmask->unique_id = g_value_get_uint(value);
       break;
@@ -308,10 +372,17 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
     case PROP_LOWER_BBOX_BOTTOM_BY_HEIGHT_RATIO:
       dsfieldmask->lower_bbox_bottom_by_height_ratio = g_value_get_float(value);
       break;
+    case PROP_LEFT_BBOX_BY_HALF_WIDTH_RATIO:
+      dsfieldmask->left_bbox_by_half_width_ratio = g_value_get_float(value);
+      break;
+    case PROP_RIGHT_BBOX_BY_HALF_WIDTH_RATIO:
+      dsfieldmask->right_bbox_by_half_width_ratio = g_value_get_float(value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
   }
+  GST_OBJECT_UNLOCK(dsfieldmask);
 }
 
 /* Function called when a property of the element is requested. Standard
@@ -320,7 +391,20 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
 static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
   GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(object);
   assert(dsfieldmask);
+  GST_OBJECT_LOCK(dsfieldmask);
   switch (prop_id) {
+    case PROP_MASK_TOP_INSET:
+      g_value_set_int(value, dsfieldmask->mask_top_inset);
+      break;
+    case PROP_MASK_BOTTOM_INSET:
+      g_value_set_int(value, dsfieldmask->mask_bottom_inset);
+      break;
+    case PROP_MASK_LEFT_INSET:
+      g_value_set_int(value, dsfieldmask->mask_left_inset);
+      break;
+    case PROP_MASK_RIGHT_INSET:
+      g_value_set_int(value, dsfieldmask->mask_right_inset);
+      break;
     case PROP_REQUIRE_EXISTING_MASK:
       g_value_set_boolean(value, dsfieldmask->require_existing_mask);
       break;
@@ -339,10 +423,17 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
     case PROP_LOWER_BBOX_BOTTOM_BY_HEIGHT_RATIO:
       g_value_set_float(value, dsfieldmask->lower_bbox_bottom_by_height_ratio);
       break;
+    case PROP_LEFT_BBOX_BY_HALF_WIDTH_RATIO:
+      g_value_set_float(value, dsfieldmask->left_bbox_by_half_width_ratio);
+      break;
+    case PROP_RIGHT_BBOX_BY_HALF_WIDTH_RATIO:
+      g_value_set_float(value, dsfieldmask->right_bbox_by_half_width_ratio);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
   }
+  GST_OBJECT_UNLOCK(dsfieldmask);
 }
 
 /**
@@ -355,6 +446,13 @@ static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
       .detection_mask_file = dsfieldmask->detection_mask_file,
       .raise_bbox_center_by_height_ratio = dsfieldmask->raise_bbox_center_by_height_ratio,
       .lower_bbox_bottom_by_height_ratio = dsfieldmask->lower_bbox_bottom_by_height_ratio,
+      .left_bbox_by_half_width_ratio = dsfieldmask->left_bbox_by_half_width_ratio,
+      .right_bbox_by_half_width_ratio = dsfieldmask->right_bbox_by_half_width_ratio,
+      .mask_insets =
+          {dsfieldmask->mask_top_inset,
+           dsfieldmask->mask_bottom_inset,
+           dsfieldmask->mask_left_inset,
+           dsfieldmask->mask_right_inset},
       .require_existing_mask = static_cast<bool>(dsfieldmask->require_existing_mask),
   };
 
@@ -413,6 +511,21 @@ static GstFlowReturn gst_dsfieldmask_transform_ip(GstBaseTransform* btrans, GstB
   NvDsMetaList* l_frame = NULL;
 
   size_t frame_index = 0;
+
+  GST_OBJECT_LOCK(dsfieldmask);
+  DsFieldMaskSetOffsets(
+      dsfieldmask->dsfieldmasklib_ctx,
+      {dsfieldmask->raise_bbox_center_by_height_ratio,
+       dsfieldmask->lower_bbox_bottom_by_height_ratio,
+       dsfieldmask->left_bbox_by_half_width_ratio,
+       dsfieldmask->right_bbox_by_half_width_ratio});
+  DsFieldMaskSetInsets(
+      dsfieldmask->dsfieldmasklib_ctx,
+      {dsfieldmask->mask_top_inset,
+       dsfieldmask->mask_bottom_inset,
+       dsfieldmask->mask_left_inset,
+       dsfieldmask->mask_right_inset});
+  GST_OBJECT_UNLOCK(dsfieldmask);
 
   dsfieldmask->frame_num++;
   CHECK_CUDA_STATUS(cudaSetDevice(dsfieldmask->gpu_id), "Unable to set cuda device");

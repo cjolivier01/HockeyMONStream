@@ -96,6 +96,7 @@ cc_test(
     }),
     deps = [
         ":deepstream_apps_common",
+        "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/common:utils",
         "//src/libs/stitching:hugin_project",
@@ -157,7 +158,10 @@ cc_test(
 cc_library(
     name = "hm_gpu_preview",
     srcs = ["HmGpuPreview.cpp"],
-    hdrs = ["HmGpuPreview.h"],
+    hdrs = [
+        "HmGpuPreview.h",
+        "IceBoundaryGuide.h",
+    ],
     copts = ["-std=c++17"],
     include_prefix = INCLUDE_PREFIX,
     linkopts = select({
@@ -167,6 +171,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":rink_mask_image",
+        "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/stitching:stitching",
         "//src/libs/draw_display:watermark",
@@ -208,6 +213,16 @@ cc_test(
         "//src/libs/draw_display:analytics_overlay",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "ice_boundary_guide_test",
+    srcs = ["IceBoundaryGuideTest.cpp"],
+    deps = [
+        ":hm_gpu_preview",
+        "//src/libs/common:utils",
+        "@opencv_linux//:opencv",
     ],
 )
 

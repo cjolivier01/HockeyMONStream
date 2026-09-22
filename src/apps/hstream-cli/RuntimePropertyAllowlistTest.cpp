@@ -15,6 +15,18 @@ bool expect(bool condition, const char* message) {
 
 int main() {
   using hm::pipeline::is_allowlisted_runtime_property;
+  for (const char* property :
+       {"raise-bbox-center-by-height-ratio",
+        "lower-bbox-bottom-by-height-ratio",
+        "left-bbox-by-half-width-ratio",
+        "right-bbox-by-half-width-ratio",
+        "mask-top-inset",
+        "mask-bottom-inset",
+        "mask-left-inset",
+        "mask-right-inset"}) {
+    if (!expect(is_allowlisted_runtime_property("dsfieldmask0", property), "Rink offsets must support live edits"))
+      return 1;
+  }
   if (!expect(
           is_allowlisted_runtime_property("playcropper0", "shadow-lift"),
           "The production playcropper instance must accept live shadow lift") ||

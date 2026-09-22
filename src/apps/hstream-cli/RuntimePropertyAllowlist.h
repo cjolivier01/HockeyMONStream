@@ -6,9 +6,15 @@ namespace hm {
 namespace pipeline {
 
 inline bool is_allowlisted_runtime_property(std::string_view element_name, std::string_view property_name) {
-  return (element_name == "hmstitcher0" &&
-          (property_name == "stitched-output-epoch" || property_name == "shadow-lift" ||
-           property_name == "shadow-lift-black-point" || property_name == "exposure")) ||
+  return (element_name == "dsfieldmask0" &&
+          (property_name == "mask-top-inset" || property_name == "mask-bottom-inset" ||
+           property_name == "mask-left-inset" || property_name == "mask-right-inset" ||
+           property_name == "raise-bbox-center-by-height-ratio" ||
+           property_name == "lower-bbox-bottom-by-height-ratio" || property_name == "left-bbox-by-half-width-ratio" ||
+           property_name == "right-bbox-by-half-width-ratio")) ||
+      (element_name == "hmstitcher0" &&
+       (property_name == "stitched-output-epoch" || property_name == "shadow-lift" ||
+        property_name == "shadow-lift-black-point" || property_name == "exposure")) ||
       (element_name == "dsplaytracker0" &&
        (property_name == "draw" || property_name == "runtime-tuning-config-file" ||
         property_name == "fixed-edge-rotation-angle" || property_name == "fixed-edge-rotation-angle-left" ||
