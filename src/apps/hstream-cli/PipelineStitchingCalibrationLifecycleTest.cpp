@@ -865,6 +865,15 @@ int main(int argc, char** argv) {
       ok &= expect(first_generation == generation, "Changing only the mask time must preserve alignment/maps");
       const bool prepared = timed.output().find("Preparing mask at recording time") != std::string::npos;
       ok &= expect(prepared == (pass < 2), "Only new mask selections must run preparation");
+      if (prepared) {
+        const std::string restart_event = "HSTREAM_CALIBRATION stage=playback-restart status=complete";
+        const size_t restart = timed.output().find(restart_event);
+        ok &= expect(
+            restart != std::string::npos &&
+                count_occurrences(timed.output(), restart_event, 0, timed.output().size()) == 1 &&
+                count_occurrences(timed.output(), "Pipeline running", 0, restart) == (pass == 0 ? 3 : 2),
+            "Timed mask preparation must acknowledge normal PLAYING exactly once so the UI closes calibration");
+      }
       if (pass == 2)
         ok &= expect(
             fs::last_write_time(game / "rink_mask_0.png") == mask_before, "A repeated time must reuse the saved mask");
@@ -908,6 +917,9 @@ int main(int argc, char** argv) {
     ok &= expect(
         cancelled.Interrupt() && cancelled.WaitForExit(&cancelled_exit),
         "Cancelling mask preparation must promptly stop the pipeline");
+    ok &= expect(
+        cancelled.output().find("stage=playback-restart status=complete") == std::string::npos,
+        "Cancelled mask preparation must not acknowledge normal playback");
     config = YAML::LoadFile((game / "config.yaml").string());
     ok &= expect(
         config["rink"]["mask_frame"]["selection"].as<std::string>() == "00:00:05" &&
@@ -921,6 +933,7 @@ int main(int argc, char** argv) {
     YAML::Node legacy_pipeline = YAML::LoadFile(pipeline_config.string());
     legacy_pipeline["application"]["stage"] = -1;
     legacy_pipeline["hmstitcher"]["configure-only"] = 1;
+    legacy_pipeline["hmstitcher"]["one-pass-mode"] = 0;
     std::ofstream(pipeline_config) << YAML::Dump(legacy_pipeline) << '\n';
     PipelineProcess legacy_stage;
     int legacy_exit = -1;

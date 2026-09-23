@@ -2379,6 +2379,12 @@ absl::Status PipelineApplication::createMainLoop(
   });
 
   const uint64_t main_loop_generation = ++main_loop_generation_;
+  if (rink_mask_prepared_ && rink_mask_preparation_ == RinkMaskPreparation::kNone)
+    rink_mask_playback_restart_generation_ = main_loop_generation;
+  cleanup_stack.push([this, main_loop_generation] {
+    if (rink_mask_playback_restart_generation_ == main_loop_generation)
+      rink_mask_playback_restart_generation_ = 0;
+  });
   cleanup_stack.push([this, main_loop_generation] { cancel_stitch_frame_rewind(main_loop_generation); });
 
   std::vector<AppCtx*> stage_calibration_contexts;
@@ -7229,6 +7235,22 @@ gboolean PipelineApplication::event_thread_func() {
   // runtime command until the completed transaction is published here.
   if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
     return TRUE;
+  }
+  // Timed mask preparation recreates the entire stage rather than using the
+  // stitch-frame rewind callback. Preserve the same UI completion protocol,
+  // but only after the replacement generation has actually reached PLAYING.
+  if (rink_mask_playback_restart_generation_ != 0 && rink_mask_playback_restart_generation_ == main_loop_generation_) {
+    const auto stage = stage_app_contexts_.find(current_stage_);
+    if (stage != stage_app_contexts_.end() && !stage->second.empty() &&
+        std::all_of(stage->second.begin(), stage->second.end(), [](const auto& context) {
+          return context && context->pipeline.pipeline && context->return_value == 0 &&
+              context->observed_pipeline_state == GST_STATE_PLAYING;
+        })) {
+      rink_mask_playback_restart_generation_ = 0;
+      g_print(
+          "HSTREAM_CALIBRATION stage=playback-restart status=complete message=Playback restarted after ice mask preparation\n");
+      std::fflush(stdout);
+    }
   }
   if (player_frame_scan_) {
     const auto progress = player_frame_scan_->progress();

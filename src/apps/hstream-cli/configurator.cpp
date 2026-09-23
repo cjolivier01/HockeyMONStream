@@ -5420,16 +5420,29 @@ absl::Status Configurator::setup_stitcher_and_masks(
             game_dir.string(), max_output_width, post_stitch_rotate_degrees, {}, validated_stitching_artifacts_);
       }
       rink_mask_required_ = calibrate_field_mask && !field_mask_configured;
+      std::string mask_time;
+      HM_ASSIGN_OR_RETURN(mask_time, stitching::read_rink_mask_frame_time(config_));
+      const bool timed_mask_preparation = configure_only && rink_mask_required_ && mask_time != "auto";
+      if (timed_mask_preparation) {
+        // Legacy calibration stages must reach the bounded preparation path
+        // even when their alignment maps already exist.
+        pipeline["hmstitcher"]["configure-only"] = 0;
+        pipeline["hmstitcher"]["one-pass-mode"] = 1;
+      }
       const char* calibration_pending = g_getenv("HSTREAM_CALIBRATION_PENDING");
       const bool calibration_completion_requested =
           calibration_pending && *calibration_pending && g_strcmp0(calibration_pending, "0") != 0;
       stitching_matcher_model_required_ =
           StitcherMatcherModelRequired(configure_only, one_pass_mode, is_configured, force);
       stitching_calibration_required_ = OnePassCalibrationRequiredForMode(
-          one_pass_mode, is_configured, field_mask_configured, calibrate_field_mask, calibration_completion_requested);
+          one_pass_mode || timed_mask_preparation,
+          is_configured,
+          field_mask_configured,
+          calibrate_field_mask,
+          calibration_completion_requested);
       if (stitching_calibration_required_)
         stitching_calibration_start_stage_ = is_configured ? "rink-mask" : "input";
-      if (configure_only && is_configured && !force) {
+      if (configure_only && is_configured && !force && !timed_mask_preparation) {
         return absl::CancelledError("Stitching is already configured.");
       }
     }

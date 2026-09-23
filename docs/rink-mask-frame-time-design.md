@@ -76,6 +76,9 @@ video path gains no frame copies. Preparation does not consume timed playback.
 Each pass has a fresh run generation. Existing completion scopes, cancellation,
 worker teardown, and artifact locks fence transitions. Alignment completion
 does not report overall calibration complete before the mask is published.
+After preparation, the runner acknowledges playback restart only once the new
+normal pipeline generation is observed in PLAYING; this closes the UI
+calibration dialog without mistaking a preparation graph for Program playback.
 Calibration-only runs that omit ice-mask generation retain that behavior.
 
 Explicit sampling currently requires one pipeline context and exactly two
