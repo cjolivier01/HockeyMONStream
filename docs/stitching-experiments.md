@@ -3,11 +3,15 @@
 The desktop UI's **Stitching experiments…** tool compares multiple stitching calibrations against the same game and
 the same moving playback passage. It runs only while the main pipeline is stopped.
 
+Desktop action icons use consistent colors: green for apply/play/add, red for stop/cancel/delete, blue for
+navigation and inspection, and distinct colors for camera/stitching tools. Disabled icons retain their hue at
+reduced opacity. Standard dialog icons, native navigation/spin arrows, and table/tree indicators follow the same policy.
+
 ## Candidate matrix
 
 Enter comma-separated values for:
 
-- control-point limits (20–5000);
+- control-point limits per synchronized frame pair (10–5000);
 - calibration frame counts (1–16); and
 - first calibration-frame timestamps (`HH:MM:SS` or `HH:MM:SS.mmm`).
 
@@ -17,6 +21,13 @@ in one dialog are ignored while the main configuration is unchanged; reopening a
 contain at most 64 queued candidates. By default every candidate reuses the game's saved
 rink-leveling rotation. Clear that option to add pitch/roll variants as comma-separated `pitch/roll` pairs, for
 example `0/0,-1.5/0.5`. Explicit variants preserve the game's saved yaw.
+
+**Feature image size** offers the same SuperPoint choices as the main controls: **Native (full size)**,
+**1K (1024 px long edge)**, and **2K (2048 × 1152)**. It starts from the saved effective game setting.
+Change the size and add options again to compare otherwise identical solves; the **Image size** column records
+each candidate's choice, which survives reopening and promotion. Fixed-size matchers display their processing
+size with this control disabled. Native preserves source detail at higher memory/computation cost; it is not
+guaranteed to produce more useful matches. This setting is independent of inspector zoom and panorama output size.
 
 Adding options prepares each private game directory on a worker and saves the queued configuration in the
 persistent experiment cache. Camera chapters and matching
@@ -33,13 +44,17 @@ at the first calibration frame and defaults to 60 seconds, bounded to 300 second
 the existing detector and Program ice-mask pruning; people surviving that filter include players and referees.
 Tracking is not required. The baseline prepares its rink mask before scanning, while the scan requires that exact
 existing mask and adds no video readbacks. Selected synchronized pairs are replayed exactly for a separate calibration.
-The first pair remains the anchor, and a one-frame candidate needs no scan. All variants with the same frame count share one frozen selection: changing control-point limits or rotation
+The first pair remains the anchor, and a one-frame candidate needs no scan. All variants with the same frame count share one frozen selection: changing control-point limits, image size or rotation
 runs only another solve. The first search duration is authoritative for that count. A different frame count can
 establish another selection; an incompatible reference time for an established count is an error. Baselines count toward the 64-row limit; removing one removes its dependent automatic rows.
 
 An empty passage or insufficient separated people leaves the automatic row unavailable with a reason. Source,
 model, inference, or mask failures are errors. The ordinary baseline remains available. Automatic frame selection
 does not guarantee improved alignment or that the feature matcher uses player points; compare the moving results.
+
+The **Frame selection** column records each row's actual policy: ordinary capture, the ordinary baseline used
+for a search, anchor-only capture, or pending/saved player-rich selection. It follows the row's retained inputs
+and dependencies, independently of the checkbox's current state.
 
 Adding, running, cancelling, previewing, or discarding a batch never modifies the selected game's stitching config or
 artifacts. Closing retains the complete experiment history, configurations, extracted frames and logs under the game’s
@@ -59,12 +74,22 @@ the configured passage start and duration; Loop restarts that exact passage. The
 beside the preview, with passage start and duration on separate labeled rows below it.
 
 Drag a window edge or the bottom-right resize grip to resize the dialog, or use its title-bar maximize button.
-The calibration-frame inspector has its own resize grip and resizes independently of the experiment window;
-camera and match images scale to fit. **Expand preview** (or double-click the video) hides
+Both this dialog and the calibration-frame inspector also have an explicit **Maximize window / Restore window**
+icon at the top right. The inspector resizes independently of the experiment window. Each camera image and match
+image has independent **Zoom in**, **Zoom out**, **Actual size (1:1)**, and **Fit image** controls. The mouse wheel
+zooms at the pointer; dragging pans; double-clicking fits. Manual zoom survives window resizing, while Fit follows
+the available space. Actual size refers to saved thumbnail pixels, not the full-resolution matcher input.
+These owned dialogs use an ordinary native window type while retaining Qt ownership and modality. This allows
+GNOME/Mutter to honor title-bar maximize/restore; its dialog window type can otherwise report a maximized Qt state
+without changing the actual geometry.
+**Expand preview** (or double-click the video) hides
 the candidate panel and log to give the moving canvas more space while keeping playback controls available.
 **Restore layout**, another double-click, or **Escape** returns to the previous split without restarting playback
 or replacing its native GPU window. Switching candidates starts the same passage against that candidate's maps and
 seam. Video surfaces remain GPU-resident.
+While idle, Qt paints the preview black, including newly exposed areas after resizing. Playback gives the same
+native window to the GPU renderer; Qt resumes painting after the renderer process exits and its shutdown cleanup
+finishes. If helper shutdown cannot be confirmed, the existing cleanup path quarantines the candidate workspace.
 Calibration-only embedded playback retains the render sink's configured clock pacing, so a passage plays at normal
 speed. Ordinary Program previews keep their existing processing/encoding timing.
 
@@ -98,12 +123,22 @@ before multi-frame pooling and geometric validation; they are not all raw SuperP
 solver's inliers. Changing the selected pair updates the view, and turning off Show matches restores the original
 camera thumbnails. The coverage grid keeps its separate meaning.
 
-The control-point maximum limits retained matches rather than the detector's raw
-keypoint count. Capped selection balances occupied height bands before horizontal
+The control-point maximum limits retained matches per synchronized frame pair rather than the detector's raw
+keypoint count. Selected matches add across pairs without another global cap: 100 CP with 2 frames supplies
+up to 200 matches to geometric validation. Pairs with fewer usable matches contribute only what they have;
+if the pooled solve is rejected, individual-pair fallback attempts retain the per-pair cap.
+Existing saved calibrations keep their original matches; rerun calibration to apply this selection policy.
+Capped selection balances occupied height bands before horizontal
 cells to preserve available near-side points when the back wall is more textured.
 It cannot add lower-image matches that the detector did not find, and a maximum
 above the accepted count retains all of them. See [native feature matchers](native-feature-matchers.md)
 for the detector limits, selection algorithm, and comparison with HockeyMON.
+
+SuperPoint detects distinctive local features; LightGlue scores confidence in the correspondence. Neither score
+identifies people. Within a spatial cell, a higher-confidence background match can displace a player match.
+Player-rich frame selection does not alter that ranking. Matching the same body feature in synchronized views can
+help inspect player alignment, but motion alone does not make it a stronger calibration constraint: timing error,
+occlusion and depth-dependent parallax can make moving people inconsistent with a single panorama alignment.
 
 Calibration saves `points_N.jpg` and `matches_N.jpg` beside the generation's ordinary inspection files, including
 for Players rows. Each combined image is at most 2048 × 1024 pixels and uses the CPU stills and matching results
@@ -149,6 +184,9 @@ calibration with that candidate’s frame policy.
 deduplication, serial continuation after failure, source-config isolation, and prompt closure without GPU use. It
 also checks non-overlapping preview controls at 1280×820 and 1024×720, dialog maximization, and preview expand/restore
 through the button, double-click, and Escape, preserving the splitter sizes and native window identity.
+The same test can run with `QT_QPA_PLATFORM=xcb` under Xvfb to check displayed pixels: idle resize/focus changes
+remain black, external frame pixels survive Qt invalidation during playback, and normal exit, failure, and Stop
+return the preview to black without replacing its native window.
 It also checks one scan across control-point variants, same-count selection inheritance, per-row baseline/Players
 inspection, dependency removal, the full queue bound, bootstrap failure and cancellation, and the Close confirmation. Backend tests distinguish invalid reports from unavailable coverage and preserve selection
 provenance through promotion.

@@ -475,8 +475,8 @@ bool test_owned_solve_publication(
       "    invalidation_id: owned-solve\n"
       "    stale_from: input\n"
       "    reframe: null\n"
-      "    control_point_count: 20\n"
-      "    calibration_frame_count: 3\n");
+      "    control_point_count: 2000\n"
+      "    calibration_frame_count: 16\n");
   config["stitching"]["control_point_matcher"] = choices.control_point_matcher;
   config["stitching"]["control_point_resolution"] = ControlPointResolutionName(choices.control_point_resolution);
   config["stitching"]["mapping_backend"] = choices.mapping_backend;
@@ -492,19 +492,27 @@ bool test_owned_solve_publication(
     return false;
   }
   const std::string previous_config = YAML::Dump(config) + "\n";
+  // A supported 16-pair solve can exceed the old 1 MiB project-reader limit.
+  std::vector<FeatureMatch> large_matches;
+  for (size_t i = 0; i < 16 * 2000; ++i) {
+    auto match = matches[i % matches.size()];
+    match.left += cv::Point2f(0.123456f, 0.234567f);
+    match.right += cv::Point2f(0.345678f, 0.456789f);
+    large_matches.push_back(match);
+  }
   std::ofstream(game / "config.yaml") << previous_config;
   std::ofstream(game / "rink_mask_0.png") << "previous mask";
   std::ofstream(game / "s.png") << "previous snapshot";
   ::setenv("HM_AUTOOPTIMISER", owned_optimizer.c_str(), 1);
   ::setenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG", "1", 1);
-  const auto failed = HuginProject::Configure(game, matches, options);
+  const auto failed = HuginProject::Configure(game, large_matches, options);
   ::unsetenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG");
   bool ok = expect(
       !failed.ok() && HuginProject::Recover(game).ok() && read_text_file(game / "config.yaml") == previous_config &&
           read_text_file(game / "autooptimiser_out.pto") == previous_project && fs::exists(game / "rink_mask_0.png"),
       "owned solve publication failure rolls back maps, config, and the previous rink mask");
   ::setenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG", "1", 1);
-  const auto interrupted = HuginProject::Configure(game, matches, options);
+  const auto interrupted = HuginProject::Configure(game, large_matches, options);
   ::unsetenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG");
   const auto recovered = HuginProject::Recover(game);
   ::setenv("HM_AUTOOPTIMISER", optimizer.c_str(), 1);
@@ -513,6 +521,18 @@ bool test_owned_solve_publication(
   if (!interrupted_at_commit)
     std::cerr << "Owned solve publication did not reach commit: " << interrupted << '\n';
   ok &= expect(interrupted_at_commit && recovered.ok(), "owned solve recovery completes config-aware publication");
+  const auto published_project = HuginProject::ReadProject(game / "autooptimiser_out.pto");
+  ok &= expect(
+      published_project.ok() && published_project->size() > 1024 * 1024 &&
+          std::count(published_project->begin(), published_project->end(), '\n') >= large_matches.size(),
+      "owned multi-frame solve must publish and read back all points in a project larger than 1 MiB");
+  const fs::path oversized = root / "oversized-project.pto";
+  std::ofstream(oversized) << "p f2 w100 h50 v180\n";
+  fs::resize_file(oversized, HuginProject::kMaximumProjectBytes + 1);
+  ok &= expect(
+      absl::IsFailedPrecondition(HuginProject::ReadProject(oversized).status()),
+      "shared PTO reader must reject oversized files before allocating their contents");
+  fs::remove(oversized);
   const YAML::Node saved = YAML::LoadFile((game / "config.yaml").string());
   const YAML::Node calibration = saved["hstream_ui"]["stitching_calibration"];
   const std::string geometry =
@@ -521,8 +541,8 @@ bool test_owned_solve_publication(
       calibration["status"].as<std::string>("") == "complete" &&
           calibration["rink_mask_status"].as<std::string>("") == "pending" &&
           calibration["artifacts_invalidated"].as<bool>(false) && !calibration["stale_from"] &&
-          !calibration["reframe"] && calibration["control_point_count"].as<int>(0) == 20 &&
-          calibration["calibration_frame_count"].as<int>(0) == 3 &&
+          !calibration["reframe"] && calibration["control_point_count"].as<int>(0) == 2000 &&
+          calibration["calibration_frame_count"].as<int>(0) == 16 &&
           validate_stitching_backend_generation(saved, "owned-solve", choices).ok() &&
           projection_crop_reviewed(saved, geometry),
       "a published owned solve remains complete and keeps its accepted crop while rink-mask work is pending");
@@ -797,7 +817,9 @@ int main(int argc, char** argv) {
       "non-finite PTO camera pose must fail");
   ok &=
       expect(!hm::stitching::HuginProject::ParseCameraPose(pose_project, 2).ok(), "missing PTO image index must fail");
-  matches.resize(15);
+  matches.resize(10);
+  ok &= expect(hm::stitching::HuginProject::InsertControlPoints(base, matches).ok(), "ten control points must insert");
+  matches.resize(9);
   ok &=
       expect(!hm::stitching::HuginProject::InsertControlPoints(base, matches).ok(), "too few control points must fail");
   matches.resize(16, hm::stitching::FeatureMatch{{0.0f, 0.0f}, {1.0f, 1.0f}, 1.0f});
@@ -1089,11 +1111,22 @@ int main(int argc, char** argv) {
   options.horizontal_fov = 127.2;
   options.vertical_fov = 95.0;
   options.projection = hm::stitching::StitchProjection::kGeneralPanini;
+  const std::vector<hm::stitching::FeatureMatch> nine_matches(matches.begin(), matches.begin() + 9);
+  const auto too_few = hm::stitching::HuginProject::Configure(
+      root / "nine-point-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      nine_matches,
+      options);
+  ok &= expect(
+      absl::IsFailedPrecondition(too_few) && !fs::exists(root / "nine-point-game"),
+      "nine control points must fail general calibration before creating artifacts");
+  const std::vector<hm::stitching::FeatureMatch> ten_matches(matches.begin(), matches.begin() + 10);
   const auto configured = hm::stitching::HuginProject::Configure(
-      root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
+      root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", ten_matches, options);
   if (!configured.ok())
     std::cerr << configured << '\n';
-  ok &= expect(configured.ok(), "fake Hugin toolchain must complete orchestration");
+  ok &= expect(configured.ok(), "fake Hugin toolchain must complete orchestration with ten control points");
   if (configured.ok()) {
     auto lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
     if (!lock.ok())
@@ -1736,7 +1769,7 @@ int main(int argc, char** argv) {
   std::string optimizer_disabled_message;
   fs::create_directories(root / "optimizer-disabled-game");
   std::vector<hm::stitching::FeatureMatch> optimizer_disabled_matches;
-  for (int y = 6; y < 48; y += 10) {
+  for (int y : {6, 36}) {
     for (int x = 16; x < 64; x += 10) {
       optimizer_disabled_matches.push_back(
           {{static_cast<float>(x), static_cast<float>(y)},
@@ -1805,6 +1838,16 @@ int main(int argc, char** argv) {
   if (!six_point_akaze.ok())
     std::cerr << six_point_akaze << '\n';
   ok &= expect(six_point_akaze.ok(), "native AKAZE mapping must honor its six-control-point minimum");
+  six_point_akaze_matches.pop_back();
+  const auto five_point_akaze = hm::stitching::HuginProject::Configure(
+      root / "five-point-akaze-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      six_point_akaze_matches,
+      six_point_akaze_options);
+  ok &= expect(
+      absl::IsFailedPrecondition(five_point_akaze) && !fs::exists(root / "five-point-akaze-game"),
+      "AKAZE must reject five control points before creating artifacts");
 
   hm::stitching::HuginProject::Options invalid_nona_options;
   invalid_nona_options.run_autooptimizer = false;

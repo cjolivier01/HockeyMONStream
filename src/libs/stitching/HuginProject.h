@@ -24,6 +24,11 @@ bool hard_seam_fallback_enabled();
 
 class HuginProject {
  public:
+  // Additive multi-frame calibrations can contain tens of thousands of points.
+  static constexpr size_t kMaximumProjectBytes = 64ULL * 1024 * 1024;
+  // Reads only a stable regular file, allocating its actual size within the cap.
+  static absl::StatusOr<std::string> ReadProject(const std::filesystem::path& path);
+
   class ArtifactLock {
    public:
     ~ArtifactLock();
@@ -125,7 +130,7 @@ class HuginProject {
   static absl::StatusOr<std::string> InsertControlPoints(
       const std::string& pto,
       const std::vector<FeatureMatch>& matches,
-      size_t minimum_control_points = 16);
+      size_t minimum_control_points = kMinimumCalibrationControlPoints);
   static absl::StatusOr<std::pair<size_t, size_t>> ParseCanvasSize(const std::string& pto);
   static absl::StatusOr<int> ParseProjection(const std::string& pto);
   static absl::StatusOr<double> ParseHorizontalFov(const std::string& pto);

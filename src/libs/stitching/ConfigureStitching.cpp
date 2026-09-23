@@ -2969,6 +2969,28 @@ bool is_missing_hugin_executable(const absl::Status& status) {
       message.find("hm_enblend is not executable") != std::string::npos;
 }
 
+std::vector<StitchingCalibrationMatchCandidate> make_stitching_calibration_match_candidates(
+    std::vector<StitchingCalibrationMatchCandidate> frame_candidates) {
+  std::stable_sort(frame_candidates.begin(), frame_candidates.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.accepted_match_count > rhs.accepted_match_count;
+  });
+  if (frame_candidates.size() > 1) {
+    StitchingCalibrationMatchCandidate pooled;
+    pooled.index = frame_candidates.front().index;
+    pooled.pooled = true;
+    size_t selected_count = 0;
+    for (const auto& candidate : frame_candidates) {
+      selected_count += candidate.selected.size();
+      pooled.accepted_match_count += candidate.accepted_match_count;
+    }
+    pooled.selected.reserve(selected_count);
+    for (const auto& candidate : frame_candidates)
+      pooled.selected.insert(pooled.selected.end(), candidate.selected.begin(), candidate.selected.end());
+    frame_candidates.insert(frame_candidates.begin(), std::move(pooled));
+  }
+  return frame_candidates;
+}
+
 bool should_retry_stitching_calibration_candidate(const absl::Status& status, bool alignment_complete) {
   if (alignment_complete)
     return false;
@@ -3389,14 +3411,11 @@ absl::Status create_control_points(
           {},
           cpu_fallback));
   const size_t minimum_matches =
-      control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona ? 6 : 16;
-  struct CandidateFramePair {
-    size_t index{0};
-    std::vector<FeatureMatch> accepted;
-    bool pooled{false};
-  };
-  std::vector<FeatureMatch> pooled_accepted;
-  std::vector<CandidateFramePair> candidates;
+      control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona
+      ? 6
+      : kMinimumCalibrationControlPoints;
+  std::vector<StitchingCalibrationMatchCandidate> candidates;
+  size_t accepted_match_count = 0;
   cv::Size left_source_size;
   cv::Size right_source_size;
   size_t matched_frame_pairs = 0;
@@ -3474,8 +3493,15 @@ absl::Status create_control_points(
     }
     frame_match_counts[index] = frame_matches.accepted.size();
     ++matched_frame_pairs;
-    candidates.push_back(CandidateFramePair{.index = index, .accepted = frame_matches.accepted});
-    pooled_accepted.insert(pooled_accepted.end(), frame_matches.accepted.begin(), frame_matches.accepted.end());
+    accepted_match_count += frame_matches.accepted.size();
+    // The inspection and solver consume the same per-pair selection. Pooling
+    // these capped sets makes the final budget additive across matched pairs.
+    candidates.push_back(
+        StitchingCalibrationMatchCandidate{
+            .index = index,
+            .accepted_match_count = frame_matches.accepted.size(),
+            .selected = std::move(frame_matches.selected),
+        });
   }
   report_calibration_progress(
       "features",
@@ -3490,31 +3516,18 @@ absl::Status create_control_points(
   if (matched_frame_pairs == 0) {
     return absl::FailedPreconditionError("No stitching calibration frame pair produced usable matches");
   }
-  if (pooled_accepted.size() < minimum_matches) {
+  if (accepted_match_count < minimum_matches) {
     return absl::FailedPreconditionError(TO_STRING(
-        "Native feature matcher produced only " << pooled_accepted.size() << " usable matches across "
+        "Native feature matcher produced only " << accepted_match_count << " usable matches across "
                                                 << matched_frame_pairs << "/" << input_files.size()
                                                 << " frame pairs; at least " << minimum_matches << " are required"));
   }
-  std::stable_sort(
-      candidates.begin(), candidates.end(), [](const CandidateFramePair& lhs, const CandidateFramePair& rhs) {
-        return lhs.accepted.size() > rhs.accepted.size();
-      });
-  const size_t pooled_match_count = pooled_accepted.size();
-  if (candidates.size() > 1) {
-    candidates.insert(
-        candidates.begin(),
-        CandidateFramePair{
-            .index = candidates.front().index,
-            .accepted = std::move(pooled_accepted),
-            .pooled = true,
-        });
-  }
+  candidates = make_stitching_calibration_match_candidates(std::move(candidates));
   report_calibration_progress(
       "matching",
       "complete",
       TO_STRING(
-          "Matched candidates from " << pooled_match_count << " usable control points across " << matched_frame_pairs
+          "Matched candidates from " << accepted_match_count << " usable control points across " << matched_frame_pairs
                                      << "/" << input_files.size() << " frame pair"
                                      << (input_files.size() == 1 ? "" : "s")
                                      << (skipped_frame_pairs == 0 ? "" : TO_STRING(", skipped " << skipped_frame_pairs))
@@ -3544,19 +3557,11 @@ absl::Status create_control_points(
   absl::Status last_candidate_status =
       absl::FailedPreconditionError("No stitching calibration frame pair had enough usable matches");
   size_t attempted_candidates = 0;
-  for (const CandidateFramePair& candidate : candidates) {
-    if (candidate.accepted.size() < minimum_matches) {
+  for (const StitchingCalibrationMatchCandidate& candidate : candidates) {
+    if (candidate.selected.size() < minimum_matches) {
       continue;
     }
-    auto selected_or = FeatureMatcher::SelectControlPoints(candidate.accepted, left_source_size, max_control_points);
-    if (!selected_or.ok()) {
-      last_candidate_status = selected_or.status();
-      if (absl::IsFailedPrecondition(last_candidate_status) || absl::IsNotFound(last_candidate_status)) {
-        continue;
-      }
-      return last_candidate_status;
-    }
-    std::vector<FeatureMatch> selected = std::move(*selected_or);
+    const std::vector<FeatureMatch>& selected = candidate.selected;
     for (const FeatureMatch& match : selected) {
       if (match.left.x < 0.0f || match.left.y < 0.0f || match.right.x < 0.0f || match.right.y < 0.0f ||
           match.left.x >= left_source_size.width || match.left.y >= left_source_size.height ||
@@ -5501,14 +5506,8 @@ absl::Status reframe_stitching(
     HM_RETURN_IF_ERROR(options.validate_source());
     try {
       YAML::Node current = YAML::LoadFile(config_path.string());
-      std::ifstream project(staging / "autooptimiser_out.pto", std::ios::binary);
-      if (!project)
-        return absl::InternalError("Cannot read reframed project for accepted crop");
-      std::string pto(1024 * 1024 + 1, '\0');
-      project.read(pto.data(), pto.size());
-      pto.resize(project.gcount());
-      if (project.bad() || pto.size() > 1024 * 1024)
-        return absl::FailedPreconditionError("Reframed project exceeds the accepted crop size limit");
+      std::string pto;
+      HM_ASSIGN_OR_RETURN(pto, HuginProject::ReadProject(staging / "autooptimiser_out.pto"));
       const std::string geometry = projection_crop_geometry(pto, options.projection_framing);
       if (geometry.empty())
         return absl::FailedPreconditionError("Reframed project has no valid crop geometry");
