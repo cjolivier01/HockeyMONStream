@@ -29,6 +29,7 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSizeGrip>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
@@ -128,6 +129,8 @@ void check_preview_layout(StitchingExperimentDialog& dialog) {
 
 void exercise_layout(StitchingExperimentDialog& dialog) {
   require(dialog.windowFlags().testFlag(Qt::WindowMaximizeButtonHint), "Dialog must offer title-bar maximize");
+  auto* grip = dialog.findChild<QSizeGrip*>();
+  require(dialog.isSizeGripEnabled() && grip && grip->isVisible(), "Experiments must expose a corner resize grip");
   const QSize original_size = dialog.size();
   for (const QSize size : {QSize(1280, 820), QSize(1024, 720)}) {
     dialog.resize(size);
@@ -201,8 +204,10 @@ void exercise_player_queue(const QString& game, const QString& root) {
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
   require(
-      !players->isChecked() && !duration->isEnabled() && duration->value() == 60 && duration->maximum() == 300,
-      "Player selection must be opt-in with bounded search controls");
+      players->isChecked() && duration->isEnabled() && duration->value() == 60 && duration->maximum() == 300,
+      "Player selection must default on with bounded search controls");
+  players->setChecked(false);
+  require(!duration->isEnabled(), "Disabling player selection must disable its search controls");
   add_options(dialog);
   players->setChecked(true);
   add_options(dialog);
@@ -322,6 +327,7 @@ void exercise_queued_reopen(const QString& game, const QString& root) {
     require(
         table->rowCount() == 3 && table->item(0, 5)->text() == "Queued" && table->item(2, 5)->text() == "Queued",
         "Unstarted rows and settings must survive closing the dialog");
+    widget<QCheckBox>(reopened, "stitchExperimentPreferPlayerFrames")->setChecked(false);
     add_options(reopened);
     require(
         table->rowCount() == 4 && table->item(3, 0)->text().startsWith("Players"),
@@ -687,8 +693,8 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
       write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(selected_config)));
     }
   });
+  widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(player_group);
   if (player_group) {
-    widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(true);
     widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
   }
   add_options(dialog);
@@ -797,6 +803,7 @@ void exercise_failed_ordinary_selection_recovery(const QString& game, const QStr
     StitchingExperimentDialog queued(
         game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
     queued.show();
+    widget<QCheckBox>(queued, "stitchExperimentPreferPlayerFrames")->setChecked(false);
     add_options(queued);
     queued.reject();
     require(wait_until([&] { return !queued.isVisible(); }, 1000), "Ordinary recovery fixture did not close");
@@ -953,6 +960,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     require(inspected_log, "Reopened historical rows must expose their retained runner output");
     table->selectRow(0);
     bool inspected_main = false;
+    const QSize parent_size = reopened.size();
     QTimer::singleShot(0, &reopened, [&]() {
       if (auto* inspector = reopened.findChild<QDialog*>("stitchExperimentFrameInspector")) {
         auto* frames = inspector->findChild<QTableWidget*>("stitchExperimentSelectedFrames");
@@ -965,6 +973,15 @@ void exercise_saved_selection(const QString& game, const QString& root) {
         if (inspected_main) {
           show->setChecked(true);
           QCoreApplication::processEvents();
+          auto* grip = inspector->findChild<QSizeGrip*>();
+          inspected_main &= inspector->isSizeGripEnabled() && grip && grip->isVisible();
+          for (const QSize size : {QSize(1280, 820), QSize(1000, 700)}) {
+            inspector->resize(size);
+            QCoreApplication::processEvents();
+            const QPixmap fitted = image->property("pixmap").value<QPixmap>();
+            inspected_main &= inspector->size() == size && reopened.size() == parent_size && !fitted.isNull() &&
+                fitted.width() <= image->width() && fitted.height() <= image->height();
+          }
           const QImage lines = image->property("pixmap").value<QPixmap>().toImage();
           inspected_main &= image->isVisible() && points_only->isEnabled() && !lines.isNull();
           const QString screenshot = qEnvironmentVariable("HSTREAM_TEST_MATCH_SCREENSHOT");

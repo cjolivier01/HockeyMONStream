@@ -27,7 +27,8 @@ configuration stay isolated. The dialog remains responsive during preparation; q
 Program crop, inference, rink masking, and play tracking. Completed candidates remain available for comparison after
 the batch finishes or is cancelled.
 
-Enable **Prefer player-rich frames** to add an automatic candidate alongside its ordinary baseline. The search starts
+**Prefer player-rich frames** is enabled by default and adds an automatic candidate alongside its ordinary baseline
+for multi-frame calibrations. Uncheck it to queue only ordinary candidates when no saved frame selection applies. The search starts
 at the first calibration frame and defaults to 60 seconds, bounded to 300 seconds. It samples every 500 ms through
 the existing detector and Program ice-mask pruning; people surviving that filter include players and referees.
 Tracking is not required. The baseline prepares its rink mask before scanning, while the scan requires that exact
@@ -57,7 +58,9 @@ Select a ready row and choose **Play selected** (or double-click it). The existi
 the configured passage start and duration; Loop restarts that exact passage. The candidate matrix and results sit
 beside the preview, with passage start and duration on separate labeled rows below it.
 
-Use the title-bar maximize button to enlarge the whole dialog. **Expand preview** (or double-click the video) hides
+Drag a window edge or the bottom-right resize grip to resize the dialog, or use its title-bar maximize button.
+The calibration-frame inspector has its own resize grip and resizes independently of the experiment window;
+camera and match images scale to fit. **Expand preview** (or double-click the video) hides
 the candidate panel and log to give the moving canvas more space while keeping playback controls available.
 **Restore layout**, another double-click, or **Escape** returns to the previous split without restarting playback
 or replacing its native GPU window. Switching candidates starts the same passage against that candidate's maps and

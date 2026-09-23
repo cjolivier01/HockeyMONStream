@@ -2269,6 +2269,7 @@ struct StitchingExperimentDialog::Impl {
     viewer.setObjectName("stitchExperimentFrameInspector");
     viewer.setWindowTitle(QString("Calibration frames — Candidate %1").arg(candidates[row].sequence));
     viewer.setWindowFlag(Qt::WindowMaximizeButtonHint, true);
+    viewer.setSizeGripEnabled(true);
     viewer.resize(1180, 780);
     auto* layout = new QVBoxLayout(&viewer);
     auto* explanation = new QLabel(
@@ -2538,6 +2539,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   setWindowTitle("Stitching Experiments");
   setWindowFlag(Qt::WindowMaximizeButtonHint, true);
   setWindowFlag(Qt::WindowContextHelpButtonHint, false);
+  setSizeGripEnabled(true);
   resize(1280, 820);
   auto& s = *impl_;
   s.game_directory = game_directory;
@@ -2584,6 +2586,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_layout->addRow("Rink pitch/roll variants", s.rotations);
   s.prefer_player_frames = new QCheckBox("Prefer player-rich frames");
   s.prefer_player_frames->setObjectName("stitchExperimentPreferPlayerFrames");
+  s.prefer_player_frames->setChecked(true);
   s.prefer_player_frames->setToolTip(
       "Choose player-rich frames once per frame count, using one ordinary baseline and the Program ice mask. "
       "Later options reuse that exact selection and its original search duration, even when this box is unchecked. "

@@ -518,14 +518,23 @@ absl::StatusOr<std::string> read_inspection_file(const fs::path& path, size_t li
     return absl::NotFoundError("Calibration inspection file is missing: " + path.string());
   if (error || status.type() != fs::file_type::regular)
     return absl::FailedPreconditionError("Calibration inspection file must be a regular owned file");
+  const auto size = fs::file_size(path, error);
+  if (error)
+    return absl::InternalError("Unable to size calibration inspection file");
+  if (size > limit)
+    return absl::ResourceExhaustedError("Calibration inspection file exceeds its byte limit");
   std::ifstream input(path, std::ios::binary);
   if (!input)
     return absl::InternalError("Unable to read calibration inspection file");
-  std::string bytes(limit + 1, '\0');
+  // Promotion retains all pair images until staging. Allocate for their actual
+  // payloads, not 4/5 MiB per file: resize() alone would retain that capacity.
+  std::string bytes(static_cast<size_t>(size) + 1, '\0');
   input.read(bytes.data(), bytes.size());
   bytes.resize(input.gcount());
-  if (input.bad() || bytes.size() > limit)
-    return absl::ResourceExhaustedError("Calibration inspection file exceeds its byte limit");
+  if (input.bad())
+    return absl::InternalError("Unable to read calibration inspection file");
+  if (bytes.size() != size)
+    return absl::AbortedError("Calibration inspection file changed while being read");
   return bytes;
 }
 
