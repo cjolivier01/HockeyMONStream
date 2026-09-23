@@ -5408,7 +5408,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   control_points_spin_->setPrefix("CP ");
   control_points_spin_->setMinimumWidth(96);
   control_points_spin_->setToolTip(
-      "Control-point limit for stitching calibration. Changing this in Program mode recalibrates stitching before "
+      "Control-point limit per synchronized frame pair; 100 with 2 frames gives up to 200 total. "
+      "Changing this in Program mode recalibrates stitching before "
       "the full pipeline continues.");
   connect(control_points_spin_, &QSpinBox::valueChanged, this, [this]() { updatePresetDirtyState(); });
 
@@ -6404,7 +6405,8 @@ void HStreamWindow::configureControlHelp() {
       "simultaneously record the full stitched canvas.");
   help(
       "controlPointsSpin",
-      "Set the maximum number of feature control points used during stitching calibration. Changing it makes "
+      "Set the maximum number of feature control points per synchronized frame pair. Contributions add across "
+      "pairs: 100 with 2 frames gives up to 200 total before geometric validation. Changing it makes "
       "Program recalibrate stale stitching before continuing.");
   help(
       "stitchFrameTimeEdit",

@@ -2739,6 +2739,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.control_points = new QLineEdit(QString::number(control_points));
   s.control_points->setObjectName("stitchExperimentControlPoints");
   s.control_points->setPlaceholderText("600,900,1500");
+  s.control_points->setToolTip(
+      "Maximum retained matches per synchronized frame pair. Contributions add across pairs: "
+      "100 with 2 frames gives up to 200 total before geometric validation.");
   s.frame_counts = new QLineEdit(QString::number(frame_count));
   s.frame_counts->setObjectName("stitchExperimentFrameCounts");
   s.frame_counts->setPlaceholderText("1,4,8");
@@ -2802,7 +2805,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.rotations->setPlaceholderText("pitch/roll pairs: 0/0,-1.5/0.5");
   s.rotations->setEnabled(false);
   connect(s.shared_rotation, &QCheckBox::toggled, this, [&s](bool checked) { s.rotations->setEnabled(!checked); });
-  matrix_layout->addRow("Control-point counts", s.control_points);
+  matrix_layout->addRow("CP limits per frame pair", s.control_points);
   matrix_layout->addRow("Feature image size", s.control_point_resolution);
   matrix_layout->addRow("Frame counts", s.frame_counts);
   matrix_layout->addRow("First calibration frames", s.start_frames);
@@ -2859,6 +2862,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.table->setObjectName("stitchExperimentCandidates");
   s.table->setHorizontalHeaderLabels(
       {"Candidate", "CP", "Frames", "First frame", "Rink pitch / roll", "Status", "Frame selection", "Image size"});
+  s.table->horizontalHeaderItem(1)->setToolTip("Maximum control points per synchronized frame pair.");
   s.table->setSelectionBehavior(QAbstractItemView::SelectRows);
   s.table->setSelectionMode(QAbstractItemView::SingleSelection);
   s.table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);

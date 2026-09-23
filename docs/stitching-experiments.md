@@ -11,7 +11,7 @@ reduced opacity. Standard dialog icons, native navigation/spin arrows, and table
 
 Enter comma-separated values for:
 
-- control-point limits (10–5000);
+- control-point limits per synchronized frame pair (10–5000);
 - calibration frame counts (1–16); and
 - first calibration-frame timestamps (`HH:MM:SS` or `HH:MM:SS.mmm`).
 
@@ -123,8 +123,12 @@ before multi-frame pooling and geometric validation; they are not all raw SuperP
 solver's inliers. Changing the selected pair updates the view, and turning off Show matches restores the original
 camera thumbnails. The coverage grid keeps its separate meaning.
 
-The control-point maximum limits retained matches rather than the detector's raw
-keypoint count. Capped selection balances occupied height bands before horizontal
+The control-point maximum limits retained matches per synchronized frame pair rather than the detector's raw
+keypoint count. Selected matches add across pairs without another global cap: 100 CP with 2 frames supplies
+up to 200 matches to geometric validation. Pairs with fewer usable matches contribute only what they have;
+if the pooled solve is rejected, individual-pair fallback attempts retain the per-pair cap.
+Existing saved calibrations keep their original matches; rerun calibration to apply this selection policy.
+Capped selection balances occupied height bands before horizontal
 cells to preserve available near-side points when the back wall is more textured.
 It cannot add lower-image matches that the detector did not find, and a maximum
 above the accepted count retains all of them. See [native feature matchers](native-feature-matchers.md)

@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -29,6 +30,62 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+bool expect_additive_calibration_matches() {
+  using hm::stitching::FeatureMatch;
+  using hm::stitching::FeatureMatcher;
+  using hm::stitching::make_stitching_calibration_match_candidates;
+  using hm::stitching::StitchingCalibrationMatchCandidate;
+  const auto frame = [](size_t index, size_t count, float score) {
+    std::vector<FeatureMatch> accepted;
+    for (size_t i = 0; i < count; ++i) {
+      const cv::Point2f point((i % 16) * 100 + 20, ((i / 16) % 9) * 100 + 20 + (i / 144) * 0.25f);
+      const int id = static_cast<int>(index * 1000 + i);
+      accepted.push_back({point, point + cv::Point2f(5, 3), score, id, id});
+    }
+    auto selected = FeatureMatcher::SelectControlPoints(accepted, {1600, 900}, 100);
+    return StitchingCalibrationMatchCandidate{index, count, selected.ok() ? *selected : std::vector<FeatureMatch>{}};
+  };
+  const auto first = frame(0, 300, 0.9f);
+  // Deliberately use a nonconsecutive index, as when an intervening pair failed.
+  const auto second = frame(2, 600, 0.5f);
+  const auto candidates = make_stitching_calibration_match_candidates({first, second});
+  if (candidates.size() != 3 || !candidates[0].pooled || candidates[0].index != 2 ||
+      candidates[0].selected.size() != 200 || candidates[0].accepted_match_count != 900 ||
+      std::count_if(
+          candidates[0].selected.begin(),
+          candidates[0].selected.end(),
+          [](const auto& match) { return match.left_index < 1000; }) != 100 ||
+      candidates[1].pooled || candidates[1].index != 2 || candidates[1].selected.size() != 100 ||
+      candidates[2].pooled || candidates[2].index != 0 || candidates[2].selected.size() != 100) {
+    std::cerr << "Two 100-CP pairs must contribute 100 each, with independently capped single-pair fallbacks\n";
+    return false;
+  }
+  // Keep the exact per-pair inspection matches, including repeated coordinates
+  // in different frames; a more confident frame must not displace another one.
+  for (const auto& expected : {first, second}) {
+    for (const auto& match : expected.selected) {
+      if (std::count_if(candidates[0].selected.begin(), candidates[0].selected.end(), [&](const auto& actual) {
+            return actual.left_index == match.left_index && actual.left == match.left && actual.right == match.right &&
+                actual.score == match.score;
+          }) != 1) {
+        std::cerr << "Pooling must preserve every selected correspondence exactly once\n";
+        return false;
+      }
+    }
+  }
+  const auto sparse = make_stitching_calibration_match_candidates({first, frame(2, 37, 0.5f)});
+  const auto single = make_stitching_calibration_match_candidates({first});
+  const auto tied = make_stitching_calibration_match_candidates({first, frame(2, 300, 0.5f)});
+  if (sparse.size() != 3 || sparse[0].selected.size() != 137 || single.size() != 1 || single[0].pooled ||
+      single[0].selected.size() != 100 || tied[0].index != 0 || tied[1].index != 0 || tied[2].index != 2 ||
+      !make_stitching_calibration_match_candidates({}).empty()) {
+    std::cerr
+        << "Sparse/missing pairs cannot increase another pair's cap; single-pair and stable fallback order remain\n";
+    return false;
+  }
+  return true;
+}
 
 bool expect_candidate_retry_policy_preserves_late_failure() {
   const absl::Status geometry_failure = absl::FailedPreconditionError("candidate geometry rejected");
@@ -2491,6 +2548,9 @@ void finish(const fs::path& tmpdir, int code) {
 } // namespace
 
 int main() {
+  if (!expect_additive_calibration_matches()) {
+    return 54;
+  }
   if (!expect_candidate_retry_policy_preserves_late_failure()) {
     return 47;
   }

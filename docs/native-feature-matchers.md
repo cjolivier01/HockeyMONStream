@@ -31,7 +31,7 @@ backends:
   cross-check. It does not require a model asset.
 
 **Max control points** (`stitching.max_control_points`) limits retained matched
-correspondences, not raw SuperPoint detections. SuperPoint still extracts at most
+correspondences per synchronized frame pair, not raw SuperPoint detections. SuperPoint still extracts at most
 2048 keypoints per image; valid LightGlue matches must score strictly above 0.2.
 The UI accepts limits from 10 to 5000. General calibration and saved-point replay
 require at least 10 usable matches; OpenCV AKAZE retains its specialized six-match
@@ -45,8 +45,11 @@ within each cell. Partial rounds alternate opposite occupied edges rather than
 favoring the top of the image. Sparse bands return their unused budget; a cap above
 the accepted count retains every match. This preserves available near-side matches
 when a broad textured wall has more populated cells, but cannot create detections
-on featureless ice. Multi-frame calibration applies the same cap again to the pool
-of accepted correspondences before geometric validation.
+on featureless ice. Multi-frame calibration concatenates each pair's capped
+selection before geometric validation, with no second global cap: 100 control
+points with two frame pairs contributes up to 200. A pair with only 37 usable
+matches contributes 37, without increasing another pair's allowance. If pooled
+geometry fails, the existing individual-pair retries each retain their own cap.
 
 HockeyMON's Python `hmlib/stitching/control_points.py` uses the same distinction
 between detector keypoints and retained matches, also defaults to 2048 detector
