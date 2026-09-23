@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -53,6 +54,7 @@ struct State {
   std::atomic_flag queue_lock = ATOMIC_FLAG_INIT;
   std::array<Record, 256> queue;
   size_t head{0}, count{0};
+  std::atomic_flag recent_lock = ATOMIC_FLAG_INIT;
   std::array<RecentBreadcrumb, 32> recent;
   size_t recent_next{0}, recent_count{0};
   std::atomic<unsigned> pending{0}, dropped{0};
@@ -200,7 +202,7 @@ void fatal_signal(int signal, siginfo_t* info, void* context) noexcept {
     *next = 0;
     crash_write(record);
     State* current = state.load(std::memory_order_acquire);
-    if (current && !current->queue_lock.test_and_set(std::memory_order_acquire)) {
+    if (current && !current->recent_lock.test_and_set(std::memory_order_acquire)) {
       // Fixed, preformatted records only. Never wait for a crashed producer.
       crash_write("Recent breadcrumbs (may duplicate breadcrumbs.log):\n");
       for (size_t i = 0; i < current->recent_count; ++i) {
@@ -209,7 +211,7 @@ void fatal_signal(int signal, siginfo_t* info, void* context) noexcept {
                 [(current->recent_next + current->recent.size() - current->recent_count + i) % current->recent.size()];
         crash_write(entry.text.data());
       }
-      current->queue_lock.clear(std::memory_order_release);
+      current->recent_lock.clear(std::memory_order_release);
     } else {
       crash_write("Recent breadcrumb snapshot unavailable (producer interrupted)\n");
     }
@@ -368,31 +370,7 @@ void writer(State* current) noexcept {
   }
 }
 
-void record(std::string_view category, std::string_view message, bool breadcrumb) noexcept {
-  State* current = state.load(std::memory_order_acquire);
-  if (!current || ::getpid() != owner_pid)
-    return;
-  if (current->queue_lock.test_and_set(std::memory_order_acquire)) {
-    current->dropped.fetch_add(1, std::memory_order_relaxed);
-    return;
-  }
-  const auto now = std::chrono::steady_clock::now();
-  if (now - current->rate_epoch >= std::chrono::seconds(1)) {
-    current->rate_epoch = now;
-    current->log_count = current->breadcrumb_count = current->error_count = 0;
-  }
-  const bool error = category.find("error") != std::string_view::npos ||
-      category.find("stderr") != std::string_view::npos || category.find("warning") != std::string_view::npos;
-  unsigned& count = breadcrumb ? current->breadcrumb_count : (error ? current->error_count : current->log_count);
-  const bool full = current->count == current->queue.size();
-  if (count >= 100 || (full && !breadcrumb)) {
-    current->dropped.fetch_add(1, std::memory_order_relaxed);
-    current->queue_lock.clear(std::memory_order_release);
-    return;
-  }
-  ++count;
-  Record overflow;
-  auto& entry = full ? overflow : current->queue[(current->head + current->count) % current->queue.size()];
+void format_record(Record& entry, std::string_view category, std::string_view message, bool breadcrumb) noexcept {
   entry.breadcrumb = breadcrumb;
   const auto milliseconds =
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -414,26 +392,61 @@ void record(std::string_view category, std::string_view message, bool breadcrumb
     append(" [truncated]", 20);
   entry.text[entry.size++] = '\n';
   entry.text[entry.size] = 0;
+}
+
+void record(std::string_view category, std::string_view message, bool breadcrumb) noexcept {
+  State* current = state.load(std::memory_order_acquire);
+  if (!current || ::getpid() != owner_pid)
+    return;
+  // The disk writer must never make the emergency history unavailable. Keep
+  // this fixed ring independent of its queue, with no waiting in either path.
+  std::optional<Record> emergency_record;
+  if (breadcrumb)
+    emergency_record.emplace();
   if (breadcrumb) {
-    auto& recent = current->recent[current->recent_next];
-    recent.size = std::min(entry.size, recent.text.size() - 2);
-    std::memcpy(recent.text.data(), entry.text.data(), recent.size);
-    if (recent.size && recent.text[recent.size - 1] != '\n')
-      recent.text[recent.size++] = '\n';
-    recent.text[recent.size] = 0;
-    current->recent_next = (current->recent_next + 1) % current->recent.size();
-    current->recent_count = std::min(current->recent_count + 1, current->recent.size());
+    auto& emergency = *emergency_record;
+    format_record(emergency, category, message, true);
+    if (!current->recent_lock.test_and_set(std::memory_order_acquire)) {
+      auto& recent = current->recent[current->recent_next];
+      recent.size = std::min(emergency.size, recent.text.size() - 2);
+      std::memcpy(recent.text.data(), emergency.text.data(), recent.size);
+      if (recent.size && recent.text[recent.size - 1] != '\n')
+        recent.text[recent.size++] = '\n';
+      recent.text[recent.size] = 0;
+      current->recent_next = (current->recent_next + 1) % current->recent.size();
+      current->recent_count = std::min(current->recent_count + 1, current->recent.size());
+      current->recent_lock.clear(std::memory_order_release);
+    }
   }
-  if (full) {
+  if (current->queue_lock.test_and_set(std::memory_order_acquire)) {
+    current->dropped.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (now - current->rate_epoch >= std::chrono::seconds(1)) {
+    current->rate_epoch = now;
+    current->log_count = current->breadcrumb_count = current->error_count = 0;
+  }
+  const bool error = category.find("error") != std::string_view::npos ||
+      category.find("stderr") != std::string_view::npos || category.find("warning") != std::string_view::npos;
+  unsigned& count = breadcrumb ? current->breadcrumb_count : (error ? current->error_count : current->log_count);
+  if (count >= 100 || current->count == current->queue.size()) {
     current->dropped.fetch_add(1, std::memory_order_relaxed);
     current->queue_lock.clear(std::memory_order_release);
-    return; // Emergency breadcrumbs remain available even with a stalled writer.
+    return;
   }
+  ++count;
+  auto& entry = current->queue[(current->head + current->count) % current->queue.size()];
+  if (breadcrumb)
+    entry = *emergency_record;
+  else
+    format_record(entry, category, message, false);
   ++current->count;
   current->pending.fetch_add(1, std::memory_order_relaxed);
   current->queue_lock.clear(std::memory_order_release);
   current->wake.notify_one();
 }
+
 } // namespace
 
 bool Initialize(const char* component, const char* executable) noexcept {
