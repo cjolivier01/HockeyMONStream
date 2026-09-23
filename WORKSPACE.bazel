@@ -237,6 +237,9 @@ git_repository(
     remote = "https://github.com/abseil/abseil-cpp.git",
     # tag = "20250127.0",
     commit = "9ac7062b1860d895fb5a8cbf58c3e9ef8f674b5f",
+    # ARM64 crash unwinding must recognize the alternate signal stack.
+    patches = ["//third_party/patches:abseil_aarch64_signal_stack.patch"],
+    patch_args = ["-p1"],
 )
 
 conditional_local_repository(

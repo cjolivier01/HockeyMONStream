@@ -370,3 +370,25 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
 )
+
+# Process-local crash reports; no dependency on GUI, GPU, or GStreamer.
+cc_library(
+    name = "process_diagnostics",
+    srcs = ["ProcessDiagnostics.cpp"],
+    hdrs = ["ProcessDiagnostics.h"],
+    copts = ["-fno-omit-frame-pointer"],
+    include_prefix = INCLUDE_PREFIX,
+    linkopts = ["-ldl", "-Wl,--build-id"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/debugging:failure_signal_handler",
+        "@com_google_absl//absl/debugging:symbolize",
+    ],
+)
+
+cc_test(
+    name = "process_diagnostics_test",
+    srcs = ["ProcessDiagnosticsTest.cpp"],
+    copts = ["-fno-omit-frame-pointer", "-fno-optimize-sibling-calls"],
+    deps = [":process_diagnostics"],
+)

@@ -1,3 +1,4 @@
+#include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 /* clang-format off */
 #include "src/libs/common/Status.h"
@@ -482,6 +483,7 @@ absl::StatusOr<std::optional<double>> active_stitch_output_rotation(const YAML::
 }
 
 void emit_ui_startup(const char* stage, const char* message) {
+  hm::diagnostics::Breadcrumb("startup", stage ? stage : "unknown");
   if (!g_getenv("HSTREAM_UI_PARENT_PID")) {
     return;
   }
@@ -1593,6 +1595,7 @@ absl::Status PipelineApplication::createPipelines(
         selection.c_str());
   }
   for (guint i = 0; i < app_contexts.size(); i++) {
+    hm::diagnostics::Breadcrumb("pipeline", "create instance=" + std::to_string(i));
     if (!create_pipeline(
             app_contexts[i].get(),
             nullptr,
@@ -2434,6 +2437,7 @@ absl::Status PipelineApplication::createMainLoop(
       if (context->return_value == -1) {
         return_value_ = -1;
       }
+      hm::diagnostics::Breadcrumb("pipeline", "destroy");
       destroy_pipeline(context.get());
     }
     const auto stage_windows = stage_windows_.find(stage);
@@ -2652,6 +2656,7 @@ absl::Status PipelineApplication::playPipelines(
     status = app_contexts[i]->configurator().post_config_pipeline(
         app_contexts[i]->pipeline, app_contexts[i]->config, initial_position_ns);
     if (!status.ok()) {
+      hm::diagnostics::Log("pipeline-error", status.ToString());
       std::cerr << status << std::endl;
       g_print("\npipeline post-configuration failed.\n");
       return absl::InternalError("pipeline post-configuration failed");
@@ -2664,6 +2669,7 @@ absl::Status PipelineApplication::playPipelines(
     cleanup_stack.push([this, app_ctx = app_contexts[i]]() {
       auto status = stopPipeline(std::move(app_ctx));
       if (!status.ok()) {
+        hm::diagnostics::Log("pipeline-error", status.ToString());
         std::cerr << status << std::endl;
       }
     });
@@ -2720,7 +2726,9 @@ absl::Status PipelineApplication::playPipelines(
         generation);
     set_preview_active_runtime(channel, generation);
   }
+  hm::diagnostics::Breadcrumb("pipeline", "enter main loop");
   g_main_loop_run(main_loop_);
+  hm::diagnostics::Breadcrumb("pipeline", "leave main loop");
   if (player_frame_scan_) {
     // Inspect natural EOS before graceful shutdown synthesizes EOS for a user
     // stop. Only the inferred boundary frame can complete a timed scan.
@@ -5596,6 +5604,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kSeekRelativeCommand = "seek-relative";
   constexpr absl::string_view kSeekCommand = "seek";
   const std::string trimmed_line = trim_ascii(line);
+  hm::diagnostics::Breadcrumb("runtime-command", trimmed_line.substr(0, trimmed_line.find_first_of(" \t")));
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
   if (hm::pipeline_internal::is_preview_overlay_command(trimmed_line)) {
     hm::pipeline_internal::PreviewOverlayCommand command;
@@ -8129,6 +8138,38 @@ int main(int argc, char* argv[]) {
       std::perror("hstream-cli re-exec failed");
     }
   }
+  hm::diagnostics::Initialize("hstream-cli", argc ? argv[0] : nullptr);
+  g_set_print_handler(+[](const gchar* message) {
+    hm::diagnostics::Log("stdout", message ? message : "");
+    if (message) {
+      std::fputs(message, stdout);
+      std::fflush(stdout);
+    }
+  });
+  g_set_printerr_handler(+[](const gchar* message) {
+    hm::diagnostics::Log("stderr", message ? message : "");
+    if (message) {
+      std::fputs(message, stderr);
+      std::fflush(stderr);
+    }
+  });
+  g_log_set_default_handler(
+      +[](const gchar* domain, GLogLevelFlags level, const gchar* message, gpointer data) {
+        const char* category = (level & (G_LOG_LEVEL_ERROR | G_LOG_LEVEL_CRITICAL))
+            ? "glib-error"
+            : ((level & G_LOG_LEVEL_WARNING) ? "glib-warning" : (domain ? domain : "glib"));
+        hm::diagnostics::Log(category, message ? message : "");
+        if (level & (G_LOG_LEVEL_ERROR | G_LOG_LEVEL_CRITICAL | G_LOG_FLAG_FATAL))
+          hm::diagnostics::Breadcrumb(category, message ? message : "");
+        g_log_default_handler(domain, level, message, data);
+      },
+      nullptr);
+  if (!hm::diagnostics::Directory().empty())
+    g_printerr("HStream diagnostics: %s\n", hm::diagnostics::Directory().c_str());
+  const auto finish = [](int code) {
+    hm::diagnostics::Finish(code);
+    return code;
+  };
   // Must precede GStreamer sinks or any other Xlib user in this process.
   if (argc == 2 && std::string(argv[1]) == "--tensorrt-runtime-info") {
     // Resolve through DeepStream's dependency handle, not the system's
@@ -8140,7 +8181,7 @@ int main(int argc, char* argv[]) {
       std::cerr << "Cannot inspect DeepStream TensorRT runtime and GPU 0\n";
       if (library)
         dlclose(library);
-      return 1;
+      return finish(1);
     }
     Dl_info location{};
     if (dladdr(reinterpret_cast<void*>(version), &location) && location.dli_fname)
@@ -8151,30 +8192,32 @@ int main(int argc, char* argv[]) {
       std::cout << hex[byte >> 4] << hex[byte & 15];
     std::cout << " gpu_name=" << hm::inference::SanitizeGpuName(device.name) << '\n';
     dlclose(library);
-    return 0;
+    return finish(0);
   }
   if (argc == 3 && std::string(argv[1]) == "--resolve-engine-path") {
     auto gpu = hm::inference::TensorRtGpuName(0);
     if (!gpu.ok()) {
       std::cerr << gpu.status() << '\n';
-      return gpu.status().raw_code();
+      return finish(gpu.status().raw_code());
     }
     std::cout << hm::inference::ResolveGpuEnginePath(argv[2], *gpu) << '\n';
-    return 0;
+    return finish(0);
   }
   if (argc == 3 && std::string(argv[1]) == "--int8-sample-verify") {
     const auto status = hm::pipeline::Int8FrameSampler::Verify(argv[2]);
     if (!status.ok())
       std::cerr << status << '\n';
-    return status.ok() ? 0 : status.raw_code();
+    return finish(status.ok() ? 0 : status.raw_code());
   }
+  hm::diagnostics::Breadcrumb("pipeline", "initializing runtime");
   hm::gpu_preview::initialize_process();
   PipelineApplication app;
   absl::Status status = app.run(argc, argv);
   disable_perf_measurement();
   if (!status.ok()) {
+    hm::diagnostics::Log("pipeline-error", status.ToString());
     std::cerr << status << std::endl;
-    return status.raw_code();
+    return finish(status.raw_code());
   }
-  return 0;
+  return finish(0);
 }
