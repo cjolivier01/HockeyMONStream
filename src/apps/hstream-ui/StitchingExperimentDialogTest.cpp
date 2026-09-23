@@ -166,7 +166,9 @@ void check_external_preview(StitchingExperimentDialog& dialog) {
   const auto gc = xcb_generate_id(connection);
   const uint32_t magenta = 0xff00ff;
   xcb_create_gc(connection, gc, target, XCB_GC_FOREGROUND, &magenta);
-  const xcb_rectangle_t area{0, 0, static_cast<uint16_t>(video->width()), static_cast<uint16_t>(video->height())};
+  const QSize native_size = video->size() * video->devicePixelRatioF();
+  const xcb_rectangle_t area{
+      0, 0, static_cast<uint16_t>(native_size.width()), static_cast<uint16_t>(native_size.height())};
   xcb_poly_fill_rectangle(connection, target, gc, 1, &area);
   xcb_free_gc(connection, gc);
   xcb_flush(connection);
@@ -174,9 +176,14 @@ void check_external_preview(StitchingExperimentDialog& dialog) {
   // erase the presented frame while the runner owns the target.
   video->repaint();
   QCoreApplication::processEvents();
-  const QImage image = video->screen()->grabWindow(video->winId()).toImage();
   require(
-      !image.isNull() && image.pixelColor(image.width() / 2, image.height() / 2) == QColor(Qt::magenta),
+      wait_until(
+          [&] {
+            // A compositor can present the XCB drawing on its next frame.
+            const QImage image = video->screen()->grabWindow(video->winId()).toImage();
+            return !image.isNull() && image.pixelColor(image.width() / 2, image.height() / 2) == QColor(Qt::magenta);
+          },
+          1000),
       "Qt must preserve externally presented pixels during playback");
 #else
   Q_UNUSED(dialog);

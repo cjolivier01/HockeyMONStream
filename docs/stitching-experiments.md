@@ -66,7 +66,8 @@ the candidate panel and log to give the moving canvas more space while keeping p
 or replacing its native GPU window. Switching candidates starts the same passage against that candidate's maps and
 seam. Video surfaces remain GPU-resident.
 While idle, Qt paints the preview black, including newly exposed areas after resizing. Playback gives the same
-native window to the GPU renderer; Qt resumes painting only after the preview runner and its helpers have stopped.
+native window to the GPU renderer; Qt resumes painting after the renderer process exits and its shutdown cleanup
+finishes. If helper shutdown cannot be confirmed, the existing cleanup path quarantines the candidate workspace.
 Calibration-only embedded playback retains the render sink's configured clock pacing, so a passage plays at normal
 speed. Ordinary Program previews keep their existing processing/encoding timing.
 
