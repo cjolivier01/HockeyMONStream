@@ -98,6 +98,13 @@ before multi-frame pooling and geometric validation; they are not all raw SuperP
 solver's inliers. Changing the selected pair updates the view, and turning off Show matches restores the original
 camera thumbnails. The coverage grid keeps its separate meaning.
 
+The control-point maximum limits retained matches rather than the detector's raw
+keypoint count. Capped selection balances occupied height bands before horizontal
+cells to preserve available near-side points when the back wall is more textured.
+It cannot add lower-image matches that the detector did not find, and a maximum
+above the accepted count retains all of them. See [native feature matchers](native-feature-matchers.md)
+for the detector limits, selection algorithm, and comparison with HockeyMON.
+
 Calibration saves `points_N.jpg` and `matches_N.jpg` beside the generation's ordinary inspection files, including
 for Players rows. Each combined image is at most 2048 × 1024 pixels and uses the CPU stills and matching results
 already available during calibration. Calibrated AKAZE coordinates are projected back through the lens model so

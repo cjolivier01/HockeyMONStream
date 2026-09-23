@@ -30,6 +30,25 @@ backends:
   distance, a strict 0.75 Lowe ratio in both directions, and a mutual
   cross-check. It does not require a model asset.
 
+**Max control points** (`stitching.max_control_points`) limits retained matched
+correspondences, not raw SuperPoint detections. SuperPoint still extracts at most
+1024 keypoints per image; valid LightGlue matches must score strictly above 0.2.
+Selection uses a 16×9 grid in the left camera: it shares the budget across occupied
+height bands, then across occupied columns within each band, ranking by confidence
+within each cell. Partial rounds alternate opposite occupied edges rather than
+favoring the top of the image. Sparse bands return their unused budget; a cap above
+the accepted count retains every match. This preserves available near-side matches
+when a broad textured wall has more populated cells, but cannot create detections
+on featureless ice. Multi-frame calibration applies the same cap again to the pool
+of accepted correspondences before geometric validation.
+
+HockeyMON's Python `hmlib/stitching/control_points.py` uses the same distinction
+between detector keypoints and retained matches, but defaults to 2048 detector
+keypoints and selects evenly spaced *indices* after sorting by Y. That preserves
+the original density distribution rather than allocating equal height-band budgets.
+When near-side detections are scarce, compare `2k` with `native` on the same retained
+pairs; a larger input does not guarantee more useful matches (see measurements below).
+
 `stitching.control_point_resolution` accepts `auto` (default), `native`, or `2k`
 for SuperPoint + LightGlue. `auto` resolves to `2k` on Jetson and `native` on
 desktop/SBSA. Explicit user/game/CLI `native` and `2k` selections override this

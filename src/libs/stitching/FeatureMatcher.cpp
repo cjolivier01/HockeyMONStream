@@ -685,14 +685,13 @@ absl::StatusOr<std::vector<FeatureMatch>> FeatureMatcher::SelectControlPoints(
     return absl::NotFoundError("Feature matcher produced no usable matches");
   }
 
-  // Select a spatially distributed, deterministic subset. The former global
-  // Y-rank linspace duplicated points when the requested cap exceeded the
-  // model output and allowed one marginal match to shift every later rank.
-  // Fixed cells localize those changes and make model-row permutations
-  // irrelevant. A total final order keeps the emitted PTO reproducible.
+  // Balance occupied height bands before their horizontal cells. Giving every
+  // cell equal weight lets a wide, textured wall consume the budget while
+  // near-side matches occupy fewer columns. Keep score ranking within a cell
+  // and a total final order so model-row permutations cannot change the PTO.
   constexpr size_t grid_columns = 16;
   constexpr size_t grid_rows = 9;
-  std::vector<std::vector<size_t>> cells(grid_columns * grid_rows);
+  std::array<std::array<std::vector<size_t>, grid_columns>, grid_rows> cells;
   for (size_t index = 0; index < accepted.size(); ++index) {
     const double normalized_x =
         std::clamp(static_cast<double>(accepted[index].left.x) / left_source_size.width, 0.0, 1.0);
@@ -700,7 +699,7 @@ absl::StatusOr<std::vector<FeatureMatch>> FeatureMatcher::SelectControlPoints(
         std::clamp(static_cast<double>(accepted[index].left.y) / left_source_size.height, 0.0, 1.0);
     const size_t column = std::min(grid_columns - 1, static_cast<size_t>(normalized_x * grid_columns));
     const size_t row = std::min(grid_rows - 1, static_cast<size_t>(normalized_y * grid_rows));
-    cells[row * grid_columns + column].push_back(index);
+    cells[row][column].push_back(index);
   }
   const auto ranked = [&](size_t lhs, size_t rhs) {
     const FeatureMatch& left = accepted[lhs];
@@ -711,25 +710,38 @@ absl::StatusOr<std::vector<FeatureMatch>> FeatureMatcher::SelectControlPoints(
     };
     return key(left) < key(right);
   };
-  for (auto& cell : cells)
-    std::sort(cell.begin(), cell.end(), ranked);
-
   const size_t selection_count = std::min(max_control_points, accepted.size());
-  std::vector<size_t> selected_indices;
-  selected_indices.reserve(selection_count);
-  for (size_t rank = 0; selected_indices.size() < selection_count; ++rank) {
-    bool added = false;
-    for (const auto& cell : cells) {
-      if (rank < cell.size()) {
-        selected_indices.push_back(cell[rank]);
-        added = true;
-        if (selected_indices.size() == selection_count)
-          break;
+  const auto interleave = [](const auto& groups, size_t limit) {
+    std::vector<size_t> occupied;
+    size_t total = 0;
+    for (size_t index = 0; index < groups.size(); ++index) {
+      if (!groups[index].empty()) {
+        occupied.push_back(index);
+        total += groups[index].size();
       }
     }
-    if (!added)
-      break;
+    limit = std::min(limit, total);
+    std::vector<size_t> indices;
+    indices.reserve(limit);
+    for (size_t rank = 0; indices.size() < limit; ++rank) {
+      // Visit opposite occupied edges alternately, so a partial round covers
+      // both ends instead of stopping in the upper/left part of the image.
+      for (size_t slot = 0; slot < occupied.size() && indices.size() < limit; ++slot) {
+        const size_t index = slot % 2 == 0 ? slot / 2 : occupied.size() - 1 - slot / 2;
+        const auto& group = groups[occupied[index]];
+        if (rank < group.size())
+          indices.push_back(group[rank]);
+      }
+    }
+    return indices;
+  };
+  std::array<std::vector<size_t>, grid_rows> rows;
+  for (size_t row = 0; row < grid_rows; ++row) {
+    for (auto& cell : cells[row])
+      std::sort(cell.begin(), cell.end(), ranked);
+    rows[row] = interleave(cells[row], selection_count);
   }
+  auto selected_indices = interleave(rows, selection_count);
   std::sort(selected_indices.begin(), selected_indices.end(), [&](size_t lhs, size_t rhs) {
     const FeatureMatch& left = accepted[lhs];
     const FeatureMatch& right = accepted[rhs];

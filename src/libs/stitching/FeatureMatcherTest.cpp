@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -17,10 +18,66 @@ bool expect(bool condition, const char* message) {
   return condition;
 }
 
+bool test_spatial_selection() {
+  using hm::stitching::FeatureMatch;
+  using hm::stitching::FeatureMatcher;
+  std::vector<FeatureMatch> accepted;
+  // The wall spans many columns, while equally plentiful near-side matches
+  // occupy one column per band. Density and confidence must not erase coverage.
+  for (int row : {0, 1, 2, 3, 5, 6, 7, 8}) {
+    for (int point = 0; point < 100; ++point) {
+      const bool upper = row < 4;
+      const cv::Point2f left(upper ? 50 + (point % 16) * 100 : 850, row * 100 + 10 + point * 0.5f);
+      const int index = static_cast<int>(accepted.size());
+      accepted.push_back({left, left + cv::Point2f(5, 3), upper ? 0.9f : 0.5f, index, index});
+    }
+  }
+  const auto lower_count = [](const auto& matches) {
+    return std::count_if(matches.begin(), matches.end(), [](const auto& match) { return match.left.y >= 450; });
+  };
+  bool ok = true;
+  auto selected = FeatureMatcher::SelectControlPoints(accepted, {1600, 900}, 80);
+  ok &= expect(
+      selected.ok() && selected->size() == 80 && lower_count(*selected) == 40,
+      "Wide upper clusters must not consume the budget of populated lower height bands");
+  auto small = FeatureMatcher::SelectControlPoints(accepted, {1600, 900}, 4);
+  ok &= expect(
+      small.ok() && small->size() == 4 && lower_count(*small) == 2 && small->front().left.y < 100 &&
+          small->back().left.y >= 800,
+      "A cap smaller than the occupied band count must cover opposite image edges");
+  std::reverse(accepted.begin(), accepted.end());
+  auto reversed = FeatureMatcher::SelectControlPoints(accepted, {1600, 900}, 80);
+  ok &= expect(
+      selected.ok() && reversed.ok() && selected->size() == reversed->size() &&
+          std::equal(
+              selected->begin(),
+              selected->end(),
+              reversed->begin(),
+              [](const auto& a, const auto& b) {
+                return a.left_index == b.left_index && a.right_index == b.right_index;
+              }),
+      "Capped spatial selection must be invariant to input order");
+  accepted.erase(
+      std::remove_if(
+          accepted.begin(),
+          accepted.end(),
+          [](const auto& match) { return match.left.y >= 450 && match.left_index % 100 >= 2; }),
+      accepted.end());
+  auto sparse = FeatureMatcher::SelectControlPoints(accepted, {1600, 900}, 80);
+  ok &= expect(
+      sparse.ok() && sparse->size() == 80 && lower_count(*sparse) == 8,
+      "Exhausted sparse bands must give their remaining budget to real available matches");
+  auto all = FeatureMatcher::SelectControlPoints(accepted, {1600, 900}, 1500);
+  ok &= expect(
+      all.ok() && all->size() == accepted.size() && lower_count(*all) == 8,
+      "An inactive cap must preserve all accepted matches without inventing near-side points");
+  return ok;
+}
+
 } // namespace
 
 int main() {
-  bool ok = true;
+  bool ok = test_spatial_selection();
   ok &= expect(
       hm::stitching::ParseControlPointMatcher("superpoint-lightglue").ok(),
       "HockeyMOM baseline matcher spelling must be accepted");
