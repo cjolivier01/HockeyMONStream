@@ -3,6 +3,10 @@
 The desktop UI's **Stitching experiments…** tool compares multiple stitching calibrations against the same game and
 the same moving playback passage. It runs only while the main pipeline is stopped.
 
+Desktop action icons use consistent colors: green for apply/play/add, red for stop/cancel/delete, blue for
+navigation and inspection, and distinct colors for camera/stitching tools. Disabled icons retain their hue at
+reduced opacity. Standard dialog icons, native navigation/spin arrows, and table/tree indicators follow the same policy.
+
 ## Candidate matrix
 
 Enter comma-separated values for:
@@ -75,6 +79,9 @@ icon at the top right. The inspector resizes independently of the experiment win
 image has independent **Zoom in**, **Zoom out**, **Actual size (1:1)**, and **Fit image** controls. The mouse wheel
 zooms at the pointer; dragging pans; double-clicking fits. Manual zoom survives window resizing, while Fit follows
 the available space. Actual size refers to saved thumbnail pixels, not the full-resolution matcher input.
+These owned dialogs use an ordinary native window type while retaining Qt ownership and modality. This allows
+GNOME/Mutter to honor title-bar maximize/restore; its dialog window type can otherwise report a maximized Qt state
+without changing the actual geometry.
 **Expand preview** (or double-click the video) hides
 the candidate panel and log to give the moving canvas more space while keeping playback controls available.
 **Restore layout**, another double-click, or **Escape** returns to the previous split without restarting playback

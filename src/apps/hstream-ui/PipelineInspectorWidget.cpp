@@ -7,12 +7,10 @@
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
 #include <QtGui/QBrush>
-#include <QtGui/QIcon>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPen>
-#include <QtGui/QPixmap>
 #include <QtGui/QResizeEvent>
 #include <QtGui/QShortcut>
 #include <QtGui/QWheelEvent>
@@ -347,27 +345,6 @@ class PipelineGraphView : public QGraphicsView {
   QToolButton* overlay_button_{nullptr};
 };
 
-QIcon graph_focus_icon(bool focused) {
-  QPixmap pixmap(16, 16);
-  pixmap.fill(Qt::transparent);
-  QPainter painter(&pixmap);
-  painter.setRenderHint(QPainter::Antialiasing, false);
-  painter.setPen(QPen(Qt::white, 2, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
-  const int outer = focused ? 3 : 2;
-  const int inner = focused ? 6 : 5;
-  const int far = focused ? 12 : 13;
-  const int arm = inner - outer;
-  painter.drawLine(outer, inner, outer, outer);
-  painter.drawLine(outer, outer, inner, outer);
-  painter.drawLine(far, inner, far, outer);
-  painter.drawLine(far, outer, far - arm, outer);
-  painter.drawLine(outer, far - arm, outer, far);
-  painter.drawLine(outer, far, inner, far);
-  painter.drawLine(far, far - arm, far, far);
-  painter.drawLine(far, far, far - arm, far);
-  return QIcon(pixmap);
-}
-
 QString elidedLabel(QPainter* painter, const QString& value, qreal maximum_width) {
   return painter->fontMetrics().elidedText(value, Qt::ElideRight, static_cast<int>(maximum_width));
 }
@@ -654,7 +631,7 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
   graph_maximize_button_->setObjectName("pipelineInspectorMaximizeButton");
   graph_maximize_button_->setFixedSize(24, 24);
   graph_maximize_button_->setIconSize(QSize(14, 14));
-  graph_maximize_button_->setIcon(graph_focus_icon(false));
+  graph_maximize_button_->setIcon(action_icon(ActionIcon::Expand));
   graph_maximize_button_->setAccessibleName("Maximize pipeline graph");
   graph_maximize_button_->setToolTip("Maximize the pipeline graph while keeping properties visible.");
   graph_maximize_button_->setStyleSheet(
@@ -1440,7 +1417,7 @@ void PipelineInspectorWidget::setGraphMaximized(bool maximized) {
   } else {
     splitter_->setSizes({850, 470});
   }
-  graph_maximize_button_->setIcon(graph_focus_icon(maximized));
+  graph_maximize_button_->setIcon(action_icon(maximized ? ActionIcon::Restore : ActionIcon::Expand));
   graph_maximize_button_->setAccessibleName(maximized ? "Restore pipeline graph" : "Maximize pipeline graph");
   graph_maximize_button_->setToolTip(
       maximized ? "Restore the normal pipeline inspector layout."

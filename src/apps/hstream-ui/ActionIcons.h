@@ -36,5 +36,6 @@ enum class ActionIcon {
 };
 
 QIcon action_icon(ActionIcon action);
-// Enable Qt's own icons for standard dialog and message-box buttons.
+// Color platform icons and navigation arrows, and show standard dialog icons.
+// Disabled icons retain their hue at reduced opacity.
 void install_button_icon_style();

@@ -11,6 +11,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include <QtCore/QCryptographicHash>
+#include <QtCore/QDebug>
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
@@ -25,12 +26,14 @@
 #include <QtGui/QPixmap>
 #include <QtGui/QScreen>
 #include <QtGui/QWheelEvent>
+#include <QtGui/QWindow>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
@@ -199,6 +202,14 @@ void check_external_preview(StitchingExperimentDialog& dialog) {
 }
 
 void exercise_layout(StitchingExperimentDialog& dialog) {
+  require(dialog.windowType() == Qt::Window, "Owned experiments must use a maximizable native window type");
+  require(
+      dialog.parentWidget() && dialog.windowModality() == Qt::WindowModal,
+      "Exercise the main window's owned, window-modal experiment presentation");
+  require(
+      dialog.windowHandle()->transientParent() == dialog.parentWidget()->windowHandle() &&
+          QApplication::activeModalWidget() == &dialog,
+      "Maximizable window type must retain Qt's parent and modal relationship");
   require(dialog.windowFlags().testFlag(Qt::WindowMaximizeButtonHint), "Dialog must offer title-bar maximize");
   auto* grip = dialog.findChild<QSizeGrip*>();
   require(dialog.isSizeGripEnabled() && grip && grip->isVisible(), "Experiments must expose a corner resize grip");
@@ -252,6 +263,23 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
   auto* maximize = widget<QToolButton>(dialog, "maximizeStitchExperimentWindowButton");
   maximize->click();
   require(wait_until([&] { return dialog.isMaximized(); }, 1000), "Window action must maximize");
+  const bool physically_maximized = wait_until(
+      [&] {
+        const QSize available = dialog.screen()->availableGeometry().size();
+        // Xwayland may report the whole monitor as available even when
+        // GNOME reserves a dock. Check substantial screen coverage and a
+        // real size change, rather than guessing decoration/panel widths.
+        return dialog.size() != normal_geometry.size() && dialog.width() >= available.width() * 0.8 &&
+            dialog.height() >= available.height() * 0.8;
+      },
+      2000);
+  if (!physically_maximized || qEnvironmentVariableIntValue("HSTREAM_TEST_LAYOUT_ONLY") != 0)
+    qWarning() << "Maximize geometry:" << dialog.geometry() << "normal:" << normal_geometry
+               << "screen:" << dialog.screen()->geometry() << "available:" << dialog.screen()->availableGeometry()
+               << "DPR:" << dialog.devicePixelRatioF() << "flags:" << dialog.windowFlags();
+  require(
+      physically_maximized,
+      "Window manager must actually enlarge the owned modal window, not merely set Qt's maximized flag");
   require(maximize->text() == "Restore window", "Maximize action must follow the window state");
   check_preview_layout(dialog);
   expand->click();
@@ -1206,7 +1234,8 @@ void exercise_saved_selection(const QString& game, const QString& root) {
           show->setChecked(true);
           QCoreApplication::processEvents();
           auto* grip = inspector->findChild<QSizeGrip*>();
-          inspected_main &= inspector->isSizeGripEnabled() && grip && grip->isVisible();
+          inspected_main &= inspector->windowType() == Qt::Window && inspector->isSizeGripEnabled() && grip &&
+              grip->isVisible();
           for (const QSize size : {QSize(1280, 820), QSize(1000, 700)}) {
             inspector->resize(size);
             QCoreApplication::processEvents();
@@ -1221,6 +1250,13 @@ void exercise_saved_selection(const QString& game, const QString& root) {
           if (maximize) {
             maximize->click();
             inspected_main &= wait_until([&] { return inspector->isMaximized(); }, 1000);
+            inspected_main &= wait_until(
+                [&] {
+                  const QSize available = inspector->screen()->availableGeometry().size();
+                  return inspector->size() != inspector_normal_geometry.size() &&
+                  inspector->width() >= available.width() * 0.8 && inspector->height() >= available.height() * 0.8;
+                },
+                2000);
             maximize->click();
             inspected_main &= wait_until(
                 [&] { return !inspector->isMaximized() && inspector->geometry() == inspector_normal_geometry; }, 2000);
@@ -1573,6 +1609,10 @@ void exercise(
   require(experiment_cache.isValid(), "Cannot create isolated experiment output for test");
   auto experiment_environment = QProcessEnvironment::systemEnvironment();
   experiment_environment.insert("HM_OUTPUT_WORK_DIR", experiment_cache.path());
+  QMainWindow main_window;
+  main_window.setWindowTitle("Stitching experiment test owner");
+  main_window.resize(800, 600);
+  main_window.show();
   StitchingExperimentDialog dialog(
       game,
       runner,
@@ -1582,8 +1622,9 @@ void exercise(
       100,
       1,
       anchor,
-      nullptr,
+      &main_window,
       [&] { selected = true; });
+  dialog.setWindowModality(Qt::WindowModal);
   auto* log = widget<QPlainTextEdit>(dialog, "stitchExperimentLog");
   struct SaveLog {
     QPlainTextEdit* log;
@@ -1941,6 +1982,29 @@ int main(int argc, char** argv) {
         write(game + "/right.mp4", "right");
         return game;
       };
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_LAYOUT_ONLY") != 0) {
+        QMainWindow main_window;
+        main_window.setWindowTitle("Stitching experiment test owner");
+        main_window.resize(800, 600);
+        main_window.show();
+        StitchingExperimentDialog dialog(
+            make_game("layout"),
+            "/bin/false",
+            fixture.path(),
+            fixture.path() + "/config.yaml",
+            QProcessEnvironment::systemEnvironment(),
+            100,
+            1,
+            "00:00:00",
+            &main_window);
+        dialog.setWindowModality(Qt::WindowModal);
+        dialog.show();
+        dialog.raise();
+        QCoreApplication::processEvents();
+        exercise_layout(dialog);
+        std::cout << "Stitching experiment layout checks passed\n";
+        return 0;
+      }
       exercise_frame_navigation(fixture.path());
       exercise_resolution_queue(make_game("resolutions"), fixture.path());
       exercise_player_queue(make_game("queue"), fixture.path());

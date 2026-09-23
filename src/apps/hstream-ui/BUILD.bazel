@@ -69,6 +69,15 @@ cc_library(
     deps = ["@qt//:qt_widgets"],
 )
 
+cc_test(
+    name = "action_icons_test",
+    srcs = ["ActionIconsTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":action_icons", "@qt//:qt_widgets"],
+)
+
 cc_library(
     name = "scoreboard_selection_dialog",
     srcs = ["ScoreboardSelectionDialog.cpp"],

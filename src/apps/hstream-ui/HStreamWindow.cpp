@@ -34,14 +34,10 @@
 #include <QtCore/Qt>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
-#include <QtGui/QIcon>
 #include <QtGui/QLinearGradient>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPaintEngine>
-#include <QtGui/QPainter>
-#include <QtGui/QPainterPath>
 #include <QtGui/QPalette>
-#include <QtGui/QPixmap>
 #include <QtGui/QResizeEvent>
 #include <QtGui/QStandardItemModel>
 #include <QtGui/QTextDocument>
@@ -647,27 +643,6 @@ class NativeVideoTarget : public QWidget {
   bool focus_available_{false};
 };
 
-QIcon preview_focus_icon(bool focused) {
-  QPixmap pixmap(16, 16);
-  pixmap.fill(Qt::transparent);
-  QPainter painter(&pixmap);
-  painter.setRenderHint(QPainter::Antialiasing, false);
-  painter.setPen(QPen(Qt::white, 2, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
-  const int outer = focused ? 3 : 2;
-  const int inner = focused ? 6 : 5;
-  const int far = focused ? 12 : 13;
-  const int arm = inner - outer;
-  painter.drawLine(outer, inner, outer, outer);
-  painter.drawLine(outer, outer, inner, outer);
-  painter.drawLine(far, inner, far, outer);
-  painter.drawLine(far, outer, far - arm, outer);
-  painter.drawLine(outer, far - arm, outer, far);
-  painter.drawLine(outer, far, inner, far);
-  painter.drawLine(far, far - arm, far, far);
-  painter.drawLine(far, far, far - arm, far);
-  return QIcon(pixmap);
-}
-
 class LetterboxRenderHost : public QWidget {
  public:
   explicit LetterboxRenderHost(double aspect_ratio, QWidget* parent = nullptr)
@@ -697,7 +672,7 @@ class LetterboxRenderHost : public QWidget {
     set_control_help(
         focus_button_, "Expand this video preview to fill the application while keeping video on the GPU.");
     focus_button_->setAccessibleName("Focus video");
-    focus_button_->setIcon(preview_focus_icon(false));
+    focus_button_->setIcon(action_icon(ActionIcon::Expand));
     focus_button_->setStyleSheet(
         "QPushButton { background: rgba(15, 23, 42, 210); border: 1px solid rgba(255, 255, 255, 100); "
         "border-radius: 3px; color: white; padding: 0; }"
@@ -757,7 +732,7 @@ class LetterboxRenderHost : public QWidget {
   }
 
   void setFocused(bool focused) {
-    focus_button_->setIcon(preview_focus_icon(focused));
+    focus_button_->setIcon(action_icon(focused ? ActionIcon::Restore : ActionIcon::Expand));
     focus_button_->setAccessibleName(focused ? "Restore HStream controls" : "Focus video");
     set_control_help(
         focus_button_,

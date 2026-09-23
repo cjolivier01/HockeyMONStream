@@ -2418,7 +2418,10 @@ struct StitchingExperimentDialog::Impl {
       show_status(QString::fromStdString(inspection.status().ToString()), true);
       return;
     }
-    QDialog viewer(dialog);
+    // Mutter does not maximize transient windows with the Dialog window type,
+    // even when Qt reports WindowMaximized. Keep QDialog ownership/modality,
+    // but request an ordinary, resizable native window.
+    QDialog viewer(dialog, Qt::Window);
     viewer.setObjectName("stitchExperimentFrameInspector");
     viewer.setWindowTitle(QString("Calibration frames — Candidate %1").arg(candidates[row].sequence));
     viewer.setWindowFlag(Qt::WindowMaximizeButtonHint, true);
@@ -2698,7 +2701,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     const QString& stitch_frame_time,
     QWidget* parent,
     std::function<void()> selection_applied)
-    : QDialog(parent), impl_(std::make_unique<Impl>(this)) {
+    // A native Dialog window cannot maximize on Mutter. Qt::Window retains
+    // QDialog's parent/modal lifecycle while allowing normal window actions.
+    : QDialog(parent, Qt::Window), impl_(std::make_unique<Impl>(this)) {
   setObjectName("stitchingExperimentDialog");
   setWindowTitle("Stitching Experiments");
   setWindowFlag(Qt::WindowMaximizeButtonHint, true);

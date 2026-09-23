@@ -1,6 +1,8 @@
 #include "src/apps/hstream-ui/ActionIcons.h"
 
+#include <QtCore/QScopedValueRollback>
 #include <QtCore/QVariant>
+#include <QtGui/QImage>
 #include <QtGui/QPainter>
 #include <QtGui/QPalette>
 #include <QtGui/QPixmap>
@@ -8,8 +10,103 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QProxyStyle>
 #include <QtWidgets/QStyle>
+#include <QtWidgets/QStyleOption>
+
+#include <algorithm>
+#include <array>
 
 namespace {
+QColor standard_color(QStyle::StandardPixmap icon) {
+  using S = QStyle;
+  switch (icon) {
+    case S::SP_MediaPlay:
+    case S::SP_DialogApplyButton:
+    case S::SP_DialogOkButton:
+    case S::SP_DialogYesButton:
+    case S::SP_DialogYesToAllButton:
+    case S::SP_FileDialogNewFolder:
+      return QColor("#229954");
+    case S::SP_TrashIcon:
+    case S::SP_MediaStop:
+    case S::SP_BrowserStop:
+    case S::SP_DialogCancelButton:
+    case S::SP_DialogCloseButton:
+    case S::SP_DialogDiscardButton:
+    case S::SP_DialogAbortButton:
+    case S::SP_DialogNoButton:
+    case S::SP_DialogNoToAllButton:
+    case S::SP_TitleBarCloseButton:
+    case S::SP_DockWidgetCloseButton:
+    case S::SP_TabCloseButton:
+    case S::SP_MessageBoxCritical:
+      return QColor("#d94a53");
+    case S::SP_MediaPause:
+    case S::SP_MessageBoxWarning:
+    case S::SP_DirIcon:
+    case S::SP_DirOpenIcon:
+    case S::SP_DirClosedIcon:
+    case S::SP_DialogOpenButton:
+      return QColor("#c48920");
+    case S::SP_BrowserReload:
+    case S::SP_DialogResetButton:
+    case S::SP_DialogRetryButton:
+    case S::SP_RestoreDefaultsButton:
+      return QColor("#159895");
+    default:
+      return QColor("#2d7dd2");
+  }
+}
+
+QPixmap tinted_pixmap(const QPixmap& source, const QColor& color) {
+  if (source.isNull())
+    return source;
+  QImage image = source.toImage().convertToFormat(QImage::Format_ARGB32);
+  // Retain shading and highlights inside platform glyphs. A flat alpha tint
+  // would erase details such as the cutout in a save icon. Even the darkest
+  // source pixel becomes the semantic color instead of black.
+  std::array<QRgb, 256> shades;
+  for (int gray = 0; gray < 256; ++gray) {
+    const double highlight = gray / 255.0 * 0.72;
+    shades[gray] = qRgb(
+        color.red() + (255 - color.red()) * highlight,
+        color.green() + (255 - color.green()) * highlight,
+        color.blue() + (255 - color.blue()) * highlight);
+  }
+  for (int y = 0; y < image.height(); ++y) {
+    auto* pixels = reinterpret_cast<QRgb*>(image.scanLine(y));
+    for (int x = 0; x < image.width(); ++x) {
+      const QRgb shade = shades[qGray(pixels[x])];
+      pixels[x] = qRgba(qRed(shade), qGreen(shade), qBlue(shade), qAlpha(pixels[x]));
+    }
+  }
+  QPixmap result = QPixmap::fromImage(image);
+  result.setDevicePixelRatio(source.devicePixelRatio());
+  return result;
+}
+
+void add_colored_modes(QIcon& icon, const QPixmap& normal, QIcon::State state) {
+  if (normal.isNull())
+    return;
+  QPixmap disabled = normal;
+  QPainter fade(&disabled);
+  fade.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+  fade.fillRect(disabled.rect(), QColor(255, 255, 255, 115));
+  fade.end();
+  // Explicit variants prevent Qt's default disabled-icon grayscale conversion.
+  for (auto mode : {QIcon::Normal, QIcon::Active, QIcon::Selected})
+    icon.addPixmap(normal, mode, state);
+  icon.addPixmap(disabled, QIcon::Disabled, state);
+}
+
+QIcon colored_icon(const QIcon& source, const QColor& color) {
+  QIcon result;
+  for (int size : {16, 24, 32, 48, 64}) {
+    for (auto state : {QIcon::Off, QIcon::On})
+      add_colored_modes(result, tinted_pixmap(source.pixmap(size, size, QIcon::Normal, state), color), state);
+  }
+  return result;
+}
+
 class ButtonIconStyle : public QProxyStyle {
  public:
   explicit ButtonIconStyle(QStyle* base) : QProxyStyle(base) {}
@@ -19,6 +116,101 @@ class ButtonIconStyle : public QProxyStyle {
       return 1;
     return QProxyStyle::styleHint(hint, option, widget, data);
   }
+  QIcon standardIcon(StandardPixmap icon, const QStyleOption* option, const QWidget* widget) const override {
+    if (generating_icon_)
+      return QProxyStyle::standardIcon(icon, option, widget);
+    QScopedValueRollback<bool> guard(generating_icon_, true);
+    return colored_icon(QProxyStyle::standardIcon(icon, option, widget), standard_color(icon));
+  }
+  QPixmap standardPixmap(StandardPixmap icon, const QStyleOption* option, const QWidget* widget) const override {
+    if (generating_icon_)
+      return QProxyStyle::standardPixmap(icon, option, widget);
+    QScopedValueRollback<bool> guard(generating_icon_, true);
+    return tinted_pixmap(QProxyStyle::standardPixmap(icon, option, widget), standard_color(icon));
+  }
+  void drawComplexControl(
+      ComplexControl control,
+      const QStyleOptionComplex* option,
+      QPainter* painter,
+      const QWidget* widget) const override {
+    // Fusion paints some arrows directly inside complex controls instead of
+    // delegating to drawPrimitive. Color just their subcontrols; text and frames
+    // keep the platform palette.
+    if (control == CC_SpinBox) {
+      if (const auto* spin = qstyleoption_cast<const QStyleOptionSpinBox*>(option)) {
+        draw_colored_subcontrols(control, *spin, SC_SpinBoxUp | SC_SpinBoxDown, painter, widget);
+        return;
+      }
+    } else if (control == CC_ComboBox) {
+      if (const auto* combo = qstyleoption_cast<const QStyleOptionComboBox*>(option)) {
+        draw_colored_subcontrols(control, *combo, SC_ComboBoxArrow, painter, widget);
+        return;
+      }
+    } else if (control == CC_ScrollBar) {
+      if (const auto* slider = qstyleoption_cast<const QStyleOptionSlider*>(option)) {
+        draw_colored_subcontrols(control, *slider, SC_ScrollBarAddLine | SC_ScrollBarSubLine, painter, widget);
+        return;
+      }
+    }
+    QProxyStyle::drawComplexControl(control, option, painter, widget);
+  }
+  void drawPrimitive(PrimitiveElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget)
+      const override {
+    const bool navigation = element >= PE_IndicatorArrowDown && element <= PE_IndicatorArrowUp;
+    const bool spin = element == PE_IndicatorSpinUp || element == PE_IndicatorSpinDown ||
+        element == PE_IndicatorSpinPlus || element == PE_IndicatorSpinMinus;
+    if (!painting_indicator_ && option && !option->rect.isEmpty() &&
+        (navigation || spin || element == PE_IndicatorHeaderArrow || element == PE_IndicatorBranch)) {
+      // Preserve the platform's glyph shape, sort direction and tree expansion
+      // state. These tiny UI indicators are painted only on widget invalidation.
+      const qreal ratio = painter->device()->devicePixelRatioF();
+      QPixmap glyph(option->rect.size() * ratio);
+      glyph.setDevicePixelRatio(ratio);
+      glyph.fill(Qt::transparent);
+      QPainter native(&glyph);
+      native.translate(-option->rect.topLeft());
+      {
+        QScopedValueRollback<bool> guard(painting_indicator_, true);
+        QProxyStyle::drawPrimitive(element, option, &native, widget);
+      }
+      native.end();
+      painter->save();
+      if (!option->state.testFlag(State_Enabled))
+        painter->setOpacity(painter->opacity() * 0.45);
+      painter->drawPixmap(option->rect.topLeft(), tinted_pixmap(glyph, QColor("#2d7dd2")));
+      painter->restore();
+      return;
+    }
+    QProxyStyle::drawPrimitive(element, option, painter, widget);
+  }
+
+ private:
+  template <typename Option>
+  void draw_colored_subcontrols(
+      ComplexControl control,
+      const Option& option,
+      SubControls glyphs,
+      QPainter* painter,
+      const QWidget* widget) const {
+    Option background(option);
+    background.subControls &= ~glyphs;
+    QProxyStyle::drawComplexControl(control, &background, painter, widget);
+    Option arrows(option);
+    arrows.subControls &= glyphs;
+    const QColor blue("#2d7dd2");
+    QColor disabled = blue;
+    disabled.setAlpha(115);
+    for (auto role : {QPalette::ButtonText, QPalette::WindowText, QPalette::Text}) {
+      arrows.palette.setColor(QPalette::All, role, blue);
+      arrows.palette.setColor(QPalette::Disabled, role, disabled);
+    }
+    QProxyStyle::drawComplexControl(control, &arrows, painter, widget);
+  }
+
+  // Platform styles can implement standardIcon via proxy()->standardPixmap.
+  // Tint only the final result so nested lookups retain their original contrast.
+  mutable bool generating_icon_{false};
+  mutable bool painting_indicator_{false};
 };
 
 QIcon drawn_icon(ActionIcon action) {
@@ -29,7 +221,13 @@ QIcon drawn_icon(ActionIcon action) {
     QPainter p(&pixmap);
     p.setRenderHint(QPainter::Antialiasing);
     p.scale(size / 24.0, size / 24.0);
-    p.setPen(QPen(qApp->palette().color(QPalette::ButtonText), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    const QColor color = action == ActionIcon::Add                       ? QColor("#229954")
+        : action == ActionIcon::Remove                                   ? QColor("#c48920")
+        : action == ActionIcon::Camera                                   ? QColor("#9966dd")
+        : action == ActionIcon::Stitching || action == ActionIcon::Level ? QColor("#159895")
+        : action == ActionIcon::Crop                                     ? QColor("#c48920")
+                                                                         : QColor("#2d7dd2");
+    p.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     if (action == ActionIcon::Add || action == ActionIcon::Remove) {
       p.drawLine(QPointF(4, 12), QPointF(20, 12));
       if (action == ActionIcon::Add)
@@ -64,7 +262,8 @@ QIcon drawn_icon(ActionIcon action) {
         p.drawLine(QPointF(10, 6), QPointF(10, 14));
     }
     p.end();
-    icon.addPixmap(pixmap);
+    for (auto state : {QIcon::Off, QIcon::On})
+      add_colored_modes(icon, pixmap, state);
   }
   return icon;
 }
@@ -161,5 +360,8 @@ QIcon action_icon(ActionIcon action) {
     default:
       break;
   }
-  return qApp->style()->standardIcon(standard);
+  // Also support direct dialog construction in embedders/tests without the
+  // application-wide proxy installed by main().
+  const QIcon icon = qApp->style()->standardIcon(standard);
+  return qApp->property("hstreamButtonIconStyle").toBool() ? icon : colored_icon(icon, standard_color(standard));
 }
