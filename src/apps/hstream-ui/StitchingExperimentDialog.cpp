@@ -75,19 +75,30 @@ constexpr char kStitchedPreviewOptions[] =
 class StitchingExperimentVideoTarget : public QWidget {
  public:
   explicit StitchingExperimentVideoTarget(QWidget* parent) : QWidget(parent) {
-    if (QGuiApplication::platformName() == "xcb") {
+    if (QGuiApplication::platformName() == "xcb")
       setAttribute(Qt::WA_NativeWindow);
-      setAttribute(Qt::WA_PaintOnScreen);
-      setAttribute(Qt::WA_NoSystemBackground);
-    }
     setMinimumSize(320, 180);
     QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     policy.setRetainSizeWhenHidden(true);
     setSizePolicy(policy);
-    setAutoFillBackground(false);
+    QPalette background = palette();
+    background.setColor(QPalette::Window, Qt::black);
+    setPalette(background);
+    setAutoFillBackground(true);
   }
+
+  void set_renderer_active(bool active) {
+    // Qt owns idle pixels. While the runner owns the native target, keep its
+    // frames out of the backing store without replacing the window's XID.
+    const bool direct = active && QGuiApplication::platformName() == "xcb";
+    setAttribute(Qt::WA_PaintOnScreen, direct);
+    setAttribute(Qt::WA_NoSystemBackground, direct);
+    setAutoFillBackground(!active);
+    update();
+  }
+
   QPaintEngine* paintEngine() const override {
-    return nullptr;
+    return testAttribute(Qt::WA_PaintOnScreen) ? nullptr : QWidget::paintEngine();
   }
 
   std::function<void()> toggle_focus;
@@ -1230,6 +1241,7 @@ struct StitchingExperimentDialog::Impl {
       preview_process_token.clear();
       preview_completion_pending = false;
       preview_candidate_row = -1;
+      video->set_renderer_active(false);
       update_controls();
       if (replay)
         start_preview(true);
@@ -2176,6 +2188,7 @@ struct StitchingExperimentDialog::Impl {
       update_controls();
       return;
     }
+    video->set_renderer_active(true);
     preview_process->start();
     update_controls();
   }

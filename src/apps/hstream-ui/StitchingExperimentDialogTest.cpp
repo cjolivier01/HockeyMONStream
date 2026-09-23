@@ -34,6 +34,11 @@
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
 
+#if QT_CONFIG(xcb)
+#include <QtGui/qguiapplication_platform.h>
+#include <xcb/xcb.h>
+#endif
+
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -127,6 +132,57 @@ void check_preview_layout(StitchingExperimentDialog& dialog) {
   }
 }
 
+void check_idle_preview(StitchingExperimentDialog& dialog) {
+  auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
+  require(
+      wait_until(
+          [&] {
+            // Read the actual native window on X11: QWidget::grab() would
+            // trigger a fresh Qt paint and could hide stale displayed pixels.
+            const QImage image =
+                (QGuiApplication::platformName() == "xcb" ? video->screen()->grabWindow(video->winId()) : video->grab())
+                    .toImage();
+            if (image.isNull())
+              return false;
+            for (int y = 0; y < image.height(); ++y)
+              for (int x = 0; x < image.width(); ++x)
+                if (image.pixelColor(x, y) != QColor(Qt::black))
+                  return false;
+            return true;
+          },
+          1000),
+      "Idle preview must repaint every exposed pixel black");
+}
+
+void check_external_preview(StitchingExperimentDialog& dialog) {
+#if QT_CONFIG(xcb)
+  if (QGuiApplication::platformName() != "xcb")
+    return;
+  auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
+  auto* x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+  require(x11 && x11->connection(), "Native preview requires an X11 connection");
+  auto* connection = x11->connection();
+  const auto target = static_cast<xcb_window_t>(video->winId());
+  const auto gc = xcb_generate_id(connection);
+  const uint32_t magenta = 0xff00ff;
+  xcb_create_gc(connection, gc, target, XCB_GC_FOREGROUND, &magenta);
+  const xcb_rectangle_t area{0, 0, static_cast<uint16_t>(video->width()), static_cast<uint16_t>(video->height())};
+  xcb_poly_fill_rectangle(connection, target, gc, 1, &area);
+  xcb_free_gc(connection, gc);
+  xcb_flush(connection);
+  // Simulate the external renderer, then deliver Qt invalidation. Qt must not
+  // erase the presented frame while the runner owns the target.
+  video->repaint();
+  QCoreApplication::processEvents();
+  const QImage image = video->screen()->grabWindow(video->winId()).toImage();
+  require(
+      !image.isNull() && image.pixelColor(image.width() / 2, image.height() / 2) == QColor(Qt::magenta),
+      "Qt must preserve externally presented pixels during playback");
+#else
+  Q_UNUSED(dialog);
+#endif
+}
+
 void exercise_layout(StitchingExperimentDialog& dialog) {
   require(dialog.windowFlags().testFlag(Qt::WindowMaximizeButtonHint), "Dialog must offer title-bar maximize");
   auto* grip = dialog.findChild<QSizeGrip*>();
@@ -137,6 +193,7 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
     QCoreApplication::processEvents();
     require(dialog.size() == size, "Dialog minimum size must fit a 1024x720 desktop");
     check_preview_layout(dialog);
+    check_idle_preview(dialog);
   }
   auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
   auto* candidate_panel = widget<QWidget>(dialog, "stitchExperimentCandidatePanel");
@@ -154,6 +211,7 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
   require(video->width() > normal_video_size.width(), "Focused preview must gain horizontal space");
   require(video->winId() == original_target, "Expanding must not replace the GPU target");
   check_preview_layout(dialog);
+  check_idle_preview(dialog);
   if (!screenshot_dir.isEmpty())
     dialog.grab().save(screenshot_dir + "/stitch-layout-expanded.png");
   QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
@@ -174,6 +232,7 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
   expand->click();
   QCoreApplication::processEvents();
   require(candidate_panel->isVisible() && video->winId() == original_target, "Button must restore the same target");
+  check_idle_preview(dialog);
   dialog.showMaximized();
   QCoreApplication::processEvents();
   require(dialog.isMaximized(), "Dialog must maximize");
@@ -1196,7 +1255,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
   write(game + "/config.yaml", original);
 }
 
-void exercise_close_promotion_failure(const QString& game, const QString& root) {
+void exercise_preview_and_promotion_failure(const QString& game, const QString& root) {
   const QString fixtures = root + "/synthetic-artifacts";
   require(QDir().mkpath(fixtures), "Cannot create synthetic artifacts");
   for (const char* name :
@@ -1215,13 +1274,23 @@ void exercise_close_promotion_failure(const QString& game, const QString& root) 
   write(fixtures + "/hm_project.pto", "invalid promotion geometry");
   write(fixtures + "/autooptimiser_out.pto", "invalid promotion geometry");
   const QString runner = root + "/complete-runner.sh";
-  write(runner, "#!/bin/sh\ncp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/\"\n");
+  const QString preview_release = root + "/preview-release";
+  const QString preview_started = root + "/preview-started";
+  write(
+      runner,
+      "#!/bin/sh\ncase \" $* \" in\n*' --enable-sinks=RENDER '*)\n"
+      "touch \"$HSTREAM_TEST_PREVIEW_STARTED\"\n"
+      "while [ ! -f \"$HSTREAM_TEST_PREVIEW_RELEASE\" ]; do sleep 0.05; done\n"
+      "exit \"$(cat \"$HSTREAM_TEST_PREVIEW_RELEASE\")\";;\nesac\n"
+      "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/\"\n");
   require(
       QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
       "Cannot prepare completion runner");
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HM_OUTPUT_WORK_DIR", root + "/promotion-output");
   environment.insert("HSTREAM_TEST_ARTIFACTS", fixtures);
+  environment.insert("HSTREAM_TEST_PREVIEW_RELEASE", preview_release);
+  environment.insert("HSTREAM_TEST_PREVIEW_STARTED", preview_started);
   StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
   dialog.show();
   add_options(dialog);
@@ -1231,6 +1300,30 @@ void exercise_close_promotion_failure(const QString& game, const QString& root) 
       wait_until([&] { return status->text().startsWith("Batch complete."); }, 10000), "Synthetic completion stalled");
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   require(table->item(0, 5)->text() == "Ready", "Synthetic candidate must complete before testing promotion failure");
+  auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
+  const WId target = video->winId();
+  auto* play = widget<QPushButton>(dialog, "previewStitchExperimentButton");
+  auto* stop = widget<QPushButton>(dialog, "stopStitchExperimentPreviewButton");
+  widget<QCheckBox>(dialog, "stitchExperimentLoop")->setChecked(false);
+  for (int exit_code : {0, 7, -1}) {
+    QFile::remove(preview_release);
+    QFile::remove(preview_started);
+    play->click();
+    require(
+        wait_until([&] { return QFile::exists(preview_started) && stop->isEnabled(); }, 10000),
+        "Preview fixture did not start");
+    require(video->winId() == target, "Starting a preview must preserve its native target");
+    check_external_preview(dialog);
+    if (exit_code < 0)
+      stop->click();
+    else
+      write(preview_release, QByteArray::number(exit_code));
+    require(wait_until([&] { return play->isEnabled(); }, 10000), "Preview did not release the native target");
+    check_idle_preview(dialog);
+    dialog.resize(dialog.size() + QSize(20, 10));
+    check_idle_preview(dialog);
+    require(video->winId() == target, "Finishing a preview must preserve its native target");
+  }
   answer_close_guard(dialog, "stitchExperimentCloseUse", true);
   require(
       wait_until([&] { return widget<QPushButton>(dialog, "applyStitchExperimentButton")->isEnabled(); }, 10000),
@@ -1657,7 +1750,7 @@ int main(int argc, char** argv) {
       exercise_known_selection_copy_race(make_game("known-selection-copy-race"), fixture.path());
       exercise_failed_ordinary_selection_recovery(make_game("ordinary-failed-recovery"), fixture.path());
       exercise_saved_selection(make_game("saved"), fixture.path());
-      exercise_close_promotion_failure(make_game("promotion"), fixture.path());
+      exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
       exercise_player_cancellation(make_game("cancel"), fixture.path());
       exercise(make_game("ordinary"), "/bin/false", fixture.path(), false, {});
     }

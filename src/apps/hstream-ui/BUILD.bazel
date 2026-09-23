@@ -285,6 +285,7 @@ cc_test(
     srcs = ["StitchingExperimentDialogTest.cpp"],
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
+    linkopts = ["-lxcb"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":stitching_experiment_dialog",

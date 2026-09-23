@@ -65,6 +65,8 @@ the candidate panel and log to give the moving canvas more space while keeping p
 **Restore layout**, another double-click, or **Escape** returns to the previous split without restarting playback
 or replacing its native GPU window. Switching candidates starts the same passage against that candidate's maps and
 seam. Video surfaces remain GPU-resident.
+While idle, Qt paints the preview black, including newly exposed areas after resizing. Playback gives the same
+native window to the GPU renderer; Qt resumes painting only after the preview runner and its helpers have stopped.
 Calibration-only embedded playback retains the render sink's configured clock pacing, so a passage plays at normal
 speed. Ordinary Program previews keep their existing processing/encoding timing.
 
@@ -149,6 +151,9 @@ calibration with that candidate’s frame policy.
 deduplication, serial continuation after failure, source-config isolation, and prompt closure without GPU use. It
 also checks non-overlapping preview controls at 1280×820 and 1024×720, dialog maximization, and preview expand/restore
 through the button, double-click, and Escape, preserving the splitter sizes and native window identity.
+The same test can run with `QT_QPA_PLATFORM=xcb` under Xvfb to check displayed pixels: idle resize/focus changes
+remain black, external frame pixels survive Qt invalidation during playback, and normal exit, failure, and Stop
+return the preview to black without replacing its native window.
 It also checks one scan across control-point variants, same-count selection inheritance, per-row baseline/Players
 inspection, dependency removal, the full queue bound, bootstrap failure and cancellation, and the Close confirmation. Backend tests distinguish invalid reports from unavailable coverage and preserve selection
 provenance through promotion.
