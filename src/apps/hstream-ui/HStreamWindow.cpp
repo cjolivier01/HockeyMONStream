@@ -8755,7 +8755,8 @@ void HStreamWindow::showStitchingCalibrationDialog() {
   if (active_run_is_calibration_)
     setStitchingCalibrationStage("rink-mask", "skipped", {});
   calibration_dialog_->show();
-  QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+  // Let the outer event loop paint the dialog. Dispatching runner output here
+  // can reenter calibration completion while its caller holds the config lock.
 }
 
 bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_stage, bool terminal_failure) {

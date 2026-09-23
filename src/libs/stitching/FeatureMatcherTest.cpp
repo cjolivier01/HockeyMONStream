@@ -134,17 +134,11 @@ int main() {
           !hm::stitching::ParseControlPointResolution("bad-size").ok(),
       "resolution accepts native, 1k and 2k, rejecting unknown values");
   const auto auto_resolution = hm::stitching::ParseControlPointResolution("auto");
-#ifdef IS_TEGRA
-  const auto expected_default = ControlPointResolution::k2K;
-#else
-  const auto expected_default = ControlPointResolution::kNative;
-#endif
   auto default_input = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right);
   ok &= expect(
-      auto_resolution.ok() && *auto_resolution == expected_default && default_input.ok() &&
-          default_input->tensor_size ==
-              (expected_default == ControlPointResolution::k2K ? cv::Size(2048, 1152) : cv::Size(160, 104)),
-      "auto and default preprocessing must use 2K on Jetson and native elsewhere");
+      auto_resolution.ok() && *auto_resolution == ControlPointResolution::k2K && default_input.ok() &&
+          default_input->tensor_size == cv::Size(2048, 1152),
+      "auto and default preprocessing must use 2K on every platform");
   auto reduced = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right, ControlPointResolution::k2K);
   ok &= expect(
       reduced.ok() && reduced->tensor_size == cv::Size(2048, 1152) &&
