@@ -518,26 +518,34 @@ absl::StatusOr<std::string> read_inspection_file(const fs::path& path, size_t li
     return absl::NotFoundError("Calibration inspection file is missing: " + path.string());
   if (error || status.type() != fs::file_type::regular)
     return absl::FailedPreconditionError("Calibration inspection file must be a regular owned file");
+  const auto size = fs::file_size(path, error);
+  if (error)
+    return absl::InternalError("Unable to size calibration inspection file");
+  if (size > limit)
+    return absl::ResourceExhaustedError("Calibration inspection file exceeds its byte limit");
   std::ifstream input(path, std::ios::binary);
   if (!input)
     return absl::InternalError("Unable to read calibration inspection file");
-  std::string bytes(limit + 1, '\0');
+  // Promotion retains all pair images until staging. Allocate for their actual
+  // payloads, not 4/5 MiB per file: resize() alone would retain that capacity.
+  std::string bytes(static_cast<size_t>(size) + 1, '\0');
   input.read(bytes.data(), bytes.size());
   bytes.resize(input.gcount());
-  if (input.bad() || bytes.size() > limit)
-    return absl::ResourceExhaustedError("Calibration inspection file exceeds its byte limit");
+  if (input.bad())
+    return absl::InternalError("Unable to read calibration inspection file");
+  if (bytes.size() != size)
+    return absl::AbortedError("Calibration inspection file changed while being read");
   return bytes;
 }
 
 // Called only inside Hugin's promotion callback, with source/destination
 // artifact locks and destination config ownership already held.
-absl::Status copy_ordinary_inspection_for_promotion(
+absl::Status copy_frame_inspection_for_promotion(
     const fs::path& source_game,
     const fs::path& destination_game,
     const YAML::Node& selected_config) {
   const YAML::Node selection = selected_config["stitching"]["calibration_frame_selection"];
-  if (selection && !selection.IsNull())
-    return absl::OkStatus();
+  const bool player_selected = selection && !selection.IsNull();
   const YAML::Node calibration = selected_config["hstream_ui"]["stitching_calibration"];
   const std::string owner = calibration["invalidation_id"].as<std::string>("");
   if (!std::regex_match(owner, std::regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,159}")))
@@ -551,32 +559,51 @@ absl::Status copy_ordinary_inspection_for_promotion(
     if (error || type != fs::file_type::directory)
       return absl::FailedPreconditionError("Calibration inspection must remain in owned directories");
   }
-  std::string manifest_bytes;
-  auto manifest_file = read_inspection_file(source / "frames.yaml", 64 * 1024);
-  if (absl::IsNotFound(manifest_file.status())) {
-    std::error_code error;
-    if (!fs::exists(source, error) && !error)
-      return absl::OkStatus(); // Legacy candidate without inspection artifacts.
-  }
-  HM_ASSIGN_OR_RETURN(manifest_bytes, std::move(manifest_file));
-  const YAML::Node manifest = YAML::Load(manifest_bytes);
-  const size_t count = manifest["expected_pair_count"].as<size_t>(0);
-  if (manifest["version"].as<int>(0) != 1 || manifest["invalidation_id"].as<std::string>("") != owner || count == 0 ||
-      count > 16 || count != calibration["frame_count"].as<size_t>(0) || !manifest["pairs"].IsSequence() ||
-      manifest["pairs"].size() != count)
-    return absl::FailedPreconditionError("Cannot promote incomplete or mismatched calibration frame inspection");
+  const size_t count = calibration["frame_count"].as<size_t>(0);
+  if (count == 0 || count > 16)
+    return absl::FailedPreconditionError("Invalid promoted calibration inspection pair count");
   std::vector<std::pair<std::string, std::string>> files;
-  files.emplace_back("frames.yaml", std::move(manifest_bytes));
-  for (size_t index = 0; index < count; ++index) {
-    if (manifest["pairs"][index]["index"].as<size_t>(16) != index)
-      return absl::FailedPreconditionError("Invalid calibration frame inspection ordering");
-    for (const char* camera : {"left", "right"}) {
-      const std::string filename = std::string(camera) + "_" + std::to_string(index) + ".jpg";
-      std::string contents;
-      HM_ASSIGN_OR_RETURN(contents, read_inspection_file(source / filename, 4 * 1024 * 1024));
-      files.emplace_back(filename, std::move(contents));
+  if (!player_selected) {
+    std::string manifest_bytes;
+    auto manifest_file = read_inspection_file(source / "frames.yaml", 64 * 1024);
+    if (absl::IsNotFound(manifest_file.status())) {
+      std::error_code error;
+      if (!fs::exists(source, error) && !error)
+        return absl::OkStatus(); // Legacy candidate without inspection artifacts.
+    }
+    HM_ASSIGN_OR_RETURN(manifest_bytes, std::move(manifest_file));
+    const YAML::Node manifest = YAML::Load(manifest_bytes);
+    if (manifest["version"].as<int>(0) != 1 || manifest["invalidation_id"].as<std::string>("") != owner ||
+        count != manifest["expected_pair_count"].as<size_t>(0) || !manifest["pairs"].IsSequence() ||
+        manifest["pairs"].size() != count)
+      return absl::FailedPreconditionError("Cannot promote incomplete or mismatched calibration frame inspection");
+    files.emplace_back("frames.yaml", std::move(manifest_bytes));
+    for (size_t index = 0; index < count; ++index) {
+      if (manifest["pairs"][index]["index"].as<size_t>(16) != index)
+        return absl::FailedPreconditionError("Invalid calibration frame inspection ordering");
+      for (const char* camera : {"left", "right"}) {
+        const std::string filename = std::string(camera) + "_" + std::to_string(index) + ".jpg";
+        std::string contents;
+        HM_ASSIGN_OR_RETURN(contents, read_inspection_file(source / filename, 4 * 1024 * 1024));
+        files.emplace_back(filename, std::move(contents));
+      }
     }
   }
+  // Match pictures are optional for old candidates and failed/skipped pairs.
+  // Players input bundles are shared across solves; these pictures are not.
+  for (size_t index = 0; index < count; ++index) {
+    for (const char* kind : {"points_", "matches_"}) {
+      const std::string filename = std::string(kind) + std::to_string(index) + ".jpg";
+      auto contents = read_inspection_file(source / filename, 5 * 1024 * 1024);
+      if (absl::IsNotFound(contents.status()))
+        continue;
+      if (!contents.ok())
+        return contents.status();
+      files.emplace_back(filename, std::move(*contents));
+    }
+  }
+  if (files.empty())
+    return absl::OkStatus();
   const fs::path root = destination_game / "calibration-frame-inspection";
   const fs::path destination = root / owner;
   std::error_code error;
@@ -591,7 +618,7 @@ absl::Status copy_ordinary_inspection_for_promotion(
       return absl::FailedPreconditionError("Destination calibration inspection owner is not a private directory");
     for (const auto& [name, contents] : files) {
       std::string existing;
-      HM_ASSIGN_OR_RETURN(existing, read_inspection_file(destination / name, 4 * 1024 * 1024));
+      HM_ASSIGN_OR_RETURN(existing, read_inspection_file(destination / name, 5 * 1024 * 1024));
       if (existing != contents)
         return absl::FailedPreconditionError("A different calibration inspection already owns the destination ID");
     }
@@ -798,7 +825,7 @@ absl::Status PromoteStitchingExperiment(
                 experiment.game_directory / "config.yaml", game_directory / "config.yaml"));
         try {
           HM_RETURN_IF_ERROR(
-              copy_ordinary_inspection_for_promotion(experiment.game_directory, game_directory, YAML::Load(selected)));
+              copy_frame_inspection_for_promotion(experiment.game_directory, game_directory, YAML::Load(selected)));
         } catch (const YAML::Exception& error) {
           return absl::InvalidArgumentError("Invalid promoted frame inspection: " + std::string(error.what()));
         }
@@ -1086,9 +1113,16 @@ absl::StatusOr<StitchingExperimentFrameInspection> InspectStitchingExperimentFra
             experiment.invalidation_id)
       return absl::AbortedError("Selected frame workspace was superseded");
     const YAML::Node selection = config["stitching"]["calibration_frame_selection"];
+    if (!std::regex_match(experiment.invalidation_id, std::regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,159}")))
+      return absl::InvalidArgumentError("Invalid calibration inspection owner");
+    const fs::path match_images =
+        experiment.game_directory / "calibration-frame-inspection" / experiment.invalidation_id;
+    const auto set_match_images = [&](StitchingExperimentSelectedFrame& frame, size_t index) {
+      frame.match_images = {
+          match_images / ("points_" + std::to_string(index) + ".jpg"),
+          match_images / ("matches_" + std::to_string(index) + ".jpg")};
+    };
     if (!selection || selection.IsNull()) {
-      if (!std::regex_match(experiment.invalidation_id, std::regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,159}")))
-        return absl::InvalidArgumentError("Invalid calibration inspection owner");
       const fs::path images = experiment.game_directory / "calibration-frame-inspection" / experiment.invalidation_id;
       std::ifstream file(images / "frames.yaml");
       if (!file)
@@ -1117,6 +1151,7 @@ absl::StatusOr<StitchingExperimentFrameInspection> InspectStitchingExperimentFra
         if (pair["index"].as<size_t>(16) != index)
           return absl::InvalidArgumentError("Calibration frame inspection pair indices are invalid");
         StitchingExperimentSelectedFrame frame;
+        set_match_images(frame, index);
         for (size_t camera = 0; camera < 2; ++camera) {
           const char* role = camera == 0 ? "left" : "right";
           frame.camera_paths[camera] = pair[role]["path"].as<std::string>();
@@ -1159,6 +1194,7 @@ absl::StatusOr<StitchingExperimentFrameInspection> InspectStitchingExperimentFra
     for (size_t index = 0; index < plan.selected.size(); ++index) {
       const auto& selected = plan.selected[index];
       StitchingExperimentSelectedFrame frame;
+      set_match_images(frame, index);
       frame.timeline_ns = selected.pair.timeline_pts_ns;
       frame.eligible_people = selected.eligible_people;
       frame.size_band_counts = selected.size_band_counts;

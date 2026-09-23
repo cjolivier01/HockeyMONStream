@@ -207,7 +207,8 @@ bool ordinary_frame_inspection(const StitchingExperimentWorkspace& workspace) {
       if (!expect(
               partial.ok() && !partial->player_selected && partial->frames.size() == 2 &&
                   partial->source_validation.find("Partial capture") != std::string::npos &&
-                  partial->frames.front().camera_paths[1].empty() && partial->frames.front().coverage.empty(),
+                  partial->frames.front().camera_paths[1].empty() && partial->frames.front().coverage.empty() &&
+                  partial->frames[1].match_images[1] == manifest_path.parent_path() / "matches_1.jpg",
               "ordinary inspection must identify partial captures and never invent player scores or source identity"))
         return false;
       YAML::Node complete = YAML::Clone(original);
@@ -753,7 +754,10 @@ int main() {
         "inspection must preserve exact raw identities and scoring coverage");
     ok &= expect(
         inspected->frames[1].thumbnails[0] ==
-            workspace->game_directory / "player-frame-inspection" / plan.fingerprint / "left_1.jpg",
+                workspace->game_directory / "player-frame-inspection" / plan.fingerprint / "left_1.jpg" &&
+            inspected->frames[1].match_images[0] ==
+                workspace->game_directory / "calibration-frame-inspection" / workspace->invalidation_id /
+                    "points_1.jpg",
         "inspection thumbnail paths must belong to the selected fingerprint");
   }
   if (!write(game / "cam2" / "right.mp4", "changed-source"))

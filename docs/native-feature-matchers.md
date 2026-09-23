@@ -8,11 +8,11 @@ backends:
   Jetson defaults to the 2K canvas described below. In native mode, images are
   converted to grayscale floats in `[0,1]` and padded on the right/bottom with
   zeros to a shared canvas covering both images, rounded up to multiples of 8.
-  A minimum 32 × 32 canvas supports the graph's fixed top-1024 operation for tiny
+  A minimum 48 × 48 canvas supports the graph's fixed top-2048 operation for tiny
   inputs. For two 3840 × 2160 cameras, the tensor is `[2,1,2160,3840]` with no
   padding. Matches in padding are discarded; retained coordinates refer directly
   to the original images. The existing graph supports dynamic spatial dimensions.
-  The keypoint limit remains 1024 per image.
+  The SuperPoint keypoint limit is 2048 per image, matching the HockeyMON/cupano script's detector budget.
 - `dedode-lightglue` uses DeDoDe `L-C4-v2` detection, `B-upright`
   descriptors, and the `dedodeb` LightGlue weights in a fixed-shape ONNX
   graph with a 1024 × 576 RGB canvas per camera. Because one embedded checkpoint
@@ -30,13 +30,38 @@ backends:
   distance, a strict 0.75 Lowe ratio in both directions, and a mutual
   cross-check. It does not require a model asset.
 
-`stitching.control_point_resolution` accepts `auto` (default), `native`, or `2k`
+**Max control points** (`stitching.max_control_points`) limits retained matched
+correspondences, not raw SuperPoint detections. SuperPoint still extracts at most
+2048 keypoints per image; valid LightGlue matches must score strictly above 0.2.
+Selection uses a 16×9 grid in the left camera: it shares the budget across occupied
+height bands, then across occupied columns within each band, ranking by confidence
+within each cell. Partial rounds alternate opposite occupied edges rather than
+favoring the top of the image. Sparse bands return their unused budget; a cap above
+the accepted count retains every match. This preserves available near-side matches
+when a broad textured wall has more populated cells, but cannot create detections
+on featureless ice. Multi-frame calibration applies the same cap again to the pool
+of accepted correspondences before geometric validation.
+
+HockeyMON's Python `hmlib/stitching/control_points.py` uses the same distinction
+between detector keypoints and retained matches, also defaults to 2048 detector
+keypoints, but selects evenly spaced *indices* after sorting by Y. That preserves
+the original density distribution rather than allocating equal height-band budgets.
+For reference-like coverage, select **1K (1024 px long edge)**. The Python script's
+`SuperPoint.extract()` implicitly resizes the long edge to 1024 before inference;
+`native` and `2k` are different inputs, and larger inputs do not guarantee more
+useful matches. See [the reference comparison](superpoint-reference-comparison.md).
+
+`stitching.control_point_resolution` accepts `auto` (default), `native`, `1k`, or `2k`
 for SuperPoint + LightGlue. `auto` resolves to `2k` on Jetson and `native` on
-desktop/SBSA. Explicit user/game/CLI `native` and `2k` selections override this
-platform default; the UI displays the effective size. `2k` restores the 2048 × 1152 grayscale canvas from the
+desktop/SBSA. Explicit user/game/CLI `native`, `1k`, and `2k` selections override this
+platform default; the UI displays the effective size. `1k` independently resizes
+each camera to a 1024-pixel long edge using floating-point Gaussian antialiasing
+and bilinear interpolation, matching the reference Kornia preprocessing. Only
+batch padding is aligned to multiples of eight; matched coordinates are restored
+to source pixel centers. `2k` restores the 2048 × 1152 grayscale canvas from the
 earlier doubled-resolution implementation: each camera is resized preserving
 aspect ratio and padded; matches are converted back to source coordinates.
-Both execution providers support these sizes; CUDA uses the graph described below.
+Both execution providers support all three sizes; CUDA uses the graph described below.
 
 The UI's **Image size** selector sits beside the control-point count. It remembers
 the SuperPoint choice when switching matchers. For the other backends it is
@@ -68,7 +93,7 @@ stitching:
 CUDA uses visible device 0 (`CUDA_VISIBLE_DEVICES` controls visibility). If model
 loading or inference exhausts GPU memory, calibration releases the CUDA session
 and retries the same inputs once on CPU. Remaining frame pairs use that CPU
-session. SuperPoint uses its original float32 CPU graph; startup verifies both
+session. SuperPoint uses the matching 2048-keypoint float32 CPU graph; startup verifies both
 CPU and CUDA assets when CUDA matching is selected. Provider-specific verified
 paths use `HM_FEATURE_MATCHER_CPU_ONNX_MODEL` and
 `HM_FEATURE_MATCHER_CUDA_ONNX_MODEL`; the explicit
@@ -121,9 +146,16 @@ for the convolution network. NMS, descriptor normalization/sampling and LightGlu
 remain float32. This avoids cuDNN's signed-32-bit tensor element limit for a batch
 of two 8K images and reduces activation memory without resizing. The reproducible
 converter is `scripts/export_superpoint_cuda_onnx.py` (onnx 1.20.1); it verifies the
-original graph's SHA-256 before transformation. The CPU setting retains the
-original float32 graph. Both keep 1024 keypoints per image and the same score
-threshold. Numerical differences may change the selected keypoints and matches.
+original graph's SHA-256 before transformation. It emits both a float32 CPU graph
+and the serial mixed-precision CUDA graph, each with 2048 keypoints. The additional
+`image_sizes` input carries each camera's source and resized dimensions. LightGlue
+normalizes restored source pixel centers by that camera's long edge, rather than
+scaling X and Y independently by the padded batch canvas. Old custom 1024-keypoint
+ONNX overrides must be regenerated for this contract. `--keypoints=1024
+--normalization=legacy-per-axis` reproduces the earlier CUDA asset for comparisons.
+The score threshold is unchanged. Numerical differences may change selected
+keypoints and matches; the Python reference also uses different attention precision
+when its default FlashAttention path is active.
 
 All sessions created through `src/libs/onnx/OnnxSession.cpp`, including CPU
 fallbacks and rink segmentation, request deterministic computation with

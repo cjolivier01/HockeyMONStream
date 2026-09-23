@@ -736,7 +736,8 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
     return absl::FailedPreconditionError("Invalid canvas provenance format");
   CanvasProvenance provenance;
   if (resolution_aware && lines[28] != "control-point-resolution=native" &&
-      lines[28] != "control-point-resolution=2k" && lines[28] != "control-point-resolution=auto")
+      lines[28] != "control-point-resolution=1k" && lines[28] != "control-point-resolution=2k" &&
+      lines[28] != "control-point-resolution=auto")
     return absl::FailedPreconditionError("Invalid canvas provenance control-point resolution");
   if (selection_aware &&
       (lines[29].rfind("calibration-frame-selection=", 0) != 0 ||

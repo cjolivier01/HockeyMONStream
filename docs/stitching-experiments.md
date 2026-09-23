@@ -27,7 +27,8 @@ configuration stay isolated. The dialog remains responsive during preparation; q
 Program crop, inference, rink masking, and play tracking. Completed candidates remain available for comparison after
 the batch finishes or is cancelled.
 
-Enable **Prefer player-rich frames** to add an automatic candidate alongside its ordinary baseline. The search starts
+**Prefer player-rich frames** is enabled by default and adds an automatic candidate alongside its ordinary baseline
+for multi-frame calibrations. Uncheck it to queue only ordinary candidates when no saved frame selection applies. The search starts
 at the first calibration frame and defaults to 60 seconds, bounded to 300 seconds. It samples every 500 ms through
 the existing detector and Program ice-mask pruning; people surviving that filter include players and referees.
 Tracking is not required. The baseline prepares its rink mask before scanning, while the scan requires that exact
@@ -57,7 +58,9 @@ Select a ready row and choose **Play selected** (or double-click it). The existi
 the configured passage start and duration; Loop restarts that exact passage. The candidate matrix and results sit
 beside the preview, with passage start and duration on separate labeled rows below it.
 
-Use the title-bar maximize button to enlarge the whole dialog. **Expand preview** (or double-click the video) hides
+Drag a window edge or the bottom-right resize grip to resize the dialog, or use its title-bar maximize button.
+The calibration-frame inspector has its own resize grip and resizes independently of the experiment window;
+camera and match images scale to fit. **Expand preview** (or double-click the video) hides
 the candidate panel and log to give the moving canvas more space while keeping playback controls available.
 **Restore layout**, another double-click, or **Escape** returns to the previous split without restarting playback
 or replacing its native GPU window. Switching candidates starts the same passage against that candidate's maps and
@@ -87,6 +90,28 @@ already required by calibration, without another video-surface readback or a sep
 most 1024 pixels on its longest edge. New selected sets retain all full-resolution PNGs and inspection JPEGs under
 `player-frame-inputs/<selection fingerprint>/`; the complete set is copied into the main game during promotion.
 Ordinary rows retain a bounded source manifest and JPEGs under `calibration-frame-inspection/<invalidation id>/`. Missing thumbnails are shown explicitly rather than replaced with nearby frames.
+
+In **Inspect selected frames**, enable **Show matches** to see the two camera stills with green lines connecting
+matched control points. **Points only** hides the lines while retaining the matched endpoints. These are the
+matcher-selected correspondences for that individual pair, after its confidence/filtering and control-point cap,
+before multi-frame pooling and geometric validation; they are not all raw SuperPoint detections or the final
+solver's inliers. Changing the selected pair updates the view, and turning off Show matches restores the original
+camera thumbnails. The coverage grid keeps its separate meaning.
+
+The control-point maximum limits retained matches rather than the detector's raw
+keypoint count. Capped selection balances occupied height bands before horizontal
+cells to preserve available near-side points when the back wall is more textured.
+It cannot add lower-image matches that the detector did not find, and a maximum
+above the accepted count retains all of them. See [native feature matchers](native-feature-matchers.md)
+for the detector limits, selection algorithm, and comparison with HockeyMON.
+
+Calibration saves `points_N.jpg` and `matches_N.jpg` beside the generation's ordinary inspection files, including
+for Players rows. Each combined image is at most 2048 × 1024 pixels and uses the CPU stills and matching results
+already available during calibration. Calibrated AKAZE coordinates are projected back through the lens model so
+the overlays align with the raw cameras. No extra inference, video decode or video-surface readback is needed.
+Unlike the reusable selected input bundle, these pictures belong to a specific solve. Retries clear previous
+match pictures before matching, and promotion copies them to the main game. Existing experiments and pairs that
+failed matching may lack these pictures; the inspector reports that explicitly and never regenerates them.
 
 ## Selecting the Program calibration
 

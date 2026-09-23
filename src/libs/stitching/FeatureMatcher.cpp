@@ -42,12 +42,46 @@ cv::Point2f restore_feature_point(cv::Point2f point, cv::Size source, cv::Size r
   };
 }
 
+cv::Size long_edge_size(cv::Size source, int maximum_dimension) {
+  const double scale = static_cast<double>(maximum_dimension) / std::max(source.width, source.height);
+  return {
+      std::max(1, static_cast<int>(source.width * scale)),
+      std::max(1, static_cast<int>(source.height * scale)),
+  };
+}
+
+cv::Mat reference_superpoint_image(const cv::Mat& source, cv::Size resized_size) {
+  // LightGlue's extractor uses Kornia's Gaussian antialias filter followed by
+  // bilinear resizing on floats. Resizing integer BGR with INTER_AREA changes
+  // weak ice features before the detector ever sees them. Grayscale is linear,
+  // so do it first to bound the temporary storage to one float plane per camera.
+  cv::Mat gray(source.rows, source.cols, CV_32FC1);
+  for (int y = 0; y < source.rows; ++y) {
+    float* row = gray.ptr<float>(y);
+    for (int x = 0; x < source.cols; ++x)
+      row[x] = 0.299f * bgr_channel_to_unit_float(source, y, x, 2) +
+          0.587f * bgr_channel_to_unit_float(source, y, x, 1) + 0.114f * bgr_channel_to_unit_float(source, y, x, 0);
+  }
+  const double factor_x = static_cast<double>(source.cols) / resized_size.width;
+  const double factor_y = static_cast<double>(source.rows) / resized_size.height;
+  if (std::max(factor_x, factor_y) > 1.0) {
+    const double sigma_x = std::max((factor_x - 1.0) / 2.0, 0.001);
+    const double sigma_y = std::max((factor_y - 1.0) / 2.0, 0.001);
+    const auto kernel_size = [](double sigma) { return static_cast<int>(std::max(4.0 * sigma, 3.0)) | 1; };
+    cv::GaussianBlur(
+        gray, gray, {kernel_size(sigma_x), kernel_size(sigma_y)}, sigma_x, sigma_y, cv::BORDER_REFLECT_101);
+  }
+  cv::resize(gray, gray, resized_size, 0.0, 0.0, cv::INTER_LINEAR);
+  return gray;
+}
+
 absl::StatusOr<FeaturePairInput> prepare_feature_pair(
     const cv::Mat& left_bgr,
     const cv::Mat& right_bgr,
     int input_channels,
     cv::Size tensor_size,
-    bool resize_to_fit) {
+    bool resize_to_fit,
+    int maximum_dimension = 0) {
   auto status = validate_source_image(left_bgr, "Left");
   if (!status.ok())
     return status;
@@ -68,7 +102,9 @@ absl::StatusOr<FeaturePairInput> prepare_feature_pair(
   for (int image_index = 0; image_index < 2; ++image_index) {
     const cv::Mat& source = *images[image_index];
     cv::Mat resized = source;
-    if (resize_to_fit) {
+    if (maximum_dimension > 0) {
+      resized = reference_superpoint_image(source, long_edge_size(source.size(), maximum_dimension));
+    } else if (resize_to_fit) {
       const double scale = std::min(
           static_cast<double>(tensor_size.width) / source.cols, static_cast<double>(tensor_size.height) / source.rows);
       const int width = std::max(32, static_cast<int>(std::round(source.cols * scale)));
@@ -82,6 +118,14 @@ absl::StatusOr<FeaturePairInput> prepare_feature_pair(
     }
     result.resized_sizes[image_index] = {width, height};
     const size_t image_base = static_cast<size_t>(image_index) * input_channels * image_plane;
+    if (maximum_dimension > 0) {
+      for (int y = 0; y < height; ++y)
+        std::copy_n(
+            resized.ptr<float>(y),
+            width,
+            result.tensor.data() + image_base + static_cast<size_t>(y) * tensor_size.width);
+      continue;
+    }
     for (int y = 0; y < height; ++y) {
       for (int x = 0; x < width; ++x) {
         const float blue = bgr_channel_to_unit_float(resized, y, x, 0);
@@ -345,9 +389,12 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
       input_channels = 1;
       session = hm::onnx::Session::Create(
           model_path,
-          {{"images", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, input_channels, -1, -1}}},
           {
-              {"keypoints", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {-1, kKeypointsPerImage, 2}},
+              {"images", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, input_channels, -1, -1}},
+              {"image_sizes", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {2, 4}},
+          },
+          {
+              {"keypoints", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {-1, kSuperPointKeypointsPerImage, 2}},
               {"matches", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {-1, 3}},
               {"mscores", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1}},
           },
@@ -395,7 +442,10 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
   }
   if (!session.ok())
     return session.status();
-  auto result = std::unique_ptr<FeatureMatcher>(new FeatureMatcher(matcher, std::move(*session), input_channels));
+  const size_t keypoints_per_image =
+      matcher == ControlPointMatcher::kSuperPointLightGlue ? kSuperPointKeypointsPerImage : kKeypointsPerImage;
+  auto result = std::unique_ptr<FeatureMatcher>(
+      new FeatureMatcher(matcher, std::move(*session), input_channels, keypoints_per_image));
   result->resolution_ = resolution;
   std::clog << "Control-point matcher " << ControlPointMatcherName(matcher)
             << " execution provider=" << hm::onnx::ExecutionProviderName(result->session_->execution_provider())
@@ -435,6 +485,20 @@ absl::StatusOr<FeaturePairInput> FeatureMatcher::PrepareSuperPoint(
             1) /
         kSuperPointDimensionAlignment * kSuperPointDimensionAlignment;
   };
+  if (resolution == ControlPointResolution::k1K) {
+    auto status = validate_source_image(left_bgr, "Left");
+    if (!status.ok())
+      return status;
+    status = validate_source_image(right_bgr, "Right");
+    if (!status.ok())
+      return status;
+    const cv::Size left = long_edge_size(left_bgr.size(), kSuperPointReferenceMaximumDimension);
+    const cv::Size right = long_edge_size(right_bgr.size(), kSuperPointReferenceMaximumDimension);
+    const cv::Size canvas(
+        static_cast<int>(align_up(std::max(left.width, right.width))),
+        static_cast<int>(align_up(std::max(left.height, right.height))));
+    return prepare_feature_pair(left_bgr, right_bgr, 1, canvas, true, kSuperPointReferenceMaximumDimension);
+  }
   const int64_t width = align_up(std::max(left_bgr.cols, right_bgr.cols));
   const int64_t height = align_up(std::max(left_bgr.rows, right_bgr.rows));
   if (width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max())
@@ -494,7 +558,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
       scores,
       score_count,
       max_control_points,
-      kKeypointsPerImage);
+      kSuperPointKeypointsPerImage);
 }
 
 absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessSparse(
@@ -685,14 +749,13 @@ absl::StatusOr<std::vector<FeatureMatch>> FeatureMatcher::SelectControlPoints(
     return absl::NotFoundError("Feature matcher produced no usable matches");
   }
 
-  // Select a spatially distributed, deterministic subset. The former global
-  // Y-rank linspace duplicated points when the requested cap exceeded the
-  // model output and allowed one marginal match to shift every later rank.
-  // Fixed cells localize those changes and make model-row permutations
-  // irrelevant. A total final order keeps the emitted PTO reproducible.
+  // Balance occupied height bands before their horizontal cells. Giving every
+  // cell equal weight lets a wide, textured wall consume the budget while
+  // near-side matches occupy fewer columns. Keep score ranking within a cell
+  // and a total final order so model-row permutations cannot change the PTO.
   constexpr size_t grid_columns = 16;
   constexpr size_t grid_rows = 9;
-  std::vector<std::vector<size_t>> cells(grid_columns * grid_rows);
+  std::array<std::array<std::vector<size_t>, grid_columns>, grid_rows> cells;
   for (size_t index = 0; index < accepted.size(); ++index) {
     const double normalized_x =
         std::clamp(static_cast<double>(accepted[index].left.x) / left_source_size.width, 0.0, 1.0);
@@ -700,7 +763,7 @@ absl::StatusOr<std::vector<FeatureMatch>> FeatureMatcher::SelectControlPoints(
         std::clamp(static_cast<double>(accepted[index].left.y) / left_source_size.height, 0.0, 1.0);
     const size_t column = std::min(grid_columns - 1, static_cast<size_t>(normalized_x * grid_columns));
     const size_t row = std::min(grid_rows - 1, static_cast<size_t>(normalized_y * grid_rows));
-    cells[row * grid_columns + column].push_back(index);
+    cells[row][column].push_back(index);
   }
   const auto ranked = [&](size_t lhs, size_t rhs) {
     const FeatureMatch& left = accepted[lhs];
@@ -711,25 +774,38 @@ absl::StatusOr<std::vector<FeatureMatch>> FeatureMatcher::SelectControlPoints(
     };
     return key(left) < key(right);
   };
-  for (auto& cell : cells)
-    std::sort(cell.begin(), cell.end(), ranked);
-
   const size_t selection_count = std::min(max_control_points, accepted.size());
-  std::vector<size_t> selected_indices;
-  selected_indices.reserve(selection_count);
-  for (size_t rank = 0; selected_indices.size() < selection_count; ++rank) {
-    bool added = false;
-    for (const auto& cell : cells) {
-      if (rank < cell.size()) {
-        selected_indices.push_back(cell[rank]);
-        added = true;
-        if (selected_indices.size() == selection_count)
-          break;
+  const auto interleave = [](const auto& groups, size_t limit) {
+    std::vector<size_t> occupied;
+    size_t total = 0;
+    for (size_t index = 0; index < groups.size(); ++index) {
+      if (!groups[index].empty()) {
+        occupied.push_back(index);
+        total += groups[index].size();
       }
     }
-    if (!added)
-      break;
+    limit = std::min(limit, total);
+    std::vector<size_t> indices;
+    indices.reserve(limit);
+    for (size_t rank = 0; indices.size() < limit; ++rank) {
+      // Visit opposite occupied edges alternately, so a partial round covers
+      // both ends instead of stopping in the upper/left part of the image.
+      for (size_t slot = 0; slot < occupied.size() && indices.size() < limit; ++slot) {
+        const size_t index = slot % 2 == 0 ? slot / 2 : occupied.size() - 1 - slot / 2;
+        const auto& group = groups[occupied[index]];
+        if (rank < group.size())
+          indices.push_back(group[rank]);
+      }
+    }
+    return indices;
+  };
+  std::array<std::vector<size_t>, grid_rows> rows;
+  for (size_t row = 0; row < grid_rows; ++row) {
+    for (auto& cell : cells[row])
+      std::sort(cell.begin(), cell.end(), ranked);
+    rows[row] = interleave(cells[row], selection_count);
   }
+  auto selected_indices = interleave(rows, selection_count);
   std::sort(selected_indices.begin(), selected_indices.end(), [&](size_t lhs, size_t rhs) {
     const FeatureMatch& left = accepted[lhs];
     const FeatureMatch& right = accepted[rhs];
@@ -774,6 +850,29 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
         {
             {"image0", shape, input->tensor.data(), image_plane},
             {"image1", shape, input->tensor.data() + image_plane, image_plane},
+        },
+        is_cancelled);
+  } else if (matcher_ == ControlPointMatcher::kSuperPointLightGlue && input_channels_ == 1) {
+    // LightGlue normalizes restored source-image coordinates, independently for
+    // each camera. Supplying the actual sizes avoids treating batch padding as
+    // part of the image and preserves the reference extractor's pixel centers.
+    const std::array<float, 8> image_sizes = {
+        static_cast<float>(input->source_sizes[0].width),
+        static_cast<float>(input->source_sizes[0].height),
+        static_cast<float>(input->resized_sizes[0].width),
+        static_cast<float>(input->resized_sizes[0].height),
+        static_cast<float>(input->source_sizes[1].width),
+        static_cast<float>(input->source_sizes[1].height),
+        static_cast<float>(input->resized_sizes[1].width),
+        static_cast<float>(input->resized_sizes[1].height),
+    };
+    outputs = session_->RunFloatInputs(
+        {
+            {"images",
+             {2, input_channels_, input->tensor_size.height, input->tensor_size.width},
+             input->tensor.data(),
+             input->tensor.size()},
+            {"image_sizes", {2, 4}, image_sizes.data(), image_sizes.size()},
         },
         is_cancelled);
   } else {

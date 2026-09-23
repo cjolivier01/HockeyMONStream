@@ -111,8 +111,8 @@ absl::StatusOr<std::filesystem::path> feature_matcher_model_path(
     case ControlPointMatcher::kSuperPointLightGlue:
       return model_path(
           model_override_name(matcher, provider),
-          provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx"
-                                                         : "superpoint-lightglue-pipeline-228994cea8c01014.onnx",
+          provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-k2048-59460a88dac888ad.onnx"
+                                                         : "superpoint-lightglue-k2048-d63a61e3b1667c0b.onnx",
           false);
     case ControlPointMatcher::kDeDoDeLightGlue:
       return model_path(
@@ -132,8 +132,8 @@ absl::StatusOr<std::filesystem::path> feature_matcher_model_target_path(
     case ControlPointMatcher::kSuperPointLightGlue:
       return model_target_path(
           model_override_name(matcher, provider),
-          provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx"
-                                                         : "superpoint-lightglue-pipeline-228994cea8c01014.onnx",
+          provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-k2048-59460a88dac888ad.onnx"
+                                                         : "superpoint-lightglue-k2048-d63a61e3b1667c0b.onnx",
           false);
     case ControlPointMatcher::kDeDoDeLightGlue:
       return model_target_path(

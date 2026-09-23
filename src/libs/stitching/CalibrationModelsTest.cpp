@@ -30,8 +30,8 @@ int main() {
   const fs::path user_models = root / "home/.cache/hstream/models";
 
   constexpr const char* rink = "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx";
-  constexpr const char* superpoint = "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx";
-  constexpr const char* superpoint_cpu = "superpoint-lightglue-pipeline-228994cea8c01014.onnx";
+  constexpr const char* superpoint = "superpoint-lightglue-cuda-k2048-59460a88dac888ad.onnx";
+  constexpr const char* superpoint_cpu = "superpoint-lightglue-k2048-d63a61e3b1667c0b.onnx";
   constexpr const char* dedode = "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx";
   constexpr const char* loftr = "efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx";
   write_model(package_models / rink);

@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
           contains(packager, "--package-assets --verify") && contains(packager, "--package-assets --print-targets") &&
           contains(packager, "DeDoDe must be locally supplied") &&
           contains(packager, "hockey YOLO checkpoint likewise has no recorded redistribution grant") &&
-          !contains(packager, "superpoint-lightglue-pipeline-228994cea8c01014.onnx") &&
+          !contains(packager, "superpoint-lightglue-k2048-d63a61e3b1667c0b.onnx") &&
           contains(packager, "native_model_licenses") && contains(packager, "Apache-2.0-LICENSE.txt") &&
           contains(packager, "DeDoDe-LICENSE.txt") && contains(packager, "NOTICE.txt"),
       "package must carry platform provenance, enforce each platform's CUDA ABI, and stage verified native models "

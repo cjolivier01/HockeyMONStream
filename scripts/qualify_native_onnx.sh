@@ -75,7 +75,7 @@ if [[ ! -f "${model_manifest}" ]]; then
 fi
 rink_model="${HM_RINK_ONNX_MODEL:-${HOME}/.cache/hstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx}"
 matcher_model="${HM_FEATURE_MATCHER_ONNX_MODEL:-${HOME}/.cache/hstream/models/aliked-lightglue-k2048-ea4a4ab2cb556958.onnx}"
-superpoint_model="${HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL:-${HOME}/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx}"
+superpoint_model="${HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL:-${HOME}/.cache/hstream/models/superpoint-lightglue-k2048-d63a61e3b1667c0b.onnx}"
 dedode_model="${HM_DEDODE_LIGHTGLUE_ONNX_MODEL:-${HOME}/.cache/hstream/models/dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx}"
 loftr_model="${HM_LOFTR_ONNX_MODEL:-${HOME}/.cache/hstream/models/efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx}"
 for model_entry in \

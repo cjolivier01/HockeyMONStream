@@ -116,6 +116,7 @@ cc_library(
   implementation_deps = [":orientation_internal"],
   deps = [
     ":stitching_reframe",
+    ":calibration_match_images",
     ":calibration_frame_exif",
     ":player_frame_input_store",
     ":imu_synchronization",
@@ -276,6 +277,24 @@ cc_library(
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
   ],
+)
+
+cc_library(
+  name = "calibration_match_images",
+  srcs = ["CalibrationMatchImages.cpp"],
+  hdrs = ["CalibrationMatchImages.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    ":feature_matcher",
+    "@opencv_linux//:opencv",
+  ],
+)
+
+cc_test(
+  name = "calibration_match_images_test",
+  srcs = ["CalibrationMatchImagesTest.cpp"],
+  deps = [":calibration_match_images"],
 )
 
 cc_library(

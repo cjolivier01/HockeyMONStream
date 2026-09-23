@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
+#include "hstream/src/libs/stitching/CalibrationMatchImages.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
@@ -28,6 +29,7 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSizeGrip>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
@@ -127,6 +129,8 @@ void check_preview_layout(StitchingExperimentDialog& dialog) {
 
 void exercise_layout(StitchingExperimentDialog& dialog) {
   require(dialog.windowFlags().testFlag(Qt::WindowMaximizeButtonHint), "Dialog must offer title-bar maximize");
+  auto* grip = dialog.findChild<QSizeGrip*>();
+  require(dialog.isSizeGripEnabled() && grip && grip->isVisible(), "Experiments must expose a corner resize grip");
   const QSize original_size = dialog.size();
   for (const QSize size : {QSize(1280, 820), QSize(1024, 720)}) {
     dialog.resize(size);
@@ -200,8 +204,10 @@ void exercise_player_queue(const QString& game, const QString& root) {
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
   require(
-      !players->isChecked() && !duration->isEnabled() && duration->value() == 60 && duration->maximum() == 300,
-      "Player selection must be opt-in with bounded search controls");
+      players->isChecked() && duration->isEnabled() && duration->value() == 60 && duration->maximum() == 300,
+      "Player selection must default on with bounded search controls");
+  players->setChecked(false);
+  require(!duration->isEnabled(), "Disabling player selection must disable its search controls");
   add_options(dialog);
   players->setChecked(true);
   add_options(dialog);
@@ -321,6 +327,7 @@ void exercise_queued_reopen(const QString& game, const QString& root) {
     require(
         table->rowCount() == 3 && table->item(0, 5)->text() == "Queued" && table->item(2, 5)->text() == "Queued",
         "Unstarted rows and settings must survive closing the dialog");
+    widget<QCheckBox>(reopened, "stitchExperimentPreferPlayerFrames")->setChecked(false);
     add_options(reopened);
     require(
         table->rowCount() == 4 && table->item(3, 0)->text().startsWith("Players"),
@@ -686,8 +693,8 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
       write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(selected_config)));
     }
   });
+  widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(player_group);
   if (player_group) {
-    widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(true);
     widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
   }
   add_options(dialog);
@@ -796,6 +803,7 @@ void exercise_failed_ordinary_selection_recovery(const QString& game, const QStr
     StitchingExperimentDialog queued(
         game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
     queued.show();
+    widget<QCheckBox>(queued, "stitchExperimentPreferPlayerFrames")->setChecked(false);
     add_options(queued);
     queued.reject();
     require(wait_until([&] { return !queued.isVisible(); }, 1000), "Ordinary recovery fixture did not close");
@@ -868,6 +876,17 @@ void exercise_saved_selection(const QString& game, const QString& root) {
   config["hstream_ui"]["stitching_calibration"]["control_points"] = 100;
   config["hstream_ui"]["stitching_calibration"]["frame_count"] = 2;
   write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  const QString match_directory = game + "/calibration-frame-inspection/fixture-main-calibration";
+  require(QDir().mkpath(match_directory), "Cannot create generation-owned match fixture");
+  const auto match_images = MakeCalibrationMatchImages(
+      {cv::Mat(300, 600, CV_8UC3, cv::Scalar::all(64)), cv::Mat(400, 800, CV_8UC3, cv::Scalar::all(96))},
+      {{{300, 150}, {200, 250}, 0.9f}, {{450, 75}, {100, 150}, 0.8f}});
+  require(match_images.ok(), "Cannot render match fixture");
+  for (size_t kind = 0; kind < 2; ++kind)
+    require(
+        cv::imwrite(
+            (match_directory + (kind == 0 ? "/points_0.jpg" : "/matches_0.jpg")).toStdString(), (*match_images)[kind]),
+        "Cannot save match fixture");
   {
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     environment.insert("HM_OUTPUT_WORK_DIR", root + "/saved-output");
@@ -941,15 +960,51 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     require(inspected_log, "Reopened historical rows must expose their retained runner output");
     table->selectRow(0);
     bool inspected_main = false;
+    const QSize parent_size = reopened.size();
     QTimer::singleShot(0, &reopened, [&]() {
       if (auto* inspector = reopened.findChild<QDialog*>("stitchExperimentFrameInspector")) {
         auto* frames = inspector->findChild<QTableWidget*>("stitchExperimentSelectedFrames");
-        inspected_main = frames && frames->rowCount() == 2;
+        auto* show = inspector->findChild<QCheckBox*>("stitchExperimentShowMatches");
+        auto* points_only = inspector->findChild<QCheckBox*>("stitchExperimentMatchPointsOnly");
+        auto* image = inspector->findChild<QLabel*>("stitchExperimentSelectedMatches");
+        auto* status = inspector->findChild<QLabel*>("stitchExperimentMatchStatus");
+        inspected_main = frames && frames->rowCount() == 2 && show && show->isEnabled() && !show->isChecked() &&
+            points_only && image && !image->isVisible() && status;
+        if (inspected_main) {
+          show->setChecked(true);
+          QCoreApplication::processEvents();
+          auto* grip = inspector->findChild<QSizeGrip*>();
+          inspected_main &= inspector->isSizeGripEnabled() && grip && grip->isVisible();
+          for (const QSize size : {QSize(1280, 820), QSize(1000, 700)}) {
+            inspector->resize(size);
+            QCoreApplication::processEvents();
+            const QPixmap fitted = image->property("pixmap").value<QPixmap>();
+            inspected_main &= inspector->size() == size && reopened.size() == parent_size && !fitted.isNull() &&
+                fitted.width() <= image->width() && fitted.height() <= image->height();
+          }
+          const QImage lines = image->property("pixmap").value<QPixmap>().toImage();
+          inspected_main &= image->isVisible() && points_only->isEnabled() && !lines.isNull();
+          const QString screenshot = qEnvironmentVariable("HSTREAM_TEST_MATCH_SCREENSHOT");
+          if (!screenshot.isEmpty())
+            inspector->grab().save(screenshot);
+          points_only->setChecked(true);
+          const QImage points = image->property("pixmap").value<QPixmap>().toImage();
+          inspected_main &= !points.isNull() && points != lines;
+          frames->selectRow(1);
+          inspected_main &= !show->isEnabled() && !points_only->isEnabled() && !image->isVisible() &&
+              status->text().contains("not recorded");
+          frames->selectRow(0);
+          inspected_main &= show->isEnabled() && image->isVisible();
+          show->setChecked(false);
+          inspected_main &= !image->isVisible();
+        }
         inspector->accept();
       }
     });
     widget<QPushButton>(reopened, "inspectStitchExperimentFramesButton")->click();
-    require(inspected_main, "Main frame inspector must show the retained selected pairs");
+    require(
+        inspected_main,
+        "Inspector must toggle saved matches/points, resize, and handle missing pair data without inference");
     require(!QFile::exists(arguments), "Main frame inspection must not launch baseline, scan or extraction");
     require(
         QFile::rename(game + "/left.offline", game + "/left.mp4") &&

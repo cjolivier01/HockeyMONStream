@@ -112,18 +112,20 @@ class SelectedFrameImage : public QLabel {
     setWordWrap(true);
   }
 
-  void load(const std::filesystem::path& path) {
+  void load(const std::filesystem::path& path, int maximum_width = 1024) {
     original_ = {};
     clear();
     const QString file = QString::fromStdString(path.string());
     const QFileInfo info(file);
     if (!info.isFile()) {
-      setText("Thumbnail becomes available when this pair is extracted for calibration.");
+      setText(
+          maximum_width == 1024 ? "Thumbnail becomes available when this pair is extracted for calibration."
+                                : "Match visualization is unavailable for this pair.");
       return;
     }
     QImageReader reader(file);
     const QSize size = reader.size();
-    if (info.isSymLink() || info.size() > 5 * 1024 * 1024 || !size.isValid() || size.width() > 1024 ||
+    if (info.isSymLink() || info.size() > 5 * 1024 * 1024 || !size.isValid() || size.width() > maximum_width ||
         size.height() > 1024) {
       setText("Thumbnail exceeds the inspection limits.");
       return;
@@ -2267,6 +2269,7 @@ struct StitchingExperimentDialog::Impl {
     viewer.setObjectName("stitchExperimentFrameInspector");
     viewer.setWindowTitle(QString("Calibration frames — Candidate %1").arg(candidates[row].sequence));
     viewer.setWindowFlag(Qt::WindowMaximizeButtonHint, true);
+    viewer.setSizeGripEnabled(true);
     viewer.resize(1180, 780);
     auto* layout = new QVBoxLayout(&viewer);
     auto* explanation = new QLabel(
@@ -2319,10 +2322,24 @@ struct StitchingExperimentDialog::Impl {
       }
     }
     layout->addWidget(choices);
+    auto* match_controls = new QHBoxLayout();
+    auto* show_matches = new QCheckBox("Show matches");
+    show_matches->setObjectName("stitchExperimentShowMatches");
+    auto* points_only = new QCheckBox("Points only");
+    points_only->setObjectName("stitchExperimentMatchPointsOnly");
+    auto* match_status = new QLabel();
+    match_status->setObjectName("stitchExperimentMatchStatus");
+    match_status->setWordWrap(true);
+    match_controls->addWidget(show_matches);
+    match_controls->addWidget(points_only);
+    match_controls->addWidget(match_status, 1);
+    layout->addLayout(match_controls);
     auto* images = new QHBoxLayout();
     std::array<SelectedFrameImage*, 2> camera_images;
+    std::array<QGroupBox*, 2> camera_groups;
     for (size_t camera = 0; camera < camera_images.size(); ++camera) {
       auto* group = new QGroupBox(camera == 0 ? "Left camera" : "Right camera");
+      camera_groups[camera] = group;
       auto* image_layout = new QVBoxLayout(group);
       camera_images[camera] = new SelectedFrameImage(group);
       camera_images[camera]->setObjectName(
@@ -2330,6 +2347,12 @@ struct StitchingExperimentDialog::Impl {
       image_layout->addWidget(camera_images[camera]);
       images->addWidget(group, 2);
     }
+    auto* match_group = new QGroupBox("Matched control points — left / right camera");
+    auto* match_layout = new QVBoxLayout(match_group);
+    auto* match_image = new SelectedFrameImage(match_group);
+    match_image->setObjectName("stitchExperimentSelectedMatches");
+    match_layout->addWidget(match_image);
+    images->addWidget(match_group, 4);
     auto* coverage_group = new QGroupBox("Baseline stitched scoring coverage");
     auto* coverage_layout = new QVBoxLayout(coverage_group);
     auto* coverage = new SelectedFrameCoverage(coverage_group);
@@ -2346,6 +2369,27 @@ struct StitchingExperimentDialog::Impl {
     detail->setReadOnly(true);
     detail->setMaximumHeight(150);
     layout->addWidget(detail);
+    const auto show_match_view = [&]() {
+      const int selected_row = choices->currentRow();
+      if (selected_row < 0 || selected_row >= static_cast<int>(inspection->frames.size()))
+        return;
+      const auto& frame = inspection->frames[selected_row];
+      const bool available = std::all_of(frame.match_images.begin(), frame.match_images.end(), [](const auto& path) {
+        const QFileInfo info(QString::fromStdString(path.string()));
+        return info.isFile() && !info.isSymLink();
+      });
+      show_matches->setEnabled(available);
+      const bool showing = available && show_matches->isChecked();
+      points_only->setEnabled(showing);
+      match_group->setVisible(showing);
+      for (auto* group : camera_groups)
+        group->setVisible(!showing);
+      match_status->setText(
+          available ? "Retained matches for this pair, before multi-frame pooling and geometric validation."
+                    : "Match images were not recorded for this pair. New calibrations save them after matching.");
+      if (showing)
+        match_image->load(frame.match_images[points_only->isChecked() ? 0 : 1], 2048);
+    };
     const auto show_pair = [&]() {
       const int selected_row = choices->currentRow();
       if (selected_row < 0 || selected_row >= static_cast<int>(inspection->frames.size()))
@@ -2379,8 +2423,11 @@ struct StitchingExperimentDialog::Impl {
         identity += "Selection fingerprint: " + QString::fromStdString(inspection->fingerprint);
       detail->setPlainText(identity);
       coverage->set_coverage(frame.coverage);
+      show_match_view();
     };
     QObject::connect(choices, &QTableWidget::itemSelectionChanged, &viewer, show_pair);
+    QObject::connect(show_matches, &QCheckBox::toggled, &viewer, show_match_view);
+    QObject::connect(points_only, &QCheckBox::toggled, &viewer, show_match_view);
     auto* close = new QPushButton("Close");
     QObject::connect(close, &QPushButton::clicked, &viewer, &QDialog::accept);
     layout->addWidget(close, 0, Qt::AlignRight);
@@ -2492,6 +2539,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   setWindowTitle("Stitching Experiments");
   setWindowFlag(Qt::WindowMaximizeButtonHint, true);
   setWindowFlag(Qt::WindowContextHelpButtonHint, false);
+  setSizeGripEnabled(true);
   resize(1280, 820);
   auto& s = *impl_;
   s.game_directory = game_directory;
@@ -2538,6 +2586,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_layout->addRow("Rink pitch/roll variants", s.rotations);
   s.prefer_player_frames = new QCheckBox("Prefer player-rich frames");
   s.prefer_player_frames->setObjectName("stitchExperimentPreferPlayerFrames");
+  s.prefer_player_frames->setChecked(true);
   s.prefer_player_frames->setToolTip(
       "Choose player-rich frames once per frame count, using one ordinary baseline and the Program ice mask. "
       "Later options reuse that exact selection and its original search duration, even when this box is unchecked. "

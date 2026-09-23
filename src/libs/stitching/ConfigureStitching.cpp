@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/CalibrationMatchImages.h"
 #include "hstream/src/libs/stitching/CalibrationModels.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
@@ -3111,6 +3112,75 @@ absl::Status write_stitching_calibration_frame_inspection(
   }
 }
 
+namespace {
+
+// Both ordinary and Players diagnostics belong to the solve generation, not
+// the shared immutable Players input bundle. The caller holds the artifact lock.
+absl::Status update_stitching_match_inspection(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id,
+    size_t index,
+    const std::array<cv::Mat, 2>* visualizations) {
+  if (!std::regex_match(expected_invalidation_id, std::regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,159}")) || index >= 16)
+    return absl::InvalidArgumentError("Invalid calibration match inspection owner or pair index");
+  auto lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!lock.ok())
+    return lock.status();
+  HM_RETURN_IF_ERROR(
+      validate_stitching_generation_owner_file_locked(fs::path(game_dir) / "config.yaml", expected_invalidation_id));
+  const fs::path root = fs::path(game_dir) / "calibration-frame-inspection";
+  const fs::path directory = root / expected_invalidation_id;
+  std::error_code error;
+  for (const auto& path : {root, directory}) {
+    fs::create_directory(path, error);
+    if (error || fs::symlink_status(path, error).type() != fs::file_type::directory || error)
+      return absl::FailedPreconditionError("Calibration match inspection requires private regular directories");
+  }
+  if (!visualizations) {
+    // Clear every pair before a retry: a failed extraction/matcher must never
+    // leave the previous attempt's match pictures next to new camera stills.
+    for (size_t pair = 0; pair < 16; ++pair) {
+      for (const char* kind : {"points_", "matches_"}) {
+        fs::remove(directory / (std::string(kind) + std::to_string(pair) + ".jpg"), error);
+        if (error)
+          return absl::InternalError("Cannot reset calibration match inspection: " + error.message());
+      }
+    }
+  } else {
+    std::string pattern = (directory / ".matches-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    const char* created = ::mkdtemp(writable.data());
+    if (!created)
+      return absl::InternalError("Cannot stage calibration match inspection");
+    struct Cleanup {
+      fs::path path;
+      ~Cleanup() {
+        std::error_code ignored;
+        fs::remove_all(path, ignored);
+      }
+    } staging{created};
+    try {
+      for (size_t kind = 0; kind < visualizations->size(); ++kind) {
+        const std::string filename = std::string(kind == 0 ? "points_" : "matches_") + std::to_string(index) + ".jpg";
+        if (!cv::imwrite((staging.path / filename).string(), (*visualizations)[kind], {cv::IMWRITE_JPEG_QUALITY, 92}))
+          return absl::InternalError("Cannot save calibration match inspection");
+        HM_RETURN_IF_ERROR(fsync_stitch_path(staging.path / filename));
+        fs::rename(staging.path / filename, directory / filename, error);
+        if (error)
+          return absl::InternalError("Cannot publish calibration match inspection: " + error.message());
+      }
+    } catch (const cv::Exception& exception) {
+      return absl::InternalError("Cannot encode calibration match inspection: " + std::string(exception.what()));
+    }
+  }
+  HM_RETURN_IF_ERROR(fsync_stitch_path(directory, true));
+  HM_RETURN_IF_ERROR(fsync_stitch_path(root, true));
+  return fsync_stitch_path(game_dir, true);
+}
+
+} // namespace
+
 absl::Status create_control_points(
     const std::string& game_dir,
     const std::vector<StitchingCalibrationFramePair>& frame_pairs,
@@ -3332,6 +3402,12 @@ absl::Status create_control_points(
   size_t matched_frame_pairs = 0;
   size_t skipped_frame_pairs = 0;
   std::vector<size_t> frame_match_counts(input_files.size(), 0);
+  const char* inspection_enabled = std::getenv("HSTREAM_STITCH_CALIBRATION_INSPECTION");
+  const bool inspect_matches = !expected_invalidation_id.empty() &&
+      (!backend_choices.calibration_frame_selection_fingerprint.empty() ||
+       (inspection_enabled && std::string(inspection_enabled) == "1"));
+  if (inspect_matches)
+    HM_RETURN_IF_ERROR(update_stitching_match_inspection(game_dir, expected_invalidation_id, 0, nullptr));
   for (size_t index = 0; index < input_files.size(); ++index) {
     auto left_or = load_feature_image(input_files[index].first);
     if (!left_or.ok())
@@ -3390,6 +3466,12 @@ absl::Status create_control_points(
       return frame_matches_or.status();
     }
     FeatureMatchResult frame_matches = std::move(*frame_matches_or);
+    if (inspect_matches) {
+      std::array<cv::Mat, 2> visualizations;
+      HM_ASSIGN_OR_RETURN(
+          visualizations, MakeCalibrationMatchImages({left, right}, frame_matches.selected, akaze_calibration));
+      HM_RETURN_IF_ERROR(update_stitching_match_inspection(game_dir, expected_invalidation_id, index, &visualizations));
+    }
     frame_match_counts[index] = frame_matches.accepted.size();
     ++matched_frame_pairs;
     candidates.push_back(CandidateFramePair{.index = index, .accepted = frame_matches.accepted});

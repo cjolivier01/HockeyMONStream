@@ -84,6 +84,9 @@ struct StitchingExperimentSelectedFrame {
   double quality{0};
   std::vector<uint16_t> coverage;
   std::array<std::filesystem::path, 2> thumbnails;
+  // Generation-owned combined stills: matched endpoints, then endpoints + lines.
+  // Missing files are expected for legacy rows or pairs that failed matching.
+  std::array<std::filesystem::path, 2> match_images;
 };
 
 struct StitchingExperimentFrameInspection {

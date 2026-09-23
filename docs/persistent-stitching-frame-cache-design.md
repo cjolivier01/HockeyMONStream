@@ -181,7 +181,7 @@ directory must not itself run calibration or inference.
 
 Reopening loads retained rows and adds a read-only `Main calibration` row bound to the current main config and
 published generation. This row is inspectable immediately when its bundle or ordinary manifest is present.
-Unavailable legacy inspection data is reported honestly; merely opening the inspector never generates it.
+Unavailable legacy inspection data is reported honestly; merely opening the inspector never generates it. Match/point pictures live under `calibration-frame-inspection/<invalidation id>/` for both ordinary and Players rows, because the matcher and control-point limit belong to each solve rather than its reusable input bundle. See [stitching experiments](stitching-experiments.md) for overlay semantics and bounds.
 Main inspection does not require available source recordings. Re-solving cached Players inputs still enforces
 the source-binding policy above.
 
