@@ -4455,8 +4455,29 @@ absl::Status visit_current_field_mask_impl(
     HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
     expected_canvas_size = native_size;
   }
+  std::string mask_time;
+  HM_ASSIGN_OR_RETURN(mask_time, read_rink_mask_frame_time(*config));
   bool migrate_legacy_generation = false;
   try {
+    const YAML::Node values = *config;
+    const YAML::Node provenance = values["rink"]["mask_frame"];
+    const YAML::Node saved_time =
+        provenance && provenance.IsMap() ? provenance["selection"] : YAML::Node(YAML::NodeType::Undefined);
+    if ((provenance && !provenance.IsMap()) || (!saved_time && mask_time != "auto") ||
+        (saved_time && (!saved_time.IsScalar() || saved_time.as<std::string>() != mask_time)))
+      return absl::FailedPreconditionError("Field mask was generated with a different rink mask frame time");
+    if (mask_time != "auto") {
+      if (!provenance["recording_time_ns"] || !provenance["recording_time_ns"].IsScalar() ||
+          provenance["recording_time_ns"].as<uint64_t>() == std::numeric_limits<uint64_t>::max() ||
+          !provenance["sources"].IsSequence() || provenance["sources"].size() != 2)
+        return absl::FailedPreconditionError("Timed field mask is missing sampled frame provenance");
+      for (const auto& source : provenance["sources"]) {
+        if (!source.IsMap() || !source["video"] || !source["video"].IsScalar() ||
+            source["video"].as<std::string>().empty() || !source["seconds"] || !source["seconds"].IsScalar() ||
+            !std::isfinite(source["seconds"].as<double>()) || source["seconds"].as<double>() < 0)
+          return absl::FailedPreconditionError("Timed field mask has invalid camera frame provenance");
+      }
+    }
     const YAML::Node saved_generation = (*config)["rink"]["stitched_output_generation"];
     const bool current_matches = saved_generation && saved_generation.IsScalar() &&
         saved_generation.as<std::string>() == current_output_generation;
@@ -4844,7 +4865,8 @@ absl::Status save_rink_profile_locked(
     const std::string& expected_output_authorization_id,
     const std::string& expected_invalidation_id,
     const std::optional<double>& expected_persisted_rotation,
-    const cv::Mat* stitched_image = nullptr) {
+    const cv::Mat* stitched_image = nullptr,
+    const RinkMaskFrameProvenance& frame = {}) {
   if (game_dir.empty() || profile.masks.empty()) {
     return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
   }
@@ -5032,6 +5054,30 @@ absl::Status save_rink_profile_locked(
         return configured_generation.status();
       current_output_generation = *configured_generation;
     }
+    std::string current_mask_time;
+    HM_ASSIGN_OR_RETURN(current_mask_time, read_rink_mask_frame_time(config));
+    if (current_mask_time != frame.selection)
+      return absl::AbortedError("Rink mask frame time changed before publication");
+    if (frame.selection != "auto" && !frame.recording_time_ns.has_value())
+      return absl::FailedPreconditionError("A timed rink mask requires its sampled recording position");
+    if (frame.selection != "auto") {
+      for (const auto& source : frame.sources)
+        if (source.video.empty() || !std::isfinite(source.seconds) || source.seconds < 0)
+          return absl::FailedPreconditionError("A timed rink mask requires both sampled camera identities");
+    }
+    YAML::Node provenance(YAML::NodeType::Map);
+    provenance["selection"] = frame.selection;
+    if (frame.recording_time_ns)
+      provenance["recording_time_ns"] = *frame.recording_time_ns;
+    for (const auto& source : frame.sources) {
+      if (source.video.empty())
+        continue;
+      YAML::Node camera;
+      camera["video"] = source.video.string();
+      camera["seconds"] = source.seconds;
+      provenance["sources"].push_back(camera);
+    }
+    config["rink"]["mask_frame"] = provenance;
     config["rink"]["ice_contours_mask_count"] = profile.masks.size();
     config["rink"]["ice_contours_mask_centroid"] = std::vector<double>{profile.centroid.x, profile.centroid.y};
     config["rink"]["ice_contours_combined_bbox"] = std::vector<double>{
@@ -5255,7 +5301,8 @@ absl::Status create_field_mask(
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
-    const std::string& expected_output_authorization_id) {
+    const std::string& expected_output_authorization_id,
+    const RinkMaskFrameProvenance& frame) {
   if (is_cancelled && is_cancelled())
     return absl::CancelledError("Rink-mask calibration cancelled before inference");
   const fs::path root(game_dir);
@@ -5268,6 +5315,14 @@ absl::Status create_field_mask(
   if (!expected_output_generation.empty()) {
     HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
   }
+  auto frame_config = load_config_or_empty(root / "config.yaml");
+  if (!frame_config.ok())
+    return frame_config.status();
+  std::string requested_time;
+  HM_ASSIGN_OR_RETURN(requested_time, read_rink_mask_frame_time(*frame_config));
+  if (requested_time != frame.selection || (requested_time != "auto" && !frame.recording_time_ns))
+    return absl::FailedPreconditionError(
+        "The selected rink mask time requires a mask preparation pass; restart playback");
   // Avoid GPU readback and rink inference after this calibration generation
   // has already been superseded. Publication validates again under the config
   // transaction lock because a newer invalidation can still arrive while the
@@ -5327,7 +5382,8 @@ absl::Status create_field_mask(
         expected_output_authorization_id,
         expected_invalidation_id,
         expected_persisted_rotation,
-        &stitched);
+        &stitched,
+        frame);
   }
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
@@ -5347,7 +5403,8 @@ absl::Status create_field_mask(
       expected_output_authorization_id,
       expected_invalidation_id,
       expected_persisted_rotation,
-      &stitched);
+      &stitched,
+      frame);
 }
 
 absl::Status configure_orientation(

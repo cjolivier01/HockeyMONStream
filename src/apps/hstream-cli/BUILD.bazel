@@ -29,6 +29,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/stitching:rink_mask_frame_time",
     "//src/libs/assets:asset_manager",
     "//src/libs/common:tensorrt_gpu_identity",
     # "//src/libs/common:mod_pipeline",

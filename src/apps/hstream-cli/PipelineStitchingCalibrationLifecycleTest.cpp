@@ -819,6 +819,143 @@ int main(int argc, char** argv) {
           {}),
       "short ordinary-peer video must be generated");
 
+  if (std::getenv("HM_TEST_RINK_MASK_TIME_ONLY")) {
+    ok &= expect(
+        write_game_config(game / "config.yaml", 128, "timed-mask", false, 1, "akaze-hamming"),
+        "Timed mask fixture must be written");
+    YAML::Node config = YAML::LoadFile((game / "config.yaml").string());
+    config["stitching"]["mapping_backend"] = "opencv-magsac";
+    config["stitching"]["projection"] = "rectilinear";
+    config["stitching"]["rink_mask_frame_time"] = "-00:00:01";
+    config["stitching"]["stitch_frame_time"] = "00:00:59.900";
+    std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+    std::string first_generation;
+    int pass = 0;
+    for (const std::string selection : {"-00:00:01", "00:00:05", "00:00:05"}) {
+      config = YAML::LoadFile((game / "config.yaml").string());
+      config["stitching"]["rink_mask_frame_time"] = selection;
+      std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+      const auto mask_before =
+          fs::exists(game / "rink_mask_0.png") ? fs::last_write_time(game / "rink_mask_0.png") : fs::file_time_type{};
+      PipelineProcess timed;
+      int exit_code = -1;
+      ok &= expect(
+          timed.Start(
+              argv[1], pipeline_config, game_root, plugin_directory, "timed-mask", 128, false, "00:00:59.900", 1),
+          "Timed mask pipeline must start");
+      ok &= expect(
+          timed.WaitForExit(&exit_code, kCalibrationTimeout), "Timed mask run must finish after normal playback");
+      ok &= expect(exit_code == 0, "Timed mask run must succeed");
+      if (!ok) {
+        timed.DumpOutput("timed mask");
+        std::cerr << "fixture retained at " << root << '\n';
+        return 1;
+      }
+      config = YAML::LoadFile((game / "config.yaml").string());
+      const YAML::Node frame = config["rink"]["mask_frame"];
+      ok &= expect(
+          frame["selection"].as<std::string>() == selection &&
+              frame["recording_time_ns"].as<uint64_t>() ==
+                  (selection.front() == '-' ? 59000000000ULL : 5000000000ULL) &&
+              frame["sources"].size() == 2,
+          "Mask provenance must identify the selected recording frame and both camera sources");
+      const std::string generation = config["rink"]["stitched_output_generation"].as<std::string>();
+      if (first_generation.empty())
+        first_generation = generation;
+      ok &= expect(first_generation == generation, "Changing only the mask time must preserve alignment/maps");
+      const bool prepared = timed.output().find("Preparing mask at recording time") != std::string::npos;
+      ok &= expect(prepared == (pass < 2), "Only new mask selections must run preparation");
+      if (prepared) {
+        const std::string restart_event = "HSTREAM_CALIBRATION stage=playback-restart status=complete";
+        const size_t restart = timed.output().find(restart_event);
+        ok &= expect(
+            restart != std::string::npos &&
+                count_occurrences(timed.output(), restart_event, 0, timed.output().size()) == 1 &&
+                count_occurrences(timed.output(), "Pipeline running", 0, restart) == (pass == 0 ? 3 : 2),
+            "Timed mask preparation must acknowledge normal PLAYING exactly once so the UI closes calibration");
+      }
+      if (pass == 2)
+        ok &= expect(
+            fs::last_write_time(game / "rink_mask_0.png") == mask_before, "A repeated time must reuse the saved mask");
+      for (const auto& source : frame["sources"])
+        ok &= expect(
+            std::abs(source["seconds"].as<double>() - (pass == 0 ? 59.0 : 5.0)) < 0.1,
+            "Actual sampled camera timestamps must match the mask target");
+      ++pass;
+      ok &= expect(
+          timed.output().find("Ignoring stale stitching completion") == std::string::npos,
+          "Preparation completion must retain stage/run ownership");
+      if (!ok) {
+        timed.DumpOutput("timed mask provenance");
+        std::cerr << "fixture retained at " << root << '\n';
+        return 1;
+      }
+    }
+    config = YAML::LoadFile((game / "config.yaml").string());
+    config["stitching"]["rink_mask_frame_time"] = "00:00:07";
+    std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+    PipelineProcess cancelled;
+    int cancelled_exit = -1;
+    ok &= expect(
+        cancelled.Start(
+            argv[1],
+            pipeline_config,
+            game_root,
+            plugin_directory,
+            "timed-mask",
+            128,
+            false,
+            "00:00:59.900",
+            1,
+            {},
+            true,
+            3000),
+        "Cancellable mask preparation must start");
+    ok &= expect(
+        cancelled.WaitFor("Looking for the ice surface", 0, kCalibrationTimeout),
+        "Cancellation fixture must reach mask preparation");
+    ok &= expect(
+        cancelled.Interrupt() && cancelled.WaitForExit(&cancelled_exit),
+        "Cancelling mask preparation must promptly stop the pipeline");
+    ok &= expect(
+        cancelled.output().find("stage=playback-restart status=complete") == std::string::npos,
+        "Cancelled mask preparation must not acknowledge normal playback");
+    config = YAML::LoadFile((game / "config.yaml").string());
+    ok &= expect(
+        config["rink"]["mask_frame"]["selection"].as<std::string>() == "00:00:05" &&
+            config["rink"]["stitched_output_generation"].as<std::string>() == first_generation,
+        "Cancellation must not publish a replacement mask or alter alignment");
+    if (!ok) {
+      cancelled.DumpOutput("cancelled mask");
+      std::cerr << "fixture retained at " << root << '\n';
+      return 1;
+    }
+    YAML::Node legacy_pipeline = YAML::LoadFile(pipeline_config.string());
+    legacy_pipeline["application"]["stage"] = -1;
+    legacy_pipeline["hmstitcher"]["configure-only"] = 1;
+    legacy_pipeline["hmstitcher"]["one-pass-mode"] = 0;
+    std::ofstream(pipeline_config) << YAML::Dump(legacy_pipeline) << '\n';
+    PipelineProcess legacy_stage;
+    int legacy_exit = -1;
+    ok &= expect(
+        legacy_stage.Start(
+            argv[1], pipeline_config, game_root, plugin_directory, "timed-mask", 128, false, "00:00:59.900", 1) &&
+            legacy_stage.WaitForExit(&legacy_exit, kCalibrationTimeout) && legacy_exit == 0,
+        "Legacy calibration stage must prepare the selected mask before finishing");
+    config = YAML::LoadFile((game / "config.yaml").string());
+    ok &= expect(
+        config["rink"]["mask_frame"]["recording_time_ns"].as<uint64_t>() == 7000000000ULL &&
+            config["rink"]["stitched_output_generation"].as<std::string>() == first_generation,
+        "Legacy calibration stage must reuse alignment and honor the custom mask time");
+    if (!ok) {
+      legacy_stage.DumpOutput("legacy mask preparation");
+      std::cerr << "fixture retained at " << root << '\n';
+      return 1;
+    }
+    fs::remove_all(root);
+    return ok ? 0 : 1;
+  }
+
   PipelineProcess ordinary_uri;
   if (ok) {
     ok = [&] {

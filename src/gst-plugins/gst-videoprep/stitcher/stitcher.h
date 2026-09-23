@@ -8,6 +8,7 @@
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/stitching/CalibrationFrameExif.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
@@ -220,6 +221,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::string config_file_;
   std::string calibration_invalidation_id_;
   std::string calibration_run_generation_;
+  bool mask_preparation_{false};
+  hm::stitching::RinkMaskFrameProvenance mask_frame_;
   GstElement* owner_element_{nullptr};
   std::mutex process_mu_;
   size_t process_pass_{0};

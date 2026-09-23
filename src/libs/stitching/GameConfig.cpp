@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
@@ -934,7 +935,8 @@ absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurat
         return absl::InvalidArgumentError("stitching.rink_configs identifiers must be unique lowercase kebab-case");
       for (const auto& field : entry.second) {
         if (!field.first.IsScalar() ||
-            (field.first.as<std::string>() != "display_name" && field.first.as<std::string>() != "rotation_degrees"))
+            (field.first.as<std::string>() != "display_name" && field.first.as<std::string>() != "rotation_degrees" &&
+             field.first.as<std::string>() != "rink_mask_frame_time"))
           return absl::InvalidArgumentError("Unsupported field in stitching.rink_configs." + id);
       }
       const YAML::Node name = entry.second["display_name"];
@@ -944,7 +946,17 @@ absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurat
       StitchProjectionFraming view;
       HM_RETURN_IF_ERROR(read_framing_array(entry.second, "rotation_degrees", view.rotation_degrees));
       HM_RETURN_IF_ERROR(validate_projection_view(view));
-      result.push_back({id, name.as<std::string>(), view.rotation_degrees});
+      std::string mask_time = "auto";
+      const YAML::Node mask_value = entry.second["rink_mask_frame_time"];
+      if (mask_value && !mask_value.IsNull()) {
+        if (!mask_value.IsScalar())
+          return absl::InvalidArgumentError("Rink " + id + " rink_mask_frame_time must be a time or auto");
+        const auto parsed = ParseRinkMaskFrameTime(mask_value.as<std::string>());
+        if (!parsed.ok())
+          return parsed.status();
+        mask_time = FormatRinkMaskFrameTime(*parsed);
+      }
+      result.push_back({id, name.as<std::string>(), view.rotation_degrees, mask_time});
     }
     return result;
   } catch (const YAML::Exception& exception) {
@@ -976,6 +988,71 @@ absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config)
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching rink selection: " + std::string(exception.what()));
   }
+}
+
+absl::StatusOr<std::string> read_rink_mask_frame_time(const YAML::Node& config) {
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    const YAML::Node value = stitching && stitching.IsMap() ? stitching["rink_mask_frame_time"] : YAML::Node();
+    if (value && !value.IsNull()) {
+      if (!value.IsScalar())
+        return absl::InvalidArgumentError("stitching.rink_mask_frame_time must be a time, auto or null");
+      const auto parsed = ParseRinkMaskFrameTime(value.as<std::string>());
+      if (!parsed.ok())
+        return parsed.status();
+      return FormatRinkMaskFrameTime(*parsed);
+    }
+    std::string rink;
+    HM_ASSIGN_OR_RETURN(rink, read_stitch_rink_selection(config));
+    if (!rink.empty()) {
+      std::vector<StitchRinkConfiguration> profiles;
+      HM_ASSIGN_OR_RETURN(profiles, read_stitch_rink_configurations(config));
+      for (const auto& profile : profiles)
+        if (profile.id == rink)
+          return profile.rink_mask_frame_time;
+    }
+    return std::string("auto");
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Invalid rink mask frame time: " + std::string(exception.what()));
+  }
+}
+
+bool restore_generated_rink_mask_frame_time(YAML::Node& config) {
+  const YAML::Node values = config;
+  const YAML::Node ui = values && values.IsMap() ? values["hstream_ui"] : YAML::Node();
+  const YAML::Node marker = ui && ui.IsMap() ? ui["generated_rink_mask_frame_time"] : YAML::Node();
+  if (!marker || !marker.IsMap() || !marker["generated"] || !marker["generated"].IsScalar())
+    return false;
+  const YAML::Node stitching = values["stitching"];
+  const YAML::Node current = stitching && stitching.IsMap() ? stitching["rink_mask_frame_time"] : YAML::Node();
+  if (current && YAML::Dump(current) == YAML::Dump(marker["generated"])) {
+    if (marker["previous"])
+      config["stitching"]["rink_mask_frame_time"] = YAML::Clone(marker["previous"]);
+    else
+      config["stitching"].remove("rink_mask_frame_time");
+  }
+  config["hstream_ui"].remove("generated_rink_mask_frame_time");
+  return true;
+}
+
+absl::StatusOr<bool> materialize_rink_mask_frame_time(YAML::Node& config, const YAML::Node& effective) {
+  const std::string before = YAML::Dump(config);
+  restore_generated_rink_mask_frame_time(config);
+  std::string requested;
+  HM_ASSIGN_OR_RETURN(requested, read_rink_mask_frame_time(effective));
+  const auto current = read_rink_mask_frame_time(config);
+  if (!current.ok() || *current != requested) {
+    YAML::Node marker(YAML::NodeType::Map);
+    const YAML::Node values = config;
+    const YAML::Node stitching = values && values.IsMap() ? values["stitching"] : YAML::Node();
+    const YAML::Node previous = stitching && stitching.IsMap() ? stitching["rink_mask_frame_time"] : YAML::Node();
+    if (previous)
+      marker["previous"] = YAML::Clone(previous);
+    marker["generated"] = requested;
+    config["stitching"]["rink_mask_frame_time"] = requested;
+    config["hstream_ui"]["generated_rink_mask_frame_time"] = marker;
+  }
+  return YAML::Dump(config) != before;
 }
 
 absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML::Node& config) {
@@ -1142,7 +1219,8 @@ absl::StatusOr<bool> materialize_stitch_rink_context(YAML::Node& config, const Y
         if (profile.id != selected || !current_profiles.ok())
           return false;
         return std::any_of(current_profiles->begin(), current_profiles->end(), [&](const auto& current) {
-          return current.id == selected && current.rotation_degrees == profile.rotation_degrees;
+          return current.id == selected && current.rotation_degrees == profile.rotation_degrees &&
+              current.rink_mask_frame_time == profile.rink_mask_frame_time;
         });
       };
       matching = matching && std::any_of(profiles.begin(), profiles.end(), same_selected_profile);
@@ -1162,6 +1240,7 @@ absl::StatusOr<bool> materialize_stitch_rink_context(YAML::Node& config, const Y
     YAML::Node definitions(YAML::NodeType::Map);
     for (const auto& profile : profiles) {
       definitions[profile.id]["display_name"] = profile.display_name;
+      definitions[profile.id]["rink_mask_frame_time"] = profile.rink_mask_frame_time;
       definitions[profile.id]["rotation_degrees"] =
           std::vector<double>(profile.rotation_degrees.begin(), profile.rotation_degrees.end());
     }
