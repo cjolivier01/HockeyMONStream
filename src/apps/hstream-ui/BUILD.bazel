@@ -636,6 +636,8 @@ cc_binary(
     deps = [
         ":action_icons",
         ":match_editor_dialog",
+        ":rink_leveling_dialog",
+        ":scoreboard_selection_dialog",
         ":stitching_experiment_dialog",
         ":stitching_experiment_store",
         "//src/libs/stitching:calibration_matches",

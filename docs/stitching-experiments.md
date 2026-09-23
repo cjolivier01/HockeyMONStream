@@ -275,8 +275,8 @@ checking every input digest and requiring no new player search or frame capture.
 `HSTREAM_TEST_PLAYER_ANCHOR=HH:MM:SS[.mmm]` selects the action passage for that mode. The input must contain enough
 on-ice people for the requested pair count; unavailable coverage is intentionally a failed smoke test.
 
-Re-leveling remains available for completed calibration, including the current version-10 metadata. Saving revised
-angles retains the selected frame plan, input bundle, and optimized NONA alignment. Rebuilding the view runs only
+Re-leveling remains available for completed calibration, including version-10 automatic and version-11 manual-match
+metadata. Saving revised angles retains the selected frame plan, input bundle, and optimized NONA alignment. Rebuilding the view runs only
 projection, maps, seam, panorama, and dependent rink work. Cancel/retry keeps that source alignment; it cannot fall
 back to matching. Legacy projects require AUTO canvas for this operation. Changing a solve input, such as the
 control-point budget, requests a new solve using the retained frames. Selecting an ordinary historical candidate
@@ -295,7 +295,8 @@ folder, using read-only video hard links and private config, sidecar and image
 copies. The source and test folder must share a filesystem. It runs automatic
 matching, edits/deletes points through the actual Qt controls, recalibrates the
 new candidate, checks the GPU preview, promotes it into the isolated game, and
-reopens its saved points. It verifies that the promoted Hugin project contains
+reopens its saved points, then loads both rink-leveling camera images and renders
+a leveling preview. It verifies that the promoted Hugin project contains
 the exact saved count. Logs, editor screenshots, optional native-preview captures,
 and `result.txt` stay in the test folder. Xwayland can reject framebuffer capture;
 the test also requires the renderer acknowledgement after its first GPU

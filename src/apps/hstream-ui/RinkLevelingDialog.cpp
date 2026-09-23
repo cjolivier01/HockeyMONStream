@@ -341,9 +341,9 @@ void RinkLevelingDialog::loadSnapshot() {
       fields[key] = QString::fromUtf8(line.mid(separator + 1));
     }
     const int version = fields.value("version").toInt();
-    // Version 10 adds selected-frame provenance; camera geometry and rotation
-    // keep their version-9 representation and remain valid for re-leveling.
-    if (version < 2 || version > 10 || fields.value("mapping-backend") != "nona") {
+    // Versions 10 and 11 add selected-frame and manual-match provenance.
+    // Camera geometry and rotation retain their version-9 representation.
+    if (version < 2 || version > 11 || fields.value("mapping-backend") != "nona") {
       load_error_ = "Leveling requires saved NONA calibration metadata. Run stitching calibration first.";
       return;
     }

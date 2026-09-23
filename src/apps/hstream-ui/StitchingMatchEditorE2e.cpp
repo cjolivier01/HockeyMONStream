@@ -3,6 +3,8 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
+#include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
@@ -26,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 
 namespace {
@@ -97,6 +100,8 @@ int main(int argc, char** argv) {
   int step = 0;
   int automatic_row = -1;
   int manual_row = -1;
+  size_t saved_control_points = 0;
+  std::unique_ptr<RinkLevelingDialog> leveling;
   QElapsedTimer elapsed;
   elapsed.start();
   QElapsedTimer preview_elapsed;
@@ -225,10 +230,47 @@ int main(int argc, char** argv) {
         require(
             reopened.editedSet().frames.front().matches.front().left == expected.frames.front().matches.front().left,
             "Reopened editor lost endpoint edit");
+        saved_control_points = control_points;
+        const auto framing = hm::stitching::read_stitch_projection_framing(config);
+        const auto camera = hm::stitching::read_stitch_camera_selection(config);
+        require(framing.ok(), framing.status().ToString());
+        require(camera.ok(), camera.status().ToString());
+        leveling = std::make_unique<RinkLevelingDialog>(
+            QString::fromStdString(game.string()), framing->rotation_degrees, nullptr, *camera);
+        require(leveling->loadError().isEmpty(), leveling->loadError().toStdString());
+        for (const char* name : {"rinkLevelingCamera0", "rinkLevelingCamera1"})
+          require(
+              !static_cast<ScoreboardSelectionCanvas*>(widget<QWidget>(*leveling, name))->imageSize().isEmpty(),
+              "Promoted manual calibration must load both leveling camera images");
+        leveling->show();
+        leveling->grab().save(QString::fromStdString((artifacts / "leveling-camera.png").string()));
+        // Exercise a real Hugin preview with the saved angles, without changing
+        // the promoted calibration. Post mode permits preview without new marks.
+        widget<QCheckBox>(*leveling, "markRinkPostsCheck")->setChecked(true);
+        click(*leveling, "previousRinkLevelingButton");
+        preview_elapsed.restart();
+        ++step;
+      } else if (step == 9) {
+        require(
+            preview_elapsed.elapsed() < 120000,
+            "Leveling preview did not finish: " + widget<QLabel>(*leveling, "rinkLevelingStatus")->text().toStdString());
+        if (!widget<QPushButton>(*leveling, "acceptRinkLevelingButton")->isEnabled())
+          return;
+        require(
+            !static_cast<ScoreboardSelectionCanvas*>(widget<QWidget>(*leveling, "rinkLevelingPreview"))
+                 ->imageSize()
+                 .isEmpty(),
+            "Promoted manual calibration must render a leveling preview");
+        leveling->grab().save(QString::fromStdString((artifacts / "leveling-preview.png").string()));
+        require(
+            RinkLevelingDialog::sourceRevision(QString::fromStdString(game.string())) == leveling->sourceRevision(),
+            "Leveling preview changed the saved calibration");
         std::ofstream(artifacts / "result.txt")
-            << "PASS: automatic solve -> UI edit/delete/undo/redo -> manual solve -> GPU preview -> promotion -> reopen\n"
-            << "pairs=" << saved->frames.size() << " points=" << total << " Hugin points=" << control_points << '\n';
-        std::cerr << "E2E PASS: " << total << " edited points in promoted Hugin project\n";
+            << "PASS: automatic solve -> UI edit/delete/undo/redo -> manual solve -> GPU preview -> promotion -> "
+               "reopen -> leveling preview\n"
+            << "pairs=" << expected.frames.size() << " points=" << saved_control_points
+            << " Hugin points=" << saved_control_points << '\n';
+        std::cerr << "E2E PASS: " << saved_control_points << " edited points and promoted leveling preview\n";
         driver.stop();
         app.exit(0);
       }
