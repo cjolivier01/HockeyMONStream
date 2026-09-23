@@ -24,6 +24,11 @@ bool hard_seam_fallback_enabled();
 
 class HuginProject {
  public:
+  // Additive multi-frame calibrations can contain tens of thousands of points.
+  static constexpr size_t kMaximumProjectBytes = 64ULL * 1024 * 1024;
+  // Reads only a stable regular file, allocating its actual size within the cap.
+  static absl::StatusOr<std::string> ReadProject(const std::filesystem::path& path);
+
   class ArtifactLock {
    public:
     ~ArtifactLock();

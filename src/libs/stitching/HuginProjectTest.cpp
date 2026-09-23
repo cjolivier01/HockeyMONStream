@@ -475,8 +475,8 @@ bool test_owned_solve_publication(
       "    invalidation_id: owned-solve\n"
       "    stale_from: input\n"
       "    reframe: null\n"
-      "    control_point_count: 20\n"
-      "    calibration_frame_count: 3\n");
+      "    control_point_count: 2000\n"
+      "    calibration_frame_count: 16\n");
   config["stitching"]["control_point_matcher"] = choices.control_point_matcher;
   config["stitching"]["control_point_resolution"] = ControlPointResolutionName(choices.control_point_resolution);
   config["stitching"]["mapping_backend"] = choices.mapping_backend;
@@ -492,19 +492,27 @@ bool test_owned_solve_publication(
     return false;
   }
   const std::string previous_config = YAML::Dump(config) + "\n";
+  // A supported 16-pair solve can exceed the old 1 MiB project-reader limit.
+  std::vector<FeatureMatch> large_matches;
+  for (size_t i = 0; i < 16 * 2000; ++i) {
+    auto match = matches[i % matches.size()];
+    match.left += cv::Point2f(0.123456f, 0.234567f);
+    match.right += cv::Point2f(0.345678f, 0.456789f);
+    large_matches.push_back(match);
+  }
   std::ofstream(game / "config.yaml") << previous_config;
   std::ofstream(game / "rink_mask_0.png") << "previous mask";
   std::ofstream(game / "s.png") << "previous snapshot";
   ::setenv("HM_AUTOOPTIMISER", owned_optimizer.c_str(), 1);
   ::setenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG", "1", 1);
-  const auto failed = HuginProject::Configure(game, matches, options);
+  const auto failed = HuginProject::Configure(game, large_matches, options);
   ::unsetenv("HM_TEST_STITCH_PROMOTION_FAIL_BEFORE_CONFIG");
   bool ok = expect(
       !failed.ok() && HuginProject::Recover(game).ok() && read_text_file(game / "config.yaml") == previous_config &&
           read_text_file(game / "autooptimiser_out.pto") == previous_project && fs::exists(game / "rink_mask_0.png"),
       "owned solve publication failure rolls back maps, config, and the previous rink mask");
   ::setenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG", "1", 1);
-  const auto interrupted = HuginProject::Configure(game, matches, options);
+  const auto interrupted = HuginProject::Configure(game, large_matches, options);
   ::unsetenv("HM_TEST_STITCH_PROMOTION_INTERRUPT_AFTER_CONFIG");
   const auto recovered = HuginProject::Recover(game);
   ::setenv("HM_AUTOOPTIMISER", optimizer.c_str(), 1);
@@ -513,6 +521,18 @@ bool test_owned_solve_publication(
   if (!interrupted_at_commit)
     std::cerr << "Owned solve publication did not reach commit: " << interrupted << '\n';
   ok &= expect(interrupted_at_commit && recovered.ok(), "owned solve recovery completes config-aware publication");
+  const auto published_project = HuginProject::ReadProject(game / "autooptimiser_out.pto");
+  ok &= expect(
+      published_project.ok() && published_project->size() > 1024 * 1024 &&
+          std::count(published_project->begin(), published_project->end(), '\n') >= large_matches.size(),
+      "owned multi-frame solve must publish and read back all points in a project larger than 1 MiB");
+  const fs::path oversized = root / "oversized-project.pto";
+  std::ofstream(oversized) << "p f2 w100 h50 v180\n";
+  fs::resize_file(oversized, HuginProject::kMaximumProjectBytes + 1);
+  ok &= expect(
+      absl::IsFailedPrecondition(HuginProject::ReadProject(oversized).status()),
+      "shared PTO reader must reject oversized files before allocating their contents");
+  fs::remove(oversized);
   const YAML::Node saved = YAML::LoadFile((game / "config.yaml").string());
   const YAML::Node calibration = saved["hstream_ui"]["stitching_calibration"];
   const std::string geometry =
@@ -521,8 +541,8 @@ bool test_owned_solve_publication(
       calibration["status"].as<std::string>("") == "complete" &&
           calibration["rink_mask_status"].as<std::string>("") == "pending" &&
           calibration["artifacts_invalidated"].as<bool>(false) && !calibration["stale_from"] &&
-          !calibration["reframe"] && calibration["control_point_count"].as<int>(0) == 20 &&
-          calibration["calibration_frame_count"].as<int>(0) == 3 &&
+          !calibration["reframe"] && calibration["control_point_count"].as<int>(0) == 2000 &&
+          calibration["calibration_frame_count"].as<int>(0) == 16 &&
           validate_stitching_backend_generation(saved, "owned-solve", choices).ok() &&
           projection_crop_reviewed(saved, geometry),
       "a published owned solve remains complete and keeps its accepted crop while rink-mask work is pending");

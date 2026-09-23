@@ -7544,10 +7544,11 @@ bool HStreamWindow::ensureProjectionCropReviewed() {
       if (!lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) || !status.IsScalar() ||
           status.as<std::string>() != "complete")
         return true;
-      QFile project(QDir(directory).filePath("autooptimiser_out.pto"));
-      if (!project.open(QIODevice::ReadOnly) || project.size() > 1024 * 1024)
+      const auto project =
+          hm::stitching::HuginProject::ReadProject(QDir(directory).filePath("autooptimiser_out.pto").toStdString());
+      if (!project.ok())
         return true;
-      geometry = hm::stitching::projection_crop_geometry(project.readAll().toStdString(), stitchProjectionFraming());
+      geometry = hm::stitching::projection_crop_geometry(*project, stitchProjectionFraming());
       revision = RinkLevelingDialog::sourceRevision(directory);
       if (geometry.empty() || revision.isEmpty() || hm::stitching::projection_crop_reviewed(config, geometry))
         return true;

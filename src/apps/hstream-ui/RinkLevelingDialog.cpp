@@ -46,6 +46,11 @@ QByteArray readFile(const QString& path, qint64 limit = 1024 * 1024) {
   return file.readAll();
 }
 
+std::string readProject(const QString& path) {
+  auto project = hm::stitching::HuginProject::ReadProject(path.toStdString());
+  return project.ok() ? std::move(*project) : std::string{};
+}
+
 bool writeFile(const QString& path, const QByteArray& contents) {
   QFile file(path);
   return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(contents) == contents.size() &&
@@ -303,7 +308,7 @@ void RinkLevelingDialog::loadSnapshot() {
       : QStringList{"autooptimiser_out.pto"};
   for (const auto& name : preview_projects) {
     const auto localized = hm::stitching::LocalizeCalibrationPreviewImages(
-        readFile(temporary_.filePath(name)).toStdString(), game_directory_.toStdString());
+        readProject(temporary_.filePath(name)), game_directory_.toStdString());
     if (!localized.ok()) {
       load_error_ =
           "The saved project does not reference the expected left and right camera images. Recalibrate first.";
@@ -315,7 +320,7 @@ void RinkLevelingDialog::loadSnapshot() {
     }
   }
   const auto prepared =
-      hm::stitching::PrepareRinkLevelingProject(readFile(temporary_.filePath("autooptimiser_out.pto")).toStdString());
+      hm::stitching::PrepareRinkLevelingProject(readProject(temporary_.filePath("autooptimiser_out.pto")));
   if (!prepared.ok() || prepared->image_sizes.size() != 2) {
     load_error_ = prepared.ok() ? "This selector requires two calibrated cameras."
                                 : QString::fromStdString(prepared.status().ToString());
@@ -754,8 +759,7 @@ void RinkLevelingDialog::preview() {
   invalidatePreview();
   status_->setText("Rendering a temporary still preview…");
   auto render_preview = [this](const QString& framed_project) {
-    const auto canvas =
-        hm::stitching::HuginProject::ParseCanvasSize(readFile(temporary_.filePath(framed_project)).toStdString());
+    const auto canvas = hm::stitching::HuginProject::ParseCanvasSize(readProject(temporary_.filePath(framed_project)));
     if (!canvas.ok() || canvas->first == 0 || canvas->second == 0 || canvas->second > canvas->first * 4ULL) {
       fail(
           canvas.ok() ? "Saved preview canvas dimensions are invalid."

@@ -196,6 +196,22 @@ int main(int argc, char** argv) {
   qputenv("HM_NONA", bin.filePath("nona").toUtf8());
   qputenv("RINK_PREVIEW_ARGS", bin.filePath("rink-preview-arguments").toUtf8());
   qputenv("RINK_NONA_ARGS", bin.filePath("rink-nona-arguments").toUtf8());
+  {
+    QByteArray large_pto = pto;
+    for (size_t i = 0; i < 16 * 2000; ++i)
+      large_pto += "c n0 N1 x12.3456789 y23.4567891 X34.5678912 Y45.6789123 t0\n";
+    ok &= expect(large_pto.size() > 1024 * 1024, "multi-frame leveling fixture must exceed the old PTO read cap");
+    ok &= write(game.filePath("autooptimiser_out.pto"), large_pto);
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.show();
+    advanceToPreview(dialog);
+    auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
+    ok &= expect(
+        waitUntil([&]() { return accept->isEnabled(); }, 5000),
+        "multi-frame projects larger than 1 MiB must load and render a leveling preview");
+    dialog.close();
+    ok &= write(game.filePath("autooptimiser_out.pto"), pto);
+  }
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
   {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});

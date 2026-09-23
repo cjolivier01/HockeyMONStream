@@ -721,7 +721,10 @@ int main() {
       calibration["invalidation_id"].as<std::string>() == workspace->invalidation_id &&
           !calibration["backend_generation"].IsDefined(),
       "candidate must leave backend reservation to the runner after inherited settings resolve");
-  const std::string selected_pto = "p f19 v180\ni w3840 h2160 f0 v108 y-25\ni w3840 h2160 f0 v108 y25\n";
+  std::string selected_pto = "p f19 v180\ni w3840 h2160 f0 v108 y-25\ni w3840 h2160 f0 v108 y25\n";
+  for (size_t i = 0; i < 16 * 2000; ++i)
+    selected_pto += "c n0 N1 x123.456789 y234.567891 X345.678912 Y456.789123 t0\n";
+  ok &= expect(selected_pto.size() > 1024 * 1024, "multi-frame promotion fixture must exceed the old PTO read cap");
   ok &= expect(
       write(workspace->game_directory / "autooptimiser_out.pto", selected_pto),
       "selected candidate geometry fixture must publish");

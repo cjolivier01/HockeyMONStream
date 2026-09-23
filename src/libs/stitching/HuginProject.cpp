@@ -151,7 +151,7 @@ struct AlignmentFields {
 };
 
 absl::StatusOr<AlignmentFields> read_alignment_fields(const std::string& pto) {
-  if (pto.empty() || pto.size() > 64ULL * 1024ULL * 1024ULL)
+  if (pto.empty() || pto.size() > HuginProject::kMaximumProjectBytes)
     return absl::FailedPreconditionError("Invalid or oversized calibrated Hugin project");
   AlignmentFields result;
   std::istringstream input(pto);
@@ -1679,6 +1679,10 @@ absl::Status publish_artifacts(
 
 } // namespace
 
+absl::StatusOr<std::string> HuginProject::ReadProject(const fs::path& path) {
+  return read_bounded_hugin_file(path, kMaximumProjectBytes);
+}
+
 HuginProject::ArtifactLock::~ArtifactLock() {
   if (descriptor_ >= 0) {
     ::flock(descriptor_, LOCK_UN);
@@ -2500,7 +2504,7 @@ absl::Status HuginProject::Configure(
       // A solved generation is durable before downstream segmentation begins.
       // Cancelling rink-mask work must leave this exact alignment reusable.
       std::string project;
-      HM_ASSIGN_OR_RETURN(project, read_bounded_hugin_file(staging / "autooptimiser_out.pto", 1024 * 1024));
+      HM_ASSIGN_OR_RETURN(project, ReadProject(staging / "autooptimiser_out.pto"));
       const std::string geometry = projection_crop_geometry(project, effective_projection_framing);
       if (geometry.empty())
         return absl::FailedPreconditionError("Solved project has no valid accepted crop geometry");
@@ -2884,8 +2888,7 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
         *provenance->control_point_matcher == ControlPointMatcher::kAkazeHamming ? "absent" : "not-applicable";
     if (*provenance->akaze_calibration_fingerprint != expected_calibration)
       return absl::FailedPreconditionError("Reframing cannot reinterpret calibrated OpenCV camera geometry as NONA");
-    HM_ASSIGN_OR_RETURN(
-        original_project, read_bounded_hugin_file(game_dir / "autooptimiser_out.pto", 64ULL * 1024 * 1024));
+    HM_ASSIGN_OR_RETURN(original_project, ReadProject(game_dir / "autooptimiser_out.pto"));
     HM_ASSIGN_OR_RETURN(original_project, LocalizeCalibrationPreviewImages(original_project, game_dir));
     HM_RETURN_IF_ERROR(ValidateReframeAlignment(
         original_project,
@@ -2949,7 +2952,7 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
         nullptr,
         request.is_cancelled));
     std::string neutral;
-    HM_ASSIGN_OR_RETURN(neutral, read_bounded_hugin_file(staging / ".reframe-neutral.pto", 64ULL * 1024 * 1024));
+    HM_ASSIGN_OR_RETURN(neutral, ReadProject(staging / ".reframe-neutral.pto"));
     HM_RETURN_IF_ERROR(ValidateReframeAlignment(
         original_project, neutral, provenance->projection_framing->rotation_degrees, {0, 0, 0}));
     HM_RETURN_IF_ERROR(write_file(staging / "autooptimiser_out.pto", neutral));
@@ -2960,8 +2963,7 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
     request.progress("projection", "complete", "Edited projection is ready; saved alignment was retained");
   HM_RETURN_IF_ERROR(render_staged_project(staging, {}, options, request.projection_framing));
   std::string reframed_project;
-  HM_ASSIGN_OR_RETURN(
-      reframed_project, read_bounded_hugin_file(staging / "autooptimiser_out.pto", 64ULL * 1024 * 1024));
+  HM_ASSIGN_OR_RETURN(reframed_project, ReadProject(staging / "autooptimiser_out.pto"));
   HM_RETURN_IF_ERROR(ValidateReframeAlignment(
       original_project,
       reframed_project,

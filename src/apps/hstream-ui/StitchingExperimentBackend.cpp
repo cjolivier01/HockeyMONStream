@@ -937,16 +937,8 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
       return absl::InternalError(
           "Unable to inspect the selected candidate's crop geometry: " + project_error.message());
     if (has_project) {
-      std::ifstream project(project_path);
-      if (!project)
-        return absl::InternalError("Unable to open the selected candidate's crop geometry");
-      std::string pto(1024 * 1024 + 1, '\0');
-      project.read(pto.data(), pto.size());
-      pto.resize(project.gcount());
-      if (project.bad())
-        return absl::InternalError("Unable to read the selected candidate's crop geometry");
-      if (pto.size() > 1024 * 1024)
-        return absl::FailedPreconditionError("Selected candidate project exceeds the crop-review size limit");
+      std::string pto;
+      HM_ASSIGN_OR_RETURN(pto, hm::stitching::HuginProject::ReadProject(project_path));
       hm::stitching::StitchProjectionFraming framing;
       HM_ASSIGN_OR_RETURN(framing, hm::stitching::read_stitch_projection_framing(selected));
       const std::string geometry = hm::stitching::projection_crop_geometry(pto, framing);

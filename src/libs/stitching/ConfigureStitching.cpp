@@ -5449,14 +5449,8 @@ absl::Status reframe_stitching(
     HM_RETURN_IF_ERROR(options.validate_source());
     try {
       YAML::Node current = YAML::LoadFile(config_path.string());
-      std::ifstream project(staging / "autooptimiser_out.pto", std::ios::binary);
-      if (!project)
-        return absl::InternalError("Cannot read reframed project for accepted crop");
-      std::string pto(1024 * 1024 + 1, '\0');
-      project.read(pto.data(), pto.size());
-      pto.resize(project.gcount());
-      if (project.bad() || pto.size() > 1024 * 1024)
-        return absl::FailedPreconditionError("Reframed project exceeds the accepted crop size limit");
+      std::string pto;
+      HM_ASSIGN_OR_RETURN(pto, HuginProject::ReadProject(staging / "autooptimiser_out.pto"));
       const std::string geometry = projection_crop_geometry(pto, options.projection_framing);
       if (geometry.empty())
         return absl::FailedPreconditionError("Reframed project has no valid crop geometry");
