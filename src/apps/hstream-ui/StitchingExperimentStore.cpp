@@ -130,7 +130,8 @@ uint64_t anchor(const StitchingExperimentSettings& settings) {
 bool same_settings(const StitchingExperimentSettings& left, const StitchingExperimentSettings& right) {
   return left.control_points == right.control_points && left.frame_count == right.frame_count &&
       left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees &&
-      left.control_point_resolution == right.control_point_resolution;
+      left.control_point_resolution == right.control_point_resolution &&
+      left.manual_control_points == right.manual_control_points;
 }
 
 YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
@@ -143,6 +144,13 @@ YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
   node["control_points"] = settings.control_points;
   node["frame_count"] = settings.frame_count;
   node["reference"] = settings.stitch_frame_time;
+  if (settings.manual_control_points) {
+    const auto& fingerprint = *settings.manual_control_points;
+    require(
+        fingerprint.size() == 64 && fingerprint.find_first_not_of("0123456789abcdef") == std::string::npos,
+        "Experiment manual control-point fingerprint is invalid");
+    node["manual_control_points"] = fingerprint;
+  }
   if (settings.control_point_resolution) {
     require(
         !settings.control_point_resolution->empty() &&
@@ -160,13 +168,17 @@ YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
 }
 
 StitchingExperimentSettings parse_settings(const YAML::Node& node) {
-  keys(node, {"control_points", "frame_count", "reference", "rotation", "control_point_resolution"});
+  keys(
+      node,
+      {"control_points", "frame_count", "reference", "rotation", "control_point_resolution", "manual_control_points"});
   StitchingExperimentSettings settings;
   const uint64_t control_points = uint_value(node["control_points"]);
   require(control_points > 0 && control_points <= std::numeric_limits<int>::max(), "Invalid control-point budget");
   settings.control_points = static_cast<int>(control_points);
   settings.frame_count = count_value(node["frame_count"]);
   settings.stitch_frame_time = string_value(node["reference"], 12);
+  if (node["manual_control_points"])
+    settings.manual_control_points = string_value(node["manual_control_points"], 64);
   if (node["control_point_resolution"])
     settings.control_point_resolution = string_value(node["control_point_resolution"], 16);
   if (node["rotation"]) {
@@ -372,6 +384,11 @@ absl::StatusOr<YAML::Node> validate_workspace_config(
         config["stitching"]["control_point_resolution"] && actual.ok() && expected.ok() && *actual == *expected,
         "Saved experiment control-point resolution no longer matches its workspace");
   }
+  std::string manual;
+  HM_ASSIGN_OR_RETURN(manual, hm::stitching::manual_control_point_fingerprint(config));
+  require(
+      manual == workspace.settings.manual_control_points.value_or(""),
+      "Saved experiment manual control points no longer match their workspace");
   return config;
 }
 
@@ -960,17 +977,17 @@ absl::Status DiscardStitchingExperimentStore(const StitchingExperimentStore& sto
   }
 }
 
-absl::Status RemoveQueuedStitchingExperiments(
+absl::Status RemoveStitchingExperiments(
     const StitchingExperimentStore& store,
     const std::vector<std::string>& workspace_keys) {
   try {
     require(
         !workspace_keys.empty() && workspace_keys.size() <= kMaximumStoredStitchingExperiments,
-        "Queued removal requires a bounded set of rows");
+        "Experiment removal requires a bounded set of rows");
     std::set<std::string> removed;
     for (const auto& key : workspace_keys) {
       (void)key_path(store, key);
-      require(removed.insert(key).second, "Queued removal contains duplicate rows");
+      require(removed.insert(key).second, "Experiment removal contains duplicate rows");
     }
     auto lock = acquire(store);
     if (!lock.ok())
@@ -978,39 +995,45 @@ absl::Status RemoveQueuedStitchingExperiments(
     Index index;
     HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
     std::vector<StoredStitchingExperiment> records;
+    std::set<std::string> unfinished_owners;
     for (const auto& record : index.catalog.experiments) {
       const auto key = path_key(store, record.workspace.game_directory);
       if (!removed.count(key))
         continue;
       require(
-          record.state == "queued" && record.process_session_id == 0 && record.process_token.empty(),
-          "Only stopped queued rows may be removed individually");
+          (record.state == "queued" || record.state == "failed" || record.state == "frozen") &&
+              record.process_session_id == 0 && record.process_token.empty(),
+          "Only stopped unfinished rows may be removed individually");
       auto config = validate_workspace_config(**lock, store, record.workspace);
       if (!config.ok())
         return config.status();
       records.push_back(record);
+      if (record.state != "queued")
+        unfinished_owners.insert(key);
     }
-    require(records.size() == removed.size(), "A queued row changed or disappeared before removal");
+    require(records.size() == removed.size(), "An experiment row changed or disappeared before removal");
     for (const auto& [count, key] : index.catalog.selected_by_count) {
       (void)count;
-      require(!removed.count(key), "Cannot remove the owner of a retained frame selection");
+      require(!removed.count(key) || unfinished_owners.count(key), "Cannot remove a queued owner of retained frames");
     }
     for (const auto& [count, reservation] : index.reservations) {
       (void)count;
-      require(!removed.count(reservation.key), "Release the unfinished count reservation before removing its owner");
+      require(
+          !removed.count(reservation.key) || unfinished_owners.count(reservation.key),
+          "Release the unfinished count reservation before removing its queued owner");
     }
     for (const auto& survivor : index.catalog.experiments) {
       if (removed.count(path_key(store, survivor.workspace.game_directory)))
         continue;
       require(
           !removed.count(survivor.baseline_workspace_key) && !removed.count(survivor.selection_owner_workspace_key),
-          "Remove dependent queued rows before their input owner");
+          "Remove dependent experiments before their input owner");
       for (const auto& record : records) {
         if (survivor.workspace.root != record.workspace.root)
           continue;
         require(
             survivor.baseline_sequence != record.sequence && survivor.selection_owner_sequence != record.sequence,
-            "Remove dependent queued rows before their session-local input owner");
+            "Remove dependent experiments before their session-local input owner");
       }
     }
     struct Removal {
@@ -1023,12 +1046,24 @@ absl::Status RemoveQueuedStitchingExperiments(
       auto candidate = open_workspace(**lock, store, record.workspace.game_directory);
       if (!candidate.ok())
         return candidate.status();
-      auto parent = hm::stitching::PinnedDirectory::Open(record.workspace.root, "queued experiment session");
+      auto parent = hm::stitching::PinnedDirectory::Open(record.workspace.root, "experiment session");
       if (!parent.ok())
         return parent.status();
       removals.push_back({std::move(*parent), std::move(*candidate), record.workspace.game_id});
     }
     auto& experiments = index.catalog.experiments;
+    for (auto it = index.catalog.selected_by_count.begin(); it != index.catalog.selected_by_count.end();) {
+      if (unfinished_owners.count(it->second))
+        it = index.catalog.selected_by_count.erase(it);
+      else
+        ++it;
+    }
+    for (auto it = index.reservations.begin(); it != index.reservations.end();) {
+      if (unfinished_owners.count(it->second.key))
+        it = index.reservations.erase(it);
+      else
+        ++it;
+    }
     experiments.erase(
         std::remove_if(
             experiments.begin(),
@@ -1041,7 +1076,7 @@ absl::Status RemoveQueuedStitchingExperiments(
           hm::stitching::remove_pinned_directory(removal.parent, removal.name, removal.candidate, "config.yaml");
       if (!status.ok())
         return absl::InternalError(
-            "Queued records were removed from history, but private files remain in " + store.directory.string() +
+            "Experiment records were removed from history, but private files remain in " + store.directory.string() +
             ". Reload the saved rows; use Discard results or remove the leftover files manually: " + status.ToString());
     }
     return absl::OkStatus();

@@ -667,21 +667,30 @@ int main(int argc, char** argv) {
     selected_provenance +=
         "control-point-resolution=native\ncalibration-frame-selection-policy=players\n"
         "calibration-frame-selection-fingerprint=saved-frames\n";
-    write(game.filePath("stitching_canvas_provenance"), selected_provenance);
-    {
+    for (const int version : {10, 11}) {
+      QByteArray current_provenance = selected_provenance;
+      current_provenance.replace("version=10", "version=" + QByteArray::number(version));
+      if (version == 11)
+        current_provenance += "manual-control-points=" + QByteArray(64, 'a') + '\n';
+      write(game.filePath("stitching_canvas_provenance"), current_provenance);
       RinkLevelingDialog selected(game.path(), {0, -33, 2}, nullptr, changed_camera);
       auto* left = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera0"));
       auto* right = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera1"));
       ok &= expect(
           selected.loadError().isEmpty() && left->imageSize() == source.size() && right->imageSize() == source.size(),
-          "a promoted version-10 selected-frame calibration loads both camera images for re-leveling");
+          "promoted automatic and manual calibrations load both camera images for re-leveling");
       advanceToPreview(selected);
       auto* accept = selected.findChild<QPushButton*>("acceptRinkLevelingButton");
       ok &= expect(
-          waitUntil([&]() { return accept->isEnabled(); }), "selected-frame calibration can preview new leveling");
+          waitUntil([&]() { return accept->isEnabled(); }), "automatic and manual calibrations can preview new leveling");
       accept->click();
-      ok &= expect(selected.result() == QDialog::Accepted, "re-leveling selected frames returns the revised angles");
+      ok &= expect(selected.result() == QDialog::Accepted, "re-leveling promoted matches returns the revised angles");
     }
+    QByteArray future_provenance = selected_provenance;
+    future_provenance.replace("version=10", "version=12");
+    write(game.filePath("stitching_canvas_provenance"), future_provenance);
+    RinkLevelingDialog unsupported(game.path(), {0, -33, 2}, nullptr, changed_camera);
+    ok &= expect(!unsupported.loadError().isEmpty(), "unknown future metadata must still be rejected");
     write(game.filePath("stitching_canvas_provenance"), provenance);
     changed_camera.configuration = "different-camera";
     RinkLevelingDialog mismatched(game.path(), {0, -33, 2}, nullptr, changed_camera);

@@ -158,6 +158,7 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
   HM_ASSIGN_OR_RETURN(choices.control_point_resolution, read_control_point_resolution(config));
   HM_ASSIGN_OR_RETURN(choices.control_point_execution_provider, read_control_point_execution_provider(config));
   HM_ASSIGN_OR_RETURN(choices.calibration_frame_selection_fingerprint, player_frame_selection_fingerprint(config));
+  HM_ASSIGN_OR_RETURN(choices.manual_control_point_fingerprint, manual_control_point_fingerprint(config));
   HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(backend, projection));
   if (backend == MappingBackend::kNona)
     HM_RETURN_IF_ERROR(
@@ -187,6 +188,8 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
   solver["camera_fov"]["horizontal_fov"] = choices.camera.horizontal_fov;
   solver["camera_fov"]["vertical_fov"] = choices.camera.vertical_fov;
   solver["calibration_frame_selection_fingerprint"] = choices.calibration_frame_selection_fingerprint;
+  if (!choices.manual_control_point_fingerprint.empty())
+    solver["manual_control_points"] = choices.manual_control_point_fingerprint;
   solver["calibration_frame_inputs_fingerprint"] = text_or(stitching["calibration_frame_inputs_fingerprint"]);
   solver["stitch_frame_time"] = text_or(stitching["stitch_frame_time"], "00:00:00");
   solver["videos"] = canonical(node_at(config, {"game", "videos"}));
@@ -279,7 +282,8 @@ absl::Status validate_provenance(const HuginProject::CanvasProvenance& source, c
       !source.control_point_matcher ||
       ControlPointMatcherName(*source.control_point_matcher) != choices.control_point_matcher ||
       !source.control_point_resolution || *source.control_point_resolution != choices.control_point_resolution ||
-      source.calibration_frame_selection_fingerprint != choices.calibration_frame_selection_fingerprint)
+      source.calibration_frame_selection_fingerprint != choices.calibration_frame_selection_fingerprint ||
+      source.manual_control_point_fingerprint != choices.manual_control_point_fingerprint)
     return absl::FailedPreconditionError(
         "Published alignment provenance does not match the original completed calibration");
   return absl::OkStatus();
@@ -324,8 +328,8 @@ absl::StatusOr<HuginProject::CanvasProvenance> source_provenance(const fs::path&
       contents,
       read_bounded_regular_file_no_follow(
           directory / kStitchCanvasProvenanceArtifact, 4096, "reframe canvas provenance"));
-  if (contents.rfind("version=10\n", 0) != 0)
-    return absl::FailedPreconditionError("Reframing requires complete version-10 alignment provenance");
+  if (contents.rfind("version=10\n", 0) != 0 && contents.rfind("version=11\n", 0) != 0)
+    return absl::FailedPreconditionError("Reframing requires complete version-10 or version-11 alignment provenance");
   const auto provenance = HuginProject::ReadCanvasProvenanceLocked(directory);
   if (!provenance.ok())
     return provenance.status();

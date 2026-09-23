@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
+#include "src/apps/hstream-ui/MatchEditorDialog.h"
 
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
@@ -8,6 +9,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
@@ -603,6 +605,8 @@ struct StitchingExperimentDialog::Impl {
   int pending_group_shutdowns{0};
   int next_candidate_sequence{0};
   int running_candidate{-1};
+  int batch_only_row{-1};
+  int open_editor_after_row{-1};
   bool batch_started{false};
   bool batch_active{false};
   bool cancelling{false};
@@ -721,6 +725,11 @@ struct StitchingExperimentDialog::Impl {
             : "Uses ordinary frame spacing. This candidate has no player-rich selection or pending player scan."};
   }
 
+  static bool removable_candidate(const Candidate& candidate) {
+    return !candidate.main_calibration && !candidate.complete &&
+        (candidate.queued || !candidate.failure.isEmpty() || (candidate.stored && candidate.stored->state == "frozen"));
+  }
+
   void update_controls() {
     for (const Candidate& candidate : candidates) {
       auto* item = table->item(candidate.row, 6);
@@ -737,13 +746,15 @@ struct StitchingExperimentDialog::Impl {
     const bool stopping = pending_group_shutdowns > 0;
     const int row = table->currentRow();
     const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete;
-    const bool selected_queued = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].queued;
+    const bool selected_removable =
+        row >= 0 && row < static_cast<int>(candidates.size()) && removable_candidate(candidates[row]);
     const bool editing_batch =
         store && store_error.isEmpty() && !batch_active && !previewing && !promoting && !stopping && !closing;
     const auto queued_count =
         std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
     add_to_batch->setEnabled(editing_batch && feature_settings_error.isEmpty() && queued_count < 64);
-    remove_from_batch->setEnabled(editing_batch && selected_queued);
+    remove_from_batch->setEnabled(
+        store && !batch_active && !previewing && !promoting && !stopping && !closing && selected_removable);
     clear_batch->setEnabled(
         store && !batch_active && !previewing && !promoting && !stopping && !closing &&
         (!candidates.empty() || !store_error.isEmpty()));
@@ -1511,7 +1522,8 @@ struct StitchingExperimentDialog::Impl {
 
   void launch_next_candidate() {
     ++running_candidate;
-    while (running_candidate < static_cast<int>(candidates.size()) && !candidates[running_candidate].queued)
+    while (running_candidate < static_cast<int>(candidates.size()) &&
+           (!candidates[running_candidate].queued || (batch_only_row >= 0 && running_candidate != batch_only_row)))
       ++running_candidate;
     if (cancelling || closing || running_candidate >= static_cast<int>(candidates.size())) {
       calibration_process.reset();
@@ -1519,7 +1531,7 @@ struct StitchingExperimentDialog::Impl {
       calibration_process_token.clear();
       batch_active = false;
       for (Candidate& pending : candidates) {
-        if (!pending.queued)
+        if (!pending.queued || (batch_only_row >= 0 && pending.row != batch_only_row))
           continue;
         if (!pending.selection_reuse_blocked) {
           (void)release_reservation(pending);
@@ -1538,7 +1550,14 @@ struct StitchingExperimentDialog::Impl {
               ? "Batch cancelled. Completed candidates remain available; the main Program is unchanged."
               : "Batch complete. Select a successful row and preview the seam in motion.");
       cancelling = false;
+      batch_only_row = -1;
       update_controls();
+      if (open_editor_after_row >= 0 && !closing) {
+        const int edit_row = std::exchange(open_editor_after_row, -1);
+        // Matching snapshots remain useful when subsequent geometry failed.
+        if (candidate_has_inspection(candidates[edit_row]))
+          QTimer::singleShot(0, dialog, [this, edit_row]() { open_match_editor(edit_row); });
+      }
       return;
     }
     Candidate& candidate = candidates[running_candidate];
@@ -1688,11 +1707,9 @@ struct StitchingExperimentDialog::Impl {
            << QString("-t=%1").arg(candidate.scan_duration_seconds);
     } else {
       env.insert("HSTREAM_CALIBRATION_PENDING", "1");
-      env.insert("HSTREAM_CALIBRATION_START_STAGE", "input");
+      env.insert("HSTREAM_CALIBRATION_START_STAGE", "features");
       env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", QString::fromStdString(candidate.workspace->invalidation_id));
       env.insert("HSTREAM_STITCH_CALIBRATION_INSPECTION", "1");
-      if (!candidate.has_selected_frames)
-        args << "--force-reconfigure";
       args << QString("--clean-expected-invalidation-id=%1")
                   .arg(QString::fromStdString(candidate.workspace->invalidation_id))
            << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1").arg(candidate.settings.frame_count)
@@ -1761,7 +1778,8 @@ struct StitchingExperimentDialog::Impl {
         hm::stitch_frame_time_to_nanoseconds(left.stitch_frame_time) ==
         hm::stitch_frame_time_to_nanoseconds(right.stitch_frame_time) &&
         left.rink_rotation_degrees == right.rink_rotation_degrees &&
-        left.control_point_resolution == right.control_point_resolution;
+        left.control_point_resolution == right.control_point_resolution &&
+        left.manual_control_points == right.manual_control_points;
   }
 
   QString candidate_image_size(const Candidate& candidate) const {
@@ -1799,12 +1817,13 @@ struct StitchingExperimentDialog::Impl {
                                                                   .arg((*settings.rink_rotation_degrees)[2], 0, 'g', 6)
                                                             : "Saved setting";
     const QStringList columns = {
-        candidate.main_calibration ? QString("Main calibration")
+        candidate.main_calibration           ? QString("Main calibration")
+            : settings.manual_control_points ? QString("Manual %1").arg(candidate.sequence)
             : candidate.has_selected_frames || candidate.selection_owner_sequence != 0 ||
                 !candidate.saved_selection_fingerprint.empty()
             ? QString("Players %1").arg(candidate.sequence)
             : QString(candidate.requires_ice_mask ? "Baseline %1" : "Candidate %1").arg(candidate.sequence),
-        QString::number(settings.control_points),
+        settings.manual_control_points ? QString("Edited") : QString::number(settings.control_points),
         QString::number(settings.frame_count),
         QString::fromStdString(settings.stitch_frame_time),
         rotation,
@@ -1821,6 +1840,9 @@ struct StitchingExperimentDialog::Impl {
       table->setItem(row, column, item);
     }
     table->item(row, 6)->setToolTip(frame_selection_policy(candidate).second);
+    if (settings.manual_control_points)
+      table->item(row, 1)->setToolTip(
+          "Uses every saved manual match across all pairs; the automatic per-pair cap does not apply.");
     candidates.push_back(std::move(candidate));
   }
 
@@ -2024,16 +2046,34 @@ struct StitchingExperimentDialog::Impl {
 
   void remove_selected_from_batch() {
     const int row = table->currentRow();
-    if (batch_active || preparation_worker || !store || row < 0 || row >= static_cast<int>(candidates.size()) ||
-        !candidates[row].queued)
+    if (batch_active || preparation_worker || promotion_worker || preview_process || pending_group_shutdowns ||
+        closing || !store || row < 0 || row >= static_cast<int>(candidates.size()) ||
+        !removable_candidate(candidates[row]))
       return;
-    const int sequence = candidates[row].sequence;
+    // Follow dependencies transitively, including rows added in later sessions.
+    std::set<int> sequences{candidates[row].sequence};
+    size_t previous_size;
+    do {
+      previous_size = sequences.size();
+      for (const Candidate& candidate : candidates)
+        if (sequences.count(candidate.baseline_sequence) || sequences.count(candidate.selection_owner_sequence))
+          sequences.insert(candidate.sequence);
+    } while (previous_size != sequences.size());
     std::vector<std::string> removed_keys;
     for (Candidate& candidate : candidates) {
-      if (candidate.sequence == sequence || candidate.baseline_sequence == sequence ||
-          candidate.selection_owner_sequence == sequence) {
-        if (!candidate.queued || !candidate.workspace) {
-          show_status("Only queued candidates can be removed individually.", true);
+      if (sequences.count(candidate.sequence)) {
+        if (!removable_candidate(candidate)) {
+          show_status(
+              "This attempt has successful dependents. Use Discard experiments to remove the entire history.", true);
+          return;
+        }
+        // Preparation can fail before a workspace is published. Such rows have
+        // no retained files; remove them from the table alongside durable rows.
+        if (!candidate.workspace)
+          continue;
+        if (!candidate.stored) {
+          show_status(
+              "This attempt's files were not cataloged. Use Discard experiments to remove its retained files.", true);
           return;
         }
         const auto released = release_reservation(candidate);
@@ -2045,7 +2085,7 @@ struct StitchingExperimentDialog::Impl {
             candidate.workspace->game_directory.lexically_relative(store->directory).generic_string());
       }
     }
-    const auto removed = RemoveQueuedStitchingExperiments(*store, removed_keys);
+    const auto removed = removed_keys.empty() ? absl::OkStatus() : RemoveStitchingExperiments(*store, removed_keys);
     if (!removed.ok()) {
       candidates.clear();
       table->setRowCount(0);
@@ -2058,8 +2098,7 @@ struct StitchingExperimentDialog::Impl {
     // Removing a baseline also removes every dependent automatic candidate;
     // stable sequence identities keep other dependencies intact as rows shift.
     for (int index = static_cast<int>(candidates.size()) - 1; index >= 0; --index) {
-      if (candidates[index].sequence == sequence || candidates[index].baseline_sequence == sequence ||
-          candidates[index].selection_owner_sequence == sequence) {
+      if (sequences.count(candidates[index].sequence)) {
         candidates.erase(candidates.begin() + index);
         table->removeRow(index);
       }
@@ -2081,13 +2120,20 @@ struct StitchingExperimentDialog::Impl {
                                            .arg(candidate.sequence));
       }
     }
+    if (!store_error.isEmpty() &&
+        std::none_of(
+            candidates.begin(),
+            candidates.end(),
+            [](const Candidate& item) { return !item.main_calibration && !item.stored && !item.failure.isEmpty(); }) &&
+        LoadStitchingExperimentStore(*store).ok())
+      store_error.clear();
     if (!candidates.empty()) {
       table->selectRow(std::min(row, static_cast<int>(candidates.size()) - 1));
       show_status(QString("Removed the candidate. %1 remain in the batch.").arg(candidates.size()));
     } else {
       session.reset();
       next_candidate_sequence = 0;
-      show_status("Removed the last queued candidate. Previously saved frame sets remain in the cache.");
+      show_status("Removed the last candidate and its private files. The main calibration is unchanged.");
     }
     update_controls();
   }
@@ -2148,14 +2194,15 @@ struct StitchingExperimentDialog::Impl {
     update_controls();
   }
 
-  void start_candidate_batch() {
+  void start_candidate_batch(int only_row = -1) {
     if (!store || batch_active ||
         !std::any_of(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; }))
       return;
     if (preparation_worker || !ensure_session())
       return;
     for (Candidate& owner : candidates) {
-      if (!owner.queued || owner.selection_owner_sequence != owner.sequence || owner.has_selected_frames)
+      if (!owner.queued || (only_row >= 0 && owner.row != only_row) ||
+          owner.selection_owner_sequence != owner.sequence || owner.has_selected_frames)
         continue;
       if (owner.reservation_token.isEmpty())
         owner.reservation_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -2185,6 +2232,7 @@ struct StitchingExperimentDialog::Impl {
     session->setAutoRemove(false);
     batch_active = true;
     running_candidate = -1;
+    batch_only_row = only_row;
     cancelling = false;
     progress->setRange(0, static_cast<int>(candidates.size()));
     progress->setValue(0);
@@ -2409,6 +2457,172 @@ struct StitchingExperimentDialog::Impl {
     viewer.exec();
   }
 
+  void create_match_candidate(
+      int source_row,
+      std::optional<hm::stitching::CalibrationMatchSet> edited = std::nullopt,
+      std::string expected_snapshot = {},
+      QPointer<MatchEditorDialog> editor = {}) {
+    if (!store || preparation_worker || batch_active || closing)
+      return;
+    if (!ensure_session()) {
+      if (editor)
+        editor->setSaving(false, status->text());
+      return;
+    }
+    const auto source = *candidates[source_row].workspace;
+    const auto root = std::filesystem::path(session->path().toStdString());
+    const auto persistent = *store;
+    const int sequence = ++next_candidate_sequence;
+    auto result = std::make_shared<absl::StatusOr<StoredStitchingExperiment>>(
+        absl::UnknownError("Match candidate preparation did not finish"));
+    const bool preparing = !edited;
+    QThread* worker =
+        QThread::create([source, root, persistent, sequence, edited = std::move(edited), expected_snapshot, result]() {
+          auto workspace = edited
+              ? CreateEditedStitchingExperimentWorkspace(source, root, expected_snapshot, *edited, sequence)
+              : CreateStitchingExperimentEditableCopy(source, root, sequence);
+          if (!workspace.ok()) {
+            *result = workspace.status();
+            return;
+          }
+          auto selection =
+              ReusableStitchingExperimentSelectionFingerprint(workspace->game_directory, workspace->settings);
+          if (!selection.ok()) {
+            *result = selection.status();
+            return;
+          }
+          StoredStitchingExperiment record;
+          record.workspace = *workspace;
+          record.sequence = sequence;
+          record.state = "queued";
+          record.selection_fingerprint = *selection;
+          record.saved_selection_fingerprint = *selection;
+          auto status = SaveStitchingExperiment(persistent, record);
+          if (!status.ok()) {
+            *result = status;
+            return;
+          }
+          *result = std::move(record);
+        });
+    preparation_worker = worker;
+    if (editor)
+      editor->setSaving(true);
+    QObject::connect(worker, &QThread::finished, dialog, [this, worker, result, preparing, editor]() {
+      if (preparation_worker != worker)
+        return;
+      preparation_worker = nullptr;
+      if (!result->ok()) {
+        const auto error = QString::fromStdString(result->status().ToString());
+        show_status(error, true);
+        if (editor)
+          editor->setSaving(false, error);
+      } else {
+        if (editor) {
+          editor->setSaving(false);
+          editor->accept();
+        }
+        Candidate candidate;
+        candidate.stored = **result;
+        candidate.workspace = (**result).workspace;
+        candidate.settings = (**result).workspace.settings;
+        candidate.sequence = (**result).sequence;
+        candidate.saved_selection_fingerprint = (**result).selection_fingerprint;
+        candidate.has_selected_frames = !candidate.saved_selection_fingerprint.empty();
+        append_candidate(std::move(candidate));
+        const int row = static_cast<int>(candidates.size()) - 1;
+        table->selectRow(row);
+        if (!closing) {
+          if (preparing)
+            open_editor_after_row = row;
+          start_candidate_batch(row);
+        }
+      }
+      update_controls();
+      maybe_finish_close();
+    });
+    QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    show_status(
+        preparing ? "Preparing an editable copy with original camera images…"
+                  : "Saving edited matches into a new candidate…");
+    worker->start();
+    update_controls();
+  }
+
+  void open_match_editor(int row) {
+    if (closing || preparation_worker || batch_active || row < 0 || row >= static_cast<int>(candidates.size()) ||
+        !candidates[row].workspace)
+      return;
+    using MatchSet = hm::stitching::CalibrationMatchSet;
+    struct Result {
+      absl::Status status;
+      MatchSet matches;
+      MatchSet automatic;
+    };
+    const auto workspace = *candidates[row].workspace;
+    auto result = std::make_shared<Result>();
+    QThread* worker = QThread::create([workspace, result]() {
+      auto config = hm::stitching::load_game_config_file(workspace.game_directory / "config.yaml");
+      if (!config.ok()) {
+        result->status = config.status();
+        return;
+      }
+      if (!config->has_value()) {
+        result->status = absl::NotFoundError("Calibration configuration is missing");
+        return;
+      }
+      try {
+        const auto snapshot = (**config)["hstream_ui"]["stitching_calibration"]["match_snapshot"];
+        if (!snapshot || !snapshot.IsScalar()) {
+          result->status = absl::NotFoundError("Editable coordinates are unavailable. Prepare an editable copy first.");
+          return;
+        }
+        auto matches = hm::stitching::LoadCalibrationMatches(workspace.game_directory, snapshot.as<std::string>());
+        if (!matches.ok()) {
+          result->status = matches.status();
+          return;
+        }
+        result->matches = std::move(*matches);
+        if (!result->matches.manual) {
+          result->automatic = result->matches;
+        } else {
+          auto automatic = hm::stitching::LoadCalibrationMatches(
+              workspace.game_directory, result->matches.automatic_fingerprint, false);
+          if (!automatic.ok()) {
+            result->status = automatic.status();
+            return;
+          }
+          result->automatic = std::move(*automatic);
+        }
+      } catch (const std::exception& error) {
+        result->status = absl::InvalidArgumentError(error.what());
+      }
+    });
+    preparation_worker = worker;
+    QObject::connect(worker, &QThread::finished, dialog, [this, worker, result, row]() {
+      if (preparation_worker != worker)
+        return;
+      preparation_worker = nullptr;
+      update_controls();
+      if (closing) {
+        maybe_finish_close();
+        return;
+      }
+      if (!result->status.ok()) {
+        show_status(QString::fromStdString(result->status.ToString()), true);
+        return;
+      }
+      const auto expected = result->matches.fingerprint;
+      MatchEditorDialog editor(std::move(result->matches), std::move(result->automatic), dialog);
+      editor.setSaveHandler(
+          [this, row, expected, &editor]() { create_match_candidate(row, editor.editedSet(), expected, &editor); });
+      editor.exec();
+    });
+    QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    show_status("Loading original camera images and editable matches…");
+    worker->start();
+    update_controls();
+  }
+
   void inspect_selected_frames() {
     const int row = table->currentRow();
     if (row < 0 || row >= static_cast<int>(candidates.size()) || !candidate_has_inspection(candidates[row]))
@@ -2592,11 +2806,41 @@ struct StitchingExperimentDialog::Impl {
     QObject::connect(choices, &QTableWidget::itemSelectionChanged, &viewer, show_pair);
     QObject::connect(show_matches, &QCheckBox::toggled, &viewer, show_match_view);
     QObject::connect(points_only, &QCheckBox::toggled, &viewer, show_match_view);
+    bool editable = false;
+    const auto config = hm::stitching::load_game_config_file(candidates[row].workspace->game_directory / "config.yaml");
+    if (config.ok() && config->has_value()) {
+      const YAML::Node saved = (**config)["hstream_ui"]["stitching_calibration"]["match_snapshot"];
+      editable = saved && saved.IsScalar();
+    }
+    auto* footer = new QHBoxLayout();
+    auto* edit = new QPushButton(
+        action_icon(editable ? ActionIcon::Inspect : ActionIcon::Prepare),
+        editable ? "Edit matches…" : "Prepare editable copy…");
+    edit->setObjectName("stitchExperimentEditMatches");
+    edit->setToolTip(
+        editable
+            ? "Edit original-resolution points, then save and recalibrate a new candidate."
+            : "This older result has only JPEG previews. Recalculate a private copy to retain editable points and full-resolution images.");
+    edit->setEnabled(store && store_error.isEmpty());
+    bool edit_requested = false;
+    QObject::connect(edit, &QPushButton::clicked, &viewer, [&]() {
+      edit_requested = true;
+      viewer.accept();
+    });
+    footer->addWidget(edit);
+    footer->addStretch();
     auto* close = new QPushButton(action_icon(ActionIcon::Close), "Close");
     QObject::connect(close, &QPushButton::clicked, &viewer, &QDialog::accept);
-    layout->addWidget(close, 0, Qt::AlignRight);
+    footer->addWidget(close);
+    layout->addLayout(footer);
     choices->selectRow(0);
     viewer.exec();
+    if (edit_requested) {
+      if (editable)
+        open_match_editor(row);
+      else
+        create_match_candidate(row);
+    }
   }
 
   void shutdown() {

@@ -371,13 +371,24 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool selection_aware = lines.size() == 31 && lines[0] == "version=10";
+  const bool manual_aware = lines.size() == 32 && lines[0] == "version=11";
+  const bool selection_aware = (lines.size() == 31 && lines[0] == "version=10") || manual_aware;
   const bool resolution_aware = (lines.size() == 29 && lines[0] == "version=9") || selection_aware;
   const bool view_aware = (lines.size() == 28 && lines[0] == "version=8") || resolution_aware;
   const bool camera_aware = (lines.size() == 21 && lines[0] == "version=7") || view_aware;
   if (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware && !camera_aware)
     return absl::FailedPreconditionError("Invalid stitching canvas provenance format");
   HuginProject::CanvasProvenance provenance;
+  if (manual_aware) {
+    HM_ASSIGN_OR_RETURN(
+        provenance.manual_control_point_fingerprint,
+        parse_canvas_provenance_string(lines[31], "manual-control-points"));
+    YAML::Node config;
+    config["stitching"]["manual_control_points"] = provenance.manual_control_point_fingerprint;
+    auto validated = manual_control_point_fingerprint(config);
+    if (!validated.ok())
+      return validated.status();
+  }
   if (selection_aware) {
     HM_ASSIGN_OR_RETURN(
         provenance.calibration_frame_selection_fingerprint,
@@ -2496,6 +2507,10 @@ absl::Status HuginProject::Configure(
     HM_ASSIGN_OR_RETURN(current_selection, player_frame_selection_fingerprint(current_config));
     // Compare even an ordinary worker's empty fingerprint: a newly added plan
     // also invalidates the generation that this worker just extracted.
+    std::string current_manual;
+    HM_ASSIGN_OR_RETURN(current_manual, manual_control_point_fingerprint(current_config));
+    if (current_manual != options.manual_control_point_fingerprint)
+      return absl::AbortedError("Manual control points changed before publication");
     if (current_selection != options.calibration_frame_selection_fingerprint)
       return absl::AbortedError("Calibration frame selection changed before publication");
     if (!current_selection.empty())
@@ -2787,7 +2802,8 @@ absl::Status render_staged_project(
       : options.projection_parameters;
   HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*generated_projection, generated_projection_parameters));
   provenance.imbue(std::locale::classic());
-  provenance << std::setprecision(std::numeric_limits<double>::max_digits10) << "version=10\n"
+  provenance << std::setprecision(std::numeric_limits<double>::max_digits10)
+             << (options.manual_control_point_fingerprint.empty() ? "version=10\n" : "version=11\n")
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -2835,6 +2851,8 @@ absl::Status render_staged_project(
   provenance << "calibration-frame-diagnostics="
              << (options.calibration_frame_diagnostics.empty() ? "none" : options.calibration_frame_diagnostics)
              << '\n';
+  if (!options.manual_control_point_fingerprint.empty())
+    provenance << "manual-control-points=" << options.manual_control_point_fingerprint << '\n';
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;
@@ -2922,6 +2940,7 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
   options.control_point_resolution = *provenance->control_point_resolution;
   options.calibration_frame_selection_fingerprint = provenance->calibration_frame_selection_fingerprint;
   options.calibration_frame_diagnostics = provenance->calibration_frame_diagnostics;
+  options.manual_control_point_fingerprint = provenance->manual_control_point_fingerprint;
   options.mapping_backend = MappingBackend::kNona;
   options.projection = request.projection;
   options.projection_parameters = parameters;
@@ -2991,6 +3010,10 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
           "Reframe publication requires a completed calibration without pending intent");
     std::string selection;
     HM_ASSIGN_OR_RETURN(selection, player_frame_selection_fingerprint(config));
+    std::string manual_points;
+    HM_ASSIGN_OR_RETURN(manual_points, manual_control_point_fingerprint(config));
+    if (manual_points != options.manual_control_point_fingerprint)
+      return absl::AbortedError("Manual control points changed during reframe");
     if (selection != options.calibration_frame_selection_fingerprint)
       return absl::AbortedError("Reframe publication changed the retained frame selection");
   } catch (const YAML::Exception& error) {

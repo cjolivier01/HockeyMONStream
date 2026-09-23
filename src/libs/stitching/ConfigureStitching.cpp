@@ -3,6 +3,7 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
+#include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/CalibrationModels.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
@@ -2069,6 +2070,7 @@ struct ConfiguredStitchAlgorithms {
   StitchProjectionFraming projection_framing;
   StitchCameraSelection camera;
   std::string calibration_frame_selection_fingerprint;
+  std::string manual_control_point_fingerprint;
 };
 
 absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algorithms(const std::string& game_dir) {
@@ -2104,7 +2106,7 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     const bool selection_present =
         stitching["calibration_frame_selection"] && !stitching["calibration_frame_selection"].IsNull();
     if (!matcher_present && !backend_present && !projection_present && !camera_present && !camera_fov_present &&
-        !resolution_present && !selection_present)
+        !resolution_present && !selection_present && !stitching["manual_control_points"])
       return std::nullopt;
     if ((matcher_present && !matcher_node.IsScalar()) || (backend_present && !backend_node.IsScalar()) ||
         (projection_present && !projection_node.IsScalar()) || (camera_present && !camera_node.IsScalar())) {
@@ -2143,6 +2145,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(**loaded));
     std::string frame_selection;
     HM_ASSIGN_OR_RETURN(frame_selection, player_frame_selection_fingerprint(**loaded));
+    std::string manual_points;
+    HM_ASSIGN_OR_RETURN(manual_points, manual_control_point_fingerprint(**loaded));
     return ConfiguredStitchAlgorithms{
         .control_point_resolution = resolution,
         .control_point_matcher = matcher,
@@ -2151,7 +2155,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
         .projection_parameters = std::move(projection_parameters),
         .projection_framing = projection_framing,
         .camera = camera,
-        .calibration_frame_selection_fingerprint = std::move(frame_selection)};
+        .calibration_frame_selection_fingerprint = std::move(frame_selection),
+        .manual_control_point_fingerprint = std::move(manual_points)};
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching mapping choices: " + std::string(exception.what()));
   }
@@ -2163,6 +2168,8 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
   std::optional<ConfiguredStitchAlgorithms> configured;
   HM_ASSIGN_OR_RETURN(configured, configured_stitch_algorithms(game_dir));
   if (!configured.has_value()) {
+    if (provenance && !provenance->manual_control_point_fingerprint.empty())
+      return CanvasProvenanceCompatibility{false, "the manual control points were cleared"};
     if (provenance && !provenance->calibration_frame_selection_fingerprint.empty())
       return CanvasProvenanceCompatibility{false, "the selected calibration frame plan was cleared"};
     return CanvasProvenanceCompatibility{true, {}};
@@ -2175,6 +2182,8 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
     return CanvasProvenanceCompatibility{
         false, "control-point matcher provenance is missing; calibration inputs cannot be verified"};
   }
+  if (provenance->manual_control_point_fingerprint != configured->manual_control_point_fingerprint)
+    return CanvasProvenanceCompatibility{false, "the manual control points changed"};
   if (provenance->calibration_frame_selection_fingerprint != configured->calibration_frame_selection_fingerprint)
     return CanvasProvenanceCompatibility{false, "the selected calibration frame plan changed"};
   if (*provenance->control_point_matcher != configured->control_point_matcher)
@@ -2941,6 +2950,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
   HM_ASSIGN_OR_RETURN(provider, read_control_point_execution_provider(config));
   std::string frame_selection;
   HM_ASSIGN_OR_RETURN(frame_selection, player_frame_selection_fingerprint(config));
+  std::string manual_points;
+  HM_ASSIGN_OR_RETURN(manual_points, manual_control_point_fingerprint(config));
   return StitchingBackendChoices{
       std::string(ControlPointMatcherName(control_point_matcher)),
       std::string(MappingBackendName(mapping_backend)),
@@ -2951,7 +2962,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
       camera,
       resolution,
       provider,
-      std::move(frame_selection)};
+      std::move(frame_selection),
+      std::move(manual_points)};
 }
 
 bool is_missing_hugin_executable(const absl::Status& status) {
@@ -3267,8 +3279,27 @@ absl::Status create_control_points(
     HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, backend_choices));
   }
 
+  std::optional<CalibrationMatchSet> manual_matches;
+  std::optional<YAML::Node> match_config;
+  HM_ASSIGN_OR_RETURN(match_config, load_game_config_file(game_config_path));
+  if (!backend_choices.manual_control_point_fingerprint.empty()) {
+    CalibrationMatchSet saved;
+    HM_ASSIGN_OR_RETURN(saved, LoadCalibrationMatches(game_dir, backend_choices.manual_control_point_fingerprint));
+    if (!match_config || !saved.manual || saved.selection_fingerprint != captured_frame_selection_fingerprint)
+      return absl::FailedPreconditionError("Edited matches do not identify this calibration input set");
+    HM_RETURN_IF_ERROR(ValidateCalibrationMatchInputs(saved, *match_config, game_dir, frame_pairs.size()));
+    manual_matches = std::move(saved);
+  }
   const bool using_cached_inputs = !frame_pairs.front().left_image.empty() || !frame_pairs.front().right_image.empty();
-  if (using_cached_inputs) {
+  if (manual_matches) {
+    if (!using_cached_inputs)
+      return absl::FailedPreconditionError("Edited matches require their retained original camera frames");
+    for (size_t index = 0; index < frame_pairs.size(); ++index) {
+      if (frame_pairs[index].left_image != manual_matches->frames[index].images[0] ||
+          frame_pairs[index].right_image != manual_matches->frames[index].images[1])
+        return absl::FailedPreconditionError("Edited matches reference different captured images");
+    }
+  } else if (using_cached_inputs) {
     if (!selected_plan)
       return absl::FailedPreconditionError("Cached calibration requires a selected frame plan");
     auto retained = LoadPlayerFrameInputs(game_dir, *selected_plan);
@@ -3374,10 +3405,12 @@ absl::Status create_control_points(
   ControlPointMatcher control_point_matcher;
   HM_ASSIGN_OR_RETURN(control_point_matcher, ParseControlPointMatcher(backend_choices.control_point_matcher));
   fs::path model_path;
+  if (!manual_matches)
   HM_ASSIGN_OR_RETURN(
-      model_path, feature_matcher_model_path(control_point_matcher, backend_choices.control_point_execution_provider));
+        model_path,
+        feature_matcher_model_path(control_point_matcher, backend_choices.control_point_execution_provider));
   hm::onnx::CpuFallbackOptions cpu_fallback;
-  if (backend_choices.control_point_execution_provider == hm::onnx::ExecutionProvider::kCuda &&
+  if (!manual_matches && backend_choices.control_point_execution_provider == hm::onnx::ExecutionProvider::kCuda &&
       control_point_matcher != ControlPointMatcher::kAkazeHamming) {
     fs::path cpu_model_path;
     HM_ASSIGN_OR_RETURN(
@@ -3400,6 +3433,9 @@ absl::Status create_control_points(
         "Calibrated AKAZE control points are rectified and require an OpenCV mapping backend; NONA does not consume "
         "the GoPro KB4 lens profile");
   }
+  if (manual_matches)
+    HM_RETURN_IF_ERROR(ValidateCalibrationMatchCalibration(*manual_matches, akaze_calibration));
+  if (!manual_matches) {
   HM_ASSIGN_OR_RETURN(
       matcher,
       FeatureMatcher::Create(
@@ -3410,6 +3446,7 @@ absl::Status create_control_points(
           backend_choices.control_point_execution_provider,
           {},
           cpu_fallback));
+  }
   const size_t minimum_matches =
       control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona
       ? 6
@@ -3427,6 +3464,16 @@ absl::Status create_control_points(
        (inspection_enabled && std::string(inspection_enabled) == "1"));
   if (inspect_matches)
     HM_RETURN_IF_ERROR(update_stitching_match_inspection(game_dir, expected_invalidation_id, 0, nullptr));
+  CalibrationMatchSet recorded;
+  recorded.matcher = control_point_matcher;
+  recorded.calibration = akaze_calibration;
+  recorded.selection_fingerprint = captured_frame_selection_fingerprint;
+  recorded.frames.resize(input_files.size());
+  if (inspect_matches && !manual_matches) {
+    if (!match_config)
+      return absl::FailedPreconditionError("Cannot record match inputs without game configuration");
+    HM_ASSIGN_OR_RETURN(recorded.source_context, CalibrationMatchSourceContext(*match_config, game_dir));
+  }
   for (size_t index = 0; index < input_files.size(); ++index) {
     auto left_or = load_feature_image(input_files[index].first);
     if (!left_or.ok())
@@ -3474,17 +3521,36 @@ absl::Status create_control_points(
     } else if (left.size() != left_source_size || right.size() != right_source_size) {
       return absl::FailedPreconditionError("Stitching calibration frame pairs must have stable input dimensions");
     }
-    auto frame_matches_or = matcher->Infer(left, right, max_control_points, {}, is_cancelled);
-    if (!frame_matches_or.ok()) {
-      if (absl::IsNotFound(frame_matches_or.status())) {
+    auto& recorded_frame = recorded.frames[index];
+    recorded_frame.images = {input_files[index].first, input_files[index].second};
+    recorded_frame.sizes = {left.size(), right.size()};
+    recorded_frame.source_paths = {
+        frame_pairs[index].left_source.video.string(), frame_pairs[index].right_source.video.string()};
+    recorded_frame.source_seconds = {frame_pairs[index].left_source.seconds, frame_pairs[index].right_source.seconds};
+    FeatureMatchResult frame_matches;
+    if (manual_matches) {
+      HM_ASSIGN_OR_RETURN(
+          frame_matches.selected,
+          ConvertCalibrationMatchCoordinates(
+              manual_matches->frames[index].matches, recorded_frame.sizes, akaze_calibration, false));
+      frame_matches.accepted = frame_matches.selected;
+    } else {
+      auto inferred = matcher->Infer(left, right, max_control_points, {}, is_cancelled);
+      if (!inferred.ok()) {
+        if (absl::IsNotFound(inferred.status())) {
         ++skipped_frame_pairs;
         std::cerr << "Skipping stitching calibration frame pair " << (index + 1) << "/" << input_files.size() << ": "
-                  << frame_matches_or.status() << std::endl;
+                    << inferred.status() << std::endl;
         continue;
       }
-      return frame_matches_or.status();
+        return inferred.status();
     }
-    FeatureMatchResult frame_matches = std::move(*frame_matches_or);
+      frame_matches = std::move(*inferred);
+      if (inspect_matches)
+        HM_ASSIGN_OR_RETURN(
+            recorded_frame.matches,
+            ConvertCalibrationMatchCoordinates(frame_matches.selected, recorded_frame.sizes, akaze_calibration, true));
+    }
     if (inspect_matches) {
       std::array<cv::Mat, 2> visualizations;
       HM_ASSIGN_OR_RETURN(
@@ -3502,6 +3568,22 @@ absl::Status create_control_points(
             .accepted_match_count = frame_matches.accepted.size(),
             .selected = std::move(frame_matches.selected),
         });
+  }
+  if (inspect_matches) {
+    std::string snapshot = backend_choices.manual_control_point_fingerprint;
+    if (!manual_matches)
+      HM_ASSIGN_OR_RETURN(snapshot, PublishCalibrationMatches(game_dir, recorded));
+    auto lock = GameConfigTransactionLock::Acquire(game_dir);
+    if (!lock.ok())
+      return lock.status();
+    try {
+      YAML::Node current = YAML::LoadFile(game_config_path.string());
+      HM_RETURN_IF_ERROR(validate_stitching_backend_generation(current, expected_invalidation_id, backend_choices));
+      current["hstream_ui"]["stitching_calibration"]["match_snapshot"] = snapshot;
+      HM_RETURN_IF_ERROR(publish_game_config(game_dir, YAML::Dump(current) + "\n"));
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError(error.what());
+    }
   }
   report_calibration_progress(
       "features",
@@ -3523,6 +3605,9 @@ absl::Status create_control_points(
                                                 << " frame pairs; at least " << minimum_matches << " are required"));
   }
   candidates = make_stitching_calibration_match_candidates(std::move(candidates));
+  // Manual input is authoritative: a rejected union must not silently drop a pair.
+  if (manual_matches && candidates.size() > 1)
+    candidates.resize(1);
   report_calibration_progress(
       "matching",
       "complete",
@@ -3542,6 +3627,7 @@ absl::Status create_control_points(
   options.control_point_matcher = control_point_matcher;
   options.control_point_resolution = backend_choices.control_point_resolution;
   options.calibration_frame_selection_fingerprint = captured_frame_selection_fingerprint;
+  options.manual_control_point_fingerprint = backend_choices.manual_control_point_fingerprint;
   StitchProjection projection;
   HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(backend_choices.projection));
   options.mapping_backend = mapping_backend;

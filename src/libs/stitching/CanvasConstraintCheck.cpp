@@ -727,7 +727,8 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool selection_aware = lines.size() == 31 && lines[0] == "version=10";
+  const bool manual_aware = lines.size() == 32 && lines[0] == "version=11";
+  const bool selection_aware = (lines.size() == 31 && lines[0] == "version=10") || manual_aware;
   const bool resolution_aware = (lines.size() == 29 && lines[0] == "version=9") || selection_aware;
   const bool view_aware = (lines.size() == 28 && lines[0] == "version=8") || resolution_aware;
   const bool camera_aware = (lines.size() == 21 && lines[0] == "version=7") || view_aware;
@@ -735,6 +736,14 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
       (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware && !camera_aware))
     return absl::FailedPreconditionError("Invalid canvas provenance format");
   CanvasProvenance provenance;
+  if (manual_aware) {
+    constexpr char prefix[] = "manual-control-points=";
+    if (lines[31].rfind(prefix, 0) != 0 || lines[31].size() != std::strlen(prefix) + 64 ||
+        !std::all_of(lines[31].begin() + std::strlen(prefix), lines[31].end(), [](char c) {
+          return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        }))
+      return absl::FailedPreconditionError("Invalid canvas provenance manual control-point fingerprint");
+  }
   if (resolution_aware && lines[28] != "control-point-resolution=native" &&
       lines[28] != "control-point-resolution=1k" && lines[28] != "control-point-resolution=2k" &&
       lines[28] != "control-point-resolution=auto")

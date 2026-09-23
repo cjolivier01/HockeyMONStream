@@ -96,6 +96,7 @@ StitchingBackendChoices choices(const YAML::Node& config) {
   result.control_point_resolution = value(read_control_point_resolution(config));
   result.control_point_execution_provider = value(read_control_point_execution_provider(config));
   result.calibration_frame_selection_fingerprint = value(player_frame_selection_fingerprint(config));
+  result.manual_control_point_fingerprint = value(manual_control_point_fingerprint(config));
   return result;
 }
 
@@ -193,6 +194,9 @@ bool test_ownership_and_edits(const fs::path& root) {
     std::cerr << prepare.status() << '\n';
     return false;
   }
+  ok &= expect(
+      !desired["hstream_ui"]["stitching_calibration"]["reframe"]["source_solver"]["manual_control_points"],
+      "automatic reframe solver snapshots retain the legacy schema and fingerprints");
   pending(desired, "view-1");
   auto valid = ValidateStitchingReframeIntentLocked(root, desired);
   ok &= expect(valid.ok(), "captured reframe validates under its new pending owner");
@@ -224,6 +228,7 @@ bool test_ownership_and_edits(const fs::path& root) {
   for (const auto& change : std::vector<std::pair<std::string, std::string>>{
            {"control_point_execution_provider", "cuda"},
            {"control_point_resolution", "2k"},
+           {"manual_control_points", std::string(64, 'a')},
            {"stitch_frame_time", "00:01:00"}}) {
     auto edited = YAML::Clone(rebound);
     edited["stitching"][change.first] = change.second;
@@ -468,6 +473,38 @@ PlayerFrameSelectionPlan selected_plan(const fs::path& root) {
   return plan;
 }
 
+bool test_manual_identity(const fs::path& root) {
+  auto before = fixture(root);
+  const std::string manual(64, 'a');
+  before["stitching"]["manual_control_points"] = manual;
+  before["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+  require(reserve_stitching_backend_generation_in_config(before, "completed-solve", choices(before)));
+  provenance(root);
+  auto artifact_lock = value(lock_canvas_constraint_artifacts(root));
+  auto config_lock = value(GameConfigTransactionLock::Acquire(root));
+  auto desired = desired_view(before);
+  bool ok = expect(
+      !PrepareStitchingReframeIntentLocked(root, before, desired, "manual-view", desired).ok(),
+      "manual inputs cannot reframe alignment carrying automatic provenance");
+  std::ifstream input(root / kStitchCanvasProvenanceArtifact);
+  std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  text.replace(0, std::string("version=10").size(), "version=11");
+  text += "manual-control-points=" + manual + "\n";
+  write(root / kStitchCanvasProvenanceArtifact, text);
+  desired = desired_view(before);
+  const auto prepared = PrepareStitchingReframeIntentLocked(root, before, desired, "manual-view", desired);
+  ok &= expect(prepared.ok() && *prepared, "matching manual provenance authorizes a geometry-only reframe");
+  if (!prepared.ok() || !*prepared)
+    return false;
+  pending(desired, "manual-view");
+  ok &= expect(ValidateStitchingReframeIntentLocked(root, desired).ok(), "manual reframe snapshot validates unchanged");
+  desired["stitching"]["manual_control_points"] = std::string(64, 'b');
+  ok &= expect(
+      !ValidateStitchingReframeIntentLocked(root, desired).ok(),
+      "replacing manual matches invalidates a pending reframe");
+  return ok;
+}
+
 bool test_selected_retention(const fs::path& root) {
   auto before = fixture(root);
   const auto plan = selected_plan(root);
@@ -523,6 +560,7 @@ int main() {
     ok &= test_completed_runtime_reservation(root / "runtime-reservation");
     ok &= test_projections_without_parameters(root / "no-parameters");
     ok &= test_selected_retention(root / "selected");
+    ok &= test_manual_identity(root / "manual");
     fs::remove_all(root);
     return ok ? 0 : 1;
   } catch (const std::exception& error) {

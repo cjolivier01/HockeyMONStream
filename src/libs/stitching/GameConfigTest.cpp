@@ -1197,6 +1197,54 @@ stitching:
                   .as<std::string>() == "opencv-magsac",
       "a competing backend tuple must not replace the generation's first reservation");
   if (after_conflict.ok() && after_conflict->has_value()) {
+    YAML::Node manual_generation = YAML::Clone(**after_conflict);
+    manual_generation["stitching"]["manual_control_points"] = std::string(64, 'a');
+    ok &= expect(
+        absl::IsAborted(
+            hm::stitching::validate_stitching_backend_generation(
+                manual_generation, "backend-generation-a", magsac_choices)),
+        "automatic workers must reject a concurrent manual replacement");
+    auto manual_choices = magsac_choices;
+    manual_choices.manual_control_point_fingerprint = std::string(64, 'a');
+    manual_generation["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+    ok &= expect(
+        hm::stitching::reserve_stitching_backend_generation_in_config(
+            manual_generation, "backend-generation-a", manual_choices)
+                .ok() &&
+            hm::stitching::validate_stitching_backend_generation(
+                manual_generation, "backend-generation-a", manual_choices)
+                .ok() &&
+            manual_generation["hstream_ui"]["stitching_calibration"]["backend_generation"]["manual_control_points"]
+                    .as<std::string>() == std::string(64, 'a'),
+        "manual identity must be reserved in the immutable backend tuple");
+    for (bool clear : {false, true}) {
+      auto changed_manual = YAML::Clone(manual_generation);
+      if (clear)
+        changed_manual["stitching"].remove("manual_control_points");
+      else
+        changed_manual["stitching"]["manual_control_points"] = std::string(64, 'b');
+      ok &= expect(
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  changed_manual, "backend-generation-a", manual_choices)),
+          "a manual worker must reject replacement or removal of its saved match set");
+    }
+    auto automatic_again = YAML::Clone(manual_generation);
+    automatic_again["stitching"].remove("manual_control_points");
+    automatic_again["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "automatic-again";
+    ok &= expect(
+        hm::stitching::reserve_stitching_backend_generation_in_config(
+            automatic_again, "automatic-again", magsac_choices).ok() &&
+            hm::stitching::validate_stitching_backend_generation(
+                automatic_again, "automatic-again", magsac_choices).ok(),
+        "a new automatic generation must clear the previous manual claim identity");
+    manual_generation["stitching"]["manual_control_points"] = YAML::Null;
+    ok &= expect(!hm::stitching::manual_control_point_fingerprint(manual_generation).ok(),
+                 "an explicit null manual reference cannot silently enable automatic matching");
+    manual_generation["stitching"]["manual_control_points"] = "not-a-fingerprint";
+    ok &= expect(
+        !hm::stitching::manual_control_point_fingerprint(manual_generation).ok(),
+        "malformed manual references cannot fall back to automatic matching");
     YAML::Node provider_mismatch = YAML::Clone(**after_conflict);
     provider_mismatch["stitching"]["control_point_execution_provider"] = "cpu";
     ok &= expect(

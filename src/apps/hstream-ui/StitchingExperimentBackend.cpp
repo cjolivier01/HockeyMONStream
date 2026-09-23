@@ -68,14 +68,53 @@ absl::StatusOr<fs::path> normalized_source(
   return relative;
 }
 
+// Only validated workspace clones may follow a final media/sidecar link outside
+// their game. Preserve its local name, reject traversal and directory links, and
+// link directly to the resolved regular file so deleting a parent experiment is safe.
+absl::StatusOr<fs::path> linked_workspace_source(
+    const fs::path& game,
+    const fs::path& configured,
+    bool calibration_asset = false) {
+  if (configured.empty())
+    return absl::InvalidArgumentError("Workspace input path must not be empty");
+  for (const auto& component : configured) {
+    if (component == "..")
+      return absl::InvalidArgumentError("Workspace input paths must not traverse parent directories");
+  }
+  const fs::path absolute_game = fs::absolute(game).lexically_normal();
+  const fs::path absolute_source = configured.is_absolute() ? configured : absolute_game / configured;
+  const fs::path relative = absolute_source.lexically_normal().lexically_relative(absolute_game);
+  if (relative.empty() || relative == "." || relative.is_absolute() || *relative.begin() == "..")
+    return absl::InvalidArgumentError("Workspace input must be named inside its game");
+  fs::path parent = absolute_game;
+  std::error_code error;
+  for (const auto& component : relative.parent_path()) {
+    parent /= component;
+    if (fs::symlink_status(parent, error).type() != fs::file_type::directory || error)
+      return absl::InvalidArgumentError("Workspace input directories must not be links");
+  }
+  const auto resolved = fs::canonical(absolute_game / relative, error);
+  if (error || !fs::is_regular_file(resolved, error) || error)
+    return absl::NotFoundError("Workspace input must resolve to an existing regular file");
+  const auto allowed = [calibration_asset](const fs::path& path) {
+    return calibration_asset ? std::regex_match(path.filename().string(), kCalibrationAsset) : is_video(path);
+  };
+  if (!allowed(relative) || !allowed(resolved))
+    return absl::InvalidArgumentError("Workspace input resolves to an unsupported file");
+  return relative;
+}
+
 absl::Status link_input(const fs::path& canonical_source, const fs::path& destination) {
   std::error_code error;
+  const auto resolved = fs::canonical(canonical_source, error);
+  if (error || !fs::is_regular_file(resolved, error) || error)
+    return absl::NotFoundError("Experiment input disappeared before linking");
   fs::create_directories(destination.parent_path(), error);
   if (error)
     return absl::InternalError("Unable to create experiment input directory: " + error.message());
   if (fs::exists(destination, error) || fs::is_symlink(destination, error))
     return absl::AlreadyExistsError("Duplicate experiment input destination: " + destination.string());
-  fs::create_symlink(canonical_source, destination, error);
+  fs::create_symlink(resolved, destination, error);
   return error ? absl::InternalError("Unable to link experiment input: " + error.message()) : absl::OkStatus();
 }
 
@@ -83,7 +122,8 @@ absl::Status link_configured_videos(
     YAML::Node config,
     const fs::path& source_game_directory,
     const fs::path& candidate_game_directory,
-    std::set<fs::path>* linked) {
+    std::set<fs::path>* linked,
+    bool allow_linked_inputs = false) {
   for (const std::pair<const char*, const char*> section :
        {std::make_pair("game", "videos"), std::make_pair("hstream_ui", "video_roles")}) {
     YAML::Node roles = config[section.first][section.second];
@@ -97,7 +137,10 @@ absl::Status link_configured_videos(
         if (!values[index].IsScalar())
           return absl::InvalidArgumentError("Experiment video roles must contain path strings");
         fs::path relative;
-        HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, values[index].as<std::string>()));
+        HM_ASSIGN_OR_RETURN(
+            relative,
+            allow_linked_inputs ? linked_workspace_source(source_game_directory, values[index].as<std::string>())
+                                : normalized_source(source_game_directory, values[index].as<std::string>()));
         if (!is_video(relative))
           return absl::InvalidArgumentError(
               "Configured experiment video is not a supported video file: " + relative.string());
@@ -149,7 +192,8 @@ absl::Status link_auto_videos(
 absl::Status link_calibration_assets(
     const fs::path& source_game_directory,
     const fs::path& candidate_game_directory,
-    const std::set<fs::path>& linked_videos) {
+    const std::set<fs::path>& linked_videos,
+    bool allow_linked_inputs = false) {
   std::set<fs::path> directories{fs::path{}};
   for (const fs::path& video : linked_videos)
     directories.insert(video.parent_path());
@@ -164,7 +208,10 @@ absl::Status link_calibration_assets(
         continue;
       }
       fs::path relative;
-      HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, entry.path(), "calibration asset"));
+      HM_ASSIGN_OR_RETURN(
+          relative,
+          allow_linked_inputs ? linked_workspace_source(source_game_directory, entry.path(), true)
+                              : normalized_source(source_game_directory, entry.path(), "calibration asset"));
       if (!std::regex_match(relative.filename().string(), kCalibrationAsset))
         return absl::InvalidArgumentError(
             "Experiment calibration asset resolves to a reserved file: " + entry.path().string());
@@ -256,6 +303,13 @@ absl::Status configure_candidate(
   std::string selection;
   HM_ASSIGN_OR_RETURN(selection, reusable_selection_fingerprint(config, settings));
   config["stitching"]["calibration_frame_count"] = settings.frame_count;
+  if (settings.manual_control_points) {
+    config["stitching"]["manual_control_points"] = *settings.manual_control_points;
+    config["hstream_ui"]["stitching_calibration"]["match_snapshot"] = *settings.manual_control_points;
+  } else {
+    config["stitching"].remove("manual_control_points");
+    config["hstream_ui"]["stitching_calibration"].remove("match_snapshot");
+  }
   if (settings.control_point_resolution) {
     config["stitching"]["control_point_resolution"] = *settings.control_point_resolution;
     config["hstream_ui"].remove("generated_control_point_resolution");
@@ -285,7 +339,10 @@ absl::Status configure_candidate(
   calibration["frame_count"] = settings.frame_count;
   calibration["status"] = "pending";
   calibration["rink_mask_status"] = "pending";
-  calibration["stale_from"] = "input";
+  // Experiment settings change the solve, not camera synchronization. Input
+  // cleanup would discard the copied offsets and let the baseline resynchronize
+  // independently of the siblings that will consume its selected frame pairs.
+  calibration["stale_from"] = "features";
   calibration["artifacts_invalidated"] = false;
   calibration["invalidation_id"] = invalidation_id;
   remove_downstream_generation(config);
@@ -366,6 +423,20 @@ void copy_node(YAML::Node destination, const YAML::Node& source, const char* key
     destination[key] = YAML::Clone(source[key]);
   else if (destination && destination.IsMap())
     destination.remove(key);
+}
+
+absl::Status copy_match_bundles(const fs::path& source, const fs::path& destination, const YAML::Node& config) {
+  std::string manual;
+  HM_ASSIGN_OR_RETURN(manual, hm::stitching::manual_control_point_fingerprint(config));
+  if (!manual.empty())
+    HM_RETURN_IF_ERROR(hm::stitching::CopyCalibrationMatches(source, destination, manual));
+  const YAML::Node snapshot = config["hstream_ui"]["stitching_calibration"]["match_snapshot"];
+  if (snapshot && !snapshot.IsNull()) {
+    const auto fingerprint = snapshot.as<std::string>();
+    if (fingerprint != manual)
+      HM_RETURN_IF_ERROR(hm::stitching::CopyCalibrationMatches(source, destination, fingerprint));
+  }
+  return absl::OkStatus();
 }
 
 absl::Status reconcile_selected_video_paths(
@@ -689,6 +760,9 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
     if (fingerprint.empty() && calibration["status"].as<std::string>("") != "complete")
       return std::nullopt;
     StitchingExperimentSettings settings = displayed_settings;
+    std::string manual;
+    HM_ASSIGN_OR_RETURN(manual, hm::stitching::manual_control_point_fingerprint(config));
+    settings.manual_control_points = manual.empty() ? std::nullopt : std::make_optional(manual);
     // This row describes the saved solve, not the current experiment controls.
     settings.control_point_resolution.reset();
     const YAML::Node claim = calibration["backend_generation"];
@@ -738,11 +812,12 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
   }
 }
 
-absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
+static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     const fs::path& source_game_directory,
     const fs::path& experiment_root,
     const StitchingExperimentSettings& settings,
-    int sequence) {
+    int sequence,
+    bool allow_linked_inputs) {
   if (settings.control_points <= 0 || settings.frame_count <= 0 || sequence <= 0)
     return absl::InvalidArgumentError("Stitching experiment counts and sequence must be positive");
   if (settings.control_point_resolution) {
@@ -751,6 +826,13 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
     const auto resolution = hm::stitching::ParseControlPointResolution(*settings.control_point_resolution);
     if (!resolution.ok())
       return resolution.status();
+  }
+  if (settings.manual_control_points) {
+    YAML::Node requested;
+    requested["stitching"]["manual_control_points"] = *settings.manual_control_points;
+    const auto fingerprint = hm::stitching::manual_control_point_fingerprint(requested);
+    if (!fingerprint.ok())
+      return fingerprint.status();
   }
   try {
     (void)hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time);
@@ -814,16 +896,28 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
       frozen_settings.control_point_resolution = hm::stitching::ControlPointResolutionName(resolution);
     }
     std::set<fs::path> linked;
-    HM_RETURN_IF_ERROR(link_configured_videos(config, source_game_directory, workspace_path, &linked));
-    HM_RETURN_IF_ERROR(link_auto_videos(source_game_directory, workspace_path, &linked));
+    HM_RETURN_IF_ERROR(
+        link_configured_videos(config, source_game_directory, workspace_path, &linked, allow_linked_inputs));
+    if (!allow_linked_inputs)
+      HM_RETURN_IF_ERROR(link_auto_videos(source_game_directory, workspace_path, &linked));
     if (linked.size() < 2)
       return absl::FailedPreconditionError("Stitching experiments require at least two camera videos");
-    HM_RETURN_IF_ERROR(link_calibration_assets(source_game_directory, workspace_path, linked));
+    HM_RETURN_IF_ERROR(link_calibration_assets(source_game_directory, workspace_path, linked, allow_linked_inputs));
     promote_generated_video_roles(config);
     const std::string invalidation_id = "stitch-experiment-" + std::to_string(::getpid()) + "-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(sequence);
     HM_RETURN_IF_ERROR(configure_candidate(config, frozen_settings, invalidation_id));
     HM_RETURN_IF_ERROR(copy_selected_input_bundle(source_game_directory, workspace_path, config));
+    HM_RETURN_IF_ERROR(copy_match_bundles(source_game_directory, workspace_path, config));
+    if (frozen_settings.manual_control_points) {
+      hm::stitching::CalibrationMatchSet matches;
+      HM_ASSIGN_OR_RETURN(
+          matches, hm::stitching::LoadCalibrationMatches(workspace_path, *frozen_settings.manual_control_points));
+      if (!matches.manual)
+        return absl::InvalidArgumentError("Manual control points must reference an edited match set");
+      HM_RETURN_IF_ERROR(
+          hm::stitching::ValidateCalibrationMatchInputs(matches, config, workspace_path, frozen_settings.frame_count));
+    }
     HM_RETURN_IF_ERROR(write_config(workspace_path / "config.yaml", config));
     HM_RETURN_IF_ERROR(sync_workspace_directory_tree(**pinned_candidate));
     // Candidate and session names must survive with their config and media-link
@@ -842,6 +936,97 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(
         "Unable to prepare stitching experiment config: " + std::string(exception.what()));
+  }
+}
+
+absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
+    const fs::path& source_game_directory,
+    const fs::path& experiment_root,
+    const StitchingExperimentSettings& settings,
+    int sequence) {
+  return create_workspace(source_game_directory, experiment_root, settings, sequence, false);
+}
+
+static absl::Status validate_clone_source(const StitchingExperimentWorkspace& source, const YAML::Node& config) {
+  std::error_code error;
+  if (source.game_id.empty() || source.game_id != source.game_directory.filename() ||
+      fs::absolute(source.root / source.game_id).lexically_normal() !=
+          fs::absolute(source.game_directory).lexically_normal() ||
+      fs::symlink_status(source.game_directory, error).type() != fs::file_type::directory || error ||
+      fs::symlink_status(source.game_directory / "config.yaml", error).type() != fs::file_type::regular || error)
+    return absl::FailedPreconditionError("Experiment source workspace identity is invalid");
+  if (source.invalidation_id.empty() ||
+      config["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>("") != source.invalidation_id)
+    return absl::AbortedError("Experiment source generation changed before copying");
+  return absl::OkStatus();
+}
+
+absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentEditableCopy(
+    const StitchingExperimentWorkspace& source,
+    const fs::path& experiment_root,
+    int sequence) {
+  auto lock = hm::stitching::GameConfigTransactionLock::Acquire(source.game_directory);
+  if (!lock.ok())
+    return lock.status();
+  try {
+    const YAML::Node config = YAML::LoadFile((source.game_directory / "config.yaml").string());
+    HM_RETURN_IF_ERROR(validate_clone_source(source, config));
+    auto settings = source.settings;
+    settings.manual_control_points.reset();
+    return create_workspace(source.game_directory, experiment_root, settings, sequence, true);
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Unable to copy experiment: " + std::string(error.what()));
+  }
+}
+
+absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWorkspace(
+    const StitchingExperimentWorkspace& source,
+    const fs::path& experiment_root,
+    const std::string& expected_match_snapshot,
+    const hm::stitching::CalibrationMatchSet& edited,
+    int sequence) {
+  auto lock = hm::stitching::GameConfigTransactionLock::Acquire(source.game_directory);
+  if (!lock.ok())
+    return lock.status();
+  try {
+    const YAML::Node config = YAML::LoadFile((source.game_directory / "config.yaml").string());
+    HM_RETURN_IF_ERROR(validate_clone_source(source, config));
+    const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    if (source.invalidation_id.empty() || expected_match_snapshot.empty() ||
+        calibration["invalidation_id"].as<std::string>("") != source.invalidation_id ||
+        calibration["match_snapshot"].as<std::string>("") != expected_match_snapshot)
+      return absl::AbortedError("Calibration matches changed while the editor was open; reopen the saved matches");
+    hm::stitching::CalibrationMatchSet original;
+    HM_ASSIGN_OR_RETURN(
+        original, hm::stitching::LoadCalibrationMatches(source.game_directory, expected_match_snapshot));
+    HM_RETURN_IF_ERROR(
+        hm::stitching::ValidateCalibrationMatchInputs(
+            original, config, source.game_directory, source.settings.frame_count));
+    if (edited.input_fingerprint != original.input_fingerprint || edited.frames.size() != original.frames.size() ||
+        edited.selection_fingerprint != original.selection_fingerprint ||
+        edited.source_context != original.source_context || edited.matcher != original.matcher)
+      return absl::AbortedError("Edited matches no longer identify the inspected camera frames");
+    auto replacement = original;
+    replacement.fingerprint.clear();
+    replacement.manual = true;
+    replacement.automatic_fingerprint = original.manual ? original.automatic_fingerprint : original.fingerprint;
+    for (size_t pair = 0; pair < original.frames.size(); ++pair) {
+      const auto& before = original.frames[pair];
+      const auto& after = edited.frames[pair];
+      if (after.images != before.images || after.sizes != before.sizes || after.source_paths != before.source_paths ||
+          after.source_seconds != before.source_seconds)
+        return absl::AbortedError("Edited matches changed the inspected frame inputs");
+      // Only endpoints/scores are editable. Lens and all input provenance are
+      // copied from the immutable source rather than accepted from the editor.
+      replacement.frames[pair].matches = after.matches;
+    }
+    std::string fingerprint;
+    HM_ASSIGN_OR_RETURN(fingerprint, hm::stitching::PublishCalibrationMatches(source.game_directory, replacement));
+    StitchingExperimentSettings settings = source.settings;
+    settings.manual_control_points = fingerprint;
+    return create_workspace(source.game_directory, experiment_root, settings, sequence, true);
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Unable to save edited calibration matches: " + std::string(error.what()));
   }
 }
 
@@ -865,6 +1050,7 @@ absl::Status PromoteStitchingExperiment(
             BuildStitchingExperimentSelectionConfig(
                 experiment.game_directory / "config.yaml", game_directory / "config.yaml"));
         try {
+          HM_RETURN_IF_ERROR(copy_match_bundles(experiment.game_directory, game_directory, YAML::Load(selected)));
           HM_RETURN_IF_ERROR(
               copy_frame_inspection_for_promotion(experiment.game_directory, game_directory, YAML::Load(selected)));
         } catch (const YAML::Exception& error) {
@@ -907,6 +1093,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
           "control_point_execution_provider",
           "control_point_matcher",
           "control_point_resolution",
+          "manual_control_points",
           "mapping_backend",
           "max_output_width",
           "projection",

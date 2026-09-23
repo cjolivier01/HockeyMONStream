@@ -31,6 +31,29 @@
 
 namespace hm::stitching {
 
+absl::StatusOr<std::string> manual_control_point_fingerprint(const YAML::Node& config) {
+  try {
+    const auto stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    if (!stitching || stitching.IsNull())
+      return std::string();
+    if (!stitching.IsMap())
+      return absl::InvalidArgumentError("stitching must be a map");
+    const auto node = stitching["manual_control_points"];
+    if (!node)
+      return std::string();
+    if (!node.IsScalar())
+      return absl::InvalidArgumentError("Manual control points must identify a saved match set");
+    const auto value = node.as<std::string>();
+    if (value.size() != 64 || !std::all_of(value.begin(), value.end(), [](char c) {
+          return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        }))
+      return absl::InvalidArgumentError("Invalid manual control-point fingerprint");
+    return value;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(error.what());
+  }
+}
+
 absl::StatusOr<std::string> player_frame_selection_fingerprint(const YAML::Node& config) {
   try {
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
@@ -1969,7 +1992,10 @@ absl::Status validate_backend_generation_claim(
     const std::string claimed_selection = claim["calibration_frame_selection_fingerprint"]
         ? claim["calibration_frame_selection_fingerprint"].as<std::string>()
         : std::string();
-    const bool claim_matches = claim_provider == expected_choices.control_point_execution_provider &&
+    std::string claimed_manual;
+    HM_ASSIGN_OR_RETURN(claimed_manual, manual_control_point_fingerprint(claim_config));
+    const bool claim_matches = claimed_manual == expected_choices.manual_control_point_fingerprint &&
+        claim_provider == expected_choices.control_point_execution_provider &&
         claimed_selection == expected_choices.calibration_frame_selection_fingerprint &&
         claim_resolution == expected_choices.control_point_resolution &&
         claim["invalidation_id"].as<std::string>() == expected_invalidation_id &&
@@ -2051,8 +2077,11 @@ absl::Status validate_backend_generation_claim(
     HM_ASSIGN_OR_RETURN(worker_provider, read_control_point_execution_provider(config));
     std::string worker_selection;
     HM_ASSIGN_OR_RETURN(worker_selection, player_frame_selection_fingerprint(config));
+    std::string worker_manual;
+    HM_ASSIGN_OR_RETURN(worker_manual, manual_control_point_fingerprint(config));
     const bool worker_tuple_matches = worker_provider == expected_choices.control_point_execution_provider &&
         worker_selection == expected_choices.calibration_frame_selection_fingerprint &&
+        worker_manual == expected_choices.manual_control_point_fingerprint &&
         worker_resolution == expected_choices.control_point_resolution &&
         stitching["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         stitching["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
@@ -2115,6 +2144,10 @@ absl::Status reserve_stitching_backend_generation_in_config(
       claim["control_point_execution_provider"] =
           hm::onnx::ExecutionProviderName(expected_choices.control_point_execution_provider);
       claim["calibration_frame_selection_fingerprint"] = expected_choices.calibration_frame_selection_fingerprint;
+      if (!expected_choices.manual_control_point_fingerprint.empty())
+        claim["manual_control_points"] = expected_choices.manual_control_point_fingerprint;
+      else
+        claim.remove("manual_control_points");
       claim["mapping_backend"] = expected_choices.mapping_backend;
       claim["projection"] = expected_choices.projection;
       claim["run_autooptimizer"] = expected_choices.run_autooptimizer;

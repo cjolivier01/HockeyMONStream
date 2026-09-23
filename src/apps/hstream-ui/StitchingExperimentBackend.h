@@ -9,6 +9,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "hstream/src/libs/stitching/CalibrationMatches.h"
 
 struct StitchingExperimentSettings {
   int control_points{0};
@@ -17,6 +18,8 @@ struct StitchingExperimentSettings {
   std::optional<std::array<double, 3>> rink_rotation_degrees;
   // An explicit size is frozen for this solve; legacy nullopt retains config inheritance.
   std::optional<std::string> control_point_resolution;
+  // Explicit immutable replacement; nullopt requests automatic matching.
+  std::optional<std::string> manual_control_points;
 };
 
 struct StitchingExperimentWorkspace {
@@ -33,6 +36,22 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
     const std::filesystem::path& source_game_directory,
     const std::filesystem::path& experiment_root,
     const StitchingExperimentSettings& settings,
+    int sequence);
+
+// Copies a generation-validated main/candidate workspace for a fresh automatic
+// solve. Explicit media links remain bound to their original regular files.
+absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentEditableCopy(
+    const StitchingExperimentWorkspace& source,
+    const std::filesystem::path& experiment_root,
+    int sequence);
+
+// Saves edited correspondences as a new candidate. The inspected source owner
+// and match snapshot must still agree; the original candidate is unchanged.
+absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWorkspace(
+    const StitchingExperimentWorkspace& source,
+    const std::filesystem::path& experiment_root,
+    const std::string& expected_match_snapshot,
+    const hm::stitching::CalibrationMatchSet& edited,
     int sequence);
 
 // Returns the saved immutable selection for this count, or an empty string when

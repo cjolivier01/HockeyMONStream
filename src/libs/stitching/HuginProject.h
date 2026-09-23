@@ -66,6 +66,7 @@ class HuginProject {
     std::optional<StitchCameraSelection> camera;
     std::string calibration_frame_selection_fingerprint;
     std::string calibration_frame_diagnostics;
+    std::string manual_control_point_fingerprint;
   };
 
   struct Options {
@@ -84,6 +85,7 @@ class HuginProject {
     ControlPointResolution control_point_resolution{ControlPointResolution::kNative};
     std::string calibration_frame_selection_fingerprint;
     std::string calibration_frame_diagnostics;
+    std::string manual_control_point_fingerprint;
     MappingBackend mapping_backend{MappingBackend::kNona};
     bool run_autooptimizer{true};
     std::optional<StitchProjection> projection;

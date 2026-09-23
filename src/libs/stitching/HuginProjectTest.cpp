@@ -347,6 +347,9 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
             (fields.size() <= 28 ||
              (*parsed)->control_point_resolution == hm::stitching::ControlPointResolution::k1K) &&
             (*parsed)->calibration_frame_selection_fingerprint == (selected ? fingerprint : std::string()) &&
+            (*parsed)->manual_control_point_fingerprint ==
+                (fields.size() == 32 ? fields.back().substr(std::string("manual-control-points=").size())
+                                     : std::string()) &&
             (!selected || (*parsed)->calibration_frame_diagnostics == diagnostics),
         "both readers must accept supported provenance and preserve the exact plan identity/diagnostics");
   };
@@ -355,6 +358,24 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
   ordinary[29] = "calibration-frame-selection=none";
   ordinary[30] = "calibration-frame-diagnostics=none";
   ok &= check(ordinary, true, false);
+  auto manual = lines;
+  manual[0] = "version=11";
+  manual.push_back("manual-control-points=" + std::string(64, 'b'));
+  ok &= check(manual, true, true);
+  manual[29] = "calibration-frame-selection=none";
+  manual[30] = "calibration-frame-diagnostics=none";
+  ok &= check(manual, true, false);
+  for (const std::string& invalid : std::vector<std::string>{"", "none", "invalid", std::string(64, 'B')}) {
+    auto malformed = manual;
+    malformed.back() = "manual-control-points=" + invalid;
+    ok &= check(malformed, false, false);
+  }
+  auto malformed_manual = manual;
+  malformed_manual.back() = "wrong-manual-key=" + std::string(64, 'b');
+  ok &= check(malformed_manual, false, false);
+  malformed_manual = manual;
+  malformed_manual.push_back("unexpected=value");
+  ok &= check(malformed_manual, false, false);
   for (int version : {8, 9}) {
     auto legacy = lines;
     legacy.resize(version == 8 ? 28 : 29);
