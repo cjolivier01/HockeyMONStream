@@ -56,6 +56,8 @@ filegroup(
         "hstream-ui.desktop",
         "hstream-ui.svg",
         "main.cpp",
+        "UiDiagnostics.cpp",
+        "UiDiagnostics.h",
     ],
     visibility = ["//visibility:public"],
 )
@@ -381,6 +383,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:process_diagnostics",
         ":action_icons",
         ":application_identity",
         ":camera_experiment_dialog",
@@ -449,6 +452,8 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":ui_diagnostics",
+        "//src/libs/common:process_diagnostics",
         ":action_icons",
         ":hstream_window",
         # DeepStream's nvbufsurface libraries use the CUDA Driver API. Link
@@ -568,4 +573,22 @@ cc_test(
         "//src/libs/recording",
         "@qt//:qt_core",
     ],
+)
+
+cc_library(
+    name = "ui_diagnostics",
+    srcs = ["UiDiagnostics.cpp"],
+    hdrs = ["UiDiagnostics.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["//src/libs/common:process_diagnostics", "@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "ui_diagnostics_test",
+    srcs = ["UiDiagnosticsTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":ui_diagnostics", "//src/libs/common:process_diagnostics", "@qt//:qt_widgets"],
 )

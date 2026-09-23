@@ -1,7 +1,8 @@
-#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/libs/common/PinnedFile.h"
+#include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "src/apps/hstream-ui/Int8PreparationDialog.h"
@@ -9618,6 +9619,7 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 }
 
 void HStreamWindow::startPipeline() {
+  hm::diagnostics::Breadcrumb("pipeline", "start requested");
   if (!ensureSavedControlConfigLoaded())
     return;
   if (findChild<QDialog*>("stitchingExperimentDialog")) {
@@ -10186,6 +10188,7 @@ void HStreamWindow::pauseOrResumePipeline() {
 }
 
 void HStreamWindow::stopPipeline() {
+  hm::diagnostics::Breadcrumb("pipeline", "stop requested");
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
   if (projection_crop_dialog_)
@@ -10240,6 +10243,8 @@ void HStreamWindow::stopPipeline() {
 }
 
 void HStreamWindow::handlePipelineStarted() {
+  hm::diagnostics::Breadcrumb(
+      "pipeline", "started pid=" + std::to_string(pipeline_process_ ? pipeline_process_->processId() : 0));
   if (pipeline_inspector_) {
     pipeline_inspector_->setPipelineRunning(true);
     if (preview_tabs_ && preview_tabs_->currentIndex() == pipeline_inspector_tab_index_) {
@@ -10292,6 +10297,10 @@ void HStreamWindow::handlePipelineStarted() {
 }
 
 void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
+  hm::diagnostics::Breadcrumb(
+      "pipeline",
+      "finished code=" + std::to_string(exit_code) +
+          " status=" + (exit_status == QProcess::CrashExit ? "crashed" : "normal"));
   ++scheduled_rotation_control_generation_;
   scheduled_rotation_controls_.clear();
   scheduled_rotation_controls_ready_ = false;
@@ -10527,6 +10536,7 @@ void HStreamWindow::updatePreviewTabResolution(const QString& channel, int width
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
+  hm::diagnostics::Breadcrumb("pipeline-error", std::to_string(static_cast<int>(error)));
   ++scheduled_rotation_control_generation_;
   scheduled_rotation_controls_.clear();
   scheduled_rotation_controls_ready_ = false;
@@ -19106,6 +19116,8 @@ void HStreamWindow::addRtspOutput() {
 void HStreamWindow::appendLog(const QString& message, bool stderr_output) {
   const QString entry_timestamp = timestamp();
   const QByteArray plain_entry = QString("%1 %2\n").arg(entry_timestamp, message).toUtf8();
+  hm::diagnostics::Log(
+      stderr_output ? "runner-stderr" : "ui-log", {plain_entry.constData(), static_cast<size_t>(plain_entry.size())});
   FILE* console = stderr_output ? stderr : stdout;
   if (console) {
     (void)std::fwrite(plain_entry.constData(), 1, static_cast<size_t>(plain_entry.size()), console);

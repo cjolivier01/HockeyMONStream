@@ -1,0 +1,27 @@
+--- a/absl/debugging/internal/stacktrace_aarch64-inl.inc
++++ b/absl/debugging/internal/stacktrace_aarch64-inl.inc
+@@ -216,1 +216,15 @@
+   stack_info.sig_stack_high = kUnknownStackEnd;
++#if defined(__linux__)
++  if (IS_WITH_CONTEXT && ucp != nullptr) {
++    // Identify alternate-stack transitions before checking frame distances.
++    // The signal context records this thread's configured alternate stack.
++    const stack_t& sig_stack = static_cast<const ucontext_t*>(ucp)->uc_stack;
++    const uintptr_t low = reinterpret_cast<uintptr_t>(sig_stack.ss_sp);
++    if (!(sig_stack.ss_flags & SS_DISABLE) && low != 0 &&
++        sig_stack.ss_size > 0 && low < kUnknownStackEnd &&
++        sig_stack.ss_size < kUnknownStackEnd - low) {
++      stack_info.sig_stack_low = low;
++      stack_info.sig_stack_high = low + sig_stack.ss_size;
++    }
++  }
++#endif
+@@ -238,2 +252,6 @@
+-        sizes[n] = static_cast<int>(
+-            ComputeStackFrameSize(prev_frame_pointer, frame_pointer));
++        // Separate signal and regular stacks have no meaningful frame distance.
++        sizes[n] = InsideSignalStack(prev_frame_pointer, &stack_info) ==
++                           InsideSignalStack(frame_pointer, &stack_info)
++                       ? static_cast<int>(ComputeStackFrameSize(
++                             prev_frame_pointer, frame_pointer))
++                       : kUnknownFrameSize;
