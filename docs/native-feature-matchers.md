@@ -4,8 +4,7 @@
 backends:
 
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
-  at each camera image's original resolution on desktop/SBSA by default.
-  Jetson defaults to the 2K canvas described below. In native mode, images are
+  with the 2K canvas described below by default on every platform. In explicit native mode, images are
   converted to grayscale floats in `[0,1]` and padded on the right/bottom with
   zeros to a shared canvas covering both images, rounded up to multiples of 8.
   A minimum 48 × 48 canvas supports the graph's fixed top-2048 operation for tiny
@@ -60,10 +59,12 @@ For reference-like coverage, select **1K (1024 px long edge)**. The Python scrip
 `native` and `2k` are different inputs, and larger inputs do not guarantee more
 useful matches. See [the reference comparison](superpoint-reference-comparison.md).
 
-`stitching.control_point_resolution` accepts `auto` (default), `native`, `1k`, or `2k`
-for SuperPoint + LightGlue. `auto` resolves to `2k` on Jetson and `native` on
-desktop/SBSA. Explicit user/game/CLI `native`, `1k`, and `2k` selections override this
-platform default; the UI displays the effective size. `1k` independently resizes
+`stitching.control_point_resolution` accepts `2k` (default), `auto`, `native`, or `1k`
+for SuperPoint + LightGlue. Missing settings and existing `auto` values resolve to `2k` on every platform.
+Explicit user/game/CLI selections override the default; the UI displays the effective size.
+The 2K default bounds feature-matching GPU memory, avoiding native 8K activation peaks that can exhaust even
+a 32 GiB desktop GPU. This changes matching input size, not panorama output resolution.
+`1k` independently resizes
 each camera to a 1024-pixel long edge using floating-point Gaussian antialiasing
 and bilinear interpolation, matching the reference Kornia preprocessing. Only
 batch padding is aligned to multiples of eight; matched coordinates are restored
@@ -97,7 +98,7 @@ claims. For example:
 ```yaml
 stitching:
   control_point_execution_provider: cuda
-  control_point_resolution: auto
+  control_point_resolution: 2k
 ```
 
 CUDA uses visible device 0 (`CUDA_VISIBLE_DEVICES` controls visibility). If model

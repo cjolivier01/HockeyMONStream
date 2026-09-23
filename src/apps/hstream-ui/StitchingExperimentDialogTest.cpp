@@ -384,6 +384,16 @@ void exercise_frame_navigation(const QString& root) {
 void exercise_resolution_queue(const QString& game, const QString& root) {
   auto config = YAML::Load(read(game + "/config.yaml").toStdString());
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  for (bool auto_setting : {false, true}) {
+    if (auto_setting)
+      config["stitching"]["control_point_resolution"] = "auto";
+    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+    StitchingExperimentDialog defaults(
+        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+    require(
+        widget<QComboBox>(defaults, "stitchExperimentControlPointResolution")->currentData() == "2k",
+        "New experiments must use 2K for missing and auto settings");
+  }
   config["stitching"]["control_point_resolution"] = "1k";
   write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   {

@@ -19,7 +19,7 @@ enum class ControlPointMatcher {
 
 // SuperPoint has a dynamic graph; the other backends retain their established sizes.
 enum class ControlPointResolution { kNative, k2K, k1K };
-// The canonical auto setting resolves to 2K on Jetson and native on desktop/SBSA.
+// Missing settings and the legacy auto value resolve to 2K on every platform.
 ControlPointResolution DefaultControlPointResolution();
 const char* ControlPointResolutionName(ControlPointResolution resolution);
 absl::StatusOr<ControlPointResolution> ParseControlPointResolution(const std::string& value);

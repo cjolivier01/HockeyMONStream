@@ -9,11 +9,7 @@
 namespace hm::stitching {
 
 ControlPointResolution DefaultControlPointResolution() {
-#ifdef IS_TEGRA
   return ControlPointResolution::k2K;
-#else
-  return ControlPointResolution::kNative;
-#endif
 }
 
 const char* ControlPointResolutionName(ControlPointResolution resolution) {

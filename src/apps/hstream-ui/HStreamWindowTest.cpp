@@ -12959,10 +12959,28 @@ bool test_control_point_resolution(const QString& source_game_directory) {
   YAML::Node config =
       fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node(YAML::NodeType::Map);
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
-  config["stitching"]["control_point_resolution"] = "native";
+  config["stitching"].remove("control_point_resolution");
   config["hstream_ui"].remove("generated_control_point_resolution");
   config["hstream_ui"].remove("generated_stitching_backend_choices");
   config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  for (bool auto_setting : {false, true}) {
+    if (auto_setting)
+      config["stitching"]["control_point_resolution"] = "auto";
+    std::ofstream(config_path) << YAML::Dump(config) << '\n';
+    HStreamWindow window;
+    auto* game = require_child<QLineEdit>(&window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&window, "createGameButton");
+    auto* resolution = require_child<QComboBox>(&window, "controlPointResolutionCombo");
+    if (!game || !create || !resolution)
+      return false;
+    game->setText("ui-feature-resolution");
+    activate(create);
+    if (!expect(
+            resolution->isEnabled() && resolution->currentData() == "2k",
+            "Main UI must use 2K for missing and auto settings"))
+      return false;
+  }
+  config["stitching"]["control_point_resolution"] = "native";
   std::ofstream(config_path) << YAML::Dump(config) << '\n';
   for (int run = 0; run < 3; ++run) {
     HStreamWindow window;
