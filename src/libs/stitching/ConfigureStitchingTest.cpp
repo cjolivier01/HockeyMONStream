@@ -1134,7 +1134,10 @@ rink:
     std::cerr << "config preservation: unrelated keys were changed:\n" << config << std::endl;
     return false;
   }
-  if (config["stitching"] || config["game"]["stitching"] || config["rink"]) {
+  const bool retained_scoreboard_clear = config["rink"].IsMap() && config["rink"].size() == 1 &&
+      config["rink"]["scoreboard"].IsMap() && config["rink"]["scoreboard"].size() == 1 &&
+      config["rink"]["scoreboard"]["perspective_polygon"].IsNull();
+  if (config["stitching"] || config["game"]["stitching"] || (config["rink"] && !retained_scoreboard_clear)) {
     std::cerr << "config preservation: cleanable keys remain:\n" << config << std::endl;
     return false;
   }
@@ -1196,10 +1199,13 @@ hstream_ui:
   const bool upstream_preserved = fs::exists(dir / "left.png") && fs::exists(dir / "right.png") &&
       config["game"]["videos"]["left"] && config["game"]["videos"]["right"] &&
       config["game"]["stitching"]["frame_offsets"];
+  const bool retained_scoreboard_clear = config["rink"].IsMap() && config["rink"].size() == 1 &&
+      config["rink"]["scoreboard"].IsMap() && config["rink"]["scoreboard"].size() == 1 &&
+      config["rink"]["scoreboard"]["perspective_polygon"].IsNull();
   const bool downstream_removed = !fs::exists(dir / "hm_project.pto") && !fs::exists(dir / "autooptimiser_out.pto") &&
       !fs::exists(dir / "mapping_0000.tif") && !fs::exists(dir / "mapping_0001.tif") &&
       !fs::exists(dir / "matches.png") && !fs::exists(dir / "s.png") && !fs::exists(dir / "rink_mask_0.png") &&
-      !config["stitching"] && !config["rink"];
+      !config["stitching"] && (!config["rink"] || retained_scoreboard_clear);
   const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   if (!upstream_preserved || !downstream_removed || !calibration || calibration["control_points"].as<int>(0) != 750 ||
       calibration["stale_from"].as<std::string>("") != "features") {

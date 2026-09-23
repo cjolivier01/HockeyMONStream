@@ -123,6 +123,15 @@ struct HStreamWindowTestAccess {
     window->updateRinkLevelingControls();
     window->updatePresetDirtyState();
   }
+  static void setTestLevelingCrop(HStreamWindow* window, const std::array<double, 4>& crop) {
+    window->loaded_projection_framing_.auto_crop = false;
+    window->loaded_projection_framing_.crop = crop;
+    if (window->projection_auto_crop_check_) {
+      const QSignalBlocker blocker(window->projection_auto_crop_check_);
+      window->projection_auto_crop_check_->setChecked(false);
+    }
+    window->updatePresetDirtyState();
+  }
   static bool rinkLevelingInputsUnchanged(HStreamWindow* window) {
     return window->rinkLevelingInputsUnchanged();
   }
@@ -9077,6 +9086,16 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(
           HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Saved calibration controls permit leveling"))
     return false;
+  auto* gyro_sync = require_child<QCheckBox>(window, "gyroSyncCheck");
+  if (!expect(gyro_sync, "Gyroscope synchronization control should be available"))
+    return false;
+  const bool saved_gyro_sync = gyro_sync->isChecked();
+  gyro_sync->setChecked(!saved_gyro_sync);
+  if (!expect(
+          !HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window),
+          "Unsaved synchronization-method changes reject leveling against the old calibration"))
+    return false;
+  gyro_sync->setChecked(saved_gyro_sync);
   const double original_camera_fov = camera_horizontal_fov->value();
   camera_horizontal_fov->setValue(original_camera_fov + 1);
   if (!expect(
@@ -10202,7 +10221,8 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
                   cleaned_stitching, {"hstream_ui", "stitching_calibration", "invalidation_id"}, nullptr) &&
               !lookup_yaml_path(
                   cleaned_stitching, {"hstream_ui", "stitching_calibration", "backend_generation"}, nullptr) &&
-              !lookup_yaml_path(cleaned_stitching, {"rink", "scoreboard", "perspective_polygon"}, nullptr) &&
+              lookup_yaml_path(cleaned_stitching, {"rink", "scoreboard", "perspective_polygon"}, nullptr) &&
+              cleaned_stitching["rink"]["scoreboard"]["perspective_polygon"].IsNull() &&
               !lookup_yaml_path(cleaned_stitching, {"rink", "ice_contours_mask_count"}, nullptr) &&
               !lookup_yaml_path(cleaned_stitching, {"hstream_ui", "projection_crop_geometry"}, nullptr) &&
               !lookup_yaml_path(
@@ -11566,8 +11586,10 @@ bool test_camera_controls(HStreamWindow* window) {
   const bool removed_generated_backend_marker =
       !lookup_yaml_path(saved, {"hstream_ui", "generated_stitching_backend_choices"}, nullptr);
   const bool removed_rink_mask = !fs::exists(rink_mask);
+  YAML::Node saved_scoreboard_polygon;
   const bool removed_scoreboard_polygon =
-      !lookup_yaml_path(saved, {"rink", "scoreboard", "perspective_polygon"}, nullptr);
+      lookup_yaml_path(saved, {"rink", "scoreboard", "perspective_polygon"}, &saved_scoreboard_polygon) &&
+      saved_scoreboard_polygon.IsNull();
   const bool removed_ice_mask_keys = !lookup_yaml_path(saved, {"rink", "ice_contours_mask_count"}, nullptr) &&
       !lookup_yaml_path(saved, {"rink", "ice_contours_mask_centroid"}, nullptr) &&
       !lookup_yaml_path(saved, {"rink", "ice_contours_combined_bbox"}, nullptr);
@@ -11739,6 +11761,43 @@ bool test_camera_controls(HStreamWindow* window) {
     if (!expect(!save->isEnabled(), "Restoring and saving a control should leave the preset clean")) {
       return false;
     }
+  }
+
+  {
+    YAML::Node changed_crop = saved;
+    YAML::Node polygon(YAML::NodeType::Sequence);
+    for (const std::array<int, 2>& point : {std::array<int, 2>{100, 100},
+                                             std::array<int, 2>{300, 100},
+                                             std::array<int, 2>{300, 200},
+                                             std::array<int, 2>{100, 200}}) {
+      YAML::Node pair(YAML::NodeType::Sequence);
+      pair.push_back(point[0]);
+      pair.push_back(point[1]);
+      polygon.push_back(pair);
+    }
+    changed_crop["rink"]["scoreboard"]["perspective_polygon"] = polygon;
+    changed_crop["rink"]["stitched_output_pending_completed_scoreboard_polygon"] = YAML::Clone(polygon);
+    changed_crop["pipeline"]["hmplaycropper"]["scoreboard-perspective-polygon"] = "100,100,300,100,300,200,100,200";
+    {
+      std::ofstream out(config);
+      out << changed_crop << "\n";
+    }
+    activate(create);
+    HStreamWindowTestAccess::setTestLevelingCrop(window, {0.0, 1.0, 0.1, 0.9});
+    activate(save);
+    const YAML::Node after_crop_save = YAML::LoadFile(config.string());
+    const YAML::Node saved_scoreboard_polygon = after_crop_save["rink"]["scoreboard"]["perspective_polygon"];
+    if (!expect(
+            saved_scoreboard_polygon && saved_scoreboard_polygon.IsNull() &&
+                !lookup_yaml_path(after_crop_save, {"rink", "stitched_output_pending_completed_scoreboard_polygon"}, nullptr) &&
+                !lookup_yaml_path(
+                    after_crop_save, {"pipeline", "hmplaycropper", "scoreboard-perspective-polygon"}, nullptr),
+            "Saving a changed projection crop should shadow and invalidate scoreboard perspective")) {
+      return false;
+    }
+    HStreamWindowTestAccess::setTestLevelingCrop(window, {0.0, 1.0, 0.0, 1.0});
+    activate(save);
+    saved = YAML::LoadFile(config.string());
   }
 
   YAML::Node stitching;
@@ -13224,7 +13283,8 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
               config["hstream_ui"]["playback_start_time"].as<std::string>() == "00:12:30.125" && !save->isEnabled(),
           "Saving workflow preferences must preserve strict YAML IMU and fractional playback time"))
     return false;
-  // Workflow preferences must not invalidate completed geometry or saved synchronization.
+  // A synchronization-method change invalidates input-dependent calibration,
+  // while unrelated workflow preferences still retain the selected plan.
   config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   config["game"]["stitching"]["frame_offsets"]["left"] = "3";
   config["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_frame_plan);
@@ -13235,11 +13295,12 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   activate(save);
   config = YAML::LoadFile(config_path.string());
   if (!expect(
-          config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
+          config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
+              config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input" &&
               config["game"]["stitching"]["frame_offsets"]["left"].as<std::string>() == "3" &&
               config["stitching"]["sync_method"].as<std::string>() == "audio" &&
               YAML::Dump(config["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_frame_plan),
-          "Iteration-only edits must retain complete calibration, saved/manual offsets and the selected-frame plan"))
+          "A synchronization-method edit must mark calibration stale while retaining offsets and the selected-frame plan"))
     return false;
   activate(create);
   gyro->setChecked(true);

@@ -582,7 +582,7 @@ int main() {
         current_live_override_authorization.ok() &&
             current_live_override_authorization->pending_generation == live_override_generation &&
             current_live_override_commit.ok() &&
-            !YAML::LoadFile((root / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+            YAML::LoadFile((root / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"].IsNull(),
         "the current exact live generation must commit scoreboard invalidation after runtime acceptance");
     NvBufSurfaceParams superseded_live_surface_params{};
     hm::surface::Surface superseded_live_surface(&superseded_live_surface_params);

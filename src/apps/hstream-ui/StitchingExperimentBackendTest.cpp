@@ -898,6 +898,7 @@ int main() {
   if (selected_config.ok()) {
     const YAML::Node selected = YAML::Load(*selected_config);
     const YAML::Node selected_rink = selected["rink"];
+    const YAML::Node selected_pipeline = selected["pipeline"];
     const auto selected_framing = hm::stitching::read_stitch_projection_framing(selected);
     ok &= expect(
         selected_framing.ok() &&
@@ -910,7 +911,9 @@ int main() {
     ok &= expect(
         !selected["stitching"]["control_points"].IsDefined() &&
             !selected["game"]["stitching"]["control_points"].IsDefined() &&
-            !selected_rink["scoreboard"]["perspective_polygon"].IsDefined() &&
+            selected_rink["scoreboard"]["perspective_polygon"].IsNull() &&
+            (!selected_pipeline || !selected_pipeline["hmplaycropper"] ||
+             !selected_pipeline["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined()) &&
             !selected_rink["ice_contours_mask_count"].IsDefined() &&
             !selected_rink["ice_contours_mask_centroid"].IsDefined() &&
             !selected_rink["ice_contours_combined_bbox"].IsDefined() &&

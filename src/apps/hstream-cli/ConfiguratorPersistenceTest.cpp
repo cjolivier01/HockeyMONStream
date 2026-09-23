@@ -1146,7 +1146,8 @@ play-tracker:
       stale_runtime_polygon_configurator.config(), "pipeline.hmplaycropper.scoreboard-perspective-polygon");
   const auto stale_runtime_persisted_polygon = hm::get_node(stale_runtime_after, "rink.scoreboard.perspective_polygon");
   const bool stale_runtime_polygon_cleared = stale_runtime_polygon_loaded &&
-      !stale_runtime_native_polygon.has_value() && !stale_runtime_persisted_polygon.has_value() &&
+      !stale_runtime_native_polygon.has_value() && stale_runtime_persisted_polygon.has_value() &&
+      stale_runtime_persisted_polygon->IsNull() &&
       stale_runtime_rotation_marker.has_value() && stale_runtime_rotation_marker->IsScalar() &&
       stale_runtime_rotation_marker->as<double>() == 15.0;
   if (!stale_runtime_polygon_cleared) {

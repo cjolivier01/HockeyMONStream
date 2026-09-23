@@ -249,11 +249,14 @@ void clear_previous_calibration_geometry(YAML::Node& config) {
     config["stitching"].remove("control_points");
   if (config["game"].IsMap() && config["game"]["stitching"].IsMap())
     config["game"]["stitching"].remove("control_points");
+  if (config["pipeline"]["hmplaycropper"].IsMap())
+    config["pipeline"]["hmplaycropper"].remove("scoreboard-perspective-polygon");
+  if (!config["rink"].IsMap())
+    config["rink"] = YAML::Node(YAML::NodeType::Map);
+  if (!config["rink"]["scoreboard"].IsMap())
+    config["rink"]["scoreboard"] = YAML::Node(YAML::NodeType::Map);
   YAML::Node rink = config["rink"];
-  if (!rink.IsMap())
-    return;
-  if (rink["scoreboard"].IsMap())
-    rink["scoreboard"].remove("perspective_polygon");
+  rink["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
   for (const char* key :
        {"ice_contours_mask_count",
         "ice_contours_mask_centroid",
@@ -266,7 +269,8 @@ void clear_previous_calibration_geometry(YAML::Node& config) {
         "stitched_output_pending_previous_generation",
         "stitched_output_pending_previous_authorization_id",
         "stitched_output_pending_previous_owner_process",
-        "stitched_output_pending_completed_scoreboard_polygon"})
+        "stitched_output_pending_completed_scoreboard_polygon",
+        "stitched_output_pending_scoreboard_polygon_invalidated"})
     rink.remove(key);
 }
 

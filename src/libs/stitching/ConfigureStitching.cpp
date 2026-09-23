@@ -709,7 +709,8 @@ bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::str
 void remove_control_point_dependent_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"stitching", "control_points"});
   remove_yaml_key_path(config, {"game", "stitching", "control_points"});
-  remove_yaml_key_path(config, {"rink", "scoreboard", "perspective_polygon"});
+  config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+  remove_yaml_key_path(config, {"pipeline", "hmplaycropper", "scoreboard-perspective-polygon"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_count"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});
   remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
@@ -722,6 +723,7 @@ void remove_control_point_dependent_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_authorization_id"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_owner_process"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_scoreboard_polygon_invalidated"});
 }
 
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
@@ -4911,8 +4913,11 @@ bool scoreboard_polygon_is_disabled(const YAML::Node& polygon) {
 
 void remove_active_scoreboard_polygon(YAML::Node& config) {
   const YAML::Node polygon = config["rink"]["scoreboard"]["perspective_polygon"];
-  if (polygon && polygon.IsDefined() && !scoreboard_polygon_is_disabled(polygon))
-    config["rink"]["scoreboard"].remove("perspective_polygon");
+  if (config["pipeline"]["hmplaycropper"].IsMap())
+    config["pipeline"]["hmplaycropper"].remove("scoreboard-perspective-polygon");
+  if (!scoreboard_polygon_is_disabled(polygon)) {
+    config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+  }
 }
 
 bool forced_test_rink_profile_enabled() {

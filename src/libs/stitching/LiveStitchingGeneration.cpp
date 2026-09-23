@@ -141,10 +141,28 @@ bool scoreboard_polygon_is_disabled(const YAML::Node& polygon) {
   }
 }
 
+bool pending_scoreboard_polygon_is_recoverable(const YAML::Node& config) {
+  const YAML::Node marker = config["rink"]["stitched_output_pending_scoreboard_polygon_invalidated"];
+  return marker && marker.IsScalar() && marker.as<bool>();
+}
+
+bool scoreboard_polygon_can_restore(const YAML::Node& config, const YAML::Node& active_polygon) {
+  return !active_polygon || !active_polygon.IsDefined() ||
+      (active_polygon.IsNull() && pending_scoreboard_polygon_is_recoverable(config));
+}
+
 void remove_active_scoreboard_polygon(YAML::Node& config) {
   const YAML::Node polygon = config["rink"]["scoreboard"]["perspective_polygon"];
-  if (polygon && polygon.IsDefined() && !scoreboard_polygon_is_disabled(polygon))
-    config["rink"]["scoreboard"].remove("perspective_polygon");
+  if (config["pipeline"]["hmplaycropper"].IsMap())
+    config["pipeline"]["hmplaycropper"].remove("scoreboard-perspective-polygon");
+  if (!scoreboard_polygon_is_disabled(polygon)) {
+    const bool recoverable = polygon && polygon.IsDefined() && !polygon.IsNull();
+    config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+    if (recoverable)
+      config["rink"]["stitched_output_pending_scoreboard_polygon_invalidated"] = true;
+    else
+      config["rink"].remove("stitched_output_pending_scoreboard_polygon_invalidated");
+  }
 }
 
 void remove_pending_authorization(YAML::Node& config) {
@@ -155,6 +173,7 @@ void remove_pending_authorization(YAML::Node& config) {
   config["rink"].remove("stitched_output_pending_previous_authorization_id");
   config["rink"].remove("stitched_output_pending_previous_owner_process");
   config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
+  config["rink"].remove("stitched_output_pending_scoreboard_polygon_invalidated");
 }
 
 void remove_pending_predecessor(YAML::Node& config) {
@@ -174,8 +193,15 @@ absl::StatusOr<std::optional<std::string>> optional_scalar(const YAML::Node& nod
 absl::StatusOr<std::string> scoreboard_property_value(const YAML::Node& config) {
   const YAML::Node active_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
   const YAML::Node saved_polygon = config["rink"]["stitched_output_pending_completed_scoreboard_polygon"];
-  const YAML::Node polygon = active_polygon && active_polygon.IsDefined() ? active_polygon : saved_polygon;
+  if (active_polygon && active_polygon.IsDefined() && active_polygon.IsNull() &&
+      !pending_scoreboard_polygon_is_recoverable(config))
+    return std::string("0,0,0,0,0,0,0,0");
+  const YAML::Node polygon = active_polygon && active_polygon.IsDefined() && !active_polygon.IsNull()
+      ? active_polygon
+      : saved_polygon;
   if (!polygon || !polygon.IsDefined())
+    return std::string("0,0,0,0,0,0,0,0");
+  if (polygon.IsNull())
     return std::string("0,0,0,0,0,0,0,0");
   if (!polygon.IsSequence() || polygon.size() != 4)
     return absl::InvalidArgumentError("Scoreboard perspective polygon must contain four points");
@@ -262,7 +288,7 @@ absl::StatusOr<bool> reconcile_inactive_live_stitched_output_authorization(const
         }
       }
     }
-    if ((!active_polygon || !active_polygon.IsDefined()) && completed_generation_matches_hugin)
+    if (scoreboard_polygon_can_restore(config, active_polygon) && completed_generation_matches_hugin)
       config["rink"]["scoreboard"]["perspective_polygon"] = saved_polygon;
     remove_pending_authorization(config);
     HM_RETURN_IF_ERROR(publish_game_config(root, YAML::Dump(config) + "\n"));
@@ -347,7 +373,7 @@ absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_r
         const YAML::Node completed_scoreboard_polygon =
             config["rink"]["stitched_output_pending_completed_scoreboard_polygon"];
         const YAML::Node active_scoreboard_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
-        if ((!active_scoreboard_polygon || !active_scoreboard_polygon.IsDefined()) && completed_scoreboard_polygon &&
+        if (scoreboard_polygon_can_restore(config, active_scoreboard_polygon) && completed_scoreboard_polygon &&
             completed_scoreboard_polygon.IsDefined()) {
           config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Clone(completed_scoreboard_polygon);
         }
@@ -370,17 +396,20 @@ absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_r
     const bool generation_changed = *authorized_generation != saved_generation.as<std::string>();
     if (!generation_changed && !previous_generation.has_value()) {
       remove_pending_authorization(config);
+      std::string runtime_scoreboard_value;
+      HM_ASSIGN_OR_RETURN(runtime_scoreboard_value, scoreboard_property_value(config));
       const absl::Status published = publish_game_config(root, YAML::Dump(config) + "\n");
       if (!published.ok())
         return published;
-      return LiveStitchedOutputAuthorization{};
+      return LiveStitchedOutputAuthorization{{}, {}, false, runtime_scoreboard_value};
     }
 
     config["rink"]["stitched_output_pending_generation"] = *authorized_generation;
     config["rink"]["stitched_output_pending_authorization_id"] = authorization_id;
     config["rink"]["stitched_output_pending_owner_process"] = owner_process;
     const YAML::Node active_scoreboard_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
-    if (!previous_generation.has_value() && active_scoreboard_polygon && active_scoreboard_polygon.IsDefined()) {
+    if (!previous_generation.has_value() && active_scoreboard_polygon && active_scoreboard_polygon.IsDefined() &&
+        !active_scoreboard_polygon.IsNull()) {
       config["rink"]["stitched_output_pending_completed_scoreboard_polygon"] = YAML::Clone(active_scoreboard_polygon);
     }
     if (previous_generation.has_value()) {
@@ -475,6 +504,7 @@ absl::StatusOr<std::optional<LiveStitchedOutputAuthorization>> rollback_live_sti
             "Previous pending stitched-output owner process"));
     const YAML::Node completed_scoreboard_polygon =
         YAML::Clone(config["rink"]["stitched_output_pending_completed_scoreboard_polygon"]);
+    const bool completed_scoreboard_polygon_recoverable = pending_scoreboard_polygon_is_recoverable(config);
     remove_pending_authorization(config);
     std::optional<LiveStitchedOutputAuthorization> restored;
     if (previous_generation.has_value() && previous_authorization_id.has_value() &&
@@ -484,11 +514,15 @@ absl::StatusOr<std::optional<LiveStitchedOutputAuthorization>> rollback_live_sti
       config["rink"]["stitched_output_pending_owner_process"] = *previous_owner_process;
       if (completed_scoreboard_polygon && completed_scoreboard_polygon.IsDefined()) {
         config["rink"]["stitched_output_pending_completed_scoreboard_polygon"] = completed_scoreboard_polygon;
+        const YAML::Node active_scoreboard_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
+        if (active_scoreboard_polygon && active_scoreboard_polygon.IsDefined() && active_scoreboard_polygon.IsNull())
+          config["rink"]["stitched_output_pending_scoreboard_polygon_invalidated"] = true;
       }
       restored = LiveStitchedOutputAuthorization{*previous_generation, *previous_authorization_id, true, {}};
     } else if (completed_scoreboard_polygon && completed_scoreboard_polygon.IsDefined()) {
       const YAML::Node active_scoreboard_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
-      if (!active_scoreboard_polygon || !active_scoreboard_polygon.IsDefined())
+      if ((!active_scoreboard_polygon || !active_scoreboard_polygon.IsDefined() ||
+           (active_scoreboard_polygon.IsNull() && completed_scoreboard_polygon_recoverable)))
         config["rink"]["scoreboard"]["perspective_polygon"] = completed_scoreboard_polygon;
     }
     const absl::Status published = publish_game_config(root, YAML::Dump(config) + "\n");
@@ -553,7 +587,7 @@ absl::Status commit_live_stitched_output_rotation(
       const YAML::Node active_scoreboard_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
       const YAML::Node completed_scoreboard_polygon =
           config["rink"]["stitched_output_pending_completed_scoreboard_polygon"];
-      if ((!active_scoreboard_polygon || !active_scoreboard_polygon.IsDefined()) && completed_scoreboard_polygon &&
+      if (scoreboard_polygon_can_restore(config, active_scoreboard_polygon) && completed_scoreboard_polygon &&
           completed_scoreboard_polygon.IsDefined()) {
         config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Clone(completed_scoreboard_polygon);
       }
