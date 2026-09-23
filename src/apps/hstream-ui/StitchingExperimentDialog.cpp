@@ -725,6 +725,11 @@ struct StitchingExperimentDialog::Impl {
             : "Uses ordinary frame spacing. This candidate has no player-rich selection or pending player scan."};
   }
 
+  static bool removable_candidate(const Candidate& candidate) {
+    return !candidate.main_calibration && !candidate.complete &&
+        (candidate.queued || !candidate.failure.isEmpty() || (candidate.stored && candidate.stored->state == "frozen"));
+  }
+
   void update_controls() {
     for (const Candidate& candidate : candidates) {
       auto* item = table->item(candidate.row, 6);
@@ -741,9 +746,8 @@ struct StitchingExperimentDialog::Impl {
     const bool stopping = pending_group_shutdowns > 0;
     const int row = table->currentRow();
     const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete;
-    const bool selected_removable = row >= 0 && row < static_cast<int>(candidates.size()) &&
-        !candidates[row].main_calibration && !candidates[row].complete &&
-        (candidates[row].queued || !candidates[row].failure.isEmpty());
+    const bool selected_removable =
+        row >= 0 && row < static_cast<int>(candidates.size()) && removable_candidate(candidates[row]);
     const bool editing_batch =
         store && store_error.isEmpty() && !batch_active && !previewing && !promoting && !stopping && !closing;
     const auto queued_count =
@@ -2044,8 +2048,7 @@ struct StitchingExperimentDialog::Impl {
     const int row = table->currentRow();
     if (batch_active || preparation_worker || promotion_worker || preview_process || pending_group_shutdowns ||
         closing || !store || row < 0 || row >= static_cast<int>(candidates.size()) ||
-        candidates[row].main_calibration || candidates[row].complete ||
-        (!candidates[row].queued && candidates[row].failure.isEmpty()))
+        !removable_candidate(candidates[row]))
       return;
     // Follow dependencies transitively, including rows added in later sessions.
     std::set<int> sequences{candidates[row].sequence};
@@ -2059,7 +2062,7 @@ struct StitchingExperimentDialog::Impl {
     std::vector<std::string> removed_keys;
     for (Candidate& candidate : candidates) {
       if (sequences.count(candidate.sequence)) {
-        if (candidate.main_calibration || candidate.complete || (!candidate.queued && candidate.failure.isEmpty())) {
+        if (!removable_candidate(candidate)) {
           show_status(
               "This attempt has successful dependents. Use Discard experiments to remove the entire history.", true);
           return;

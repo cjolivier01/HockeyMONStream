@@ -1214,7 +1214,10 @@ void exercise_known_selection_copy_race(const QString& game, const QString& root
   require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Rejected known-selection snapshot did not close");
 }
 
-void exercise_failed_ordinary_selection_recovery(const QString& game, const QString& root) {
+void exercise_failed_ordinary_selection_recovery(
+    const QString& game,
+    const QString& root,
+    bool remove_recovered = false) {
   using namespace hm::stitching;
   auto environment = QProcessEnvironment::systemEnvironment();
   const QString arguments = game + "/runner-arguments.txt";
@@ -1254,6 +1257,21 @@ void exercise_failed_ordinary_selection_recovery(const QString& game, const QStr
               ordinary.workspace.game_directory.lexically_relative(store->directory).generic_string() &&
           table->rowCount() == 1 && table->item(0, 0)->text().startsWith("Players"),
       "A failed ordinary row's owned plan must recover as the count owner without a scan dependency");
+  if (remove_recovered) {
+    require(recovered->experiments.front().state == "frozen", "Recovery must retain a stopped frozen attempt");
+    table->selectRow(0);
+    auto* remove = widget<QPushButton>(reopened, "removeStitchExperimentFromBatchButton");
+    require(remove->isEnabled(), "Recovered failed attempts must be removable");
+    remove->click();
+    const auto remaining = LoadStitchingExperimentStore(*store);
+    require(
+        table->rowCount() == 0 && remaining.ok() && remaining->experiments.empty() &&
+            remaining->selected_by_count.empty() && !std::filesystem::exists(ordinary.workspace.game_directory),
+        "Removing a recovered attempt must delete private files and forget its frozen count");
+    reopened.reject();
+    require(wait_until([&] { return !reopened.isVisible(); }, 1000), "Recovery removal dialog did not close");
+    return;
+  }
   add_options(reopened);
   require(table->rowCount() == 2, "Recovered ordinary frames must create only one direct solve");
   widget<QPushButton>(reopened, "startStitchExperimentBatchButton")->click();
@@ -2182,6 +2200,7 @@ int main(int argc, char** argv) {
       exercise_actual_workspace_selection(make_game("group-copy-race"), fixture.path(), true);
       exercise_known_selection_copy_race(make_game("known-selection-copy-race"), fixture.path());
       exercise_failed_ordinary_selection_recovery(make_game("ordinary-failed-recovery"), fixture.path());
+      exercise_failed_ordinary_selection_recovery(make_game("remove-recovered-failure"), fixture.path(), true);
       exercise_saved_selection(make_game("saved"), fixture.path());
       exercise_match_save_retry(make_game("match-save-retry"), fixture.path());
       exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());

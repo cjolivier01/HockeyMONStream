@@ -165,7 +165,7 @@ bool failed_attempt_removal(const fs::path& root) {
     ok &= expect(reserved.ok() && !reserved->has_value(), "reserve failed-removal fixture");
     if (frozen)
       install_plan(owner, make_plan(store.game_directory, 2));
-    owner.state = "failed";
+    owner.state = frozen ? "frozen" : "failed";
     ok &= expect(SaveStitchingExperiment(store, owner, frozen).ok(), "save stopped failed attempt");
     const auto key = owner.workspace.game_directory.lexically_relative(store.directory).generic_string();
     write_file(store.game_directory / "config.yaml", "main sentinel");
