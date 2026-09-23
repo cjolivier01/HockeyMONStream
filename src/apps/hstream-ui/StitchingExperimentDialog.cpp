@@ -1,9 +1,14 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/CalibrationFrameView.h"
 
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
+#include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
@@ -30,6 +35,7 @@
 #include <QtGui/QTextCursor>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
@@ -44,6 +50,7 @@
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTimeEdit>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
 #include <yaml-cpp/yaml.h>
@@ -57,6 +64,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -67,6 +75,58 @@
 
 namespace {
 
+// Keep the explicit window action in sync with title-bar and window-manager changes.
+class WindowSizeButton : public QToolButton {
+ public:
+  explicit WindowSizeButton(QDialog* dialog) : QToolButton(dialog), dialog_(dialog) {
+    dialog_->installEventFilter(this);
+    connect(this, &QToolButton::clicked, dialog_, [this]() {
+      if (dialog_->isMaximized())
+        dialog_->showNormal();
+      else
+        dialog_->showMaximized();
+    });
+    update_action();
+  }
+
+ protected:
+  bool eventFilter(QObject* object, QEvent* event) override {
+    if (object == dialog_ && event->type() == QEvent::WindowStateChange)
+      update_action();
+    return QToolButton::eventFilter(object, event);
+  }
+
+ private:
+  void update_action() {
+    const bool maximized = dialog_->isMaximized();
+    setIcon(action_icon(maximized ? ActionIcon::Restore : ActionIcon::Expand));
+    setText(maximized ? "Restore window" : "Maximize window");
+    setToolTip(text());
+    setAccessibleName(text());
+  }
+  QDialog* dialog_;
+};
+
+void add_image_navigation(QVBoxLayout* layout, CalibrationFrameView* view) {
+  auto* controls = new QHBoxLayout();
+  const auto add = [&](const char* name, const char* label, ActionIcon icon, auto method) {
+    auto* button = new QToolButton(view->parentWidget());
+    button->setObjectName(view->objectName() + name);
+    button->setIcon(action_icon(icon));
+    button->setText(label);
+    button->setToolTip(label);
+    button->setAccessibleName(label);
+    QObject::connect(button, &QToolButton::clicked, view, method);
+    controls->addWidget(button);
+  };
+  add("ZoomOut", "Zoom out", ActionIcon::ZoomOut, &CalibrationFrameView::zoomOut);
+  add("ZoomIn", "Zoom in", ActionIcon::ZoomIn, &CalibrationFrameView::zoomIn);
+  add("ActualSize", "Actual size (1:1)", ActionIcon::ActualSize, &CalibrationFrameView::actualSize);
+  add("Fit", "Fit image", ActionIcon::Fit, &CalibrationFrameView::fitImage);
+  controls->addStretch();
+  layout->addLayout(controls);
+}
+
 constexpr char kStitchedPreviewOptions[] =
     "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
     "pipeline.streammux.batched-push-timeout=2147483647,pipeline.streammux.frame-num-reset-on-stream-reset=0,"
@@ -75,19 +135,30 @@ constexpr char kStitchedPreviewOptions[] =
 class StitchingExperimentVideoTarget : public QWidget {
  public:
   explicit StitchingExperimentVideoTarget(QWidget* parent) : QWidget(parent) {
-    if (QGuiApplication::platformName() == "xcb") {
+    if (QGuiApplication::platformName() == "xcb")
       setAttribute(Qt::WA_NativeWindow);
-      setAttribute(Qt::WA_PaintOnScreen);
-      setAttribute(Qt::WA_NoSystemBackground);
-    }
     setMinimumSize(320, 180);
     QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     policy.setRetainSizeWhenHidden(true);
     setSizePolicy(policy);
-    setAutoFillBackground(false);
+    QPalette background = palette();
+    background.setColor(QPalette::Window, Qt::black);
+    setPalette(background);
+    setAutoFillBackground(true);
   }
+
+  void set_renderer_active(bool active) {
+    // Qt owns idle pixels. While the runner owns the native target, keep its
+    // frames out of the backing store without replacing the window's XID.
+    const bool direct = active && QGuiApplication::platformName() == "xcb";
+    setAttribute(Qt::WA_PaintOnScreen, direct);
+    setAttribute(Qt::WA_NoSystemBackground, direct);
+    setAutoFillBackground(!active);
+    update();
+  }
+
   QPaintEngine* paintEngine() const override {
-    return nullptr;
+    return testAttribute(Qt::WA_PaintOnScreen) ? nullptr : QWidget::paintEngine();
   }
 
   std::function<void()> toggle_focus;
@@ -101,54 +172,6 @@ class StitchingExperimentVideoTarget : public QWidget {
     }
     QWidget::mouseDoubleClickEvent(event);
   }
-};
-
-class SelectedFrameImage : public QLabel {
- public:
-  explicit SelectedFrameImage(QWidget* parent) : QLabel(parent) {
-    setAlignment(Qt::AlignCenter);
-    setMinimumSize(180, 160);
-    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-    setWordWrap(true);
-  }
-
-  void load(const std::filesystem::path& path, int maximum_width = 1024) {
-    original_ = {};
-    clear();
-    const QString file = QString::fromStdString(path.string());
-    const QFileInfo info(file);
-    if (!info.isFile()) {
-      setText(
-          maximum_width == 1024 ? "Thumbnail becomes available when this pair is extracted for calibration."
-                                : "Match visualization is unavailable for this pair.");
-      return;
-    }
-    QImageReader reader(file);
-    const QSize size = reader.size();
-    if (info.isSymLink() || info.size() > 5 * 1024 * 1024 || !size.isValid() || size.width() > maximum_width ||
-        size.height() > 1024) {
-      setText("Thumbnail exceeds the inspection limits.");
-      return;
-    }
-    original_ = QPixmap::fromImage(reader.read());
-    if (original_.isNull())
-      setText("Thumbnail could not be read.");
-    else
-      update_image();
-  }
-
- protected:
-  void resizeEvent(QResizeEvent* event) override {
-    QLabel::resizeEvent(event);
-    update_image();
-  }
-
- private:
-  void update_image() {
-    if (!original_.isNull())
-      setPixmap(original_.scaled(size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-  }
-  QPixmap original_;
 };
 
 class SelectedFrameCoverage : public QWidget {
@@ -211,6 +234,45 @@ std::optional<QTime> parse_time(const QString& value) {
   if (!parsed.isValid())
     parsed = QTime::fromString(value.trimmed(), "HH:mm:ss");
   return parsed.isValid() ? std::optional<QTime>(parsed) : std::nullopt;
+}
+
+// Resolve only the two canonical feature settings needed by this editor. The
+// runner continues to own the remaining configuration and native properties.
+void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
+  const YAML::Node stitching = layer && layer.IsMap() ? layer["stitching"] : YAML::Node();
+  if (!stitching || stitching.IsNull())
+    return;
+  if (!stitching.IsMap())
+    throw std::runtime_error("stitching must be a configuration map");
+  for (const char* key : {"control_point_matcher", "control_point_resolution"}) {
+    if (stitching[key])
+      effective["stitching"][key] = YAML::Clone(stitching[key]);
+  }
+}
+
+hm::stitching::ControlPointMatcher feature_matcher(const YAML::Node& config) {
+  const YAML::Node stitching = config["stitching"];
+  const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_matcher"] : YAML::Node();
+  const auto matcher = hm::stitching::ParseControlPointMatcher(
+      value && !value.IsNull() ? value.as<std::string>() : "superpoint-lightglue");
+  if (!matcher.ok())
+    throw std::runtime_error(matcher.status().ToString());
+  return *matcher;
+}
+
+QString fixed_feature_size(hm::stitching::ControlPointMatcher matcher) {
+  using hm::stitching::ControlPointMatcher;
+  switch (matcher) {
+    case ControlPointMatcher::kAkazeHamming:
+      return "1920 px maximum";
+    case ControlPointMatcher::kLoFTR:
+      return "1600 px maximum";
+    case ControlPointMatcher::kDeDoDeLightGlue:
+      return "1024 × 576";
+    case ControlPointMatcher::kSuperPointLightGlue:
+      return {};
+  }
+  return {};
 }
 
 std::optional<std::vector<int>> parse_positive_list(
@@ -491,6 +553,10 @@ struct StitchingExperimentDialog::Impl {
   QLineEdit* control_points{nullptr};
   QLineEdit* frame_counts{nullptr};
   QLineEdit* start_frames{nullptr};
+  QComboBox* control_point_resolution{nullptr};
+  YAML::Node feature_defaults;
+  QString feature_settings_error;
+  bool feature_size_selectable{false};
   QCheckBox* shared_rotation{nullptr};
   QLineEdit* rotations{nullptr};
   QCheckBox* prefer_player_frames{nullptr};
@@ -574,6 +640,7 @@ struct StitchingExperimentDialog::Impl {
     for (QWidget* sibling : preview_focus_siblings)
       sibling->setVisible(!focused);
     expand_preview->setText(focused ? "Restore layout" : "Expand preview");
+    expand_preview->setIcon(action_icon(focused ? ActionIcon::Restore : ActionIcon::Expand));
     expand_preview->setToolTip(
         focused ? "Restore the candidate controls (Escape or double-click the preview)."
                 : "Expand the preview within this dialog (or double-click the preview).");
@@ -620,7 +687,51 @@ struct StitchingExperimentDialog::Impl {
     status->setStyleSheet(error ? "color:#b42318;" : "color:#475467;");
   }
 
+  static std::pair<QString, QString> frame_selection_policy(const Candidate& candidate) {
+    if (candidate.settings.frame_count == 1) {
+      return {
+          "Anchor only",
+          "One-frame calibration uses the reference pair; no additional player-rich frames are selected."};
+    }
+    const bool frozen = candidate.has_selected_frames || !candidate.saved_selection_fingerprint.empty() ||
+        (candidate.stored && !candidate.stored->selection_fingerprint.empty());
+    const bool scan_planned =
+        candidate.baseline_sequence != 0 || (candidate.stored && !candidate.stored->baseline_workspace_key.empty());
+    if (candidate.selection_reuse_blocked || (candidate.main_calibration && !candidate.failure.isEmpty())) {
+      return {
+          frozen || scan_planned ? "Player-rich (unavailable)" : "Unconfirmed",
+          "Saved frame inputs or process ownership could not be verified. See this candidate's status."};
+    }
+    if (frozen) {
+      return {
+          "Player-rich (saved)",
+          "Uses this candidate's frozen player-rich frame selection, including its reference pair. "
+          "Changing the checkbox does not replace saved frames."};
+    }
+    if (scan_planned || candidate.selection_owner_sequence != 0) {
+      return {
+          !candidate.queued && !candidate.failure.isEmpty() ? "Player-rich (unavailable)" : "Player-rich (pending)",
+          "This candidate requests a player-rich selection from its baseline scan or shared frame owner, "
+          "but no selection has been frozen in this candidate yet."};
+    }
+    return {
+        candidate.requires_ice_mask ? "Ordinary (baseline)" : "Ordinary",
+        candidate.requires_ice_mask
+            ? "Uses ordinary frame spacing to prepare the baseline and rink mask for the separate player scan."
+            : "Uses ordinary frame spacing. This candidate has no player-rich selection or pending player scan."};
+  }
+
   void update_controls() {
+    for (const Candidate& candidate : candidates) {
+      auto* item = table->item(candidate.row, 6);
+      if (!item)
+        continue;
+      const auto [label, description] = frame_selection_policy(candidate);
+      if (item->text() != label)
+        item->setText(label);
+      if (item->toolTip() != description)
+        item->setToolTip(description);
+    }
     const bool previewing = preview_process && preview_process->state() != QProcess::NotRunning;
     const bool promoting = promotion_worker != nullptr || preparation_worker != nullptr;
     const bool stopping = pending_group_shutdowns > 0;
@@ -631,7 +742,7 @@ struct StitchingExperimentDialog::Impl {
         store && store_error.isEmpty() && !batch_active && !previewing && !promoting && !stopping && !closing;
     const auto queued_count =
         std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
-    add_to_batch->setEnabled(editing_batch && queued_count < 64);
+    add_to_batch->setEnabled(editing_batch && feature_settings_error.isEmpty() && queued_count < 64);
     remove_from_batch->setEnabled(editing_batch && selected_queued);
     clear_batch->setEnabled(
         store && !batch_active && !previewing && !promoting && !stopping && !closing &&
@@ -657,6 +768,7 @@ struct StitchingExperimentDialog::Impl {
     rotations->setEnabled(editing_batch && !shared_rotation->isChecked());
     prefer_player_frames->setEnabled(editing_batch);
     scan_duration->setEnabled(editing_batch && prefer_player_frames->isChecked());
+    control_point_resolution->setEnabled(editing_batch && feature_settings_error.isEmpty() && feature_size_selectable);
     for (QWidget* input : std::array<QWidget*, 3>{control_points, frame_counts, start_frames})
       input->setEnabled(editing_batch);
     progress->setVisible(batch_started);
@@ -755,6 +867,7 @@ struct StitchingExperimentDialog::Impl {
           continue;
         }
         candidate.workspace = *workspace;
+        candidate.settings = workspace->settings;
         // Add's earlier main lookup may race a config update before this copy.
         // Bind both the queue expectation and catalog to the snapshot we own.
         const auto fingerprint =
@@ -813,6 +926,7 @@ struct StitchingExperimentDialog::Impl {
         if (candidates[row].has_selected_frames)
           table->item(row, 0)->setText(QString("Players %1").arg(candidates[row].sequence));
         table->item(row, 5)->setText(candidates[row].queued ? "Queued" : candidates[row].failure);
+        table->item(row, 7)->setText(candidate_image_size(candidates[row]));
       }
       if (!result->status.ok()) {
         store_error = QString::fromStdString(result->status.ToString());
@@ -1230,6 +1344,7 @@ struct StitchingExperimentDialog::Impl {
       preview_process_token.clear();
       preview_completion_pending = false;
       preview_candidate_row = -1;
+      video->set_renderer_active(false);
       update_controls();
       if (replay)
         start_preview(true);
@@ -1645,7 +1760,33 @@ struct StitchingExperimentDialog::Impl {
     return left.control_points == right.control_points && left.frame_count == right.frame_count &&
         hm::stitch_frame_time_to_nanoseconds(left.stitch_frame_time) ==
         hm::stitch_frame_time_to_nanoseconds(right.stitch_frame_time) &&
-        left.rink_rotation_degrees == right.rink_rotation_degrees;
+        left.rink_rotation_degrees == right.rink_rotation_degrees &&
+        left.control_point_resolution == right.control_point_resolution;
+  }
+
+  QString candidate_image_size(const Candidate& candidate) const {
+    try {
+      YAML::Node effective = YAML::Clone(feature_defaults);
+      if (candidate.workspace) {
+        const auto config = hm::stitching::load_game_config_file(candidate.workspace->game_directory / "config.yaml");
+        if (!config.ok() || !config->has_value())
+          return "Unavailable";
+        overlay_feature_settings(effective, **config);
+        const QString fixed = fixed_feature_size(feature_matcher(effective));
+        if (!fixed.isEmpty())
+          return fixed;
+      } else {
+        // Pending additions use the same matcher as the current editor.
+        if (!feature_size_selectable)
+          return control_point_resolution->currentText();
+      }
+      if (!candidate.settings.control_point_resolution)
+        return "Inherited";
+      const auto& resolution = *candidate.settings.control_point_resolution;
+      return resolution == "native" ? "Native" : QString::fromStdString(resolution).toUpper();
+    } catch (const std::exception&) {
+      return "Unavailable";
+    }
   }
 
   void append_candidate(Candidate candidate) {
@@ -1671,24 +1812,32 @@ struct StitchingExperimentDialog::Impl {
             : candidate.complete           ? "Ready"
             : !candidate.failure.isEmpty() ? candidate.failure
                                            : "Saved frame set",
+        frame_selection_policy(candidate).first,
+        candidate_image_size(candidate),
     };
     for (int column = 0; column < columns.size(); ++column) {
       auto* item = new QTableWidgetItem(columns[column]);
       item->setFlags(item->flags() & ~Qt::ItemIsEditable);
       table->setItem(row, column, item);
     }
+    table->item(row, 6)->setToolTip(frame_selection_policy(candidate).second);
     candidates.push_back(std::move(candidate));
   }
 
   void add_candidates_to_batch() {
     if (batch_active || preparation_worker || promotion_worker || closing)
       return;
+    if (!feature_settings_error.isEmpty()) {
+      show_status(feature_settings_error, true);
+      return;
+    }
     if (!store) {
       show_status(store_error.isEmpty() ? "The persistent experiment cache is unavailable." : store_error, true);
       return;
     }
     QString error;
-    auto points = parse_positive_list(control_points->text(), 20, 5000, "Control-point counts", &error);
+    auto points = parse_positive_list(
+        control_points->text(), hm::stitching::kMinimumCalibrationControlPoints, 5000, "Control-point counts", &error);
     auto frames = parse_positive_list(frame_counts->text(), 1, 16, "Frame counts", &error);
     auto starts = parse_time_list(start_frames->text(), &error);
     std::optional<std::vector<std::array<double, 3>>> rink_rotations;
@@ -1741,6 +1890,7 @@ struct StitchingExperimentDialog::Impl {
                 .rink_rotation_degrees = shared_rotation->isChecked()
                     ? std::nullopt
                     : std::optional<std::array<double, 3>>(rink_rotations->at(rotation_index)),
+                .control_point_resolution = control_point_resolution->currentData().toString().toStdString(),
             };
             auto saved = ReusableStitchingExperimentSelectionFingerprint(game_directory.toStdString(), settings);
             if (!saved.ok()) {
@@ -1956,6 +2106,8 @@ struct StitchingExperimentDialog::Impl {
         "The main game's promoted calibration and its saved frame bundle are preserved. This deletion cannot be undone.");
     auto* discard = prompt.addButton("Discard experiments and cache", QMessageBox::DestructiveRole);
     auto* keep = prompt.addButton("Cancel", QMessageBox::RejectRole);
+    discard->setIcon(action_icon(ActionIcon::Delete));
+    keep->setIcon(action_icon(ActionIcon::Cancel));
     discard->setObjectName("stitchExperimentDiscardConfirm");
     prompt.setDefaultButton(keep);
     prompt.setEscapeButton(keep);
@@ -2176,6 +2328,7 @@ struct StitchingExperimentDialog::Impl {
       update_controls();
       return;
     }
+    video->set_renderer_active(true);
     preview_process->start();
     update_controls();
   }
@@ -2250,7 +2403,7 @@ struct StitchingExperimentDialog::Impl {
     contents->setObjectName("stitchExperimentRetainedRunnerLog");
     contents->setReadOnly(true);
     layout->addWidget(contents, 1);
-    auto* close = new QPushButton("Close");
+    auto* close = new QPushButton(action_icon(ActionIcon::Close), "Close");
     QObject::connect(close, &QPushButton::clicked, &viewer, &QDialog::accept);
     layout->addWidget(close, 0, Qt::AlignRight);
     viewer.exec();
@@ -2265,10 +2418,14 @@ struct StitchingExperimentDialog::Impl {
       show_status(QString::fromStdString(inspection.status().ToString()), true);
       return;
     }
-    QDialog viewer(dialog);
+    // Mutter does not maximize transient windows with the Dialog window type,
+    // even when Qt reports WindowMaximized. Keep QDialog ownership/modality,
+    // but request an ordinary, resizable native window.
+    QDialog viewer(dialog, Qt::Window);
     viewer.setObjectName("stitchExperimentFrameInspector");
     viewer.setWindowTitle(QString("Calibration frames — Candidate %1").arg(candidates[row].sequence));
     viewer.setWindowFlag(Qt::WindowMaximizeButtonHint, true);
+    viewer.setWindowFlag(Qt::WindowContextHelpButtonHint, false);
     viewer.setSizeGripEnabled(true);
     viewer.resize(1180, 780);
     auto* layout = new QVBoxLayout(&viewer);
@@ -2280,7 +2437,12 @@ struct StitchingExperimentDialog::Impl {
             : "These are this candidate's ordinary calibration pairs. Thumbnails come from the captured images supplied "
               "to the matcher. Source times are shown when recorded; player scores are unavailable for ordinary capture.");
     explanation->setWordWrap(true);
-    layout->addWidget(explanation);
+    auto* heading = new QHBoxLayout();
+    heading->addWidget(explanation, 1);
+    auto* maximize = new WindowSizeButton(&viewer);
+    maximize->setObjectName("maximizeCalibrationFramesWindowButton");
+    heading->addWidget(maximize, 0, Qt::AlignTop);
+    layout->addLayout(heading);
     auto* validation = new QLabel(QString::fromStdString(inspection->source_validation));
     validation->setTextFormat(Qt::PlainText);
     validation->setWordWrap(true);
@@ -2335,22 +2497,24 @@ struct StitchingExperimentDialog::Impl {
     match_controls->addWidget(match_status, 1);
     layout->addLayout(match_controls);
     auto* images = new QHBoxLayout();
-    std::array<SelectedFrameImage*, 2> camera_images;
+    std::array<CalibrationFrameView*, 2> camera_images;
     std::array<QGroupBox*, 2> camera_groups;
     for (size_t camera = 0; camera < camera_images.size(); ++camera) {
       auto* group = new QGroupBox(camera == 0 ? "Left camera" : "Right camera");
       camera_groups[camera] = group;
       auto* image_layout = new QVBoxLayout(group);
-      camera_images[camera] = new SelectedFrameImage(group);
+      camera_images[camera] = new CalibrationFrameView(group);
       camera_images[camera]->setObjectName(
           camera == 0 ? "stitchExperimentSelectedLeft" : "stitchExperimentSelectedRight");
+      add_image_navigation(image_layout, camera_images[camera]);
       image_layout->addWidget(camera_images[camera]);
       images->addWidget(group, 2);
     }
     auto* match_group = new QGroupBox("Matched control points — left / right camera");
     auto* match_layout = new QVBoxLayout(match_group);
-    auto* match_image = new SelectedFrameImage(match_group);
+    auto* match_image = new CalibrationFrameView(match_group);
     match_image->setObjectName("stitchExperimentSelectedMatches");
+    add_image_navigation(match_layout, match_image);
     match_layout->addWidget(match_image);
     images->addWidget(match_group, 4);
     auto* coverage_group = new QGroupBox("Baseline stitched scoring coverage");
@@ -2428,7 +2592,7 @@ struct StitchingExperimentDialog::Impl {
     QObject::connect(choices, &QTableWidget::itemSelectionChanged, &viewer, show_pair);
     QObject::connect(show_matches, &QCheckBox::toggled, &viewer, show_match_view);
     QObject::connect(points_only, &QCheckBox::toggled, &viewer, show_match_view);
-    auto* close = new QPushButton("Close");
+    auto* close = new QPushButton(action_icon(ActionIcon::Close), "Close");
     QObject::connect(close, &QPushButton::clicked, &viewer, &QDialog::accept);
     layout->addWidget(close, 0, Qt::AlignRight);
     choices->selectRow(0);
@@ -2469,6 +2633,9 @@ struct StitchingExperimentDialog::Impl {
       auto* use = prompt.addButton("Use selected in main Program", QMessageBox::AcceptRole);
       auto* discard = prompt.addButton("Keep results and close", QMessageBox::ActionRole);
       auto* keep = prompt.addButton("Cancel", QMessageBox::RejectRole);
+      use->setIcon(action_icon(ActionIcon::Apply));
+      discard->setIcon(action_icon(ActionIcon::Save));
+      keep->setIcon(action_icon(ActionIcon::Cancel));
       use->setObjectName("stitchExperimentCloseUse");
       discard->setObjectName("stitchExperimentCloseDiscard");
       keep->setObjectName("stitchExperimentCloseCancel");
@@ -2534,7 +2701,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     const QString& stitch_frame_time,
     QWidget* parent,
     std::function<void()> selection_applied)
-    : QDialog(parent), impl_(std::make_unique<Impl>(this)) {
+    // A native Dialog window cannot maximize on Mutter. Qt::Window retains
+    // QDialog's parent/modal lifecycle while allowing normal window actions.
+    : QDialog(parent, Qt::Window), impl_(std::make_unique<Impl>(this)) {
   setObjectName("stitchingExperimentDialog");
   setWindowTitle("Stitching Experiments");
   setWindowFlag(Qt::WindowMaximizeButtonHint, true);
@@ -2557,7 +2726,12 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       "configuration unless you explicitly choose Use selected in main Program. Optional player selection uses "
       "the same ice filtering as Program; moving previews do not run crop or tracking.");
   intro->setWordWrap(true);
-  root->addWidget(intro);
+  auto* heading = new QHBoxLayout();
+  heading->addWidget(intro, 1);
+  auto* maximize = new WindowSizeButton(this);
+  maximize->setObjectName("maximizeStitchExperimentWindowButton");
+  heading->addWidget(maximize, 0, Qt::AlignTop);
+  root->addLayout(heading);
 
   auto* matrix_group = new QGroupBox("Candidate matrix");
   matrix_group->setObjectName("stitchExperimentMatrix");
@@ -2565,12 +2739,64 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.control_points = new QLineEdit(QString::number(control_points));
   s.control_points->setObjectName("stitchExperimentControlPoints");
   s.control_points->setPlaceholderText("600,900,1500");
+  s.control_points->setToolTip(
+      "Maximum retained matches per synchronized frame pair. Contributions add across pairs: "
+      "100 with 2 frames gives up to 200 total before geometric validation.");
   s.frame_counts = new QLineEdit(QString::number(frame_count));
   s.frame_counts->setObjectName("stitchExperimentFrameCounts");
   s.frame_counts->setPlaceholderText("1,4,8");
   s.start_frames = new QLineEdit(stitch_frame_time);
   s.start_frames->setObjectName("stitchExperimentStartFrames");
   s.start_frames->setPlaceholderText("00:05:00,00:10:00.500");
+  s.control_point_resolution = new QComboBox();
+  s.control_point_resolution->setObjectName("stitchExperimentControlPointResolution");
+  try {
+    const auto baseline = environment.contains("HM_CONFIG_ROOT")
+        ? hm::baseline_config::load_from_root(environment.value("HM_CONFIG_ROOT").toStdString())
+        : hm::baseline_config::load();
+    if (!baseline.ok())
+      throw std::runtime_error(baseline.status().ToString());
+    const auto user = hm::user_config::load_or_create();
+    if (!user.ok())
+      throw std::runtime_error(user.status().ToString());
+    overlay_feature_settings(s.feature_defaults, baseline->values);
+    overlay_feature_settings(s.feature_defaults, *user);
+    YAML::Node effective = YAML::Clone(s.feature_defaults);
+    const auto saved =
+        hm::stitching::load_game_config_file(std::filesystem::path(game_directory.toStdString()) / "config.yaml");
+    if (!saved.ok())
+      throw std::runtime_error(saved.status().ToString());
+    if (saved->has_value()) {
+      YAML::Node game = YAML::Clone(**saved);
+      hm::stitching::restore_generated_control_point_resolution(game);
+      overlay_feature_settings(effective, game);
+    }
+    const auto resolution = hm::stitching::read_control_point_resolution(effective);
+    if (!resolution.ok())
+      throw std::runtime_error(resolution.status().ToString());
+    const auto matcher = feature_matcher(effective);
+    const QString size = hm::stitching::ControlPointResolutionName(*resolution);
+    s.feature_size_selectable = matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue;
+    if (s.feature_size_selectable) {
+      s.control_point_resolution->addItem("Native (full size)", "native");
+      s.control_point_resolution->addItem("1K (1024 px long edge)", "1k");
+      s.control_point_resolution->addItem("2K (2048 × 1152)", "2k");
+      s.control_point_resolution->setCurrentIndex(s.control_point_resolution->findData(size));
+      s.control_point_resolution->setToolTip(
+          "SuperPoint + LightGlue input size. Native uses the original pixels; 1K uses a 1024-pixel long edge; "
+          "2K fits each image into 2048 × 1152. Resizing preserves aspect ratio. "
+          "Each added candidate keeps this choice independently of later changes.");
+    } else {
+      const QString fixed = fixed_feature_size(matcher);
+      s.control_point_resolution->addItem(fixed, size);
+      s.control_point_resolution->setToolTip("This matcher uses a fixed processing size: " + fixed + ".");
+    }
+    s.initial_settings.control_point_resolution = size.toStdString();
+  } catch (const std::exception& error) {
+    s.feature_settings_error = "Cannot load feature image settings: " + QString::fromUtf8(error.what());
+    s.control_point_resolution->addItem("Unavailable");
+    s.control_point_resolution->setToolTip(s.feature_settings_error);
+  }
   s.shared_rotation = new QCheckBox("Use the game’s saved rink leveling for every candidate");
   s.shared_rotation->setObjectName("stitchExperimentSharedRotation");
   s.shared_rotation->setChecked(true);
@@ -2579,7 +2805,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.rotations->setPlaceholderText("pitch/roll pairs: 0/0,-1.5/0.5");
   s.rotations->setEnabled(false);
   connect(s.shared_rotation, &QCheckBox::toggled, this, [&s](bool checked) { s.rotations->setEnabled(!checked); });
-  matrix_layout->addRow("Control-point counts", s.control_points);
+  matrix_layout->addRow("CP limits per frame pair", s.control_points);
+  matrix_layout->addRow("Feature image size", s.control_point_resolution);
   matrix_layout->addRow("Frame counts", s.frame_counts);
   matrix_layout->addRow("First calibration frames", s.start_frames);
   matrix_layout->addRow(s.shared_rotation);
@@ -2603,15 +2830,15 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_layout->addRow("Player search", player_options);
   connect(s.prefer_player_frames, &QCheckBox::toggled, this, [&s]() { s.update_controls(); });
   auto* matrix_actions = new QHBoxLayout();
-  s.add_to_batch = new QPushButton("Add options to batch");
+  s.add_to_batch = new QPushButton(action_icon(ActionIcon::Add), "Add options to batch");
   s.add_to_batch->setObjectName("addStitchExperimentsToBatchButton");
-  s.remove_from_batch = new QPushButton("Remove selected");
+  s.remove_from_batch = new QPushButton(action_icon(ActionIcon::Remove), "Remove selected");
   s.remove_from_batch->setObjectName("removeStitchExperimentFromBatchButton");
-  s.clear_batch = new QPushButton("Discard experiments…");
+  s.clear_batch = new QPushButton(action_icon(ActionIcon::Delete), "Discard experiments…");
   s.clear_batch->setObjectName("clearStitchExperimentBatchButton");
-  s.start_batch = new QPushButton("Start batch");
+  s.start_batch = new QPushButton(action_icon(ActionIcon::Play), "Start batch");
   s.start_batch->setObjectName("startStitchExperimentBatchButton");
-  s.cancel = new QPushButton("Cancel batch");
+  s.cancel = new QPushButton(action_icon(ActionIcon::Cancel), "Cancel batch");
   s.cancel->setObjectName("cancelStitchExperimentsButton");
   s.cancel->setEnabled(false);
   matrix_actions->addWidget(s.add_to_batch);
@@ -2631,9 +2858,11 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   auto* candidate_layout = new QVBoxLayout(candidate_panel);
   candidate_layout->setContentsMargins(0, 0, 0, 0);
   candidate_layout->addWidget(matrix_group);
-  s.table = new QTableWidget(0, 6);
+  s.table = new QTableWidget(0, 8);
   s.table->setObjectName("stitchExperimentCandidates");
-  s.table->setHorizontalHeaderLabels({"Candidate", "CP", "Frames", "First frame", "Rink pitch / roll", "Status"});
+  s.table->setHorizontalHeaderLabels(
+      {"Candidate", "CP", "Frames", "First frame", "Rink pitch / roll", "Status", "Frame selection", "Image size"});
+  s.table->horizontalHeaderItem(1)->setToolTip("Maximum control points per synchronized frame pair.");
   s.table->setSelectionBehavior(QAbstractItemView::SelectRows);
   s.table->setSelectionMode(QAbstractItemView::SingleSelection);
   s.table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
@@ -2662,11 +2891,11 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.loop = new QCheckBox("Loop");
   s.loop->setObjectName("stitchExperimentLoop");
   s.loop->setChecked(true);
-  s.preview = new QPushButton("Play selected");
+  s.preview = new QPushButton(action_icon(ActionIcon::Play), "Play selected");
   s.preview->setObjectName("previewStitchExperimentButton");
-  s.stop_preview = new QPushButton("Stop");
+  s.stop_preview = new QPushButton(action_icon(ActionIcon::Stop), "Stop");
   s.stop_preview->setObjectName("stopStitchExperimentPreviewButton");
-  s.expand_preview = new QPushButton("Expand preview");
+  s.expand_preview = new QPushButton(action_icon(ActionIcon::Expand), "Expand preview");
   s.expand_preview->setObjectName("maximizeStitchExperimentButton");
   s.expand_preview->setAutoDefault(false);
   s.expand_preview->setToolTip("Expand the preview within this dialog (or double-click the preview).");
@@ -2713,13 +2942,13 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   root->addWidget(s.log);
   s.preview_focus_siblings = {intro, candidate_panel, s.log};
   auto* bottom = new QHBoxLayout();
-  s.apply = new QPushButton("Use selected in main Program");
+  s.apply = new QPushButton(action_icon(ActionIcon::Apply), "Use selected in main Program");
   s.apply->setObjectName("applyStitchExperimentButton");
-  s.inspect_frames = new QPushButton("Inspect calibration frames");
+  s.inspect_frames = new QPushButton(action_icon(ActionIcon::Inspect), "Inspect calibration frames");
   s.inspect_frames->setObjectName("inspectStitchExperimentFramesButton");
-  s.view_runner_log = new QPushButton("View runner log");
+  s.view_runner_log = new QPushButton(action_icon(ActionIcon::Document), "View runner log");
   s.view_runner_log->setObjectName("viewStitchExperimentRunnerLogButton");
-  auto* close = new QPushButton("Close");
+  auto* close = new QPushButton(action_icon(ActionIcon::Close), "Close");
   close->setObjectName("closeStitchExperimentButton");
   bottom->addWidget(s.apply);
   bottom->addWidget(s.inspect_frames);
@@ -2751,6 +2980,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   connect(s.view_runner_log, &QPushButton::clicked, this, [&s]() { s.show_selected_runner_log(); });
   connect(close, &QPushButton::clicked, this, [this]() { this->close(); });
   s.restore_persistent_store(s.initial_settings);
+  if (!s.feature_settings_error.isEmpty())
+    s.show_status(s.feature_settings_error, true);
   s.update_controls();
 }
 

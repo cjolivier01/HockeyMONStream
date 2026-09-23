@@ -141,7 +141,7 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
       throw std::runtime_error("Replay requires finite two-camera point correspondences (n0 N1 t0)");
     matches.push_back({cv::Point2f(x, y), cv::Point2f(X, Y), 1.0f});
   }
-  if (!camera_checked || matches.size() < 16)
+  if (!camera_checked || matches.size() < stitching::kMinimumCalibrationControlPoints)
     throw std::runtime_error("Saved calibration has no camera FOV or insufficient control points");
   if (!fs::create_directories(destination))
     throw std::runtime_error("Output game directory was created by another process");

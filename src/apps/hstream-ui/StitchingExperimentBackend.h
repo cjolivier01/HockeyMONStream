@@ -15,6 +15,8 @@ struct StitchingExperimentSettings {
   int frame_count{0};
   std::string stitch_frame_time;
   std::optional<std::array<double, 3>> rink_rotation_degrees;
+  // An explicit size is frozen for this solve; legacy nullopt retains config inheritance.
+  std::optional<std::string> control_point_resolution;
 };
 
 struct StitchingExperimentWorkspace {

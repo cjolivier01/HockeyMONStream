@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
@@ -33,14 +34,10 @@
 #include <QtCore/Qt>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
-#include <QtGui/QIcon>
 #include <QtGui/QLinearGradient>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPaintEngine>
-#include <QtGui/QPainter>
-#include <QtGui/QPainterPath>
 #include <QtGui/QPalette>
-#include <QtGui/QPixmap>
 #include <QtGui/QResizeEvent>
 #include <QtGui/QStandardItemModel>
 #include <QtGui/QTextDocument>
@@ -646,27 +643,6 @@ class NativeVideoTarget : public QWidget {
   bool focus_available_{false};
 };
 
-QIcon preview_focus_icon(bool focused) {
-  QPixmap pixmap(16, 16);
-  pixmap.fill(Qt::transparent);
-  QPainter painter(&pixmap);
-  painter.setRenderHint(QPainter::Antialiasing, false);
-  painter.setPen(QPen(Qt::white, 2, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
-  const int outer = focused ? 3 : 2;
-  const int inner = focused ? 6 : 5;
-  const int far = focused ? 12 : 13;
-  const int arm = inner - outer;
-  painter.drawLine(outer, inner, outer, outer);
-  painter.drawLine(outer, outer, inner, outer);
-  painter.drawLine(far, inner, far, outer);
-  painter.drawLine(far, outer, far - arm, outer);
-  painter.drawLine(outer, far - arm, outer, far);
-  painter.drawLine(outer, far, inner, far);
-  painter.drawLine(far, far - arm, far, far);
-  painter.drawLine(far, far, far - arm, far);
-  return QIcon(pixmap);
-}
-
 class LetterboxRenderHost : public QWidget {
  public:
   explicit LetterboxRenderHost(double aspect_ratio, QWidget* parent = nullptr)
@@ -696,7 +672,7 @@ class LetterboxRenderHost : public QWidget {
     set_control_help(
         focus_button_, "Expand this video preview to fill the application while keeping video on the GPU.");
     focus_button_->setAccessibleName("Focus video");
-    focus_button_->setIcon(preview_focus_icon(false));
+    focus_button_->setIcon(action_icon(ActionIcon::Expand));
     focus_button_->setStyleSheet(
         "QPushButton { background: rgba(15, 23, 42, 210); border: 1px solid rgba(255, 255, 255, 100); "
         "border-radius: 3px; color: white; padding: 0; }"
@@ -756,7 +732,7 @@ class LetterboxRenderHost : public QWidget {
   }
 
   void setFocused(bool focused) {
-    focus_button_->setIcon(preview_focus_icon(focused));
+    focus_button_->setIcon(action_icon(focused ? ActionIcon::Restore : ActionIcon::Expand));
     focus_button_->setAccessibleName(focused ? "Restore HStream controls" : "Focus video");
     set_control_help(
         focus_button_,
@@ -5233,7 +5209,7 @@ void HStreamWindow::buildUi() {
   auto* seek_layout = new QHBoxLayout(playback_seek_controls_);
   seek_layout->setContentsMargins(0, 0, 0, 0);
   seek_layout->setSpacing(8);
-  playback_seek_back_button_ = new QPushButton("−10s", playback_seek_controls_);
+  playback_seek_back_button_ = new QPushButton(action_icon(ActionIcon::Previous), "−10s", playback_seek_controls_);
   playback_seek_back_button_->setObjectName("playbackSeekBack10Button");
   auto* playback_seek_slider = new PlaybackSeekSlider(Qt::Horizontal, playback_seek_controls_);
   playback_seek_slider_ = playback_seek_slider;
@@ -5244,7 +5220,7 @@ void HStreamWindow::buildUi() {
       playback_seek_slider_, &QSlider::sliderMoved, this, [this](int) { updatePlaybackSeekPositionPresentation(); });
   connect(
       playback_seek_slider_, &QSlider::sliderReleased, this, [this]() { updatePlaybackSeekPositionPresentation(); });
-  playback_seek_forward_button_ = new QPushButton("+10s", playback_seek_controls_);
+  playback_seek_forward_button_ = new QPushButton(action_icon(ActionIcon::Next), "+10s", playback_seek_controls_);
   playback_seek_forward_button_->setObjectName("playbackSeekForward10Button");
   playback_seek_position_ = new QLabel("00:00:00 / --:--:--", playback_seek_controls_);
   playback_seek_position_->setObjectName("playbackSeekPosition");
@@ -5297,7 +5273,7 @@ void HStreamWindow::buildUi() {
   root->addWidget(main_log_splitter_, 1);
 
   auto* file_menu = menuBar()->addMenu("&File");
-  auto* save_job = file_menu->addAction("Save job script…");
+  auto* save_job = file_menu->addAction(action_icon(ActionIcon::Save), "Save job script…");
   save_job->setObjectName("saveJobScriptAction");
   connect(save_job, &QAction::triggered, this, [this]() { saveJobScript(); });
   const auto button_action = [this](QMenu* menu, const QString& name) {
@@ -5318,7 +5294,7 @@ void HStreamWindow::buildUi() {
   button_action(file_menu, "browseVideoButton");
   button_action(file_menu, "addVideoButton");
   file_menu->addSeparator();
-  auto* quit = file_menu->addAction("&Quit");
+  auto* quit = file_menu->addAction(action_icon(ActionIcon::Close), "&Quit");
   connect(quit, &QAction::triggered, this, [this]() { close(); });
   auto* run_menu = menuBar()->addMenu("&Run");
   for (const char* name : {"startPipelineButton", "pausePipelineButton", "stopPipelineButton", "restartStageButton"})
@@ -5425,14 +5401,15 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   control_points_spin_ = new QSpinBox();
   control_points_spin_->setObjectName("controlPointsSpin");
-  control_points_spin_->setRange(20, 5000);
+  control_points_spin_->setRange(hm::stitching::kMinimumCalibrationControlPoints, 5000);
   control_points_spin_->setSingleStep(25);
   control_points_spin_->setValue(kDefaultStitchCalibrationControlPoints);
   control_points_spin_->setEnabled(true);
   control_points_spin_->setPrefix("CP ");
   control_points_spin_->setMinimumWidth(96);
   control_points_spin_->setToolTip(
-      "Control-point limit for stitching calibration. Changing this in Program mode recalibrates stitching before "
+      "Control-point limit per synchronized frame pair; 100 with 2 frames gives up to 200 total. "
+      "Changing this in Program mode recalibrates stitching before "
       "the full pipeline continues.");
   connect(control_points_spin_, &QSpinBox::valueChanged, this, [this]() { updatePresetDirtyState(); });
 
@@ -5678,7 +5655,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   });
   connect(projection_auto_canvas_check_, &QCheckBox::toggled, this, [this]() { updatePresetDirtyState(); });
   connect(projection_auto_crop_check_, &QCheckBox::toggled, this, [this]() { updatePresetDirtyState(); });
-  projection_crop_button_ = new QPushButton("Adjust crop…");
+  projection_crop_button_ = new QPushButton(action_icon(ActionIcon::Crop), "Adjust crop…");
   projection_crop_button_->setObjectName("projectionCropButton");
   set_control_help(
       projection_crop_button_, "Preview Auto cropping, retain the full canvas, or drag a manual crop rectangle.");
@@ -5702,9 +5679,9 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       updatePresetDirtyState();
     });
   }
-  rink_leveling_button_ = new QPushButton("Level rink…");
+  rink_leveling_button_ = new QPushButton(action_icon(ActionIcon::Level), "Level rink…");
   rink_leveling_button_->setObjectName("selectRinkLevelingButton");
-  rink_default_button_ = new QPushButton("Use rink default");
+  rink_default_button_ = new QPushButton(action_icon(ActionIcon::Reset), "Use rink default");
   rink_default_button_->setObjectName("resetRinkLevelingButton");
   connect(rink_leveling_button_, &QPushButton::clicked, this, [this]() { selectRinkLeveling(); });
   connect(rink_default_button_, &QPushButton::clicked, this, [this]() {
@@ -5820,7 +5797,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   restart->setObjectName("restartStageButton");
   save_preset_button_ = new QPushButton(style()->standardIcon(QStyle::SP_DialogSaveButton), "Save Preset");
   save_preset_button_->setObjectName("savePresetButton");
-  auto* reset = new QPushButton("Reset Controls");
+  auto* reset = new QPushButton(action_icon(ActionIcon::Reset), "Reset Controls");
   reset->setObjectName("resetCameraButton");
   stop_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), "Stop");
   stop_button_->setObjectName("stopPipelineButton");
@@ -5847,7 +5824,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   auto* action_bar = new QHBoxLayout();
   action_bar->setSpacing(8);
-  auto* experiments = new QPushButton("Camera experiments…");
+  auto* experiments = new QPushButton(action_icon(ActionIcon::Camera), "Camera experiments…");
   experiments->setObjectName("cameraExperimentsButton");
   experiments->setToolTip(
       "Replay a short DriveGPT recording from its historical camera state with independent trial settings.");
@@ -5868,7 +5845,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     dialog->show();
   });
   action_bar->addWidget(experiments);
-  stitching_experiments_button_ = new QPushButton("Stitching experiments…");
+  stitching_experiments_button_ = new QPushButton(action_icon(ActionIcon::Stitching), "Stitching experiments…");
   stitching_experiments_button_->setObjectName("stitchingExperimentsButton");
   stitching_experiments_button_->setToolTip(
       "Generate stitching candidates, replay one moving passage across their seams, and use the selected maps "
@@ -6401,11 +6378,11 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
     }
   }
 
-  auto* redirect = new QPushButton("Redirect YouTube");
+  auto* redirect = new QPushButton(action_icon(ActionIcon::Network), "Redirect YouTube");
   redirect->setObjectName("redirectYoutubeButton");
   connect(redirect, &QPushButton::clicked, this, [this]() { redirectYoutube(); });
 
-  auto* add_rtsp = new QPushButton("Add RTSP Mount");
+  auto* add_rtsp = new QPushButton(action_icon(ActionIcon::Add), "Add RTSP Mount");
   add_rtsp->setObjectName("addRtspButton");
   connect(add_rtsp, &QPushButton::clicked, this, [this]() { addRtspOutput(); });
 
@@ -6428,7 +6405,8 @@ void HStreamWindow::configureControlHelp() {
       "simultaneously record the full stitched canvas.");
   help(
       "controlPointsSpin",
-      "Set the maximum number of feature control points used during stitching calibration. Changing it makes "
+      "Set the maximum number of feature control points per synchronized frame pair. Contributions add across "
+      "pairs: 100 with 2 frames gives up to 200 total before geometric validation. Changing it makes "
       "Program recalibrate stale stitching before continuing.");
   help(
       "stitchFrameTimeEdit",
@@ -6736,7 +6714,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     detector_precision_status_->setObjectName("detectorPrecisionStatus");
     detector_precision_status_->setWordWrap(true);
     detection_layout->addWidget(detector_precision_status_);
-    auto* prepare_int8 = new QPushButton("Prepare INT8 from recording…");
+    auto* prepare_int8 = new QPushButton(action_icon(ActionIcon::Prepare), "Prepare INT8 from recording…");
     prepare_int8->setObjectName("prepareRecordedInt8Button");
     detection_layout->addWidget(prepare_int8);
     connect(prepare_int8, &QPushButton::clicked, this, [this] { prepareRecordedInt8(); });
@@ -6992,7 +6970,7 @@ void HStreamWindow::buildLog(QVBoxLayout* root) {
   QFont title_font = title->font();
   title_font.setBold(true);
   title->setFont(title_font);
-  auto* clear = new QPushButton("Clear Log");
+  auto* clear = new QPushButton(action_icon(ActionIcon::Delete), "Clear Log");
   clear->setObjectName("clearLogButton");
   clear->setToolTip("Clear the visible runtime log");
   header->addWidget(title);
@@ -7566,10 +7544,11 @@ bool HStreamWindow::ensureProjectionCropReviewed() {
       if (!lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) || !status.IsScalar() ||
           status.as<std::string>() != "complete")
         return true;
-      QFile project(QDir(directory).filePath("autooptimiser_out.pto"));
-      if (!project.open(QIODevice::ReadOnly) || project.size() > 1024 * 1024)
+      const auto project =
+          hm::stitching::HuginProject::ReadProject(QDir(directory).filePath("autooptimiser_out.pto").toStdString());
+      if (!project.ok())
         return true;
-      geometry = hm::stitching::projection_crop_geometry(project.readAll().toStdString(), stitchProjectionFraming());
+      geometry = hm::stitching::projection_crop_geometry(*project, stitchProjectionFraming());
       revision = RinkLevelingDialog::sourceRevision(directory);
       if (geometry.empty() || revision.isEmpty() || hm::stitching::projection_crop_reviewed(config, geometry))
         return true;
@@ -8617,13 +8596,13 @@ void HStreamWindow::showStitchingCalibrationDialog() {
 
     auto* buttons = new QHBoxLayout();
     buttons->addStretch(1);
-    calibration_cancel_button_ = new QPushButton("Stop calibration", dialog);
+    calibration_cancel_button_ = new QPushButton(action_icon(ActionIcon::Stop), "Stop calibration", dialog);
     calibration_cancel_button_->setObjectName("stitchCalibrationCancelButton");
     set_control_help(
         calibration_cancel_button_,
         "Stop the active stitching calibration and its pipeline. Completed calibration stages remain visible in "
         "the runtime log.");
-    calibration_ok_button_ = new QPushButton("OK", dialog);
+    calibration_ok_button_ = new QPushButton(action_icon(ActionIcon::Apply), "OK", dialog);
     calibration_ok_button_->setObjectName("stitchCalibrationOkButton");
     calibration_ok_button_->setDefault(true);
     set_control_help(
@@ -12268,7 +12247,7 @@ void HStreamWindow::startArchiveFinalization(
 
     auto* buttons = new QHBoxLayout();
     buttons->addStretch(1);
-    archive_finalize_ok_button_ = new QPushButton("OK", dialog);
+    archive_finalize_ok_button_ = new QPushButton(action_icon(ActionIcon::Apply), "OK", dialog);
     archive_finalize_ok_button_->setObjectName("archiveFinalizeOkButton");
     archive_finalize_ok_button_->setDefault(true);
     set_control_help(
@@ -15310,6 +15289,7 @@ void HStreamWindow::updateRunControls() {
     pause_button_->setEnabled(
         running && pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0);
     pause_button_->setText(pipeline_paused_ ? "Resume" : "Pause");
+    pause_button_->setIcon(action_icon(pipeline_paused_ ? ActionIcon::Play : ActionIcon::Pause));
   }
   if (stop_button_) {
     stop_button_->setEnabled(running);

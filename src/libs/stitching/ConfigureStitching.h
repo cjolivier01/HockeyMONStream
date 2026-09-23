@@ -183,6 +183,19 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
 // a non-overlap summary.
 bool should_retry_stitching_calibration_candidate(const absl::Status& status, bool alignment_complete);
 
+struct StitchingCalibrationMatchCandidate {
+  size_t index{0};
+  size_t accepted_match_count{0};
+  std::vector<FeatureMatch> selected;
+  bool pooled{false};
+};
+
+// Each input is one successfully matched pair, already capped by the matcher.
+// Try their additive union first, then individual pairs by accepted-match count.
+// No second control-point cap is applied to the union.
+std::vector<StitchingCalibrationMatchCandidate> make_stitching_calibration_match_candidates(
+    std::vector<StitchingCalibrationMatchCandidate> frame_candidates);
+
 // Opens one selector response without following links or blocking on special
 // files. NotFound means the atomically published response is not present yet.
 absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file(

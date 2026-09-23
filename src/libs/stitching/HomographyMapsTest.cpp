@@ -142,6 +142,12 @@ int main() {
   auto magsac =
       hm::stitching::CreateOpenCvMappingFiles(root, left, right, matches, hm::stitching::MappingBackend::kOpenCvMagsac);
   ok &= expect(magsac.ok(), "MAGSAC mapping should generate artifacts");
+  const fs::path ten_point_dir = root / "ten-point";
+  fs::create_directories(ten_point_dir);
+  const std::vector<hm::stitching::FeatureMatch> ten_matches(matches.begin(), matches.begin() + 10);
+  auto ten_point = hm::stitching::CreateOpenCvMappingFiles(
+      ten_point_dir, left, right, ten_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(ten_point.ok(), "ten well-distributed matches must support MAGSAC calibration");
   if (magsac.ok()) {
     ok &= expect(magsac->canvas_width >= 111 && magsac->canvas_width <= 113, "canvas width should include offset");
     ok &= expect(magsac->canvas_height >= 83 && magsac->canvas_height <= 85, "canvas height should include offset");
@@ -490,6 +496,16 @@ int main() {
       !low_consensus.ok() &&
           std::string(low_consensus.status().message()).find("insufficient consensus") != std::string::npos,
       "MAGSAC mapping should reject a 16-point set supported by only four inliers");
+  const fs::path ten_low_consensus_dir = root / "ten-low-consensus";
+  fs::create_directories(ten_low_consensus_dir);
+  const std::vector<hm::stitching::FeatureMatch> ten_low_matches(
+      low_consensus_matches.begin(), low_consensus_matches.begin() + 10);
+  auto ten_low_consensus = hm::stitching::CreateOpenCvMappingFiles(
+      ten_low_consensus_dir, left, right, ten_low_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !ten_low_consensus.ok() &&
+          std::string(ten_low_consensus.status().message()).find("insufficient consensus") != std::string::npos,
+      "a ten-point budget must retain MAGSAC consensus validation");
   fs::path calibrated_low_consensus_dir = root / "calibrated-low-consensus";
   fs::create_directories(calibrated_low_consensus_dir);
   auto calibrated_low_consensus = hm::stitching::CreateOpenCvMappingFiles(
@@ -523,6 +539,15 @@ int main() {
       !clustered_consensus.ok() &&
           std::string(clustered_consensus.status().message()).find("inlier coverage") != std::string::npos,
       "MAGSAC mapping should reject inliers confined to a small source-image region");
+  const fs::path ten_clustered_dir = root / "ten-clustered-consensus";
+  fs::create_directories(ten_clustered_dir);
+  const std::vector<hm::stitching::FeatureMatch> ten_clustered_matches(
+      clustered_consensus_matches.begin(), clustered_consensus_matches.begin() + 10);
+  const auto ten_clustered = hm::stitching::CreateOpenCvMappingFiles(
+      ten_clustered_dir, left, right, ten_clustered_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !ten_clustered.ok() && std::string(ten_clustered.status().message()).find("inlier coverage") != std::string::npos,
+      "a ten-point budget must reject spatially concentrated inliers even with perfect consensus");
 
   fs::path collapsed_destination_dir = root / "collapsed-destination";
   fs::create_directories(collapsed_destination_dir);

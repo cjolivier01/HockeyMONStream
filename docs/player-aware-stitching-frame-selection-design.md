@@ -41,7 +41,7 @@ and does not count unfiltered spectators or use independently invented mask rule
    its selected pair plan in a separate candidate's config. It verifies source and
    camera/synchronization context. Candidate calibration replays from the same anchor
    and captures the exact selected pairs using the existing GPU snapshot path.
-5. Ordinary feature matching, pooled control-point selection, Hugin/OpenCV solving,
+5. Ordinary feature matching, per-pair control-point selection with additive pooling, Hugin/OpenCV solving,
    seam creation, and transactional publication run unchanged. Only a successful
    completed candidate becomes Ready. The user compares baseline/candidate and
    promotes through the existing transaction.

@@ -1,4 +1,5 @@
 #include "Int8PreparationDialog.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
@@ -45,7 +46,9 @@ Int8PreparationDialog::Int8PreparationDialog(Int8PreparationRequest request, QWi
   log_->setMaximumBlockCount(500);
   layout->addWidget(log_);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+  buttons->button(QDialogButtonBox::Cancel)->setIcon(action_icon(ActionIcon::Cancel));
   prepare_ = buttons->addButton("Prepare INT8", QDialogButtonBox::ActionRole);
+  prepare_->setIcon(action_icon(ActionIcon::Prepare));
   prepare_->setObjectName("int8PrepareButton");
   layout->addWidget(buttons);
   connect(prepare_, &QPushButton::clicked, this, [this] { start(); });

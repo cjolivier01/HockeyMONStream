@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -293,9 +294,11 @@ ProjectionCropDialog::ProjectionCropDialog(
   note->setWordWrap(true);
   layout->addWidget(note);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+  buttons->button(QDialogButtonBox::Cancel)->setIcon(action_icon(ActionIcon::Cancel));
   if (in_progress_calibration_)
     buttons->button(QDialogButtonBox::Cancel)->setText("Cancel calibration");
   accept_ = buttons->addButton("Use crop", QDialogButtonBox::AcceptRole);
+  accept_->setIcon(action_icon(ActionIcon::Apply));
   accept_->setObjectName("acceptProjectionCropButton");
   layout->addWidget(buttons);
   connect(buttons, &QDialogButtonBox::rejected, this, &ProjectionCropDialog::reject);

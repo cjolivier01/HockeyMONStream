@@ -31,16 +31,25 @@ backends:
   cross-check. It does not require a model asset.
 
 **Max control points** (`stitching.max_control_points`) limits retained matched
-correspondences, not raw SuperPoint detections. SuperPoint still extracts at most
+correspondences per synchronized frame pair, not raw SuperPoint detections. SuperPoint still extracts at most
 2048 keypoints per image; valid LightGlue matches must score strictly above 0.2.
+The UI accepts limits from 10 to 5000. General calibration and saved-point replay
+require at least 10 usable matches; OpenCV AKAZE retains its specialized six-match
+floor. General MAGSAC calibration still requires at least eight inliers and checks
+their spatial coverage at a 10-point budget, so a small or poorly distributed set
+can fail calibration. Calibrated AKAZE retains its separate small-set consensus and
+coverage rules.
 Selection uses a 16×9 grid in the left camera: it shares the budget across occupied
 height bands, then across occupied columns within each band, ranking by confidence
 within each cell. Partial rounds alternate opposite occupied edges rather than
 favoring the top of the image. Sparse bands return their unused budget; a cap above
 the accepted count retains every match. This preserves available near-side matches
 when a broad textured wall has more populated cells, but cannot create detections
-on featureless ice. Multi-frame calibration applies the same cap again to the pool
-of accepted correspondences before geometric validation.
+on featureless ice. Multi-frame calibration concatenates each pair's capped
+selection before geometric validation, with no second global cap: 100 control
+points with two frame pairs contributes up to 200. A pair with only 37 usable
+matches contributes 37, without increasing another pair's allowance. If pooled
+geometry fails, the existing individual-pair retries each retain their own cap.
 
 HockeyMON's Python `hmlib/stitching/control_points.py` uses the same distinction
 between detector keypoints and retained matches, also defaults to 2048 detector
@@ -68,7 +77,8 @@ the SuperPoint choice when switching matchers. For the other backends it is
 disabled and displays their actual processing size: AKAZE at a maximum dimension
 of 1920 pixels, EfficientLoFTR at 1600 (aligned down to multiples of 32), and DeDoDe
 at 1024 × 576. These backends retain their existing size regardless of the saved
-SuperPoint preference. This setting is independent of the stitched output width.
+SuperPoint preference. This setting is independent of the stitched output width. Stitching Experiments exposes the
+same choices and freezes the selected size per candidate, including saved history and promotion.
 
 The resolution uses the normal baseline → user → game → CLI precedence; for example,
 `--options=stitching.control_point_resolution=2k`. Save Preset or starting a run with

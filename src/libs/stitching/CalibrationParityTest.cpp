@@ -500,8 +500,9 @@ int main(int argc, char** argv) {
         if (duplicate == legacy_matches.end())
           legacy_matches.push_back({legacy_left[index], legacy_right[index], 1.0f});
       }
-      if (legacy_matches.size() < 16) {
-        std::cerr << "FAIL: legacy SuperPoint oracle returned fewer than 16 unique control points\n";
+      if (legacy_matches.size() < hm::stitching::kMinimumCalibrationControlPoints) {
+        std::cerr << "FAIL: legacy SuperPoint oracle returned fewer than "
+                  << hm::stitching::kMinimumCalibrationControlPoints << " unique control points\n";
         return 1;
       }
       const auto native_hugin = configure_hugin(output_dir / "native-hugin", game_dir, native_matches->selected);

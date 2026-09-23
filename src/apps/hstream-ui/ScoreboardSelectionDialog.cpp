@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 #include <QtCore/QFile>
@@ -745,26 +746,33 @@ void ScoreboardSelectionDialog::buildUi() {
     return button;
   };
   auto* zoom_out = add_button("Zoom Out", "scoreboardZoomOutButton", 0, 0, [this]() { canvas_->zoomBy(0.8); });
+  zoom_out->setIcon(action_icon(ActionIcon::ZoomOut));
   set_control_help(zoom_out, "Zoom out around the center of the scoreboard image to show more of the rink.");
   auto* zoom_in = add_button("Zoom In", "scoreboardZoomInButton", 0, 1, [this]() { canvas_->zoomBy(1.25); });
+  zoom_in->setIcon(action_icon(ActionIcon::ZoomIn));
   set_control_help(zoom_in, "Zoom in around the center of the scoreboard image for more precise corner placement.");
   auto* fit = add_button("Fit Image", "scoreboardFitButton", 1, 0, [this]() { canvas_->fitImage(); });
+  fit->setIcon(action_icon(ActionIcon::Fit));
   set_control_help(fit, "Fit the entire stitched image inside the selection canvas.");
   auto* actual_size = add_button("100% Zoom", "scoreboardActualSizeButton", 1, 1, [this]() { canvas_->actualSize(); });
+  actual_size->setIcon(action_icon(ActionIcon::ActualSize));
   set_control_help(actual_size, "Show the selection image at one display pixel per preview-image pixel.");
   focus_button_ = add_button("Focus Points", "scoreboardFocusButton", 2, 0, [this]() { canvas_->focusPoints(); });
+  focus_button_->setIcon(action_icon(ActionIcon::Inspect));
   set_control_help(focus_button_, "Zoom and pan to frame the currently selected scoreboard corner points.");
   undo_button_ = add_button("Undo Last Point", "scoreboardUndoButton", 2, 1, [this]() {
     canvas_->undoLastPoint();
     status_title_->setText("Last point removed");
     status_message_->setText("Click to place it again or drag another point into place.");
   });
+  undo_button_->setIcon(action_icon(ActionIcon::Undo));
   set_control_help(undo_button_, "Remove the most recently placed scoreboard corner without clearing other points.");
   clear_button_ = add_button("Clear Points", "scoreboardClearButton", 3, 0, [this]() {
     canvas_->clearPoints();
     status_title_->setText("Points cleared");
     status_message_->setText("Click four scoreboard corners to start again.");
   });
+  clear_button_->setIcon(action_icon(ActionIcon::Delete));
   set_control_help(clear_button_, "Remove all selected scoreboard corners and begin the selection again.");
   no_scoreboard_button_ = add_button("No Scoreboard", "scoreboardNoScoreboardButton", 3, 1, [this]() {
     QMessageBox confirmation(
@@ -779,6 +787,7 @@ void ScoreboardSelectionDialog::buildUi() {
       submit(Submission::kNoScoreboard);
     }
   });
+  no_scoreboard_button_->setIcon(action_icon(ActionIcon::Cancel));
   set_control_help(
       no_scoreboard_button_,
       "Confirm that this game has no visible scoreboard and disable the scoreboard overlay for its pipeline.");
@@ -806,11 +815,11 @@ void ScoreboardSelectionDialog::buildUi() {
 
   auto* action_row = new QHBoxLayout;
   action_row->addStretch();
-  cancel_button_ = new QPushButton("Cancel", this);
+  cancel_button_ = new QPushButton(action_icon(ActionIcon::Cancel), "Cancel", this);
   cancel_button_->setObjectName("scoreboardCancelButton");
   set_control_help(cancel_button_, "Cancel scoreboard selection and stop waiting for a selection in the pipeline.");
   connect(cancel_button_, &QPushButton::clicked, this, [this]() { requestCancel(); });
-  save_button_ = new QPushButton("Save Selection", this);
+  save_button_ = new QPushButton(action_icon(ActionIcon::Save), "Save Selection", this);
   save_button_->setObjectName("scoreboardSaveButton");
   set_control_help(
       save_button_,
