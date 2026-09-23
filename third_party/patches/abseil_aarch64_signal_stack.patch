@@ -1,6 +1,7 @@
 --- a/absl/debugging/internal/stacktrace_aarch64-inl.inc
 +++ b/absl/debugging/internal/stacktrace_aarch64-inl.inc
-@@ -216,0 +217,14 @@
+@@ -216,1 +216,15 @@
+   stack_info.sig_stack_high = kUnknownStackEnd;
 +#if defined(__linux__)
 +  if (IS_WITH_CONTEXT && ucp != nullptr) {
 +    // Identify alternate-stack transitions before checking frame distances.
