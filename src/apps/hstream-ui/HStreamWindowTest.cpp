@@ -2770,6 +2770,21 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
 
 bool test_calibration_progress_caption() {
   HStreamWindow window;
+  QTimer::singleShot(0, &window, [&window]() {
+    HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=matching status=started");
+  });
+  HStreamWindowTestAccess::showCalibrationProgress(&window, "features");
+  auto* initial_detail = require_child<QLabel>(&window, "stitchCalibrationDetail");
+  if (!initial_detail ||
+      !expect(
+          initial_detail->text() == "Control-point detection…",
+          "Opening calibration progress must not dispatch queued runner events inside the current transaction"))
+    return false;
+  QApplication::processEvents();
+  if (!expect(
+          initial_detail->text() == "Control-point matching…",
+          "Queued calibration progress must be handled after returning to the event loop"))
+    return false;
   const std::vector<std::pair<QString, QString>> stages = {
       {"input", "Synchronized camera frame capture"},
       {"orientation", "Camera orientation"},

@@ -201,12 +201,12 @@ Loop's sparse descriptors do not introduce video-frame readback.
 
 The native model smoke test uses unequal, non-aligned 4K-sized synthetic images
 for SuperPoint and checks the known source-coordinate translation. To validate
-saved camera frames at their original resolution, set
+saved camera frames, set
 `HM_SUPERPOINT_SMOKE_GAME_DIR=/path/to/game` when running
 `//src/libs/stitching:native_model_smoke_test`; this reads `left.png` and
 `right.png` without modifying the game's calibration. Set
 `HM_REQUIRE_ONNX_MODEL_TESTS=1` to fail if model assets are unavailable. Set
-`HM_SUPERPOINT_SMOKE_RESOLUTION=native` or `2k` to override the platform default. Both modes
+`HM_SUPERPOINT_SMOKE_RESOLUTION=native` or `1k` to override the 2K default. All modes
 verify synthetic translation in the original source coordinates. Set
 `HM_MATCHER_SMOKE_NAME=superpoint-lightglue` to test rink segmentation and only
 that matcher without requiring unrelated model assets. Set
