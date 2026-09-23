@@ -291,13 +291,20 @@ absl::StatusOr<cv::Mat> load_field_mask_for_loaded_generation(
     const std::string& loaded_hugin_generation,
     const std::string& expected_invalidation_id = {});
 
+struct RinkMaskFrameProvenance {
+  std::string selection{"auto"};
+  std::optional<uint64_t> recording_time_ns;
+  std::array<CalibrationFrameSource, 2> sources;
+};
+
 absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
     const std::string& expected_output_generation = {},
     const std::string& expected_invalidation_id = {},
     const std::function<bool()>& is_cancelled = {},
-    const std::string& expected_output_authorization_id = {});
+    const std::string& expected_output_authorization_id = {},
+    const RinkMaskFrameProvenance& frame = {});
 
 absl::Status save_rink_profile(
     const std::string& game_dir,

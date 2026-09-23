@@ -152,6 +152,21 @@ class Configurator {
   bool stitching_calibration_required() const {
     return stitching_calibration_required_;
   }
+  const std::string& stitching_calibration_start_stage() const {
+    return stitching_calibration_start_stage_;
+  }
+  // A preceding bounded preparation already reported calibration completion.
+  // Call only after complete_configuration has revalidated the published mask.
+  absl::Status accept_prepared_rink_mask() {
+    if (rink_mask_required_ || stitching_matcher_model_required_ ||
+        (stitching_calibration_required_ && stitching_calibration_start_stage_ != "rink-mask"))
+      return absl::AbortedError("Calibration changed after rink mask preparation");
+    stitching_calibration_required_ = false;
+    return absl::OkStatus();
+  }
+  bool rink_mask_required() const {
+    return rink_mask_required_;
+  }
   bool stitching_matcher_model_required() const {
     return stitching_matcher_model_required_;
   }
@@ -290,6 +305,7 @@ class Configurator {
   std::string active_stitching_invalidation_id_;
   std::string stitching_calibration_start_stage_;
   bool stitching_calibration_required_{false};
+  bool rink_mask_required_{false};
   bool stitching_matcher_model_required_{false};
   bool scoreboard_perspective_materialized_from_rink_{false};
   bool loaded_generated_stitching_backend_choices_{false};

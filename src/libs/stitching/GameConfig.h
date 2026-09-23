@@ -76,12 +76,17 @@ struct StitchRinkConfiguration {
   std::string display_name;
   // One rotation of the registered camera pair, not per-camera corrections.
   std::array<double, 3> rotation_degrees{0.0, 0.0, 0.0};
+  std::string rink_mask_frame_time{"auto"};
 };
 
 // Definitions live in stitching.rink_configs in the shared baseline. An empty
 // stitching.rink_config selects no venue default (legacy zero rotation).
 absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurations(const YAML::Node& config);
 absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config);
+// Resolves the direct setting, then the selected rink default, then auto.
+absl::StatusOr<std::string> read_rink_mask_frame_time(const YAML::Node& config);
+bool restore_generated_rink_mask_frame_time(YAML::Node& config);
+absl::StatusOr<bool> materialize_rink_mask_frame_time(YAML::Node& config, const YAML::Node& effective);
 // Runtime workers read game-private YAML. Preserve noncanonical effective rink
 // context there only as generated state, restoring prior private intent before
 // the next layered config load. Returns whether the document changed.

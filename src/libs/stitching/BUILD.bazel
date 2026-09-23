@@ -35,6 +35,7 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     ":player_frame_selection",
+    ":rink_mask_frame_time",
     ":control_point_matcher",
     ":stitching_algorithms",
     ":transaction_state",
@@ -758,4 +759,19 @@ cc_test(
   name = "stitching_reframe_test",
   srcs = ["StitchingReframeTest.cpp"],
   deps = [":stitching_reframe"],
+)
+
+cc_library(
+  name = "rink_mask_frame_time",
+  srcs = ["RinkMaskFrameTime.cpp"],
+  hdrs = ["RinkMaskFrameTime.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+  name = "rink_mask_frame_time_test",
+  srcs = ["RinkMaskFrameTimeTest.cpp"],
+  deps = [":rink_mask_frame_time", ":game_config", "@yaml-cpp"],
 )

@@ -830,6 +830,14 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
   return true;
 }
 
+bool restore_generated_worker_choices(YAML::Node& config) {
+  const bool provider = stitching::restore_generated_control_point_execution_provider(config);
+  const bool resolution = stitching::restore_generated_control_point_resolution(config);
+  const bool rink = stitching::restore_generated_stitch_rink_context(config);
+  const bool mask_time = stitching::restore_generated_rink_mask_frame_time(config);
+  return normalize_generated_stitching_backend_choices(config) || provider || resolution || rink || mask_time;
+}
+
 bool is_cam_video_key(const std::string& key) {
   static const std::regex cam_pattern(R"(cam[0-9]+)", std::regex::icase);
   return std::regex_match(key, cam_pattern);
@@ -5384,6 +5392,7 @@ absl::Status Configurator::setup_stitcher_and_masks(
       stitching_matcher_model_required_ = false;
       stitching_calibration_required_ = true;
       stitching_calibration_start_stage_ = "canvas";
+      rink_mask_required_ = StitcherCalibratesFieldMask(pipeline);
       validated_stitching_artifacts_.reset();
     } else if (enabled && (configure_only || one_pass_mode)) {
       int max_output_width = 0;
@@ -5410,6 +5419,7 @@ absl::Status Configurator::setup_stitcher_and_masks(
         field_mask_configured = stitching::is_field_mask_configured_for_stitching_config(
             game_dir.string(), max_output_width, post_stitch_rotate_degrees, {}, validated_stitching_artifacts_);
       }
+      rink_mask_required_ = calibrate_field_mask && !field_mask_configured;
       const char* calibration_pending = g_getenv("HSTREAM_CALIBRATION_PENDING");
       const bool calibration_completion_requested =
           calibration_pending && *calibration_pending && g_strcmp0(calibration_pending, "0") != 0;
@@ -8189,6 +8199,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   HM_ASSIGN_OR_RETURN(resolution_changed, stitching::materialize_control_point_resolution(private_config_, config_));
   bool rink_context_changed = false;
   HM_ASSIGN_OR_RETURN(rink_context_changed, stitching::materialize_stitch_rink_context(private_config_, config_));
+  bool mask_time_changed = false;
+  HM_ASSIGN_OR_RETURN(mask_time_changed, stitching::materialize_rink_mask_frame_time(private_config_, config_));
   std::vector<double> private_projection_parameters;
   HM_ASSIGN_OR_RETURN(
       private_projection_parameters, stitching::read_stitch_projection_parameters(private_config_, projection));
@@ -8225,8 +8237,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       (!private_parameter_projection.has_value() || *private_parameter_projection != projection_name);
 
   const bool private_matches = !provider_changed && !resolution_changed && !rink_context_changed &&
-      private_matcher_value.has_value() && *private_matcher_value == matcher && private_backend_value.has_value() &&
-      *private_backend_value == backend && private_projection_value.has_value() &&
+      !mask_time_changed && private_matcher_value.has_value() && *private_matcher_value == matcher &&
+      private_backend_value.has_value() && *private_backend_value == backend && private_projection_value.has_value() &&
       *private_projection_value == projection && private_autooptimizer_value.has_value() &&
       *private_autooptimizer_value == run_autooptimizer && private_projection_parameters == projection_parameters &&
       private_projection_framing == projection_framing && private_camera == camera;
@@ -8522,6 +8534,11 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
 
   private_config_ = YAML::Clone(latest);
   persisted_private_config_ = YAML::Clone(latest);
+  // Reloading a reference-time override must preserve the same private intent
+  // as load_config(), including explicit backend choices beneath generated
+  // worker values. Preparation repeats this reconciliation between passes.
+  loaded_generated_stitching_backend_choices_ =
+      restore_generated_worker_choices(private_config_) || loaded_generated_stitching_backend_choices_;
   config_["stitching"]["stitch_frame_time"] = requested;
   const auto calibration = get_node(latest, "hstream_ui.stitching_calibration");
   if (calibration.has_value()) {
@@ -8655,11 +8672,7 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   if (private_config.has_value()) {
     const YAML::Node original_private_config = YAML::Clone(*private_config);
     private_config_ = YAML::Clone(*private_config);
-    const bool restored_provider = stitching::restore_generated_control_point_execution_provider(private_config_);
-    const bool restored_resolution = stitching::restore_generated_control_point_resolution(private_config_);
-    const bool restored_rink_context = stitching::restore_generated_stitch_rink_context(private_config_);
-    loaded_generated_stitching_backend_choices_ = normalize_generated_stitching_backend_choices(private_config_) ||
-        restored_rink_context || restored_resolution || restored_provider;
+    loaded_generated_stitching_backend_choices_ = restore_generated_worker_choices(private_config_);
     persisted_private_config_ =
         YAML::Clone(loaded_generated_stitching_backend_choices_ ? original_private_config : private_config_);
     record_explicit_overlay(private_config_, {}, 2);
@@ -8824,6 +8837,7 @@ absl::Status Configurator::complete_configuration(
   stitching_calibration_start_stage_.clear();
   validated_stitching_artifacts_.reset();
   stitching_calibration_required_ = false;
+  rink_mask_required_ = false;
   stitching_matcher_model_required_ = false;
   scoreboard_perspective_materialized_from_rink_ = false;
   const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;

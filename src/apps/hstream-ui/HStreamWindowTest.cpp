@@ -12878,6 +12878,76 @@ bool test_preset_reload_with_missing_tracker() {
   return QDir(game_directory).removeRecursively();
 }
 
+bool test_rink_mask_time(const QString& source_game_directory) {
+  const fs::path source(source_game_directory.toStdString());
+  const fs::path fixture = source.parent_path() / "ui-rink-mask-time";
+  std::error_code error;
+  fs::copy(source, fixture, fs::copy_options::recursive, error);
+  if (error)
+    return expect(false, "Could not copy rink mask fixture");
+  const fs::path config_path = fixture / "config.yaml";
+  YAML::Node config =
+      fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node(YAML::NodeType::Map);
+  config["stitching"]["rink_config"] = "tv-dublin";
+  config["stitching"]["rink_mask_frame_time"] = YAML::Node(YAML::NodeType::Null);
+  config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  config["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+  std::ofstream(config_path) << YAML::Dump(config) << '\n';
+  std::ofstream(fixture / "mapping_0000_x.tif") << "alignment-must-survive";
+  for (int run = 0; run < 4; ++run) {
+    HStreamWindow window;
+    window.show();
+    auto* game = require_child<QLineEdit>(&window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&window, "createGameButton");
+    auto* save = require_child<QPushButton>(&window, "savePresetButton");
+    auto* mode = require_child<QComboBox>(&window, "rinkMaskTimeModeCombo");
+    auto* time = require_child<QLineEdit>(&window, "rinkMaskTimeEdit");
+    auto* hint = require_child<QLabel>(&window, "rinkMaskTimeSourceLabel");
+    if (!game || !create || !save || !mode || !time || !hint)
+      return false;
+    game->setText("ui-rink-mask-time");
+    activate(create);
+    const QString expected_mode = run == 1 ? "custom" : run == 2 ? "auto" : "inherit";
+    if (!expect(mode->currentData() == expected_mode, "Mask time mode must survive save/reload"))
+      return false;
+    if (run == 0 || run == 3) {
+      if (!expect(
+              hint->text().contains("-00:00:01") && !time->isVisible(),
+              "Inherited TV Dublin time must be visible without a custom editor"))
+        return false;
+    }
+    if (run == 3)
+      break;
+    std::ofstream(fixture / "rink_mask_0.png") << "old-mask";
+    std::ofstream(fixture / "s.png") << "old-mask-frame";
+    if (run == 0) {
+      mode->setCurrentIndex(mode->findData("custom"));
+      time->setText("-00:00:02.5");
+    } else {
+      if (run == 1 && !expect(time->text() == "-00:00:02.500", "Signed time must reload with canonical precision"))
+        return false;
+      mode->setCurrentIndex(mode->findData(run == 1 ? "auto" : "inherit"));
+    }
+    if (!expect(save->isEnabled(), "Editing mask time must enable Save preset"))
+      return false;
+    activate(save);
+    config = YAML::LoadFile(config_path.string());
+    const YAML::Node value = config["stitching"]["rink_mask_frame_time"];
+    if (!expect(
+            run == 2 ? value.IsNull() : value.as<std::string>() == (run == 0 ? "-00:00:02.500" : "auto"),
+            "Mask time must persist independently of the reference frame") ||
+        !expect(
+            !fs::exists(fixture / "rink_mask_0.png") && !fs::exists(fixture / "s.png") &&
+                fs::exists(fixture / "mapping_0000_x.tif"),
+            "Changing mask time must remove only dependent mask artifacts") ||
+        !expect(
+            config["hstream_ui"]["stitching_calibration"]["rink_mask_status"].as<std::string>() == "pending",
+            "Changed mask time must mark mask pending"))
+      return false;
+  }
+  return true;
+}
+
 bool test_control_point_resolution(const QString& source_game_directory) {
   const fs::path source(source_game_directory.toStdString());
   const fs::path fixture = source.parent_path() / "ui-feature-resolution";
@@ -15585,6 +15655,10 @@ int main(int argc, char** argv) {
     return test_detector_precision() ? 0 : 1;
   if (!test_detector_precision())
     return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_MASK_TIME_ONLY")) {
+    HStreamWindow window;
+    return test_game_setup(&window, source_root.path()) && test_rink_mask_time(window.gameDirectoryText()) ? 0 : 1;
+  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RESOLUTION_ONLY")) {
     HStreamWindow window;
     return test_game_setup(&window, source_root.path()) && test_control_point_resolution(window.gameDirectoryText())
@@ -15658,8 +15732,8 @@ int main(int argc, char** argv) {
     std::cerr << "test_game_setup failed\n";
     return 1;
   }
-  if (!test_control_point_resolution(window.gameDirectoryText()) || !test_preset_reload_with_missing_tracker() ||
-      !test_stitching_iteration_controls(window.gameDirectoryText()))
+  if (!test_rink_mask_time(window.gameDirectoryText()) || !test_control_point_resolution(window.gameDirectoryText()) ||
+      !test_preset_reload_with_missing_tracker() || !test_stitching_iteration_controls(window.gameDirectoryText()))
     return 1;
   if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
     std::cerr << "test_nonzero_user_stitch_frame_default failed\n";

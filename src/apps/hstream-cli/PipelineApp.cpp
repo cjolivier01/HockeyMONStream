@@ -1,3 +1,4 @@
+#include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 /* clang-format off */
 #include "src/libs/common/Status.h"
 /* clang-format on */
@@ -1345,7 +1346,7 @@ absl::Status PipelineApplication::configureInstances(
 
       // Now auto-configure stuff as needed, i.e. dependent pipelines or stitching (if needed)
       absl::Status configuration_status = app_ctx->complete_configuration(
-          force_reconfigure_,
+          force_reconfigure_ && !rink_mask_alignment_prepared_,
           clean_stitching_artifacts_,
           clean_stitching_from_control_points_,
           clean_stitching_expected_invalidation_id_ ? clean_stitching_expected_invalidation_id_ : "",
@@ -1375,6 +1376,8 @@ absl::Status PipelineApplication::configureInstances(
           return absl::FailedPreconditionError("Complete stitching calibration before preparing INT8 samples");
         hm::pipeline_internal::configure_int8_sampling_pipeline(app_ctx->configurator().config()["pipeline"]);
       }
+      if (rink_mask_prepared_ && !app_ctx->configurator().rink_mask_required())
+        HM_RETURN_IF_ERROR(app_ctx->configurator().accept_prepared_rink_mask());
       // Matcher graphs are optional and large. Provision them only after
       // configuration inspection proves that this launch will regenerate
       // control points. Honor explicit local overrides before fetching an
@@ -1440,6 +1443,19 @@ absl::Status PipelineApplication::configureInstances(
             kCalibrationRunGenerationPath, std::to_string(main_loop_generation_ + 1)));
       }
       YAML::Node config = app_ctx->configurator().config();
+      std::string mask_time;
+      HM_ASSIGN_OR_RETURN(mask_time, hm::stitching::read_rink_mask_frame_time(config));
+      if (mask_time != "auto" && app_ctx->configurator().rink_mask_required() &&
+          app_ctx->configurator().stitching_calibration_required()) {
+        if (app_contexts.size() != 1)
+          return absl::InvalidArgumentError("Timed rink-mask preparation requires one pipeline context");
+        rink_mask_preparation_ = app_ctx->configurator().stitching_calibration_start_stage() == "rink-mask"
+            ? RinkMaskPreparation::kMask
+            : RinkMaskPreparation::kAlignment;
+        hm::pipeline_internal::configure_rink_mask_preparation_pipeline(
+            config["pipeline"], rink_mask_preparation_ == RinkMaskPreparation::kMask);
+        config["pipeline"]["hmstitcher"]["private-properties"]["rink-mask-frame-time"] = mask_time;
+      }
       if (!stitch_frame_time_set_) {
         uint64_t configured_stitch_frame_time_ns = 0;
         HM_ASSIGN_OR_RETURN(configured_stitch_frame_time_ns, configured_stitch_frame_time(config));
@@ -1546,6 +1562,36 @@ absl::Status PipelineApplication::createPipelines(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
     CleanupStack& cleanup_stack) {
   // Section 2: Create pipelines for each instance.
+  if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
+    const auto& app = app_contexts.front();
+    uint64_t duration = GST_CLOCK_TIME_NONE;
+    if (app->config.num_source_sub_bins != 2)
+      return absl::FailedPreconditionError("Timed rink masks require exactly two recorded camera sources");
+    for (guint index = 0; index < 2; ++index) {
+      const auto& source = app->config.multi_source_config[index];
+      if (!source.enable || source.type != NV_DS_SOURCE_URI_MULTIPLE)
+        return absl::FailedPreconditionError("Timed rink masks require two URI-MULTIPLE recorded camera sources");
+      const uint64_t source_duration = duration_for_source_ns(source);
+      if (source_duration == GST_CLOCK_TIME_NONE)
+        return absl::FailedPreconditionError("Cannot determine the recording end for rink mask preparation");
+      duration = std::min(
+          duration,
+          subtract_duration_ns(source_duration, hmstitcher_source_offset_ns(app->config.hmsticher_config, index)));
+    }
+    std::string selection;
+    HM_ASSIGN_OR_RETURN(selection, hm::stitching::read_rink_mask_frame_time(app->configurator().config()));
+    std::optional<int64_t> offset;
+    HM_ASSIGN_OR_RETURN(offset, hm::stitching::ParseRinkMaskFrameTime(selection));
+    if (!offset)
+      return absl::AbortedError("Rink mask frame selection changed during preparation");
+    HM_ASSIGN_OR_RETURN(rink_mask_position_ns_, hm::stitching::ResolveRinkMaskFrameTime(*offset, duration));
+    app->config.hmsticher_config.private_properties.push_back(
+        {"rink-mask-frame-position-ns", std::to_string(rink_mask_position_ns_)});
+    g_print(
+        "HSTREAM_CALIBRATION stage=rink-mask status=started message=Preparing mask at recording time %.3f seconds (%s)\n",
+        double(rink_mask_position_ns_) / GST_SECOND,
+        selection.c_str());
+  }
   for (guint i = 0; i < app_contexts.size(); i++) {
     if (!create_pipeline(
             app_contexts[i].get(),
@@ -1622,7 +1668,8 @@ absl::Status PipelineApplication::createPipelines(
       hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_created" + s);
     }
   }
-  HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
+  if (rink_mask_preparation_ == RinkMaskPreparation::kNone)
+    HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
   return auto_focus_cameras(app_contexts);
 }
 
@@ -2365,7 +2412,11 @@ absl::Status PipelineApplication::createMainLoop(
   stitching_configure_only_active_.store(configure_only_active, std::memory_order_release);
   cleanup_stack.push([this] { stitching_configure_only_active_.store(false, std::memory_order_release); });
   reset_playback_timing_state(current_stage_);
-  g_timeout_add(400, check_for_interrupt_static, nullptr);
+  const guint interrupt_timer = g_timeout_add(400, check_for_interrupt_static, nullptr);
+  cleanup_stack.push([interrupt_timer] {
+    if (GSource* source = g_main_context_find_source_by_id(nullptr, interrupt_timer))
+      g_source_destroy(source);
+  });
 
   auto owned_windows = std::make_shared<std::set<Window>>();
   cleanup_stack.push([this, contexts = app_contexts, stage = current_stage_, owned_windows] {
@@ -2643,7 +2694,11 @@ absl::Status PipelineApplication::playPipelines(
   publish_inspector_topology();
   print_runtime_commands();
   changemode(1);
-  g_timeout_add(40, event_thread_func_static, nullptr);
+  const guint event_timer = g_timeout_add(40, event_thread_func_static, nullptr);
+  cleanup_stack.push([event_timer] {
+    if (GSource* source = g_main_context_find_source_by_id(nullptr, event_timer))
+      g_source_destroy(source);
+  });
   if (g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_ERROR") || g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_EOS")) {
     g_idle_add(inject_stitching_calibration_error_static, nullptr);
   }
@@ -3422,35 +3477,73 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   for (auto stage_item : stage_app_contexts_) {
     current_stage_ = stage_item.first;
     auto& app_contexts = stage_app_contexts_.at(current_stage_);
-    {
-      auto cache_lock_cleanup = absl::MakeCleanup([] { hm::pipeline::ReleaseTensorRtModelCacheLocks(); });
-      emit_ui_startup("stitching", "Discovering source chapters and validating saved stitching artifacts");
-      HM_RETURN_IF_ERROR(configureInstances(stage_count, app_contexts));
-      if (!app_contexts.empty()) {
-        CleanupStack stage_cleanup_stack;
-        emit_ui_startup("pipeline", "Creating the GPU pipeline and loading plugins");
-        HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
-        emit_ui_startup("video", "Opening video sources and preparing output branches");
-        HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
-        if (quit_) {
-          return absl::OkStatus();
+    rink_mask_alignment_prepared_ = false;
+    rink_mask_prepared_ = false;
+    for (size_t preparation_pass = 0;; ++preparation_pass) {
+      rink_mask_preparation_ = RinkMaskPreparation::kNone;
+      rink_mask_preparation_complete_ = false;
+      {
+        auto cache_lock_cleanup = absl::MakeCleanup([] { hm::pipeline::ReleaseTensorRtModelCacheLocks(); });
+        emit_ui_startup("stitching", "Discovering source chapters and validating saved stitching artifacts");
+        HM_RETURN_IF_ERROR(configureInstances(stage_count, app_contexts));
+        if (!app_contexts.empty()) {
+          CleanupStack stage_cleanup_stack;
+          emit_ui_startup("pipeline", "Creating the GPU pipeline and loading plugins");
+          HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
+          emit_ui_startup("video", "Opening video sources and preparing output branches");
+          HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
+          if (quit_) {
+            return absl::OkStatus();
+          }
+          hm::pipeline::ReleaseTensorRtModelCacheLocks();
+          // editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
+          emit_ui_startup("decoding", "Starting decoders and waiting for the first frame");
+          HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
+          if (int8_frame_sampler_) {
+            if (player_scan_interrupted_)
+              return absl::CancelledError("INT8 sampling cancelled");
+            HM_RETURN_IF_ERROR(int8_frame_sampler_->Finish());
+          }
+          if (player_frame_scan_) {
+            if (!player_scan_clean_completion_ || player_scan_interrupted_)
+              return absl::CancelledError("Player frame scan cancelled before completion");
+            HM_RETURN_IF_ERROR(player_frame_scan_->Finish(stitching_player_scan_output_));
+          }
         }
-        hm::pipeline::ReleaseTensorRtModelCacheLocks();
-        // editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
-        emit_ui_startup("decoding", "Starting decoders and waiting for the first frame");
-        HM_RETURN_IF_ERROR(playPipelines(app_contexts, stage_cleanup_stack));
-        if (int8_frame_sampler_) {
-          if (player_scan_interrupted_)
-            return absl::CancelledError("INT8 sampling cancelled");
-          HM_RETURN_IF_ERROR(int8_frame_sampler_->Finish());
-        }
-        if (player_frame_scan_) {
-          if (!player_scan_clean_completion_ || player_scan_interrupted_)
-            return absl::CancelledError("Player frame scan cancelled before completion");
-          HM_RETURN_IF_ERROR(player_frame_scan_->Finish(stitching_player_scan_output_));
-        }
+        HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
       }
-      HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
+      if (rink_mask_preparation_ == RinkMaskPreparation::kNone)
+        break;
+      if (!rink_mask_preparation_complete_ || cintr_ || quit_)
+        return absl::CancelledError("Rink mask preparation stopped before completion");
+      if (preparation_pass >= 2)
+        return absl::AbortedError("Rink mask preparation did not produce a reusable mask");
+      rink_mask_alignment_prepared_ = true;
+      if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
+        rink_mask_prepared_ = true;
+        g_print(
+            "HSTREAM_CALIBRATION stage=calibration status=complete message=Stitching and ice mask preparation are complete\n");
+        if (current_stage_ < 0)
+          break;
+      }
+      for (auto& previous : app_contexts) {
+        auto next = std::make_shared<HmApp>(game_id_ ? *game_id_ : "", previous->app_config_file(), override_gpu_id_);
+        next->person_class_id = -1;
+        next->car_class_id = -1;
+        next->index = previous->index;
+        next->active_source_index = -1;
+        next->element_message_cb = handle_element_message_static;
+        next->bus_message_cb = handle_bus_message_static;
+        next->defer_eos_cb = should_defer_eos_static;
+        next->fatal_pipeline_error_cb = handle_fatal_pipeline_error_static;
+        next->show_bbox_text = previous->show_bbox_text;
+        const absl::Status reload_status = next->load_config();
+        if (!reload_status.ok())
+          return absl::Status(
+              reload_status.code(), "Reloading configuration after rink preparation: " + reload_status.ToString());
+        previous = std::move(next);
+      }
+      runtime_seek_shutdown_requested_ = false;
     }
     if (stage_count) {
       std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -6467,6 +6560,8 @@ gboolean PipelineApplication::event_thread_func_static(gpointer arg) {
 }
 
 uint64_t PipelineApplication::initial_pipeline_position_ns(const HmApp* app_ctx) const {
+  if (rink_mask_preparation_ == RinkMaskPreparation::kMask)
+    return rink_mask_position_ns_;
   const uint64_t configured_position = hm::pipeline_internal::stitch_frame_initial_position(
       start_time_ns_,
       stitch_frame_time_ns_,
@@ -6750,7 +6845,8 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
   if (output_generation && *output_generation && !stitcher_config_path.empty()) {
     generation_status = hm::stitching::validate_stitched_output_generation(
         stitcher_config_path, output_generation, active_invalidation_id);
-    if (generation_status.ok() && !stitching_calibration_only_ &&
+    if (generation_status.ok() && rink_mask_preparation_ != RinkMaskPreparation::kAlignment &&
+        (!stitching_calibration_only_ || stitching_calibration_with_ice_mask_) &&
         !hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation, active_invalidation_id)) {
       generation_status = absl::FailedPreconditionError("Rink mask does not match the current stitched output");
     }
@@ -6765,6 +6861,12 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     return TRUE;
   }
   cancel_stitch_frame_completion_timeout();
+  if (rink_mask_preparation_ != RinkMaskPreparation::kNone) {
+    rink_mask_preparation_complete_ = true;
+    if (main_loop_)
+      g_main_loop_quit(main_loop_);
+    return TRUE;
+  }
   // The stitch artifact generation and completion latch are shared across all
   // contexts in this stage. Only one stitcher posts the completion message.
   // Keep every calibration context classified as such until its old worker is

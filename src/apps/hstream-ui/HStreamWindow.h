@@ -568,6 +568,11 @@ class HStreamWindow : public QMainWindow {
   QCheckBox* projection_auto_crop_check_{nullptr};
   QPushButton* projection_crop_button_{nullptr};
   QComboBox* rink_configuration_combo_{nullptr};
+  QComboBox* rink_mask_time_mode_{nullptr};
+  QLineEdit* rink_mask_time_edit_{nullptr};
+  QLabel* rink_mask_time_source_{nullptr};
+  QString saved_rink_mask_time_mode_;
+  QString saved_rink_mask_time_text_;
   std::array<QDoubleSpinBox*, 2> rink_angle_spins_{};
   QPushButton* rink_leveling_button_{nullptr};
   QPushButton* rink_default_button_{nullptr};

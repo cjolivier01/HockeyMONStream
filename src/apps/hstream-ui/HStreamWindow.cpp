@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/libs/common/PinnedFile.h"
+#include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "src/apps/hstream-ui/Int8PreparationDialog.h"
@@ -4516,6 +4517,7 @@ ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& c
   result.invalidated +=
       remove_yaml_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "mask_frame"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
@@ -5702,6 +5704,27 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       updatePresetDirtyState();
     });
   }
+  rink_mask_time_mode_ = new QComboBox();
+  rink_mask_time_mode_->setObjectName("rinkMaskTimeModeCombo");
+  rink_mask_time_mode_->addItem("Rink default", "inherit");
+  rink_mask_time_mode_->addItem("Automatic", "auto");
+  rink_mask_time_mode_->addItem("Custom time", "custom");
+  rink_mask_time_edit_ = new QLineEdit();
+  rink_mask_time_edit_->setObjectName("rinkMaskTimeEdit");
+  rink_mask_time_edit_->setPlaceholderText("[-]HH:MM:SS[.mmm]");
+  set_control_help(
+      rink_mask_time_edit_,
+      "Frame used to create the final stitched ice mask. Positive times are measured from the recording start; "
+      "negative times from the synchronized recording end. Example: -00:00:01 is one second before the end. "
+      "Independent of Reference frame and Playback start.");
+  rink_mask_time_source_ = new QLabel();
+  rink_mask_time_source_->setObjectName("rinkMaskTimeSourceLabel");
+  rink_mask_time_source_->setWordWrap(true);
+  connect(rink_mask_time_mode_, &QComboBox::currentIndexChanged, this, [this] {
+    updateRinkLevelingControls();
+    updatePresetDirtyState();
+  });
+  connect(rink_mask_time_edit_, &QLineEdit::textChanged, this, [this] { updatePresetDirtyState(); });
   rink_leveling_button_ = new QPushButton("Level rink…");
   rink_leveling_button_->setObjectName("selectRinkLevelingButton");
   rink_default_button_ = new QPushButton("Use rink default");
@@ -6975,7 +6998,13 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     algorithms_layout->addWidget(rink_rotation_source_, 24, 0, 1, 2);
     algorithms_layout->addWidget(rink_default_button_, 25, 0);
     algorithms_layout->addWidget(rink_leveling_button_, 25, 1);
-    algorithms_layout->setRowStretch(26, 1);
+    auto* mask_time_label = new QLabel("Ice mask frame");
+    mask_time_label->setBuddy(rink_mask_time_mode_);
+    algorithms_layout->addWidget(mask_time_label, 26, 0);
+    algorithms_layout->addWidget(rink_mask_time_mode_, 26, 1);
+    algorithms_layout->addWidget(rink_mask_time_edit_, 27, 1);
+    algorithms_layout->addWidget(rink_mask_time_source_, 28, 0, 1, 2);
+    algorithms_layout->setRowStretch(29, 1);
     algorithms_scroll->setWidget(algorithms_page);
     control_tabs->addTab(algorithms_scroll, "Algorithms");
     updateProjectionParameterControls();
@@ -7336,6 +7365,18 @@ void HStreamWindow::loadRinkLevelingControls(const YAML::Node& config) {
   if (!profiles.ok() || !selection.ok())
     throw std::invalid_argument(!profiles.ok() ? profiles.status().ToString() : selection.status().ToString());
   rink_configurations_ = *profiles;
+  if (rink_mask_time_mode_ && rink_mask_time_edit_) {
+    YAML::Node private_values = YAML::Clone(config);
+    hm::stitching::restore_generated_rink_mask_frame_time(private_values);
+    const YAML::Node effective_values = merge_yaml_maps(baseline_config_, private_values);
+    const YAML::Node stitching = effective_values["stitching"];
+    const YAML::Node value = stitching && stitching.IsMap() ? stitching["rink_mask_frame_time"] : YAML::Node();
+    const QSignalBlocker mode_blocker(rink_mask_time_mode_);
+    const QSignalBlocker time_blocker(rink_mask_time_edit_);
+    const QString text = value && value.IsScalar() ? QString::fromStdString(value.as<std::string>()) : QString();
+    set_combo_to_data(rink_mask_time_mode_, text.isEmpty() ? "inherit" : text == "auto" ? "auto" : "custom");
+    rink_mask_time_edit_->setText(text == "auto" ? QString() : text);
+  }
   const QSignalBlocker blocker(rink_configuration_combo_);
   rink_configuration_combo_->clear();
   rink_configuration_combo_->addItem("No rink default", QString());
@@ -7369,7 +7410,25 @@ void HStreamWindow::updateRinkLevelingControls() {
       loaded_projection_framing_.rotation_inherited ? "Using rink defaults" : "Using this game's angle override");
   const bool enabled = mappingBackend() == "nona" && !isArchiveFinalizing() &&
       (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning);
-  rink_configuration_combo_->setEnabled(enabled);
+  const bool idle =
+      !isArchiveFinalizing() && (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning);
+  rink_configuration_combo_->setEnabled(idle);
+  if (rink_mask_time_mode_) {
+    const bool custom = rink_mask_time_mode_->currentData().toString() == "custom";
+    rink_mask_time_mode_->setEnabled(idle);
+    rink_mask_time_edit_->setEnabled(idle && custom);
+    rink_mask_time_edit_->setVisible(custom);
+    std::string default_time = "auto";
+    for (const auto& profile : rink_configurations_)
+      if (profile.id == rink_configuration_combo_->currentData().toString().toStdString())
+        default_time = profile.rink_mask_frame_time;
+    rink_mask_time_source_->setText(
+        rink_mask_time_mode_->currentData().toString() == "inherit"
+            ? (default_time == "auto" ? "Rink default: first available stitched frame"
+                                      : QString("Rink default: %1").arg(QString::fromStdString(default_time)))
+            : (custom ? "Uses this game's time; preserves stitching alignment"
+                      : "Uses the first available stitched frame"));
+  }
   for (const auto* name : {"rinkConfigurationLabel", "rinkPitchLabel", "rinkRollLabel"}) {
     if (auto* label = findChild<QLabel*>(name))
       label->setEnabled(enabled);
@@ -7425,6 +7484,22 @@ bool HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) {
   if (!rink_configuration_combo_)
     return true;
   hm::stitching::restore_generated_stitch_rink_context(config);
+  hm::stitching::restore_generated_rink_mask_frame_time(config);
+  if (rink_mask_time_mode_) {
+    const QString mode = rink_mask_time_mode_->currentData().toString();
+    if (mode == "inherit") {
+      config["stitching"]["rink_mask_frame_time"] = YAML::Node(YAML::NodeType::Null);
+    } else if (mode == "auto") {
+      config["stitching"]["rink_mask_frame_time"] = "auto";
+    } else {
+      const auto parsed = hm::stitching::ParseRinkMaskFrameTime(rink_mask_time_edit_->text().trimmed().toStdString());
+      if (!parsed.ok() || !parsed->has_value()) {
+        appendLog("Could not save ice mask frame: enter [-]HH:MM:SS[.mmm].");
+        return false;
+      }
+      config["stitching"]["rink_mask_frame_time"] = hm::stitching::FormatRinkMaskFrameTime(*parsed);
+    }
+  }
   const std::string selected = rink_configuration_combo_->currentData().toString().toStdString();
   config["stitching"]["rink_config"] = selected.empty() ? YAML::Node(YAML::NodeType::Null) : YAML::Node(selected);
   // Workers read private YAML. Supply the effective catalog temporarily while
@@ -16118,6 +16193,8 @@ void HStreamWindow::captureSavedControlState() {
   saved_projection_ = stitchProjection();
   saved_projection_parameters_ = projection_parameter_values_;
   saved_projection_framing_ = stitchProjectionFraming();
+  saved_rink_mask_time_mode_ = rink_mask_time_mode_ ? rink_mask_time_mode_->currentData().toString() : QString();
+  saved_rink_mask_time_text_ = rink_mask_time_edit_ ? rink_mask_time_edit_->text() : QString();
   saved_rink_configuration_ =
       rink_configuration_combo_ ? rink_configuration_combo_->currentData().toString() : QString();
   updatePresetDirtyState();
@@ -16147,6 +16224,9 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
   bool dirty = retry_required || detectorSelectionChanged() ||
+      (rink_mask_time_mode_ && saved_rink_mask_time_mode_ != rink_mask_time_mode_->currentData().toString()) ||
+      (rink_mask_time_mode_ && rink_mask_time_mode_->currentData().toString() == "custom" &&
+       saved_rink_mask_time_text_ != rink_mask_time_edit_->text()) ||
       saved_iteration_settings_ != stitchingIterationSettings() || !pending_crop_geometry_.empty() ||
       (rink_configuration_combo_ && saved_rink_configuration_ != rink_configuration_combo_->currentData().toString()) ||
       saved_projection_framing_.rotation_inherited != loaded_projection_framing_.rotation_inherited ||
@@ -16472,6 +16552,7 @@ void HStreamWindow::loadSavedControlConfig() {
   try {
     YAML::Node config = loaded_config->has_value() ? **loaded_config : YAML::Node(YAML::NodeType::Map);
     hm::stitching::restore_generated_stitch_rink_context(config);
+    hm::stitching::restore_generated_rink_mask_frame_time(config);
     std::map<QString, double> staged_controls;
     const QString staged_resolution = controlPointResolutionFromGameConfig(config);
     QString staged_high_bit_depth_mode = highBitDepthMode();
@@ -17112,6 +17193,7 @@ bool HStreamWindow::applySavedControlConfig(
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
   }
+  const auto previous_mask_time = hm::stitching::read_rink_mask_frame_time(merge_yaml_maps(baseline_config_, config));
   if (!detectorPrecision().isEmpty() && detectorSelectionChanged()) {
     try {
       const QString engine = detectorEnginePath();
@@ -17531,7 +17613,10 @@ bool HStreamWindow::applySavedControlConfig(
   const bool rotation_changed_for_artifacts = previous_stitch_rotation_found != current_stitch_rotation_found ||
       (previous_stitch_rotation_found && current_stitch_rotation_found &&
        YAML::Dump(previous_stitch_rotation) != YAML::Dump(current_stitch_rotation));
-  if (rotation_changed_for_artifacts) {
+  const auto current_mask_time = hm::stitching::read_rink_mask_frame_time(merge_yaml_maps(baseline_config_, config));
+  const bool mask_time_changed =
+      !previous_mask_time.ok() || !current_mask_time.ok() || *previous_mask_time != *current_mask_time;
+  if (rotation_changed_for_artifacts || mask_time_changed) {
     const ArtifactInvalidationResult invalidation = invalidate_rotation_dependent_artifacts(config);
     config["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "pending";
     if (invalidate_rink_masks) {

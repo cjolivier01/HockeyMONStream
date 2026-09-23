@@ -263,6 +263,8 @@ void StitcherPriv::Shutdown() {
   release_high_bit_field_mask_canvas();
   calibration_invalidation_id_.clear();
   calibration_run_generation_.clear();
+  mask_preparation_ = false;
+  mask_frame_ = {};
   field_mask_authority_monitor_.reset();
   update_live_output_epoch(std::nullopt, std::string(), std::string());
   release_rotation_scratch();
@@ -1655,6 +1657,12 @@ bool StitcherPriv::SetProperty(const Property& prop) {
   } else if (prop.key == "cancel-pending-work") {
     calibration_cancelled_.store(true, std::memory_order_release);
     RequestShutdown();
+  } else if (prop.key == "mask-preparation") {
+    mask_preparation_ = std::atol(prop.value.c_str()) != 0;
+  } else if (prop.key == "rink-mask-frame-time") {
+    mask_frame_.selection = prop.value;
+  } else if (prop.key == "rink-mask-frame-position-ns") {
+    mask_frame_.recording_time_ns = std::stoull(prop.value);
   } else if (prop.key == "calibration-run-generation") {
     calibration_run_generation_ = prop.value;
   } else if (
@@ -2462,13 +2470,17 @@ absl::Status StitcherPriv::GenerateOutput(
             HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
             field_mask_surface = hm::surface::Surface(&high_bit_field_mask_canvas_params_);
           }
+          mask_frame_.sources = {
+              calibration_frame_source(frame_info_left.frame_meta),
+              calibration_frame_source(frame_info_right.frame_meta)};
           absl::Status mask_status = stitching::create_field_mask(
               config_file_,
               field_mask_surface,
               output_generation,
               calibration_invalidation_id_,
               [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
-              output_authorization_id);
+              output_authorization_id,
+              mask_frame_);
           release_high_bit_field_mask_canvas();
           if (!mask_status.ok()) {
             if (absl::IsAborted(mask_status)) {
@@ -2531,7 +2543,8 @@ absl::Status StitcherPriv::GenerateOutput(
           if (process_calibration_completion_latch.try_begin_delivery(completion_scope)) {
             if (calibrate_field_mask_)
               report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
-            report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
+            if (!mask_preparation_)
+              report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
             g_print("hmstitcher: one-pass stitching configuration complete\n");
             std::fflush(stdout);
             process_calibration_completion_latch.finish_delivery(completion_scope, /*delivered=*/true);

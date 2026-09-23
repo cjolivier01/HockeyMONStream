@@ -359,6 +359,7 @@ cc_library(
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:control_point_matcher",
         "//src/libs/stitching:game_config",
+        "//src/libs/stitching:rink_mask_frame_time",
         "//src/libs/stitching:live_output_epoch",
         "//src/libs/stitching:live_stitching_generation",
         "//src/libs/stitching:stitching_algorithms",

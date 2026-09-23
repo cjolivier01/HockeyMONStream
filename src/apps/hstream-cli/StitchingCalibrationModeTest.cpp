@@ -159,5 +159,22 @@ pipeline:
           pipeline["tests"]["file-loop"].as<int>() == 0 && pipeline["tests"]["pipeline-recreate-sec"].as<int>() == 0 &&
           !hm::StitcherCalibratesFieldMask(pipeline),
       "scan preserves single forward sampled decode without rewinds");
+  for (bool create_mask : {false, true}) {
+    YAML::Node preparation = YAML::Clone(pipeline);
+    preparation["primary-gie"]["enable"] = 1;
+    preparation["tracker"]["enable"] = 1;
+    preparation["hmaudio0"]["enable"] = 1;
+    preparation["sink2"]["enable"] = 1;
+    preparation["hmstitcher"]["configure-only"] = 1;
+    hm::pipeline_internal::configure_rink_mask_preparation_pipeline(preparation, create_mask);
+    ok &= expect(
+        !enabled(preparation, "primary-gie") && !enabled(preparation, "tracker") &&
+            !enabled(preparation, "ds-fieldmask") && !enabled(preparation, "hmplaycropper") &&
+            !enabled(preparation, "hmaudio0") && !enabled(preparation, "sink2") &&
+            preparation["sink0"]["type"].as<int>() == 1 && preparation["hmstitcher"]["configure-only"].as<int>() == 0 &&
+            preparation["hmstitcher"]["one-pass-mode"].as<int>() == 1 &&
+            hm::StitcherCalibratesFieldMask(preparation) == create_mask,
+        "Mask preparation must isolate alignment/mask work from all Program outputs and consumers");
+  }
   return ok ? 0 : 1;
 }

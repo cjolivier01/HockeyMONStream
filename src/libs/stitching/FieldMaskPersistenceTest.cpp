@@ -166,6 +166,25 @@ int main() {
         expect(!cv::imread((root / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE).empty(), "first mask must load");
     ok &=
         expect(!cv::imread((root / "rink_mask_1.png").string(), cv::IMREAD_GRAYSCALE).empty(), "second mask must load");
+    const YAML::Node original_mask_config = YAML::LoadFile((root / "config.yaml").string());
+    for (const YAML::Node& invalid_frame : {YAML::Load("bad-metadata"), YAML::Load("{selection: '00:00:05'}")}) {
+      YAML::Node changed = YAML::Clone(original_mask_config);
+      changed["stitching"]["rink_mask_frame_time"] = "00:00:05";
+      changed["rink"]["mask_frame"] = invalid_frame;
+      std::ofstream(root / "config.yaml") << YAML::Dump(changed) << '\n';
+      ok &= expect(
+          !hm::stitching::is_field_mask_configured(root.string()),
+          "Malformed or incomplete timed provenance must require a new mask without throwing");
+    }
+    YAML::Node legacy = YAML::Clone(original_mask_config);
+    legacy["rink"].remove("mask_frame");
+    std::ofstream(root / "config.yaml") << YAML::Dump(legacy) << '\n';
+    ok &= expect(hm::stitching::is_field_mask_configured(root.string()), "Legacy automatic masks must remain reusable");
+    legacy["stitching"]["rink_mask_frame_time"] = "00:00:05";
+    std::ofstream(root / "config.yaml") << YAML::Dump(legacy) << '\n';
+    ok &=
+        expect(!hm::stitching::is_field_mask_configured(root.string()), "A changed time must invalidate a saved mask");
+    std::ofstream(root / "config.yaml") << YAML::Dump(original_mask_config) << '\n';
     struct stat config_metadata{};
     ok &= expect(
         ::stat((root / "config.yaml").c_str(), &config_metadata) == 0 && (config_metadata.st_mode & 0777) == 0600,
