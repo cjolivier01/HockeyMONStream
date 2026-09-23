@@ -112,12 +112,15 @@ struct StitchingBackendChoices {
   ControlPointResolution control_point_resolution{DefaultControlPointResolution()};
   hm::onnx::ExecutionProvider control_point_execution_provider{hm::onnx::ExecutionProvider::kCuda};
   std::string calibration_frame_selection_fingerprint;
+  std::string manual_control_point_fingerprint;
 };
 
 // Generated exact-pair plans are optional. Loading existing maps only validates
 // the plan's contents/fingerprint; source files are checked when extracting a new
 // generation, so an archive remains playable after its original media moves.
 absl::StatusOr<std::string> player_frame_selection_fingerprint(const YAML::Node& config);
+// Empty means automatic matching; nonempty identifies an immutable edited set.
+absl::StatusOr<std::string> manual_control_point_fingerprint(const YAML::Node& config);
 // Full scan/handoff provenance, including the baseline camera geometry.
 absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config, uint64_t anchor_ns);
 // Replay retains the frozen plan when solve geometry changes. Physical media,

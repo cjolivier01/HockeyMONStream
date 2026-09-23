@@ -390,8 +390,33 @@ bool resolution_settings(const fs::path& root) {
   return ok;
 }
 
+bool manual_match_settings(const fs::path& root) {
+  auto store = open_store(root);
+  auto record = make_record(store, "manual", 1);
+  record.workspace.settings.manual_control_points = std::string(64, 'a');
+  YAML::Node config = YAML::LoadFile((record.workspace.game_directory / "config.yaml").string());
+  config["stitching"]["manual_control_points"] = *record.workspace.settings.manual_control_points;
+  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  bool ok = expect(SaveStitchingExperiment(store, record).ok(), "manual match identity must persist");
+  const auto restored = LoadStitchingExperimentStore(store);
+  ok &= expect(
+      restored.ok() && restored->experiments.size() == 1 &&
+          restored->experiments[0].workspace.settings.manual_control_points ==
+              record.workspace.settings.manual_control_points,
+      "manual match identity must survive catalog reload");
+  auto changed = record;
+  changed.workspace.settings.manual_control_points = std::string(64, 'b');
+  config["stitching"]["manual_control_points"] = *changed.workspace.settings.manual_control_points;
+  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  ok &= expect(
+      !SaveStitchingExperiment(store, changed).ok(), "an existing candidate cannot replace its manual match identity");
+  ok &= expect(!SaveStitchingExperiment(store, record).ok(), "catalog rejects a mismatched workspace manual identity");
+  return ok;
+}
+
 bool run(const fs::path& root) {
   bool ok = true;
+  ok &= manual_match_settings(root / "manual-settings");
   ok &= resolution_settings(root / "resolution-settings");
   ok &= stopped_process_with_corrupt_config(root / "stopped-corrupt-config");
   ok &= retained_main_counts(root / "retained-main-counts");

@@ -148,6 +148,57 @@ Unlike the reusable selected input bundle, these pictures belong to a specific s
 match pictures before matching, and promotion copies them to the main game. Existing experiments and pairs that
 failed matching may lack these pictures; the inspector reports that explicitly and never regenerates them.
 
+## Editing matches
+
+Open **Inspect selected frames** and choose **Edit matches…**. The editor opens at about 90% of the available
+display, with its own native maximize/restore controls and two large camera views. It loads the clean retained
+full-resolution PNGs, including 16-bit inputs, rather than enlarging the match-preview JPEGs. Only the current
+pair is decoded, with file-size, dimension and decoder-allocation limits; an unavailable image is an error.
+This is offline still-image editing and adds no video-surface readback.
+
+Choose a **Frame pair**, then select a marker in either camera or use the match selector. Both endpoints of the
+selected correspondence are highlighted. Drag either endpoint or edit its X/Y fields in original camera-pixel
+coordinates; selecting a point does not round its saved floating-point coordinates. Each camera has independent
+zoom, pan, **1:1**, **Fit**, and **Find selected** controls. Drag empty space to pan and use the wheel to zoom at the
+pointer. **Add match** takes one click in each camera; Escape cancels an unfinished addition. **Delete** removes the
+selected correspondence. **Undo/Redo** covers coordinate edits, additions and deletions across pairs, and
+**Reset all to automatic** restores the original automatic set for every pair as one undoable operation.
+
+**Save & recalibrate** publishes the edit into a new **Manual** candidate and immediately calibrates only that row.
+The original candidate remains available, and unrelated queued rows stay queued. The Manual row shows **Edited**
+in the control-point column. Compare its moving preview before choosing **Use selected in main Program**.
+Cancelling the editor leaves the inspected result unchanged. If its generation or snapshot changed while the
+editor was open, saving fails and requires reopening the current matches.
+
+Older results with only preview JPEGs offer **Prepare editable copy…**. This creates and calibrates a private
+candidate to retain its original-resolution inputs and numeric matches, then opens the editor. It requires usable
+source inputs and preserves the historical result. Merely opening the inspector never starts this preparation.
+
+`src/libs/stitching/CalibrationMatches.*` stores immutable clean PNG bundles under
+`calibration-matches/inputs/<input fingerprint>/` and numeric documents under
+`calibration-matches/sets/<match fingerprint>.yaml`. Documents retain ordered source identities/times, image
+sizes and hashes, matcher/lens metadata, the selected-frame fingerprint, and floating-point endpoints. Manual
+documents reference their automatic original and share its input bundle. Experiment persistence and promotion
+copy the referenced bundles and automatic original, so promoted matches survive deletion of experiment history.
+`hstream_ui.stitching_calibration.match_snapshot` identifies the inspectable automatic or manual set;
+`stitching.manual_control_points` activates an authoritative manual set for solving.
+
+A manual solve consumes its retained original images and all edited correspondences across pairs. It bypasses
+feature-matcher construction and model lookup, and does not apply the automatic per-pair cap again. It also cannot
+silently fall back to a smaller subset of pairs. The existing minimum-count, geometric-consensus, coverage and
+canvas checks remain authoritative: adding points does not guarantee a valid or better alignment. Calibrated
+AKAZE endpoints are stored in raw camera coordinates and converted through the matching immutable lens calibration
+for solving. Changed source bindings, synchronization, anchor, frame count, selected plan, matcher or lens
+calibration are rejected rather than causing an automatic rematch. The manual fingerprint participates in worker
+generation claims, canvas provenance and saved-alignment reframe binding.
+
+In the main UI, changing Reference frame, Frames, the control-point budget, matcher, feature image size, or camera
+configuration/FOV clears the active manual reference and inspection snapshot. Replacing camera inputs also clears
+those references. View edits such as projection, crop/framing and leveling preserve them; supported NONA view
+changes retain the saved alignment through the existing reframe path. Clearing a reference does not delete its
+immutable match documents or input images. Retained player-frame selection has its own lifetime and continues to
+follow the selection rules below.
+
 ## Selecting the Program calibration
 
 **Use selected in main Program** validates and transactionally republishes the candidate's existing Hugin project,
@@ -191,6 +242,13 @@ It also checks one scan across control-point variants, same-count selection inhe
 inspection, dependency removal, the full queue bound, bootstrap failure and cancellation, and the Close confirmation. Backend tests distinguish invalid reports from unavailable coverage and preserve selection
 provenance through promotion.
 
+`//src/apps/hstream-ui:match_editor_dialog_test` checks 16-bit image loading, unmodified coordinates on selection,
+numeric and dragged endpoint edits, complete two-camera additions, deletion, undo/redo and reset across pairs.
+It checks that controls fit a 1280×720 window; under X11 it also verifies modal ownership and actual maximize/restore
+geometry. `HSTREAM_TEST_MATCH_EDITOR_SCREENSHOT=/path/to/editor.png` saves its initial editor view.
+`//src/libs/stitching:calibration_matches_test` checks immutable storage, input identity and lens-coordinate
+validation. Experiment backend tests cover new manual workspace isolation and stale-snapshot rejection.
+
 For a real GPU check, build the dialog test and CLI with the host's CUDA architecture configuration (for example,
 `--config=opt --cpu=k8 --config=blackwell` on an RTX 5090). The opt-in mode requires an X11 display and a **disposable
 game copy** with local camera inputs and relative `game.videos` paths:
@@ -224,3 +282,20 @@ control-point budget, requests a new solve using the retained frames. Selecting 
 at the same frame count cannot silently remove Main's player selection.
 
 See [the alignment preservation design](preserve-stitching-alignment-design.md) for ownership and retry behavior.
+
+For the real-media/GPU editor test on the desktop development machine:
+
+```sh
+DISPLAY=:0 scripts/test_stitching_match_editor_e2e.sh "$HOME/Videos/tv-14-1-p1"
+```
+
+The test creates an isolated game under a new `~/Videos/hstream-match-editor-e2e-*`
+folder, using read-only video hard links and private config, sidecar and image
+copies. The source and test folder must share a filesystem. It runs automatic
+matching, edits/deletes points through the actual Qt controls, recalibrates the
+new candidate, checks the GPU preview, promotes it into the isolated game, and
+reopens its saved points. It verifies that the promoted Hugin project contains
+the exact saved count. Logs, editor/preview screenshots, and `result.txt` stay in
+the test folder. The source game is unchanged. This opt-in script builds the
+Blackwell desktop configuration; the ordinary editor tests also run offscreen
+and on X11 to check physical maximization/restoration and mouse interactions.

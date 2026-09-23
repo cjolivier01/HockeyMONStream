@@ -3699,6 +3699,10 @@ bool config_references_video_path(const YAML::Node& config, const QDir& game_dir
 
 bool clear_stitching_frame_offsets(YAML::Node& config) {
   bool changed = false;
+  if (config["stitching"].IsMap())
+    changed = config["stitching"].remove("manual_control_points");
+  if (config["hstream_ui"]["stitching_calibration"].IsMap())
+    changed = config["hstream_ui"]["stitching_calibration"].remove("match_snapshot") || changed;
   YAML::Node game_stitching = config["game"]["stitching"];
   if (game_stitching && game_stitching["frame_offsets"]) {
     game_stitching.remove("frame_offsets");
@@ -8379,6 +8383,11 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     config["hstream_ui"]["stitching_calibration"]["control_points"] = control_points;
     config["hstream_ui"]["stitching_calibration"]["frame_count"] = frame_count;
+    if (active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed || frame_count_changed ||
+        control_point_matcher_changed || camera_changed) {
+      remove_yaml_path(config, {"stitching", "manual_control_points"});
+      remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "match_snapshot"});
+    }
     if (active_force_reconfigure_ || saved_frame_count != frame_count) {
       hm::stitching::ClearStitchingReframeIntent(config);
     } else {
@@ -8502,9 +8511,10 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         !projection_parameters_changed && !projection_framing_changed && !run_autooptimizer_changed;
     if (width_only_change_from_complete_state && !canvas_constraint.cleanup_required)
       clean_all = false;
-    if (retain_selected_frames && clean_all) {
-      // The frozen plan owns synchronization as well as its exact input images.
-      // Ordinary solves must not discard the selected input offsets.
+    const bool retain_manual_matches = config["stitching"]["manual_control_points"].IsScalar();
+    if ((retain_selected_frames || retain_manual_matches) && clean_all) {
+      // Retained matches/plans own synchronization and exact input images.
+      // Geometry-only solves must not discard their input offsets.
       clean_all = false;
       clean_from_control_points = true;
     }
@@ -17477,6 +17487,11 @@ bool HStreamWindow::applySavedControlConfig(
   if (!writeRinkLevelingSelection(config))
     return false;
   write_stitch_max_output_width_override(config, selected_max_output_width, default_stitch_max_output_width_);
+  if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
+      camera_changed) {
+    remove_yaml_path(config, {"stitching", "manual_control_points"});
+    remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "match_snapshot"});
+  }
   if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
       mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
       projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) {

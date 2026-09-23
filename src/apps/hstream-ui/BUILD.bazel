@@ -251,6 +251,7 @@ cc_library(
     deps = [
         "//src/libs/common:status",
         "//src/libs/common:utils",
+        "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
@@ -294,6 +295,34 @@ cc_test(
 )
 
 cc_library(
+    name = "match_editor_dialog",
+    srcs = ["MatchEditorDialog.cpp"],
+    hdrs = ["MatchEditorDialog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":action_icons",
+        "//src/libs/stitching:calibration_matches",
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_test(
+    name = "match_editor_dialog_test",
+    srcs = ["MatchEditorDialogTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":action_icons",
+        ":match_editor_dialog",
+        "@qt//:qt_test",
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_library(
     name = "stitching_experiment_dialog",
     srcs = ["CalibrationFrameView.cpp", "StitchingExperimentDialog.cpp"],
     hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h"],
@@ -302,6 +331,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":action_icons",
+        ":match_editor_dialog",
+        "//src/libs/stitching:calibration_matches",
         ":stitching_experiment_backend",
         ":stitching_experiment_store",
         "//src/libs/common:baseline_config",
@@ -346,6 +377,7 @@ cc_test(
     deps = [
         ":stitching_experiment_backend",
         ":stitching_experiment_store",
+        "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
@@ -591,4 +623,23 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":ui_diagnostics", "//src/libs/common:process_diagnostics", "@qt//:qt_widgets"],
+)
+
+cc_binary(
+    name = "stitching_match_editor_e2e",
+    testonly = True,
+    srcs = ["StitchingMatchEditorE2e.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":action_icons",
+        ":match_editor_dialog",
+        ":stitching_experiment_dialog",
+        ":stitching_experiment_store",
+        "//src/libs/stitching:calibration_matches",
+        "//src/libs/stitching:game_config",
+        "@qt//:qt_test",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
 )

@@ -7,6 +7,7 @@
 #include "hstream/src/libs/common/StitchingFramePairMeta.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
+#include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
@@ -1088,6 +1089,33 @@ absl::Status StitcherPriv::initialize_calibration_frame_selection() {
   const YAML::Node stitching_config = (*config)["stitching"];
   if (!stitching_config || !stitching_config.IsMap())
     return absl::OkStatus();
+  std::string manual_fingerprint;
+  HM_ASSIGN_OR_RETURN(manual_fingerprint, stitching::manual_control_point_fingerprint(*config));
+  if (!manual_fingerprint.empty()) {
+    stitching::CalibrationMatchSet saved;
+    HM_ASSIGN_OR_RETURN(saved, stitching::LoadCalibrationMatches(config_file_, manual_fingerprint));
+    if (!saved.manual)
+      return absl::FailedPreconditionError("Manual match reference identifies an automatic snapshot");
+    HM_RETURN_IF_ERROR(
+        stitching::ValidateCalibrationMatchInputs(saved, *config, config_file_, calibration_frame_count_));
+    HM_ASSIGN_OR_RETURN(captured_frame_selection_fingerprint_, stitching::player_frame_selection_fingerprint(*config));
+    if (saved.selection_fingerprint != captured_frame_selection_fingerprint_)
+      return absl::FailedPreconditionError("Edited matches belong to a different selected frame plan");
+    for (const auto& frame : saved.frames) {
+      cached_calibration_frame_pairs_.push_back({
+          .left = surface::Surface(&cached_calibration_surface_placeholder_),
+          .right = surface::Surface(&cached_calibration_surface_placeholder_),
+          .left_source = {frame.source_paths[0], frame.source_seconds[0]},
+          .right_source = {frame.source_paths[1], frame.source_seconds[1]},
+          .left_image = frame.images[0],
+          .right_image = frame.images[1],
+      });
+    }
+    g_print(
+        "hmstitcher: reusing %zu retained frame pairs with manual matches; automatic matching is bypassed\n",
+        saved.frames.size());
+    return absl::OkStatus();
+  }
   const YAML::Node cached_marker = stitching_config["calibration_frame_inputs_fingerprint"];
   if (cached_marker && !cached_marker.IsNull() && !cached_marker.IsScalar())
     return absl::InvalidArgumentError("Selected-frame input cache reference must be a fingerprint");

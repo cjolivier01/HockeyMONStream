@@ -8193,6 +8193,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   HM_ASSIGN_OR_RETURN(provider, stitching::read_control_point_execution_provider(config_));
   std::string calibration_frame_selection_fingerprint;
   HM_ASSIGN_OR_RETURN(calibration_frame_selection_fingerprint, stitching::player_frame_selection_fingerprint(config_));
+  std::string manual_points;
+  HM_ASSIGN_OR_RETURN(manual_points, stitching::manual_control_point_fingerprint(config_));
   const stitching::StitchingBackendChoices backend_choices{
       matcher_name,
       backend_name,
@@ -8203,7 +8205,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       camera,
       resolution,
       provider,
-      calibration_frame_selection_fingerprint};
+      calibration_frame_selection_fingerprint,
+      manual_points};
 
   bool provider_changed = false;
   HM_ASSIGN_OR_RETURN(
@@ -8637,6 +8640,8 @@ absl::Status Configurator::reconcile_selected_frame_count_override(
   }
   remove_yaml_key_path(latest, {"stitching", "calibration_frame_selection"});
   remove_yaml_key_path(latest, {"stitching", "calibration_frame_inputs_fingerprint"});
+  remove_yaml_key_path(latest, {"stitching", "manual_control_points"});
+  remove_yaml_key_path(latest, {"hstream_ui", "stitching_calibration", "match_snapshot"});
   latest["stitching"]["calibration_frame_count"] = requested_count;
   YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
   calibration["frame_count"] = requested_count;
@@ -8652,6 +8657,7 @@ absl::Status Configurator::reconcile_selected_frame_count_override(
   persisted_private_config_ = YAML::Clone(latest);
   remove_yaml_key_path(config_, {"stitching", "calibration_frame_selection"});
   remove_yaml_key_path(config_, {"stitching", "calibration_frame_inputs_fingerprint"});
+  remove_yaml_key_path(config_, {"stitching", "manual_control_points"});
   config_["stitching"]["calibration_frame_count"] = requested_count;
   config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(calibration);
   if (changed_invalidation_id)
@@ -9109,6 +9115,8 @@ absl::Status Configurator::complete_configuration(
         HM_ASSIGN_OR_RETURN(expected_provider, stitching::read_control_point_execution_provider(config_));
         std::string expected_selection_fingerprint;
         HM_ASSIGN_OR_RETURN(expected_selection_fingerprint, stitching::player_frame_selection_fingerprint(config_));
+        std::string expected_manual_points;
+        HM_ASSIGN_OR_RETURN(expected_manual_points, stitching::manual_control_point_fingerprint(config_));
         const stitching::StitchingBackendChoices expected_backend_choices{
             get_node_value(config_, "stitching.control_point_matcher", std::string()),
             get_node_value(config_, "stitching.mapping_backend", std::string()),
@@ -9119,7 +9127,8 @@ absl::Status Configurator::complete_configuration(
             expected_camera,
             expected_resolution,
             expected_provider,
-            expected_selection_fingerprint};
+            expected_selection_fingerprint,
+            expected_manual_points};
         HM_RETURN_IF_ERROR(
             stitching::validate_stitching_backend_generation(
                 current, effective_invalidation_id, expected_backend_choices));

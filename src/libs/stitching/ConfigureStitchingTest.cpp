@@ -1,9 +1,10 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
-#include "hstream/src/libs/common/BaselineConfig.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -512,6 +513,131 @@ bool expect_cleared_player_plan_invalidates_geometry(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_manual_match_provenance(const fs::path& tmpdir) {
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    const fs::path directory = tmpdir / ("manual-provenance-" + std::to_string(scenario));
+    if (!write_valid_stitching_artifacts(directory) || !write_player_frame_canvas_provenance(directory, ""))
+      return false;
+    if (scenario != 0) {
+      std::ifstream input(directory / "stitching_canvas_provenance");
+      std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+      text.replace(0, std::string("version=10").size(), "version=11");
+      text += "manual-control-points=" + std::string(64, 'a') + "\n";
+      if (!write_text_file(directory / "stitching_canvas_provenance", text))
+        return false;
+    }
+    YAML::Node config;
+    if (scenario == 0) {
+      // The manual identity alone must engage compatibility checking, even
+      // when every algorithm setting comes from an inherited layer.
+      config["stitching"]["manual_control_points"] = std::string(64, 'a');
+    } else {
+      config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+      config["stitching"]["control_point_resolution"] = "native";
+      config["stitching"]["mapping_backend"] = "nona";
+      config["stitching"]["projection"] = "equirectangular";
+      if (scenario != 3)
+        config["stitching"]["manual_control_points"] = std::string(64, scenario == 1 ? 'a' : 'b');
+    }
+    if (!write_text_file(directory / "config.yaml", YAML::Dump(config)))
+      return false;
+    if (!expect_configured(
+            directory, scenario == 1, "only the exact manual match identity may reuse the saved stitched geometry"))
+      return false;
+  }
+  return true;
+}
+
+bool expect_manual_solver_uses_exact_union(const fs::path& tmpdir) {
+  using namespace hm::stitching;
+  const fs::path game = tmpdir / "manual-solver";
+  fs::create_directory(game);
+  YAML::Node config = YAML::Load(
+      "game: {videos: {left: [left.mp4], right: [right.mp4]}, stitching: {frame_offsets: {left: 0, right: 0}}}\n"
+      "stitching: {control_point_matcher: superpoint-lightglue, control_point_execution_provider: cpu, mapping_backend: nona, projection: general-panini, run_autooptimizer: true, calibration_frame_count: 2}\n");
+  if (!write_text_file(game / "left.mp4", "left") || !write_text_file(game / "right.mp4", "right"))
+    return false;
+  CalibrationMatchSet automatic;
+  const auto context = CalibrationMatchSourceContext(config, game);
+  if (!context.ok())
+    return false;
+  automatic.source_context = *context;
+  for (int pair = 0; pair < 2; ++pair) {
+    CalibrationMatchFrame frame;
+    for (size_t camera = 0; camera < 2; ++camera) {
+      frame.images[camera] = game / (std::to_string(pair) + (camera ? "-right.png" : "-left.png"));
+      frame.sizes[camera] = {80, 60};
+      frame.source_paths[camera] = (game / (camera ? "right.mp4" : "left.mp4")).string();
+      frame.source_seconds[camera] = pair;
+      if (!cv::imwrite(frame.images[camera].string(), cv::Mat(60, 80, CV_8UC3, cv::Scalar(40, 80, 120))))
+        return false;
+    }
+    for (int index = 0; index < 12; ++index)
+      frame.matches.push_back({{float(10 + index), float(20 + pair)}, {float(12 + index), float(21 + pair)}, 0.9f});
+    automatic.frames.push_back(frame);
+  }
+  const auto original = PublishCalibrationMatches(game, automatic);
+  if (!original.ok())
+    return false;
+  auto manual = LoadCalibrationMatches(game, *original);
+  if (!manual.ok())
+    return false;
+  manual->manual = true;
+  manual->automatic_fingerprint = *original;
+  manual->fingerprint.clear();
+  const auto published = PublishCalibrationMatches(game, *manual);
+  if (!published.ok())
+    return false;
+  manual = LoadCalibrationMatches(game, *published);
+  if (!manual.ok())
+    return false;
+  config["stitching"]["manual_control_points"] = *published;
+  if (!write_text_file(game / "config.yaml", YAML::Dump(config)))
+    return false;
+  const fs::path generator = game / "pto-gen";
+  const fs::path optimizer = game / "optimizer";
+  if (!write_text_file(
+          generator,
+          "#!/bin/sh\ncat > hm_project.pto <<'PTO'\np f19 w80 h60 v180\ni w80 h60 f0 v100 n\"left.png\"\ni w80 h60 f0 v100 n\"right.png\"\n# control points\nPTO\n") ||
+      !write_text_file(
+          optimizer,
+          "#!/bin/sh\nawk '/^c / {count++} END {print count}' hm_project.pto >> \"$HM_TEST_MANUAL_COUNT\"\nexit 1\n"))
+    return false;
+  ::chmod(generator.c_str(), 0700);
+  ::chmod(optimizer.c_str(), 0700);
+  const fs::path counts = game / "solver-counts";
+  const pid_t child = ::fork();
+  if (child == 0) {
+    ::setenv("HM_FEATURE_MATCHER_CPU_ONNX_MODEL", "/missing/manual-must-not-load-a-matcher.onnx", 1);
+    ::setenv("HM_MAX_CONTROL_POINTS", "10", 1);
+    ::setenv("HM_PTO_GEN", generator.c_str(), 1);
+    ::setenv("HM_AUTOOPTIMISER", optimizer.c_str(), 1);
+    ::setenv("HM_TEST_MANUAL_COUNT", counts.c_str(), 1);
+    NvBufSurfaceParams left{};
+    NvBufSurfaceParams right{};
+    std::vector<StitchingCalibrationFramePair> pairs(2, {hm::surface::Surface(&left), hm::surface::Surface(&right)});
+    for (size_t pair = 0; pair < pairs.size(); ++pair) {
+      pairs[pair].left_image = manual->frames[pair].images[0];
+      pairs[pair].right_image = manual->frames[pair].images[1];
+      pairs[pair].left_source = {manual->frames[pair].source_paths[0], double(pair)};
+      pairs[pair].right_source = {manual->frames[pair].source_paths[1], double(pair)};
+    }
+    const auto result = configure_stitching(game.string(), pairs);
+    std::ifstream input(counts);
+    const std::string actual((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (result.ok() || actual != "24\n") {
+      std::cerr << "Manual solver must receive all 24 points exactly once despite CP10 and missing model: " << result
+                << "; counts=" << actual << '\n';
+      ::_exit(1);
+    }
+    ::_exit(0);
+  }
+  if (child < 0)
+    return false;
+  int status = 0;
+  return ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 bool expect_capture_plan_changes_abort_before_extraction(const fs::path& tmpdir) {
   using namespace hm::stitching;
   const fs::path directory = tmpdir / "capture-plan-identity";
@@ -935,8 +1061,14 @@ bool expect_clean_preserves_selected_inputs(const fs::path& tmpdir) {
     config["game"]["stitching"]["frame_offsets"][camera ? "right" : "left"] = camera ? 0.0 : 3.0;
   }
   plan.selected.push_back(anchor);
-  for (const char* key : {"baseline_generation", "output_generation", "detector_identity", "rink_mask_sha256",
-                          "rink_mask_revision", "fieldmask_settings", "output_rotation_degrees"})
+  for (const char* key :
+       {"baseline_generation",
+        "output_generation",
+        "detector_identity",
+        "rink_mask_sha256",
+        "rink_mask_revision",
+        "fieldmask_settings",
+        "output_rotation_degrees"})
     plan.context[key] = "fixture";
   const auto source_context = player_frame_source_context(config, 0);
   if (!source_context.ok())
@@ -951,8 +1083,7 @@ bool expect_clean_preserves_selected_inputs(const fs::path& tmpdir) {
   config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
   const fs::path saved_inputs = dir / "player-frame-inputs" / plan.fingerprint;
   fs::create_directories(saved_inputs);
-  if (!write_text_file(saved_inputs / "retained-input", "bundle") ||
-      !write_text_file(dir / "seam_file.png", "stale") ||
+  if (!write_text_file(saved_inputs / "retained-input", "bundle") || !write_text_file(dir / "seam_file.png", "stale") ||
       !write_text_file(dir / "config.yaml", YAML::Dump(config)))
     return false;
   const auto cleaned = clean_stitching_artifacts(dir.string());
@@ -2572,6 +2703,12 @@ int main() {
   if (!write_text_file(fixture_config_root / "baseline.yaml", YAML::Dump(fixture_baseline)))
     finish(tmpdir, 53);
   ::setenv("HM_CONFIG_ROOT", fixture_config_root.c_str(), 1);
+  if (!expect_manual_match_provenance(tmpdir)) {
+    finish(tmpdir, 55);
+  }
+  if (!expect_manual_solver_uses_exact_union(tmpdir)) {
+    finish(tmpdir, 56);
+  }
   if (!expect_ordinary_frame_inspection_is_bounded_and_owned(tmpdir)) {
     finish(tmpdir, 52);
   }

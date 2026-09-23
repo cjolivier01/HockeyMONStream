@@ -612,6 +612,149 @@ bool experiment_resolutions(const fs::path& root) {
   return ok;
 }
 
+bool edited_match_workspace(const fs::path& root) {
+  using namespace hm::stitching;
+  const fs::path original_game = root / "edited-original";
+  if (!write(original_game / "left.mp4", "left") || !write(original_game / "right.mp4", "right") ||
+      !write(original_game / "left_calibration.json", "{}"))
+    return false;
+  YAML::Node config = YAML::Load(
+      "game: {videos: {left: [left.mp4], right: [right.mp4]}}\n"
+      "stitching: {control_point_matcher: superpoint-lightglue, calibration_frame_count: 1}\n"
+      "hstream_ui: {stitching_calibration: {invalidation_id: source-owner, status: complete, control_points: 100, frame_count: 1}}\n");
+  if (!write(original_game / "config.yaml", YAML::Dump(config)))
+    return false;
+  const auto candidate =
+      CreateStitchingExperimentWorkspace(original_game, root / "source-session", {100, 1, "00:00:00", std::nullopt}, 1);
+  if (!expect(candidate.ok(), "editable fixture starts with a real linked-media workspace"))
+    return false;
+  const fs::path game = candidate->game_directory;
+  config = YAML::LoadFile((game / "config.yaml").string());
+  fs::create_symlink(original_game / "right.mp4", game / "right-99.mp4");
+  CalibrationMatchSet automatic;
+  const auto context = CalibrationMatchSourceContext(config, game);
+  if (!context.ok()) {
+    std::cerr << "Cannot identify edited fixture sources: " << context.status() << '\n';
+    return false;
+  }
+  automatic.source_context = *context;
+  CalibrationMatchFrame frame;
+  for (size_t camera = 0; camera < 2; ++camera) {
+    frame.images[camera] = game / (camera ? "right.png" : "left.png");
+    frame.sizes[camera] = {80, 60};
+    frame.source_paths[camera] = (game / (camera ? "right.mp4" : "left.mp4")).string();
+    if (!cv::imwrite(frame.images[camera].string(), cv::Mat(60, 80, CV_8UC3, cv::Scalar(20, 40, 60))))
+      return false;
+  }
+  for (int i = 0; i < 12; ++i)
+    frame.matches.push_back({{float(i + 10), 20}, {float(i + 12), 22}, 0.9f});
+  automatic.frames.push_back(frame);
+  const auto published = PublishCalibrationMatches(game, automatic);
+  if (!expect(published.ok(), "automatic editable fixture must publish"))
+    return false;
+  config["hstream_ui"]["stitching_calibration"]["match_snapshot"] = *published;
+  const std::string original_config = YAML::Dump(config);
+  if (!write(game / "config.yaml", original_config))
+    return false;
+  auto source_matches = LoadCalibrationMatches(game, *published);
+  if (!source_matches.ok()) {
+    std::cerr << "Cannot load edited fixture matches: " << source_matches.status() << '\n';
+    return false;
+  }
+  auto edited = *source_matches;
+  edited.frames[0].matches[0].left.x += 2;
+  edited.frames[0].matches.erase(edited.frames[0].matches.begin() + 1);
+  StitchingExperimentWorkspace source = *candidate;
+  const auto workspace =
+      CreateEditedStitchingExperimentWorkspace(source, root / "edited-session", *published, edited, 1);
+  if (!expect(workspace.ok(), "edited matches must create an isolated replacement candidate")) {
+    if (!workspace.ok())
+      std::cerr << workspace.status() << '\n';
+    return false;
+  }
+  const auto saved = LoadCalibrationMatches(workspace->game_directory, *workspace->settings.manual_control_points);
+  bool ok = expect(
+      saved.ok() && saved->manual && saved->automatic_fingerprint == *published &&
+          saved->frames[0].matches.size() == 11 && saved->frames[0].matches[0].left.x == 12,
+      "replacement preserves edits and original automatic provenance");
+  ok &= expect(
+      fs::read_symlink(workspace->game_directory / "left.mp4") == fs::canonical(original_game / "left.mp4") &&
+          fs::read_symlink(workspace->game_directory / "left_calibration.json") ==
+              fs::canonical(original_game / "left_calibration.json"),
+      "cloned media and calibration sidecars point directly to the original regular files");
+  ok &= expect(
+      !fs::exists(workspace->game_directory / "right-99.mp4"),
+      "workspace clones only carry explicitly configured camera videos");
+  if (saved.ok()) {
+    auto again = *saved;
+    again.frames[0].matches[0].right.y += 1;
+    const auto subsequent =
+        CreateEditedStitchingExperimentWorkspace(*workspace, root / "edited-session", saved->fingerprint, again, 5);
+    ok &= expect(subsequent.ok(), "a manual replacement can be edited again");
+    if (subsequent.ok()) {
+      const auto matches =
+          LoadCalibrationMatches(subsequent->game_directory, *subsequent->settings.manual_control_points);
+      ok &= expect(
+          matches.ok() && matches->automatic_fingerprint == *published,
+          "successive edits retain the original automatic match set");
+    }
+  }
+  const auto selected =
+      BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+  ok &= expect(
+      selected.ok() &&
+          YAML::Load(*selected)["stitching"]["manual_control_points"].as<std::string>() ==
+              *workspace->settings.manual_control_points,
+      "promotion configuration retains the selected manual replacement identity");
+  std::ifstream original(game / "config.yaml");
+  const std::string after((std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
+  ok &= expect(after == original_config, "editing preserves the original candidate configuration");
+  ok &= expect(
+      !CreateEditedStitchingExperimentWorkspace(source, root / "edited-session", std::string(64, 'a'), edited, 2).ok(),
+      "stale editor snapshot must fail instead of replacing another solve");
+  edited.frames[0].source_seconds[0] += 1;
+  ok &= expect(
+      !CreateEditedStitchingExperimentWorkspace(source, root / "edited-session", *published, edited, 3).ok(),
+      "edited input identities cannot change the inspected frame pair");
+  ok &= expect(
+      !CreateStitchingExperimentWorkspace(workspace->game_directory, root / "edited-session", source.settings, 6).ok(),
+      "general workspace creation must still reject linked inputs outside the selected game");
+  const auto plain = CreateStitchingExperimentEditableCopy(*workspace, root / "edited-session", 4);
+  if (!expect(plain.ok(), "a fresh automatic candidate can be derived from an edited candidate"))
+    return false;
+  const YAML::Node plain_config = YAML::LoadFile((plain->game_directory / "config.yaml").string());
+  ok &= expect(
+      !plain_config["stitching"]["manual_control_points"] &&
+          !plain_config["hstream_ui"]["stitching_calibration"]["match_snapshot"],
+      "fresh automatic candidates must clear inherited manual and inspection references");
+  auto stale = *workspace;
+  stale.invalidation_id = "stale-owner";
+  ok &= expect(
+      !CreateStitchingExperimentEditableCopy(stale, root / "edited-session", 7).ok(),
+      "automatic copies must reject a stale source generation");
+  YAML::Node invalid = YAML::LoadFile((workspace->game_directory / "config.yaml").string());
+  invalid["game"]["videos"]["left"][0] = (original_game / "left.mp4").string();
+  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(invalid)))
+    return false;
+  ok &= expect(
+      !CreateStitchingExperimentEditableCopy(*workspace, root / "edited-session", 8).ok(),
+      "clones must reject configured media names outside their workspace");
+  invalid["game"]["videos"]["left"][0] = "nested/../left.mp4";
+  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(invalid)))
+    return false;
+  ok &= expect(
+      !CreateStitchingExperimentEditableCopy(*workspace, root / "edited-session", 9).ok(),
+      "clones must reject parent traversal even when it resolves to an owned media link");
+  fs::create_directory_symlink(original_game, workspace->game_directory / "linked-directory");
+  invalid["game"]["videos"]["left"][0] = "linked-directory/left.mp4";
+  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(invalid)))
+    return false;
+  ok &= expect(
+      !CreateStitchingExperimentEditableCopy(*workspace, root / "edited-session", 10).ok(),
+      "clones must reject configured videos reached through a directory symlink");
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -627,6 +770,9 @@ int main() {
       fs::remove_all(root, ignored);
     }
   } cleanup{root};
+
+  if (!edited_match_workspace(root))
+    return 24;
 
   const fs::path game = root / "game";
   const fs::path experiments = root / "experiments";

@@ -118,6 +118,7 @@ cc_library(
   deps = [
     ":stitching_reframe",
     ":calibration_match_images",
+    ":calibration_matches",
     ":calibration_frame_exif",
     ":player_frame_input_store",
     ":imu_synchronization",
@@ -296,6 +297,24 @@ cc_test(
   name = "calibration_match_images_test",
   srcs = ["CalibrationMatchImagesTest.cpp"],
   deps = [":calibration_match_images"],
+)
+
+cc_library(
+  name = "calibration_matches",
+  srcs = ["CalibrationMatches.cpp"],
+  hdrs = ["CalibrationMatches.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-lcrypto"],
+  deps = [
+    ":feature_matcher",
+    ":canvas_constraint_check",
+    ":transaction_state",
+    "//src/libs/common:status",
+    "//src/libs/common:utils",
+    "@yaml-cpp",
+    "@opencv_linux//:opencv",
+  ],
 )
 
 cc_library(
@@ -774,4 +793,13 @@ cc_test(
   name = "rink_mask_frame_time_test",
   srcs = ["RinkMaskFrameTimeTest.cpp"],
   deps = [":rink_mask_frame_time", ":game_config", "@yaml-cpp"],
+)
+
+cc_test(
+  name = "calibration_matches_test",
+  srcs = ["CalibrationMatchesTest.cpp"],
+  deps = [
+    ":calibration_matches",
+    "@opencv_linux//:opencv",
+  ],
 )
