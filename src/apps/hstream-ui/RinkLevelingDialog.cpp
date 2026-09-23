@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
 #include <QtCore/QCryptographicHash>
@@ -105,6 +106,8 @@ RinkLevelingDialog::RinkLevelingDialog(
     auto* actions = new QHBoxLayout();
     for (const auto& name : {"Undo point", "Clear", "Fit image"}) {
       auto* button = new QPushButton(name);
+      button->setIcon(action_icon(
+          QString(name) == "Undo point" ? ActionIcon::Undo : QString(name) == "Clear" ? ActionIcon::Delete : ActionIcon::Fit));
       button->setObjectName(QString("rinkLevelingCamera%1%2").arg(camera).arg(QString(name).remove(' ')));
       actions->addWidget(button);
       connect(button, &QPushButton::clicked, this, [this, camera, name]() {
@@ -172,9 +175,9 @@ RinkLevelingDialog::RinkLevelingDialog(
     angles->addWidget(spin);
   }
   angles->addStretch();
-  previous_button_ = new QPushButton("Prev");
+  previous_button_ = new QPushButton(action_icon(ActionIcon::Previous), "Prev");
   previous_button_->setObjectName("previousRinkLevelingButton");
-  next_button_ = new QPushButton("Next");
+  next_button_ = new QPushButton(action_icon(ActionIcon::Next), "Next");
   next_button_->setObjectName("nextRinkLevelingButton");
   for (auto* button : {previous_button_, next_button_})
     button->setAutoDefault(false);
@@ -203,12 +206,15 @@ RinkLevelingDialog::RinkLevelingDialog(
       ? buttons->addButton("Skip leveling", QDialogButtonBox::RejectRole)
       : buttons->button(QDialogButtonBox::Cancel);
   reject_button->setObjectName(in_progress_calibration_ ? "skipRinkLevelingButton" : "cancelRinkLevelingButton");
+  reject_button->setIcon(action_icon(in_progress_calibration_ ? ActionIcon::Next : ActionIcon::Cancel));
   if (in_progress_calibration_) {
     auto* cancel_calibration = buttons->addButton("Cancel calibration", QDialogButtonBox::DestructiveRole);
+    cancel_calibration->setIcon(action_icon(ActionIcon::Cancel));
     cancel_calibration->setObjectName("cancelRinkCalibrationButton");
     connect(cancel_calibration, &QPushButton::clicked, this, [this]() { cancelCalibration(); });
   }
   accept_button_ = buttons->addButton("Use angles", QDialogButtonBox::AcceptRole);
+  accept_button_->setIcon(action_icon(ActionIcon::Apply));
   accept_button_->setObjectName("acceptRinkLevelingButton");
   accept_button_->setEnabled(false);
   connect(reject_button, &QPushButton::clicked, this, &RinkLevelingDialog::reject);
@@ -718,6 +724,8 @@ void RinkLevelingDialog::estimate() {
                  : "To change camera settings, return to the points, choose Cancel, then recalibrate."));
         auto* use_points = confirmation->addButton("Use points anyway", QMessageBox::AcceptRole);
         auto* select_again = confirmation->addButton("Select points again", QMessageBox::RejectRole);
+        use_points->setIcon(action_icon(ActionIcon::Apply));
+        select_again->setIcon(action_icon(ActionIcon::Reset));
         confirmation->setDefaultButton(select_again);
         confirmation->setEscapeButton(select_again);
         rectangle_confirmation_ = confirmation;

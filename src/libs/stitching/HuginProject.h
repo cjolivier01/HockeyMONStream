@@ -125,7 +125,7 @@ class HuginProject {
   static absl::StatusOr<std::string> InsertControlPoints(
       const std::string& pto,
       const std::vector<FeatureMatch>& matches,
-      size_t minimum_control_points = 16);
+      size_t minimum_control_points = kMinimumCalibrationControlPoints);
   static absl::StatusOr<std::pair<size_t, size_t>> ParseCanvasSize(const std::string& pto);
   static absl::StatusOr<int> ParseProjection(const std::string& pto);
   static absl::StatusOr<double> ParseHorizontalFov(const std::string& pto);

@@ -351,8 +351,48 @@ bool retained_main_counts(const fs::path& root) {
   return ok;
 }
 
+bool resolution_settings(const fs::path& root) {
+  auto store = open_store(root);
+  auto legacy = make_record(store, "resolution", 1);
+  bool ok = expect(SaveStitchingExperiment(store, legacy).ok(), "legacy rows without image size remain saveable");
+  int sequence = 1;
+  for (const std::string size : {"native", "1k", "2k"}) {
+    auto record = make_record(store, "resolution", ++sequence);
+    record.workspace.settings.control_point_resolution = size;
+    YAML::Node config = YAML::LoadFile((record.workspace.game_directory / "config.yaml").string());
+    config["stitching"]["control_point_resolution"] = size;
+    write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+    ok &= expect(SaveStitchingExperiment(store, record).ok(), "each explicit image size persists independently");
+    auto changed = record;
+    changed.workspace.settings.control_point_resolution = size == "native" ? "1k" : "native";
+    config["stitching"]["control_point_resolution"] = *changed.workspace.settings.control_point_resolution;
+    write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+    ok &= expect(
+        !SaveStitchingExperiment(store, changed).ok(),
+        "updating an existing candidate cannot change its frozen image size even when config agrees");
+    ok &= expect(
+        !SaveStitchingExperiment(store, record).ok(), "a changed workspace size cannot retain the old catalog setting");
+    config["stitching"]["control_point_resolution"] = size;
+    write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  }
+  const auto restored = LoadStitchingExperimentStore(store);
+  if (!expect(restored.ok() && restored->experiments.size() == 4, "image size variants survive history reload"))
+    return false;
+  ok &= expect(
+      !restored->experiments[0].workspace.settings.control_point_resolution &&
+          restored->experiments[1].workspace.settings.control_point_resolution == "native" &&
+          restored->experiments[2].workspace.settings.control_point_resolution == "1k" &&
+          restored->experiments[3].workspace.settings.control_point_resolution == "2k",
+      "history distinguishes absent legacy image size from every explicit size");
+  auto invalid = make_record(store, "resolution", ++sequence);
+  invalid.workspace.settings.control_point_resolution = "bad-size";
+  ok &= expect(!SaveStitchingExperiment(store, invalid).ok(), "catalog rejects invalid image-size settings");
+  return ok;
+}
+
 bool run(const fs::path& root) {
   bool ok = true;
+  ok &= resolution_settings(root / "resolution-settings");
   ok &= stopped_process_with_corrupt_config(root / "stopped-corrupt-config");
   ok &= retained_main_counts(root / "retained-main-counts");
   {

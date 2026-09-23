@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
 
 #include <QtCore/QDebug>
 #include <QtCore/QtGlobal>
@@ -20,6 +21,7 @@ int main(int argc, char** argv) {
   }
 #endif
   QApplication app(argc, argv);
+  install_button_icon_style();
   app.setWindowIcon(hm::ui_internal::application_icon());
   const QString desktop_error = hm::ui_internal::ensure_desktop_integration(QCoreApplication::applicationFilePath());
   if (!desktop_error.isEmpty())

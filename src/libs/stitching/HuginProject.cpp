@@ -56,7 +56,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr size_t kMinimumUsableMatches = 16;
 constexpr double kMaximumOptimizationRmsPixels = 50.0;
 constexpr size_t kHardMaximumCanvasDimension = 65536;
 constexpr uint64_t kHardMaximumCanvasPixels = 256ULL * 1024ULL * 1024ULL;
@@ -2273,7 +2272,7 @@ absl::Status HuginProject::Configure(
   const size_t minimum_usable_matches = options.control_point_matcher == ControlPointMatcher::kAkazeHamming &&
           options.mapping_backend != MappingBackend::kNona
       ? 6
-      : kMinimumUsableMatches;
+      : kMinimumCalibrationControlPoints;
   if (matches.size() < minimum_usable_matches) {
     return absl::FailedPreconditionError("Insufficient control points for Hugin optimization");
   }

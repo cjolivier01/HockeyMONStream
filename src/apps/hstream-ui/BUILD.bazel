@@ -20,8 +20,12 @@ QT_UI_COMPATIBILITY = select({
 filegroup(
     name = "runtime_sources",
     srcs = [
+        "ActionIcons.cpp",
+        "ActionIcons.h",
         "ApplicationIdentity.cpp",
         "ApplicationIdentity.h",
+        "CalibrationFrameView.cpp",
+        "CalibrationFrameView.h",
         "HStreamWindow.cpp",
         "HStreamWindow.h",
         "Int8PreparationDialog.cpp",
@@ -57,6 +61,15 @@ filegroup(
 )
 
 cc_library(
+    name = "action_icons",
+    srcs = ["ActionIcons.cpp"],
+    hdrs = ["ActionIcons.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_widgets"],
+)
+
+cc_library(
     name = "scoreboard_selection_dialog",
     srcs = ["ScoreboardSelectionDialog.cpp"],
     hdrs = ["ScoreboardSelectionDialog.h"],
@@ -65,6 +78,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":action_icons",
         "@qt//:qt_network",
         "@qt//:qt_widgets",
     ],
@@ -77,7 +91,10 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = ["@qt//:qt_widgets"],
+    deps = [
+        ":action_icons",
+        "@qt//:qt_widgets",
+    ],
 )
 
 cc_library(
@@ -98,6 +115,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":action_icons",
         ":scoreboard_selection_dialog",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
@@ -115,6 +133,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":action_icons",
         ":rink_leveling_dialog",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
@@ -201,6 +220,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":action_icons",
         "//src/libs/recording",
         ":camera_experiment_source",
         ":camera_experiment_preview",
@@ -242,6 +262,7 @@ cc_library(
         ":stitching_experiment_backend",
         "//src/libs/common:status",
         "//src/libs/common:utils",
+        "//src/libs/stitching:game_config",
         "//src/libs/stitching:player_frame_selection",
         "//src/libs/stitching:transaction_state",
         "@yaml-cpp",
@@ -263,15 +284,19 @@ cc_test(
 
 cc_library(
     name = "stitching_experiment_dialog",
-    srcs = ["StitchingExperimentDialog.cpp"],
-    hdrs = ["StitchingExperimentDialog.h"],
+    srcs = ["CalibrationFrameView.cpp", "StitchingExperimentDialog.cpp"],
+    hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":action_icons",
         ":stitching_experiment_backend",
         ":stitching_experiment_store",
+        "//src/libs/common:baseline_config",
+        "//src/libs/common:user_config",
         "//src/libs/common:utils",
+        "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
         "//src/libs/stitching:player_frame_selection",
         "//src/libs/stitching:transaction_state",
@@ -288,6 +313,7 @@ cc_test(
     linkopts = ["-lxcb"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        ":action_icons",
         ":stitching_experiment_dialog",
         ":stitching_experiment_store",
         "//src/libs/stitching:calibration_match_images",
@@ -346,6 +372,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":action_icons",
         ":application_identity",
         ":camera_experiment_dialog",
         ":pipeline_inspector_widget",
@@ -412,6 +439,7 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":action_icons",
         ":hstream_window",
         # DeepStream's nvbufsurface libraries use the CUDA Driver API. Link
         # the toolkit stub so package builds do not require a host GPU driver.
@@ -473,7 +501,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = ["@qt//:qt_test", "@qt//:qt_widgets"],
+    deps = [":action_icons", "@qt//:qt_test", "@qt//:qt_widgets"],
 )
 
 cc_test(

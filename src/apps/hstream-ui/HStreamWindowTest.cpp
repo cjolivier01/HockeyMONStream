@@ -13037,11 +13037,13 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
           YAML::Dump(config["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_frame_plan),
           "Saving unrelated playback settings with unchanged reference/count must retain the promoted frame plan"))
     return false;
-  control_points->setValue(control_points->value() + 1);
+  control_points->setValue(10);
   activate(save);
   config = YAML::LoadFile(config_path.string());
   if (!expect(
-          YAML::Dump(config["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_frame_plan) &&
+          control_points->value() == 10 &&
+              config["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 10 &&
+              YAML::Dump(config["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_frame_plan) &&
               config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "features" &&
               window.logText().contains("stitching calibration marked stale: control-point limit"),
           "Changing stitching feature settings must regenerate from the same selected frame pairs"))

@@ -20,6 +20,7 @@
 
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
@@ -128,7 +129,8 @@ uint64_t anchor(const StitchingExperimentSettings& settings) {
 
 bool same_settings(const StitchingExperimentSettings& left, const StitchingExperimentSettings& right) {
   return left.control_points == right.control_points && left.frame_count == right.frame_count &&
-      left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees;
+      left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees &&
+      left.control_point_resolution == right.control_point_resolution;
 }
 
 YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
@@ -141,6 +143,13 @@ YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
   node["control_points"] = settings.control_points;
   node["frame_count"] = settings.frame_count;
   node["reference"] = settings.stitch_frame_time;
+  if (settings.control_point_resolution) {
+    require(
+        !settings.control_point_resolution->empty() &&
+            hm::stitching::ParseControlPointResolution(*settings.control_point_resolution).ok(),
+        "Experiment control-point resolution is invalid");
+    node["control_point_resolution"] = *settings.control_point_resolution;
+  }
   if (settings.rink_rotation_degrees) {
     for (double value : *settings.rink_rotation_degrees) {
       require(std::isfinite(value) && std::abs(value) <= 180, "Experiment rotation is invalid");
@@ -151,13 +160,15 @@ YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
 }
 
 StitchingExperimentSettings parse_settings(const YAML::Node& node) {
-  keys(node, {"control_points", "frame_count", "reference", "rotation"});
+  keys(node, {"control_points", "frame_count", "reference", "rotation", "control_point_resolution"});
   StitchingExperimentSettings settings;
   const uint64_t control_points = uint_value(node["control_points"]);
   require(control_points > 0 && control_points <= std::numeric_limits<int>::max(), "Invalid control-point budget");
   settings.control_points = static_cast<int>(control_points);
   settings.frame_count = count_value(node["frame_count"]);
   settings.stitch_frame_time = string_value(node["reference"], 12);
+  if (node["control_point_resolution"])
+    settings.control_point_resolution = string_value(node["control_point_resolution"], 16);
   if (node["rotation"]) {
     require(node["rotation"].IsSequence() && node["rotation"].size() == 3, "Invalid experiment rotation tuple");
     std::array<double, 3> rotation;
@@ -354,6 +365,13 @@ absl::StatusOr<YAML::Node> validate_workspace_config(
           calibration["frame_count"].as<int>(0) == workspace.settings.frame_count &&
           config["stitching"]["calibration_frame_count"].as<int>(0) == workspace.settings.frame_count,
       "Saved experiment count/settings no longer match their workspace");
+  if (workspace.settings.control_point_resolution) {
+    const auto actual = hm::stitching::read_control_point_resolution(config);
+    const auto expected = hm::stitching::ParseControlPointResolution(*workspace.settings.control_point_resolution);
+    require(
+        config["stitching"]["control_point_resolution"] && actual.ok() && expected.ok() && *actual == *expected,
+        "Saved experiment control-point resolution no longer matches its workspace");
+  }
   return config;
 }
 

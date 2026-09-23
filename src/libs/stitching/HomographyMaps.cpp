@@ -32,7 +32,8 @@ constexpr double kAffineRansacReprojectionThreshold = 10.0;
 constexpr double kRansacConfidence = 0.999;
 constexpr int kRansacMaxIterations = 10000;
 constexpr double kProjectivePoleEpsilon = 1e-9;
-constexpr size_t kRobustConsensusMatchCount = 16;
+// Keep consensus and spatial-coverage checks active at the smallest UI budget.
+constexpr size_t kRobustConsensusMatchCount = kMinimumCalibrationControlPoints;
 constexpr size_t kMinimumRobustMagsacInliers = 8;
 constexpr double kMinimumMagsacInlierRatio = 0.5;
 constexpr double kMinimumMagsacSourceSpanRatio = 0.1;

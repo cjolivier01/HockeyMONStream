@@ -256,6 +256,10 @@ absl::Status configure_candidate(
   std::string selection;
   HM_ASSIGN_OR_RETURN(selection, reusable_selection_fingerprint(config, settings));
   config["stitching"]["calibration_frame_count"] = settings.frame_count;
+  if (settings.control_point_resolution) {
+    config["stitching"]["control_point_resolution"] = *settings.control_point_resolution;
+    config["hstream_ui"].remove("generated_control_point_resolution");
+  }
   if (selection.empty()) {
     config["stitching"]["stitch_frame_time"] = settings.stitch_frame_time;
     config["stitching"].remove("calibration_frame_selection");
@@ -685,6 +689,22 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
     if (fingerprint.empty() && calibration["status"].as<std::string>("") != "complete")
       return std::nullopt;
     StitchingExperimentSettings settings = displayed_settings;
+    // This row describes the saved solve, not the current experiment controls.
+    settings.control_point_resolution.reset();
+    const YAML::Node claim = calibration["backend_generation"];
+    const YAML::Node stitching = config["stitching"];
+    YAML::Node saved_resolution =
+        stitching && stitching.IsMap() ? stitching["control_point_resolution"] : YAML::Node(YAML::NodeType::Undefined);
+    if (calibration["status"].as<std::string>("") == "complete" && claim && claim.IsMap() &&
+        claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>("") &&
+        claim["control_point_resolution"]) {
+      saved_resolution.reset(claim["control_point_resolution"]);
+    }
+    if (saved_resolution && !saved_resolution.IsNull()) {
+      hm::stitching::ControlPointResolution resolution;
+      HM_ASSIGN_OR_RETURN(resolution, hm::stitching::ParseControlPointResolution(saved_resolution.as<std::string>()));
+      settings.control_point_resolution = hm::stitching::ControlPointResolutionName(resolution);
+    }
     settings.control_points = calibration["control_points"].as<int>(settings.control_points);
     settings.frame_count = fingerprint.empty()
         ? calibration["frame_count"].as<int>(settings.frame_count)
@@ -725,6 +745,13 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
     int sequence) {
   if (settings.control_points <= 0 || settings.frame_count <= 0 || sequence <= 0)
     return absl::InvalidArgumentError("Stitching experiment counts and sequence must be positive");
+  if (settings.control_point_resolution) {
+    if (settings.control_point_resolution->empty())
+      return absl::InvalidArgumentError("An explicit experiment control-point resolution must not be empty");
+    const auto resolution = hm::stitching::ParseControlPointResolution(*settings.control_point_resolution);
+    if (!resolution.ok())
+      return resolution.status();
+  }
   try {
     (void)hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time);
   } catch (const std::exception& exception) {
@@ -772,6 +799,20 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
     YAML::Node config = YAML::LoadFile(source_config.string());
     if (!config || !config.IsMap())
       return absl::InvalidArgumentError("The selected game config must contain a YAML map");
+    StitchingExperimentSettings frozen_settings = settings;
+    const YAML::Node source_stitching = static_cast<const YAML::Node&>(config)["stitching"];
+    const YAML::Node source_resolution = source_stitching && source_stitching.IsMap()
+        ? source_stitching["control_point_resolution"]
+        : YAML::Node(YAML::NodeType::Undefined);
+    if (settings.control_point_resolution || (source_resolution && !source_resolution.IsNull())) {
+      hm::stitching::ControlPointResolution resolution;
+      HM_ASSIGN_OR_RETURN(
+          resolution,
+          hm::stitching::ParseControlPointResolution(
+              settings.control_point_resolution ? *settings.control_point_resolution
+                                                : source_resolution.as<std::string>()));
+      frozen_settings.control_point_resolution = hm::stitching::ControlPointResolutionName(resolution);
+    }
     std::set<fs::path> linked;
     HM_RETURN_IF_ERROR(link_configured_videos(config, source_game_directory, workspace_path, &linked));
     HM_RETURN_IF_ERROR(link_auto_videos(source_game_directory, workspace_path, &linked));
@@ -781,7 +822,7 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
     promote_generated_video_roles(config);
     const std::string invalidation_id = "stitch-experiment-" + std::to_string(::getpid()) + "-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(sequence);
-    HM_RETURN_IF_ERROR(configure_candidate(config, settings, invalidation_id));
+    HM_RETURN_IF_ERROR(configure_candidate(config, frozen_settings, invalidation_id));
     HM_RETURN_IF_ERROR(copy_selected_input_bundle(source_game_directory, workspace_path, config));
     HM_RETURN_IF_ERROR(write_config(workspace_path / "config.yaml", config));
     HM_RETURN_IF_ERROR(sync_workspace_directory_tree(**pinned_candidate));
@@ -796,7 +837,7 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
         .game_directory = candidate,
         .game_id = game_id,
         .invalidation_id = invalidation_id,
-        .settings = settings,
+        .settings = frozen_settings,
     };
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(
@@ -884,6 +925,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
+    copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_resolution");
     // Choosing this candidate accepts its existing crop as seen in the preview.
     // Its alignment may differ from the inherited game's crop-review marker.
     // Bind the review to the promoted geometry so first Play reuses these maps.

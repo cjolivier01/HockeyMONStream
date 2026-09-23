@@ -797,7 +797,9 @@ int main(int argc, char** argv) {
       "non-finite PTO camera pose must fail");
   ok &=
       expect(!hm::stitching::HuginProject::ParseCameraPose(pose_project, 2).ok(), "missing PTO image index must fail");
-  matches.resize(15);
+  matches.resize(10);
+  ok &= expect(hm::stitching::HuginProject::InsertControlPoints(base, matches).ok(), "ten control points must insert");
+  matches.resize(9);
   ok &=
       expect(!hm::stitching::HuginProject::InsertControlPoints(base, matches).ok(), "too few control points must fail");
   matches.resize(16, hm::stitching::FeatureMatch{{0.0f, 0.0f}, {1.0f, 1.0f}, 1.0f});
@@ -1089,11 +1091,22 @@ int main(int argc, char** argv) {
   options.horizontal_fov = 127.2;
   options.vertical_fov = 95.0;
   options.projection = hm::stitching::StitchProjection::kGeneralPanini;
+  const std::vector<hm::stitching::FeatureMatch> nine_matches(matches.begin(), matches.begin() + 9);
+  const auto too_few = hm::stitching::HuginProject::Configure(
+      root / "nine-point-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      nine_matches,
+      options);
+  ok &= expect(
+      absl::IsFailedPrecondition(too_few) && !fs::exists(root / "nine-point-game"),
+      "nine control points must fail general calibration before creating artifacts");
+  const std::vector<hm::stitching::FeatureMatch> ten_matches(matches.begin(), matches.begin() + 10);
   const auto configured = hm::stitching::HuginProject::Configure(
-      root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
+      root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", ten_matches, options);
   if (!configured.ok())
     std::cerr << configured << '\n';
-  ok &= expect(configured.ok(), "fake Hugin toolchain must complete orchestration");
+  ok &= expect(configured.ok(), "fake Hugin toolchain must complete orchestration with ten control points");
   if (configured.ok()) {
     auto lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
     if (!lock.ok())
@@ -1736,7 +1749,7 @@ int main(int argc, char** argv) {
   std::string optimizer_disabled_message;
   fs::create_directories(root / "optimizer-disabled-game");
   std::vector<hm::stitching::FeatureMatch> optimizer_disabled_matches;
-  for (int y = 6; y < 48; y += 10) {
+  for (int y : {6, 36}) {
     for (int x = 16; x < 64; x += 10) {
       optimizer_disabled_matches.push_back(
           {{static_cast<float>(x), static_cast<float>(y)},
@@ -1805,6 +1818,16 @@ int main(int argc, char** argv) {
   if (!six_point_akaze.ok())
     std::cerr << six_point_akaze << '\n';
   ok &= expect(six_point_akaze.ok(), "native AKAZE mapping must honor its six-control-point minimum");
+  six_point_akaze_matches.pop_back();
+  const auto five_point_akaze = hm::stitching::HuginProject::Configure(
+      root / "five-point-akaze-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      six_point_akaze_matches,
+      six_point_akaze_options);
+  ok &= expect(
+      absl::IsFailedPrecondition(five_point_akaze) && !fs::exists(root / "five-point-akaze-game"),
+      "AKAZE must reject five control points before creating artifacts");
 
   hm::stitching::HuginProject::Options invalid_nona_options;
   invalid_nona_options.run_autooptimizer = false;

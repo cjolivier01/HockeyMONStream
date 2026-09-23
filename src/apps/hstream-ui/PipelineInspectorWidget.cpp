@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
 
 #include <QtCore/QJsonArray>
@@ -591,19 +592,19 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
   root->setSpacing(6);
 
   auto* toolbar = new QHBoxLayout();
-  auto* refresh = new QPushButton("Refresh");
+  auto* refresh = new QPushButton(action_icon(ActionIcon::Refresh), "Refresh");
   refresh->setObjectName("pipelineInspectorRefreshButton");
-  auto* zoom_out = new QPushButton("−");
+  auto* zoom_out = new QPushButton(action_icon(ActionIcon::ZoomOut), "−");
   zoom_out->setObjectName("pipelineInspectorZoomOutButton");
-  auto* zoom_in = new QPushButton("+");
+  auto* zoom_in = new QPushButton(action_icon(ActionIcon::ZoomIn), "+");
   zoom_in->setObjectName("pipelineInspectorZoomInButton");
-  auto* fit = new QPushButton("Fit");
+  auto* fit = new QPushButton(action_icon(ActionIcon::Fit), "Fit");
   fit->setObjectName("pipelineInspectorFitButton");
   fit->setToolTip("Fit the whole pipeline (F or Home in the graph)");
-  auto* actual_size = new QPushButton("100%");
+  auto* actual_size = new QPushButton(action_icon(ActionIcon::ActualSize), "100%");
   actual_size->setObjectName("pipelineInspectorActualSizeButton");
   actual_size->setToolTip("Reset zoom to 100% (1 in the graph)");
-  auto* focus_selection = new QPushButton("Focus selected");
+  auto* focus_selection = new QPushButton(action_icon(ActionIcon::Inspect), "Focus selected");
   focus_selection->setObjectName("pipelineInspectorFocusSelectionButton");
   focus_selection->setToolTip("Zoom to the selected node or bin (S or double-click in the graph)");
   focus_selection->setEnabled(false);
@@ -617,7 +618,7 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
   node_search_ = new QLineEdit();
   node_search_->setObjectName("pipelineInspectorNodeSearch");
   node_search_->setPlaceholderText("Find node by name, factory, or path");
-  auto* find_next = new QPushButton("Find next");
+  auto* find_next = new QPushButton(action_icon(ActionIcon::Next), "Find next");
   find_next->setObjectName("pipelineInspectorFindNextButton");
   toolbar->addWidget(refresh);
   toolbar->addSpacing(8);
@@ -693,7 +694,7 @@ PipelineInspectorWidget::PipelineInspectorWidget(QWidget* parent) : QWidget(pare
   property_editor_->setObjectName("pipelineInspectorPropertyEditor");
   property_editor_->setEditable(true);
   property_editor_->setEnabled(false);
-  apply_button_ = new QPushButton("Apply live value");
+  apply_button_ = new QPushButton(action_icon(ActionIcon::Apply), "Apply live value");
   apply_button_->setObjectName("pipelineInspectorApplyButton");
   apply_button_->setEnabled(false);
   editor_row->addWidget(property_editor_, 1);

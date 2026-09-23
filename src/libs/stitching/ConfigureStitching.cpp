@@ -3389,7 +3389,9 @@ absl::Status create_control_points(
           {},
           cpu_fallback));
   const size_t minimum_matches =
-      control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona ? 6 : 16;
+      control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona
+      ? 6
+      : kMinimumCalibrationControlPoints;
   struct CandidateFramePair {
     size_t index{0};
     std::vector<FeatureMatch> accepted;

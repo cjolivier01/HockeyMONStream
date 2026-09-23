@@ -6,6 +6,10 @@
 
 namespace hm::stitching {
 
+// Shared UI budget and general calibration floor. AKAZE with OpenCV retains
+// its specialized six-match floor; geometric validation can still reject a set.
+inline constexpr int kMinimumCalibrationControlPoints = 10;
+
 enum class ControlPointMatcher {
   kSuperPointLightGlue,
   kDeDoDeLightGlue,

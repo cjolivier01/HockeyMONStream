@@ -247,10 +247,11 @@ bool inherited_camera_handoff(const fs::path& root) {
   if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
       !write(game / "config.yaml", YAML::Dump(original)))
     return false;
-  const StitchingExperimentSettings settings{900, 2, "00:00:08", std::nullopt};
+  const StitchingExperimentSettings settings{900, 2, "00:00:08", std::nullopt, "2k"};
   const auto baseline = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 1);
   StitchingExperimentSettings varied = settings;
   varied.control_points = 1200;
+  varied.control_point_resolution = "native";
   varied.rink_rotation_degrees = std::array<double, 3>{0, 1, 2};
   const auto candidate = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", varied, 2);
   if (!baseline.ok() || !candidate.ok())
@@ -364,10 +365,13 @@ bool inherited_camera_handoff(const fs::path& root) {
   const YAML::Node frozen = YAML::LoadFile((candidate->game_directory / "config.yaml").string());
   const auto frozen_camera = read_stitch_camera_selection(frozen);
   if (!prepared->available || !frozen_camera.ok() || *frozen_camera != camera ||
-      frozen["stitching"]["stitch_frame_time"].IsDefined() || !validate_player_frame_selection_sources(frozen).ok())
+      frozen["stitching"]["stitch_frame_time"].IsDefined() ||
+      frozen["stitching"]["control_point_resolution"].as<std::string>() != "native" ||
+      !validate_player_frame_selection_sources(frozen).ok())
     return false;
 
   varied.control_points = 1500;
+  varied.control_point_resolution = "1k";
   varied.stitch_frame_time = "00:00:08.000";
   varied.rink_rotation_degrees = std::array<double, 3>{0, -2, 3};
   const auto reused = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", varied, 3);
@@ -382,6 +386,7 @@ bool inherited_camera_handoff(const fs::path& root) {
                   plan.fingerprint &&
               !reused_config["stitching"]["stitch_frame_time"].IsDefined() &&
               reused_config["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 1500 &&
+              reused_config["stitching"]["control_point_resolution"].as<std::string>() == "1k" &&
               reused_config["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -2,
           "reuse must preserve exact frames and reference spelling while changing only solve settings"))
     return false;
@@ -534,6 +539,79 @@ bool inherited_camera_handoff(const fs::path& root) {
       "ordinary artifact promotion must not require available media");
 }
 
+bool experiment_resolutions(const fs::path& root) {
+  const fs::path game = root / "resolution-game";
+  YAML::Node source;
+  source["stitching"]["control_point_resolution"] = "1k";
+  source["hstream_ui"]["generated_control_point_resolution"]["generated"] = "1k";
+  source["hstream_ui"]["generated_control_point_resolution"]["previous"] = "2k";
+  auto calibration = source["hstream_ui"]["stitching_calibration"];
+  calibration["status"] = "complete";
+  calibration["invalidation_id"] = "saved-main";
+  calibration["backend_generation"]["invalidation_id"] = "saved-main";
+  calibration["backend_generation"]["control_point_resolution"] = "native";
+  if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
+      !write(game / "config.yaml", YAML::Dump(source)))
+    return false;
+  StitchingExperimentSettings settings{100, 2, "00:00:00", std::nullopt, "2k"};
+  auto main = MainStitchingExperimentWorkspace(game, settings);
+  bool ok = expect(
+      main.ok() && main->has_value() && (**main).settings.control_point_resolution == "native",
+      "Main reports its saved generation's Native size instead of the displayed experiment size");
+  int sequence = 0;
+  for (const std::string size : {"native", "1k", "2k"}) {
+    settings.control_point_resolution = size;
+    const auto workspace = CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence);
+    if (!expect(workspace.ok(), "explicit resolution candidate must be created"))
+      return false;
+    const YAML::Node config = YAML::LoadFile((workspace->game_directory / "config.yaml").string());
+    ok &= expect(
+        workspace->settings.control_point_resolution == size &&
+            config["stitching"]["control_point_resolution"].as<std::string>() == size &&
+            !config["hstream_ui"]["generated_control_point_resolution"].IsDefined(),
+        "candidate size must override copied generated values and remain in its settings");
+    const auto promoted =
+        BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+    if (!expect(promoted.ok(), "candidate size must be promotable"))
+      return false;
+    YAML::Node selected = YAML::Load(*promoted);
+    ok &= expect(
+        !hm::stitching::restore_generated_control_point_resolution(selected) &&
+            selected["stitching"]["control_point_resolution"].as<std::string>() == size,
+        "Main's previous generated marker must not undo the promoted size");
+  }
+  settings.control_point_resolution.reset();
+  const auto inherited = CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence);
+  ok &= expect(
+      inherited.ok() && inherited->settings.control_point_resolution == "1k",
+      "an inherited size already materialized in the source config is frozen when queued");
+  calibration.remove("backend_generation");
+  if (!write(game / "config.yaml", YAML::Dump(source)))
+    return false;
+  main = MainStitchingExperimentWorkspace(game, settings);
+  ok &= expect(
+      main.ok() && main->has_value() && (**main).settings.control_point_resolution == "1k",
+      "Main without a generation claim reports its saved canonical size");
+  source["stitching"].remove("control_point_resolution");
+  source["hstream_ui"].remove("generated_control_point_resolution");
+  if (!write(game / "config.yaml", YAML::Dump(source)))
+    return false;
+  const auto legacy = CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence);
+  ok &= expect(
+      legacy.ok() && !legacy->settings.control_point_resolution,
+      "missing source size keeps inheritance instead of guessing a user-level default");
+  settings.control_point_resolution = "native";
+  main = MainStitchingExperimentWorkspace(game, settings);
+  ok &= expect(
+      main.ok() && main->has_value() && !(**main).settings.control_point_resolution,
+      "legacy Main without saved size must not copy the current experiment selector");
+  settings.control_point_resolution = "invalid";
+  ok &= expect(
+      !CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence).ok(),
+      "invalid experiment image sizes are rejected");
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -598,6 +676,7 @@ int main() {
   }
 
   bool ok = true;
+  ok &= expect(experiment_resolutions(root), "experiment image sizes must persist and promote independently");
   ok &= expect(durable_workspace_publication(root), "queued workspaces must be durable before catalog publication");
   ok &= expect(ordinary_frame_inspection(*workspace), "ordinary calibration inspection must remain bound to its row");
   ok &= expect(inherited_camera_handoff(root), "candidate handoff must freeze inherited baseline camera and FOV");

@@ -1,4 +1,6 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/CalibrationFrameView.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
@@ -22,23 +24,29 @@
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPixmap>
 #include <QtGui/QScreen>
+#include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSizeGrip>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
+#include <QtWidgets/QToolButton>
 
 #if QT_CONFIG(xcb)
 #include <QtGui/qguiapplication_platform.h>
 #include <xcb/xcb.h>
 #endif
 
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -240,13 +248,163 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
   QCoreApplication::processEvents();
   require(candidate_panel->isVisible() && video->winId() == original_target, "Button must restore the same target");
   check_idle_preview(dialog);
-  dialog.showMaximized();
-  QCoreApplication::processEvents();
-  require(dialog.isMaximized(), "Dialog must maximize");
+  const QRect normal_geometry = dialog.geometry();
+  auto* maximize = widget<QToolButton>(dialog, "maximizeStitchExperimentWindowButton");
+  maximize->click();
+  require(wait_until([&] { return dialog.isMaximized(); }, 1000), "Window action must maximize");
+  require(maximize->text() == "Restore window", "Maximize action must follow the window state");
   check_preview_layout(dialog);
-  dialog.showNormal();
+  expand->click();
+  QCoreApplication::processEvents();
+  require(!candidate_panel->isVisible(), "Preview must expand while the window is maximized");
+  expand->click();
+  maximize->click();
+  require(
+      wait_until([&] { return !dialog.isMaximized() && dialog.geometry() == normal_geometry; }, 2000),
+      "Window restore must recover its original geometry without a manual resize");
+  require(
+      candidate_panel->isVisible() && video->winId() == original_target,
+      "Window restore must preserve layout and native GPU target");
+  check_idle_preview(dialog);
   dialog.resize(original_size);
   QCoreApplication::processEvents();
+}
+
+void exercise_frame_navigation(const QString& root) {
+  const QString path = root + "/navigation.png";
+  QImage fixture(1024, 576, QImage::Format_RGB32);
+  fixture.fill(Qt::darkCyan);
+  require(fixture.save(path), "Cannot save navigation fixture");
+  QDialog dialog;
+  auto* layout = new QHBoxLayout(&dialog);
+  auto* left = new CalibrationFrameView(&dialog);
+  auto* right = new CalibrationFrameView(&dialog);
+  layout->addWidget(left);
+  layout->addWidget(right);
+  dialog.resize(800, 400);
+  dialog.show();
+  left->load(path.toStdString());
+  right->load(path.toStdString());
+  QCoreApplication::processEvents();
+  const QTransform right_transform = right->transform();
+  const QPoint fitted_anchor(120, 90);
+  for (int delta : {120, -120, -120}) {
+    const QPointF before = left->mapToScene(fitted_anchor);
+    QWheelEvent wheel(
+        fitted_anchor,
+        left->viewport()->mapToGlobal(fitted_anchor),
+        {},
+        QPoint(0, delta),
+        Qt::NoButton,
+        Qt::NoModifier,
+        Qt::NoScrollPhase,
+        false);
+    QApplication::sendEvent(left->viewport(), &wheel);
+    QCoreApplication::processEvents();
+    require(
+        QLineF(before, left->mapToScene(fitted_anchor)).length() < 4.0,
+        "Pointer anchoring must also work when zooming from or below fitted size");
+  }
+  left->actualSize();
+  require(
+      std::abs(left->transform().m11() * left->devicePixelRatioF() - 1.0) < 0.001,
+      "Actual size must show one image pixel per display pixel");
+  for (int i = 0; i < 5; ++i)
+    left->zoomIn();
+  QCoreApplication::processEvents();
+  const QPoint anchor(120, 90);
+  const QPointF before = left->mapToScene(anchor);
+  QWheelEvent wheel(
+      anchor,
+      left->viewport()->mapToGlobal(anchor),
+      {},
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::NoScrollPhase,
+      false);
+  QApplication::sendEvent(left->viewport(), &wheel);
+  require(QLineF(before, left->mapToScene(anchor)).length() < 2.0, "Wheel zoom must stay anchored at the pointer");
+  const int scroll_before = left->horizontalScrollBar()->value();
+  const auto mouse = [&](QEvent::Type type, QPoint position, Qt::MouseButton button, Qt::MouseButtons buttons) {
+    QMouseEvent event(type, position, left->viewport()->mapToGlobal(position), button, buttons, Qt::NoModifier);
+    QApplication::sendEvent(left->viewport(), &event);
+  };
+  mouse(QEvent::MouseButtonPress, anchor, Qt::LeftButton, Qt::LeftButton);
+  mouse(QEvent::MouseMove, anchor + QPoint(50, 20), Qt::NoButton, Qt::LeftButton);
+  mouse(QEvent::MouseButtonRelease, anchor + QPoint(50, 20), Qt::LeftButton, Qt::NoButton);
+  require(left->horizontalScrollBar()->value() != scroll_before, "Dragging must pan a zoomed image");
+  const QTransform zoomed = left->transform();
+  left->load(path.toStdString());
+  require(
+      left->transform() == zoomed && right->transform() == right_transform,
+      "Reloading the same image must retain zoom without affecting the other camera");
+  dialog.resize(900, 450);
+  QCoreApplication::processEvents();
+  require(left->transform() == zoomed, "Resize must retain manual zoom");
+  left->fitImage();
+  require(left->transform().m11() < zoomed.m11(), "Fit must restore the whole image");
+  require(QFile::link(path, root + "/navigation-link.png"), "Cannot create rejected image symlink");
+  left->load((root + "/navigation-link.png").toStdString());
+  require(left->pixmap().isNull() && left->message().contains("limits"), "Inspector must reject symlink images");
+}
+
+void exercise_resolution_queue(const QString& game, const QString& root) {
+  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  config["stitching"]["control_point_resolution"] = "1k";
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  {
+    StitchingExperimentDialog dialog(
+        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+    auto* size = widget<QComboBox>(dialog, "stitchExperimentControlPointResolution");
+    auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+    require(
+        size->isEnabled() && size->currentData() == "1k" && size->count() == 3,
+        "Experiments must initialize the same saved SuperPoint size choices as main");
+    for (const auto& choice : {"1k", "native", "2k"}) {
+      size->setCurrentIndex(size->findData(choice));
+      add_options(dialog);
+      add_options(dialog);
+    }
+    require(table->rowCount() == 3, "Different image sizes must form distinct deduplicated candidates");
+    const auto opened = OpenStitchingExperimentStore(game.toStdString());
+    require(opened.ok(), "Cannot open resolution test store");
+    const auto saved = LoadStitchingExperimentStore(*opened);
+    require(saved.ok() && saved->experiments.size() == 3, "All resolution variants must persist");
+    const std::array<std::string, 3> expected{"1k", "native", "2k"};
+    for (size_t row = 0; row < expected.size(); ++row) {
+      const auto& workspace = saved->experiments[row].workspace;
+      const auto yaml = YAML::LoadFile((workspace.game_directory / "config.yaml").string());
+      require(
+          workspace.settings.control_point_resolution == expected[row] &&
+              yaml["stitching"]["control_point_resolution"].as<std::string>() == expected[row] &&
+              table->item(static_cast<int>(row), 6)->text() == "Anchor only" &&
+              !table->item(static_cast<int>(row), 7)->text().isEmpty(),
+          "Candidate rows and private configs must retain each chosen size and frame policy");
+    }
+  }
+  {
+    StitchingExperimentDialog reopened(
+        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+    require(
+        widget<QTableWidget>(reopened, "stitchExperimentCandidates")->rowCount() == 3,
+        "Reopening must restore all sizes");
+  }
+  config["stitching"]["control_point_matcher"] = "loftr";
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  StitchingExperimentDialog fixed(
+      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+  require(
+      !widget<QComboBox>(fixed, "stitchExperimentControlPointResolution")->isEnabled(),
+      "Fixed-size matchers must not offer ineffective image size choices");
+  config["stitching"]["control_point_resolution"] = "invalid";
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  StitchingExperimentDialog invalid(
+      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+  require(!widget<QPushButton>(invalid, "addStitchExperimentsToBatchButton")->isEnabled() &&
+              widget<QPushButton>(invalid, "startStitchExperimentBatchButton")->isEnabled(),
+          "Invalid current size must block new candidates without blocking already frozen queued solves");
 }
 
 void exercise_player_queue(const QString& game, const QString& root) {
@@ -275,6 +433,7 @@ void exercise_player_queue(const QString& game, const QString& root) {
   players->setChecked(false);
   require(!duration->isEnabled(), "Disabling player selection must disable its search controls");
   add_options(dialog);
+  require(table->item(0, 6)->text() == "Ordinary", "Unchecked queue must label ordinary frames");
   players->setChecked(true);
   add_options(dialog);
   add_options(dialog);
@@ -282,6 +441,9 @@ void exercise_player_queue(const QString& game, const QString& root) {
       table->rowCount() == 2 && table->item(0, 0)->text().startsWith("Baseline") &&
           table->item(1, 0)->text().startsWith("Players"),
       "Automatic selection must reuse and upgrade an already queued ordinary baseline");
+  require(
+      table->item(0, 6)->text() == "Ordinary (baseline)" && table->item(1, 6)->text() == "Player-rich (pending)",
+      "Rows must distinguish the ordinary baseline from the pending player selection");
   duration->setValue(120);
   add_options(dialog);
   require(table->rowCount() == 2, "Changing search duration must retain the original immutable selection request");
@@ -298,6 +460,9 @@ void exercise_player_queue(const QString& game, const QString& root) {
   require(
       table->rowCount() == 4 && table->item(3, 0)->text().startsWith("Players"),
       "Unchecked variants must retain the group's selected frames while changing solve geometry");
+  require(
+      table->item(3, 6)->text() == "Player-rich (pending)",
+      "A row's frame policy must reflect inherited selection even when the checkbox is off");
   widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText("00:00:01");
   add_options(dialog);
   require(
@@ -992,7 +1157,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     require(
         wait_until([&] { return !dialog.isVisible(); }, 1000), "Keeping results must close a failed saved-plan batch");
   }
-  config["stitching"]["control_point_matcher"] = "sift";
+  config["stitching"]["control_point_matcher"] = "loftr";
   config["stitching"]["projection_framing"]["horizontal_fov"] = 170;
   write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   {
@@ -1032,7 +1197,8 @@ void exercise_saved_selection(const QString& game, const QString& root) {
         auto* frames = inspector->findChild<QTableWidget*>("stitchExperimentSelectedFrames");
         auto* show = inspector->findChild<QCheckBox*>("stitchExperimentShowMatches");
         auto* points_only = inspector->findChild<QCheckBox*>("stitchExperimentMatchPointsOnly");
-        auto* image = inspector->findChild<QLabel*>("stitchExperimentSelectedMatches");
+        auto* image =
+            static_cast<CalibrationFrameView*>(inspector->findChild<QGraphicsView*>("stitchExperimentSelectedMatches"));
         auto* status = inspector->findChild<QLabel*>("stitchExperimentMatchStatus");
         inspected_main = frames && frames->rowCount() == 2 && show && show->isEnabled() && !show->isChecked() &&
             points_only && image && !image->isVisible() && status;
@@ -1044,17 +1210,37 @@ void exercise_saved_selection(const QString& game, const QString& root) {
           for (const QSize size : {QSize(1280, 820), QSize(1000, 700)}) {
             inspector->resize(size);
             QCoreApplication::processEvents();
-            const QPixmap fitted = image->property("pixmap").value<QPixmap>();
+            const QPixmap fitted = image->pixmap();
             inspected_main &= inspector->size() == size && reopened.size() == parent_size && !fitted.isNull() &&
-                fitted.width() <= image->width() && fitted.height() <= image->height();
+                fitted.width() * image->transform().m11() <= image->viewport()->width() &&
+                fitted.height() * image->transform().m22() <= image->viewport()->height();
           }
-          const QImage lines = image->property("pixmap").value<QPixmap>().toImage();
+          const QRect inspector_normal_geometry = inspector->geometry();
+          auto* maximize = inspector->findChild<QToolButton*>("maximizeCalibrationFramesWindowButton");
+          inspected_main &= maximize && !maximize->icon().isNull();
+          if (maximize) {
+            maximize->click();
+            inspected_main &= wait_until([&] { return inspector->isMaximized(); }, 1000);
+            maximize->click();
+            inspected_main &= wait_until(
+                [&] { return !inspector->isMaximized() && inspector->geometry() == inspector_normal_geometry; }, 2000);
+          }
+          auto* zoom = inspector->findChild<QToolButton*>("stitchExperimentSelectedMatchesZoomIn");
+          auto* fit = inspector->findChild<QToolButton*>("stitchExperimentSelectedMatchesFit");
+          const double fitted_scale = image->transform().m11();
+          inspected_main &= zoom && fit && !zoom->icon().isNull() && !fit->icon().isNull();
+          if (zoom && fit) {
+            zoom->click();
+            inspected_main &= image->transform().m11() > fitted_scale;
+            fit->click();
+          }
+          const QImage lines = image->pixmap().toImage();
           inspected_main &= image->isVisible() && points_only->isEnabled() && !lines.isNull();
           const QString screenshot = qEnvironmentVariable("HSTREAM_TEST_MATCH_SCREENSHOT");
           if (!screenshot.isEmpty())
             inspector->grab().save(screenshot);
           points_only->setChecked(true);
-          const QImage points = image->property("pixmap").value<QPixmap>().toImage();
+          const QImage points = image->pixmap().toImage();
           inspected_main &= !points.isNull() && points != lines;
           frames->selectRow(1);
           inspected_main &= !show->isEnabled() && !points_only->isEnabled() && !image->isVisible() &&
@@ -1091,7 +1277,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
       require(
           latest.workspace.settings.control_points == 100 &&
               latest.saved_selection_fingerprint == expected.fingerprint &&
-              candidate_config["stitching"]["control_point_matcher"].as<std::string>() == "sift" &&
+              candidate_config["stitching"]["control_point_matcher"].as<std::string>() == "loftr" &&
               candidate_config["stitching"]["projection_framing"]["horizontal_fov"].as<int>() == 170,
           "Rerunning a saved matrix must use the current main solve settings and selection fingerprint");
       const auto retained = LoadPlayerFrameInputs(latest.workspace.game_directory, expected);
@@ -1420,9 +1606,16 @@ void exercise(
   dialog.show();
   dialog.raise();
   QCoreApplication::processEvents();
-  if (!gpu)
+  if (!gpu) {
     exercise_layout(dialog);
-  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
+    const int rows_before = widget<QTableWidget>(dialog, "stitchExperimentCandidates")->rowCount();
+    widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("9");
+    add_options(dialog);
+    require(
+        widget<QTableWidget>(dialog, "stitchExperimentCandidates")->rowCount() == rows_before,
+        "Nine control points must fail validation");
+  }
+  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText(gpu ? "100,150" : "10,150");
   widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText(player_selection ? "2" : "1");
   widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText(anchor);
   if (player_selection) {
@@ -1521,14 +1714,16 @@ void exercise(
             return;
           auto* frames = viewer->findChild<QTableWidget*>("stitchExperimentSelectedFrames");
           auto* identity = viewer->findChild<QPlainTextEdit*>("stitchExperimentSelectedFrameIdentity");
-          auto* left = viewer->findChild<QLabel*>("stitchExperimentSelectedLeft");
-          auto* right = viewer->findChild<QLabel*>("stitchExperimentSelectedRight");
+          auto* left =
+              static_cast<CalibrationFrameView*>(viewer->findChild<QGraphicsView*>("stitchExperimentSelectedLeft"));
+          auto* right =
+              static_cast<CalibrationFrameView*>(viewer->findChild<QGraphicsView*>("stitchExperimentSelectedRight"));
           if (frames && frames->rowCount() == 2)
             frames->selectRow(1);
-          const auto thumbnail_has_tones = [](const QLabel* label) {
+          const auto thumbnail_has_tones = [](const CalibrationFrameView* label) {
             if (!label)
               return false;
-            const QPixmap pixmap = label->property("pixmap").value<QPixmap>();
+            const QPixmap pixmap = label->pixmap();
             if (pixmap.isNull())
               return false;
             const QImage sample = pixmap.scaled(64, 36).toImage();
@@ -1720,6 +1915,7 @@ void exercise(
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
+  install_button_icon_style();
   try {
     // Real mode requires a disposable game copy: explicit selection changes it.
     if (argc == 5 && (QString(argv[1]) == "--gpu-smoke" || QString(argv[1]) == "--gpu-player-smoke")) {
@@ -1734,6 +1930,9 @@ int main(int argc, char** argv) {
     } else {
       QTemporaryDir fixture;
       require(fixture.isValid(), "Cannot create test workspace");
+      // Bazel deliberately omits HOME; explicit game storage permits an empty
+      // user overlay without creating or changing the developer's settings.
+      qputenv("HM_GAME_DIR", fixture.path().toLocal8Bit());
       const auto make_game = [&](const char* name) {
         const QString game = fixture.path() + "/" + name;
         require(QDir().mkpath(game), "Cannot create fixture game");
@@ -1742,6 +1941,8 @@ int main(int argc, char** argv) {
         write(game + "/right.mp4", "right");
         return game;
       };
+      exercise_frame_navigation(fixture.path());
+      exercise_resolution_queue(make_game("resolutions"), fixture.path());
       exercise_player_queue(make_game("queue"), fixture.path());
       exercise_queued_reopen(make_game("queued-reopen"), fixture.path());
       exercise_preparation_failure(make_game("partial-preparation"), fixture.path());

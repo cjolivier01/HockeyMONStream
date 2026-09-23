@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "hstream/src/libs/recording/Database.h"
 
@@ -288,6 +289,7 @@ struct CameraExperimentDialog::Impl {
     next->setEnabled(!active && prepared && !playing);
     play->setEnabled(!calculating && !closing_result && prepared && (!loading || playing));
     play->setText(playing ? "Pause" : "Play preview");
+    play->setIcon(action_icon(playing ? ActionIcon::Pause : ActionIcon::Play));
     save->setEnabled(editable && prepared && comparison->currentIndex() >= 2);
     capture->setEnabled(!active && prepared && frame_ready);
     loop->setEnabled(!calculating && !closing_result);
@@ -705,7 +707,7 @@ CameraExperimentDialog::CameraExperimentDialog(
     *field = new QLineEdit();
     (*field)->setObjectName(name);
     layout->addWidget(*field, 1);
-    auto* browse = new QPushButton("Browse…");
+    auto* browse = new QPushButton(action_icon(ActionIcon::Open), "Browse…");
     layout->addWidget(browse);
     QLineEdit* edit = *field;
     connect(browse, &QPushButton::clicked, this, [this, edit, filter, game_directory]() {
@@ -815,11 +817,11 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.frame_label->setWordWrap(true);
   left_layout->addWidget(s.frame_label);
   auto* transport = new QHBoxLayout();
-  auto* previous = s.previous = new QPushButton("◀ Frame");
+  auto* previous = s.previous = new QPushButton(action_icon(ActionIcon::Previous), "◀ Frame");
   previous->setObjectName("experimentPrevious");
-  auto* next = s.next = new QPushButton("Frame ▶");
+  auto* next = s.next = new QPushButton(action_icon(ActionIcon::Next), "Frame ▶");
   next->setObjectName("experimentNext");
-  s.play = new QPushButton("Play preview");
+  s.play = new QPushButton(action_icon(ActionIcon::Play), "Play preview");
   s.play->setObjectName("experimentPlay");
   s.play->setEnabled(false);
   s.loop = new QCheckBox("Repeat range");
@@ -912,17 +914,17 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.trial_name->setObjectName("experimentTrialName");
   s.trial_name->setMaxLength(100);
   right_layout->addWidget(s.trial_name);
-  s.apply = new QPushButton("Apply && replay");
+  s.apply = new QPushButton(action_icon(ActionIcon::Refresh), "Apply && replay");
   s.apply->setObjectName("experimentApply");
   s.apply->setEnabled(false);
   s.apply->setStyleSheet(
       "QPushButton{background:#117866;color:white;padding:10px;font-weight:600;} QPushButton:disabled{background:#a5bdb7;}");
   right_layout->addWidget(s.apply);
   auto* outputs = new QHBoxLayout();
-  s.save = new QPushButton("Save trial…");
+  s.save = new QPushButton(action_icon(ActionIcon::Save), "Save trial…");
   s.save->setObjectName("experimentSave");
   s.save->setEnabled(false);
-  s.capture = new QPushButton("Screenshot…");
+  s.capture = new QPushButton(action_icon(ActionIcon::Camera), "Screenshot…");
   s.capture->setObjectName("experimentScreenshot");
   s.capture->setEnabled(false);
   outputs->addWidget(s.save);
@@ -952,12 +954,12 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.status->setWordWrap(true);
   root->addWidget(s.status);
   auto* bottom = new QHBoxLayout();
-  s.prepare = new QPushButton("Prepare historical start");
+  s.prepare = new QPushButton(action_icon(ActionIcon::Prepare), "Prepare historical start");
   s.prepare->setObjectName("experimentPrepare");
-  s.cancel = new QPushButton("Cancel preparation");
+  s.cancel = new QPushButton(action_icon(ActionIcon::Cancel), "Cancel preparation");
   s.cancel->setObjectName("experimentCancel");
   s.cancel->setEnabled(false);
-  auto* close = new QPushButton("Close");
+  auto* close = new QPushButton(action_icon(ActionIcon::Close), "Close");
   bottom->addWidget(s.prepare);
   bottom->addWidget(s.cancel);
   bottom->addStretch();

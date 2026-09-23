@@ -33,6 +33,12 @@ backends:
 **Max control points** (`stitching.max_control_points`) limits retained matched
 correspondences, not raw SuperPoint detections. SuperPoint still extracts at most
 2048 keypoints per image; valid LightGlue matches must score strictly above 0.2.
+The UI accepts limits from 10 to 5000. General calibration and saved-point replay
+require at least 10 usable matches; OpenCV AKAZE retains its specialized six-match
+floor. General MAGSAC calibration still requires at least eight inliers and checks
+their spatial coverage at a 10-point budget, so a small or poorly distributed set
+can fail calibration. Calibrated AKAZE retains its separate small-set consensus and
+coverage rules.
 Selection uses a 16×9 grid in the left camera: it shares the budget across occupied
 height bands, then across occupied columns within each band, ranking by confidence
 within each cell. Partial rounds alternate opposite occupied edges rather than
@@ -68,7 +74,8 @@ the SuperPoint choice when switching matchers. For the other backends it is
 disabled and displays their actual processing size: AKAZE at a maximum dimension
 of 1920 pixels, EfficientLoFTR at 1600 (aligned down to multiples of 32), and DeDoDe
 at 1024 × 576. These backends retain their existing size regardless of the saved
-SuperPoint preference. This setting is independent of the stitched output width.
+SuperPoint preference. This setting is independent of the stitched output width. Stitching Experiments exposes the
+same choices and freezes the selected size per candidate, including saved history and promotion.
 
 The resolution uses the normal baseline → user → game → CLI precedence; for example,
 `--options=stitching.control_point_resolution=2k`. Save Preset or starting a run with
