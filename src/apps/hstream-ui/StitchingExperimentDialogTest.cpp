@@ -1,9 +1,11 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
+#include "src/apps/hstream-ui/MatchEditorDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
+#include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
@@ -16,6 +18,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
+#include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryDir>
@@ -30,6 +33,7 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
@@ -430,9 +434,10 @@ void exercise_resolution_queue(const QString& game, const QString& root) {
   write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   StitchingExperimentDialog invalid(
       game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
-  require(!widget<QPushButton>(invalid, "addStitchExperimentsToBatchButton")->isEnabled() &&
-              widget<QPushButton>(invalid, "startStitchExperimentBatchButton")->isEnabled(),
-          "Invalid current size must block new candidates without blocking already frozen queued solves");
+  require(
+      !widget<QPushButton>(invalid, "addStitchExperimentsToBatchButton")->isEnabled() &&
+          widget<QPushButton>(invalid, "startStitchExperimentBatchButton")->isEnabled(),
+      "Invalid current size must block new candidates without blocking already frozen queued solves");
 }
 
 void exercise_player_queue(const QString& game, const QString& root) {
@@ -700,6 +705,134 @@ hm::stitching::PlayerFrameSelectionPlan selected_plan_fixture(const QString& gam
   require(fingerprint.ok(), "Saved-plan fingerprint failed");
   plan.fingerprint = *fingerprint;
   return plan;
+}
+
+void exercise_match_save_retry(const QString& game, const QString& root) {
+  using namespace hm::stitching;
+  YAML::Node config = YAML::Load(read(game + "/config.yaml").toStdString());
+  auto plan = selected_plan_fixture(game, config);
+  config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
+  auto calibration = config["hstream_ui"]["stitching_calibration"];
+  calibration["invalidation_id"] = "match-save-retry-main";
+  calibration["status"] = "complete";
+  calibration["control_points"] = 100;
+  calibration["frame_count"] = 2;
+  CalibrationMatchSet automatic;
+  automatic.selection_fingerprint = plan.fingerprint;
+  const auto context = CalibrationMatchSourceContext(config, game.toStdString());
+  require(context.ok(), "Cannot identify retry fixture media");
+  automatic.source_context = *context;
+  std::vector<std::array<std::filesystem::path, 2>> inputs;
+  for (size_t pair = 0; pair < 2; ++pair) {
+    CalibrationMatchFrame frame;
+    for (size_t camera = 0; camera < 2; ++camera) {
+      frame.images[camera] = (game + QString("/retry-%1-%2.png").arg(pair).arg(camera)).toStdString();
+      frame.sizes[camera] = {80, 60};
+      frame.source_paths[camera] = plan.sources[camera].path;
+      frame.source_seconds[camera] = double(pair);
+      require(
+          cv::imwrite(frame.images[camera].string(), cv::Mat(60, 80, CV_8UC3, cv::Scalar(40, 80, 120))),
+          "Cannot write retry fixture camera image");
+    }
+    for (int point = 0; point < 12; ++point)
+      frame.matches.push_back({{float(10 + point), 20}, {float(12 + point), 22}, 0.9f});
+    inputs.push_back(frame.images);
+    automatic.frames.push_back(std::move(frame));
+  }
+  require(PublishPlayerFrameInputs(game.toStdString(), plan, inputs).ok(), "Cannot retain retry fixture inputs");
+  const auto snapshot = PublishCalibrationMatches(game.toStdString(), automatic);
+  require(snapshot.ok(), "Cannot retain retry fixture matches");
+  calibration["match_snapshot"] = *snapshot;
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  const QString runner = root + "/match-retry-runner.sh";
+  const QString marker = root + "/match-retry-runner-started";
+  write(runner, "#!/bin/sh\nprintf started > \"$HSTREAM_MATCH_RETRY_MARKER\"\nexit 13\n");
+  require(
+      QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot make retry fixture runner executable");
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_MATCH_RETRY_MARKER", marker);
+  environment.insert("HM_OUTPUT_WORK_DIR", root + "/match-retry-output");
+  StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+  dialog.show();
+  auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  require(table->rowCount() == 1, "Retry fixture must expose its main calibration");
+  table->selectRow(0);
+  bool finished = false;
+  std::string failure;
+  QTimer interactions;
+  interactions.setInterval(10);
+  QObject::connect(&interactions, &QTimer::timeout, &dialog, [&] {
+    if (auto* inspector = dialog.findChild<QDialog*>("stitchExperimentFrameInspector")) {
+      if (auto* edit = inspector->findChild<QPushButton*>("stitchExperimentEditMatches"))
+        edit->click();
+      return;
+    }
+    auto* found = dialog.findChild<QDialog*>("matchEditorDialog");
+    if (!found)
+      return;
+    interactions.stop();
+    QPointer<MatchEditorDialog> editor(static_cast<MatchEditorDialog*>(found));
+    try {
+      auto* selection = editor->findChild<QComboBox*>("matchEditorSelection");
+      auto* coordinate = editor->findChild<QDoubleSpinBox*>("matchEditorCoordinate0");
+      auto* save = editor->findChild<QPushButton*>("matchEditorSave");
+      auto* undo = editor->findChild<QPushButton*>("matchEditorUndo");
+      auto* redo = editor->findChild<QPushButton*>("matchEditorRedo");
+      auto* status = editor->findChild<QLabel*>("matchEditorStatus");
+      require(selection && coordinate && save && undo && redo && status, "Retry editor controls are unavailable");
+      selection->setCurrentIndex(0);
+      coordinate->setValue(17.25);
+      require(editor->editedSet().frames[0].matches[0].left.x == 17.25f, "Retry fixture must change an endpoint");
+      require(QFile::rename(game + "/left.mp4", game + "/left.mp4.hidden"), "Cannot hide retry source media");
+      save->click();
+      require(editor && editor->isVisible() && !save->isEnabled(), "Editor must remain open while saving");
+      require(wait_until([&] { return !editor || save->isEnabled(); }, 30000), "Failed save did not finish");
+      require(QFile::rename(game + "/left.mp4.hidden", game + "/left.mp4"), "Cannot restore retry source media");
+      require(editor && editor->isVisible(), "Failed save must retain the same open editor");
+      require(
+          editor->editedSet().frames[0].matches[0].left.x == 17.25f && undo->isEnabled() &&
+              (status->text().contains("NOT_FOUND") || status->text().contains("FAILED_PRECONDITION")),
+          "Failed save must preserve edited points, history, and a visible error");
+      require(table->rowCount() == 1 && !QFile::exists(marker), "Failed save must not publish or run a candidate");
+      undo->click();
+      require(editor->editedSet().frames[0].matches[0].left.x == 10.0f, "Undo history must survive failed saving");
+      redo->click();
+      require(editor->editedSet().frames[0].matches[0].left.x == 17.25f, "Redo must recover the unsaved endpoint");
+      save->click();
+      require(
+          wait_until([&] { return !editor || !editor->isVisible(); }, 30000), "Successful retry did not close editor");
+      require(table->rowCount() == 2, "Successful retry must publish exactly one new candidate");
+      const auto store = OpenStitchingExperimentStore(game.toStdString());
+      require(store.ok(), "Cannot inspect retry catalog");
+      const auto catalog = LoadStitchingExperimentStore(*store);
+      require(catalog.ok() && catalog->experiments.size() == 1, "Successful retry must durably save one candidate");
+      const auto& workspace = catalog->experiments.front().workspace;
+      require(workspace.settings.manual_control_points.has_value(), "Retry candidate must retain manual identity");
+      const auto saved = LoadCalibrationMatches(workspace.game_directory, *workspace.settings.manual_control_points);
+      require(
+          saved.ok() && saved->frames[0].matches[0].left.x == 17.25f && saved->automatic_fingerprint == *snapshot,
+          "Successful retry must persist the original unsaved endpoint and automatic provenance");
+    } catch (const std::exception& error) {
+      failure = error.what();
+      if (editor)
+        editor->done(QDialog::Rejected);
+    }
+    finished = true;
+  });
+  interactions.start();
+  widget<QPushButton>(dialog, "inspectStitchExperimentFramesButton")->click();
+  require(wait_until([&] { return finished; }, 30000), "Retry editor interaction did not finish");
+  if (!failure.empty())
+    throw std::runtime_error(failure);
+  require(wait_until([&] { return QFile::exists(marker); }, 30000), "Successful save did not start recalibration");
+  require(
+      wait_until([&] { return widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->isEnabled(); }, 30000),
+      "Retry fixture runner did not finish");
+  answer_close_guard(dialog, "stitchExperimentCloseDiscard", false);
+  require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Retry dialog did not close after its runner stopped");
 }
 
 struct QueuedOwnerFixture {
@@ -1234,8 +1367,8 @@ void exercise_saved_selection(const QString& game, const QString& root) {
           show->setChecked(true);
           QCoreApplication::processEvents();
           auto* grip = inspector->findChild<QSizeGrip*>();
-          inspected_main &= inspector->windowType() == Qt::Window && inspector->isSizeGripEnabled() && grip &&
-              grip->isVisible();
+          inspected_main &=
+              inspector->windowType() == Qt::Window && inspector->isSizeGripEnabled() && grip && grip->isVisible();
           for (const QSize size : {QSize(1280, 820), QSize(1000, 700)}) {
             inspector->resize(size);
             QCoreApplication::processEvents();
@@ -1254,7 +1387,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
                 [&] {
                   const QSize available = inspector->screen()->availableGeometry().size();
                   return inspector->size() != inspector_normal_geometry.size() &&
-                  inspector->width() >= available.width() * 0.8 && inspector->height() >= available.height() * 0.8;
+                      inspector->width() >= available.width() * 0.8 && inspector->height() >= available.height() * 0.8;
                 },
                 2000);
             maximize->click();
@@ -2022,6 +2155,7 @@ int main(int argc, char** argv) {
       exercise_known_selection_copy_race(make_game("known-selection-copy-race"), fixture.path());
       exercise_failed_ordinary_selection_recovery(make_game("ordinary-failed-recovery"), fixture.path());
       exercise_saved_selection(make_game("saved"), fixture.path());
+      exercise_match_save_retry(make_game("match-save-retry"), fixture.path());
       exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
       exercise_player_cancellation(make_game("cancel"), fixture.path());
       exercise(make_game("ordinary"), "/bin/false", fixture.path(), false, {});

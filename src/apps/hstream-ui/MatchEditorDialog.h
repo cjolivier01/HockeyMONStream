@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 
 #include <QtWidgets/QDialog>
@@ -17,6 +18,12 @@ class MatchEditorDialog : public QDialog {
   ~MatchEditorDialog() override;
   hm::stitching::CalibrationMatchSet editedSet() const;
   void reject() override;
+  // With a handler, Save leaves this editor open until the caller durably saves
+  // the candidate and calls accept(). Without one, Save accepts immediately.
+  void setSaveHandler(std::function<void()> handler);
+  // Block editing/close while publishing; failure restores the same edits and
+  // undo history. Call with false and an error to permit a retry.
+  void setSaving(bool saving, const QString& error = {});
 
  protected:
   void keyPressEvent(QKeyEvent* event) override;

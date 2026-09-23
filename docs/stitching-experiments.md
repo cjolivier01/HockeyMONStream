@@ -165,6 +165,7 @@ selected correspondence. **Undo/Redo** covers coordinate edits, additions and de
 **Reset all to automatic** restores the original automatic set for every pair as one undoable operation.
 
 **Save & recalibrate** publishes the edit into a new **Manual** candidate and immediately calibrates only that row.
+The editor stays open until the candidate is saved. A failed save preserves the points and undo history for retry.
 The original candidate remains available, and unrelated queued rows stay queued. The Manual row shows **Edited**
 in the control-point column. Compare its moving preview before choosing **Use selected in main Program**.
 Cancelling the editor leaves the inspected result unchanged. If its generation or snapshot changed while the
@@ -295,7 +296,9 @@ copies. The source and test folder must share a filesystem. It runs automatic
 matching, edits/deletes points through the actual Qt controls, recalibrates the
 new candidate, checks the GPU preview, promotes it into the isolated game, and
 reopens its saved points. It verifies that the promoted Hugin project contains
-the exact saved count. Logs, editor/preview screenshots, and `result.txt` stay in
-the test folder. The source game is unchanged. This opt-in script builds the
+the exact saved count. Logs, editor screenshots, optional native-preview captures,
+and `result.txt` stay in the test folder. Xwayland can reject framebuffer capture;
+the test also requires the renderer acknowledgement after its first GPU
+presentation. The source game is unchanged. This opt-in script builds the
 Blackwell desktop configuration; the ordinary editor tests also run offscreen
 and on X11 to check physical maximization/restoration and mouse interactions.

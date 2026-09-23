@@ -9,6 +9,7 @@
 #include <utility>
 
 #include <QtCore/QFileInfo>
+#include <QtCore/QScopedValueRollback>
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QImageReader>
 #include <QtGui/QKeyEvent>
@@ -282,6 +283,8 @@ struct MatchEditorDialog::Impl {
   CalibrationMatchSet set, automatic;
   std::vector<Matches> initial_matches;
   bool close_prompt_active{false};
+  bool saving{false}, invoking_save{false};
+  std::function<void()> save_handler;
   QComboBox* pairs{};
   QComboBox* selection{};
   std::array<MatchView*, 2> views{};
@@ -317,7 +320,7 @@ struct MatchEditorDialog::Impl {
     return pair >= 0 && pair < int(set.frames.size());
   }
   bool editable() const {
-    return validPair() && views[0]->ready() && views[1]->ready();
+    return !saving && validPair() && views[0]->ready() && views[1]->ready();
   }
   static bool equal(const Matches& a, const Matches& b) {
     if (a.size() != b.size())
@@ -412,7 +415,9 @@ struct MatchEditorDialog::Impl {
         }
       }
     }
-    if (!image_error.isEmpty())
+    if (saving)
+      status->setText("Saving edited matches…");
+    else if (!image_error.isEmpty())
       status->setText(image_error);
     else if (adding)
       status->setText(
@@ -666,7 +671,15 @@ MatchEditorDialog::MatchEditorDialog(CalibrationMatchSet matches, CalibrationMat
   actions->addStretch();
   action("Cancel", "matchEditorCancel", ActionIcon::Cancel, [this] { reject(); });
   s.save = action("Save & recalibrate", "matchEditorSave", ActionIcon::Save, [this] {
-    if (impl_->editable() && !impl_->adding)
+    auto& state = *impl_;
+    if (!state.editable() || state.adding || state.invoking_save)
+      return;
+    QScopedValueRollback<bool> guard(state.invoking_save, true);
+    for (auto* field : state.coordinates)
+      field->interpretText();
+    if (state.save_handler)
+      state.save_handler();
+    else
       accept();
   });
   root->addLayout(actions);
@@ -693,9 +706,19 @@ CalibrationMatchSet MatchEditorDialog::editedSet() const {
   result.fingerprint.clear();
   return result;
 }
+void MatchEditorDialog::setSaveHandler(std::function<void()> handler) {
+  impl_->save_handler = std::move(handler);
+}
+void MatchEditorDialog::setSaving(bool saving, const QString& error) {
+  impl_->saving = saving;
+  setEnabled(!saving);
+  impl_->refresh();
+  if (!saving && !error.isEmpty())
+    impl_->status->setText(error);
+}
 void MatchEditorDialog::reject() {
   auto& s = *impl_;
-  if (s.close_prompt_active)
+  if (s.close_prompt_active || s.saving)
     return;
   // The title-bar close path may arrive before a spin box loses focus. Commit
   // any typed coordinate so dirty detection cannot overlook that pending edit.
@@ -726,6 +749,10 @@ void MatchEditorDialog::reject() {
   QDialog::reject();
 }
 void MatchEditorDialog::keyPressEvent(QKeyEvent* event) {
+  if (impl_->saving) {
+    event->accept();
+    return;
+  }
   if (event->key() == Qt::Key_Escape && impl_->adding) {
     impl_->cancelAdd();
     event->accept();

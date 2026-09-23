@@ -356,9 +356,11 @@ cc_test(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":action_icons",
+        ":match_editor_dialog",
         ":stitching_experiment_dialog",
         ":stitching_experiment_store",
         "//src/libs/stitching:calibration_match_images",
+        "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:player_frame_input_store",
         "//src/libs/stitching:player_frame_selection",

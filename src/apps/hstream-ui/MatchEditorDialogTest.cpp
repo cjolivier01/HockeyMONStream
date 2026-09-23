@@ -243,6 +243,50 @@ int main(int argc, char** argv) {
         "Edited set must retain input and automatic provenance");
     save->click();
     require(dialog.result() == QDialog::Accepted, "Save must accept the in-memory edit for caller publication");
+    // Publication is asynchronous in the experiments dialog. A failed save
+    // must leave the original editor and undo history available for a retry.
+    MatchEditorDialog asynchronous(automatic, automatic, &owner);
+    asynchronous.show();
+    QApplication::processEvents();
+    auto* async_save = widget<QPushButton>(asynchronous, "matchEditorSave");
+    auto* async_x = widget<QDoubleSpinBox>(asynchronous, "matchEditorCoordinate0");
+    async_x->setValue(101.375);
+    int save_attempts = 0;
+    asynchronous.setSaveHandler([&] {
+      ++save_attempts;
+      async_save->click(); // Accidental reentry must not dispatch twice.
+      asynchronous.setSaving(true);
+    });
+    async_save->click();
+    require(
+        save_attempts == 1 && asynchronous.isVisible() && !async_x->isEnabled() && !async_save->isEnabled(),
+        "Save handler must keep the editor open and disable edits while publishing");
+    asynchronous.close();
+    require(
+        asynchronous.isVisible() && !asynchronous.findChild<QMessageBox*>("matchEditorDiscardPrompt"),
+        "Native close while saving must leave the editor open without a discard prompt");
+    asynchronous.reject();
+    require(asynchronous.isVisible(), "Reject must not close an editor while saving");
+    asynchronous.setSaving(false, "Simulated candidate publication failure");
+    require(
+        asynchronous.isVisible() && async_x->isEnabled() && async_save->isEnabled() &&
+            widget<QLabel>(asynchronous, "matchEditorStatus")->text().contains("publication failure") &&
+            asynchronous.editedSet().frames[0].matches[0].left.x == 101.375f,
+        "Save failure must display its error and retain the exact editable coordinates");
+    widget<QPushButton>(asynchronous, "matchEditorUndo")->click();
+    require(
+        asynchronous.editedSet().frames[0].matches[0].left == frame.matches[0].left,
+        "Save failure must preserve the existing undo history");
+    widget<QPushButton>(asynchronous, "matchEditorRedo")->click();
+    require(
+        asynchronous.editedSet().frames[0].matches[0].left.x == 101.375f,
+        "Save failure must preserve redo as well as undo");
+    async_save->click();
+    require(save_attempts == 2 && asynchronous.isVisible(), "Retry must dispatch the same editor's save handler once");
+    asynchronous.accept();
+    require(
+        asynchronous.result() == QDialog::Accepted && !asynchronous.isVisible(),
+        "Caller must be able to accept the editor after successful durable publication");
     MatchEditorDialog cancellation(automatic, automatic, &owner);
     cancellation.show();
     QApplication::processEvents();

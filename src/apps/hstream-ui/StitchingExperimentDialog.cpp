@@ -2431,9 +2431,15 @@ struct StitchingExperimentDialog::Impl {
   void create_match_candidate(
       int source_row,
       std::optional<hm::stitching::CalibrationMatchSet> edited = std::nullopt,
-      std::string expected_snapshot = {}) {
-    if (!store || preparation_worker || batch_active || closing || !ensure_session())
+      std::string expected_snapshot = {},
+      QPointer<MatchEditorDialog> editor = {}) {
+    if (!store || preparation_worker || batch_active || closing)
       return;
+    if (!ensure_session()) {
+      if (editor)
+        editor->setSaving(false, status->text());
+      return;
+    }
     const auto source = *candidates[source_row].workspace;
     const auto root = std::filesystem::path(session->path().toStdString());
     const auto persistent = *store;
@@ -2443,8 +2449,6 @@ struct StitchingExperimentDialog::Impl {
     const bool preparing = !edited;
     QThread* worker =
         QThread::create([source, root, persistent, sequence, edited = std::move(edited), expected_snapshot, result]() {
-          auto settings = source.settings;
-          settings.manual_control_points.reset();
           auto workspace = edited
               ? CreateEditedStitchingExperimentWorkspace(source, root, expected_snapshot, *edited, sequence)
               : CreateStitchingExperimentEditableCopy(source, root, sequence);
@@ -2472,13 +2476,22 @@ struct StitchingExperimentDialog::Impl {
           *result = std::move(record);
         });
     preparation_worker = worker;
-    QObject::connect(worker, &QThread::finished, dialog, [this, worker, result, preparing]() {
+    if (editor)
+      editor->setSaving(true);
+    QObject::connect(worker, &QThread::finished, dialog, [this, worker, result, preparing, editor]() {
       if (preparation_worker != worker)
         return;
       preparation_worker = nullptr;
       if (!result->ok()) {
-        show_status(QString::fromStdString(result->status().ToString()), true);
+        const auto error = QString::fromStdString(result->status().ToString());
+        show_status(error, true);
+        if (editor)
+          editor->setSaving(false, error);
       } else {
+        if (editor) {
+          editor->setSaving(false);
+          editor->accept();
+        }
         Candidate candidate;
         candidate.stored = **result;
         candidate.workspace = (**result).workspace;
@@ -2571,8 +2584,10 @@ struct StitchingExperimentDialog::Impl {
       }
       const auto expected = result->matches.fingerprint;
       MatchEditorDialog editor(std::move(result->matches), std::move(result->automatic), dialog);
-      if (editor.exec() == QDialog::Accepted)
-        create_match_candidate(row, editor.editedSet(), expected);
+      editor.setSaveHandler([this, row, expected, &editor]() {
+        create_match_candidate(row, editor.editedSet(), expected, &editor);
+      });
+      editor.exec();
     });
     QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     show_status("Loading original camera images and editable matches…");
