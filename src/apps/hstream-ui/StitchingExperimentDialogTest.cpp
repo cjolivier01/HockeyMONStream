@@ -441,6 +441,11 @@ void exercise_resolution_queue(const QString& game, const QString& root) {
 }
 
 void exercise_player_queue(const QString& game, const QString& root) {
+  auto initial = YAML::Load(read(game + "/config.yaml").toStdString());
+  initial["game"]["stitching"]["frame_offsets"]["left"] = 0;
+  initial["game"]["stitching"]["frame_offsets"]["right"] = 70.330809;
+  initial["stitching"]["sync_method"] = "auto";
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(initial)));
   const QString runner = root + "/record-runner.sh";
   const QString arguments = root + "/runner-arguments.txt";
   write(
@@ -530,6 +535,16 @@ void exercise_player_queue(const QString& game, const QString& root) {
   widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100");
   widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText("2");
   add_options(dialog);
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot inspect queued calibration store");
+  const auto queued = LoadStitchingExperimentStore(*store);
+  require(queued.ok() && queued->experiments.size() == 2, "Cannot inspect queued baseline");
+  const auto baseline = queued->experiments.front().workspace.game_directory;
+  const auto baseline_config = YAML::LoadFile((baseline / "config.yaml").string());
+  require(
+      baseline_config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "features" &&
+          baseline_config["game"]["stitching"]["frame_offsets"]["right"].as<double>() == 70.330809,
+      "New baseline must preserve synchronization when invalidating solve artifacts");
   widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
   require(
       wait_until([&] { return status->text().startsWith("Batch complete."); }, 10000),
@@ -537,13 +552,21 @@ void exercise_player_queue(const QString& game, const QString& root) {
   const QByteArray args = read(arguments);
   require(
       args.contains("--stitching-calibration-only\n") && args.contains("--stitching-calibration-with-ice-mask\n") &&
-          !args.contains("--stitching-player-scan-output"),
-      "Associated baseline must prepare its rink mask before any player scan");
+          !args.contains("--stitching-player-scan-output") && !args.contains("--force-reconfigure"),
+      "Baseline must prepare its rink mask without forcing synchronization before player scanning");
   require(
       table->item(0, 5)->text().contains("Player overlap mapping canvas mismatch") &&
           table->item(0, 5)->toolTip().contains("Runner exited 13") &&
           table->item(1, 5)->text().contains("baseline calibration failed"),
       "A failed bootstrap must prevent its dependent scan from launching");
+  table->selectRow(0);
+  require(remove->isEnabled(), "Failed attempts must be removable after their runners stop");
+  remove->click();
+  const auto removed = LoadStitchingExperimentStore(*store);
+  require(
+      table->rowCount() == 0 && removed.ok() && removed->experiments.empty() && !std::filesystem::exists(baseline) &&
+          !std::filesystem::exists(queued->experiments.back().workspace.game_directory),
+      "Removing a failed baseline must delete dependent rows and all private files");
   dialog.reject();
   require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Player queue dialog did not close");
 }
@@ -652,6 +675,11 @@ void exercise_preparation_failure(const QString& game, const QString& root) {
     require(
         !widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->isEnabled(),
         "A partially prepared queue cannot start");
+    table->selectRow(0);
+    auto* remove = widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton");
+    require(remove->isEnabled(), "Failure before workspace creation must still be removable");
+    remove->click();
+    require(table->rowCount() == 0, "Removing an unprepared baseline must remove all dependent rows");
     dialog.reject();
     require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Failed preparation dialog did not close");
   }

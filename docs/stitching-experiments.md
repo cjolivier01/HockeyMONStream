@@ -56,6 +56,14 @@ The **Frame selection** column records each row's actual policy: ordinary captur
 for a search, anchor-only capture, or pending/saved player-rich selection. It follows the row's retained inputs
 and dependencies, independently of the checkbox's current state.
 
+Candidate solves preserve existing camera synchronization while regenerating control points, maps, panorama, and
+rink masks. Missing offsets are still resolved by the runner; independently changed offsets remain a selection error.
+
+**Remove selected** deletes queued or failed attempts and their queued/failed dependents, including private images,
+configurations, logs, and any frozen selection owned by a failed attempt. Successful dependents and unconfirmed process
+ownership block individual deletion. **Discard experiments and cache…** clears the entire history after runners stop.
+Older batches with a resynchronized baseline must be discarded and recreated, including that baseline.
+
 Adding, running, cancelling, previewing, or discarding a batch never modifies the selected game's stitching config or
 artifacts. Closing retains the complete experiment history, configurations, extracted frames and logs under the game’s
 `stitching-experiments/` directory. Reopening restores it. **Discard experiments** explicitly removes this owned

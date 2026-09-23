@@ -741,13 +741,16 @@ struct StitchingExperimentDialog::Impl {
     const bool stopping = pending_group_shutdowns > 0;
     const int row = table->currentRow();
     const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete;
-    const bool selected_queued = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].queued;
+    const bool selected_removable = row >= 0 && row < static_cast<int>(candidates.size()) &&
+        !candidates[row].main_calibration && !candidates[row].complete &&
+        (candidates[row].queued || !candidates[row].failure.isEmpty());
     const bool editing_batch =
         store && store_error.isEmpty() && !batch_active && !previewing && !promoting && !stopping && !closing;
     const auto queued_count =
         std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
     add_to_batch->setEnabled(editing_batch && feature_settings_error.isEmpty() && queued_count < 64);
-    remove_from_batch->setEnabled(editing_batch && selected_queued);
+    remove_from_batch->setEnabled(
+        store && !batch_active && !previewing && !promoting && !stopping && !closing && selected_removable);
     clear_batch->setEnabled(
         store && !batch_active && !previewing && !promoting && !stopping && !closing &&
         (!candidates.empty() || !store_error.isEmpty()));
@@ -1700,11 +1703,9 @@ struct StitchingExperimentDialog::Impl {
            << QString("-t=%1").arg(candidate.scan_duration_seconds);
     } else {
       env.insert("HSTREAM_CALIBRATION_PENDING", "1");
-      env.insert("HSTREAM_CALIBRATION_START_STAGE", "input");
+      env.insert("HSTREAM_CALIBRATION_START_STAGE", "features");
       env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", QString::fromStdString(candidate.workspace->invalidation_id));
       env.insert("HSTREAM_STITCH_CALIBRATION_INSPECTION", "1");
-      if (!candidate.has_selected_frames && !candidate.settings.manual_control_points)
-        args << "--force-reconfigure";
       args << QString("--clean-expected-invalidation-id=%1")
                   .arg(QString::fromStdString(candidate.workspace->invalidation_id))
            << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1").arg(candidate.settings.frame_count)
@@ -1812,7 +1813,7 @@ struct StitchingExperimentDialog::Impl {
                                                                   .arg((*settings.rink_rotation_degrees)[2], 0, 'g', 6)
                                                             : "Saved setting";
     const QStringList columns = {
-        candidate.main_calibration ? QString("Main calibration")
+        candidate.main_calibration           ? QString("Main calibration")
             : settings.manual_control_points ? QString("Manual %1").arg(candidate.sequence)
             : candidate.has_selected_frames || candidate.selection_owner_sequence != 0 ||
                 !candidate.saved_selection_fingerprint.empty()
@@ -2041,16 +2042,35 @@ struct StitchingExperimentDialog::Impl {
 
   void remove_selected_from_batch() {
     const int row = table->currentRow();
-    if (batch_active || preparation_worker || !store || row < 0 || row >= static_cast<int>(candidates.size()) ||
-        !candidates[row].queued)
+    if (batch_active || preparation_worker || promotion_worker || preview_process || pending_group_shutdowns ||
+        closing || !store || row < 0 || row >= static_cast<int>(candidates.size()) ||
+        candidates[row].main_calibration || candidates[row].complete ||
+        (!candidates[row].queued && candidates[row].failure.isEmpty()))
       return;
-    const int sequence = candidates[row].sequence;
+    // Follow dependencies transitively, including rows added in later sessions.
+    std::set<int> sequences{candidates[row].sequence};
+    size_t previous_size;
+    do {
+      previous_size = sequences.size();
+      for (const Candidate& candidate : candidates)
+        if (sequences.count(candidate.baseline_sequence) || sequences.count(candidate.selection_owner_sequence))
+          sequences.insert(candidate.sequence);
+    } while (previous_size != sequences.size());
     std::vector<std::string> removed_keys;
     for (Candidate& candidate : candidates) {
-      if (candidate.sequence == sequence || candidate.baseline_sequence == sequence ||
-          candidate.selection_owner_sequence == sequence) {
-        if (!candidate.queued || !candidate.workspace) {
-          show_status("Only queued candidates can be removed individually.", true);
+      if (sequences.count(candidate.sequence)) {
+        if (candidate.main_calibration || candidate.complete || (!candidate.queued && candidate.failure.isEmpty())) {
+          show_status(
+              "This attempt has successful dependents. Use Discard experiments to remove the entire history.", true);
+          return;
+        }
+        // Preparation can fail before a workspace is published. Such rows have
+        // no retained files; remove them from the table alongside durable rows.
+        if (!candidate.workspace)
+          continue;
+        if (!candidate.stored) {
+          show_status(
+              "This attempt's files were not cataloged. Use Discard experiments to remove its retained files.", true);
           return;
         }
         const auto released = release_reservation(candidate);
@@ -2062,7 +2082,7 @@ struct StitchingExperimentDialog::Impl {
             candidate.workspace->game_directory.lexically_relative(store->directory).generic_string());
       }
     }
-    const auto removed = RemoveQueuedStitchingExperiments(*store, removed_keys);
+    const auto removed = removed_keys.empty() ? absl::OkStatus() : RemoveStitchingExperiments(*store, removed_keys);
     if (!removed.ok()) {
       candidates.clear();
       table->setRowCount(0);
@@ -2075,8 +2095,7 @@ struct StitchingExperimentDialog::Impl {
     // Removing a baseline also removes every dependent automatic candidate;
     // stable sequence identities keep other dependencies intact as rows shift.
     for (int index = static_cast<int>(candidates.size()) - 1; index >= 0; --index) {
-      if (candidates[index].sequence == sequence || candidates[index].baseline_sequence == sequence ||
-          candidates[index].selection_owner_sequence == sequence) {
+      if (sequences.count(candidates[index].sequence)) {
         candidates.erase(candidates.begin() + index);
         table->removeRow(index);
       }
@@ -2098,13 +2117,20 @@ struct StitchingExperimentDialog::Impl {
                                            .arg(candidate.sequence));
       }
     }
+    if (!store_error.isEmpty() &&
+        std::none_of(
+            candidates.begin(),
+            candidates.end(),
+            [](const Candidate& item) { return !item.main_calibration && !item.stored && !item.failure.isEmpty(); }) &&
+        LoadStitchingExperimentStore(*store).ok())
+      store_error.clear();
     if (!candidates.empty()) {
       table->selectRow(std::min(row, static_cast<int>(candidates.size()) - 1));
       show_status(QString("Removed the candidate. %1 remain in the batch.").arg(candidates.size()));
     } else {
       session.reset();
       next_candidate_sequence = 0;
-      show_status("Removed the last queued candidate. Previously saved frame sets remain in the cache.");
+      show_status("Removed the last candidate and its private files. The main calibration is unchanged.");
     }
     update_controls();
   }
@@ -2584,9 +2610,8 @@ struct StitchingExperimentDialog::Impl {
       }
       const auto expected = result->matches.fingerprint;
       MatchEditorDialog editor(std::move(result->matches), std::move(result->automatic), dialog);
-      editor.setSaveHandler([this, row, expected, &editor]() {
-        create_match_candidate(row, editor.editedSet(), expected, &editor);
-      });
+      editor.setSaveHandler(
+          [this, row, expected, &editor]() { create_match_candidate(row, editor.editedSet(), expected, &editor); });
       editor.exec();
     });
     QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);

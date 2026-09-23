@@ -339,7 +339,10 @@ absl::Status configure_candidate(
   calibration["frame_count"] = settings.frame_count;
   calibration["status"] = "pending";
   calibration["rink_mask_status"] = "pending";
-  calibration["stale_from"] = "input";
+  // Experiment settings change the solve, not camera synchronization. Input
+  // cleanup would discard the copied offsets and let the baseline resynchronize
+  // independently of the siblings that will consume its selected frame pairs.
+  calibration["stale_from"] = "features";
   calibration["artifacts_invalidated"] = false;
   calibration["invalidation_id"] = invalidation_id;
   remove_downstream_generation(config);

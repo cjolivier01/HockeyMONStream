@@ -154,6 +154,49 @@ struct InterruptCleanup {
   }
 };
 
+bool failed_attempt_removal(const fs::path& root) {
+  bool ok = true;
+  for (bool frozen : {false, true}) {
+    auto store = open_store(root / (frozen ? "failed-frozen-removal" : "failed-reserved-removal"));
+    auto owner = make_record(store, "session", 1);
+    owner.reservation_token = "failed-owner";
+    const auto reserved = ReserveStitchingExperimentFrameCount(
+        store, 2, 10 * kPlayerFrameSecond, owner.workspace, owner.reservation_token);
+    ok &= expect(reserved.ok() && !reserved->has_value(), "reserve failed-removal fixture");
+    if (frozen)
+      install_plan(owner, make_plan(store.game_directory, 2));
+    owner.state = "failed";
+    ok &= expect(SaveStitchingExperiment(store, owner, frozen).ok(), "save stopped failed attempt");
+    const auto key = owner.workspace.game_directory.lexically_relative(store.directory).generic_string();
+    write_file(store.game_directory / "config.yaml", "main sentinel");
+    fs::create_directory_symlink(store.game_directory, owner.workspace.game_directory / "linked-main");
+    write_file(owner.workspace.game_directory / "runner.log", "failed runner");
+    ok &= expect(
+        RemoveStitchingExperiments(store, {key}).ok() && !fs::exists(owner.workspace.game_directory) &&
+            read_file(store.game_directory / "config.yaml") == "main sentinel",
+        "failed removal deletes private files without following media links into main");
+    const auto loaded = LoadStitchingExperimentStore(store);
+    ok &= expect(
+        loaded.ok() && loaded->experiments.empty() && loaded->selected_by_count.empty() &&
+            loaded->retained_by_count.empty(),
+        "failed removal forgets frozen selections as well as history");
+    auto fresh = make_record(store, "fresh", 1);
+    const auto retry =
+        ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, fresh.workspace, "new-attempt");
+    ok &= expect(retry.ok() && !retry->has_value(), "removed attempts cannot block a new selection of that count");
+    fresh.state = "quarantined";
+    fresh.reservation_token = "new-attempt";
+    ok &= expect(SaveStitchingExperiment(store, fresh).ok(), "save unconfirmed process ownership");
+    ok &= expect(
+        !RemoveStitchingExperiments(
+             store, {fresh.workspace.game_directory.lexically_relative(store.directory).generic_string()})
+                .ok() &&
+            fs::exists(fresh.workspace.game_directory),
+        "removal must reject quarantined attempts even without a recorded PID");
+  }
+  return ok;
+}
+
 bool deletion_recovery(const fs::path& root) {
   bool ok = true;
   auto queued_store = open_store(root / "queued-deletion-recovery");
@@ -167,7 +210,7 @@ bool deletion_recovery(const fs::path& root) {
   absl::Status removed_status;
   {
     InterruptCleanup interrupt;
-    removed_status = RemoveQueuedStitchingExperiments(
+    removed_status = RemoveStitchingExperiments(
         queued_store, {removed.workspace.game_directory.lexically_relative(queued_store.directory).generic_string()});
   }
   ok &= expect(
@@ -719,14 +762,13 @@ bool run(const fs::path& root) {
   const auto parent_key = remove_parent.workspace.game_directory.lexically_relative(store.directory).generic_string();
   const auto child_key = remove_child.workspace.game_directory.lexically_relative(store.directory).generic_string();
   ok &= expect(
-      !RemoveQueuedStitchingExperiments(store, {parent_key}).ok(),
-      "a surviving dependent prevents removing its input owner");
+      !RemoveStitchingExperiments(store, {parent_key}).ok(), "a surviving dependent prevents removing its input owner");
   ok &= expect(
-      RemoveQueuedStitchingExperiments(store, {parent_key, child_key}).ok() &&
+      RemoveStitchingExperiments(store, {parent_key, child_key}).ok() &&
           !fs::exists(remove_parent.workspace.game_directory) && !fs::exists(remove_child.workspace.game_directory),
       "explicit queued removal discards the selected rows and their private files together");
   ok &= expect(
-      !RemoveQueuedStitchingExperiments(
+      !RemoveStitchingExperiments(
            store,
            {merge_a.workspace.game_directory.lexically_relative(store.directory).generic_string(),
             merge_b.workspace.game_directory.lexically_relative(store.directory).generic_string()})
@@ -801,6 +843,7 @@ bool run(const fs::path& root) {
       !SaveStitchingExperiment(*reopened, ordinary).ok(),
       "a stale pre-discard row cannot write into a new empty history");
   ok &= deletion_recovery(root);
+  ok &= failed_attempt_removal(root);
   return ok;
 }
 

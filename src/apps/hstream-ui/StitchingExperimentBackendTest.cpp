@@ -236,10 +236,14 @@ bool ordinary_frame_inspection(const StitchingExperimentWorkspace& workspace) {
   return write(config_path, YAML::Dump(original));
 }
 
-bool inherited_camera_handoff(const fs::path& root) {
+bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) {
   using namespace hm::stitching;
   const fs::path game = root / "inherited-camera-game";
   YAML::Node original;
+  if (saved_offsets) {
+    original["game"]["stitching"]["frame_offsets"]["left"] = 0;
+    original["game"]["stitching"]["frame_offsets"]["right"] = 70.330809;
+  }
   for (const auto& section : {std::make_pair("game", "videos"), std::make_pair("hstream_ui", "video_roles")}) {
     original[section.first][section.second]["left"].push_back((game / "cam1" / "left.mp4").string());
     original[section.first][section.second]["right"].push_back((game / "cam2" / "right.mp4").string());
@@ -257,6 +261,17 @@ bool inherited_camera_handoff(const fs::path& root) {
   if (!baseline.ok() || !candidate.ok())
     return false;
   const fs::path directory = baseline->game_directory;
+  if (saved_offsets) {
+    if (!write(directory / "seam_file.png", "stale solve") ||
+        !clean_stitching_artifacts_from_control_points(directory.string(), baseline->invalidation_id).ok())
+      return false;
+    const auto cleaned = YAML::LoadFile((directory / "config.yaml").string());
+    if (!expect(
+            !fs::exists(directory / "seam_file.png") &&
+                cleaned["game"]["stitching"]["frame_offsets"]["right"].as<double>() == 70.330809,
+            "feature cleanup must remove stale solve artifacts while preserving synchronization"))
+      return false;
+  }
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
     if (!write(directory / name, "fixture"))
       return false;
@@ -309,7 +324,7 @@ bool inherited_camera_handoff(const fs::path& root) {
   // Its absence must not conflict with the candidate's explicit reference time.
   resolved["stitching"].remove("stitch_frame_time");
   resolved["game"]["stitching"]["frame_offsets"]["left"] = 0;
-  resolved["game"]["stitching"]["frame_offsets"]["right"] = 1;
+  resolved["game"]["stitching"]["frame_offsets"]["right"] = saved_offsets ? 70.330809 : 1;
   resolved["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   resolved["rink"]["stitched_output_generation"] = *output_generation;
   if (!write(directory / "config.yaml", YAML::Dump(resolved)))
@@ -826,6 +841,9 @@ int main() {
   ok &= expect(durable_workspace_publication(root), "queued workspaces must be durable before catalog publication");
   ok &= expect(ordinary_frame_inspection(*workspace), "ordinary calibration inspection must remain bound to its row");
   ok &= expect(inherited_camera_handoff(root), "candidate handoff must freeze inherited baseline camera and FOV");
+  ok &= expect(
+      inherited_camera_handoff(root / "saved-offsets", true),
+      "selection freeze and sibling reuse must accept preserved fractional synchronization");
   ok &= expect(fs::is_symlink(workspace->game_directory / "cam1" / "left.mp4"), "left video must be linked");
   ok &= expect(fs::is_symlink(workspace->game_directory / "cam2" / "right.mp4"), "right video must be linked");
   ok &= expect(
