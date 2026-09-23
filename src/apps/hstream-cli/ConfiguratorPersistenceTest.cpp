@@ -485,16 +485,13 @@ play-tracker:
     if (!loaded)
       continue;
     ok &= expect(
-        resolution_config.apply_config_item("stitching.control_point_resolution", game_override ? "2k" : "native")
-                .ok() &&
+        resolution_config.apply_config_item("stitching.control_point_resolution", "1k").ok() &&
             resolution_config.persist_effective_stitching_backend_choices().ok() &&
             resolution_config.persist_effective_stitching_backend_choices().ok(),
         "Explicit resolution overrides must survive repeated worker publication");
     const auto persisted = YAML::LoadFile((games / game / "config.yaml").string());
     ok &= expect(
-        hm::stitching::read_control_point_resolution(persisted).value() ==
-            (game_override ? hm::stitching::ControlPointResolution::k2K
-                           : hm::stitching::ControlPointResolution::kNative),
+        hm::stitching::read_control_point_resolution(persisted).value() == hm::stitching::ControlPointResolution::k1K,
         "The worker must receive the effective CLI resolution");
     hm::Configurator reloaded(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     ok &= expect(

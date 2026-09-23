@@ -59,13 +59,15 @@ class FeatureMatcher {
  public:
   static constexpr int kSuperPointReducedWidth = 2048;
   static constexpr int kSuperPointReducedHeight = 1152;
+  static constexpr int kSuperPointReferenceMaximumDimension = 1024;
   static constexpr int kSuperPointDimensionAlignment = 8;
-  // A 32x32 score grid supplies the graph's fixed top-1024 keypoints even for tiny inputs.
-  static constexpr int kSuperPointMinimumDimension = 32;
+  // A 48x48 score grid supplies the graph's fixed top-2048 keypoints even for tiny inputs.
+  static constexpr int kSuperPointMinimumDimension = 48;
   // Frozen RGB canvas for DeDoDe and the legacy ALIKED parity graph.
   static constexpr int kInputWidth = 1024;
   static constexpr int kInputHeight = 576;
   static constexpr int kKeypointsPerImage = 1024;
+  static constexpr int kSuperPointKeypointsPerImage = 2048;
   static constexpr int kLegacyAlikedKeypointsPerImage = 2048;
   static constexpr int kLoFTRMaximumDimension = 1600;
   static constexpr int kLoFTRDimensionAlignment = 32;

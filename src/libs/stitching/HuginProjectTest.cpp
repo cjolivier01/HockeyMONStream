@@ -317,6 +317,7 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
   lines[8] = "max-canvas-dimension-applied=0";
   const std::string fingerprint(64, 'a');
   const std::string diagnostics = "representative=1;pooled=0;accepted=42,87,31";
+  lines[28] = "control-point-resolution=1k";
   lines[29] = "calibration-frame-selection=" + fingerprint;
   lines[30] = "calibration-frame-diagnostics=" + diagnostics;
   auto check = [&](const std::vector<std::string>& fields, bool valid, bool selected) {
@@ -343,6 +344,8 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
           "both provenance readers must reject malformed selected-frame state");
     return expect(
         parsed.ok() && parsed->has_value() && constraints.ok() && constraints->artifacts_compatible &&
+            (fields.size() <= 28 ||
+             (*parsed)->control_point_resolution == hm::stitching::ControlPointResolution::k1K) &&
             (*parsed)->calibration_frame_selection_fingerprint == (selected ? fingerprint : std::string()) &&
             (!selected || (*parsed)->calibration_frame_diagnostics == diagnostics),
         "both readers must accept supported provenance and preserve the exact plan identity/diagnostics");

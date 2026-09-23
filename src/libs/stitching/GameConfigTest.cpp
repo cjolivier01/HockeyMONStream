@@ -216,9 +216,7 @@ int main() {
 
   using hm::stitching::ControlPointResolution;
   YAML::Node resolution_private(YAML::NodeType::Map);
-  const auto alternate_resolution = hm::stitching::DefaultControlPointResolution() == ControlPointResolution::kNative
-      ? ControlPointResolution::k2K
-      : ControlPointResolution::kNative;
+  const auto alternate_resolution = ControlPointResolution::k1K;
   const std::string alternate_name = hm::stitching::ControlPointResolutionName(alternate_resolution);
   YAML::Node reduced_config;
   reduced_config["stitching"]["control_point_resolution"] = alternate_name;
@@ -1207,14 +1205,14 @@ stitching:
                 provider_mismatch, "backend-generation-a", magsac_choices)),
         "a worker must not publish after its execution provider changed concurrently");
     YAML::Node resolution_mismatch = YAML::Clone(**after_conflict);
-    resolution_mismatch["stitching"]["control_point_resolution"] = "2k";
+    resolution_mismatch["stitching"]["control_point_resolution"] = "1k";
     ok &= expect(
         absl::IsAborted(
             hm::stitching::validate_stitching_backend_generation(
                 resolution_mismatch, "backend-generation-a", magsac_choices)),
         "a worker must not publish after its resolution changed concurrently");
     auto reduced_choices = magsac_choices;
-    reduced_choices.control_point_resolution = ControlPointResolution::k2K;
+    reduced_choices.control_point_resolution = ControlPointResolution::k1K;
     ok &= expect(
         absl::IsAborted(
             hm::stitching::reserve_stitching_backend_generation_in_config(
@@ -1225,7 +1223,7 @@ stitching:
         hm::stitching::reserve_stitching_backend_generation_in_config(
             resolution_mismatch, "resolution-generation", reduced_choices)
             .ok(),
-        "a fresh generation can reserve 2K input");
+        "a fresh generation can reserve 1K input");
     YAML::Node worker_mismatch = YAML::Clone(**after_conflict);
     worker_mismatch["stitching"]["projection"] = "general-panini";
     YAML::Node camera_worker_mismatch = YAML::Clone(**after_conflict);

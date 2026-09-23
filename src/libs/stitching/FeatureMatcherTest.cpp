@@ -125,11 +125,14 @@ int main() {
   }
 
   using hm::stitching::ControlPointResolution;
+  const auto reference_resolution = hm::stitching::ParseControlPointResolution("1k");
   ok &= expect(
       hm::stitching::ParseControlPointResolution("native").ok() &&
-          hm::stitching::ParseControlPointResolution("2k").ok() &&
+          hm::stitching::ParseControlPointResolution("2k").ok() && reference_resolution.ok() &&
+          *reference_resolution == ControlPointResolution::k1K &&
+          std::string(hm::stitching::ControlPointResolutionName(ControlPointResolution::k1K)) == "1k" &&
           !hm::stitching::ParseControlPointResolution("bad-size").ok(),
-      "resolution accepts native and 2k, rejecting unknown values");
+      "resolution accepts native, 1k and 2k, rejecting unknown values");
   const auto auto_resolution = hm::stitching::ParseControlPointResolution("auto");
 #ifdef IS_TEGRA
   const auto expected_default = ControlPointResolution::k2K;
@@ -148,6 +151,53 @@ int main() {
           reduced->resized_sizes[0] == cv::Size(2048, 1152) && reduced->resized_sizes[1] == cv::Size(1152, 1152) &&
           reduced->tensor[static_cast<size_t>(2048) * 1152 + 1152] == 0.0f,
       "2K reproduces the aspect-preserving canvas and per-camera padding");
+  auto reference = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right, ControlPointResolution::k1K);
+  ok &= expect(
+      reference.ok() && reference->tensor_size == cv::Size(1024, 1024) &&
+          reference->resized_sizes[0] == cv::Size(1024, 576) && reference->resized_sizes[1] == cv::Size(1024, 1024) &&
+          reference->tensor[576 * 1024] == 0.0f,
+      "1K resizes each camera's long edge independently and pads their shared canvas");
+  const cv::Mat portrait(301, 201, CV_8UC3, cv::Scalar::all(255));
+  auto reference_portrait =
+      hm::stitching::FeatureMatcher::PrepareSuperPoint(portrait, portrait, ControlPointResolution::k1K);
+  ok &= expect(
+      reference_portrait.ok() && reference_portrait->resized_sizes[0] == cv::Size(683, 1024) &&
+          reference_portrait->tensor_size == cv::Size(688, 1024) &&
+          std::abs(reference_portrait->tensor[682] - 1.0f) < 1e-6f && reference_portrait->tensor[683] == 0.0f,
+      "1K preserves portrait aspect ratio and rounds only the padded canvas to multiples of eight");
+  cv::Mat reference_pattern(256, 4096, CV_8UC3);
+  for (int y = 0; y < reference_pattern.rows; ++y) {
+    for (int x = 0; x < reference_pattern.cols; ++x)
+      reference_pattern.at<cv::Vec3b>(y, x) = {
+          static_cast<uchar>((x * 17 + y * 13) % 256),
+          static_cast<uchar>((x * x + 7 * y) % 256),
+          static_cast<uchar>((3 * x + 19 * y) % 256)};
+  }
+  auto antialiased = hm::stitching::FeatureMatcher::PrepareSuperPoint(
+      reference_pattern, reference_pattern, ControlPointResolution::k1K);
+  // Independent Kornia oracle: resize(rgb.float()/255, 1024, side="long",
+  // antialias=True), then rgb_to_grayscale. Edge samples verify reflect padding.
+  const struct {
+    int y, x;
+    float value;
+  } reference_samples[] = {
+      {0, 0, 0.105538331f},
+      {0, 1, 0.212004855f},
+      {0, 500, 0.523470461f},
+      {1, 1023, 0.254430801f},
+      {32, 500, 0.445597708f},
+      {63, 0, 0.823443770f},
+      {63, 1023, 0.759036183f}};
+  ok &= expect(antialiased.ok(), "1K reference antialias fixture must preprocess");
+  if (antialiased.ok()) {
+    for (const auto& sample : reference_samples)
+      ok &= expect(
+          std::abs(antialiased->tensor[sample.y * antialiased->tensor_size.width + sample.x] - sample.value) < 2e-6f,
+          "1K floating-point antialias preprocessing must match the independent Kornia oracle");
+  }
+  ok &= expect(
+      !hm::stitching::FeatureMatcher::PrepareSuperPoint({}, right, ControlPointResolution::k1K).ok(),
+      "1K rejects empty images before deriving their long-edge scale");
   auto superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right, ControlPointResolution::kNative);
   ok &= expect(superpoint.ok(), "valid SuperPoint images must preprocess");
   if (superpoint.ok()) {
@@ -180,9 +230,9 @@ int main() {
   const cv::Mat tiny(2, 3, CV_8UC3, cv::Scalar::all(255));
   auto tiny_superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(tiny, tiny, ControlPointResolution::kNative);
   ok &= expect(
-      tiny_superpoint.ok() && tiny_superpoint->tensor_size == cv::Size(32, 32) &&
+      tiny_superpoint.ok() && tiny_superpoint->tensor_size == cv::Size(48, 48) &&
           tiny_superpoint->resized_sizes[0] == tiny.size() && tiny_superpoint->tensor[3] == 0.0f,
-      "tiny SuperPoint images must pad for top-1024 without upscaling");
+      "tiny SuperPoint images must pad for top-2048 without upscaling");
 
   cv::Mat full_size(2161, 3841, CV_8UC3, cv::Scalar::all(0));
   full_size.at<cv::Vec3b>(2160, 3840) = {255, 255, 255};
@@ -228,9 +278,11 @@ int main() {
   metadata.resized_sizes[0] = {2048, 1152};
   metadata.resized_sizes[1] = {2048, 1152};
   metadata.tensor_size = {2048, 1152};
-  std::vector<float> keypoints(static_cast<size_t>(2) * hm::stitching::FeatureMatcher::kKeypointsPerImage * 2, 0.0f);
+  std::vector<float> keypoints(
+      static_cast<size_t>(2) * hm::stitching::FeatureMatcher::kSuperPointKeypointsPerImage * 2, 0.0f);
   auto set_keypoint = [&](int image, int index, float x, float y) {
-    const size_t offset = (static_cast<size_t>(image) * hm::stitching::FeatureMatcher::kKeypointsPerImage + index) * 2;
+    const size_t offset =
+        (static_cast<size_t>(image) * hm::stitching::FeatureMatcher::kSuperPointKeypointsPerImage + index) * 2;
     keypoints[offset] = x;
     keypoints[offset + 1] = y;
   };
@@ -242,6 +294,30 @@ int main() {
   set_keypoint(1, 2, 1530.0f, 905.0f);
   std::vector<int64_t> matches = {0, 0, 0, 0, 1, 1, 0, 2, 2};
   std::vector<float> scores = {0.9f, 0.8f, 0.7f};
+  set_keypoint(0, 2047, 70.0f, 60.0f);
+  set_keypoint(1, 2047, 80.0f, 65.0f);
+  const std::vector<int64_t> high_index_match = {0, 2047, 2047};
+  auto high_index = hm::stitching::FeatureMatcher::Postprocess(
+      metadata, keypoints.data(), keypoints.size(), high_index_match.data(), 3, scores.data(), 1, 5);
+  ok &= expect(
+      high_index.ok() && high_index->accepted.size() == 1 && high_index->accepted[0].left_index == 2047 &&
+          high_index->accepted[0].right_index == 2047,
+      "SuperPoint must retain matches from the entire 2048-keypoint detector budget");
+  ok &= expect(
+      !hm::stitching::FeatureMatcher::Postprocess(
+           metadata, keypoints.data(), keypoints.size() / 2, matches.data(), 3, scores.data(), 1, 5)
+           .ok(),
+      "SuperPoint must reject the obsolete 1024-keypoint output contract");
+  if (reference.ok()) {
+    set_keypoint(0, 2047, 639.5f, 319.5f);
+    set_keypoint(1, 2047, 511.5f, 511.5f);
+    auto restored = hm::stitching::FeatureMatcher::Postprocess(
+        *reference, keypoints.data(), keypoints.size(), high_index_match.data(), 3, scores.data(), 1, 5);
+    ok &= expect(
+        restored.ok() && cv::norm(restored->accepted[0].left - cv::Point2f(99.5f, 49.5f)) < 1e-4 &&
+            cv::norm(restored->accepted[0].right - cv::Point2f(49.5f, 49.5f)) < 1e-4,
+        "1K matches restore each camera's source pixel-center coordinates");
+  }
   auto result = hm::stitching::FeatureMatcher::Postprocess(
       metadata, keypoints.data(), keypoints.size(), matches.data(), matches.size(), scores.data(), scores.size(), 5);
   ok &= expect(result.ok(), "valid matches must postprocess");

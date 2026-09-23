@@ -400,15 +400,15 @@ bool write_pipeline_config(const fs::path& path) {
   - name: superpoint-lightglue
     on-demand: true
     redistributable: false
-    url: https://github.com/fabio-sim/LightGlue-ONNX/releases/download/v2.0/superpoint_lightglue_pipeline.onnx
-    sha256: 228994cea8c010146fa2aef933baa3ffaa4bcdc522bc8aa560087fcff8134526
-    path: $HOME/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx
+    url: https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/superpoint-lightglue-k2048-d63a61e3b1667c0b.onnx
+    sha256: d63a61e3b1667c0bdf89bea9c5508df9dc98472944ca1dea0b46f3facfc00935
+    path: $HOME/.cache/hstream/models/superpoint-lightglue-k2048-d63a61e3b1667c0b.onnx
   - name: superpoint-lightglue-cuda
     on-demand: true
     redistributable: false
-    url: https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx
-    sha256: 0f3d76a65c832fc10c81ce80048b361cef75fce8f1d67f6aa65a73294a333411
-    path: $HOME/.cache/hstream/models/superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx
+    url: https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/superpoint-lightglue-cuda-k2048-59460a88dac888ad.onnx
+    sha256: 59460a88dac888adeccb6bd4a7870b5193a0755e3b0fdc57de249177b7f47bc4
+    path: $HOME/.cache/hstream/models/superpoint-lightglue-cuda-k2048-59460a88dac888ad.onnx
 
 application:
   stage: 0

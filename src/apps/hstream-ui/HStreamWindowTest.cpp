@@ -12894,7 +12894,7 @@ bool test_control_point_resolution(const QString& source_game_directory) {
   config["hstream_ui"].remove("generated_stitching_backend_choices");
   config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   std::ofstream(config_path) << YAML::Dump(config) << '\n';
-  for (int run = 0; run < 2; ++run) {
+  for (int run = 0; run < 3; ++run) {
     HStreamWindow window;
     window.show();
     auto* game = require_child<QLineEdit>(&window, "gameIdEdit");
@@ -12907,10 +12907,17 @@ bool test_control_point_resolution(const QString& source_game_directory) {
     game->setText("ui-feature-resolution");
     activate(create);
     if (!expect(
-            resolution->isEnabled() && resolution->currentData() == (run == 0 ? "native" : "2k"),
-            "SuperPoint must default to native and reload an explicitly saved 2K size"))
+            resolution->isEnabled() &&
+                resolution->currentData() ==
+                    (run == 0       ? "native"
+                         : run == 1 ? "2k"
+                                    : "1k"),
+            "SuperPoint must reload explicitly saved native, 2K and 1K sizes"))
       return false;
-    resolution->setCurrentIndex(resolution->findData("2k"));
+    const QString selected_resolution = run == 0 ? "2k" : "1k";
+    if (!expect(resolution->findData(selected_resolution) >= 0, "SuperPoint must offer 1K and 2K image sizes"))
+      return false;
+    resolution->setCurrentIndex(resolution->findData(selected_resolution));
     for (const auto& choice : std::vector<std::pair<const char*, const char*>>{
              {"akaze-hamming", "1920"}, {"dedode-lightglue", "1024"}, {"loftr", "1600"}}) {
       matcher->setCurrentIndex(matcher->findData(choice.first));
@@ -12921,14 +12928,14 @@ bool test_control_point_resolution(const QString& source_game_directory) {
     }
     matcher->setCurrentIndex(matcher->findData("superpoint-lightglue"));
     if (!expect(
-            resolution->isEnabled() && resolution->currentData() == "2k",
+            resolution->isEnabled() && resolution->currentData() == selected_resolution,
             "Switching algorithms must preserve the selected SuperPoint resolution"))
       return false;
-    if (run == 0) {
+    if (run < 2) {
       activate(save);
       const auto saved = YAML::LoadFile(config_path.string());
       if (!expect(
-              saved["stitching"]["control_point_resolution"].as<std::string>() == "2k" &&
+              saved["stitching"]["control_point_resolution"].as<std::string>() == selected_resolution.toStdString() &&
                   saved["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
                   saved["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "features",
               "Saving a different image size must restart calibration from features"))

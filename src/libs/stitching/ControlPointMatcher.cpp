@@ -17,6 +17,8 @@ ControlPointResolution DefaultControlPointResolution() {
 }
 
 const char* ControlPointResolutionName(ControlPointResolution resolution) {
+  if (resolution == ControlPointResolution::k1K)
+    return "1k";
   return resolution == ControlPointResolution::k2K ? "2k" : "native";
 }
 
@@ -27,7 +29,9 @@ absl::StatusOr<ControlPointResolution> ParseControlPointResolution(const std::st
     return ControlPointResolution::kNative;
   if (value == "2k")
     return ControlPointResolution::k2K;
-  return absl::InvalidArgumentError("stitching.control_point_resolution must be auto, native or 2k: " + value);
+  if (value == "1k")
+    return ControlPointResolution::k1K;
+  return absl::InvalidArgumentError("stitching.control_point_resolution must be auto, native, 1k or 2k: " + value);
 }
 
 const char* ControlPointMatcherName(ControlPointMatcher matcher) {

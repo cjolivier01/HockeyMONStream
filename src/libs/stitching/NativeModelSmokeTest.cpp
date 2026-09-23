@@ -66,8 +66,8 @@ int main() {
   const fs::path rink_path = model_path("HM_RINK_ONNX_MODEL", "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx");
   const fs::path matcher_path = model_path(
       "HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL",
-      *provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-0f3d76a65c832fc1.onnx"
-                                                      : "superpoint-lightglue-pipeline-228994cea8c01014.onnx");
+      *provider == hm::onnx::ExecutionProvider::kCuda ? "superpoint-lightglue-cuda-k2048-59460a88dac888ad.onnx"
+                                                      : "superpoint-lightglue-k2048-d63a61e3b1667c0b.onnx");
   const fs::path legacy_aliked_path =
       model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "aliked-lightglue-k2048-ea4a4ab2cb556958.onnx");
   const fs::path dedode_path =
@@ -184,7 +184,7 @@ int main() {
     hm::onnx::CpuFallbackOptions fallback;
     if (require_cpu_fallback) {
       fallback.model_path = matcher_case.matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue
-          ? model_path("HM_FEATURE_MATCHER_CPU_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx")
+          ? model_path("HM_FEATURE_MATCHER_CPU_ONNX_MODEL", "superpoint-lightglue-k2048-d63a61e3b1667c0b.onnx")
                 .string()
           : matcher_case.path.string();
       fallback.on_fallback = [&] { ++fallback_count; };

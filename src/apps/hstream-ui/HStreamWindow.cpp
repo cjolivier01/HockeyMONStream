@@ -7233,10 +7233,12 @@ void HStreamWindow::updateControlPointResolution() {
   const bool selectable = matcher == "superpoint-lightglue";
   if (selectable) {
     control_point_resolution_combo_->addItem("Native (full size)", "native");
+    control_point_resolution_combo_->addItem("1K (1024 px long edge)", "1k");
     control_point_resolution_combo_->addItem("2K (2048 × 1152)", "2k");
     set_combo_to_data(control_point_resolution_combo_, control_point_resolution_);
     control_point_resolution_combo_->setToolTip(
-        "SuperPoint + LightGlue image size. 2K fits each image into 2048 × 1152 while preserving aspect ratio. "
+        "SuperPoint + LightGlue image size. 1K uses the HM/cupano reference size: a 1024-pixel long edge. "
+        "2K fits each image into 2048 × 1152. Both preserve aspect ratio. "
         "Native uses the original pixels. Changing size requires finding control points again.");
   } else {
     const QString size = matcher == "akaze-hamming" ? "1920 px maximum"
