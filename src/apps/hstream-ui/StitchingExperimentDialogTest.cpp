@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
+#include "hstream/src/libs/stitching/CalibrationMatchImages.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
@@ -868,6 +869,17 @@ void exercise_saved_selection(const QString& game, const QString& root) {
   config["hstream_ui"]["stitching_calibration"]["control_points"] = 100;
   config["hstream_ui"]["stitching_calibration"]["frame_count"] = 2;
   write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  const QString match_directory = game + "/calibration-frame-inspection/fixture-main-calibration";
+  require(QDir().mkpath(match_directory), "Cannot create generation-owned match fixture");
+  const auto match_images = MakeCalibrationMatchImages(
+      {cv::Mat(300, 600, CV_8UC3, cv::Scalar::all(64)), cv::Mat(400, 800, CV_8UC3, cv::Scalar::all(96))},
+      {{{300, 150}, {200, 250}, 0.9f}, {{450, 75}, {100, 150}, 0.8f}});
+  require(match_images.ok(), "Cannot render match fixture");
+  for (size_t kind = 0; kind < 2; ++kind)
+    require(
+        cv::imwrite(
+            (match_directory + (kind == 0 ? "/points_0.jpg" : "/matches_0.jpg")).toStdString(), (*match_images)[kind]),
+        "Cannot save match fixture");
   {
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     environment.insert("HM_OUTPUT_WORK_DIR", root + "/saved-output");
@@ -944,12 +956,38 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     QTimer::singleShot(0, &reopened, [&]() {
       if (auto* inspector = reopened.findChild<QDialog*>("stitchExperimentFrameInspector")) {
         auto* frames = inspector->findChild<QTableWidget*>("stitchExperimentSelectedFrames");
-        inspected_main = frames && frames->rowCount() == 2;
+        auto* show = inspector->findChild<QCheckBox*>("stitchExperimentShowMatches");
+        auto* points_only = inspector->findChild<QCheckBox*>("stitchExperimentMatchPointsOnly");
+        auto* image = inspector->findChild<QLabel*>("stitchExperimentSelectedMatches");
+        auto* status = inspector->findChild<QLabel*>("stitchExperimentMatchStatus");
+        inspected_main = frames && frames->rowCount() == 2 && show && show->isEnabled() && !show->isChecked() &&
+            points_only && image && !image->isVisible() && status;
+        if (inspected_main) {
+          show->setChecked(true);
+          QCoreApplication::processEvents();
+          const QImage lines = image->property("pixmap").value<QPixmap>().toImage();
+          inspected_main &= image->isVisible() && points_only->isEnabled() && !lines.isNull();
+          const QString screenshot = qEnvironmentVariable("HSTREAM_TEST_MATCH_SCREENSHOT");
+          if (!screenshot.isEmpty())
+            inspector->grab().save(screenshot);
+          points_only->setChecked(true);
+          const QImage points = image->property("pixmap").value<QPixmap>().toImage();
+          inspected_main &= !points.isNull() && points != lines;
+          frames->selectRow(1);
+          inspected_main &= !show->isEnabled() && !points_only->isEnabled() && !image->isVisible() &&
+              status->text().contains("not recorded");
+          frames->selectRow(0);
+          inspected_main &= show->isEnabled() && image->isVisible();
+          show->setChecked(false);
+          inspected_main &= !image->isVisible();
+        }
         inspector->accept();
       }
     });
     widget<QPushButton>(reopened, "inspectStitchExperimentFramesButton")->click();
-    require(inspected_main, "Main frame inspector must show the retained selected pairs");
+    require(
+        inspected_main,
+        "Inspector must toggle saved matches/points, resize, and handle missing pair data without inference");
     require(!QFile::exists(arguments), "Main frame inspection must not launch baseline, scan or extraction");
     require(
         QFile::rename(game + "/left.offline", game + "/left.mp4") &&

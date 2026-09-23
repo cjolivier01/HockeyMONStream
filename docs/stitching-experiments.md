@@ -88,6 +88,21 @@ most 1024 pixels on its longest edge. New selected sets retain all full-resoluti
 `player-frame-inputs/<selection fingerprint>/`; the complete set is copied into the main game during promotion.
 Ordinary rows retain a bounded source manifest and JPEGs under `calibration-frame-inspection/<invalidation id>/`. Missing thumbnails are shown explicitly rather than replaced with nearby frames.
 
+In **Inspect selected frames**, enable **Show matches** to see the two camera stills with green lines connecting
+matched control points. **Points only** hides the lines while retaining the matched endpoints. These are the
+matcher-selected correspondences for that individual pair, after its confidence/filtering and control-point cap,
+before multi-frame pooling and geometric validation; they are not all raw SuperPoint detections or the final
+solver's inliers. Changing the selected pair updates the view, and turning off Show matches restores the original
+camera thumbnails. The coverage grid keeps its separate meaning.
+
+Calibration saves `points_N.jpg` and `matches_N.jpg` beside the generation's ordinary inspection files, including
+for Players rows. Each combined image is at most 2048 × 1024 pixels and uses the CPU stills and matching results
+already available during calibration. Calibrated AKAZE coordinates are projected back through the lens model so
+the overlays align with the raw cameras. No extra inference, video decode or video-surface readback is needed.
+Unlike the reusable selected input bundle, these pictures belong to a specific solve. Retries clear previous
+match pictures before matching, and promotion copies them to the main game. Existing experiments and pairs that
+failed matching may lack these pictures; the inspector reports that explicitly and never regenerates them.
+
 ## Selecting the Program calibration
 
 **Use selected in main Program** validates and transactionally republishes the candidate's existing Hugin project,
