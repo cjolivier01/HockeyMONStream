@@ -16,6 +16,8 @@ VIDEO_RE = re.compile(
     r"(?:-(?P<version>\d+))?\.(?P<ext>mp4|mkv)$",
     re.IGNORECASE,
 )
+PROGRAM_4K_RE = re.compile(r"program[_-]4k_output", re.IGNORECASE)
+OFFICIAL_4K_RE = re.compile(r"program[_-]4k_output-with-audio", re.IGNORECASE)
 TELEMETRY_RE = re.compile(
     r"^(?:tracking|detections|camera|camera_fast|hstream_frame_index|hstream_config_events)"
     r"(?:-(?P<version>\d+))?\.csv$"
@@ -97,15 +99,23 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
                 pending.append(path)
 
         ui_newest = max((version for version, _ in ui_videos), default=0)
+        newest_mp4 = max(
+            (version for versions in videos.values() for version, _, ext in versions if ext == "mp4"),
+            default=0,
+        )
         for versions in videos.values():
             newest = max(version for version, _, _ in versions)
             for version, path, extension in versions:
                 # CLI work archives reuse their bare MKV path on every run.
                 if version == 0 and extension == "mkv":
                     continue
-                # An official 4K Program export remains current until another
-                # export of the same kind replaces it.
-                if version < newest:
+                nonofficial_4k_companion = (
+                    version > 0
+                    and extension == "mp4"
+                    and PROGRAM_4K_RE.search(path.name) is not None
+                    and OFFICIAL_4K_RE.search(path.name) is None
+                )
+                if version < newest or (nonofficial_4k_companion and version < newest_mp4):
                     obsolete.append(path)
 
         telemetry_newest = max((version for version, _ in telemetry), default=0)
