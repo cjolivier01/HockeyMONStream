@@ -122,6 +122,41 @@ int main() {
   ok &= expect(
       parsed.ok() && parsed->plan && parsed->plan->fingerprint == plan.fingerprint,
       "report and plan round-trip with stable fingerprint");
+  PlayerFrameSelectionPlan string_context;
+  string_context.settings.frame_count = 1;
+  string_context.sources = {{"/recording/left.mp4", 100, 123}, {"/recording/right.mp4", 200, 456}};
+  string_context.context = context();
+  string_context.context["output_rotation_degrees"] = "0.000000";
+  string_context.context["decode_anchor_ns"] = "582000000000";
+  string_context.context["additional_identity"] = "yes";
+  PlayerFrameObservation anchor_observation;
+  anchor_observation.pair = pair(0, "/recording/left.mp4", "/recording/right.mp4");
+  string_context.selected.push_back(anchor_observation);
+  auto string_fingerprint = PlayerFrameSelectionFingerprint(string_context);
+  if (!string_fingerprint.ok())
+    return 1;
+  string_context.fingerprint = *string_fingerprint;
+  ok &= expect(
+      *string_fingerprint == "f26a1599bade86d7b13efd45b9015ad6533a4066954d7f1fe736a711648be23d",
+      "context string serialization retains the original schema-1 fingerprint encoding");
+  auto string_document = YAML::Load(YAML::Dump(PlayerFrameSelectionPlanYaml(string_context)));
+  for (const auto& [key, value] : string_context.context) {
+    ok &= expect(
+        string_document["context"][key].Tag() == "tag:yaml.org,2002:str" &&
+            string_document["context"][key].as<std::string>() == value,
+        "persisted context preserves string types for YAML tools with scalar resolution");
+  }
+  auto string_parsed = ParsePlayerFrameSelectionPlan(string_document);
+  ok &= expect(
+      string_parsed.ok() && string_parsed->fingerprint == string_context.fingerprint,
+      "explicit string tags preserve the plan fingerprint");
+  for (const auto& [key, value] : string_context.context)
+    string_document["context"][key].SetTag("");
+  ok &= expect(
+      ParsePlayerFrameSelectionPlan(YAML::Load(YAML::Dump(string_document))).ok(),
+      "legacy plans without explicit string tags remain valid");
+  string_document["context"]["output_rotation_degrees"] = "0.0";
+  ok &= expect(!ParsePlayerFrameSelectionPlan(string_document).ok(), "changed context text still fails validation");
   auto reordered = plan;
   std::reverse(reordered.sources.begin(), reordered.sources.end());
   auto reordered_hash = PlayerFrameSelectionFingerprint(reordered);

@@ -48,6 +48,13 @@ versioned bounded manifest identifies the exact plan fingerprint, ordered source
 dimensions and depth, complete pair count, and content digests for all full PNGs and inspection JPEGs. Filenames
 are fixed relative names selected by the implementation, never arbitrary paths from a manifest.
 
+Selection-plan context values are exact strings, including numeric-looking text such as `0.000000`.
+`PlayerFrameSelectionPlanYaml` emits explicit YAML string tags so tools with scalar type inference preserve
+their text when saving. Fingerprints retain the original schema-1 encoding; existing untagged plans remain
+valid. If an external rewrite has already changed context text, restore it from a validated scan report or
+retained bundle with the same fingerprint rather than recomputing the fingerprint or discarding the selected
+frames.
+
 The library publishes a bundle from the full PNGs already required by matching, before creating the matcher or
 loading its model, so a model-initialization failure cannot discard the captured inputs.
 Publishing uses a private sibling staging directory, validates every pair, fsyncs data and manifest, and renames
