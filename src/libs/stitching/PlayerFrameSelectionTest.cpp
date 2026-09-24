@@ -122,6 +122,71 @@ int main() {
   ok &= expect(
       parsed.ok() && parsed->plan && parsed->plan->fingerprint == plan.fingerprint,
       "report and plan round-trip with stable fingerprint");
+  PlayerFrameSelectionPlan string_context;
+  string_context.settings.frame_count = 1;
+  string_context.sources = {{"/recording/left.mp4", 100, 123}, {"/recording/right.mp4", 200, 456}};
+  string_context.context = context();
+  string_context.context["output_rotation_degrees"] = "0.000000";
+  string_context.context["decode_anchor_ns"] = "582000000000";
+  string_context.context["additional_identity"] = "yes";
+  PlayerFrameObservation anchor_observation;
+  anchor_observation.pair = pair(0, "/recording/left.mp4", "/recording/right.mp4");
+  string_context.selected.push_back(anchor_observation);
+  auto string_fingerprint = PlayerFrameSelectionFingerprint(string_context);
+  if (!string_fingerprint.ok())
+    return 1;
+  string_context.fingerprint = *string_fingerprint;
+  ok &= expect(
+      *string_fingerprint == "f26a1599bade86d7b13efd45b9015ad6533a4066954d7f1fe736a711648be23d",
+      "context string serialization retains the original schema-1 fingerprint encoding");
+  auto string_document = YAML::Load(YAML::Dump(PlayerFrameSelectionPlanYaml(string_context)));
+  for (const auto& [key, value] : string_context.context) {
+    ok &= expect(
+        string_document["context"][key].Tag() == "tag:yaml.org,2002:str" &&
+            string_document["context"][key].as<std::string>() == value,
+        "persisted context preserves string types for YAML tools with scalar resolution");
+  }
+  auto string_parsed = ParsePlayerFrameSelectionPlan(string_document);
+  ok &= expect(
+      string_parsed.ok() && string_parsed->fingerprint == string_context.fingerprint,
+      "explicit string tags preserve the plan fingerprint");
+  // External tools such as PyYAML may replace explicit tags with quoting. A
+  // later ordinary config save must retain that string type without rebuilding
+  // the plan through PlayerFrameSelectionPlanYaml.
+  auto quoted_document = YAML::Clone(string_document);
+  for (const auto& [key, value] : string_context.context) {
+    YAML::Emitter quoted;
+    quoted << YAML::DoubleQuoted << value;
+    quoted_document["context"][key] = YAML::Load(quoted.c_str());
+  }
+  for (int rewrite = 0; rewrite < 2; ++rewrite) {
+    quoted_document = YAML::Load(YAML::Dump(quoted_document));
+    for (const auto& [key, value] : string_context.context) {
+      ok &= expect(
+          quoted_document["context"][key].Tag() == "!" &&
+              quoted_document["context"][key].as<std::string>() == value,
+          "ordinary native re-saves retain quoted context strings from external YAML tools");
+    }
+    auto rewritten_plan = ParsePlayerFrameSelectionPlan(quoted_document);
+    ok &= expect(
+        rewritten_plan.ok() && rewritten_plan->fingerprint == string_context.fingerprint,
+        "repeated native re-saves preserve the externally quoted plan fingerprint");
+  }
+  auto mixed_scalars =
+      YAML::Load(YAML::Dump(YAML::Load("text: '0.000000'\ncount: 3\nratio: 0.5\nenabled: true\n")));
+  ok &= expect(
+      mixed_scalars["text"].Tag() == "!" && mixed_scalars["count"].Tag() == "?" &&
+          mixed_scalars["count"].as<int>() == 3 && mixed_scalars["ratio"].Tag() == "?" &&
+          mixed_scalars["ratio"].as<double>() == 0.5 && mixed_scalars["enabled"].Tag() == "?" &&
+          mixed_scalars["enabled"].as<bool>(),
+      "retaining string quoting does not change the types of following numeric scalars");
+  for (const auto& [key, value] : string_context.context)
+    string_document["context"][key].SetTag("");
+  ok &= expect(
+      ParsePlayerFrameSelectionPlan(YAML::Load(YAML::Dump(string_document))).ok(),
+      "legacy plans without explicit string tags remain valid");
+  string_document["context"]["output_rotation_degrees"] = "0.0";
+  ok &= expect(!ParsePlayerFrameSelectionPlan(string_document).ok(), "changed context text still fails validation");
   auto reordered = plan;
   std::reverse(reordered.sources.begin(), reordered.sources.end());
   auto reordered_hash = PlayerFrameSelectionFingerprint(reordered);

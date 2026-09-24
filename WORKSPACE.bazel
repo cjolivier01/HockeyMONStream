@@ -100,6 +100,8 @@ new_git_repository(
     name = "yaml-cpp",
     build_file = "@//buildfiles:third_party/yaml-cpp.BUILD",
     commit = "f7320141120f720aecc4c32be25586e7da9eb978",
+    patch_args = ["-p1"],
+    patches = ["//third_party/patches:yaml_cpp_preserve_quoted_scalars.patch"],
     remote = "https://github.com/jbeder/yaml-cpp.git",
 )
 

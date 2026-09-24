@@ -197,8 +197,14 @@ YAML::Node plan_yaml(const PlayerFrameSelectionPlan& plan, bool fingerprint) {
     binding["modification_time_ns"] = source.modification_time_ns;
     node["sources"].push_back(binding);
   }
-  for (const auto& [key, value] : plan.context)
+  for (const auto& [key, value] : plan.context) {
     node["context"][key] = value;
+    // Other YAML loaders resolve plain scalars (e.g. 0.000000) as numbers,
+    // changing their text on save and breaking the fingerprint. Persist the
+    // string type explicitly, but retain the original untagged hash encoding.
+    if (fingerprint)
+      node["context"][key].SetTag("tag:yaml.org,2002:str");
+  }
   for (const auto& observation : plan.selected)
     node["selected"].push_back(observation_yaml(observation));
   if (fingerprint)
