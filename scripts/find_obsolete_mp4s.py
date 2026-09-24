@@ -45,7 +45,8 @@ def config_owners(paths: list[Path]) -> dict[str, set[int]]:
         events = re.fullmatch(r"hstream_config_events(?:-(\d+))?\.csv", name, re.IGNORECASE)
         if manifest:
             try:
-                provenance = json.loads(path.read_text(encoding="utf-8")).get("config_provenance", {})
+                document = json.loads(path.read_text(encoding="utf-8"))
+                provenance = document.get("config_provenance", {}) if isinstance(document, dict) else {}
                 if isinstance(provenance, dict):
                     for key in ("source_artifact", "effective_artifact"):
                         artifact = provenance.get(key)
