@@ -10,7 +10,7 @@ identify the individual captures.
 | `vegas-kings-program.webp` | Program preview with live tracking controls | 25:49 |
 | `vegas-kings-stitched.webp` | Stitched panorama with controls collapsed | 25:37 |
 | `vegas-kings-camera.webp` | Camera 1 source preview | 25:22 |
-| `vegas-kings-mapping.webp` | Stitched preview with the Algorithms controls | 25:56 |
+| `vegas-kings-mapping.webp` | Stitched preview with the legacy Algorithms controls | 25:56 |
 
 The game's saved calibration uses SuperPoint + LightGlue, NONA, GoPro Hero 11
 camera geometry, and General Panini projection with parameters `100, -10, -10`.
@@ -27,8 +27,8 @@ To refresh these assets:
 3. Seek to roughly 25 minutes, wait for the preview to resume, and choose frames
    showing active play. Inspect the footage rather than selecting on time alone.
 4. Capture the Program, Stitched, and Camera 1 tabs. Expand Stitched Controls
-   and select Algorithms for the mapping screenshot. The geometry controls are
-   disabled during playback, as shown in the application.
+   and select Projection for the mapping screenshot (the existing image predates the Alignment/Projection split).
+   The geometry controls are disabled during playback, as shown in the application.
 5. Capture the application window at 1600 pixels wide. Crop off the bottom
    runtime log while retaining the transport, tabs, video, and preview status.
    Save WebP images at quality 88. Update the HTML dimensions if sizes change.

@@ -6855,18 +6855,24 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     color_page_layout->addWidget(color_scroll, 1);
     control_tabs->addTab(color_page, "Color & Precision");
 
-    auto* algorithms_scroll = new QScrollArea();
-    algorithms_scroll->setObjectName("stitchingAlgorithmsScrollArea");
-    algorithms_scroll->setFrameShape(QFrame::NoFrame);
-    algorithms_scroll->setWidgetResizable(true);
-    algorithms_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    algorithms_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    auto* algorithms_page = new QWidget();
-    algorithms_page->setObjectName("stitchingAlgorithmsTab");
-    algorithms_page->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-    auto* algorithms_layout = new QGridLayout(algorithms_page);
-    algorithms_layout->setContentsMargins(8, 8, 8, 8);
-    algorithms_layout->setColumnStretch(1, 1);
+    const auto add_stitching_tab = [control_tabs](const QString& name, const QString& title) {
+      auto* scroll = new QScrollArea();
+      scroll->setObjectName(name + "ScrollArea");
+      scroll->setFrameShape(QFrame::NoFrame);
+      scroll->setWidgetResizable(true);
+      scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+      scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+      auto* page = new QWidget();
+      page->setObjectName(name + "Tab");
+      page->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+      auto* grid = new QGridLayout(page);
+      grid->setContentsMargins(8, 8, 8, 8);
+      grid->setColumnStretch(1, 1);
+      scroll->setWidget(page);
+      control_tabs->addTab(scroll, title);
+      return grid;
+    };
+    auto* alignment_layout = add_stitching_tab("stitchingAlignment", "Alignment");
     auto* control_points_label = new QLabel("Control points");
     control_points_label->setObjectName("controlPointsLabel");
     control_points_label->setBuddy(control_points_spin_);
@@ -6929,62 +6935,52 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     clean_stitching_button_->setObjectName("cleanStitchingButton");
     clean_stitching_button_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(clean_stitching_button_, &QPushButton::clicked, this, [this]() { cleanStitchingCalibration(); });
-    algorithms_layout->addWidget(gyro_sync_check_, 0, 0, 1, 2);
-    algorithms_layout->addWidget(show_crop_dialog_check_, 1, 0, 1, 2);
-    algorithms_layout->addWidget(control_points_label, 2, 0);
+    alignment_layout->addWidget(gyro_sync_check_, 0, 0, 1, 2);
+    alignment_layout->addWidget(control_points_label, 1, 0);
     auto* feature_settings = new QHBoxLayout();
     feature_settings->addWidget(control_points_spin_);
     auto* resolution_label = new QLabel("Image size");
     resolution_label->setBuddy(control_point_resolution_combo_);
     feature_settings->addWidget(resolution_label);
     feature_settings->addWidget(control_point_resolution_combo_, 1);
-    algorithms_layout->addLayout(feature_settings, 2, 1);
-    algorithms_layout->addWidget(frame_count_label, 3, 0);
-    algorithms_layout->addWidget(calibration_frame_count_spin_, 3, 1);
-    algorithms_layout->addWidget(stitch_frame_time_label, 4, 0);
-    algorithms_layout->addWidget(stitch_frame_time_edit_, 4, 1);
-    algorithms_layout->addWidget(matcher_label, 5, 0);
-    algorithms_layout->addWidget(control_point_matcher_combo_, 5, 1);
-    algorithms_layout->addWidget(mapping_label, 6, 0);
-    algorithms_layout->addWidget(mapping_backend_combo_, 6, 1);
-    algorithms_layout->addWidget(camera_configuration_label, 7, 0);
-    algorithms_layout->addWidget(camera_configuration_combo_, 7, 1);
-    algorithms_layout->addWidget(camera_horizontal_fov_label, 8, 0);
-    algorithms_layout->addWidget(camera_horizontal_fov_spin_, 8, 1);
-    algorithms_layout->addWidget(camera_vertical_fov_label, 9, 0);
-    algorithms_layout->addWidget(camera_vertical_fov_spin_, 9, 1);
-    algorithms_layout->addWidget(projection_label, 10, 0);
-    algorithms_layout->addWidget(projection_combo_, 10, 1);
-    for (size_t index = 0; index < projection_parameter_spins_.size(); ++index) {
-      algorithms_layout->addWidget(projection_parameter_labels_[index], static_cast<int>(index) + 11, 0);
-      algorithms_layout->addWidget(projection_parameter_spins_[index], static_cast<int>(index) + 11, 1);
-      algorithms_layout->addWidget(projection_parameter_checks_[index], static_cast<int>(index) + 11, 0, 1, 2);
-    }
-    algorithms_layout->addWidget(projection_fov_label, 14, 0);
-    algorithms_layout->addWidget(projection_fov_controls, 14, 1);
-    algorithms_layout->addWidget(projection_auto_canvas_check_, 15, 0, 1, 2);
-    algorithms_layout->addWidget(projection_auto_crop_check_, 16, 0);
-    algorithms_layout->addWidget(projection_crop_button_, 16, 1);
-    algorithms_layout->addWidget(max_width_label, 17, 0);
-    algorithms_layout->addWidget(stitch_max_output_width_spin_, 17, 1);
-    algorithms_layout->addWidget(run_autooptimizer_check_, 18, 0, 1, 2);
-    algorithms_layout->addWidget(clean_stitching_button_, 19, 0, 1, 2);
-    algorithms_layout->setRowStretch(20, 1);
-    algorithms_scroll->setWidget(algorithms_page);
-    control_tabs->addTab(algorithms_scroll, "Algorithms");
+    alignment_layout->addLayout(feature_settings, 1, 1);
+    alignment_layout->addWidget(frame_count_label, 2, 0);
+    alignment_layout->addWidget(calibration_frame_count_spin_, 2, 1);
+    alignment_layout->addWidget(stitch_frame_time_label, 3, 0);
+    alignment_layout->addWidget(stitch_frame_time_edit_, 3, 1);
+    alignment_layout->addWidget(matcher_label, 4, 0);
+    alignment_layout->addWidget(control_point_matcher_combo_, 4, 1);
+    alignment_layout->addWidget(mapping_label, 5, 0);
+    alignment_layout->addWidget(mapping_backend_combo_, 5, 1);
+    alignment_layout->addWidget(camera_configuration_label, 6, 0);
+    alignment_layout->addWidget(camera_configuration_combo_, 6, 1);
+    alignment_layout->addWidget(camera_horizontal_fov_label, 7, 0);
+    alignment_layout->addWidget(camera_horizontal_fov_spin_, 7, 1);
+    alignment_layout->addWidget(camera_vertical_fov_label, 8, 0);
+    alignment_layout->addWidget(camera_vertical_fov_spin_, 8, 1);
+    alignment_layout->addWidget(run_autooptimizer_check_, 9, 0, 1, 2);
+    alignment_layout->addWidget(clean_stitching_button_, 10, 0, 1, 2);
+    alignment_layout->setRowStretch(11, 1);
 
-    auto* rink_scroll = new QScrollArea();
-    rink_scroll->setObjectName("stitchingRinkScrollArea");
-    rink_scroll->setFrameShape(QFrame::NoFrame);
-    rink_scroll->setWidgetResizable(true);
-    rink_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    rink_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    auto* rink_page = new QWidget();
-    rink_page->setObjectName("stitchingRinkTab");
-    rink_page->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-    auto* rink_layout = new QGridLayout(rink_page);
-    rink_layout->setContentsMargins(8, 8, 8, 8);
-    rink_layout->setColumnStretch(1, 1);
+    auto* projection_layout = add_stitching_tab("stitchingProjection", "Projection");
+    projection_layout->addWidget(projection_label, 0, 0);
+    projection_layout->addWidget(projection_combo_, 0, 1);
+    for (size_t index = 0; index < projection_parameter_spins_.size(); ++index) {
+      projection_layout->addWidget(projection_parameter_labels_[index], static_cast<int>(index) + 1, 0);
+      projection_layout->addWidget(projection_parameter_spins_[index], static_cast<int>(index) + 1, 1);
+      projection_layout->addWidget(projection_parameter_checks_[index], static_cast<int>(index) + 1, 0, 1, 2);
+    }
+    projection_layout->addWidget(projection_fov_label, 4, 0);
+    projection_layout->addWidget(projection_fov_controls, 4, 1);
+    projection_layout->addWidget(projection_auto_canvas_check_, 5, 0, 1, 2);
+    projection_layout->addWidget(projection_auto_crop_check_, 6, 0);
+    projection_layout->addWidget(projection_crop_button_, 6, 1);
+    projection_layout->addWidget(max_width_label, 7, 0);
+    projection_layout->addWidget(stitch_max_output_width_spin_, 7, 1);
+    projection_layout->addWidget(show_crop_dialog_check_, 8, 0, 1, 2);
+    projection_layout->setRowStretch(9, 1);
+
+    auto* rink_layout = add_stitching_tab("stitchingRink", "Rink");
     auto* rink_label = new QLabel("Rink");
     rink_label->setObjectName("rinkConfigurationLabel");
     rink_label->setBuddy(rink_configuration_combo_);
@@ -7011,8 +7007,6 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     rink_layout->addWidget(rink_mask_time_edit_, 7, 1);
     rink_layout->addWidget(rink_mask_time_source_, 8, 0, 1, 2);
     rink_layout->setRowStretch(9, 1);
-    rink_scroll->setWidget(rink_page);
-    control_tabs->addTab(rink_scroll, "Rink");
     updateProjectionParameterControls();
     updateProjectionFramingControls();
     synchronizeStitchedColorControls();
@@ -7775,12 +7769,12 @@ void HStreamWindow::updateProjectionParameterControls() {
   }
   projection_parameter_controls_projection_ = projection_name;
   if (stitched_control_tabs_) {
-    if (auto* algorithms_page = stitched_control_tabs_->findChild<QWidget*>("stitchingAlgorithmsTab")) {
-      if (algorithms_page->layout())
-        algorithms_page->layout()->activate();
-      if (algorithms_page->layout())
-        algorithms_page->setMinimumSize(algorithms_page->layout()->minimumSize());
-      algorithms_page->updateGeometry();
+    if (auto* projection_page = stitched_control_tabs_->findChild<QWidget*>("stitchingProjectionTab")) {
+      if (projection_page->layout())
+        projection_page->layout()->activate();
+      if (projection_page->layout())
+        projection_page->setMinimumSize(projection_page->layout()->minimumSize());
+      projection_page->updateGeometry();
     }
   }
 }

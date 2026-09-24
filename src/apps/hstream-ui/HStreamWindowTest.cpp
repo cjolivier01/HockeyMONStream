@@ -3423,8 +3423,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stitched_lift_black_point = require_child<QCheckBox>(window, "stitchedCameraCheck_Lift_Shadow_Black_Point");
   auto* stitched_force_high_bit = require_child<QCheckBox>(window, "stitchedCameraCheck_Use_10_Bit_Grading");
   auto* stitched_precision_status = require_child<QLabel>(window, "stitchedColorPrecisionStatus");
-  auto* algorithms_scroll = require_child<QScrollArea>(window, "stitchingAlgorithmsScrollArea");
-  auto* algorithms_page = require_child<QWidget>(window, "stitchingAlgorithmsTab");
+  auto* projection_scroll = require_child<QScrollArea>(window, "stitchingProjectionScrollArea");
+  auto* projection_page = require_child<QWidget>(window, "stitchingProjectionTab");
+  auto* alignment_scroll = require_child<QScrollArea>(window, "stitchingAlignmentScrollArea");
+  auto* alignment_page = require_child<QWidget>(window, "stitchingAlignmentTab");
   auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
   auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
   auto* program_controls_splitter = require_child<QSplitter>(window, "programPreviewControlsSplitter");
@@ -3456,10 +3458,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !camera3_surface || !camera3_target || !camera3_focus || !external_notice || !camera1_notice ||
       !stitched_status || !preview_status || !program_controls || !program_controls_toggle || !stitched_controls ||
       !stitched_controls_toggle || !stitched_bring_up_shadows || !stitched_exposure || !stitched_lift_black_point ||
-      !stitched_force_high_bit || !stitched_precision_status || !algorithms_scroll || !algorithms_page ||
-      !program_control_tabs || !stitched_control_tabs || !program_controls_splitter || !stitched_controls_splitter ||
-      !program_focus || !stitched_focus || !top_bar || !setup_row || !log_panel || !playback_progress || !seek_slider ||
-      !seek_back || !seek_forward || !seek_position || !pipeline_process) {
+      !stitched_force_high_bit || !stitched_precision_status || !projection_scroll || !projection_page ||
+      !alignment_scroll || !alignment_page || !program_control_tabs || !stitched_control_tabs ||
+      !program_controls_splitter || !stitched_controls_splitter || !program_focus || !stitched_focus || !top_bar ||
+      !setup_row || !log_panel || !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position ||
+      !pipeline_process) {
     return false;
   }
 
@@ -3582,11 +3585,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const QString original_projection = projection->currentData().toString();
   window->resize(1440, 900);
   preview_tabs->setCurrentIndex(1);
-  stitched_control_tabs->setCurrentIndex(2);
+  stitched_control_tabs->setCurrentWidget(projection_scroll);
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   if (!expect(
-          stitched_control_tabs->height() >= 220 && algorithms_scroll->viewport()->height() > 40,
+          stitched_control_tabs->height() >= 220 && projection_scroll->viewport()->height() > 40,
           "The rendered Stitched configuration area should expand without crushing content")) {
     return false;
   }
@@ -3679,9 +3682,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         parsed_projection.ok() && mapping_backend->currentData().toString() == "nona"
         ? hm::stitching::StitchProjectionParameters(*parsed_projection).size()
         : 0;
-    bool legible = algorithms_scroll->isVisible() && algorithms_page->isVisible() &&
-        (algorithms_page->height() <= algorithms_scroll->viewport()->height() ||
-         algorithms_scroll->verticalScrollBar()->maximum() > 0) &&
+    bool legible = projection_scroll->isVisible() && projection_page->isVisible() &&
+        (projection_page->height() <= projection_scroll->viewport()->height() ||
+         projection_scroll->verticalScrollBar()->maximum() > 0) &&
         projection->width() >= projection->minimumSizeHint().width() &&
         projection->width() >= projection->fontMetrics().horizontalAdvance(projection->currentText()) + 36;
     for (size_t parameter_index = 0; parameter_index < projection_parameter_labels.size(); ++parameter_index) {
@@ -3696,7 +3699,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       if (boolean) {
         legible = legible && !label->isVisible() && !spin->isVisible() &&
             checkbox->width() >= checkbox->sizeHint().width() &&
-            algorithms_page->contentsRect().contains(checkbox->geometry());
+            projection_page->contentsRect().contains(checkbox->geometry());
         continue;
       }
       legible = legible && label->isVisible() == expected_visible && spin->isVisible() == expected_visible;
@@ -3705,14 +3708,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       legible = legible && label->width() >= label->sizeHint().width() &&
           label->height() >= label->minimumSizeHint().height() && spin->width() >= spin->minimumSizeHint().width() &&
           spin->height() >= spin->minimumSizeHint().height() && !label->geometry().intersects(spin->geometry()) &&
-          algorithms_page->contentsRect().contains(label->geometry()) &&
-          algorithms_page->contentsRect().contains(spin->geometry());
+          projection_page->contentsRect().contains(label->geometry()) &&
+          projection_page->contentsRect().contains(spin->geometry());
     }
     if (!legible) {
       std::cerr << "projection layout is not legible: backend="
                 << mapping_backend->currentData().toString().toStdString()
                 << " projection=" << projection->currentData().toString().toStdString()
-                << " page-visible=" << algorithms_page->isVisible() << " projection-width=" << projection->width()
+                << " page-visible=" << projection_page->isVisible() << " projection-width=" << projection->width()
                 << " projection-min-width=" << projection->minimumSizeHint().width()
                 << " text-width=" << projection->fontMetrics().horizontalAdvance(projection->currentText()) << '\n';
       for (size_t parameter_index = 0; parameter_index < projection_parameter_labels.size(); ++parameter_index) {
@@ -3738,7 +3741,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const QString projection_name = projection->currentData().toString();
     all_projection_layouts_legible = all_projection_layouts_legible && projection_layout_is_legible();
     all_projection_artifacts_captured = all_projection_artifacts_captured &&
-        capture_widget_artifact(algorithms_page, QString("stitching-algorithms-nona-%1.png").arg(projection_name));
+        capture_widget_artifact(projection_page, QString("stitching-projection-nona-%1.png").arg(projection_name));
   }
   const std::array<std::pair<QString, QString>, 2> native_backends = {{
       {QStringLiteral("opencv-magsac"), QStringLiteral("MAGSAC++")},
@@ -3752,7 +3755,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         mapping_backend->currentData().toString() == backend_name && mapping_backend->currentText() == backend_label &&
         projection->currentData().toString() == "rectilinear" && projection_layout_is_legible();
     all_projection_artifacts_captured = all_projection_artifacts_captured &&
-        capture_widget_artifact(algorithms_page, QString("stitching-algorithms-%1-rectilinear.png").arg(backend_name));
+        capture_widget_artifact(projection_page, QString("stitching-projection-%1-rectilinear.png").arg(backend_name));
   }
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   projection->setCurrentIndex(projection->findData(original_projection));
@@ -3784,16 +3787,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitched_controls->isAncestorOf(stitched_force_high_bit) &&
               stitched_controls->isAncestorOf(stitched_precision_status) && !camera1_host->isAncestorOf(max_speed_x) &&
               !camera1_host->isAncestorOf(bring_up_shadows) && !camera1_host->isAncestorOf(rotate) &&
-              stitched_controls->isAncestorOf(control_point_matcher) &&
-              stitched_controls->isAncestorOf(mapping_backend) &&
-              stitched_controls->isAncestorOf(camera_configuration) &&
-              stitched_controls->isAncestorOf(camera_horizontal_fov) &&
-              stitched_controls->isAncestorOf(camera_vertical_fov) && stitched_controls->isAncestorOf(projection) &&
-              stitched_controls->isAncestorOf(control_points) && stitched_controls->isAncestorOf(stitch_frame_time) &&
-              stitched_controls->isAncestorOf(stitch_max_output_width) &&
-              stitched_controls->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 5 &&
-              stitched_control_tabs->count() == 4 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
-              stitched_control_tabs->tabText(2) == "Algorithms" && stitched_control_tabs->tabText(3) == "Rink" &&
+              alignment_page->isAncestorOf(control_point_matcher) && alignment_page->isAncestorOf(mapping_backend) &&
+              alignment_page->isAncestorOf(camera_configuration) &&
+              alignment_page->isAncestorOf(camera_horizontal_fov) &&
+              alignment_page->isAncestorOf(camera_vertical_fov) && projection_page->isAncestorOf(projection) &&
+              alignment_page->isAncestorOf(control_points) && alignment_page->isAncestorOf(stitch_frame_time) &&
+              projection_page->isAncestorOf(stitch_max_output_width) &&
+              alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 5 &&
+              stitched_control_tabs->count() == 5 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
+              stitched_control_tabs->tabText(2) == "Alignment" && stitched_control_tabs->tabText(3) == "Projection" &&
+              stitched_control_tabs->tabText(4) == "Rink" &&
               program_controls_splitter->orientation() == Qt::Horizontal &&
               stitched_controls_splitter->orientation() == Qt::Horizontal &&
               control_point_matcher_label->text() == "Control-point matcher" &&
@@ -3925,9 +3928,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   preview_tabs->setCurrentIndex(1);
-  stitched_control_tabs->setCurrentIndex(2);
+  stitched_control_tabs->setCurrentWidget(alignment_scroll);
   QApplication::processEvents();
-  if (!capture_interaction_artifact(window, "stitching-algorithms-controls.png"))
+  if (!capture_widget_artifact(alignment_page, "stitching-alignment-controls.png") ||
+      !capture_interaction_artifact(window, "stitching-alignment-window.png"))
+    return false;
+  stitched_control_tabs->setCurrentWidget(projection_scroll);
+  QApplication::processEvents();
+  if (!capture_interaction_artifact(window, "stitching-projection-window.png"))
     return false;
   preview_tabs->setCurrentIndex(0);
   QApplication::processEvents();
@@ -4145,7 +4153,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   QApplication::processEvents();
 
   preview_tabs->setCurrentIndex(1);
-  stitched_control_tabs->setCurrentIndex(2);
+  stitched_control_tabs->setCurrentWidget(alignment_scroll);
   QApplication::processEvents();
   window->activateWindow();
   stitch_frame_time->setFocus(Qt::OtherFocusReason);
@@ -10277,7 +10285,7 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() == 9, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 10, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -15491,21 +15499,22 @@ bool test_early_finalization_failure_retains_log_guard(HStreamWindow* window, co
 
 bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* window) {
   auto* stitched_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
-  auto* algorithms_scroll = require_child<QScrollArea>(window, "stitchingAlgorithmsScrollArea");
+  auto* alignment_scroll = require_child<QScrollArea>(window, "stitchingAlignmentScrollArea");
+  auto* projection_scroll = require_child<QScrollArea>(window, "stitchingProjectionScrollArea");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* max_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
   auto* auto_canvas = require_child<QCheckBox>(window, "projectionAutoCanvasCheck");
   auto* role_left = require_child<QRadioButton>(window, "videoRole_left");
   auto* runtime_log = require_child<QTextEdit>(window, "runtimeLog");
-  if (!stitched_tabs || !algorithms_scroll || !mapping_backend || !max_width || !auto_canvas || !role_left ||
-      !runtime_log) {
+  if (!stitched_tabs || !alignment_scroll || !projection_scroll || !mapping_backend || !max_width || !auto_canvas ||
+      !role_left || !runtime_log) {
     return false;
   }
 
   const int original_tab = stitched_tabs->currentIndex();
-  stitched_tabs->setCurrentWidget(algorithms_scroll);
+  stitched_tabs->setCurrentWidget(alignment_scroll);
   QApplication::processEvents();
-  QScrollBar* pane_scroll = algorithms_scroll->verticalScrollBar();
+  QScrollBar* pane_scroll = alignment_scroll->verticalScrollBar();
   pane_scroll->setValue(pane_scroll->minimum());
   const int backend_before = mapping_backend->currentIndex();
   QWheelEvent combo_wheel(
@@ -15523,6 +15532,8 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
   const bool pane_scrolled =
       pane_scroll->maximum() == pane_scroll->minimum() || pane_scroll->value() > pane_scroll->minimum();
 
+  stitched_tabs->setCurrentWidget(projection_scroll);
+  QApplication::processEvents();
   const int width_before = max_width->value();
   QWheelEvent spin_wheel(
       max_width->rect().center(),
