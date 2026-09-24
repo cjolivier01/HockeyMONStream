@@ -2,4 +2,5 @@ exports_files([
     "abseil_aarch64_signal_stack.patch",
     "rules_cuda_sm120.patch",
     "rules_cuda_quote_includes.patch",
+    "yaml_cpp_preserve_quoted_scalars.patch",
 ])

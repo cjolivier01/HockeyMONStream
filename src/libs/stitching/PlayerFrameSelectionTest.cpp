@@ -150,6 +150,36 @@ int main() {
   ok &= expect(
       string_parsed.ok() && string_parsed->fingerprint == string_context.fingerprint,
       "explicit string tags preserve the plan fingerprint");
+  // External tools such as PyYAML may replace explicit tags with quoting. A
+  // later ordinary config save must retain that string type without rebuilding
+  // the plan through PlayerFrameSelectionPlanYaml.
+  auto quoted_document = YAML::Clone(string_document);
+  for (const auto& [key, value] : string_context.context) {
+    YAML::Emitter quoted;
+    quoted << YAML::DoubleQuoted << value;
+    quoted_document["context"][key] = YAML::Load(quoted.c_str());
+  }
+  for (int rewrite = 0; rewrite < 2; ++rewrite) {
+    quoted_document = YAML::Load(YAML::Dump(quoted_document));
+    for (const auto& [key, value] : string_context.context) {
+      ok &= expect(
+          quoted_document["context"][key].Tag() == "!" &&
+              quoted_document["context"][key].as<std::string>() == value,
+          "ordinary native re-saves retain quoted context strings from external YAML tools");
+    }
+    auto rewritten_plan = ParsePlayerFrameSelectionPlan(quoted_document);
+    ok &= expect(
+        rewritten_plan.ok() && rewritten_plan->fingerprint == string_context.fingerprint,
+        "repeated native re-saves preserve the externally quoted plan fingerprint");
+  }
+  auto mixed_scalars =
+      YAML::Load(YAML::Dump(YAML::Load("text: '0.000000'\ncount: 3\nratio: 0.5\nenabled: true\n")));
+  ok &= expect(
+      mixed_scalars["text"].Tag() == "!" && mixed_scalars["count"].Tag() == "?" &&
+          mixed_scalars["count"].as<int>() == 3 && mixed_scalars["ratio"].Tag() == "?" &&
+          mixed_scalars["ratio"].as<double>() == 0.5 && mixed_scalars["enabled"].Tag() == "?" &&
+          mixed_scalars["enabled"].as<bool>(),
+      "retaining string quoting does not change the types of following numeric scalars");
   for (const auto& [key, value] : string_context.context)
     string_document["context"][key].SetTag("");
   ok &= expect(

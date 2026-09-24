@@ -50,7 +50,10 @@ are fixed relative names selected by the implementation, never arbitrary paths f
 
 Selection-plan context values are exact strings, including numeric-looking text such as `0.000000`.
 `PlayerFrameSelectionPlanYaml` emits explicit YAML string tags so tools with scalar type inference preserve
-their text when saving. Fingerprints retain the original schema-1 encoding; existing untagged plans remain
+their text when saving. External tools may replace those tags with quoted strings; the local yaml-cpp emitter
+patch retains quoted scalars during ordinary native saves, including staged config transactions, so repeated
+external/native rewrites remain safe. Synthesized nodes retain their original emission behavior.
+Fingerprints retain the original schema-1 encoding; existing untagged plans remain
 valid. If an external rewrite has already changed context text, restore it from a validated scan report or
 retained bundle with the same fingerprint rather than recomputing the fingerprint or discarding the selected
 frames.

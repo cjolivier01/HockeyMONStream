@@ -1,0 +1,14 @@
+--- a/src/emitfromevents.cpp
++++ b/src/emitfromevents.cpp
+@@ -42,6 +42,11 @@ void EmitFromEvents::OnScalar(const Mark&, const std::string& tag,
+                               anchor_t anchor, const std::string& value) {
+   BeginNode();
+   EmitProps(tag, anchor);
++  // Parsed quoted scalars carry the non-specific string tag. Dropping it
++  // permits a different YAML loader to resolve numeric text as a number on
++  // the next save. Keep the string type without changing synthesized nodes.
++  if (tag == "!")
++    m_emitter << DoubleQuoted;
+   m_emitter << value;
+ }
+ 
