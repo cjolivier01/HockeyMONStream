@@ -245,7 +245,11 @@ void remove_downstream_generation(YAML::Node config) {
   if (game_stitching && game_stitching.IsMap())
     game_stitching.remove("control_points");
   YAML::Node rink = config["rink"];
-  if (rink && rink.IsMap()) {
+  if (!rink || !rink.IsMap()) {
+    config["rink"] = YAML::Node(YAML::NodeType::Map);
+    rink = config["rink"];
+  }
+  if (rink.IsMap()) {
     for (const char* key :
          {"stitched_output_generation",
           "stitched_output_persisted_rotation_degrees",
@@ -256,15 +260,21 @@ void remove_downstream_generation(YAML::Node config) {
           "stitched_output_pending_previous_authorization_id",
           "stitched_output_pending_previous_owner_process",
           "stitched_output_pending_completed_scoreboard_polygon",
+          "stitched_output_pending_scoreboard_polygon_invalidated",
           "ice_contours_mask_count",
           "ice_contours_mask_centroid",
           "ice_contours_combined_bbox"}) {
       rink.remove(key);
     }
     YAML::Node scoreboard = rink["scoreboard"];
-    if (scoreboard && scoreboard.IsMap())
-      scoreboard.remove("perspective_polygon");
+    if (!scoreboard || !scoreboard.IsMap()) {
+      rink["scoreboard"] = YAML::Node(YAML::NodeType::Map);
+      scoreboard = rink["scoreboard"];
+    }
+    scoreboard["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
   }
+  if (config["pipeline"]["hmplaycropper"].IsMap())
+    config["pipeline"]["hmplaycropper"].remove("scoreboard-perspective-polygon");
 }
 
 absl::StatusOr<std::string> reusable_selection_fingerprint(

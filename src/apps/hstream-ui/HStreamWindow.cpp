@@ -3853,6 +3853,16 @@ bool remove_yaml_path(YAML::Node root, const QString& dotted_path) {
   return remove_yaml_path_at(root, path, 0);
 }
 
+bool invalidate_scoreboard_geometry(YAML::Node& config) {
+  remove_yaml_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"});
+  remove_yaml_path(config, {"rink", "stitched_output_pending_scoreboard_polygon_invalidated"});
+  remove_yaml_path(config, {"pipeline", "hmplaycropper", "scoreboard-perspective-polygon"});
+  // Shadow lower-precedence user/baseline configuration. Removing this key
+  // would allow an old polygon to become effective again on the next merge.
+  config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+  return true;
+}
+
 int remove_manual_stitching_clean_config_keys(YAML::Node& config) {
   int removed = 0;
   // These are results of the previous calibration, including its crop-review
@@ -3887,8 +3897,7 @@ int remove_manual_stitching_clean_config_keys(YAML::Node& config) {
   removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_generation"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_authorization_id"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_owner_process"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
+  removed += invalidate_scoreboard_geometry(config) ? 1 : 0;
   removed += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
@@ -4495,9 +4504,7 @@ ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& c
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_generation"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_authorization_id"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_owner_process"}) ? 1 : 0;
-  result.invalidated +=
-      remove_yaml_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
+  result.invalidated += invalidate_scoreboard_geometry(config) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "mask_frame"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
@@ -7500,6 +7507,7 @@ bool HStreamWindow::rinkLevelingInputsUnchanged() const {
   return saved_control_point_resolution_ == control_point_resolution_ &&
       saved_camera_selection_ == stitchCameraSelection() && saved_control_point_matcher_ == controlPointMatcher() &&
       saved_mapping_backend_ == mappingBackend() && saved_run_autooptimizer_ == runAutooptimizer() &&
+      saved_iteration_settings_.sync_method == stitchingIterationSettings().sync_method &&
       saved_stitch_frame_time_ == stitchFrameTime() &&
       saved_stitching_control_points_ == stitchingCalibrationControlPoints() &&
       saved_stitching_calibration_frame_count_ == stitchingCalibrationFrameCount();
@@ -8165,6 +8173,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   std::optional<int> selected_plan_frame_count;
   QString saved_stitch_frame_time = default_stitch_frame_time_;
   bool saved_stitch_frame_time_valid = true;
+  QString saved_sync_method = default_iteration_settings_.sync_method;
   int saved_max_output_width = default_stitch_max_output_width_;
   QString saved_resolution = default_control_point_resolution_;
   QString saved_control_point_matcher = default_control_point_matcher_;
@@ -8221,6 +8230,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       }
       saved_stitch_frame_time_valid =
           read_stitch_frame_time(config, &saved_stitch_frame_time, nullptr, default_stitch_frame_time_);
+      saved_sync_method = read_stitching_iteration_settings(config, default_iteration_settings_).sync_method;
       saved_resolution = controlPointResolutionFromGameConfig(config);
       YAML::Node control_point_matcher;
       if (lookup_yaml_path(config, "stitching.control_point_matcher", &control_point_matcher) &&
@@ -8318,6 +8328,11 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         saved_projection_framing != active_projection_framing_;
     const bool stitch_frame_time_changed =
         !saved_stitch_frame_time_valid || saved_stitch_frame_time != active_stitch_frame_time_;
+    const bool sync_method_changed = saved_sync_method != active_iteration_settings_.sync_method;
+    const bool stitched_output_geometry_changed = active_force_reconfigure_ || stitch_frame_time_changed ||
+        sync_method_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
+        mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
+        projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required;
     const bool retain_selected_frames = selected_plan_frame_count.has_value() && saved_frame_count == frame_count;
     replay_selected_frames = retain_selected_frames;
     if (stitch_frame_time_changed && retain_selected_frames) {
@@ -8376,6 +8391,9 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     hm::stitching::write_stitch_projection_framing(config, active_projection_framing_);
     if (!writeRinkLevelingSelection(config))
       return false;
+    if (stitched_output_geometry_changed && invalidate_scoreboard_geometry(config)) {
+      appendLog("stitching output geometry changed; scoreboard perspective must be configured again");
+    }
     if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
       config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
     }
@@ -8410,9 +8428,9 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       }
       active_stitching_reframe_ = *reframe;
     }
-    const bool needs_calibration = active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed ||
-        frame_count_changed || control_point_matcher_changed || mapping_backend_changed || camera_changed ||
-        projection_changed || projection_parameters_changed || projection_framing_changed ||
+    const bool needs_calibration = active_force_reconfigure_ || stitch_frame_time_changed || sync_method_changed ||
+        control_points_changed || frame_count_changed || control_point_matcher_changed || mapping_backend_changed ||
+        camera_changed || projection_changed || projection_parameters_changed || projection_framing_changed ||
         run_autooptimizer_changed || canvas_constraint.calibration_required || saved_status != "complete" ||
         active_stitching_reframe_;
     if (!needs_calibration) {
@@ -8446,6 +8464,9 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
                      .arg(frame_count);
     if (stitch_frame_time_changed)
       reasons << QString("reference time %1 -> %2").arg(saved_stitch_frame_time, active_stitch_frame_time_);
+    if (sync_method_changed)
+      reasons << QString("synchronization method %1 -> %2")
+                     .arg(saved_sync_method, active_iteration_settings_.sync_method);
     if (saved_control_point_matcher != active_control_point_matcher_)
       reasons << QString("matcher %1 -> %2").arg(saved_control_point_matcher, active_control_point_matcher_);
     if (saved_resolution != active_control_point_resolution_)
@@ -8494,19 +8515,19 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         canvas_index < *calibration_stage_index(stale_from)) {
       stale_from = "canvas";
     }
-    if (active_force_reconfigure_ || stitch_frame_time_changed || frame_count_changed)
+    if (active_force_reconfigure_ || stitch_frame_time_changed || sync_method_changed || frame_count_changed)
       stale_from = "input";
     active_calibration_start_stage_ = stale_from;
 
     clean_from_control_points = !active_force_reconfigure_ && !stitch_frame_time_changed && stale_from == "features" &&
         (control_points_changed || control_point_matcher_changed || !saved_artifacts_invalidated);
-    clean_all = active_force_reconfigure_ || stitch_frame_time_changed ||
+    clean_all = active_force_reconfigure_ || stitch_frame_time_changed || sync_method_changed ||
         (stale_from != "features" &&
          (!saved_artifacts_invalidated || control_points_changed || control_point_matcher_changed ||
           mapping_backend_changed || projection_changed || projection_parameters_changed || run_autooptimizer_changed ||
           camera_changed || projection_framing_changed || canvas_constraint.cleanup_required));
     const bool width_only_change_from_complete_state = saved_status == "complete" && max_output_width_changed &&
-        !active_force_reconfigure_ && !stitch_frame_time_changed && !frame_count_changed && !control_points_changed &&
+        !active_force_reconfigure_ && !stitch_frame_time_changed && !sync_method_changed && !frame_count_changed &&
         !control_point_matcher_changed && !mapping_backend_changed && !projection_changed && !camera_changed &&
         !projection_parameters_changed && !projection_framing_changed && !run_autooptimizer_changed;
     if (width_only_change_from_complete_state && !canvas_constraint.cleanup_required)
@@ -17224,6 +17245,7 @@ bool HStreamWindow::applySavedControlConfig(
       read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
   const bool stitch_frame_time_changed =
       !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
+  const bool sync_method_changed = saved_iteration_settings_.sync_method != stitchingIterationSettings().sync_method;
   const bool frame_count_changed =
       saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
   const bool retain_selected_frames = selected_plan_frame_count->has_value() && !frame_count_changed;
@@ -17462,6 +17484,10 @@ bool HStreamWindow::applySavedControlConfig(
   const bool projection_parameters_changed = previous_projection_parameters != selected_projection_parameters;
   const bool projection_framing_changed = (previous_mapping_backend == "nona" || selected_mapping_backend == "nona") &&
       saved_projection_framing_ != selected_projection_framing;
+  const bool stitched_output_geometry_changed = stitch_frame_time_changed || sync_method_changed ||
+      control_points_changed || frame_count_changed || control_point_matcher_changed || mapping_backend_changed ||
+      camera_changed || projection_changed || projection_parameters_changed || projection_framing_changed ||
+      run_autooptimizer_changed || canvas_constraint.calibration_required;
   if (!retain_selected_frames)
     remove_yaml_path(config, {"stitching", "stitch_frame_time"});
   remove_yaml_path(config, {"stitching", "calibration_frame_count"});
@@ -17487,17 +17513,21 @@ bool HStreamWindow::applySavedControlConfig(
   hm::stitching::write_stitch_projection_framing(config, selected_projection_framing);
   if (!writeRinkLevelingSelection(config))
     return false;
+  if (stitched_output_geometry_changed && invalidate_scoreboard_geometry(config)) {
+    appendLog("stitching output geometry changed; scoreboard perspective must be configured again");
+  }
   write_stitch_max_output_width_override(config, selected_max_output_width, default_stitch_max_output_width_);
-  if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
-      camera_changed) {
+  if (stitch_frame_time_changed || sync_method_changed || control_points_changed || frame_count_changed ||
+      control_point_matcher_changed || camera_changed) {
     remove_yaml_path(config, {"stitching", "manual_control_points"});
     remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "match_snapshot"});
   }
-  if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
-      mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
+  if (stitch_frame_time_changed || sync_method_changed || control_points_changed || frame_count_changed ||
+      control_point_matcher_changed || mapping_backend_changed || camera_changed || projection_changed ||
+      projection_parameters_changed ||
       projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
-    QString stale_from = stitch_frame_time_changed || frame_count_changed
+    QString stale_from = stitch_frame_time_changed || sync_method_changed || frame_count_changed
         ? "input"
         : ((control_points_changed || control_point_matcher_changed) ? "features" : "canvas");
     const YAML::Node previous_status = map_value(calibration, "status");
@@ -17514,6 +17544,7 @@ bool HStreamWindow::applySavedControlConfig(
     calibration["rink_mask_status"] = "pending";
     calibration["stale_from"] = stale_from.toStdString();
     const bool only_width_changed = canvas_constraint.calibration_required && !stitch_frame_time_changed &&
+        !sync_method_changed &&
         !control_points_changed && !frame_count_changed && !control_point_matcher_changed && !mapping_backend_changed &&
         !camera_changed && !projection_changed && !projection_parameters_changed && !projection_framing_changed &&
         !run_autooptimizer_changed;
@@ -17529,6 +17560,9 @@ bool HStreamWindow::applySavedControlConfig(
           << QString("frame count %1 -> %2").arg(saved_stitching_calibration_frame_count_).arg(selected_frame_count);
     if (stitch_frame_time_changed)
       reasons << QString("reference time %1 -> %2").arg(previous_stitch_frame_time, stitch_frame_time);
+    if (sync_method_changed)
+      reasons << QString("synchronization method %1 -> %2")
+                     .arg(saved_iteration_settings_.sync_method, stitchingIterationSettings().sync_method);
     if (previous_control_point_matcher != selected_control_point_matcher)
       reasons << QString("matcher %1 -> %2").arg(previous_control_point_matcher, selected_control_point_matcher);
     if (saved_control_point_resolution_ != control_point_resolution_)

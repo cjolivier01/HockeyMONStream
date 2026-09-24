@@ -569,7 +569,8 @@ bool test_owned_solve_publication(
       "a published owned solve remains complete and keeps its accepted crop while rink-mask work is pending");
   ok &= expect(
       !saved["stitching"]["control_points"] && !saved["game"]["stitching"]["control_points"] &&
-          saved["stitching"]["frame_offsets"].size() == 2 && !saved["rink"]["scoreboard"]["perspective_polygon"] &&
+          saved["stitching"]["frame_offsets"].size() == 2 &&
+          saved["rink"]["scoreboard"]["perspective_polygon"].IsNull() &&
           !saved["rink"]["ice_contours_mask_count"] && !saved["rink"]["ice_contours_mask_centroid"] &&
           !saved["rink"]["ice_contours_combined_bbox"] && !saved["rink"]["stitched_output_generation"] &&
           !saved["rink"]["stitched_output_persisted_rotation_degrees"] &&

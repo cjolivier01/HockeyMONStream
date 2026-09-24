@@ -906,7 +906,10 @@ void remove_rotation_dependent_rink_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_generation"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_authorization_id"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"});
-  remove_yaml_key_path(config, {"rink", "scoreboard", "perspective_polygon"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_scoreboard_polygon_invalidated"});
+  config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+  if (config["pipeline"]["hmplaycropper"].IsMap())
+    config["pipeline"]["hmplaycropper"].remove("scoreboard-perspective-polygon");
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_count"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});
   remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
@@ -9226,6 +9229,12 @@ absl::Status Configurator::complete_configuration(
       if (preserved_pipeline.IsDefined()) {
         config_["pipeline"] = preserved_pipeline;
       }
+      // The preserved structural pipeline may contain the old same-layer
+      // native scoreboard polygon. Keep the canonical invalidation dominant
+      // after restoring it.
+      config_["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+      if (config_["pipeline"]["hmplaycropper"].IsMap())
+        config_["pipeline"]["hmplaycropper"].remove("scoreboard-perspective-polygon");
       // clean_stitching_artifacts already published the merged private YAML.
       // Keep this process's snapshot aligned without overwriting concurrent
       // config owners with the stale pre-clean document.

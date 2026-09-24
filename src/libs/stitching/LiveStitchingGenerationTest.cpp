@@ -158,7 +158,7 @@ int main() {
   ok &= expect(
       reauthorize.ok() && reauthorize->pending_generation == rotated_generation && commit.ok() &&
           config["rink"]["stitched_output_pending_generation"].as<std::string>() == rotated_generation &&
-          !config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+          config["rink"]["scoreboard"]["perspective_polygon"].IsNull(),
       "the current exact pending generation must invalidate scoreboard geometry while retaining producer authority");
 
   const auto return_after_commit =
@@ -204,6 +204,7 @@ int main() {
   write_config(root / "config.yaml", generation);
   config = YAML::LoadFile((root / "config.yaml").string());
   config["rink"]["scoreboard"]["perspective_polygon"] = std::vector<std::vector<int>>{{0, 0}, {0, 0}, {0, 0}, {0, 0}};
+  config["pipeline"]["hmplaycropper"]["scoreboard-perspective-polygon"] = "1,2,3,4,5,6,7,8";
   std::ofstream(root / "config.yaml") << config << '\n';
   const auto disabled_scoreboard =
       hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0, "auth-disabled");
@@ -215,8 +216,25 @@ int main() {
   ok &= expect(
       disabled_scoreboard.ok() && !disabled_scoreboard->pending_generation.empty() && disabled_scoreboard_commit.ok() &&
           config["rink"]["scoreboard"]["perspective_polygon"].IsSequence() &&
-          config["rink"]["scoreboard"]["perspective_polygon"].size() == 4,
+          config["rink"]["scoreboard"]["perspective_polygon"].size() == 4 &&
+          !config["pipeline"]["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
       "live rotation must preserve the scoreboard-disabled sentinel");
+
+  write_config(root / "config.yaml", generation);
+  config = YAML::LoadFile((root / "config.yaml").string());
+  config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+  std::ofstream(root / "config.yaml") << config << '\n';
+  const auto null_scoreboard =
+      hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0, "auth-null-scoreboard");
+  const auto null_scoreboard_commit = null_scoreboard.ok()
+      ? hm::stitching::commit_live_stitched_output_rotation(
+            root.string(), null_scoreboard->pending_generation, null_scoreboard->authorization_id)
+      : null_scoreboard.status();
+  config = YAML::LoadFile((root / "config.yaml").string());
+  ok &= expect(
+      null_scoreboard.ok() && null_scoreboard->scoreboard_property_value == "0,0,0,0,0,0,0,0" &&
+          null_scoreboard_commit.ok() && config["rink"]["scoreboard"]["perspective_polygon"].IsNull(),
+      "live rotation must preserve an explicit null scoreboard configuration");
 
   write_config(root / "config.yaml", generation);
   const auto accepted_before_shutdown =
@@ -382,7 +400,7 @@ int main() {
         replaced_artifact_authorization.ok() && replaced_artifact_commit.ok() &&
             replaced_artifact_reconciliation.ok() && *replaced_artifact_reconciliation &&
             !replaced_artifact_config["rink"]["stitched_output_pending_generation"].IsDefined() &&
-            !replaced_artifact_config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+            replaced_artifact_config["rink"]["scoreboard"]["perspective_polygon"].IsNull(),
         "startup reconciliation must discard saved geometry when current Hugin artifacts were replaced");
   }
   ok &= expect(recovery_hugin_generation.ok(), "recovery fixtures must publish identifiable Hugin artifacts");
