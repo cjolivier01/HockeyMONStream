@@ -103,7 +103,9 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
                 # CLI work archives reuse their bare MKV path on every run.
                 if version == 0 and extension == "mkv":
                     continue
-                if version < (ui_newest if (version, path) in ui_videos else newest):
+                # An official 4K Program export remains current until another
+                # export of the same kind replaces it.
+                if version < newest:
                     obsolete.append(path)
 
         telemetry_newest = max((version for version, _ in telemetry), default=0)
