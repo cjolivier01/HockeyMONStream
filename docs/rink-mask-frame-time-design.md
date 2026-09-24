@@ -18,7 +18,7 @@ stitching:
   rink_mask_frame_time: null
 ```
 
-In Program Controls → Algorithms, **Ice mask frame** offers **Rink default**,
+In **Stitched → Rink**, **Ice mask frame** offers **Rink default**,
 **Automatic**, and **Custom time**. The inherited value appears below the
 control. Saving a new time invalidates the mask and dependent rink/scoreboard
 geometry while preserving camera alignment, maps, seam, `panorama.tif`, and

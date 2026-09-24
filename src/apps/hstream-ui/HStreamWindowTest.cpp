@@ -3792,8 +3792,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitched_controls->isAncestorOf(control_points) && stitched_controls->isAncestorOf(stitch_frame_time) &&
               stitched_controls->isAncestorOf(stitch_max_output_width) &&
               stitched_controls->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 5 &&
-              stitched_control_tabs->count() == 3 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
-              stitched_control_tabs->tabText(2) == "Algorithms" &&
+              stitched_control_tabs->count() == 4 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
+              stitched_control_tabs->tabText(2) == "Algorithms" && stitched_control_tabs->tabText(3) == "Rink" &&
               program_controls_splitter->orientation() == Qt::Horizontal &&
               stitched_controls_splitter->orientation() == Qt::Horizontal &&
               control_point_matcher_label->text() == "Control-point matcher" &&
@@ -10277,7 +10277,7 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() == 8, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 9, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -12977,12 +12977,38 @@ bool test_rink_mask_time(const QString& source_game_directory) {
     auto* mode = require_child<QComboBox>(&window, "rinkMaskTimeModeCombo");
     auto* time = require_child<QLineEdit>(&window, "rinkMaskTimeEdit");
     auto* hint = require_child<QLabel>(&window, "rinkMaskTimeSourceLabel");
-    if (!game || !create || !save || !mode || !time || !hint)
+    auto* preview_tabs = require_child<QTabWidget>(&window, "previewTabs");
+    auto* control_tabs = require_child<QTabWidget>(&window, "stitchedControlTabs");
+    auto* rink_scroll = require_child<QScrollArea>(&window, "stitchingRinkScrollArea");
+    auto* rink_page = require_child<QWidget>(&window, "stitchingRinkTab");
+    if (!game || !create || !save || !mode || !time || !hint || !preview_tabs || !control_tabs || !rink_scroll ||
+        !rink_page)
       return false;
+    preview_tabs->setCurrentIndex(1);
+    control_tabs->setCurrentWidget(rink_scroll);
+    for (const char* name :
+         {"stitchRinkConfigurationCombo",
+          "rinkPitchSpin",
+          "rinkRollSpin",
+          "rinkRotationSource",
+          "resetRinkLevelingButton",
+          "selectRinkLevelingButton",
+          "showLevelingDialogCheck",
+          "rinkMaskTimeModeCombo",
+          "rinkMaskTimeEdit",
+          "rinkMaskTimeSourceLabel"}) {
+      if (!expect(rink_page->findChild<QWidget*>(name), "Rink configuration must be grouped in the Rink tab"))
+        return false;
+    }
     game->setText("ui-rink-mask-time");
     activate(create);
     const QString expected_mode = run == 1 ? "custom" : run == 2 ? "auto" : "inherit";
-    if (!expect(mode->currentData() == expected_mode, "Mask time mode must survive save/reload"))
+    QApplication::processEvents();
+    if (!expect(
+            mode->currentData() == expected_mode && mode->isVisible() && hint->isVisible() &&
+                time->isVisible() == (expected_mode == "custom"),
+            "Rink tab must show the saved mask time mode and its custom editor only when selected") ||
+        !capture_widget_artifact(rink_page, QString("stitching-rink-%1.png").arg(expected_mode)))
       return false;
     if (run == 0 || run == 3) {
       if (!expect(
@@ -15477,7 +15503,7 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
   }
 
   const int original_tab = stitched_tabs->currentIndex();
-  stitched_tabs->setCurrentIndex(stitched_tabs->count() - 1);
+  stitched_tabs->setCurrentWidget(algorithms_scroll);
   QApplication::processEvents();
   QScrollBar* pane_scroll = algorithms_scroll->verticalScrollBar();
   pane_scroll->setValue(pane_scroll->minimum());
