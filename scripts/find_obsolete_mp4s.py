@@ -16,8 +16,6 @@ VIDEO_RE = re.compile(
     r"(?:-(?P<version>\d+))?\.(?P<ext>mp4|mkv)$",
     re.IGNORECASE,
 )
-PROGRAM_4K_RE = re.compile(r"program[_-]4k_output", re.IGNORECASE)
-OFFICIAL_4K_RE = re.compile(r"program[_-]4k_output-with-audio", re.IGNORECASE)
 TELEMETRY_RE = re.compile(
     r"^(?:tracking|detections|camera|camera_fast|hstream_frame_index|hstream_config_events)"
     r"(?:-(?P<version>\d+))?\.csv$"
@@ -103,8 +101,9 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
             (version for versions in videos.values() for version, _, ext in versions if ext == "mp4"),
             default=0,
         )
-        for versions in videos.values():
+        for base, versions in videos.items():
             newest = max(version for version, _, _ in versions)
+            nonofficial_4k = base.endswith(("program_4k_output", "program-4k_output"))
             for version, path, extension in versions:
                 # CLI work archives reuse their bare MKV path on every run.
                 if version == 0 and extension == "mkv":
@@ -112,8 +111,7 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
                 nonofficial_4k_companion = (
                     version > 0
                     and extension == "mp4"
-                    and PROGRAM_4K_RE.search(path.name) is not None
-                    and OFFICIAL_4K_RE.search(path.name) is None
+                    and nonofficial_4k
                 )
                 if version < newest or (nonofficial_4k_companion and version < newest_mp4):
                     obsolete.append(path)
