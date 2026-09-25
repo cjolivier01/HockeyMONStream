@@ -19,6 +19,7 @@ int main() {
   }
   for (const char* invalid : {
            "pose: {enable: 1}",
+           "pose: {enable: 1, bundle: x}\njersey: {enable: 1, bundle: y, roi-mode: pose}\nmax-due-rois: 1",
            "action: {enable: 1, bundle: x}",
            "jersey: {enable: 1, bundle: x, roi-mode: pose}",
            "pose: {enable: 1, bundle: x, rate-hz: .nan}",
