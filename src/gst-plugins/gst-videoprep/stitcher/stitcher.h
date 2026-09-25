@@ -248,6 +248,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool show_{false};
   bool match_exposure_{false};
   bool minimize_blend_{false};
+  bool fused_rgb10_remap_{true};
   size_t calibration_frame_count_{4};
   uint64_t calibration_sample_span_ns_{0};
   int max_output_width_{0};

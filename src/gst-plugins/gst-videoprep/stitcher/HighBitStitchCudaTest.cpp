@@ -1,8 +1,12 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/ShadowToneCurve.h"
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/cudaHighBitStitch.h"
 
+#include "cupano/cuda/cudaRemap.h"
+#include "cupano/pano/cudaMat.h"
+
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <cstring>
 
 #include <algorithm>
 #include <cmath>
@@ -111,6 +115,50 @@ int main() {
                stream),
            "cudaMemcpy2DAsync(half)") &&
       cuda_ok(cudaStreamSynchronize(stream), "cudaStreamSynchronize(half)");
+  // Compare the fused conversion against the actual legacy CUDA unpack kernel.
+  // Identity remapping covers all 1024 codes and all four packed alpha values.
+  if (ok) {
+    std::vector<uint16_t> mx(kWidth * kHeight), my(kWidth * kHeight);
+    for (int y = 0; y < kHeight; ++y)
+      for (int x = 0; x < kWidth; ++x) {
+        mx[y * kWidth + x] = x;
+        my[y * kWidth + x] = y;
+      }
+    hm::CudaMat<uint16_t> map_x(1, kWidth, kHeight), map_y(1, kWidth, kHeight);
+    hm::CudaMat<half4> remapped(1, kWidth, kHeight);
+    ok = map_x.is_valid() && map_y.is_valid() && remapped.is_valid() &&
+        cuda_ok(
+             cudaMemcpyAsync(map_x.data(), mx.data(), mx.size() * sizeof(uint16_t), cudaMemcpyHostToDevice, stream),
+             "map x") &&
+        cuda_ok(
+             cudaMemcpyAsync(map_y.data(), my.data(), my.size() * sizeof(uint16_t), cudaMemcpyHostToDevice, stream),
+             "map y") &&
+        cuda_ok(
+             batched_remap_kernel_ex_offset(
+                 CudaSurface<Rgb10A2>{reinterpret_cast<Rgb10A2*>(device_packed), kWidth, kHeight, kPackedPitch},
+                 remapped.surface(),
+                 map_x.data(),
+                 map_y.data(),
+                 Rgb10A2{},
+                 1,
+                 kWidth,
+                 kHeight,
+                 0,
+                 0,
+                 false,
+                 stream),
+             "fused RGB10 remap");
+    std::vector<half4> fused(unpacked.size());
+    ok = ok &&
+        cuda_ok(
+             cudaMemcpyAsync(fused.data(), remapped.data(), remapped.size(), cudaMemcpyDeviceToHost, stream),
+             "fused download") &&
+        cuda_ok(cudaStreamSynchronize(stream), "fused synchronize");
+    if (ok && std::memcmp(fused.data(), unpacked.data(), fused.size() * sizeof(half4)) != 0) {
+      std::cerr << "Fused RGB10 remap differs from legacy unpack\n";
+      ok = false;
+    }
+  }
   float previous = -1.0f;
   for (int code = 0; ok && code < kWidth; ++code) {
     const half4& pixel = unpacked[code];

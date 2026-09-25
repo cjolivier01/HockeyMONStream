@@ -739,7 +739,9 @@ absl::Status StitcherPriv::ensure_stitcher() {
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
     artifacts->artifact_lock.reset();
     if (high_bit_depth_) {
-      g_print("hmstitcher: using RGB10A2 input with fp16 stitch compute\n");
+      g_print(
+          "hmstitcher: using RGB10A2 input with fp16 stitch compute (%s)\n",
+          fused_rgb10_remap_ ? "fused unpack/remap" : "staged unpack/remap");
       stitcher_rgb10_fp16_ = std::make_unique<STITCHER_RGB10_FP16>(
           /*batch_size=*/1,
           /*num_levels=*/kNumStitcherLaplacianLevels,
@@ -1590,6 +1592,9 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       prop.key == "stitch-auto-adjust-exposure" || prop.key == "stitch_auto_adjust_exposure" ||
       prop.key == "match-exposure" || prop.key == "match_exposure") {
     match_exposure_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "fused-rgb10-remap" || prop.key == "fused_rgb10_remap") {
+    if (caps_initialized_ || !parse_strict_bool(prop.value, fused_rgb10_remap_))
+      return false;
   } else if (prop.key == "minimize-blend" || prop.key == "minimize_blend") {
     minimize_blend_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "calibration-frame-count" || prop.key == "calibration_frame_count") {
@@ -2348,7 +2353,8 @@ absl::Status StitcherPriv::GenerateOutput(
     const std::string& output_authorization_id = output_epoch->authorization_id;
     const std::string& output_scoreboard_property_value = output_epoch->scoreboard_property_value;
     if (stitcher_rgb10_fp16_) {
-      HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
+      if (!fused_rgb10_remap_)
+        HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
       if (!high_bit_canvas_ || high_bit_canvas_->width() != canvas->width() ||
           high_bit_canvas_->height() != canvas->height()) {
         high_bit_canvas_ = std::make_unique<hm::CudaMat<half4>>(
@@ -2363,9 +2369,32 @@ absl::Status StitcherPriv::GenerateOutput(
           high_bit_canvas_->height() * high_bit_canvas_->pitch() * high_bit_canvas_->batch_size(),
           cuda_stream_)));
       std::unique_ptr<hm::CudaMat<half4>> high_bit_canvas = std::move(high_bit_canvas_);
-      HM_CUDA_ASSIGN_OR_RETURN(
-          high_bit_canvas,
-          stitcher_rgb10_fp16_->process(*high_bit_left_, *high_bit_right_, cuda_stream_, std::move(high_bit_canvas)));
+      if (fused_rgb10_remap_) {
+        if (!isRgb10A2ColorFormat(incoming_surface_left->colorFormat) ||
+            !isRgb10A2ColorFormat(incoming_surface_right->colorFormat) ||
+            incoming_surface_left.width() != incoming_surface_right.width() ||
+            incoming_surface_left.height() != incoming_surface_right.height())
+          return absl::FailedPreconditionError("Fused high-bit stitching requires equal-sized RGB10A2 inputs");
+        // Non-owning pitched views: input GstBuffers remain retained until this stream completes.
+        auto packed_view = [](hm::surface::Surface surface) {
+          return hm::CudaMat<Rgb10A2>(
+              hm::SurfaceInfo{
+                  static_cast<int>(surface.width()),
+                  static_cast<int>(surface.height()),
+                  static_cast<int>(surface.pitch()),
+                  surface.dataptr()},
+              1);
+        };
+        auto packed_left = packed_view(incoming_surface_left);
+        auto packed_right = packed_view(incoming_surface_right);
+        HM_CUDA_ASSIGN_OR_RETURN(
+            high_bit_canvas,
+            stitcher_rgb10_fp16_->process(packed_left, packed_right, cuda_stream_, std::move(high_bit_canvas)));
+      } else {
+        HM_CUDA_ASSIGN_OR_RETURN(
+            high_bit_canvas,
+            stitcher_rgb10_fp16_->process(*high_bit_left_, *high_bit_right_, cuda_stream_, std::move(high_bit_canvas)));
+      }
       high_bit_canvas_ = std::move(high_bit_canvas);
 
       NvBufSurfaceParams* stitched_output = outgoing_surface.get_mutable();

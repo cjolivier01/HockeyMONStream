@@ -72,6 +72,7 @@ cc_test(
         "//toolchains/jetson:cuda_runtime",
         "@deepstream//:deepstream_lib",
         "@hm-cupano//src/pano:cuda_matrix",
+        "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
     ],
 )
 
