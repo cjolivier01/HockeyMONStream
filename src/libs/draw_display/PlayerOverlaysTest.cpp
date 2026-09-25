@@ -367,6 +367,39 @@ void BakedBoxesNeverDraw() {
   a::BuildPlayerOverlays(frame.frame, a::kPlayerBoxes, .3F, nullptr, 800, 600, &list);
   Check(list.size() == 4, "another stream's baked bits suppressed current object boxes");
 }
+void LabelsRequireVisiblePlayer() {
+  auto transform = po::PlayCropperTransform{};
+  transform.input_width = transform.metadata_width = 800;
+  transform.input_height = transform.metadata_height = 600;
+  transform.crop_left = 200;
+  transform.crop_top = 150;
+  transform.crop_width = transform.output_width = 400;
+  transform.crop_height = transform.output_height = 300;
+  const auto commands_for = [](const pa::Box& box, const po::PlayCropperTransform& t) {
+    Frame frame;
+    auto result = Result();
+    result.players[0].box = box;
+    frame.Attach(result);
+    a::CommandList list;
+    a::BuildPlayerOverlays(frame.frame, a::kJerseys | a::kActions, .3F, &t, t.output_width, t.output_height, &list);
+    return list.size();
+  };
+  for (const auto& box :
+       {pa::Box{10, 200, 30, 50}, pa::Box{250, 10, 30, 50}, pa::Box{650, 200, 30, 50}, pa::Box{250, 500, 30, 50}})
+    Check(commands_for(box, transform) == 0, "Fully offcrop player emitted clamped labels");
+  Check(commands_for({190, 200, 30, 50}, transform) == 9, "Partly visible player lost labels");
+  // A 100x100 box rotated 45 degrees forms a diamond. This viewport overlaps
+  // its AABB but lies beyond the diamond's lower-right edge (x+y > sqrt(2)*100).
+  transform.angle_degrees = 45;
+  transform.crop_left = 40;
+  transform.crop_top = 110;
+  transform.crop_width = transform.crop_height = 30;
+  transform.output_width = transform.output_height = 300;
+  Check(commands_for({0, 0, 100, 100}, transform) == 0, "Rotated offcrop polygon admitted by AABB painted labels");
+  transform.crop_left = 10;
+  transform.crop_top = 80;
+  Check(commands_for({0, 0, 100, 100}, transform) == 9, "Visible rotated player lost labels");
+}
 } // namespace
 int main() {
   struct Test {
@@ -380,7 +413,8 @@ int main() {
       {"freshness_labels_priority", FreshnessAndLabels},
       {"baked_transform_and_empty", BakedTransformsAndEmpty},
       {"zero_confidence", ZeroConfidenceNeverDraws},
-      {"baked_boxes", BakedBoxesNeverDraw}};
+      {"baked_boxes", BakedBoxesNeverDraw},
+      {"labels_require_visible_player", LabelsRequireVisiblePlayer}};
   unsigned failures = 0;
   for (const auto& test : cases) {
     try {

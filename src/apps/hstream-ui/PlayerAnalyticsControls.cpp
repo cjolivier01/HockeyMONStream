@@ -15,6 +15,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QVBoxLayout>
 
+#include <algorithm>
 #include <stdexcept>
 
 #include "hstream/src/libs/player_analytics/Config.h"
@@ -72,6 +73,45 @@ bool Flag(const YAML::Node& node, bool fallback = false) {
   if (node.Scalar() == "0")
     return false;
   return node.as<bool>();
+}
+bool ProgramBoxes(const std::vector<YAML::Node>& layers) {
+  struct Ranked {
+    YAML::Node value{YAML::NodeType::Undefined};
+    int rank{-1};
+  };
+  const auto read = [&layers](const QString& path) {
+    Ranked result;
+    for (size_t rank = 0; rank < layers.size(); ++rank) {
+      bool replaced = false;
+      const auto value = Get(layers[rank], path, &replaced);
+      if (value.IsDefined() || replaced) {
+        result.value.reset(value);
+        result.rank = static_cast<int>(rank);
+      }
+    }
+    return result;
+  };
+  const auto debug = read("plot.debug_play_tracker");
+  const auto individual = read("plot.plot_individual_player_tracking");
+  const auto native = read("pipeline.hmplaycropper.plot-player-tracking");
+  const int source_rank = std::max({0, debug.rank, individual.rank});
+  // Match Configurator's map_bool_or: a true source carries its own rank,
+  // rather than the rank of a later false source. Structural native defaults
+  // also win when neither canonical setting has an explicit override.
+  if (native.value.IsDefined() && !native.value.IsNull() && native.rank >= source_rank)
+    return Flag(native.value);
+  const auto canonical_flag = [](const YAML::Node& node) {
+    if (node.IsDefined() && node.IsNull())
+      throw std::invalid_argument("Program box drawing requires non-null canonical booleans");
+    return Flag(node);
+  };
+  const bool debug_on = canonical_flag(debug.value), individual_on = canonical_flag(individual.value);
+  const int mapped_rank = debug_on || individual_on
+      ? std::max(debug_on ? std::max(0, debug.rank) : -1, individual_on ? std::max(0, individual.rank) : -1)
+      : source_rank;
+  if (native.value.IsDefined() && !native.value.IsNull() && native.rank >= mapped_rank)
+    return Flag(native.value);
+  return debug_on || individual_on;
 }
 QString Absolute(const QString& path, const QString& directory) {
   return QDir::cleanPath(QFileInfo(path).isAbsolute() ? path : QDir(directory).absoluteFilePath(path));
@@ -198,6 +238,15 @@ QVariant PlayerAnalyticsControls::value(const Field& field) const {
   return static_cast<QLineEdit*>(field.editor)->text();
 }
 QVariant PlayerAnalyticsControls::read(const Field& field, const std::vector<YAML::Node>& layers, bool* valid) const {
+  if (field.key == "plot.plot_individual_player_tracking") {
+    try {
+      *valid = true;
+      return ProgramBoxes(layers);
+    } catch (const std::exception&) {
+      *valid = false;
+      return false;
+    }
+  }
   YAML::Node resolved(YAML::NodeType::Undefined);
   if (field.native_alias.isEmpty()) {
     YAML::Node merged(YAML::NodeType::Map);
@@ -317,7 +366,8 @@ QString PlayerAnalyticsControls::applyChanges(YAML::Node& destination) const {
       Set(staged, field.key.split('.'), selected);
       // Preserve explicit native settings on unrelated saves. On an edit only,
       // reconcile the conflicting same-destination leaf with the canonical choice.
-      if (!field.native_alias.isEmpty() && Get(staged, field.native_alias).IsDefined())
+      if (!field.native_alias.isEmpty() &&
+          (Get(staged, field.native_alias).IsDefined() || field.key == "plot.plot_individual_player_tracking"))
         Set(staged, field.native_alias.split('.'), selected);
     }
     destination = staged;
@@ -341,6 +391,10 @@ QStringList PlayerAnalyticsControls::arguments() const {
   QStringList result;
   const auto append = [&result](const QString& key, const QString& text) { result << "--options=" + key + "=" + text; };
   for (const auto& field : fields_) {
+    // Unedited boxes retain the runner's debug-OR mapping and any advanced
+    // cropper private-property precedence. Never synthesize an off override.
+    if (field.key == "plot.plot_individual_player_tracking" && !changed(field))
+      continue;
     if (field.kind == Kind::kFlag) {
       const QString text = value(field).toBool() ? "true" : "false";
       append(field.key, text);

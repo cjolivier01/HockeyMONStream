@@ -22,6 +22,32 @@ Color PlayerColor(uint8_t slot) {
   const auto& color = player_analytics::kTrackPalette[slot];
   return {color.red, color.green, color.blue, color.alpha};
 }
+bool VisibleBox(const std::array<Point, 4>& corners, float width, float height) {
+  for (const auto& point : corners)
+    if (!std::isfinite(point.x) || !std::isfinite(point.y))
+      return false;
+  // Separating axes for the transformed rectangle and the viewport. Testing
+  // only axis-aligned bounds admits rotated players beyond a crop corner.
+  const auto separated = [&](float x, float y) {
+    float low = corners[0].x * x + corners[0].y * y, high = low;
+    for (const auto& point : corners) {
+      const float projection = point.x * x + point.y * y;
+      low = std::min(low, projection);
+      high = std::max(high, projection);
+    }
+    const float viewport_low = std::min(0.0F, width * x) + std::min(0.0F, height * y);
+    const float viewport_high = std::max(0.0F, width * x) + std::max(0.0F, height * y);
+    return high <= viewport_low || low >= viewport_high;
+  };
+  if (separated(1, 0) || separated(0, 1))
+    return false;
+  for (size_t i = 0; i < 2; ++i) {
+    const float dx = corners[i + 1].x - corners[i].x, dy = corners[i + 1].y - corners[i].y;
+    if ((dx == 0 && dy == 0) || separated(-dy, dx))
+      return false;
+  }
+  return true;
+}
 } // namespace
 
 void BuildPlayerOverlays(
@@ -103,6 +129,8 @@ void BuildPlayerOverlays(
       }
     }
   }
+  if (!(layers & (kJerseys | kActions)))
+    return;
   for (size_t i = 0; i < result->player_count; ++i) {
     const auto& player = result->players[i];
     const Color color = PlayerColor(player.color_slot);
@@ -110,8 +138,10 @@ void BuildPlayerOverlays(
     const std::array<Point, 4> corners{
         {map({box.left, box.top}),
          map({box.left + box.width, box.top}),
-         map({box.left, box.top + box.height}),
-         map({box.left + box.width, box.top + box.height})}};
+         map({box.left + box.width, box.top + box.height}),
+         map({box.left, box.top + box.height})}};
+    if (!VisibleBox(corners, coordinate_width, coordinate_height))
+      continue;
     float x = corners[0].x, y = corners[0].y;
     for (const auto& point : corners) {
       x = std::min(x, point.x);

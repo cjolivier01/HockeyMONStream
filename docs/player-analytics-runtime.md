@@ -51,6 +51,8 @@ The plugin supports pitched NVMM RGBA8 and packed RGB10A2. This does not establi
 10-bit support for unrelated upstream cropper/stitcher paths. Model inference has
 an explicit GPU cost; disabled-path and enabled/drawing measurements are tracked
 in [the validation record](player-analytics-validation.md).
+The [benchmark procedure](player-analytics-benchmark.md) repeats frozen-runtime
+comparisons and separately checks compact transfers with Nsight Systems.
 
 ## Jersey and action inference
 

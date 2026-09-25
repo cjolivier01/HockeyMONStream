@@ -441,3 +441,17 @@ Empty drawing makes no CUDA calls or allocations. The shared glyph atlas is
 52/59 µs wall and 4.8/11.4 µs GPU at 1080p/4K. These isolated 4K timings do not
 establish the cost of the real 8K Program output. Jetson clocks were not fixed;
 its RGBA8 wall p95 is 1156.3/2277.5 µs. x86 CUDA memcheck reports zero errors.
+
+### PR4 review iterations
+
+Two independent xhigh reviewers reviewed `88eec689`. Both reported one required
+correction: unchanged desktop controls could override boxes inherited from
+`plot.debug_play_tracker`, and labels for fully cropped-out players could be
+clamped onto the Program edge. The controls now resolve the legacy boolean OR
+with its source ranks and omit unchanged box overrides; explicit edits preserve
+other debug layers. Labels require actual transformed-box/viewport intersection
+before anchor clamping, including rotated boxes whose bounding rectangles alone
+overlap. Regression cases cover saved/exported/active UI arguments, all four crop
+sides, partial visibility and rotated geometry. Complete x86 build and focused
+controls/window, overlay-contract and actual GPU cropper/preview checks pass.
+Native rebuild, renewed performance evidence and paired second review follow.

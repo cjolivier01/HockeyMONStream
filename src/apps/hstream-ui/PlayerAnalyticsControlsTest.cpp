@@ -94,6 +94,44 @@ pipeline:
           !args.join(' ').contains("reid-config-file="),
       "Drawing preferences or disabled argument omission incorrect");
 }
+void LegacyProgramBoxes(const QString& root) {
+  PlayerAnalyticsControls widget;
+  auto defaults = Defaults();
+  defaults["plot"]["debug_play_tracker"] = false;
+  defaults["plot"]["plot_individual_player_tracking"] = false;
+  auto game = YAML::Load("plot: {debug_play_tracker: true, retained: yes}");
+  widget.loadConfig(defaults, YAML::Node(), game, root);
+  auto* boxes = Control<QCheckBox>(widget, "playerDrawBoxes");
+  Require(boxes->isChecked() && !widget.isDirty(), "Legacy debug boxes were not reflected in controls");
+  const auto original = YAML::Dump(game);
+  Require(
+      widget.applyChanges(game).isEmpty() && YAML::Dump(game) == original,
+      "Unchanged debug-only save rewrote its configuration");
+  Require(
+      !widget.arguments().join(' ').contains("plot-player-tracking=") &&
+          !widget.arguments().join(' ').contains("plot_individual_player_tracking="),
+      "Unchanged box arguments overrode inherited native/debug settings");
+  boxes->setChecked(false);
+  Require(
+      widget.arguments().contains("--options=pipeline.hmplaycropper.plot-player-tracking=false"),
+      "Explicit box edit did not reach launch/export");
+  Require(
+      widget.applyChanges(game).isEmpty() && game["plot"]["debug_play_tracker"].as<bool>() &&
+          !game["pipeline"]["hmplaycropper"]["plot-player-tracking"].as<bool>(),
+      "Box edit disabled other debug layers or failed to persist its override");
+  widget.loadConfig(defaults, YAML::Node(), game, root);
+  Require(!boxes->isChecked() && !widget.isDirty(), "Saved override lost against same-layer debug OR");
+  auto user = YAML::Load("plot: {debug_play_tracker: true}");
+  game = YAML::Load("plot: {plot_individual_player_tracking: false}");
+  widget.loadConfig(defaults, user, game, root);
+  Require(boxes->isChecked(), "Later individual false erased inherited debug true");
+  user["pipeline"]["hmplaycropper"]["plot-player-tracking"] = false;
+  widget.loadConfig(defaults, user, game, root);
+  Require(!boxes->isChecked(), "False canonical rank displaced native override of true source");
+  game["plot"]["debug_play_tracker"] = true;
+  widget.loadConfig(defaults, user, game, root);
+  Require(boxes->isChecked(), "Later true debug source did not override older native false");
+}
 void LayersAndPersistence(const QString& root) {
   PlayerAnalyticsControls widget;
   int changes = 0;
@@ -251,6 +289,7 @@ int main(int argc, char** argv) {
   QTemporaryDir directory;
   Require(directory.isValid(), "Cannot create test directory");
   Disabled();
+  LegacyProgramBoxes(directory.path());
   LayersAndPersistence(directory.path());
   DependenciesAndExport(directory.path());
   ReId(directory.path());

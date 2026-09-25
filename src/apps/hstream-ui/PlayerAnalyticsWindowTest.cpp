@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
       "  player-analytics:\n    pose: {enable: false, bundle: /disabled/pose, rate-hz: 20}\n"
       "    jersey: {enable: false, confidence-threshold: 0.91}\n"
       "    action: {enable: false}\n    draw-pose: false\n    retained: [custom, data]\n"
-      "plot: {plot_pose: true}\n");
+      "plot: {plot_pose: true, debug_play_tracker: true}\n");
   HStreamWindow window;
   auto* game = Find<QComboBox>(window, "gameSelector");
   game->setCurrentIndex(game->findText("analytics-one"));
@@ -82,6 +82,10 @@ int main(int argc, char** argv) {
   auto* boxes = Find<QCheckBox>(window, "playerDrawBoxes");
   const auto detector = Find<QComboBox>(window, "detectorPrecisionCombo")->currentData();
   Require(!draw->isChecked() && !pose->isChecked(), "Window load lost native drawing precedence");
+  Require(
+      boxes->isChecked() && !HStreamWindowTestAccess::args(window).join(' ').contains("plot-player-tracking=") &&
+          !HStreamWindowTestAccess::args(window, false).join(' ').contains("plot-player-tracking="),
+      "Unchanged launch/export removed legacy debug-derived boxes");
   preview->setChecked(true);
   boxes->setChecked(true);
   boxes->setChecked(false);
@@ -119,7 +123,9 @@ int main(int argc, char** argv) {
           saved["pipeline"]["player-analytics"]["draw-pose"].as<bool>() &&
           saved["pipeline"]["player-analytics"]["retained"].size() == 2 &&
           saved["pipeline"]["player-analytics"]["pose"]["rate-hz"].as<int>() == 20 &&
-          saved["pipeline"]["tracker"]["ll-config-file"].as<std::string>() == "existing-native.yaml",
+          saved["pipeline"]["tracker"]["ll-config-file"].as<std::string>() == "existing-native.yaml" &&
+          saved["plot"]["debug_play_tracker"].as<bool>() &&
+          !saved["pipeline"]["hmplaycropper"]["plot-player-tracking"].as<bool>(),
       "Preset save lost native/advanced choices");
   QStringList exported;
   for (const auto& argument : saved["hstream_ui"]["job"]["arguments"])
