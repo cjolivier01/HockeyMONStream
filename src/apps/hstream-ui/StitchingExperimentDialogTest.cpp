@@ -1876,6 +1876,45 @@ void exercise_completed_dependency_removal(const QString& game, const QString& r
   dialog.reject();
 }
 
+void exercise_stale_completed_removal(const QString& game, const QString& root) {
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open stale-removal store");
+  const auto workspace = CreateStitchingExperimentWorkspace(
+      game.toStdString(), store->directory / "sessions" / "stale", {100, 1, "00:00:00"}, 1);
+  require(workspace.ok(), "Cannot create stale-removal fixture");
+  StoredStitchingExperiment record;
+  record.workspace = *workspace;
+  record.sequence = 1;
+  record.state = "queued";
+  require(SaveStitchingExperiment(*store, record).ok(), "Cannot persist queued stale-removal fixture");
+  StitchingExperimentDialog dialog(
+      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 100, 1, "00:00:00");
+  dialog.show();
+  auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  require(table->rowCount() == 1, "Stale dialog must retain the queued row");
+  table->selectRow(0);
+  // Simulate another dialog completing the row after this dialog restored it.
+  record.state = "complete";
+  record.artifact_generation_id = "newly-completed-generation";
+  require(SaveStitchingExperiment(*store, record).ok(), "Cannot publish concurrent completed result");
+  const auto index_path = QString::fromStdString((store->directory / "index.yaml").string());
+  const auto completed_index = read(index_path);
+  widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton")->click();
+  require(
+      table->rowCount() == 1 && read(index_path) == completed_index &&
+          std::filesystem::exists(workspace->game_directory) &&
+          widget<QLabel>(dialog, "stitchExperimentStatus")->text().contains("confirm removal"),
+      "Stale queued deletion must preserve and reload newly completed results for confirmation");
+  table->selectRow(0);
+  remove_completed_experiments(dialog, false);
+  require(read(index_path) == completed_index, "Cancel after stale-row refresh must preserve the completed result");
+  remove_completed_experiments(dialog, true);
+  require(
+      table->rowCount() == 0 && !std::filesystem::exists(workspace->game_directory),
+      "Refreshed completed results may be removed after confirmation");
+  dialog.reject();
+}
+
 void exercise_player_cancellation(const QString& game, const QString& root) {
   // A shell fixture remains running without interpreting the runner arguments.
   const QString runner = root + "/waiting-runner.sh";
@@ -2337,6 +2376,7 @@ int main(int argc, char** argv) {
       exercise_match_save_retry(make_game("match-save-retry"), fixture.path());
       exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
       exercise_completed_dependency_removal(make_game("completed-dependencies"), fixture.path());
+      exercise_stale_completed_removal(make_game("stale-completed"), fixture.path());
       exercise_player_cancellation(make_game("cancel"), fixture.path());
       exercise(make_game("ordinary"), "/bin/false", fixture.path(), false, {});
     }

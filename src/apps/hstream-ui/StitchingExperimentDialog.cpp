@@ -2118,7 +2118,8 @@ struct StitchingExperimentDialog::Impl {
         return;
       }
     }
-    const auto removed = removed_keys.empty() ? absl::OkStatus() : RemoveStitchingExperiments(*store, removed_keys);
+    const auto removed =
+        removed_keys.empty() ? absl::OkStatus() : RemoveStitchingExperiments(*store, removed_keys, removes_completed);
     if (!removed.ok()) {
       candidates.clear();
       table->setRowCount(0);

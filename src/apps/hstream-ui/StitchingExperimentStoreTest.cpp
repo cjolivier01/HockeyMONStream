@@ -208,10 +208,16 @@ bool completed_result_removal(const fs::path& root) {
   const auto reserved =
       ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, owner.workspace, owner.reservation_token);
   ok &= expect(reserved.ok() && !reserved->has_value(), "reserve completed selection owner");
+  ok &= expect(SaveStitchingExperiment(store, owner).ok(), "save queued selection owner before completion");
   install_plan(owner, make_plan(store.game_directory, 2));
   owner.state = "complete";
   owner.artifact_generation_id = "completed-generation";
   ok &= expect(SaveStitchingExperiment(store, owner, true).ok(), "publish completed selection owner");
+  const auto completed_index = read_file(store.directory / "index.yaml");
+  ok &= expect(
+      !RemoveStitchingExperiments(store, {key(owner)}).ok() &&
+          read_file(store.directory / "index.yaml") == completed_index && fs::exists(owner.workspace.game_directory),
+      "stale queued handles cannot remove newly completed results without confirmation");
   auto child = make_record(store, "child-session", 1);
   child.state = "complete";
   child.artifact_generation_id = "child-generation";
@@ -225,8 +231,8 @@ bool completed_result_removal(const fs::path& root) {
       "save completed dependent and unrelated result");
   const auto original = read_file(store.directory / "index.yaml");
   ok &= expect(
-      !RemoveStitchingExperiments(store, {key(owner)}).ok() && read_file(store.directory / "index.yaml") == original &&
-          fs::exists(owner.workspace.game_directory),
+      !RemoveStitchingExperiments(store, {key(owner)}, true).ok() &&
+          read_file(store.directory / "index.yaml") == original && fs::exists(owner.workspace.game_directory),
       "completed removal must preserve a surviving dependent's inputs");
   for (int64_t session_id : {0, 12345}) {
     child.process_session_id = session_id;
@@ -234,7 +240,7 @@ bool completed_result_removal(const fs::path& root) {
     ok &= expect(SaveStitchingExperiment(store, child).ok(), "save completed preview ownership");
     const auto active = read_file(store.directory / "index.yaml");
     ok &= expect(
-        !RemoveStitchingExperiments(store, {key(owner), key(child)}).ok() &&
+        !RemoveStitchingExperiments(store, {key(owner), key(child)}, true).ok() &&
             read_file(store.directory / "index.yaml") == active && fs::exists(child.workspace.game_directory),
         "preview intent or an active process prevents completed deletion");
   }
@@ -247,8 +253,9 @@ bool completed_result_removal(const fs::path& root) {
   fs::create_directory_symlink(store.game_directory, owner.workspace.game_directory / "linked-main");
   write_file(owner.workspace.game_directory / "runner.log", "completed runner");
   ok &= expect(
-      RemoveStitchingExperiments(store, {key(owner), key(child)}).ok() && !fs::exists(owner.workspace.game_directory) &&
-          !fs::exists(child.workspace.game_directory) && fs::exists(unrelated.workspace.game_directory) &&
+      RemoveStitchingExperiments(store, {key(owner), key(child)}, true).ok() &&
+          !fs::exists(owner.workspace.game_directory) && !fs::exists(child.workspace.game_directory) &&
+          fs::exists(unrelated.workspace.game_directory) &&
           read_file(store.game_directory / "config.yaml") == "main calibration sentinel" &&
           read_file(store.game_directory / "player-frame-inputs" / "promoted.png") == "promoted input sentinel",
       "completed cascade removes only owned results and preserves main's promoted inputs");

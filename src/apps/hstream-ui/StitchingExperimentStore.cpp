@@ -979,7 +979,8 @@ absl::Status DiscardStitchingExperimentStore(const StitchingExperimentStore& sto
 
 absl::Status RemoveStitchingExperiments(
     const StitchingExperimentStore& store,
-    const std::vector<std::string>& workspace_keys) {
+    const std::vector<std::string>& workspace_keys,
+    bool allow_completed) {
   try {
     require(
         !workspace_keys.empty() && workspace_keys.size() <= kMaximumStoredStitchingExperiments,
@@ -1005,6 +1006,9 @@ absl::Status RemoveStitchingExperiments(
            record.state == "complete") &&
               record.process_session_id == 0 && record.process_token.empty(),
           "Only stopped experiments may be removed individually");
+      require(
+          record.state != "complete" || allow_completed,
+          "An experiment has completed. Reload the results and confirm removal before deleting them");
       auto config = validate_workspace_config(**lock, store, record.workspace);
       if (!config.ok())
         return config.status();

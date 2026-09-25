@@ -64,6 +64,8 @@ including private images, configurations, logs, and any frozen selection owned b
 completed results asks for confirmation and states how many dependent experiments will also be deleted. Cancel
 preserves all results and saved selections. The button is disabled during a batch, preview, or shutdown; unconfirmed
 process ownership also blocks deletion. Main calibration and unrelated experiments are preserved.
+If another dialog completes a row that still appears queued here, removal refreshes the saved results and requires
+confirmation before deleting them.
 **Discard experiments and cache…** clears the entire history after runners stop.
 Older batches with a resynchronized baseline must be discarded and recreated, including that baseline.
 
