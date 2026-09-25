@@ -254,3 +254,9 @@ input-count/batch-limit combinations, an incomplete final batch and a failure
 occurring only in a later case that must prevent publication. Numerical thresholds
 and model graphs are unchanged. Complete x86/Jetson builds pass after the change.
 Evidence: `/tmp/hstream-player-pr2-coverage-{build,test}.log` on each host.
+
+PR2 implementation round 2: two independent xhigh reviewers reviewed the
+preparation coverage correction against `47b2df5a`; both report no necessary
+fixes and independently reran all 17 CPU tests without skips. Prior runtime,
+pipeline, EGL and shutdown findings are resolved. The supported engines and
+numerical thresholds are unchanged by this preparation-only correction.
