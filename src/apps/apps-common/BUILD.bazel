@@ -262,6 +262,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/tracker_reid:tracker_reid",
         ":encoder_dimensions",
         ":hm_gpu_preview",
         ":gst_plugin_properties",

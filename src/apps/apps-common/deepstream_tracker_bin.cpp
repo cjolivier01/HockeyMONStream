@@ -12,11 +12,33 @@
 
 #include "deepstream_common.h"
 #include "deepstream_tracker.h"
+#include "hstream/src/libs/tracker_reid/ReIdConfig.h"
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 
 gboolean create_tracking_bin(NvDsTrackerConfig* config, NvDsTrackerBin* bin) {
   gboolean ret = FALSE;
+  std::unique_ptr<hm::tracker_reid::PreparedConfig> reid_config;
+  const gchar* low_level_config = config->ll_config_file;
+
+  // This is deliberately after final graph/mode selection, rather than during
+  // YAML parsing: calibration-only runs must never inspect ReID assets.
+  if (config->enable && config->reid_enable) {
+    auto prepared = hm::tracker_reid::Prepare({
+        true,
+        true,
+        config->ll_lib_file ? config->ll_lib_file : "",
+        config->ll_config_file ? config->ll_config_file : "",
+        config->reid_config_file ? config->reid_config_file : "",
+        config->sub_batches ? config->sub_batches : "",
+    });
+    if (!prepared.ok()) {
+      NVGSTDS_ERR_MSG_V("%s", prepared.status().ToString().c_str());
+      return FALSE;
+    }
+    reid_config = std::move(*prepared);
+    low_level_config = reid_config->path().c_str();
+  }
 
   bin->bin = gst_bin_new("tracking_bin");
   if (!bin->bin) {
@@ -29,6 +51,11 @@ gboolean create_tracking_bin(NvDsTrackerConfig* config, NvDsTrackerBin* bin) {
     NVGSTDS_ERR_MSG_V("Failed to create 'tracking_tracker'");
     goto done;
   }
+  if (reid_config) {
+    g_object_set_data_full(G_OBJECT(bin->tracker), "hstream-reid-config", reid_config.release(), [](gpointer data) {
+      delete static_cast<hm::tracker_reid::PreparedConfig*>(data);
+    });
+  }
 
   g_object_set(
       G_OBJECT(bin->tracker),
@@ -39,7 +66,7 @@ gboolean create_tracking_bin(NvDsTrackerConfig* config, NvDsTrackerBin* bin) {
       "gpu-id",
       config->gpu_id,
       "ll-config-file",
-      config->ll_config_file,
+      low_level_config,
       "ll-lib-file",
       config->ll_lib_file,
       NULL);
@@ -63,7 +90,8 @@ gboolean create_tracking_bin(NvDsTrackerConfig* config, NvDsTrackerBin* bin) {
   g_object_set(
       G_OBJECT(bin->tracker), "sub-batch-err-recovery-trial-cnt", config->sub_batch_err_recovery_trial_cnt, NULL);
 
-  gst_bin_add_many(GST_BIN(bin->bin), bin->tracker, NULL);
+  if (!gst_bin_add(GST_BIN(bin->bin), bin->tracker))
+    goto done;
 
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->tracker, "sink");
 
@@ -76,6 +104,12 @@ gboolean create_tracking_bin(NvDsTrackerConfig* config, NvDsTrackerBin* bin) {
 done:
   if (!ret) {
     NVGSTDS_ERR_MSG_V("%s failed", __func__);
+    if (bin->tracker && !GST_OBJECT_PARENT(bin->tracker))
+      gst_object_unref(bin->tracker);
+    if (bin->bin)
+      gst_object_unref(bin->bin);
+    bin->tracker = nullptr;
+    bin->bin = nullptr;
   }
   return ret;
 }

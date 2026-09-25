@@ -64,6 +64,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:track_color_meta",
         ":playtracker_runtime_config",
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "//src/libs/common:playtracker_config_roles",

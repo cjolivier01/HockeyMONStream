@@ -983,6 +983,7 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   // g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
 
   ppc << "draw=" << config->draw;
+  ppc << ";color-players=" << config->color_players;
   ppc << ";show=" << config->show;
   if (config->fixed_edge_rotation_angle_set) {
     ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;

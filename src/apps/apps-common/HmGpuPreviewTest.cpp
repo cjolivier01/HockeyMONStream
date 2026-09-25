@@ -313,6 +313,7 @@ GstBuffer* make_overlay_inspection_buffer(bool snapshot, bool transform) {
   player->rect_params.top = 200.0F;
   player->rect_params.width = 300.0F;
   player->rect_params.height = 400.0F;
+  player->rect_params.border_color = {0.125, 0.375, 0.625, 1.0};
   nvds_add_obj_meta_to_frame(frame, player, nullptr);
   display->num_rects = 1;
   display->rect_params[0].left = 500.0F;
@@ -403,7 +404,9 @@ bool run_program_transform_fail_closed_test() {
   gst_object_unref(sink);
   const bool passed = !missing.diagnostic_coordinates_valid && missing.path_count == 0 &&
       valid.diagnostic_coordinates_valid && valid.path_count >= 2 && !fallback.diagnostic_coordinates_valid &&
-      fallback.path_count == 0 && stitched.diagnostic_coordinates_valid && stitched.path_count >= 2;
+      fallback.path_count == 0 && stitched.diagnostic_coordinates_valid && stitched.path_count >= 2 &&
+      valid.colors.front() == std::array<float, 4>{0.125F, 0.375F, 0.625F, 1.0F} &&
+      valid.colors.front() == stitched.colors.front();
   if (!passed)
     std::cerr << "Program diagnostics did not fail closed when crop-transform metadata was unavailable\n";
   return passed;

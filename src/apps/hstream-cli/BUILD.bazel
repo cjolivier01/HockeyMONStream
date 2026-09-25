@@ -44,6 +44,7 @@ HSTREAM_CLI_DEPS = [
     "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
     "//src/libs/common:playtracker_config_roles",
     "//src/libs/common:preview_overlay_meta",
+    "//src/libs/common:track_color_meta",
     "//src/libs/common:user_config",
     "//src/libs/pipeline_controller:gst_property_service",
     "//src/libs/stitching",

@@ -2,6 +2,7 @@
 
 #include <gst/gst.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -43,6 +44,7 @@ enum class CallbackPoint {
 struct PreviewOverlayInspection {
   std::size_t path_count{0};
   bool diagnostic_coordinates_valid{false};
+  std::vector<std::array<float, 4>> colors;
 };
 
 inline constexpr std::size_t kMaximumPresentedFrameCaptureBytes = 32U * 1024U * 1024U;

@@ -986,7 +986,7 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
           rect.width,
           rect.height,
           std::max(2.0F, static_cast<float>(rect.border_width)),
-          OverlayColor{0.0F, 1.0F, 1.0F, 0.95F},
+          overlay_color(rect.border_color),
           false,
           {},
           transform);
@@ -2420,7 +2420,10 @@ PreviewOverlayInspection inspect_preview_overlays_for_test(GstElement* sink, Gst
     return {};
   std::lock_guard<std::mutex> lock(self->state->mutex);
   const PreviewOverlays overlays = collect_preview_overlays(self, buffer);
-  return {overlays.paths.size(), overlays.diagnostic_coordinates_valid};
+  PreviewOverlayInspection result{overlays.paths.size(), overlays.diagnostic_coordinates_valid, {}};
+  for (const auto& path : overlays.paths)
+    result.colors.push_back({path.color.red, path.color.green, path.color.blue, path.color.alpha});
+  return result;
 #else
   (void)sink;
   (void)buffer;

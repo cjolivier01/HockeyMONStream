@@ -1,0 +1,83 @@
+INCLUDE_PREFIX = "hstream/src/libs/player_analytics/"
+
+cc_library(
+    name = "types",
+    hdrs = ["Types.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "track_colors",
+    srcs = ["TrackColors.cpp"],
+    hdrs = ["TrackColors.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":types"],
+)
+
+cc_binary(
+    name = "track_colors_test",
+    srcs = ["TrackColorsTest.cpp"],
+    deps = [":track_colors"],
+)
+
+cc_library(
+    name = "config",
+    srcs = ["Config.cpp"],
+    hdrs = ["Config.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":types", "@com_google_absl//absl/status:statusor", "@yaml-cpp"],
+)
+
+cc_binary(
+    name = "config_test",
+    srcs = ["ConfigTest.cpp"],
+    deps = [":config"],
+)
+
+cc_library(
+    name = "model_contract",
+    srcs = ["ModelContract.cpp"],
+    hdrs = ["ModelContract.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":types", "@com_google_absl//absl/status:statusor", "@yaml-cpp"],
+)
+
+cc_binary(
+    name = "model_contract_test",
+    srcs = ["ModelContractTest.cpp"],
+    deps = [":model_contract"],
+)
+
+cc_library(
+    name = "temporal_state",
+    srcs = ["TemporalState.cpp"],
+    hdrs = ["TemporalState.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":types"],
+)
+
+cc_binary(
+    name = "temporal_state_test",
+    srcs = ["TemporalStateTest.cpp"],
+    deps = [":temporal_state"],
+)
+
+cc_library(
+    name = "frame_meta",
+    srcs = ["FrameMeta.cpp"],
+    hdrs = ["FrameMeta.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":types", "@deepstream//:deepstream_lib", "@glib"],
+)
+
+cc_binary(
+    name = "frame_meta_test",
+    srcs = ["FrameMetaTest.cpp"],
+    deps = [":frame_meta"],
+)

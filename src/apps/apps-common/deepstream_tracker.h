@@ -38,6 +38,8 @@ typedef struct {
   guint user_meta_pool_size;
   gchar* sub_batches;
   gint sub_batch_err_recovery_trial_cnt;
+  gboolean reid_enable;
+  gchar* reid_config_file;
 } NvDsTrackerConfig;
 
 typedef struct {

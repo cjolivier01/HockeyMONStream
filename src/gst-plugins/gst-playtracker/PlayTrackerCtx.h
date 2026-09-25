@@ -13,6 +13,7 @@
 #include "absl/status/statusor.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/common/ManagedObject.h"
+#include "hstream/src/libs/common/TrackColorMeta.h"
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 
@@ -32,6 +33,7 @@ struct DsPlayTrackerInitParams {
   std::vector<std::shared_ptr<hm::ManagedObject>> owned_objects;
   std::string play_tracker_config_file;
   bool draw{false};
+  bool color_players{false};
   // // The class id we will set for the play box
   static constexpr inline int kPlayBoxClassIdBase = 99;
 };
@@ -41,6 +43,7 @@ struct DsPlayTrackerCtx {
   std::atomic<bool> draw{false};
   std::atomic<unsigned> preview_overlay_flags{0};
   std::atomic<bool> preview_snapshot_failure_reported{false};
+  hm::preview_overlay::TrackColorState player_colors;
   std::optional<DsPlayTrackerRuntimeTuning> detector_runtime_tuning;
   std::optional<DsPlayTrackerRuntimeTuning> fast_box_runtime_tuning;
   std::optional<DsPlayTrackerRuntimeTuning> follower_box_runtime_tuning;

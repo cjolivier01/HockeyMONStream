@@ -1,6 +1,7 @@
 #include "deepstream_app.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
+#include "hstream/src/libs/common/TrackColorMeta.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <gst/gst.h>
@@ -1688,6 +1689,8 @@ static gboolean create_common_elements(
   }
 
   if (config->dsplaytracker_config.enable) {
+    config->dsplaytracker_config.color_players =
+        config->hmplaycropper_config.enable && config->hmplaycropper_config.plot_player_tracking;
     // Create dsexample element bin and set properties
     if (!create_dsplaytracker_bin(&config->dsplaytracker_config, &pipeline->dsplaytracker_bin)) {
       goto done;
@@ -1729,6 +1732,13 @@ static gboolean create_common_elements(
       NVGSTDS_LINK_ELEMENT(pipeline->common_elements.tracker_bin.bin, *sink_elem);
     }
     *sink_elem = pipeline->common_elements.tracker_bin.bin;
+  }
+
+  if (!config->dsplaytracker_config.enable && config->tracker_config.enable && config->hmplaycropper_config.enable &&
+      config->hmplaycropper_config.plot_player_tracking &&
+      !hm::preview_overlay::ConfigureTrackColorProducer(pipeline->common_elements.tracker_bin.bin, true)) {
+    NVGSTDS_ERR_MSG_V("Could not create the requested player-color producer");
+    goto done;
   }
 
   if (config->dsexample_config.enable) {

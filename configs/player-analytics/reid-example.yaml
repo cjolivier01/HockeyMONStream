@@ -1,0 +1,33 @@
+# Opt-in low-level overlay; this file alone never enables tracking or downloads.
+# Copy it beside the prebuilt engine, update modelEngineFile, then set:
+# pipeline:
+#   tracker:
+#     reid-enable: true
+#     reid-config-file: /absolute/path/to/reid.yaml
+#
+# Prepare the engine on the playback GPU using that DeepStream release's
+# TensorRT SDK. See src/libs/tracker_reid/README.md for the download/checksum,
+# matching-SDK preparation commands, limits, and native integration test.
+#
+# NVIDIA ReIdentificationNet deployable_v1.2 ONNX contract.
+# ONNX SHA256:
+# 0e21d09278508ec835955f422a9fdd3cd59b2a6ecdef98d705f388f33cebac2b
+# The older SDK ETLT sample uses a different keepAspc convention.
+ReID:
+  modelEngineFile: ./reid.onnx.engine
+  batchSize: 8
+  workspaceSize: 256
+  reidFeatureSize: 256
+  reidHistorySize: 32
+  inferDims: [3, 256, 128]
+  networkMode: 1
+  inputOrder: 0
+  colorFormat: 0
+  offsets: [123.675, 116.28, 103.53]
+  netScaleFactor: 0.01735207357279195
+  keepAspc: 0
+  addFeatureNormalization: 1
+  minVisibility4GalleryUpdate: 0.6
+TrajectoryManagement:
+  reidExtractionInterval: 8
+

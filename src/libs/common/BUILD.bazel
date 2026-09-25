@@ -392,3 +392,24 @@ cc_test(
     copts = ["-fno-omit-frame-pointer", "-fno-optimize-sibling-calls"],
     deps = [":process_diagnostics"],
 )
+
+cc_library(
+    name = "track_color_meta",
+    srcs = ["TrackColorMeta.cpp"],
+    hdrs = ["TrackColorMeta.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":preview_overlay_meta",
+        "//src/libs/player_analytics:track_colors",
+        "//src/libs/stitching:stitched_output_generation_meta",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "track_color_meta_test",
+    srcs = ["TrackColorMetaTest.cpp"],
+    deps = [":track_color_meta"],
+)

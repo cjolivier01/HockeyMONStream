@@ -11,6 +11,7 @@
  */
 
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include "hstream/src/apps/apps-common/deepstream_common.h"
@@ -29,6 +30,8 @@ gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const YAML::Node& yaml_no
   config->user_meta_pool_size = 32;
   config->sub_batches = {};
   config->sub_batch_err_recovery_trial_cnt = 0;
+  config->reid_enable = FALSE;
+  config->reid_config_file = nullptr;
 
   for (YAML::const_iterator itr = yaml_node.begin(); itr != yaml_node.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
@@ -90,10 +93,26 @@ gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const YAML::Node& yaml_no
       config->user_meta_pool_size = itr->second.as<guint>();
     } else if (paramKey == "sub-batches") {
       std::string temp = itr->second.as<std::string>();
-      config->sub_batches = (char*)malloc(sizeof(char) * temp.size());
-      std::strncpy(config->sub_batches, temp.c_str(), temp.size());
+      config->sub_batches = g_strdup(temp.c_str());
     } else if (paramKey == "sub-batch-err-recovery-trial-cnt") {
       config->sub_batch_err_recovery_trial_cnt = itr->second.as<gint>();
+    } else if (paramKey == "reid-enable") {
+      try {
+        config->reid_enable = itr->second.as<bool>();
+      } catch (const YAML::BadConversion&) {
+        const int value = itr->second.as<int>();
+        if (value != 0 && value != 1) {
+          g_printerr("Error: tracker reid-enable must be true/false or 0/1.\n");
+          goto done;
+        }
+        config->reid_enable = value;
+      }
+    } else if (paramKey == "reid-config-file") {
+      // Resolve lexically only. Disabled trackers/ReID must not inspect paths.
+      std::filesystem::path path(itr->second.as<std::string>());
+      if (!path.empty() && path.is_relative())
+        path = std::filesystem::path(config_dir) / path;
+      config->reid_config_file = g_strdup(path.lexically_normal().string().c_str());
     } else {
       cout << "Unknown key " << paramKey << " for tracker" << endl;
     }
