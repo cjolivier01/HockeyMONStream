@@ -1,1 +1,0 @@
-../external/hm-cupano/scripts/create_control_points.py
