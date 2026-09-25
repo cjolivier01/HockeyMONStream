@@ -7,11 +7,22 @@ import time
 import unittest
 from pathlib import Path
 
-from benchmark_player_analytics import inspect_log, process_ids, stop
+from benchmark_player_analytics import inspect_log, process_ids, run, stop
 from profile_player_analytics import analyze, run_profile
 
 
 class HarnessTest(unittest.TestCase):
+    def test_periodic_zero_output_is_retained_after_warmup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = '\n'.join(f'**PERF: {value} (average)' for value in (60, 0, 0, 30))
+            case = {'name': 'stall', 'cwd': directory,
+                    'command': [sys.executable, '-c', f'print({log!r})'],
+                    'expect_analytics': False, 'expect_overlay': False}
+            result = run(case, 0, Path(directory), timeout=5, warmup_samples=1, smi=None)
+            self.assertEqual(result['failures'], [])
+            self.assertEqual(result['fps_samples'], [60, 0, 0, 30])
+            self.assertEqual(result['median_output_fps'], 0)
+
     def test_cleanup_after_wrapper_already_exited(self):
         with tempfile.TemporaryDirectory() as directory:
             pid_file = Path(directory) / 'worker.pid'

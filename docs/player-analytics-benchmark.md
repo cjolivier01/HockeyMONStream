@@ -108,6 +108,8 @@ The result directory must be new. Case order reverses each round. Logs and JSON
 retain all periodic FPS samples, warmup samples discarded (default one), run
 medians, wall time including startup/shutdown, sampled process-tree RSS/NVML GPU
 memory, loaded custom-library paths/hashes and inference/render counters.
+Zero-FPS observations remain in both raw samples and the measured suffix; only
+the requested number of leading warmup observations is excluded.
 Library paths are sampled from `/proc` during playback and hashed after exit;
 include every expected runtime file in the artifact manifest and check observed
 paths against it. Missing samples do not prove a library was not loaded.

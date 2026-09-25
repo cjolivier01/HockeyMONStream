@@ -455,3 +455,10 @@ overlap. Regression cases cover saved/exported/active UI arguments, all four cro
 sides, partial visibility and rotated geometry. Complete x86 build and focused
 controls/window, overlay-contract and actual GPU cropper/preview checks pass.
 Native rebuild, renewed performance evidence and paired second review follow.
+
+Follow-up inspection caught a benchmark-only parser error that removed all zero-FPS
+observations before warmup selection. The parser now retains raw zeros and includes
+them after the explicit warmup prefix. A real subprocess regression with
+`[60, 0, 0, 30]` verifies the post-warmup median is zero, not 30. Existing evidence
+is audited/reparsed from retained logs; this correction does not change runtime
+code or require repeating GPU workloads.

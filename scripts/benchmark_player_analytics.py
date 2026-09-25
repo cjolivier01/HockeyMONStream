@@ -214,7 +214,10 @@ def run(case, repetition, directory, timeout, warmup_samples, smi):
             stop(process)
     elapsed = time.monotonic() - started
     content = log.read_text(errors='replace')
-    fps = [float(value) for value in re.findall(r'\*\*PERF:\s+([0-9.]+)\s+\(', content) if float(value) > 0]
+    # Zero means no completed output in that interval, including possible
+    # steady-state stalls. Discard only the explicitly requested leading warmup
+    # observations; never silently remove zero intervals from the measurement.
+    fps = [float(value) for value in re.findall(r'\*\*PERF:\s+([0-9.]+)\s+\(', content)]
     samples = fps[warmup_samples:]
     analytics, overlays, detectors, failures = inspect_log(content, case)
     after = hashes(case.get('monitor_artifacts', []))
