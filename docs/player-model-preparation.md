@@ -110,7 +110,8 @@ produce a compatible skeleton.
 Copy the *export* directory to Jetson and run only `build` there with the Jetson native
 builder and a Python containing NumPy. The build subcommand does not import Torch,
 OpenMMLab, ONNX Runtime or Python TensorRT. It checks the ONNX/reference checksums, builds
-the engine, runs the native enqueueV3 path at all three batch bounds, and compares outputs
+the engine, runs the native enqueueV3 path at all three batch bounds and every remaining
+supplied example in bounded chunks (including a partial final batch), and compares outputs
 against recorded references. FP16 uses recorded numerical tolerances and also rejects a
 changed high-margin classification decision. `--precision fp32` selects the stricter
 reference profile when needed. Failed validation never publishes a prepared bundle.
@@ -135,3 +136,9 @@ reports clipping of two large constants; recorded output parity remains required
 Run `python scripts/prepare_player_models_test.py` for atomic-publication/path failure
 checks. Actual model exports, native parity, coherent-SDK rejection and Jetson builds are
 required release checks; a successful ordinary C++ build does not prove model availability.
+
+New exports record the supplied row count and each case's input indices; native
+preparation checks complete coverage and replays every case. Original minimum/
+optimum/maximum batch fixture names remain stable. Older exports without row-count
+provenance remain usable, but should be regenerated when their validation NPZ had
+more rows than the maximum batch. Existing immutable bundles are unchanged.

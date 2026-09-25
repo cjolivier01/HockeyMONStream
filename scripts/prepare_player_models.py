@@ -289,6 +289,64 @@ def output_arrays(value):
     return [x.detach().cpu().numpy() for x in value]
 
 
+def validation_batches(input_count: int, maximum_batch: int):
+    """Keep profile-boundary fixtures, then cover every remaining input row."""
+    if type(input_count) is not int or not 1 <= input_count <= 256:
+        raise ValueError("Validation input count must be between 1 and 256")
+    if type(maximum_batch) is not int or not 1 <= maximum_batch <= 8:
+        raise ValueError("Invalid export batch profile")
+    batches = []
+    for batch in sorted({1, min(2, maximum_batch), maximum_batch}):
+        # Retain the original boundary filenames used by native fixture tests.
+        batches.append((batch, f"b{batch}", [i % input_count for i in range(batch)]))
+    for first in range(maximum_batch, input_count, maximum_batch):
+        indices = list(range(first, min(first + maximum_batch, input_count)))
+        batches.append((len(indices), f"b{len(indices)}_from{first}", indices))
+    return batches
+
+
+def validation_cases(validation: dict, maximum_batch: int) -> list[dict]:
+    """Validate bounded replay and, for new exports, complete row provenance.
+
+    Legacy exports have no input_count/input_indices. Keep their existing
+    boundary cases usable; regenerate them to prove coverage of a larger NPZ.
+    """
+    if type(maximum_batch) is not int or not 1 <= maximum_batch <= 8:
+        raise ValueError("Invalid export batch profile")
+    cases = validation["cases"]
+    if not isinstance(cases, list) or not 1 <= len(cases) <= 258:
+        raise ValueError("Invalid export validation case count")
+    batches = set()
+    filenames = set()
+    covered = set()
+    input_count = validation.get("input_count")
+    if "input_count" in validation and (type(input_count) is not int or not 1 <= input_count <= 256):
+        raise ValueError("Invalid export validation input count")
+    for case in cases:
+        batch = case["batch"]
+        if type(batch) is not int or not 1 <= batch <= maximum_batch:
+            raise ValueError("Validation case batch is outside the export profile")
+        batches.add(batch)
+        outputs = case["outputs"]
+        if not isinstance(outputs, list) or not 1 <= len(outputs) <= 8:
+            raise ValueError("Invalid validation output count")
+        for filename in [case["input"], *[output["file"] for output in outputs]]:
+            if not isinstance(filename, str) or not filename or filename in filenames:
+                raise ValueError("Validation cases require unique input/reference filenames")
+            filenames.add(filename)
+        if input_count is not None:
+            indices = case.get("input_indices")
+            if not isinstance(indices, list) or len(indices) != batch or any(
+                    type(index) is not int or not 0 <= index < input_count for index in indices):
+                raise ValueError("Invalid validation input indices")
+            covered.update(indices)
+    if not {1, min(2, maximum_batch), maximum_batch}.issubset(batches):
+        raise ValueError("Export validation must cover minimum, optimum and maximum batch")
+    if input_count is not None and covered != set(range(input_count)):
+        raise ValueError("Export validation omits supplied input rows")
+    return cases
+
+
 def export_bundle(args) -> None:
     import numpy as np
     import onnx
@@ -323,14 +381,14 @@ def export_bundle(args) -> None:
         if [x.name for x in session.get_inputs()] != [input_name] or [x.name for x in session.get_outputs()] != output_names:
             raise ValueError("ONNX tensor contract changed during export")
         cases = []
-        for batch in sorted({1, min(2, args.max_batch), args.max_batch}):
-            value = np.ascontiguousarray(np.stack([inputs[i % len(inputs)] for i in range(batch)]))
+        for batch, case_suffix, indices in validation_batches(len(inputs), args.max_batch):
+            value = np.ascontiguousarray(inputs[indices])
             tensor = torch.from_numpy(value)
             with torch.inference_mode():
                 expected = output_arrays(reference(tensor))
                 wrapped = output_arrays(model(tensor))
             actual = session.run(None, {input_name: value})
-            case = {"batch": batch, "input": f"input_b{batch}.f32", "outputs": []}
+            case = {"batch": batch, "input": f"input_{case_suffix}.f32", "input_indices": indices, "outputs": []}
             value.tofile(directory / case["input"])
             case["input_sha256"] = digest(directory / case["input"])
             for index, (name, dimensions) in enumerate(profile["outputs"]):
@@ -340,7 +398,7 @@ def export_bundle(args) -> None:
                 for candidate in (wrapped[index], actual[index]):
                     if not np.isfinite(candidate).all() or not np.allclose(candidate, expected[index], atol=1e-4, rtol=5e-4):
                         raise ValueError(f"PyTorch/export parity failed for {name}, batch {batch}")
-                filename = f"reference_b{batch}_{index}.f32"
+                filename = f"reference_{case_suffix}_{index}.f32"
                 expected[index].astype(np.float32).tofile(directory / filename)
                 case["outputs"].append({"name": name, "file": filename, "shape": shape,
                                          "sha256": digest(directory / filename),
@@ -360,7 +418,7 @@ def export_bundle(args) -> None:
             "inputs": [{"name": input_name, "dtype": "float32", "shape": [-1, *suffix]}],
             "outputs": [{"name": name, "dtype": "float32", "shape": [-1, *dims]} for name, dims in profile["outputs"]],
             "preprocessing": preprocessing,
-            "validation": {"inputs_sha256": digest(validation), "cases": cases,
+            "validation": {"inputs_sha256": digest(validation), "input_count": len(inputs), "cases": cases,
                            "description": args.validation_description,
                            "onnx_atol": 1e-4, "onnx_rtol": 5e-4},
         }
@@ -416,17 +474,13 @@ def build_bundle(args) -> None:
     builder = Path(args.builder).expanduser().resolve(strict=True)
     identity = verify_deepstream(builder, Path(args.deepstream_library).expanduser().resolve(strict=True))
     max_batch = manifest["max_batch"]
-    if not isinstance(max_batch, int) or not 1 <= max_batch <= 8:
-        raise ValueError("Invalid export batch profile")
+    cases = validation_cases(manifest["validation"], max_batch)
     with publication(Path(args.output)) as directory:
         shutil.copyfile(onnx_path, directory / "model.onnx")
         engine_path = directory / "model.engine"
         native_json([str(builder), "--onnx", str(directory / "model.onnx"), "--engine", str(engine_path),
                      "--precision", args.precision, "--max-batch", str(max_batch)])
         reports = []
-        cases = manifest["validation"]["cases"]
-        if {x["batch"] for x in cases} != {1, min(2, max_batch), max_batch}:
-            raise ValueError("Export validation must cover minimum, optimum and maximum batch")
         for case in cases:
             input_path = relative_file(source, case["input"])
             if digest(input_path) != case["input_sha256"]:
@@ -461,7 +515,7 @@ def build_bundle(args) -> None:
                     equal = flat_expected.argmax(-1) == flat_actual.argmax(-1)
                     if np.any(stable & ~equal):
                         raise ValueError("TensorRT changes a high-margin reference decision")
-                    reports.append({"batch": case["batch"], "name": reference["name"],
+                    reports.append({"batch": case["batch"], "input": case["input"], "name": reference["name"],
                                     "max_abs_error": float(np.abs(actual - expected).max()),
                                     "argmax_agreement": float(equal.mean()), "atol": atol, "rtol": rtol})
         manifest["engine"] = {"file": "model.engine", "sha256": digest(engine_path), "max_batch": max_batch,

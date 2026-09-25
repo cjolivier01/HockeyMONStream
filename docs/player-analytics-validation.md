@@ -242,3 +242,15 @@ both platforms: all six original cases reach their 10-second failure alarm and
 all six corrected cases stop normally. Trimming trailing blank context from the
 patch preserves generated source byte-for-byte; final full builds are recorded
 in `/tmp/hstream-player-pr2-shutdown-build-final.log`.
+
+
+PR2 implementation round 1 reviewed `47b2df5a`. The pipeline reviewer found no
+necessary fixes. The runtime/preparation reviewer found that export validation
+accepted up to 256 supplied examples but tested only the first maximum batch.
+The correction retains profile-boundary fixtures, then validates every remaining
+row in bounded chunks, records coverage and replays every case during native
+preparation. Seventeen CPU tests pass on x86 and Jetson, including all supported
+input-count/batch-limit combinations, an incomplete final batch and a failure
+occurring only in a later case that must prevent publication. Numerical thresholds
+and model graphs are unchanged. Complete x86/Jetson builds pass after the change.
+Evidence: `/tmp/hstream-player-pr2-coverage-{build,test}.log` on each host.
