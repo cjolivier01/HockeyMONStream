@@ -45,6 +45,8 @@ filegroup(
         "ProjectionCropDialog.h",
         "PipelineInspectorWidget.cpp",
         "PipelineInspectorWidget.h",
+        "PlayerAnalyticsControls.cpp",
+        "PlayerAnalyticsControls.h",
         "ScoreboardSelectionDialog.cpp",
         "ScoreboardSelectionDialog.h",
         "StitchingExperimentBackend.cpp",
@@ -422,6 +424,7 @@ cc_library(
         ":application_identity",
         ":camera_experiment_dialog",
         ":pipeline_inspector_widget",
+        ":player_analytics_controls",
         ":projection_crop_dialog",
         ":rink_leveling_dialog",
         ":scoreboard_selection_dialog",
@@ -643,6 +646,53 @@ cc_binary(
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:game_config",
         "@qt//:qt_test",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "player_analytics_controls",
+    srcs = ["PlayerAnalyticsControls.cpp"],
+    hdrs = ["PlayerAnalyticsControls.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        "//src/libs/player_analytics:config",
+        "//src/libs/player_analytics:model_catalog",
+        "//src/libs/player_analytics:model_contract",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "player_analytics_controls_test",
+    srcs = ["PlayerAnalyticsControlsTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":player_analytics_controls", "@qt//:qt_widgets", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "player_analytics_window_test",
+    srcs = ["PlayerAnalyticsWindowTest.cpp"],
+    data = [
+        "//configs:play_tracker_config.yaml",
+        "//configs:ds_hockey_app_config.yaml",
+        "//configs:ds_hockey_configure_stitching.yaml",
+        "//configs:config_infer_yolov8_hockey.yaml",
+        "//configs:config_infer_yolov8_hockey_fp16.yaml",
+        "//configs:config_infer_yolov8_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8_hockey_int8.yaml",
+    ],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":hstream_window",
+        ":player_analytics_controls",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],

@@ -55,7 +55,7 @@ accuracy or reassociation benchmarks. See the
 A frozen master executable, own plugins, dependency libraries and configs were
 copied before edits and content-hashed. Three alternating master/candidate runs
 used a private copy of `gse-16a-short` calibration (13705×3919 canvas), the same
-camera media, FAKE sink, 15 seconds of video, and the same detector engine:
+camera media, FAKE sink, 15 seconds of video, and the same detector configuration:
 
 ```sh
 HM_GAME_DIR=/tmp/hstream-player-analytics-validation/games \
@@ -77,6 +77,11 @@ this small difference does not establish a causal regression. The first candidat
 run included launch-cache preparation, one fewer periodic FPS sample, and an
 8 MiB larger peak. Do not compare startup wall times between the installed-style
 frozen bundle and the initial Bazel launch cache.
+
+The final PR4 audit found different detector-engine hashes in the historical
+master/PR1/PR3 caches. These initial observations do not establish a controlled
+performance bound; the explicitly pinned, hash-verified PR4 comparisons below
+supersede them.
 
 All analytics model work is absent from this stage's normal graph. Color state
 is updated only for requested player drawing; off ReID returns before filesystem
@@ -301,3 +306,422 @@ samples; invalid timestamps/ROIs, capacity exclusions, duplicates and cancelled
 batches are zero. It exits naturally with “App run successful”. Remote evidence
 is `/tmp/hstream-player-pr3-*.log`, copied locally under
 `/tmp/hstream-player-pr3-jetson-evidence/`.
+
+
+PR3 implementation round 1: two independent xhigh reviewers reviewed
+`b071711e..b4a9390b`; neither found necessary fixes. The processor reviewer also
+ran fixed-snapshot planner and temporal tests under ASAN/UBSAN. The nonblocking
+jersey documentation clarification distinguishes retained brief absences from
+expiry, eviction and source/seek resets.
+
+
+## GPU drawing and controls (PR 4)
+
+The integrated x86 build passes, including the explicit CUDA/GL compositor and
+preview targets. Focused metadata/command, actual cropper, preview collector,
+routing, canonical mapping, desktop controls/window and actual semantic-engine
+tests pass. Default/empty rendering is checked before allocation; disabled model
+sentinels are not accessed. Independent tests exercise real DeepStream metadata
+copies, a shared color producer, full track IDs/overflow, rotated/nonuniform
+coordinates, current poses, expiry, immutable tee inputs and baked-layer suppression.
+
+The actual GPU cropper test checks pixels at an independently derived rotated
+position, leaves its input byte-identical, and verifies stream completion before
+fixture readback. Capacity suppression preserves output video. Shutdown releases
+resources once and is idempotent. The Jetson completion fence now outlives queued
+work but is destroyed before per-frame EGL imports; this closes an existing
+import/fence ordering gap. The actual preview collector suppresses missing-transform
+frames and clears previously built commands, while Stitched retains independent
+unbaked drawing.
+
+Integration caught and corrected zero-confidence joints at a zero display threshold,
+semantic baked-box masking, optional canonical-null CLI/UI consistency, private STB
+font symbol collisions, and stop-owned renderer cleanup. Fully offscreen successful
+commands are no-op renders, not capacity/error suppression. These fixes have
+regression coverage or real pipeline counter evidence.
+
+Real x86 runs complete through FAKE and HEVC/AAC file output, with GPU pose/box
+drawing and no suppressed/rejected commands. The encoded fixture is 7680×4320,
+5.272 seconds, and probes successfully. All-model Program/Stitched GPU previews
+also complete with and without vpplaytracker; native-tracker fallback places the
+preview tee and shared color owner after semantic inference. Preview uses the
+existing framebuffer, with no new full-frame copy. Source/encode fixtures stay
+outside Git.
+
+Local integrated logs: `/tmp/hstream-player-pr4-{build-integrated,overlay,
+overlay-gl,overlay-contract,cropper-caller,preview-caller,routing,mapping,
+semantic-labels,ui-controls,ui-window}.log`; real recording/graph logs are under
+`/tmp/hstream-player-analytics-validation/pr4-*`. Final platform/performance and
+paired PR review results are recorded below.
+
+The complete native Jetson build passes. Its six supported focused suites cover
+the CUDA compositor, overlay contracts, actual GPU cropper, routing, mapping and
+color configuration. Desktop Qt/GL tests run on x86; those targets are intentionally
+incompatible with the repository's Jetson platform. No native ARM64/SBSA host was
+available, so Jetson validation is not evidence for an SBSA runtime.
+
+An initial, pre-review native Jetson 20-second all-model drawing replay completes 1,212 frames,
+4,724 poses, 1,012 jersey results and 26 action results from 22 action enqueues.
+Drawing reports 1,190 renders, 1,149 launches and zero suppressed/rejected commands.
+The retained compositor allocation is 6,438,912 device bytes. Invalid timestamps
+and ROIs remain zero, and the process exits successfully.
+
+### Controlled x86 performance
+
+Thirty final-source unprofiled runs use frozen master/candidate runtime bundles, sampled loaded
+plugin paths and hashes, the identical explicitly pinned FP32 detector engine,
+private calibration/media, FAKE output, 15 seconds of media per run, and three
+rounds with reversed case order. The GPU is an RTX 5090 with driver 610.57.04;
+power settings and clocks were not changed. Source/build-file hashes bind the
+candidate to clean runtime commit `e3ed7898`; later `9b597543` changes only
+benchmark parsing/docs. Artifact guards pass throughout. This complete renewed
+suite supersedes the initial PR4 timing/trace evidence retained separately.
+
+Each run drops its first periodic FPS sample. The table reports the median of
+three run medians and the maximum sampled process-tree NVML memory. Enabled
+models use pose/jersey/action cadences of 10/2/1 Hz, batch limit 8 and aggregate
+limit 32 model samples/frame. Jersey-only uses bbox crops; action requires pose.
+
+| Case | Median FPS | Peak GPU MiB |
+| --- | ---: | ---: |
+| Frozen master | 62.925 | 10560 |
+| Candidate, all off | 63.170 | 10560 |
+| Pose | 62.015 | 10586 |
+| Jersey only | 62.645 | 10686 |
+| Pose + action | 61.960 | 10728 |
+| All three | 61.715 | 10804 |
+| All three + semantic drawing | 61.470 | 10810 |
+| Colored boxes only | 63.250 | 10566 |
+| Native ReID only | 62.010 | 10844 |
+| All three + drawing + ReID | 60.840 | 11092 |
+
+Median *paired* FPS differences are +0.008% for disabled versus master, -2.557%
+for all three versus disabled, and -0.397% for drawing versus all three. These
+use each round's reference and differ from ratios of overall medians. Disabled
+versus master spans -0.429% to +0.389%; this sample shows no meaningful disabled
+regression or new measured GPU allocation. Drawing comparisons span -0.534% to
+-0.292%. They describe this recording, not a universal overhead guarantee.
+
+Every enabled run records actual inference, including 21 action results in each
+all-model run. Drawing runs report roughly 900 raster launches and zero rejected
+or suppressed commands. Display labels remain confidence-gated, so this is not
+a maximum-label workload or an accuracy assessment. Timed source stops can differ
+by a few completed frames; per-run samples and counters are retained. FPS measures
+throughput, not individual frame latency; startup/shutdown wall times are recorded
+separately. Trace runs are excluded from the throughput sample.
+
+Local evidence: `/tmp/hstream-player-pr4-performance-e3ed7898/summary.json`,
+`results-x86-measured/`, `verified-plugin-identity.json`, and frozen runtime/model/
+calibration manifests. Private media, models and machine-specific specifications
+are not committed.
+
+A separate Nsight Systems capture passes transfer attribution: 1,037 pose, 422
+jersey and 10 action D2H copies match both GPU reducers and teardown enqueue
+counters exactly. The largest result transfer is 1,632 bytes (eight poses), with
+881,260 bytes total. The Program drawing stream executes 893 raster kernels,
+matching its launch counter, and contains zero D2H transfers after drawing starts.
+The retained global transfer histogram separates existing detector/tracker copies
+from these analytics streams. This execution contains no analytics video/crop
+readback; offline parity tests intentionally read larger tensors/images. Raw
+`.nsys-rep`, SQLite and `transfers.json` remain in `profile-all3-draw/` beside the
+benchmark evidence. No native Jetson Nsight capture was available.
+
+The corrected parser independently recomputed all medians from raw logs,
+retaining any zero-FPS observations after warmup. An audit of all 62 old/new
+measured and initialization logs found no zero observations, so these corrections
+do not change the measured x86 results. Original reports remain intact beside
+`results-offline-verified.json` and `zero-fps-audit.json`.
+
+### Native Jetson performance
+
+The final enabled matrix uses a frozen runtime from `9b597543`, native
+DeepStream 7.1/TensorRT 10.3, the same pinned FP32 detector and target-local
+analytics engines, and a private 7135×2634 canvas from two 4K camera sources.
+Each case processes 20 seconds of media to a FAKE sink, with the same
+10/2/1 Hz pose/jersey/action rates, batch eight and aggregate cap 32 as x86.
+High-bit-depth output is disabled for this fixture; MAXN/schedutil and clocks
+remain unchanged. Two rounds reverse the order of eight enabled cases.
+
+All 16 final runs complete successfully. The table retains each run median to
+show variation; each run excludes the startup prefix through its first two
+positive FPS observations, then retains every interval, including any zero.
+
+| Case | Forward FPS | Reverse FPS | Median FPS |
+| --- | ---: | ---: | ---: |
+| Pose | 7.290 | 7.395 | 7.343 |
+| Jersey only | 7.550 | 8.010 | 7.780 |
+| Pose + action | 7.360 | 7.390 | 7.375 |
+| All three | 7.170 | 7.305 | 7.238 |
+| All three + semantic drawing | 7.110 | 7.280 | 7.195 |
+| Colored boxes only | 8.080 | 8.495 | 8.288 |
+| Native ReID only | 8.190 | 8.140 | 8.165 |
+| All three + drawing + ReID | 7.160 | 7.140 | 7.150 |
+
+The paired drawing changes are -0.837% and -0.342%, median -0.590%. Both drawing
+runs produce actual inference and raster work with zero suppressed/rejected
+commands: forward 1,185 renders/1,149 launches, reverse 1,184/1,148. Their
+retained compositor allocation is 6,438,912 device bytes. All-model runs produce
+26 action results after the required history warmup.
+The enabled-model table is not paired against a new final-source disabled run,
+so it does not establish precise model-only percentage costs. These are
+throughput observations for this fixture, not frame latency or an accuracy test.
+
+Disabled-path evidence is retained separately. Two valid alternating pairs use
+the original PR4 runtime corresponding to `88eec689` and frozen master:
+master/off 8.09/8.435 FPS, then off/master 8.36/8.19 FPS. Their overall medians
+are 8.140/8.3975 FPS and the median paired change is +3.170%. The original runtime
+was frozen before its commit; comparison against `88eec689` confirms all compiled
+source/build/config files match (only two unrelated editor-preference files
+vary). A separate final `9b597543` disabled confirmation completes at 8.24 FPS
+with no analytics/drawing and a peak process RSS of 5291.23 MiB. Do not pool
+that confirmation with the older paired sample.
+
+Two additional frozen-master attempts (the original timeout and one bounded
+retry) reach clip completion but time out during shutdown at 360 seconds (exit
+124). They are excluded and preserved; no further retries were attempted. No
+candidate matrix run has this failure. Native ptrace policy prevents a GDB
+attach, so retained process wait observations do not establish the cause. The
+successful pairs and final confirmation support compatibility but are a small
+sample, not a tight universal disabled-path performance bound.
+
+Jetson shares system DRAM. Sampled process RSS is not GPU memory, and tegrastats
+RAM describes the whole system; neither is reported as per-process GPU usage.
+No native Nsight capture was available. The x86 trace and focused native tests
+provide the separate transfer/allocation evidence above.
+
+The private harness initially rejected a successful forward ReID run because
+DS7.1 uses generic engine-load messages instead of DS9.1's path-bearing wording.
+Versioned evidence rules revalidate the original logs without changing or
+rerunning production inputs. Later runs retain the generated tracker YAML and
+verify engine binding, `reidType: 2`, batch eight and disabled embedding export.
+The first forward ReID-only temporary YAML had already been deleted normally;
+later same-input YAML is not represented as a capture from that earlier run.
+
+Native logs, runtime/source/model identities, versioned harness specifications,
+memory samples and summaries remain under `/tmp/hstream-player-pr4-performance/`
+on `stubby` (backed by its NVMe directory). Compact evidence is copied locally to
+`/tmp/hstream-player-pr4-jetson-evidence/`, including the original-source commit
+comparison and separate disabled summary.
+
+### Isolated renderer cost
+
+The synthetic fixture draws 32 players with boxes, 19 bones, 17 joints and text:
+1,472 commands after at least 500 ms warmup, then 200 samples. RGBA8 wall medians
+(command construction, binning, submission and completion) are 91.9/154.3 µs at
+1080p/4K on RTX 5090 and 753.2/1576.3 µs on Orin. GPU upload+raster medians are
+25.6/33.1 µs and 511.1/1119.7 µs respectively. Packed RGB10A2 tests also pass;
+the actual Program cropper continues to use its existing RGBA path.
+
+Every warmed synthetic frame uses one compact metadata upload and one raster
+launch, with zero C++ heap/device/pinned allocations and no atlas re-upload.
+Empty drawing makes no CUDA calls or allocations. The shared glyph atlas is
+147,456 bytes; bounded three-slot device and pinned buffers are each at most
+6,438,912 bytes including the atlas. The x86 GL fixture measures approximately
+52/59 µs wall and 4.8/11.4 µs GPU at 1080p/4K. These isolated 4K timings do not
+establish the cost of the real 8K Program output. Jetson clocks were not fixed;
+its RGBA8 wall p95 is 1169.7/2241.8 µs. The Orin values use the final
+`9b597543` frozen test/dependency bundle. An initial missing-library launch
+failed before any GPU work; the completed dependency closure passes the fixture.
+x86 CUDA memcheck reports zero errors.
+
+### PR4 review iterations
+
+Two independent xhigh reviewers reviewed `88eec689`. Both reported one required
+correction: unchanged desktop controls could override boxes inherited from
+`plot.debug_play_tracker`, and labels for fully cropped-out players could be
+clamped onto the Program edge. The controls now resolve the legacy boolean OR
+with its source ranks and omit unchanged box overrides; explicit edits preserve
+other debug layers. Labels require actual transformed-box/viewport intersection
+before anchor clamping, including rotated boxes whose bounding rectangles alone
+overlap. Regression cases cover saved/exported/active UI arguments, all four crop
+sides, partial visibility and rotated geometry. Complete x86 build and focused
+controls/window, overlay-contract and actual GPU cropper/preview checks pass.
+Native rebuild, renewed performance evidence and paired second review are recorded
+below and in the performance sections above.
+
+Follow-up inspection caught a benchmark-only parser error that removed all zero-FPS
+observations before warmup selection. The parser now retains raw zeros and includes
+them after the explicit warmup prefix. A real subprocess regression with
+`[60, 0, 0, 30]` verifies the post-warmup median is zero, not 30. Existing evidence
+is audited/reparsed from retained logs; this correction does not change runtime
+code or require repeating GPU workloads.
+
+
+PR4 formal round 2: two independent xhigh reviewers reviewed published head
+`9b597543` and found no necessary fixes. The renderer reviewer rebuilt the
+original isolated offcrop CUDA reproducer against the exact head: zero emitted
+commands and zero changed pixels, versus nine commands and 232 pixels before
+the fix. Eight overlay test groups and all seven benchmark/profile tests pass.
+The integration reviewer independently checked Configurator's OR/source ranks,
+unchanged and explicit box preferences, save/export/active-run snapshots and
+script cleanup/zero-FPS semantics; controls/window/overlay and seven isolated
+Python tests pass. The optional suggestion to broaden `--validate-only` case
+preflight is nonblocking.
+
+Complete final-source x86 and native Jetson builds pass. Native affected overlay
+and actual GPU cropper regressions pass, as do all seven CPU harness tests. The
+final native runtime has the same production source as `e3ed7898`; `9b597543`
+adds only the benchmark correction/documentation. Logs are
+`/tmp/hstream-player-pr4-review-final-x86-build.log` locally and
+`/tmp/hstream-player-pr4-review-fixes-build.log` on Jetson.
+
+Final handoff rebuilds also pass (341 x86 targets including manual GPU tests;
+339 native Jetson targets). The remaining handoff edits are documentation only;
+production source is unchanged. Logs are retained locally as
+`/tmp/hstream-player-pr4-handoff-{x86,jetson}-build.log`.
+
+### Normal-build SDK selection follow-up
+
+The initial validation supplied a private `HSTREAM_PLAYER_TENSORRT_SDK_ROOT`,
+which concealed a normal-build failure when DeepStream 9.1's TensorRT 10.16.1
+runtime coexists with TensorRT 11 development packages. Removing the
+`tensorrt-dev` metapackage does not remove those component headers/libraries.
+The repository now selects DeepStream's versioned libraries automatically,
+checks the complete native header/runtime version, and uses pinned NVIDIA
+10.16.1.11 development headers inside Bazel when installed headers disagree.
+Normal build/playback needs no SDK override and no system package changes.
+Explicit custom overrides remain strict; sysroot builds never execute target
+libraries or select the managed x86 headers. See the
+[preparation guide](player-model-preparation.md) for exact selection boundaries.
+
+The exact `make perf` command passes with the override unset in the ordinary
+output base. The first full build executed 3,538 actions; the final rule also
+passes the full build after version/multiarch checks. Fifteen isolated regression
+cases use real ELF libraries and deb extraction to check mixed-major/minor/build
+versions, missing headers, strict overrides, sysroot isolation, parser identity,
+multiarch selection and the DeepStream root override. The player builder reports
+TensorRT 10.16.1 build 11, and actual pose-engine validation passes batches 1/2/8/1
+plus malformed-contract rejection. A real five-second recording completes with
+`App run successful` and no analytics element under default settings.
+
+Native Jetson's full 338-target build passes with the override unset. It retains
+its installed AArch64 headers and versioned libraries, creates no managed header
+downloads, and reports TensorRT 10.3.0 build 30 / CUDA 12.6 on Orin. Neither native
+playback nor model preparation imports the TensorRT Python package.
+
+Both follow-up reviewers found one additional SDK consistency gap: installed
+headers and explicit SDKs could bypass the ONNX parser release check. All
+selection paths now compare the parser and inference release; two additional
+regressions cover those cases.
+
+Evidence: `/tmp/hstream-player-sdk-{make-perf,make-perf-final,selection-tests,
+runtime-info,engine-test,default-playback}.log` and
+`/tmp/hstream-player-trt-sdk-jetson-evidence/validation.md`.
+
+### Automatic model setup follow-up
+
+At `cab5e7a1`, supplied model selections download and prepare themselves on first
+use; normal playback needs no prepared paths or SDK override. The default ReID
+selection uses the installed DeepStream tracker's ETLT and preprocessing, with
+the newer NVIDIA ONNX model available as an explicit alternative. The portable
+pose, jersey and action ONNX graphs and their license/provenance sidecars are
+published under `pretrained-assets-v1`; catalog entries pin their exact digests.
+The jersey model retains CC BY-NC 3.0 terms, and action labels remain generic
+NTU60 activities. Custom prepared models remain supported.
+
+The normal x86 `env -u HSTREAM_PLAYER_TENSORRT_SDK_ROOT make perf` build passes,
+including a final full 342-target build. Catalog, cache, asset, configuration,
+calibration suppression, mapping, tracker, UI persistence/window and exported-job
+tests pass. Cache tests cover disabled/custom bypass, repeated preparation of the
+same YAML, identity separation, corrupt entries, failed/cancelled children and
+descendants, concurrent callers, lock cancellation and disabled trackers with
+malformed ReID settings. These tests exercise native code without requiring
+Python at runtime.
+
+Recorded-game checks use a private copy of the existing calibrated fixture and
+read-only source media. No player model path or TensorRT SDK override is supplied.
+The final-source x86 cases use an isolated empty cache. All three
+analytics features, GPU drawing and default DeepStream ReID are enabled together
+for 20 seconds of video; the alternative ReID case changes only its selection.
+
+| x86 case | Wall seconds | Pose results | Jersey results | Action results | GPU raster launches |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cold, DeepStream ReID | 98.935 | 5,559 | 1,200 | 31 | 1,214 |
+| Warm, DeepStream ReID | 27.148 | 5,563 | 1,202 | 30 | 1,213 |
+| NVIDIA ONNX ReID | 39.367 | 5,552 | 1,197 | 30 | 1,213 |
+
+Every case completes successfully with zero invalid timestamps/ROIs, cancelled
+batches or suppressed/rejected drawing commands. Cold preparation downloads and
+builds all four selected models; warm playback reports exactly four cache reuses
+with no download/build. The alternative case reuses pose/jersey/action and prepares
+only its selected ReID engine. These wall times include startup/preparation and
+are end-to-end smoke evidence, not a new steady-state performance benchmark.
+The earlier controlled performance and transfer measurements above describe the
+unchanged analytics/rendering paths. Their ReID cases used explicit prepared
+tracker profiles, not the new automatic SDK-default selection.
+
+Separate five-second all-off and calibration runs pass in 10.330 and 7.175 seconds
+respectively, with no model progress, analytics counters or player-cache creation.
+The calibration case deliberately requests invalid enabled analytics/ReID model
+IDs and confirms suppression before model lookup. SIGTERM during actual native
+pose preparation terminates in 0.164 seconds, reaps the helper and leaves neither
+a staging directory nor a published engine.
+
+A real exported job also runs from `/tmp` against a staged installed layout with
+the CLI, adjacent native helper, private libraries/plugins and configs. It reuses
+all four prepared models and completes five seconds of inference/drawing in
+13.436 seconds. This validates installed-layout discovery and exported execution;
+it is not a `.deb` installation test.
+
+x86 commands, logs, fixture/runtime identities, cache provenance and case results
+are retained under `/tmp/hstream-player-auto-model-validation-x86/`. The table
+uses its `final-source/` cases: source, executable, builder and plugin hashes
+are identical before and after the run sequence. Review identified that earlier
+development smoke logs predated the final parser-warning cleanup; they are
+preserved separately and superseded by these published-source runs. Cancellation
+and installed-layout checks already used the final executable. Full-build logs
+are `/tmp/hstream-player-auto-model-x86-build{,-final}.log`. The bundled
+baseline remains byte-identical to the stack base `ad40b08e` (SHA256
+`ea618d7a52f0147a96ff56a69851e47a4fc415a8d6af6de14a2638296f6a12d5`).
+
+The native Jetson full 342-target build also passes without an SDK override,
+using AGX Orin, DeepStream 7.1 and TensorRT 10.3.0 build 30. Source hashes before
+and after the final build match. Native catalog, configuration and cache tests
+pass. Recorded-game checks use the current native Bazel executable with its
+ordinary plugin discovery, a private 7135×2634 calibrated fixture and isolated
+cache/output directories; no player model paths are supplied. Five-second
+disabled and calibration-only cases complete in 57.364 and 38.217 seconds,
+respectively, without player-cache files or analytics execution. Calibration
+suppresses deliberately enabled features and ReID before preparation.
+
+The 20-second native cold run downloads and prepares all four models, completes
+playback and shuts down successfully in 1,110.943 seconds including first-use
+compilation. It produces 4,720 pose, 1,011 jersey and 26 action results over
+1,211 frames, with 1,209 GPU raster launches and zero suppressed/rejected
+drawing commands. The original recording/calibration guards remain unchanged.
+The matching warm run completes in 185.216 seconds with the same result/frame/
+launch counts. It reuses all four engines without downloads or compilation;
+all 33 cache files retain identical hashes and modification times. Both runs
+have zero invalid timestamps/ROIs and cancelled batches. Wall times include
+startup and are smoke results, not controlled performance comparisons.
+The cold run logs one decoder output-buffer-unavailable diagnostic during timed
+shutdown; it exits successfully with the complete final counters retained.
+The explicit NVIDIA ONNX ReID alternative also completes its 20-second native
+recording in 424.26 seconds including preparation of only the new ReID engine:
+4,724 pose, 1,011 jersey
+and 26 action results over 1,212 frames, with 1,210 GPU raster launches and
+zero suppressed/rejected commands. Pose, jersey and action use their cached
+engines. Final integrity checks confirm unchanged source and runtime hashes,
+all 25 original-artifact guards in every case, and retention of the default
+cache entries after the alternative run.
+
+Initial SSH trials inherited a forwarded display that could not create Jetson
+EGL images. Both the current executable and the earlier known-working frozen
+runtime stall in DeepStream tracker pool cleanup under that environment. The
+headless harness removes those display variables; the current executable then
+completes normally. Failed trials and captured stacks remain in the evidence,
+separate from successful results. No source change was made for this test setup
+issue.
+
+Native build/test logs, per-case commands/environments, loaded plugin identities,
+cache hashes/timestamps and original-artifact guards are retained on `stubby` at
+`/mnt/data/home/colivier/hstream-player-auto-model-validation-20260925/`.
+The compact summaries and full case logs are copied locally to
+`/tmp/hstream-player-auto-model-jetson-evidence/`. Desktop Qt targets are
+x86-only under existing platform constraints; native ARM64/SBSA was not tested.
+
+Two independent xhigh reviewers checked `df8d610c..cab5e7a1` and found no
+necessary code fixes. The runtime reviewer independently passed the native cache
+test. A nonblocking documentation finding identified stale local-only jersey
+delivery wording; the design and model research documents now distinguish the
+original recommendation from automatic delivery with retained license terms.

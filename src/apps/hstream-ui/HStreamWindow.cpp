@@ -7,6 +7,7 @@
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "src/apps/hstream-ui/Int8PreparationDialog.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
+#include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
@@ -4765,6 +4766,8 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!user_overlay.ok())
     throw std::runtime_error(user_overlay.status().ToString());
   baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
+  player_analytics_defaults_ = YAML::Clone(loaded->values);
+  player_analytics_user_ = YAML::Clone(*user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
 
   auto require = [this](const QString& path) {
@@ -6773,6 +6776,15 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     crop_page->layout()->addWidget(crop_rotation_explanation_);
     control_tabs->addTab(crop_page, "Crop Rotation");
     control_tabs->addTab(detection_page, "Detection");
+    auto* analytics_scroll = new QScrollArea();
+    analytics_scroll->setObjectName("playerAnalyticsScrollArea");
+    analytics_scroll->setWidgetResizable(true);
+    analytics_scroll->setFrameShape(QFrame::NoFrame);
+    player_analytics_controls_ = new PlayerAnalyticsControls();
+    player_analytics_controls_->setChangedCallback([this] { updatePresetDirtyState(); });
+    analytics_scroll->setWidget(player_analytics_controls_);
+    loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
+    control_tabs->addTab(analytics_scroll, "Players");
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
     control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
@@ -9476,6 +9488,9 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
               .arg(cameraControlValue("Lift_Shadow_Black_Point"));
   args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
   if (!isCalibrationRun()) {
+    if (player_analytics_controls_)
+      args << (standalone || active_run_game_id_.isEmpty() ? player_analytics_controls_->arguments()
+                                                         : active_player_analytics_arguments_);
     if (!detectorPrecision().isEmpty() && detectorSelectionChanged()) {
       args << QString("--options=pipeline.primary-gie.config-file=%1").arg(detectorConfigName());
       args << QString("--options=pipeline.primary-gie.model-engine-file=%1").arg(detectorEnginePath());
@@ -9568,6 +9583,34 @@ QString HStreamWindow::detectorEnginePath() const {
     return prepared_int8_engine_;
   const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(detectorConfigName()).toStdString());
   return QString::fromStdString(inference["property"]["model-engine-file"].as<std::string>());
+}
+
+void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
+  if (!player_analytics_controls_)
+    return;
+  YAML::Node defaults = YAML::Clone(player_analytics_defaults_);
+  const QString structural_path = pipelineConfigPath("ds_hockey_app_config.yaml");
+  // Structural/native and bundled canonical defaults share rank zero. Keep the
+  // user and game layers separate for drawing provenance in the controls.
+  if (QFileInfo(structural_path).isFile()) {
+    const auto structural = YAML::LoadFile(structural_path.toStdString());
+    YAML::Node native_defaults;
+    lookup_yaml_path(defaults, "pipeline", &native_defaults);
+    defaults["pipeline"] = native_defaults.IsMap() ? merge_yaml_maps(structural, native_defaults)
+                                                 : YAML::Clone(structural);
+  }
+  player_analytics_controls_->loadConfig(
+      defaults, player_analytics_user_, config, QFileInfo(structural_path).absolutePath());
+}
+
+bool HStreamWindow::validatePlayerAnalyticsForRun() {
+  if (isCalibrationRun() || !player_analytics_controls_)
+    return true;
+  const QString error = player_analytics_controls_->validateForRun();
+  if (error.isEmpty())
+    return true;
+  appendLog("Player analytics prerequisites: " + error);
+  return false;
 }
 
 void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
@@ -9663,7 +9706,7 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 
 void HStreamWindow::startPipeline() {
   hm::diagnostics::Breadcrumb("pipeline", "start requested");
-  if (!ensureSavedControlConfigLoaded())
+  if (!ensureSavedControlConfigLoaded() || !validatePlayerAnalyticsForRun())
     return;
   if (findChild<QDialog*>("stitchingExperimentDialog")) {
     appendLog("close Stitching Experiments before starting the main pipeline");
@@ -9767,6 +9810,7 @@ void HStreamWindow::startPipeline() {
   active_run_autooptimizer_ = runAutooptimizer();
   active_stitch_frame_time_ = stitchFrameTime();
   active_iteration_settings_ = stitchingIterationSettings();
+  active_player_analytics_arguments_ = player_analytics_controls_ ? player_analytics_controls_->arguments() : QStringList();
   active_control_point_matcher_ = controlPointMatcher();
   active_control_point_resolution_ = control_point_resolution_;
   active_mapping_backend_ = mappingBackend();
@@ -15529,7 +15573,7 @@ void HStreamWindow::maybeStartDeferredRestart() {
 }
 
 void HStreamWindow::saveJobScript() {
-  if (!ensureSavedControlConfigLoaded())
+  if (!ensureSavedControlConfigLoaded() || !validatePlayerAnalyticsForRun())
     return;
   if ((pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) ||
       live_rotation_authorization_pending_) {
@@ -15929,6 +15973,7 @@ bool HStreamWindow::savePreset() {
                   .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
   }
   loadDetectorPrecision(config);
+  loadPlayerAnalyticsConfig(config);
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
   if (game_id_edit_) {
     preset_save_retry_game_ids_.erase(game_id_edit_->text().trimmed());
@@ -15974,6 +16019,8 @@ void HStreamWindow::resetCameraControls() {
   synchronizeStitchedColorControls();
   if (!pipeline_running && detector_precision_combo_)
     set_combo_to_data(detector_precision_combo_, "fp32");
+  if (!pipeline_running && player_analytics_controls_)
+    player_analytics_controls_->resetToDefaults();
   if (!pipeline_running)
     setStitchingIterationSettings(default_iteration_settings_);
   if (!pipeline_running && stitch_frame_time_edit_) {
@@ -16257,6 +16304,7 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
   bool dirty = retry_required || detectorSelectionChanged() ||
+      (player_analytics_controls_ && player_analytics_controls_->isDirty()) ||
       (rink_mask_time_mode_ && saved_rink_mask_time_mode_ != rink_mask_time_mode_->currentData().toString()) ||
       (rink_mask_time_mode_ && rink_mask_time_mode_->currentData().toString() == "custom" &&
        saved_rink_mask_time_text_ != rink_mask_time_edit_->text()) ||
@@ -16435,6 +16483,7 @@ void HStreamWindow::loadSavedControlConfig() {
   saved_control_config_load_error_ = "Game settings are still loading";
   control_point_resolution_ = default_control_point_resolution_;
   loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
+  loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
   setStitchingIterationSettings(default_iteration_settings_);
   inherited_player_size_controls_.clear();
   unavailable_playtracker_config_error_.clear();
@@ -17184,6 +17233,7 @@ void HStreamWindow::loadSavedControlConfig() {
       appendLog(QString("Loaded saved settings, but tracker defaults are unavailable: %1")
                     .arg(unavailable_playtracker_config_error_));
     loadDetectorPrecision(config);
+    loadPlayerAnalyticsConfig(config);
     saved_control_config_load_error_.clear();
     captureSavedControlState();
     if (normalized_nona_without_autooptimizer) {
@@ -17240,6 +17290,13 @@ bool HStreamWindow::applySavedControlConfig(
       }
     } catch (const std::exception& exc) {
       appendLog(QString("could not save detector precision: %1").arg(exc.what()));
+      return false;
+    }
+  }
+  if (player_analytics_controls_) {
+    const auto error = player_analytics_controls_->applyChanges(config);
+    if (!error.isEmpty()) {
+      appendLog("Could not save player analytics: " + error);
       return false;
     }
   }

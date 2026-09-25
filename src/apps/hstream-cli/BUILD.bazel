@@ -8,7 +8,7 @@ HSTREAM_CLI_SRCS = glob(
         "*.cpp",
         "*.h",
     ],
-    exclude = ["*Test.cpp"],
+    exclude = ["*Test.cpp", "PlayerModelCache.cpp"],
 )
 
 HSTREAM_CLI_COPTS = [
@@ -24,11 +24,13 @@ HSTREAM_CLI_LINKOPTS = [
 ]
 
 HSTREAM_CLI_RUNTIME_DATA = [
+    "//src/apps/player-model-builder:player-model-builder",
     "//src/gst-plugins:hstream_runtime_plugins",
     "//src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo",
 ]
 
 HSTREAM_CLI_DEPS = [
+    ":player_model_cache",
     "//src/libs/common:process_diagnostics",
     "//src/libs/stitching:rink_mask_frame_time",
     "//src/libs/assets:asset_manager",
@@ -64,6 +66,27 @@ HSTREAM_CLI_DEPS = [
     "@com_google_absl//absl/status:statusor",
     "@com_google_absl//absl/cleanup",
 ]
+
+cc_library(
+    name = "player_model_cache",
+    srcs = ["PlayerModelCache.cpp", "DeepStreamReIdCache.inc"],
+    hdrs = ["PlayerModelCache.h"],
+    deps = [
+        "//src/libs/assets:asset_manager",
+        "//src/libs/player_analytics:config",
+        "//src/libs/player_analytics:model_catalog",
+        "//src/libs/player_analytics:model_contract",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "player_model_cache_test",
+    srcs = ["PlayerModelCacheTest.cpp"],
+    deps = [":player_model_cache"],
+)
 
 filegroup(
     name = "runtime_sources",
@@ -424,4 +447,21 @@ cc_test(
         "@com_google_absl//absl/status:status",
         "@com_google_absl//absl/status:statusor",
     ],
+)
+
+cc_test(
+    name = "player_analytics_mapping_test",
+    srcs = [
+        "PlayerAnalyticsMappingTest.cpp",
+        "StitcherOnePassConfig.h",
+        "StitchingCalibrationMode.h",
+        "configurator.cpp",
+        "configurator.h",
+        "deepstream_app.h",
+    ],
+    args = ["$(location //configs:baseline.yaml)"],
+    copts = HSTREAM_CLI_COPTS,
+    data = ["//configs:baseline.yaml"],
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    deps = HSTREAM_CLI_DEPS,
 )

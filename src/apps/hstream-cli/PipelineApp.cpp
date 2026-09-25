@@ -5,9 +5,11 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
+#include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "PipelineAssetOptions.h"
 #include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
+#include "PlayerModelCache.h"
 #include "PreviewOverlayRuntime.h"
 #include "RuntimePropertyAllowlist.h"
 #include "RuntimePropertyValueParser.h"
@@ -93,6 +95,36 @@ namespace fs = std::filesystem;
 GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
+
+volatile sig_atomic_t player_model_preparation_interrupted = 0;
+
+void interrupt_player_model_preparation(int) {
+  player_model_preparation_interrupted = 1;
+}
+
+// Preparation runs before the normal playback signal handlers are installed.
+// Let Stop/Ctrl-C cancel downloads and reap the native builder before returning.
+class PlayerModelPreparationSignals {
+ public:
+  PlayerModelPreparationSignals() {
+    player_model_preparation_interrupted = 0;
+    struct sigaction action {};
+    action.sa_handler = interrupt_player_model_preparation;
+    sigemptyset(&action.sa_mask);
+    interrupt_installed_ = ::sigaction(SIGINT, &action, &interrupt_) == 0;
+    terminate_installed_ = ::sigaction(SIGTERM, &action, &terminate_) == 0;
+  }
+  ~PlayerModelPreparationSignals() {
+    if (interrupt_installed_)
+      ::sigaction(SIGINT, &interrupt_, nullptr);
+    if (terminate_installed_)
+      ::sigaction(SIGTERM, &terminate_, nullptr);
+  }
+
+ private:
+  struct sigaction interrupt_ {}, terminate_ {};
+  bool interrupt_installed_{false}, terminate_installed_{false};
+};
 
 absl::StatusOr<hm::stitching::ControlPointMatcher> selected_stitching_matcher(const YAML::Node& config) {
   std::string configured;
@@ -1439,6 +1471,19 @@ absl::Status PipelineApplication::configureInstances(
       HM_RETURN_IF_ERROR(
           hm::pipeline::PrepareTensorRtModelCache(
               config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path()));
+      {
+        PlayerModelPreparationSignals preparation_signals;
+        hm::pipeline::PlayerModelCacheOptions options;
+        options.cancelled = [this] { return cintr_ || player_model_preparation_interrupted; };
+        options.progress = [](const std::string& message) {
+          if (g_getenv("HSTREAM_UI_PARENT_PID"))
+            emit_ui_startup("models", message.c_str());
+          else
+            g_print("Player models: %s\n", message.c_str());
+        };
+        HM_RETURN_IF_ERROR(hm::pipeline::PreparePlayerModelCache(
+            config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path(), options));
+      }
       if (!parse_config_yaml(
               config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());
@@ -1654,8 +1699,9 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
     const std::string rink_mask_file = (hm::Configurator::get_game_dir(game_id) / "rink_mask_0.png").string();
 
-    auto configure_overlays = [&](GstElement* sink) {
+    auto configure_overlays = [&](GstElement* sink, const hm::player_analytics::Config& analytics) {
       g_object_set(G_OBJECT(sink), "rink-mask-file", rink_mask_file.c_str(), nullptr);
+      hm::gpu_preview::configure_player_analytics(sink, analytics.drawing_layers(), analytics.pose.confidence_threshold);
     };
 
     struct PreviewProbeState {
@@ -1864,7 +1910,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           !link_element_to_tee_src_pad(output.tee, ingress_isolation)) {
         return absl::InternalError("Could not link the GPU-native Program preview branch");
       }
-      configure_overlays(sink);
+      configure_overlays(sink, app_context->config.player_analytics_config.analytics);
     }
 
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
@@ -1872,9 +1918,10 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     if (preview_overlay_producer)
       preview_overlay_producers_.push_back(preview_overlay_producer);
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
-    GstElement* tracked_preview_source = app_context->pipeline.dsplaytracker_bin.bin;
-    if (!tracked_preview_source)
-      tracked_preview_source = app_context->pipeline.common_elements.tracker_bin.bin;
+    GstElement* tracked_preview_source = hm::gst::SelectTrackedPreviewSource(
+        app_context->pipeline.dsplaytracker_bin.bin,
+        app_context->pipeline.common_elements.player_analytics,
+        app_context->pipeline.common_elements.tracker_bin.bin);
     if ((program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
         !preview_overlay_producer) {
       GstElement* snapshot_source = tracked_preview_source ? tracked_preview_source : stitcher.elem_hmstitcher;
@@ -1948,7 +1995,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             !link_element_to_tee_src_pad(tee, ingress_isolation)) {
           return absl::InternalError("Could not link the tracked Stitched GPU preview branch");
         }
-        configure_overlays(sink);
+        configure_overlays(sink, app_context->config.player_analytics_config.analytics);
       } else {
         if (!stitcher.preview_queue || !stitcher.preview_ingress_isolation || !stitcher.preview_isolation ||
             !stitcher.preview_converter || !stitcher.preview_caps_filter || !stitcher.preview_sink) {
@@ -1970,7 +2017,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
                 false)) {
           return absl::InternalError("Could not configure the GPU-native Stitched preview branch");
         }
-        configure_overlays(stitcher.preview_sink);
+        configure_overlays(stitcher.preview_sink, app_context->config.player_analytics_config.analytics);
       }
     }
 

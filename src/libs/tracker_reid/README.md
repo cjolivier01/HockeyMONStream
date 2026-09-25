@@ -1,7 +1,12 @@
 # Optional native tracker ReID
 
 The next-run tracker settings are pipeline.tracker.reid-enable (default false)
-and pipeline.tracker.reid-config-file. The overlay is prepared only when the
+and pipeline.tracker.reid-model (`deepstream` by default). The SDK-supplied model
+downloads and prepares automatically before playback; choose it in the Players tab
+or set `reid-enable: true`. No environment variable or manually prepared file is needed.
+A custom overlay remains available through `reid-model: custom` and
+`pipeline.tracker.reid-config-file`; a legacy config path with no model selection
+also selects Custom. The overlay is prepared only when the
 final playback graph creates an enabled tracker. With either tracking or this
 extension off, no new config, engine, cache, or filesystem access occurs. Existing
 user-supplied native tracker settings remain unchanged, including independently
@@ -12,7 +17,25 @@ configuration, and no tracker sub-batches. It preserves unrelated NvDCF tuning,
 enables native appearance reassociation, and disables embedding export. This
 does not establish that two different tracker IDs represent the same player.
 
-## Prepare the reference model
+## DeepStream default
+
+The default follows the installed SDK's `config_tracker_NvDCF_accuracy.yml` ReID
+profile and its `resnet50_market1501.etlt` model (NGC `deployable_v1.0`). It preserves
+NVIDIA's preprocessing, including `keepAspc=1`. Existing matching SDK model files
+are reused; missing files download into the per-user cache with SHA256
+`0e5b7f702ce7e3734e45f27b819866f15f6b083048481d1afae2089136e20201`.
+The native tracker prepares the engine in an isolated child before playback;
+no files under the SDK installation are modified. Engine batch, workspace, and
+gallery history are capped at 32, 256 MiB, and 32 respectively. The current native
+tracker library digest also participates in this cache identity. Unrelated tuning
+from the selected low-level NvDCF configuration is preserved.
+
+The explicitly named `reidentificationnet-deployable-v1.2` alternative uses NVIDIA's
+portable ONNX, which has different `keepAspc=0` preprocessing. Selecting one does
+not silently substitute the other. The model notices are in
+[`configs/player-models`](../../../configs/player-models/README.md).
+
+## Advanced: prepare a custom reference model
 
 The tested reference is NVIDIA ReIdentificationNet deployable_v1.2,
 resnet50_market1501_aicity156.onnx. Obtain it from NVIDIA and review the linked
@@ -49,8 +72,8 @@ own version; this x86 binary cannot prepare the Jetson engine.
 Retain the source checksum, engine checksum, GPU model and compute capability,
 TensorRT version, and this exact profile with the engine. Build in a staging
 directory, verify native loading with the test below, and rename the completed
-bundle into its private final cache location before configuring playback. There
-is no engine builder in playback. A missing/unloadable engine fails the run;
+bundle into its private final cache location before configuring playback. Automatic model preparation uses the native helper before playback. There
+is no engine builder in the steady-state tracker. A missing/unloadable engine fails the run;
 the generated native config contains no ONNX/ETLT/calibration rebuild inputs.
 
 Copy configs/player-analytics/reid-example.yaml alongside the engine. Its

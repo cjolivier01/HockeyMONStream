@@ -2,6 +2,7 @@
 
 #include <nvdsmeta.h>
 
+#include "hstream/src/libs/player_analytics/TrackColors.h"
 #include "hstream/src/libs/player_analytics/Types.h"
 
 namespace hm::player_analytics {
@@ -19,6 +20,10 @@ bool AttachFrameResult(
     const FrameResult& result,
     FrameMetaFailureInjection injection = FrameMetaFailureInjection::kNone) noexcept;
 const FrameResult* FindFrameResult(const NvDsFrameMeta* frame) noexcept;
+
+// Copy on write into this frame's handle, before the tracked preview tee. No
+// allocation when no result or no color changes. Existing copies stay immutable.
+bool AssignFrameColors(NvDsFrameMeta* frame, const TrackColorAllocator& colors) noexcept;
 
 // Exercises the same noexcept handle-copy boundary installed on NvDsUserMeta.
 bool FrameResultCopySucceedsForTest(const NvDsFrameMeta* frame, FrameMetaFailureInjection injection) noexcept;

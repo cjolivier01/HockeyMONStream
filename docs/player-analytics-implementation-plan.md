@@ -1,9 +1,30 @@
 # Player analytics implementation plan
 
-Status: approved after two rounds by both independent xhigh reviewers. Implementation in progress. Implements the reviewed
+Status: implemented in four stacked PRs after two plan-review rounds with both
+independent xhigh reviewers. All four PRs have clean paired implementation reviews.
+Full x86 and native Jetson builds pass; measured performance, review fixes and
+platform/model limitations are recorded in the [validation record](player-analytics-validation.md).
+Implements the reviewed
 [design](player-analytics-design.md) and [model comparison](player-analytics-models.md).
 
+The PR 4 follow-up replaces required prepared-model paths with named selections and
+enabled-only automatic native preparation. Startup downloads the pinned portable graph,
+validates a target-local engine, and caches it atomically; installed playback remains
+Python-free. ReID defaults to the installed DeepStream NvDCF model/profile, with its
+exact missing ETLT fetched from NVIDIA, while the newer ONNX and Custom options remain
+explicit alternatives. Custom offline export instructions below remain relevant to
+model development, not ordinary feature enablement. Cold/warm recorded playback,
+cancellation, package helper discovery, and disabled/calibration no-work checks are
+additional acceptance checks for this follow-up.
+
 ## Delivery order
+
+| Stage | Published PR | Base |
+| --- | --- | --- |
+| Colors, contracts and native ReID | [#205](https://github.com/cjolivier01/HockeyMONStream/pull/205) | master |
+| GPU pose and model preparation | [#208](https://github.com/cjolivier01/HockeyMONStream/pull/208) | #205 |
+| GPU jerseys and causal actions | [#209](https://github.com/cjolivier01/HockeyMONStream/pull/209) | #208 |
+| GPU overlays, controls and performance | [#210](https://github.com/cjolivier01/HockeyMONStream/pull/210) | #209 |
 
 Four ready-for-review PRs form a linear stack. PR 1 targets master; each subsequent
 PR targets its predecessor. Do not merge the stack during this task. Commit complete,
@@ -147,7 +168,7 @@ Record model identity and separate throughput/VRAM results.
    vpplaytracker, and carry baked-layer bits to avoid duplicate Program drawing. Preserve
    original play-debug layers and raw detection telemetry behavior.
 3. Map existing canonical plot flags with ordinary explicit-layer precedence. Add next-run
-   desktop controls for compute/model bundles/ReID and independent drawing preferences;
+   desktop controls for compute/model selection/ReID and independent drawing preferences;
    persist via existing game/user config helpers, preserve unknown keys, show missing
    prerequisites before launch, and include settings in exported jobs. Do not infer compute
    enable from drawing. Respect current generation/acknowledgment ownership; no hot model

@@ -1,4 +1,5 @@
 #include "hstream/src/libs/player_analytics/Config.h"
+#include "hstream/src/libs/player_analytics/ModelCatalog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -31,11 +32,26 @@ void Enable(const YAML::Node& node, FeatureConfig* config) {
 void ReadFeature(const YAML::Node& node, const char* name, FeatureConfig* config) {
   if (!config->enabled)
     return;
-  if (!node["bundle"] || !node["bundle"].IsScalar())
-    throw std::invalid_argument(std::string(name) + ".bundle is required when enabled");
-  config->bundle = node["bundle"].as<std::string>();
-  if (config->bundle.empty() || config->bundle.size() > 4096 || config->bundle.find('\0') != std::string::npos)
-    throw std::invalid_argument(std::string(name) + ".bundle must be a nonempty bounded path");
+  const bool explicit_model = node["model"] && !node["model"].IsNull();
+  if (explicit_model)
+    config->model = node["model"].as<std::string>();
+  const bool custom = !explicit_model || config->model == "custom";
+  if (node["bundle"] && !node["bundle"].IsNull() && (custom || node["bundle"].IsScalar()))
+    config->bundle = node["bundle"].as<std::string>();
+  if (config->bundle.size() > 4096 || config->bundle.find('\0') != std::string::npos) {
+    if (custom)
+      throw std::invalid_argument(std::string(name) + ".bundle must be a bounded path");
+    config->bundle.clear();
+  }
+  config->model = explicit_model ? config->model
+      : !config->bundle.empty()  ? "custom"
+                                 : std::string(DefaultModelId(name));
+  if (config->model == "custom") {
+    if (config->bundle.empty())
+      throw std::invalid_argument(std::string(name) + ".bundle is required for a custom model");
+  } else if (!FindModel(name, config->model)) {
+    throw std::invalid_argument(std::string(name) + ".model is not a supported model selection: " + config->model);
+  }
   if (node["rate-hz"])
     config->rate_hz = node["rate-hz"].as<double>();
   if (!std::isfinite(config->rate_hz) || config->rate_hz <= 0 || config->rate_hz > 240)

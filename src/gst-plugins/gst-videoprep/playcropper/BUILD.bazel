@@ -20,6 +20,7 @@ cc_library(
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/common:utils",
         "//src/libs/draw_display",
+        "//src/libs/draw_display:player_overlays",
         "//src/libs/scoreboard",
         "//src/libs/stitching",
         "@hm-cupano//src/pano:cuda_matrix",
@@ -143,4 +144,23 @@ cc_library(
         "@deepstream//:deepstream_lib",
         "//toolchains/jetson:cuda_runtime",
     ],
+)
+
+cc_binary(
+    name = "playcropper_player_overlay_test",
+    srcs = ["PlayCropperPlayerOverlayTest.cpp"],
+    deps = [
+        ":playcropper",
+        "//src/gst-plugins/gst-playtracker:playtracker_context_header",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/draw_display:player_overlays",
+        "//src/libs/player_analytics:frame_meta",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+        "@local_cuda//:nppc",
+        "@local_cuda//:nppif",
+        "@local_cuda//:nppig",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+    linkopts = ["-lnvdsbufferpool"],
 )

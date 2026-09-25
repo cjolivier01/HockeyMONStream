@@ -51,6 +51,7 @@ class QThread;
 class QTimer;
 class QToolButton;
 class PipelineInspectorWidget;
+class PlayerAnalyticsControls;
 class RinkLevelingDialog;
 class ScoreboardSelectionDialog;
 class ProjectionCropDialog;
@@ -395,6 +396,8 @@ class HStreamWindow : public QMainWindow {
   QString detectorConfigName() const;
   QString detectorEnginePath() const;
   void loadDetectorPrecision(const YAML::Node& config);
+  void loadPlayerAnalyticsConfig(const YAML::Node& config);
+  bool validatePlayerAnalyticsForRun();
   void updateDetectorPrecisionStatus();
   void setHighBitDepthMode(const QString& mode);
   bool setupPretrainedAssets(const QStringList& pipeline_args);
@@ -616,6 +619,10 @@ class HStreamWindow : public QMainWindow {
   std::vector<QWidget*> camera_preview_render_targets_;
   std::vector<QLabel*> camera_preview_notices_;
   QTabWidget* program_control_tabs_{nullptr};
+  PlayerAnalyticsControls* player_analytics_controls_{nullptr};
+  YAML::Node player_analytics_defaults_;
+  YAML::Node player_analytics_user_;
+  QStringList active_player_analytics_arguments_;
   QComboBox* detector_precision_combo_{nullptr};
   QLabel* detector_precision_status_{nullptr};
   QString saved_detector_precision_;

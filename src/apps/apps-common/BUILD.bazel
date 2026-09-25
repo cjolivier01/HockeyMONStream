@@ -173,7 +173,13 @@ cc_library(
         "@com_google_absl//absl/status:status",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ] + select({
+        "@platforms//cpu:x86_64": [
+            "//src/libs/draw_display:analytics_overlay_gl",
+            "//src/libs/draw_display:player_overlays",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 cc_library(
@@ -221,6 +227,7 @@ cc_library(
     ],
     hdrs = [
         "ProgramTrackColors.h",
+        "PlayerAnalyticsRouting.h",
         "UriPlaylistDiscovery.h",
         "deepstream_app_version.h",
         "deepstream_audio_classifier.h",
@@ -398,4 +405,36 @@ cc_test(
     name = "player_analytics_bin_test",
     srcs = ["PlayerAnalyticsBinTest.cpp"],
     deps = [":player_analytics_bin"],
+)
+
+cc_binary(
+    name = "player_analytics_routing_test",
+    srcs = ["PlayerAnalyticsRoutingTest.cpp"],
+    deps = [
+        ":deepstream_apps_common",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/common:track_color_meta",
+        "//src/libs/player_analytics:config",
+        "//src/libs/player_analytics:frame_meta",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+
+# Uses the real metadata collector; no X11 window, GL context or video required.
+cc_binary(
+    name = "hm_gpu_preview_player_overlay_test",
+    srcs = ["HmGpuPreviewPlayerOverlayTest.cpp"],
+    target_compatible_with = select({
+        "@platforms//cpu:x86_64": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":hm_gpu_preview",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/player_analytics:frame_meta",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
 )

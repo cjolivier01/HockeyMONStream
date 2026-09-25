@@ -1,10 +1,10 @@
-# Explicit opt-in overlay; replace bundle with a locally prepared, compatible model.
+# Explicit opt-in overlay; the selected model downloads/prepares on first use.
 # No player-analytics section is needed for ordinary playback.
 pipeline:
   player-analytics:
     pose:
       enable: 1
-      bundle: /absolute/path/to/prepared-pose-bundle
+      model: rtmpose-m-coco17-256x192
       rate-hz: 10
       confidence-threshold: 0.3
     max-tracks: 256

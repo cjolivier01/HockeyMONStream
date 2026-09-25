@@ -2,7 +2,14 @@
 
 This report records model research and offline export feasibility verified on 2026-09-24. The selected checkpoint bytes were downloaded and checked, and all three selected models passed PyTorch/ONNX/native TensorRT conversion checks on RTX5090. These checks used synthetic nonzero inputs: they do not establish deployed pipeline performance or hockey accuracy. Sources were fetched directly from the linked official repositories, model cards and papers.
 
-## Recommended concrete first implementation
+The original local-only preparation recommendation below is superseded by the
+[automatic model selection and preparation workflow](player-model-preparation.md).
+The supported converted ONNX graphs now download with pinned digests and the required
+source/conversion/license notices. Target-local engine preparation remains native and
+retains the same fixed model contracts; no Python or manual path is required to enable
+a supplied selection. The underlying model-quality limitations below still apply.
+
+## Original concrete first implementation recommendation
 
 - **Pose:** RTMPose-M, COCO17, 256×192 crops, FP16 TensorRT, reusing hstream's existing tracked person boxes. RTMPose-S is the credible lower-cost Jetson alternative. Preserve HARPET18 RTMPose-M as a separate hockey-specific pose/jersey profile; it cannot substitute for COCO17 action inputs.
 - **Jersey:** a native bounded TensorRT PARSeq adapter, initially using an explicitly supplied hockey-finetuned Koshkina checkpoint with its original architecture/tokenizer/hyperparameters. Local preparation only, record CC BY-NC 3.0 provenance and do not redistribute these weights by default. Generic Apache-2.0 PARSeq is a weaker but available comparison baseline. Future preferred compact replacement: hockey-finetuned SVTRv2-T CTC after dataset/evaluation work; generic OCR benchmark superiority does not establish jersey superiority.

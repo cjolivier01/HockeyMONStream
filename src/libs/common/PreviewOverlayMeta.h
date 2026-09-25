@@ -3,6 +3,7 @@
 #include <nvdsmeta.h>
 
 #include <array>
+#include <cstdint>
 #include <vector>
 
 namespace hm::preview_overlay {
@@ -32,6 +33,9 @@ struct PlayCropperTransform {
   float output_height{0.0F};
   float angle_degrees{0.0F};
   bool object_meta_transformed{false};
+  // Layers drawn into this Program surface only; immutable Stitched metadata
+  // retains its own independent transform/handle across the tee.
+  uint32_t baked_player_layers{0};
 };
 
 // Immutable pre-playcropper metadata copied at the tracked Stitched tee. Both

@@ -530,6 +530,12 @@ struct PlayerAnalyticsProcessor::Impl {
       player.box = boxes[i];
       player.jersey = jersey_label;
       player.action = action_label;
+      if (action && action_label.label >= 0) {
+        const auto& text = action->manifest().labels.at(static_cast<size_t>(action_label.label));
+        const size_t length = std::min(text.size(), player.action_text.size() - 1);
+        for (size_t character = 0; character < length; ++character)
+          player.action_text[character] = text[character] >= ' ' && text[character] <= '~' ? text[character] : '?';
+      }
       if (has_pose[i]) {
         player.has_pose = true;
         player.pose_observed_at = frame->buf_pts;

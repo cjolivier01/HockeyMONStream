@@ -1,22 +1,32 @@
-# Explicit opt-in. Prepare target-local models before use; no runtime downloads.
+# Explicit opt-in. Selected models download and prepare automatically on first use.
 # Action outputs use the model's generic NTU60 labels, not hockey events.
 pipeline:
+  tracker:
+    reid-enable: true
+    reid-model: deepstream # supplied NvDCF model; optional independently of jerseys
   player-analytics:
     pose:
       enable: 1
-      bundle: /absolute/path/to/prepared-pose-bundle
+      model: rtmpose-m-coco17-256x192
       rate-hz: 10
     jersey:
       enable: 1
-      bundle: /absolute/path/to/prepared-jersey-bundle
+      model: parseq-hockey-cvprw2024 # CC BY-NC 3.0; noncommercial use
       rate-hz: 2
       confidence-threshold: 0.8
       roi-mode: bbox # pose requires enabled pose and fresh same-frame torso joints
     action:
       enable: 1
-      bundle: /absolute/path/to/prepared-action-bundle
+      model: stgcnpp-coco2d-joint-ntu60
       rate-hz: 1
       confidence-threshold: 0.5
     max-tracks: 256
     max-due-rois: 32 # Aggregate model samples, not 32 per feature.
     batch-size: 8
+
+# Independent next-run drawing preferences; these do not enable any model.
+plot:
+  plot_pose: true
+  plot_jersey_numbers: true
+  plot_actions: true
+  plot_individual_player_tracking: true

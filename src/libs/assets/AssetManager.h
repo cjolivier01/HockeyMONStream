@@ -86,9 +86,18 @@ class AssetManager {
       const std::string& name,
       const std::filesystem::path& target,
       const Limits& limits = {});
+  // Ensures a trusted, caller-selected absolute cache target. URL and digest
+  // remain mandatory; limits, symlink checks and atomic publication still apply.
+  // Cancellation also interrupts lock waiting and the HTTPS transfer.
+  static absl::Status EnsureAsset(
+      const AssetSpec& spec,
+      const Limits& limits = {},
+      const std::function<bool()>& cancelled = {});
   static absl::Status Verify(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::Status VerifyPackageAssets(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
-  static absl::StatusOr<std::string> Sha256(const std::filesystem::path& path);
+  static absl::StatusOr<std::string> Sha256(
+      const std::filesystem::path& path,
+      const std::function<bool()>& cancelled = {});
   static absl::StatusOr<std::string> Sha256Bytes(std::string_view contents);
 };
 

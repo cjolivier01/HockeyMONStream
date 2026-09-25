@@ -65,8 +65,7 @@ void post_preview_status(
     gst_element_post_message(element, gst_message_new_application(GST_OBJECT(element), structure));
   if (width > 0 && height > 0) {
     emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT
-        " message=%s resolution=%dx%d\n",
+        "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " message=%s resolution=%dx%d\n",
         safe_channel,
         status,
         static_cast<guint64>(generation),
@@ -472,6 +471,9 @@ void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
 
 #if defined(__x86_64__)
 
+#include "hstream/src/libs/draw_display/AnalyticsOverlayGl.h"
+#include "hstream/src/libs/draw_display/PlayerOverlays.h"
+
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
 #include <GL/glx.h>
@@ -524,6 +526,11 @@ struct PreviewOverlays {
 };
 
 struct RendererState {
+  unsigned player_analytics_layers{0};
+  float player_joint_confidence{0.3F};
+  hm::draw_display::analytics::CommandList player_commands;
+  std::unique_ptr<hm::draw_display::analytics::GlCompositor> player_compositor;
+  uint64_t player_overlay_suppressions{0};
   std::mutex mutex;
   std::atomic<bool> stopping{false};
   std::atomic<bool> failed{false};
@@ -928,6 +935,7 @@ void add_rect_paths(
 PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* buffer) {
   RendererState* state = self->state;
   PreviewOverlays overlays;
+  state->player_commands.Clear();
   overlays.stitched_surface_width =
       static_cast<float>(state->source_width ? state->source_width : state->negotiated_width);
   overlays.stitched_surface_height =
@@ -976,7 +984,8 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   }
   const auto* program_transform = overlays.program_transform ? &*overlays.program_transform : nullptr;
 
-  if (state->show_player_tracking.load()) {
+  if (state->show_player_tracking.load() &&
+      (!program_transform || !(program_transform->baked_player_layers & hm::player_analytics::kDrawPlayerBoxes))) {
     auto add_player_rect = [&](const NvOSD_RectParams& rect,
                                const hm::preview_overlay::PlayCropperTransform* transform) {
       add_rect_paths(
@@ -1104,6 +1113,15 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
       }
     }
   }
+  if (state->player_analytics_layers)
+    hm::draw_display::analytics::BuildPlayerOverlays(
+        frame_meta,
+        state->player_analytics_layers,
+        state->player_joint_confidence,
+        program_transform,
+        overlays.coordinate_width,
+        overlays.coordinate_height,
+        &state->player_commands);
   return overlays;
 }
 
@@ -1389,6 +1407,19 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   glEnd();
   draw_rink_mask(self, overlays);
   draw_overlay_paths(overlays);
+  if (!state->player_commands.empty()) {
+    using namespace hm::draw_display::analytics;
+    if (!state->player_compositor)
+      state->player_compositor = std::make_unique<GlCompositor>();
+    const auto rendered =
+        state->player_compositor->Render(overlays.coordinate_width, overlays.coordinate_height, state->player_commands);
+    if (rendered.status == GlRenderStatus::kGlError || rendered.status == GlRenderStatus::kInvalidArgument) {
+      post_sink_failure(self, "could not draw player analytics in the GPU preview");
+      return;
+    }
+    if (rendered.status != GlRenderStatus::kOk && ++state->player_overlay_suppressions == 1)
+      g_printerr("HSTREAM_PLAYER_PREVIEW status=suppressed reason=%d\n", static_cast<int>(rendered.status));
+  }
   current_x_error_target = state;
   glXSwapBuffers(state->display, static_cast<GLXDrawable>(state->window_id));
   XSync(state->display, False);
@@ -1710,6 +1741,17 @@ bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
     if (!make_cleanup_context_current(self))
       return false;
     glFinish();
+    if (state->player_compositor) {
+      const auto& counters = state->player_compositor->counters();
+      g_printerr(
+          "HSTREAM_PLAYER_PREVIEW draws=%llu uploads=%llu upload-bytes=%llu suppressed=%llu\n",
+          static_cast<unsigned long long>(counters.draws),
+          static_cast<unsigned long long>(counters.vertex_uploads),
+          static_cast<unsigned long long>(counters.vertex_bytes),
+          static_cast<unsigned long long>(state->player_overlay_suppressions));
+      state->player_compositor.reset();
+    }
+    state->player_commands.Clear();
     if (!cuda_succeeded(self, cudaSetDevice(state->gpu_id), "cudaSetDevice during preview cleanup")) {
       release_context(state);
       return false;
@@ -2411,6 +2453,23 @@ void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptio
 #endif
 }
 
+void configure_player_analytics(GstElement* sink, unsigned layers, float joint_confidence) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  std::lock_guard<std::mutex> lock(self->state->mutex);
+  self->state->player_analytics_layers = layers &
+      (hm::player_analytics::kDrawPose | hm::player_analytics::kDrawJerseys | hm::player_analytics::kDrawActions);
+  self->state->player_joint_confidence = joint_confidence;
+  self->state->player_commands.Clear();
+#else
+  (void)sink;
+  (void)layers;
+  (void)joint_confidence;
+#endif
+}
+
 PreviewOverlayInspection inspect_preview_overlays_for_test(GstElement* sink, GstBuffer* buffer) {
 #if defined(__x86_64__)
   if (!sink || !buffer || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
@@ -2423,6 +2482,7 @@ PreviewOverlayInspection inspect_preview_overlays_for_test(GstElement* sink, Gst
   PreviewOverlayInspection result{overlays.paths.size(), overlays.diagnostic_coordinates_valid, {}};
   for (const auto& path : overlays.paths)
     result.colors.push_back({path.color.red, path.color.green, path.color.blue, path.color.alpha});
+  result.analytics_command_count = self->state->player_commands.size();
   return result;
 #else
   (void)sink;
@@ -2466,9 +2526,8 @@ bool renderer_rink_mask_cache_cleared_for_test(GstElement* sink) {
   const RendererState* state = self->state;
   return state->rink_mask_texture == 0 && state->rink_mask_dirty && state->rink_mask_width == 0 &&
       state->rink_mask_height == 0 && state->rink_mask_canvas_width == 0 && state->rink_mask_canvas_height == 0 &&
-      state->rink_mask_output_generation.empty() &&
-      state->requested_rink_mask_width == 0 && state->requested_rink_mask_height == 0 &&
-      state->requested_rink_mask_output_generation.empty();
+      state->rink_mask_output_generation.empty() && state->requested_rink_mask_width == 0 &&
+      state->requested_rink_mask_height == 0 && state->requested_rink_mask_output_generation.empty();
 #else
   (void)sink;
   return true;
@@ -2482,9 +2541,9 @@ bool renderer_resources_released_for_test(GstElement* sink) {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
   std::lock_guard<std::mutex> lock(self->state->mutex);
   const RendererState* state = self->state;
-  return !state->display && !state->context && state->cleanup_window == 0 && state->cleanup_colormap == 0 &&
-      state->texture == 0 && state->rink_mask_texture == 0 && !state->cuda_texture && !state->cuda_stream &&
-      !state->copy_complete;
+  return !state->player_compositor && !state->display && !state->context && state->cleanup_window == 0 &&
+      state->cleanup_colormap == 0 && state->texture == 0 && state->rink_mask_texture == 0 && !state->cuda_texture &&
+      !state->cuda_stream && !state->copy_complete;
 #else
   (void)sink;
   return true;

@@ -1,8 +1,11 @@
-# Opt-in low-level overlay; this file alone never enables tracking or downloads.
+# Advanced custom low-level overlay. Ordinary use needs only tracker.reid-enable=true.
+# Default reid-model=deepstream downloads/prepares the SDK model automatically.
+# This explicit ONNX custom overlay alone never enables tracking or downloads.
 # Copy it beside the prebuilt engine, update modelEngineFile, then set:
 # pipeline:
 #   tracker:
 #     reid-enable: true
+#     reid-model: custom
 #     reid-config-file: /absolute/path/to/reid.yaml
 #
 # Prepare the engine on the playback GPU using that DeepStream release's
@@ -30,4 +33,3 @@ ReID:
   minVisibility4GalleryUpdate: 0.6
 TrajectoryManagement:
   reidExtractionInterval: 8
-

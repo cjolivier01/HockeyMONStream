@@ -1,5 +1,6 @@
 #include "deepstream_app.h"
 #include "hstream/src/apps/apps-common/ProgramTrackColors.h"
+#include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
 #include "hstream/src/libs/common/TrackColorMeta.h"
@@ -1593,6 +1594,8 @@ static gboolean create_common_elements(
   }
 
   if (config->hmplaycropper_config.enable) {
+    config->hmplaycropper_config.player_analytics_layers = config->player_analytics_config.analytics.drawing_layers();
+    config->hmplaycropper_config.player_joint_confidence = config->player_analytics_config.analytics.pose.confidence_threshold;
     if (!create_hmplaycropper_bin(&config->hmplaycropper_config, &pipeline->common_elements.hmplaycropper_bin)) {
       g_print("creating hmplaycropper bin failed\n");
       goto done;
@@ -1694,6 +1697,12 @@ static gboolean create_common_elements(
     *sink_elem = pipeline->common_elements.dsanalytics_bin.bin;
   }
 
+  program_color_producer = hm::gst::AddAnalyticsColorDemand(
+      program_color_producer,
+      config->player_analytics_config.analytics.drawing_layers(),
+      config->dsplaytracker_config.enable,
+      config->tracker_config.enable);
+
   if (config->dsplaytracker_config.enable) {
     config->dsplaytracker_config.color_players =
         program_color_producer == hm::gst::ProgramTrackColorProducer::kPlayTracker;
@@ -1759,7 +1768,10 @@ static gboolean create_common_elements(
   }
 
   if (program_color_producer == hm::gst::ProgramTrackColorProducer::kNativeTracker &&
-      !hm::preview_overlay::ConfigureTrackColorProducer(pipeline->common_elements.tracker_bin.bin, true)) {
+      !hm::preview_overlay::ConfigureTrackColorProducer(
+          hm::gst::SelectTrackedPreviewSource(
+              nullptr, pipeline->common_elements.player_analytics, pipeline->common_elements.tracker_bin.bin),
+          true)) {
     NVGSTDS_ERR_MSG_V("Could not create the requested player-color producer");
     goto done;
   }

@@ -29,6 +29,10 @@ absl::StatusOr<PlayerAnalyticsConfig> ResolvePlayerAnalyticsConfig(
                                                           : result.analytics.action.enabled;
       if (!enabled)
         continue;
+      if (!resolved[feature]["bundle"] || !resolved[feature]["bundle"].IsScalar() ||
+          resolved[feature]["bundle"].as<std::string>().empty())
+        return absl::FailedPreconditionError(
+            std::string("Player model preparation did not resolve the enabled ") + feature + " model");
       std::filesystem::path bundle(resolved[feature]["bundle"].as<std::string>());
       if (bundle.is_relative())
         bundle = std::filesystem::absolute(std::filesystem::path(config_dir) / bundle);

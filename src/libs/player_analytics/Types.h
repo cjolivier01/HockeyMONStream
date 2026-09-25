@@ -18,6 +18,7 @@ inline constexpr uint64_t kUntrackedId = std::numeric_limits<uint64_t>::max();
 inline constexpr uint64_t kActionSamplePeriod = 100000000ULL;
 inline constexpr uint64_t kActionMaximumGap = 150000000ULL;
 inline constexpr uint8_t kNoColor = 255;
+enum DrawingLayer : uint32_t { kDrawPlayerBoxes = 1, kDrawPose = 2, kDrawJerseys = 4, kDrawActions = 8 };
 
 // All positions are pre-crop DeepStream metadata pixels, which may differ from
 // NvBufSurface pixels. The inference adapter owns the per-axis conversion.
@@ -63,6 +64,8 @@ struct PlayerResult {
   uint64_t pose_observed_at{kInvalidTime};
   JerseyResult jersey;
   ActionResult action;
+  // Bounded printable display label from the actual model manifest, not a remap.
+  std::array<char, 65> action_text{};
 };
 
 struct FrameResult {
