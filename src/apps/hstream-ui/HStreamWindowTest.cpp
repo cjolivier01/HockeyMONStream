@@ -3794,7 +3794,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               alignment_page->isAncestorOf(camera_vertical_fov) && projection_page->isAncestorOf(projection) &&
               alignment_page->isAncestorOf(control_points) && alignment_page->isAncestorOf(stitch_frame_time) &&
               projection_page->isAncestorOf(stitch_max_output_width) &&
-              alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 5 &&
+              alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 6 &&
+              program_control_tabs->tabText(5) == "Players" &&
               stitched_control_tabs->count() == 5 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
               stitched_control_tabs->tabText(2) == "Alignment" && stitched_control_tabs->tabText(3) == "Projection" &&
               stitched_control_tabs->tabText(4) == "Rink" &&
@@ -10286,7 +10287,7 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() == 10, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 11, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -11773,7 +11774,15 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   {
-    YAML::Node changed_crop = saved;
+    YAML::Node changed_crop = YAML::Clone(saved);
+    // The legacy-backend migration above selected OpenCV. This fixture must
+    // already use NONA so only the crop edit invalidates the seeded polygon.
+    changed_crop["stitching"]["mapping_backend"] = "nona";
+    changed_crop["stitching"]["run_autooptimizer"] = true;
+    changed_crop["stitching"]["projection"] = "rectilinear";
+    changed_crop["stitching"]["projection_framing"] = YAML::Load(
+        "{auto_fov: false, horizontal_fov: 90, auto_canvas: true, auto_crop: false, "
+        "crop: [0, 1, 0, 1], rotation_degrees: [0, 0, 0]}");
     YAML::Node polygon(YAML::NodeType::Sequence);
     for (const std::array<int, 2>& point : {std::array<int, 2>{100, 100},
                                              std::array<int, 2>{300, 100},
@@ -11792,7 +11801,13 @@ bool test_camera_controls(HStreamWindow* window) {
       out << changed_crop << "\n";
     }
     activate(create);
+    if (!expect(
+            mapping_backend->currentData().toString() == "nona" && !save->isEnabled(),
+            "The crop fixture must load cleanly with the NONA backend"))
+      return false;
     HStreamWindowTestAccess::setTestLevelingCrop(window, {0.0, 1.0, 0.1, 0.9});
+    if (!expect(save->isEnabled(), "Changing the projection crop must enable Save Preset"))
+      return false;
     activate(save);
     const YAML::Node after_crop_save = YAML::LoadFile(config.string());
     const YAML::Node saved_scoreboard_polygon = after_crop_save["rink"]["scoreboard"]["perspective_polygon"];
@@ -11804,9 +11819,14 @@ bool test_camera_controls(HStreamWindow* window) {
             "Saving a changed projection crop should shadow and invalidate scoreboard perspective")) {
       return false;
     }
-    HStreamWindowTestAccess::setTestLevelingCrop(window, {0.0, 1.0, 0.0, 1.0});
-    activate(save);
-    saved = YAML::LoadFile(config.string());
+    // Restore the OpenCV fixture for the remaining camera-control checks.
+    {
+      std::ofstream out(config);
+      out << saved << "\n";
+    }
+    activate(create);
+    if (!expect(!save->isEnabled(), "Restoring the camera-control fixture must leave the preset clean"))
+      return false;
   }
 
   YAML::Node stitching;
