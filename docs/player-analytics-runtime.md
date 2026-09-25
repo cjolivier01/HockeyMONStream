@@ -125,8 +125,8 @@ over an older native setting. Canonical null suppresses its optional mapping.
 Pose/jersey/action drawing preferences alone never enable models or create a
 renderer. Player boxes inherit the boolean OR of `plot.plot_individual_player_tracking`
 and `plot.debug_play_tracker`, subject to explicit native cropper overrides.
-Unchanged desktop controls preserve that resolution; editing Program boxes writes
-only its native drawing leaf and preserves other debug/private settings. The
+Unchanged desktop controls preserve that resolution; editing Program boxes updates
+its canonical and native drawing leaves and preserves other debug/private settings. The
 preview-only Player boxes checkbox remains independent of encoded output.
 
 Program draws after crop/rotation directly on its owned output, using the existing
