@@ -108,6 +108,29 @@ void discard_experiments(StitchingExperimentDialog& dialog) {
       "Explicit experiment discard did not finish");
 }
 
+void remove_completed_experiments(StitchingExperimentDialog& dialog, bool confirm, int dependents = 0) {
+  bool prompted = false;
+  bool safe_default = false;
+  bool correct_count = false;
+  QTimer::singleShot(0, &dialog, [&]() {
+    if (auto* prompt = dialog.findChild<QMessageBox*>("stitchExperimentRemoveGuard")) {
+      prompted = true;
+      auto* remove = prompt->findChild<QPushButton*>("stitchExperimentRemoveConfirm");
+      safe_default = prompt->defaultButton() && prompt->defaultButton() != remove &&
+          prompt->escapeButton() == prompt->defaultButton();
+      correct_count = dependents == 0 ? prompt->text() == "Remove the selected experiment and its saved results?"
+                                      : prompt->text().contains(QString("and %1 dependent experiment").arg(dependents));
+      if (confirm && remove)
+        remove->click();
+      else
+        prompt->reject();
+    }
+  });
+  widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton")->click();
+  QCoreApplication::processEvents();
+  require(prompted && safe_default && correct_count, "Completed deletion must confirm its scope with Cancel default");
+}
+
 QByteArray read(const QString& path) {
   QFile file(path);
   require(file.open(QIODevice::ReadOnly), "Cannot read fixture");
@@ -1352,6 +1375,10 @@ void exercise_saved_selection(const QString& game, const QString& root) {
         table->rowCount() == 3 && table->item(0, 0)->text() == "Main calibration" &&
             table->item(1, 0)->text().startsWith("Players") && table->item(2, 0)->text().startsWith("Players"),
         "An unchecked saved selection must produce only solve candidates, without an ordinary baseline");
+    table->selectRow(0);
+    require(
+        !widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton")->isEnabled(),
+        "Main calibration must never be individually removable");
     widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText("00:00:01");
     add_options(dialog);
     require(table->rowCount() == 3 && status->text().contains("reference"), "Saved reference conflicts must fail");
@@ -1711,13 +1738,21 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   environment.insert("HSTREAM_TEST_PREVIEW_STARTED", preview_started);
   StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
   dialog.show();
+  const auto original_config = read(game + "/config.yaml");
+  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
   add_options(dialog);
+  auto* remove = widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton");
   widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
+  require(!remove->isEnabled(), "Removal must be disabled during batch execution");
   auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
   require(
       wait_until([&] { return status->text().startsWith("Batch complete."); }, 10000), "Synthetic completion stalled");
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
-  require(table->item(0, 5)->text() == "Ready", "Synthetic candidate must complete before testing promotion failure");
+  require(
+      table->rowCount() == 2 && table->item(0, 5)->text() == "Ready" && table->item(1, 5)->text() == "Ready",
+      "Synthetic candidates must complete before testing removal and promotion failure");
+  table->selectRow(0);
+  require(remove->isEnabled(), "Completed results must be removable after a batch");
   auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
   const WId target = video->winId();
   auto* play = widget<QPushButton>(dialog, "previewStitchExperimentButton");
@@ -1731,17 +1766,40 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
         wait_until([&] { return QFile::exists(preview_started) && stop->isEnabled(); }, 10000),
         "Preview fixture did not start");
     require(video->winId() == target, "Starting a preview must preserve its native target");
+    require(!remove->isEnabled(), "Removal must be disabled during playback");
     check_external_preview(dialog);
     if (exit_code < 0)
       stop->click();
     else
       write(preview_release, QByteArray::number(exit_code));
     require(wait_until([&] { return play->isEnabled(); }, 10000), "Preview did not release the native target");
+    require(remove->isEnabled(), "Removal must return after playback ends, fails, or is stopped");
     check_idle_preview(dialog);
     dialog.resize(dialog.size() + QSize(20, 10));
     check_idle_preview(dialog);
     require(video->winId() == target, "Finishing a preview must preserve its native target");
   }
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open completed history");
+  const auto before = LoadStitchingExperimentStore(*store);
+  require(before.ok() && before->experiments.size() == 2, "Completed history must be durable");
+  const auto removed_directory = before->experiments.front().workspace.game_directory;
+  const auto retained_directory = before->experiments.back().workspace.game_directory;
+  const auto index_path = QString::fromStdString((store->directory / "index.yaml").string());
+  const auto original_index = read(index_path);
+  remove_completed_experiments(dialog, false);
+  require(
+      table->rowCount() == 2 && read(index_path) == original_index &&
+          std::filesystem::exists(removed_directory / "mapping_0000.tif"),
+      "Cancel must preserve completed rows, their catalog, and saved artifacts");
+  remove_completed_experiments(dialog, true);
+  const auto after = LoadStitchingExperimentStore(*store);
+  require(
+      table->rowCount() == 1 && after.ok() && after->experiments.size() == 1 &&
+          !std::filesystem::exists(removed_directory) && std::filesystem::exists(retained_directory) &&
+          read(game + "/config.yaml") == original_config && read(game + "/left.mp4") == "left",
+      "Confirmed removal must delete only the selected completed result");
+  table->selectRow(0);
   answer_close_guard(dialog, "stitchExperimentCloseUse", true);
   require(
       wait_until([&] { return widget<QPushButton>(dialog, "applyStitchExperimentButton")->isEnabled(); }, 10000),
@@ -1752,6 +1810,109 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
       "Failed promotion must retain the dialog and its results");
   answer_close_guard(dialog, "stitchExperimentCloseDiscard", true);
   require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Keeping results must close completed results");
+  StitchingExperimentDialog reopened(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+  reopened.show();
+  auto* restored = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
+  require(restored->rowCount() == 1, "Reopening must retain the surviving completed result");
+  restored->selectRow(0);
+  require(
+      widget<QPushButton>(reopened, "removeStitchExperimentFromBatchButton")->isEnabled(),
+      "Completed results must be removable after reopening");
+  remove_completed_experiments(reopened, true);
+  const auto empty = LoadStitchingExperimentStore(*store);
+  require(restored->rowCount() == 0 && empty.ok() && empty->experiments.empty(), "Last result must be removable");
+  reopened.reject();
+}
+
+void exercise_completed_dependency_removal(const QString& game, const QString& root) {
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open dependency-removal store");
+  std::vector<StoredStitchingExperiment> rows;
+  for (int sequence = 1; sequence <= 4; ++sequence) {
+    // Each retained session starts at sequence 1. Reopening must resolve the
+    // durable workspace keys before computing the transitive removal scope.
+    const auto workspace = CreateStitchingExperimentWorkspace(
+        game.toStdString(), store->directory / "sessions" / std::to_string(sequence), {100, 1, "00:00:00"}, 1);
+    require(workspace.ok(), "Cannot create completed dependency fixture");
+    StoredStitchingExperiment record;
+    record.workspace = *workspace;
+    record.sequence = 1;
+    record.state = "complete";
+    record.artifact_generation_id = "generation-" + std::to_string(sequence);
+    if (sequence == 2) {
+      record.baseline_sequence = 1;
+      record.baseline_workspace_key =
+          rows.back().workspace.game_directory.lexically_relative(store->directory).string();
+    } else if (sequence == 3) {
+      record.selection_owner_sequence = 1;
+      record.selection_owner_workspace_key =
+          rows.back().workspace.game_directory.lexically_relative(store->directory).string();
+    }
+    require(SaveStitchingExperiment(*store, record).ok(), "Cannot persist completed dependency fixture");
+    rows.push_back(record);
+  }
+  StitchingExperimentDialog dialog(
+      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 100, 1, "00:00:00");
+  dialog.show();
+  auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  require(table->rowCount() == 4, "All completed dependency fixtures must restore");
+  table->selectRow(0);
+  const auto index_path = QString::fromStdString((store->directory / "index.yaml").string());
+  const auto original_index = read(index_path);
+  remove_completed_experiments(dialog, false, 2);
+  require(table->rowCount() == 4 && read(index_path) == original_index, "Cancel must preserve dependent results");
+  remove_completed_experiments(dialog, true, 2);
+  const auto remaining = LoadStitchingExperimentStore(*store);
+  require(
+      table->rowCount() == 1 && remaining.ok() && remaining->experiments.size() == 1 &&
+          remaining->experiments.front().workspace.game_directory == rows.back().workspace.game_directory,
+      "Removal must cascade through both dependency types across sessions and preserve unrelated results");
+  for (size_t index = 0; index < rows.size(); ++index)
+    require(
+        std::filesystem::exists(rows[index].workspace.game_directory) == (index == rows.size() - 1),
+        "Only the unrelated completed workspace should survive");
+  table->selectRow(0);
+  remove_completed_experiments(dialog, true);
+  dialog.reject();
+}
+
+void exercise_stale_completed_removal(const QString& game, const QString& root) {
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open stale-removal store");
+  const auto workspace = CreateStitchingExperimentWorkspace(
+      game.toStdString(), store->directory / "sessions" / "stale", {100, 1, "00:00:00"}, 1);
+  require(workspace.ok(), "Cannot create stale-removal fixture");
+  StoredStitchingExperiment record;
+  record.workspace = *workspace;
+  record.sequence = 1;
+  record.state = "queued";
+  require(SaveStitchingExperiment(*store, record).ok(), "Cannot persist queued stale-removal fixture");
+  StitchingExperimentDialog dialog(
+      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 100, 1, "00:00:00");
+  dialog.show();
+  auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  require(table->rowCount() == 1, "Stale dialog must retain the queued row");
+  table->selectRow(0);
+  // Simulate another dialog completing the row after this dialog restored it.
+  record.state = "complete";
+  record.artifact_generation_id = "newly-completed-generation";
+  require(SaveStitchingExperiment(*store, record).ok(), "Cannot publish concurrent completed result");
+  const auto index_path = QString::fromStdString((store->directory / "index.yaml").string());
+  const auto completed_index = read(index_path);
+  widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton")->click();
+  require(
+      table->rowCount() == 1 && read(index_path) == completed_index &&
+          std::filesystem::exists(workspace->game_directory) &&
+          widget<QLabel>(dialog, "stitchExperimentStatus")->text().contains("confirm removal"),
+      "Stale queued deletion must preserve and reload newly completed results for confirmation");
+  table->selectRow(0);
+  remove_completed_experiments(dialog, false);
+  require(read(index_path) == completed_index, "Cancel after stale-row refresh must preserve the completed result");
+  remove_completed_experiments(dialog, true);
+  require(
+      table->rowCount() == 0 && !std::filesystem::exists(workspace->game_directory),
+      "Refreshed completed results may be removed after confirmation");
+  dialog.reject();
 }
 
 void exercise_player_cancellation(const QString& game, const QString& root) {
@@ -2214,6 +2375,8 @@ int main(int argc, char** argv) {
       exercise_saved_selection(make_game("saved"), fixture.path());
       exercise_match_save_retry(make_game("match-save-retry"), fixture.path());
       exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
+      exercise_completed_dependency_removal(make_game("completed-dependencies"), fixture.path());
+      exercise_stale_completed_removal(make_game("stale-completed"), fixture.path());
       exercise_player_cancellation(make_game("cancel"), fixture.path());
       exercise(make_game("ordinary"), "/bin/false", fixture.path(), false, {});
     }
