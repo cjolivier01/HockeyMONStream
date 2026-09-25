@@ -1,7 +1,7 @@
-HStream's **Stitched → Rink** tab groups the rink selector, pitch and roll controls, **Use rink default**,
+HStream's **Stitched → Rink** tab groups the rink selector, pitch and roll controls, **Reset to rink defaults**,
 **Level rink…**, the automatic leveling-dialog option, and the ice-mask frame settings. Vallco inherits −35° pitch
 and Sharks Ice inherits −25° pitch. A saved game angle overrides the rink profile, including when it happens to
-equal that profile's default. **Use rink default** removes the override.
+equal that profile's default. **Reset to rink defaults** removes the override.
 Changing the rink while a game override is active keeps the override. No rink selection inherits zero rotation.
 
 When NONA applies a nonzero rink pitch or roll, **Program → Crop Rotation** shows zero for both sides and disables

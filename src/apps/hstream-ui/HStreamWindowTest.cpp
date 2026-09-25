@@ -9176,7 +9176,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(rink_pitch->value() == -23.8 && rink_roll->value() == 4.3, "Changing rink preserves game override"))
     return false;
   activate(rink_default);
-  if (!expect(rink_pitch->value() == -15 && rink_roll->value() == 0, "Use rink default removes the game override"))
+  if (!expect(rink_pitch->value() == -15 && rink_roll->value() == 0, "Reset to rink defaults removes the game override"))
     return false;
   activate(save);
   rink_saved = YAML::LoadFile(config_path.string());

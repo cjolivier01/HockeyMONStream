@@ -5716,7 +5716,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   connect(rink_mask_time_edit_, &QLineEdit::textChanged, this, [this] { updatePresetDirtyState(); });
   rink_leveling_button_ = new QPushButton(action_icon(ActionIcon::Level), "Level rink…");
   rink_leveling_button_->setObjectName("selectRinkLevelingButton");
-  rink_default_button_ = new QPushButton(action_icon(ActionIcon::Reset), "Use rink default");
+  rink_default_button_ = new QPushButton(action_icon(ActionIcon::Reset), "Reset to rink defaults");
   rink_default_button_->setObjectName("resetRinkLevelingButton");
   connect(rink_leveling_button_, &QPushButton::clicked, this, [this]() { selectRinkLeveling(); });
   connect(rink_default_button_, &QPushButton::clicked, this, [this]() {
