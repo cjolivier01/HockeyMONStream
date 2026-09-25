@@ -94,7 +94,15 @@ cc_library(
     testonly = True,
     hdrs = ["gstvideoprep.h", "videoprep_plugins.h"],
     include_prefix = "hstream/src/gst-plugins/gst-videoprep",
-    linkopts = ["-lnppig"],
+    linkopts = select({
+        ":jetson": ["-L/opt/jetson-sysroot/usr/local/cuda/targets/aarch64-linux/lib"],
+        ":arm64-sbsa": [
+            "-L/usr/local/cuda/targets/sbsa-linux/lib",
+            "-L/usr/local/cuda/targets/aarch64-linux/lib",
+            "-L/usr/local/cuda/lib64",
+        ],
+        "//conditions:default": ["-L/usr/local/cuda/targets/x86_64-linux/lib"],
+    }) + ["-lnppig"],
     visibility = ["//src/apps/apps-common:__pkg__"],
     deps = [
         "//src/gst-plugins/gst-videoprep/algorithm-base",

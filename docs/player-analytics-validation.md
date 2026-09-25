@@ -139,3 +139,14 @@ the actual plugin's startup precedence markers as well as color demand, includin
 drawing disabled. The previous round's correction is superseded by this ordering-
 preserving version. Round-4 builds/tests are recorded in
 `/tmp/hstream-player-pr1-round4-{build,test}.log` on each host.
+
+PR1 implementation round 4: both independent xhigh reviewers report no necessary
+fixes at `4d450dbb`. The final fresh x86 build exposed a missing CUDA library
+search path in the new test-only header target; it now mirrors the existing
+plugin's platform-specific NPP search paths. Production behavior is unchanged by
+that build correction. The regression test and complete x86/Jetson builds pass
+with the corrected test target. Final x86 evidence is
+`/tmp/hstream-player-pr1-round4-isolated-{test,build}.log`, using a dedicated
+`--output_base=/home/colivier/.bazel-player-analytics` because unrelated worktrees
+were replacing the default shared outputs. Use this output base for subsequent
+local builds and runtime verification.
