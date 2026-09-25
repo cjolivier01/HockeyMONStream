@@ -569,3 +569,36 @@ Final handoff rebuilds also pass (341 x86 targets including manual GPU tests;
 339 native Jetson targets). The remaining handoff edits are documentation only;
 production source is unchanged. Logs are retained locally as
 `/tmp/hstream-player-pr4-handoff-{x86,jetson}-build.log`.
+
+### Normal-build SDK selection follow-up
+
+The initial validation supplied a private `HSTREAM_PLAYER_TENSORRT_SDK_ROOT`,
+which concealed a normal-build failure when DeepStream 9.1's TensorRT 10.16.1
+runtime coexists with TensorRT 11 development packages. Removing the
+`tensorrt-dev` metapackage does not remove those component headers/libraries.
+The repository now selects DeepStream's versioned libraries automatically,
+checks the complete native header/runtime version, and uses pinned NVIDIA
+10.16.1.11 development headers inside Bazel when installed headers disagree.
+Normal build/playback needs no SDK override and no system package changes.
+Explicit custom overrides remain strict; sysroot builds never execute target
+libraries or select the managed x86 headers. See the
+[preparation guide](player-model-preparation.md) for exact selection boundaries.
+
+The exact `make perf` command passes with the override unset in the ordinary
+output base. The first full build executed 3,538 actions; the final rule also
+passes the full build after version/multiarch checks. Thirteen isolated regression
+cases use real ELF libraries and deb extraction to check mixed-major/minor/build
+versions, missing headers, strict overrides, sysroot isolation, parser identity,
+multiarch selection and the DeepStream root override. The player builder reports
+TensorRT 10.16.1 build 11, and actual pose-engine validation passes batches 1/2/8/1
+plus malformed-contract rejection. A real five-second recording completes with
+`App run successful` and no analytics element under default settings.
+
+Native Jetson's full 338-target build passes with the override unset. It retains
+its installed AArch64 headers and versioned libraries, creates no managed header
+downloads, and reports TensorRT 10.3.0 build 30 / CUDA 12.6 on Orin. Neither native
+playback nor model preparation imports the TensorRT Python package.
+
+Evidence: `/tmp/hstream-player-sdk-{make-perf,make-perf-final,selection-tests,
+runtime-info,engine-test,default-playback}.log` and
+`/tmp/hstream-player-trt-sdk-jetson-evidence/validation.md`.

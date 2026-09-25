@@ -25,34 +25,48 @@ preparation provenance and must be retained to reproduce an export.
 scripts/create_player_model_export_env.sh /path/to/working/python /path/to/new/export-env
 ```
 
-The runtime builder must use the TensorRT SDK loaded by DeepStream, independently of
-Python's TensorRT package. A host can have a newer default `/usr` SDK than DeepStream.
-On the tested x86 host, DeepStream 9.1 needs TensorRT 10.16.1 while `/usr` development
-files are 11.3. The dedicated repository refuses a mismatched header/library/DeepStream
-major instead of compiling with an accidental SDK. Set `HSTREAM_PLAYER_TENSORRT_SDK_ROOT`
-to a coherent SDK before building. Keep this root outside sandbox-masked temporary
-directories (for example under `$HOME/.cache/hstream/player-sdk`). The namespaced
-SDK headers prevent a missing selected SDK from falling back to system headers:
+Normal builds and playback require no TensorRT environment override. The build
+selects the versioned TensorRT libraries required by the configured DeepStream
+installation and checks native header/runtime versions, including the build number.
+Compatible installed development headers are used directly. On Linux x86_64 with
+TensorRT 10.16.1 build 11, missing or incompatible headers trigger a SHA256-pinned
+download of NVIDIA's matching development packages into Bazel's external repository.
+Only their headers are used; libraries still come from the installed runtime.
+This handles DeepStream 9.1 alongside `/usr` TensorRT 11 development files without
+installing, uninstalling or modifying system packages or using a private SDK cache.
+
+The managed fallback requires `dpkg-deb` and network access on the first fetch
+(subsequent fetches use Bazel's download cache). Native version inspection uses
+Python's standard-library `ctypes`, without importing the TensorRT Python package
+or creating a CUDA context. The namespaced headers cannot fall back to `/usr`
+accidentally. Ordinary commands are:
 
 ```bash
-HSTREAM_PLAYER_TENSORRT_SDK_ROOT=/path/to/coherent/sdk/root \
-  bazelisk build --config=opt --cpu=k8 //src/apps/player-model-builder:player-model-builder
+make perf
 bazel-bin/src/apps/player-model-builder/player-model-builder --runtime-info
 ```
 
+`HSTREAM_PLAYER_TENSORRT_SDK_ROOT` remains an optional advanced override for a
+custom/offline SDK. An invalid override fails instead of selecting another SDK.
+Keep a custom SDK outside sandbox-masked temporary directories. `DEEPSTREAM_ROOT`
+is honored consistently with the main DeepStream repository.
+
 The SDK root contains `include[/ARCH]/NvInfer.h` and `lib[/ARCH]/libnvinfer.so`,
 `libnvonnxparser.so`. Jetson builds use the actual Jetson SDK (10.3 on the tested DS7.1
-host). Cross-compiles use the synchronized Jetson sysroot. Engines must be built and
+host). Cross-compiles use the synchronized Jetson sysroot and never download x86
+headers or execute target libraries; target startup retains the full runtime identity
+check. Other SDK releases require matching installed headers or a custom SDK.
+Engines must be built and
 validated on their eventual playback GPU, not copied from x86 to Jetson. Preparation
 records the actual loaded TensorRT semantic/build versions, CUDA runtime version, GPU
 name and compute capability. The CUDA runtime query may differ from the header version
 when multiple CUDA minor versions are installed.
 
-For the tested x86 host, coherent 10.16 headers can be staged without changing installed
-packages by downloading/extracting the matching `libnvinfer-headers-dev` and
-`libnvonnxparsers-dev` packages from NVIDIA's configured repository. Point the staged
-SDK's development library links at the installed `.so.10` runtime. Do not use the default
-Python TensorRT 11 to build these engines.
+The managed 10.16 fallback extracts `libnvinfer-headers-dev` and
+`libnvonnxparsers-dev` version `10.16.1.11-1+cuda13.2` from NVIDIA's Ubuntu 24.04
+repository. The source URLs and SHA256 digests are pinned in
+`bazel/player_tensorrt_sdk_repository.bzl`. Do not use Python TensorRT 11 to build
+engines for a DeepStream TensorRT 10 runtime.
 
 ## Validation input
 
