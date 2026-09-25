@@ -205,7 +205,7 @@ git_repository(
 ################################ HockeyMON Sub-Modules ################################
 git_repository(
     name = "hm-cupano",
-    commit = "f7dca49f0fae67ae70ef1dee475c2ec3f886ee0f",
+    commit = "a3a243637fb294b05eb3d317ce38c87bec0edc52",
     remote = "ssh://git@github.com/cjolivier01/hm-cupano",
 )
 
@@ -391,4 +391,11 @@ http_archive(
     sha256 = "f392ec4f5471d0bc5d4de20ab23efe61392eb6e09e780781b9407e2eb95ad31e",
     strip_prefix = "exiftool-13.50",
     build_file = "//buildfiles:third_party/exiftool.BUILD",
+)
+
+# hm-cupano's packed-remap parity tests use GoogleTest.
+git_repository(
+    name = "googletest",
+    commit = "52eb8108c5bdec04579160ae17225d66034bd723",
+    remote = "https://github.com/google/googletest.git",
 )
