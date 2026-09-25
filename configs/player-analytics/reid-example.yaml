@@ -30,4 +30,3 @@ ReID:
   minVisibility4GalleryUpdate: 0.6
 TrajectoryManagement:
   reidExtractionInterval: 8
-
