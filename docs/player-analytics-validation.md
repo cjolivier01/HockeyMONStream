@@ -586,7 +586,7 @@ libraries or select the managed x86 headers. See the
 
 The exact `make perf` command passes with the override unset in the ordinary
 output base. The first full build executed 3,538 actions; the final rule also
-passes the full build after version/multiarch checks. Thirteen isolated regression
+passes the full build after version/multiarch checks. Fifteen isolated regression
 cases use real ELF libraries and deb extraction to check mixed-major/minor/build
 versions, missing headers, strict overrides, sysroot isolation, parser identity,
 multiarch selection and the DeepStream root override. The player builder reports
@@ -598,6 +598,11 @@ Native Jetson's full 338-target build passes with the override unset. It retains
 its installed AArch64 headers and versioned libraries, creates no managed header
 downloads, and reports TensorRT 10.3.0 build 30 / CUDA 12.6 on Orin. Neither native
 playback nor model preparation imports the TensorRT Python package.
+
+Both follow-up reviewers found one additional SDK consistency gap: installed
+headers and explicit SDKs could bypass the ONNX parser release check. All
+selection paths now compare the parser and inference release; two additional
+regressions cover those cases.
 
 Evidence: `/tmp/hstream-player-sdk-{make-perf,make-perf-final,selection-tests,
 runtime-info,engine-test,default-playback}.log` and

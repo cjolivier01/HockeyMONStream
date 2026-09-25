@@ -91,14 +91,17 @@ def _deepstream_infer(ctx, cross):
         fail("DEEPSTREAM_ROOT does not exist: {}".format(override))
     return None
 
+def _library_release(library):
+    version = library.realpath.basename.split(".so.")[-1].split(".")
+    if len(version) == 3 and all([field.isdigit() for field in version]):
+        return version
+    fail("Cannot identify TensorRT library release; use the SDK's versioned libraries: {}".format(library))
+
 def _runtime_version(ctx, library, cross):
     if cross:
         # Do not execute target code. The actual target performs the full
         # major/minor/patch/build check in QueryRuntimeIdentity at runtime.
-        version = library.realpath.basename.split(".so.")[-1].split(".")
-        if len(version) == 3 and all([field.isdigit() for field in version]):
-            return version
-        fail("Cannot identify TensorRT target runtime version: {}".format(library))
+        return _library_release(library)
     python = ctx.which("python3")
     if not python:
         fail("python3 is required to query the native TensorRT runtime version.")
@@ -157,6 +160,9 @@ def _player_tensorrt_sdk_impl(ctx):
     libraries = _libraries(ctx, root, major, machine)
     machine = machine or _elf_machine(ctx, libraries["nvinfer"])
     runtime_version = _runtime_version(ctx, libraries["nvinfer"], cross)
+    parser_release = _library_release(libraries["nvonnxparser"])
+    if parser_release != runtime_version[:3]:
+        fail("Player TensorRT parser release {} disagrees with runtime {}. Select a coherent SDK.".format(".".join(parser_release), ".".join(runtime_version)))
     if header_version[:len(runtime_version)] != runtime_version:
         if override:
             fail("Explicit player TensorRT SDK headers {} disagree with runtime {} at {}. Explicit overrides never fall back.".format(".".join(header_version), ".".join(runtime_version), root))

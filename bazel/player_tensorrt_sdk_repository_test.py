@@ -193,7 +193,22 @@ class SdkSelectionTest(unittest.TestCase):
 
     def test_different_parser_release_rejects_managed_headers(self):
         library(self.libs, "nvonnxparser", "10.15.1")
-        with self.assertRaisesRegex(RuntimeError, "Automatic headers are available only"):
+        with self.assertRaisesRegex(RuntimeError, "parser release .* disagrees"):
+            self.select()
+        self.assertEqual(self.context.downloads, [])
+
+    def test_installed_headers_reject_different_parser_release(self):
+        headers(self.system, (10, 16, 1, 11))
+        library(self.libs, "nvonnxparser", "10.15.1")
+        with self.assertRaisesRegex(RuntimeError, "parser release .* disagrees"):
+            self.select()
+        self.assertEqual(self.context.downloads, [])
+
+    def test_explicit_sdk_rejects_different_parser_release(self):
+        headers(self.system, (10, 16, 1, 11))
+        library(self.libs, "nvonnxparser", "10.15.1")
+        self.context.os.environ["HSTREAM_PLAYER_TENSORRT_SDK_ROOT"] = str(self.system)
+        with self.assertRaisesRegex(RuntimeError, "parser release .* disagrees"):
             self.select()
         self.assertEqual(self.context.downloads, [])
 
