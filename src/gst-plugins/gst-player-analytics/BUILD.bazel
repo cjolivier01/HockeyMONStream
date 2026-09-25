@@ -10,12 +10,15 @@ cc_library(
     linkopts = ["-lcuda"],
     visibility = ["//visibility:public"],
     deps = [
+        ":frame_work_plan",
         "//src/libs/player_analytics:config",
         "//src/libs/player_analytics:frame_meta",
         "//src/libs/player_analytics:temporal_state",
         "//src/libs/player_analytics/runtime:native_engine",
         "//src/libs/player_analytics/runtime:pose_gpu",
         "//src/libs/player_analytics/runtime:pose_affine",
+        "//src/libs/player_analytics/runtime:semantic_gpu",
+        "//src/libs/player_analytics/runtime:semantic_roi",
         "//src/libs/stitching:stitched_output_generation_meta",
         "@deepstream//:deepstream_lib",
         "@local_cuda//:cuda",
@@ -44,4 +47,25 @@ cc_binary(
     name = "borrowed_image_test",
     srcs = ["BorrowedImageTest.cpp"],
     deps = [":processor"],
+)
+
+cc_library(
+    name = "frame_work_plan",
+    srcs = ["FrameWorkPlan.cpp"],
+    hdrs = ["FrameWorkPlan.h"],
+    include_prefix = INCLUDE_PREFIX,
+    deps = ["//src/libs/player_analytics:types"],
+)
+
+cc_binary(
+    name = "frame_work_plan_test",
+    srcs = ["FrameWorkPlanTest.cpp"],
+    deps = [":frame_work_plan"],
+)
+
+# Explicit actual model/fixture arguments; no network or synthetic model path.
+cc_binary(
+    name = "player_analytics_semantic_test",
+    srcs = ["PlayerAnalyticsSemanticTest.cpp"],
+    deps = [":processor", "@gstreamer", "@opencv_linux//:opencv"],
 )

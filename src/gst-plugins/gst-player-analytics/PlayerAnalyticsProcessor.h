@@ -16,6 +16,17 @@ struct AnalyticsCounters {
   uint64_t frames{0};
   uint64_t pose_enqueues{0};
   uint64_t pose_results{0};
+  uint64_t jersey_enqueues{0};
+  uint64_t jersey_results{0};
+  uint64_t action_enqueues{0};
+  uint64_t action_results{0};
+  uint64_t model_samples{0};
+  uint64_t maximum_frame_samples{0};
+  uint64_t budget_deferred{0};
+  uint64_t jersey_pose_skipped{0};
+  uint64_t jersey_visibility_skipped{0};
+  uint64_t action_history_unready{0};
+  uint64_t action_history_resets{0};
   uint64_t invalid_time{0};
   uint64_t invalid_rois{0};
   uint64_t capacity_excluded{0};

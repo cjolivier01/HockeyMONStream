@@ -105,7 +105,12 @@ gboolean Stop(GstBaseTransform* transform) noexcept {
         "HSTREAM_PLAYER_ANALYTICS frames=%" G_GUINT64_FORMAT " pose-enqueues=%" G_GUINT64_FORMAT
         " pose-results=%" G_GUINT64_FORMAT " invalid-time=%" G_GUINT64_FORMAT " invalid-rois=%" G_GUINT64_FORMAT
         " capacity-excluded=%" G_GUINT64_FORMAT " duplicate-time=%" G_GUINT64_FORMAT
-        " cancelled-batches=%" G_GUINT64_FORMAT "\n",
+        " cancelled-batches=%" G_GUINT64_FORMAT " jersey-enqueues=%" G_GUINT64_FORMAT
+        " jersey-results=%" G_GUINT64_FORMAT " action-enqueues=%" G_GUINT64_FORMAT " action-results=%" G_GUINT64_FORMAT
+        " model-samples=%" G_GUINT64_FORMAT " maximum-frame-samples=%" G_GUINT64_FORMAT
+        " budget-deferred=%" G_GUINT64_FORMAT " jersey-pose-skipped=%" G_GUINT64_FORMAT
+        " jersey-visibility-skipped=%" G_GUINT64_FORMAT " action-history-unready=%" G_GUINT64_FORMAT
+        " action-history-resets=%" G_GUINT64_FORMAT "\n",
         counters.frames,
         counters.pose_enqueues,
         counters.pose_results,
@@ -113,7 +118,18 @@ gboolean Stop(GstBaseTransform* transform) noexcept {
         counters.invalid_rois,
         counters.capacity_excluded,
         counters.duplicate_time,
-        counters.cancelled_batches);
+        counters.cancelled_batches,
+        counters.jersey_enqueues,
+        counters.jersey_results,
+        counters.action_enqueues,
+        counters.action_results,
+        counters.model_samples,
+        counters.maximum_frame_samples,
+        counters.budget_deferred,
+        counters.jersey_pose_skipped,
+        counters.jersey_visibility_skipped,
+        counters.action_history_unready,
+        counters.action_history_resets);
     delete processor;
   }
   return TRUE;

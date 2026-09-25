@@ -90,6 +90,8 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
       throw std::invalid_argument("action recognition requires pose.rate-hz >= 10 for the causal sample profile");
     config.maximum_tracks = Limit(node, "max-tracks", kMaximumTracks, kMaximumTracks);
     config.maximum_due_rois = Limit(node, "max-due-rois", kMaximumDueRois, kMaximumDueRois);
+    if (config.jersey.enabled && config.jersey_roi_mode == JerseyRoiMode::kPose && config.maximum_due_rois < 2)
+      throw std::invalid_argument("pose-guided jersey recognition requires max-due-rois >= 2");
     config.batch_size = Limit(node, "batch-size", std::min(kMaximumBatch, config.maximum_due_rois), kMaximumBatch);
     if (config.batch_size > config.maximum_due_rois)
       throw std::invalid_argument("batch-size must not exceed max-due-rois");

@@ -140,6 +140,28 @@ bool Disabled() {
   disabled.batch_size = 0;
   const auto processor = pa::PlayerAnalyticsProcessor::Create(disabled, -1);
   bool okay = processor.ok() && !*processor;
+  for (int invalid = 0; invalid < 4; ++invalid) {
+    pa::Config config;
+    config.batch_size = 1;
+    config.pose.bundle = config.jersey.bundle = config.action.bundle = "/inaccessible";
+    if (invalid == 0)
+      config.action.enabled = true;
+    if (invalid == 1) {
+      config.pose.enabled = config.action.enabled = true;
+      config.pose.rate_hz = 9;
+    }
+    if (invalid >= 2) {
+      config.jersey.enabled = true;
+      config.jersey_roi_mode = pa::JerseyRoiMode::kPose;
+      if (invalid == 3) {
+        config.pose.enabled = true;
+        config.maximum_due_rois = 1;
+      }
+    }
+    okay &= Check(
+        !pa::PlayerAnalyticsProcessor::Create(config, 0).ok(),
+        "Invalid semantic dependency/budget accepted before CUDA");
+  }
   {
     Harness test(
         "pose: {enable: false, bundle: /proc/1/not-readable/model.engine}\n"

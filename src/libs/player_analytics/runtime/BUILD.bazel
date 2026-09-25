@@ -63,3 +63,49 @@ cc_binary(
     srcs = ["PoseFixtureTest.cpp"],
     deps = [":native_engine", ":pose_affine", ":pose_gpu", "@opencv_linux//:opencv"],
 )
+
+cc_library(
+    name = "semantic_gpu_headers",
+    hdrs = ["SemanticGpu.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":pose_gpu_headers"],
+)
+
+cc_library(
+    name = "semantic_roi",
+    srcs = ["SemanticRoi.cpp"],
+    hdrs = ["SemanticRoi.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":semantic_gpu_headers",
+        "//src/libs/player_analytics:config",
+        "//src/libs/player_analytics:model_contract",
+    ],
+)
+
+cuda_library(
+    name = "semantic_gpu",
+    srcs = ["SemanticGpu.cu"],
+    visibility = ["//visibility:public"],
+    deps = [":semantic_gpu_headers"],
+)
+
+cc_binary(
+    name = "semantic_gpu_test",
+    srcs = ["SemanticGpuTest.cpp"],
+    deps = [":semantic_roi", ":semantic_gpu", "@opencv_linux//:opencv"],
+)
+
+cc_binary(
+    name = "semantic_engine_test",
+    srcs = ["SemanticEngineTest.cpp"],
+    deps = [":native_engine", ":semantic_roi", ":semantic_gpu"],
+)
+
+cc_binary(
+    name = "jersey_fixture_test",
+    srcs = ["JerseyFixtureTest.cpp"],
+    deps = [":native_engine", ":semantic_roi", ":semantic_gpu", "@opencv_linux//:opencv"],
+)

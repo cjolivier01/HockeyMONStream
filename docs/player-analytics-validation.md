@@ -260,3 +260,44 @@ preparation coverage correction against `47b2df5a`; both report no necessary
 fixes and independently reran all 17 CPU tests without skips. Prior runtime,
 pipeline, EGL and shutdown findings are resolved. The supported engines and
 numerical thresholds are unchanged by this preparation-only correction.
+## Jersey/action integration (PR 3)
+
+Both complete x86 and native Jetson builds pass after integrating the native
+semantic GPU helpers and shared work planner. Integrated x86 tests pass for
+configuration/dependencies, weighted/fair aggregate scheduling, 16 exact PIL crop
+fixtures (including packed 10-bit and extreme/padded geometry), full-vocabulary
+OCR/action reduction, and actual engine batches 1/2/8/1. The retained real jersey
+fixture reads “27”; preprocessing is exact. Plugin lifecycle/flush/error tests
+continue to pass with all semantic features present.
+
+The actual-model integration test verifies jersey consensus/expiry and identity
+reuse, explicit guided crops with no stale-pose/bbox fallback, and two player
+histories of 100 samples over 9.9 seconds. A real batched action enqueue reports
+label 28, confidence 0.966745 on RTX 5090. This repeated-image fixture verifies
+causal processing and model execution, not temporal classification accuracy.
+Under a one-sample cap, 105 actual poses split 53/52 between tracks and action
+remains unready; a high action cadence cannot reuse a window as new evidence.
+
+A 15-second private x86 recording completes 915 frames, 4,281 pose results,
+918 jersey results and 21 action results (10 action enqueues), with no invalid
+PTS/ROI, excluded-capacity or cancelled-batch events. Maximum per-frame model
+samples is exactly the configured cap of 32; 16 eligible samples were deferred.
+History resets/unready counters reflect actual tracking/pose gaps. “App run
+successful” confirms shutdown completed. This is operational evidence, not a
+controlled performance or hockey accuracy measurement.
+
+Evidence: `/tmp/hstream-player-pr3-{build-initial,config,planner,gpu,engines,jersey,
+lifecycle,semantics,recording}.log`. Model weights, fixtures and private game
+artifacts are retained outside Git. GPU rendering and final performance comparisons
+remain the next stack stage.
+
+Integrated native Jetson tests also pass all seven suites. Its 16 PIL fixtures
+have zero pixel differences; the real jersey is “27” at confidence 0.833069.
+The two-history action fixture returns label 28 at confidence 0.969337, with the
+same 53/52 capacity fairness and gap/reset assertions. A real 20-second Jetson
+recording completes 1,212 frames, 4,724 poses, 1,012 jerseys and 26 actions from
+22 action enqueues. The maximum remains 32 model samples/frame, with 14 deferred
+samples; invalid timestamps/ROIs, capacity exclusions, duplicates and cancelled
+batches are zero. It exits naturally with “App run successful”. Remote evidence
+is `/tmp/hstream-player-pr3-*.log`, copied locally under
+`/tmp/hstream-player-pr3-jetson-evidence/`.

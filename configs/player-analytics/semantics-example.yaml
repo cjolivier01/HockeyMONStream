@@ -1,0 +1,22 @@
+# Explicit opt-in. Prepare target-local models before use; no runtime downloads.
+# Action outputs use the model's generic NTU60 labels, not hockey events.
+pipeline:
+  player-analytics:
+    pose:
+      enable: 1
+      bundle: /absolute/path/to/prepared-pose-bundle
+      rate-hz: 10
+    jersey:
+      enable: 1
+      bundle: /absolute/path/to/prepared-jersey-bundle
+      rate-hz: 2
+      confidence-threshold: 0.8
+      roi-mode: bbox # pose requires enabled pose and fresh same-frame torso joints
+    action:
+      enable: 1
+      bundle: /absolute/path/to/prepared-action-bundle
+      rate-hz: 1
+      confidence-threshold: 0.5
+    max-tracks: 256
+    max-due-rois: 32 # Aggregate model samples, not 32 per feature.
+    batch-size: 8
