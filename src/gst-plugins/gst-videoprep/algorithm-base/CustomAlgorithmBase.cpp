@@ -7,6 +7,7 @@
 #include <nvdsdummyusermeta.h>
 #endif
 
+#include <chrono>
 #include <iostream>
 #include <mutex>
 #include <ostream>
@@ -458,6 +459,7 @@ bool CustomAlgorithmBase::HandleEvent(GstEvent* event) {
         std::lock_guard<std::mutex> lock(m_processLock);
         flush_generation_.fetch_add(1, std::memory_order_release);
         pending.swap(m_processQ);
+        m_processCV.notify_all();
       }
       while (!pending.empty()) {
         gst_buffer_unref(pending.front().inbuf);
@@ -642,6 +644,28 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   }
 
   return BufferResult::Buffer_Async; // BufferResult::Buffer_Ok;
+}
+
+GstFlowReturn CustomAlgorithmBase::AcquireOutputBuffer(
+    GstBufferPool* pool,
+    GstBuffer** buffer,
+    const PacketInfo& packet) {
+  *buffer = nullptr;
+  GstBufferPoolAcquireParams params{};
+  params.flags = GST_BUFFER_POOL_ACQUIRE_FLAG_DONTWAIT;
+  const auto cancelled = [&] {
+    return shutdown_requested_.load(std::memory_order_acquire) || !PacketGenerationIsCurrent(packet);
+  };
+  while (!cancelled()) {
+    const GstFlowReturn flow = gst_buffer_pool_acquire_buffer(pool, buffer, &params);
+    // DONTWAIT reports EOS when the pool is temporarily exhausted. Keep backpressure
+    // without dropping frames, and let cancellation/seek wake the worker promptly.
+    if (flow != GST_FLOW_EOS)
+      return flow;
+    std::unique_lock<std::mutex> lock(m_processLock);
+    m_processCV.wait_for(lock, std::chrono::milliseconds(5), cancelled);
+  }
+  return GST_FLOW_FLUSHING;
 }
 
 bool CustomAlgorithmBase::PacketGenerationIsCurrent(const PacketInfo& packet_info) const {
@@ -907,6 +931,11 @@ void CustomAlgorithmBase::OutputThread(void) {
     if (m_frameinsertinterval) {
       if ((packetInfo.frame_num % m_frameinsertinterval) == 0) {
         auto status = InsertCustomFrame(&packetInfo);
+        if (absl::IsCancelled(status)) {
+          gst_buffer_unref(packetInfo.inbuf);
+          lk.lock();
+          continue;
+        }
         if (!status.ok()) {
           std::cerr << status << std::endl;
           update_last_flow_ret(GST_FLOW_ERROR);
@@ -951,10 +980,17 @@ void CustomAlgorithmBase::OutputThread(void) {
           continue;
         }
         assert(m_dsBufferPool);
-        result = gst_buffer_pool_acquire_buffer(m_dsBufferPool, &newGstOutBuf, NULL);
+        result = AcquireOutputBuffer(m_dsBufferPool, &newGstOutBuf, packetInfo);
         if (result != GST_FLOW_OK) {
-          GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
-          update_last_flow_ret(GST_FLOW_ERROR);
+          if (result != GST_FLOW_FLUSHING) {
+            update_last_flow_ret(GST_FLOW_ERROR);
+            videoprep::post_fatal_output_error(
+                GST_ELEMENT(m_element), absl::InternalError("Could not acquire an output buffer"));
+            RequestShutdown();
+          }
+          gst_buffer_unref(packetInfo.inbuf);
+          lk.lock();
+          continue;
         }
         // Copy meta and transform if required
         if (!gst_buffer_copy_into(newGstOutBuf, packetInfo.inbuf, GST_BUFFER_COPY_META, 0, -1)) {
@@ -1036,11 +1072,17 @@ void CustomAlgorithmBase::OutputThread(void) {
         GstMapInfo swbufmap = GST_MAP_INFO_INIT;
         GstMapInfo inbufmap = GST_MAP_INFO_INIT;
         GstFlowReturn result = GST_FLOW_OK;
-        result = gst_buffer_pool_acquire_buffer(m_swbufpool, &swGstOutBuf, NULL);
+        result = AcquireOutputBuffer(m_swbufpool, &swGstOutBuf, packetInfo);
         if (result != GST_FLOW_OK) {
-          GST_ERROR_OBJECT(m_element, "Acquire buffer failed with error = %d", result);
-          MarkOutputThreadStopped();
-          return;
+          if (result != GST_FLOW_FLUSHING) {
+            update_last_flow_ret(GST_FLOW_ERROR);
+            videoprep::post_fatal_output_error(
+                GST_ELEMENT(m_element), absl::InternalError("Could not acquire a software output buffer"));
+            RequestShutdown();
+          }
+          gst_buffer_unref(packetInfo.inbuf);
+          lk.lock();
+          continue;
         }
 
         if (!gst_buffer_map(swGstOutBuf, &swbufmap, GST_MAP_READ)) {
@@ -1132,8 +1174,10 @@ absl::Status CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
   GstBuffer* newGstOutBuf = NULL;
   GstFlowReturn result = GST_FLOW_OK;
 
-  result = gst_buffer_pool_acquire_buffer(m_dsBufferPool, &newGstOutBuf, NULL);
+  result = AcquireOutputBuffer(m_dsBufferPool, &newGstOutBuf, *packetInfo);
   if (result != GST_FLOW_OK) {
+    if (result == GST_FLOW_FLUSHING)
+      return absl::CancelledError("Output acquisition cancelled");
     GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
     return absl::InternalError("InsertCustomFrame failed");
   }

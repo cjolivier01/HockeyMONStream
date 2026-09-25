@@ -97,6 +97,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   // teardown must cooperatively cancel long-running algorithm work without
   // blocking the GLib main loop that owns the state transition.
   void RequestShutdown();
+  GstFlowReturn AcquireOutputBuffer(GstBufferPool* pool, GstBuffer** buffer, const PacketInfo& packet);
 
  private:
   /* Helper Function to Extract Batch Meta from buffer */

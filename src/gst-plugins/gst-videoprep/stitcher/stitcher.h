@@ -188,7 +188,6 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   absl::Status prepare_high_bit_inputs(
       hm::surface::Surface incoming_surface_left,
       hm::surface::Surface incoming_surface_right);
-  absl::StatusOr<std::pair<hm::surface::Surface, hm::surface::Surface>> high_bit_calibration_surfaces();
   absl::StatusOr<CalibrationSurfaceSnapshot> capture_calibration_surface(hm::surface::Surface surface);
   absl::Status capture_calibration_pair(
       hm::surface::Surface left,
@@ -204,7 +203,6 @@ class StitcherPriv : public STITCH_PRIV_BASE {
       const NvDsFrameMeta* right_meta);
   bool calibration_input_exhausted(const EosSnapshot& eos_snapshot);
   absl::Status report_fatal_calibration_failure(const absl::Status& status);
-  void release_high_bit_calibration_surfaces();
   void release_captured_calibration_surfaces();
   void release_high_bit_field_mask_canvas();
   void update_live_output_epoch(
@@ -249,6 +247,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool match_exposure_{false};
   bool minimize_blend_{false};
   bool fused_rgb10_remap_{true};
+  bool compact_workspace_{false};
   size_t calibration_frame_count_{4};
   uint64_t calibration_sample_span_ns_{0};
   int max_output_width_{0};
@@ -285,13 +284,9 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::unique_ptr<hm::CudaMat<half4>> high_bit_left_;
   std::unique_ptr<hm::CudaMat<half4>> high_bit_right_;
   std::unique_ptr<hm::CudaMat<half4>> high_bit_canvas_;
-  std::unique_ptr<hm::CudaMat<uchar4>> high_bit_calibration_left_;
-  std::unique_ptr<hm::CudaMat<uchar4>> high_bit_calibration_right_;
   std::vector<CalibrationFramePairSnapshot> captured_calibration_frame_pairs_;
   std::optional<uint64_t> first_calibration_pair_pts_ns_;
   std::unique_ptr<hm::CudaMat<uchar4>> high_bit_field_mask_canvas_;
-  NvBufSurfaceParams high_bit_calibration_left_params_{};
-  NvBufSurfaceParams high_bit_calibration_right_params_{};
   NvBufSurfaceParams high_bit_field_mask_canvas_params_{};
 };
 

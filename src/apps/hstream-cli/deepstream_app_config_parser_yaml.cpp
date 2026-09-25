@@ -413,6 +413,7 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   locator.ignored.emplace("post_stitch_rotate_degrees");
   SET_LOCATOR(locator, *config, minimize_blend);
   SET_LOCATOR(locator, *config, ui_preview);
+  SET_LOCATOR(locator, *config, pre_converter_output_buffers);
   SET_LOCATOR(locator, *config, calibration_frame_count);
   SET_LOCATOR(locator, *config, calibration_sample_span_ns);
   SET_LOCATOR_CHARS(locator, *config, stitch_compute_precision);

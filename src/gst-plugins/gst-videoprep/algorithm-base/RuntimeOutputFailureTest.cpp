@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <string>
 
@@ -17,6 +18,8 @@ bool expect(bool condition, const char* message) {
 
 class FailingRuntimeSize final : public hm::CustomAlgorithmBase {
  public:
+  using CustomAlgorithmBase::AcquireOutputBuffer;
+  using CustomAlgorithmBase::RequestShutdown;
   FailingRuntimeSize() : CustomAlgorithmBase(0, 2) {
     m_transformMode = true;
   }
@@ -38,6 +41,55 @@ class FailingRuntimeSize final : public hm::CustomAlgorithmBase {
   std::atomic<int> sizing_calls{0};
   std::atomic<int> generation_calls{0};
 };
+
+bool expect_cancellable_pool_wait() {
+  bool ok = true;
+  for (int scenario = 0; scenario < 3; ++scenario) {
+    FailingRuntimeSize algorithm;
+    GstBufferPool* pool = gst_buffer_pool_new();
+    GstStructure* config = gst_buffer_pool_get_config(pool);
+    gst_buffer_pool_config_set_params(config, nullptr, 16, 1, 1);
+    ok &= expect(
+        gst_buffer_pool_set_config(pool, config) && gst_buffer_pool_set_active(pool, true),
+        "single-buffer pool must activate");
+    GstBuffer* held = nullptr;
+    ok &= expect(
+        gst_buffer_pool_acquire_buffer(pool, &held, nullptr) == GST_FLOW_OK, "test must hold the sole output buffer");
+    hm::PacketInfo packet{};
+    packet.flush_generation = 0;
+    GstBuffer* acquired = nullptr;
+    auto future =
+        std::async(std::launch::async, [&] { return algorithm.AcquireOutputBuffer(pool, &acquired, packet); });
+    ok &= expect(
+        future.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout,
+        "exhausted pool must apply backpressure");
+    if (scenario == 0) {
+      algorithm.RequestShutdown();
+    } else if (scenario == 1) {
+      GstEvent* event = gst_event_new_flush_start();
+      algorithm.HandleEvent(event);
+      gst_event_unref(event);
+    } else {
+      gst_buffer_unref(held);
+      held = nullptr;
+    }
+    const bool ready = future.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+    ok &= expect(ready, "pool wait must respond to cancellation, seek, or a returned buffer");
+    if (!ready)
+      gst_buffer_pool_set_flushing(pool, true); // Keep a regression from hanging the test.
+    const GstFlowReturn result = future.get();
+    ok &= expect(
+        result == (scenario == 2 ? GST_FLOW_OK : GST_FLOW_FLUSHING),
+        "pool wait must distinguish available output from cancellation");
+    if (acquired)
+      gst_buffer_unref(acquired);
+    if (held)
+      gst_buffer_unref(held);
+    gst_buffer_pool_set_active(pool, false);
+    gst_object_unref(pool);
+  }
+  return ok;
+}
 
 bool expect_nonfatal_pool_statuses() {
   hm::videoprep::RuntimeOutputPoolFlow flow;
@@ -137,6 +189,7 @@ bool expect_single_input_failure(GstElement* element, GstBus* bus, cudaStream_t 
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   bool ok = expect_nonfatal_pool_statuses();
+  ok &= expect_cancellable_pool_wait();
   int devices = 0;
   if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
     std::cout << "SKIP: the actual output-worker regression requires CUDA device initialization\n";

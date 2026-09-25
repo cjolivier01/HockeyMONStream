@@ -696,6 +696,8 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "config-file", config->config_file, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+  if (config->pre_converter_output_buffers)
+    g_object_set(G_OBJECT(bin->pre_conv), "output-buffers", config->pre_converter_output_buffers, NULL);
 
   if (config->num_output_buffers) {
     g_object_set(G_OBJECT(bin->elem_hmstitcher), "num-output-buffers", config->num_output_buffers, NULL);

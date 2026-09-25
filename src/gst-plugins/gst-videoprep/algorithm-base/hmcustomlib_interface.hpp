@@ -25,6 +25,7 @@ struct BufferPoolConfig {
   gint cuda_mem_type{0};
   guint gpu_id{0};
   guint max_buffers{0};
+  guint extra_buffers{4};
   gint batch_size{0};
 };
 

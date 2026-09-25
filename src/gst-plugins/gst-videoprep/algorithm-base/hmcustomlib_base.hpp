@@ -11,6 +11,7 @@
 
 #include "gstnvdsbufferpool.h"
 
+#include <algorithm>
 #include <cassert>
 
 namespace hm {
@@ -208,7 +209,11 @@ inline GstBufferPool* DSCustomLibraryBase::CreateBufferPool(BufferPoolConfig* po
 
   GST_INFO_OBJECT(m_element, "in videoconvert caps = %" GST_PTR_FORMAT "\n", outcaps);
   gst_buffer_pool_config_set_params(
-      config, outcaps, sizeof(NvBufSurface), pool_config->max_buffers, pool_config->max_buffers + 4);
+      config,
+      outcaps,
+      sizeof(NvBufSurface),
+      pool_config->max_buffers,
+      pool_config->max_buffers + std::min(pool_config->extra_buffers, G_MAXUINT - pool_config->max_buffers));
 
   gst_structure_set(
       config,

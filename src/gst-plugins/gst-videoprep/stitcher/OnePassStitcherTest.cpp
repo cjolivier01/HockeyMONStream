@@ -37,12 +37,13 @@ bool run_precaps(
     size_t expected_width,
     size_t expected_height) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
-  constexpr const char* kFusedRemap = "fused-rgb10-remap";
-  if (!stitcher.SetProperty({kFusedRemap, "true"}) || !stitcher.SetProperty({kFusedRemap, "false"}) ||
-      !stitcher.SetProperty({kFusedRemap, "1"}) || !stitcher.SetProperty({kFusedRemap, "0"}) ||
-      stitcher.SetProperty({kFusedRemap, "yes"})) {
-    std::cerr << "Invalid boolean parsing for " << kFusedRemap << '\n';
-    return false;
+  for (const auto* name : {"fused-rgb10-remap", "compact-workspace"}) {
+    if (!stitcher.SetProperty({name, "true"}) || !stitcher.SetProperty({name, "false"}) ||
+        !stitcher.SetProperty({name, "1"}) || !stitcher.SetProperty({name, "0"}) ||
+        stitcher.SetProperty({name, "yes"})) {
+      std::cerr << "Invalid boolean parsing for " << name << '\n';
+      return false;
+    }
   }
   if (stitcher.SetProperty({"emit-frame-pair-meta", "yes"}) ||
       !stitcher.SetProperty({"emit-frame-pair-meta", "true"}) ||
