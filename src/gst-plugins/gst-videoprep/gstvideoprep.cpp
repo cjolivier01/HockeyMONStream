@@ -138,6 +138,7 @@ enum {
   PROP_GPU_DEVICE_ID,
   PROP_SOURCE_ID,
   PROP_NUM_OUTPUT_BUFFERS,
+  PROP_OUTPUT_POOL_EXTRA_BUFFERS,
   PROP_CONFIG_FILE,
   PROP_PLUGIN_TYPE,
   PROP_OUTPUT_WIDTH,
@@ -804,6 +805,7 @@ static gboolean gst_videoprep_set_caps(GstBaseTransform* trans, GstCaps* incaps,
   videoprep->custom_create_params.m_outCaps = outcaps;
 
   videoprep->custom_create_params.m_bufferPoolConfig.max_buffers = videoprep->num_output_buffers;
+  videoprep->custom_create_params.m_bufferPoolConfig.extra_buffers = videoprep->output_pool_extra_buffers;
   videoprep->custom_create_params.m_bufferPoolConfig.batch_size = videoprep->num_batch_buffers;
   videoprep->custom_create_params.m_bufferPoolConfig.cuda_mem_type = videoprep->cuda_mem_type;
   videoprep->custom_create_params.m_bufferPoolConfig.gpu_id = videoprep->gpu_id;
@@ -1066,6 +1068,18 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
           0,
           G_MAXUINT,
           DEFAULT_SOURCE_ID,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_OUTPUT_POOL_EXTRA_BUFFERS,
+      g_param_spec_uint(
+          "output-pool-extra-buffers",
+          "Output pool growth allowance",
+          "Additional output buffers beyond num-output-buffers; zero enforces a fixed pool",
+          0,
+          G_MAXUINT,
+          4,
           GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
 
   g_object_class_install_property(
@@ -1431,6 +1445,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->priv_factory = new VideoPrepLibrary_Factory();
 
   videoprep->num_output_buffers = DEFAULT_NUM_OUTPUT_BUFFERS;
+  videoprep->output_pool_extra_buffers = 4;
 
   // videoprep->dump_frames = DEFAULT_DEWARP_DUMP_FRAMES;
 
@@ -1526,6 +1541,7 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       PROPERTY_SET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
       PROPERTY_SET_CASE(PROP_SOURCE_ID, videoprep->source_id)
       PROPERTY_SET_CASE(PROP_NUM_OUTPUT_BUFFERS, videoprep->num_output_buffers)
+      PROPERTY_SET_CASE(PROP_OUTPUT_POOL_EXTRA_BUFFERS, videoprep->output_pool_extra_buffers)
       PROPERTY_SET_CASE(PROP_NUM_BATCH_BUFFERS, videoprep->num_batch_buffers)
       PROPERTY_SET_CASE(PROP_NVBUF_MEMORY_TYPE, videoprep->cuda_mem_type)
       PROPERTY_SET_CASE(PROP_INTERPOLATION_METHOD, videoprep->interpolation_method);
@@ -1949,6 +1965,7 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       PROPERTY_GET_CASE(PROP_GPU_DEVICE_ID, videoprep->gpu_id)
       PROPERTY_GET_CASE(PROP_SOURCE_ID, videoprep->source_id)
       PROPERTY_GET_CASE(PROP_NUM_OUTPUT_BUFFERS, videoprep->num_output_buffers)
+      PROPERTY_GET_CASE(PROP_OUTPUT_POOL_EXTRA_BUFFERS, videoprep->output_pool_extra_buffers)
       PROPERTY_GET_CASE(PROP_NUM_BATCH_BUFFERS, videoprep->num_batch_buffers)
       PROPERTY_GET_CASE(PROP_NVBUF_MEMORY_TYPE, videoprep->cuda_mem_type)
       PROPERTY_GET_CASE(PROP_INTERPOLATION_METHOD, videoprep->interpolation_method);

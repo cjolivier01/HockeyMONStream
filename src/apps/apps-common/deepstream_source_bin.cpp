@@ -4446,8 +4446,7 @@ static void set_properties_nvuribin(GstElement* element_, NvDsSourceConfig const
   GstElementFactory* factory = GST_ELEMENT_GET_CLASS(element_)->elementfactory;
   if (!g_strcmp0(GST_OBJECT_NAME(factory), "nvurisrcbin"))
     g_object_set(element_, "uri", config->uri, NULL);
-  if (config->num_extra_surfaces)
-    g_object_set(element_, "num-extra-surfaces", config->num_extra_surfaces, NULL);
+  g_object_set(element_, "num-extra-surfaces", config->num_extra_surfaces, NULL);
   if (config->gpu_id)
     g_object_set(element_, "gpu-id", config->gpu_id, NULL);
   g_object_set(element_, "cuda_memory_type", config->cuda_memory_type, NULL);

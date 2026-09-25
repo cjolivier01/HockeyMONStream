@@ -188,6 +188,7 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
  *
  */
 struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
+  guint pre_converter_output_buffers; // Zero preserves the converter default.
   gboolean configure_only;
   gboolean one_pass_mode;
   gulong left_frame_offset_ns;

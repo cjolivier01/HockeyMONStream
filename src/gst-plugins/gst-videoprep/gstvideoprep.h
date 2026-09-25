@@ -155,6 +155,7 @@ struct GstVideoPrep
   gboolean silent;                    /**< Boolean indicating swtiching on/off of verbose output */
 
   guint source_id;                            /**< Source ID of the input source */
+  guint output_pool_extra_buffers;
   guint num_output_buffers;                   /**< Number of Output Buffers to be allocated by buffer pool */
 
   GstPadEventFunction parent_sink_event_fn;

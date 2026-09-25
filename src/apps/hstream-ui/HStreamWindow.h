@@ -103,6 +103,9 @@ StitchingCanvasConstraintDecision decide_stitching_canvas_constraint_change(
     bool width_changed,
     const std::optional<bool>& artifacts_compatible,
     const std::optional<bool>& requires_regeneration);
+// Mirrors the runner's GPU precedence. Invalid or negative configured values
+// cannot name a CUDA ordinal and return no selection.
+std::optional<unsigned> configured_pipeline_gpu(const YAML::Node& effective_config);
 
 } // namespace hm::ui_internal
 
@@ -396,6 +399,7 @@ class HStreamWindow : public QMainWindow {
   QString detectorConfigName() const;
   QString detectorEnginePath() const;
   void loadDetectorPrecision(const YAML::Node& config);
+  void updateDefaultGpuMemoryProfile(const YAML::Node& game_config);
   void loadPlayerAnalyticsConfig(const YAML::Node& config);
   bool validatePlayerAnalyticsForRun();
   void updateDetectorPrecisionStatus();
@@ -623,6 +627,9 @@ class HStreamWindow : public QMainWindow {
   YAML::Node player_analytics_defaults_;
   YAML::Node player_analytics_user_;
   QStringList active_player_analytics_arguments_;
+  QString active_gpu_memory_profile_;
+  QComboBox* gpu_memory_profile_combo_{nullptr};
+  bool gpu_memory_profile_user_selected_{false};
   QComboBox* detector_precision_combo_{nullptr};
   QLabel* detector_precision_status_{nullptr};
   QString saved_detector_precision_;

@@ -85,6 +85,7 @@ gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node
   SET_LOCATOR(locator, *config, gpu_id); // "gpu-id"
   SET_LOCATOR(locator, *config, num_decode_surfaces); // "num-decode-surfaces"
   SET_LOCATOR(locator, *config, num_extra_surfaces); // "num-extra-surfaces"
+  SET_LOCATOR(locator, *config, low_latency_mode); // "low-latency-mode"
   SET_LOCATOR(locator, *config, drop_frame_interval); // "drop-frame-interval"
   SET_LOCATOR(locator, *config, camera_id); // "camera-id"
   SET_LOCATOR(locator, *config, input_audio_rate); // "input-audio-rate" or "audio-input-rate"

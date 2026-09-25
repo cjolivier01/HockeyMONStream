@@ -575,8 +575,11 @@ absl::Status prepare_inference_config(
   if (!enabled(section) || !section["config-file"] || !section["config-file"].IsScalar())
     return absl::OkStatus();
   const fs::path inference_path = resolve_path(section["config-file"].as<std::string>(), config_directory);
-  if (!is_yaml(inference_path))
+  const YAML::Node workspace_override = section["workspace-size"];
+  if (!is_yaml(inference_path)) {
+    section.remove("workspace-size");
     return absl::OkStatus();
+  }
   YAML::Node inference;
   try {
     inference = YAML::LoadFile(inference_path.string());
@@ -585,6 +588,22 @@ absl::Status prepare_inference_config(
         "Unable to read inference config " + inference_path.string() + ": " + exception.what());
   }
   YAML::Node properties = inference["property"];
+  bool inference_property_override = false;
+  if (workspace_override && workspace_override.IsDefined()) {
+    if (!workspace_override.IsScalar())
+      return absl::InvalidArgumentError("Inference workspace-size override must be a positive integer in MiB");
+    try {
+      if (workspace_override.as<unsigned>() == 0)
+        return absl::InvalidArgumentError("Inference workspace-size override must be a positive integer in MiB");
+    } catch (const YAML::Exception&) {
+      return absl::InvalidArgumentError("Inference workspace-size override must be a positive integer in MiB");
+    }
+    if (!properties || !properties.IsMap())
+      return absl::InvalidArgumentError("Inference workspace-size override requires a property map");
+    properties["workspace-size"] = YAML::Clone(workspace_override);
+    section.remove("workspace-size");
+    inference_property_override = true;
+  }
   bool expanded_gpu_path = false;
   for (auto node : {properties, section}) {
     if (!node || !node["model-engine-file"] || !node["model-engine-file"].IsScalar())
@@ -649,8 +668,8 @@ absl::Status prepare_inference_config(
     staged_custom_library =
         staged_custom_library_path("custom-lib-path", properties["custom-lib-path"].as<std::string>());
   }
-  const bool relocated_runtime_config_required =
-      expanded_gpu_path || staged_custom_library.has_value() || inference_paths_require_expansion(properties);
+  const bool relocated_runtime_config_required = expanded_gpu_path || inference_property_override ||
+      staged_custom_library.has_value() || inference_paths_require_expansion(properties);
   auto publish_relocated_config = [&]() -> absl::Status {
     if (!relocated_runtime_config_required)
       return absl::OkStatus();
