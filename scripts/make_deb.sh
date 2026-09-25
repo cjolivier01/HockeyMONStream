@@ -1346,6 +1346,7 @@ Depends: ${SHLIB_DEPENDS},
  ca-certificates,
  ${DEEPSTREAM_DEPENDS},
  ffmpeg,
+ fonts-dejavu-core,
  perl,
  gstreamer1.0-plugins-bad,
  gstreamer1.0-nice${RUNTIME_TOOL_DEPENDS}

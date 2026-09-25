@@ -153,6 +153,9 @@ struct NvDsHmVideoPrepBin {
 };
 
 struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
+  // Authoritative compute-gated drawing, assigned during graph construction.
+  guint player_analytics_layers{0};
+  gfloat player_joint_confidence{0.3F};
   // Four (x,y) coordinates
   gboolean no_crop;
   gboolean show_scoreboard;

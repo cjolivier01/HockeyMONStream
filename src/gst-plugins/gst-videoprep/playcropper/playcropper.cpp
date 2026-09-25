@@ -381,6 +381,15 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (key == "plot-player-tracking") {
     plot_player_tracking_ = !!std::atoi(prop.value.c_str());
+  } else if (key == "player-overlay-layers") {
+    const int value = std::atoi(prop.value.c_str());
+    player_overlay_layers_ = static_cast<uint32_t>(value) &
+        (player_analytics::kDrawPose | player_analytics::kDrawJerseys | player_analytics::kDrawActions);
+  } else if (key == "player-joint-confidence") {
+    float value = 0;
+    if (!parse_finite_float(prop.value, &value) || value < 0 || value > 1)
+      return false;
+    player_joint_confidence_ = value;
   } else if (key == "transform-object-meta") {
     transform_object_meta_ = !!std::atoi(prop.value.c_str());
   } else if (key == "runtime-output-max-width") {
@@ -556,6 +565,36 @@ void PlayCropperPriv::TransformObjectMetaForOutput(
   frame_meta->pipeline_height = static_cast<guint>(output_rect.height());
 }
 
+PlayCropperPriv::~PlayCropperPriv() {
+  Shutdown();
+}
+
+void PlayCropperPriv::Shutdown() {
+  Super::Shutdown();
+  absl::WriterMutexLock lk(&mu_process_);
+  if (!player_overlay_compositor_)
+    return;
+  // GenerateOutput fences successful and failed submissions; retain explicit
+  // shutdown ownership before the base class releases its stream.
+  cudaSetDevice(m_gpuId);
+  if (cuda_stream_)
+    cudaStreamSynchronize(cuda_stream_);
+  const auto& counters = player_overlay_compositor_->counters();
+  g_printerr(
+      "HSTREAM_PLAYER_OVERLAY renders=%llu launches=%llu upload-bytes=%llu device-bytes=%llu "
+      "suppressed=%llu rejected-commands=%llu\n",
+      static_cast<unsigned long long>(counters.renders),
+      static_cast<unsigned long long>(counters.raster_launches),
+      static_cast<unsigned long long>(counters.h2d_bytes),
+      static_cast<unsigned long long>(counters.device_bytes),
+      static_cast<unsigned long long>(player_overlay_suppressions_),
+      static_cast<unsigned long long>(player_overlay_rejections_));
+  player_overlay_compositor_.reset();
+  player_overlay_suppressions_ = 0;
+  player_overlay_rejections_ = 0;
+  player_overlay_commands_.Clear();
+}
+
 absl::Status PlayCropperPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,
@@ -581,7 +620,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
   // nppStreamContext.nCudaDeviceId = m_gpuId;
 
   HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(m_gpuId)));
+#ifndef __aarch64__
   CudaStreamCompletionFence completion_fence(cuda_stream_);
+#endif
 
   const std::vector<std::optional<BBox>> tracking_boxes = get_object_boxes_by_frame(
       batch_meta, DsPlayTrackerInitParams::kPlayBoxClassIdBase, DsPlayTrackerInitParams::kPlayBoxClassIdBase);
@@ -613,6 +654,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
     hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, batch_nr, /*read_only=*/false);
     HM_RETURN_IF_ERROR(hm::to_status(outgoing_elg_surface_mapper.status()));
     hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
+    // Fence before either borrowed EGL mapping is released, including errors.
+    CudaStreamCompletionFence completion_fence(cuda_stream_);
 #else
     hm::surface::Surface incoming_surface(&in_surface->surfaceList[batch_nr]);
     hm::surface::Surface outgoing_surface(&out_surface->surfaceList[batch_nr]);
@@ -658,35 +701,25 @@ absl::Status PlayCropperPriv::GenerateOutput(
 #else
     const BBox output_rect(0, 0, (FloatValue)output_width, (FloatValue)output_height);
 
-    // Preview metadata is purely diagnostic. Request it only when the UI's
-    // pre-playcropper snapshot is present, and attach it before any output GPU
-    // work is submitted. Pool exhaustion must never break encode/headless
-    // processing or return a surface while CUDA is still writing it.
-    if (preview_overlay::find_overlay_snapshot_meta(frame_meta)) {
-      const preview_overlay::PlayCropperTransform preview_transform{
-          static_cast<float>(input_width),
-          static_cast<float>(input_height),
-          metadata_width,
-          metadata_height,
-          transform.source_rect.left,
-          transform.source_rect.top,
-          transform.anchor_point.x,
-          transform.anchor_point.y,
-          transform.crop_box.left,
-          transform.crop_box.top,
-          transform.crop_box.width(),
-          transform.crop_box.height(),
-          static_cast<float>(output_width),
-          static_cast<float>(output_height),
-          transform.angle,
-          transform_object_meta_,
-      };
-      if (!preview_overlay::add_playcropper_transform_meta(frame_meta, preview_transform) &&
-          !preview_transform_failure_reported_) {
-        g_printerr("HSTREAM_PREVIEW_OVERLAY status=transform-meta-unavailable\n");
-        preview_transform_failure_reported_ = true;
-      }
-    }
+    // One exact transform is shared by direct Program drawing and preview
+    // metadata. Publish after rendering so baked bits describe actual pixels.
+    preview_overlay::PlayCropperTransform preview_transform{
+        static_cast<float>(input_width),
+        static_cast<float>(input_height),
+        metadata_width,
+        metadata_height,
+        transform.source_rect.left,
+        transform.source_rect.top,
+        transform.anchor_point.x,
+        transform.anchor_point.y,
+        transform.crop_box.left,
+        transform.crop_box.top,
+        transform.crop_box.width(),
+        transform.crop_box.height(),
+        static_cast<float>(output_width),
+        static_cast<float>(output_height),
+        transform.angle,
+        transform_object_meta_};
 
     // Check if we can use our optimized path
     NvBufSurfaceColorFormat color_format = incoming_surface->colorFormat;
@@ -745,6 +778,51 @@ absl::Status PlayCropperPriv::GenerateOutput(
       completion_fence.MarkSubmitted();
       HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, frame_meta, cuda_stream_));
     }
+    const uint32_t player_layers =
+        player_overlay_layers_ | (plot_player_tracking_ ? player_analytics::kDrawPlayerBoxes : 0U);
+    if (player_layers) {
+      using namespace draw_display::analytics;
+      player_overlay_commands_.Clear();
+      BuildPlayerOverlays(
+          frame_meta,
+          player_layers,
+          player_joint_confidence_,
+          &preview_transform,
+          static_cast<float>(output_width),
+          static_cast<float>(output_height),
+          &player_overlay_commands_);
+      player_overlay_rejections_ += player_overlay_commands_.rejected();
+      if (!player_overlay_commands_.empty()) {
+        if (!player_overlay_compositor_)
+          player_overlay_compositor_ = std::make_unique<Compositor>();
+        if (outgoing_surface->colorFormat != NVBUF_COLOR_FORMAT_RGBA)
+          return absl::FailedPreconditionError("Player overlays require the Program cropper's RGBA output");
+        // Owned output only; no write to the shared stitched tee input.
+        completion_fence.MarkSubmitted();
+        const auto rendered = player_overlay_compositor_->Render(
+            {outgoing_surface.dataptr(),
+             outgoing_surface.pitch(),
+             static_cast<uint32_t>(output_width),
+             static_cast<uint32_t>(output_height),
+             PixelFormat::kRgba8},
+            player_overlay_commands_,
+            cuda_stream_);
+        if (rendered.status == RenderStatus::kCudaError)
+          return hm::to_status(rendered.cuda_error);
+        if (rendered.status == RenderStatus::kInvalidArgument)
+          return absl::InternalError("Invalid Program player-overlay image or stream");
+        if (rendered.status == RenderStatus::kOk)
+          preview_transform.baked_player_layers = player_layers;
+        else if (++player_overlay_suppressions_ == 1)
+          g_printerr("HSTREAM_PLAYER_OVERLAY status=suppressed reason=%d\n", static_cast<int>(rendered.status));
+      }
+    }
+    if ((player_layers || preview_overlay::find_overlay_snapshot_meta(frame_meta)) &&
+        !preview_overlay::add_playcropper_transform_meta(frame_meta, preview_transform) &&
+        !preview_transform_failure_reported_) {
+      g_printerr("HSTREAM_PREVIEW_OVERLAY status=transform-meta-unavailable\n");
+      preview_transform_failure_reported_ = true;
+    }
     if (show_ && !batch_nr) {
       // Render it inside the loop, but we'll display it after our cudaSynchronize
       display_surface = std::make_unique<surface::Surface>(incoming_surface);
@@ -762,11 +840,15 @@ absl::Status PlayCropperPriv::GenerateOutput(
           transform.crop_box,
           output_rect);
     }
+#ifdef __aarch64__
+    HM_RETURN_IF_ERROR(hm::to_status(completion_fence.Synchronize()));
+#endif
     ++frame_count_;
   }
 
-  // Synchronize stream
+#ifndef __aarch64__
   HM_RETURN_IF_ERROR(hm::to_status(completion_fence.Synchronize()));
+#endif
 
   if (show_ && display_surface) {
     // If rendering, only render opne per batch and do it after the main cuda synchronize

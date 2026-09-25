@@ -1,6 +1,6 @@
 # Player analytics implementation plan
 
-Status: approved after two rounds by both independent xhigh reviewers. Implementation in progress. Implements the reviewed
+Status: approved after two rounds by both independent xhigh reviewers. The first three PRs have clean paired reviews; rendering/control integration is implemented and undergoing final platform/performance validation and review. Implements the reviewed
 [design](player-analytics-design.md) and [model comparison](player-analytics-models.md).
 
 ## Delivery order

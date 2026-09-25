@@ -85,3 +85,89 @@ cuda_library(
         "//toolchains/jetson:cuda_runtime",
     ],
 )
+
+cc_library(
+    name = "analytics_overlay_headers",
+    hdrs = ["AnalyticsOverlay.h", "AnalyticsOverlayInternal.h", "stb_truetype.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["//toolchains/jetson:cuda_runtime", "@local_cuda//:cuda"],
+)
+
+cc_library(
+    name = "analytics_overlay_atlas",
+    srcs = ["AnalyticsOverlayAtlas.cpp"],
+    hdrs = ["AnalyticsOverlayAtlas.h"],
+    include_prefix = INCLUDE_PREFIX,
+    deps = [":analytics_overlay_headers"],
+)
+
+cuda_library(
+    name = "analytics_overlay_cuda",
+    srcs = ["AnalyticsOverlay.cu"],
+    deps = [":analytics_overlay_headers"],
+)
+
+cc_library(
+    name = "analytics_overlay",
+    srcs = ["AnalyticsOverlay.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [":analytics_overlay_headers", ":analytics_overlay_atlas", ":analytics_overlay_cuda"],
+)
+
+cc_test(
+    name = "analytics_overlay_test",
+    srcs = ["AnalyticsOverlayTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":analytics_overlay"],
+)
+
+cc_library(
+    name = "analytics_overlay_gl",
+    srcs = ["AnalyticsOverlayGl.cpp"],
+    hdrs = ["AnalyticsOverlayGl.h"],
+    include_prefix = INCLUDE_PREFIX,
+    linkopts = ["-lGL", "-lX11"],
+    target_compatible_with = select({
+        "@platforms//cpu:x86_64": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    visibility = ["//visibility:public"],
+    deps = [":analytics_overlay", ":analytics_overlay_atlas"],
+)
+
+cc_test(
+    name = "analytics_overlay_gl_test",
+    srcs = ["AnalyticsOverlayGlTest.cpp"],
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
+    tags = ["manual", "requires-gpu"],
+    target_compatible_with = select({
+        "@platforms//cpu:x86_64": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":analytics_overlay_gl"],
+)
+
+cc_library(
+    name = "player_overlays",
+    srcs = ["PlayerOverlays.cpp"],
+    hdrs = ["PlayerOverlays.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":analytics_overlay",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/player_analytics:frame_meta",
+    ],
+)
+
+cc_binary(
+    name = "player_overlays_test",
+    srcs = ["PlayerOverlaysTest.cpp"],
+    deps = [
+        ":player_overlays",
+        "//src/libs/common:track_color_meta",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/player_analytics:frame_meta",
+    ],
+)

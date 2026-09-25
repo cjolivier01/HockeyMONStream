@@ -73,7 +73,7 @@ cc_library(
     hdrs = ["FrameMeta.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [":types", "@deepstream//:deepstream_lib", "@glib"],
+    deps = [":types", ":track_colors", "@deepstream//:deepstream_lib", "@glib"],
 )
 
 cc_binary(

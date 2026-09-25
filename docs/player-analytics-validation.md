@@ -55,7 +55,7 @@ accuracy or reassociation benchmarks. See the
 A frozen master executable, own plugins, dependency libraries and configs were
 copied before edits and content-hashed. Three alternating master/candidate runs
 used a private copy of `gse-16a-short` calibration (13705×3919 canvas), the same
-camera media, FAKE sink, 15 seconds of video, and the same detector engine:
+camera media, FAKE sink, 15 seconds of video, and the same detector configuration:
 
 ```sh
 HM_GAME_DIR=/tmp/hstream-player-analytics-validation/games \
@@ -77,6 +77,11 @@ this small difference does not establish a causal regression. The first candidat
 run included launch-cache preparation, one fewer periodic FPS sample, and an
 8 MiB larger peak. Do not compare startup wall times between the installed-style
 frozen bundle and the initial Bazel launch cache.
+
+The final PR4 audit found different detector-engine hashes in the historical
+master/PR1/PR3 caches. These initial observations do not establish a controlled
+performance bound; the explicitly pinned, hash-verified PR4 comparisons below
+supersede them.
 
 All analytics model work is absent from this stage's normal graph. Color state
 is updated only for requested player drawing; off ReID returns before filesystem
@@ -301,3 +306,138 @@ samples; invalid timestamps/ROIs, capacity exclusions, duplicates and cancelled
 batches are zero. It exits naturally with “App run successful”. Remote evidence
 is `/tmp/hstream-player-pr3-*.log`, copied locally under
 `/tmp/hstream-player-pr3-jetson-evidence/`.
+
+
+PR3 implementation round 1: two independent xhigh reviewers reviewed
+`b071711e..b4a9390b`; neither found necessary fixes. The processor reviewer also
+ran fixed-snapshot planner and temporal tests under ASAN/UBSAN. The nonblocking
+jersey documentation clarification distinguishes retained brief absences from
+expiry, eviction and source/seek resets.
+
+
+## GPU drawing and controls (PR 4)
+
+The integrated x86 build passes, including the explicit CUDA/GL compositor and
+preview targets. Focused metadata/command, actual cropper, preview collector,
+routing, canonical mapping, desktop controls/window and actual semantic-engine
+tests pass. Default/empty rendering is checked before allocation; disabled model
+sentinels are not accessed. Independent tests exercise real DeepStream metadata
+copies, a shared color producer, full track IDs/overflow, rotated/nonuniform
+coordinates, current poses, expiry, immutable tee inputs and baked-layer suppression.
+
+The actual GPU cropper test checks pixels at an independently derived rotated
+position, leaves its input byte-identical, and verifies stream completion before
+fixture readback. Capacity suppression preserves output video. Shutdown releases
+resources once and is idempotent. The Jetson completion fence now outlives queued
+work but is destroyed before per-frame EGL imports; this closes an existing
+import/fence ordering gap. The actual preview collector suppresses missing-transform
+frames and clears previously built commands, while Stitched retains independent
+unbaked drawing.
+
+Integration caught and corrected zero-confidence joints at a zero display threshold,
+semantic baked-box masking, optional canonical-null CLI/UI consistency, private STB
+font symbol collisions, and stop-owned renderer cleanup. Fully offscreen successful
+commands are no-op renders, not capacity/error suppression. These fixes have
+regression coverage or real pipeline counter evidence.
+
+Real x86 runs complete through FAKE and HEVC/AAC file output, with GPU pose/box
+drawing and no suppressed/rejected commands. The encoded fixture is 7680×4320,
+5.272 seconds, and probes successfully. All-model Program/Stitched GPU previews
+also complete with and without vpplaytracker; native-tracker fallback places the
+preview tee and shared color owner after semantic inference. Preview uses the
+existing framebuffer, with no new full-frame copy. Source/encode fixtures stay
+outside Git.
+
+Local integrated logs: `/tmp/hstream-player-pr4-{build-integrated,overlay,
+overlay-gl,overlay-contract,cropper-caller,preview-caller,routing,mapping,
+semantic-labels,ui-controls,ui-window}.log`; real recording/graph logs are under
+`/tmp/hstream-player-analytics-validation/pr4-*`. Final platform/performance and
+paired PR review results are recorded below as they complete.
+
+The complete native Jetson build passes. Its six supported focused suites cover
+the CUDA compositor, overlay contracts, actual GPU cropper, routing, mapping and
+color configuration. Desktop Qt/GL tests run on x86; those targets are intentionally
+incompatible with the repository's Jetson platform. No native ARM64/SBSA host was
+available, so Jetson validation is not evidence for an SBSA runtime.
+
+A native Jetson 20-second all-model drawing replay completes 1,212 frames,
+4,724 poses, 1,012 jersey results and 26 action results from 22 action enqueues.
+Drawing reports 1,190 renders, 1,149 launches and zero suppressed/rejected commands.
+The retained compositor allocation is 6,438,912 device bytes. Invalid timestamps
+and ROIs remain zero, and the process exits successfully.
+
+### Controlled x86 performance
+
+Thirty unprofiled runs use frozen master/candidate runtime bundles, sampled loaded
+plugin paths and hashes, the identical explicitly pinned FP32 detector engine,
+private calibration/media, FAKE output, 15 seconds of media per run, and three
+rounds with reversed case order. The GPU is an RTX 5090 with driver 610.57.04;
+power settings and clocks were not changed. Source/build-file hashes bind the
+candidate to the measured implementation. Artifact guards pass throughout.
+
+Each run drops its first periodic FPS sample. The table reports the median of
+three run medians and the maximum sampled process-tree NVML memory. Enabled
+models use pose/jersey/action cadences of 10/2/1 Hz, batch limit 8 and aggregate
+limit 32 model samples/frame. Jersey-only uses bbox crops; action requires pose.
+
+| Case | Median FPS | Peak GPU MiB |
+| --- | ---: | ---: |
+| Frozen master | 63.250 | 10560 |
+| Candidate, all off | 63.270 | 10560 |
+| Pose | 61.960 | 10586 |
+| Jersey only | 62.670 | 10688 |
+| Pose + action | 61.920 | 10728 |
+| All three | 61.695 | 10804 |
+| All three + semantic drawing | 61.580 | 10810 |
+| Colored boxes only | 63.320 | 10566 |
+| Native ReID only | 61.940 | 10844 |
+| All three + drawing + ReID | 60.720 | 11092 |
+
+Median *paired* FPS differences are -0.379% for disabled versus master, -2.547%
+for all three versus disabled, and -0.073% for drawing versus all three. These
+use each round's reference and differ from ratios of overall medians. Disabled
+versus master spans -1.030% to +0.532%; this sample shows no meaningful disabled
+regression or new measured GPU allocation. Drawing comparisons span -0.227% to
+-0.073%. They describe this recording, not a universal overhead guarantee.
+
+Every enabled run records actual inference, including 21 action results in each
+all-model run. Drawing runs report roughly 900 raster launches and zero rejected
+or suppressed commands. Display labels remain confidence-gated, so this is not
+a maximum-label workload or an accuracy assessment. Timed source stops can differ
+by a few completed frames; per-run samples and counters are retained. FPS measures
+throughput, not individual frame latency; startup/shutdown wall times are recorded
+separately. Trace runs are excluded from the throughput sample.
+
+Local evidence: `/tmp/hstream-player-pr4-performance/summary.json`,
+`results-x86-measured/`, `verified-plugin-identity.json`, and frozen runtime/model/
+calibration manifests. Private media, models and machine-specific specifications
+are not committed.
+
+A separate Nsight Systems capture passes transfer attribution: 1,036 pose, 421
+jersey and 10 action D2H copies match both GPU reducers and teardown enqueue
+counters exactly. The largest result transfer is 1,632 bytes (eight poses), with
+880,836 bytes total. The Program drawing stream executes 892 raster kernels,
+matching its launch counter, and contains zero D2H transfers after drawing starts.
+The retained global transfer histogram separates existing detector/tracker copies
+from these analytics streams. This execution contains no analytics video/crop
+readback; offline parity tests intentionally read larger tensors/images. Raw
+`.nsys-rep`, SQLite and `transfers.json` remain in `profile-all3-draw/` beside the
+benchmark evidence. No native Jetson Nsight capture was available.
+
+### Isolated renderer cost
+
+The synthetic fixture draws 32 players with boxes, 19 bones, 17 joints and text:
+1,472 commands after at least 500 ms warmup, then 200 samples. RGBA8 wall medians
+(command construction, binning, submission and completion) are 91.9/154.3 µs at
+1080p/4K on RTX 5090 and 752.0/1566.1 µs on Orin. GPU upload+raster medians are
+25.6/33.1 µs and 516.3/1118.7 µs respectively. Packed RGB10A2 tests also pass;
+the actual Program cropper continues to use its existing RGBA path.
+
+Every warmed synthetic frame uses one compact metadata upload and one raster
+launch, with zero C++ heap/device/pinned allocations and no atlas re-upload.
+Empty drawing makes no CUDA calls or allocations. The shared glyph atlas is
+147,456 bytes; bounded three-slot device and pinned buffers are each at most
+6,438,912 bytes including the atlas. The x86 GL fixture measures approximately
+52/59 µs wall and 4.8/11.4 µs GPU at 1080p/4K. These isolated 4K timings do not
+establish the cost of the real 8K Program output. Jetson clocks were not fixed;
+its RGBA8 wall p95 is 1156.3/2277.5 µs. x86 CUDA memcheck reports zero errors.

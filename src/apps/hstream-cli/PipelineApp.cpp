@@ -5,6 +5,7 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
+#include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "PipelineAssetOptions.h"
 #include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
@@ -1654,8 +1655,9 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
     const std::string rink_mask_file = (hm::Configurator::get_game_dir(game_id) / "rink_mask_0.png").string();
 
-    auto configure_overlays = [&](GstElement* sink) {
+    auto configure_overlays = [&](GstElement* sink, const hm::player_analytics::Config& analytics) {
       g_object_set(G_OBJECT(sink), "rink-mask-file", rink_mask_file.c_str(), nullptr);
+      hm::gpu_preview::configure_player_analytics(sink, analytics.drawing_layers(), analytics.pose.confidence_threshold);
     };
 
     struct PreviewProbeState {
@@ -1864,7 +1866,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           !link_element_to_tee_src_pad(output.tee, ingress_isolation)) {
         return absl::InternalError("Could not link the GPU-native Program preview branch");
       }
-      configure_overlays(sink);
+      configure_overlays(sink, app_context->config.player_analytics_config.analytics);
     }
 
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
@@ -1872,9 +1874,10 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     if (preview_overlay_producer)
       preview_overlay_producers_.push_back(preview_overlay_producer);
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
-    GstElement* tracked_preview_source = app_context->pipeline.dsplaytracker_bin.bin;
-    if (!tracked_preview_source)
-      tracked_preview_source = app_context->pipeline.common_elements.tracker_bin.bin;
+    GstElement* tracked_preview_source = hm::gst::SelectTrackedPreviewSource(
+        app_context->pipeline.dsplaytracker_bin.bin,
+        app_context->pipeline.common_elements.player_analytics,
+        app_context->pipeline.common_elements.tracker_bin.bin);
     if ((program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
         !preview_overlay_producer) {
       GstElement* snapshot_source = tracked_preview_source ? tracked_preview_source : stitcher.elem_hmstitcher;
@@ -1948,7 +1951,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             !link_element_to_tee_src_pad(tee, ingress_isolation)) {
           return absl::InternalError("Could not link the tracked Stitched GPU preview branch");
         }
-        configure_overlays(sink);
+        configure_overlays(sink, app_context->config.player_analytics_config.analytics);
       } else {
         if (!stitcher.preview_queue || !stitcher.preview_ingress_isolation || !stitcher.preview_isolation ||
             !stitcher.preview_converter || !stitcher.preview_caps_filter || !stitcher.preview_sink) {
@@ -1970,7 +1973,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
                 false)) {
           return absl::InternalError("Could not configure the GPU-native Stitched preview branch");
         }
-        configure_overlays(stitcher.preview_sink);
+        configure_overlays(stitcher.preview_sink, app_context->config.player_analytics_config.analytics);
       }
     }
 

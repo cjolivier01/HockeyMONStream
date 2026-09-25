@@ -1247,9 +1247,21 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
         NULL);
   }
   private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
-  g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", private_config.c_str(), NULL);
-  if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->playcropper), config->plugin_properties)) {
-    goto done;
+  {
+    const std::string analytics = ";player-overlay-layers=" + std::to_string(config->player_analytics_layers) +
+        ";player-joint-confidence=" + std::to_string(config->player_joint_confidence);
+    private_config += analytics;
+    g_object_set(G_OBJECT(bin->playcropper), "plugin-private-config", private_config.c_str(), NULL);
+    // Augment before the original setters, preserving public-property order.
+    hm::gst::PluginProperties properties = config->plugin_properties;
+    for (auto& property : properties) {
+      std::string name = property.name;
+      std::replace(name.begin(), name.end(), '_', '-');
+      if (name == "plugin-private-config")
+        property.value += analytics;
+    }
+    if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->playcropper), properties))
+      goto done;
   }
 
 #if 0

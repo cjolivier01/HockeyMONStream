@@ -2,7 +2,7 @@
 
 Pose, jersey and action inference are opt-in. Ordinary playback omits `hmplayeranalytics` entirely;
 no inference engine, stream, ROI buffer or analytics pad probe is created. Drawing
-preferences do not enable inference. This stack stage publishes immutable semantic metadata; GPU drawing follows separately.
+preferences do not enable inference. Immutable semantic metadata feeds optional GPU drawing.
 
 Prepare a compatible RTMPose-M COCO17 bundle using
 [the offline preparation tool](player-model-preparation.md), then add an overlay:
@@ -68,7 +68,7 @@ mode crops x20–80%/y25–95% of the tracked box; pose mode uses shoulders and 
 at confidence >=0.4 with 5% padding. Crops must be at least 16×8 surface pixels
 and at least half visible. Source-time votes provide consensus and hysteresis;
 a retained label can appear between inference updates, then expires without
-repeat reinforcement. Missing/evicted identities and resets clear evidence.
+repeat reinforcement. Expired/evicted identities and resets clear evidence.
 The batch-eight resize workspace is about 26 MiB, allocated only with jersey enabled.
 
 STGCN++ consumes 100 causal COCO17 samples at 100 ms intervals (9.9 seconds),
@@ -93,3 +93,50 @@ inputs upload CPU skeleton coordinates/confidences, never video or crop pixels.
 Shutdown counters include actual model enqueues/results, aggregate model samples,
 maximum-frame-samples, budget-deferred, jersey pose/visibility skips and action
 history readiness/resets. Interpret retained labels separately from fresh inference.
+
+
+## Drawing and desktop controls
+
+The Program Controls **Players** tab offers next-run pose, jersey and action
+compute toggles, prepared bundle paths, jersey ROI mode and optional tracker ReID.
+Save Preset changes only edited leaves. Unsaved choices are included in launch
+and exported jobs; an active run keeps its original snapshot. Enabled-only
+preflight reads bounded manifests and checks file metadata without loading engines
+or touching CUDA. Playback performs the strict content/runtime checks.
+
+Drawing is independent of compute:
+
+| Canonical preference | Native override |
+| --- | --- |
+| `plot.plot_pose` | `pipeline.player-analytics.draw-pose` |
+| `plot.plot_jersey_numbers` | `pipeline.player-analytics.draw-jerseys` |
+| `plot.plot_actions` | `pipeline.player-analytics.draw-actions` |
+
+The native key wins at the same explicit layer; a later canonical setting wins
+over an older native setting. Canonical null suppresses its optional mapping.
+A drawing preference alone never enables a model or creates a renderer. Player
+boxes use the existing `plot.plot_individual_player_tracking` preference; the
+preview-only Player boxes checkbox remains independent of encoded output.
+
+Program draws after crop/rotation directly on its owned output, using the existing
+CUDA stream and completion fence. Stitched preview uses the same immutable results
+in the existing GL framebuffer; no additional full-frame image/copy/readback is
+introduced. The existing x86/X11 preview availability is unchanged. All coordinates
+use the exact per-frame crop transform, including nonuniform metadata scale and
+rotation. Baked-layer bits suppress duplicate Program overlays; missing Program
+transform metadata suppresses diagnostic drawing for that frame.
+
+One producer assigns the 32-color palette to full 64-bit tracks before the tracked
+preview tee. Boxes, skeletons and labels share those colors across views. Released
+colors are reused and temporary palette overflow can recover uniqueness. Untracked
+objects do not acquire a player color. Only current-frame skeletons are drawn;
+jersey/action labels may persist until their evidence expires. Action text comes
+from the prepared model's label map, without hockey-event renaming.
+
+The compositor caps commands, glyphs, tile references and uploads; capacity pressure
+suppresses overlays while video continues. It reuses buffers after warmup, with one
+compact upload and one raster launch per nonempty visible Program frame. The font
+atlas is built lazily by the same rasterizer in the CUDA/GL implementations; packages include
+DejaVu Sans Mono. Empty drawing does no GPU allocation, upload or launch. Stop joins
+the cropper worker, drains its stream and releases renderer resources before stream
+destruction. Shutdown counters report actual launches/uploads and suppression.

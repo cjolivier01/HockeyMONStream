@@ -1,0 +1,456 @@
+#include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
+
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QSignalBlocker>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QFileDialog>
+#include <QtWidgets/QFormLayout>
+#include <QtWidgets/QGroupBox>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QVBoxLayout>
+
+#include <stdexcept>
+
+#include "hstream/src/libs/player_analytics/Config.h"
+#include "hstream/src/libs/player_analytics/ModelContract.h"
+
+namespace {
+namespace pa = hm::player_analytics;
+const QString kAnalytics = "pipeline.player-analytics.";
+YAML::Node Get(const YAML::Node& root, const QString& path, bool* ancestor_replaced = nullptr) {
+  if (ancestor_replaced)
+    *ancestor_replaced = false;
+  YAML::Node current(root);
+  for (const auto& key : path.split('.')) {
+    if (!current.IsDefined() || !current.IsMap()) {
+      if (ancestor_replaced)
+        *ancestor_replaced = current.IsDefined();
+      return YAML::Node(YAML::NodeType::Undefined);
+    }
+    const YAML::Node next = static_cast<const YAML::Node&>(current)[key.toStdString()];
+    if (!next.IsDefined())
+      return YAML::Node(YAML::NodeType::Undefined);
+    current.reset(next);
+  }
+  return current;
+}
+YAML::Node Merge(const YAML::Node& low, const YAML::Node& high) {
+  if (!high.IsDefined())
+    return YAML::Clone(low);
+  if (!low.IsDefined() || !low.IsMap() || !high.IsMap())
+    return YAML::Clone(high);
+  YAML::Node result = YAML::Clone(low);
+  for (const auto& item : high) {
+    const auto key = item.first.as<std::string>();
+    result[key] = Merge(static_cast<const YAML::Node&>(result)[key], item.second);
+  }
+  return result;
+}
+void Set(YAML::Node node, const QStringList& path, const YAML::Node& value, int index = 0) {
+  if (!node.IsDefined() || node.IsNull())
+    node = YAML::Node(YAML::NodeType::Map);
+  if (!node.IsMap())
+    throw std::invalid_argument("Cannot edit player settings beneath a non-mapping configuration key");
+  if (index + 1 == path.size())
+    node[path[index].toStdString()] = YAML::Clone(value);
+  else
+    Set(node[path[index].toStdString()], path, value, index + 1);
+}
+bool Flag(const YAML::Node& node, bool fallback = false) {
+  if (!node.IsDefined() || node.IsNull())
+    return fallback;
+  if (!node.IsScalar())
+    throw std::invalid_argument("Expected a boolean or 0/1");
+  if (node.Scalar() == "1")
+    return true;
+  if (node.Scalar() == "0")
+    return false;
+  return node.as<bool>();
+}
+QString Absolute(const QString& path, const QString& directory) {
+  return QDir::cleanPath(QFileInfo(path).isAbsolute() ? path : QDir(directory).absoluteFilePath(path));
+}
+bool ReadableFile(const QString& path) {
+  const QFileInfo info(path);
+  return info.isFile() && info.isReadable() && info.size() > 0;
+}
+YAML::Node Document(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > 1024 * 1024)
+    throw std::invalid_argument(("Cannot read bounded model/config metadata: " + path).toStdString());
+  return YAML::Load(file.readAll().toStdString());
+}
+} // namespace
+
+PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(parent) {
+  setObjectName("playerAnalyticsControls");
+  auto* layout = new QVBoxLayout(this);
+  auto* explanation = new QLabel(
+      "Player analytics (next run). Compute and drawing are independent; selecting drawing does not enable a model.");
+  explanation->setWordWrap(true);
+  layout->addWidget(explanation);
+  auto* compute = new QGroupBox("Compute");
+  new QFormLayout(compute);
+  addFlag(kAnalytics + "pose.enable", {}, "playerPoseEnable", "Estimate pose", compute);
+  addPath(kAnalytics + "pose.bundle", "playerPoseBundle", true, compute);
+  addFlag(kAnalytics + "jersey.enable", {}, "playerJerseyEnable", "Read jersey numbers", compute);
+  addPath(kAnalytics + "jersey.bundle", "playerJerseyBundle", true, compute);
+  auto* roi = new QComboBox();
+  roi->setObjectName("playerJerseyRoiMode");
+  roi->addItem("Bounding-box torso", "bbox");
+  roi->addItem("Fresh pose torso (requires pose)", "pose");
+  static_cast<QFormLayout*>(compute->layout())->addRow("Jersey crop", roi);
+  fields_.push_back({kAnalytics + "jersey.roi-mode", {}, Kind::kRoi, roi, "bbox"});
+  const size_t roi_index = fields_.size() - 1;
+  connect(roi, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, roi_index] { changed(roi_index); });
+  addFlag(kAnalytics + "action.enable", {}, "playerActionEnable", "Recognize activities", compute);
+  addPath(kAnalytics + "action.bundle", "playerActionBundle", true, compute);
+  auto* action_help = new QLabel(
+      "Activities require pose at 10 Hz or faster and 9.9 seconds of continuous observations. "
+      "Labels describe generic activities, not hockey events.");
+  action_help->setWordWrap(true);
+  static_cast<QFormLayout*>(compute->layout())->addRow(action_help);
+  layout->addWidget(compute);
+  auto* tracker = new QGroupBox("Native tracker appearance matching");
+  new QFormLayout(tracker);
+  addFlag("pipeline.tracker.reid-enable", {}, "playerReidEnable", "Enable prepared ReID extension", tracker);
+  addPath("pipeline.tracker.reid-config-file", "playerReidConfig", false, tracker);
+  auto* tracker_help =
+      new QLabel("Off preserves the existing tracker configuration, including any ReID it already uses.");
+  tracker_help->setWordWrap(true);
+  static_cast<QFormLayout*>(tracker->layout())->addRow(tracker_help);
+  layout->addWidget(tracker);
+  auto* drawing = new QGroupBox("Drawing");
+  new QFormLayout(drawing);
+  addFlag("plot.plot_pose", kAnalytics + "draw-pose", "playerDrawPose", "Pose skeletons", drawing);
+  addFlag("plot.plot_jersey_numbers", kAnalytics + "draw-jerseys", "playerDrawJerseys", "Jersey numbers", drawing);
+  addFlag("plot.plot_actions", kAnalytics + "draw-actions", "playerDrawActions", "Activity labels", drawing);
+  addFlag(
+      "plot.plot_individual_player_tracking",
+      "pipeline.hmplaycropper.plot-player-tracking",
+      "playerDrawBoxes",
+      "Program player boxes",
+      drawing);
+  layout->addWidget(drawing);
+  status_ = new QLabel();
+  status_->setObjectName("playerAnalyticsStatus");
+  status_->setWordWrap(true);
+  status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  layout->addWidget(status_);
+  layout->addStretch();
+  loadConfig(YAML::Node(), YAML::Node(), YAML::Node(), QDir::currentPath());
+}
+
+void PlayerAnalyticsControls::addFlag(
+    const QString& key,
+    const QString& alias,
+    const QString& name,
+    const QString& label,
+    QWidget* parent) {
+  auto* editor = new QCheckBox(label);
+  editor->setObjectName(name);
+  editor->setToolTip("Applies on the next run. Save Preset keeps this choice for the selected game.");
+  static_cast<QFormLayout*>(parent->layout())->addRow(editor);
+  fields_.push_back({key, alias, Kind::kFlag, editor, false});
+  const size_t index = fields_.size() - 1;
+  connect(editor, &QCheckBox::toggled, this, [this, index] { changed(index); });
+}
+void PlayerAnalyticsControls::addPath(const QString& key, const QString& name, bool directory, QWidget* parent) {
+  auto* row = new QWidget();
+  auto* layout = new QHBoxLayout(row);
+  layout->setContentsMargins(0, 0, 0, 0);
+  auto* editor = new QLineEdit();
+  editor->setObjectName(name);
+  editor->setPlaceholderText(directory ? "Prepared bundle directory" : "Prepared ReID configuration file");
+  editor->setToolTip("Choose an existing prepared model. Relative paths use the pipeline configuration directory.");
+  auto* browse = new QPushButton("Browse…");
+  browse->setObjectName(name + "Browse");
+  layout->addWidget(editor, 1);
+  layout->addWidget(browse);
+  static_cast<QFormLayout*>(parent->layout())->addRow(directory ? "Prepared bundle" : "Prepared config", row);
+  fields_.push_back({key, {}, Kind::kPath, editor, QString()});
+  const size_t index = fields_.size() - 1;
+  connect(editor, &QLineEdit::textChanged, this, [this, index] { changed(index); });
+  connect(browse, &QPushButton::clicked, this, [this, editor, directory] {
+    const QString initial =
+        editor->text().isEmpty() ? structural_directory_ : Absolute(editor->text(), structural_directory_);
+    const QString path = directory
+        ? QFileDialog::getExistingDirectory(this, "Prepared analytics bundle", initial)
+        : QFileDialog::getOpenFileName(this, "Prepared ReID config", initial, "YAML (*.yaml *.yml);;All files (*)");
+    if (!path.isEmpty())
+      editor->setText(path);
+  });
+}
+void PlayerAnalyticsControls::setChangedCallback(std::function<void()> callback) {
+  changed_callback_ = std::move(callback);
+}
+QVariant PlayerAnalyticsControls::value(const Field& field) const {
+  if (field.kind == Kind::kFlag)
+    return static_cast<QCheckBox*>(field.editor)->isChecked();
+  if (field.kind == Kind::kRoi)
+    return static_cast<QComboBox*>(field.editor)->currentData();
+  return static_cast<QLineEdit*>(field.editor)->text();
+}
+QVariant PlayerAnalyticsControls::read(const Field& field, const std::vector<YAML::Node>& layers, bool* valid) const {
+  YAML::Node resolved(YAML::NodeType::Undefined);
+  if (field.native_alias.isEmpty()) {
+    YAML::Node merged(YAML::NodeType::Map);
+    for (const auto& layer : layers)
+      merged = Merge(merged, layer);
+    resolved.reset(Get(merged, field.key));
+  } else {
+    YAML::Node canonical(YAML::NodeType::Undefined), native(YAML::NodeType::Undefined);
+    int canonical_rank = -1, native_rank = -1;
+    for (size_t rank = 0; rank < layers.size(); ++rank) {
+      const auto update = [&](const QString& path, YAML::Node& previous, int& previous_rank) {
+        bool replaced = false;
+        const auto next = Get(layers[rank], path, &replaced);
+        if (next.IsDefined() || replaced) {
+          previous.reset(next);
+          previous_rank = static_cast<int>(rank);
+        }
+      };
+      update(field.key, canonical, canonical_rank);
+      update(field.native_alias, native, native_rank);
+    }
+    // A null canonical value suppresses its mapping. Same-layer native wins;
+    // later canonical values override older native values that still exist.
+    if (native.IsDefined() && (!canonical.IsDefined() || canonical.IsNull() || native_rank >= canonical_rank))
+      resolved.reset(native);
+    else if (canonical.IsDefined() && !canonical.IsNull())
+      resolved.reset(canonical);
+  }
+  *valid = true;
+  try {
+    if (field.kind == Kind::kFlag)
+      return Flag(resolved);
+    if (!resolved.IsDefined() || resolved.IsNull())
+      return field.kind == Kind::kRoi ? QString("bbox") : QString();
+    if (!resolved.IsScalar())
+      throw std::invalid_argument("Expected a scalar path/mode");
+    return QString::fromStdString(resolved.as<std::string>());
+  } catch (const std::exception&) {
+    *valid = false;
+    return field.kind == Kind::kFlag ? QVariant(false) : QVariant(QString());
+  }
+}
+void PlayerAnalyticsControls::setValue(Field& field, const QVariant& selected) {
+  const QSignalBlocker blocker(field.editor);
+  if (field.kind == Kind::kFlag)
+    static_cast<QCheckBox*>(field.editor)->setChecked(selected.toBool());
+  else if (field.kind == Kind::kPath)
+    static_cast<QLineEdit*>(field.editor)->setText(selected.toString());
+  else {
+    auto* combo = static_cast<QComboBox*>(field.editor);
+    int index = combo->findData(selected);
+    if (index < 0) {
+      combo->addItem("Saved mode: " + selected.toString(), selected);
+      index = combo->count() - 1;
+    }
+    combo->setCurrentIndex(index);
+  }
+}
+void PlayerAnalyticsControls::loadConfig(
+    const YAML::Node& defaults,
+    const YAML::Node& user,
+    const YAML::Node& game,
+    const QString& directory) {
+  loading_ = true;
+  const auto layer = [](const YAML::Node& node) {
+    return !node.IsDefined() || node.IsNull() ? YAML::Node(YAML::NodeType::Map) : YAML::Clone(node);
+  };
+  defaults_ = layer(defaults);
+  user_ = layer(user);
+  game_ = layer(game);
+  structural_directory_ = directory;
+  for (auto& field : fields_) {
+    field.loaded = read(field, {defaults_, user_, game_}, &field.valid);
+    field.touched = false;
+    setValue(field, field.loaded);
+  }
+  loading_ = false;
+  updateStatus();
+}
+void PlayerAnalyticsControls::resetToDefaults() {
+  for (auto& field : fields_) {
+    bool valid = true;
+    setValue(field, read(field, {defaults_, user_}, &valid));
+    field.touched = true;
+  }
+  updateStatus();
+  if (changed_callback_)
+    changed_callback_();
+}
+bool PlayerAnalyticsControls::changed(const Field& field) const {
+  return value(field) != field.loaded || (!field.valid && field.touched);
+}
+bool PlayerAnalyticsControls::isDirty() const {
+  for (const auto& field : fields_)
+    if (changed(field))
+      return true;
+  return false;
+}
+void PlayerAnalyticsControls::changed(size_t index) {
+  if (loading_)
+    return;
+  fields_.at(index).touched = true;
+  updateStatus();
+  if (changed_callback_)
+    changed_callback_();
+}
+QString PlayerAnalyticsControls::applyChanges(YAML::Node& destination) const {
+  try {
+    YAML::Node staged = YAML::Clone(destination);
+    if (!staged.IsDefined() || staged.IsNull())
+      staged = YAML::Node(YAML::NodeType::Map);
+    for (const auto& field : fields_) {
+      if (!changed(field))
+        continue;
+      const YAML::Node selected = field.kind == Kind::kFlag ? YAML::Node(value(field).toBool())
+                                                            : YAML::Node(value(field).toString().toStdString());
+      Set(staged, field.key.split('.'), selected);
+      // Preserve explicit native settings on unrelated saves. On an edit only,
+      // reconcile the conflicting same-destination leaf with the canonical choice.
+      if (!field.native_alias.isEmpty() && Get(staged, field.native_alias).IsDefined())
+        Set(staged, field.native_alias.split('.'), selected);
+    }
+    destination = staged;
+    return {};
+  } catch (const std::exception& error) {
+    return QString::fromUtf8(error.what());
+  }
+}
+YAML::Node PlayerAnalyticsControls::effectiveConfig() const {
+  YAML::Node edited = YAML::Clone(game_);
+  const auto error = applyChanges(edited);
+  if (!error.isEmpty())
+    throw std::invalid_argument(error.toStdString());
+  YAML::Node effective = Merge(Merge(defaults_, user_), edited);
+  for (const auto& field : fields_)
+    if (!field.native_alias.isEmpty())
+      Set(effective, field.native_alias.split('.'), YAML::Node(value(field).toBool()));
+  return effective;
+}
+QStringList PlayerAnalyticsControls::arguments() const {
+  QStringList result;
+  const auto append = [&result](const QString& key, const QString& text) { result << "--options=" + key + "=" + text; };
+  for (const auto& field : fields_) {
+    if (field.kind == Kind::kFlag) {
+      const QString text = value(field).toBool() ? "true" : "false";
+      append(field.key, text);
+      if (!field.native_alias.isEmpty())
+        append(field.native_alias, text);
+    } else {
+      const QString owner = field.key.startsWith("pipeline.tracker.")
+          ? "pipeline.tracker.reid-enable"
+          : field.key.left(field.key.lastIndexOf('.')) + ".enable";
+      bool enabled = false;
+      for (const auto& candidate : fields_)
+        if (candidate.key == owner)
+          enabled = value(candidate).toBool();
+      if (!enabled)
+        continue;
+      const QString text = value(field).toString();
+      // Saved paths remain in their original layer. The CLI has no delimiter
+      // escaping; validation rejects only requested unsaved path overrides.
+      if (field.kind == Kind::kPath &&
+          (text.contains(',') || text.contains('=') || text.contains(QChar::Null) || text.contains('\n')))
+        continue;
+      append(field.key, field.kind == Kind::kPath ? Absolute(text, structural_directory_) : text);
+    }
+  }
+  return result;
+}
+QString PlayerAnalyticsControls::validation(bool inspect_files) const {
+  try {
+    for (const auto& field : fields_)
+      if (field.kind == Kind::kFlag && !field.valid && !changed(field))
+        return "Invalid saved boolean for " + field.key;
+    const YAML::Node effective = effectiveConfig();
+    const auto edited_path = [this](const QString& key) {
+      for (const auto& field : fields_)
+        if (field.key == key)
+          return changed(field);
+      return false;
+    };
+    const auto parsed = pa::ParseConfig(Get(effective, "pipeline.player-analytics"));
+    if (!parsed.ok())
+      return QString::fromUtf8(parsed.status().message().data(), parsed.status().message().size());
+    const bool reid = Flag(Get(effective, "pipeline.tracker.reid-enable"));
+    const auto gpu = Get(effective, "pipeline.player-analytics.gpu-id");
+    if (parsed->enabled() && gpu.IsDefined() && gpu.as<int>() < 0)
+      return "Player analytics GPU ID must be nonnegative.";
+    if ((parsed->enabled() || reid) && !Flag(Get(effective, "pipeline.tracker.enable")))
+      return "Player analytics and the ReID extension require pipeline.tracker.enable=1.";
+    if (parsed->enabled() && !Flag(Get(effective, "pipeline.primary-gie.enable")))
+      return "Player analytics require pipeline.primary-gie.enable=1.";
+    if (parsed->jersey.enabled && parsed->jersey_roi_mode == pa::JerseyRoiMode::kPose && parsed->maximum_due_rois < 2)
+      return "Pose-guided jersey recognition requires max-due-rois >= 2.";
+    const std::array<std::pair<const char*, const pa::FeatureConfig*>, 3> features{
+        {{"pose", &parsed->pose}, {"jersey", &parsed->jersey}, {"action", &parsed->action}}};
+    for (const auto& [name, feature] : features) {
+      if (!feature->enabled)
+        continue;
+      const QString path = Absolute(QString::fromStdString(feature->bundle), structural_directory_);
+      if (edited_path(kAnalytics + QString(name) + ".bundle") &&
+          (path.contains(',') || path.contains('=') || path.contains(QChar::Null) || path.contains('\n')))
+        return "This unsaved bundle path cannot be passed in runner arguments (comma, equals sign, NUL or newline). Save Preset first.";
+      if (!inspect_files)
+        continue;
+      if (!QFileInfo(path).isDir())
+        return QString("Missing %1 prepared bundle directory: %2").arg(name, path);
+      const auto manifest = pa::ParseModelManifest(Document(QDir(path).filePath("manifest.json")));
+      if (!manifest.ok())
+        return QString("Invalid %1 prepared manifest: %2")
+            .arg(name, QString::fromUtf8(manifest.status().message().data(), manifest.status().message().size()));
+      const auto expected = std::string(name) == "pose" ? pa::ModelFeature::kPose
+          : std::string(name) == "jersey"               ? pa::ModelFeature::kJersey
+                                                        : pa::ModelFeature::kAction;
+      if (manifest->feature != expected || manifest->maximum_batch < parsed->batch_size)
+        return QString("The %1 bundle has the wrong feature or insufficient batch capacity.").arg(name);
+      for (const auto& file : {manifest->engine_file, manifest->onnx_file})
+        if (!ReadableFile(QDir(path).filePath(QString::fromStdString(file))))
+          return QString("Missing or unreadable prepared %1 file: %2").arg(name, QString::fromStdString(file));
+    }
+    if (reid) {
+      const auto configured = Get(effective, "pipeline.tracker.reid-config-file");
+      if (!configured.IsDefined() || !configured.IsScalar() || configured.as<std::string>().empty())
+        return "The ReID extension requires a prepared configuration file.";
+      const QString path = Absolute(QString::fromStdString(configured.as<std::string>()), structural_directory_);
+      if (edited_path("pipeline.tracker.reid-config-file") &&
+          (path.contains(',') || path.contains('=') || path.contains(QChar::Null) || path.contains('\n')))
+        return "This unsaved ReID path cannot be passed in runner arguments (comma, equals sign, NUL or newline). Save Preset first.";
+      if (inspect_files) {
+        const auto document = Document(path);
+        const auto engine = Get(document, "ReID.modelEngineFile");
+        if (!engine.IsDefined() || !engine.IsScalar() || engine.as<std::string>().empty() ||
+            !ReadableFile(Absolute(QString::fromStdString(engine.as<std::string>()), QFileInfo(path).absolutePath())))
+          return "The ReID configuration requires a readable, nonempty prepared modelEngineFile.";
+      }
+    }
+    return {};
+  } catch (const std::exception& error) {
+    return QString::fromUtf8(error.what());
+  }
+}
+void PlayerAnalyticsControls::updateStatus() {
+  const auto error = validation(false);
+  status_->setText(
+      error.isEmpty() ? "Changes apply on the next run. Save Preset keeps these choices. Enabled models must "
+                        "already be prepared for the playback GPU; playback verifies compatibility."
+                      : error);
+}
+QString PlayerAnalyticsControls::validateForRun() {
+  const auto error = validation(true);
+  if (error.isEmpty())
+    updateStatus();
+  else
+    status_->setText(error);
+  return error;
+}

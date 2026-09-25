@@ -4,6 +4,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CudaStreamCompletionFence.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
+#include "hstream/src/libs/draw_display/PlayerOverlays.h"
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
 
 #include <atomic>
@@ -38,6 +39,9 @@ class PlayCropperPriv : public CustomAlgorithmBase {
 
  public:
   PlayCropperPriv(int gpu_id, size_t batch_size) : CustomAlgorithmBase(gpu_id, batch_size) {}
+
+  ~PlayCropperPriv() override;
+  void Shutdown() override;
 
   absl::Status PreCapsInit(DSCustom_CreateParams* params) override;
   absl::Status PostCapsInit(DSCustom_CreateParams* params) override;
@@ -111,6 +115,12 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   NvBufSurfaceParams display_dest_params_;
   bool plot_play_tracking_{false};
   bool plot_player_tracking_{false};
+  uint32_t player_overlay_layers_{0};
+  float player_joint_confidence_{0.3F};
+  draw_display::analytics::CommandList player_overlay_commands_;
+  std::unique_ptr<draw_display::analytics::Compositor> player_overlay_compositor_;
+  uint64_t player_overlay_suppressions_{0};
+  uint64_t player_overlay_rejections_{0};
   bool transform_object_meta_{false};
   bool runtime_output_size_{false};
   size_t runtime_output_max_width_{0};

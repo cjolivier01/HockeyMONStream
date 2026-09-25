@@ -7,6 +7,7 @@
 #include <gstnvdsmeta.h>
 
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
+#include "hstream/src/libs/player_analytics/FrameMeta.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 namespace hm::preview_overlay {
@@ -57,7 +58,7 @@ bool TrackColorState::Apply(NvDsFrameMeta* frame) noexcept {
         object->rect_params.border_color = {0.45, 0.45, 0.45, 1.0};
       }
     }
-    return true;
+    return player_analytics::AssignFrameColors(frame, stream.colors);
   } catch (...) {
     return false;
   }

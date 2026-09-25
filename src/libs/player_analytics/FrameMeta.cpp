@@ -79,6 +79,14 @@ bool ValidateFrameResult(const FrameResult& result) noexcept {
           player.jersey.evidence < 0 || !Times(player.jersey.observed_at, player.jersey.expires_at, result.pts_ns))
         return false;
     }
+    if (player.action_text.back() != '\0')
+      return false;
+    for (char character : player.action_text) {
+      if (character == '\0')
+        break;
+      if (character < ' ' || character > '~')
+        return false;
+    }
     if (player.action.label != -1 &&
         (player.action.label < 0 || player.action.label >= 60 || !Confidence(player.action.confidence) ||
          !Times(player.action.observed_at, player.action.expires_at, result.pts_ns) ||
@@ -109,6 +117,39 @@ bool AttachFrameResult(NvDsFrameMeta* frame, const FrameResult& result, FrameMet
     meta->base_meta.copy_func = Copy;
     meta->base_meta.release_func = Release;
     nvds_add_user_meta_to_frame(frame, meta);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool AssignFrameColors(NvDsFrameMeta* frame, const TrackColorAllocator& colors) noexcept {
+  try {
+    if (!frame)
+      return true;
+    for (auto* item = frame->frame_user_meta_list; item; item = item->next) {
+      auto* meta = static_cast<NvDsUserMeta*>(item->data);
+      if (!meta || meta->base_meta.meta_type != FrameResultMetaType() || !meta->user_meta_data)
+        continue;
+      auto& payload = *static_cast<Payload*>(meta->user_meta_data);
+      if (!payload)
+        return false;
+      std::shared_ptr<FrameResult> updated;
+      for (size_t i = 0; i < payload->player_count; ++i) {
+        const auto lease = colors.Find(payload->players[i].track_id);
+        const uint8_t slot = lease ? lease->slot : kNoColor;
+        const bool shared = lease && lease->overflow;
+        if (payload->players[i].color_slot == slot && payload->players[i].color_shared == shared)
+          continue;
+        if (!updated)
+          updated = std::make_shared<FrameResult>(*payload);
+        updated->players[i].color_slot = slot;
+        updated->players[i].color_shared = shared;
+      }
+      if (updated)
+        payload = std::move(updated);
+      return true;
+    }
     return true;
   } catch (...) {
     return false;

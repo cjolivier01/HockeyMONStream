@@ -5796,6 +5796,28 @@ absl::Status Configurator::map_common_config_keys() {
     }
   }
 
+  // Drawing preferences preserve normal explicit-layer precedence and never
+  // enable models. Null suppresses optional canonical mapping, retaining native.
+  if (!pipeline["player-analytics"] || pipeline["player-analytics"].IsNull())
+    pipeline["player-analytics"] = YAML::Node(YAML::NodeType::Map);
+  if (pipeline["player-analytics"].IsMap()) {
+    YAML::Node analytics = pipeline["player-analytics"];
+    for (const auto& [canonical, native] : {
+        std::pair<const char*, const char*>("plot.plot_pose", "draw-pose"),
+        {"plot.plot_jersey_numbers", "draw-jerseys"}, {"plot.plot_actions", "draw-actions"}}) {
+      std::optional<YAML::Node> source;
+      HM_ASSIGN_OR_RETURN(source, canonical_source(canonical,
+          std::string("pipeline.player-analytics.") + native, analytics[native], true));
+      if (!source || source->IsNull())
+        continue;
+      try {
+        analytics[native] = source->as<bool>() ? 1 : 0;
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError(std::string("Invalid ") + canonical + ": " + error.what());
+      }
+    }
+  }
+
   if (pipeline["hmplaycropper"].IsMap()) {
     YAML::Node cropper = pipeline["hmplaycropper"];
     HM_RETURN_IF_ERROR(

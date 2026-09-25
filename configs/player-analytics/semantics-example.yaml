@@ -20,3 +20,10 @@ pipeline:
     max-tracks: 256
     max-due-rois: 32 # Aggregate model samples, not 32 per feature.
     batch-size: 8
+
+# Independent next-run drawing preferences; these do not enable any model.
+plot:
+  plot_pose: true
+  plot_jersey_numbers: true
+  plot_actions: true
+  plot_individual_player_tracking: true

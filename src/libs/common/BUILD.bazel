@@ -402,6 +402,7 @@ cc_library(
     deps = [
         ":preview_overlay_meta",
         "//src/libs/player_analytics:track_colors",
+        "//src/libs/player_analytics:frame_meta",
         "//src/libs/stitching:stitched_output_generation_meta",
         "@deepstream//:deepstream_lib",
         "@gstreamer",

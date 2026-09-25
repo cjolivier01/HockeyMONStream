@@ -425,3 +425,20 @@ cc_test(
         "@com_google_absl//absl/status:statusor",
     ],
 )
+
+cc_test(
+    name = "player_analytics_mapping_test",
+    srcs = [
+        "PlayerAnalyticsMappingTest.cpp",
+        "StitcherOnePassConfig.h",
+        "StitchingCalibrationMode.h",
+        "configurator.cpp",
+        "configurator.h",
+        "deepstream_app.h",
+    ],
+    args = ["$(location //configs:baseline.yaml)"],
+    copts = HSTREAM_CLI_COPTS,
+    data = ["//configs:baseline.yaml"],
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    deps = HSTREAM_CLI_DEPS,
+)

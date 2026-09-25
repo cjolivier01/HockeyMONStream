@@ -36,6 +36,11 @@ struct Config {
   size_t batch_size{kMaximumBatch};
   uint64_t track_retention_ns{2 * kSecond};
 
+  uint32_t drawing_layers() const {
+    return (pose.enabled && drawing.pose ? kDrawPose : 0U) | (jersey.enabled && drawing.jersey ? kDrawJerseys : 0U) |
+        (action.enabled && drawing.action ? kDrawActions : 0U);
+  }
+
   bool enabled() const {
     return pose.enabled || jersey.enabled || action.enabled;
   }
