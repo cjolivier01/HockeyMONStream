@@ -1,6 +1,7 @@
-HStream's **Algorithms** tab now has a rink selector, pitch and roll controls, and an optional **Level from posts**
-dialog. Vallco inherits −35° pitch and Sharks Ice inherits −25° pitch. A saved game angle overrides the rink
-profile, including when it happens to equal that profile's default. **Use rink default** removes the override.
+HStream's **Stitched → Rink** tab groups the rink selector, pitch and roll controls, **Reset to rink defaults**,
+**Level rink…**, the automatic leveling-dialog option, and the ice-mask frame settings. Vallco inherits −23.8° pitch
+and +4.3° roll; Sharks Ice inherits −15° pitch and 0° roll. A saved game angle overrides the rink profile, including when it happens to
+equal that profile's default. **Reset to rink defaults** removes the override.
 Changing the rink while a game override is active keeps the override. No rink selection inherits zero rotation.
 
 When NONA applies a nonzero rink pitch or roll, **Program → Crop Rotation** shows zero for both sides and disables
@@ -50,7 +51,7 @@ full-resolution Nona maps and Enblend seam. If the rotation changed, HStream rea
 projection/framing step before those final outputs. If the calibration backend terminates while selection is open,
 the selector closes without returning a stale Skip response.
 
-**Algorithms → Level from posts** remains available for an already calibrated game. That version uses **Cancel**
+**Stitched → Rink → Level rink…** remains available for an already calibrated game. That version uses **Cancel**
 instead of **Skip leveling** and returns the accepted angles to the controls; choose **Save Preset** to apply them and
 trigger the normal stitching invalidation flow.
 

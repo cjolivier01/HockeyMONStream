@@ -57,7 +57,7 @@ in the streaming pipeline. Frame skips use each camera's own frame rate.
 
 ## Quick stitching iterations in the UI
 
-Under **Stitched → Algorithms**, check **Gyroscope synchronization** to try IMU
+Under **Stitched → Alignment**, check **Gyroscope synchronization** to try IMU
 with audio fallback (`auto`); uncheck it for audio. A game or user YAML setting
 of `imu` appears checked and remains strict when saving other controls. Existing
 offsets still take precedence: use **Clean Stitching**, then **Play**, to test a

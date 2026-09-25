@@ -5,7 +5,7 @@ editor is offered again when the projected camera geometry changes, such as a ne
 projection parameters, or leveling angles. Changing only crop bounds or output resolution does not require
 another confirmation. Games with an existing calibration and no recorded choice are prompted before playback.
 
-Use **Adjust crop…** in the stitching controls to control how much of the projected rink is retained. Stop
+Use **Stitched → Projection → Adjust crop…** to control how much of the projected rink is retained. Stop
 playback before editing. This control is available with the Nona mapping backend.
 
 - **Auto — crop valid pixels** lets Hugin choose its valid-image rectangle during calibration. The editor shows
