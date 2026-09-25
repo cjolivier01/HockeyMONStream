@@ -96,3 +96,15 @@ implementation plan in two rounds. Resolved requirements included causal action
 resampling, color recovery after temporary overflow, pre-crop preview ownership,
 strict model contracts, and exact preprocessing validation. PR implementation
 review rounds are recorded here as they complete.
+
+PR1 implementation round 1 reviewed `c6bd5236` independently for pipeline and
+runtime/core correctness. One required fix: deriving Program color demand from
+the root drawing flag ignored later cropper property overrides. Demand now reads
+the created cropper's final private configuration once, matching its alias,
+last-token and integer parsing behavior. The regression test exercises 11 actual
+cropper configurations across four producer combinations, including native-tracker
+fallback ownership and reuse. It passes on x86 and native Jetson. Full builds on
+both platforms pass after the fix, including the explicitly built x86 GPU preview
+target. Logs: `/tmp/hstream-player-pr1-round2-{build,test}.log` on the corresponding
+hosts; x86 regression detail is in `hstream-player-pr1-color-demand-test.log`.
+The independent runtime/core reviewer found no required fixes in round 1.

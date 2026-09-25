@@ -1,4 +1,5 @@
 #include "deepstream_app.h"
+#include "hstream/src/apps/apps-common/ProgramTrackColors.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
 #include "hstream/src/libs/common/TrackColorMeta.h"
@@ -1571,6 +1572,7 @@ static gboolean create_common_elements(
     GstElement** src_elem,
     bbox_generated_callback bbox_generated_post_analytics_cb) {
   gboolean ret = FALSE;
+  auto program_color_producer = hm::gst::ProgramTrackColorProducer::kNone;
   *sink_elem = *src_elem = NULL;
 
   if (config->hmimagemetamerger_config.enable) {
@@ -1595,6 +1597,10 @@ static gboolean create_common_elements(
       g_print("creating hmplaycropper bin failed\n");
       goto done;
     }
+    program_color_producer = hm::gst::ResolveProgramTrackColorProducer(
+        pipeline->common_elements.hmplaycropper_bin.playcropper,
+        config->dsplaytracker_config.enable,
+        config->tracker_config.enable);
     gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.hmplaycropper_bin.bin);
 
     if (!*src_elem) {
@@ -1690,7 +1696,7 @@ static gboolean create_common_elements(
 
   if (config->dsplaytracker_config.enable) {
     config->dsplaytracker_config.color_players =
-        config->hmplaycropper_config.enable && config->hmplaycropper_config.plot_player_tracking;
+        program_color_producer == hm::gst::ProgramTrackColorProducer::kPlayTracker;
     // Create dsexample element bin and set properties
     if (!create_dsplaytracker_bin(&config->dsplaytracker_config, &pipeline->dsplaytracker_bin)) {
       goto done;
@@ -1734,8 +1740,7 @@ static gboolean create_common_elements(
     *sink_elem = pipeline->common_elements.tracker_bin.bin;
   }
 
-  if (!config->dsplaytracker_config.enable && config->tracker_config.enable && config->hmplaycropper_config.enable &&
-      config->hmplaycropper_config.plot_player_tracking &&
+  if (program_color_producer == hm::gst::ProgramTrackColorProducer::kNativeTracker &&
       !hm::preview_overlay::ConfigureTrackColorProducer(pipeline->common_elements.tracker_bin.bin, true)) {
     NVGSTDS_ERR_MSG_V("Could not create the requested player-color producer");
     goto done;

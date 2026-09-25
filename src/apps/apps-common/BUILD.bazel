@@ -173,6 +173,7 @@ cc_library(
 cc_library(
     name = "deepstream_apps_common",
     srcs = [
+        "ProgramTrackColors.cpp",
         "deepstream-yaml/deepstream_config_yaml.cpp",
         "deepstream-yaml/deepstream_dewarper_yaml.cpp",
         "deepstream-yaml/deepstream_dsanalytics_yaml.cpp",
@@ -213,6 +214,7 @@ cc_library(
         "deepstream_video_converter.cpp",
     ],
     hdrs = [
+        "ProgramTrackColors.h",
         "UriPlaylistDiscovery.h",
         "deepstream_app_version.h",
         "deepstream_audio_classifier.h",
@@ -354,5 +356,17 @@ cc_test(
         ":gst_plugin_properties",
         "@gstreamer",
         "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "program_track_color_demand_test",
+    srcs = ["ProgramTrackColorsTest.cpp"],
+    args = ["$(location //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so)"],
+    data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
+    deps = [
+        ":deepstream_apps_common",
+        "//src/libs/common:track_color_meta",
+        "@gstreamer",
     ],
 )
