@@ -1,0 +1,11 @@
+cc_binary(
+    name = "player-model-builder",
+    srcs = ["player_model_builder.cpp"],
+    copts = ["-Wall", "-std=c++17", "-Wno-error=deprecated-declarations"],
+    linkopts = ["-L/usr/local/cuda/lib64", "-lcudart"],
+    deps = [
+        "@player_tensorrt//:sdk",
+        "@local_cuda//:cuda",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+)

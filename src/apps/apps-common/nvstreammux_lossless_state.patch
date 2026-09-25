@@ -1,6 +1,28 @@
 --- gstnvstreammux.cpp
 +++ gstnvstreammux.cpp
-@@ -1547,6 +1547,10 @@
+@@ -878,6 +878,7 @@
+               LOGD("failed to set caps [%s] on source pad\n", gst_caps_to_string(caps));
+               GST_ERROR_OBJECT (element, "failed to set caps [%s] on source pad\n",
+                 gst_caps_to_string(caps));
++              g_mutex_unlock (&mux->ctx_lock);
+               return FALSE;
+             }
+           }
+@@ -898,5 +899,6 @@
+            LOGD("failed to set updated caps [%s] on source pad\n", gst_caps_to_string(caps));
+            GST_ERROR_OBJECT (element, "failed to set caps [%s] on source pad\n",
+               gst_caps_to_string(caps));
++           g_mutex_unlock (&mux->ctx_lock);
+            return FALSE;
+         }
+@@ -1067,5 +1069,6 @@
+          LOGD("failed to set updated caps [%s] on source pad\n", gst_caps_to_string(caps));
+          GST_ERROR_OBJECT (element, "failed to set caps [%s] on source pad\n",
+             gst_caps_to_string(caps));
++         g_mutex_unlock (&mux->ctx_lock);
+          return FALSE;
+       }
+@@ -1547,6 +1550,10 @@
        break;
      case GST_STATE_CHANGE_PAUSED_TO_READY:
      {
@@ -11,7 +33,7 @@
          GHashTableIter iter;
          gpointer value;
          gint key = 0;
-@@ -1561,7 +1565,6 @@
+@@ -1561,7 +1568,6 @@
            }
          }
          g_mutex_unlock (&mux->ctx_lock);

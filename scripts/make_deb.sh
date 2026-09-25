@@ -146,6 +146,7 @@ HSTREAM_GST_PLUGINS=(
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so"
+  "${TOPDIR}/bazel-bin/src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so"
 )
 if [[ ! -f "${HSTREAM_CLI}" ]]; then
   echo "ERROR: ${HSTREAM_CLI} not found. Run 'make hstream-cli' first, or pass --build." >&2

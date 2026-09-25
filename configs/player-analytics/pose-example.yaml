@@ -1,0 +1,13 @@
+# Explicit opt-in overlay; replace bundle with a locally prepared, compatible model.
+# No player-analytics section is needed for ordinary playback.
+pipeline:
+  player-analytics:
+    pose:
+      enable: 1
+      bundle: /absolute/path/to/prepared-pose-bundle
+      rate-hz: 10
+      confidence-threshold: 0.3
+    max-tracks: 256
+    max-due-rois: 32
+    batch-size: 8
+    track-retention-ms: 2000

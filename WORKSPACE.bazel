@@ -6,6 +6,9 @@ load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_r
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
 load("//bazel:conditional_local_repository.bzl", "conditional_local_repository")
 load("//bazel:onnxruntime_gpu_repository.bzl", "onnxruntime_gpu_arm64_repository")
+load("//bazel:player_tensorrt_sdk_repository.bzl", "player_tensorrt_sdk_repository")
+
+player_tensorrt_sdk_repository(name = "player_tensorrt")
 load("//bazel:tensorrt_sdk_repository.bzl", "tensorrt_sdk_repository")
 
 # Keep the offline engine builder's headers and libraries in the same SDK.

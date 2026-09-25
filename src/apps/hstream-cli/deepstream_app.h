@@ -33,6 +33,7 @@
 #include "hstream/src/apps/apps-common/deepstream_streammux.h"
 #include "hstream/src/apps/apps-common/deepstream_tiled_display.h"
 #include "hstream/src/apps/apps-common/deepstream_tracker.h"
+#include "hstream/src/apps/apps-common/PlayerAnalyticsBin.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 
 // #include "gst-nvdscommonconfig.h"
@@ -82,6 +83,7 @@ typedef struct {
   NvDsSecondaryGieBin secondary_gie_bin;
   NvDsSecondaryPreProcessBin secondary_preprocess_bin;
   NvDsTrackerBin tracker_bin;
+  GstElement* player_analytics;
   NvDsHmImageMetaMergerBin hmimagemetamerger_bin;
   NvDsSinkBin sink_bin;
   NvDsSinkBin demux_sink_bin;
@@ -146,6 +148,7 @@ struct NvDsConfig {
   NvDsPreProcessConfig secondary_preprocess_sub_bin_config[MAX_SECONDARY_PREPROCESS_BINS];
   NvDsGieConfig primary_gie_config;
   NvDsTrackerConfig tracker_config;
+  hm::gst::PlayerAnalyticsConfig player_analytics_config;
   NvDsGieConfig secondary_gie_sub_bin_config[MAX_SECONDARY_GIE_BINS];
   NvDsSinkSubBinConfig sink_bin_sub_bin_config[MAX_SINK_BINS];
   NvDsMsgConsumerConfig message_consumer_config[MAX_MESSAGE_CONSUMERS];

@@ -6,6 +6,11 @@
 
 namespace hm::pipeline_internal {
 
+inline void suppress_player_analytics(YAML::Node pipeline) {
+  if (pipeline && pipeline.IsMap())
+    pipeline.remove("player-analytics");
+}
+
 // Keep stitching calibration on the shortest useful video graph. Sources,
 // streammux, hmstitcher, sinks, audio, and preview branches remain available;
 // every stage that consumes the stitched output for Program production is
@@ -13,6 +18,7 @@ namespace hm::pipeline_internal {
 inline void configure_stitching_calibration_pipeline(YAML::Node pipeline, bool prepare_ice_mask = false) {
   if (!pipeline || !pipeline.IsMap())
     return;
+  suppress_player_analytics(pipeline);
 
   constexpr const char* kDownstreamStages[] = {
       "hm-image-meta-merger",

@@ -148,6 +148,12 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "hstream_lossless_nvstreammux_rejected_caps_test",
+    srcs = ["HStreamLosslessMuxRejectedCapsTest.cpp"],
+    deps = [":hstream_lossless_nvstreammux", "@gstreamer"],
+)
+
 cc_library(
     name = "hm_gpu_preview",
     srcs = ["HmGpuPreview.cpp"],
@@ -265,6 +271,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/tracker_reid:tracker_reid",
+        ":player_analytics_bin",
         ":encoder_dimensions",
         ":hm_gpu_preview",
         ":gst_plugin_properties",
@@ -371,4 +378,24 @@ cc_test(
         "//src/libs/common:track_color_meta",
         "@gstreamer",
     ],
+)
+
+cc_library(
+    name = "player_analytics_bin",
+    srcs = ["PlayerAnalyticsBin.cpp"],
+    hdrs = ["PlayerAnalyticsBin.h"],
+    include_prefix = "hstream/src/apps/apps-common",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/player_analytics:config",
+        "@com_google_absl//absl/status:statusor",
+        "@gstreamer",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "player_analytics_bin_test",
+    srcs = ["PlayerAnalyticsBinTest.cpp"],
+    deps = [":player_analytics_bin"],
 )

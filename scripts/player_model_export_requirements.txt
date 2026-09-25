@@ -1,0 +1,16 @@
+# Added only inside the isolated export venv. GPU PyTorch/torchvision and the
+# compiled MMCV installation are inherited from the explicit base interpreter.
+onnx==1.23.0
+onnxruntime==1.30.0
+numpy==2.5.3
+ml-dtypes==0.6.0
+protobuf==7.36.2
+typing-extensions==4.16.0
+flatbuffers==25.12.19
+packaging==26.3
+pytorch-lightning==2.6.1
+torchmetrics==1.8.2
+lightning-utilities==0.15.2
+nltk==3.9.2
+timm==0.9.16
+regex==2026.9.10

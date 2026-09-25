@@ -1725,6 +1725,24 @@ static gboolean create_common_elements(
     }
   }
 
+  // Graph construction proceeds downstream-to-upstream. Analytics therefore
+  // consumes native tracker metadata before vpplaytracker and Program cropping.
+  if (config->player_analytics_config.analytics.enabled()) {
+    auto analytics = hm::gst::CreatePlayerAnalytics(config->player_analytics_config, config->tracker_config.enable);
+    if (!analytics.ok()) {
+      NVGSTDS_ERR_MSG_V("%s", analytics.status().ToString().c_str());
+      goto done;
+    }
+    pipeline->common_elements.player_analytics = *analytics;
+    gst_bin_add(GST_BIN(pipeline->pipeline), *analytics);
+    if (!*src_elem)
+      *src_elem = *analytics;
+    if (*sink_elem) {
+      NVGSTDS_LINK_ELEMENT(*analytics, *sink_elem);
+    }
+    *sink_elem = *analytics;
+  }
+
   if (config->tracker_config.enable) {
     if (!create_tracking_bin(&config->tracker_config, &pipeline->common_elements.tracker_bin)) {
       g_print("creating tracker bin failed\n");

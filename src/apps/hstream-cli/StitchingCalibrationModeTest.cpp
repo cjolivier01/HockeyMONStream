@@ -34,6 +34,7 @@ pipeline:
   secondary-gie0: {enable: 1}
   secondary-preprocess0: {enable: 1}
   tracker: {enable: 1}
+  player-analytics: {pose: {enable: 1, bundle: /unreadable}, action: {enable: 1, bundle: /unreadable}}
   ds-fieldmask: {enable: 1}
   ds-playtracker: {enable: 1}
   hmplaycropper: {enable: 1}
@@ -51,6 +52,7 @@ pipeline:
   hm::pipeline_internal::configure_stitching_calibration_pipeline(pipeline);
 
   bool ok = true;
+  ok &= expect(!pipeline["player-analytics"], "calibration must omit optional analytics before model resolution");
   ok &= expect(enabled(pipeline, "source0"), "calibration must retain decoded video sources");
   ok &= expect(enabled(pipeline, "hmstitcher"), "calibration must retain hmstitcher");
   ok &= expect(enabled(pipeline, "sink0"), "calibration must retain configured sinks");

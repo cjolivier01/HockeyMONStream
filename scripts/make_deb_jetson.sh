@@ -215,7 +215,8 @@ bazelisk --batch --output_base="${output_base}" build \
   //src/gst-plugins/gst-dsxvideoconvert:libgstdsxvideoconvert.so \
   //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \
   //src/gst-plugins/gst-playtracker:libgstplaytracker.so \
-  //src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so
+  //src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so \
+  //src/gst-plugins/gst-player-analytics:libgsthmplayeranalytics.so
 
 cuobjdump=/usr/local/cuda/bin/cuobjdump
 if [[ ! -x "${cuobjdump}" ]]; then
@@ -230,6 +231,7 @@ cuda_elfs=(
   bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so
   bazel-bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so
   bazel-bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so
+  bazel-bin/src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so
 )
 cuda_elf_count=0
 for cuda_elf in "${cuda_elfs[@]}"; do
