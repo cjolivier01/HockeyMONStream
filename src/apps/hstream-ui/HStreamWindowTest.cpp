@@ -776,6 +776,7 @@ bool test_matching_development_runtime_selection() {
   const std::vector<fs::path> runtime_artifacts = {
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
+      execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       execution_root / "bazel-out/k8-opt/bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",

@@ -11,3 +11,6 @@ bazel-out
 bazel-testlogs
 bazel-hstream
 bazel-kstream
+
+# Runtime launch caches contain changing shared-library symlinks, not packages.
+.cache

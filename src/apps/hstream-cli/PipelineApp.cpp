@@ -691,6 +691,7 @@ absl::Status validate_bazel_runtime_artifacts(const hm::pipeline_internal::Runti
   const std::vector<fs::path> required = {
       "src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
+      "src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so",
       "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
@@ -1230,6 +1231,9 @@ absl::Status PipelineApplication::configureInstances(
       // clean-only eligible context reapplies them here so CLI source/sink
       // values still win over loaded subconfigs.
       HM_RETURN_IF_ERROR(apply_pipeline_options());
+
+      if (current_stage_ < 0)
+        hm::pipeline_internal::suppress_player_analytics(app_ctx->configurator().config()["pipeline"]);
 
       if (stitching_calibration_only_ && current_stage_ >= 0) {
         hm::pipeline_internal::configure_stitching_calibration_pipeline(
@@ -3895,6 +3899,7 @@ hm::TerminalProgressGraphSnapshot PipelineApplication::build_progress_graph_snap
     add_video_stage(app_ctx->config.dsfieldmask_config.enable, "ds-fieldmask");
     add_video_stage(app_ctx->config.primary_gie_config.enable, "primary-gie");
     add_video_stage(app_ctx->config.tracker_config.enable, "tracker");
+    add_video_stage(app_ctx->config.player_analytics_config.analytics.enabled(), "player-analytics");
     add_video_stage(app_ctx->config.dsplaytracker_config.enable, "ds-playtracker");
     add_video_stage(app_ctx->config.hmsticher_config.enable, "hmstitcher");
 

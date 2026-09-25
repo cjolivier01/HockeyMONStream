@@ -537,6 +537,13 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
    * before any other group parsing */
   parse_err = !parse_app_yaml(config, configyml["application"]);
 
+  const auto player_analytics = hm::gst::ResolvePlayerAnalyticsConfig(configyml, config_dir, config->global_gpu_id);
+  if (!player_analytics.ok()) {
+    NVGSTDS_ERR_MSG_V("%s", player_analytics.status().ToString().c_str());
+    return FALSE;
+  }
+  config->player_analytics_config = *player_analytics;
+
   for (YAML::const_iterator itr = configyml.begin(); itr != configyml.end(); ++itr) {
     std::string paramKey = itr->first.as<std::string>();
     if (paramKey == "source" || (paramKey.size() > 6 && paramKey.substr(0, 6) == "source")) {
@@ -808,6 +815,8 @@ gboolean parse_config_yaml(const YAML::Node& configyml, NvDsConfig* config, cons
        * it will override the value set using global_gpu_id in parse_fieldmask_yaml function */
       // parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second);
       parse_err = !parse_hmstitcher_yaml(&config->hmsticher_config, itr->second, config_dir.c_str());
+    } else if (paramKey == "player-analytics") {
+      // Resolved above from the final layered, mode-specific pipeline settings.
     } else if (paramKey == "ds-playtracker") {
       /** set gpu_id for dsexample component using global_gpu_id(if available) */
       if (config->global_gpu_id != -1) {

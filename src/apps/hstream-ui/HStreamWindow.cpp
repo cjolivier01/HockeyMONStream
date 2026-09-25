@@ -4624,6 +4624,7 @@ QString hm::ui_internal::missing_development_runtime_artifact(const QString& baz
   const QStringList required = {
       "src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
+      "src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so",
       "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",

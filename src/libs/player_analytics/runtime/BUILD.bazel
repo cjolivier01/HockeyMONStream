@@ -1,0 +1,65 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
+INCLUDE_PREFIX = "hstream/src/libs/player_analytics/runtime/"
+
+cc_library(
+    name = "native_engine",
+    srcs = ["NativeEngine.cpp"],
+    hdrs = ["NativeEngine.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/player_analytics:model_contract",
+        "//src/libs/player_analytics:types",
+        "@com_google_absl//absl/status:statusor",
+        "@glib",
+        "@local_cuda//:cuda",
+        "@player_tensorrt//:runtime",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+)
+
+cc_library(
+    name = "pose_gpu_headers",
+    hdrs = ["PoseGpu.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/player_analytics:types",
+        "@com_google_absl//absl/status:statusor",
+        "@local_cuda//:cuda",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+)
+
+cc_library(
+    name = "pose_affine",
+    srcs = ["PoseAffine.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [":pose_gpu_headers"],
+)
+
+cuda_library(
+    name = "pose_gpu",
+    srcs = ["PoseGpu.cu"],
+    visibility = ["//visibility:public"],
+    deps = [":pose_gpu_headers"],
+)
+
+cc_binary(
+    name = "pose_gpu_test",
+    srcs = ["PoseGpuTest.cpp"],
+    deps = [":pose_affine", ":pose_gpu", "@opencv_linux//:opencv"],
+)
+
+cc_binary(
+    name = "native_engine_test",
+    srcs = ["NativeEngineTest.cpp"],
+    deps = [":native_engine"],
+)
+
+cc_binary(
+    name = "pose_fixture_test",
+    srcs = ["PoseFixtureTest.cpp"],
+    deps = [":native_engine", ":pose_affine", ":pose_gpu", "@opencv_linux//:opencv"],
+)

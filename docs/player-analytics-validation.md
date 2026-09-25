@@ -150,3 +150,113 @@ with the corrected test target. Final x86 evidence is
 `--output_base=/home/colivier/.bazel-player-analytics` because unrelated worktrees
 were replacing the default shared outputs. Use this output base for subsequent
 local builds and runtime verification.
+
+
+## Native pose and offline model preparation (PR 2)
+
+This stage adds the optional `hmplayeranalytics` element, native TensorRT runtime,
+GPU pose crops/decoding and offline preparation for the three supported profiles.
+The all-off graph omits the element. A manually instantiated disabled element also
+passes with zero intercepted CUDA calls and without accessing a video surface or
+model bundle. Live graph inspection plus file-access tracing confirms ordinary
+playback omits analytics and does not inspect an inaccessible configured bundle.
+Calibration-only playback suppresses even explicitly enabled, invalid analytics
+settings and completes both source EOS paths.
+
+The complete x86 build uses the isolated output base above and the coherent
+TensorRT 10.16 SDK selected with
+`HSTREAM_PLAYER_TENSORRT_SDK_ROOT=$HOME/.cache/hstream/player-sdk/trt10.16/usr`.
+The native Jetson build uses its TensorRT 10.3 SDK. The x86-only manual preview
+target is explicitly built on x86; it is incompatible with the Jetson platform.
+Logs are `/tmp/hstream-player-pr2-{final-build,full-build}.log` on their respective
+hosts. No model binaries or weights are committed.
+
+Executed checks cover final configuration/path resolution, calibration/scan/INT8
+suppression, real prepared engine batches 1/2/8/1, strict checksum/identity/binding/
+profile rejection, GPU fractional/out-of-bounds/nonuniform ROI sampling, pitched
+8-bit and packed 10-bit inputs, and the actual GStreamer plugin. Both platforms
+pass real pose inference, cadence, continuous-segment retention, discontinuity,
+concurrent FLUSH_START cancellation and injected D2H error fencing. Preparation
+has eight passing failure/restoration tests, including preservation of the
+independent PyTorch attention oracle.
+
+A retained real hockey-player fixture matches MMPose/OpenCV preprocessing exactly
+on both GPUs. RTX 5090 FP16 SimCC maximum errors are 0.008336/0.006984; Orin errors
+are 0.019063/0.014264. The original fixture-only raw-distribution limit of 0.01
+failed on Orin. Diagnosis found exact preprocessing and decoder reduction, with
+only near-tied maxima shifting: 15/17 exact joint argmax pairs on RTX and 13/17 on
+Orin. Maximum decoded displacement is respectively 0.5 and 0.707 model pixels;
+confidence error is 0.001942/0.002454. The fixture now applies the preparation
+precision's existing elementwise numerical tolerance while retaining independent
+one-model-pixel and 0.01-confidence semantic limits. This is conversion parity for
+one fixture, not a hockey pose accuracy assessment.
+
+PARSeq additionally exposed a real TensorRT 10.3 optimization error: the accepted
+SDPA-derived ONNX graph produced wrong results even in FP32 with TF32 disabled.
+An equivalent, scoped explicit-attention export fixes it without changing weights,
+reference behavior or preparation tolerances. The original autoregressive decoder
+also requires explicit singleton indexing to avoid unsupported rank-changing If
+branches. See [the compatibility findings](parseq-tensorrt-compatibility.md).
+Target-local FP16 and FP32 preparation passes batches 1/2/8 on RTX and Orin,
+including a real jersey “27” input; every token argmax agrees. FP16 maximum logits
+errors are 0.039910/0.035984 and FP32 errors are below 0.000016. The real Orin
+fixture reads “27” with confidence 0.833069 versus upstream 0.834680. These results
+establish conversion correctness, not jersey recognition accuracy.
+
+A private real-recording x86 pose run completes 317 frames, 357 pose enqueues and
+1,487 pose results with no invalid-time/ROI/capacity/cancellation events. Its short
+63.92 FPS observation is not a controlled performance comparison. Final disabled,
+inference, drawing and ReID performance comparisons remain part of PR 4.
+
+
+Actual Jetson recording exposed aligned EGL storage: the logical 7135×2634
+stitched surface imports as a 7136×2634 CUDA plane. The adapter now requires
+storage to cover the logical image and retains the logical width for ROI math.
+It does not copy or repack the frame. A native allocation regression covers odd
+sizes, existing/caller-owned EGL mappings, stitcher-adjusted plane metadata,
+bottom-right pixels, re-import, undersized allocation rejection and unsupported
+CUDA-array rejection. The original equality check fails these odd-width fixtures;
+the corrected import passes all eight cases. Evidence is in
+`/tmp/hstream-player-pr2-egl-test.log` on Jetson.
+
+
+A completed Jetson pose replay processed 312 frames, 323 pose enqueues and 1,295
+pose results, with zero invalid-time/ROI/capacity/cancellation events. One run
+then stalled during timed shutdown, after analytics teardown. A native stack
+localized the wait to the preexisting lossless mux context mutex. Its CAPS
+handler returned from three downstream-event rejection paths without unlocking.
+A standalone, GPU-free test reproduces the video and both audio rejection paths
+using a downstream flush; the original code hangs and the corrected code permits
+NULL transition. The vendor-source patch now releases that lock on those three
+failure paths. Buffering, sequence barriers and normal processing are unchanged.
+The patch applies to both DS7.1 and DS9.1; full x86/Jetson builds and all rejection
+cases pass. Evidence: `/tmp/hstream-player-pr2-shutdown-{build,test,recording}.log`
+on each host. Unmodified frozen-master/off/pose repetitions also completed on
+Jetson, consistent with an intermittent teardown race rather than inference
+failure; the deterministic rejection test is the regression oracle.
+
+The corrected real pose replays complete with “App run successful” on both hosts:
+x86 316 frames/356 enqueues/1,483 results; Jetson 312/323/1,295. The standalone
+rejection test was also run against the original and corrected vendor objects on
+both platforms: all six original cases reach their 10-second failure alarm and
+all six corrected cases stop normally. Trimming trailing blank context from the
+patch preserves generated source byte-for-byte; final full builds are recorded
+in `/tmp/hstream-player-pr2-shutdown-build-final.log`.
+
+
+PR2 implementation round 1 reviewed `47b2df5a`. The pipeline reviewer found no
+necessary fixes. The runtime/preparation reviewer found that export validation
+accepted up to 256 supplied examples but tested only the first maximum batch.
+The correction retains profile-boundary fixtures, then validates every remaining
+row in bounded chunks, records coverage and replays every case during native
+preparation. Seventeen CPU tests pass on x86 and Jetson, including all supported
+input-count/batch-limit combinations, an incomplete final batch and a failure
+occurring only in a later case that must prevent publication. Numerical thresholds
+and model graphs are unchanged. Complete x86/Jetson builds pass after the change.
+Evidence: `/tmp/hstream-player-pr2-coverage-{build,test}.log` on each host.
+
+PR2 implementation round 2: two independent xhigh reviewers reviewed the
+preparation coverage correction against `47b2df5a`; both report no necessary
+fixes and independently reran all 17 CPU tests without skips. Prior runtime,
+pipeline, EGL and shutdown findings are resolved. The supported engines and
+numerical thresholds are unchanged by this preparation-only correction.

@@ -89,6 +89,7 @@ bazelisk build --config=opt --cpu=k8 \
   //src/apps/hstream-cli:hstream-cli \
   //src/gst-plugins/gst-dsxvideoconvert:libgstdsxvideoconvert.so \
   //src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so \
+  //src/gst-plugins/gst-player-analytics:libgsthmplayeranalytics.so \
   //src/gst-plugins/gst-playtracker:libgstplaytracker.so \
   //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \
   //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
