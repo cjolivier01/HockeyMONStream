@@ -362,9 +362,11 @@ cc_test(
 cc_test(
     name = "program_track_color_demand_test",
     srcs = ["ProgramTrackColorsTest.cpp"],
+    copts = ["-DIN_GSTVIDEOPREP_PLUGIN=1"],
     args = ["$(location //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so)"],
     data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
     deps = [
+        "//src/gst-plugins/gst-videoprep:test_headers",
         ":deepstream_apps_common",
         "//src/libs/common:track_color_meta",
         "@gstreamer",

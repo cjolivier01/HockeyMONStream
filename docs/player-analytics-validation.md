@@ -128,3 +128,14 @@ establish the fixture and successful playback, not a precise performance bound.
 The first candidate startup includes its Bazel launch cache. Longer controlled
 runs and model/render comparisons remain part of PR4. Remote evidence:
 `/tmp/hstream-player-analytics-validation/pr1-jetson-comparison.json` and its logs.
+
+PR1 implementation round 3 reviewed `b519da7c`. Both reviewers caught a
+property-ordering regression in the second fix: writing the entire private
+configuration after public properties advanced the plugin's precedence sequence,
+so unrelated typed acceleration/rotation overrides could lose at startup. The
+corrected builder augments each private-config value before its original setter
+runs and preserves the original public-property order. The regression now checks
+the actual plugin's startup precedence markers as well as color demand, including
+drawing disabled. The previous round's correction is superseded by this ordering-
+preserving version. Round-4 builds/tests are recorded in
+`/tmp/hstream-player-pr1-round4-{build,test}.log` on each host.

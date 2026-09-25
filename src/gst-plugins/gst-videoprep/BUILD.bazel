@@ -87,3 +87,17 @@ cc_test(
         "@gstreamer",
     ],
 )
+
+# Tests inspect startup property ordering without allocating a video pipeline.
+cc_library(
+    name = "test_headers",
+    testonly = True,
+    hdrs = ["gstvideoprep.h", "videoprep_plugins.h"],
+    include_prefix = "hstream/src/gst-plugins/gst-videoprep",
+    linkopts = ["-lnppig"],
+    visibility = ["//src/apps/apps-common:__pkg__"],
+    deps = [
+        "//src/gst-plugins/gst-videoprep/algorithm-base",
+        "//src/gst-plugins/gst-videoprep/playtracker",
+    ],
+)

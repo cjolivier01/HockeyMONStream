@@ -1,5 +1,6 @@
 #include "hstream/src/apps/apps-common/ProgramTrackColors.h"
 #include "hstream/src/apps/apps-common/deepstream_dsfieldmask.h"
+#include "hstream/src/gst-plugins/gst-videoprep/gstvideoprep.h"
 #include "hstream/src/libs/common/TrackColorMeta.h"
 
 #include <atomic>
@@ -70,10 +71,15 @@ bool CheckPlayTrackerDemand(bool demand, bool public_override, bool private_over
   auto config = std::make_unique<NvDsDsPlayTrackerConfig>();
   std::strcpy(config->config_file, "/tmp/player-color-test-unopened.yaml");
   config->color_players = demand;
+  config->dynamic_acceleration_scaling = 1.0F;
+  config->fixed_edge_rotation_angle_set = true;
+  config->fixed_edge_rotation_angle = 1.0F;
   if (private_override)
     config->private_properties = {{"color_players", demand ? "0" : "1"}};
   if (public_override)
     config->plugin_properties = {{"plugin-private-config", "draw=0;show=0"}};
+  config->plugin_properties.push_back({"dynamic-acceleration-scaling", "0.5"});
+  config->plugin_properties.push_back({"fixed-edge-rotation-angle", "2.0"});
   NvDsDsPlayTrackerBin bin{};
   if (!create_dsplaytracker_bin(config.get(), &bin)) {
     if (bin.bin)
@@ -84,9 +90,16 @@ bool CheckPlayTrackerDemand(bool demand, bool public_override, bool private_over
   g_object_get(G_OBJECT(bin.elem_dsplaytracker), "plugin-private-config", &resolved, nullptr);
   const std::string value = resolved ? resolved : "";
   g_free(resolved);
+  const auto* native = reinterpret_cast<const hm::videoprep::GstVideoPrep*>(bin.elem_dsplaytracker);
+  // These are the actual startup precedence markers, not the property's cached
+  // public getter (which would still return 0.5 when startup incorrectly ignores it).
+  const bool typed_overrides_survive = native->dynamic_acceleration_scaling == 0.5 &&
+      native->fixed_edge_rotation_angle == 2.0 &&
+      native->dynamic_acceleration_scaling_sequence > native->plugin_private_config_sequence &&
+      native->fixed_edge_rotation_angle_sequence > native->plugin_private_config_sequence;
   gst_object_unref(bin.bin);
   const std::string suffix = demand ? ";color-players=1" : ";color-players=0";
-  const bool okay = value.size() >= suffix.size() &&
+  const bool okay = typed_overrides_survive && value.size() >= suffix.size() &&
       value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0 &&
       value.find("draw=0") != std::string::npos;
   if (!okay)
