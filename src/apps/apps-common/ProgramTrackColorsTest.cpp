@@ -66,6 +66,33 @@ bool CheckCase(
     std::cerr << name << ": incorrect demand or upstream ownership\n";
   return okay;
 }
+bool CheckPlayTrackerDemand(bool demand, bool public_override, bool private_override) {
+  auto config = std::make_unique<NvDsDsPlayTrackerConfig>();
+  std::strcpy(config->config_file, "/tmp/player-color-test-unopened.yaml");
+  config->color_players = demand;
+  if (private_override)
+    config->private_properties = {{"color_players", demand ? "0" : "1"}};
+  if (public_override)
+    config->plugin_properties = {{"plugin-private-config", "draw=0;show=0"}};
+  NvDsDsPlayTrackerBin bin{};
+  if (!create_dsplaytracker_bin(config.get(), &bin)) {
+    if (bin.bin)
+      gst_object_unref(bin.bin);
+    return false;
+  }
+  gchar* resolved = nullptr;
+  g_object_get(G_OBJECT(bin.elem_dsplaytracker), "plugin-private-config", &resolved, nullptr);
+  const std::string value = resolved ? resolved : "";
+  g_free(resolved);
+  gst_object_unref(bin.bin);
+  const std::string suffix = demand ? ";color-players=1" : ";color-players=0";
+  const bool okay = value.size() >= suffix.size() &&
+      value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0 &&
+      value.find("draw=0") != std::string::npos;
+  if (!okay)
+    std::cerr << "play-tracker property overrides discarded authoritative color demand\n";
+  return okay;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -117,6 +144,10 @@ int main(int argc, char** argv) {
   okay &= CheckCase("empty value uses atoi", true, {}, {{"plugin-private-config", "plot-player-tracking="}}, false);
   okay &= CheckCase(
       "key whitespace is significant", false, {}, {{"plugin-private-config", " plot-player-tracking=1"}}, false);
+  for (bool demand : {false, true})
+    for (bool public_override : {false, true})
+      for (bool private_override : {false, true})
+        okay &= CheckPlayTrackerDemand(demand, public_override, private_override);
   if (!okay)
     return 1;
   std::cout << "Final cropper properties and single upstream color-owner checks passed\n";

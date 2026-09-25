@@ -1027,6 +1027,18 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
     goto done;
   }
 
+  // Downstream Program drawing owns this internal demand. Apply it after
+  // public/private user properties, including replacement of the entire private
+  // config string, so requested drawing always has exactly one color owner.
+  {
+    gchar* resolved = nullptr;
+    g_object_get(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", &resolved, NULL);
+    private_config = resolved ? resolved : "";
+    g_free(resolved);
+    private_config += config->color_players ? ";color-players=1" : ";color-players=0";
+    g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", private_config.c_str(), NULL);
+  }
+
   ret = TRUE;
 done:
   if (!ret) {

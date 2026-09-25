@@ -108,3 +108,23 @@ both platforms pass after the fix, including the explicitly built x86 GPU previe
 target. Logs: `/tmp/hstream-player-pr1-round2-{build,test}.log` on the corresponding
 hosts; x86 regression detail is in `hstream-player-pr1-color-demand-test.log`.
 The independent runtime/core reviewer found no required fixes in round 1.
+
+PR1 implementation round 2 reviewed `4c6484db` with two independent xhigh
+reviewers. Both identified the symmetric play-tracker case: public replacement
+of `plugin-private-config` could discard resolved color demand. The builder now
+appends the authoritative Program request after all user property overrides,
+preserving other private settings. Eight additional actual play-tracker builder
+cases cover on/off demand with private and public overrides. The expanded test
+passes on x86 and native Jetson; full builds pass on both platforms after this fix.
+No other necessary findings were reported in round 2.
+
+Native Jetson frozen-master/default-candidate playback now also completes with
+positive output FPS. Two alternating pairs use the same private 7135×2634 canvas,
+4K camera sources, FP32 detector, FAKE sink and five seconds of video. Both use
+`pipeline.hmstitcher.properties.high-bit-depth=0` because this frozen DS7.1 master
+cannot negotiate the high-bit-depth stitched path. Periodic FPS varies from
+7.54 to 9.67 across runs; both variants average about 8.4 FPS. These short runs
+establish the fixture and successful playback, not a precise performance bound.
+The first candidate startup includes its Bazel launch cache. Longer controlled
+runs and model/render comparisons remain part of PR4. Remote evidence:
+`/tmp/hstream-player-analytics-validation/pr1-jetson-comparison.json` and its logs.
