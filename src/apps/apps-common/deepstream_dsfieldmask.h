@@ -70,6 +70,7 @@ constexpr size_t kMyMaxPath = PATH_MAX * 4;
  *                 |___/
  */
 struct NvDsDsPlayTrackerConfig {
+  gboolean color_players{false};
   // Create a bin for the element only if enabled
   gboolean enable;
   // Struct members to store config / properties for the element

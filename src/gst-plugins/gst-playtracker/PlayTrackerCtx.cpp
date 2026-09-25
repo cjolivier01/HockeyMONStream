@@ -1021,6 +1021,12 @@ bool DsPlayTrackerAttachPreviewSnapshot(DsPlayTrackerCtx* ctx, GstDsPlayTrackerF
   if (!ctx || !frame.frame_meta)
     return false;
   const unsigned flags = ctx->preview_overlay_flags.load(std::memory_order_acquire);
+  if ((ctx->initParams.color_players || (flags & kPreviewOverlayPlayers)) &&
+      !ctx->player_colors.Apply(frame.frame_meta)) {
+    if (!ctx->preview_snapshot_failure_reported.exchange(true, std::memory_order_relaxed))
+      g_printerr("HSTREAM_PREVIEW_OVERLAY status=player-colors-unavailable\n");
+    return false;
+  }
   if (flags == 0 || hm::preview_overlay::find_overlay_snapshot_meta(frame.frame_meta))
     return true;
 
@@ -1059,6 +1065,7 @@ bool DsPlayTrackerAttachPreviewSnapshot(DsPlayTrackerCtx* ctx, GstDsPlayTrackerF
 void DsPlayTrackerCtxResetTracking(DsPlayTrackerCtx* ctx) {
   if (ctx) {
     ctx->play_trackers.clear();
+    ctx->player_colors.Reset();
   }
 }
 

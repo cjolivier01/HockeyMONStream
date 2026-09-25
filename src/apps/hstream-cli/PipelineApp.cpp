@@ -73,6 +73,7 @@
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/TempFile.h"
+#include "hstream/src/libs/common/TrackColorMeta.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/pipeline_controller/GstPropertyService.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
@@ -224,11 +225,6 @@ absl::Status select_video_converter_for_element_creation(const NvDsConfig& confi
   return absl::OkStatus();
 }
 
-struct OverlaySnapshotProbeState {
-  std::atomic<unsigned>* flags{nullptr};
-  std::atomic_bool failure_reported{false};
-};
-
 constexpr unsigned kPreviewOverlayPlayers = 1U << 0;
 constexpr unsigned kPreviewOverlayPlay = 1U << 1;
 constexpr unsigned kPreviewOverlayTransformRequired = 1U << 2;
@@ -244,47 +240,6 @@ unsigned preview_overlay_producer_flags(
   if (active_channel == "program" && selection.any())
     flags |= kPreviewOverlayTransformRequired;
   return flags;
-}
-
-GstPadProbeReturn snapshot_preview_overlays(GstPad*, GstPadProbeInfo* info, gpointer user_data) noexcept {
-  try {
-    if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) == 0)
-      return GST_PAD_PROBE_OK;
-    GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-    NvDsBatchMeta* batch_meta = buffer ? gst_buffer_get_nvds_batch_meta(buffer) : nullptr;
-    if (!batch_meta)
-      return GST_PAD_PROBE_OK;
-    auto* state = static_cast<OverlaySnapshotProbeState*>(user_data);
-    const unsigned flags = state && state->flags ? state->flags->load(std::memory_order_acquire) : 0;
-    if (flags == 0)
-      return GST_PAD_PROBE_OK;
-    bool snapshot_failed = false;
-    for (NvDsMetaList* item = batch_meta->frame_meta_list; item; item = item->next) {
-      auto* frame_meta = static_cast<NvDsFrameMeta*>(item->data);
-      if (!frame_meta)
-        continue;
-      // Only immutable metadata crosses the tee. Playcropper attaches its
-      // transform to the copied metadata on the Program output buffer after the
-      // transform is known, so the Stitched branch cannot race a mutation.
-      const bool snapshot_ready = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta) ||
-          hm::preview_overlay::add_selected_overlay_snapshot_meta(
-                                      frame_meta,
-                                      (flags & kPreviewOverlayPlayers) != 0,
-                                      (flags & kPreviewOverlayPlay) != 0,
-                                      (flags & kPreviewOverlayPlay) != 0 ? frame_meta->display_meta_list : nullptr);
-      snapshot_failed = snapshot_failed || !snapshot_ready;
-    }
-    if (snapshot_failed && state && !state->failure_reported.exchange(true)) {
-      g_printerr("Could not snapshot pre-playcropper metadata for GPU preview overlays\n");
-    }
-    return GST_PAD_PROBE_OK;
-  } catch (const std::exception& error) {
-    g_printerr("Could not snapshot GPU preview overlays: %s\n", error.what());
-    return GST_PAD_PROBE_OK;
-  } catch (...) {
-    g_printerr("Could not snapshot GPU preview overlays: unknown failure\n");
-    return GST_PAD_PROBE_OK;
-  }
 }
 
 guint stitch_frame_completion_timeout_ms() {
@@ -1502,7 +1457,10 @@ absl::Status PipelineApplication::configureInstances(
       }
     }
     if (!ui_preview_window_ids_.empty()) {
-      app_ctx->config.hmsticher_config.ui_preview = TRUE;
+      // Tracked Stitched previews branch after the tracker. Only calibration
+      // graphs need the stitcher's own preview branch and its GPU resources.
+      app_ctx->config.hmsticher_config.ui_preview = ui_preview_window_ids_.count("stitched") &&
+          !app_ctx->config.dsplaytracker_config.enable && !app_ctx->config.tracker_config.enable;
     }
     const std::string video_converter = effective_video_converter_element_name(app_ctx->config);
     if (!stage_video_converter.has_value()) {
@@ -1910,31 +1868,24 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     if (preview_overlay_producer)
       preview_overlay_producers_.push_back(preview_overlay_producer);
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
+    GstElement* tracked_preview_source = app_context->pipeline.dsplaytracker_bin.bin;
+    if (!tracked_preview_source)
+      tracked_preview_source = app_context->pipeline.common_elements.tracker_bin.bin;
     if ((program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
         !preview_overlay_producer) {
-      GstPad* snapshot_pad =
-          stitcher.elem_hmstitcher ? gst_element_get_static_pad(stitcher.elem_hmstitcher, "src") : nullptr;
-      if (!snapshot_pad && app_context->pipeline.common_elements.hmplaycropper_bin.playcropper) {
-        snapshot_pad =
-            gst_element_get_static_pad(app_context->pipeline.common_elements.hmplaycropper_bin.playcropper, "sink");
+      GstElement* snapshot_source = tracked_preview_source ? tracked_preview_source : stitcher.elem_hmstitcher;
+      const char* snapshot_pad = "src";
+      if (!snapshot_source) {
+        snapshot_source = app_context->pipeline.common_elements.hmplaycropper_bin.playcropper;
+        snapshot_pad = "sink";
       }
-      if (!snapshot_pad)
-        return absl::FailedPreconditionError("The pipeline does not expose a GPU overlay snapshot point");
-      auto* snapshot_state = new OverlaySnapshotProbeState{&preview_overlay_probe_flags_};
-      const gulong snapshot_probe = gst_pad_add_probe(
-          snapshot_pad,
-          GST_PAD_PROBE_TYPE_BUFFER,
-          snapshot_preview_overlays,
-          snapshot_state,
-          +[](gpointer data) noexcept { delete static_cast<OverlaySnapshotProbeState*>(data); });
-      gst_object_unref(snapshot_pad);
-      if (snapshot_probe == 0) {
-        delete snapshot_state;
-        return absl::InternalError("Could not install the no-playtracker GPU overlay snapshot probe");
+      if (!hm::preview_overlay::ConfigureTrackColorProducer(
+              snapshot_source, false, &preview_overlay_probe_flags_, snapshot_pad)) {
+        return absl::InternalError("Could not install the post-tracker GPU overlay snapshot producer");
       }
     }
     if (stitched_target != ui_preview_window_ids_.end()) {
-      GstElement* playtracker = app_context->pipeline.dsplaytracker_bin.bin;
+      GstElement* playtracker = tracked_preview_source;
       if (playtracker) {
         GstPad* playtracker_src = gst_element_get_static_pad(playtracker, "src");
         GstPad* tracked_downstream_sink = playtracker_src ? gst_pad_get_peer(playtracker_src) : nullptr;

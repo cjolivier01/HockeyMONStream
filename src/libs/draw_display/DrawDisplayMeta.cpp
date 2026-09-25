@@ -47,113 +47,6 @@ inline uchar4 scale_and_clamp_color(const NvOSD_ColorParams& clr) {
       (uint8_t)std::clamp(clr.alpha * 255, 0.0, 255.0)};
 }
 
-#if 0
-const float3 html_colors[32] = {
-    {0.000f, 0.000f, 0.000f}, // Black
-    {1.000f, 1.000f, 1.000f}, // White
-    {1.000f, 0.000f, 0.000f}, // Red
-    {0.000f, 1.000f, 0.000f}, // Lime
-    {0.000f, 0.000f, 1.000f}, // Blue
-    {1.000f, 1.000f, 0.000f}, // Yellow
-    {0.000f, 1.000f, 1.000f}, // Cyan / Aqua
-    {1.000f, 0.000f, 1.000f}, // Magenta / Fuchsia
-    {0.753f, 0.753f, 0.753f}, // Silver (approx 192/255)
-    {0.502f, 0.502f, 0.502f}, // Gray (approx 128/255)
-    {0.502f, 0.000f, 0.000f}, // Maroon (approx 128/255, 0, 0)
-    {0.502f, 0.502f, 0.000f}, // Olive (approx 128,128,0)
-    {0.000f, 0.502f, 0.000f}, // Green (approx 0,128,0)
-    {0.502f, 0.000f, 0.502f}, // Purple (approx 128,0,128)
-    {0.000f, 0.502f, 0.502f}, // Teal (approx 0,128,128)
-    {0.000f, 0.000f, 0.502f}, // Navy (approx 0,0,128)
-    {1.000f, 0.647f, 0.000f}, // Orange (255,165,0)
-    {1.000f, 0.843f, 0.000f}, // Gold (255,215,0)
-    {1.000f, 0.753f, 0.796f}, // Pink (255,192,203)
-    {0.647f, 0.165f, 0.165f}, // Brown (165,42,42)
-    {0.863f, 0.078f, 0.235f}, // Crimson (220,20,60)
-    {0.294f, 0.000f, 0.510f}, // Indigo (75,0,130)
-    {0.933f, 0.510f, 0.933f}, // Violet (238,130,238)
-    {0.941f, 0.902f, 0.549f}, // Khaki (240,230,140)
-    {0.855f, 0.439f, 0.839f}, // Orchid (218,112,214)
-    {0.251f, 0.878f, 0.816f}, // Turquoise (64,224,208)
-    {0.980f, 0.502f, 0.447f}, // Salmon (250,128,114)
-    {1.000f, 0.498f, 0.314f}, // Coral (255,127,80)
-    {0.416f, 0.353f, 0.804f}, // SlateBlue (106,90,205)
-    {0.000f, 1.000f, 0.498f}, // SpringGreen (0,255,127)
-    {0.196f, 0.804f, 0.196f}, // LimeGreen (50,205,50)
-    {0.098f, 0.098f, 0.439f} // MidnightBlue (25,25,112)
-};
-const float3& get_object_color(size_t object_id) {
-  return html_colors[object_id % sizeof(html_colors) / sizeof(html_colors[0])];
-}
-#else
-// Convert HSV to RGB. Hue is in [0, 1), Saturation and Value in [0, 1].
-// Returns a float4 with alpha set to 1.0.
-float4 hsv2rgb(float h, float s, float v) {
-  float r, g, b;
-  int i = static_cast<int>(h * 6);
-  float f = h * 6 - i;
-  float p = v * (1.0f - s);
-  float q = v * (1.0f - f * s);
-  float t = v * (1.0f - (1.0f - f) * s);
-  switch (i % 6) {
-    case 0:
-      r = v;
-      g = t;
-      b = p;
-      break;
-    case 1:
-      r = q;
-      g = v;
-      b = p;
-      break;
-    case 2:
-      r = p;
-      g = v;
-      b = t;
-      break;
-    case 3:
-      r = p;
-      g = q;
-      b = v;
-      break;
-    case 4:
-      r = t;
-      g = p;
-      b = v;
-      break;
-    case 5:
-      r = v;
-      g = p;
-      b = q;
-      break;
-    default:
-      r = g = b = 0;
-      break;
-  }
-  return {r, g, b, 1.0f};
-}
-constexpr size_t kNumColors = 32;
-std::vector<float4> object_colors(kNumColors);
-
-const float4& get_object_color(size_t object_id) {
-  static bool initialized = false;
-  if (!initialized) {
-    // Choose parameters for high contrast on white:
-    // High saturation ensures vivid colors, while a moderate value (brightness)
-    // keeps the colors from being washed out on a white background.
-    float saturation = 0.9f;
-    float value = 0.7f;
-
-    // Generate colors by evenly spacing the hue around the color wheel.
-    for (size_t i = 0; i < kNumColors; ++i) {
-      float hue = static_cast<float>(i) / kNumColors; // hue in [0,1)
-      object_colors[i] = hsv2rgb(hue, saturation, value);
-    }
-    initialized = true;
-  }
-  return object_colors[object_id % kNumColors];
-}
-#endif
 } // namespace
 
 // Overloaded helper for rectangles. This version takes an NvOSD_RectParams struct.
@@ -318,12 +211,8 @@ absl::Status draw_object_meta(
     NvOSD_RectParams rparams;
     rparams = *rect_params;
     rparams.border_width = 1;
-    const auto& clr = get_object_color(object_meta->object_id);
-    rparams.border_color.red = clr.x;
-    rparams.border_color.green = clr.y;
-    rparams.border_color.blue = clr.z;
-
-    // It can keep its alpha
+    // The pre-crop producer assigns one stable lease shared by all views.
+    // Preserve that metadata color instead of deriving a colliding ID modulo.
     rect_params = &rparams;
 
     XCUDA_RETURN_IF_ERROR(cudaDraw(

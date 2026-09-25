@@ -803,3 +803,11 @@ cc_test(
     "@opencv_linux//:opencv",
   ],
 )
+
+cc_library(
+    name = "stitched_output_generation_meta",
+    hdrs = ["StitchedOutputGenerationPayload.h"],
+    include_prefix = "hstream/src/libs/stitching",
+    visibility = ["//visibility:public"],
+    deps = ["@deepstream//:deepstream_lib"],
+)

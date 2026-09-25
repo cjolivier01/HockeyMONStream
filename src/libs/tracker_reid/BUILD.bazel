@@ -1,0 +1,27 @@
+cc_library(
+    name = "tracker_reid",
+    srcs = ["ReIdConfig.cpp"],
+    hdrs = ["ReIdConfig.h"],
+    include_prefix = "hstream/src/libs/tracker_reid",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/status:statusor",
+        "@yaml-cpp",
+    ],
+)
+
+cc_binary(
+    name = "tracker_reid_test",
+    srcs = ["ReIdConfigTest.cpp"],
+    deps = [":tracker_reid", "@yaml-cpp"],
+)
+
+cc_binary(
+    name = "tracker_reid_native_test",
+    srcs = ["ReIdNativeTest.cpp"],
+    deps = [
+        "//src/apps/apps-common:deepstream_apps_common",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)

@@ -983,6 +983,7 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   // g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);
 
   ppc << "draw=" << config->draw;
+  ppc << ";color-players=" << config->color_players;
   ppc << ";show=" << config->show;
   if (config->fixed_edge_rotation_angle_set) {
     ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
@@ -1021,9 +1022,21 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
       static_cast<gdouble>(config->dynamic_acceleration_scaling),
       NULL);
   private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
+  // Preserve the original property application order: typed plugin properties
+  // can intentionally override keys in plugin-private-config. Add the internal
+  // color demand to each private string before its original setter runs.
+  private_config += config->color_players ? ";color-players=1" : ";color-players=0";
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-private-config", private_config.c_str(), NULL);
-  if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->elem_dsplaytracker), config->plugin_properties)) {
-    goto done;
+  {
+    hm::gst::PluginProperties properties = config->plugin_properties;
+    for (auto& property : properties) {
+      std::string name = property.name;
+      std::replace(name.begin(), name.end(), '_', '-');
+      if (name == "plugin-private-config")
+        property.value += config->color_players ? ";color-players=1" : ";color-players=0";
+    }
+    if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->elem_dsplaytracker), properties))
+      goto done;
   }
 
   ret = TRUE;
