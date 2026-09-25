@@ -1184,11 +1184,17 @@ absl::Status PipelineApplication::configureInstances(
       }
 
       auto apply_pipeline_options = [&]() -> absl::Status {
-        if (pipeline_options_.empty() || current_stage_ < 0) {
+        if (pipeline_options_.empty()) {
           return absl::OkStatus();
         }
         for (const std::map<std::string, std::string>& options : pipeline_options_) {
           for (const auto& kv_item : options) {
+            // Legacy stage -1 deliberately ignores playback overrides, but
+            // calibration still needs the selected memory policy.
+            if (current_stage_ < 0 && kv_item.first != "runtime.gpu_memory_profile" &&
+                kv_item.first != "runtime.gpu-memory-profile") {
+              continue;
+            }
             HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
           }
         }

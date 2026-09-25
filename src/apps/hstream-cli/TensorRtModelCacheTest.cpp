@@ -232,10 +232,21 @@ int main(int argc, char** argv) {
   }
 
   YAML::Node ini_pipeline = pipeline_for("infer.txt");
+  ini_pipeline["primary-gie"]["workspace-size"] = 64;
   ok &= expect(prepare_cache(ini_pipeline, configs).ok(), "standard DeepStream INI inference config must be preserved");
   ok &= expect(
-      ini_pipeline["primary-gie"]["config-file"].as<std::string>() == "infer.txt",
-      "non-YAML inference config must not be rewritten");
+      ini_pipeline["primary-gie"]["config-file"].as<std::string>() == "infer.txt" &&
+          !ini_pipeline["primary-gie"]["workspace-size"],
+      "non-YAML inference config must not be rewritten or retain the YAML-only workspace override");
+
+  YAML::Node workspace_pipeline = pipeline_for("infer.yaml");
+  workspace_pipeline["primary-gie"]["workspace-size"] = 64;
+  ok &= expect(prepare_cache(workspace_pipeline, configs).ok(), "inference workspace override must prepare");
+  const fs::path workspace_runtime = workspace_pipeline["primary-gie"]["config-file"].as<std::string>();
+  ok &= expect(
+      !workspace_pipeline["primary-gie"]["workspace-size"] &&
+          YAML::LoadFile(workspace_runtime.string())["property"]["workspace-size"].as<int>() == 64,
+      "the app-level workspace override must move into the generated inference config");
 
   YAML::Node prebuilt_pipeline = pipeline_for("bf16.yaml");
   ok &= expect(

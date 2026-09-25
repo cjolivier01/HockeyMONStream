@@ -174,6 +174,7 @@ int main() {
           automatic_low_pipeline["hmstitcher"]["private-properties"]["compact-workspace"].as<bool>() &&
           automatic_low_pipeline["hmplaycropper"]["num-output-buffers"].as<int>() == 1 &&
           automatic_low_pipeline["primary-gie"]["batch-size"].as<int>() == 1 &&
+          automatic_low_pipeline["primary-gie"]["workspace-size"].as<int>() == 64 &&
           automatic_low_pipeline["primary-gie"]["config-file"].as<std::string>() ==
               "config_infer_yolov8_hockey_fp16.yaml",
       "The automatic profile must apply the qualified low-memory settings at exactly 8 GiB");
@@ -197,22 +198,59 @@ int main() {
   hm::Configurator explicit_memory_settings("", "", hm::Configurator::kUseConfigFileGpu);
   hm::ConfiguratorTestAccess::set_config(&explicit_memory_settings, memory_profile_fixture());
   ok &= expect(
-      explicit_memory_settings.apply_config_item("pipeline.hmstitcher.num-output-buffers", "5").ok() &&
+      explicit_memory_settings.apply_config_item("pipeline.source0.num_extra_surfaces", "3").ok() &&
+          explicit_memory_settings.apply_config_item("pipeline.source1.low_latency_mode", "0").ok() &&
+          explicit_memory_settings.apply_config_item("pipeline.hmstitcher.num_output_buffers", "5").ok() &&
+          explicit_memory_settings.apply_config_item("pipeline.hmstitcher.pre_converter_output_buffers", "3").ok() &&
+          explicit_memory_settings.apply_config_item("pipeline.hmstitcher.properties.output_pool_extra_buffers", "2")
+              .ok() &&
           explicit_memory_settings
               .apply_config_item("pipeline.hmstitcher.private-properties.compact-workspace", "false")
               .ok() &&
+          explicit_memory_settings.apply_config_item("pipeline.hmplaycropper.num_output_buffers", "4").ok() &&
+          explicit_memory_settings.apply_config_item("pipeline.hmplaycropper.properties.output_pool_extra_buffers", "3")
+              .ok() &&
           explicit_memory_settings.apply_config_item("pipeline.primary-gie.batch-size", "2").ok() &&
+          explicit_memory_settings.apply_config_item("pipeline.primary-gie.workspace-size", "128").ok() &&
           explicit_memory_settings
               .apply_config_item("pipeline.primary-gie.config-file", "config_infer_yolov8_hockey_bf16.yaml")
               .ok() &&
           hm::ConfiguratorTestAccess::apply_gpu_memory_profile(&explicit_memory_settings, 8 * kGiB).ok() &&
-          explicit_memory_settings.config()["pipeline"]["hmstitcher"]["num-output-buffers"].as<int>() == 5 &&
+          explicit_memory_settings.config()["pipeline"]["source0"]["num_extra_surfaces"].as<int>() == 3 &&
+          explicit_memory_settings.config()["pipeline"]["source1"]["low_latency_mode"].as<int>() == 0 &&
+          explicit_memory_settings.config()["pipeline"]["hmstitcher"]["num_output_buffers"].as<int>() == 5 &&
+          explicit_memory_settings.config()["pipeline"]["hmstitcher"]["pre_converter_output_buffers"].as<int>() == 3 &&
+          explicit_memory_settings.config()["pipeline"]["hmstitcher"]["properties"]["output_pool_extra_buffers"]
+                  .as<int>() == 2 &&
           !explicit_memory_settings.config()["pipeline"]["hmstitcher"]["private-properties"]["compact-workspace"]
                .as<bool>() &&
+          explicit_memory_settings.config()["pipeline"]["hmplaycropper"]["num_output_buffers"].as<int>() == 4 &&
+          explicit_memory_settings.config()["pipeline"]["hmplaycropper"]["properties"]["output_pool_extra_buffers"]
+                  .as<int>() == 3 &&
           explicit_memory_settings.config()["pipeline"]["primary-gie"]["batch-size"].as<int>() == 2 &&
+          explicit_memory_settings.config()["pipeline"]["primary-gie"]["workspace-size"].as<int>() == 128 &&
           explicit_memory_settings.config()["pipeline"]["primary-gie"]["config-file"].as<std::string>() ==
               "config_infer_yolov8_hockey_bf16.yaml",
       "Explicit memory and batch settings must override the automatic low-memory profile");
+
+  hm::Configurator custom_detector_memory("", "", hm::Configurator::kUseConfigFileGpu);
+  hm::ConfiguratorTestAccess::set_config(&custom_detector_memory, memory_profile_fixture());
+  ok &= expect(
+      custom_detector_memory.apply_config_item("pipeline.primary-gie.config-file", "custom-static-batch.yaml").ok() &&
+          hm::ConfiguratorTestAccess::apply_gpu_memory_profile(&custom_detector_memory, 8 * kGiB).ok() &&
+          custom_detector_memory.config()["pipeline"]["primary-gie"]["batch-size"].as<int>() == 2 &&
+          !custom_detector_memory.config()["pipeline"]["primary-gie"]["workspace-size"],
+      "An explicit custom detector must retain its existing batch and builder contract");
+
+  hm::Configurator custom_engine_memory("", "", hm::Configurator::kUseConfigFileGpu);
+  hm::ConfiguratorTestAccess::set_config(&custom_engine_memory, memory_profile_fixture());
+  ok &= expect(
+      custom_engine_memory.apply_config_item("pipeline.primary-gie.model-engine-file", "custom-batch-two.engine")
+              .ok() &&
+          hm::ConfiguratorTestAccess::apply_gpu_memory_profile(&custom_engine_memory, 8 * kGiB).ok() &&
+          custom_engine_memory.config()["pipeline"]["primary-gie"]["batch-size"].as<int>() == 2 &&
+          !custom_engine_memory.config()["pipeline"]["primary-gie"]["workspace-size"],
+      "An explicit custom detector engine must retain its existing batch and builder contract");
 
   hm::Configurator forced_standard_memory("", "", hm::Configurator::kUseConfigFileGpu);
   hm::ConfiguratorTestAccess::set_config(&forced_standard_memory, memory_profile_fixture());

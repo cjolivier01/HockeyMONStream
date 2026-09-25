@@ -16,7 +16,7 @@ The runtime selects the low-memory profile automatically when the selected CUDA 
 
 Set `runtime.gpu_memory_profile` to `auto` (the implicit default), `low`, or `standard` in user/game YAML or through `--options`. `low` forces the profile on any GPU; `standard` disables it on an 8 GiB GPU. Explicit user, game, or CLI values for an individual setting take precedence over the selected profile.
 
-The desktop UI exposes **Normal** and **Low memory** under Program Controls → Runtime. Its initial session choice is Low memory on GPUs with at most 8 GiB and Normal on larger GPUs or when the CUDA query fails. The selection is passed to each CLI run and exported job but is never written to user or game YAML.
+The desktop UI exposes **Normal** and **Low memory** under Program Controls → Runtime. It displays an existing user/game profile when one is configured; otherwise its initial session choice is Low memory on the pipeline's effective GPU when that device has at most 8 GiB, and Normal on larger GPUs or when the CUDA query fails. Until the operator changes the selector, the UI leaves the profile unset so normal CLI configuration precedence and automatic detection apply. A manual selection is passed to UI-launched runs for the rest of the application session and is never written to YAML. Saved and exported jobs therefore use the configured or automatic CLI profile.
 
 The low-memory profile applies the qualified settings below to existing pipeline sections:
 
@@ -30,6 +30,7 @@ pipeline.hmplaycropper.num-output-buffers=1
 pipeline.hmplaycropper.properties.output-pool-extra-buffers=0
 pipeline.hmstitcher.private-properties.compact-workspace=true
 pipeline.primary-gie.batch-size=1
+pipeline.primary-gie.workspace-size=64
 pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml
 ```
 
@@ -55,10 +56,11 @@ The tested gse-16a Program/FAKE configuration resolves to:
 --options=pipeline.hmplaycropper.properties.output-pool-extra-buffers=0
 --options=pipeline.hmstitcher.private-properties.compact-workspace=true
 --options=pipeline.primary-gie.batch-size=1
+--options=pipeline.primary-gie.workspace-size=64
 --options=stitching.control_point_resolution=2k
 ```
 
-The profile replaces the bundled default FP32 detector config with its FP16 counterpart. An explicitly selected detector config, including BF16 or a custom model, takes precedence. Detection uses a batch-one engine and a 64 MiB builder workspace setting. Decoder low latency was tested on HEVC inputs with no B frames. Recordings that require frame reordering can explicitly override `low-latency-mode=0` while retaining the rest of the profile. Decoder-required capture surfaces remain allocated. Prepare calibration and the rink mask before the full Program graph so segmentation and detection workspaces do not overlap. The canonical baseline remains unchanged; the automatic profile is derived after all configuration layers are loaded.
+The profile replaces the bundled default FP32 detector config with its FP16 counterpart. Bundled detector selections use a batch-one engine and a 64 MiB builder workspace setting. An explicitly selected custom detector config or engine retains its existing batch and builder contract unless those leaves are also overridden. Decoder low latency was tested on HEVC inputs with no B frames. Recordings that require frame reordering can explicitly override `low-latency-mode=0` while retaining the rest of the profile. Decoder-required capture surfaces remain allocated. The selected profile also applies to the calibration stage in the legacy two-stage flow. Prepare calibration and the rink mask before the full Program graph so segmentation and detection workspaces do not overlap. The canonical baseline remains unchanged; the automatic profile is derived after all configuration layers are loaded.
 
 ## Measured workload
 

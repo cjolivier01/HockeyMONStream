@@ -3795,9 +3795,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               alignment_page->isAncestorOf(camera_vertical_fov) && projection_page->isAncestorOf(projection) &&
               alignment_page->isAncestorOf(control_points) && alignment_page->isAncestorOf(stitch_frame_time) &&
               projection_page->isAncestorOf(stitch_max_output_width) &&
-              alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 6 &&
-              program_control_tabs->tabText(5) == "Players" &&
-              stitched_control_tabs->count() == 5 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
+              alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 7 &&
+              program_control_tabs->tabText(4) == "Runtime" && program_control_tabs->tabText(5) == "Detection" &&
+              program_control_tabs->tabText(6) == "Players" && stitched_control_tabs->count() == 5 &&
+              stitched_control_tabs->tabText(1) == "Color & Precision" &&
               stitched_control_tabs->tabText(2) == "Alignment" && stitched_control_tabs->tabText(3) == "Projection" &&
               stitched_control_tabs->tabText(4) == "Rink" &&
               program_controls_splitter->orientation() == Qt::Horizontal &&
@@ -12761,6 +12762,18 @@ bool test_camera_controls(HStreamWindow* window) {
 }
 
 bool test_gpu_memory_profile() {
+  const YAML::Node stitcher_gpu = YAML::Load("pipeline: {hmstitcher: {gpu-id: 2}}");
+  const YAML::Node global_gpu = YAML::Load("pipeline: {application: {global-gpu-id: 3}, hmstitcher: {gpu-id: 2}}");
+  const YAML::Node invalid_gpu = YAML::Load("pipeline: {application: {global-gpu-id: -1}}");
+  if (!expect(
+          hm::ui_internal::configured_pipeline_gpu(YAML::Node(YAML::NodeType::Map)) == 0 &&
+              hm::ui_internal::configured_pipeline_gpu(stitcher_gpu) == 2 &&
+              hm::ui_internal::configured_pipeline_gpu(global_gpu) == 3 &&
+              !hm::ui_internal::configured_pipeline_gpu(invalid_gpu).has_value(),
+          "The UI must resolve the effective CUDA ordinal with the runner's global/stitcher precedence")) {
+    return false;
+  }
+
   QTemporaryDir profile_games;
   if (!profile_games.isValid())
     return false;
@@ -12792,10 +12805,18 @@ bool test_gpu_memory_profile() {
           "GPU memory mode must default from the shared 8 GiB policy")) {
     return false;
   }
+  if (!expect(
+          !HStreamWindowTestAccess::standaloneArguments(&window).join(' ').contains("runtime.gpu_memory_profile="),
+          "An untouched UI memory mode must leave CLI and saved YAML profile precedence intact")) {
+    return false;
+  }
 
   const bool save_enabled_before = save->isEnabled();
   for (const QString selected : {"standard", "low"}) {
-    profile->setCurrentIndex(profile->findData(selected));
+    const int selected_index = profile->findData(selected);
+    profile->setCurrentIndex(selected_index);
+    if (!QMetaObject::invokeMethod(profile, "activated", Q_ARG(int, selected_index)))
+      return false;
     const QString option = "--options=runtime.gpu_memory_profile=" + selected;
     const QStringList arguments = HStreamWindowTestAccess::standaloneArguments(&window);
     if (!expect(
@@ -12811,8 +12832,16 @@ bool test_gpu_memory_profile() {
   if (!HStreamWindowTestAccess::savePreset(&window))
     return false;
   const YAML::Node saved = YAML::LoadFile(QDir(game_directory).filePath("config.yaml").toStdString());
+  bool saved_profile_argument = false;
+  const YAML::Node saved_job_arguments = saved["hstream_ui"]["job"]["arguments"];
+  if (saved_job_arguments && saved_job_arguments.IsSequence()) {
+    for (const auto& argument : saved_job_arguments) {
+      saved_profile_argument |= argument.as<std::string>().find("--options=runtime.gpu_memory_profile=") == 0;
+    }
+  }
   return expect(
-      !saved["runtime"] || (!saved["runtime"]["gpu_memory_profile"] && !saved["runtime"]["gpu-memory-profile"]),
+      (!saved["runtime"] || (!saved["runtime"]["gpu_memory_profile"] && !saved["runtime"]["gpu-memory-profile"])) &&
+          !saved_profile_argument,
       "Saving a preset must not persist the session GPU memory mode to YAML");
 }
 

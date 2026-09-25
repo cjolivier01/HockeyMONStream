@@ -4551,6 +4551,22 @@ bool hm::ui_internal::reconcile_cleanup_directory_for_test(const QString& direct
 #endif
 }
 
+std::optional<unsigned> hm::ui_internal::configured_pipeline_gpu(const YAML::Node& effective_config) {
+  YAML::Node configured;
+  if (!lookup_yaml_path(effective_config, "pipeline.application.global-gpu-id", &configured) &&
+      !lookup_yaml_path(effective_config, "pipeline.hmstitcher.gpu-id", &configured)) {
+    return 0;
+  }
+  if (!configured.IsScalar())
+    return std::nullopt;
+  try {
+    const int ordinal = configured.as<int>();
+    return ordinal >= 0 ? std::optional<unsigned>(static_cast<unsigned>(ordinal)) : std::nullopt;
+  } catch (const YAML::Exception&) {
+    return std::nullopt;
+  }
+}
+
 void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous) {
   auto restore_child = [](YAML::Node current_parent, YAML::Node previous_parent, const char* key) {
     YAML::Node previous_value;
@@ -6752,10 +6768,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     gpu_memory_profile_combo_->setObjectName("gpuMemoryProfileCombo");
     gpu_memory_profile_combo_->addItem("Normal", "standard");
     gpu_memory_profile_combo_->addItem("Low memory", "low");
-    const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(0);
-    const QString default_profile =
-        total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes) ? "low" : "standard";
-    gpu_memory_profile_combo_->setCurrentIndex(gpu_memory_profile_combo_->findData(default_profile));
+    connect(gpu_memory_profile_combo_, qOverload<int>(&QComboBox::activated), this, [this] {
+      gpu_memory_profile_user_selected_ = true;
+    });
+    updateDefaultGpuMemoryProfile(YAML::Node(YAML::NodeType::Map));
     runtime_layout->addWidget(gpu_memory_profile_combo_);
     auto* runtime_description = new QLabel(
         "Low memory reduces GPU buffer pools, uses compact stitching workspace, and selects batch-one FP16 "
@@ -9509,9 +9525,11 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
   args << QString("--options=pipeline.hmstitcher.properties.high-bit-depth=%1").arg(highBitDepthMode());
   const QString gpu_memory_profile = !standalone && !active_run_game_id_.isEmpty()
       ? active_gpu_memory_profile_
-      : (gpu_memory_profile_combo_ ? gpu_memory_profile_combo_->currentData().toString() : "standard");
-  args << QString("--options=runtime.gpu_memory_profile=%1")
-              .arg(gpu_memory_profile.isEmpty() ? "standard" : gpu_memory_profile);
+      : (gpu_memory_profile_user_selected_ && gpu_memory_profile_combo_
+             ? gpu_memory_profile_combo_->currentData().toString()
+             : QString());
+  if (!gpu_memory_profile.isEmpty())
+    args << QString("--options=runtime.gpu_memory_profile=%1").arg(gpu_memory_profile);
   args << QString("--options=hstream_ui.camera_controls.Bring_Up_Shadows=%1")
               .arg(cameraControlValue("Bring_Up_Shadows"));
   args << QString("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=%1")
@@ -9613,6 +9631,54 @@ QString HStreamWindow::detectorEnginePath() const {
     return prepared_int8_engine_;
   const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(detectorConfigName()).toStdString());
   return QString::fromStdString(inference["property"]["model-engine-file"].as<std::string>());
+}
+
+void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config) {
+  if (!gpu_memory_profile_combo_ || gpu_memory_profile_user_selected_)
+    return;
+
+  YAML::Node defaults = YAML::Clone(baseline_config_);
+  const QString structural_path = pipelineConfigPath("ds_hockey_app_config.yaml");
+  if (QFileInfo(structural_path).isFile()) {
+    try {
+      const YAML::Node structural = YAML::LoadFile(structural_path.toStdString());
+      const YAML::Node canonical_pipeline = defaults["pipeline"];
+      defaults["pipeline"] =
+          canonical_pipeline.IsMap() ? merge_yaml_maps(structural, canonical_pipeline) : YAML::Clone(structural);
+    } catch (const YAML::Exception&) {
+      // The runner will report malformed structural configuration. Keep the
+      // UI default conservative when it cannot resolve the same GPU here.
+    }
+  }
+  const YAML::Node effective = merge_yaml_maps(defaults, game_config);
+  auto configured_profile = [](const YAML::Node& config) -> QString {
+    YAML::Node value;
+    if (!lookup_yaml_path(config, "runtime.gpu-memory-profile", &value) &&
+        !lookup_yaml_path(config, "runtime.gpu_memory_profile", &value)) {
+      return {};
+    }
+    if (!value.IsScalar())
+      return {};
+    QString profile = QString::fromStdString(value.as<std::string>()).trimmed().toLower().replace('_', '-');
+    if (profile == "low-memory")
+      profile = "low";
+    if (profile == "full" || profile == "normal")
+      profile = "standard";
+    return profile == "low" || profile == "standard" ? profile : QString();
+  };
+  QString profile = configured_profile(game_config);
+  if (profile.isEmpty())
+    profile = configured_profile(effective);
+  const auto gpu = hm::ui_internal::configured_pipeline_gpu(effective);
+  if (profile.isEmpty() && gpu.has_value()) {
+    const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(*gpu);
+    if (total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes))
+      profile = "low";
+  }
+  if (profile.isEmpty())
+    profile = "standard";
+  const QSignalBlocker blocker(gpu_memory_profile_combo_);
+  set_combo_to_data(gpu_memory_profile_combo_, profile);
 }
 
 void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
@@ -9840,8 +9906,9 @@ void HStreamWindow::startPipeline() {
   active_run_autooptimizer_ = runAutooptimizer();
   active_stitch_frame_time_ = stitchFrameTime();
   active_iteration_settings_ = stitchingIterationSettings();
-  active_gpu_memory_profile_ =
-      gpu_memory_profile_combo_ ? gpu_memory_profile_combo_->currentData().toString() : "standard";
+  active_gpu_memory_profile_ = gpu_memory_profile_user_selected_ && gpu_memory_profile_combo_
+      ? gpu_memory_profile_combo_->currentData().toString()
+      : QString();
   active_player_analytics_arguments_ = player_analytics_controls_ ? player_analytics_controls_->arguments() : QStringList();
   active_control_point_matcher_ = controlPointMatcher();
   active_control_point_resolution_ = control_point_resolution_;
@@ -16516,6 +16583,7 @@ void HStreamWindow::loadSavedControlConfig() {
   control_point_resolution_ = default_control_point_resolution_;
   loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
   loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
+  updateDefaultGpuMemoryProfile(YAML::Node(YAML::NodeType::Map));
   setStitchingIterationSettings(default_iteration_settings_);
   inherited_player_size_controls_.clear();
   unavailable_playtracker_config_error_.clear();
@@ -16665,6 +16733,7 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   try {
     YAML::Node config = loaded_config->has_value() ? **loaded_config : YAML::Node(YAML::NodeType::Map);
+    updateDefaultGpuMemoryProfile(config);
     hm::stitching::restore_generated_stitch_rink_context(config);
     hm::stitching::restore_generated_rink_mask_frame_time(config);
     std::map<QString, double> staged_controls;
@@ -17521,6 +17590,8 @@ bool HStreamWindow::applySavedControlConfig(
       continue;
     }
     if (argument == "--enable-sources=URI-MULTIPLE")
+      continue;
+    if (argument.startsWith("--options=runtime.gpu_memory_profile="))
       continue;
     job_arguments.push_back(argument.toStdString());
   }

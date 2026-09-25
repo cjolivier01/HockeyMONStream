@@ -5455,22 +5455,32 @@ absl::Status Configurator::apply_gpu_memory_profile(
     if (!std::regex_match(section, source_section) || !entry.second.IsMap())
       continue;
     const std::string prefix = "pipeline." + section + ".";
-    if (explicit_value_rank(prefix + "num-extra-surfaces") < 1)
+    if (explicit_value_rank(prefix + "num-extra-surfaces") < 1 &&
+        explicit_value_rank(prefix + "num_extra_surfaces") < 1)
       pipeline[section]["num-extra-surfaces"] = zero;
-    if (explicit_value_rank(prefix + "low-latency-mode") < 1)
+    if (explicit_value_rank(prefix + "low-latency-mode") < 1 && explicit_value_rank(prefix + "low_latency_mode") < 1)
       pipeline[section]["low-latency-mode"] = one;
   }
 
   YAML::Node stitcher = pipeline["hmstitcher"];
   if (stitcher.IsMap()) {
-    set_default(stitcher, "num-output-buffers", {"pipeline.hmstitcher.num-output-buffers"}, one);
-    set_default(stitcher, "pre-converter-output-buffers", {"pipeline.hmstitcher.pre-converter-output-buffers"}, one);
+    set_default(
+        stitcher,
+        "num-output-buffers",
+        {"pipeline.hmstitcher.num-output-buffers", "pipeline.hmstitcher.num_output_buffers"},
+        one);
+    set_default(
+        stitcher,
+        "pre-converter-output-buffers",
+        {"pipeline.hmstitcher.pre-converter-output-buffers", "pipeline.hmstitcher.pre_converter_output_buffers"},
+        one);
     if (!stitcher["properties"] || stitcher["properties"].IsNull())
       stitcher["properties"] = YAML::Node(YAML::NodeType::Map);
     set_default(
         stitcher["properties"],
         "output-pool-extra-buffers",
-        {"pipeline.hmstitcher.properties.output-pool-extra-buffers"},
+        {"pipeline.hmstitcher.properties.output-pool-extra-buffers",
+         "pipeline.hmstitcher.properties.output_pool_extra_buffers"},
         zero);
     if (!stitcher["private-properties"] || stitcher["private-properties"].IsNull())
       stitcher["private-properties"] = YAML::Node(YAML::NodeType::Map);
@@ -5484,22 +5494,40 @@ absl::Status Configurator::apply_gpu_memory_profile(
 
   YAML::Node cropper = pipeline["hmplaycropper"];
   if (cropper.IsMap()) {
-    set_default(cropper, "num-output-buffers", {"pipeline.hmplaycropper.num-output-buffers"}, one);
+    set_default(
+        cropper,
+        "num-output-buffers",
+        {"pipeline.hmplaycropper.num-output-buffers", "pipeline.hmplaycropper.num_output_buffers"},
+        one);
     if (!cropper["properties"] || cropper["properties"].IsNull())
       cropper["properties"] = YAML::Node(YAML::NodeType::Map);
     set_default(
         cropper["properties"],
         "output-pool-extra-buffers",
-        {"pipeline.hmplaycropper.properties.output-pool-extra-buffers"},
+        {"pipeline.hmplaycropper.properties.output-pool-extra-buffers",
+         "pipeline.hmplaycropper.properties.output_pool_extra_buffers"},
         zero);
   }
 
   YAML::Node primary_gie = pipeline["primary-gie"];
   if (primary_gie.IsMap()) {
-    set_default(primary_gie, "batch-size", {"pipeline.primary-gie.batch-size"}, one);
+    fs::path detector_config;
+    if (primary_gie["config-file"] && primary_gie["config-file"].IsScalar())
+      detector_config = primary_gie["config-file"].as<std::string>();
+    const std::string detector_name = detector_config.filename().string();
+    const bool bundled_detector = detector_name == "config_infer_yolov8_hockey.yaml" ||
+        detector_name == "config_infer_yolov8_hockey_fp16.yaml" ||
+        detector_name == "config_infer_yolov8_hockey_bf16.yaml" ||
+        detector_name == "config_infer_yolov8_hockey_int8.yaml";
+    const bool explicit_detector_config = explicit_value_rank("pipeline.primary-gie.config-file") >= 1;
+    const bool explicit_detector_engine = explicit_value_rank("pipeline.primary-gie.model-engine-file") >= 1;
+    const bool bundled_detector_selection = bundled_detector && (!explicit_detector_engine || explicit_detector_config);
+    if ((!explicit_detector_config && !explicit_detector_engine) || bundled_detector_selection) {
+      set_default(primary_gie, "batch-size", {"pipeline.primary-gie.batch-size"}, one);
+      set_default(primary_gie, "workspace-size", {"pipeline.primary-gie.workspace-size"}, YAML::Node(64));
+    }
     if (explicit_value_rank("pipeline.primary-gie.config-file") < 1 && primary_gie["config-file"] &&
         primary_gie["config-file"].IsScalar()) {
-      const fs::path detector_config = primary_gie["config-file"].as<std::string>();
       if (detector_config.filename() == "config_infer_yolov8_hockey.yaml") {
         primary_gie["config-file"] = (detector_config.parent_path() / "config_infer_yolov8_hockey_fp16.yaml").string();
       }
