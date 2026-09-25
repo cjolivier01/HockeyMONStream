@@ -86,14 +86,15 @@ inputs before advertising support. Do not commit checkpoints or engines.
 * Jersey: PARSeq with a fixed export contract, a configurable bbox torso or pose-guided crop, digit/EOS decoding,
   and temporal consensus. Bbox mode works independently; pose mode requires explicitly enabled pose. Preserve leading zeroes. Reject illegible, low-confidence,
   non-digit, and unsupported-length strings. Generic scene-text weights do not establish
-  hockey accuracy. Koshkina's jersey weights require a local rights-aware preparation
-  path rather than automatic redistribution.
+  hockey accuracy. The converted Koshkina model downloads automatically with its
+  CC BY-NC 3.0 attribution and noncommercial terms; conversion does not relicense it.
 * Action: use the lightweight STGCN++ COCO2D model with a dedicated export/parity
   wrapper. Generic NTU60 labels remain generic activities, not hockey-event predictions.
   A causal single-view deployment must be described separately from published ten-clip
   evaluation. The existing PoseC3D multi-view recipe is too costly as a default deployment.
-* ReID: use nvtracker's own appearance reassociation with an explicit model/config; do
-  not invent a second tracker or equate identical jersey numbers with the same player.
+* ReID: use nvtracker's own appearance reassociation. The default uses the SDK-supplied
+  model and preprocessing; the NVIDIA ONNX alternative and custom configurations are
+  explicit selections. Do not equate identical jersey numbers with the same player.
 
 The accompanying [model comparison](player-analytics-models.md) records alternatives,
 actual artifacts, licenses, export support, and benchmark limitations. The supported
@@ -106,8 +107,10 @@ and a zero-padded second person. Its 100 causal uniform source-time samples are 
 separate deployment recipe from ten-clip evaluation. PARSeq's tokenizer, EOS and
 character indices come from the actual checkpoint; never assume the first 11 logits
 are digits. Strict weight loading and real ONNX/TRT parity are delivery gates.
-Koshkina model terms include noncommercial restrictions; local preparation does not
-remove those terms. Record them without redistributing restricted checkpoints.
+Koshkina model terms include noncommercial restrictions. Automatic delivery and local
+preparation both retain those terms. Published converted ONNX files include source and
+modification attribution plus complete license notices; private validation fixtures and
+GPU-specific engines are excluded.
 
 ## Coordinates, state, and metadata
 

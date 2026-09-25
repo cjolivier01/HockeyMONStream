@@ -607,3 +607,121 @@ regressions cover those cases.
 Evidence: `/tmp/hstream-player-sdk-{make-perf,make-perf-final,selection-tests,
 runtime-info,engine-test,default-playback}.log` and
 `/tmp/hstream-player-trt-sdk-jetson-evidence/validation.md`.
+
+### Automatic model setup follow-up
+
+At `cab5e7a1`, supplied model selections download and prepare themselves on first
+use; normal playback needs no prepared paths or SDK override. The default ReID
+selection uses the installed DeepStream tracker's ETLT and preprocessing, with
+the newer NVIDIA ONNX model available as an explicit alternative. The portable
+pose, jersey and action ONNX graphs and their license/provenance sidecars are
+published under `pretrained-assets-v1`; catalog entries pin their exact digests.
+The jersey model retains CC BY-NC 3.0 terms, and action labels remain generic
+NTU60 activities. Custom prepared models remain supported.
+
+The normal x86 `env -u HSTREAM_PLAYER_TENSORRT_SDK_ROOT make perf` build passes,
+including a final full 342-target build. Catalog, cache, asset, configuration,
+calibration suppression, mapping, tracker, UI persistence/window and exported-job
+tests pass. Cache tests cover disabled/custom bypass, repeated preparation of the
+same YAML, identity separation, corrupt entries, failed/cancelled children and
+descendants, concurrent callers, lock cancellation and disabled trackers with
+malformed ReID settings. These tests exercise native code without requiring
+Python at runtime.
+
+Recorded-game checks use a private copy of the existing calibrated fixture and
+read-only source media. No player model path or TensorRT SDK override is supplied.
+The final-source x86 cases use an isolated empty cache. All three
+analytics features, GPU drawing and default DeepStream ReID are enabled together
+for 20 seconds of video; the alternative ReID case changes only its selection.
+
+| x86 case | Wall seconds | Pose results | Jersey results | Action results | GPU raster launches |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cold, DeepStream ReID | 98.935 | 5,559 | 1,200 | 31 | 1,214 |
+| Warm, DeepStream ReID | 27.148 | 5,563 | 1,202 | 30 | 1,213 |
+| NVIDIA ONNX ReID | 39.367 | 5,552 | 1,197 | 30 | 1,213 |
+
+Every case completes successfully with zero invalid timestamps/ROIs, cancelled
+batches or suppressed/rejected drawing commands. Cold preparation downloads and
+builds all four selected models; warm playback reports exactly four cache reuses
+with no download/build. The alternative case reuses pose/jersey/action and prepares
+only its selected ReID engine. These wall times include startup/preparation and
+are end-to-end smoke evidence, not a new steady-state performance benchmark.
+The earlier controlled performance and transfer measurements above describe the
+unchanged analytics/rendering paths. Their ReID cases used explicit prepared
+tracker profiles, not the new automatic SDK-default selection.
+
+Separate five-second all-off and calibration runs pass in 10.330 and 7.175 seconds
+respectively, with no model progress, analytics counters or player-cache creation.
+The calibration case deliberately requests invalid enabled analytics/ReID model
+IDs and confirms suppression before model lookup. SIGTERM during actual native
+pose preparation terminates in 0.164 seconds, reaps the helper and leaves neither
+a staging directory nor a published engine.
+
+A real exported job also runs from `/tmp` against a staged installed layout with
+the CLI, adjacent native helper, private libraries/plugins and configs. It reuses
+all four prepared models and completes five seconds of inference/drawing in
+13.436 seconds. This validates installed-layout discovery and exported execution;
+it is not a `.deb` installation test.
+
+x86 commands, logs, fixture/runtime identities, cache provenance and case results
+are retained under `/tmp/hstream-player-auto-model-validation-x86/`. The table
+uses its `final-source/` cases: source, executable, builder and plugin hashes
+are identical before and after the run sequence. Review identified that earlier
+development smoke logs predated the final parser-warning cleanup; they are
+preserved separately and superseded by these published-source runs. Cancellation
+and installed-layout checks already used the final executable. Full-build logs
+are `/tmp/hstream-player-auto-model-x86-build{,-final}.log`. The bundled
+baseline remains byte-identical to the stack base `ad40b08e` (SHA256
+`ea618d7a52f0147a96ff56a69851e47a4fc415a8d6af6de14a2638296f6a12d5`).
+
+The native Jetson full 342-target build also passes without an SDK override,
+using AGX Orin, DeepStream 7.1 and TensorRT 10.3.0 build 30. Source hashes before
+and after the final build match. Native catalog, configuration and cache tests
+pass. Recorded-game checks use the current native Bazel executable with its
+ordinary plugin discovery, a private 7135×2634 calibrated fixture and isolated
+cache/output directories; no player model paths are supplied. Five-second
+disabled and calibration-only cases complete in 57.364 and 38.217 seconds,
+respectively, without player-cache files or analytics execution. Calibration
+suppresses deliberately enabled features and ReID before preparation.
+
+The 20-second native cold run downloads and prepares all four models, completes
+playback and shuts down successfully in 1,110.943 seconds including first-use
+compilation. It produces 4,720 pose, 1,011 jersey and 26 action results over
+1,211 frames, with 1,209 GPU raster launches and zero suppressed/rejected
+drawing commands. The original recording/calibration guards remain unchanged.
+The matching warm run completes in 185.216 seconds with the same result/frame/
+launch counts. It reuses all four engines without downloads or compilation;
+all 33 cache files retain identical hashes and modification times. Both runs
+have zero invalid timestamps/ROIs and cancelled batches. Wall times include
+startup and are smoke results, not controlled performance comparisons.
+The cold run logs one decoder output-buffer-unavailable diagnostic during timed
+shutdown; it exits successfully with the complete final counters retained.
+The explicit NVIDIA ONNX ReID alternative also completes its 20-second native
+recording in 424.26 seconds including preparation of only the new ReID engine:
+4,724 pose, 1,011 jersey
+and 26 action results over 1,212 frames, with 1,210 GPU raster launches and
+zero suppressed/rejected commands. Pose, jersey and action use their cached
+engines. Final integrity checks confirm unchanged source and runtime hashes,
+all 25 original-artifact guards in every case, and retention of the default
+cache entries after the alternative run.
+
+Initial SSH trials inherited a forwarded display that could not create Jetson
+EGL images. Both the current executable and the earlier known-working frozen
+runtime stall in DeepStream tracker pool cleanup under that environment. The
+headless harness removes those display variables; the current executable then
+completes normally. Failed trials and captured stacks remain in the evidence,
+separate from successful results. No source change was made for this test setup
+issue.
+
+Native build/test logs, per-case commands/environments, loaded plugin identities,
+cache hashes/timestamps and original-artifact guards are retained on `stubby` at
+`/mnt/data/home/colivier/hstream-player-auto-model-validation-20260925/`.
+The compact summaries and full case logs are copied locally to
+`/tmp/hstream-player-auto-model-jetson-evidence/`. Desktop Qt targets are
+x86-only under existing platform constraints; native ARM64/SBSA was not tested.
+
+Two independent xhigh reviewers checked `df8d610c..cab5e7a1` and found no
+necessary code fixes. The runtime reviewer independently passed the native cache
+test. A nonblocking documentation finding identified stale local-only jersey
+delivery wording; the design and model research documents now distinguish the
+original recommendation from automatic delivery with retained license terms.
