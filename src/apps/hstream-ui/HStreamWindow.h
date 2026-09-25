@@ -623,6 +623,8 @@ class HStreamWindow : public QMainWindow {
   YAML::Node player_analytics_defaults_;
   YAML::Node player_analytics_user_;
   QStringList active_player_analytics_arguments_;
+  QString active_gpu_memory_profile_;
+  QComboBox* gpu_memory_profile_combo_{nullptr};
   QComboBox* detector_precision_combo_{nullptr};
   QLabel* detector_precision_status_{nullptr};
   QString saved_detector_precision_;

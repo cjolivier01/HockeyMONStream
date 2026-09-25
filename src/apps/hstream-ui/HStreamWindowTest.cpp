@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
+#include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
@@ -12759,6 +12760,62 @@ bool test_camera_controls(HStreamWindow* window) {
              "Saving the default stitch-frame time should omit stitching.stitch_frame_time");
 }
 
+bool test_gpu_memory_profile() {
+  QTemporaryDir profile_games;
+  if (!profile_games.isValid())
+    return false;
+  struct RestoreGameRoot {
+    QByteArray previous{qgetenv("HM_GAME_DIR")};
+    ~RestoreGameRoot() {
+      qputenv("HM_GAME_DIR", previous);
+    }
+  } restore;
+  qputenv("HM_GAME_DIR", profile_games.path().toLocal8Bit());
+  const QString game_name = "gpu-memory-profile";
+  const QString game_directory = QDir(profile_games.path()).filePath(game_name);
+  if (!QDir().mkpath(game_directory))
+    return false;
+
+  HStreamWindow window;
+  auto* games = require_child<QComboBox>(&window, "gameSelector");
+  auto* profile = require_child<QComboBox>(&window, "gpuMemoryProfileCombo");
+  auto* save = require_child<QPushButton>(&window, "savePresetButton");
+  if (!games || !profile || !save)
+    return false;
+  games->setCurrentIndex(games->findText(game_name));
+
+  const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(0);
+  const QString expected_default =
+      total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes) ? "low" : "standard";
+  if (!expect(
+          profile->currentData().toString() == expected_default,
+          "GPU memory mode must default from the shared 8 GiB policy")) {
+    return false;
+  }
+
+  const bool save_enabled_before = save->isEnabled();
+  for (const QString selected : {"standard", "low"}) {
+    profile->setCurrentIndex(profile->findData(selected));
+    const QString option = "--options=runtime.gpu_memory_profile=" + selected;
+    const QStringList arguments = HStreamWindowTestAccess::standaloneArguments(&window);
+    if (!expect(
+            arguments.count(option) == 1,
+            "Normal and low-memory session choices must reach the standalone runner exactly once") ||
+        !expect(
+            save->isEnabled() == save_enabled_before,
+            "Changing GPU memory mode must not dirty the saved game preset")) {
+      return false;
+    }
+  }
+
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  const YAML::Node saved = YAML::LoadFile(QDir(game_directory).filePath("config.yaml").toStdString());
+  return expect(
+      !saved["runtime"] || (!saved["runtime"]["gpu_memory_profile"] && !saved["runtime"]["gpu-memory-profile"]),
+      "Saving a preset must not persist the session GPU memory mode to YAML");
+}
+
 bool test_detector_precision() {
   QTemporaryDir precision_games;
   if (!precision_games.isValid())
@@ -15805,6 +15862,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (!test_gpu_memory_profile())
+    return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
     return test_detector_precision() ? 0 : 1;
   if (!test_detector_precision())

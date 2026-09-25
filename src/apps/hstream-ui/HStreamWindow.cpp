@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
@@ -6625,6 +6626,10 @@ void HStreamWindow::configureControlHelp() {
       "stitchedColorPrecisionStatus",
       "Shows whether calibration grading will use automatic source-depth detection, a forced 10-bit / FP16 path, "
       "or the standard 8-bit path where calibration color controls are unavailable.");
+  help(
+      "gpuMemoryProfileCombo",
+      "Choose normal or low-memory buffer and detector settings for the next run. This session-only choice is not "
+      "saved in the game preset.");
   updatePresetDirtyState();
 }
 
@@ -6740,6 +6745,25 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   };
 
   if (program_stage) {
+    auto* runtime_page = new QWidget();
+    auto* runtime_layout = new QVBoxLayout(runtime_page);
+    runtime_layout->addWidget(new QLabel("GPU memory mode (next run)"));
+    gpu_memory_profile_combo_ = new QComboBox();
+    gpu_memory_profile_combo_->setObjectName("gpuMemoryProfileCombo");
+    gpu_memory_profile_combo_->addItem("Normal", "standard");
+    gpu_memory_profile_combo_->addItem("Low memory", "low");
+    const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(0);
+    const QString default_profile =
+        total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes) ? "low" : "standard";
+    gpu_memory_profile_combo_->setCurrentIndex(gpu_memory_profile_combo_->findData(default_profile));
+    runtime_layout->addWidget(gpu_memory_profile_combo_);
+    auto* runtime_description = new QLabel(
+        "Low memory reduces GPU buffer pools, uses compact stitching workspace, and selects batch-one FP16 "
+        "detection. This choice lasts for this application session and is not saved to YAML.");
+    runtime_description->setWordWrap(true);
+    runtime_layout->addWidget(runtime_description);
+    runtime_layout->addStretch();
+
     auto* detection_page = new QWidget();
     auto* detection_layout = new QVBoxLayout(detection_page);
     detection_layout->addWidget(new QLabel("Detection precision (next run)"));
@@ -6775,6 +6799,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     crop_rotation_explanation_->hide();
     crop_page->layout()->addWidget(crop_rotation_explanation_);
     control_tabs->addTab(crop_page, "Crop Rotation");
+    control_tabs->addTab(runtime_page, "Runtime");
     control_tabs->addTab(detection_page, "Detection");
     auto* analytics_scroll = new QScrollArea();
     analytics_scroll->setObjectName("playerAnalyticsScrollArea");
@@ -9482,6 +9507,11 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
     }
   }
   args << QString("--options=pipeline.hmstitcher.properties.high-bit-depth=%1").arg(highBitDepthMode());
+  const QString gpu_memory_profile = !standalone && !active_run_game_id_.isEmpty()
+      ? active_gpu_memory_profile_
+      : (gpu_memory_profile_combo_ ? gpu_memory_profile_combo_->currentData().toString() : "standard");
+  args << QString("--options=runtime.gpu_memory_profile=%1")
+              .arg(gpu_memory_profile.isEmpty() ? "standard" : gpu_memory_profile);
   args << QString("--options=hstream_ui.camera_controls.Bring_Up_Shadows=%1")
               .arg(cameraControlValue("Bring_Up_Shadows"));
   args << QString("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=%1")
@@ -9810,6 +9840,8 @@ void HStreamWindow::startPipeline() {
   active_run_autooptimizer_ = runAutooptimizer();
   active_stitch_frame_time_ = stitchFrameTime();
   active_iteration_settings_ = stitchingIterationSettings();
+  active_gpu_memory_profile_ =
+      gpu_memory_profile_combo_ ? gpu_memory_profile_combo_->currentData().toString() : "standard";
   active_player_analytics_arguments_ = player_analytics_controls_ ? player_analytics_controls_->arguments() : QStringList();
   active_control_point_matcher_ = controlPointMatcher();
   active_control_point_resolution_ = control_point_resolution_;

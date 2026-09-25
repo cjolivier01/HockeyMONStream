@@ -54,6 +54,7 @@
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/filesystem.h"
@@ -84,7 +85,6 @@ constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 constexpr size_t kDefaultStitchingControlPoints = 1500;
 constexpr size_t kDefaultStitchingCalibrationFrameCount = 4;
-
 bool is_enabled(YAML::Node n);
 std::optional<std::string> local_video_path_from_uri(const std::string& uri);
 
@@ -5371,6 +5371,148 @@ void Configurator::apply_gpu_override(YAML::Node& pipeline) {
   }
 }
 
+absl::Status Configurator::apply_gpu_memory_profile(
+    YAML::Node& pipeline,
+    std::optional<uint64_t> detected_total_memory_bytes) {
+  auto profile_value = [&](const char* path) -> std::optional<std::string> {
+    const auto value = get_node(config_, path);
+    if (!value || !value->IsScalar())
+      return std::nullopt;
+    try {
+      return value->as<std::string>();
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  const int dashed_rank = explicit_value_rank("runtime.gpu-memory-profile");
+  const int underscored_rank = explicit_value_rank("runtime.gpu_memory_profile");
+  std::optional<std::string> configured_profile = dashed_rank >= underscored_rank
+      ? profile_value("runtime.gpu-memory-profile")
+      : profile_value("runtime.gpu_memory_profile");
+  if (!configured_profile) {
+    configured_profile = dashed_rank >= underscored_rank ? profile_value("runtime.gpu_memory_profile")
+                                                         : profile_value("runtime.gpu-memory-profile");
+  }
+  std::string profile = configured_profile.value_or("auto");
+  std::transform(profile.begin(), profile.end(), profile.begin(), [](unsigned char character) {
+    return static_cast<char>(std::tolower(character));
+  });
+  std::replace(profile.begin(), profile.end(), '_', '-');
+  if (profile == "low-memory")
+    profile = "low";
+  if (profile == "full" || profile == "normal")
+    profile = "standard";
+  if (profile != "auto" && profile != "low" && profile != "standard") {
+    return absl::InvalidArgumentError(
+        "runtime.gpu_memory_profile must be auto, low, or standard (got '" + profile + "')");
+  }
+
+  int gpu_id = 0;
+  try {
+    if (pipeline["application"]["global-gpu-id"])
+      gpu_id = pipeline["application"]["global-gpu-id"].as<int>();
+    else if (pipeline["hmstitcher"]["gpu-id"])
+      gpu_id = pipeline["hmstitcher"]["gpu-id"].as<int>();
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(
+        "Invalid GPU id while selecting the memory profile: " + std::string(error.what()));
+  }
+
+  if (!detected_total_memory_bytes) {
+    const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(gpu_id);
+    if (total_memory_bytes.ok()) {
+      detected_total_memory_bytes = *total_memory_bytes;
+    } else if (profile == "auto") {
+      std::cerr << "Warning: Cannot query GPU " << gpu_id
+                << " memory for the automatic profile: " << total_memory_bytes.status().message()
+                << "; retaining standard buffer sizes\n";
+    }
+  }
+  const bool low_memory = profile == "low" ||
+      (profile == "auto" && detected_total_memory_bytes &&
+       hm::inference::UseLowMemoryProfile(*detected_total_memory_bytes));
+  config_["runtime"]["resolved_gpu_memory_profile"] = low_memory ? "low" : "standard";
+  if (detected_total_memory_bytes)
+    config_["runtime"]["detected_gpu_memory_mib"] = *detected_total_memory_bytes / (1024ULL * 1024ULL);
+  if (!low_memory)
+    return absl::OkStatus();
+
+  auto explicitly_set = [&](std::initializer_list<const char*> paths) {
+    return std::any_of(paths.begin(), paths.end(), [&](const char* path) { return explicit_value_rank(path) >= 1; });
+  };
+  auto set_default =
+      [&](YAML::Node parent, const char* key, std::initializer_list<const char*> paths, const YAML::Node& value) {
+        if (!explicitly_set(paths))
+          parent[key] = YAML::Clone(value);
+      };
+  const YAML::Node zero(0);
+  const YAML::Node one(1);
+  const YAML::Node enabled("true");
+  const std::regex source_section("source[0-9]+");
+
+  for (const auto& entry : pipeline) {
+    const std::string section = entry.first.as<std::string>();
+    if (!std::regex_match(section, source_section) || !entry.second.IsMap())
+      continue;
+    const std::string prefix = "pipeline." + section + ".";
+    if (explicit_value_rank(prefix + "num-extra-surfaces") < 1)
+      pipeline[section]["num-extra-surfaces"] = zero;
+    if (explicit_value_rank(prefix + "low-latency-mode") < 1)
+      pipeline[section]["low-latency-mode"] = one;
+  }
+
+  YAML::Node stitcher = pipeline["hmstitcher"];
+  if (stitcher.IsMap()) {
+    set_default(stitcher, "num-output-buffers", {"pipeline.hmstitcher.num-output-buffers"}, one);
+    set_default(stitcher, "pre-converter-output-buffers", {"pipeline.hmstitcher.pre-converter-output-buffers"}, one);
+    if (!stitcher["properties"] || stitcher["properties"].IsNull())
+      stitcher["properties"] = YAML::Node(YAML::NodeType::Map);
+    set_default(
+        stitcher["properties"],
+        "output-pool-extra-buffers",
+        {"pipeline.hmstitcher.properties.output-pool-extra-buffers"},
+        zero);
+    if (!stitcher["private-properties"] || stitcher["private-properties"].IsNull())
+      stitcher["private-properties"] = YAML::Node(YAML::NodeType::Map);
+    set_default(
+        stitcher["private-properties"],
+        "compact-workspace",
+        {"pipeline.hmstitcher.private-properties.compact-workspace",
+         "pipeline.hmstitcher.private-properties.compact_workspace"},
+        enabled);
+  }
+
+  YAML::Node cropper = pipeline["hmplaycropper"];
+  if (cropper.IsMap()) {
+    set_default(cropper, "num-output-buffers", {"pipeline.hmplaycropper.num-output-buffers"}, one);
+    if (!cropper["properties"] || cropper["properties"].IsNull())
+      cropper["properties"] = YAML::Node(YAML::NodeType::Map);
+    set_default(
+        cropper["properties"],
+        "output-pool-extra-buffers",
+        {"pipeline.hmplaycropper.properties.output-pool-extra-buffers"},
+        zero);
+  }
+
+  YAML::Node primary_gie = pipeline["primary-gie"];
+  if (primary_gie.IsMap()) {
+    set_default(primary_gie, "batch-size", {"pipeline.primary-gie.batch-size"}, one);
+    if (explicit_value_rank("pipeline.primary-gie.config-file") < 1 && primary_gie["config-file"] &&
+        primary_gie["config-file"].IsScalar()) {
+      const fs::path detector_config = primary_gie["config-file"].as<std::string>();
+      if (detector_config.filename() == "config_infer_yolov8_hockey.yaml") {
+        primary_gie["config-file"] = (detector_config.parent_path() / "config_infer_yolov8_hockey_fp16.yaml").string();
+      }
+    }
+  }
+
+  std::cout << "GPU memory profile: low (GPU " << gpu_id;
+  if (detected_total_memory_bytes)
+    std::cout << ", " << *detected_total_memory_bytes / (1024ULL * 1024ULL) << " MiB";
+  std::cout << ")\n";
+  return absl::OkStatus();
+}
+
 absl::Status Configurator::setup_stitcher_and_masks(
     YAML::Node& pipeline,
     const fs::path& game_dir,
@@ -8900,6 +9042,7 @@ absl::Status Configurator::complete_configuration(
   if (!clean_requested) {
     apply_gpu_override(pipeline);
     HM_RETURN_IF_ERROR(apply_supported_baseline_mappings());
+    HM_RETURN_IF_ERROR(apply_gpu_memory_profile(pipeline));
   }
 
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
