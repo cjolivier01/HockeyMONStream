@@ -106,6 +106,12 @@ and exported jobs; an active run keeps its original snapshot. Enabled-only
 preflight reads bounded manifests and checks file metadata without loading engines
 or touching CUDA. Playback performs the strict content/runtime checks.
 
+Tracker ReID is independent of jersey inference. Prepare the target-local engine
+and overlay using [the native ReID recipe](../src/libs/tracker_reid/README.md),
+then set `pipeline.tracker.reid-enable: true` and `reid-config-file` to that
+overlay. It enables NvDCF appearance reassociation; jersey numbers remain evidence
+attached to native track identities and do not merge players by number.
+
 Drawing is independent of compute:
 
 | Canonical preference | Native override |
@@ -116,8 +122,11 @@ Drawing is independent of compute:
 
 The native key wins at the same explicit layer; a later canonical setting wins
 over an older native setting. Canonical null suppresses its optional mapping.
-A drawing preference alone never enables a model or creates a renderer. Player
-boxes use the existing `plot.plot_individual_player_tracking` preference; the
+Pose/jersey/action drawing preferences alone never enable models or create a
+renderer. Player boxes inherit the boolean OR of `plot.plot_individual_player_tracking`
+and `plot.debug_play_tracker`, subject to explicit native cropper overrides.
+Unchanged desktop controls preserve that resolution; editing Program boxes writes
+only its native drawing leaf and preserves other debug/private settings. The
 preview-only Player boxes checkbox remains independent of encoded output.
 
 Program draws after crop/rotation directly on its owned output, using the existing
@@ -126,7 +135,9 @@ in the existing GL framebuffer; no additional full-frame image/copy/readback is
 introduced. The existing x86/X11 preview availability is unchanged. All coordinates
 use the exact per-frame crop transform, including nonuniform metadata scale and
 rotation. Baked-layer bits suppress duplicate Program overlays; missing Program
-transform metadata suppresses diagnostic drawing for that frame.
+transform metadata suppresses diagnostic drawing for that frame. Jersey/action
+labels require the transformed player box to intersect the viewport, so fully
+cropped-out players cannot leave labels clamped to its edge.
 
 One producer assigns the 32-color palette to full 64-bit tracks before the tracked
 preview tee. Boxes, skeletons and labels share those colors across views. Released

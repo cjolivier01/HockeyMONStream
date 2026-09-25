@@ -352,7 +352,7 @@ Local integrated logs: `/tmp/hstream-player-pr4-{build-integrated,overlay,
 overlay-gl,overlay-contract,cropper-caller,preview-caller,routing,mapping,
 semantic-labels,ui-controls,ui-window}.log`; real recording/graph logs are under
 `/tmp/hstream-player-analytics-validation/pr4-*`. Final platform/performance and
-paired PR review results are recorded below as they complete.
+paired PR review results are recorded below.
 
 The complete native Jetson build passes. Its six supported focused suites cover
 the CUDA compositor, overlay contracts, actual GPU cropper, routing, mapping and
@@ -360,7 +360,7 @@ color configuration. Desktop Qt/GL tests run on x86; those targets are intention
 incompatible with the repository's Jetson platform. No native ARM64/SBSA host was
 available, so Jetson validation is not evidence for an SBSA runtime.
 
-A native Jetson 20-second all-model drawing replay completes 1,212 frames,
+An initial, pre-review native Jetson 20-second all-model drawing replay completes 1,212 frames,
 4,724 poses, 1,012 jersey results and 26 action results from 22 action enqueues.
 Drawing reports 1,190 renders, 1,149 launches and zero suppressed/rejected commands.
 The retained compositor allocation is 6,438,912 device bytes. Invalid timestamps
@@ -368,12 +368,14 @@ and ROIs remain zero, and the process exits successfully.
 
 ### Controlled x86 performance
 
-Thirty unprofiled runs use frozen master/candidate runtime bundles, sampled loaded
+Thirty final-source unprofiled runs use frozen master/candidate runtime bundles, sampled loaded
 plugin paths and hashes, the identical explicitly pinned FP32 detector engine,
 private calibration/media, FAKE output, 15 seconds of media per run, and three
 rounds with reversed case order. The GPU is an RTX 5090 with driver 610.57.04;
 power settings and clocks were not changed. Source/build-file hashes bind the
-candidate to the measured implementation. Artifact guards pass throughout.
+candidate to clean runtime commit `e3ed7898`; later `9b597543` changes only
+benchmark parsing/docs. Artifact guards pass throughout. This complete renewed
+suite supersedes the initial PR4 timing/trace evidence retained separately.
 
 Each run drops its first periodic FPS sample. The table reports the median of
 three run medians and the maximum sampled process-tree NVML memory. Enabled
@@ -382,23 +384,23 @@ limit 32 model samples/frame. Jersey-only uses bbox crops; action requires pose.
 
 | Case | Median FPS | Peak GPU MiB |
 | --- | ---: | ---: |
-| Frozen master | 63.250 | 10560 |
-| Candidate, all off | 63.270 | 10560 |
-| Pose | 61.960 | 10586 |
-| Jersey only | 62.670 | 10688 |
-| Pose + action | 61.920 | 10728 |
-| All three | 61.695 | 10804 |
-| All three + semantic drawing | 61.580 | 10810 |
-| Colored boxes only | 63.320 | 10566 |
-| Native ReID only | 61.940 | 10844 |
-| All three + drawing + ReID | 60.720 | 11092 |
+| Frozen master | 62.925 | 10560 |
+| Candidate, all off | 63.170 | 10560 |
+| Pose | 62.015 | 10586 |
+| Jersey only | 62.645 | 10686 |
+| Pose + action | 61.960 | 10728 |
+| All three | 61.715 | 10804 |
+| All three + semantic drawing | 61.470 | 10810 |
+| Colored boxes only | 63.250 | 10566 |
+| Native ReID only | 62.010 | 10844 |
+| All three + drawing + ReID | 60.840 | 11092 |
 
-Median *paired* FPS differences are -0.379% for disabled versus master, -2.547%
-for all three versus disabled, and -0.073% for drawing versus all three. These
+Median *paired* FPS differences are +0.008% for disabled versus master, -2.557%
+for all three versus disabled, and -0.397% for drawing versus all three. These
 use each round's reference and differ from ratios of overall medians. Disabled
-versus master spans -1.030% to +0.532%; this sample shows no meaningful disabled
-regression or new measured GPU allocation. Drawing comparisons span -0.227% to
--0.073%. They describe this recording, not a universal overhead guarantee.
+versus master spans -0.429% to +0.389%; this sample shows no meaningful disabled
+regression or new measured GPU allocation. Drawing comparisons span -0.534% to
+-0.292%. They describe this recording, not a universal overhead guarantee.
 
 Every enabled run records actual inference, including 21 action results in each
 all-model run. Drawing runs report roughly 900 raster launches and zero rejected
@@ -408,15 +410,15 @@ by a few completed frames; per-run samples and counters are retained. FPS measur
 throughput, not individual frame latency; startup/shutdown wall times are recorded
 separately. Trace runs are excluded from the throughput sample.
 
-Local evidence: `/tmp/hstream-player-pr4-performance/summary.json`,
+Local evidence: `/tmp/hstream-player-pr4-performance-e3ed7898/summary.json`,
 `results-x86-measured/`, `verified-plugin-identity.json`, and frozen runtime/model/
 calibration manifests. Private media, models and machine-specific specifications
 are not committed.
 
-A separate Nsight Systems capture passes transfer attribution: 1,036 pose, 421
+A separate Nsight Systems capture passes transfer attribution: 1,037 pose, 422
 jersey and 10 action D2H copies match both GPU reducers and teardown enqueue
 counters exactly. The largest result transfer is 1,632 bytes (eight poses), with
-880,836 bytes total. The Program drawing stream executes 892 raster kernels,
+881,260 bytes total. The Program drawing stream executes 893 raster kernels,
 matching its launch counter, and contains zero D2H transfers after drawing starts.
 The retained global transfer histogram separates existing detector/tracker copies
 from these analytics streams. This execution contains no analytics video/crop
@@ -424,13 +426,90 @@ readback; offline parity tests intentionally read larger tensors/images. Raw
 `.nsys-rep`, SQLite and `transfers.json` remain in `profile-all3-draw/` beside the
 benchmark evidence. No native Jetson Nsight capture was available.
 
+The corrected parser independently recomputed all medians from raw logs,
+retaining any zero-FPS observations after warmup. An audit of all 62 old/new
+measured and initialization logs found no zero observations, so these corrections
+do not change the measured x86 results. Original reports remain intact beside
+`results-offline-verified.json` and `zero-fps-audit.json`.
+
+### Native Jetson performance
+
+The final enabled matrix uses a frozen runtime from `9b597543`, native
+DeepStream 7.1/TensorRT 10.3, the same pinned FP32 detector and target-local
+analytics engines, and a private 7135×2634 canvas from two 4K camera sources.
+Each case processes 20 seconds of media to a FAKE sink, with the same
+10/2/1 Hz pose/jersey/action rates, batch eight and aggregate cap 32 as x86.
+High-bit-depth output is disabled for this fixture; MAXN/schedutil and clocks
+remain unchanged. Two rounds reverse the order of eight enabled cases.
+
+All 16 final runs complete successfully. The table retains each run median to
+show variation; each run excludes the startup prefix through its first two
+positive FPS observations, then retains every interval, including any zero.
+
+| Case | Forward FPS | Reverse FPS | Median FPS |
+| --- | ---: | ---: | ---: |
+| Pose | 7.290 | 7.395 | 7.343 |
+| Jersey only | 7.550 | 8.010 | 7.780 |
+| Pose + action | 7.360 | 7.390 | 7.375 |
+| All three | 7.170 | 7.305 | 7.238 |
+| All three + semantic drawing | 7.110 | 7.280 | 7.195 |
+| Colored boxes only | 8.080 | 8.495 | 8.288 |
+| Native ReID only | 8.190 | 8.140 | 8.165 |
+| All three + drawing + ReID | 7.160 | 7.140 | 7.150 |
+
+The paired drawing changes are -0.837% and -0.342%, median -0.590%. Both drawing
+runs produce actual inference and raster work with zero suppressed/rejected
+commands: forward 1,185 renders/1,149 launches, reverse 1,184/1,148. Their
+retained compositor allocation is 6,438,912 device bytes. All-model runs produce
+26 action results after the required history warmup.
+The enabled-model table is not paired against a new final-source disabled run,
+so it does not establish precise model-only percentage costs. These are
+throughput observations for this fixture, not frame latency or an accuracy test.
+
+Disabled-path evidence is retained separately. Two valid alternating pairs use
+the original PR4 runtime corresponding to `88eec689` and frozen master:
+master/off 8.09/8.435 FPS, then off/master 8.36/8.19 FPS. Their overall medians
+are 8.140/8.3975 FPS and the median paired change is +3.170%. The original runtime
+was frozen before its commit; comparison against `88eec689` confirms all compiled
+source/build/config files match (only two unrelated editor-preference files
+vary). A separate final `9b597543` disabled confirmation completes at 8.24 FPS
+with no analytics/drawing and a peak process RSS of 5291.23 MiB. Do not pool
+that confirmation with the older paired sample.
+
+Two additional frozen-master attempts (the original timeout and one bounded
+retry) reach clip completion but time out during shutdown at 360 seconds (exit
+124). They are excluded and preserved; no further retries were attempted. No
+candidate matrix run has this failure. Native ptrace policy prevents a GDB
+attach, so retained process wait observations do not establish the cause. The
+successful pairs and final confirmation support compatibility but are a small
+sample, not a tight universal disabled-path performance bound.
+
+Jetson shares system DRAM. Sampled process RSS is not GPU memory, and tegrastats
+RAM describes the whole system; neither is reported as per-process GPU usage.
+No native Nsight capture was available. The x86 trace and focused native tests
+provide the separate transfer/allocation evidence above.
+
+The private harness initially rejected a successful forward ReID run because
+DS7.1 uses generic engine-load messages instead of DS9.1's path-bearing wording.
+Versioned evidence rules revalidate the original logs without changing or
+rerunning production inputs. Later runs retain the generated tracker YAML and
+verify engine binding, `reidType: 2`, batch eight and disabled embedding export.
+The first forward ReID-only temporary YAML had already been deleted normally;
+later same-input YAML is not represented as a capture from that earlier run.
+
+Native logs, runtime/source/model identities, versioned harness specifications,
+memory samples and summaries remain under `/tmp/hstream-player-pr4-performance/`
+on `stubby` (backed by its NVMe directory). Compact evidence is copied locally to
+`/tmp/hstream-player-pr4-jetson-evidence/`, including the original-source commit
+comparison and separate disabled summary.
+
 ### Isolated renderer cost
 
 The synthetic fixture draws 32 players with boxes, 19 bones, 17 joints and text:
 1,472 commands after at least 500 ms warmup, then 200 samples. RGBA8 wall medians
 (command construction, binning, submission and completion) are 91.9/154.3 µs at
-1080p/4K on RTX 5090 and 752.0/1566.1 µs on Orin. GPU upload+raster medians are
-25.6/33.1 µs and 516.3/1118.7 µs respectively. Packed RGB10A2 tests also pass;
+1080p/4K on RTX 5090 and 753.2/1576.3 µs on Orin. GPU upload+raster medians are
+25.6/33.1 µs and 511.1/1119.7 µs respectively. Packed RGB10A2 tests also pass;
 the actual Program cropper continues to use its existing RGBA path.
 
 Every warmed synthetic frame uses one compact metadata upload and one raster
@@ -440,7 +519,10 @@ Empty drawing makes no CUDA calls or allocations. The shared glyph atlas is
 6,438,912 bytes including the atlas. The x86 GL fixture measures approximately
 52/59 µs wall and 4.8/11.4 µs GPU at 1080p/4K. These isolated 4K timings do not
 establish the cost of the real 8K Program output. Jetson clocks were not fixed;
-its RGBA8 wall p95 is 1156.3/2277.5 µs. x86 CUDA memcheck reports zero errors.
+its RGBA8 wall p95 is 1169.7/2241.8 µs. The Orin values use the final
+`9b597543` frozen test/dependency bundle. An initial missing-library launch
+failed before any GPU work; the completed dependency closure passes the fixture.
+x86 CUDA memcheck reports zero errors.
 
 ### PR4 review iterations
 
@@ -454,7 +536,8 @@ before anchor clamping, including rotated boxes whose bounding rectangles alone
 overlap. Regression cases cover saved/exported/active UI arguments, all four crop
 sides, partial visibility and rotated geometry. Complete x86 build and focused
 controls/window, overlay-contract and actual GPU cropper/preview checks pass.
-Native rebuild, renewed performance evidence and paired second review follow.
+Native rebuild, renewed performance evidence and paired second review are recorded
+below and in the performance sections above.
 
 Follow-up inspection caught a benchmark-only parser error that removed all zero-FPS
 observations before warmup selection. The parser now retains raw zeros and includes
@@ -462,3 +545,27 @@ them after the explicit warmup prefix. A real subprocess regression with
 `[60, 0, 0, 30]` verifies the post-warmup median is zero, not 30. Existing evidence
 is audited/reparsed from retained logs; this correction does not change runtime
 code or require repeating GPU workloads.
+
+
+PR4 formal round 2: two independent xhigh reviewers reviewed published head
+`9b597543` and found no necessary fixes. The renderer reviewer rebuilt the
+original isolated offcrop CUDA reproducer against the exact head: zero emitted
+commands and zero changed pixels, versus nine commands and 232 pixels before
+the fix. Eight overlay test groups and all seven benchmark/profile tests pass.
+The integration reviewer independently checked Configurator's OR/source ranks,
+unchanged and explicit box preferences, save/export/active-run snapshots and
+script cleanup/zero-FPS semantics; controls/window/overlay and seven isolated
+Python tests pass. The optional suggestion to broaden `--validate-only` case
+preflight is nonblocking.
+
+Complete final-source x86 and native Jetson builds pass. Native affected overlay
+and actual GPU cropper regressions pass, as do all seven CPU harness tests. The
+final native runtime has the same production source as `e3ed7898`; `9b597543`
+adds only the benchmark correction/documentation. Logs are
+`/tmp/hstream-player-pr4-review-final-x86-build.log` locally and
+`/tmp/hstream-player-pr4-review-fixes-build.log` on Jetson.
+
+Final handoff rebuilds also pass (341 x86 targets including manual GPU tests;
+339 native Jetson targets). The remaining handoff edits are documentation only;
+production source is unchanged. Logs are retained locally as
+`/tmp/hstream-player-pr4-handoff-{x86,jetson}-build.log`.

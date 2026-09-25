@@ -1,9 +1,20 @@
 # Player analytics implementation plan
 
-Status: approved after two rounds by both independent xhigh reviewers. The first three PRs have clean paired reviews; rendering/control integration is implemented and undergoing final platform/performance validation and review. Implements the reviewed
+Status: implemented in four stacked PRs after two plan-review rounds with both
+independent xhigh reviewers. All four PRs have clean paired implementation reviews.
+Full x86 and native Jetson builds pass; measured performance, review fixes and
+platform/model limitations are recorded in the [validation record](player-analytics-validation.md).
+Implements the reviewed
 [design](player-analytics-design.md) and [model comparison](player-analytics-models.md).
 
 ## Delivery order
+
+| Stage | Published PR | Base |
+| --- | --- | --- |
+| Colors, contracts and native ReID | [#205](https://github.com/cjolivier01/HockeyMONStream/pull/205) | master |
+| GPU pose and model preparation | [#208](https://github.com/cjolivier01/HockeyMONStream/pull/208) | #205 |
+| GPU jerseys and causal actions | [#209](https://github.com/cjolivier01/HockeyMONStream/pull/209) | #208 |
+| GPU overlays, controls and performance | [#210](https://github.com/cjolivier01/HockeyMONStream/pull/210) | #209 |
 
 Four ready-for-review PRs form a linear stack. PR 1 targets master; each subsequent
 PR targets its predecessor. Do not merge the stack during this task. Commit complete,
