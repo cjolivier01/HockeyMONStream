@@ -8,4 +8,8 @@ exports_files([
     "ds_hockey_app_config.yaml",
     "ds_hockey_configure_stitching.yaml",
     "stitching_projection_frames.yaml",
+    "player-models/pose.json",
+    "player-models/jersey.json",
+    "player-models/action.json",
+    "player-models/reid.json",
 ])

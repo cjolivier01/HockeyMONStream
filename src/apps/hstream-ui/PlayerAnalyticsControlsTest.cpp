@@ -8,6 +8,7 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QLineEdit>
 
+#include <array>
 #include <cstdlib>
 #include <iostream>
 
@@ -23,6 +24,12 @@ T* Control(PlayerAnalyticsControls& widget, const char* name) {
   auto* result = widget.findChild<T*>(name);
   Require(result != nullptr, name);
   return result;
+}
+void SelectModel(PlayerAnalyticsControls& widget, const char* name, const char* id) {
+  auto* control = Control<QComboBox>(widget, name);
+  const int index = control->findData(id);
+  Require(index >= 0, "Requested model choice is missing");
+  control->setCurrentIndex(index);
 }
 void Write(const QString& path, const QByteArray& text) {
   QFile file(path);
@@ -93,6 +100,143 @@ pipeline:
           args.contains("--options=pipeline.player-analytics.draw-pose=true") && !args.join(' ').contains("bundle=") &&
           !args.join(' ').contains("reid-config-file="),
       "Drawing preferences or disabled argument omission incorrect");
+}
+void ModelChoices(const QString& root) {
+  PlayerAnalyticsControls widget;
+  widget.loadConfig(Defaults(), YAML::Node(), YAML::Node(), root);
+  const std::array<std::array<const char*, 3>, 4> models{{
+      {{"playerPoseModel", "playerPoseEnable", "rtmpose-m-coco17-256x192"}},
+      {{"playerJerseyModel", "playerJerseyEnable", "parseq-hockey-cvprw2024"}},
+      {{"playerActionModel", "playerActionEnable", "stgcnpp-coco2d-joint-ntu60"}},
+      {{"playerReidModel", "playerReidEnable", "deepstream"}},
+  }};
+  for (const auto& model : models) {
+    Require(
+        Control<QComboBox>(widget, model[0])->currentData() == model[2],
+        "Missing settings did not select built-in model");
+    Control<QCheckBox>(widget, model[1])->setChecked(true);
+  }
+  Require(
+      Control<QComboBox>(widget, "playerJerseyModel")->currentText().contains("noncommercial") &&
+          Control<QComboBox>(widget, "playerActionModel")->currentText().contains("generic activities"),
+      "Model choices omitted license or activity scope");
+  Require(
+      widget.validateForRun().isEmpty() && Control<QLineEdit>(widget, "playerPoseBundle")->parentWidget()->isHidden() &&
+          Control<QLineEdit>(widget, "playerReidConfig")->parentWidget()->isHidden(),
+      "Built-in models required local files or exposed custom paths");
+  const auto arguments = widget.arguments();
+  for (const auto& model : models)
+    Require(arguments.join(' ').contains(model[2]), "Enabled model selection missing from launch/export");
+  Require(
+      !arguments.join(' ').contains(".bundle=") && !arguments.join(' ').contains("reid-config-file="),
+      "Built-in models exported custom path overrides");
+  YAML::Node saved;
+  Require(widget.applyChanges(saved).isEmpty(), "Cannot save default model enable choices");
+  Require(
+      !static_cast<const YAML::Node&>(saved["pipeline"]["player-analytics"]["pose"])["model"].IsDefined(),
+      "Enabling a feature materialized an unedited model leaf");
+  widget.loadConfig(Defaults(), YAML::Node(), saved, root);
+  Require(!widget.isDirty() && widget.arguments() == arguments, "Built-in launch/export changed after save/reload");
+  SelectModel(widget, "playerReidModel", "reidentificationnet-deployable-v1.2");
+  Require(
+      widget.validateForRun().isEmpty() &&
+          widget.arguments().contains("--options=pipeline.tracker.reid-model=reidentificationnet-deployable-v1.2"),
+      "Alternative NVIDIA appearance model required manual preparation or was not exported");
+  SelectModel(widget, "playerReidModel", "deepstream");
+  SelectModel(widget, "playerPoseModel", "custom");
+  Require(
+      !Control<QLineEdit>(widget, "playerPoseBundle")->parentWidget()->isHidden() && !widget.validateForRun().isEmpty(),
+      "Explicit Custom accepted an empty path or failed to reveal its control");
+  Control<QLineEdit>(widget, "playerPoseBundle")->setText(Bundle(root, "custom-selected-pose"));
+  Require(widget.validateForRun().isEmpty(), "Custom model failed while other features used built-ins");
+
+  auto legacy = YAML::Load(
+      "pipeline: {player-analytics: {pose: {enable: true, bundle: /missing/legacy/pose, rate-hz: 20}}, "
+      "tracker: {reid-enable: true, reid-config-file: /missing/legacy/reid}}");
+  widget.loadConfig(Defaults(), YAML::Node(), legacy, root);
+  Require(
+      Control<QComboBox>(widget, "playerPoseModel")->currentData() == "custom" &&
+          Control<QComboBox>(widget, "playerReidModel")->currentData() == "custom" && !widget.isDirty(),
+      "Legacy custom paths were silently replaced by built-ins");
+  const auto before = YAML::Dump(legacy);
+  Require(
+      widget.applyChanges(legacy).isEmpty() && YAML::Dump(legacy) == before, "Unedited legacy models were rewritten");
+  SelectModel(widget, "playerPoseModel", models[0][2]);
+  SelectModel(widget, "playerReidModel", models[3][2]);
+  Require(widget.validateForRun().isEmpty(), "Built-in selections inspected retained custom paths");
+  Require(widget.applyChanges(legacy).isEmpty(), "Cannot persist model selections");
+  Require(
+      legacy["pipeline"]["player-analytics"]["pose"]["bundle"].as<std::string>() == "/missing/legacy/pose" &&
+          legacy["pipeline"]["player-analytics"]["pose"]["rate-hz"].as<int>() == 20 &&
+          legacy["pipeline"]["tracker"]["reid-config-file"].as<std::string>() == "/missing/legacy/reid",
+      "Model selection rewrote unedited legacy paths or advanced settings");
+  widget.loadConfig(Defaults(), YAML::Node(), legacy, root);
+  Require(!widget.isDirty() && widget.validateForRun().isEmpty(), "Saved built-in choices reverted to legacy paths");
+  SelectModel(widget, "playerPoseModel", "custom");
+  Require(widget.validateForRun().contains("Missing pose"), "Returning to Custom lost its retained path");
+
+  auto user = YAML::Load("pipeline: {player-analytics: {pose: {bundle: /inherited/pose}}}");
+  auto game = YAML::Load("pipeline: {player-analytics: {pose: {enable: true, model: rtmpose-m-coco17-256x192}}}");
+  widget.loadConfig(Defaults(), user, game, root);
+  Require(widget.validateForRun().isEmpty(), "Game model did not override inherited custom selection");
+  widget.resetToDefaults();
+  Require(
+      Control<QComboBox>(widget, "playerPoseModel")->currentData() == "custom", "Reset lost inherited custom model");
+
+  game["pipeline"]["player-analytics"]["pose"]["model"] = "unrecognized-pose";
+  widget.loadConfig(Defaults(), YAML::Node(), game, root);
+  Require(
+      Control<QComboBox>(widget, "playerPoseModel")->currentData() == "unrecognized-pose" &&
+          widget.validateForRun().contains("not a supported model") && !widget.isDirty(),
+      "Unknown saved model was silently reinterpreted");
+  Control<QCheckBox>(widget, "playerPoseEnable")->setChecked(false);
+  Require(widget.validateForRun().isEmpty(), "Disabled unsupported model blocked playback");
+  auto unknown_reid = YAML::Load("pipeline: {tracker: {reid-enable: true, reid-model: future-reid}}");
+  widget.loadConfig(Defaults(), YAML::Node(), unknown_reid, root);
+  Require(
+      Control<QComboBox>(widget, "playerReidModel")->currentData() == "future-reid" &&
+          widget.validateForRun().contains("Unsupported player appearance"),
+      "Unknown ReID model was silently reinterpreted");
+  auto malformed = YAML::Load(
+      "pipeline: {player-analytics: {pose: {enable: true, bundle: [invalid]}}, "
+      "tracker: {reid-enable: true, reid-config-file: {invalid: path}}}");
+  widget.loadConfig(Defaults(), YAML::Node(), malformed, root);
+  Require(!widget.validateForRun().isEmpty(), "Malformed implicit custom path was silently reinterpreted");
+  SelectModel(widget, "playerPoseModel", models[0][2]);
+  SelectModel(widget, "playerReidModel", models[3][2]);
+  Require(widget.validateForRun().isEmpty(), "Explicit built-in models inspected malformed stale custom paths");
+  Require(
+      widget.applyChanges(malformed).isEmpty() &&
+          malformed["pipeline"]["player-analytics"]["pose"]["bundle"].IsSequence() &&
+          malformed["pipeline"]["tracker"]["reid-config-file"].IsMap(),
+      "Repairing model selections rewrote unrelated malformed custom paths");
+  auto null_models = YAML::Load(
+      "pipeline: {player-analytics: {pose: {enable: true, model: null}}, "
+      "tracker: {reid-enable: true, reid-model: null}}");
+  widget.loadConfig(Defaults(), YAML::Node(), null_models, root);
+  Require(
+      widget.validateForRun().isEmpty() &&
+          Control<QComboBox>(widget, "playerPoseModel")->currentData() == models[0][2] &&
+          Control<QComboBox>(widget, "playerReidModel")->currentData() == models[3][2],
+      "Null selections did not use the native default-model semantics");
+  SelectModel(widget, "playerPoseModel", "custom");
+  Control<QLineEdit>(widget, "playerPoseBundle")->setText("/retained/unused-custom-path");
+  SelectModel(widget, "playerPoseModel", models[0][2]);
+  Require(widget.validateForRun().isEmpty(), "Returning to an implicit built-in let its edited custom path take over");
+  Require(widget.applyChanges(null_models).isEmpty(), "Cannot save a returned built-in choice");
+  widget.loadConfig(Defaults(), YAML::Node(), null_models, root);
+  Require(
+      widget.validateForRun().isEmpty() && Control<QComboBox>(widget, "playerPoseModel")->currentData() == models[0][2],
+      "Edited custom path changed a returned built-in selection after reload");
+  auto implicit_custom = YAML::Load("pipeline: {tracker: {reid-enable: true, reid-config-file: /legacy/reid.yaml}}");
+  widget.loadConfig(Defaults(), YAML::Node(), implicit_custom, root);
+  Control<QLineEdit>(widget, "playerReidConfig")->clear();
+  Require(!widget.validateForRun().isEmpty(), "Clearing an implicit custom path silently selected the default model");
+  Require(widget.applyChanges(implicit_custom).isEmpty(), "Cannot preserve explicit Custom after clearing its path");
+  widget.loadConfig(Defaults(), YAML::Node(), implicit_custom, root);
+  Require(
+      Control<QComboBox>(widget, "playerReidModel")->currentData() == "custom" && !widget.validateForRun().isEmpty(),
+      "Cleared Custom path became a built-in after reload");
 }
 void LegacyProgramBoxes(const QString& root) {
   PlayerAnalyticsControls widget;
@@ -213,10 +357,12 @@ void DependenciesAndExport(const QString& root) {
   auto defaults = Defaults();
   widget.loadConfig(defaults, YAML::Node(), YAML::Node(), root);
   Control<QCheckBox>(widget, "playerActionEnable")->setChecked(true);
+  SelectModel(widget, "playerActionModel", "custom");
   Control<QLineEdit>(widget, "playerActionBundle")->setText("/missing/action");
   Require(widget.validateForRun().contains("require explicit pose"), "Action without pose was accepted");
   widget.loadConfig(defaults, YAML::Node(), YAML::Node(), root);
   Control<QCheckBox>(widget, "playerJerseyEnable")->setChecked(true);
+  SelectModel(widget, "playerJerseyModel", "custom");
   Control<QLineEdit>(widget, "playerJerseyBundle")->setText("/missing/jersey");
   Require(widget.validateForRun().contains("Missing jersey"), "BBox jersey incorrectly required pose");
   Control<QComboBox>(widget, "playerJerseyRoiMode")->setCurrentIndex(1);
@@ -232,6 +378,7 @@ void DependenciesAndExport(const QString& root) {
   widget.loadConfig(defaults, YAML::Node(), YAML::Node(), root);
   const auto bundle = Bundle(root, "prepared pose with spaces");
   Control<QCheckBox>(widget, "playerPoseEnable")->setChecked(true);
+  SelectModel(widget, "playerPoseModel", "custom");
   Control<QLineEdit>(widget, "playerPoseBundle")->setText("prepared pose with spaces");
   Require(
       widget.validateForRun().isEmpty(), "UI attempted model deserialization or rejected valid metadata prerequisites");
@@ -263,12 +410,15 @@ void DependenciesAndExport(const QString& root) {
       widget.validateForRun().isEmpty() && !widget.arguments().join(' ').contains("pose.bundle="),
       "Valid unchanged delimiter path was rejected or misserialized");
   Control<QLineEdit>(widget, "playerPoseBundle")->setText(special + "x");
-  Require(widget.validateForRun().contains("unsaved bundle"), "Unrepresentable unsaved path was silently dropped");
+  Require(
+      widget.validateForRun().contains("unsaved custom model"), "Unrepresentable unsaved path was silently dropped");
 }
 void ReId(const QString& root) {
   PlayerAnalyticsControls widget;
   widget.loadConfig(Defaults(), YAML::Node(), YAML::Node(), root);
   Control<QCheckBox>(widget, "playerReidEnable")->setChecked(true);
+  Require(widget.validateForRun().isEmpty(), "Built-in appearance matching required an existing configuration");
+  SelectModel(widget, "playerReidModel", "custom");
   Require(widget.validateForRun().contains("prepared configuration"), "ReID without configuration accepted");
   const auto config = QDir(root).filePath("reid.yaml");
   Write(config, "ReID: {modelEngineFile: reid.engine}\n");
@@ -289,6 +439,7 @@ int main(int argc, char** argv) {
   QTemporaryDir directory;
   Require(directory.isValid(), "Cannot create test directory");
   Disabled();
+  ModelChoices(directory.path());
   LegacyProgramBoxes(directory.path());
   LayersAndPersistence(directory.path());
   DependenciesAndExport(directory.path());

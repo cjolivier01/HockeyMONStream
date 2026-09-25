@@ -4,26 +4,26 @@ Pose, jersey and action inference are opt-in. Ordinary playback omits `hmplayera
 no inference engine, stream, ROI buffer or analytics pad probe is created. Drawing
 preferences do not enable inference. Immutable semantic metadata feeds optional GPU drawing.
 
-Prepare a compatible RTMPose-M COCO17 bundle using
-[the offline preparation tool](player-model-preparation.md), then add an overlay:
+Enable the feature in Program Controls → Players, or add an overlay:
 
 ```yaml
 pipeline:
   player-analytics:
     pose:
       enable: 1
-      bundle: /absolute/path/to/prepared-pose-bundle
+      model: rtmpose-m-coco17-256x192 # optional: this is the default pose model
       rate-hz: 10
       confidence-threshold: 0.3
 ```
 
-Launch with the ordinary hockey config and this overlay. Relative bundle paths
-resolve against the structural app configuration directory. Settings apply on
+Launch with the ordinary hockey config and this overlay. The selected model downloads
+and prepares automatically on first use, then reuses its per-user cache. Settings apply on
 the next run; model replacement during playback is rejected. The native tracker
 must be enabled. The analytics GPU defaults to the application's GPU; an explicit
 `pipeline.player-analytics.gpu-id` must identify the incoming surface's device.
 Prepared engines must match the manifest, loaded TensorRT/CUDA runtime, GPU and
-fixed tensor contract. There is no runtime download, build or CPU fallback.
+fixed tensor contract. Preparation finishes before playback; there is no inference CPU
+fallback. [Preparation details](player-model-preparation.md) also document custom exports.
 
 The synchronous metadata element sits after `nvtracker`, before `vpplaytracker`.
 It consumes tracked person boxes, samples padded ROIs on GPU, runs TensorRT on
@@ -57,7 +57,9 @@ comparisons and separately checks compact transfers with Nsight Systems.
 ## Jersey and action inference
 
 See [the combined example](../configs/player-analytics/semantics-example.yaml).
-Each feature requires its own prepared bundle and explicit `enable: 1`.
+Each feature requires explicit `enable: 1`; its supported model is selected by default.
+A `model` ID makes that selection explicit. `model: custom` uses an existing `bundle`
+directory instead; legacy paths without a model ID retain this custom behavior.
 Bbox jersey mode works without pose. Pose-guided jersey requires pose enabled and
 fresh same-frame shoulders/hips; it skips incomplete poses without falling back
 to bbox crops. Action requires explicit COCO17 pose at at least 10 Hz. Drawing
@@ -100,16 +102,19 @@ history readiness/resets. Interpret retained labels separately from fresh infere
 ## Drawing and desktop controls
 
 The Program Controls **Players** tab offers next-run pose, jersey and action
-compute toggles, prepared bundle paths, jersey ROI mode and optional tracker ReID.
+compute toggles, model selectors, jersey ROI mode and optional tracker ReID.
 Save Preset changes only edited leaves. Unsaved choices are included in launch
 and exported jobs; an active run keeps its original snapshot. Enabled-only
-preflight reads bounded manifests and checks file metadata without loading engines
-or touching CUDA. Playback performs the strict content/runtime checks.
+preflight validates model choices and dependencies without loading engines or touching
+CUDA. Custom models also receive bounded manifest/file checks. Startup downloads and
+prepares only enabled supplied models; playback performs strict content/runtime checks.
 
-Tracker ReID is independent of jersey inference. Prepare the target-local engine
-and overlay using [the native ReID recipe](../src/libs/tracker_reid/README.md),
-then set `pipeline.tracker.reid-enable: true` and `reid-config-file` to that
-overlay. It enables NvDCF appearance reassociation; jersey numbers remain evidence
+Tracker ReID is independent of jersey inference. Set `pipeline.tracker.reid-enable: true`
+or enable appearance matching in the Players tab. The default `reid-model: deepstream`
+uses the SDK's supplied NvDCF ReID model and preprocessing. If the SDK model is missing,
+HStream downloads that exact model from NVIDIA, then lets DeepStream prepare its engine
+in the user cache. `reidentificationnet-deployable-v1.2` selects the newer ONNX alternative. `reid-model: custom` with `reid-config-file` retains the
+[custom native ReID recipe](../src/libs/tracker_reid/README.md). It enables NvDCF appearance reassociation; jersey numbers remain evidence
 attached to native track identities and do not merge players by number.
 
 Drawing is independent of compute:

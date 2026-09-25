@@ -536,9 +536,9 @@ std::vector<fs::path> allowed_roots(const AssetSpec& spec) {
   return roots;
 }
 
-absl::Status validate_target(const AssetSpec& spec) {
+absl::Status validate_target(const AssetSpec& spec, bool selected_target = false) {
   const fs::path target = fs::absolute(spec.target).lexically_normal();
-  bool allowed = false;
+  bool allowed = selected_target;
   for (const fs::path& root : allowed_roots(spec)) {
     std::error_code root_error;
     fs::path canonical_root = fs::weakly_canonical(fs::absolute(root), root_error);
@@ -571,7 +571,17 @@ struct DownloadState {
   FILE* file;
   size_t received;
   size_t maximum;
+  std::function<bool()> cancelled;
 };
+
+int download_progress(void* opaque, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+  const auto* state = static_cast<DownloadState*>(opaque);
+  try {
+    return state->cancelled && state->cancelled() ? 1 : 0;
+  } catch (...) {
+    return 1;
+  }
+}
 
 size_t write_download(char* data, size_t size, size_t count, void* opaque) {
   auto* state = static_cast<DownloadState*>(opaque);
@@ -583,13 +593,18 @@ size_t write_download(char* data, size_t size, size_t count, void* opaque) {
   return written;
 }
 
-absl::Status download(const AssetSpec& spec, int file_descriptor, size_t maximum, size_t* received) {
+absl::Status download(
+    const AssetSpec& spec,
+    int file_descriptor,
+    size_t maximum,
+    size_t* received,
+    const std::function<bool()>& cancelled = {}) {
   FILE* file = ::fdopen(file_descriptor, "wb");
   if (!file) {
     ::close(file_descriptor);
     return absl::InternalError("Unable to create temporary asset stream");
   }
-  DownloadState state{file, 0, maximum};
+  DownloadState state{file, 0, maximum, cancelled};
   CURL* curl = curl_easy_init();
   if (!curl) {
     std::fclose(file);
@@ -626,11 +641,16 @@ absl::Status download(const AssetSpec& spec, int file_descriptor, size_t maximum
   curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_download);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, download_progress);
+  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &state);
   const CURLcode result = curl_easy_perform(curl);
   curl_slist_free_all(headers);
   curl_easy_cleanup(curl);
   const bool flushed = std::fflush(file) == 0 && ::fsync(::fileno(file)) == 0;
   std::fclose(file);
+  if (result == CURLE_ABORTED_BY_CALLBACK || (cancelled && cancelled()))
+    return absl::CancelledError("Asset download cancelled");
   if (result != CURLE_OK) {
     std::string message = "Asset download failed: " + std::string(curl_easy_strerror(result));
     if (github_api && !github_token_available)
@@ -643,8 +663,15 @@ absl::Status download(const AssetSpec& spec, int file_descriptor, size_t maximum
   return absl::OkStatus();
 }
 
-absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* total) {
-  auto status = validate_target(spec);
+absl::Status ensure_one(
+    const AssetSpec& spec,
+    const Limits& limits,
+    size_t* total,
+    const std::function<bool()>& cancelled = {},
+    bool selected_target = false) {
+  if (cancelled && cancelled())
+    return absl::CancelledError("Asset preparation cancelled");
+  auto status = validate_target(spec, selected_target);
   if (!status.ok())
     return status;
   std::error_code error;
@@ -652,8 +679,11 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
   // read-only to ordinary users. Hash an existing immutable file before
   // attempting to create a sibling lock; atomic publishers cannot change the
   // inode being read underneath this verification.
-  if (fs::is_regular_file(spec.target, error) && !error && fs::file_size(spec.target, error) > 0 && !error) {
-    auto hash = AssetManager::Sha256(spec.target);
+  if (fs::is_regular_file(spec.target, error) && !error && fs::file_size(spec.target, error) > 0 && !error &&
+      fs::file_size(spec.target, error) <= limits.maximum_asset_bytes && !error) {
+    auto hash = AssetManager::Sha256(spec.target, cancelled);
+    if (!hash.ok() && absl::IsCancelled(hash.status()))
+      return hash.status();
     if (hash.ok() && *hash == spec.sha256)
       return absl::OkStatus();
   }
@@ -672,10 +702,18 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
       ::close(fd);
     }
   } lock_cleanup{lock};
-  if (::flock(lock, LOCK_EX) != 0)
-    return absl::InternalError("Unable to lock asset target");
-  if (fs::is_regular_file(spec.target, error) && !error && fs::file_size(spec.target, error) > 0 && !error) {
-    auto hash = AssetManager::Sha256(spec.target);
+  while (::flock(lock, LOCK_EX | LOCK_NB) != 0) {
+    if (errno != EWOULDBLOCK && errno != EINTR)
+      return absl::InternalError("Unable to lock asset target");
+    if (cancelled && cancelled())
+      return absl::CancelledError("Asset lock wait cancelled");
+    ::poll(nullptr, 0, 50);
+  }
+  if (fs::is_regular_file(spec.target, error) && !error && fs::file_size(spec.target, error) > 0 && !error &&
+      fs::file_size(spec.target, error) <= limits.maximum_asset_bytes && !error) {
+    auto hash = AssetManager::Sha256(spec.target, cancelled);
+    if (!hash.ok() && absl::IsCancelled(hash.status()))
+      return hash.status();
     if (hash.ok() && *hash == spec.sha256)
       return absl::OkStatus();
     std::cerr << "Cached asset checksum mismatch; downloading a verified replacement: " << spec.target << '\n';
@@ -699,16 +737,16 @@ absl::Status ensure_one(const AssetSpec& spec, const Limits& limits, size_t* tot
   size_t received = 0;
   const size_t remaining = limits.maximum_total_bytes - std::min(*total, limits.maximum_total_bytes);
   // download takes ownership of the descriptor and closes it with its FILE stream.
-  status = download(spec, fd, std::min(limits.maximum_asset_bytes, remaining), &received);
+  status = download(spec, fd, std::min(limits.maximum_asset_bytes, remaining), &received, cancelled);
   if (!status.ok())
     return status;
   *total += received;
-  auto hash = AssetManager::Sha256(temporary);
+  auto hash = AssetManager::Sha256(temporary, cancelled);
   if (!hash.ok())
     return hash.status();
   if (*hash != spec.sha256)
     return absl::DataLossError("Downloaded asset checksum mismatch for " + spec.target.string());
-  status = validate_target(spec);
+  status = validate_target(spec, selected_target);
   if (!status.ok())
     return status;
   if (::chmod(temporary.c_str(), 0644) != 0)
@@ -1020,6 +1058,24 @@ absl::StatusOr<AssetSpec> AssetManager::EnsureNamedAtPath(
   return verified;
 }
 
+absl::Status AssetManager::EnsureAsset(
+    const AssetSpec& spec,
+    const Limits& limits,
+    const std::function<bool()>& cancelled) {
+  if (cancelled && cancelled())
+    return absl::CancelledError("Asset preparation cancelled");
+  if (!spec.target.is_absolute() || spec.target.filename().empty() || spec.url.rfind("https://", 0) != 0 ||
+      spec.sha256.size() != 64 || !std::all_of(spec.sha256.begin(), spec.sha256.end(), [](unsigned char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+      }))
+    return absl::InvalidArgumentError("Selected asset requires HTTPS, lowercase SHA256 and an absolute target");
+  static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (initialized != CURLE_OK)
+    return absl::InternalError("Unable to initialize HTTPS asset manager");
+  size_t total = 0;
+  return ensure_one(spec, limits, &total, cancelled, true);
+}
+
 absl::Status AssetManager::Verify(const std::vector<fs::path>& configs, const Limits& limits) {
   auto assets = Discover(configs, limits);
   if (!assets.ok())
@@ -1062,7 +1118,7 @@ absl::Status AssetManager::VerifyPackageAssets(const std::vector<fs::path>& conf
   return absl::OkStatus();
 }
 
-absl::StatusOr<std::string> AssetManager::Sha256(const fs::path& path) {
+absl::StatusOr<std::string> AssetManager::Sha256(const fs::path& path, const std::function<bool()>& cancelled) {
   std::ifstream input(path, std::ios::binary);
   if (!input)
     return absl::NotFoundError("Unable to open asset for hashing: " + path.string());
@@ -1074,6 +1130,10 @@ absl::StatusOr<std::string> AssetManager::Sha256(const fs::path& path) {
   }
   std::array<char, 1024 * 1024> buffer{};
   while (input) {
+    if (cancelled && cancelled()) {
+      EVP_MD_CTX_free(context);
+      return absl::CancelledError("Asset checksum cancelled");
+    }
     input.read(buffer.data(), buffer.size());
     const std::streamsize count = input.gcount();
     if (count > 0 && EVP_DigestUpdate(context, buffer.data(), static_cast<size_t>(count)) != 1) {

@@ -18,7 +18,9 @@ int main() {
     return 1;
   }
   for (const char* invalid : {
-           "pose: {enable: 1}",
+           "pose: {enable: 1, model: custom}",
+           "pose: {enable: 1, model: unknown}",
+           "pose: {enable: 1, model: parseq-hockey-cvprw2024}",
            "pose: {enable: 1, bundle: x}\njersey: {enable: 1, bundle: y, roi-mode: pose}\nmax-due-rois: 1",
            "action: {enable: 1, bundle: x}",
            "jersey: {enable: 1, bundle: x, roi-mode: pose}",
@@ -41,6 +43,20 @@ int main() {
   if (!valid.ok() || !valid->jersey.enabled || valid->pose.enabled || valid->batch_size != 3) {
     std::cerr << "pure parsing must allow bbox-only jersey with a path whose existence is checked later\n";
     return 3;
+  }
+  for (const char* builtin :
+       {"pose: {enable: 1}",
+        "pose: {enable: 1, model: null}",
+        "pose: {enable: 1, model: rtmpose-m-coco17-256x192, bundle: [old, invalid]}"}) {
+    const auto selected = pa::ParseConfig(YAML::Load(builtin));
+    if (!selected.ok() || selected->pose.model != "rtmpose-m-coco17-256x192" || !selected->pose.bundle.empty()) {
+      std::cerr << "built-in model selection must not require a prepared path\n";
+      return 4;
+    }
+  }
+  if (valid->jersey.model != "custom") {
+    std::cerr << "legacy explicit paths must retain their custom-model semantics\n";
+    return 5;
   }
   return 0;
 }

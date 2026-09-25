@@ -1,0 +1,192 @@
+{
+  "licenses": [
+    {
+      "file": "licenses/mmpose-apache-2.0.txt",
+      "sha256": "aa2c6f3408169b96e5547c875deb481c91502514c1885fa0acb4b596c8909cb9",
+      "url": "https://raw.githubusercontent.com/open-mmlab/mmpose/66c0a2cd1fe3a550f8eb21d129065b91bf2c2b50/LICENSE"
+    },
+    {
+      "file": "licenses/mmaction2-apache-2.0.txt",
+      "sha256": "02c5c55e19772184872c6c455553b15e4acac4b3a757550e7374f47723868ce1",
+      "url": "https://raw.githubusercontent.com/open-mmlab/mmaction2/41d55e263d1e4e9fc184c6f8f9cd08f5010bf690/LICENSE"
+    },
+    {
+      "file": "licenses/parseq-apache-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "url": "https://raw.githubusercontent.com/mkoshkina/jersey-number-pipeline/007d54e5530a66616ed5081ca35e0028b36aadb5/str/parseq/LICENSE"
+    },
+    {
+      "file": "licenses/parseq-NOTICE.txt",
+      "sha256": "0b0a09b6a5321a43a7cf06e5194ce51e3855e42297930f7bad9421fcb39a93b5",
+      "url": "https://raw.githubusercontent.com/mkoshkina/jersey-number-pipeline/007d54e5530a66616ed5081ca35e0028b36aadb5/str/parseq/NOTICE"
+    },
+    {
+      "file": "licenses/jersey-cc-by-nc-3.0.txt",
+      "sha256": "af0b20a664f5e5fbfd7758c935a50fac52bd0a477f178960bbf25945094d22ab",
+      "url": "https://raw.githubusercontent.com/mkoshkina/jersey-number-pipeline/007d54e5530a66616ed5081ca35e0028b36aadb5/license.txt"
+    },
+    {
+      "extraction": "Unmodified copyright and permission header before [property]; applies to the preprocessing example only.",
+      "file": "licenses/reid-preprocessing-notice.txt",
+      "sha256": "87015fd3f7ca16074765610d1d9278a8f7b36e97edc8ec4d71a2709348598bc4",
+      "url": "https://raw.githubusercontent.com/NVIDIA-AI-IOT/deepstream_tao_apps/b5363fa47b5539e5c768dcf61065426edd1478a9/configs/nvinfer/reidentificationnet_tao/sgie_reidentificationnet_tao_config.txt"
+    }
+  ],
+  "models": [
+    {
+      "contract": "pose.json",
+      "contract_sha256": "cc4fea39436a9a835a7013230fdd4c9a5aae7099aaea3ea79a38da630eeeeccb",
+      "conversion": {
+        "description": "Converted the exact upstream RTMPose-M checkpoint to ONNX opset 17 with dynamic batch and raw COCO17 SimCC outputs. No flip-test augmentation. The fixed profile uses 192x256 RGB affine input, padding 1.25, and SimCC split ratio 2.",
+        "exporter_sha256": "c85b3624397500b7ddb323fe05564c072ddbafe8f1105f9c598ef23fe77c8fe0",
+        "torch_version": "2.11.0a0+gita03d450"
+      },
+      "description": "RTMPose-M COCO17",
+      "feature": "pose",
+      "license_files": [
+        "licenses/mmpose-apache-2.0.txt"
+      ],
+      "maximum_batch": 8,
+      "model_id": "rtmpose-m-coco17-256x192",
+      "notice": "notices/pose.md",
+      "onnx": {
+        "bytes": 54370235,
+        "file": "rtmpose-m-coco17-5449a830cd121954.onnx",
+        "sha256": "5449a830cd12195430c2ac66d93854b47ae8be0cfea0f6ffbe2422d9d28983a0",
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/rtmpose-m-coco17-5449a830cd121954.onnx"
+      },
+      "release_notice": {
+        "file": "rtmpose-m-coco17-5449a830cd121954.NOTICE.txt",
+        "sha256": "28bb4565c0558f48b7d05aa5a547950bafe297d736f711b78037953e580381df",
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/rtmpose-m-coco17-5449a830cd121954.NOTICE.txt"
+      },
+      "release_provenance": {
+        "file": "rtmpose-m-coco17-5449a830cd121954.NOTICE.json",
+        "sha256": "feccbb598b90dcf49de69a25a47c1e30e72b08ecfc160b127a4cc167bdebab02",
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/rtmpose-m-coco17-5449a830cd121954.NOTICE.json"
+      },
+      "source": {
+        "config_sha256": "532dc32cd9c6ba4ea3300fdc0e0a1da622dd9f53510a1998968f7958e08b2a6b",
+        "license": "Apache-2.0 (code); retain upstream checkpoint and training-data provenance",
+        "sha256": "5e55be2a03f6e5dcd14d088afc4ae5afe94a4f9de93c22e5deb725ad0eee899d",
+        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-m_simcc-aic-coco_pt-aic-coco_420e-256x192-63eb25f7_20230126.pth"
+      }
+    },
+    {
+      "contract": "jersey.json",
+      "contract_sha256": "037833c5fc6108486b1555b93c2b3ea38ba600b139044a6f4662a87dde692acb",
+      "conversion": {
+        "description": "Converted the author-provided hockey-finetuned checkpoint to ONNX opset 17 with dynamic batch. Kept the full 95-class output vocabulary, autoregressive decoding, and one refinement pass. Limited inference to two characters plus EOS. Selected the known singleton token axis explicitly and used the mathematically equivalent explicit encoder attention branch for TensorRT 10.3 compatibility. No new training or fine-tuning.",
+        "exporter_sha256": "bf384f9860bfaeb0bc5126fdcea1a0224f6e87db31974d78f953195a04b94950",
+        "torch_version": "2.11.0a0+gita03d450"
+      },
+      "description": "Hockey PARSeq (CC BY-NC 3.0; noncommercial)",
+      "feature": "jersey",
+      "license_files": [
+        "licenses/jersey-cc-by-nc-3.0.txt",
+        "licenses/parseq-apache-2.0.txt",
+        "licenses/parseq-NOTICE.txt"
+      ],
+      "maximum_batch": 8,
+      "model_id": "parseq-hockey-cvprw2024",
+      "notice": "notices/jersey.md",
+      "onnx": {
+        "bytes": 95708748,
+        "file": "parseq-hockey-cvprw2024-df48ad7463aa89a5.onnx",
+        "sha256": "df48ad7463aa89a5e852f9c4cf2616f0cb9a4e7490ef380b0c6ab67f110228b1",
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/parseq-hockey-cvprw2024-df48ad7463aa89a5.onnx"
+      },
+      "release_notice": {
+        "file": "parseq-hockey-cvprw2024-df48ad7463aa89a5.NOTICE.txt",
+        "sha256": "18932a517ed4b28c8335e03ca9ad053324e727c0074714b6248db1ecaf21c8d0",
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/parseq-hockey-cvprw2024-df48ad7463aa89a5.NOTICE.txt"
+      },
+      "release_provenance": {
+        "file": "parseq-hockey-cvprw2024-df48ad7463aa89a5.NOTICE.json",
+        "sha256": "31359ed940aee9a2d4d4ee55829d8b7fab490159897f0102f2b3c13afcb6d8b8",
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/parseq-hockey-cvprw2024-df48ad7463aa89a5.NOTICE.json"
+      },
+      "source": {
+        "config_sha256": "b1c1374a8e672b0929c1eb26ed0eee4da199bacec84602033c018d15357e400c",
+        "license": "CC-BY-NC-3.0; model local use remains subject to noncommercial terms",
+        "sha256": "5a31899866c092ff26b245898d1fb16ecaabcd091afaadeb6a9c056ca6c846e3",
+        "url": "https://drive.google.com/file/d/1FyM31xvSXFRusN0sZH0EWXoHwDfB9WIE/view"
+      }
+    },
+    {
+      "contract": "action.json",
+      "contract_sha256": "b24e7033f22500083f4e998dbe611fdc2be70a9a821626d82e8f0caa69874d8f",
+      "conversion": {
+        "description": "Converted the exact upstream COCO2D joint STGCN++ checkpoint to ONNX opset 17 with dynamic batch. The wrapper executes the original backbone and classification head. The deployment profile uses one 100-sample causal window, a zero-padded second person, full-canvas normalization, and the original 60 NTU labels.",
+        "exporter_sha256": "c85b3624397500b7ddb323fe05564c072ddbafe8f1105f9c598ef23fe77c8fe0",
+        "torch_version": "2.11.0a0+gita03d450"
+      },
+      "description": "STGCN++ COCO2D NTU60 (generic activities)",
+      "feature": "action",
+      "license_files": [
+        "licenses/mmaction2-apache-2.0.txt"
+      ],
+      "maximum_batch": 8,
+      "model_id": "stgcnpp-coco2d-joint-ntu60",
+      "notice": "notices/action.md",
+      "onnx": {
+        "bytes": 5689417,
+        "file": "stgcnpp-coco2d-ntu60-a69d882572452c6c.onnx",
+        "sha256": "a69d882572452c6c046d998bd587c39cf614b45844e50d32ec24803ca6a3e9bd",
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/stgcnpp-coco2d-ntu60-a69d882572452c6c.onnx"
+      },
+      "release_notice": {
+        "file": "stgcnpp-coco2d-ntu60-a69d882572452c6c.NOTICE.txt",
+        "sha256": "ec5a43f552c3c5deac57d2b718da5c26852cab35ef2eb541527dfa33d692d679",
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/stgcnpp-coco2d-ntu60-a69d882572452c6c.NOTICE.txt"
+      },
+      "release_provenance": {
+        "file": "stgcnpp-coco2d-ntu60-a69d882572452c6c.NOTICE.json",
+        "sha256": "0bde54079ed01eb6dd8779e809f382fe50deac993c61702de7317b66e609fdae",
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/stgcnpp-coco2d-ntu60-a69d882572452c6c.NOTICE.json"
+      },
+      "source": {
+        "config_sha256": "31bd05179ebe52ccb9ecb194f2e9e8a804b4765d2172a124b646bdc169fd1c82",
+        "license": "Apache-2.0 (code); retain upstream checkpoint and NTU60 training-data provenance",
+        "sha256": "86e1e77a7b27dd53c6ccc1600a4cc3c321ec8e04d17f25a41fbbb7896026945a",
+        "url": "https://download.openmmlab.com/mmaction/v1.0/skeleton/stgcnpp/stgcnpp_8xb16-joint-u100-80e_ntu60-xsub-keypoint-2d/stgcnpp_8xb16-joint-u100-80e_ntu60-xsub-keypoint-2d_20221228-86e1e77a.pth"
+      }
+    },
+    {
+      "contract": "reid.json",
+      "contract_sha256": "9c17caab08b2f86d65226f15c23bffb20ff52b66a9340f2095d8e723dcf2456b",
+      "conversion": {
+        "description": "No graph conversion: use the original NVIDIA deployable_v1.2 ONNX. Build the TensorRT FP16 batch32 engine locally; native NvDCF performs preprocessing and output feature normalization."
+      },
+      "description": "NVIDIA ReIdentificationNet",
+      "distribution": "Direct NVIDIA NGC download; not mirrored in the HockeyMONStream release.",
+      "feature": "reid",
+      "license_files": [
+        "licenses/reid-preprocessing-notice.txt"
+      ],
+      "license_url": "https://www.nvidia.com/en-us/data-center/products/nvidia-ai-enterprise/eula/",
+      "maximum_batch": 32,
+      "model_card_url": "https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tao/models/reidentificationnet",
+      "model_id": "reidentificationnet-deployable-v1.2",
+      "notice": "notices/reid.md",
+      "onnx": {
+        "bytes": 96398132,
+        "file": "resnet50_market1501_aicity156.onnx",
+        "sha256": "0e21d09278508ec835955f422a9fdd3cd59b2a6ecdef98d705f388f33cebac2b",
+        "url": "https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/reidentificationnet/deployable_v1.2/files?redirect=true&path=resnet50_market1501_aicity156.onnx"
+      },
+      "preprocessing_source": {
+        "sha256": "fc8a3fd542a04d10995f4d2ffe86e91289a1331e34c4f919bcb8261951cf4bfd",
+        "url": "https://raw.githubusercontent.com/NVIDIA-AI-IOT/deepstream_tao_apps/b5363fa47b5539e5c768dcf61065426edd1478a9/configs/nvinfer/reidentificationnet_tao/sgie_reidentificationnet_tao_config.txt"
+      },
+      "source": {
+        "config_sha256": "fc8a3fd542a04d10995f4d2ffe86e91289a1331e34c4f919bcb8261951cf4bfd",
+        "license": "NVIDIA AI Enterprise EULA; see the NVIDIA NGC model card and applicable model terms",
+        "sha256": "0e21d09278508ec835955f422a9fdd3cd59b2a6ecdef98d705f388f33cebac2b",
+        "url": "https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/reidentificationnet/deployable_v1.2/files?redirect=true&path=resnet50_market1501_aicity156.onnx"
+      }
+    }
+  ],
+  "release_tag": "pretrained-assets-v1",
+  "schema_version": 1
+}

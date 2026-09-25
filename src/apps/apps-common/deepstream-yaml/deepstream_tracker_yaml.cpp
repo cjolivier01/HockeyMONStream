@@ -107,6 +107,9 @@ gboolean parse_tracker_yaml(NvDsTrackerConfig* config, const YAML::Node& yaml_no
         }
         config->reid_enable = value;
       }
+    } else if (paramKey == "reid-model") {
+      // The startup model cache resolves this selection to reid-config-file.
+      // It is not a property of the native nvtracker element.
     } else if (paramKey == "reid-config-file") {
       // Resolve lexically only. Disabled trackers/ReID must not inspect paths.
       std::filesystem::path path(itr->second.as<std::string>());

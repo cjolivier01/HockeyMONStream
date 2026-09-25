@@ -17,6 +17,9 @@ struct FeatureConfig {
   std::string bundle;
   double rate_hz{1};
   float confidence_threshold{0.5F};
+  // "custom" selects the explicit directory; otherwise this is a catalog ID.
+  // The runner resolves built-ins into the internal directory before playback.
+  std::string model;
 };
 
 struct DrawingConfig {
@@ -47,7 +50,7 @@ struct Config {
 };
 
 // Pass the final resolved pipeline.player-analytics node, not a config path.
-// Pure parsing: never opens bundle paths. Disabled features inspect only enable;
+// Pure parsing: never opens model paths. Disabled features inspect only enable;
 // absent/all-disabled inference also skips all inference-limit validation.
 // Draw preferences cannot enable inference or satisfy a pose dependency.
 absl::StatusOr<Config> ParseConfig(const YAML::Node& node);

@@ -59,19 +59,21 @@ element. Stop/cancellation releases contexts and buffers after outstanding work 
 ## Configuration and prepared models
 
 Native settings live under `pipeline.player-analytics`, with nested pose, jersey, and
-action enable flags, bundle paths, update rates, confidence thresholds, and global
+action enable flags, model selections, optional custom paths, update rates, confidence thresholds, and global
 object/batch limits. All enable flags default false. Existing synchronized canonical
 `plot.plot_pose`, `plot.plot_jersey_numbers`, and `plot.plot_actions` map to drawing
 preferences using the normal provenance rules; explicit native properties win at the
 same layer. Preserve the shared baseline byte for byte. New settings are parsed only
-after layer resolution. An enabled feature with a missing/incompatible bundle fails
-clearly; disabled features ignore their paths and require no model tooling.
+after layer resolution. Enabled built-in selections download and prepare automatically
+before pipeline allocation. Invalid custom models fail clearly; disabled features
+ignore their paths and require no model tooling.
 
 Each prepared bundle binds the ONNX/engine digest, model family, tensor names and
 shapes, maximum batch, normalization, crop convention, joint layout or character/label
-vocabulary, GPU architecture, and TensorRT version. Preparation is an explicit offline
-source-checkout command, optionally converting an existing HockeyMON checkpoint.
-Playback is native and does not import Python or build engines. Publish prepared bundles
+vocabulary, GPU architecture, and TensorRT version. Supported portable graphs are
+SHA256-pinned, and startup prepares engines in a short-lived native child. Exporting
+new/custom graphs remains an offline source-checkout workflow. Playback is native
+and Python-free. Publish prepared models
 atomically in user cache storage; never write engines into source, media, or package
 directories. Preparation must compare PyTorch, ONNX, and TensorRT results on nontrivial
 inputs before advertising support. Do not commit checkpoints or engines.

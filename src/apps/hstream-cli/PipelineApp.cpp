@@ -9,6 +9,7 @@
 #include "PipelineAssetOptions.h"
 #include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
+#include "PlayerModelCache.h"
 #include "PreviewOverlayRuntime.h"
 #include "RuntimePropertyAllowlist.h"
 #include "RuntimePropertyValueParser.h"
@@ -94,6 +95,36 @@ namespace fs = std::filesystem;
 GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
+
+volatile sig_atomic_t player_model_preparation_interrupted = 0;
+
+void interrupt_player_model_preparation(int) {
+  player_model_preparation_interrupted = 1;
+}
+
+// Preparation runs before the normal playback signal handlers are installed.
+// Let Stop/Ctrl-C cancel downloads and reap the native builder before returning.
+class PlayerModelPreparationSignals {
+ public:
+  PlayerModelPreparationSignals() {
+    player_model_preparation_interrupted = 0;
+    struct sigaction action {};
+    action.sa_handler = interrupt_player_model_preparation;
+    sigemptyset(&action.sa_mask);
+    interrupt_installed_ = ::sigaction(SIGINT, &action, &interrupt_) == 0;
+    terminate_installed_ = ::sigaction(SIGTERM, &action, &terminate_) == 0;
+  }
+  ~PlayerModelPreparationSignals() {
+    if (interrupt_installed_)
+      ::sigaction(SIGINT, &interrupt_, nullptr);
+    if (terminate_installed_)
+      ::sigaction(SIGTERM, &terminate_, nullptr);
+  }
+
+ private:
+  struct sigaction interrupt_ {}, terminate_ {};
+  bool interrupt_installed_{false}, terminate_installed_{false};
+};
 
 absl::StatusOr<hm::stitching::ControlPointMatcher> selected_stitching_matcher(const YAML::Node& config) {
   std::string configured;
@@ -1440,6 +1471,19 @@ absl::Status PipelineApplication::configureInstances(
       HM_RETURN_IF_ERROR(
           hm::pipeline::PrepareTensorRtModelCache(
               config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path()));
+      {
+        PlayerModelPreparationSignals preparation_signals;
+        hm::pipeline::PlayerModelCacheOptions options;
+        options.cancelled = [this] { return cintr_ || player_model_preparation_interrupted; };
+        options.progress = [](const std::string& message) {
+          if (g_getenv("HSTREAM_UI_PARENT_PID"))
+            emit_ui_startup("models", message.c_str());
+          else
+            g_print("Player models: %s\n", message.c_str());
+        };
+        HM_RETURN_IF_ERROR(hm::pipeline::PreparePlayerModelCache(
+            config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path(), options));
+      }
       if (!parse_config_yaml(
               config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
         NVGSTDS_ERR_MSG_V("Failed to parse config file '%s'", app_ctx->app_config_file().c_str());

@@ -7,6 +7,16 @@ platform/model limitations are recorded in the [validation record](player-analyt
 Implements the reviewed
 [design](player-analytics-design.md) and [model comparison](player-analytics-models.md).
 
+The PR 4 follow-up replaces required prepared-model paths with named selections and
+enabled-only automatic native preparation. Startup downloads the pinned portable graph,
+validates a target-local engine, and caches it atomically; installed playback remains
+Python-free. ReID defaults to the installed DeepStream NvDCF model/profile, with its
+exact missing ETLT fetched from NVIDIA, while the newer ONNX and Custom options remain
+explicit alternatives. Custom offline export instructions below remain relevant to
+model development, not ordinary feature enablement. Cold/warm recorded playback,
+cancellation, package helper discovery, and disabled/calibration no-work checks are
+additional acceptance checks for this follow-up.
+
 ## Delivery order
 
 | Stage | Published PR | Base |
@@ -158,7 +168,7 @@ Record model identity and separate throughput/VRAM results.
    vpplaytracker, and carry baked-layer bits to avoid duplicate Program drawing. Preserve
    original play-debug layers and raw detection telemetry behavior.
 3. Map existing canonical plot flags with ordinary explicit-layer precedence. Add next-run
-   desktop controls for compute/model bundles/ReID and independent drawing preferences;
+   desktop controls for compute/model selection/ReID and independent drawing preferences;
    persist via existing game/user config helpers, preserve unknown keys, show missing
    prerequisites before launch, and include settings in exported jobs. Do not infer compute
    enable from drawing. Respect current generation/acknowledgment ownership; no hot model

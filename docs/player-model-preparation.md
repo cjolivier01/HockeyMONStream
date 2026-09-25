@@ -1,8 +1,27 @@
-# Offline preparation of player models
+# Player model selection and preparation
 
-Player inference consumes an immutable prepared bundle. Installed playback loads only
-native engines; it does not import PyTorch, download weights, or build engines. These
-commands are for a source checkout. Enabling an unprepared feature fails before playback.
+Choose a model in Program Controls → Players and enable the feature. On the first
+run, HStream downloads the SHA256-pinned portable ONNX and prepares a native TensorRT
+engine for the selected GPU. Later runs reuse the cache. No model path, environment
+variable, Python installation or manual export is needed for the supplied models.
+The same behavior applies to CLI and exported jobs. All features default off; disabled
+features and calibration/preparation graphs skip model downloading and preparation.
+
+The native builder runs as a cancellable child before pipeline allocation and exits
+before playback. Cache publication is atomic and records the model, tensor contract,
+GPU, TensorRT semantic/build version and CUDA runtime identity. Changing that identity
+selects a new cache entry. Custom prepared models remain supported through the Custom
+selection and the legacy `bundle`/`reid-config-file` keys. Those names describe internal
+files; ordinary use does not need to manage them.
+
+Model IDs are `rtmpose-m-coco17-256x192`, `parseq-hockey-cvprw2024`,
+`stgcnpp-coco2d-joint-ntu60`, and `deepstream` (tracker ReID default).
+`reidentificationnet-deployable-v1.2` selects the alternative NVIDIA ONNX ReID model.
+See [model notices and portable contracts](../configs/player-models/README.md).
+Hockey PARSeq is CC BY-NC 3.0 and limited to noncommercial use.
+
+The remaining instructions are for developers exporting new or custom models,
+not for enabling the supplied selections.
 
 The initial supported profiles are RTMPose-M COCO17 (256×192), hockey PARSeq
 (32×128, two digits plus EOS, all 95 trained output classes), and STGCN++ COCO2D
@@ -134,8 +153,8 @@ A prepared directory contains `manifest.json`, `model.onnx`, `model.engine`, and
 `preparation.json`. The manifest is the strict runtime contract; the separate preparation
 report records validation inputs/provenance/tolerances/errors and binds the manifest
 checksum. Publication atomically creates a new immutable directory and refuses existing
-generations. Configure the feature with its prepared bundle directory. Disabling all features
-requires neither a bundle nor exporter packages.
+generations. For a custom model, select `model: custom` and configure `bundle` with
+its prepared directory. Disabling all features requires neither model files nor exporter packages.
 
 ## Actual validation and limits
 

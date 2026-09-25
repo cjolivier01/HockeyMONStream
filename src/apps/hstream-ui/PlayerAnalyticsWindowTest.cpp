@@ -77,11 +77,14 @@ int main(int argc, char** argv) {
   auto* draw = Find<QCheckBox>(window, "playerDrawPose");
   auto* pose = Find<QCheckBox>(window, "playerPoseEnable");
   auto* path = Find<QLineEdit>(window, "playerPoseBundle");
+  auto* model = Find<QComboBox>(window, "playerPoseModel");
   auto* save = Find<QPushButton>(window, "savePresetButton");
   auto* preview = Find<QCheckBox>(window, "showPlayerTrackingCheck");
   auto* boxes = Find<QCheckBox>(window, "playerDrawBoxes");
   const auto detector = Find<QComboBox>(window, "detectorPrecisionCombo")->currentData();
-  Require(!draw->isChecked() && !pose->isChecked(), "Window load lost native drawing precedence");
+  Require(
+      !draw->isChecked() && !pose->isChecked() && model->currentData() == "custom",
+      "Window load lost native drawing precedence or legacy model selection");
   Require(
       boxes->isChecked() && !HStreamWindowTestAccess::args(window).join(' ').contains("plot-player-tracking=") &&
           !HStreamWindowTestAccess::args(window, false).join(' ').contains("plot-player-tracking="),
@@ -105,21 +108,35 @@ int main(int argc, char** argv) {
           ->validateForRun()
           .contains("Missing pose"),
       "Structural detector/tracker defaults were lost before bundle validation");
+  model->setCurrentIndex(model->findData("rtmpose-m-coco17-256x192"));
+  Require(
+      HStreamWindowTestAccess::validate(window) &&
+          HStreamWindowTestAccess::args(window).contains(
+              "--options=pipeline.player-analytics.pose.model=rtmpose-m-coco17-256x192") &&
+          !HStreamWindowTestAccess::args(window).join(' ').contains("pose.bundle="),
+      "Built-in pose selection required manual preparation or exported its stale custom path");
   Require(
       !HStreamWindowTestAccess::calibration(window).join(' ').contains("player-analytics"),
       "Calibration launch consumed analytics choices");
   HStreamWindowTestAccess::freeze(window);
   draw->setChecked(false);
+  model->setCurrentIndex(model->findData("custom"));
   Require(
       HStreamWindowTestAccess::args(window, false).contains("--options=plot.plot_pose=true") &&
-          HStreamWindowTestAccess::args(window).contains("--options=plot.plot_pose=false"),
+          HStreamWindowTestAccess::args(window).contains("--options=plot.plot_pose=false") &&
+          HStreamWindowTestAccess::args(window, false)
+              .contains("--options=pipeline.player-analytics.pose.model=rtmpose-m-coco17-256x192") &&
+          HStreamWindowTestAccess::args(window).contains("--options=pipeline.player-analytics.pose.model=custom"),
       "Mid-run edit changed active snapshot or failed to update next-run arguments");
   HStreamWindowTestAccess::unfreeze(window);
   draw->setChecked(true);
+  model->setCurrentIndex(model->findData("rtmpose-m-coco17-256x192"));
   Require(HStreamWindowTestAccess::save(window), "Window could not save analytics preset");
   const auto saved = YAML::LoadFile(config_path.toStdString());
   Require(
       saved["pipeline"]["player-analytics"]["pose"]["enable"].as<bool>() &&
+          saved["pipeline"]["player-analytics"]["pose"]["model"].as<std::string>() == "rtmpose-m-coco17-256x192" &&
+          saved["pipeline"]["player-analytics"]["pose"]["bundle"].as<std::string>() == "/missing prepared pose" &&
           saved["pipeline"]["player-analytics"]["draw-pose"].as<bool>() &&
           saved["pipeline"]["player-analytics"]["retained"].size() == 2 &&
           saved["pipeline"]["player-analytics"]["pose"]["rate-hz"].as<int>() == 20 &&
@@ -131,7 +148,8 @@ int main(int argc, char** argv) {
   for (const auto& argument : saved["hstream_ui"]["job"]["arguments"])
     exported << QString::fromStdString(argument.as<std::string>());
   Require(
-      exported.contains("--options=pipeline.player-analytics.pose.bundle=/missing prepared pose") &&
+      exported.contains("--options=pipeline.player-analytics.pose.model=rtmpose-m-coco17-256x192") &&
+          !exported.join(' ').contains("pose.bundle=") &&
           exported.contains("--options=pipeline.player-analytics.pose.enable=true") &&
           exported.contains("--options=plot.plot_pose=true"),
       "Saved job failed to capture unsaved analytics edits");
@@ -144,7 +162,8 @@ int main(int argc, char** argv) {
   Require(!pose->isChecked(), "Unsaved inference leaked into the next game");
   game->setCurrentIndex(game->findText("analytics-one"));
   Require(
-      pose->isChecked() && draw->isChecked() && path->text() == "/missing prepared pose",
+      pose->isChecked() && draw->isChecked() && path->text() == "/missing prepared pose" &&
+          model->currentData() == "rtmpose-m-coco17-256x192",
       "Game switching did not reload saved analytics");
   HStreamWindow reload;
   auto* reload_game = Find<QComboBox>(reload, "gameSelector");

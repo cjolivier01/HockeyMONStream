@@ -139,6 +139,7 @@ fi
 HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
 HSTREAM_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-job/hstream-job"
 HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
+HSTREAM_PLAYER_MODEL_BUILDER="${TOPDIR}/bazel-bin/src/apps/player-model-builder/player-model-builder"
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
 HSTREAM_HUGIN_TOOLS_DIR="${HSTREAM_HUGIN_TOOLS_DIR:-}"
 HSTREAM_GST_PLUGINS=(
@@ -158,6 +159,10 @@ if [[ ! -f "${HSTREAM_JOB}" ]]; then
 fi
 if [[ ! -f "${HSTREAM_ASSETS}" ]]; then
   echo "ERROR: ${HSTREAM_ASSETS} not found. Run 'make hstream-assets' first, or pass --build." >&2
+  exit 1
+fi
+if [[ ! -f "${HSTREAM_PLAYER_MODEL_BUILDER}" ]]; then
+  echo "ERROR: ${HSTREAM_PLAYER_MODEL_BUILDER} not found. Rebuild hstream-cli or pass --build." >&2
   exit 1
 fi
 if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_UI}" ]]; then
@@ -210,6 +215,7 @@ validate_elf_arch() {
 }
 validate_elf_arch "${HSTREAM_CLI}"
 validate_elf_arch "${HSTREAM_ASSETS}"
+validate_elf_arch "${HSTREAM_PLAYER_MODEL_BUILDER}"
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   validate_elf_arch "${HSTREAM_UI}"
 fi
@@ -354,6 +360,9 @@ package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-job")
 cp "${HSTREAM_ASSETS}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-assets")
+cp "${HSTREAM_PLAYER_MODEL_BUILDER}" "${STAGING}${INSTALL_PREFIX}/bin/player-model-builder"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/player-model-builder"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/player-model-builder")
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   cp "${HSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
@@ -401,7 +410,7 @@ echo "[make_deb] Collecting bundled shared libs..."
 declare -A seen_libs
 
 # Collect from the binaries and the exact HStream-owned plugin set.
-all_elfs=("${HSTREAM_CLI}" "${HSTREAM_ASSETS}" "${HSTREAM_GST_PLUGINS[@]}")
+all_elfs=("${HSTREAM_CLI}" "${HSTREAM_ASSETS}" "${HSTREAM_PLAYER_MODEL_BUILDER}" "${HSTREAM_GST_PLUGINS[@]}")
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   all_elfs+=("${HSTREAM_UI}")
 fi

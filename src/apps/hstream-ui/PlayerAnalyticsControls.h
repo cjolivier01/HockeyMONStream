@@ -34,7 +34,7 @@ class PlayerAnalyticsControls : public QWidget {
   QString validateForRun();
 
  private:
-  enum class Kind { kFlag, kPath, kRoi };
+  enum class Kind { kFlag, kPath, kRoi, kModel };
   struct Field {
     QString key;
     QString native_alias;
@@ -43,6 +43,8 @@ class PlayerAnalyticsControls : public QWidget {
     QVariant loaded;
     bool valid{true};
     bool touched{false};
+    QWidget* row{nullptr};
+    QWidget* label{nullptr};
   };
   QVariant value(const Field& field) const;
   QVariant read(const Field& field, const std::vector<YAML::Node>& layers, bool* valid) const;
@@ -51,8 +53,10 @@ class PlayerAnalyticsControls : public QWidget {
   void changed(size_t index);
   YAML::Node effectiveConfig() const;
   QString validation(bool inspect_files) const;
+  QString selectedModel(const QString& key) const;
   void updateStatus();
   void addFlag(const QString& key, const QString& alias, const QString& name, const QString& label, QWidget* parent);
+  void addModel(const QString& key, const QString& name, const QString& label, QWidget* parent);
   void addPath(const QString& key, const QString& name, bool directory, QWidget* parent);
   std::vector<Field> fields_;
   YAML::Node defaults_;

@@ -28,13 +28,29 @@ cc_library(
     hdrs = ["Config.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [":types", "@com_google_absl//absl/status:statusor", "@yaml-cpp"],
+    deps = [":types", ":model_catalog", "@com_google_absl//absl/status:statusor", "@yaml-cpp"],
+)
+
+cc_library(
+    name = "model_catalog",
+    srcs = ["ModelCatalog.cpp", "ModelCatalogData.inc"],
+    hdrs = ["ModelCatalog.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
 )
 
 cc_binary(
     name = "config_test",
     srcs = ["ConfigTest.cpp"],
     deps = [":config"],
+)
+
+cc_test(
+    name = "model_catalog_test",
+    srcs = ["ModelCatalogTest.cpp"],
+    args = ["$(location //configs:player-models/" + feature + ".json)" for feature in ["pose", "jersey", "action", "reid"]],
+    data = ["//configs:player-models/" + feature + ".json" for feature in ["pose", "jersey", "action", "reid"]],
+    deps = [":model_catalog", ":model_contract"],
 )
 
 cc_library(
