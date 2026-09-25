@@ -102,10 +102,11 @@ absl::Status ReleaseStitchingExperimentFrameCount(
 // experiment directory; promoted main-game bundles/artifacts remain untouched.
 absl::Status DiscardStitchingExperimentStore(const StitchingExperimentStore& store);
 
-// Explicit removal of queued, failed, or recovered frozen rows and their files. Refuses
-// active/quarantined process intent and surviving dependencies. Failed
-// and recovered rows' count selections/reservations are forgotten atomically; queued owners
-// must release their reservations first. Main data is untouched.
+// Explicit removal of stopped queued, failed, recovered frozen, or completed rows
+// and their files. The UI confirms removal of completed results and all affected
+// dependents first. Refuses active/quarantined process intent and surviving dependencies.
+// Removed non-queued owners' count selections/reservations are forgotten atomically;
+// queued owners must release their reservations first. Main data is untouched.
 absl::Status RemoveStitchingExperiments(
     const StitchingExperimentStore& store,
     const std::vector<std::string>& workspace_keys);

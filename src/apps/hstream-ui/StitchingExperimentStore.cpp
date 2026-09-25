@@ -995,31 +995,32 @@ absl::Status RemoveStitchingExperiments(
     Index index;
     HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
     std::vector<StoredStitchingExperiment> records;
-    std::set<std::string> unfinished_owners;
+    std::set<std::string> stopped_owners;
     for (const auto& record : index.catalog.experiments) {
       const auto key = path_key(store, record.workspace.game_directory);
       if (!removed.count(key))
         continue;
       require(
-          (record.state == "queued" || record.state == "failed" || record.state == "frozen") &&
+          (record.state == "queued" || record.state == "failed" || record.state == "frozen" ||
+           record.state == "complete") &&
               record.process_session_id == 0 && record.process_token.empty(),
-          "Only stopped unfinished rows may be removed individually");
+          "Only stopped experiments may be removed individually");
       auto config = validate_workspace_config(**lock, store, record.workspace);
       if (!config.ok())
         return config.status();
       records.push_back(record);
       if (record.state != "queued")
-        unfinished_owners.insert(key);
+        stopped_owners.insert(key);
     }
     require(records.size() == removed.size(), "An experiment row changed or disappeared before removal");
     for (const auto& [count, key] : index.catalog.selected_by_count) {
       (void)count;
-      require(!removed.count(key) || unfinished_owners.count(key), "Cannot remove a queued owner of retained frames");
+      require(!removed.count(key) || stopped_owners.count(key), "Cannot remove a queued owner of retained frames");
     }
     for (const auto& [count, reservation] : index.reservations) {
       (void)count;
       require(
-          !removed.count(reservation.key) || unfinished_owners.count(reservation.key),
+          !removed.count(reservation.key) || stopped_owners.count(reservation.key),
           "Release the unfinished count reservation before removing its queued owner");
     }
     for (const auto& survivor : index.catalog.experiments) {
@@ -1053,13 +1054,13 @@ absl::Status RemoveStitchingExperiments(
     }
     auto& experiments = index.catalog.experiments;
     for (auto it = index.catalog.selected_by_count.begin(); it != index.catalog.selected_by_count.end();) {
-      if (unfinished_owners.count(it->second))
+      if (stopped_owners.count(it->second))
         it = index.catalog.selected_by_count.erase(it);
       else
         ++it;
     }
     for (auto it = index.reservations.begin(); it != index.reservations.end();) {
-      if (unfinished_owners.count(it->second.key))
+      if (stopped_owners.count(it->second.key))
         it = index.reservations.erase(it);
       else
         ++it;

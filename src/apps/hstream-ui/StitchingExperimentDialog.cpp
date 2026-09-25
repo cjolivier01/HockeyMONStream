@@ -726,8 +726,9 @@ struct StitchingExperimentDialog::Impl {
   }
 
   static bool removable_candidate(const Candidate& candidate) {
-    return !candidate.main_calibration && !candidate.complete &&
-        (candidate.queued || !candidate.failure.isEmpty() || (candidate.stored && candidate.stored->state == "frozen"));
+    return !candidate.main_calibration &&
+        (candidate.complete || candidate.queued || !candidate.failure.isEmpty() ||
+         (candidate.stored && candidate.stored->state == "frozen"));
   }
 
   void update_controls() {
@@ -2060,13 +2061,15 @@ struct StitchingExperimentDialog::Impl {
           sequences.insert(candidate.sequence);
     } while (previous_size != sequences.size());
     std::vector<std::string> removed_keys;
-    for (Candidate& candidate : candidates) {
+    bool removes_completed = false;
+    for (const Candidate& candidate : candidates) {
       if (sequences.count(candidate.sequence)) {
         if (!removable_candidate(candidate)) {
           show_status(
-              "This attempt has successful dependents. Use Discard experiments to remove the entire history.", true);
+              "This experiment has dependents that cannot be removed. Stop their runners before trying again.", true);
           return;
         }
+        removes_completed |= candidate.complete || (candidate.stored && candidate.stored->state == "complete");
         // Preparation can fail before a workspace is published. Such rows have
         // no retained files; remove them from the table alongside durable rows.
         if (!candidate.workspace)
@@ -2076,13 +2079,43 @@ struct StitchingExperimentDialog::Impl {
               "This attempt's files were not cataloged. Use Discard experiments to remove its retained files.", true);
           return;
         }
-        const auto released = release_reservation(candidate);
-        if (!released.ok()) {
-          show_status(QString::fromStdString(released.ToString()), true);
-          return;
-        }
         removed_keys.push_back(
             candidate.workspace->game_directory.lexically_relative(store->directory).generic_string());
+      }
+    }
+    if (removes_completed) {
+      const auto dependents = sequences.size() - 1;
+      QMessageBox prompt(
+          QMessageBox::Warning,
+          "Remove stitching experiments",
+          dependents == 0 ? "Remove the selected experiment and its saved results?"
+                          : QString("Remove the selected experiment and %1 dependent experiment%2?")
+                                .arg(dependents)
+                                .arg(dependents == 1 ? "" : "s"),
+          QMessageBox::NoButton,
+          dialog);
+      prompt.setObjectName("stitchExperimentRemoveGuard");
+      prompt.setInformativeText(
+          "Their private calibration files, saved frames, and logs will be deleted. "
+          "The main game's calibration and unrelated experiments are preserved. This deletion cannot be undone.");
+      auto* remove = prompt.addButton("Remove experiments", QMessageBox::DestructiveRole);
+      auto* keep = prompt.addButton("Cancel", QMessageBox::RejectRole);
+      remove->setObjectName("stitchExperimentRemoveConfirm");
+      remove->setIcon(action_icon(ActionIcon::Remove));
+      keep->setIcon(action_icon(ActionIcon::Cancel));
+      prompt.setDefaultButton(keep);
+      prompt.setEscapeButton(keep);
+      prompt.exec();
+      if (prompt.clickedButton() != remove)
+        return;
+    }
+    for (Candidate& candidate : candidates) {
+      if (!sequences.count(candidate.sequence) || !candidate.workspace || !candidate.stored)
+        continue;
+      const auto released = release_reservation(candidate);
+      if (!released.ok()) {
+        show_status(QString::fromStdString(released.ToString()), true);
+        return;
       }
     }
     const auto removed = removed_keys.empty() ? absl::OkStatus() : RemoveStitchingExperiments(*store, removed_keys);

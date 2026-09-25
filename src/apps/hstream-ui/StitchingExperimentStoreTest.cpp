@@ -197,6 +197,73 @@ bool failed_attempt_removal(const fs::path& root) {
   return ok;
 }
 
+bool completed_result_removal(const fs::path& root) {
+  bool ok = true;
+  auto store = open_store(root / "completed-removal");
+  auto owner = make_record(store, "owner-session", 1);
+  const auto key = [&](const StoredStitchingExperiment& record) {
+    return record.workspace.game_directory.lexically_relative(store.directory).generic_string();
+  };
+  owner.reservation_token = "complete-owner";
+  const auto reserved =
+      ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, owner.workspace, owner.reservation_token);
+  ok &= expect(reserved.ok() && !reserved->has_value(), "reserve completed selection owner");
+  install_plan(owner, make_plan(store.game_directory, 2));
+  owner.state = "complete";
+  owner.artifact_generation_id = "completed-generation";
+  ok &= expect(SaveStitchingExperiment(store, owner, true).ok(), "publish completed selection owner");
+  auto child = make_record(store, "child-session", 1);
+  child.state = "complete";
+  child.artifact_generation_id = "child-generation";
+  child.selection_owner_sequence = owner.sequence;
+  child.selection_owner_workspace_key = key(owner);
+  auto unrelated = make_record(store, "unrelated-session", 1, 3);
+  unrelated.state = "complete";
+  unrelated.artifact_generation_id = "unrelated-generation";
+  ok &= expect(
+      SaveStitchingExperiment(store, child).ok() && SaveStitchingExperiment(store, unrelated).ok(),
+      "save completed dependent and unrelated result");
+  const auto original = read_file(store.directory / "index.yaml");
+  ok &= expect(
+      !RemoveStitchingExperiments(store, {key(owner)}).ok() && read_file(store.directory / "index.yaml") == original &&
+          fs::exists(owner.workspace.game_directory),
+      "completed removal must preserve a surviving dependent's inputs");
+  for (int64_t session_id : {0, 12345}) {
+    child.process_session_id = session_id;
+    child.process_token = "preview-intent";
+    ok &= expect(SaveStitchingExperiment(store, child).ok(), "save completed preview ownership");
+    const auto active = read_file(store.directory / "index.yaml");
+    ok &= expect(
+        !RemoveStitchingExperiments(store, {key(owner), key(child)}).ok() &&
+            read_file(store.directory / "index.yaml") == active && fs::exists(child.workspace.game_directory),
+        "preview intent or an active process prevents completed deletion");
+  }
+  child.process_session_id = 0;
+  child.process_token.clear();
+  ok &= expect(SaveStitchingExperiment(store, child).ok(), "release preview ownership");
+  write_file(store.game_directory / "config.yaml", "main calibration sentinel");
+  fs::create_directories(store.game_directory / "player-frame-inputs");
+  write_file(store.game_directory / "player-frame-inputs" / "promoted.png", "promoted input sentinel");
+  fs::create_directory_symlink(store.game_directory, owner.workspace.game_directory / "linked-main");
+  write_file(owner.workspace.game_directory / "runner.log", "completed runner");
+  ok &= expect(
+      RemoveStitchingExperiments(store, {key(owner), key(child)}).ok() && !fs::exists(owner.workspace.game_directory) &&
+          !fs::exists(child.workspace.game_directory) && fs::exists(unrelated.workspace.game_directory) &&
+          read_file(store.game_directory / "config.yaml") == "main calibration sentinel" &&
+          read_file(store.game_directory / "player-frame-inputs" / "promoted.png") == "promoted input sentinel",
+      "completed cascade removes only owned results and preserves main's promoted inputs");
+  const auto loaded = LoadStitchingExperimentStore(store);
+  ok &= expect(
+      loaded.ok() && loaded->experiments.size() == 1 && loaded->selected_by_count.empty() &&
+          !loaded->retained_by_count.count(2),
+      "completed owner removal forgets its frame-count selection");
+  auto fresh = make_record(store, "fresh-session", 1);
+  const auto retry =
+      ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, fresh.workspace, "new-selection");
+  ok &= expect(retry.ok() && !retry->has_value(), "removed completed count can choose new frames");
+  return ok;
+}
+
 bool deletion_recovery(const fs::path& root) {
   bool ok = true;
   auto queued_store = open_store(root / "queued-deletion-recovery");
@@ -844,6 +911,7 @@ bool run(const fs::path& root) {
       "a stale pre-discard row cannot write into a new empty history");
   ok &= deletion_recovery(root);
   ok &= failed_attempt_removal(root);
+  ok &= completed_result_removal(root);
   return ok;
 }
 
