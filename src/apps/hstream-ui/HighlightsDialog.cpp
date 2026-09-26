@@ -849,6 +849,14 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
 
 void HighlightsDialog::startProbe() {
   if (probe_route_index_ >= routes_.size()) {
+    for (int clip_index = 0; clip_index < chunks_.size(); ++clip_index) {
+      const auto& lengths = chunks_[clip_index].effective_duration_ms;
+      const auto bounds = std::minmax_element(lengths.cbegin(), lengths.cend());
+      if (*bounds.second - *bounds.first > 250) {
+        finishJob(false, QString("Output routes have different video lengths for clip %1.").arg(clip_index + 1));
+        return;
+      }
+    }
     concat_route_index_ = 0;
     startConcat();
     return;

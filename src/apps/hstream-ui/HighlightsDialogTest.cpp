@@ -345,6 +345,50 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
     std::cerr << "A long audio stream must not hide an incomplete video clip" << std::endl;
     return 1;
   }
+  const QString eos_runner = temporary.filePath("eos-runner.sh");
+  QFile eos_script(eos_runner);
+  if (!eos_script.open(QIODevice::WriteOnly | QIODevice::Text))
+    return 1;
+  eos_script.write(R"(#!/bin/sh
+set -eu
+program=
+stitched=
+for arg in "$@"; do
+  case "$arg" in
+    --options=pipeline.sink2.output-file=*) program="${arg#--options=pipeline.sink2.output-file=}" ;;
+    --options=pipeline.sink5.output-file=*) stitched="${arg#--options=pipeline.sink5.output-file=}" ;;
+  esac
+done
+cp "$HSTREAM_TEST_RED" "$program"
+cp "$HSTREAM_TEST_SHORT" "$stitched"
+echo "HSTREAM_OUTPUT type=archive sink=2 kind=program path=$program"
+echo "HSTREAM_OUTPUT type=archive sink=5 kind=stitched path=$stitched"
+echo "HSTREAM_CLIP_RESULT reason=source-eos"
+)");
+  eos_script.close();
+  if (!eos_script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner))
+    return 1;
+  const QString eos_game_dir = temporary.filePath("eos-game");
+  if (!QDir().mkpath(eos_game_dir))
+    return 1;
+  QProcessEnvironment eos_env = env;
+  eos_env.insert("HSTREAM_TEST_SHORT", short_video);
+  hm::ui::HighlightsDialog eos_dialog(
+      "eos-game", eos_game_dir, eos_runner, temporary.path(), temporary.path(), eos_env, {"-g", "eos-game"});
+  if (!addRange(&eos_dialog, "First", "00:00:00", "00:00:03"))
+    return 1;
+  eos_dialog.findChild<QCheckBox*>("highlightStitchedCheck")->setChecked(true);
+  eos_dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
+  for (int i = 0; i < 3000 && eos_dialog.isBusy(); ++i) {
+    app.processEvents();
+    QThread::msleep(10);
+  }
+  if (eos_dialog.isBusy() ||
+      !eos_dialog.findChild<QLabel*>("highlightStatus")->text().contains("different video lengths") ||
+      QFileInfo::exists(QDir(eos_game_dir).filePath("eos-game-highlights-program-1.mp4"))) {
+    std::cerr << "Source EOS must not publish outputs with different video lengths" << std::endl;
+    return 1;
+  }
   const QString primed_video = temporary.filePath("primed-video.mkv");
   if (!run(
           "ffmpeg",
