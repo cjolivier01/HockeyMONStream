@@ -43,7 +43,8 @@ class HighlightsDialog : public QDialog {
   struct Chunk {
     HighlightInterval interval;
     QStringList paths;
-    QVector<qint64> start_time_ms;
+    QVector<qint64> format_start_time_ms;
+    QVector<qint64> video_start_time_ms;
     QVector<qint64> effective_duration_ms;
     bool source_eos{false};
   };
@@ -66,6 +67,7 @@ class HighlightsDialog : public QDialog {
   void startConcat();
   void publishConcat();
   void finishJob(bool success, const QString& message);
+  void requestActiveProcessStop();
   void readProcessOutput();
   void consumeVideoPacketOutput(const QString& output, bool flush);
   void processFinished(int code, QProcess::ExitStatus status);
@@ -110,6 +112,7 @@ class HighlightsDialog : public QDialog {
   int probe_clip_index_{0};
   int probe_route_index_{0};
   int concat_route_index_{0};
+  quint64 job_generation_{0};
   bool loop_{false};
   bool cancelling_{false};
   bool close_when_stopped_{false};

@@ -345,6 +345,62 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
     std::cerr << "A long audio stream must not hide an incomplete video clip" << std::endl;
     return 1;
   }
+  const QString primed_video = temporary.filePath("primed-video.mkv");
+  if (!run(
+          "ffmpeg",
+          {"-hide_banner",
+           "-loglevel",
+           "error",
+           "-y",
+           "-f",
+           "lavfi",
+           "-i",
+           "color=c=red:s=96x64:r=60:d=1",
+           "-f",
+           "lavfi",
+           "-i",
+           "sine=frequency=440:sample_rate=48000:duration=1",
+           "-c:v",
+           "libx264",
+           "-bf",
+           "0",
+           "-c:a",
+           "aac",
+           primed_video}))
+    return 1;
+  const QString primed_game_dir = temporary.filePath("primed-game");
+  if (!QDir().mkpath(primed_game_dir))
+    return 1;
+  QProcessEnvironment primed_env = env;
+  primed_env.insert("HSTREAM_TEST_RED", primed_video);
+  primed_env.insert("HSTREAM_TEST_BLUE", primed_video);
+  hm::ui::HighlightsDialog primed_dialog(
+      "primed-game", primed_game_dir, runner, temporary.path(), temporary.path(), primed_env, {"-g", "primed-game"});
+  if (!addRange(&primed_dialog, "First", "00:00:00", "00:00:01") ||
+      !addRange(&primed_dialog, "Second", "00:00:10", "00:00:11"))
+    return 1;
+  primed_dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
+  const QString primed_output = QDir(primed_game_dir).filePath("primed-game-highlights-program-1.mp4");
+  if (!waitForExport(&app, &primed_dialog, primed_output, 3000))
+    return 1;
+  QByteArray packet_count;
+  if (!run(
+          "ffprobe",
+          {"-v",
+           "error",
+           "-select_streams",
+           "v:0",
+           "-count_packets",
+           "-show_entries",
+           "stream=nb_read_packets",
+           "-of",
+           "default=noprint_wrappers=1:nokey=1",
+           primed_output},
+          &packet_count) ||
+      packet_count.trimmed() != "120") {
+    std::cerr << "AAC priming must not drop the last video packet from either clip" << std::endl;
+    return 1;
+  }
   const QString signal_runner = temporary.filePath("signal-runner.sh");
   QFile signal_script(signal_runner);
   if (!signal_script.open(QIODevice::WriteOnly | QIODevice::Text))
@@ -352,7 +408,8 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
   signal_script.write(R"(#!/bin/sh
 set -eu
 test -n "${HSTREAM_UI_PARENT_PID:-}"
-trap 'printf INT > "$HSTREAM_TEST_SIGNAL"; exit 0' INT
+printf '%s\n' "$*" >> "$HSTREAM_TEST_CALLS"
+trap 'printf INT > "$HSTREAM_TEST_SIGNAL"; echo "HSTREAM_CLIP_RESULT reason=end-boundary"; exit 0' INT
 trap 'printf TERM > "$HSTREAM_TEST_SIGNAL"; exit 0' TERM
 printf ready > "$HSTREAM_TEST_READY"
 while :; do sleep 0.1; done
@@ -395,6 +452,59 @@ while :; do sleep 0.1; done
   QFile signal_file(signal_path);
   if (signal_dialog.isBusy() || !signal_file.open(QIODevice::ReadOnly) || signal_file.readAll() != "INT") {
     std::cerr << "Stopping a clip must request graceful SIGINT shutdown" << std::endl;
+    return 1;
+  }
+  signal_file.close();
+  QFile::remove(signal_path);
+  QFile::remove(ready_path);
+  signal_dialog.findChild<QPushButton*>("highlightPreviewSelectedButton")->click();
+  signal_dialog.findChild<QPushButton*>("highlightStopButton")->click();
+  for (int i = 0; i < 3000 && signal_dialog.isBusy(); ++i) {
+    app.processEvents();
+    QThread::msleep(1);
+  }
+  if (signal_dialog.isBusy()) {
+    std::cerr << "Stopping while the runner starts must still cancel the job" << std::endl;
+    return 1;
+  }
+  const auto signal_call_count = [&calls]() {
+    QFile file(calls);
+    if (!file.open(QIODevice::ReadOnly))
+      return -1;
+    return static_cast<int>(QString::fromUtf8(file.readAll()).split('\n', Qt::SkipEmptyParts).size());
+  };
+  const int calls_before_teardown = signal_call_count();
+  const QString teardown_game_dir = temporary.filePath("teardown-game");
+  if (calls_before_teardown < 0 || !QDir().mkpath(teardown_game_dir))
+    return 1;
+  QFile::remove(ready_path);
+  auto* teardown_dialog = new hm::ui::HighlightsDialog(
+      "teardown-game",
+      teardown_game_dir,
+      signal_runner,
+      temporary.path(),
+      temporary.path(),
+      signal_env,
+      {"-g", "teardown-game"});
+  if (!addRange(teardown_dialog, "First", "00:00:00", "00:00:01") ||
+      !addRange(teardown_dialog, "Second", "00:00:10", "00:00:11")) {
+    delete teardown_dialog;
+    return 1;
+  }
+  teardown_dialog->findChild<QPushButton*>("highlightPreviewAllButton")->click();
+  for (int i = 0; i < 1000 && !QFileInfo::exists(ready_path); ++i) {
+    app.processEvents();
+    QThread::msleep(1);
+  }
+  if (!QFileInfo::exists(ready_path)) {
+    delete teardown_dialog;
+    std::cerr << "The teardown fixture did not start" << std::endl;
+    return 1;
+  }
+  delete teardown_dialog;
+  app.processEvents();
+  if (signal_call_count() != calls_before_teardown + 1) {
+    std::cerr << "Dialog teardown must not launch the next clip" << std::endl;
     return 1;
   }
   return 0;

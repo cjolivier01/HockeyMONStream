@@ -241,6 +241,10 @@ HighlightsDialog::HighlightsDialog(
   process_.setProcessChannelMode(QProcess::SeparateChannels);
   connect(&process_, &QProcess::readyReadStandardOutput, this, &HighlightsDialog::readProcessOutput);
   connect(&process_, &QProcess::readyReadStandardError, this, &HighlightsDialog::readProcessOutput);
+  connect(&process_, &QProcess::started, this, [this] {
+    if (cancelling_)
+      requestActiveProcessStop();
+  });
   connect(
       &process_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &HighlightsDialog::processFinished);
   connect(&process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
@@ -262,6 +266,9 @@ HighlightsDialog::HighlightsDialog(
 
 HighlightsDialog::~HighlightsDialog() {
   if (process_.state() != QProcess::NotRunning) {
+    cancelling_ = true;
+    loop_ = false;
+    close_when_stopped_ = false;
     const bool cli = stage_ == Stage::kCli;
     requestProcessStop(&process_, cli);
     if (!process_.waitForFinished(cli ? 15000 : 4000)) {
@@ -521,6 +528,7 @@ void HighlightsDialog::beginJob(Job job, bool selected, bool loop) {
     publication_work_dir_ = publication.path();
   }
   job_ = job;
+  ++job_generation_;
   stage_ = Stage::kIdle;
   loop_ = loop;
   cancelling_ = false;
@@ -669,7 +677,8 @@ void HighlightsDialog::readProcessOutput() {
             chunk.interval = queue_[queue_index_];
             for (int i = 0; i < routes_.size(); ++i) {
               chunk.paths << QString();
-              chunk.start_time_ms << 0;
+              chunk.format_start_time_ms << 0;
+              chunk.video_start_time_ms << 0;
               chunk.effective_duration_ms << chunk.interval.end_ms - chunk.interval.start_ms;
             }
             chunks_.append(chunk);
@@ -791,7 +800,7 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
       chunks_[probe_clip_index_].effective_duration_ms[probe_route_index_] = std::min<qint64>(
           chunks_[probe_clip_index_].effective_duration_ms[probe_route_index_],
           static_cast<qint64>(std::llround(duration * 1000.0)));
-      chunks_[probe_clip_index_].start_time_ms[probe_route_index_] =
+      chunks_[probe_clip_index_].format_start_time_ms[probe_route_index_] =
           std::isfinite(start_time) ? static_cast<qint64>(std::llround(start_time * 1000.0)) : 0;
       startVideoPacketProbe();
       return;
@@ -804,7 +813,7 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
       }
       const qint64 video_start_ms = static_cast<qint64>(std::llround(probe_video_start_seconds_ * 1000.0));
       const qint64 video_end_ms = static_cast<qint64>(std::llround(probe_video_end_seconds_ * 1000.0));
-      const qint64 format_start_ms = chunks_[probe_clip_index_].start_time_ms[probe_route_index_];
+      const qint64 format_start_ms = chunks_[probe_clip_index_].format_start_time_ms[probe_route_index_];
       const qint64 video_span_ms = video_end_ms - video_start_ms;
       const qint64 video_end_from_format_ms = video_end_ms - format_start_ms;
       const qint64 expected_ms =
@@ -819,7 +828,8 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
         return;
       }
       chunks_[probe_clip_index_].effective_duration_ms[probe_route_index_] =
-          std::min(chunks_[probe_clip_index_].effective_duration_ms[probe_route_index_], video_end_from_format_ms);
+          std::min(chunks_[probe_clip_index_].effective_duration_ms[probe_route_index_], video_span_ms);
+      chunks_[probe_clip_index_].video_start_time_ms[probe_route_index_] = video_start_ms;
       ++probe_clip_index_;
       if (probe_clip_index_ >= chunks_.size()) {
         probe_clip_index_ = 0;
@@ -948,7 +958,7 @@ void HighlightsDialog::startConcat() {
     }
     const qint64 duration_ms = chunks_[clip_index].effective_duration_ms[concat_route_index_];
     content += "file '" + controlled_name.toUtf8() + "'\n";
-    const qint64 start_ms = chunks_[clip_index].start_time_ms[concat_route_index_];
+    const qint64 start_ms = chunks_[clip_index].video_start_time_ms[concat_route_index_];
     content += "outpoint " + ffconcatSeconds(start_ms + duration_ms).toUtf8() + "\n";
     content += "duration " + ffconcatSeconds(duration_ms).toUtf8() + "\n";
   }
@@ -1070,7 +1080,7 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
 }
 
 void HighlightsDialog::stop() {
-  if (!isBusy())
+  if (!isBusy() || cancelling_)
     return;
   cancelling_ = true;
   loop_ = false;
@@ -1079,11 +1089,19 @@ void HighlightsDialog::stop() {
     finishJob(false, "Highlights job stopped.");
     return;
   }
-  const bool cli = stage_ == Stage::kCli;
+  requestActiveProcessStop();
+}
+
+void HighlightsDialog::requestActiveProcessStop() {
   const qint64 stopping_pid = process_.processId();
+  if (stopping_pid <= 0)
+    return;
+  const bool cli = stage_ == Stage::kCli;
+  const quint64 generation = job_generation_;
   requestProcessStop(&process_, cli);
-  QTimer::singleShot(cli ? 15000 : 4000, this, [this, stopping_pid] {
-    if (cancelling_ && process_.processId() == stopping_pid && process_.state() != QProcess::NotRunning)
+  QTimer::singleShot(cli ? 15000 : 4000, this, [this, stopping_pid, generation] {
+    if (cancelling_ && job_generation_ == generation && process_.processId() == stopping_pid &&
+        process_.state() != QProcess::NotRunning)
       process_.kill();
   });
 }
