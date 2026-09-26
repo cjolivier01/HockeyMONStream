@@ -188,8 +188,8 @@ stitching:
   # 180-degree view with the full projection canvas retains the
   # rounded dual-camera boundary; each AUTO choice can be enabled in the UI.
   projection_framing:
-    auto_fov: false
-    horizontal_fov: 180
+    auto_fov: true
+    horizontal_fov: 195
     auto_canvas: true
     auto_crop: false
   # NONA requires Hugin's automatic alignment pass during stitching calibration.
