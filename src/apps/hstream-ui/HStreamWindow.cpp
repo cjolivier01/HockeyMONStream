@@ -6,6 +6,7 @@
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
+#include "src/apps/hstream-ui/HighlightsDialog.h"
 #include "src/apps/hstream-ui/Int8PreparationDialog.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
 #include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
@@ -5469,6 +5470,7 @@ void HStreamWindow::buildUi() {
   for (const char* name :
        {"cameraExperimentsButton",
         "stitchingExperimentsButton",
+        "highlightsButton",
         "resetCameraButton",
         "selectRinkLevelingButton",
         "projectionCropButton"})
@@ -6105,6 +6107,59 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     dialog->show();
   });
   action_bar->addWidget(stitching_experiments_button_);
+  highlights_button_ = new QPushButton(action_icon(ActionIcon::Document), "Highlights…");
+  highlights_button_->setObjectName("highlightsButton");
+  highlights_button_->setToolTip("Play selected source intervals or export them as one video per selected output.");
+  connect(highlights_button_, &QPushButton::clicked, this, [this]() {
+    if (auto* existing = findChild<QDialog*>("highlightsDialog")) {
+      existing->show();
+      existing->raise();
+      existing->activateWindow();
+      return;
+    }
+    if ((pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing()) {
+      QMessageBox::information(this, "Highlights", "Stop playback and wait for archive finalization first.");
+      return;
+    }
+    if (isCalibrationRun()) {
+      QMessageBox::information(this, "Highlights", "Select Program mode before opening Highlights.");
+      return;
+    }
+    if (!ensureSavedControlConfigLoaded() || !ensureGameDirectory() || !savePreset())
+      return;
+    const QString game_id = game_id_edit_->text().trimmed();
+    const QString game_dir = gameDirectory(game_id);
+    const QString runner = pipelineRunnerPath();
+    if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
+      QMessageBox::warning(this, "Highlights", "The hstream-cli runner is unavailable: " + runner);
+      return;
+    }
+    const QString working_dir = pipelineWorkingDirectory();
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (!baseline_config_root_.isEmpty())
+      env.insert("HM_CONFIG_ROOT", baseline_config_root_);
+    env.insert("HM_GAME_DIR", QFileInfo(game_dir).absolutePath());
+    const QString runtime_error = configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
+    if (!runtime_error.isEmpty()) {
+      QMessageBox::warning(this, "Highlights", runtime_error);
+      return;
+    }
+    auto* dialog = new hm::ui::HighlightsDialog(
+        game_id,
+        game_dir,
+        runner,
+        working_dir,
+        archive_output_work_dir(env, working_dir),
+        env,
+        pipelineArguments(true),
+        this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::WindowModal);
+    connect(dialog, &QDialog::finished, this, [this](int) { updateRunControls(); });
+    dialog->show();
+    updateRunControls();
+  });
+  action_bar->addWidget(highlights_button_);
   action_bar->addStretch(1);
   auto* playback_start_label = new QLabel("Playback start");
   playback_start_label->setObjectName("playbackStartTimeLabel");
@@ -10083,6 +10138,10 @@ void HStreamWindow::startPipeline() {
     return;
   if (findChild<QDialog*>("stitchingExperimentDialog")) {
     appendLog("close Stitching Experiments before starting the main pipeline");
+    return;
+  }
+  if (findChild<QDialog*>("highlightsDialog")) {
+    appendLog("close Highlights before starting the main pipeline");
     return;
   }
   if (!pending_leveling_revision_.isEmpty() || hasPendingCropSelection()) {
@@ -15833,7 +15892,8 @@ void HStreamWindow::updateRunControls() {
   }
   if (start_button_) {
     start_button_->setEnabled(
-        !running && !finalizing && !archive_recovery_blocked && !live_rotation_authorization_pending_);
+        !running && !finalizing && !archive_recovery_blocked && !live_rotation_authorization_pending_ &&
+        !findChild<QDialog*>("highlightsDialog"));
   }
   if (pause_button_) {
     pause_button_->setEnabled(
@@ -15849,6 +15909,8 @@ void HStreamWindow::updateRunControls() {
   }
   if (stitching_experiments_button_)
     stitching_experiments_button_->setEnabled(!running && !finalizing);
+  if (highlights_button_)
+    highlights_button_->setEnabled(!running && !finalizing && !isCalibrationRun());
   if (const auto copy = output_toggles_.find("archive-program-4k"); copy != output_toggles_.end() && copy->second) {
     copy->second->setEnabled(!running && !finalizing && !isCalibrationRun());
     set_control_help(

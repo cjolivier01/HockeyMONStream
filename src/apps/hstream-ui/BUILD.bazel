@@ -28,6 +28,10 @@ filegroup(
         "CalibrationFrameView.h",
         "HStreamWindow.cpp",
         "HStreamWindow.h",
+        "HighlightPlan.cpp",
+        "HighlightPlan.h",
+        "HighlightsDialog.cpp",
+        "HighlightsDialog.h",
         "Int8PreparationDialog.cpp",
         "Int8PreparationDialog.h",
         "CameraControlSpecs.h",
@@ -411,6 +415,42 @@ cc_test(
 )
 
 cc_library(
+    name = "highlight_plan",
+    srcs = ["HighlightPlan.cpp"],
+    hdrs = ["HighlightPlan.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_core"],
+)
+
+cc_test(
+    name = "highlight_plan_test",
+    srcs = ["HighlightPlanTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_plan", "@qt//:qt_core"],
+)
+
+cc_library(
+    name = "highlights_dialog",
+    srcs = ["HighlightsDialog.cpp"],
+    hdrs = ["HighlightsDialog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_plan", "@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "highlights_dialog_test",
+    srcs = ["HighlightsDialogTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local", "manual"],
+    deps = [":highlights_dialog", "@qt//:qt_widgets"],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp"],
     hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h"],
@@ -423,6 +463,7 @@ cc_library(
         ":action_icons",
         ":application_identity",
         ":camera_experiment_dialog",
+        ":highlights_dialog",
         ":pipeline_inspector_widget",
         ":player_analytics_controls",
         ":projection_crop_dialog",

@@ -2737,6 +2737,15 @@ absl::Status PipelineApplication::playPipelines(
   hm::diagnostics::Breadcrumb("pipeline", "enter main loop");
   g_main_loop_run(main_loop_);
   hm::diagnostics::Breadcrumb("pipeline", "leave main loop");
+  if (clip_end_time_ns_ > start_time_ns_) {
+    const bool natural_source_eos = std::all_of(
+        app_contexts.begin(), app_contexts.end(), [](const auto& context) { return context && context->eos_received; });
+    const char* reason = clip_end_boundary_reached_.load(std::memory_order_acquire)
+        ? "end-boundary"
+        : natural_source_eos ? "source-eos" : "interrupted";
+    g_print("HSTREAM_CLIP_RESULT reason=%s\n", reason);
+    std::fflush(stdout);
+  }
   if (player_frame_scan_) {
     // Inspect natural EOS before graceful shutdown synthesizes EOS for a user
     // stop. Only the inferred boundary frame can complete a timed scan.
@@ -2862,6 +2871,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   absl::Status status = absl::OkStatus();
   GError* error = nullptr;
   char* start_time{nullptr};
+  char* clip_end_time{nullptr};
   char* stitch_frame_time{nullptr};
   std::vector<std::string> normalized_args = normalize_cli_args(argc, argv);
   std::vector<char*> normalized_argv = make_mutable_argv(normalized_args);
@@ -3130,6 +3140,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &time_limit_seconds_,
        "Stop after processing this many seconds of video",
        "N"},
+      {"clip-end-time",
+       0,
+       0,
+       G_OPTION_ARG_STRING,
+       &clip_end_time,
+       "Stop a bounded run after output reaches this source time (HH:MM:SS[.mmm])",
+       "TIME"},
       {"progress-ui",
        0,
        0,
@@ -3351,6 +3368,28 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       return parsed_start_time.status();
     }
     start_time_ns_ = *parsed_start_time;
+  }
+  if (clip_end_time) {
+    const auto parsed_clip_end_time = parse_time_option("--clip-end-time", clip_end_time);
+    g_free(clip_end_time);
+    if (!parsed_clip_end_time.ok()) {
+      return parsed_clip_end_time.status();
+    }
+    if (*parsed_clip_end_time <= start_time_ns_) {
+      return absl::InvalidArgumentError("--clip-end-time must be later than --start-time");
+    }
+    clip_end_time_ns_ = *parsed_clip_end_time;
+    const uint64_t duration_ns = clip_end_time_ns_ - start_time_ns_;
+    const uint64_t watchdog_seconds = duration_ns / GST_SECOND + 3;
+    if (watchdog_seconds > G_MAXINT) {
+      return absl::InvalidArgumentError("--clip-end-time exceeds the supported timed-run duration");
+    }
+    if (time_limit_seconds_ > 0 && static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND < duration_ns) {
+      return absl::InvalidArgumentError("--time-limit ends before --clip-end-time");
+    }
+    if (time_limit_seconds_ <= 0) {
+      time_limit_seconds_ = static_cast<gint>(watchdog_seconds);
+    }
   }
   if (stitch_frame_time) {
     const auto parsed_stitch_frame_time = parse_stitch_frame_time_option("--stitch-frame-time", stitch_frame_time);
@@ -3750,6 +3789,10 @@ uint64_t PipelineApplication::playback_horizon_ns(AppCtx* app_ctx) const {
   if (time_limit_seconds_ > 0) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     horizon_ns = horizon_ns == GST_CLOCK_TIME_NONE ? limit_ns : std::min(horizon_ns, limit_ns);
+  }
+  if (clip_end_time_ns_ > start_time_ns_) {
+    const uint64_t clip_duration_ns = clip_end_time_ns_ - start_time_ns_;
+    horizon_ns = horizon_ns == GST_CLOCK_TIME_NONE ? clip_duration_ns : std::min(horizon_ns, clip_duration_ns);
   }
   return horizon_ns;
 }
@@ -7618,7 +7661,9 @@ void PipelineApplication::observe_processed_output(
   }
   if (time_limit_seconds_ > 0 && batch_meta && !player_frame_scan_ &&
       hm::pipeline_internal::stitch_frame_should_account_playback(stitching_calibration_blocks_playback_accounting())) {
-    const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
+    const uint64_t limit_ns = clip_end_time_ns_ > start_time_ns_
+        ? clip_end_time_ns_ - start_time_ns_
+        : static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     uint64_t processed_ns = GST_CLOCK_TIME_NONE;
     {
       std::lock_guard<std::mutex> lock(playback_timing_mu_);
@@ -7643,6 +7688,9 @@ void PipelineApplication::observe_processed_output(
     }
     record_timed_run_progress(processed_ns);
     if (processed_ns != GST_CLOCK_TIME_NONE && processed_ns >= limit_ns) {
+      if (clip_end_time_ns_ > start_time_ns_ && processed_ns >= clip_end_time_ns_ - start_time_ns_) {
+        clip_end_boundary_reached_.store(true, std::memory_order_release);
+      }
       request_timed_run_stop();
     }
   }
