@@ -238,10 +238,12 @@ HighlightsDialog::HighlightsDialog(
   });
 
   QString load_error;
-  if (!LoadHighlightPlan(plan_path_, &plan_, &load_error))
-    status_->setText("Could not load highlights: " + load_error);
-  else
+  if (!LoadHighlightPlan(plan_path_, &plan_, &load_error)) {
+    plan_load_error_ = load_error;
+    status_->setText("Could not load highlights: " + load_error + ". Fix the file and reopen Highlights.");
+  } else {
     status_->setText("Ready. Intervals are saved with this game.");
+  }
   base_name_edit_->setText(plan_.base_name);
   refreshTable();
   updateControls();
@@ -333,6 +335,10 @@ bool HighlightsDialog::readEditor(HighlightInterval* interval) {
 }
 
 bool HighlightsDialog::savePlan() {
+  if (!plan_load_error_.isEmpty()) {
+    status_->setText("Could not load highlights: " + plan_load_error_ + ". Fix the file and reopen Highlights.");
+    return false;
+  }
   QString error;
   if (SaveHighlightPlan(plan_path_, plan_, &error)) {
     status_->setText("Intervals saved to " + plan_path_);
@@ -344,6 +350,7 @@ bool HighlightsDialog::savePlan() {
 
 void HighlightsDialog::updateControls() {
   const bool idle = !isBusy();
+  const bool editable = idle && plan_load_error_.isEmpty();
   const bool selected = table_->currentRow() >= 0 && table_->currentRow() < plan_.intervals.size();
   for (auto* widget :
        {static_cast<QWidget*>(table_),
@@ -355,18 +362,18 @@ void HighlightsDialog::updateControls() {
         static_cast<QWidget*>(program_check_),
         static_cast<QWidget*>(program_4k_check_),
         static_cast<QWidget*>(stitched_check_)})
-    widget->setEnabled(idle);
-  add_button_->setEnabled(idle);
-  update_button_->setEnabled(idle && selected);
-  remove_button_->setEnabled(idle && selected);
-  up_button_->setEnabled(idle && selected && table_->currentRow() > 0);
-  down_button_->setEnabled(idle && selected && table_->currentRow() + 1 < plan_.intervals.size());
-  preview_selected_button_->setEnabled(idle && selected);
-  preview_all_button_->setEnabled(idle && !plan_.intervals.isEmpty());
-  loop_selected_button_->setEnabled(idle && selected);
-  loop_button_->setEnabled(idle && !plan_.intervals.isEmpty());
-  export_selected_button_->setEnabled(idle && selected);
-  export_all_button_->setEnabled(idle && !plan_.intervals.isEmpty());
+    widget->setEnabled(editable);
+  add_button_->setEnabled(editable);
+  update_button_->setEnabled(editable && selected);
+  remove_button_->setEnabled(editable && selected);
+  up_button_->setEnabled(editable && selected && table_->currentRow() > 0);
+  down_button_->setEnabled(editable && selected && table_->currentRow() + 1 < plan_.intervals.size());
+  preview_selected_button_->setEnabled(editable && selected);
+  preview_all_button_->setEnabled(editable && !plan_.intervals.isEmpty());
+  loop_selected_button_->setEnabled(editable && selected);
+  loop_button_->setEnabled(editable && !plan_.intervals.isEmpty());
+  export_selected_button_->setEnabled(editable && selected);
+  export_all_button_->setEnabled(editable && !plan_.intervals.isEmpty());
   stop_button_->setEnabled(!idle);
 }
 
@@ -434,7 +441,7 @@ void HighlightsDialog::beginExport(bool selected) {
 }
 
 void HighlightsDialog::beginJob(Job job, bool selected, bool loop) {
-  if (isBusy())
+  if (isBusy() || !plan_load_error_.isEmpty())
     return;
   if (plan_.intervals.isEmpty()) {
     status_->setText("Add an interval first.");

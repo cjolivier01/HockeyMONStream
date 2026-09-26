@@ -266,5 +266,34 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
     std::cerr << "Loop stop did not cancel the queued preview" << std::endl;
     return 1;
   }
+  const QString incompatible_game_dir = temporary.filePath("incompatible-game");
+  if (!QDir().mkpath(incompatible_game_dir))
+    return 1;
+  const QString incompatible_plan_path = QDir(incompatible_game_dir).filePath("highlights.json");
+  const QByteArray incompatible_plan = R"({"schema":2,"base_name":"future","intervals":[]})";
+  QFile incompatible_file(incompatible_plan_path);
+  if (!incompatible_file.open(QIODevice::WriteOnly) ||
+      incompatible_file.write(incompatible_plan) != incompatible_plan.size())
+    return 1;
+  incompatible_file.close();
+  hm::ui::HighlightsDialog incompatible_dialog(
+      "incompatible-game",
+      incompatible_game_dir,
+      runner,
+      temporary.path(),
+      temporary.path(),
+      env,
+      {"-g", "incompatible-game"});
+  if (incompatible_dialog.findChild<QPushButton*>("highlightAddButton")->isEnabled() ||
+      incompatible_dialog.findChild<QLineEdit*>("highlightBaseNameEdit")->isEnabled() ||
+      !incompatible_dialog.findChild<QLabel*>("highlightStatus")->text().contains("Unsupported highlights schema")) {
+    std::cerr << "An unreadable highlight plan must block edits" << std::endl;
+    return 1;
+  }
+  incompatible_dialog.findChild<QPushButton*>("highlightAddButton")->click();
+  if (!incompatible_file.open(QIODevice::ReadOnly) || incompatible_file.readAll() != incompatible_plan) {
+    std::cerr << "Editing an unreadable plan must not replace it" << std::endl;
+    return 1;
+  }
   return 0;
 }

@@ -6155,7 +6155,9 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowModality(Qt::WindowModal);
-    connect(dialog, &QDialog::finished, this, [this](int) { updateRunControls(); });
+    connect(dialog, &QObject::destroyed, this, [this] {
+      QTimer::singleShot(0, this, [this] { updateRunControls(); });
+    });
     dialog->show();
     updateRunControls();
   });

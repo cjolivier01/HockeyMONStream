@@ -82,6 +82,7 @@ class HighlightsDialog : public QDialog {
   QProcessEnvironment env_;
   QStringList base_runner_args_;
   QString plan_path_;
+  QString plan_load_error_;
   HighlightPlan plan_;
   HighlightPlan frozen_plan_;
   QVector<HighlightInterval> queue_;
