@@ -30,7 +30,8 @@ property:
   batch-size: 2
   # DeepStream has no BF16 network-mode. It deserializes the prebuilt BF16 engine above.
   network-mode: 0
-  num-detected-classes: 80
+  # The distilled network is person-only, unlike the 80-class default detector.
+  num-detected-classes: 1
   interval: 0
   gie-unique-id: 1
   process-mode: 1

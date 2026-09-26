@@ -210,11 +210,14 @@ def main() -> int:
     with torch.no_grad():
         anchors = wrapper(dummy).shape[1]
     output_dims = model.graph.output[0].type.tensor_type.shape.dim
-    if not output_dims[1].dim_value:
+    pin_anchors = not output_dims[1].dim_value
+    if pin_anchors:
         output_dims[1].ClearField("dim_param")
         output_dims[1].dim_value = anchors
-        onnx.save(model, output)
+    # Validate before rewriting, so a bad pin cannot replace a good export.
     onnx.checker.check_model(model)
+    if pin_anchors:
+        onnx.save(model, output)
     print(f"Wrote ONNX: {output} (output anchors: {anchors})")
     return 0
 

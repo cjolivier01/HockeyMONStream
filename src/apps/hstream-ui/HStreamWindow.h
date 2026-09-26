@@ -646,7 +646,10 @@ class HStreamWindow : public QMainWindow {
   QString saved_detector_precision_;
   QString saved_detector_model_;
   QString prepared_int8_engine_, prepared_int8_manifest_;
-  QString saved_prepared_int8_engine_, saved_prepared_int8_manifest_;
+  // The detector model the prepared INT8 engine was built from. An engine built
+  // for one model must never be paired with another model's inference config.
+  QString prepared_int8_model_;
+  QString saved_prepared_int8_engine_, saved_prepared_int8_manifest_, saved_prepared_int8_model_;
   QTabWidget* stitched_control_tabs_{nullptr};
   std::vector<QWidget*> preview_hosts_;
   std::vector<QWidget*> associated_control_panels_;

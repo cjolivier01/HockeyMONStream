@@ -44,6 +44,10 @@ Model precision:
                                        builds and caches it on first run.
   --models-bf16, --bf16-models         Use a prebuilt BF16 TensorRT detector engine.
   --models-bf16-build, --bf16-build    Build the BF16 detector engine offline, then run from timestamp zero.
+  --models-detector=PREFIX             Detector family the options above act on, as a config_prefix from
+                                       hstream_ui.detector_models in configs/baseline.yaml. Without this,
+                                       they act on config_infer_yolov8_hockey and override a game's saved
+                                       model. Example: --models-detector=config_infer_yolov8s_hockey
 
 Stitcher performance:
   --stitcher-compute fp32|fp16         Stitcher compute precision. Aliases: float32, float16, half.
@@ -242,6 +246,7 @@ models_int8_calibrate=0
 models_fp16=0
 models_bf16=0
 models_bf16_build=0
+models_detector_prefix="config_infer_yolov8_hockey"
 int8_calib_frames=64
 int8_calib_batch_size=2
 int8_calib_start_seconds=0
@@ -281,6 +286,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --models-bf16-build|--bf16-build)
       models_bf16=1
       models_bf16_build=1
+      ;;
+    --models-detector=*|--detector-config-prefix=*)
+      models_detector_prefix="${arg#*=}"
       ;;
     --int8-calib-frames=*)
       int8_calib_frames="${arg#*=}"
@@ -400,7 +408,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     continue
   fi
   case "$arg" in
-    --one-pass-only|--stage0-only|--two-stage|--configure-first|--models-int8|--int8-models|--quant-int8|--models-int8-calibrate|--int8-calibrate|--calibrate-int8|--models-fp16|--fp16-models|--models-bf16|--bf16-models|--models-bf16-build|--bf16-build|--stitcher-minimize-blend|--minimize-blend)
+    --one-pass-only|--stage0-only|--two-stage|--configure-first|--models-int8|--int8-models|--quant-int8|--models-int8-calibrate|--int8-calibrate|--calibrate-int8|--models-fp16|--fp16-models|--models-bf16|--bf16-models|--models-bf16-build|--bf16-build|--models-detector=*|--detector-config-prefix=*|--stitcher-minimize-blend|--minimize-blend)
       # run.sh-only flag; do not forward to hstream-cli
       continue
       ;;
@@ -670,18 +678,28 @@ if [ $((models_int8 + models_fp16 + models_bf16)) -gt 1 ]; then
   exit 2
 fi
 
+if [ $((models_int8 + models_fp16 + models_bf16)) -gt 0 ]; then
+  for precision in fp16 bf16 int8; do
+    if [ ! -f "${SCRIPT_DIR}/configs/${models_detector_prefix}_${precision}.yaml" ]; then
+      echo "--models-detector=${models_detector_prefix} has no ${precision} config:" \
+        "configs/${models_detector_prefix}_${precision}.yaml"
+      exit 2
+    fi
+  done
+fi
+
 detector_config_file=""
 if [ "${models_int8}" -eq 1 ]; then
-  extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_int8.yaml)
-  int8_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_int8.yaml"
+  extra_options+=(--options=pipeline.primary-gie.config-file="${models_detector_prefix}_int8.yaml")
+  int8_asset_config_file="${SCRIPT_DIR}/configs/${models_detector_prefix}_int8.yaml"
   detector_config_file="${int8_asset_config_file}"
 elif [ "${models_fp16}" -eq 1 ]; then
   # FP16 needs no offline artifact: nvinfer builds and caches the engine itself.
-  extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml)
-  detector_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_fp16.yaml"
+  extra_options+=(--options=pipeline.primary-gie.config-file="${models_detector_prefix}_fp16.yaml")
+  detector_config_file="${SCRIPT_DIR}/configs/${models_detector_prefix}_fp16.yaml"
 elif [ "${models_bf16}" -eq 1 ]; then
-  extra_options+=(--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_bf16.yaml)
-  bf16_asset_config_file="${SCRIPT_DIR}/configs/config_infer_yolov8_hockey_bf16.yaml"
+  extra_options+=(--options=pipeline.primary-gie.config-file="${models_detector_prefix}_bf16.yaml")
+  bf16_asset_config_file="${SCRIPT_DIR}/configs/${models_detector_prefix}_bf16.yaml"
   detector_config_file="${bf16_asset_config_file}"
 fi
 

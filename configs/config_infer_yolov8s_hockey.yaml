@@ -24,7 +24,8 @@ property:
   labelfile-path: $HOME/.cache/hstream/models/labels_coco.txt
   batch-size: 2
   network-mode: 0
-  num-detected-classes: 80
+  # The distilled network is person-only, unlike the 80-class default detector.
+  num-detected-classes: 1
   interval: 0
   gie-unique-id: 1
   process-mode: 1

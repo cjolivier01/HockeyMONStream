@@ -23,19 +23,41 @@ FP32 inference config and the selected precision appends `_fp16`, `_bf16` or
 `_int8`, so a model contributes four `configs/config_infer_*.yaml` files. The
 first entry is the default and the one Reset Controls restores.
 
-| Model | Network | Inference size | Prefix |
-| --- | --- | --- | --- |
-| Default | YOLOv8-m | 1984x736 | `config_infer_yolov8_hockey` |
-| Distilled | YOLOv8-s | 1408x544 | `config_infer_yolov8s_hockey` |
+| Model | Network | Inference size | Classes | Prefix |
+| --- | --- | --- | --- | --- |
+| Default | YOLOv8-m | 1984x736 | 80 (COCO) | `config_infer_yolov8_hockey` |
+| Distilled | YOLOv8-s | 1408x544 | 1 (person) | `config_infer_yolov8s_hockey` |
 
 The distilled model is a YOLOv8-m to YOLOv8-s knowledge distillation trained at
 1408x544, exported by `scripts/export_hm_yolov8_onnx.py`. It is roughly a
-quarter of the default's detector cost, at some accuracy. Because its inference
-resolution differs, revalidate tracking and the oversized-player thresholds on
-any game switched to it rather than assuming the default's tuning carries over.
+quarter of the default's detector cost, at some accuracy.
+
+**The two models are not drop-in equivalents.** They differ in inference
+resolution *and* label space: the default emits any of the 80 COCO classes, the
+distilled network only ever emits person. Nothing filters on class id today
+(`person_class_id` is -1), so both feed the play tracker, but revalidate
+tracking and the oversized-player thresholds on any game switched between them
+rather than assuming the tuning carries over.
 
 Model selection is per game: it is stored as `pipeline.primary-gie.config-file`
-in the game's `config.yaml`, the same key the precision choice uses.
+in the game's `config.yaml`, the same key the precision choice uses. A prepared
+INT8 engine is recorded with the model it was built from
+(`hstream_ui.detector_int8.model`) and is only reused for that model; selecting
+a different one falls back to that model's own engine path.
+
+The low-memory GPU profile treats every catalogued model as bundled, so all of
+them get the batch-one and 64 MiB workspace sizing on small GPUs. A detector
+config outside the catalog is still treated as the user's own and keeps whatever
+sizing it declares.
+
+`./run.sh --models-fp16|--models-int8|--models-bf16` act on the default family
+unless given `--models-detector=<config_prefix>`. Without it they override a
+game's saved model choice as well as its precision. Build the distilled model's
+BF16 engine with:
+
+```sh
+./run.sh --game-id=GAME --models-bf16-build --models-detector=config_infer_yolov8s_hockey
+```
 
 FP16/BF16 permit mixed execution with higher precision where required. The
 engine's name is not evidence of its internal precision. The offline builder

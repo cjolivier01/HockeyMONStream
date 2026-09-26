@@ -84,6 +84,8 @@ struct HStreamWindowTestAccess {
   static void preparedInt8(HStreamWindow* window, const QString& engine) {
     window->prepared_int8_engine_ = engine;
     window->prepared_int8_manifest_ = engine + ".json";
+    // prepareRecordedInt8 records the model the engine was built from.
+    window->prepared_int8_model_ = window->detectorModel();
     window->updatePresetDirtyState();
   }
   static bool savePreset(HStreamWindow* window) {
@@ -13040,6 +13042,31 @@ bool test_detector_model() {
             "a saved model and precision pair must both survive a fresh UI load"))
       return false;
   }
+
+  // An engine prepared for one model must never be paired with another model's
+  // inference config: that silently runs the wrong network.
+  precision->setCurrentIndex(precision->findData("int8"));
+  model->setCurrentIndex(model->findData("default"));
+  const QString prepared_engine = QDir(root).filePath("prepared-default-int8.engine");
+  HStreamWindowTestAccess::preparedInt8(&window, prepared_engine);
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(&window).contains(
+              "--options=pipeline.primary-gie.model-engine-file=" + prepared_engine),
+          "a prepared engine must reach the runner for the model it was built from"))
+    return false;
+  model->setCurrentIndex(model->findData("distilled-s"));
+  const auto crossed = HStreamWindowTestAccess::standaloneArguments(&window);
+  if (!expect(
+          crossed.contains("--options=pipeline.primary-gie.config-file=config_infer_yolov8s_hockey_int8.yaml") &&
+              !crossed.contains("--options=pipeline.primary-gie.model-engine-file=" + prepared_engine),
+          "switching model must drop the other model's prepared INT8 engine"))
+    return false;
+  model->setCurrentIndex(model->findData("default"));
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(&window).contains(
+              "--options=pipeline.primary-gie.model-engine-file=" + prepared_engine),
+          "switching back must restore the prepared engine for its own model"))
+    return false;
 
   // Returning to the default model must restore the legacy config filenames so
   // presets written before the catalog keep resolving.

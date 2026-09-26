@@ -242,6 +242,39 @@ int main() {
           !custom_detector_memory.config()["pipeline"]["primary-gie"]["workspace-size"],
       "An explicit custom detector must retain its existing batch and builder contract");
 
+  // The UI writes both config-file and model-engine-file for every model it
+  // offers, so a catalogued non-default detector must not read as the user's own.
+  hm::Configurator catalog_detector_memory("", "", hm::Configurator::kUseConfigFileGpu);
+  YAML::Node catalog_fixture = memory_profile_fixture();
+  catalog_fixture["hstream_ui"]["detector_models"] = YAML::Load(
+      "- {id: default, config_prefix: config_infer_yolov8_hockey}\n"
+      "- {id: distilled-s, config_prefix: config_infer_yolov8s_hockey}\n");
+  hm::ConfiguratorTestAccess::set_config(&catalog_detector_memory, catalog_fixture);
+  ok &= expect(
+      catalog_detector_memory
+              .apply_config_item("pipeline.primary-gie.config-file", "config_infer_yolov8s_hockey_fp16.yaml")
+              .ok() &&
+          catalog_detector_memory.apply_config_item("pipeline.primary-gie.model-engine-file", "distilled_fp16.engine")
+              .ok() &&
+          hm::ConfiguratorTestAccess::apply_gpu_memory_profile(&catalog_detector_memory, 8 * kGiB).ok() &&
+          catalog_detector_memory.config()["pipeline"]["primary-gie"]["batch-size"].as<int>() == 1 &&
+          catalog_detector_memory.config()["pipeline"]["primary-gie"]["workspace-size"].as<int>() == 64,
+      "A catalogued non-default detector must receive the low-memory batch and workspace sizing");
+
+  // The FP32 config of whichever catalogued model is in force upgrades to FP16.
+  hm::Configurator catalog_fp16_upgrade("", "", hm::Configurator::kUseConfigFileGpu);
+  YAML::Node upgrade_fixture = memory_profile_fixture();
+  upgrade_fixture["hstream_ui"]["detector_models"] = YAML::Load(
+      "- {id: default, config_prefix: config_infer_yolov8_hockey}\n"
+      "- {id: distilled-s, config_prefix: config_infer_yolov8s_hockey}\n");
+  upgrade_fixture["pipeline"]["primary-gie"]["config-file"] = "config_infer_yolov8s_hockey.yaml";
+  hm::ConfiguratorTestAccess::set_config(&catalog_fp16_upgrade, upgrade_fixture);
+  ok &= expect(
+      hm::ConfiguratorTestAccess::apply_gpu_memory_profile(&catalog_fp16_upgrade, 8 * kGiB).ok() &&
+          catalog_fp16_upgrade.config()["pipeline"]["primary-gie"]["config-file"].as<std::string>() ==
+              "config_infer_yolov8s_hockey_fp16.yaml",
+      "The low-memory FP16 upgrade must follow the catalogued model rather than the default");
+
   hm::Configurator custom_engine_memory("", "", hm::Configurator::kUseConfigFileGpu);
   hm::ConfiguratorTestAccess::set_config(&custom_engine_memory, memory_profile_fixture());
   ok &= expect(

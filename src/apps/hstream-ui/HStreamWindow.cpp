@@ -6805,6 +6805,14 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     connect(prepare_int8, &QPushButton::clicked, this, [this] { prepareRecordedInt8(); });
     detection_layout->addStretch();
     connect(detector_precision_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+      // "Use saved detector configuration" writes nothing, so it cannot carry a
+      // model choice. Return the combo to the saved configuration's own model.
+      if (detectorPrecision().isEmpty() && detector_model_combo_) {
+        const QSignalBlocker blocker(detector_model_combo_);
+        set_combo_to_data(
+            detector_model_combo_,
+            saved_detector_model_.isEmpty() ? detectorModels().front().id : saved_detector_model_);
+      }
       updateDetectorPrecisionStatus();
       updatePresetDirtyState();
     });
@@ -9629,7 +9637,7 @@ QString HStreamWindow::detectorConfigPrefix() const {
 bool HStreamWindow::detectorSelectionChanged() const {
   return detectorPrecision() != saved_detector_precision_ || detectorModel() != saved_detector_model_ ||
       prepared_int8_engine_ != saved_prepared_int8_engine_ ||
-      prepared_int8_manifest_ != saved_prepared_int8_manifest_;
+      prepared_int8_manifest_ != saved_prepared_int8_manifest_ || prepared_int8_model_ != saved_prepared_int8_model_;
 }
 
 void HStreamWindow::prepareRecordedInt8() {
@@ -9664,6 +9672,7 @@ void HStreamWindow::prepareRecordedInt8() {
     return;
   prepared_int8_engine_ = dialog.engine();
   prepared_int8_manifest_ = dialog.manifest();
+  prepared_int8_model_ = detectorModel();
   set_combo_to_data(detector_precision_combo_, "int8");
   updatePresetDirtyState();
   if (!savePreset())
@@ -9683,7 +9692,9 @@ QString HStreamWindow::detectorConfigName() const {
 }
 
 QString HStreamWindow::detectorEnginePath() const {
-  if (detectorPrecision() == "int8" && !prepared_int8_engine_.isEmpty())
+  // A prepared engine belongs to the model it was built from. Pairing it with
+  // another model's inference config silently runs the wrong network.
+  if (detectorPrecision() == "int8" && !prepared_int8_engine_.isEmpty() && prepared_int8_model_ == detectorModel())
     return prepared_int8_engine_;
   const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(detectorConfigName()).toStdString());
   return QString::fromStdString(inference["property"]["model-engine-file"].as<std::string>());
@@ -9777,6 +9788,14 @@ void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
   prepared_int8_manifest_ = lookup_yaml_path(effective, "hstream_ui.detector_int8.manifest", &prepared)
       ? QString::fromStdString(prepared.as<std::string>())
       : QString();
+  const auto models = detectorModels();
+  prepared_int8_model_ = lookup_yaml_path(effective, "hstream_ui.detector_int8.model", &prepared)
+      ? QString::fromStdString(prepared.as<std::string>())
+      : QString();
+  // Engines prepared before the model catalog existed were built from the
+  // detector that was then the only one.
+  if (prepared_int8_model_.isEmpty() && !prepared_int8_engine_.isEmpty())
+    prepared_int8_model_ = models.front().id;
   YAML::Node configured;
   QString file;
   if (lookup_yaml_path(effective, "pipeline.primary-gie.config-file", &configured))
@@ -9791,15 +9810,19 @@ void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
   }
   // An explicit engine is part of the custom detector choice. Preserve it
   // even when its inference config has a familiar filename.
-  auto config_matches = [&](const QString& name, const QString& mode) {
+  auto config_matches = [&](const DetectorModel& model, const QString& name, const QString& mode) {
     if (file != name && !same_file_path(file, pipelineConfigPath(name)))
       return false;
     YAML::Node engine;
     if (lookup_yaml_path(effective, "pipeline.primary-gie.model-engine-file", &engine)) {
       try {
         const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(name).toStdString());
+        // The prepared engine only explains this config for the model it was
+        // built from; against any other model it is a custom detector.
+        const bool prepared_for_this_model = mode == "int8" && prepared_int8_model_ == model.id &&
+            QString::fromStdString(engine.as<std::string>()) == prepared_int8_engine_;
         if (engine.as<std::string>() != inference["property"]["model-engine-file"].as<std::string>() &&
-            !(mode == "int8" && QString::fromStdString(engine.as<std::string>()) == prepared_int8_engine_))
+            !prepared_for_this_model)
           return false;
       } catch (const std::exception&) {
         return false;
@@ -9807,14 +9830,13 @@ void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
     }
     return true;
   };
-  const auto models = detectorModels();
   QString selected;
   QString selected_model;
   for (const DetectorModel& model : models) {
     for (const QString mode : {"fp32", "fp16", "bf16", "int8"}) {
       const QString name =
           mode == "fp32" ? model.config_prefix + ".yaml" : QString("%1_%2.yaml").arg(model.config_prefix, mode);
-      if (!config_matches(name, mode))
+      if (!config_matches(model, name, mode))
         continue;
       selected = mode;
       selected_model = model.id;
@@ -16447,6 +16469,7 @@ void HStreamWindow::captureSavedControlState() {
   saved_detector_model_ = detectorModel();
   saved_prepared_int8_engine_ = prepared_int8_engine_;
   saved_prepared_int8_manifest_ = prepared_int8_manifest_;
+  saved_prepared_int8_model_ = prepared_int8_model_;
   saved_stitch_frame_time_ = stitchFrameTime();
   saved_iteration_settings_ = stitchingIterationSettings();
   saved_stitching_control_points_ = stitchingCalibrationControlPoints();
@@ -17476,6 +17499,7 @@ bool HStreamWindow::applySavedControlConfig(
       if (!prepared_int8_engine_.isEmpty()) {
         config["hstream_ui"]["detector_int8"]["engine"] = prepared_int8_engine_.toStdString();
         config["hstream_ui"]["detector_int8"]["manifest"] = prepared_int8_manifest_.toStdString();
+        config["hstream_ui"]["detector_int8"]["model"] = prepared_int8_model_.toStdString();
       }
     } catch (const std::exception& exc) {
       appendLog(QString("could not save detector precision: %1").arg(exc.what()));
