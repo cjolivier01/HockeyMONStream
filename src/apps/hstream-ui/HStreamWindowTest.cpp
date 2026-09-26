@@ -21,6 +21,8 @@
 #include <QtCore/QUrl>
 #include <QtGui/QImage>
 #include <QtGui/QScreen>
+#include <QtGui/QTextBlock>
+#include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
 #include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
@@ -153,8 +155,8 @@ struct HStreamWindowTestAccess {
   static QByteArray pendingLevelingRevision(HStreamWindow* window) {
     return window->pending_leveling_revision_;
   }
-  static void appendLog(HStreamWindow* window, const QString& message) {
-    window->appendLog(message);
+  static void appendLog(HStreamWindow* window, const QString& message, bool stderr_output = false) {
+    window->appendLog(message, stderr_output);
   }
 
   static void recordCalibrationDiagnostic(HStreamWindow* window, const QString& line) {
@@ -3511,6 +3513,28 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Main content and runtime log should be separated by a draggable vertical splitter")) {
     return false;
   }
+  const QList<int> restored_main_log_sizes = main_log_splitter->sizes();
+  main_log_splitter->setSizes({1, main_log_splitter->height()});
+  QApplication::processEvents();
+  const int draggable_log_height = main_log_splitter->sizes().value(1);
+  const int main_log_splitter_height = main_log_splitter->height();
+  main_log_splitter->setSizes(restored_main_log_sizes);
+  QApplication::processEvents();
+  // The setup controls scroll instead of pinning a minimum height on the upper
+  // pane, so dragging the handle up actually enlarges the log.
+  if (!expect(
+          draggable_log_height * 5 >= main_log_splitter_height * 2,
+          "The runtime log must be draggable to at least two fifths of the main splitter height")) {
+    std::cerr << "draggable_log_height=" << draggable_log_height << " splitter=" << main_log_splitter_height
+              << " setupPanelMinimum=" << window->findChild<QWidget*>("setupPanel")->minimumSizeHint().height() << '\n';
+    return false;
+  }
+  if (!expect(
+          !log->styleSheet().contains("background") &&
+              log->palette().color(QPalette::Base) == window->palette().color(QPalette::Base),
+          "The runtime log must take its background from the application palette, not a forced dark one")) {
+    return false;
+  }
   if (!expect(
           program_control_tabs->minimumHeight() == 220 &&
               program_control_tabs->sizePolicy().verticalPolicy() == QSizePolicy::Expanding &&
@@ -3576,6 +3600,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           output_routing->sizePolicy().verticalPolicy() == QSizePolicy::Maximum &&
               output_routing->height() <= output_routing->sizeHint().height() + 2,
           "Output Routing should use compact natural row spacing instead of stretching vertically")) {
+    std::cerr << "output_routing height=" << output_routing->height()
+              << " sizeHint=" << output_routing->sizeHint().height()
+              << " policy=" << int(output_routing->sizePolicy().verticalPolicy())
+              << " setupRow=" << window->findChild<QWidget*>("setupControlsRow")->height()
+              << " setupScroll=" << window->findChild<QWidget*>("setupControlsScroll")->height() << '\n';
     return false;
   }
   setup_preview_splitter->setSizes({240, 440});
@@ -15811,6 +15840,64 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
   log_scroll->setValue(log_scroll->minimum());
   HStreamWindowTestAccess::appendLog(window, "manual-scroll newest");
   const bool preserves_manual_scroll = log_scroll->value() == log_scroll->minimum();
+  log_scroll->setValue(log_scroll->maximum());
+  HStreamWindowTestAccess::appendLog(window, "tail-follow resumed");
+  const bool resumes_at_tail = log_scroll->value() == log_scroll->maximum();
+
+  // A change in viewport height moves the scrollbar maximum without the reader
+  // touching it: an unwrapped long line turning on the horizontal scrollbar, a
+  // splitter drag, or a window resize. None of those may stop tail following.
+  auto* log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
+  const QList<int> restored_log_sizes = log_splitter ? log_splitter->sizes() : QList<int>();
+  HStreamWindowTestAccess::appendLog(
+      window, QString("pipeline command ") + QString("--options=pipeline.hmstitcher.enable=1 ").repeated(120));
+  if (log_splitter)
+    log_splitter->setSizes({log_splitter->height() / 2, log_splitter->height() / 2});
+  QApplication::processEvents();
+  for (int index = 0; index < 20; ++index)
+    HStreamWindowTestAccess::appendLog(window, QString("tail-follow after resize %1").arg(index));
+  QApplication::processEvents();
+  const bool follows_after_viewport_change = log_scroll->value() == log_scroll->maximum();
+  if (log_splitter && restored_log_sizes.size() == 2)
+    log_splitter->setSizes(restored_log_sizes);
+  QApplication::processEvents();
+
+  // Severity is carried by the entry's own colour so a failure stands out in a
+  // long run, while ordinary entries keep the palette's text colour.
+  HStreamWindowTestAccess::clearLog(window);
+  HStreamWindowTestAccess::appendLog(window, "hmstitcher one-pass mode enabled for calibration-marker-info");
+  HStreamWindowTestAccess::appendLog(window, "FAILED_PRECONDITION: calibration-marker-error");
+  HStreamWindowTestAccess::appendLog(window, "Warning: Unrecognized key in YAML: calibration-marker-warning");
+  HStreamWindowTestAccess::appendLog(window, "HSTREAM_CALIBRATION status=complete calibration-marker-success");
+  HStreamWindowTestAccess::appendLog(window, "Opening in calibration-marker-stderr MODE", /*stderr_output=*/true);
+  const auto entry_format = [runtime_log](const QString& marker) {
+    for (QTextBlock block = runtime_log->document()->begin(); block.isValid(); block = block.next()) {
+      if (!block.text().contains(marker))
+        continue;
+      for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment fragment = it.fragment();
+        if (fragment.isValid() && fragment.text().contains(marker))
+          return fragment.charFormat();
+      }
+    }
+    return QTextCharFormat();
+  };
+  const QTextCharFormat info_format = entry_format("calibration-marker-info");
+  const QTextCharFormat error_format = entry_format("calibration-marker-error");
+  const QTextCharFormat warning_format = entry_format("calibration-marker-warning");
+  const QTextCharFormat success_format = entry_format("calibration-marker-success");
+  const QTextCharFormat stderr_format = entry_format("calibration-marker-stderr");
+  const QColor error_color = error_format.foreground().color();
+  const QColor warning_color = warning_format.foreground().color();
+  const QColor success_color = success_format.foreground().color();
+  const bool severity_is_colored = !info_format.hasProperty(QTextFormat::ForegroundBrush) &&
+      error_format.hasProperty(QTextFormat::ForegroundBrush) &&
+      warning_format.hasProperty(QTextFormat::ForegroundBrush) &&
+      success_format.hasProperty(QTextFormat::ForegroundBrush) &&
+      stderr_format.hasProperty(QTextFormat::ForegroundBrush) && error_color.red() > error_color.green() &&
+      error_color.red() > error_color.blue() && success_color.green() > success_color.red() &&
+      success_color.green() > success_color.blue() && warning_color != error_color && warning_color != success_color &&
+      stderr_format.foreground().color() != error_color;
   HStreamWindowTestAccess::clearLog(window);
 
   HStreamWindowTestAccess::recordCalibrationDiagnostic(
@@ -15928,8 +16015,11 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
   return expect(
              combo_protected && spin_protected && check_protected && radio_protected && pane_scrolled,
              "Mouse-wheel input over value controls must scroll the pane without changing values") &&
-      expect(follows_tail && preserves_manual_scroll,
+      expect(follows_tail && preserves_manual_scroll && resumes_at_tail,
              "Runtime log must follow new output only while the operator remains at the bottom") &&
+      expect(follows_after_viewport_change,
+             "Runtime log must keep following the tail when the viewport height changes on its own") &&
+      expect(severity_is_colored, "Runtime log entries must be colour-coded by severity") &&
       expect(diagnosis_is_actionable,
              "Calibration failures must explain the cause, bounded fallbacks, and corrective action") &&
       expect(seam_failure_is_not_misclassified,
@@ -15940,7 +16030,8 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
              "An invalid HM_PTO_GEN override must be presented as a toolchain failure") &&
       expect(invalid_autooptimiser_is_toolchain_failure,
              "An invalid HM_AUTOOPTIMISER override must be presented as a toolchain failure") &&
-      expect(invalid_nona_is_toolchain_failure, "An invalid HM_NONA override must be presented as a toolchain failure") &&
+      expect(invalid_nona_is_toolchain_failure,
+             "An invalid HM_NONA override must be presented as a toolchain failure") &&
       expect(settings_failure_is_not_physical_overlap,
              "A reduced CP/lens-profile mismatch must not be presented as physical non-overlap") &&
       expect(unsafe_final_failure_keeps_specific_cause,

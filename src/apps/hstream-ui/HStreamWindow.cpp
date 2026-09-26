@@ -37,6 +37,7 @@
 #include <QtCore/QUrl>
 #include <QtCore/Qt>
 #include <QtGui/QCloseEvent>
+#include <QtGui/QFontInfo>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QLinearGradient>
 #include <QtGui/QMouseEvent>
@@ -396,9 +397,21 @@ absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& 
 }
 
 struct AnsiTextStyle {
-  QString foreground = "#d8dee9";
+  // Empty means "whatever the log widget's palette uses", so log text stays
+  // readable on a light desktop theme as well as a dark one.
+  QString foreground;
   bool bold = false;
   bool dim = false;
+};
+
+// How a runtime log entry is presented. Runner output is classified from its
+// text; the UI's own entries arrive already classified.
+enum class LogSeverity {
+  kInfo,
+  kDetail,
+  kSuccess,
+  kWarning,
+  kError,
 };
 
 QString timestamp() {
@@ -817,46 +830,135 @@ class LetterboxRenderHost : public QWidget {
   bool focus_available_{false};
 };
 
-QString ansi_color(int code) {
+// A splitter pane reserves its children's minimum heights, which is how the
+// setup controls used to cap how tall the runtime log could be dragged. This
+// scroll area reports no height floor of its own and lets the controls
+// compress exactly as a plain pane would, scrolling only once they reach the
+// layout minimum, so nothing is clipped and nothing blocks the drag.
+class CompressibleScrollArea : public QScrollArea {
+ public:
+  explicit CompressibleScrollArea(QWidget* parent = nullptr) : QScrollArea(parent) {
+    setWidgetResizable(false);
+    setFrameShape(QFrame::NoFrame);
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  }
+
+  QSize sizeHint() const override {
+    return widget() ? widget()->sizeHint() : QScrollArea::sizeHint();
+  }
+
+  QSize minimumSizeHint() const override {
+    return QSize(widget() ? widget()->minimumSizeHint().width() : 0, 0);
+  }
+
+ protected:
+  void resizeEvent(QResizeEvent* event) override {
+    QScrollArea::resizeEvent(event);
+    layoutContent();
+  }
+
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    const bool handled = QScrollArea::eventFilter(watched, event);
+    if (event && watched == widget() && event->type() == QEvent::LayoutRequest)
+      layoutContent();
+    return handled;
+  }
+
+ private:
+  void layoutContent() {
+    QWidget* content = widget();
+    if (!content)
+      return;
+    const QSize target(viewport()->width(), std::max(viewport()->height(), content->minimumSizeHint().height()));
+    if (content->size() != target)
+      content->resize(target);
+  }
+};
+
+// The runtime log paints on the desktop theme's own text background, so the
+// ANSI palette has to come in two contrast variants.
+QString ansi_color(int code, bool dark_background) {
   switch (code) {
     case 30:
-      return "#4c566a";
+      return dark_background ? "#4c566a" : "#4b5563";
     case 31:
-      return "#bf616a";
+      return dark_background ? "#bf616a" : "#b42318";
     case 32:
-      return "#a3be8c";
+      return dark_background ? "#a3be8c" : "#256029";
     case 33:
-      return "#ebcb8b";
+      return dark_background ? "#ebcb8b" : "#8a6100";
     case 34:
-      return "#81a1c1";
+      return dark_background ? "#81a1c1" : "#1d4ed8";
     case 35:
-      return "#b48ead";
+      return dark_background ? "#b48ead" : "#7e22ce";
     case 36:
-      return "#88c0d0";
+      return dark_background ? "#88c0d0" : "#0e7490";
     case 37:
-      return "#e5e9f0";
+      return dark_background ? "#e5e9f0" : "#374151";
     case 90:
-      return "#667085";
+      return dark_background ? "#667085" : "#6b7280";
     case 91:
-      return "#ff7b72";
+      return dark_background ? "#ff7b72" : "#c2410c";
     case 92:
-      return "#7ee787";
+      return dark_background ? "#7ee787" : "#15803d";
     case 93:
-      return "#f2cc60";
+      return dark_background ? "#f2cc60" : "#a16207";
     case 94:
-      return "#79c0ff";
+      return dark_background ? "#79c0ff" : "#2563eb";
     case 95:
-      return "#d2a8ff";
+      return dark_background ? "#d2a8ff" : "#9333ea";
     case 96:
-      return "#a5d6ff";
+      return dark_background ? "#a5d6ff" : "#0891b2";
     case 97:
-      return "#ffffff";
+      return dark_background ? "#ffffff" : "#111827";
     default:
       return {};
   }
 }
 
-void apply_ansi_codes(const QString& codes, AnsiTextStyle* style) {
+QString severity_color(LogSeverity severity, bool dark_background) {
+  switch (severity) {
+    case LogSeverity::kDetail:
+      return dark_background ? "#98a2b3" : "#5b6472";
+    case LogSeverity::kSuccess:
+      return dark_background ? "#7ee787" : "#15803d";
+    case LogSeverity::kWarning:
+      return dark_background ? "#f2cc60" : "#a16207";
+    case LogSeverity::kError:
+      return dark_background ? "#ff7b72" : "#b42318";
+    case LogSeverity::kInfo:
+      break;
+  }
+  // Ordinary entries stay in the palette's own text colour.
+  return {};
+}
+
+LogSeverity classify_log_message(const QString& message, bool stderr_output) {
+  static const QRegularExpression error_pattern(
+      "\\b(?:ERROR|FATAL|ABORTED|CANCELLED|DATA_LOSS|DEADLINE_EXCEEDED|FAILED_PRECONDITION|INTERNAL|INVALID_ARGUMENT|"
+      "NOT_FOUND|OUT_OF_RANGE|PERMISSION_DENIED|RESOURCE_EXHAUSTED|UNAUTHENTICATED|UNAVAILABLE|UNIMPLEMENTED)\\b|"
+      "\\b(?:failed|failure)\\b|status=error",
+      QRegularExpression::CaseInsensitiveOption);
+  // "could not"/"unable to" also introduce recoverable notices such as a tool
+  // skipping optional metadata, so they stay a tier below outright failure.
+  static const QRegularExpression warning_pattern(
+      "\\b(?:WARN|WARNING|CRITICAL|deprecated|stale|skipping|retrying|unsupported|not supported|cannot|could not|"
+      "unable to)\\b",
+      QRegularExpression::CaseInsensitiveOption);
+  static const QRegularExpression success_pattern(
+      "\\b(?:succeeded|successfully)\\b|status=complete|\\bis complete\\b", QRegularExpression::CaseInsensitiveOption);
+  if (error_pattern.match(message).hasMatch())
+    return LogSeverity::kError;
+  if (warning_pattern.match(message).hasMatch())
+    return LogSeverity::kWarning;
+  if (success_pattern.match(message).hasMatch())
+    return LogSeverity::kSuccess;
+  // Uncategorised runner stderr is still worth separating from the UI's own
+  // narration without shouting about it.
+  return stderr_output ? LogSeverity::kDetail : LogSeverity::kInfo;
+}
+
+void apply_ansi_codes(const QString& codes, AnsiTextStyle* style, bool dark_background) {
   const QStringList parts = codes.isEmpty() ? QStringList{"0"} : codes.split(';');
   for (int i = 0; i < parts.size(); ++i) {
     bool ok = false;
@@ -876,13 +978,13 @@ void apply_ansi_codes(const QString& codes, AnsiTextStyle* style) {
       style->bold = false;
       style->dim = false;
     } else if (code == 39) {
-      style->foreground = "#d8dee9";
-    } else if (const QString color = ansi_color(code); !color.isEmpty()) {
+      style->foreground.clear();
+    } else if (const QString color = ansi_color(code, dark_background); !color.isEmpty()) {
       style->foreground = color;
     } else if (code == 38 && i + 2 < parts.size() && parts[i + 1] == "5") {
       const int color_index = parts[i + 2].toInt(&ok);
       if (ok && color_index >= 0 && color_index <= 255) {
-        style->foreground = QString("hsl(%1, 65%, 70%)").arg((color_index * 47) % 360);
+        style->foreground = QString("hsl(%1, 65%, %2%)").arg((color_index * 47) % 360).arg(dark_background ? 70 : 35);
       }
       i += 2;
     } else if (code == 38 && i + 4 < parts.size() && parts[i + 1] == "2") {
@@ -905,17 +1007,22 @@ void apply_ansi_codes(const QString& codes, AnsiTextStyle* style) {
 
 QString style_span_open(const AnsiTextStyle& style) {
   QStringList declarations;
-  declarations << QString("color:%1").arg(style.foreground);
+  if (!style.foreground.isEmpty()) {
+    declarations << QString("color:%1").arg(style.foreground);
+  }
   if (style.bold) {
     declarations << "font-weight:600";
   }
   if (style.dim) {
     declarations << "opacity:0.72";
   }
+  if (declarations.isEmpty()) {
+    return "<span>";
+  }
   return QString("<span style=\"%1\">").arg(declarations.join(';'));
 }
 
-QString ansi_to_html(const QString& text) {
+QString ansi_to_html(const QString& text, bool dark_background) {
   QString html;
   AnsiTextStyle style;
   bool span_open = false;
@@ -941,7 +1048,7 @@ QString ansi_to_html(const QString& text) {
       if (end < text.size()) {
         if (text[end] == 'm') {
           close_span();
-          apply_ansi_codes(text.mid(i + 2, end - i - 2), &style);
+          apply_ansi_codes(text.mid(i + 2, end - i - 2), &style, dark_background);
         }
         i = end + 1;
         continue;
@@ -5079,6 +5186,24 @@ bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
       return true;
     }
   }
+  if (watched == setup_preview_splitter_ && event && event->type() == QEvent::Resize && !setup_split_seeded_ &&
+      setup_preview_splitter_->height() > 0 && setup_controls_scroll_) {
+    setup_split_seeded_ = true;
+    // Run after this layout pass so the controls report the height they need
+    // at their final width.
+    QTimer::singleShot(0, this, [this]() {
+      if (!setup_preview_splitter_ || !setup_controls_scroll_ || setup_preview_splitter_->count() != 2)
+        return;
+      QWidget* setup_row = setup_controls_scroll_->findChild<QWidget*>("setupControlsRow");
+      QWidget* preview = setup_preview_splitter_->widget(1);
+      const int total = setup_preview_splitter_->height();
+      const int preview_floor = preview ? preview->minimumSizeHint().height() : 0;
+      const int content_floor = setup_row ? setup_row->minimumSizeHint().height() : 0;
+      const int setup_height = std::clamp(content_floor, 0, std::max(0, total - preview_floor));
+      if (setup_height > setup_preview_splitter_->sizes().value(0))
+        setup_preview_splitter_->setSizes({setup_height, std::max(1, total - setup_height)});
+    });
+  }
   if ((watched == stitch_frame_time_edit_ || watched == playback_start_time_edit_) && event) {
     auto* time_edit = static_cast<QTimeEdit*>(watched);
     if (event->type() == QEvent::FocusIn) {
@@ -5305,6 +5430,12 @@ void HStreamWindow::buildUi() {
   main_log_splitter_->setStretchFactor(0, 4);
   main_log_splitter_->setStretchFactor(1, 1);
   main_log_splitter_->setSizes({680, 170});
+  // A log height the operator dragged to is theirs to keep: preview layout
+  // changes may no longer shrink it back to the compact default.
+  connect(main_log_splitter_, &QSplitter::splitterMoved, this, [this](int, int) {
+    log_height_chosen_ = true;
+    normal_main_log_sizes_ = main_log_splitter_->sizes();
+  });
   root->addWidget(main_log_splitter_, 1);
 
   auto* file_menu = menuBar()->addMenu("&File");
@@ -6007,10 +6138,16 @@ void HStreamWindow::buildMainArea(QVBoxLayout* root) {
   setup_layout->addWidget(game_column, 1);
   setup_layout->addWidget(output_column);
 
+  auto* setup_scroll = new CompressibleScrollArea();
+  setup_scroll->setObjectName("setupControlsScroll");
+  setup_scroll->setWidget(setup_row);
+  setup_scroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+  setup_controls_scroll_ = setup_scroll;
+
   setup_preview_splitter_ = new QSplitter(Qt::Vertical);
   setup_preview_splitter_->setObjectName("setupPreviewSplitter");
   setup_preview_splitter_->setChildrenCollapsible(true);
-  setup_preview_splitter_->addWidget(setup_row);
+  setup_preview_splitter_->addWidget(setup_scroll);
   auto* preview_container = new QWidget();
   auto* preview_layout = new QVBoxLayout(preview_container);
   preview_layout->setContentsMargins(0, 0, 0, 0);
@@ -6021,6 +6158,10 @@ void HStreamWindow::buildMainArea(QVBoxLayout* root) {
   setup_preview_splitter_->setCollapsible(0, true);
   setup_preview_splitter_->setCollapsible(1, false);
   setup_preview_splitter_->setSizes({240, 440});
+  // The scrolled setup row no longer sets a height floor for the pane, so the
+  // opening split has to ask for the height the controls need. That height is
+  // only known once the window has been laid out at its real width.
+  setup_preview_splitter_->installEventFilter(this);
   root->addWidget(setup_preview_splitter_, 1);
 }
 
@@ -7114,17 +7255,46 @@ void HStreamWindow::buildLog(QVBoxLayout* root) {
   // to a failure rather than only the final few hundred lines.
   log_->document()->setMaximumBlockCount(2000);
   log_->setMinimumHeight(60);
-  log_->setStyleSheet(
-      "QTextEdit#runtimeLog {"
-      " background: #05070a;"
-      " color: #d8dee9;"
-      " font-family: \"JetBrains Mono\", \"SFMono-Regular\", Consolas, monospace;"
-      " font-size: 12px;"
-      " border: 1px solid #252a31;"
-      " selection-background-color: #264f78;"
-      "}");
-  connect(clear, &QPushButton::clicked, log_, &QTextEdit::clear);
+  // Only the typeface is ours. Colours come from the desktop theme's text
+  // palette so the log is dark exactly when the rest of the UI is.
+  QFont log_font("JetBrains Mono");
+  log_font.setStyleHint(QFont::Monospace);
+  log_font.setFamilies({"JetBrains Mono", "SFMono-Regular", "Consolas", "monospace"});
+  const double interface_point_size = QFontInfo(log_->font()).pointSizeF();
+  if (interface_point_size > 0)
+    log_font.setPointSizeF(std::max(7.5, interface_point_size - 1.0));
+  log_->setFont(log_font);
+  connect(clear, &QPushButton::clicked, log_, [this]() {
+    log_->clear();
+    log_follows_tail_ = true;
+  });
+
+  QScrollBar* log_scroll = log_->verticalScrollBar();
+  connect(log_scroll, &QScrollBar::valueChanged, this, [this](int value) {
+    if (log_scroll_is_programmatic_)
+      return;
+    QScrollBar* bar = log_->verticalScrollBar();
+    // One line of slack: a reader who scrolls back to the last line wants the
+    // tail again, and wheel steps do not always land exactly on the maximum.
+    const int slack = std::max(2, bar->singleStep());
+    log_follows_tail_ = value >= bar->maximum() - slack;
+  });
+  // A taller or narrower viewport moves the maximum without any scrolling, so
+  // re-pin the tail whenever the range changes while following.
+  connect(log_scroll, &QScrollBar::rangeChanged, this, [this]() { scrollLogToTail(); });
   root->addWidget(log_);
+}
+
+void HStreamWindow::scrollLogToTail() {
+  if (!log_ || !log_follows_tail_)
+    return;
+  QScrollBar* bar = log_->verticalScrollBar();
+  if (bar->value() == bar->maximum())
+    return;
+  const bool previous = log_scroll_is_programmatic_;
+  log_scroll_is_programmatic_ = true;
+  bar->setValue(bar->maximum());
+  log_scroll_is_programmatic_ = previous;
 }
 
 QString HStreamWindow::pipelineRunnerPath() const {
@@ -15463,7 +15633,7 @@ void HStreamWindow::setPreviewRenderingLayout(bool rendering) {
     }
     if (setup_preview_splitter_)
       setup_preview_splitter_->setSizes({0, std::max(1, setup_preview_splitter_->height())});
-    if (main_log_splitter_) {
+    if (main_log_splitter_ && !log_height_chosen_) {
       const QList<int> sizes = main_log_splitter_->sizes();
       const int total = std::max(main_log_splitter_->height(), sizes.value(0) + sizes.value(1));
       const int compact_log_height = std::min(130, std::max(90, total / 6));
@@ -15587,7 +15757,9 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
     };
     hide_for_focus(top_bar_);
     hide_for_focus(log_panel_);
-    if (setup_panel_)
+    if (setup_controls_scroll_)
+      hide_for_focus(setup_controls_scroll_);
+    else if (setup_panel_)
       hide_for_focus(setup_panel_->findChild<QWidget*>("setupControlsRow"));
     hide_for_focus(preview_tabs_->tabBar());
     for (int page_index = 0; page_index < preview_tabs_->count(); ++page_index) {
@@ -19491,14 +19663,24 @@ void HStreamWindow::appendLog(const QString& message, bool stderr_output) {
       complete_log_.remove(0, next_line >= 0 ? next_line + 1 : overflow);
     }
   }
-  const QString html =
-      QString("<span style=\"color:#667085\">%1</span> %2").arg(entry_timestamp.toHtmlEscaped(), ansi_to_html(message));
-  QScrollBar* scroll_bar = log_ ? log_->verticalScrollBar() : nullptr;
-  const int previous_scroll_value = scroll_bar ? scroll_bar->value() : 0;
-  const bool follow_tail = !scroll_bar || scroll_bar->value() >= scroll_bar->maximum() - 2;
-  log_->append(html);
-  if (scroll_bar)
-    scroll_bar->setValue(follow_tail ? scroll_bar->maximum() : previous_scroll_value);
+  if (log_) {
+    const bool dark_background = log_->palette().color(QPalette::Base).lightness() < 128;
+    const QString severity = severity_color(classify_log_message(message, stderr_output), dark_background);
+    const QString body = ansi_to_html(message, dark_background);
+    const QString html =
+        QString("<span style=\"color:%1\">%2</span> %3")
+            .arg(
+                dark_background ? "#8a93a5" : "#6b7280",
+                entry_timestamp.toHtmlEscaped(),
+                severity.isEmpty() ? body : QString("<span style=\"color:%1\">%2</span>").arg(severity, body));
+    // Appending can move the scrollbar on its own once the block cap starts
+    // discarding leading lines; that is not the reader scrolling away.
+    const bool previous_programmatic = log_scroll_is_programmatic_;
+    log_scroll_is_programmatic_ = true;
+    log_->append(html);
+    log_scroll_is_programmatic_ = previous_programmatic;
+    scrollLogToTail();
+  }
   if (!archive_log_error.isEmpty())
     appendLog(QString("archive job log write failed; file logging stopped: %1").arg(archive_log_error));
 }

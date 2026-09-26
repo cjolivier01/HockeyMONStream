@@ -218,6 +218,7 @@ class HStreamWindow : public QMainWindow {
   void buildOutputControls(QVBoxLayout* parent);
   void buildCameraControls(QVBoxLayout* parent, bool program_stage);
   void buildLog(QVBoxLayout* root);
+  void scrollLogToTail();
   void configureControlHelp();
   void loadBaselineDefaults();
 
@@ -617,11 +618,19 @@ class HStreamWindow : public QMainWindow {
   QRadioButton* role_center_{nullptr};
   QRadioButton* role_right_{nullptr};
   QTextEdit* log_{nullptr};
+  // Tail following is a remembered state, not a per-append guess: any viewport
+  // height change (window resize, splitter drag, horizontal scrollbar) moves
+  // the scrollbar maximum away from its value without the user scrolling.
+  bool log_follows_tail_{true};
+  bool log_scroll_is_programmatic_{false};
   QTabWidget* preview_tabs_{nullptr};
   PipelineInspectorWidget* pipeline_inspector_{nullptr};
   int pipeline_inspector_tab_index_{-1};
   QWidget* top_bar_{nullptr};
   QWidget* setup_panel_{nullptr};
+  QWidget* setup_controls_scroll_{nullptr};
+  bool setup_split_seeded_{false};
+  bool log_height_chosen_{false};
   QWidget* log_panel_{nullptr};
   QSplitter* main_log_splitter_{nullptr};
   QSplitter* setup_preview_splitter_{nullptr};
