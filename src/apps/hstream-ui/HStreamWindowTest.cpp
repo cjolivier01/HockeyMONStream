@@ -84,6 +84,8 @@ struct HStreamWindowTestAccess {
   static void preparedInt8(HStreamWindow* window, const QString& engine) {
     window->prepared_int8_engine_ = engine;
     window->prepared_int8_manifest_ = engine + ".json";
+    // prepareRecordedInt8 records the model the engine was built from.
+    window->prepared_int8_model_ = window->detectorModel();
     window->updatePresetDirtyState();
   }
   static bool savePreset(HStreamWindow* window) {
@@ -12967,6 +12969,124 @@ bool test_detector_precision() {
       "explicit UI precision must shadow an inherited incompatible engine");
 }
 
+bool test_detector_model() {
+  QTemporaryDir model_games;
+  if (!model_games.isValid())
+    return false;
+  struct RestoreGameRoot {
+    QByteArray previous{qgetenv("HM_GAME_DIR")};
+    ~RestoreGameRoot() {
+      qputenv("HM_GAME_DIR", previous);
+    }
+  } restore;
+  qputenv("HM_GAME_DIR", model_games.path().toLocal8Bit());
+  const QString root = model_games.path();
+  const QString game = "model-selection";
+  QDir().mkpath(QDir(root).filePath(game));
+  const auto config_path = QDir(root).filePath(game + "/config.yaml").toStdString();
+  std::ofstream(config_path) << "pipeline:\n  primary-gie:\n    config-file: custom-detector.yaml\n"
+                                "    model-engine-file: custom.engine\n";
+
+  HStreamWindow window;
+  auto* games = require_child<QComboBox>(&window, "gameSelector");
+  auto* model = require_child<QComboBox>(&window, "detectorModelCombo");
+  auto* precision = require_child<QComboBox>(&window, "detectorPrecisionCombo");
+  auto* status = require_child<QLabel>(&window, "detectorPrecisionStatus");
+  if (!games || !model || !precision || !status)
+    return false;
+  if (!expect(
+          model->count() >= 2 && model->findData("default") == 0 && model->findData("distilled-s") > 0,
+          "baseline.yaml must supply the default and distilled detector models"))
+    return false;
+  games->setCurrentIndex(games->findText(game));
+  if (!expect(
+          model->currentData().toString() == "default" && precision->currentData().toString().isEmpty(),
+          "an unrecognized detector config must keep the default model and the saved precision"))
+    return false;
+
+  // A model choice alone writes nothing while precision keeps the saved config,
+  // so selecting one must pin the bundled FP32 to make the change reachable.
+  model->setCurrentIndex(model->findData("distilled-s"));
+  if (!expect(
+          precision->currentData().toString() == "fp32",
+          "choosing a model while precision is unset must select the bundled FP32") ||
+      !expect(status->text().contains("YOLOv8-s"), "the status must name the non-default detector model"))
+    return false;
+
+  for (const QString mode : {"fp32", "fp16", "bf16", "int8"}) {
+    precision->setCurrentIndex(precision->findData(mode));
+    const QString name = mode == "fp32" ? "config_infer_yolov8s_hockey.yaml"
+                                        : QString("config_infer_yolov8s_hockey_%1.yaml").arg(mode);
+    if (!expect(
+            HStreamWindowTestAccess::standaloneArguments(&window).contains(
+                "--options=pipeline.primary-gie.config-file=" + name),
+            "the selected model and precision must pick the matching inference config"))
+      return false;
+    if (!HStreamWindowTestAccess::savePreset(&window)) {
+      std::cerr << window.logText().toStdString() << '\n';
+      return false;
+    }
+    const auto saved = YAML::LoadFile(config_path);
+    if (!expect(
+            saved["pipeline"]["primary-gie"]["config-file"].as<std::string>() == name.toStdString() &&
+                QString::fromStdString(saved["pipeline"]["primary-gie"]["model-engine-file"].as<std::string>())
+                    .contains("yolov8_s"),
+            "the saved preset must carry the distilled model's config and engine"))
+      return false;
+    HStreamWindow reload;
+    auto* reload_games = require_child<QComboBox>(&reload, "gameSelector");
+    reload_games->setCurrentIndex(reload_games->findText(game));
+    if (!expect(
+            require_child<QComboBox>(&reload, "detectorModelCombo")->currentData().toString() == "distilled-s" &&
+                require_child<QComboBox>(&reload, "detectorPrecisionCombo")->currentData().toString() == mode,
+            "a saved model and precision pair must both survive a fresh UI load"))
+      return false;
+  }
+
+  // An engine prepared for one model must never be paired with another model's
+  // inference config: that silently runs the wrong network.
+  precision->setCurrentIndex(precision->findData("int8"));
+  model->setCurrentIndex(model->findData("default"));
+  const QString prepared_engine = QDir(root).filePath("prepared-default-int8.engine");
+  HStreamWindowTestAccess::preparedInt8(&window, prepared_engine);
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(&window).contains(
+              "--options=pipeline.primary-gie.model-engine-file=" + prepared_engine),
+          "a prepared engine must reach the runner for the model it was built from"))
+    return false;
+  model->setCurrentIndex(model->findData("distilled-s"));
+  const auto crossed = HStreamWindowTestAccess::standaloneArguments(&window);
+  if (!expect(
+          crossed.contains("--options=pipeline.primary-gie.config-file=config_infer_yolov8s_hockey_int8.yaml") &&
+              !crossed.contains("--options=pipeline.primary-gie.model-engine-file=" + prepared_engine),
+          "switching model must drop the other model's prepared INT8 engine"))
+    return false;
+  model->setCurrentIndex(model->findData("default"));
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(&window).contains(
+              "--options=pipeline.primary-gie.model-engine-file=" + prepared_engine),
+          "switching back must restore the prepared engine for its own model"))
+    return false;
+
+  // Returning to the default model must restore the legacy config filenames so
+  // presets written before the catalog keep resolving.
+  model->setCurrentIndex(model->findData("default"));
+  precision->setCurrentIndex(precision->findData("fp16"));
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(&window).contains(
+              "--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml"),
+          "the default model must keep the original inference config names") ||
+      !HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  HStreamWindow reload;
+  auto* reload_games = require_child<QComboBox>(&reload, "gameSelector");
+  reload_games->setCurrentIndex(reload_games->findText(game));
+  return expect(
+      require_child<QComboBox>(&reload, "detectorModelCombo")->currentData().toString() == "default" &&
+          require_child<QComboBox>(&reload, "detectorPrecisionCombo")->currentData().toString() == "fp16",
+      "switching back to the default model must reload as the default model");
+}
+
 bool test_preset_reload_with_missing_tracker() {
   const QString game_name = "saved-preset-missing-tracker";
   const QString game_directory = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_name);
@@ -15894,8 +16014,10 @@ int main(int argc, char** argv) {
   if (!test_gpu_memory_profile())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
-    return test_detector_precision() ? 0 : 1;
+    return test_detector_precision() && test_detector_model() ? 0 : 1;
   if (!test_detector_precision())
+    return 1;
+  if (!test_detector_model())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_MASK_TIME_ONLY")) {
     HStreamWindow window;

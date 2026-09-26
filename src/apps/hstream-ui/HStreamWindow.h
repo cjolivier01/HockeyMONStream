@@ -145,6 +145,13 @@ class HStreamWindow : public QMainWindow {
     quint64 batch_id;
   };
 
+  // A program detector offered in the Detection tab, from hstream_ui.detector_models.
+  struct DetectorModel {
+    QString id;
+    QString label;
+    QString config_prefix;
+  };
+
   struct LiveRotationAuthorization {
     QString game_id;
     std::string game_dir;
@@ -394,6 +401,9 @@ class HStreamWindow : public QMainWindow {
   QStringList pipelineArguments(bool standalone = false) const;
   QString highBitDepthMode() const;
   QString detectorPrecision() const;
+  std::vector<DetectorModel> detectorModels() const;
+  QString detectorModel() const;
+  QString detectorConfigPrefix() const;
   void prepareRecordedInt8();
   bool detectorSelectionChanged() const;
   QString detectorConfigName() const;
@@ -630,11 +640,16 @@ class HStreamWindow : public QMainWindow {
   QString active_gpu_memory_profile_;
   QComboBox* gpu_memory_profile_combo_{nullptr};
   bool gpu_memory_profile_user_selected_{false};
+  QComboBox* detector_model_combo_{nullptr};
   QComboBox* detector_precision_combo_{nullptr};
   QLabel* detector_precision_status_{nullptr};
   QString saved_detector_precision_;
+  QString saved_detector_model_;
   QString prepared_int8_engine_, prepared_int8_manifest_;
-  QString saved_prepared_int8_engine_, saved_prepared_int8_manifest_;
+  // The detector model the prepared INT8 engine was built from. An engine built
+  // for one model must never be paired with another model's inference config.
+  QString prepared_int8_model_;
+  QString saved_prepared_int8_engine_, saved_prepared_int8_manifest_, saved_prepared_int8_model_;
   QTabWidget* stitched_control_tabs_{nullptr};
   std::vector<QWidget*> preview_hosts_;
   std::vector<QWidget*> associated_control_panels_;

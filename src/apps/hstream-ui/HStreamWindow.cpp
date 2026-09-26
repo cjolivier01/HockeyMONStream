@@ -6782,6 +6782,12 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
 
     auto* detection_page = new QWidget();
     auto* detection_layout = new QVBoxLayout(detection_page);
+    detection_layout->addWidget(new QLabel("Detection model (next run)"));
+    detector_model_combo_ = new QComboBox();
+    detector_model_combo_->setObjectName("detectorModelCombo");
+    for (const DetectorModel& model : detectorModels())
+      detector_model_combo_->addItem(model.label, model.id);
+    detection_layout->addWidget(detector_model_combo_);
     detection_layout->addWidget(new QLabel("Detection precision (next run)"));
     detector_precision_combo_ = new QComboBox();
     detector_precision_combo_->setObjectName("detectorPrecisionCombo");
@@ -6799,6 +6805,22 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     connect(prepare_int8, &QPushButton::clicked, this, [this] { prepareRecordedInt8(); });
     detection_layout->addStretch();
     connect(detector_precision_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+      // "Use saved detector configuration" writes nothing, so it cannot carry a
+      // model choice. Return the combo to the saved configuration's own model.
+      if (detectorPrecision().isEmpty() && detector_model_combo_) {
+        const QSignalBlocker blocker(detector_model_combo_);
+        set_combo_to_data(
+            detector_model_combo_,
+            saved_detector_model_.isEmpty() ? detectorModels().front().id : saved_detector_model_);
+      }
+      updateDetectorPrecisionStatus();
+      updatePresetDirtyState();
+    });
+    connect(detector_model_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+      // Nothing is written while precision keeps the saved configuration, so a
+      // model choice alone would not reach the pipeline. Pin the bundled FP32.
+      if (detectorPrecision().isEmpty())
+        set_combo_to_data(detector_precision_combo_, "fp32");
       updateDetectorPrecisionStatus();
       updatePresetDirtyState();
     });
@@ -9571,9 +9593,51 @@ QString HStreamWindow::detectorPrecision() const {
   return detector_precision_combo_ ? detector_precision_combo_->currentData().toString() : QString();
 }
 
+std::vector<HStreamWindow::DetectorModel> HStreamWindow::detectorModels() const {
+  std::vector<DetectorModel> models;
+  YAML::Node configured;
+  if (lookup_yaml_path(baseline_config_, "hstream_ui.detector_models", &configured) && configured.IsSequence()) {
+    for (const YAML::Node& entry : configured) {
+      if (!entry.IsMap())
+        continue;
+      try {
+        if (!entry["id"] || !entry["config_prefix"])
+          continue;
+        const QString id = QString::fromStdString(entry["id"].as<std::string>());
+        const QString prefix = QString::fromStdString(entry["config_prefix"].as<std::string>());
+        if (id.isEmpty() || prefix.isEmpty())
+          continue;
+        models.push_back(
+            {id, entry["label"] ? QString::fromStdString(entry["label"].as<std::string>()) : id, prefix});
+      } catch (const YAML::Exception&) {
+        // A malformed catalog entry must not cost the user the other models.
+      }
+    }
+  }
+  // The bundled detector stays selectable when baseline.yaml declares no catalog.
+  if (models.empty())
+    models.push_back({"default", "Default", "config_infer_yolov8_hockey"});
+  return models;
+}
+
+QString HStreamWindow::detectorModel() const {
+  return detector_model_combo_ ? detector_model_combo_->currentData().toString() : QString();
+}
+
+QString HStreamWindow::detectorConfigPrefix() const {
+  const auto models = detectorModels();
+  const QString id = detectorModel();
+  for (const DetectorModel& model : models) {
+    if (model.id == id)
+      return model.config_prefix;
+  }
+  return models.front().config_prefix;
+}
+
 bool HStreamWindow::detectorSelectionChanged() const {
-  return detectorPrecision() != saved_detector_precision_ || prepared_int8_engine_ != saved_prepared_int8_engine_ ||
-      prepared_int8_manifest_ != saved_prepared_int8_manifest_;
+  return detectorPrecision() != saved_detector_precision_ || detectorModel() != saved_detector_model_ ||
+      prepared_int8_engine_ != saved_prepared_int8_engine_ ||
+      prepared_int8_manifest_ != saved_prepared_int8_manifest_ || prepared_int8_model_ != saved_prepared_int8_model_;
 }
 
 void HStreamWindow::prepareRecordedInt8() {
@@ -9600,7 +9664,7 @@ void HStreamWindow::prepareRecordedInt8() {
        development_bazel_bin_.isEmpty() ? QDir(pipelineWorkingDirectory()).filePath("bazel-bin")
                                         : development_bazel_bin_,
        pipelineConfigPath("ds_hockey_app_config.yaml"),
-       pipelineConfigPath("config_infer_yolov8_hockey_int8.yaml"),
+       pipelineConfigPath(detectorConfigPrefix() + "_int8.yaml"),
        game_id_edit_->text().trimmed(),
        env},
       this);
@@ -9608,6 +9672,7 @@ void HStreamWindow::prepareRecordedInt8() {
     return;
   prepared_int8_engine_ = dialog.engine();
   prepared_int8_manifest_ = dialog.manifest();
+  prepared_int8_model_ = detectorModel();
   set_combo_to_data(detector_precision_combo_, "int8");
   updatePresetDirtyState();
   if (!savePreset())
@@ -9622,12 +9687,14 @@ void HStreamWindow::prepareRecordedInt8() {
 
 QString HStreamWindow::detectorConfigName() const {
   const QString precision = detectorPrecision();
-  return precision == "fp32" ? "config_infer_yolov8_hockey.yaml"
-                             : QString("config_infer_yolov8_hockey_%1.yaml").arg(precision);
+  const QString prefix = detectorConfigPrefix();
+  return precision == "fp32" ? prefix + ".yaml" : QString("%1_%2.yaml").arg(prefix, precision);
 }
 
 QString HStreamWindow::detectorEnginePath() const {
-  if (detectorPrecision() == "int8" && !prepared_int8_engine_.isEmpty())
+  // A prepared engine belongs to the model it was built from. Pairing it with
+  // another model's inference config silently runs the wrong network.
+  if (detectorPrecision() == "int8" && !prepared_int8_engine_.isEmpty() && prepared_int8_model_ == detectorModel())
     return prepared_int8_engine_;
   const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(detectorConfigName()).toStdString());
   return QString::fromStdString(inference["property"]["model-engine-file"].as<std::string>());
@@ -9721,6 +9788,14 @@ void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
   prepared_int8_manifest_ = lookup_yaml_path(effective, "hstream_ui.detector_int8.manifest", &prepared)
       ? QString::fromStdString(prepared.as<std::string>())
       : QString();
+  const auto models = detectorModels();
+  prepared_int8_model_ = lookup_yaml_path(effective, "hstream_ui.detector_int8.model", &prepared)
+      ? QString::fromStdString(prepared.as<std::string>())
+      : QString();
+  // Engines prepared before the model catalog existed were built from the
+  // detector that was then the only one.
+  if (prepared_int8_model_.isEmpty() && !prepared_int8_engine_.isEmpty())
+    prepared_int8_model_ = models.front().id;
   YAML::Node configured;
   QString file;
   if (lookup_yaml_path(effective, "pipeline.primary-gie.config-file", &configured))
@@ -9733,27 +9808,48 @@ void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
       file.clear();
     }
   }
-  QString selected;
-  for (const QString mode : {"fp32", "fp16", "bf16", "int8"}) {
-    const QString name =
-        mode == "fp32" ? "config_infer_yolov8_hockey.yaml" : QString("config_infer_yolov8_hockey_%1.yaml").arg(mode);
+  // An explicit engine is part of the custom detector choice. Preserve it
+  // even when its inference config has a familiar filename.
+  auto config_matches = [&](const DetectorModel& model, const QString& name, const QString& mode) {
     if (file != name && !same_file_path(file, pipelineConfigPath(name)))
-      continue;
-    // An explicit engine is part of the custom detector choice. Preserve it
-    // even when its inference config has a familiar filename.
+      return false;
     YAML::Node engine;
     if (lookup_yaml_path(effective, "pipeline.primary-gie.model-engine-file", &engine)) {
       try {
         const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(name).toStdString());
+        // The prepared engine only explains this config for the model it was
+        // built from; against any other model it is a custom detector.
+        const bool prepared_for_this_model = mode == "int8" && prepared_int8_model_ == model.id &&
+            QString::fromStdString(engine.as<std::string>()) == prepared_int8_engine_;
         if (engine.as<std::string>() != inference["property"]["model-engine-file"].as<std::string>() &&
-            !(mode == "int8" && QString::fromStdString(engine.as<std::string>()) == prepared_int8_engine_))
-          continue;
+            !prepared_for_this_model)
+          return false;
       } catch (const std::exception&) {
-        continue;
+        return false;
       }
     }
-    selected = mode;
-    break;
+    return true;
+  };
+  QString selected;
+  QString selected_model;
+  for (const DetectorModel& model : models) {
+    for (const QString mode : {"fp32", "fp16", "bf16", "int8"}) {
+      const QString name =
+          mode == "fp32" ? model.config_prefix + ".yaml" : QString("%1_%2.yaml").arg(model.config_prefix, mode);
+      if (!config_matches(model, name, mode))
+        continue;
+      selected = mode;
+      selected_model = model.id;
+      break;
+    }
+    if (!selected.isEmpty())
+      break;
+  }
+  if (detector_model_combo_) {
+    // Setting the model must not drag the precision to FP32 the way an
+    // interactive choice does; an unrecognized config keeps "use saved".
+    const QSignalBlocker model_blocker(detector_model_combo_);
+    set_combo_to_data(detector_model_combo_, selected_model.isEmpty() ? models.front().id : selected_model);
   }
   set_combo_to_data(detector_precision_combo_, selected);
   updateDetectorPrecisionStatus();
@@ -9777,6 +9873,17 @@ void HStreamWindow::updateDetectorPrecisionStatus() {
         : "Use Prepare INT8 from recording after stitching calibration, then validate detection accuracy. ";
     status +=
         "See the detection precision documentation for preparation. Selecting a precision uses the bundled detector.";
+  }
+  const auto models = detectorModels();
+  const QString model_id = detectorModel();
+  if (models.size() > 1 && !model_id.isEmpty() && model_id != models.front().id) {
+    const auto selected =
+        std::find_if(models.begin(), models.end(), [&](const DetectorModel& m) { return m.id == model_id; });
+    if (selected != models.end()) {
+      status += QString(" Detector model: %1. Its input resolution and accuracy differ from the default, so "
+                        "recheck tracking and oversized-player settings for this game.")
+                    .arg(selected->label);
+    }
   }
   status += " Changes take effect on the next run; Save Preset keeps the selection.";
   detector_precision_status_->setText(status);
@@ -16116,6 +16223,8 @@ void HStreamWindow::resetCameraControls() {
     }
   }
   synchronizeStitchedColorControls();
+  if (!pipeline_running && detector_model_combo_)
+    set_combo_to_data(detector_model_combo_, detectorModels().front().id);
   if (!pipeline_running && detector_precision_combo_)
     set_combo_to_data(detector_precision_combo_, "fp32");
   if (!pipeline_running && player_analytics_controls_)
@@ -16357,8 +16466,10 @@ void HStreamWindow::captureSavedControlState() {
   }
   saved_high_bit_depth_mode_ = highBitDepthMode();
   saved_detector_precision_ = detectorPrecision();
+  saved_detector_model_ = detectorModel();
   saved_prepared_int8_engine_ = prepared_int8_engine_;
   saved_prepared_int8_manifest_ = prepared_int8_manifest_;
+  saved_prepared_int8_model_ = prepared_int8_model_;
   saved_stitch_frame_time_ = stitchFrameTime();
   saved_iteration_settings_ = stitchingIterationSettings();
   saved_stitching_control_points_ = stitchingCalibrationControlPoints();
@@ -17388,6 +17499,7 @@ bool HStreamWindow::applySavedControlConfig(
       if (!prepared_int8_engine_.isEmpty()) {
         config["hstream_ui"]["detector_int8"]["engine"] = prepared_int8_engine_.toStdString();
         config["hstream_ui"]["detector_int8"]["manifest"] = prepared_int8_manifest_.toStdString();
+        config["hstream_ui"]["detector_int8"]["model"] = prepared_int8_model_.toStdString();
       }
     } catch (const std::exception& exc) {
       appendLog(QString("could not save detector precision: %1").arg(exc.what()));

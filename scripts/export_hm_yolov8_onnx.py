@@ -88,6 +88,22 @@ def _resolve_checkpoint(raw: str, timeout: float) -> Path:
     return Path(os.path.expanduser(os.path.expandvars(raw))).resolve()
 
 
+def _student_state_dict(checkpoint: Path):
+    """Return the student weights of a distillation checkpoint, or None if it is a plain detector.
+
+    Distillers save `student.*`, `teacher.*` and `adapters.*`. Below `student.` the keys already
+    match a standalone detector, so stripping the prefix is the whole conversion. Without it
+    mmengine loads nothing and silently exports randomly initialised weights.
+    """
+    import torch
+
+    blob = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    state = blob.get("state_dict", blob) if isinstance(blob, dict) else blob
+    if not any(key.startswith("student.") for key in state):
+        return None
+    return {key[len("student."):]: value for key, value in state.items() if key.startswith("student.")}
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hm-root", type=Path, default=_default_hm_root(), help="Sibling hm checkout root")
@@ -158,7 +174,13 @@ def main() -> int:
     output = args.output.resolve()
     _ensure_parent_dir(output)
 
-    detector = init_detector(str(config), str(checkpoint), device=args.device)
+    student = _student_state_dict(checkpoint)
+    if student is None:
+        detector = init_detector(str(config), str(checkpoint), device=args.device)
+    else:
+        print(f"Distillation checkpoint: loading {len(student)} student.* tensors")
+        detector = init_detector(str(config), None, device=args.device)
+        detector.load_state_dict(student, strict=True)
     detector.eval()
     for parameter in detector.parameters():
         parameter.requires_grad_(False)
@@ -183,8 +205,20 @@ def main() -> int:
         dynamo=False)
 
     model = onnx.load(output)
+    # Only the batch axis is dynamic. Newer torch exporters leave the anchor count symbolic,
+    # which hides the real output shape from nvinfer; pin it to the traced value.
+    with torch.no_grad():
+        anchors = wrapper(dummy).shape[1]
+    output_dims = model.graph.output[0].type.tensor_type.shape.dim
+    pin_anchors = not output_dims[1].dim_value
+    if pin_anchors:
+        output_dims[1].ClearField("dim_param")
+        output_dims[1].dim_value = anchors
+    # Validate before rewriting, so a bad pin cannot replace a good export.
     onnx.checker.check_model(model)
-    print(f"Wrote ONNX: {output}")
+    if pin_anchors:
+        onnx.save(model, output)
+    print(f"Wrote ONNX: {output} (output anchors: {anchors})")
     return 0
 
 

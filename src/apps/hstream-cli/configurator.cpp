@@ -79,6 +79,45 @@ constexpr long kMaxPlayCropperOutputHeight = 4320;
 
 constexpr const char* kRinkMaskFilename = "rink_mask_0.png";
 
+constexpr const char* kDefaultDetectorConfigPrefix = "config_infer_yolov8_hockey";
+
+// Inference-config prefixes the UI offers in Program Controls -> Detection, from
+// the hstream_ui.detector_models catalog. A detector outside the catalog is the
+// user's own and keeps whatever batch and workspace sizing it declares.
+std::vector<std::string> bundled_detector_prefixes(const YAML::Node& config) {
+  std::vector<std::string> prefixes;
+  if (const auto catalog = get_node(config, "hstream_ui.detector_models");
+      catalog.has_value() && catalog->IsSequence()) {
+    for (const YAML::Node& entry : *catalog) {
+      if (!entry.IsMap() || !entry["config_prefix"] || !entry["config_prefix"].IsScalar())
+        continue;
+      try {
+        std::string prefix = entry["config_prefix"].as<std::string>();
+        if (!prefix.empty())
+          prefixes.push_back(std::move(prefix));
+      } catch (const YAML::Exception&) {
+        // A malformed catalog entry must not unsize the other detectors.
+      }
+    }
+  }
+  if (prefixes.empty())
+    prefixes.emplace_back(kDefaultDetectorConfigPrefix);
+  return prefixes;
+}
+
+// Matches "<prefix>.yaml" (FP32) and the "<prefix>_<precision>.yaml" variants.
+bool is_bundled_detector_config(const std::vector<std::string>& prefixes, const std::string& detector_name) {
+  for (const std::string& prefix : prefixes) {
+    if (detector_name == prefix + ".yaml")
+      return true;
+    for (const char* precision : {"fp16", "bf16", "int8"}) {
+      if (detector_name == prefix + "_" + precision + ".yaml")
+        return true;
+    }
+  }
+  return false;
+}
+
 constexpr const char* kEnableFlagField = "enable";
 
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
@@ -5515,10 +5554,8 @@ absl::Status Configurator::apply_gpu_memory_profile(
     if (primary_gie["config-file"] && primary_gie["config-file"].IsScalar())
       detector_config = primary_gie["config-file"].as<std::string>();
     const std::string detector_name = detector_config.filename().string();
-    const bool bundled_detector = detector_name == "config_infer_yolov8_hockey.yaml" ||
-        detector_name == "config_infer_yolov8_hockey_fp16.yaml" ||
-        detector_name == "config_infer_yolov8_hockey_bf16.yaml" ||
-        detector_name == "config_infer_yolov8_hockey_int8.yaml";
+    const std::vector<std::string> detector_prefixes = bundled_detector_prefixes(config_);
+    const bool bundled_detector = is_bundled_detector_config(detector_prefixes, detector_name);
     const bool explicit_detector_config = explicit_value_rank("pipeline.primary-gie.config-file") >= 1;
     const bool explicit_detector_engine = explicit_value_rank("pipeline.primary-gie.model-engine-file") >= 1;
     const bool bundled_detector_selection = bundled_detector && (!explicit_detector_engine || explicit_detector_config);
@@ -5528,8 +5565,12 @@ absl::Status Configurator::apply_gpu_memory_profile(
     }
     if (explicit_value_rank("pipeline.primary-gie.config-file") < 1 && primary_gie["config-file"] &&
         primary_gie["config-file"].IsScalar()) {
-      if (detector_config.filename() == "config_infer_yolov8_hockey.yaml") {
-        primary_gie["config-file"] = (detector_config.parent_path() / "config_infer_yolov8_hockey_fp16.yaml").string();
+      // Upgrade whichever bundled detector is in force to its FP16 variant.
+      for (const std::string& prefix : detector_prefixes) {
+        if (detector_name != prefix + ".yaml")
+          continue;
+        primary_gie["config-file"] = (detector_config.parent_path() / (prefix + "_fp16.yaml")).string();
+        break;
       }
     }
   }

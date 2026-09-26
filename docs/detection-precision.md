@@ -1,8 +1,8 @@
 # Detection precision
 
-Program Controls → Detection selects FP32, FP16, BF16 or INT8 for the bundled
-YOLOv8 detector. Changes apply on the next run; Save Preset stores them in the
-game configuration and includes them in exported jobs. FP32 remains the default.
+Program Controls → Detection selects the detector model and then FP32, FP16,
+BF16 or INT8 for it. Changes apply on the next run; Save Preset stores them in
+the game configuration and includes them in exported jobs. FP32 remains the default.
 “Use saved detector configuration” cancels an unsaved precision choice and keeps
 custom/inherited configurations and engines intact. Reset Controls selects FP32.
 Selecting a bundled precision replaces a conflicting engine override as well as
@@ -14,6 +14,50 @@ its inference config, including an inherited override.
 | FP16 | Built and cached by nvinfer when needed; no calibration |
 | BF16 | Offline engine build with a matching TensorRT SDK; no calibration |
 | INT8 | Offline calibration/quantization and engine build; accuracy evaluation required |
+
+## Detection model
+
+`hstream_ui.detector_models` in `configs/baseline.yaml` lists the models the
+Detection tab offers. Each entry names a `config_prefix`: the bare prefix is the
+FP32 inference config and the selected precision appends `_fp16`, `_bf16` or
+`_int8`, so a model contributes four `configs/config_infer_*.yaml` files. The
+first entry is the default and the one Reset Controls restores.
+
+| Model | Network | Inference size | Classes | Prefix |
+| --- | --- | --- | --- | --- |
+| Default | YOLOv8-m | 1984x736 | 80 (COCO) | `config_infer_yolov8_hockey` |
+| Distilled | YOLOv8-s | 1408x544 | 1 (person) | `config_infer_yolov8s_hockey` |
+
+The distilled model is a YOLOv8-m to YOLOv8-s knowledge distillation trained at
+1408x544, exported by `scripts/export_hm_yolov8_onnx.py`. It is roughly a
+quarter of the default's detector cost, at some accuracy.
+
+**The two models are not drop-in equivalents.** They differ in inference
+resolution *and* label space: the default emits any of the 80 COCO classes, the
+distilled network only ever emits person. Nothing filters on class id today
+(`person_class_id` is -1), so both feed the play tracker, but revalidate
+tracking and the oversized-player thresholds on any game switched between them
+rather than assuming the tuning carries over.
+
+Model selection is per game: it is stored as `pipeline.primary-gie.config-file`
+in the game's `config.yaml`, the same key the precision choice uses. A prepared
+INT8 engine is recorded with the model it was built from
+(`hstream_ui.detector_int8.model`) and is only reused for that model; selecting
+a different one falls back to that model's own engine path.
+
+The low-memory GPU profile treats every catalogued model as bundled, so all of
+them get the batch-one and 64 MiB workspace sizing on small GPUs. A detector
+config outside the catalog is still treated as the user's own and keeps whatever
+sizing it declares.
+
+`./run.sh --models-fp16|--models-int8|--models-bf16` act on the default family
+unless given `--models-detector=<config_prefix>`. Without it they override a
+game's saved model choice as well as its precision. Build the distilled model's
+BF16 engine with:
+
+```sh
+./run.sh --game-id=GAME --models-bf16-build --models-detector=config_infer_yolov8s_hockey
+```
 
 FP16/BF16 permit mixed execution with higher precision where required. The
 engine's name is not evidence of its internal precision. The offline builder
