@@ -39,7 +39,7 @@ class HighlightsDialog : public QDialog {
 
  private:
   enum class Job { kNone, kPreview, kExport };
-  enum class Stage { kIdle, kCli, kProbe, kConcat };
+  enum class Stage { kIdle, kCli, kProbe, kVideoPackets, kConcat };
   struct Chunk {
     HighlightInterval interval;
     QStringList paths;
@@ -62,10 +62,12 @@ class HighlightsDialog : public QDialog {
   void beginJob(Job job, bool selected, bool loop);
   void runNextClip();
   void startProbe();
+  void startVideoPacketProbe();
   void startConcat();
   void publishConcat();
   void finishJob(bool success, const QString& message);
   void readProcessOutput();
+  void consumeVideoPacketOutput(const QString& output, bool flush);
   void processFinished(int code, QProcess::ExitStatus status);
   void appendLog(const QString& line);
   QStringList cliArguments(const HighlightInterval& interval, const QStringList& routes) const;
@@ -94,7 +96,12 @@ class HighlightsDialog : public QDialog {
   QStringList published_paths_;
   QString process_output_buffer_;
   QString probe_output_;
+  QString probe_packet_buffer_;
   QString probe_baseline_;
+  double probe_video_start_seconds_{0};
+  double probe_video_end_seconds_{0};
+  bool probe_saw_video_packet_{false};
+  bool probe_video_packet_error_{false};
   QStringList route_video_codecs_;
   QVector<bool> route_has_audio_;
   QString current_route_;

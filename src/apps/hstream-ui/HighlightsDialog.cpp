@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/HighlightsDialog.h"
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -31,6 +32,7 @@
 
 #ifdef Q_OS_UNIX
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
@@ -68,6 +70,15 @@ QString streamSignature(const QJsonObject& stream) {
       normalized.insert(QLatin1String(key), stream.value(QLatin1String(key)));
   }
   return QString::fromUtf8(QJsonDocument(normalized).toJson(QJsonDocument::Compact));
+}
+
+void requestProcessStop(QProcess* process, bool cli) {
+#ifdef Q_OS_UNIX
+  const qint64 pid = process->processId();
+  if (cli && pid > 0 && ::kill(static_cast<pid_t>(pid), SIGINT) == 0)
+    return;
+#endif
+  process->terminate();
 }
 
 } // namespace
@@ -251,8 +262,9 @@ HighlightsDialog::HighlightsDialog(
 
 HighlightsDialog::~HighlightsDialog() {
   if (process_.state() != QProcess::NotRunning) {
-    process_.terminate();
-    if (!process_.waitForFinished(4000)) {
+    const bool cli = stage_ == Stage::kCli;
+    requestProcessStop(&process_, cli);
+    if (!process_.waitForFinished(cli ? 15000 : 4000)) {
       process_.kill();
       process_.waitForFinished(1000);
     }
@@ -616,7 +628,9 @@ void HighlightsDialog::runNextClip() {
   appendLog(QString("%1 %2–%3")
                 .arg(interval.label, FormatHighlightTime(interval.start_ms), FormatHighlightTime(interval.end_ms)));
   process_.setWorkingDirectory(working_dir_);
-  process_.setProcessEnvironment(env_);
+  QProcessEnvironment cli_env = env_;
+  cli_env.insert("HSTREAM_UI_PARENT_PID", QString::number(QCoreApplication::applicationPid()));
+  process_.setProcessEnvironment(cli_env);
   process_.start(runner_, cliArguments(interval, job_ == Job::kExport ? routes_ : QStringList{}));
 }
 
@@ -625,6 +639,12 @@ void HighlightsDialog::readProcessOutput() {
   const QString stderr_text = QString::fromLocal8Bit(process_.readAllStandardError());
   if (stage_ == Stage::kProbe) {
     probe_output_ += stdout_text;
+    if (!stderr_text.trimmed().isEmpty())
+      appendLog(stderr_text.trimmed());
+    return;
+  }
+  if (stage_ == Stage::kVideoPackets) {
+    consumeVideoPacketOutput(stdout_text, false);
     if (!stderr_text.trimmed().isEmpty())
       appendLog(stderr_text.trimmed());
     return;
@@ -678,9 +698,9 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
         false,
         QString("%1 failed with exit code %2. See the log below.")
             .arg(
-                stage_ == Stage::kCli         ? "Playback"
-                    : stage_ == Stage::kProbe ? "ffprobe"
-                                              : "ffmpeg")
+                stage_ == Stage::kCli                                           ? "Playback"
+                    : stage_ == Stage::kProbe || stage_ == Stage::kVideoPackets ? "ffprobe"
+                                                                                : "ffmpeg")
             .arg(code));
     return;
   }
@@ -773,6 +793,33 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
           static_cast<qint64>(std::llround(duration * 1000.0)));
       chunks_[probe_clip_index_].start_time_ms[probe_route_index_] =
           std::isfinite(start_time) ? static_cast<qint64>(std::llround(start_time * 1000.0)) : 0;
+      startVideoPacketProbe();
+      return;
+    }
+    case Stage::kVideoPackets: {
+      consumeVideoPacketOutput({}, true);
+      if (probe_video_packet_error_ || !probe_saw_video_packet_) {
+        finishJob(false, "Could not read video packet times for " + current_expected_path_);
+        return;
+      }
+      const qint64 video_start_ms = static_cast<qint64>(std::llround(probe_video_start_seconds_ * 1000.0));
+      const qint64 video_end_ms = static_cast<qint64>(std::llround(probe_video_end_seconds_ * 1000.0));
+      const qint64 format_start_ms = chunks_[probe_clip_index_].start_time_ms[probe_route_index_];
+      const qint64 video_span_ms = video_end_ms - video_start_ms;
+      const qint64 video_end_from_format_ms = video_end_ms - format_start_ms;
+      const qint64 expected_ms =
+          chunks_[probe_clip_index_].interval.end_ms - chunks_[probe_clip_index_].interval.start_ms;
+      if (video_span_ms <= 0 || video_end_from_format_ms <= 0 || video_start_ms - format_start_ms > 500) {
+        finishJob(false, "A clip has incomplete video packet timing: " + current_expected_path_);
+        return;
+      }
+      if (!chunks_[probe_clip_index_].source_eos &&
+          (video_span_ms + 500 < expected_ms || video_end_from_format_ms + 500 < expected_ms)) {
+        finishJob(false, "A clip's video ended before its requested interval: " + current_expected_path_);
+        return;
+      }
+      chunks_[probe_clip_index_].effective_duration_ms[probe_route_index_] =
+          std::min(chunks_[probe_clip_index_].effective_duration_ms[probe_route_index_], video_end_from_format_ms);
       ++probe_clip_index_;
       if (probe_clip_index_ >= chunks_.size()) {
         probe_clip_index_ = 0;
@@ -807,6 +854,69 @@ void HighlightsDialog::startProbe() {
   process_.setWorkingDirectory(work_dir_);
   process_.setProcessEnvironment(env_);
   process_.start(ffprobe, {"-v", "error", "-show_streams", "-show_format", "-of", "json", current_expected_path_});
+}
+
+void HighlightsDialog::consumeVideoPacketOutput(const QString& output, bool flush) {
+  probe_packet_buffer_ += output;
+  if (flush)
+    probe_packet_buffer_ += '\n';
+  while (true) {
+    const int newline = probe_packet_buffer_.indexOf('\n');
+    if (newline < 0)
+      break;
+    const QString line = probe_packet_buffer_.left(newline).trimmed();
+    probe_packet_buffer_.remove(0, newline + 1);
+    if (line.isEmpty())
+      continue;
+    const QStringList columns = line.split(',');
+    if (columns.size() != 2) {
+      probe_video_packet_error_ = true;
+      continue;
+    }
+    bool pts_ok = false;
+    bool duration_ok = false;
+    const double pts = columns[0].toDouble(&pts_ok);
+    const double duration = columns[1] == "N/A" ? 0 : columns[1].toDouble(&duration_ok);
+    duration_ok = duration_ok || columns[1] == "N/A";
+    if (!pts_ok || !duration_ok || !std::isfinite(pts) || !std::isfinite(duration) || duration < 0 ||
+        !std::isfinite(pts + duration)) {
+      probe_video_packet_error_ = true;
+      continue;
+    }
+    if (!probe_saw_video_packet_) {
+      probe_video_start_seconds_ = pts;
+      probe_video_end_seconds_ = pts + duration;
+      probe_saw_video_packet_ = true;
+    } else {
+      probe_video_start_seconds_ = std::min(probe_video_start_seconds_, pts);
+      probe_video_end_seconds_ = std::max(probe_video_end_seconds_, pts + duration);
+    }
+  }
+  if (probe_packet_buffer_.size() > 4096)
+    probe_video_packet_error_ = true;
+}
+
+void HighlightsDialog::startVideoPacketProbe() {
+  stage_ = Stage::kVideoPackets;
+  probe_packet_buffer_.clear();
+  probe_video_start_seconds_ = 0;
+  probe_video_end_seconds_ = 0;
+  probe_saw_video_packet_ = false;
+  probe_video_packet_error_ = false;
+  process_.setWorkingDirectory(work_dir_);
+  process_.setProcessEnvironment(env_);
+  process_.start(
+      env_.value("HSTREAM_UI_FFPROBE", "ffprobe"),
+      {"-v",
+       "error",
+       "-select_streams",
+       "v:0",
+       "-show_packets",
+       "-show_entries",
+       "packet=pts_time,duration_time",
+       "-of",
+       "csv=p=0",
+       current_expected_path_});
 }
 
 void HighlightsDialog::startConcat() {
@@ -969,9 +1079,11 @@ void HighlightsDialog::stop() {
     finishJob(false, "Highlights job stopped.");
     return;
   }
-  process_.terminate();
-  QTimer::singleShot(4000, this, [this] {
-    if (cancelling_ && process_.state() != QProcess::NotRunning)
+  const bool cli = stage_ == Stage::kCli;
+  const qint64 stopping_pid = process_.processId();
+  requestProcessStop(&process_, cli);
+  QTimer::singleShot(cli ? 15000 : 4000, this, [this, stopping_pid] {
+    if (cancelling_ && process_.processId() == stopping_pid && process_.state() != QProcess::NotRunning)
       process_.kill();
   });
 }

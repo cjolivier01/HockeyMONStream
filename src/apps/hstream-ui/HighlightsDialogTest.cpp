@@ -158,6 +158,7 @@ int main(int argc, char** argv) {
     return 1;
   script.write(R"(#!/bin/sh
 set -eu
+test -n "${HSTREAM_UI_PARENT_PID:-}"
 out=
 sample="$HSTREAM_TEST_RED"
 echo "$*" >> "$HSTREAM_TEST_CALLS"
@@ -293,6 +294,107 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
   incompatible_dialog.findChild<QPushButton*>("highlightAddButton")->click();
   if (!incompatible_file.open(QIODevice::ReadOnly) || incompatible_file.readAll() != incompatible_plan) {
     std::cerr << "Editing an unreadable plan must not replace it" << std::endl;
+    return 1;
+  }
+  const QString short_video = temporary.filePath("short-video.mkv");
+  if (!run(
+          "ffmpeg",
+          {"-hide_banner",
+           "-loglevel",
+           "error",
+           "-y",
+           "-f",
+           "lavfi",
+           "-i",
+           "color=c=red:s=96x64:r=30:d=1",
+           "-f",
+           "lavfi",
+           "-i",
+           "sine=frequency=440:sample_rate=48000:duration=3",
+           "-c:v",
+           "libx264",
+           "-pix_fmt",
+           "yuv420p",
+           "-c:a",
+           "aac",
+           short_video}))
+    return 1;
+  const QString short_video_game_dir = temporary.filePath("short-video-game");
+  if (!QDir().mkpath(short_video_game_dir))
+    return 1;
+  QProcessEnvironment short_video_env = env;
+  short_video_env.insert("HSTREAM_TEST_RED", short_video);
+  hm::ui::HighlightsDialog short_video_dialog(
+      "short-video-game",
+      short_video_game_dir,
+      runner,
+      temporary.path(),
+      temporary.path(),
+      short_video_env,
+      {"-g", "short-video-game"});
+  if (!addRange(&short_video_dialog, "First", "00:00:00", "00:00:03"))
+    return 1;
+  short_video_dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
+  for (int i = 0; i < 3000 && short_video_dialog.isBusy(); ++i) {
+    app.processEvents();
+    QThread::msleep(10);
+  }
+  if (short_video_dialog.isBusy() ||
+      !short_video_dialog.findChild<QLabel*>("highlightStatus")->text().contains("video ended before") ||
+      QFileInfo::exists(QDir(short_video_game_dir).filePath("short-video-game-highlights-program-1.mp4"))) {
+    std::cerr << "A long audio stream must not hide an incomplete video clip" << std::endl;
+    return 1;
+  }
+  const QString signal_runner = temporary.filePath("signal-runner.sh");
+  QFile signal_script(signal_runner);
+  if (!signal_script.open(QIODevice::WriteOnly | QIODevice::Text))
+    return 1;
+  signal_script.write(R"(#!/bin/sh
+set -eu
+test -n "${HSTREAM_UI_PARENT_PID:-}"
+trap 'printf INT > "$HSTREAM_TEST_SIGNAL"; exit 0' INT
+trap 'printf TERM > "$HSTREAM_TEST_SIGNAL"; exit 0' TERM
+printf ready > "$HSTREAM_TEST_READY"
+while :; do sleep 0.1; done
+)");
+  signal_script.close();
+  if (!signal_script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner))
+    return 1;
+  const QString signal_game_dir = temporary.filePath("signal-game");
+  if (!QDir().mkpath(signal_game_dir))
+    return 1;
+  QProcessEnvironment signal_env = env;
+  const QString signal_path = temporary.filePath("signal.txt");
+  const QString ready_path = temporary.filePath("ready.txt");
+  signal_env.insert("HSTREAM_TEST_SIGNAL", signal_path);
+  signal_env.insert("HSTREAM_TEST_READY", ready_path);
+  hm::ui::HighlightsDialog signal_dialog(
+      "signal-game",
+      signal_game_dir,
+      signal_runner,
+      temporary.path(),
+      temporary.path(),
+      signal_env,
+      {"-g", "signal-game"});
+  if (!addRange(&signal_dialog, "First", "00:00:00", "00:00:01"))
+    return 1;
+  signal_dialog.findChild<QPushButton*>("highlightPreviewSelectedButton")->click();
+  for (int i = 0; i < 1000 && !QFileInfo::exists(ready_path); ++i) {
+    app.processEvents();
+    QThread::msleep(1);
+  }
+  if (!QFileInfo::exists(ready_path)) {
+    std::cerr << "The signal fixture did not start" << std::endl;
+    return 1;
+  }
+  signal_dialog.findChild<QPushButton*>("highlightStopButton")->click();
+  for (int i = 0; i < 3000 && signal_dialog.isBusy(); ++i) {
+    app.processEvents();
+    QThread::msleep(1);
+  }
+  QFile signal_file(signal_path);
+  if (signal_dialog.isBusy() || !signal_file.open(QIODevice::ReadOnly) || signal_file.readAll() != "INT") {
+    std::cerr << "Stopping a clip must request graceful SIGINT shutdown" << std::endl;
     return 1;
   }
   return 0;
