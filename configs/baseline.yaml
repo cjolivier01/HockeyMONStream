@@ -62,6 +62,17 @@ runtime:
   video_converter: "nvvideoconvert"
 
 hstream_ui:
+  # Program detector models offered in the Detection tab. config_prefix names a
+  # configs/config_infer_*.yaml family: the bare prefix is FP32 and the selected
+  # precision appends _fp16/_bf16/_int8. The first entry is the default.
+  detector_models:
+    - id: default
+      label: Default (YOLOv8-m, 1984x736)
+      config_prefix: config_infer_yolov8_hockey
+    - id: distilled-s
+      label: Distilled (YOLOv8-s, 1408x544)
+      config_prefix: config_infer_yolov8s_hockey
+
   drivegpt_database:
     # Initial checkbox state; capture disables seeking for the run.
     enabled: true

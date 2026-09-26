@@ -1,8 +1,8 @@
 # Detection precision
 
-Program Controls → Detection selects FP32, FP16, BF16 or INT8 for the bundled
-YOLOv8 detector. Changes apply on the next run; Save Preset stores them in the
-game configuration and includes them in exported jobs. FP32 remains the default.
+Program Controls → Detection selects the detector model and then FP32, FP16,
+BF16 or INT8 for it. Changes apply on the next run; Save Preset stores them in
+the game configuration and includes them in exported jobs. FP32 remains the default.
 “Use saved detector configuration” cancels an unsaved precision choice and keeps
 custom/inherited configurations and engines intact. Reset Controls selects FP32.
 Selecting a bundled precision replaces a conflicting engine override as well as
@@ -14,6 +14,28 @@ its inference config, including an inherited override.
 | FP16 | Built and cached by nvinfer when needed; no calibration |
 | BF16 | Offline engine build with a matching TensorRT SDK; no calibration |
 | INT8 | Offline calibration/quantization and engine build; accuracy evaluation required |
+
+## Detection model
+
+`hstream_ui.detector_models` in `configs/baseline.yaml` lists the models the
+Detection tab offers. Each entry names a `config_prefix`: the bare prefix is the
+FP32 inference config and the selected precision appends `_fp16`, `_bf16` or
+`_int8`, so a model contributes four `configs/config_infer_*.yaml` files. The
+first entry is the default and the one Reset Controls restores.
+
+| Model | Network | Inference size | Prefix |
+| --- | --- | --- | --- |
+| Default | YOLOv8-m | 1984x736 | `config_infer_yolov8_hockey` |
+| Distilled | YOLOv8-s | 1408x544 | `config_infer_yolov8s_hockey` |
+
+The distilled model is a YOLOv8-m to YOLOv8-s knowledge distillation trained at
+1408x544, exported by `scripts/export_hm_yolov8_onnx.py`. It is roughly a
+quarter of the default's detector cost, at some accuracy. Because its inference
+resolution differs, revalidate tracking and the oversized-player thresholds on
+any game switched to it rather than assuming the default's tuning carries over.
+
+Model selection is per game: it is stored as `pipeline.primary-gie.config-file`
+in the game's `config.yaml`, the same key the precision choice uses.
 
 FP16/BF16 permit mixed execution with higher precision where required. The
 engine's name is not evidence of its internal precision. The offline builder
