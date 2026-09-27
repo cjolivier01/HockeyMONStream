@@ -2237,7 +2237,9 @@ int remove_named_archive_cleanup_directory(int cleanup_fd, int parent_fd, const 
 }
 
 bool archive_cleanup_directory_contains_only_metadata(int cleanup_fd) {
-  const int scan_fd = ::dup(cleanup_fd);
+  // Open a fresh file description so a second retirement attempt cannot inherit
+  // the offset left behind by the first one and report an emptied directory.
+  const int scan_fd = ::openat(cleanup_fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (scan_fd < 0)
     return false;
   DIR* directory = ::fdopendir(scan_fd);
@@ -2861,6 +2863,11 @@ absl::Status remove_archive_entry_if_owned(
     directory_sync_result = ::fsync(parent_fd);
     directory_sync_errno = errno;
     if (directory_sync_result != 0) {
+      // Reaching here means the guard was unlinked and the transaction
+      // directory retired, so the inode has no links left and this restore
+      // cannot actually succeed: link_pinned_file fails with ENOENT once
+      // nlink reaches zero, by either of its two strategies. The UI path
+      // rolls back from the still-present cleanup guard instead.
       restore_after_sync_result = hm::link_pinned_file(pinned_fd, parent_fd, filename.c_str());
       restore_after_sync_errno = errno;
       if (restore_after_sync_result == 0)
