@@ -402,6 +402,9 @@ class HStreamWindow : public QMainWindow {
   QStringList pipelineArguments(bool standalone = false) const;
   QString highBitDepthMode() const;
   QString detectorPrecision() const;
+  // Seam blend mode for the next run: "laplacian" or "alpha".
+  QString blendMode() const;
+  double blendFeatherFraction() const;
   std::vector<DetectorModel> detectorModels() const;
   QString detectorModel() const;
   QString detectorConfigPrefix() const;
@@ -410,6 +413,7 @@ class HStreamWindow : public QMainWindow {
   QString detectorConfigName() const;
   QString detectorEnginePath() const;
   void loadDetectorPrecision(const YAML::Node& config);
+  void loadBlendMode(const YAML::Node& config);
   void updateDefaultGpuMemoryProfile(const YAML::Node& game_config);
   void loadPlayerAnalyticsConfig(const YAML::Node& config);
   bool validatePlayerAnalyticsForRun();
@@ -565,6 +569,11 @@ class HStreamWindow : public QMainWindow {
   QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
+  QComboBox* blend_mode_combo_{nullptr};
+  QDoubleSpinBox* blend_feather_spin_{nullptr};
+  QWidget* blend_feather_row_{nullptr};
+  QString default_blend_mode_{"laplacian"};
+  double default_blend_feather_fraction_{0.05};
   QComboBox* control_point_resolution_combo_{nullptr};
   QString control_point_resolution_{"native"};
   QSpinBox* control_points_spin_{nullptr};
@@ -908,6 +917,11 @@ class HStreamWindow : public QMainWindow {
   QString development_bazel_bin_;
   QString saved_stitch_frame_time_;
   QString saved_control_point_resolution_{"native"};
+  QString saved_blend_mode_{"laplacian"};
+  double saved_blend_feather_fraction_{0.05};
+  // A stitching.blend_mode the live path cannot represent (HockeyMON's "multiblend"). Kept so a
+  // run does not silently override it and a save does not clobber it.
+  QString unrepresentable_blend_mode_;
   QString saved_control_point_matcher_;
   QString saved_mapping_backend_;
   hm::stitching::StitchCameraSelection saved_camera_selection_;

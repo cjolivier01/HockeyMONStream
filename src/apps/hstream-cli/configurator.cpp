@@ -66,6 +66,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 
 namespace fs = std::filesystem;
@@ -5953,6 +5954,93 @@ absl::Status Configurator::map_common_config_keys() {
         stitcher["stitch-compute-precision"] = "fp16";
       else
         return absl::InvalidArgumentError("stitching.dtype must be float32 or float16");
+    }
+
+    // Promote the underscore native spellings before mapping, the way the rotation block below
+    // does; otherwise an operator's pipeline.hmstitcher.blend_mode is stranded.
+    for (const auto& [dashed, underscored] : std::initializer_list<std::pair<const char*, const char*>>{
+             {"blend-mode", "blend_mode"}, {"blend-feather-fraction", "blend_feather_fraction"}}) {
+      const std::string dashed_path = std::string("pipeline.hmstitcher.") + dashed;
+      const std::string underscored_path = std::string("pipeline.hmstitcher.") + underscored;
+      const int dashed_rank = explicit_value_rank(dashed_path);
+      const int underscored_rank = explicit_value_rank(underscored_path);
+      if (stitcher[underscored].IsDefined() && (!stitcher[dashed].IsDefined() || underscored_rank > dashed_rank)) {
+        stitcher[dashed] = YAML::Clone(stitcher[underscored]);
+        if (underscored_rank >= 0)
+          explicit_value_ranks_[dashed_path] = underscored_rank;
+      }
+    }
+
+    std::optional<YAML::Node> blend_mode;
+    HM_ASSIGN_OR_RETURN(
+        blend_mode,
+        canonical_source("stitching.blend_mode", "pipeline.hmstitcher.blend-mode", stitcher["blend-mode"], true));
+    if (blend_mode.has_value()) {
+      // Null means inherit, matching the other optional stitching keys in baseline.yaml.
+      if (!(*blend_mode).IsNull()) {
+        if (!(*blend_mode).IsScalar())
+          return absl::InvalidArgumentError("stitching.blend_mode must be laplacian, alpha or gpu-hard-seam");
+        // HockeyMON's Python stitcher shares this key and also accepts "multiblend", which only
+        // the offline path implements. Reject it here rather than silently running something else.
+        absl::StatusOr<hm::stitching::BlendMode> parsed =
+            hm::stitching::ParseBlendMode((*blend_mode).as<std::string>());
+        HM_RETURN_IF_ERROR(parsed.status());
+        stitcher["blend-mode"] = hm::stitching::BlendModeName(*parsed);
+      }
+    }
+
+    std::optional<YAML::Node> feather_fraction;
+    HM_ASSIGN_OR_RETURN(
+        feather_fraction,
+        canonical_source(
+            "stitching.blend_feather_fraction",
+            "pipeline.hmstitcher.blend-feather-fraction",
+            stitcher["blend-feather-fraction"],
+            // Optional, unlike stitching.blend_mode: HockeyMON's copy of baseline.yaml does not
+            // carry this key, and HM_CONFIG_ROOT replaces the bundled baseline outright rather
+            // than merging with it, so requiring it would fail startup against that config root.
+            // When it is absent the stitcher falls back to hm-cupano's own default width.
+            false));
+    if (feather_fraction.has_value()) {
+      // Null means inherit, matching the other optional stitching keys in baseline.yaml.
+      if (!(*feather_fraction).IsNull()) {
+        if (!(*feather_fraction).IsScalar())
+          return absl::InvalidArgumentError("stitching.blend_feather_fraction must be a number in [0, 1]");
+        double parsed = 0.0;
+        try {
+          parsed = (*feather_fraction).as<double>();
+        } catch (const YAML::Exception& error) {
+          return absl::InvalidArgumentError(
+              std::string("stitching.blend_feather_fraction must be a number in [0, 1]: ") + error.what());
+        }
+        if (!std::isfinite(parsed) || parsed < 0.0 || parsed > 1.0)
+          return absl::InvalidArgumentError("stitching.blend_feather_fraction must be a number in [0, 1]");
+        stitcher["blend-feather-fraction"] = parsed;
+      }
+    }
+
+    // Whatever survived the two blocks above, canonical or a direct native override, has to be
+    // something the live path can actually run. The plugin does reject a bad value, but its
+    // SetProperty failure is not fatal on the construction path, so without this a native
+    // pipeline.hmstitcher.blend-mode: multiblend runs and silently renders Laplacian.
+    if (stitcher["blend-mode"].IsDefined() && !stitcher["blend-mode"].IsNull()) {
+      if (!stitcher["blend-mode"].IsScalar())
+        return absl::InvalidArgumentError("pipeline.hmstitcher.blend-mode must be laplacian, alpha or gpu-hard-seam");
+      absl::StatusOr<hm::stitching::BlendMode> parsed =
+          hm::stitching::ParseBlendMode(stitcher["blend-mode"].as<std::string>());
+      HM_RETURN_IF_ERROR(parsed.status());
+      stitcher["blend-mode"] = hm::stitching::BlendModeName(*parsed);
+    }
+    if (stitcher["blend-feather-fraction"].IsDefined() && !stitcher["blend-feather-fraction"].IsNull()) {
+      double native_feather = 0.0;
+      try {
+        native_feather = stitcher["blend-feather-fraction"].as<double>();
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError(
+            std::string("pipeline.hmstitcher.blend-feather-fraction must be a number in [0, 1]: ") + error.what());
+      }
+      if (!std::isfinite(native_feather) || native_feather < 0.0 || native_feather > 1.0)
+        return absl::InvalidArgumentError("pipeline.hmstitcher.blend-feather-fraction must be a number in [0, 1]");
     }
 
     // Promote the highest-ranked legacy canonical spelling before mapping it

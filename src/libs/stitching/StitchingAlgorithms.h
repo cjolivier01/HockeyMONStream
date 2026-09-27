@@ -18,6 +18,22 @@ enum class MappingBackend {
 const char* MappingBackendName(MappingBackend backend);
 absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value);
 
+// How the live CUDA stitcher combines the remapped cameras. This is a render-time choice only; it
+// does not affect calibration, so it must stay out of StitchingBackendChoices.
+//
+// kLaplacian mixes the cameras across every spatial scale in the overlap, which hides exposure
+// differences but also softens the detail the detector sees. kAlpha crossfades over a narrow band
+// around the seam and leaves the rest of the overlap untouched. kHardSeam does not mix at all.
+enum class BlendMode {
+  kLaplacian,
+  kAlpha,
+  kHardSeam,
+};
+
+const char* BlendModeName(BlendMode mode);
+BlendMode DefaultBlendMode();
+absl::StatusOr<BlendMode> ParseBlendMode(const std::string& value);
+
 enum class StitchProjection {
   kRectilinear,
   kCylindrical,

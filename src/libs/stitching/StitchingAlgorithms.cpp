@@ -135,6 +135,36 @@ const char* MappingBackendName(MappingBackend backend) {
   return "nona";
 }
 
+const char* BlendModeName(BlendMode mode) {
+  switch (mode) {
+    case BlendMode::kLaplacian:
+      return "laplacian";
+    case BlendMode::kAlpha:
+      return "alpha";
+    case BlendMode::kHardSeam:
+      return "gpu-hard-seam";
+  }
+  return "laplacian";
+}
+
+BlendMode DefaultBlendMode() {
+  return BlendMode::kLaplacian;
+}
+
+absl::StatusOr<BlendMode> ParseBlendMode(const std::string& raw) {
+  // normalize_choice also maps '_' to '-', matching the plugin's normalized_property_value, so
+  // "Laplacian" and "gpu_hard_seam" are accepted on both the canonical and the native path.
+  const std::string value = normalize_choice(raw);
+  if (value == "laplacian")
+    return BlendMode::kLaplacian;
+  if (value == "alpha")
+    return BlendMode::kAlpha;
+  // HockeyMON's Python stitcher names the same mode "gpu-hard-seam"; accept both spellings.
+  if (value == "gpu-hard-seam" || value == "hard-seam" || value == "hard")
+    return BlendMode::kHardSeam;
+  return absl::InvalidArgumentError("blend mode must be laplacian, alpha or gpu-hard-seam: " + raw);
+}
+
 absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value) {
   const std::string normalized = normalize_choice(value.empty() ? "nona" : value);
   if (normalized == "nona")

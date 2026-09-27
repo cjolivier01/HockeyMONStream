@@ -102,7 +102,10 @@ void set_config_from_yaml(const YAML::Node& yaml, const ConfigLocator& locator, 
           loc->second);
     } else if (loc_char != locator.char_array_locators.end()) {
       assert(!ignored);
-      ::strncpy(loc_char->second.first, value.as<std::string>().c_str(), loc_char->second.second);
+      // strncpy does not terminate when the source fills the buffer, and these arrays are later
+      // streamed as C strings.
+      ::strncpy(loc_char->second.first, value.as<std::string>().c_str(), loc_char->second.second - 1);
+      loc_char->second.first[loc_char->second.second - 1] = '\0';
     } else if (loc_char_ptr != locator.char_ptr_locators.end()) {
       assert(!ignored);
       *loc_char_ptr->second.first = strdup(value.as<std::string>().c_str());

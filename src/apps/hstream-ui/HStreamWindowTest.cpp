@@ -259,6 +259,23 @@ struct HStreamWindowTestAccess {
     return window->pipeline_process_ ? window->pipeline_process_->processEnvironment().value(name) : QString();
   }
 
+  // A live pipeline, without one of the real run paths. resetCameraControls only asks the process
+  // for its state, so anything long-lived is enough to exercise the next-run guards.
+  static bool startStubPipelineProcess(HStreamWindow* window) {
+    window->pipeline_process_ = new QProcess(window);
+    window->pipeline_process_->start("sleep", {"120"});
+    return window->pipeline_process_->waitForStarted(5000);
+  }
+
+  static void killStubPipelineProcess(HStreamWindow* window) {
+    if (!window->pipeline_process_)
+      return;
+    window->pipeline_process_->kill();
+    window->pipeline_process_->waitForFinished(5000);
+    delete window->pipeline_process_;
+    window->pipeline_process_ = nullptr;
+  }
+
   static void setCalibrationPrecisionRunActive(HStreamWindow* window, bool active) {
     window->active_run_is_calibration_ = active;
     window->active_run_high_bit_depth_ = false;
@@ -12952,6 +12969,225 @@ bool test_gpu_memory_profile() {
       "Saving a preset must not persist the session GPU memory mode to YAML");
 }
 
+bool test_blend_mode() {
+  QTemporaryDir blend_games;
+  if (!blend_games.isValid())
+    return false;
+  struct RestoreGameRoot {
+    QByteArray previous{qgetenv("HM_GAME_DIR")};
+    ~RestoreGameRoot() {
+      qputenv("HM_GAME_DIR", previous);
+    }
+  } restore;
+  qputenv("HM_GAME_DIR", blend_games.path().toLocal8Bit());
+  const QString root = blend_games.path();
+  const QString game = "blend-mode-game";
+  const QString other_game = "blend-mode-other";
+  QDir().mkpath(QDir(root).filePath(game));
+  QDir().mkpath(QDir(root).filePath(other_game));
+  const auto config_path = QDir(root).filePath(game + "/config.yaml").toStdString();
+  const auto other_config_path = QDir(root).filePath(other_game + "/config.yaml").toStdString();
+  // A mode the combo cannot show. HockeyMON's offline stitcher accepts it; the live path does not.
+  std::ofstream(other_config_path) << "stitching:\n  blend_mode: multiblend\n";
+
+  HStreamWindow window;
+  auto* games = require_child<QComboBox>(&window, "gameSelector");
+  auto* blend = require_child<QComboBox>(&window, "blendModeCombo");
+  auto* feather = require_child<QDoubleSpinBox>(&window, "blendFeatherFractionSpin");
+  auto* feather_row = require_child<QWidget>(&window, "blendFeatherRow");
+  auto* save = require_child<QPushButton>(&window, "savePresetButton");
+  if (!games || !blend || !feather || !feather_row || !save)
+    return false;
+  games->setCurrentIndex(games->findText(game));
+
+  // The window is never shown, so isVisible() is always false; the row's own hidden flag is what
+  // the show/hide logic actually sets.
+  if (!expect(blend->currentData().toString() == "laplacian", "blend mode must default to laplacian") ||
+      !expect(feather_row->isHidden(), "feather width must stay hidden for laplacian") ||
+      !expect(!save->isEnabled(), "a freshly opened game must not be dirty"))
+    return false;
+  QString args = HStreamWindowTestAccess::standaloneArguments(&window).join(' ');
+  if (!expect(args.contains("--options=stitching.blend_mode=laplacian"), "laplacian must reach the runner") ||
+      !expect(!args.contains("blend_feather_fraction"), "feather width must not be sent for laplacian"))
+    return false;
+
+  blend->setCurrentIndex(blend->findData("alpha"));
+  if (!expect(!feather_row->isHidden(), "feather width must appear for alpha") ||
+      !expect(save->isEnabled(), "choosing alpha must mark the preset dirty"))
+    return false;
+  feather->setValue(0.12);
+  if (!expect(save->isEnabled(), "editing the feather width must mark the preset dirty"))
+    return false;
+  args = HStreamWindowTestAccess::standaloneArguments(&window).join(' ');
+  if (!expect(args.contains("--options=stitching.blend_mode=alpha"), "alpha must reach the runner") ||
+      !expect(args.contains("--options=stitching.blend_feather_fraction=0.12"), "feather width must reach the runner"))
+    return false;
+
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  auto saved = YAML::LoadFile(config_path);
+  if (!expect(
+          saved["stitching"]["blend_mode"].as<std::string>() == "alpha" &&
+              saved["stitching"]["blend_feather_fraction"].as<double>() == 0.12,
+          "alpha and its feather width must persist to the game config") ||
+      !expect(!save->isEnabled(), "saving must clear the dirty state"))
+    return false;
+
+  // Switching to another game and back is what actually reloads config into the UI.
+  games->setCurrentIndex(games->findText(other_game));
+  games->setCurrentIndex(games->findText(game));
+  if (!expect(blend->currentData().toString() == "alpha", "saved blend mode must reload") ||
+      !expect(std::abs(feather->value() - 0.12) < 1e-9, "saved feather width must reload"))
+    return false;
+
+  // Switching back to laplacian must drop the feather key rather than leave it stale.
+  blend->setCurrentIndex(blend->findData("laplacian"));
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  saved = YAML::LoadFile(config_path);
+  if (!expect(
+          saved["stitching"]["blend_mode"].as<std::string>() == "laplacian" &&
+              !saved["stitching"]["blend_feather_fraction"],
+          "laplacian must clear the persisted feather width"))
+    return false;
+
+  // The unrepresentable mode must survive both the run and a save, untouched.
+  games->setCurrentIndex(games->findText(other_game));
+  const QString other_args = HStreamWindowTestAccess::standaloneArguments(&window).join(' ');
+  if (!expect(
+          !other_args.contains("stitching.blend_mode="),
+          "an unrepresentable mode must not be overridden on the command line"))
+    return false;
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  auto other_saved = YAML::LoadFile(other_config_path);
+  if (!expect(
+          other_saved["stitching"]["blend_mode"].as<std::string>() == "multiblend",
+          "an unrepresentable mode must not be clobbered by a save"))
+    return false;
+
+  // The config's own value is shown, so the operator can see why nothing is being overridden.
+  if (!expect(
+          blend->currentText().contains("multiblend"),
+          "an unrepresentable mode must be visible in the combo, not hidden behind the default"))
+    return false;
+
+  // Laplacian is the case that used to do nothing: the combo already displayed it as the fallback,
+  // so picking it was not an index change and the choice was silently dropped.
+  blend->setCurrentIndex(blend->findData("laplacian"));
+  if (!expect(save->isEnabled(), "picking laplacian over an unrepresentable mode must mark dirty"))
+    return false;
+  const QString laplacian_args = HStreamWindowTestAccess::standaloneArguments(&window).join(' ');
+  if (!expect(
+          laplacian_args.contains("--options=stitching.blend_mode=laplacian"),
+          "picking laplacian over an unrepresentable mode must reach the runner"))
+    return false;
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  if (!expect(
+          YAML::LoadFile(other_config_path)["stitching"]["blend_mode"].as<std::string>() == "laplacian",
+          "picking laplacian over an unrepresentable mode must persist"))
+    return false;
+
+  // Reload the unrepresentable value and check the same path for alpha.
+  std::ofstream(other_config_path) << "stitching:\n  blend_mode: multiblend\n";
+  games->setCurrentIndex(games->findText(game));
+  games->setCurrentIndex(games->findText(other_game));
+  blend->setCurrentIndex(blend->findData("alpha"));
+  if (!expect(save->isEnabled(), "replacing an unrepresentable mode must mark the preset dirty"))
+    return false;
+  const QString replaced_args = HStreamWindowTestAccess::standaloneArguments(&window).join(' ');
+  if (!expect(
+          replaced_args.contains("--options=stitching.blend_mode=alpha"),
+          "replacing an unrepresentable mode must reach the runner"))
+    return false;
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  other_saved = YAML::LoadFile(other_config_path);
+  if (!expect(
+          other_saved["stitching"]["blend_mode"].as<std::string>() == "alpha",
+          "replacing an unrepresentable mode must persist"))
+    return false;
+
+  // Reset Controls must retire the sentinel with the value it stood for. Leaving it selectable
+  // offers a choice that silently means "no override and no save", with nothing remembered.
+  std::ofstream(other_config_path) << "stitching:\n  blend_mode: multiblend\n";
+  games->setCurrentIndex(games->findText(game));
+  games->setCurrentIndex(games->findText(other_game));
+  auto* reset = require_child<QPushButton>(&window, "resetCameraButton");
+  if (!reset)
+    return false;
+
+  // Both keys are constructor arguments, so a reset cannot reach a running pipeline. Resetting
+  // them anyway would only discard the operator's choice for the run after this one, which is why
+  // every other next-run control in resetCameraControls is guarded the same way.
+  blend->setCurrentIndex(blend->findData("alpha"));
+  feather->setValue(0.3);
+  if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+    return false;
+  reset->click();
+  const bool kept_during_run = blend->currentData().toString() == "alpha" && feather->value() == 0.3;
+  HStreamWindowTestAccess::killStubPipelineProcess(&window);
+  if (!expect(kept_during_run, "Reset Controls must not discard next-run blend settings mid-pipeline"))
+    return false;
+
+  reset->click();
+  if (!expect(
+          blend->currentData().toString() == "laplacian" && feather->value() == 0.05,
+          "Reset Controls must restore the blend defaults when no pipeline is running"))
+    return false;
+
+  std::ofstream(other_config_path) << "stitching:\n  blend_mode: multiblend\n";
+  games->setCurrentIndex(games->findText(game));
+  games->setCurrentIndex(games->findText(other_game));
+  reset->click();
+  if (!expect(
+          blend->findData("__unrepresentable__") < 0,
+          "Reset Controls must remove the sentinel entry, not just clear the remembered value"))
+    return false;
+  if (!expect(blend->currentData().toString() == "laplacian", "Reset Controls must fall back to the default"))
+    return false;
+
+  // The feather row must follow what the combo shows, not the baseline default. The two disagree
+  // exactly when the game's mode is unrepresentable and the baseline's is alpha: the sentinel is
+  // selected, so an edit to a visible feather row would be dirtied and then discarded by the save.
+  const auto source_baseline = find_test_baseline_yaml();
+  if (!source_baseline.has_value())
+    return expect(false, "Could not locate bundled baseline.yaml for the alpha-baseline fixture");
+  QTemporaryDir alpha_baseline_root;
+  if (!alpha_baseline_root.isValid())
+    return false;
+  YAML::Node alpha_baseline = YAML::LoadFile(source_baseline->string());
+  alpha_baseline["stitching"]["blend_mode"] = "alpha";
+  std::ofstream(QDir(alpha_baseline_root.path()).filePath("baseline.yaml").toStdString())
+      << YAML::Dump(alpha_baseline) << '\n';
+  struct RestoreConfigRoot {
+    QByteArray previous{qgetenv("HM_CONFIG_ROOT")};
+    ~RestoreConfigRoot() {
+      if (previous.isEmpty())
+        qunsetenv("HM_CONFIG_ROOT");
+      else
+        qputenv("HM_CONFIG_ROOT", previous);
+    }
+  } restore_config_root;
+  qputenv("HM_CONFIG_ROOT", alpha_baseline_root.path().toLocal8Bit());
+  std::ofstream(other_config_path) << "stitching:\n  blend_mode: multiblend\n  blend_feather_fraction: 0.22\n";
+
+  HStreamWindow alpha_window;
+  auto* alpha_games = require_child<QComboBox>(&alpha_window, "gameSelector");
+  auto* alpha_blend = require_child<QComboBox>(&alpha_window, "blendModeCombo");
+  auto* alpha_feather_row = require_child<QWidget>(&alpha_window, "blendFeatherRow");
+  if (!alpha_games || !alpha_blend || !alpha_feather_row)
+    return false;
+  alpha_games->setCurrentIndex(alpha_games->findText(other_game));
+  if (!expect(
+          alpha_blend->currentData().toString() == "__unrepresentable__",
+          "the alpha-baseline fixture must leave the unrepresentable mode selected"))
+    return false;
+  return expect(
+      alpha_feather_row->isHidden(), "the feather row must follow the selected mode, not the baseline default");
+}
+
 bool test_detector_precision() {
   QTemporaryDir precision_games;
   if (!precision_games.isValid())
@@ -16220,8 +16456,12 @@ int main(int argc, char** argv) {
   QApplication app(argc, argv);
   if (!test_gpu_memory_profile())
     return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_BLEND_ONLY"))
+    return test_blend_mode() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
     return test_detector_precision() && test_detector_model() ? 0 : 1;
+  if (!test_blend_mode())
+    return 1;
   if (!test_detector_precision())
     return 1;
   if (!test_detector_model())

@@ -1040,9 +1040,26 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWork
   }
 }
 
+absl::StatusOr<std::string> ApplyStitchingExperimentBlend(
+    const std::string& selection_config,
+    const StitchingExperimentBlend& blend) {
+  try {
+    YAML::Node patched = YAML::Load(selection_config);
+    patched["stitching"]["blend_mode"] = blend.mode;
+    // Only written for a mode that has one, so selecting Laplacian does not leave a stale width
+    // behind that alpha would silently pick up later.
+    if (blend.feather_fraction.has_value())
+      patched["stitching"]["blend_feather_fraction"] = *blend.feather_fraction;
+    return YAML::Dump(patched);
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Could not apply the selected seam blend: " + std::string(error.what()));
+  }
+}
+
 absl::Status PromoteStitchingExperiment(
     const StitchingExperimentWorkspace& experiment,
-    const fs::path& game_directory) {
+    const fs::path& game_directory,
+    const std::optional<StitchingExperimentBlend>& blend) {
   return hm::stitching::HuginProject::PromoteArtifactsAndConfig(
       experiment.game_directory, game_directory, [&]() -> absl::StatusOr<std::string> {
         try {
@@ -1066,6 +1083,11 @@ absl::Status PromoteStitchingExperiment(
         } catch (const YAML::Exception& error) {
           return absl::InvalidArgumentError("Invalid promoted frame inspection: " + std::string(error.what()));
         }
+        // Applied after the selection config rather than copied out of the experiment's own
+        // config: the experiment never sets it, and it is not one of the calibration keys the
+        // selection reconciles.
+        if (blend.has_value())
+          HM_ASSIGN_OR_RETURN(selected, ApplyStitchingExperimentBlend(selected, *blend));
         return selected;
       });
 }

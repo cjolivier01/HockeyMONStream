@@ -133,6 +133,21 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
 
 // Publishes the already-generated candidate maps/seam without recalibrating,
 // then updates only stitching-owned config and invalidates dependent rink data.
+// A render-time seam blend chosen while comparing candidates. Not a calibration input, so it is
+// applied on top of the selection config rather than copied out of the experiment's own config.
+struct StitchingExperimentBlend {
+  std::string mode;
+  std::optional<double> feather_fraction;
+};
+
+// Applies a chosen seam blend on top of an already-built selection config. Separate from the
+// selection itself because blend is a render setting, not one of the calibration keys the
+// selection reconciles.
+absl::StatusOr<std::string> ApplyStitchingExperimentBlend(
+    const std::string& selection_config,
+    const StitchingExperimentBlend& blend);
+
 absl::Status PromoteStitchingExperiment(
     const StitchingExperimentWorkspace& experiment,
-    const std::filesystem::path& game_directory);
+    const std::filesystem::path& game_directory,
+    const std::optional<StitchingExperimentBlend>& blend = std::nullopt);

@@ -197,7 +197,11 @@ stitching:
   max_output_dimension: null
   offsets: null
   dir_name: null
+  # laplacian mixes the cameras across every scale in the overlap; alpha crossfades over a narrow
+  # band at the seam, which preserves detail the detector uses but cannot hide an exposure step.
   blend_mode: "laplacian"
+  # Alpha-blend crossfade width, as a fraction of the narrowest camera image. Ignored otherwise.
+  blend_feather_fraction: 0.05
   max_blend_levels: 11
   python_blender: false
   # Force using the arbitrary-N CUDA stitcher even when there are only 2 input views.

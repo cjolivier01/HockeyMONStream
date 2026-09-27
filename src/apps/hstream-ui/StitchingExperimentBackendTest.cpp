@@ -772,6 +772,53 @@ bool edited_match_workspace(const fs::path& root) {
 
 } // namespace
 
+// Seam blend is a render setting the operator chose while comparing candidates, so it is applied
+// on top of the selection config rather than reconciled with it.
+bool selected_seam_blend() {
+  const std::string selection =
+      "stitching:\n"
+      "  control_point_matcher: dedode-lightglue\n"
+      "  blend_mode: laplacian\n"
+      "game:\n"
+      "  videos:\n"
+      "    left: [cam1/left.mp4]\n";
+
+  StitchingExperimentBlend alpha;
+  alpha.mode = "alpha";
+  alpha.feather_fraction = 0.2;
+  const auto with_alpha = ApplyStitchingExperimentBlend(selection, alpha);
+  if (!expect(with_alpha.ok(), "Applying an alpha blend must succeed"))
+    return false;
+  const YAML::Node alpha_config = YAML::Load(*with_alpha);
+  if (!expect(
+          alpha_config["stitching"]["blend_mode"].as<std::string>() == "alpha" &&
+              alpha_config["stitching"]["blend_feather_fraction"].as<double>() == 0.2,
+          "Alpha must write both the mode and its width"))
+    return false;
+  if (!expect(
+          alpha_config["stitching"]["control_point_matcher"].as<std::string>() == "dedode-lightglue" &&
+              alpha_config["game"]["videos"]["left"][0].as<std::string>() == "cam1/left.mp4",
+          "Applying a blend must leave the rest of the selection config alone"))
+    return false;
+
+  // A mode without a width must not leave one behind for a later alpha to pick up.
+  StitchingExperimentBlend hard;
+  hard.mode = "gpu-hard-seam";
+  const auto with_hard = ApplyStitchingExperimentBlend(*with_alpha, hard);
+  if (!expect(with_hard.ok(), "Applying a hard seam must succeed"))
+    return false;
+  const YAML::Node hard_config = YAML::Load(*with_hard);
+  if (!expect(
+          hard_config["stitching"]["blend_mode"].as<std::string>() == "gpu-hard-seam" &&
+              hard_config["stitching"]["blend_feather_fraction"].as<double>() == 0.2,
+          "A mode without a width must leave the stored width untouched"))
+    return false;
+
+  return expect(
+      !ApplyStitchingExperimentBlend("stitching: [unbalanced", alpha).ok(),
+      "Malformed input must be rejected rather than silently dropped");
+}
+
 int main() {
   char root_template[] = "/tmp/hstream-stitch-experiment-backend-XXXXXX";
   const char* created = ::mkdtemp(root_template);
@@ -788,6 +835,9 @@ int main() {
 
   if (!edited_match_workspace(root))
     return 24;
+
+  if (!selected_seam_blend())
+    return 25;
 
   const fs::path game = root / "game";
   const fs::path experiments = root / "experiments";

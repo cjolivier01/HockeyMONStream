@@ -50,6 +50,8 @@ Model precision:
                                        model. Example: --models-detector=config_infer_yolov8s_hockey
 
 Stitcher performance:
+  --stitcher-blend-mode MODE           Live seam blend: laplacian, alpha or gpu-hard-seam (alias hard-seam).
+  --stitcher-feather FRACTION          Alpha-blend crossfade width in [0, 1], fraction of camera width.
   --stitcher-compute fp32|fp16         Stitcher compute precision. Aliases: float32, float16, half.
   --stitcher-compute-precision VALUE   Same as --stitcher-compute.
   --stitcher-minimize-blend,
@@ -256,6 +258,8 @@ int8_calib_table=""
 bf16_asset_config_file=""
 bf16_engine_file=""
 stitcher_compute_precision=""
+stitcher_blend_mode=""
+stitcher_feather_fraction=""
 stitcher_minimize_blend=0
 game_id=""
 args=("$@")
@@ -312,6 +316,22 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --int8-calib-start-seconds)
       if [ "$((i + 1))" -lt "${#args[@]}" ]; then
         int8_calib_start_seconds="${args[$((i + 1))]}"
+      fi
+      ;;
+    --stitcher-blend-mode=*)
+      stitcher_blend_mode="${arg#*=}"
+      ;;
+    --stitcher-blend-mode)
+      if [ "$((i + 1))" -lt "${#args[@]}" ]; then
+        stitcher_blend_mode="${args[$((i + 1))]}"
+      fi
+      ;;
+    --stitcher-feather=*)
+      stitcher_feather_fraction="${arg#*=}"
+      ;;
+    --stitcher-feather)
+      if [ "$((i + 1))" -lt "${#args[@]}" ]; then
+        stitcher_feather_fraction="${args[$((i + 1))]}"
       fi
       ;;
     --stitcher-compute=*|--stitcher-compute-precision=*)
@@ -412,12 +432,12 @@ for ((i = 0; i < ${#args[@]}; i++)); do
       # run.sh-only flag; do not forward to hstream-cli
       continue
       ;;
-    --int8-calib-frames|--int8-calib-batch-size|--int8-calib-start-seconds|--stitcher-compute|--stitcher-compute-precision)
+    --int8-calib-frames|--int8-calib-batch-size|--int8-calib-start-seconds|--stitcher-compute|--stitcher-compute-precision|--stitcher-blend-mode|--stitcher-feather)
       # run.sh-only flag with a separate value; the value is consumed below.
       skip_next_rewritten_arg=1
       continue
       ;;
-    --int8-calib-frames=*|--int8-calib-batch-size=*|--int8-calib-start-seconds=*|--stitcher-compute=*|--stitcher-compute-precision=*)
+    --int8-calib-frames=*|--int8-calib-batch-size=*|--int8-calib-start-seconds=*|--stitcher-compute=*|--stitcher-compute-precision=*|--stitcher-blend-mode=*|--stitcher-feather=*)
       # run.sh-only flag; do not forward to hstream-cli
       continue
       ;;
@@ -714,6 +734,25 @@ if [ -n "${stitcher_compute_precision}" ]; then
   extra_options+=(
     --options=pipeline.hmstitcher.stitch-compute-precision="${stitcher_compute_precision}"
   )
+fi
+
+if [ -n "${stitcher_blend_mode}" ]; then
+  case "${stitcher_blend_mode}" in
+    laplacian|alpha|gpu-hard-seam|hard-seam|hard) ;;
+    *)
+      echo "Unsupported --stitcher-blend-mode value: ${stitcher_blend_mode} (expected laplacian, alpha or gpu-hard-seam)"
+      exit 2
+      ;;
+  esac
+  extra_options+=(--options=stitching.blend_mode="${stitcher_blend_mode}")
+fi
+
+if [ -n "${stitcher_feather_fraction}" ]; then
+  if ! awk -v v="${stitcher_feather_fraction}" 'BEGIN { exit !(v == v + 0 && v >= 0 && v <= 1) }' </dev/null; then
+    echo "Unsupported --stitcher-feather value: ${stitcher_feather_fraction} (expected a number in [0, 1])"
+    exit 2
+  fi
+  extra_options+=(--options=stitching.blend_feather_fraction="${stitcher_feather_fraction}")
 fi
 
 if [ "${stitcher_minimize_blend}" -eq 1 ]; then
