@@ -29,6 +29,12 @@ absl::StatusOr<std::optional<PlayerFrameInputSet>> LoadPlayerFrameInputs(
     const std::filesystem::path& game_directory,
     const PlayerFrameSelectionPlan& plan,
     PlayerFrameInputValidation validation = PlayerFrameInputValidation::kFull);
+// Recover a legacy plan whose numeric rotation text was rewritten by an
+// external YAML editor. A present bundle must be complete and independently
+// validate; an absent bundle leaves the invalid plan untouched.
+absl::StatusOr<std::optional<YAML::Node>> RecoverPlayerFrameSelectionFromRetainedInputs(
+    const std::filesystem::path& game_directory,
+    const YAML::Node& selection);
 absl::Status PublishPlayerFrameInputs(
     const std::filesystem::path& game_directory,
     const PlayerFrameSelectionPlan& plan,

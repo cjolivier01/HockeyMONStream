@@ -522,7 +522,10 @@ absl::StatusOr<std::string> CalibrationMatchSourceContext(const YAML::Node& conf
     const auto anchor = optional_child(stitching, "stitch_frame_time");
     context["anchor_ns"] =
         hm::stitch_frame_time_to_nanoseconds(anchor && !anchor.IsNull() ? anchor.as<std::string>() : "00:00:00");
-    const auto offsets = optional_child(optional_child(game_config, "stitching"), "frame_offsets");
+    const auto native_offsets = optional_child(optional_child(game_config, "stitching"), "frame_offsets");
+    const auto offsets = native_offsets && !native_offsets.IsNull()
+        ? native_offsets
+        : optional_child(stitching, "frame_offsets");
     for (const char* role : {"left", "right"}) {
       const auto sources = optional_child(videos, role);
       if (!sources || !sources.IsSequence() || sources.size() == 0)
