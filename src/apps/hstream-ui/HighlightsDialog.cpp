@@ -180,7 +180,8 @@ HighlightsDialog::HighlightsDialog(
   preview_panel->setObjectName("highlightPreviewPanel");
   auto* preview_layout = new QVBoxLayout(preview_panel);
   auto* preview_header = new QHBoxLayout();
-  preview_header->addWidget(new QLabel("Program preview", preview_panel));
+  preview_header->addWidget(new QLabel(
+      embeddedPreviewAvailable() ? "Program preview" : "Program preview opens in a separate window", preview_panel));
   preview_header->addStretch();
   expand_preview_button_ = new QPushButton(action_icon(ActionIcon::Expand), "Expand preview", preview_panel);
   expand_preview_button_->setObjectName("highlightExpandPreviewButton");
@@ -452,7 +453,15 @@ void HighlightsDialog::appendLog(const QString& line) {
     const bool previous = log_scroll_is_programmatic_;
     log_scroll_is_programmatic_ = true;
     const bool dark_background = log_->palette().color(QPalette::Base).lightness() < 128;
-    log_->append(ansi_to_html(line.trimmed(), dark_background));
+    QString normalized = line;
+    normalized.replace("\r\n", "\n");
+    normalized.replace('\r', '\n');
+    const QStringList lines = normalized.split('\n');
+    for (int index = 0; index < lines.size(); ++index) {
+      if (index + 1 == lines.size() && lines[index].isEmpty())
+        break;
+      log_->append("<span style=\"white-space:pre-wrap\">" + ansi_to_html(lines[index], dark_background) + "</span>");
+    }
     log_scroll_is_programmatic_ = previous;
     if (log_follows_tail_) {
       log_scroll_is_programmatic_ = true;
@@ -461,6 +470,14 @@ void HighlightsDialog::appendLog(const QString& line) {
       log_scroll_is_programmatic_ = previous;
     }
   }
+}
+
+bool HighlightsDialog::embeddedPreviewAvailable() const {
+#if defined(__x86_64__) && !defined(IS_TEGRA)
+  return QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
+#else
+  return false;
+#endif
 }
 
 void HighlightsDialog::closeScoreboardSelector() {
@@ -742,6 +759,7 @@ void HighlightsDialog::beginJob(Job job, bool selected, bool loop) {
   chunks_.clear();
   published_paths_.clear();
   process_output_buffer_.clear();
+  process_error_buffer_.clear();
   log_->clear();
   status_->setText(job == Job::kPreview ? "Starting preview…" : "Encoding highlight intervals…");
   updateControls();
@@ -798,9 +816,11 @@ QStringList HighlightsDialog::cliArguments(const HighlightInterval& interval, co
   if (routes.isEmpty()) {
     sink_names << "RENDER";
     args << "--show";
-    args << "--ui-preview-realtime";
-    args << QString("--ui-preview-windows=program:%1").arg(static_cast<qulonglong>(video_->winId()));
-    args << "--ui-preview-active=program";
+    if (embeddedPreviewAvailable()) {
+      args << "--ui-preview-realtime";
+      args << QString("--ui-preview-windows=program:%1").arg(static_cast<qulonglong>(video_->winId()));
+      args << "--ui-preview-active=program";
+    }
   }
   args << "--enable-sinks=" + sink_names.join(',');
   args << "--start-time=" + FormatHighlightTime(interval.start_ms);
@@ -851,7 +871,7 @@ void HighlightsDialog::runNextClip() {
   QProcessEnvironment cli_env = env_;
   cli_env.insert("HSTREAM_UI_PARENT_PID", QString::number(QCoreApplication::applicationPid()));
   process_.setProcessEnvironment(cli_env);
-  if (job_ == Job::kPreview)
+  if (job_ == Job::kPreview && embeddedPreviewAvailable())
     video_->setRendererActive(true);
   process_.start(runner_, cliArguments(interval, job_ == Job::kExport ? routes_ : QStringList{}));
 }
@@ -860,16 +880,13 @@ void HighlightsDialog::readProcessOutput() {
   const QString stdout_text = QString::fromLocal8Bit(process_.readAllStandardOutput());
   const QString stderr_text = QString::fromLocal8Bit(process_.readAllStandardError());
   handleScoreboardSelectorOutput(stderr_text);
+  appendProcessError(stderr_text);
   if (stage_ == Stage::kProbe) {
     probe_output_ += stdout_text;
-    if (!stderr_text.trimmed().isEmpty())
-      appendLog(stderr_text.trimmed());
     return;
   }
   if (stage_ == Stage::kVideoPackets) {
     consumeVideoPacketOutput(stdout_text, false);
-    if (!stderr_text.trimmed().isEmpty())
-      appendLog(stderr_text.trimmed());
     return;
   }
   process_output_buffer_ += stdout_text;
@@ -906,14 +923,31 @@ void HighlightsDialog::readProcessOutput() {
     if (line.startsWith("HSTREAM_OUTPUT") || line.contains("ERROR", Qt::CaseInsensitive))
       appendLog(line);
   }
-  if (!stderr_text.trimmed().isEmpty())
-    appendLog(stderr_text.right(3000).trimmed());
+}
+
+void HighlightsDialog::appendProcessError(const QString& output, bool flush) {
+  process_error_buffer_ += output;
+  while (true) {
+    const int newline = process_error_buffer_.indexOf('\n');
+    const int carriage_return = process_error_buffer_.indexOf('\r');
+    const int boundary = newline < 0 ? carriage_return
+                                    : carriage_return < 0 ? newline : std::min(newline, carriage_return);
+    if (boundary < 0)
+      break;
+    appendLog(process_error_buffer_.left(boundary));
+    process_error_buffer_.remove(0, boundary + 1);
+  }
+  if (flush && !process_error_buffer_.isEmpty()) {
+    appendLog(process_error_buffer_);
+    process_error_buffer_.clear();
+  }
 }
 
 void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
   if (job_ == Job::kNone)
     return;
   readProcessOutput();
+  appendProcessError({}, true);
   if (cancelling_) {
     finishJob(false, "Highlights job stopped.");
     return;

@@ -208,7 +208,9 @@ test -n "${HSTREAM_UI_PARENT_PID:-}"
 out=
 sample="$HSTREAM_TEST_RED"
 echo "$*" >> "$HSTREAM_TEST_CALLS"
-printf '\033[31mcolored runner line\033[0m\n' >&2
+printf '\033[3' >&2
+sleep 0.05
+printf '1mcolored runner line\033[0m\nERROR first line\n  detail\n' >&2
 for arg in "$@"; do
   case "$arg" in
     --start-time=00:00:10*) sample="$HSTREAM_TEST_BLUE" ;;
@@ -287,6 +289,10 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
     std::cerr << "Highlights log did not render terminal color" << std::endl;
     return 1;
   }
+  if (!log->toPlainText().contains("ERROR first line\n  detail")) {
+    std::cerr << "Highlights log did not preserve multiline stderr" << std::endl;
+    return 1;
+  }
   QByteArray probe;
   if (!run("ffprobe", {"-v", "error", "-show_streams", "-show_format", "-of", "json", output}, &probe))
     return 1;
@@ -348,9 +354,9 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
   const QStringList calls_list = QString::fromUtf8(call_log.readAll()).split('\n', Qt::SkipEmptyParts);
   if (calls_list.size() < 6 || !calls_list[calls_list.size() - 2].contains("--enable-sinks=RENDER") ||
       !calls_list[calls_list.size() - 2].contains("--start-time=00:00:00") ||
-      !calls_list[calls_list.size() - 2].contains("--ui-preview-windows=program:") ||
-      !calls_list[calls_list.size() - 2].contains("--ui-preview-realtime") ||
-      !calls_list[calls_list.size() - 2].contains("--ui-preview-active=program") ||
+      calls_list[calls_list.size() - 2].contains("--ui-preview-windows=") ||
+      calls_list[calls_list.size() - 2].contains("--ui-preview-realtime") ||
+      calls_list[calls_list.size() - 2].contains("--ui-preview-active=") ||
       !calls_list.last().contains("--enable-sinks=RENDER") || !calls_list.last().contains("--start-time=00:00:10")) {
     std::cerr << "Preview did not play both intervals with render-only output" << std::endl;
     return 1;

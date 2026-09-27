@@ -76,9 +76,11 @@ class HighlightsDialog : public QDialog {
   void finishJob(bool success, const QString& message);
   void requestActiveProcessStop();
   void readProcessOutput();
+  void appendProcessError(const QString& output, bool flush = false);
   void consumeVideoPacketOutput(const QString& output, bool flush);
   void processFinished(int code, QProcess::ExitStatus status);
   void appendLog(const QString& line);
+  bool embeddedPreviewAvailable() const;
   void handleScoreboardSelectorOutput(const QString& output);
   void closeScoreboardSelector();
   void setPreviewFocused(bool focused);
@@ -107,6 +109,7 @@ class HighlightsDialog : public QDialog {
   QString final_partial_path_;
   QStringList published_paths_;
   QString process_output_buffer_;
+  QString process_error_buffer_;
   QString scoreboard_selector_output_tail_;
   QString scoreboard_selector_url_;
   QString probe_output_;
