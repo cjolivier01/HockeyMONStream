@@ -905,8 +905,7 @@ bool run_rink_mask_reactivation_test(Window window) {
   unsigned rink_width = 0;
   unsigned rink_height = 0;
   std::string rink_capture_error;
-  const bool rink_captured =
-      initially_loaded &&
+  const bool rink_captured = initially_loaded &&
       hm::gpu_preview::capture_presented_frame(sink, &rink_rgba, &rink_width, &rink_height, &rink_capture_error);
   bool rink_visible = false;
   if (rink_captured && rink_width > 0 && rink_height > 0 &&
@@ -950,7 +949,7 @@ bool run_rink_mask_reactivation_test(Window window) {
 bool run_renderer_test(Display* display, Window window) {
   GError* error = nullptr;
   GstElement* pipeline = gst_parse_launch(
-      "videotestsrc pattern=smpte num-buffers=5 ! "
+      "videotestsrc pattern=black num-buffers=5 ! "
       "video/x-raw,width=640,height=360,framerate=30/1 ! "
       "nvvideoconvert gpu-id=0 nvbuf-memory-type=2 output-buffers=1 ! "
       "video/x-raw(memory:NVMM),format=RGBA,width=640,height=360 ! "
@@ -1014,6 +1013,17 @@ bool run_renderer_test(Display* display, Window window) {
   std::string capture_error;
   sink = gst_bin_get_by_name(GST_BIN(pipeline), "preview");
   const bool captured = hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error);
+  bool watermark_visible = false;
+  if (captured && width >= 352 && height >= 111 && rgba.size() >= static_cast<size_t>(width) * height * 4U) {
+    for (unsigned y = height - 111; y < height && !watermark_visible; ++y)
+      for (unsigned x = width - 352; x < width - 31; ++x) {
+        const size_t pixel = (static_cast<size_t>(y) * width + x) * 4U;
+        if (rgba[pixel] > rgba[pixel + 1] + 20 && rgba[pixel] > rgba[pixel + 2] + 20) {
+          watermark_visible = true;
+          break;
+        }
+      }
+  }
   hm::gpu_preview::set_capture_exception_injection_for_test(
       sink, hm::gpu_preview::CallbackExceptionInjection::kBadAlloc);
   std::vector<std::uint8_t> failed_capture_rgba;
@@ -1062,11 +1072,12 @@ bool run_renderer_test(Display* display, Window window) {
       bounded_rgba.size() <= hm::gpu_preview::kMaximumPresentedFrameCaptureBytes;
   const bool capture_recovery_ok = !injected_capture && !failed_capture_error.empty() && recovered_capture &&
       recovered_capture_width == 640 && recovered_capture_height == 360 && !recovered_capture_rgba.empty();
-  if (!ready || !eos || !captured || width != 640 || height != 360 || maximum == minimum || !capture_recovery_ok ||
-      !bounded_capture_ok || !stale_xid_cleanup) {
+  if (!ready || !eos || !captured || !watermark_visible || width != 640 || height != 360 || maximum == minimum ||
+      !capture_recovery_ok || !bounded_capture_ok || !stale_xid_cleanup) {
     std::cerr << "GPU preview did not expose its presented texture: ready=" << ready << " captured=" << captured
-              << " range=" << static_cast<int>(maximum - minimum) << " error=" << capture_error
-              << " bounded-capture=" << bounded_capture << " bounded-size=" << bounded_width << 'x' << bounded_height
+              << " watermark=" << watermark_visible << " range=" << static_cast<int>(maximum - minimum)
+              << " error=" << capture_error << " bounded-capture=" << bounded_capture
+              << " bounded-size=" << bounded_width << 'x' << bounded_height
               << " bounded-error=" << bounded_capture_error << " capture-recovery=" << capture_recovery_ok << '\n';
     return false;
   }

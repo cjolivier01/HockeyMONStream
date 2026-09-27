@@ -4,7 +4,7 @@ The visible mark reads “SportsAI HockeyMON” on two lines in a fixed 319×111
 
 Program output is drawn after the crop/rotation in `playcropper`, on its owned RGBA surface. Every Program sink and its GPU preview sees those pixels. The stitched preview bypasses `playcropper`, so its GL renderer draws the mark separately. The archive branch draws after its final `nvvideoconvert` scaling and before batch demux/encoding, on the archive's owned I420 or P010 NVMM surface. The shared stitched canvas is never modified. The 10-bit route remains P010 all the way to the encoder.
 
-The optional 4K Program encoder scales its already watermarked Program frame, including the mark. Its mark therefore grows with that branch's upscale. The stitched archive draws at final encoder dimensions and keeps the fixed rectangle.
+The optional 4K Program encoder can downscale an already watermarked Program frame to fit 3840×2160. Its mark shrinks with that branch's downscale. The stitched archive draws at final encoder dimensions and keeps the fixed rectangle.
 
 The Program and archive CUDA renderers rasterize only tiles touched by the glyphs. Glyphs are prepared once and no GPU video frame is copied to the CPU. The archive pad probe maps only the small `NvBufSurface` descriptor; its video planes stay GPU resident. It synchronizes the small overlay write before the encoder reads the surface or a Jetson EGL mapping is released. If the archive falls back to a software encoder, its already system-memory I420 output gets the same bounded CPU glyph blend. A missing surface or renderer error posts a GStreamer error instead of emitting an unmarked archive.
 
