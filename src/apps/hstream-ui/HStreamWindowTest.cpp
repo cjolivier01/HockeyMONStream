@@ -62,6 +62,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -1586,6 +1587,16 @@ bool write_fake_sync(const QString& path) {
   file.write("import sys\n");
   file.write("import time\n");
   file.write("time.sleep(float(os.environ.get('HSTREAM_UI_TEST_SYNC_DELAY', '0')))\n");
+  // Record where each inherited descriptor resolves. A pin left on a
+  // finalization scratch name shows up here as a deleted temporary path.
+  file.write("probe = os.environ.get('HSTREAM_UI_TEST_SYNC_PIN_PROBE')\n");
+  file.write("if probe:\n");
+  file.write("    try:\n");
+  file.write("        with open(probe, 'a') as handle:\n");
+  file.write("            for path in sys.argv[2:]:\n");
+  file.write("                handle.write(os.path.realpath(path) + '\\n')\n");
+  file.write("    except Exception:\n");
+  file.write("        pass\n");
   file.write(
       "if len(sys.argv) < 3 or sys.argv[1] != '-f' or not all(os.path.exists(path) for path in sys.argv[2:]):\n");
   file.write("    sys.exit(19)\n");
@@ -8611,6 +8622,8 @@ bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false)
   qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
   qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", "100");
+  const QString sync_pin_probe = QDir(output_root.path()).filePath("dual-sync-pins.txt");
+  qputenv("HSTREAM_UI_TEST_SYNC_PIN_PROBE", sync_pin_probe.toLocal8Bit());
   mode->setCurrentIndex(mode->findData("program"));
   archive->setChecked(true);
   stitched_archive->setChecked(true);
@@ -8649,6 +8662,43 @@ bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false)
     dual_telemetry_deployed &=
         published.open(QIODevice::ReadOnly) && published.readAll() == (stem + " dual archive contents\n").toUtf8();
   }
+  qunsetenv("HSTREAM_UI_TEST_SYNC_PIN_PROBE");
+  QFile sync_pin_probe_file(sync_pin_probe);
+  const bool sync_pin_probe_opened = sync_pin_probe_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QStringList synced_pins = sync_pin_probe_opened
+      ? QString::fromUtf8(sync_pin_probe_file.readAll()).split('\n', Qt::SkipEmptyParts)
+      : QStringList();
+  // Compare file names so a symlinked temporary root cannot make the helper's
+  // resolved path diverge from the pathname the window reports.
+  const auto synced_pin_named = [&synced_pins](const QString& published) {
+    const QString name = "/" + QFileInfo(published).fileName();
+    return std::any_of(
+        synced_pins.cbegin(), synced_pins.cend(), [&name](const QString& pin) { return pin.endsWith(name); });
+  };
+  bool pins_follow_published_names = sync_pin_probe_opened && !program_completed.isEmpty() &&
+      !stitched_completed.isEmpty() && synced_pin_named(program_completed) && synced_pin_named(stitched_completed);
+  for (const QString& pin : synced_pins)
+    pins_follow_published_names &= !pin.contains("-hstream-finalize-") && !pin.endsWith(" (deleted)");
+  // Scope the scratch filter to this run's two outputs so an unrelated leftover
+  // cannot be reported against these pins.
+  const QStringList finalize_scratch_filters = {
+      QFileInfo(program_completed).completeBaseName() + "-hstream-finalize-*",
+      QFileInfo(stitched_completed).completeBaseName() + "-hstream-finalize-*"};
+  const bool finalize_scratch_removed =
+      QDir(window->gameDirectoryText())
+          .entryList(finalize_scratch_filters, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
+          .isEmpty();
+  const bool finalization_scratch_released = expect(
+      pins_follow_published_names && finalize_scratch_removed,
+      "Durability sync must hold each completed MP4 through its published name, not the finalization scratch name "
+      "it was built under, and both scratch directories must be gone");
+  if (!finalization_scratch_released) {
+    std::cerr << "sync pins=" << synced_pins.join(", ").toStdString()
+              << " program=" << program_completed.toStdString()
+              << " stitched=" << stitched_completed.toStdString()
+              << " scratch-removed=" << finalize_scratch_removed << '\n';
+  }
+
   const bool ok = expect(
       window->outputStateText("archive-file") == "SAVED" && window->outputStateText(secondary_id) == "SAVED" &&
           program_opened && stitched_opened && program_file.readAll() == "completed lossless archive" &&
@@ -8952,8 +9002,8 @@ bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false)
     qunsetenv("HM_OUTPUT_WORK_DIR");
   else
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
-  return ok && program_telemetry_failure_visible && dual_telemetry_failure_visible && first_failure_safe &&
-      second_failure_safe && both_failures_safe && blocked_recovery_resumed;
+  return ok && finalization_scratch_released && program_telemetry_failure_visible && dual_telemetry_failure_visible &&
+      first_failure_safe && second_failure_safe && both_failures_safe && blocked_recovery_resumed;
 }
 
 bool test_leveled_crop_rotation(HStreamWindow* window) {
@@ -15410,7 +15460,6 @@ bool test_cleanup_transaction_protocol() {
   QString preclose_sync_error;
   const bool preclose_sync_setup = write_file(preclose_sync_target, "trusted NFS preclose recovery") &&
       file_identity(preclose_sync_target, &preclose_sync_stat);
-  qputenv("HSTREAM_UI_TEST_FORCE_NFS_SILLY_RENAME_RETIREMENT", preclose_sync_target.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_NFS_PRECLOSE_PARENT_SYNC_FAILURE", preclose_sync_target.toLocal8Bit());
   const bool preclose_sync_removed = preclose_sync_setup &&
       hm::ui_internal::remove_owned_path_for_test(
@@ -15418,7 +15467,6 @@ bool test_cleanup_transaction_protocol() {
                                          static_cast<quint64>(preclose_sync_stat.st_dev),
                                          static_cast<quint64>(preclose_sync_stat.st_ino),
                                          &preclose_sync_error);
-  qunsetenv("HSTREAM_UI_TEST_FORCE_NFS_SILLY_RENAME_RETIREMENT");
   qunsetenv("HSTREAM_UI_TEST_NFS_PRECLOSE_PARENT_SYNC_FAILURE");
   QString preclose_reconciliation_error;
   const bool preclose_reconciled =
@@ -15429,13 +15477,54 @@ bool test_cleanup_transaction_protocol() {
       preclose_sync_setup && !preclose_sync_removed && preclose_reconciled && preclose_recovered_opened &&
           preclose_recovered_file.readAll() == "trusted NFS preclose recovery" &&
           cleanup_transaction(preclose_sync_dir).isEmpty(),
-      "NFS cleanup must restore the pinned identity if durability sync fails before releasing a silly-rename pin");
+      "NFS cleanup must restore the trusted identity when the pre-close parent sync fails after the deletion is "
+      "committed");
   if (!preclose_sync_recovery) {
     std::cerr << "preclose recovery result=" << preclose_sync_removed
               << " remove-error=" << preclose_sync_error.toStdString() << " reconciled=" << preclose_reconciled
               << " reconcile-error=" << preclose_reconciliation_error.toStdString()
               << " recovered-open=" << preclose_recovered_opened
               << " transaction=" << cleanup_transaction(preclose_sync_dir).toStdString() << '\n';
+  }
+
+  const QString tombstone_dir = QDir(root.path()).filePath("nfs-persistent-tombstone");
+  QDir().mkpath(tombstone_dir);
+  const QString tombstone_target = QDir(tombstone_dir).filePath("completed.mp4");
+  struct stat tombstone_stat {};
+  QString tombstone_error;
+  const bool tombstone_setup =
+      write_file(tombstone_target, "trusted tombstone cleanup") && file_identity(tombstone_target, &tombstone_stat);
+  qputenv("HSTREAM_UI_TEST_PERSISTENT_CLEANUP_TOMBSTONE", tombstone_target.toLocal8Bit());
+  const bool tombstone_removed = tombstone_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+                                      tombstone_target,
+                                      static_cast<quint64>(tombstone_stat.st_dev),
+                                      static_cast<quint64>(tombstone_stat.st_ino),
+                                      &tombstone_error);
+  qunsetenv("HSTREAM_UI_TEST_PERSISTENT_CLEANUP_TOMBSTONE");
+  const QString tombstone_transaction = cleanup_transaction(tombstone_dir);
+  const bool tombstone_records_retained = !tombstone_transaction.isEmpty() &&
+      QFileInfo::exists(QDir(tombstone_transaction).filePath("owner")) &&
+      QFileInfo::exists(QDir(tombstone_transaction).filePath("committed"));
+  const bool tombstone_cleared = !tombstone_transaction.isEmpty() &&
+      QFile::remove(QDir(tombstone_transaction).filePath(".nfs00000000deadbeef"));
+  QString tombstone_reconciliation_error;
+  const bool tombstone_reconciled = tombstone_cleared &&
+      hm::ui_internal::reconcile_cleanup_directory_for_test(tombstone_dir, &tombstone_reconciliation_error);
+  const bool persistent_tombstone_recovery = expect(
+      tombstone_setup && !tombstone_removed &&
+          tombstone_error.contains(QString::fromLocal8Bit(std::strerror(ENOTEMPTY))) && tombstone_records_retained &&
+          tombstone_reconciled &&
+          cleanup_transaction(tombstone_dir).isEmpty() && !QFileInfo::exists(tombstone_target) &&
+          !QFileInfo::exists(tombstone_target + ".hstream-cleanup-pin"),
+      "A cleanup transaction blocked by a tombstone outliving its own pin must keep the owner and commit records "
+      "so reconciliation can retire it once the tombstone disappears");
+  if (!persistent_tombstone_recovery) {
+    std::cerr << "persistent tombstone result=" << tombstone_removed
+              << " remove-error=" << tombstone_error.toStdString() << " records=" << tombstone_records_retained
+              << " cleared=" << tombstone_cleared << " reconciled=" << tombstone_reconciled
+              << " reconcile-error=" << tombstone_reconciliation_error.toStdString()
+              << " transaction=" << cleanup_transaction(tombstone_dir).toStdString() << '\n';
   }
 
   const QString committed_dir = QDir(root.path()).filePath("committed-interruption");
@@ -15465,6 +15554,7 @@ bool test_cleanup_transaction_protocol() {
   const bool committed_restart =
       hm::ui_internal::reconcile_cleanup_directory_for_test(committed_dir, &committed_restart_error);
   bool ok = unsupported_rename_fallback && unsupported_rename_race && preclose_sync_recovery &&
+      persistent_tombstone_recovery &&
       expect(committed_setup && !committed_first && committed_authenticated && committed_restart &&
                  !QFileInfo::exists(committed_target) && !QFileInfo::exists(committed_transaction),
              "UI cleanup must finish a durable commit interrupted between fallback and guard retirement");

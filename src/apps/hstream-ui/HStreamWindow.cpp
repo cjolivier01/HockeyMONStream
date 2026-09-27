@@ -1590,6 +1590,26 @@ bool create_open_file_guard(int source_fd, const QString& protected_path, QStrin
   return false;
 }
 
+// Move a pin from the pathname a file was built under to the pathname it was
+// published as. NFS silly-renames an unlinked file while any descriptor still
+// resolves through its dentry, so a pin left on the temporary name turns the
+// later deletion into a hidden .nfs* entry that blocks removal of the private
+// directory holding it. Returns -1 when the published name no longer has the
+// expected identity, leaving the caller's existing pin authoritative.
+int reopen_pin_on_published_path(const QString& published_path, const struct stat& expected_stat) {
+  const QByteArray encoded_published = QFile::encodeName(published_path);
+  const int published_fd = ::open(encoded_published.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (published_fd < 0)
+    return -1;
+  struct stat published_stat {};
+  if (::fstat(published_fd, &published_stat) != 0 || !S_ISREG(published_stat.st_mode) ||
+      !same_file_identity(published_stat, expected_stat)) {
+    ::close(published_fd);
+    return -1;
+  }
+  return published_fd;
+}
+
 bool remove_path_if_same_identity(
     const QString& path,
     const struct stat& expected_stat,
@@ -1842,6 +1862,7 @@ constexpr char kUiCleanupOwnerMagic[] = "hstream-cleanup-v2\n";
 constexpr char kUiCleanupCommittedName[] = "committed";
 constexpr char kUiCleanupCommittedStagingName[] = "committed.pending";
 constexpr char kUiCleanupCommittedMagic[] = "hstream-cleanup-committed-v1\n";
+constexpr char kUiTestTombstoneName[] = ".nfs00000000deadbeef";
 
 struct UiCleanupCommittedIdentity {
   quint64 device = 0;
@@ -2191,7 +2212,9 @@ bool remove_named_ui_cleanup_directory(int cleanup_fd, int parent_fd, const QByt
 }
 
 bool ui_cleanup_directory_contains_only_metadata(int cleanup_fd) {
-  const int scan_fd = ::dup(cleanup_fd);
+  // Open a fresh file description so a second retirement attempt cannot inherit
+  // the offset left behind by the first one and report an emptied directory.
+  const int scan_fd = ::openat(cleanup_fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (scan_fd < 0)
     return false;
   DIR* directory = ::fdopendir(scan_fd);
@@ -3075,6 +3098,15 @@ bool remove_path_if_same_identity(
     return false;
   }
 
+  // The durable fallback link now holds the inode, so the private pin is no
+  // longer what keeps it alive. Release it before the quarantined name is
+  // unlinked below: NFS silly-renames a deleted file that any descriptor still
+  // resolves through, and the resulting .nfs* entry would block retirement of
+  // the very directory this transaction has to remove. Nothing past this point
+  // reads the descriptor.
+  ::close(pinned_fd);
+  pinned_fd = -1;
+
   int move_errno = 0;
   if (!rename_entry_no_replace(
           parent_fd,
@@ -3091,7 +3123,6 @@ bool remove_path_if_same_identity(
       ::fsync(parent_fd);
     }
     ::close(cleanup_fd);
-    ::close(pinned_fd);
     ::close(parent_fd);
     if (move_errno == ENOENT && fallback_retired)
       return true;
@@ -3102,7 +3133,6 @@ bool remove_path_if_same_identity(
   if (qEnvironmentVariable("HSTREAM_UI_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE") == path) {
     qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
     ::close(cleanup_fd);
-    ::close(pinned_fd);
     ::close(parent_fd);
     if (error)
       *error = "archive cleanup interruption requested after quarantine";
@@ -3143,7 +3173,6 @@ bool remove_path_if_same_identity(
       }
     }
     ::close(cleanup_fd);
-    ::close(pinned_fd);
     ::close(parent_fd);
     if (error) {
       *error = retained ? QString("refusing to remove a replaced path: %1; retained at %2")
@@ -3177,7 +3206,6 @@ bool remove_path_if_same_identity(
         cleanup_result = ::fsync(parent_fd);
     }
     ::close(cleanup_fd);
-    ::close(pinned_fd);
     ::close(parent_fd);
     if (error) {
       *error = QString::fromLocal8Bit(std::strerror(saved_errno));
@@ -3199,16 +3227,25 @@ bool remove_path_if_same_identity(
   const int unlink_errno = errno;
   if (unlink_result != 0) {
     ::close(cleanup_fd);
-    ::close(pinned_fd);
     ::close(parent_fd);
     if (error)
       *error = QString::fromLocal8Bit(std::strerror(unlink_errno));
     return false;
   }
+  // NFS silly-renames an unlinked file that a descriptor outside this
+  // transaction still holds open through the same dentry. Such a tombstone
+  // outlives the transaction's own pin, so retirement must leave the recovery
+  // records in place instead of emptying a directory it cannot remove.
+  if (qEnvironmentVariable("HSTREAM_UI_TEST_PERSISTENT_CLEANUP_TOMBSTONE") == path) {
+    qunsetenv("HSTREAM_UI_TEST_PERSISTENT_CLEANUP_TOMBSTONE");
+    const int tombstone_fd = ::openat(
+        cleanup_fd, kUiTestTombstoneName, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+    if (tombstone_fd >= 0)
+      ::close(tombstone_fd);
+  }
   if (::fsync(cleanup_fd) != 0) {
     const int saved_errno = errno;
     ::close(cleanup_fd);
-    ::close(pinned_fd);
     ::close(parent_fd);
     if (error)
       *error = QString::fromLocal8Bit(std::strerror(saved_errno));
@@ -3254,7 +3291,6 @@ bool remove_path_if_same_identity(
         }
       }
       ::close(cleanup_fd);
-      ::close(pinned_fd);
       ::close(parent_fd);
       if (error) {
         *error = rescued
@@ -3291,7 +3327,6 @@ bool remove_path_if_same_identity(
     const bool commit_withdrawn = retained &&
         (::unlinkat(cleanup_fd, kUiCleanupCommittedName, 0) == 0 || errno == ENOENT) && ::fsync(cleanup_fd) == 0;
     ::close(cleanup_fd);
-    ::close(pinned_fd);
     ::close(parent_fd);
     if (error) {
       *error = commit_withdrawn
@@ -3312,32 +3347,16 @@ bool remove_path_if_same_identity(
     errno = EIO;
   const int guard_unlink_result = fallback_retired && !fail_guard_unlink ? ::unlinkat(cleanup_fd, "guard", 0) : -1;
   const int guard_unlink_errno = errno;
-  const bool force_nfs_silly_rename = qEnvironmentVariable("HSTREAM_UI_TEST_FORCE_NFS_SILLY_RENAME_RETIREMENT") == path;
-  if (force_nfs_silly_rename)
-    qunsetenv("HSTREAM_UI_TEST_FORCE_NFS_SILLY_RENAME_RETIREMENT");
-  int cleanup_result = fallback_retired && guard_unlink_result == 0 && !force_nfs_silly_rename &&
+  const int cleanup_result = fallback_retired && guard_unlink_result == 0 &&
           retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name)
       ? 0
       : -1;
-  if (force_nfs_silly_rename)
-    errno = ENOTEMPTY;
-  int cleanup_errno = errno;
-  if (cleanup_result != 0 && cleanup_errno == ENOTEMPTY && pinned_fd >= 0) {
-    // NFS silly-renames an unlinked-but-open file to .nfs* in the cleanup
-    // directory. The committed deletion was synced above while the private
-    // guard still existed, so the final pin can now be released safely.
-    ::close(pinned_fd);
-    pinned_fd = -1;
-    cleanup_result = retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) ? 0 : -1;
-    cleanup_errno = errno;
-  }
+  const int cleanup_errno = errno;
   ::close(cleanup_fd);
   const bool cleanup_completed =
       unlink_result == 0 && guard_unlink_result == 0 && fallback_retired && cleanup_result == 0;
   const int directory_sync_result = cleanup_completed ? ::fsync(parent_fd) : 0;
   const int directory_sync_errno = errno;
-  if (pinned_fd >= 0)
-    ::close(pinned_fd);
   ::close(parent_fd);
   if (unlink_result == 0 && guard_unlink_result == 0 && fallback_retired && cleanup_result == 0 &&
       directory_sync_result == 0) {
@@ -13358,6 +13377,15 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         publication_error = QString("Could not protect the completed MP4 at %1: %2").arg(candidate, target_guard_error);
         break;
       }
+      // The published name and its guard both hold the inode now, so the pin
+      // can move off the temporary name before that name is deleted below.
+      const int published_pin_fd = reopen_pin_on_published_path(candidate, partial_stat);
+      if (published_pin_fd >= 0) {
+        ::close(pinned_partial_fd);
+        pinned_partial_fd = published_pin_fd;
+      } else {
+        appendLog(QString("completed MP4 pin remains on the temporary name; %1 could not be reopened").arg(candidate));
+      }
       archive_finalize_target_fd_ = pinned_partial_fd;
       pinned_partial_fd = -1;
       archive_finalize_target_device_ = static_cast<quint64>(partial_stat.st_dev);
@@ -13403,12 +13431,45 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
     appendLog(QString("completed MP4 temporary link retained or replaced: %1").arg(partial_cleanup_error));
   }
 #endif
-  archive_finalize_partial_path_.clear();
   if (!archive_finalize_temporary_dir_.isEmpty()) {
+#ifdef Q_OS_UNIX
+    const QByteArray encoded_temporary_dir = QFile::encodeName(archive_finalize_temporary_dir_);
+    int removal_errno = ::rmdir(encoded_temporary_dir.constData()) == 0 ? 0 : errno;
+    if (removal_errno == ENOTEMPTY) {
+      // Anything left inside belongs to this finalization's own cleanup
+      // transaction, so reconciliation can adopt it. Reconciliation restores an
+      // uncommitted deletion, which puts the temporary link back, so delete it
+      // again before retrying the directory removal.
+      QString reconcile_error;
+      if (!reconcile_scoped_ui_cleanup_directory(archive_finalize_temporary_dir_, &reconcile_error)) {
+        appendLog(QString("archive temporary directory cleanup remains pending in %1: %2")
+                      .arg(archive_finalize_temporary_dir_, reconcile_error));
+      } else {
+        if (path_has_file_identity(archive_finalize_partial_path_, partial_stat)) {
+          QString restored_cleanup_error;
+          if (!remove_path_if_same_identity(
+                  archive_finalize_partial_path_,
+                  partial_stat,
+                  &restored_cleanup_error,
+                  archive_finalize_target_path_,
+                  &partial_stat)) {
+            appendLog(QString("restored completed MP4 temporary link retained: %1").arg(restored_cleanup_error));
+          }
+        }
+        removal_errno = ::rmdir(encoded_temporary_dir.constData()) == 0 ? 0 : errno;
+      }
+    }
+    if (removal_errno != 0) {
+      appendLog(QString("could not remove archive temporary directory %1: %2")
+                    .arg(archive_finalize_temporary_dir_, QString::fromLocal8Bit(std::strerror(removal_errno))));
+    }
+#else
     if (!QDir().rmdir(archive_finalize_temporary_dir_))
-      appendLog(QString("could not remove empty archive temporary directory: %1").arg(archive_finalize_temporary_dir_));
+      appendLog(QString("could not remove archive temporary directory: %1").arg(archive_finalize_temporary_dir_));
+#endif
     archive_finalize_temporary_dir_.clear();
   }
+  archive_finalize_partial_path_.clear();
 
   QString durability_error;
   if (!startArchiveDurabilitySync(
@@ -13804,14 +13865,23 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
 #ifdef Q_OS_UNIX
   if (archive_finalize_target_fd_ >= 0) {
     struct stat failed_target_stat {};
-    if (::fstat(archive_finalize_target_fd_, &failed_target_stat) == 0 && S_ISREG(failed_target_stat.st_mode)) {
-      QString cleanup_error;
-      if (path_has_file_identity(archive_finalize_target_path_, failed_target_stat))
-        remove_path_if_same_identity(archive_finalize_target_path_, failed_target_stat, &cleanup_error);
-      if (path_has_file_identity(archive_finalize_target_guard_path_, failed_target_stat))
-        remove_path_if_same_identity(archive_finalize_target_guard_path_, failed_target_stat, &cleanup_error);
-    }
+    const bool have_failed_target_identity =
+        ::fstat(archive_finalize_target_fd_, &failed_target_stat) == 0 && S_ISREG(failed_target_stat.st_mode);
+    const QString failed_target_path = archive_finalize_target_path_;
+    const QString failed_guard_path = archive_finalize_target_guard_path_;
+    // Release the pin before unlinking the names it resolves through. NFS
+    // silly-renames a deleted file that any descriptor still holds open, which
+    // would strand a cleanup transaction in the game directory and block the
+    // next archive run. The remaining links keep the inode from being reused,
+    // so the identity checks below stay meaningful without the descriptor.
     releaseArchiveFinalizeTarget(false);
+    if (have_failed_target_identity) {
+      QString cleanup_error;
+      if (path_has_file_identity(failed_target_path, failed_target_stat))
+        remove_path_if_same_identity(failed_target_path, failed_target_stat, &cleanup_error);
+      if (path_has_file_identity(failed_guard_path, failed_target_stat))
+        remove_path_if_same_identity(failed_guard_path, failed_target_stat, &cleanup_error);
+    }
   }
   struct stat original_archive_stat {};
   const bool has_pinned_archive = archive_finalize_source_fd_ >= 0 &&
