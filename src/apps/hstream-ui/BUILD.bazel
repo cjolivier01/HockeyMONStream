@@ -22,6 +22,8 @@ filegroup(
     srcs = [
         "ActionIcons.cpp",
         "ActionIcons.h",
+        "AnsiLogFormat.cpp",
+        "AnsiLogFormat.h",
         "ApplicationIdentity.cpp",
         "ApplicationIdentity.h",
         "CalibrationFrameView.cpp",
@@ -75,6 +77,15 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = ["@qt//:qt_widgets"],
+)
+
+cc_library(
+    name = "ansi_log_format",
+    srcs = ["AnsiLogFormat.cpp"],
+    hdrs = ["AnsiLogFormat.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_core"],
 )
 
 cc_test(
@@ -437,7 +448,13 @@ cc_library(
     hdrs = ["HighlightsDialog.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_plan", "@qt//:qt_widgets"],
+    deps = [
+        ":action_icons",
+        ":ansi_log_format",
+        ":highlight_plan",
+        ":scoreboard_selection_dialog",
+        "@qt//:qt_widgets",
+    ],
 )
 
 cc_test(
@@ -461,6 +478,7 @@ cc_library(
     deps = [
         "//src/libs/common:process_diagnostics",
         ":action_icons",
+        ":ansi_log_format",
         ":application_identity",
         ":camera_experiment_dialog",
         ":highlights_dialog",

@@ -12,14 +12,17 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
+#include <QtCore/QTimer>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
-#include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QTableWidget>
+#include <QtWidgets/QTextEdit>
 
 #include <cmath>
 #include <iostream>
@@ -68,9 +71,25 @@ bool addRange(hm::ui::HighlightsDialog* dialog, const QString& name, const QStri
   return dialog->findChild<QTableWidget*>("highlightsTable")->rowCount() == (name == "First" ? 1 : 2);
 }
 
-bool waitForExport(QApplication* app, hm::ui::HighlightsDialog* dialog, const QString& output, int maximum_iterations) {
+bool waitForExport(
+    QApplication* app,
+    hm::ui::HighlightsDialog* dialog,
+    const QString& output,
+    int maximum_iterations,
+    bool* scoreboard_selected = nullptr) {
   for (int i = 0; i < maximum_iterations && (dialog->isBusy() || !QFileInfo::exists(output)); ++i) {
     app->processEvents();
+    if (scoreboard_selected && !*scoreboard_selected) {
+      auto* no_scoreboard = dialog->findChild<QPushButton*>("scoreboardNoScoreboardButton");
+      if (no_scoreboard && no_scoreboard->isVisible()) {
+        *scoreboard_selected = true;
+        QTimer::singleShot(0, app, [app] {
+          if (auto* confirmation = qobject_cast<QMessageBox*>(app->activeModalWidget()))
+            confirmation->button(QMessageBox::Yes)->click();
+        });
+        no_scoreboard->click();
+      }
+    }
     if (!dialog->isBusy() && !QFileInfo::exists(output))
       break;
     QThread::msleep(10);
@@ -79,7 +98,7 @@ bool waitForExport(QApplication* app, hm::ui::HighlightsDialog* dialog, const QS
     return true;
   std::cerr << "Export did not finish: " << dialog->findChild<QLabel*>("highlightStatus")->text().toStdString()
             << std::endl;
-  if (auto* log = dialog->findChild<QPlainTextEdit*>("highlightLog"))
+  if (auto* log = dialog->findChild<QTextEdit*>("highlightLog"))
     std::cerr << log->toPlainText().toStdString() << std::endl;
   return false;
 }
@@ -100,9 +119,7 @@ int realGameE2E(QApplication* app) {
       "--enable-sources=URI-MULTIPLE",
       "-c",
       QDir(working_dir).filePath("configs/ds_hockey_app_config.yaml"),
-      "--options=pipeline.hmaudio.enable=1",
-      "--options=pipeline.hmstitcher.private-properties.calibrate-field-mask=0",
-      "--options=pipeline.ds-fieldmask.enable=0"};
+      "--options=pipeline.hmaudio.enable=1"};
   hm::ui::HighlightsDialog dialog(
       "tv-14-1-p1",
       game_dir,
@@ -111,6 +128,8 @@ int realGameE2E(QApplication* app) {
       qEnvironmentVariable("HSTREAM_HIGHLIGHTS_E2E_OUTPUT_ROOT", QDir::tempPath()),
       env,
       base_args);
+  dialog.show();
+  app->processEvents();
   if (!addRange(&dialog, "First", "5", "7") || !addRange(&dialog, "Second", "0:15", "0:17"))
     return 1;
   auto* base_name = dialog.findChild<QLineEdit*>("highlightBaseNameEdit");
@@ -118,9 +137,15 @@ int realGameE2E(QApplication* app) {
   dialog.findChild<QCheckBox*>("highlightProgram4kCheck")->setChecked(true);
   dialog.findChild<QCheckBox*>("highlightStitchedCheck")->setChecked(true);
   dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
+  bool scoreboard_selected = false;
   for (const QString route : {"program", "program_4k", "stitched"}) {
     const QString output = QDir(game_dir).filePath(QString("tv-14-1-p1-%1-%2-1.mp4").arg(base_name->text(), route));
-    if (!waitForExport(app, &dialog, output, 90000))
+    if (!waitForExport(
+            app,
+            &dialog,
+            output,
+            90000,
+            qEnvironmentVariableIsSet("HSTREAM_HIGHLIGHTS_E2E_SELECT_NO_SCOREBOARD") ? &scoreboard_selected : nullptr))
       return 1;
     QByteArray probe;
     if (!run("ffprobe", {"-v", "error", "-show_streams", "-show_format", "-of", "json", output}, &probe))
@@ -133,6 +158,22 @@ int realGameE2E(QApplication* app) {
       return 1;
     }
     std::cout << route.toStdString() << " " << output.toStdString() << " duration=" << duration << std::endl;
+  }
+  if (qEnvironmentVariableIsSet("HSTREAM_HIGHLIGHTS_E2E_SELECT_NO_SCOREBOARD") && !scoreboard_selected) {
+    std::cerr << "Highlights did not open the missing-scoreboard selector" << std::endl;
+    return 1;
+  }
+  dialog.findChild<QTableWidget*>("highlightsTable")->setCurrentCell(0, 0);
+  dialog.findChild<QPushButton*>("highlightPreviewSelectedButton")->click();
+  for (int i = 0; i < 12000 && dialog.isBusy(); ++i) {
+    app->processEvents();
+    QThread::msleep(10);
+  }
+  if (dialog.isBusy() || dialog.findChild<QLabel*>("highlightStatus")->text() != "Preview complete.") {
+    std::cerr << "Embedded Program preview failed: "
+              << dialog.findChild<QLabel*>("highlightStatus")->text().toStdString() << std::endl;
+    std::cerr << dialog.findChild<QTextEdit*>("highlightLog")->toPlainText().toStdString() << std::endl;
+    return 1;
   }
   return 0;
 }
@@ -167,6 +208,7 @@ test -n "${HSTREAM_UI_PARENT_PID:-}"
 out=
 sample="$HSTREAM_TEST_RED"
 echo "$*" >> "$HSTREAM_TEST_CALLS"
+printf '\033[31mcolored runner line\033[0m\n' >&2
 for arg in "$@"; do
   case "$arg" in
     --start-time=00:00:10*) sample="$HSTREAM_TEST_BLUE" ;;
@@ -191,6 +233,43 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
   env.insert("HSTREAM_TEST_CALLS", calls);
   hm::ui::HighlightsDialog dialog(
       "test-game", game_dir, runner, temporary.path(), temporary.path(), env, {"-g", "test-game"});
+  dialog.show();
+  app.processEvents();
+  if (!dialog.findChild<QWidget*>("highlightVideo"))
+    return 1;
+  auto* expand_preview = dialog.findChild<QPushButton*>("highlightExpandPreviewButton");
+  if (!expand_preview || expand_preview->icon().isNull())
+    return 1;
+  expand_preview->click();
+  app.processEvents();
+  if (dialog.findChild<QTableWidget*>("highlightsTable")->isVisible() ||
+      !dialog.findChild<QWidget*>("highlightVideo")->isVisible()) {
+    std::cerr << "Expanded preview did not focus the video" << std::endl;
+    return 1;
+  }
+  expand_preview->click();
+  app.processEvents();
+  if (!dialog.findChild<QTableWidget*>("highlightsTable")->isVisible())
+    return 1;
+  for (const char* name :
+       {"highlightAddButton",
+        "highlightUpdateButton",
+        "highlightRemoveButton",
+        "highlightUpButton",
+        "highlightDownButton",
+        "highlightPreviewSelectedButton",
+        "highlightPreviewAllButton",
+        "highlightLoopSelectedButton",
+        "highlightLoopButton",
+        "highlightExportSelectedButton",
+        "highlightExportAllButton",
+        "highlightStopButton"}) {
+    auto* button = dialog.findChild<QPushButton*>(name);
+    if (!button || button->icon().isNull()) {
+      std::cerr << "Missing colored action icon: " << name << std::endl;
+      return 1;
+    }
+  }
   if (!addRange(&dialog, "First", "0", "1") || !addRange(&dialog, "Second", "0:10", "0:11")) {
     std::cerr << "Could not add two ranges" << std::endl;
     return 1;
@@ -202,6 +281,12 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
   const QString output = QDir(game_dir).filePath("test-game-highlights-program-1.mp4");
   if (!waitForExport(&app, &dialog, output, 3000))
     return 1;
+  auto* log = dialog.findChild<QTextEdit*>("highlightLog");
+  if (!log || !log->toPlainText().contains("colored runner line") || log->toPlainText().contains(QChar(0x1b)) ||
+      (!log->toHtml().contains("#b42318") && !log->toHtml().contains("#bf616a"))) {
+    std::cerr << "Highlights log did not render terminal color" << std::endl;
+    return 1;
+  }
   QByteArray probe;
   if (!run("ffprobe", {"-v", "error", "-show_streams", "-show_format", "-of", "json", output}, &probe))
     return 1;
@@ -241,9 +326,16 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
       return 1;
     }
   }
+  log->verticalScrollBar()->setValue(log->verticalScrollBar()->maximum());
   export_all->click();
   if (!waitForExport(&app, &dialog, QDir(game_dir).filePath("test-game-highlights-program-2.mp4"), 3000))
     return 1;
+  app.processEvents();
+  if (log->verticalScrollBar()->maximum() == 0 ||
+      log->verticalScrollBar()->value() != log->verticalScrollBar()->maximum()) {
+    std::cerr << "Highlights log did not follow the newest line" << std::endl;
+    return 1;
+  }
   auto* preview_all = dialog.findChild<QPushButton*>("highlightPreviewAllButton");
   preview_all->click();
   for (int i = 0; i < 3000 && dialog.isBusy(); ++i) {
@@ -256,6 +348,9 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
   const QStringList calls_list = QString::fromUtf8(call_log.readAll()).split('\n', Qt::SkipEmptyParts);
   if (calls_list.size() < 6 || !calls_list[calls_list.size() - 2].contains("--enable-sinks=RENDER") ||
       !calls_list[calls_list.size() - 2].contains("--start-time=00:00:00") ||
+      !calls_list[calls_list.size() - 2].contains("--ui-preview-windows=program:") ||
+      !calls_list[calls_list.size() - 2].contains("--ui-preview-realtime") ||
+      !calls_list[calls_list.size() - 2].contains("--ui-preview-active=program") ||
       !calls_list.last().contains("--enable-sinks=RENDER") || !calls_list.last().contains("--start-time=00:00:10")) {
     std::cerr << "Preview did not play both intervals with render-only output" << std::endl;
     return 1;

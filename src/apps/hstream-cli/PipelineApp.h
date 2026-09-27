@@ -268,6 +268,7 @@ class PipelineApplication {
   gdouble show_render_scale_{-1};
   gint64 render_window_id_{0};
   gboolean headless_render_video_{FALSE};
+  gboolean ui_preview_realtime_{FALSE};
   gboolean stitching_calibration_only_{FALSE};
   gboolean stitching_calibration_with_ice_mask_{FALSE};
   gchar* stitching_player_scan_output_{nullptr};

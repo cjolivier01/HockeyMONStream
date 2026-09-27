@@ -2,6 +2,8 @@
 
 #include "src/apps/hstream-ui/HighlightPlan.h"
 
+#include <QtCore/QList>
+#include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QVector>
@@ -9,15 +11,19 @@
 
 class QCheckBox;
 class QCloseEvent;
+class QKeyEvent;
 class QComboBox;
 class QLabel;
 class QLineEdit;
-class QPlainTextEdit;
 class QPushButton;
+class QSplitter;
 class QTableWidget;
+class QTextEdit;
+class ScoreboardSelectionDialog;
 
 namespace hm::ui {
 
+class HighlightsVideoTarget;
 class HighlightsDialog : public QDialog {
  public:
   HighlightsDialog(
@@ -36,6 +42,7 @@ class HighlightsDialog : public QDialog {
 
  protected:
   void closeEvent(QCloseEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
 
  private:
   enum class Job { kNone, kPreview, kExport };
@@ -72,6 +79,9 @@ class HighlightsDialog : public QDialog {
   void consumeVideoPacketOutput(const QString& output, bool flush);
   void processFinished(int code, QProcess::ExitStatus status);
   void appendLog(const QString& line);
+  void handleScoreboardSelectorOutput(const QString& output);
+  void closeScoreboardSelector();
+  void setPreviewFocused(bool focused);
   QStringList cliArguments(const HighlightInterval& interval, const QStringList& routes) const;
   QString routeOutputPath(int clip_index, const QString& route) const;
   QString finalOutputPath(const QString& route) const;
@@ -97,6 +107,8 @@ class HighlightsDialog : public QDialog {
   QString final_partial_path_;
   QStringList published_paths_;
   QString process_output_buffer_;
+  QString scoreboard_selector_output_tail_;
+  QString scoreboard_selector_url_;
   QString probe_output_;
   QString probe_packet_buffer_;
   QString probe_baseline_;
@@ -120,8 +132,15 @@ class HighlightsDialog : public QDialog {
   Job job_{Job::kNone};
   Stage stage_{Stage::kIdle};
   QProcess process_;
+  QPointer<ScoreboardSelectionDialog> scoreboard_selection_dialog_;
 
   QTableWidget* table_{nullptr};
+  QSplitter* preview_splitter_{nullptr};
+  HighlightsVideoTarget* video_{nullptr};
+  QPushButton* expand_preview_button_{nullptr};
+  QVector<QWidget*> preview_focus_hidden_;
+  QList<int> preview_splitter_sizes_;
+  bool preview_focused_{false};
   QLineEdit* label_edit_{nullptr};
   QComboBox* mode_combo_{nullptr};
   QLineEdit* first_edit_{nullptr};
@@ -143,7 +162,9 @@ class HighlightsDialog : public QDialog {
   QPushButton* export_all_button_{nullptr};
   QPushButton* stop_button_{nullptr};
   QLabel* status_{nullptr};
-  QPlainTextEdit* log_{nullptr};
+  QTextEdit* log_{nullptr};
+  bool log_follows_tail_{true};
+  bool log_scroll_is_programmatic_{false};
 };
 
 } // namespace hm::ui

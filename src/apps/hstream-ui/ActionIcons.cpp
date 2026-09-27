@@ -335,6 +335,12 @@ QIcon action_icon(ActionIcon action) {
     case ActionIcon::Next:
       standard = S::SP_MediaSeekForward;
       break;
+    case ActionIcon::Up:
+      standard = S::SP_ArrowUp;
+      break;
+    case ActionIcon::Down:
+      standard = S::SP_ArrowDown;
+      break;
     case ActionIcon::Expand:
     case ActionIcon::Fit:
       standard = S::SP_TitleBarMaxButton;

@@ -1,4 +1,7 @@
 #include "src/apps/hstream-ui/HighlightsDialog.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/AnsiLogFormat.h"
+#include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
@@ -12,7 +15,13 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
+#include <QtCore/QUrl>
 #include <QtGui/QCloseEvent>
+#include <QtGui/QGuiApplication>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QMouseEvent>
+#include <QtGui/QTextDocument>
+#include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QFormLayout>
@@ -21,13 +30,17 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMessageBox>
-#include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
+#include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
+#include <QtWidgets/QTextEdit>
 #include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QWidget>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <utility>
 
 #ifdef Q_OS_UNIX
@@ -40,6 +53,45 @@
 #endif
 
 namespace hm::ui {
+
+class HighlightsVideoTarget : public QWidget {
+ public:
+  explicit HighlightsVideoTarget(QWidget* parent) : QWidget(parent) {
+    if (QGuiApplication::platformName() == "xcb")
+      setAttribute(Qt::WA_NativeWindow);
+    setMinimumSize(320, 180);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    QPalette background = palette();
+    background.setColor(QPalette::Window, Qt::black);
+    setPalette(background);
+    setAutoFillBackground(true);
+  }
+
+  void setRendererActive(bool active) {
+    const bool direct = active && QGuiApplication::platformName() == "xcb";
+    setAttribute(Qt::WA_PaintOnScreen, direct);
+    setAttribute(Qt::WA_NoSystemBackground, direct);
+    setAutoFillBackground(!active);
+    update();
+  }
+
+  QPaintEngine* paintEngine() const override {
+    return testAttribute(Qt::WA_PaintOnScreen) ? nullptr : QWidget::paintEngine();
+  }
+
+  std::function<void()> toggleFocus;
+
+ protected:
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && toggleFocus) {
+      toggleFocus();
+      event->accept();
+      return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+  }
+};
+
 namespace {
 
 QString safeFileComponent(QString value) {
@@ -103,7 +155,7 @@ HighlightsDialog::HighlightsDialog(
       plan_path_(QDir(game_dir_).filePath("highlights.json")) {
   setObjectName("highlightsDialog");
   setWindowTitle("Highlights — " + game_id_);
-  resize(850, 660);
+  resize(1220, 700);
   auto* root = new QVBoxLayout(this);
   auto* intro = new QLabel(
       "Add event times or exact ranges. Enter seconds, MM:SS, or HH:MM:SS (optional .mmm). "
@@ -111,7 +163,10 @@ HighlightsDialog::HighlightsDialog(
   intro->setWordWrap(true);
   root->addWidget(intro);
 
-  table_ = new QTableWidget(0, 5, this);
+  preview_splitter_ = new QSplitter(Qt::Horizontal, this);
+  preview_splitter_->setObjectName("highlightPreviewSplitter");
+  preview_splitter_->setChildrenCollapsible(false);
+  table_ = new QTableWidget(0, 5, preview_splitter_);
   table_->setObjectName("highlightsTable");
   table_->setHorizontalHeaderLabels({"Name", "Input", "Start", "End", "Length"});
   table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -120,7 +175,28 @@ HighlightsDialog::HighlightsDialog(
   table_->setSelectionBehavior(QAbstractItemView::SelectRows);
   table_->setSelectionMode(QAbstractItemView::SingleSelection);
   table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-  root->addWidget(table_, 1);
+  preview_splitter_->addWidget(table_);
+  auto* preview_panel = new QWidget(preview_splitter_);
+  preview_panel->setObjectName("highlightPreviewPanel");
+  auto* preview_layout = new QVBoxLayout(preview_panel);
+  auto* preview_header = new QHBoxLayout();
+  preview_header->addWidget(new QLabel("Program preview", preview_panel));
+  preview_header->addStretch();
+  expand_preview_button_ = new QPushButton(action_icon(ActionIcon::Expand), "Expand preview", preview_panel);
+  expand_preview_button_->setObjectName("highlightExpandPreviewButton");
+  expand_preview_button_->setAutoDefault(false);
+  expand_preview_button_->setToolTip("Expand within this dialog (or double-click the preview).");
+  preview_header->addWidget(expand_preview_button_);
+  preview_layout->addLayout(preview_header);
+  video_ = new HighlightsVideoTarget(preview_panel);
+  video_->setObjectName("highlightVideo");
+  preview_layout->addWidget(video_, 1);
+  preview_splitter_->addWidget(preview_panel);
+  preview_splitter_->setStretchFactor(0, 3);
+  preview_splitter_->setStretchFactor(1, 2);
+  root->addWidget(preview_splitter_, 1);
+  video_->toggleFocus = [this] { setPreviewFocused(!preview_focused_); };
+  connect(expand_preview_button_, &QPushButton::clicked, this, video_->toggleFocus);
   connect(table_, &QTableWidget::currentCellChanged, this, [this](int row) {
     loadEditor(row);
     updateControls();
@@ -152,13 +228,20 @@ HighlightsDialog::HighlightsDialog(
 
   auto* edit_actions = new QHBoxLayout();
   add_button_ = new QPushButton("Add", this);
+  add_button_->setIcon(action_icon(ActionIcon::Add));
   add_button_->setObjectName("highlightAddButton");
   update_button_ = new QPushButton("Apply changes", this);
+  update_button_->setIcon(action_icon(ActionIcon::Apply));
   update_button_->setObjectName("highlightUpdateButton");
   remove_button_ = new QPushButton("Remove", this);
+  remove_button_->setIcon(action_icon(ActionIcon::Remove));
   remove_button_->setObjectName("highlightRemoveButton");
   up_button_ = new QPushButton("Move up", this);
+  up_button_->setIcon(action_icon(ActionIcon::Up));
+  up_button_->setObjectName("highlightUpButton");
   down_button_ = new QPushButton("Move down", this);
+  down_button_->setIcon(action_icon(ActionIcon::Down));
+  down_button_->setObjectName("highlightDownButton");
   for (auto* button : {add_button_, update_button_, remove_button_, up_button_, down_button_})
     edit_actions->addWidget(button);
   edit_actions->addStretch();
@@ -171,12 +254,16 @@ HighlightsDialog::HighlightsDialog(
 
   auto* playback = new QHBoxLayout();
   preview_selected_button_ = new QPushButton("Preview selected", this);
+  preview_selected_button_->setIcon(action_icon(ActionIcon::Play));
   preview_selected_button_->setObjectName("highlightPreviewSelectedButton");
   preview_all_button_ = new QPushButton("Preview all", this);
+  preview_all_button_->setIcon(action_icon(ActionIcon::Play));
   preview_all_button_->setObjectName("highlightPreviewAllButton");
   loop_selected_button_ = new QPushButton("Loop selected", this);
+  loop_selected_button_->setIcon(action_icon(ActionIcon::Refresh));
   loop_selected_button_->setObjectName("highlightLoopSelectedButton");
   loop_button_ = new QPushButton("Loop all", this);
+  loop_button_->setIcon(action_icon(ActionIcon::Refresh));
   loop_button_->setObjectName("highlightLoopButton");
   for (auto* button : {preview_selected_button_, preview_all_button_, loop_selected_button_, loop_button_})
     playback->addWidget(button);
@@ -215,10 +302,13 @@ HighlightsDialog::HighlightsDialog(
 
   auto* export_actions = new QHBoxLayout();
   export_selected_button_ = new QPushButton("Export selected", this);
+  export_selected_button_->setIcon(action_icon(ActionIcon::Save));
   export_selected_button_->setObjectName("highlightExportSelectedButton");
   export_all_button_ = new QPushButton("Export all", this);
+  export_all_button_->setIcon(action_icon(ActionIcon::Save));
   export_all_button_->setObjectName("highlightExportAllButton");
   stop_button_ = new QPushButton("Stop", this);
+  stop_button_->setIcon(action_icon(ActionIcon::Stop));
   stop_button_->setObjectName("highlightStopButton");
   export_actions->addWidget(export_selected_button_);
   export_actions->addWidget(export_all_button_);
@@ -233,12 +323,29 @@ HighlightsDialog::HighlightsDialog(
   status_->setObjectName("highlightStatus");
   status_->setWordWrap(true);
   root->addWidget(status_);
-  log_ = new QPlainTextEdit(this);
+  log_ = new QTextEdit(this);
   log_->setObjectName("highlightLog");
   log_->setReadOnly(true);
-  log_->setMaximumBlockCount(400);
+  log_->setAcceptRichText(true);
+  log_->document()->setMaximumBlockCount(400);
   log_->setMaximumHeight(145);
   root->addWidget(log_);
+  auto* log_scroll = log_->verticalScrollBar();
+  connect(log_scroll, &QScrollBar::valueChanged, this, [this](int value) {
+    if (log_scroll_is_programmatic_)
+      return;
+    auto* bar = log_->verticalScrollBar();
+    log_follows_tail_ = value >= bar->maximum() - std::max(2, bar->singleStep());
+  });
+  connect(log_scroll, &QScrollBar::rangeChanged, this, [this] {
+    if (!log_follows_tail_)
+      return;
+    const bool previous = log_scroll_is_programmatic_;
+    log_scroll_is_programmatic_ = true;
+    auto* bar = log_->verticalScrollBar();
+    bar->setValue(bar->maximum());
+    log_scroll_is_programmatic_ = previous;
+  });
 
   process_.setProcessChannelMode(QProcess::SeparateChannels);
   connect(&process_, &QProcess::readyReadStandardOutput, this, &HighlightsDialog::readProcessOutput);
@@ -294,9 +401,106 @@ void HighlightsDialog::closeEvent(QCloseEvent* event) {
   QDialog::closeEvent(event);
 }
 
+void HighlightsDialog::keyPressEvent(QKeyEvent* event) {
+  if (event->key() == Qt::Key_Escape && preview_focused_) {
+    setPreviewFocused(false);
+    event->accept();
+    return;
+  }
+  QDialog::keyPressEvent(event);
+}
+
+void HighlightsDialog::setPreviewFocused(bool focused) {
+  if (focused == preview_focused_)
+    return;
+  const bool remap_video = video_->isVisible();
+  if (remap_video)
+    video_->hide();
+  if (focused) {
+    preview_splitter_sizes_ = preview_splitter_->sizes();
+    preview_focus_hidden_.clear();
+    for (QWidget* widget : findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+      if (widget != preview_splitter_ && widget->isVisible()) {
+        preview_focus_hidden_.push_back(widget);
+        widget->hide();
+      }
+    }
+    if (table_->isVisible()) {
+      preview_focus_hidden_.push_back(table_);
+      table_->hide();
+    }
+  } else {
+    for (QWidget* widget : preview_focus_hidden_)
+      widget->show();
+    preview_focus_hidden_.clear();
+  }
+  preview_focused_ = focused;
+  expand_preview_button_->setText(focused ? "Restore layout" : "Expand preview");
+  expand_preview_button_->setIcon(action_icon(focused ? ActionIcon::Restore : ActionIcon::Expand));
+  layout()->activate();
+  if (!focused)
+    preview_splitter_->setSizes(preview_splitter_sizes_);
+  QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+  if (remap_video) {
+    video_->show();
+    video_->raise();
+  }
+}
+
 void HighlightsDialog::appendLog(const QString& line) {
-  if (!line.trimmed().isEmpty())
-    log_->appendPlainText(line.trimmed());
+  if (!line.trimmed().isEmpty()) {
+    const bool previous = log_scroll_is_programmatic_;
+    log_scroll_is_programmatic_ = true;
+    const bool dark_background = log_->palette().color(QPalette::Base).lightness() < 128;
+    log_->append(ansi_to_html(line.trimmed(), dark_background));
+    log_scroll_is_programmatic_ = previous;
+    if (log_follows_tail_) {
+      log_scroll_is_programmatic_ = true;
+      auto* bar = log_->verticalScrollBar();
+      bar->setValue(bar->maximum());
+      log_scroll_is_programmatic_ = previous;
+    }
+  }
+}
+
+void HighlightsDialog::closeScoreboardSelector() {
+  if (!scoreboard_selection_dialog_)
+    return;
+  scoreboard_selection_dialog_->closeAfterBackendCompletion();
+  scoreboard_selection_dialog_->deleteLater();
+  scoreboard_selection_dialog_ = nullptr;
+}
+
+void HighlightsDialog::handleScoreboardSelectorOutput(const QString& output) {
+  if (stage_ != Stage::kCli || output.isEmpty())
+    return;
+  if (output.contains("Loaded scoreboard perspective polygon") || output.contains("Scoreboard overlay disabled")) {
+    closeScoreboardSelector();
+    status_->setText("Scoreboard selection complete; processing clip…");
+  }
+  scoreboard_selector_output_tail_ = (scoreboard_selector_output_tail_ + output).right(8192);
+  static const QRegularExpression selector_url(
+      R"((https?://[^\s]+/\?token=[0-9a-fA-F]{64}))", QRegularExpression::CaseInsensitiveOption);
+  const QRegularExpressionMatch match = selector_url.match(scoreboard_selector_output_tail_);
+  if (!match.hasMatch() || match.captured(1) == scoreboard_selector_url_)
+    return;
+  scoreboard_selector_url_ = match.captured(1);
+  closeScoreboardSelector();
+  auto* dialog = new ScoreboardSelectionDialog(
+      QUrl(scoreboard_selector_url_), QDir(game_dir_).filePath("s.png"), {}, this);
+  scoreboard_selection_dialog_ = dialog;
+  dialog->cancellationFailed = [this](const QString& reason) {
+    appendLog("Scoreboard selection could not be cancelled: " + reason);
+    stop();
+  };
+  connect(dialog, &QDialog::rejected, this, [this] { stop(); });
+  if (!dialog->loadError().isEmpty())
+    appendLog(dialog->loadError());
+  dialog->show();
+  dialog->raise();
+  dialog->activateWindow();
+  status_->setText("Select scoreboard corners or No Scoreboard to continue this clip.");
+  appendLog("Scoreboard selection opened for this game.");
 }
 
 void HighlightsDialog::refreshTable() {
@@ -594,6 +798,9 @@ QStringList HighlightsDialog::cliArguments(const HighlightInterval& interval, co
   if (routes.isEmpty()) {
     sink_names << "RENDER";
     args << "--show";
+    args << "--ui-preview-realtime";
+    args << QString("--ui-preview-windows=program:%1").arg(static_cast<qulonglong>(video_->winId()));
+    args << "--ui-preview-active=program";
   }
   args << "--enable-sinks=" + sink_names.join(',');
   args << "--start-time=" + FormatHighlightTime(interval.start_ms);
@@ -626,6 +833,9 @@ void HighlightsDialog::runNextClip() {
     }
   }
   stage_ = Stage::kCli;
+  closeScoreboardSelector();
+  scoreboard_selector_output_tail_.clear();
+  scoreboard_selector_url_.clear();
   process_output_buffer_.clear();
   current_expected_path_.clear();
   current_cli_result_.clear();
@@ -641,12 +851,15 @@ void HighlightsDialog::runNextClip() {
   QProcessEnvironment cli_env = env_;
   cli_env.insert("HSTREAM_UI_PARENT_PID", QString::number(QCoreApplication::applicationPid()));
   process_.setProcessEnvironment(cli_env);
+  if (job_ == Job::kPreview)
+    video_->setRendererActive(true);
   process_.start(runner_, cliArguments(interval, job_ == Job::kExport ? routes_ : QStringList{}));
 }
 
 void HighlightsDialog::readProcessOutput() {
   const QString stdout_text = QString::fromLocal8Bit(process_.readAllStandardOutput());
   const QString stderr_text = QString::fromLocal8Bit(process_.readAllStandardError());
+  handleScoreboardSelectorOutput(stderr_text);
   if (stage_ == Stage::kProbe) {
     probe_output_ += stdout_text;
     if (!stderr_text.trimmed().isEmpty())
@@ -666,6 +879,7 @@ void HighlightsDialog::readProcessOutput() {
       break;
     const QString line = process_output_buffer_.left(newline).trimmed();
     process_output_buffer_.remove(0, newline + 1);
+    handleScoreboardSelectorOutput(line);
     if (stage_ == Stage::kCli && line.startsWith("HSTREAM_CLIP_RESULT reason="))
       current_cli_result_ = line.mid(QString("HSTREAM_CLIP_RESULT reason=").size());
     if (stage_ == Stage::kCli && job_ == Job::kExport && line.startsWith("HSTREAM_OUTPUT type=archive ")) {
@@ -1061,11 +1275,13 @@ void HighlightsDialog::publishConcat() {
 }
 
 void HighlightsDialog::finishJob(bool success, const QString& message) {
+  closeScoreboardSelector();
   const Job completed = job_;
   job_ = Job::kNone;
   stage_ = Stage::kIdle;
   cancelling_ = false;
   loop_ = false;
+  video_->setRendererActive(false);
   QString detail = message;
   if (!success && completed == Job::kExport && !work_dir_.isEmpty()) {
     detail += " Work files retained in " + work_dir_;

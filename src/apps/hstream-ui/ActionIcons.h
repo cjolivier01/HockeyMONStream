@@ -18,6 +18,8 @@ enum class ActionIcon {
   Stop,
   Previous,
   Next,
+  Up,
+  Down,
   Expand,
   Restore,
   Camera,
