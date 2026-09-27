@@ -52,27 +52,43 @@ bool valid_base_name(const QString& name) {
 bool ParseHighlightTime(const QString& text, qint64* milliseconds, QString* error) {
   if (!milliseconds)
     return fail(error, "No destination was supplied for the highlight time");
-  static const QRegularExpression pattern("^([0-9]{2,}):([0-5][0-9]):([0-5][0-9])(?:\\.([0-9]{1,3}))?$");
+  static const QRegularExpression pattern("^([0-9]+)(?::([0-9]+))?(?::([0-9]+))?(?:\\.([0-9]{1,3}))?$");
   const QRegularExpressionMatch match = pattern.match(text.trimmed());
   if (!match.hasMatch())
-    return fail(error, "Use HH:MM:SS or HH:MM:SS.mmm");
+    return fail(error, "Use seconds, MM:SS, or HH:MM:SS, optionally followed by .mmm");
 
-  bool hours_ok = false;
-  const qint64 hours = match.captured(1).toLongLong(&hours_ok);
-  if (!hours_ok)
+  bool first_ok = false;
+  bool second_ok = false;
+  bool third_ok = false;
+  const qint64 first = match.captured(1).toLongLong(&first_ok);
+  const bool has_second = match.capturedStart(2) >= 0;
+  const bool has_third = match.capturedStart(3) >= 0;
+  const qint64 second = has_second ? match.captured(2).toLongLong(&second_ok) : 0;
+  const qint64 third = has_third ? match.captured(3).toLongLong(&third_ok) : 0;
+  if (!first_ok || (has_second && !second_ok) || (has_third && !third_ok))
     return fail(error, "Highlight time exceeds the pipeline time range");
-  const qint64 minutes = match.captured(2).toLongLong();
-  const qint64 seconds = match.captured(3).toLongLong();
+  const qint64 hours = has_third ? first : 0;
+  const qint64 minutes = has_third ? second : has_second ? first : 0;
+  const qint64 seconds = has_third ? third : has_second ? second : first;
+  if ((has_second && seconds >= 60) || (has_third && minutes >= 60))
+    return fail(error, "Seconds must be below 60 after a colon, and HH:MM:SS minutes must be below 60");
   QString fraction = match.captured(4);
   while (fraction.size() < 3)
     fraction += '0';
   const qint64 fractional_ms = fraction.isEmpty() ? 0 : fraction.toLongLong();
-  if (hours > kMaximumMilliseconds / 3600000)
+  qint64 value = 0;
+  if (hours > (kMaximumMilliseconds - value) / 3600000)
     return fail(error, "Highlight time exceeds the pipeline time range");
-  const qint64 value = hours * 3600000 + minutes * 60000 + seconds * 1000 + fractional_ms;
-  if (!valid_milliseconds(value))
+  value += hours * 3600000;
+  if (minutes > (kMaximumMilliseconds - value) / 60000)
     return fail(error, "Highlight time exceeds the pipeline time range");
-  *milliseconds = value;
+  value += minutes * 60000;
+  if (seconds > (kMaximumMilliseconds - value) / 1000)
+    return fail(error, "Highlight time exceeds the pipeline time range");
+  value += seconds * 1000;
+  if (fractional_ms > kMaximumMilliseconds - value)
+    return fail(error, "Highlight time exceeds the pipeline time range");
+  *milliseconds = value + fractional_ms;
   return true;
 }
 

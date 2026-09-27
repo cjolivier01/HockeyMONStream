@@ -17,6 +17,7 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QTableWidget>
 
@@ -70,12 +71,16 @@ bool addRange(hm::ui::HighlightsDialog* dialog, const QString& name, const QStri
 bool waitForExport(QApplication* app, hm::ui::HighlightsDialog* dialog, const QString& output, int maximum_iterations) {
   for (int i = 0; i < maximum_iterations && (dialog->isBusy() || !QFileInfo::exists(output)); ++i) {
     app->processEvents();
+    if (!dialog->isBusy() && !QFileInfo::exists(output))
+      break;
     QThread::msleep(10);
   }
   if (!dialog->isBusy() && QFileInfo::exists(output))
     return true;
   std::cerr << "Export did not finish: " << dialog->findChild<QLabel*>("highlightStatus")->text().toStdString()
             << std::endl;
+  if (auto* log = dialog->findChild<QPlainTextEdit*>("highlightLog"))
+    std::cerr << log->toPlainText().toStdString() << std::endl;
   return false;
 }
 
@@ -106,7 +111,7 @@ int realGameE2E(QApplication* app) {
       qEnvironmentVariable("HSTREAM_HIGHLIGHTS_E2E_OUTPUT_ROOT", QDir::tempPath()),
       env,
       base_args);
-  if (!addRange(&dialog, "First", "00:00:05", "00:00:07") || !addRange(&dialog, "Second", "00:00:15", "00:00:17"))
+  if (!addRange(&dialog, "First", "5", "7") || !addRange(&dialog, "Second", "0:15", "0:17"))
     return 1;
   auto* base_name = dialog.findChild<QLineEdit*>("highlightBaseNameEdit");
   base_name->setText("e2e-" + QString::number(QDateTime::currentMSecsSinceEpoch()));
@@ -186,7 +191,7 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
   env.insert("HSTREAM_TEST_CALLS", calls);
   hm::ui::HighlightsDialog dialog(
       "test-game", game_dir, runner, temporary.path(), temporary.path(), env, {"-g", "test-game"});
-  if (!addRange(&dialog, "First", "00:00:00", "00:00:01") || !addRange(&dialog, "Second", "00:00:10", "00:00:11")) {
+  if (!addRange(&dialog, "First", "0", "1") || !addRange(&dialog, "Second", "0:10", "0:11")) {
     std::cerr << "Could not add two ranges" << std::endl;
     return 1;
   }

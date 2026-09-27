@@ -105,7 +105,9 @@ HighlightsDialog::HighlightsDialog(
   setWindowTitle("Highlights — " + game_id_);
   resize(850, 660);
   auto* root = new QVBoxLayout(this);
-  auto* intro = new QLabel("Add event times or exact ranges. Event clips use 75% of the duration before the event.");
+  auto* intro = new QLabel(
+      "Add event times or exact ranges. Enter seconds, MM:SS, or HH:MM:SS (optional .mmm). "
+      "Event clips use 75% of the duration before the event.");
   intro->setWordWrap(true);
   root->addWidget(intro);
 
@@ -135,17 +137,17 @@ HighlightsDialog::HighlightsDialog(
   editor->addRow("Timing", mode_combo_);
   first_edit_ = new QLineEdit(this);
   first_edit_->setObjectName("highlightFirstTimeEdit");
-  first_edit_->setPlaceholderText("HH:MM:SS.mmm");
+  first_edit_->setPlaceholderText("e.g. 32 or 14:12");
   editor->addRow("Event / start", first_edit_);
   second_edit_ = new QLineEdit(this);
   second_edit_->setObjectName("highlightSecondTimeEdit");
-  second_edit_->setPlaceholderText("HH:MM:SS.mmm");
+  second_edit_->setPlaceholderText("e.g. 32 or 14:12");
   editor->addRow("Duration / end", second_edit_);
   root->addLayout(editor);
   connect(mode_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
-    first_edit_->setPlaceholderText(mode_combo_->currentData().toBool() ? "Event HH:MM:SS.mmm" : "Start HH:MM:SS.mmm");
+    first_edit_->setPlaceholderText(mode_combo_->currentData().toBool() ? "Event: 32 or 14:12" : "Start: 32 or 14:12");
     second_edit_->setPlaceholderText(
-        mode_combo_->currentData().toBool() ? "Duration HH:MM:SS.mmm" : "End HH:MM:SS.mmm");
+        mode_combo_->currentData().toBool() ? "Duration: 32 or 14:12" : "End: 32 or 14:12");
   });
 
   auto* edit_actions = new QHBoxLayout();
