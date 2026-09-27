@@ -268,6 +268,7 @@ class PipelineApplication {
   gdouble show_render_scale_{-1};
   gint64 render_window_id_{0};
   gboolean headless_render_video_{FALSE};
+  gboolean ui_preview_realtime_{FALSE};
   gboolean stitching_calibration_only_{FALSE};
   gboolean stitching_calibration_with_ice_mask_{FALSE};
   gchar* stitching_player_scan_output_{nullptr};
@@ -302,6 +303,8 @@ class PipelineApplication {
   gboolean print_dependencies_version_;
   // Stop conditions
   gint time_limit_seconds_{0};
+  uint64_t clip_end_time_ns_{0};
+  std::atomic<bool> clip_end_boundary_reached_{false};
   gboolean quit_;
   gboolean dump_pipeline_dot_;
   gboolean force_reconfigure_;

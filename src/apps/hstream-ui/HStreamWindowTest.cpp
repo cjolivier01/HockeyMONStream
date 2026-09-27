@@ -17,6 +17,7 @@
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTemporaryDir>
+#include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtGui/QImage>
@@ -2598,6 +2599,31 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
              "Auto imports for a different vendor video id should create a separate camN directory") &&
       expect(fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "cam3" / "GX020001.MP4"),
              "Auto imports from a different camera folder should create a new camN without renaming");
+}
+
+bool test_highlights_dialog_controls(HStreamWindow* window) {
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* highlights = require_child<QPushButton>(window, "highlightsButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  if (!start || !highlights || !mode)
+    return false;
+  mode->setCurrentIndex(mode->findData("program"));
+  QApplication::processEvents();
+  if (!expect(start->isEnabled() && highlights->isEnabled(), "Program mode must allow a highlights job"))
+    return false;
+  activate(highlights);
+  auto* dialog = window->findChild<QDialog*>("highlightsDialog");
+  if (!expect(dialog && !start->isEnabled(), "Opening Highlights must block the main pipeline"))
+    return false;
+  dialog->close();
+  for (int attempt = 0; attempt < 50 && window->findChild<QDialog*>("highlightsDialog"); ++attempt) {
+    QApplication::processEvents();
+    QThread::msleep(1);
+  }
+  QApplication::processEvents();
+  return expect(
+      !window->findChild<QDialog*>("highlightsDialog") && start->isEnabled(),
+      "Closing Highlights must reenable the main pipeline");
 }
 
 bool set_test_calibration_status(HStreamWindow* window, const std::string& status, int control_points = 1500) {
@@ -16126,6 +16152,11 @@ int main(int argc, char** argv) {
             test_nonzero_user_stitch_frame_default(window.gameDirectoryText()) && test_camera_controls(&window)
         ? 0
         : 1;
+  }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_HIGHLIGHTS_FLOW_ONLY")) {
+    HStreamWindow window;
+    window.show();
+    return test_game_setup(&window, source_root.path()) && test_highlights_dialog_controls(&window) ? 0 : 1;
   }
   const bool rink_leveling_flow_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RINK_LEVELING_FLOW_ONLY");
   const bool iteration_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ITERATION_ONLY");

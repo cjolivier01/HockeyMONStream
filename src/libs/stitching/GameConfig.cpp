@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
@@ -1717,7 +1718,24 @@ absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& 
   if (!fs::is_regular_file(config_path, error) || error)
     return absl::FailedPreconditionError("Game config is not a regular file: " + config_path.string());
   try {
-    return std::optional<YAML::Node>(YAML::LoadFile(config_path.string()));
+    YAML::Node config = YAML::LoadFile(config_path.string());
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    const YAML::Node selection =
+        stitching && stitching.IsMap() ? stitching["calibration_frame_selection"] : YAML::Node();
+    if (selection && !selection.IsNull()) {
+      const auto parsed = ParsePlayerFrameSelectionPlan(selection);
+      if (!parsed.ok() &&
+          parsed.status().message().find("plan fingerprint does not match its contents") != std::string::npos) {
+        std::optional<YAML::Node> recovered;
+        HM_ASSIGN_OR_RETURN(
+            recovered, RecoverPlayerFrameSelectionFromRetainedInputs(config_path.parent_path(), selection));
+        if (recovered) {
+          config["stitching"]["calibration_frame_selection"] = *recovered;
+          HM_RETURN_IF_ERROR(publish_game_config(config_path.parent_path(), YAML::Dump(config) + "\n"));
+        }
+      }
+    }
+    return std::optional<YAML::Node>(std::move(config));
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to load game config: " + std::string(exception.what()));
   }

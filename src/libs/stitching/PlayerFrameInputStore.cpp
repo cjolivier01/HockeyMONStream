@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <memory>
@@ -17,7 +19,6 @@
 #include <opencv2/imgproc.hpp>
 
 #include "hstream/src/libs/common/Status.h"
-#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 namespace hm::stitching {
@@ -38,6 +39,33 @@ struct Descriptor {
 
 absl::Status io_error(const std::string& action) {
   return absl::InternalError(action + ": " + std::strerror(errno));
+}
+
+absl::Status fsync_bundle_path(const fs::path& path, bool directory = false) {
+  Descriptor descriptor{::open(path.c_str(), O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0))};
+  if (descriptor.value < 0)
+    return io_error("Cannot open saved frame bundle for fsync");
+  if (::fsync(descriptor.value) != 0)
+    return io_error("Cannot fsync saved frame bundle");
+  return absl::OkStatus();
+}
+
+absl::Status write_bundle_manifest(const fs::path& path, const std::string& contents) {
+  Descriptor descriptor{::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600)};
+  if (descriptor.value < 0)
+    return io_error("Cannot create saved frame manifest");
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const ssize_t count = ::write(descriptor.value, contents.data() + offset, contents.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return io_error("Cannot write saved frame manifest");
+    offset += static_cast<size_t>(count);
+  }
+  if (::fsync(descriptor.value) != 0)
+    return io_error("Cannot fsync saved frame manifest");
+  return absl::OkStatus();
 }
 
 std::string name(size_t index, size_t camera, const char* extension) {
@@ -191,6 +219,79 @@ absl::StatusOr<std::optional<PlayerFrameInputSet>> LoadPlayerFrameInputs(
   }
 }
 
+absl::StatusOr<std::optional<YAML::Node>> RecoverPlayerFrameSelectionFromRetainedInputs(
+    const fs::path& game_directory,
+    const YAML::Node& selection) {
+  try {
+    if (!selection.IsMap() || !selection["fingerprint"].IsScalar())
+      return std::nullopt;
+    const std::string fingerprint = selection["fingerprint"].as<std::string>();
+    if (fingerprint.size() != 64 || !std::all_of(fingerprint.begin(), fingerprint.end(), [](char c) {
+          return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        }))
+      return std::nullopt;
+    auto game = PinnedDirectory::Open(game_directory, "saved frame game");
+    if (!game.ok())
+      return game.status();
+    auto store = game->OpenChild("player-frame-inputs", "saved frame store");
+    if (!store.ok())
+      return store.status();
+    if (!store->has_value())
+      return std::nullopt;
+    auto child = (**store).OpenChild(fingerprint, "saved player frame bundle");
+    if (!child.ok())
+      return child.status();
+    if (!child->has_value())
+      return std::nullopt;
+    auto bytes = read_bounded_regular_file_no_follow(
+        (**child).path() / "frames.yaml", kMaximumManifestBytes, "saved frame manifest");
+    if (!bytes.ok())
+      return bytes.status();
+    const YAML::Node manifest = YAML::Load(*bytes);
+    if (!manifest.IsMap() || manifest["version"].as<int>(0) != 1 ||
+        manifest["fingerprint"].as<std::string>("") != fingerprint)
+      return absl::FailedPreconditionError("Saved frame manifest has the wrong selection owner");
+    PlayerFrameSelectionPlan stored;
+    HM_ASSIGN_OR_RETURN(stored, ParsePlayerFrameSelectionPlan(manifest["plan"]));
+    if (stored.fingerprint != fingerprint)
+      return absl::FailedPreconditionError("Saved frame manifest identifies another selection");
+
+    // Schema 1 fingerprints context scalar text. Old untagged plans can turn
+    // 0.000000 into 0.0 on a PyYAML round trip. Restore only this known numeric
+    // context field; parsing the resulting plan verifies every other field.
+    const YAML::Node context = selection["context"];
+    const YAML::Node rotation = context && context.IsMap() ? context["output_rotation_degrees"] : YAML::Node();
+    const auto original = stored.context.find("output_rotation_degrees");
+    if (!rotation || !rotation.IsScalar() || original == stored.context.end())
+      return absl::FailedPreconditionError("Saved plan differs from the retained frame selection");
+    const std::string rewritten = rotation.as<std::string>();
+    char* end = nullptr;
+    errno = 0;
+    const double rewritten_degrees = std::strtod(rewritten.c_str(), &end);
+    if (errno == ERANGE || end == rewritten.c_str() || *end != '\0' || !std::isfinite(rewritten_degrees))
+      return absl::FailedPreconditionError("Saved plan rotation is not a finite number");
+    errno = 0;
+    const double original_degrees = std::strtod(original->second.c_str(), &end);
+    if (errno == ERANGE || end == original->second.c_str() || *end != '\0' || !std::isfinite(original_degrees) ||
+        rewritten_degrees != original_degrees)
+      return absl::FailedPreconditionError("Saved plan rotation differs from the retained selection");
+    YAML::Node normalized = YAML::Clone(selection);
+    normalized["context"]["output_rotation_degrees"] = original->second;
+    PlayerFrameSelectionPlan equivalent;
+    HM_ASSIGN_OR_RETURN(equivalent, ParsePlayerFrameSelectionPlan(normalized));
+    if (equivalent.fingerprint != fingerprint)
+      return absl::FailedPreconditionError("Saved plan differs from the retained frame selection");
+    auto inputs = LoadPlayerFrameInputs(game_directory, stored, PlayerFrameInputValidation::kFull);
+    if (!inputs.ok())
+      return inputs.status();
+    if (!inputs->has_value())
+      return absl::FailedPreconditionError("Retained player frames disappeared during plan recovery");
+    return std::optional<YAML::Node>(PlayerFrameSelectionPlanYaml(stored));
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Cannot recover saved frame selection: " + std::string(error.what()));
+  }
+}
+
 static absl::Status publish_player_frame_inputs(
     const fs::path& game_directory,
     const PlayerFrameSelectionPlan& plan,
@@ -287,21 +388,21 @@ static absl::Status publish_player_frame_inputs(
           return absl::AbortedError("Saved source thumbnail changed while its bundle was copied");
         pair[camera == 0 ? "left" : "right"]["image"] = identity;
         pair[camera == 0 ? "left" : "right"]["thumbnail"] = thumbnail_identity;
-        HM_RETURN_IF_ERROR(fsync_stitch_path(png));
-        HM_RETURN_IF_ERROR(fsync_stitch_path(jpg));
+        HM_RETURN_IF_ERROR(fsync_bundle_path(png));
+        HM_RETURN_IF_ERROR(fsync_bundle_path(jpg));
       }
       manifest["pairs"].push_back(pair);
     }
     const std::string contents = YAML::Dump(manifest) + "\n";
     if (contents.size() > kMaximumManifestBytes)
       return absl::ResourceExhaustedError("Saved frame manifest exceeds its size limit");
-    HM_RETURN_IF_ERROR(write_stitch_transaction_file(staging.path / "frames.yaml", contents));
-    HM_RETURN_IF_ERROR(fsync_stitch_path(staging.path, true));
+    HM_RETURN_IF_ERROR(write_bundle_manifest(staging.path / "frames.yaml", contents));
+    HM_RETURN_IF_ERROR(fsync_bundle_path(staging.path, true));
     fs::rename(staging.path, pinned->path() / plan.fingerprint, error);
     if (error)
       return absl::InternalError("Cannot publish saved frame bundle: " + error.message());
-    HM_RETURN_IF_ERROR(fsync_stitch_path(pinned->path(), true));
-    return fsync_stitch_path(game_directory, true);
+    HM_RETURN_IF_ERROR(fsync_bundle_path(pinned->path(), true));
+    return fsync_bundle_path(game_directory, true);
   } catch (const cv::Exception& exception) {
     return absl::InternalError("Cannot encode saved calibration frames: " + std::string(exception.what()));
   } catch (const YAML::Exception& exception) {

@@ -1238,8 +1238,8 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   // Ordinary embedded/headless render-video terminators must never throttle the processing/encode
   // branch. A synchronized application-owned ximagesink can reject every late frame when inference falls behind,
   // while a synchronized fakesink needlessly clock-paces an otherwise headless render branch. Encoded and
-  // self-managed render sinks retain their configured timing behavior. Calibration-only embedded playback
-  // preserves the configured render clock so seam comparisons are presented at normal playback speed.
+  // self-managed render sinks retain their configured timing behavior. Embedded playback that requests
+  // real-time viewing preserves the render clock so clips are presented at normal playback speed.
 #ifndef IS_TEGRA
   g_object_set(
       G_OBJECT(bin->sink),

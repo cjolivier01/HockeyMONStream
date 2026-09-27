@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -52,7 +53,7 @@ PlayerFrameSelectionPlan make_plan(const fs::path& root) {
       {"rink_mask_sha256", "mask-content"},
       {"rink_mask_revision", "output:authority"},
       {"fieldmask_settings", "center=-0.1;bottom=0.1"},
-      {"output_rotation_degrees", "0"}};
+      {"output_rotation_degrees", "0.000000"}};
   for (const char* role : {"left", "right"}) {
     const fs::path video = root / (std::string(role) + ".mp4");
     write_bytes(video, "recorded-source-fixture");
@@ -121,6 +122,13 @@ bool run(const fs::path& root) {
   fs::create_directories(source);
   auto absent = LoadPlayerFrameInputs(source, plan);
   ok &= expect(absent.ok() && !absent->has_value(), "only an absent bundle returns no input set");
+  YAML::Node rewritten = PlayerFrameSelectionPlanYaml(plan);
+  rewritten["context"]["output_rotation_degrees"] = "0.0";
+  rewritten["selected"][1]["quality"] = "0.9";
+  auto unavailable_recovery = RecoverPlayerFrameSelectionFromRetainedInputs(source, rewritten);
+  ok &= expect(
+      unavailable_recovery.ok() && !unavailable_recovery->has_value(),
+      "an old plan without retained inputs is left for normal fingerprint validation");
   const fs::path destination = root / "copied-game";
   fs::create_directories(destination);
   ok &= expect(
@@ -132,6 +140,45 @@ bool run(const fs::path& root) {
   auto loaded = LoadPlayerFrameInputs(source, plan);
   if (!expect(loaded.ok() && loaded->has_value(), "load a published bundle"))
     return false;
+  ok &= expect(!ParsePlayerFrameSelectionPlan(rewritten).ok(), "legacy YAML rewrite changes the plan fingerprint");
+  auto recovered = RecoverPlayerFrameSelectionFromRetainedInputs(source, rewritten);
+  ok &= expect(
+      recovered.ok() && recovered->has_value() && ParsePlayerFrameSelectionPlan(**recovered).ok(),
+      "a validated retained bundle restores equivalent legacy rotation text");
+  YAML::Node game_config;
+  game_config["stitching"]["calibration_frame_selection"] = rewritten;
+  write_bytes(source / "config.yaml", YAML::Dump(game_config));
+  auto reopened = load_game_config_file(source / "config.yaml");
+  ok &= expect(
+      reopened.ok() && reopened->has_value() &&
+          ParsePlayerFrameSelectionPlan((**reopened)["stitching"]["calibration_frame_selection"]).ok(),
+      "the ordinary game-config loader recovers an old externally rewritten plan");
+  const YAML::Node persisted = YAML::LoadFile((source / "config.yaml").string());
+  ok &= expect(
+      ParsePlayerFrameSelectionPlan(persisted["stitching"]["calibration_frame_selection"]).ok(),
+      "recovery atomically leaves a valid plan for direct YAML readers");
+  const std::string repaired_bytes = read_bytes(source / "config.yaml");
+  ok &= expect(
+      load_game_config_file(source / "config.yaml").ok() && read_bytes(source / "config.yaml") == repaired_bytes,
+      "reloading a valid plan does not rewrite the game config");
+  YAML::Node malformed_config = YAML::Clone(game_config);
+  malformed_config["stitching"]["calibration_frame_selection"]["schema"] = 99;
+  write_bytes(source / "config.yaml", YAML::Dump(malformed_config));
+  const std::string malformed_bytes = read_bytes(source / "config.yaml");
+  ok &= expect(
+      load_game_config_file(source / "config.yaml").ok() && read_bytes(source / "config.yaml") == malformed_bytes &&
+          !ParsePlayerFrameSelectionPlan(malformed_config["stitching"]["calibration_frame_selection"]).ok(),
+      "an unrelated malformed plan is not rewritten or silently accepted");
+  YAML::Node altered = YAML::Clone(rewritten);
+  altered["selected"][0]["timeline_pts_ns"] = 1;
+  ok &= expect(
+      !RecoverPlayerFrameSelectionFromRetainedInputs(source, altered).ok(),
+      "recovery rejects a changed frame even when the claimed fingerprint still names a bundle");
+  altered = YAML::Clone(rewritten);
+  altered["context"]["output_rotation_degrees"] = "1.0";
+  ok &= expect(
+      !RecoverPlayerFrameSelectionFromRetainedInputs(source, altered).ok(),
+      "recovery rejects a changed rotation value");
   const auto& inputs = **loaded;
   if (!expect(inputs.images.size() == 2 && inputs.thumbnails.size() == 2, "retain every ordered camera pair"))
     return false;
@@ -188,6 +235,9 @@ bool run(const fs::path& root) {
     return false;
   ok &= expect(fs::file_size(damaged_png) == previous_size, "content-corruption fixture retains the PNG byte count");
   ok &= expect(!LoadPlayerFrameInputs(corrupted, plan).ok(), "full validation rejects same-size changed PNG content");
+  ok &= expect(
+      !RecoverPlayerFrameSelectionFromRetainedInputs(corrupted, rewritten).ok(),
+      "recovery rejects a retained bundle with damaged full-resolution input");
   auto inspection = LoadPlayerFrameInputs(corrupted, plan, PlayerFrameInputValidation::kInspection);
   ok &= expect(
       inspection.ok() && inspection->has_value(), "inspection does not hash full PNG content on its thumbnail path");
@@ -340,7 +390,22 @@ bool run(const fs::path& root) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2) {
+    try {
+      const YAML::Node config = YAML::LoadFile(argv[1]);
+      const auto plan = ParsePlayerFrameSelectionPlan(config["stitching"]["calibration_frame_selection"]);
+      if (!plan.ok()) {
+        std::cerr << plan.status() << '\n';
+        return 1;
+      }
+      std::cout << plan->fingerprint << '\n';
+      return 0;
+    } catch (const YAML::Exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
   std::string pattern = (fs::temp_directory_path() / "player-input-store-test-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');

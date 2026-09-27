@@ -15,7 +15,9 @@
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSlider>
+#include <QtWidgets/QSizeGrip>
 #include <QtWidgets/QTabWidget>
+#include <QtWidgets/QToolButton>
 
 #include <atomic>
 #include <functional>
@@ -49,6 +51,50 @@ bool smoke() {
   CameraExperimentDialog second;
   first.show();
   QCoreApplication::processEvents();
+  auto* maximize_window = widget<QToolButton>(first, "maximizeCameraExperimentWindowButton");
+  auto* resize_grip = first.findChild<QSizeGrip*>();
+  if (!first.windowFlags().testFlag(Qt::WindowMaximizeButtonHint) || !first.isSizeGripEnabled() || !resize_grip ||
+      !resize_grip->isVisible()) {
+    std::cerr << "Camera experiments window must support maximize and resize\n";
+    return false;
+  }
+  const QSize resized = first.size() + QSize(80, 60);
+  first.resize(resized);
+  if (!wait_until([&] { return first.size() == resized; }, 2000)) {
+    std::cerr << "Camera experiments window did not resize: requested " << resized.width() << 'x' << resized.height()
+              << ", got " << first.width() << 'x' << first.height() << '\n';
+    return false;
+  }
+  maximize_window->click();
+  if (!wait_until([&] { return first.isMaximized() && maximize_window->text() == "Restore window"; }, 2000)) {
+    std::cerr << "Camera experiments window did not maximize\n";
+    return false;
+  }
+  maximize_window->click();
+  if (!wait_until([&] { return !first.isMaximized() && maximize_window->text() == "Maximize window"; }, 2000)) {
+    std::cerr << "Camera experiments window did not restore\n";
+    return false;
+  }
+  auto* preview_focus = widget<QToolButton>(first, "maximizeCameraExperimentPreviewButton");
+  auto* preview_stop = widget<QPushButton>(first, "experimentStopPreview");
+  auto* controls_panel = widget<QWidget>(first, "experimentControlsPanel");
+  auto* video = widget<QWidget>(first, "experimentVideoTarget");
+  const WId original_target = video->winId();
+  if (!preview_focus->text().isEmpty() || preview_focus->accessibleName() != "Maximize preview")
+    return false;
+  preview_focus->click();
+  QCoreApplication::processEvents();
+  if (controls_panel->isVisible() || preview_focus->accessibleName() != "Restore preview" ||
+      video->winId() != original_target || !preview_stop->isEnabled()) {
+    std::cerr << "Camera preview did not focus while retaining its GPU target\n";
+    return false;
+  }
+  preview_stop->click();
+  QCoreApplication::processEvents();
+  if (!controls_panel->isVisible() || preview_focus->accessibleName() != "Maximize preview") {
+    std::cerr << "Stopping camera preview did not restore its layout\n";
+    return false;
+  }
   auto* first_override = widget<QCheckBox>(first, "experimentOverride_Max_Speed_X_x10");
   auto* first_value = widget<QDoubleSpinBox>(first, "experimentValue_Max_Speed_X_x10");
   if (first_value->isEnabled() || widget<QPushButton>(first, "experimentApply")->isEnabled())

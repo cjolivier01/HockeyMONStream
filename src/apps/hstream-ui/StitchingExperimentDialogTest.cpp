@@ -251,7 +251,9 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
   auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
   auto* candidate_panel = widget<QWidget>(dialog, "stitchExperimentCandidatePanel");
   auto* splitter = widget<QSplitter>(dialog, "stitchExperimentSplitter");
-  auto* expand = widget<QPushButton>(dialog, "maximizeStitchExperimentButton");
+  auto* expand = widget<QToolButton>(dialog, "maximizeStitchExperimentButton");
+  require(
+      expand->text().isEmpty() && expand->accessibleName() == "Maximize preview", "Preview action must use an icon");
   const WId original_target = video->winId();
   const QSize normal_video_size = video->size();
   const QList<int> normal_splitter_sizes = splitter->sizes();
@@ -260,7 +262,8 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
     dialog.grab().save(screenshot_dir + "/stitch-layout-normal.png");
   expand->click();
   QCoreApplication::processEvents();
-  require(!candidate_panel->isVisible() && expand->text() == "Restore layout", "Expand must focus the preview");
+  require(
+      !candidate_panel->isVisible() && expand->accessibleName() == "Restore preview", "Expand must focus the preview");
   require(video->width() > normal_video_size.width(), "Focused preview must gain horizontal space");
   require(video->winId() == original_target, "Expanding must not replace the GPU target");
   check_preview_layout(dialog);
@@ -1768,9 +1771,15 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
     require(video->winId() == target, "Starting a preview must preserve its native target");
     require(!remove->isEnabled(), "Removal must be disabled during playback");
     check_external_preview(dialog);
-    if (exit_code < 0)
+    if (exit_code < 0) {
+      auto* focus = widget<QToolButton>(dialog, "maximizeStitchExperimentButton");
+      focus->click();
+      require(
+          !widget<QWidget>(dialog, "stitchExperimentCandidatePanel")->isVisible(), "Preview must focus before stop");
       stop->click();
-    else
+      require(
+          widget<QWidget>(dialog, "stitchExperimentCandidatePanel")->isVisible(), "Stop must restore the layout");
+    } else
       write(preview_release, QByteArray::number(exit_code));
     require(wait_until([&] { return play->isEnabled(); }, 10000), "Preview did not release the native target");
     require(remove->isEnabled(), "Removal must return after playback ends, fails, or is stopped");

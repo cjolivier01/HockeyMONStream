@@ -210,6 +210,19 @@ void metadata_and_bounds(const fs::path& game) {
   require(
       take(CalibrationMatchSourceContext(equivalent, game)) == defaulted_set.source_context,
       "Missing frame_offsets within an existing game.stitching map must default");
+  equivalent = config();
+  equivalent["stitching"]["frame_offsets"]["left"] = 0.75;
+  equivalent["stitching"]["frame_offsets"]["right"] = 0.25;
+  require(
+      take(CalibrationMatchSourceContext(equivalent, game)) == set.source_context,
+      "Explicit native game offsets retain precedence over canonical offsets");
+  equivalent["game"].remove("stitching");
+  equivalent["stitching"]["stitch_frame_time"] = "00:00:00";
+  equivalent["stitching"]["frame_offsets"]["left"] = 0.0;
+  equivalent["stitching"]["frame_offsets"]["right"] = 0.0;
+  require(
+      take(CalibrationMatchSourceContext(equivalent, game)) == defaulted_set.source_context,
+      "Saved canonical offsets identify matches when native game offsets are absent");
   require(!CalibrationMatchSourceContext(YAML::Load("{}"), game).ok(), "Camera sources remain required");
 
   auto settings = config();

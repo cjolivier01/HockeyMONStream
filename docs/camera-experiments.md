@@ -71,8 +71,9 @@ main window, and later main-window changes do not overwrite the experiment.
 
 Preparation and preview startup, seeks, loops, and teardown run in the background.
 An animated progress bar identifies pending work. Source and camera settings are
-disabled during preparation and playback; pause the preview to edit them. Cancel
-stops pending work, and closing the dialog keeps the window responsive while the
+disabled during preparation and playback; pause the preview to edit them. The dialog can resize and maximize, and the
+icon at the Program preview's top right expands or restores the preview layout. **Stop** closes the preview and
+restores the normal layout. Cancel stops pending work, and closing the dialog keeps the window responsive while the
 renderer finishes using its native video window. Cancellation can take time while
 a decoder operation finishes.
 
