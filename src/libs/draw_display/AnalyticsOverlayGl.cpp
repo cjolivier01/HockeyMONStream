@@ -184,6 +184,28 @@ struct SavedState {
 };
 } // namespace
 
+const char* ToString(GlRenderStatus status) {
+  switch (status) {
+    case GlRenderStatus::kOk:
+      return "ok";
+    case GlRenderStatus::kCapacity:
+      return "capacity";
+    case GlRenderStatus::kInvalidArgument:
+      return "invalid-argument";
+    case GlRenderStatus::kFontUnavailable:
+      return "font-unavailable";
+    case GlRenderStatus::kGlError:
+      return "gl-error";
+  }
+  return "unknown";
+}
+
+const char* Remedy(GlRenderStatus status) {
+  return status == GlRenderStatus::kFontUnavailable
+      ? " (no monospace TTF at the DejaVu or Liberation paths; install fonts-dejavu-core)"
+      : "";
+}
+
 struct GlCompositor::State {
   GLXContext context{nullptr};
   Display* display{nullptr};

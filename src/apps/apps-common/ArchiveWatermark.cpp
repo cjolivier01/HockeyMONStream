@@ -26,8 +26,18 @@ namespace {
 using hm::draw_display::analytics::ImageView;
 using hm::draw_display::analytics::PixelFormat;
 
+// RenderSystemI420 reports through a borrowed string, so keep one with static
+// storage rather than returning a pointer into a temporary.
+const std::string& FontUnavailableReason() {
+  static const std::string reason =
+      std::string(hm::draw_display::analytics::ToString(hm::draw_display::analytics::RenderStatus::kFontUnavailable)) +
+      hm::draw_display::analytics::Remedy(hm::draw_display::analytics::RenderStatus::kFontUnavailable);
+  return reason;
+}
+
 struct State {
-  explicit State(GstElement* owner, int device) : owner(owner), device(device) {}
+  State(GstElement* owner, int device, std::string font_path)
+      : owner(owner), device(device), font_path(std::move(font_path)) {}
   ~State() {
     if (stream) {
       cudaSetDevice(device);
@@ -38,10 +48,17 @@ struct State {
   }
   GstElement* owner;
   int device;
+  std::string font_path;
   cudaStream_t stream{nullptr};
   std::unique_ptr<hm::draw_display::analytics::Compositor> compositor;
   hm::draw_display::analytics::CommandList commands;
   std::vector<uint8_t> cpu_atlas;
+  // Latched the way each compositor latches its own font failure. Without it
+  // every later buffer re-opens and re-reads the TTF before failing the same
+  // way.
+  bool cpu_font_failed{false};
+  // One bus error is the signal; the rest would be a log flood at frame rate.
+  bool error_reported{false};
 };
 
 float GlyphCoverage(const hm::draw_display::analytics::detail::Command& glyph, float x, float y, const uint8_t* atlas) {
@@ -64,23 +81,32 @@ float GlyphCoverage(const hm::draw_display::analytics::detail::Command& glyph, f
   return coverage / 255.0F;
 }
 
-bool RenderSystemI420(State* state, GstBuffer* buffer, GstVideoInfo* info) {
+// Returns nullptr once the mark is blended, else why it could not be.
+const char* RenderSystemI420(State* state, GstBuffer* buffer, GstVideoInfo* info) {
   using namespace hm::draw_display::analytics::detail;
   if (!gst_buffer_is_writable(buffer) || GST_VIDEO_INFO_WIDTH(info) % 2 || GST_VIDEO_INFO_HEIGHT(info) % 2)
-    return false;
+    return "buffer is not writable or has odd dimensions";
+  if (state->cpu_font_failed)
+    return FontUnavailableReason().c_str();
   if (state->cpu_atlas.empty()) {
-    state->cpu_atlas.resize(kAtlasBytes);
-    if (!BuildAtlas(state->cpu_atlas.data(), {}))
-      return false;
+    // Build into a local first. Keeping a resized but unbuilt atlas would let
+    // the next buffer skip this branch and blend nothing, which is how an
+    // unmarked frame would reach the encoder.
+    std::vector<uint8_t> atlas(kAtlasBytes);
+    if (!BuildAtlas(atlas.data(), state->font_path)) {
+      state->cpu_font_failed = true;
+      return FontUnavailableReason().c_str();
+    }
+    state->cpu_atlas = std::move(atlas);
   }
   GstVideoFrame frame{};
   if (!gst_video_frame_map(&frame, info, buffer, GST_MAP_WRITE))
-    return false;
+    return "could not map the frame for writing";
   const int width = GST_VIDEO_INFO_WIDTH(info), height = GST_VIDEO_INFO_HEIGHT(info);
   state->commands.Clear();
   if (!hm::draw_display::AppendWatermark(&state->commands, width, height)) {
     gst_video_frame_unmap(&frame);
-    return false;
+    return "watermark command capacity exhausted";
   }
   auto* y_plane = static_cast<uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
   auto* u_plane = static_cast<uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 1));
@@ -129,7 +155,7 @@ bool RenderSystemI420(State* state, GstBuffer* buffer, GstVideoInfo* info) {
       v_plane[(y / 2) * v_pitch + x / 2] = static_cast<uint8_t>(std::lround(std::clamp(v, 0.0F, 255.0F)));
     }
   gst_video_frame_unmap(&frame);
-  return true;
+  return nullptr;
 }
 
 #if defined(__aarch64__)
@@ -228,8 +254,10 @@ GstPadProbeReturn Probe(GstPad* pad, GstPadProbeInfo* info, gpointer user_data) 
   if (caps)
     gst_caps_unref(caps);
   if (error.empty() && !nvmm) {
-    if (format != PixelFormat::kI420 || !RenderSystemI420(state, buffer, &video_info))
-      error = "software archive watermark render failed";
+    if (format != PixelFormat::kI420)
+      error = "software archive watermark render failed: input is not I420";
+    else if (const char* reason = RenderSystemI420(state, buffer, &video_info))
+      error = std::string("software archive watermark render failed: ") + reason;
     else
       return GST_PAD_PROBE_OK;
   }
@@ -254,7 +282,8 @@ GstPadProbeReturn Probe(GstPad* pad, GstPadProbeInfo* info, gpointer user_data) 
       error = "invalid archive NvBufSurface batch";
     } else {
       if (!state->compositor)
-        state->compositor = std::make_unique<hm::draw_display::analytics::Compositor>();
+        state->compositor = std::make_unique<hm::draw_display::analytics::Compositor>(
+            hm::draw_display::analytics::Limits{}, state->font_path.empty() ? nullptr : state->font_path.c_str());
       for (unsigned index = 0; index < surface->numFilled; ++index) {
         ImageView image{};
 #if defined(__aarch64__)
@@ -274,10 +303,14 @@ GstPadProbeReturn Probe(GstPad* pad, GstPadProbeInfo* info, gpointer user_data) 
         const auto result = state->compositor->Render(image, state->commands, state->stream);
         if (result.status != hm::draw_display::analytics::RenderStatus::kOk) {
           cudaStreamSynchronize(state->stream);
-          error = "archive watermark GPU render failed: status=" + std::to_string(static_cast<int>(result.status)) +
-              " cuda=" + cudaGetErrorString(result.cuda_error) + " size=" + std::to_string(image.width) + "x" +
-              std::to_string(image.height) + " pitches=" + std::to_string(image.pitch) + "," +
-              std::to_string(image.chroma_pitch);
+          error = std::string("archive watermark GPU render failed: status=") +
+              hm::draw_display::analytics::ToString(result.status) + hm::draw_display::analytics::Remedy(result.status);
+          if (result.status != hm::draw_display::analytics::RenderStatus::kFontUnavailable) {
+            // Surface geometry says nothing about a missing font.
+            error += std::string(" cuda=") + cudaGetErrorString(result.cuda_error) +
+                " size=" + std::to_string(image.width) + "x" + std::to_string(image.height) +
+                " pitches=" + std::to_string(image.pitch) + "," + std::to_string(image.chroma_pitch);
+          }
           break;
         }
         // The encoder uses its own stream. Complete the sparse ROI write before
@@ -293,17 +326,20 @@ GstPadProbeReturn Probe(GstPad* pad, GstPadProbeInfo* info, gpointer user_data) 
     gst_buffer_unmap(buffer, &map);
   if (error.empty())
     return GST_PAD_PROBE_OK;
-  GST_ELEMENT_ERROR(state->owner, RESOURCE, FAILED, ("%s", error.c_str()), ("archive watermark"));
+  if (!state->error_reported) {
+    state->error_reported = true;
+    GST_ELEMENT_ERROR(state->owner, RESOURCE, FAILED, ("%s", error.c_str()), ("archive watermark"));
+  }
   return GST_PAD_PROBE_DROP;
 }
 
 } // namespace
 
-bool Install(GstElement* caps_filter, int gpu_id) {
+bool Install(GstElement* caps_filter, int gpu_id, std::string font_path) {
   GstPad* pad = gst_element_get_static_pad(caps_filter, "src");
   if (!pad)
     return false;
-  auto* state = new State(caps_filter, gpu_id);
+  auto* state = new State(caps_filter, gpu_id, std::move(font_path));
   const gulong id = gst_pad_add_probe(
       pad, GST_PAD_PROBE_TYPE_BUFFER, Probe, state, [](gpointer data) { delete static_cast<State*>(data); });
   gst_object_unref(pad);

@@ -374,7 +374,16 @@ void BusyOwnership() {
       compositor.counters().device_allocations == before.device_allocations &&
           compositor.counters().host_allocations == before.host_allocations,
       "warm path allocated");
-  std::cout << "async_ownership busy_suppression=1 command_reuse_safe=1 warm_allocations=0\n";
+  // playcropper answers kBusy by synchronizing and rendering again. Nothing
+  // reaches that today - hmstitcher emits one frame per batch - but its fence
+  // spans the batch on x86, so a wider one would. Keep the property the retry
+  // assumes honest: a ring that reported kBusy has to become usable once its
+  // slots retire.
+  Cuda(cudaStreamSynchronize(stream.value));
+  const auto retried = compositor.Render(image.view, commands, stream.value);
+  Check(retried.status == a::RenderStatus::kOk && retried.launched, "retired slots were not reused after kBusy");
+  Cuda(cudaStreamSynchronize(stream.value));
+  std::cout << "async_ownership busy_suppression=1 command_reuse_safe=1 warm_allocations=0 busy_retry_recovers=1\n";
 }
 void People(a::CommandList* commands, unsigned width, unsigned height) {
   constexpr float joints[17][2] = {

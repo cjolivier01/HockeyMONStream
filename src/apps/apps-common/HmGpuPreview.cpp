@@ -7,6 +7,7 @@
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 
 #include <gst/base/gstbasesink.h>
 #include <gst/video/video.h>
@@ -1418,12 +1419,22 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
     const auto rendered =
         state->player_compositor->Render(overlays.coordinate_width, overlays.coordinate_height, state->player_commands);
     if (rendered.status == GlRenderStatus::kGlError || rendered.status == GlRenderStatus::kInvalidArgument) {
-      post_sink_failure(self, "could not draw player analytics in the GPU preview");
+      post_sink_failure(
+          self,
+          absl::StrCat(
+              "could not draw player analytics in the GPU preview: ",
+              hm::draw_display::analytics::ToString(rendered.status),
+              rendered.status == GlRenderStatus::kGlError ? absl::StrCat(" gl=0x", absl::Hex(rendered.gl_error))
+                                                          : std::string())
+              .c_str());
       return;
     }
     if (rendered.status != GlRenderStatus::kOk) {
       if (++state->player_overlay_suppressions == 1)
-        g_printerr("HSTREAM_PLAYER_PREVIEW status=suppressed reason=%d\n", static_cast<int>(rendered.status));
+        g_printerr(
+            "HSTREAM_PLAYER_PREVIEW status=suppressed reason=%s%s\n",
+            hm::draw_display::analytics::ToString(rendered.status),
+            hm::draw_display::analytics::Remedy(rendered.status));
     }
   }
   if (state->channel == "stitched") {
@@ -1437,7 +1448,7 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
             std::min(
                 overlays.coordinate_width / state->negotiated_width,
                 overlays.coordinate_height / state->negotiated_height))) {
-      post_sink_failure(self, "could not queue the stitched preview watermark");
+      post_sink_failure(self, "stitched preview watermark command capacity exhausted");
       return;
     }
     if (!state->player_compositor)
@@ -1445,7 +1456,15 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
     const auto mark = state->player_compositor->Render(
         overlays.coordinate_width, overlays.coordinate_height, state->watermark_commands);
     if (mark.status != hm::draw_display::analytics::GlRenderStatus::kOk) {
-      post_sink_failure(self, "could not draw the stitched preview watermark");
+      // Same reason the Program path names its status: a missing font and a
+      // full vertex budget need different answers from whoever reads this.
+      post_sink_failure(
+          self,
+          absl::StrCat(
+              "could not draw the stitched preview watermark: ",
+              hm::draw_display::analytics::ToString(mark.status),
+              hm::draw_display::analytics::Remedy(mark.status))
+              .c_str());
       return;
     }
   }

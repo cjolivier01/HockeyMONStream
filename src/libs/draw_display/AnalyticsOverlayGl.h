@@ -6,6 +6,10 @@ namespace hm::draw_display::analytics {
 
 inline constexpr uint64_t kMaximumGlFragmentCandidates = 64 * 1024 * 1024;
 enum class GlRenderStatus { kOk, kCapacity, kInvalidArgument, kFontUnavailable, kGlError };
+// Short stable name for logs and error messages.
+const char* ToString(GlRenderStatus status);
+// What to do about the status, or "" when there is nothing to suggest.
+const char* Remedy(GlRenderStatus status);
 struct GlRenderResult {
   GlRenderStatus status{GlRenderStatus::kOk};
   unsigned gl_error{0};
