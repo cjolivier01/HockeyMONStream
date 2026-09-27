@@ -784,6 +784,12 @@ absl::Status PlayCropperPriv::GenerateOutput(
     {
       using namespace draw_display::analytics;
       player_overlay_commands_.Clear();
+      // Reserve the first commands for the mandatory mark. Player analytics
+      // may fill the bounded list, but must not stop Program output.
+      if (!draw_display::AppendWatermark(
+              &player_overlay_commands_, static_cast<float>(output_width), static_cast<float>(output_height)))
+        return absl::ResourceExhaustedError("Program watermark command capacity exhausted");
+      const size_t watermark_commands = player_overlay_commands_.size();
       if (player_layers)
         BuildPlayerOverlays(
             frame_meta,
@@ -793,10 +799,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
             static_cast<float>(output_width),
             static_cast<float>(output_height),
             &player_overlay_commands_);
-      const bool player_commands_present = !player_overlay_commands_.empty();
-      if (!draw_display::AppendWatermark(
-              &player_overlay_commands_, static_cast<float>(output_width), static_cast<float>(output_height)))
-        return absl::ResourceExhaustedError("Program watermark command capacity exhausted");
+      bool player_commands_rendered = player_overlay_commands_.size() > watermark_commands;
       player_overlay_rejections_ += player_overlay_commands_.rejected();
       if (!player_overlay_commands_.empty()) {
         if (!player_overlay_compositor_)
@@ -805,31 +808,39 @@ absl::Status PlayCropperPriv::GenerateOutput(
           return absl::FailedPreconditionError("Player overlays require the Program cropper's RGBA output");
         // Owned output only; no write to the shared stitched tee input.
         completion_fence.MarkSubmitted();
-        auto rendered = player_overlay_compositor_->Render(
-            {outgoing_surface.dataptr(),
-             outgoing_surface.pitch(),
-             static_cast<uint32_t>(output_width),
-             static_cast<uint32_t>(output_height),
-             PixelFormat::kRgba8},
-            player_overlay_commands_,
-            cuda_stream_);
+        const ImageView image{
+            outgoing_surface.dataptr(),
+            outgoing_surface.pitch(),
+            static_cast<uint32_t>(output_width),
+            static_cast<uint32_t>(output_height),
+            PixelFormat::kRgba8};
+        auto rendered = player_overlay_compositor_->Render(image, player_overlay_commands_, cuda_stream_);
         if (rendered.status == RenderStatus::kBusy) {
           XCUDA_RETURN_IF_ERROR(cudaStreamSynchronize(cuda_stream_));
-          rendered = player_overlay_compositor_->Render(
-              {outgoing_surface.dataptr(),
-               outgoing_surface.pitch(),
-               static_cast<uint32_t>(output_width),
-               static_cast<uint32_t>(output_height),
-               PixelFormat::kRgba8},
-              player_overlay_commands_,
-              cuda_stream_);
+          rendered = player_overlay_compositor_->Render(image, player_overlay_commands_, cuda_stream_);
+        }
+        if (rendered.status == RenderStatus::kCapacity && player_commands_rendered) {
+          // Capacity is checked before any raster work. Keep the watermark
+          // and drop this frame's optional analytics when the tile budget fills.
+          player_overlay_commands_.Clear();
+          if (!draw_display::AppendWatermark(
+                  &player_overlay_commands_, static_cast<float>(output_width), static_cast<float>(output_height)))
+            return absl::ResourceExhaustedError("Program watermark command capacity exhausted");
+          player_commands_rendered = false;
+          if (++player_overlay_suppressions_ == 1)
+            g_printerr("HSTREAM_PLAYER_OVERLAY status=suppressed reason=capacity\n");
+          rendered = player_overlay_compositor_->Render(image, player_overlay_commands_, cuda_stream_);
+          if (rendered.status == RenderStatus::kBusy) {
+            XCUDA_RETURN_IF_ERROR(cudaStreamSynchronize(cuda_stream_));
+            rendered = player_overlay_compositor_->Render(image, player_overlay_commands_, cuda_stream_);
+          }
         }
         if (rendered.status == RenderStatus::kCudaError)
           return hm::to_status(rendered.cuda_error);
         if (rendered.status == RenderStatus::kInvalidArgument)
           return absl::InternalError("Invalid Program player-overlay image or stream");
         if (rendered.status == RenderStatus::kOk) {
-          if (player_commands_present)
+          if (player_commands_rendered)
             preview_transform.baked_player_layers = player_layers;
         } else
           return absl::InternalError("Program watermark could not be rendered");

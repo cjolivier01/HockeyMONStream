@@ -954,7 +954,9 @@ bool run_renderer_test(Display* display, Window window) {
       "video/x-raw,width=640,height=360,framerate=30/1 ! "
       "nvvideoconvert gpu-id=0 nvbuf-memory-type=2 output-buffers=1 ! "
       "video/x-raw(memory:NVMM),format=RGBA,width=640,height=360 ! "
-      "hmgpupreviewsink name=preview gpu-id=0 channel=test sync=false async=false",
+      // This source has no DeepStream frame metadata. The stitched preview
+      // still needs negotiated geometry to place its mandatory watermark.
+      "hmgpupreviewsink name=preview gpu-id=0 channel=stitched sync=false async=false",
       &error);
   if (!pipeline) {
     std::cerr << "Could not create GPU preview test pipeline: " << (error ? error->message : "unknown") << '\n';

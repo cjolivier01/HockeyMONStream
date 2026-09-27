@@ -530,6 +530,7 @@ struct RendererState {
   unsigned player_analytics_layers{0};
   float player_joint_confidence{0.3F};
   hm::draw_display::analytics::CommandList player_commands;
+  hm::draw_display::analytics::CommandList watermark_commands{64, 64};
   std::unique_ptr<hm::draw_display::analytics::GlCompositor> player_compositor;
   uint64_t player_overlay_suppressions{0};
   std::mutex mutex;
@@ -937,6 +938,8 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   RendererState* state = self->state;
   PreviewOverlays overlays;
   state->player_commands.Clear();
+  overlays.coordinate_width = static_cast<float>(state->negotiated_width);
+  overlays.coordinate_height = static_cast<float>(state->negotiated_height);
   overlays.stitched_surface_width =
       static_cast<float>(state->source_width ? state->source_width : state->negotiated_width);
   overlays.stitched_surface_height =
@@ -1409,15 +1412,25 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   draw_rink_mask(self, overlays);
   draw_overlay_paths(overlays);
   if (state->channel == "stitched") {
-    // The stitched preview bypasses playcropper. Draw only in this GL branch;
-    // the shared stitched canvas must stay pristine for Program cropping.
+    // This branch bypasses playcropper. Keep the mandatory mark independent
+    // of optional player commands and draw only into this preview framebuffer.
+    state->watermark_commands.Clear();
     if (!hm::draw_display::AppendWatermark(
-            &state->player_commands,
+            &state->watermark_commands,
             overlays.coordinate_width,
             overlays.coordinate_height,
-            std::min(overlays.coordinate_width / state->negotiated_width,
-                     overlays.coordinate_height / state->negotiated_height))) {
+            std::min(
+                overlays.coordinate_width / state->negotiated_width,
+                overlays.coordinate_height / state->negotiated_height))) {
       post_sink_failure(self, "could not queue the stitched preview watermark");
+      return;
+    }
+    if (!state->player_compositor)
+      state->player_compositor = std::make_unique<hm::draw_display::analytics::GlCompositor>();
+    const auto mark = state->player_compositor->Render(
+        overlays.coordinate_width, overlays.coordinate_height, state->watermark_commands);
+    if (mark.status != hm::draw_display::analytics::GlRenderStatus::kOk) {
+      post_sink_failure(self, "could not draw the stitched preview watermark");
       return;
     }
   }
@@ -1432,10 +1445,6 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
       return;
     }
     if (rendered.status != GlRenderStatus::kOk) {
-      if (state->channel == "stitched") {
-        post_sink_failure(self, "could not draw the stitched preview watermark");
-        return;
-      }
       if (++state->player_overlay_suppressions == 1)
         g_printerr("HSTREAM_PLAYER_PREVIEW status=suppressed reason=%d\n", static_cast<int>(rendered.status));
     }
