@@ -51,6 +51,13 @@ int main() {
     std::cerr << "Watermark escaped its fixed bottom-right rectangle\n";
     return 1;
   }
+  const size_t watermark_count = commands.size();
+  if (!commands.AddFill(1600, 1000, 1700, 1050, {0, 1, 0, 1}) || !commands.MovePrefixToEnd(watermark_count) ||
+      commands.data()[0].kind != Kind::kFill || commands.data()[1].glyph != 96 + 'S' - 32 ||
+      commands.MovePrefixToEnd(commands.size() + 1)) {
+    std::cerr << "Watermark did not retain draw priority after optional graphics\n";
+    return 1;
+  }
   commands.Clear();
   if (!hm::draw_display::AppendWatermark(&commands, 1600, 900, 2.0F)) {
     std::cerr << "Scaled preview watermark was rejected\n";

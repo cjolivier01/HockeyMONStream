@@ -800,6 +800,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
             static_cast<float>(output_height),
             &player_overlay_commands_);
       bool player_commands_rendered = player_overlay_commands_.size() > watermark_commands;
+      if (!player_overlay_commands_.MovePrefixToEnd(watermark_commands))
+        return absl::InternalError("Program watermark command order failed");
       player_overlay_rejections_ += player_overlay_commands_.rejected();
       if (!player_overlay_commands_.empty()) {
         if (!player_overlay_compositor_)

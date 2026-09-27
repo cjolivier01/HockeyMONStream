@@ -190,6 +190,13 @@ bool CommandList::AddText(float x, float y, float height, std::string_view text,
   return true;
 }
 
+bool CommandList::MovePrefixToEnd(size_t count) {
+  if (count > commands_.size())
+    return false;
+  std::rotate(commands_.begin(), commands_.begin() + count, commands_.end());
+  return true;
+}
+
 struct Compositor::State {
   struct Reference {
     uint32_t command, next;

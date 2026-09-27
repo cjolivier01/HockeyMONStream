@@ -74,6 +74,9 @@ class CommandList {
       std::string_view text,
       Color color,
       TextWeight weight = TextWeight::kRegular);
+  // Reserve a required prefix before optional commands, then place that prefix
+  // last for source-over drawing without another GPU render pass.
+  bool MovePrefixToEnd(size_t count);
   size_t size() const noexcept {
     return commands_.size();
   }

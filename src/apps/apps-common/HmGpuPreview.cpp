@@ -1411,9 +1411,24 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   glEnd();
   draw_rink_mask(self, overlays);
   draw_overlay_paths(overlays);
+  if (!state->player_commands.empty()) {
+    using namespace hm::draw_display::analytics;
+    if (!state->player_compositor)
+      state->player_compositor = std::make_unique<GlCompositor>();
+    const auto rendered =
+        state->player_compositor->Render(overlays.coordinate_width, overlays.coordinate_height, state->player_commands);
+    if (rendered.status == GlRenderStatus::kGlError || rendered.status == GlRenderStatus::kInvalidArgument) {
+      post_sink_failure(self, "could not draw player analytics in the GPU preview");
+      return;
+    }
+    if (rendered.status != GlRenderStatus::kOk) {
+      if (++state->player_overlay_suppressions == 1)
+        g_printerr("HSTREAM_PLAYER_PREVIEW status=suppressed reason=%d\n", static_cast<int>(rendered.status));
+    }
+  }
   if (state->channel == "stitched") {
-    // This branch bypasses playcropper. Keep the mandatory mark independent
-    // of optional player commands and draw only into this preview framebuffer.
+    // This branch bypasses playcropper. Draw the mandatory mark last in its
+    // own GL pass so optional player graphics cannot cover it.
     state->watermark_commands.Clear();
     if (!hm::draw_display::AppendWatermark(
             &state->watermark_commands,
@@ -1432,21 +1447,6 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
     if (mark.status != hm::draw_display::analytics::GlRenderStatus::kOk) {
       post_sink_failure(self, "could not draw the stitched preview watermark");
       return;
-    }
-  }
-  if (!state->player_commands.empty()) {
-    using namespace hm::draw_display::analytics;
-    if (!state->player_compositor)
-      state->player_compositor = std::make_unique<GlCompositor>();
-    const auto rendered =
-        state->player_compositor->Render(overlays.coordinate_width, overlays.coordinate_height, state->player_commands);
-    if (rendered.status == GlRenderStatus::kGlError || rendered.status == GlRenderStatus::kInvalidArgument) {
-      post_sink_failure(self, "could not draw player analytics in the GPU preview");
-      return;
-    }
-    if (rendered.status != GlRenderStatus::kOk) {
-      if (++state->player_overlay_suppressions == 1)
-        g_printerr("HSTREAM_PLAYER_PREVIEW status=suppressed reason=%d\n", static_cast<int>(rendered.status));
     }
   }
   current_x_error_target = state;
