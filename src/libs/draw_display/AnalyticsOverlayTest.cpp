@@ -198,6 +198,69 @@ void PixelTests() {
   }
   std::cout << "pixel_tests rgba8/rgb10a2 pitch clipping guard overlap source_over deterministic passed\n";
 }
+void EncoderFormatTests() {
+  Stream stream;
+  for (const bool ten_bit : {false, true}) {
+    constexpr unsigned width = 64, height = 32;
+    const size_t y_pitch = width * (ten_bit ? 2U : 1U) + 16;
+    const size_t uv_pitch = (ten_bit ? width * 2U : width / 2U) + 16;
+    const size_t y_bytes = y_pitch * height;
+    const size_t uv_bytes = uv_pitch * (height / 2);
+    const size_t bytes = y_bytes + uv_bytes * (ten_bit ? 1U : 2U);
+    std::vector<uint8_t> original(bytes, 0xa5);
+    for (unsigned y = 0; y < height; ++y)
+      for (unsigned x = 0; x < width; ++x) {
+        if (ten_bit) {
+          const uint16_t value = 64U << 6;
+          std::memcpy(original.data() + y * y_pitch + x * 2, &value, 2);
+        } else {
+          original[y * y_pitch + x] = 16;
+        }
+      }
+    for (unsigned y = 0; y < height / 2; ++y)
+      for (unsigned x = 0; x < width / 2; ++x) {
+        if (ten_bit) {
+          const uint16_t value = 512U << 6;
+          std::memcpy(original.data() + y_bytes + y * uv_pitch + x * 4, &value, 2);
+          std::memcpy(original.data() + y_bytes + y * uv_pitch + x * 4 + 2, &value, 2);
+        } else {
+          original[y_bytes + y * uv_pitch + x] = 128;
+          original[y_bytes + uv_bytes + y * uv_pitch + x] = 128;
+        }
+      }
+    uint8_t* device = nullptr;
+    Cuda(cudaMalloc(reinterpret_cast<void**>(&device), bytes));
+    Cuda(cudaMemcpyAsync(device, original.data(), bytes, cudaMemcpyHostToDevice, stream.value));
+    a::ImageView image{device, y_pitch, width, height, ten_bit ? a::PixelFormat::kP010 : a::PixelFormat::kI420};
+    image.chroma = device + y_bytes;
+    image.chroma_pitch = uv_pitch;
+    if (!ten_bit) {
+      image.chroma_v = device + y_bytes + uv_bytes;
+      image.chroma_v_pitch = uv_pitch;
+    }
+    a::CommandList commands;
+    Check(commands.AddFill(4, 4, 20, 12, {1, 0, 0, 1}), "encoder mark fixture failed");
+    a::Compositor compositor;
+    Check(compositor.Render(image, commands, stream.value).status == a::RenderStatus::kOk,
+          "encoder format watermark render failed");
+    std::vector<uint8_t> actual(bytes);
+    Cuda(cudaMemcpyAsync(actual.data(), device, bytes, cudaMemcpyDeviceToHost, stream.value));
+    Cuda(cudaStreamSynchronize(stream.value));
+    cudaFree(device);
+    Check(actual[0] == original[0], "encoder watermark modified a pixel outside its rectangle");
+    Check(actual[4 * y_pitch + 4 * (ten_bit ? 2U : 1U)] != original[4 * y_pitch + 4 * (ten_bit ? 2U : 1U)],
+          "encoder watermark did not modify luma");
+    Check(actual[y_bytes + 2 * uv_pitch + 2 * (ten_bit ? 4U : 1U)] !=
+              original[y_bytes + 2 * uv_pitch + 2 * (ten_bit ? 4U : 1U)],
+          "encoder watermark did not modify chroma");
+    for (unsigned y = 0; y < height; ++y)
+      Check(std::equal(actual.begin() + y * y_pitch + width * (ten_bit ? 2U : 1U),
+                       actual.begin() + (y + 1) * y_pitch,
+                       original.begin() + y * y_pitch + width * (ten_bit ? 2U : 1U)),
+            "encoder watermark overwrote row padding");
+  }
+  std::cout << "encoder_formats i420/p010 sparse watermark passed\n";
+}
 void CapacityAndText() {
   Stream stream;
   Image image(128, 96, a::PixelFormat::kRgba8);
@@ -449,6 +512,7 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--cpu-only")
       return 0;
     PixelTests();
+    EncoderFormatTests();
     CapacityAndText();
     BusyOwnership();
     if (argc == 2 && std::string(argv[1]) == "--benchmark")

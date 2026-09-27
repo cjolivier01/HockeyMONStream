@@ -169,6 +169,7 @@ cc_library(
         ":rink_mask_image",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/stitching:stitching",
+        "//src/libs/draw_display:watermark",
         "//toolchains/jetson:cuda_runtime",
         "@com_google_absl//absl/status:status",
         "@deepstream//:deepstream_lib",
@@ -180,6 +181,28 @@ cc_library(
         ],
         "//conditions:default": [],
     }),
+)
+
+cc_library(
+    name = "archive_watermark",
+    srcs = ["ArchiveWatermark.cpp"],
+    hdrs = ["ArchiveWatermark.h"],
+    copts = ["-std=c++17"],
+    include_prefix = INCLUDE_PREFIX,
+    deps = [
+        "//src/libs/draw_display:analytics_overlay",
+        "//src/libs/draw_display:analytics_overlay_atlas",
+        "//src/libs/draw_display:watermark",
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "archive_watermark_test",
+    srcs = ["ArchiveWatermarkTest.cpp"],
+    deps = [":archive_watermark", "@deepstream//:deepstream_lib", "@gstreamer"],
 )
 
 cc_library(
@@ -277,6 +300,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":archive_watermark",
         "//src/libs/tracker_reid:tracker_reid",
         ":player_analytics_bin",
         ":encoder_dimensions",

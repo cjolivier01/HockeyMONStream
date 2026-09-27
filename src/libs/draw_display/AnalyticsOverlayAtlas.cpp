@@ -1,5 +1,6 @@
 #include "hstream/src/libs/draw_display/AnalyticsOverlayAtlas.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -71,6 +72,18 @@ bool BuildAtlas(uint8_t* atlas, const std::string& configured_path) {
         scale,
         scale,
         code);
+  }
+  // Prepare a thicker variant once. Keeping it in the same atlas lets a bold
+  // watermark use one glyph command per letter on every frame.
+  for (int index = 0; index < detail::kGlyphCount; ++index) {
+    const int cell_x = (index % detail::kAtlasColumns) * detail::kGlyphWidth;
+    const int cell_y = (index / detail::kAtlasColumns) * detail::kGlyphHeight;
+    for (int y = 0; y < detail::kGlyphHeight; ++y) {
+      const uint8_t* regular = atlas + (cell_y + y) * detail::kAtlasWidth + cell_x;
+      uint8_t* bold = atlas + (cell_y + y + detail::kGlyphHeight * 6) * detail::kAtlasWidth + cell_x;
+      for (int x = 0; x < detail::kGlyphWidth; ++x)
+        bold[x] = std::max({regular[x], regular[std::max(0, x - 1)], regular[std::max(0, x - 2)]});
+    }
   }
   return true;
 }

@@ -25,7 +25,7 @@ static_assert(kMaximumCommands * 4 <= 65536);
 // GLSL 1.20 literals below must stay paired with the one shared atlas layout.
 static_assert(
     detail::kGlyphWidth == 32 && detail::kGlyphHeight == 48 && detail::kAtlasColumns == 16 &&
-    detail::kAtlasWidth == 512 && detail::kAtlasHeight == 288);
+    detail::kAtlasWidth == 512 && detail::kAtlasHeight == 576);
 static_assert(static_cast<int>(Kind::kGlyph) == 4);
 
 struct Bounds {
@@ -74,7 +74,7 @@ varying vec4 rgba;
 varying vec3 params;
 float sample_cell(vec2 origin, vec2 xy) {
   if (xy.x < 0.0 || xy.x >= 32.0 || xy.y < 0.0 || xy.y >= 48.0) return 0.0;
-  return texture2D(atlas, (origin + xy + vec2(0.5)) / vec2(512.0, 288.0)).r;
+  return texture2D(atlas, (origin + xy + vec2(0.5)) / vec2(512.0, 576.0)).r;
 }
 void main() {
   float coverage = 0.0;

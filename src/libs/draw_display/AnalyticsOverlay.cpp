@@ -143,7 +143,7 @@ bool CommandList::AddFill(float left, float top, float right, float bottom, Colo
   }
   return Add({left, top, right, bottom, color, 0, Kind::kFill, 0, 0});
 }
-bool CommandList::AddText(float x, float y, float height, std::string_view text, Color color) {
+bool CommandList::AddText(float x, float y, float height, std::string_view text, Color color, TextWeight weight) {
   const float advance = height * (static_cast<float>(detail::kGlyphWidth) / detail::kGlyphHeight);
   if (!(height > 0 && height <= 512) || text.size() > 64 || !Finite(x) || !Finite(y) || !ValidColor(color) ||
       !Finite(x + text.size() * advance) || !Finite(y + height)) {
@@ -174,10 +174,26 @@ bool CommandList::AddText(float x, float y, float height, std::string_view text,
   for (unsigned char c : text) {
     if (c != ' ')
       commands_.push_back(
-          {x, y, x + advance, y + height, color, 0, Kind::kGlyph, static_cast<uint32_t>(c - detail::kFirstGlyph), 0});
+          {x,
+           y,
+           x + advance,
+           y + height,
+           color,
+           0,
+           Kind::kGlyph,
+           static_cast<uint32_t>(c - detail::kFirstGlyph) +
+               (weight == TextWeight::kBold ? detail::kWeightGlyphOffset : 0),
+           0});
     x += advance;
   }
   glyphs_ += glyphs;
+  return true;
+}
+
+bool CommandList::MovePrefixToEnd(size_t count) {
+  if (count > commands_.size())
+    return false;
+  std::rotate(commands_.begin(), commands_.begin() + count, commands_.end());
   return true;
 }
 
@@ -263,11 +279,18 @@ RenderResult Compositor::Render(
     result.cuda_error = error;
     return result;
   };
+  const bool planar = image.format == PixelFormat::kI420 || image.format == PixelFormat::kP010;
+  const size_t luma_bytes = image.format == PixelFormat::kP010 ? 2U : (planar ? 1U : 4U);
   if (!image.data || !image.width || !image.height || image.width > kMaximumSide || image.height > kMaximumSide ||
-      image.pitch < size_t(image.width) * 4 || image.pitch % 4 || reinterpret_cast<uintptr_t>(image.data) % 4 ||
+      image.pitch < size_t(image.width) * luma_bytes || (!planar && image.pitch % 4) ||
+      (!planar && reinterpret_cast<uintptr_t>(image.data) % 4) ||
       image.pitch > std::numeric_limits<size_t>::max() / image.height ||
-      (image.format != PixelFormat::kRgba8 && image.format != PixelFormat::kRgb10A2) || !limits_.active_tiles ||
-      limits_.active_tiles > kMaximumActiveTiles || !limits_.tile_references ||
+      (image.format != PixelFormat::kRgba8 && image.format != PixelFormat::kRgb10A2 && !planar) ||
+      (planar &&
+       ((image.width % 2) || (image.height % 2) || !image.chroma ||
+        image.chroma_pitch < (image.format == PixelFormat::kP010 ? size_t(image.width) * 2 : image.width / 2) ||
+        (image.format == PixelFormat::kI420 && (!image.chroma_v || image.chroma_v_pitch < image.width / 2)))) ||
+      !limits_.active_tiles || limits_.active_tiles > kMaximumActiveTiles || !limits_.tile_references ||
       limits_.tile_references > kMaximumTileReferences || !limits_.upload_bytes ||
       limits_.upload_bytes > kMaximumUploadBytes)
     return invalid();

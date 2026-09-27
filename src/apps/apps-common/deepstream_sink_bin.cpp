@@ -36,6 +36,7 @@
 #include "deepstream_sinks.h"
 
 #include "hstream/src/apps/apps-common/EncoderDimensions.h"
+#include "hstream/src/apps/apps-common/ArchiveWatermark.h"
 #include "hstream/src/apps/apps-common/HStreamBatchDemux.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
@@ -1829,6 +1830,10 @@ static gboolean create_encode_file_bin(
   NVGSTDS_LINK_ELEMENT(bin->queue, bin->transform);
 
   NVGSTDS_LINK_ELEMENT(bin->transform, bin->cap_filter);
+  if (stitched_output && !hm::archive_watermark::Install(bin->cap_filter, config->gpu_id)) {
+    NVGSTDS_ERR_MSG_V("Failed to install stitched archive watermark");
+    goto done;
+  }
   if (bin->batch_demux) {
     NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->batch_demux);
     GstPad* demux_src_pad = gst_element_request_pad_simple(bin->batch_demux, "src_0");
