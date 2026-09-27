@@ -510,6 +510,36 @@ std::optional<fs::path> find_test_baseline_yaml() {
   return std::nullopt;
 }
 
+// Detects a posted-event drain: a posted event may only be delivered once
+// control is back in the application's own event loop. Anything that runs
+// QCoreApplication::processEvents() (directly, or through
+// QGuiApplication::sync()) from inside a geometry write delivers it early,
+// which is what freed QMainWindowLayout's geometry animation underneath Qt
+// during a live preview resize.
+class PostedEventProbe : public QObject {
+ public:
+  void arm() {
+    delivered_ = false;
+    QCoreApplication::postEvent(this, new QEvent(QEvent::User));
+  }
+
+  bool delivered() const {
+    return delivered_;
+  }
+
+ protected:
+  bool event(QEvent* event) override {
+    if (event->type() == QEvent::User) {
+      delivered_ = true;
+      return true;
+    }
+    return QObject::event(event);
+  }
+
+ private:
+  bool delivered_{false};
+};
+
 bool expect_x11_widget_state(
     QWidget* widget,
     bool expected_viewable,
@@ -5771,6 +5801,33 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!capture_interaction_artifact(window, "playing-focused-resized.png"))
     return false;
+
+  // A live preview host lays its native children out from resizeEvent, so that
+  // code runs with a Qt layout pass on the stack. Resizing the host directly
+  // delivers QResizeEvent synchronously, which makes the check deterministic.
+  // It goes after the geometry assertions above because QWidget::resize() on a
+  // layout-managed child is not undone until something invalidates the layout,
+  // and the size is put back afterwards so nothing downstream inherits a
+  // shrunk host. Only the xcb run has teeth: layoutRenderSurface() does no
+  // window-system work at all on the offscreen platform this binary defaults
+  // to, so neither the old code nor the new reaches the call under test.
+  const QSize probed_host_size = program_host->size();
+  PostedEventProbe resize_drain_probe;
+  resize_drain_probe.arm();
+  program_host->resize(probed_host_size.width() - 40, probed_host_size.height() - 24);
+  const bool delivered_inside_resize = resize_drain_probe.delivered();
+  if (!expect(
+          !delivered_inside_resize,
+          "Resizing a live preview must not drain posted events from inside the geometry write")) {
+    return false;
+  }
+  QApplication::processEvents();
+  if (!expect(
+          resize_drain_probe.delivered(),
+          "The posted-event probe must still be delivered by the application's own event loop")) {
+    return false;
+  }
+  program_host->resize(probed_host_size);
 
   const int ready_count_before_focused_disable = window->logText().count("GPU preview ready channel=program");
   render_video->setChecked(false);
