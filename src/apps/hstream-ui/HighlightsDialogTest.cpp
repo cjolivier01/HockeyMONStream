@@ -13,6 +13,7 @@
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
+#include <QtGui/QGuiApplication>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -21,8 +22,10 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollBar>
+#include <QtWidgets/QSizeGrip>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTextEdit>
+#include <QtWidgets/QToolButton>
 
 #include <cmath>
 #include <iostream>
@@ -237,14 +240,51 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
       "test-game", game_dir, runner, temporary.path(), temporary.path(), env, {"-g", "test-game"});
   dialog.show();
   app.processEvents();
+  auto* maximize_window = dialog.findChild<QToolButton*>("maximizeHighlightsWindowButton");
+  auto* resize_grip = dialog.findChild<QSizeGrip*>();
+  if (!dialog.windowFlags().testFlag(Qt::WindowMaximizeButtonHint) || !dialog.isSizeGripEnabled() || !resize_grip ||
+      !resize_grip->isVisible() || !maximize_window) {
+    std::cerr << "Highlights window must support maximize and resize" << std::endl;
+    return 1;
+  }
+  const QSize resized = dialog.size() + QSize(80, 60);
+  dialog.resize(resized);
+  for (int attempt = 0; attempt < 200 && dialog.size() != resized; ++attempt) {
+    app.processEvents();
+    QThread::msleep(10);
+  }
+  if (dialog.size() != resized) {
+    std::cerr << "Highlights window did not resize" << std::endl;
+    return 1;
+  }
+  maximize_window->click();
+  for (int attempt = 0; attempt < 200 && !dialog.isMaximized(); ++attempt) {
+    app.processEvents();
+    QThread::msleep(10);
+  }
+  if (!dialog.isMaximized() || maximize_window->text() != "Restore window") {
+    std::cerr << "Highlights window did not maximize" << std::endl;
+    return 1;
+  }
+  maximize_window->click();
+  for (int attempt = 0; attempt < 200 && dialog.isMaximized(); ++attempt) {
+    app.processEvents();
+    QThread::msleep(10);
+  }
+  if (dialog.isMaximized() || maximize_window->text() != "Maximize window") {
+    std::cerr << "Highlights window did not restore" << std::endl;
+    return 1;
+  }
   if (!dialog.findChild<QWidget*>("highlightVideo"))
     return 1;
-  auto* expand_preview = dialog.findChild<QPushButton*>("highlightExpandPreviewButton");
-  if (!expand_preview || expand_preview->icon().isNull())
+  auto* expand_preview = dialog.findChild<QToolButton*>("highlightExpandPreviewButton");
+  if (!expand_preview || expand_preview->icon().isNull() || !expand_preview->text().isEmpty() ||
+      expand_preview->accessibleName() != "Maximize preview")
     return 1;
   expand_preview->click();
   app.processEvents();
   if (dialog.findChild<QTableWidget*>("highlightsTable")->isVisible() ||
+      expand_preview->accessibleName() != "Restore preview" ||
       !dialog.findChild<QWidget*>("highlightVideo")->isVisible()) {
     std::cerr << "Expanded preview did not focus the video" << std::endl;
     return 1;
@@ -352,11 +392,20 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
   if (dialog.isBusy() || !call_log.open(QIODevice::ReadOnly))
     return 1;
   const QStringList calls_list = QString::fromUtf8(call_log.readAll()).split('\n', Qt::SkipEmptyParts);
-  if (calls_list.size() < 6 || !calls_list[calls_list.size() - 2].contains("--enable-sinks=RENDER") ||
-      !calls_list[calls_list.size() - 2].contains("--start-time=00:00:00") ||
-      calls_list[calls_list.size() - 2].contains("--ui-preview-windows=") ||
-      calls_list[calls_list.size() - 2].contains("--ui-preview-realtime") ||
-      calls_list[calls_list.size() - 2].contains("--ui-preview-active=") ||
+  if (calls_list.size() < 6)
+    return 1;
+  const QString& preview_call = calls_list[calls_list.size() - 2];
+  const bool has_preview_window = preview_call.contains("--ui-preview-windows=program:");
+  const bool has_preview_realtime = preview_call.contains("--ui-preview-realtime");
+  const bool has_preview_active = preview_call.contains("--ui-preview-active=program");
+#if defined(__x86_64__) && !defined(IS_TEGRA)
+  const bool expected_embedded = QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
+#else
+  const bool expected_embedded = false;
+#endif
+  if (!preview_call.contains("--enable-sinks=RENDER") || !preview_call.contains("--start-time=00:00:00") ||
+      has_preview_window != expected_embedded || has_preview_realtime != expected_embedded ||
+      has_preview_active != expected_embedded ||
       !calls_list.last().contains("--enable-sinks=RENDER") || !calls_list.last().contains("--start-time=00:00:10")) {
     std::cerr << "Preview did not play both intervals with render-only output" << std::endl;
     return 1;
@@ -364,7 +413,15 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
   dialog.findChild<QTableWidget*>("highlightsTable")->setCurrentCell(0, 0);
   dialog.findChild<QPushButton*>("highlightLoopSelectedButton")->click();
   app.processEvents();
+  expand_preview->click();
+  app.processEvents();
   dialog.findChild<QPushButton*>("highlightStopButton")->click();
+  app.processEvents();
+  if (!dialog.findChild<QTableWidget*>("highlightsTable")->isVisible() ||
+      expand_preview->accessibleName() != "Maximize preview") {
+    std::cerr << "Stopping preview did not restore the Highlights layout" << std::endl;
+    return 1;
+  }
   for (int i = 0; i < 1000 && dialog.isBusy(); ++i) {
     app.processEvents();
     QThread::msleep(1);

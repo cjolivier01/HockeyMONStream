@@ -20,6 +20,7 @@ class QSplitter;
 class QTableWidget;
 class QTextEdit;
 class ScoreboardSelectionDialog;
+class PreviewFocusButton;
 
 namespace hm::ui {
 
@@ -140,7 +141,7 @@ class HighlightsDialog : public QDialog {
   QTableWidget* table_{nullptr};
   QSplitter* preview_splitter_{nullptr};
   HighlightsVideoTarget* video_{nullptr};
-  QPushButton* expand_preview_button_{nullptr};
+  PreviewFocusButton* expand_preview_button_{nullptr};
   QVector<QWidget*> preview_focus_hidden_;
   QList<int> preview_splitter_sizes_;
   bool preview_focused_{false};

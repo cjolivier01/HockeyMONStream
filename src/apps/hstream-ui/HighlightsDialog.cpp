@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/HighlightsDialog.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
+#include "src/apps/hstream-ui/PreviewDialogWindow.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 #include <QtCore/QCoreApplication>
@@ -144,7 +145,7 @@ HighlightsDialog::HighlightsDialog(
     QProcessEnvironment env,
     QStringList base_runner_args,
     QWidget* parent)
-    : QDialog(parent),
+    : QDialog(parent, Qt::Window),
       game_id_(std::move(game_id)),
       game_dir_(std::move(game_dir)),
       runner_(std::move(runner)),
@@ -155,13 +156,19 @@ HighlightsDialog::HighlightsDialog(
       plan_path_(QDir(game_dir_).filePath("highlights.json")) {
   setObjectName("highlightsDialog");
   setWindowTitle("Highlights — " + game_id_);
+  configure_preview_dialog_window(this);
   resize(1220, 700);
   auto* root = new QVBoxLayout(this);
   auto* intro = new QLabel(
       "Add event times or exact ranges. Enter seconds, MM:SS, or HH:MM:SS (optional .mmm). "
       "Event clips use 75% of the duration before the event.");
   intro->setWordWrap(true);
-  root->addWidget(intro);
+  auto* heading = new QHBoxLayout();
+  heading->addWidget(intro, 1);
+  auto* maximize = new PreviewDialogWindowSizeButton(this);
+  maximize->setObjectName("maximizeHighlightsWindowButton");
+  heading->addWidget(maximize, 0, Qt::AlignTop);
+  root->addLayout(heading);
 
   preview_splitter_ = new QSplitter(Qt::Horizontal, this);
   preview_splitter_->setObjectName("highlightPreviewSplitter");
@@ -183,10 +190,11 @@ HighlightsDialog::HighlightsDialog(
   preview_header->addWidget(new QLabel(
       embeddedPreviewAvailable() ? "Program preview" : "Program preview opens in a separate window", preview_panel));
   preview_header->addStretch();
-  expand_preview_button_ = new QPushButton(action_icon(ActionIcon::Expand), "Expand preview", preview_panel);
+  stop_button_ = new QPushButton(action_icon(ActionIcon::Stop), "Stop", preview_panel);
+  stop_button_->setObjectName("highlightStopButton");
+  preview_header->addWidget(stop_button_);
+  expand_preview_button_ = new PreviewFocusButton(preview_panel);
   expand_preview_button_->setObjectName("highlightExpandPreviewButton");
-  expand_preview_button_->setAutoDefault(false);
-  expand_preview_button_->setToolTip("Expand within this dialog (or double-click the preview).");
   preview_header->addWidget(expand_preview_button_);
   preview_layout->addLayout(preview_header);
   video_ = new HighlightsVideoTarget(preview_panel);
@@ -197,7 +205,8 @@ HighlightsDialog::HighlightsDialog(
   preview_splitter_->setStretchFactor(1, 2);
   root->addWidget(preview_splitter_, 1);
   video_->toggleFocus = [this] { setPreviewFocused(!preview_focused_); };
-  connect(expand_preview_button_, &QPushButton::clicked, this, video_->toggleFocus);
+  connect(expand_preview_button_, &QToolButton::clicked, this, video_->toggleFocus);
+  connect(stop_button_, &QPushButton::clicked, this, &HighlightsDialog::stop);
   connect(table_, &QTableWidget::currentCellChanged, this, [this](int row) {
     loadEditor(row);
     updateControls();
@@ -308,17 +317,12 @@ HighlightsDialog::HighlightsDialog(
   export_all_button_ = new QPushButton("Export all", this);
   export_all_button_->setIcon(action_icon(ActionIcon::Save));
   export_all_button_->setObjectName("highlightExportAllButton");
-  stop_button_ = new QPushButton("Stop", this);
-  stop_button_->setIcon(action_icon(ActionIcon::Stop));
-  stop_button_->setObjectName("highlightStopButton");
   export_actions->addWidget(export_selected_button_);
   export_actions->addWidget(export_all_button_);
   export_actions->addStretch();
-  export_actions->addWidget(stop_button_);
   root->addLayout(export_actions);
   connect(export_selected_button_, &QPushButton::clicked, this, [this] { beginExport(true); });
   connect(export_all_button_, &QPushButton::clicked, this, [this] { beginExport(false); });
-  connect(stop_button_, &QPushButton::clicked, this, &HighlightsDialog::stop);
 
   status_ = new QLabel(this);
   status_->setObjectName("highlightStatus");
@@ -436,8 +440,7 @@ void HighlightsDialog::setPreviewFocused(bool focused) {
     preview_focus_hidden_.clear();
   }
   preview_focused_ = focused;
-  expand_preview_button_->setText(focused ? "Restore layout" : "Expand preview");
-  expand_preview_button_->setIcon(action_icon(focused ? ActionIcon::Restore : ActionIcon::Expand));
+  expand_preview_button_->setFocused(focused);
   layout()->activate();
   if (!focused)
     preview_splitter_->setSizes(preview_splitter_sizes_);
@@ -446,6 +449,7 @@ void HighlightsDialog::setPreviewFocused(bool focused) {
     video_->show();
     video_->raise();
   }
+  updateControls();
 }
 
 void HighlightsDialog::appendLog(const QString& line) {
@@ -616,7 +620,7 @@ void HighlightsDialog::updateControls() {
   loop_button_->setEnabled(editable && !plan_.intervals.isEmpty());
   export_selected_button_->setEnabled(editable && selected);
   export_all_button_->setEnabled(editable && !plan_.intervals.isEmpty());
-  stop_button_->setEnabled(!idle);
+  stop_button_->setEnabled(!idle || preview_focused_);
 }
 
 void HighlightsDialog::addInterval() {
@@ -1340,6 +1344,7 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
 }
 
 void HighlightsDialog::stop() {
+  setPreviewFocused(false);
   if (!isBusy() || cancelling_)
     return;
   cancelling_ = true;

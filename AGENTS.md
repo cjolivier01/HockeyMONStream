@@ -49,6 +49,9 @@ Notes:
 - When a D2H transfer is unavoidable, isolate it from the main pipeline, bound its frequency and resolution, and document why the transfer is necessary and what prevents a GPU-native path.
 - Treat new system-memory caps, `gst_buffer_map`/`gst_video_frame_map` calls on video frames, CPU-side image conversion, and snapshot encoding in a steady-state video path as performance-sensitive changes that require explicit justification and measurement.
 
+## Desktop UI
+- Dialogs with preview windows must let the whole dialog resize and maximize. Use a normal Qt window type, a title-bar maximize button, a resize grip, and an in-dialog Maximize/Restore control as in Stitching Experiments. This applies to Highlights and Camera Experiments too. Put an icon-only Maximize/Restore control at the preview's top-right; Stop must restore the normal preview layout.
+
 ## Testing Guidelines
 - Keep tests small and colocated. Name sources `*Test.cpp` and targets `<name>_test`.
 - Tests are simple binaries; run via `bazelisk run //<path>:<target>`. If using frameworks (e.g., Abseil), follow existing library deps.

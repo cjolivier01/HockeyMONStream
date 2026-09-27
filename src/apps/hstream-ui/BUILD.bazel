@@ -53,6 +53,7 @@ filegroup(
         "PipelineInspectorWidget.h",
         "PlayerAnalyticsControls.cpp",
         "PlayerAnalyticsControls.h",
+        "PreviewDialogWindow.h",
         "ScoreboardSelectionDialog.cpp",
         "ScoreboardSelectionDialog.h",
         "StitchingExperimentBackend.cpp",
@@ -77,6 +78,13 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = ["@qt//:qt_widgets"],
+)
+
+cc_library(
+    name = "preview_dialog_window",
+    hdrs = ["PreviewDialogWindow.h"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":action_icons", "@qt//:qt_widgets"],
 )
 
 cc_library(
@@ -249,6 +257,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":action_icons",
+        ":preview_dialog_window",
         "//src/libs/recording",
         ":camera_experiment_source",
         ":camera_experiment_preview",
@@ -348,6 +357,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":action_icons",
+        ":preview_dialog_window",
         ":match_editor_dialog",
         "//src/libs/stitching:calibration_matches",
         ":stitching_experiment_backend",
@@ -450,6 +460,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":action_icons",
+        ":preview_dialog_window",
         ":ansi_log_format",
         ":highlight_plan",
         ":scoreboard_selection_dialog",

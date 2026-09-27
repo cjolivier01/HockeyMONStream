@@ -95,10 +95,10 @@ the available space. Actual size refers to saved thumbnail pixels, not the full-
 These owned dialogs use an ordinary native window type while retaining Qt ownership and modality. This allows
 GNOME/Mutter to honor title-bar maximize/restore; its dialog window type can otherwise report a maximized Qt state
 without changing the actual geometry.
-**Expand preview** (or double-click the video) hides
+The maximize icon at the preview's top right (or double-clicking the video) hides
 the candidate panel and log to give the moving canvas more space while keeping playback controls available.
-**Restore layout**, another double-click, or **Escape** returns to the previous split without restarting playback
-or replacing its native GPU window. Switching candidates starts the same passage against that candidate's maps and
+The restore icon, another double-click, **Escape**, or **Stop** returns to the previous split without replacing its
+native GPU window. The first three keep playback running; **Stop** ends it. Switching candidates starts the same passage against that candidate's maps and
 seam. Video surfaces remain GPU-resident.
 While idle, Qt paints the preview black, including newly exposed areas after resizing. Playback gives the same
 native window to the GPU renderer; Qt resumes painting after the renderer process exits and its shutdown cleanup

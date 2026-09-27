@@ -2,6 +2,7 @@
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
+#include "src/apps/hstream-ui/PreviewDialogWindow.h"
 
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
@@ -76,38 +77,6 @@
 #endif
 
 namespace {
-
-// Keep the explicit window action in sync with title-bar and window-manager changes.
-class WindowSizeButton : public QToolButton {
- public:
-  explicit WindowSizeButton(QDialog* dialog) : QToolButton(dialog), dialog_(dialog) {
-    dialog_->installEventFilter(this);
-    connect(this, &QToolButton::clicked, dialog_, [this]() {
-      if (dialog_->isMaximized())
-        dialog_->showNormal();
-      else
-        dialog_->showMaximized();
-    });
-    update_action();
-  }
-
- protected:
-  bool eventFilter(QObject* object, QEvent* event) override {
-    if (object == dialog_ && event->type() == QEvent::WindowStateChange)
-      update_action();
-    return QToolButton::eventFilter(object, event);
-  }
-
- private:
-  void update_action() {
-    const bool maximized = dialog_->isMaximized();
-    setIcon(action_icon(maximized ? ActionIcon::Restore : ActionIcon::Expand));
-    setText(maximized ? "Restore window" : "Maximize window");
-    setToolTip(text());
-    setAccessibleName(text());
-  }
-  QDialog* dialog_;
-};
 
 void add_image_navigation(QVBoxLayout* layout, CalibrationFrameView* view) {
   auto* controls = new QHBoxLayout();
@@ -575,7 +544,7 @@ struct StitchingExperimentDialog::Impl {
   QCheckBox* loop{nullptr};
   QPushButton* preview{nullptr};
   QPushButton* stop_preview{nullptr};
-  QPushButton* expand_preview{nullptr};
+  PreviewFocusButton* expand_preview{nullptr};
   QSplitter* splitter{nullptr};
   std::vector<QWidget*> preview_focus_siblings;
   QList<int> normal_splitter_sizes;
@@ -643,11 +612,7 @@ struct StitchingExperimentDialog::Impl {
     preview_focused = focused;
     for (QWidget* sibling : preview_focus_siblings)
       sibling->setVisible(!focused);
-    expand_preview->setText(focused ? "Restore layout" : "Expand preview");
-    expand_preview->setIcon(action_icon(focused ? ActionIcon::Restore : ActionIcon::Expand));
-    expand_preview->setToolTip(
-        focused ? "Restore the candidate controls (Escape or double-click the preview)."
-                : "Expand the preview within this dialog (or double-click the preview).");
+    expand_preview->setFocused(focused);
     dialog->layout()->activate();
     if (!focused)
       splitter->setSizes(normal_splitter_sizes);
@@ -2672,9 +2637,7 @@ struct StitchingExperimentDialog::Impl {
     QDialog viewer(dialog, Qt::Window);
     viewer.setObjectName("stitchExperimentFrameInspector");
     viewer.setWindowTitle(QString("Calibration frames — Candidate %1").arg(candidates[row].sequence));
-    viewer.setWindowFlag(Qt::WindowMaximizeButtonHint, true);
-    viewer.setWindowFlag(Qt::WindowContextHelpButtonHint, false);
-    viewer.setSizeGripEnabled(true);
+    configure_preview_dialog_window(&viewer);
     viewer.resize(1180, 780);
     auto* layout = new QVBoxLayout(&viewer);
     auto* explanation = new QLabel(
@@ -2687,7 +2650,7 @@ struct StitchingExperimentDialog::Impl {
     explanation->setWordWrap(true);
     auto* heading = new QHBoxLayout();
     heading->addWidget(explanation, 1);
-    auto* maximize = new WindowSizeButton(&viewer);
+    auto* maximize = new PreviewDialogWindowSizeButton(&viewer);
     maximize->setObjectName("maximizeCalibrationFramesWindowButton");
     heading->addWidget(maximize, 0, Qt::AlignTop);
     layout->addLayout(heading);
@@ -2984,9 +2947,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     : QDialog(parent, Qt::Window), impl_(std::make_unique<Impl>(this)) {
   setObjectName("stitchingExperimentDialog");
   setWindowTitle("Stitching Experiments");
-  setWindowFlag(Qt::WindowMaximizeButtonHint, true);
-  setWindowFlag(Qt::WindowContextHelpButtonHint, false);
-  setSizeGripEnabled(true);
+  configure_preview_dialog_window(this);
   resize(1280, 820);
   auto& s = *impl_;
   s.game_directory = game_directory;
@@ -3006,7 +2967,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   intro->setWordWrap(true);
   auto* heading = new QHBoxLayout();
   heading->addWidget(intro, 1);
-  auto* maximize = new WindowSizeButton(this);
+  auto* maximize = new PreviewDialogWindowSizeButton(this);
   maximize->setObjectName("maximizeStitchExperimentWindowButton");
   heading->addWidget(maximize, 0, Qt::AlignTop);
   root->addLayout(heading);
@@ -3151,6 +3112,13 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   auto* preview_panel = new QWidget();
   preview_panel->setObjectName("stitchExperimentPreviewPanel");
   auto* preview_layout = new QVBoxLayout(preview_panel);
+  auto* preview_header = new QHBoxLayout();
+  preview_header->addWidget(new QLabel("Stitched preview", preview_panel));
+  preview_header->addStretch();
+  s.expand_preview = new PreviewFocusButton(preview_panel);
+  s.expand_preview->setObjectName("maximizeStitchExperimentButton");
+  preview_header->addWidget(s.expand_preview);
+  preview_layout->addLayout(preview_header);
   s.video = new StitchingExperimentVideoTarget(preview_panel);
   s.video->setObjectName("stitchExperimentVideo");
   preview_layout->addWidget(s.video, 1);
@@ -3173,10 +3141,6 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.preview->setObjectName("previewStitchExperimentButton");
   s.stop_preview = new QPushButton(action_icon(ActionIcon::Stop), "Stop");
   s.stop_preview->setObjectName("stopStitchExperimentPreviewButton");
-  s.expand_preview = new QPushButton(action_icon(ActionIcon::Expand), "Expand preview");
-  s.expand_preview->setObjectName("maximizeStitchExperimentButton");
-  s.expand_preview->setAutoDefault(false);
-  s.expand_preview->setToolTip("Expand the preview within this dialog (or double-click the preview).");
   auto* start_label = new QLabel("Passage start");
   start_label->setObjectName("stitchExperimentPreviewStartLabel");
   start_label->setBuddy(s.preview_start);
@@ -3192,7 +3156,6 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   auto* preview_actions = new QHBoxLayout();
   preview_actions->addWidget(s.preview);
   preview_actions->addWidget(s.stop_preview);
-  preview_actions->addWidget(s.expand_preview);
   preview_layout->addLayout(preview_actions);
   splitter->addWidget(preview_panel);
   splitter->setStretchFactor(0, 2);
@@ -3248,11 +3211,12 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   connect(s.table, &QTableWidget::cellDoubleClicked, this, [&s](int, int) { s.start_preview(); });
   connect(s.preview, &QPushButton::clicked, this, [&s]() { s.start_preview(); });
   connect(s.stop_preview, &QPushButton::clicked, this, [&s]() {
+    s.set_preview_focus(false);
     s.stop_preview_process();
     s.show_status("Stopping preview…");
   });
   s.video->toggle_focus = [&s]() { s.set_preview_focus(!s.preview_focused); };
-  connect(s.expand_preview, &QPushButton::clicked, this, s.video->toggle_focus);
+  connect(s.expand_preview, &QToolButton::clicked, this, s.video->toggle_focus);
   connect(s.apply, &QPushButton::clicked, this, [&s]() { s.apply_selected(); });
   connect(s.inspect_frames, &QPushButton::clicked, this, [&s]() { s.inspect_selected_frames(); });
   connect(s.view_runner_log, &QPushButton::clicked, this, [&s]() { s.show_selected_runner_log(); });

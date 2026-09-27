@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
+#include "src/apps/hstream-ui/PreviewDialogWindow.h"
 #include "hstream/src/libs/recording/Database.h"
 
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
@@ -18,8 +19,11 @@
 #include <QtCore/QTimer>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
+#include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
@@ -43,6 +47,7 @@
 #include <chrono>
 #include <cmath>
 #include <future>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
@@ -65,6 +70,17 @@ class ExperimentVideoTarget : public QWidget {
   }
   QPaintEngine* paintEngine() const override {
     return nullptr;
+  }
+  std::function<void()> toggleFocus;
+
+ protected:
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && toggleFocus) {
+      toggleFocus();
+      event->accept();
+      return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
   }
 };
 
@@ -206,6 +222,8 @@ struct CameraExperimentDialog::Impl {
   QPushButton* apply{nullptr};
   QPushButton* cancel{nullptr};
   QPushButton* play{nullptr};
+  QPushButton* stop_preview{nullptr};
+  PreviewFocusButton* focus_button{nullptr};
   QPushButton* save{nullptr};
   QPushButton* capture{nullptr};
   QLabel* status{nullptr};
@@ -223,7 +241,12 @@ struct CameraExperimentDialog::Impl {
   bool preview_loading{false};
   std::optional<int> closing_result;
   ExperimentVideoTarget* video{nullptr};
+  QSplitter* splitter{nullptr};
+  QWidget* right_panel{nullptr};
   CameraPathPlot* plot{nullptr};
+  std::vector<QWidget*> preview_focus_hidden;
+  QList<int> normal_splitter_sizes;
+  bool preview_focused{false};
   std::vector<Control> controls;
   std::map<QString, double> initial_controls;
   std::shared_ptr<replay::ReplaySession> session;
@@ -267,6 +290,45 @@ struct CameraExperimentDialog::Impl {
       qWarning().noquote() << "Camera experiment:" << text;
   }
 
+  void set_preview_focus(bool focused) {
+    if (focused == preview_focused)
+      return;
+    const bool remap_video = video->isVisible();
+    if (remap_video)
+      video->hide();
+    if (focused) {
+      normal_splitter_sizes = splitter->sizes();
+      preview_focus_hidden.clear();
+      for (QWidget* widget : dialog->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+        if (widget != splitter && widget->isVisible()) {
+          preview_focus_hidden.push_back(widget);
+          widget->hide();
+        }
+      }
+      for (QWidget* widget : {right_panel, static_cast<QWidget*>(plot)}) {
+        if (widget->isVisible()) {
+          preview_focus_hidden.push_back(widget);
+          widget->hide();
+        }
+      }
+    } else {
+      for (QWidget* widget : preview_focus_hidden)
+        widget->show();
+      preview_focus_hidden.clear();
+    }
+    preview_focused = focused;
+    focus_button->setFocused(focused);
+    dialog->layout()->activate();
+    if (!focused)
+      splitter->setSizes(normal_splitter_sizes);
+    QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    if (remap_video) {
+      video->show();
+      video->raise();
+    }
+    update_controls();
+  }
+
   void update_controls() {
     const auto state = preview.Poll();
     const bool loading = state.busy || state.seeking;
@@ -290,11 +352,12 @@ struct CameraExperimentDialog::Impl {
     play->setEnabled(!calculating && !closing_result && prepared && (!loading || playing));
     play->setText(playing ? "Pause" : "Play preview");
     play->setIcon(action_icon(playing ? ActionIcon::Pause : ActionIcon::Play));
+    stop_preview->setEnabled((preview_open || preview_focused) && !closing_result);
     save->setEnabled(editable && prepared && comparison->currentIndex() >= 2);
     capture->setEnabled(!active && prepared && frame_ready);
     loop->setEnabled(!calculating && !closing_result);
-    progress->setVisible(active);
-    activity->setVisible(active || playing);
+    progress->setVisible(active && !preview_focused);
+    activity->setVisible((active || playing) && !preview_focused);
     activity->setText(
         closing_result    ? "Finishing background work before closing…"
             : calculating ? "Preparing experiment…"
@@ -314,6 +377,7 @@ struct CameraExperimentDialog::Impl {
     playing = false;
     frame_ready = false;
     preview_loading = false;
+    set_preview_focus(false);
     update_controls();
   }
 
@@ -684,16 +748,22 @@ CameraExperimentDialog::CameraExperimentDialog(
     const QString& game_directory,
     QWidget* parent,
     const std::map<QString, double>& camera_controls)
-    : QDialog(parent), impl_(std::make_unique<Impl>(this)) {
+    : QDialog(parent, Qt::Window), impl_(std::make_unique<Impl>(this)) {
   auto& s = *impl_;
   s.initial_controls = camera_controls;
   setWindowTitle("HStream · Camera experiments");
   setObjectName("cameraExperimentDialog");
+  configure_preview_dialog_window(this);
   resize(1440, 980);
   auto* root = new QVBoxLayout(this);
   auto* title = new QLabel("Camera experiments");
   title->setStyleSheet("font-size:24px;font-weight:600;color:#152b43;");
-  root->addWidget(title);
+  auto* heading = new QHBoxLayout();
+  heading->addWidget(title, 1);
+  auto* maximize = new PreviewDialogWindowSizeButton(this);
+  maximize->setObjectName("maximizeCameraExperimentWindowButton");
+  heading->addWidget(maximize, 0, Qt::AlignTop);
+  root->addLayout(heading);
   root->addWidget(new QLabel(
       "Replay a short passage from its recorded camera state. Each trial uses the same player observations."));
 
@@ -798,7 +868,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   source_layout->addRow("Video source confirmation", s.uncropped);
   root->addWidget(s.settings);
 
-  auto* splitter = new QSplitter(Qt::Horizontal);
+  auto* splitter = s.splitter = new QSplitter(Qt::Horizontal);
   auto* left = new QWidget();
   auto* left_layout = new QVBoxLayout(left);
   left_layout->setContentsMargins(0, 0, 8, 0);
@@ -806,7 +876,13 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.video->setObjectName("experimentVideoTarget");
   auto* video_frame = new QGroupBox("Program preview");
   auto* video_layout = new QVBoxLayout(video_frame);
-  video_layout->addWidget(s.video);
+  auto* preview_header = new QHBoxLayout();
+  preview_header->addStretch();
+  s.focus_button = new PreviewFocusButton(video_frame);
+  s.focus_button->setObjectName("maximizeCameraExperimentPreviewButton");
+  preview_header->addWidget(s.focus_button);
+  video_layout->addLayout(preview_header);
+  video_layout->addWidget(s.video, 1);
   left_layout->addWidget(video_frame, 1);
   s.timeline = new QSlider(Qt::Horizontal);
   s.timeline->setObjectName("experimentTimeline");
@@ -824,6 +900,8 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.play = new QPushButton(action_icon(ActionIcon::Play), "Play preview");
   s.play->setObjectName("experimentPlay");
   s.play->setEnabled(false);
+  s.stop_preview = new QPushButton(action_icon(ActionIcon::Stop), "Stop");
+  s.stop_preview->setObjectName("experimentStopPreview");
   s.loop = new QCheckBox("Repeat range");
   s.loop->setObjectName("experimentLoop");
   s.loop->setChecked(true);
@@ -832,6 +910,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.comparison->setMinimumWidth(180);
   transport->addWidget(previous);
   transport->addWidget(s.play);
+  transport->addWidget(s.stop_preview);
   transport->addWidget(next);
   transport->addWidget(s.loop);
   transport->addStretch();
@@ -844,6 +923,8 @@ CameraExperimentDialog::CameraExperimentDialog(
   splitter->addWidget(left);
 
   auto* right = new QWidget();
+  s.right_panel = right;
+  right->setObjectName("experimentControlsPanel");
   right->setMinimumWidth(390);
   auto* right_layout = new QVBoxLayout(right);
   right_layout->setContentsMargins(4, 0, 0, 0);
@@ -1037,6 +1118,9 @@ CameraExperimentDialog::CameraExperimentDialog(
       state.open_preview(true, state.current);
     }
   });
+  connect(s.stop_preview, &QPushButton::clicked, this, [this]() { impl_->close_preview(); });
+  s.video->toggleFocus = [&s]() { s.set_preview_focus(!s.preview_focused); };
+  connect(s.focus_button, &QToolButton::clicked, this, s.video->toggleFocus);
   connect(s.save, &QPushButton::clicked, this, [this]() {
     auto& state = *impl_;
     const int index = state.comparison->currentIndex() - 2;
@@ -1101,6 +1185,15 @@ void CameraExperimentDialog::closeEvent(QCloseEvent* event) {
   } else {
     QDialog::closeEvent(event);
   }
+}
+
+void CameraExperimentDialog::keyPressEvent(QKeyEvent* event) {
+  if (event->key() == Qt::Key_Escape && impl_->preview_focused) {
+    impl_->set_preview_focus(false);
+    event->accept();
+    return;
+  }
+  QDialog::keyPressEvent(event);
 }
 
 bool CameraExperimentDialog::captureScreenshot(const QString& path, QString* error) {

@@ -5,6 +5,8 @@
 #include <map>
 #include <memory>
 
+class QKeyEvent;
+
 // Experiments own their recording, historical state and controls independently
 // of the live Program window. Closing this dialog cannot change a live preset.
 class CameraExperimentDialog : public QDialog {
@@ -19,6 +21,7 @@ class CameraExperimentDialog : public QDialog {
 
  protected:
   void closeEvent(QCloseEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
 
  private:
   struct Impl;
