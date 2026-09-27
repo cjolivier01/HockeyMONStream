@@ -40,6 +40,7 @@ class HighlightsDialog : public QDialog {
 
   bool isBusy() const;
   void stop();
+  void done(int result) override;
 
  protected:
   void closeEvent(QCloseEvent* event) override;
@@ -132,6 +133,7 @@ class HighlightsDialog : public QDialog {
   bool loop_{false};
   bool cancelling_{false};
   bool close_when_stopped_{false};
+  int close_result_{QDialog::Rejected};
   QString current_cli_result_;
   Job job_{Job::kNone};
   Stage stage_{Stage::kIdle};

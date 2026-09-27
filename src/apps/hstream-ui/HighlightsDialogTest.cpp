@@ -14,6 +14,7 @@
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QKeyEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -672,6 +673,32 @@ while :; do sleep 0.1; done
   }
   if (signal_dialog.isBusy()) {
     std::cerr << "Stopping while the runner starts must still cancel the job" << std::endl;
+    return 1;
+  }
+  QFile::remove(signal_path);
+  QFile::remove(ready_path);
+  signal_dialog.show();
+  signal_dialog.findChild<QPushButton*>("highlightPreviewSelectedButton")->click();
+  for (int i = 0; i < 1000 && !QFileInfo::exists(ready_path); ++i) {
+    app.processEvents();
+    QThread::msleep(1);
+  }
+  if (!QFileInfo::exists(ready_path))
+    return 1;
+  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+  QApplication::sendEvent(&signal_dialog, &escape);
+  if (!signal_dialog.isVisible() || !signal_dialog.isBusy()) {
+    std::cerr << "Escape bypassed asynchronous Highlights shutdown" << std::endl;
+    return 1;
+  }
+  for (int i = 0; i < 3000 && (signal_dialog.isBusy() || signal_dialog.isVisible()); ++i) {
+    app.processEvents();
+    QThread::msleep(1);
+  }
+  QFile escape_signal(signal_path);
+  if (signal_dialog.isBusy() || signal_dialog.isVisible() || !escape_signal.open(QIODevice::ReadOnly) ||
+      escape_signal.readAll() != "INT") {
+    std::cerr << "Escape did not stop and close Highlights after runner shutdown" << std::endl;
     return 1;
   }
   const auto signal_call_count = [&calls]() {

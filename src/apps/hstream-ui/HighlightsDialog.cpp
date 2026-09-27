@@ -398,12 +398,21 @@ bool HighlightsDialog::isBusy() const {
 
 void HighlightsDialog::closeEvent(QCloseEvent* event) {
   if (isBusy()) {
-    close_when_stopped_ = true;
-    stop();
     event->ignore();
+    done(QDialog::Rejected);
     return;
   }
   QDialog::closeEvent(event);
+}
+
+void HighlightsDialog::done(int result) {
+  if (isBusy()) {
+    close_when_stopped_ = true;
+    close_result_ = result;
+    stop();
+    return;
+  }
+  QDialog::done(result);
 }
 
 void HighlightsDialog::keyPressEvent(QKeyEvent* event) {
@@ -1339,7 +1348,11 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
   updateControls();
   if (close_when_stopped_) {
     close_when_stopped_ = false;
-    QTimer::singleShot(0, this, [this] { close(); });
+    const int result = close_result_;
+    QTimer::singleShot(0, this, [this, result] {
+      if (!isBusy())
+        done(result);
+    });
   }
 }
 
