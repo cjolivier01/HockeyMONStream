@@ -2,6 +2,7 @@
 
 #include "hstream/src/apps/apps-common/RinkMaskImage.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
+#include "hstream/src/libs/draw_display/Watermark.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
@@ -1407,6 +1408,19 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   glEnd();
   draw_rink_mask(self, overlays);
   draw_overlay_paths(overlays);
+  if (state->channel == "stitched") {
+    // The stitched preview bypasses playcropper. Draw only in this GL branch;
+    // the shared stitched canvas must stay pristine for Program cropping.
+    if (!hm::draw_display::AppendWatermark(
+            &state->player_commands,
+            overlays.coordinate_width,
+            overlays.coordinate_height,
+            std::min(overlays.coordinate_width / state->negotiated_width,
+                     overlays.coordinate_height / state->negotiated_height))) {
+      post_sink_failure(self, "could not queue the stitched preview watermark");
+      return;
+    }
+  }
   if (!state->player_commands.empty()) {
     using namespace hm::draw_display::analytics;
     if (!state->player_compositor)
@@ -1417,8 +1431,14 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
       post_sink_failure(self, "could not draw player analytics in the GPU preview");
       return;
     }
-    if (rendered.status != GlRenderStatus::kOk && ++state->player_overlay_suppressions == 1)
-      g_printerr("HSTREAM_PLAYER_PREVIEW status=suppressed reason=%d\n", static_cast<int>(rendered.status));
+    if (rendered.status != GlRenderStatus::kOk) {
+      if (state->channel == "stitched") {
+        post_sink_failure(self, "could not draw the stitched preview watermark");
+        return;
+      }
+      if (++state->player_overlay_suppressions == 1)
+        g_printerr("HSTREAM_PLAYER_PREVIEW status=suppressed reason=%d\n", static_cast<int>(rendered.status));
+    }
   }
   current_x_error_target = state;
   glXSwapBuffers(state->display, static_cast<GLXDrawable>(state->window_id));

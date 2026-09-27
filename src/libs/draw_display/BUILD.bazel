@@ -95,10 +95,25 @@ cc_library(
 )
 
 cc_library(
+    name = "watermark",
+    hdrs = ["Watermark.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":analytics_overlay_headers"],
+)
+
+cc_test(
+    name = "watermark_test",
+    srcs = ["WatermarkTest.cpp"],
+    deps = [":watermark", ":analytics_overlay", ":analytics_overlay_atlas"],
+)
+
+cc_library(
     name = "analytics_overlay_atlas",
     srcs = ["AnalyticsOverlayAtlas.cpp"],
     hdrs = ["AnalyticsOverlayAtlas.h"],
     include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
     deps = [":analytics_overlay_headers"],
 )
 

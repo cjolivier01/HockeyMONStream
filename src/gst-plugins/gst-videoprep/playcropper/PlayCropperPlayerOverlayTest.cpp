@@ -85,9 +85,6 @@ class Cropper : public hm::playcropper::PlayCropperPriv {
     limits.upload_bytes = 1;
     player_overlay_compositor_ = std::make_unique<overlay::Compositor>(limits);
   }
-  uint64_t suppressions() const {
-    return player_overlay_suppressions_;
-  }
 };
 
 class Metadata {
@@ -185,7 +182,7 @@ std::vector<unsigned char> Run(
   // missing caller fences on normal, suppressed, or post-submit error returns.
   Check(cudaStreamQuery(stream) == cudaSuccess, "GenerateOutput returned with unfinished borrowed-surface work");
   output.value->surfaceList[0].colorFormat = NVBUF_COLOR_FORMAT_RGBA;
-  Check(status.ok() != invalid_output, "unexpected GenerateOutput result");
+  Check(status.ok() != (invalid_output || suppress), "unexpected GenerateOutput result");
   Check(
       pa::FindFrameResult(meta.original) == original_result && original_result->baked_layers == 0,
       "Program mutated the shared semantic payload");
@@ -202,7 +199,7 @@ std::vector<unsigned char> Run(
   Check(
       source_person && source_person->rect_params.left == 240 && source_person->rect_params.width == 80,
       "Program changed source object coordinates");
-  if (invalid_output) {
+  if (invalid_output || suppress) {
     Check(output.value->numFilled == 0, "failed frame was marked complete");
     const auto pixels = output.Pixels();
     cropper.Shutdown();
@@ -213,8 +210,7 @@ std::vector<unsigned char> Run(
   }
   Check(output.value->numFilled == 1, "successful output was not filled");
   Check(
-      cropper.allocated() == (suppress || (layers && confidence <= 0.9F)),
-      "disabled or empty overlay allocated compositor resources");
+      cropper.allocated(), "mandatory watermark did not allocate the compositor");
   const auto* transform = preview::find_playcropper_transform_meta(meta.output);
   if (!layers) {
     Check(!transform, "all-off/no-preview frame attached overlay transform");
@@ -230,9 +226,8 @@ std::vector<unsigned char> Run(
             transform->output_width == 160 && transform->output_height == 120 &&
             std::abs(transform->angle_degrees - 3.1875F) < 1e-5 && transform->object_meta_transformed,
         "Program published a transform different from its actual crop/rotation/resize");
-    const bool drawn = !suppress && confidence <= 0.9F;
+    const bool drawn = confidence <= 0.9F;
     Check(transform->baked_player_layers == (drawn ? layers : 0), "baked layers claim missing or suppressed pixels");
-    Check(cropper.suppressions() == (suppress ? 1 : 0), "suppression was not recorded");
     overlay::CommandList preview_commands;
     overlay::BuildPlayerOverlays(meta.output, layers, confidence, transform, 160, 120, &preview_commands);
     Check(preview_commands.empty() == (drawn || confidence > 0.9F), "Program preview duplicated baked player drawing");
@@ -263,8 +258,7 @@ int main(int argc, char** argv) {
     const auto drawn = Run(stream, input, output, pa::kDrawPose, false, 0.3F);
     Check(drawn != off && ColoredAt(drawn, 160, 88, 64), "actual cropper did not draw at transformed joint position");
     Check(!ColoredAt(drawn, 160, 70, 55), "joint was drawn at naive scale instead of crop/rotation position");
-    const auto suppressed = Run(stream, input, output, pa::kDrawPose, true, 0.3F);
-    Check(suppressed == off, "capacity suppression changed the video frame");
+    Run(stream, input, output, pa::kDrawPose, true, 0.3F);
 #if !defined(__aarch64__)
     // Backing allocation remains RGBA-sized. Only its declared output format
     // changes, forcing the real caller's failure after transform submission.
@@ -272,8 +266,8 @@ int main(int argc, char** argv) {
 #endif
     Check(input.Pixels() == original, "Program overlay wrote the shared Stitched GPU input");
     Cuda(cudaStreamDestroy(stream));
-    std::cout << "Actual cropper output-only pixels, exact transform, immutable tee metadata, lazy/empty paths, "
-                 "baked suppression and completion fences passed\n";
+    std::cout << "Actual cropper output-only pixels, exact transform, mandatory watermark, immutable tee metadata, "
+                 "and completion fences passed\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

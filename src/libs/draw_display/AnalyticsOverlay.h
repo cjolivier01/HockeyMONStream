@@ -16,19 +16,26 @@ inline constexpr uint32_t kMaximumGlyphs = 1024;
 inline constexpr uint32_t kMaximumActiveTiles = 32768;
 inline constexpr uint32_t kMaximumTileReferences = 262144;
 inline constexpr size_t kMaximumUploadBytes = 2 * 1024 * 1024;
-inline constexpr size_t kMaximumAtlasBytes = 256 * 1024;
+inline constexpr size_t kMaximumAtlasBytes = 512 * 1024;
 inline constexpr uint32_t kTileSize = 16;
 
 struct Color {
   float red{0}, green{0}, blue{0}, alpha{1};
 };
-enum class PixelFormat { kRgba8, kRgb10A2 };
+enum class TextWeight { kRegular, kBold };
+enum class PixelFormat { kRgba8, kRgb10A2, kI420, kP010 };
 struct ImageView {
   void* data{nullptr};
   size_t pitch{0};
   uint32_t width{0}, height{0};
   // Packed R is bits 0..9, G 10..19, B 20..29, A 30..31.
   PixelFormat format{PixelFormat::kRgba8};
+  // Planar encoder outputs. I420 uses two 8-bit chroma planes; P010 uses one
+  // interleaved 16-bit UV plane with 10-bit samples in the high bits.
+  void* chroma{nullptr};
+  size_t chroma_pitch{0};
+  void* chroma_v{nullptr};
+  size_t chroma_v_pitch{0};
 };
 
 namespace detail {
@@ -60,7 +67,13 @@ class CommandList {
   bool AddFill(float left, float top, float right, float bottom, Color color);
   // Text occupies fixed monospace cells: advance = 2/3 pixel_height. y is top,
   // not baseline. Spaces advance without emitting a glyph. Font atlas is fixed.
-  bool AddText(float x, float y, float pixel_height, std::string_view text, Color color);
+  bool AddText(
+      float x,
+      float y,
+      float pixel_height,
+      std::string_view text,
+      Color color,
+      TextWeight weight = TextWeight::kRegular);
   size_t size() const noexcept {
     return commands_.size();
   }

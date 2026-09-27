@@ -34,6 +34,7 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
+#include "hstream/src/libs/draw_display/Watermark.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
@@ -780,17 +781,22 @@ absl::Status PlayCropperPriv::GenerateOutput(
     }
     const uint32_t player_layers =
         player_overlay_layers_ | (plot_player_tracking_ ? player_analytics::kDrawPlayerBoxes : 0U);
-    if (player_layers) {
+    {
       using namespace draw_display::analytics;
       player_overlay_commands_.Clear();
-      BuildPlayerOverlays(
-          frame_meta,
-          player_layers,
-          player_joint_confidence_,
-          &preview_transform,
-          static_cast<float>(output_width),
-          static_cast<float>(output_height),
-          &player_overlay_commands_);
+      if (player_layers)
+        BuildPlayerOverlays(
+            frame_meta,
+            player_layers,
+            player_joint_confidence_,
+            &preview_transform,
+            static_cast<float>(output_width),
+            static_cast<float>(output_height),
+            &player_overlay_commands_);
+      const bool player_commands_present = !player_overlay_commands_.empty();
+      if (!draw_display::AppendWatermark(
+              &player_overlay_commands_, static_cast<float>(output_width), static_cast<float>(output_height)))
+        return absl::ResourceExhaustedError("Program watermark command capacity exhausted");
       player_overlay_rejections_ += player_overlay_commands_.rejected();
       if (!player_overlay_commands_.empty()) {
         if (!player_overlay_compositor_)
@@ -799,7 +805,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
           return absl::FailedPreconditionError("Player overlays require the Program cropper's RGBA output");
         // Owned output only; no write to the shared stitched tee input.
         completion_fence.MarkSubmitted();
-        const auto rendered = player_overlay_compositor_->Render(
+        auto rendered = player_overlay_compositor_->Render(
             {outgoing_surface.dataptr(),
              outgoing_surface.pitch(),
              static_cast<uint32_t>(output_width),
@@ -807,14 +813,26 @@ absl::Status PlayCropperPriv::GenerateOutput(
              PixelFormat::kRgba8},
             player_overlay_commands_,
             cuda_stream_);
+        if (rendered.status == RenderStatus::kBusy) {
+          XCUDA_RETURN_IF_ERROR(cudaStreamSynchronize(cuda_stream_));
+          rendered = player_overlay_compositor_->Render(
+              {outgoing_surface.dataptr(),
+               outgoing_surface.pitch(),
+               static_cast<uint32_t>(output_width),
+               static_cast<uint32_t>(output_height),
+               PixelFormat::kRgba8},
+              player_overlay_commands_,
+              cuda_stream_);
+        }
         if (rendered.status == RenderStatus::kCudaError)
           return hm::to_status(rendered.cuda_error);
         if (rendered.status == RenderStatus::kInvalidArgument)
           return absl::InternalError("Invalid Program player-overlay image or stream");
-        if (rendered.status == RenderStatus::kOk)
-          preview_transform.baked_player_layers = player_layers;
-        else if (++player_overlay_suppressions_ == 1)
-          g_printerr("HSTREAM_PLAYER_OVERLAY status=suppressed reason=%d\n", static_cast<int>(rendered.status));
+        if (rendered.status == RenderStatus::kOk) {
+          if (player_commands_present)
+            preview_transform.baked_player_layers = player_layers;
+        } else
+          return absl::InternalError("Program watermark could not be rendered");
       }
     }
     if ((player_layers || preview_overlay::find_overlay_snapshot_meta(frame_meta)) &&

@@ -21,6 +21,7 @@ cc_library(
         "//src/libs/common:utils",
         "//src/libs/draw_display",
         "//src/libs/draw_display:player_overlays",
+        "//src/libs/draw_display:watermark",
         "//src/libs/scoreboard",
         "//src/libs/stitching",
         "@hm-cupano//src/pano:cuda_matrix",
