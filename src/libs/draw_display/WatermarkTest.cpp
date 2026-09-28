@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <string>
 #include <vector>
 
 int main() {
@@ -67,6 +68,23 @@ int main() {
     const auto& command = commands.data()[index];
     if (command.x0 < 0 || command.y0 < 0 || command.x1 > 1600 || command.y1 > 900) {
       std::cerr << "Scaled preview watermark escaped the frame\n";
+      return 1;
+    }
+  }
+  // Refusing to emit an unmarked frame is only actionable if the message says
+  // which condition stopped the mark.
+  using hm::draw_display::analytics::RenderStatus;
+  using hm::draw_display::analytics::ToString;
+  for (const auto status :
+       {RenderStatus::kOk,
+        RenderStatus::kCapacity,
+        RenderStatus::kBusy,
+        RenderStatus::kInvalidArgument,
+        RenderStatus::kFontUnavailable,
+        RenderStatus::kCudaError}) {
+    const char* name = ToString(status);
+    if (!name || !*name || std::string(name) == "unknown") {
+      std::cerr << "Watermark render status has no reportable name\n";
       return 1;
     }
   }

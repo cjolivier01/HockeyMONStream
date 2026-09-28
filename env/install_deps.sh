@@ -1,6 +1,7 @@
 #!/bin/bash
 sudo apt-get install -y \
   curl \
+  fonts-dejavu-core \
   libva-dev \
   libsoup2.4-dev \
   libjson-glib-dev \

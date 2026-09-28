@@ -172,6 +172,7 @@ cc_library(
         "//src/libs/draw_display:watermark",
         "//toolchains/jetson:cuda_runtime",
         "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/strings",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ] + select({
@@ -202,7 +203,12 @@ cc_library(
 cc_test(
     name = "archive_watermark_test",
     srcs = ["ArchiveWatermarkTest.cpp"],
-    deps = [":archive_watermark", "@deepstream//:deepstream_lib", "@gstreamer"],
+    deps = [
+        ":archive_watermark",
+        "//src/libs/draw_display:analytics_overlay",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
 )
 
 cc_library(

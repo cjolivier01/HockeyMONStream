@@ -1,5 +1,7 @@
 #include "hstream/src/apps/apps-common/ArchiveWatermark.h"
 
+#include "hstream/src/libs/draw_display/AnalyticsOverlay.h"
+
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <nvbufsurface.h>
@@ -173,6 +175,90 @@ int main(int argc, char** argv) {
   gst_object_unref(pipeline);
   if (!ok)
     return 1;
+
+  // The mark is mandatory, so a font failure has to stop every frame, not just
+  // the one that discovered it. The original bug cached a half-built atlas and
+  // let the second buffer through unmarked, so push two.
+  {
+    error = nullptr;
+    GstElement* font_pipeline = gst_parse_launch(
+        "videotestsrc pattern=black num-buffers=2 ! "
+        "video/x-raw,format=I420,width=640,height=360,framerate=30/1 ! "
+        // async=false only removes a stall. Both buffers are pushed either
+        // way - a dropped push still returns GST_FLOW_OK - but a prerolling
+        // sink never sees one, so it never leaves ASYNC and never posts EOS,
+        // and the drain below would wait out its full timeout.
+        "capsfilter name=archive_caps ! fakesink name=output signal-handoffs=true sync=false async=false",
+        &error);
+    if (!font_pipeline || error) {
+      std::cerr << "Could not create missing-font archive fixture\n";
+      if (error)
+        g_error_free(error);
+      if (font_pipeline)
+        gst_object_unref(font_pipeline);
+      return 1;
+    }
+    GstElement* font_caps = gst_bin_get_by_name(GST_BIN(font_pipeline), "archive_caps");
+    GstElement* font_sink = gst_bin_get_by_name(GST_BIN(font_pipeline), "output");
+    Result font_result;
+    const bool font_installed =
+        font_caps && hm::archive_watermark::Install(font_caps, 0, "/not-present/hstream-archive-font.ttf");
+    if (font_sink)
+      g_signal_connect(font_sink, "handoff", G_CALLBACK(OnHandoff), &font_result);
+    if (font_installed)
+      gst_element_set_state(font_pipeline, GST_STATE_PLAYING);
+    GstBus* font_bus = gst_element_get_bus(font_pipeline);
+    // Dropping a buffer still returns GST_FLOW_OK upstream, so both buffers are
+    // pushed and EOS follows. Drain to EOS rather than stopping at the first
+    // error: the bug only showed on the second buffer, which reused the atlas
+    // the failed build had left behind.
+    bool saw_error = false;
+    bool saw_eos = false;
+    bool named_cause = false;
+    bool named_remedy = false;
+    GstMessage* font_message = nullptr;
+    while (font_installed && !saw_eos &&
+           (font_message = gst_bus_timed_pop_filtered(
+                font_bus, 10 * GST_SECOND, static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS)))) {
+      if (GST_MESSAGE_TYPE(font_message) == GST_MESSAGE_ERROR) {
+        saw_error = true;
+        // The point of naming the status is that an operator can act on it, so
+        // check the text, not just that something failed.
+        GError* reported = nullptr;
+        gst_message_parse_error(font_message, &reported, nullptr);
+        if (reported && reported->message) {
+          const std::string text = reported->message;
+          named_cause =
+              text.find(
+                  hm::draw_display::analytics::ToString(hm::draw_display::analytics::RenderStatus::kFontUnavailable)) !=
+              std::string::npos;
+          named_remedy = text.find("fonts-dejavu-core") != std::string::npos;
+        }
+        if (reported)
+          g_error_free(reported);
+      }
+      saw_eos = GST_MESSAGE_TYPE(font_message) == GST_MESSAGE_EOS;
+      gst_message_unref(font_message);
+    }
+    // Every buffer is dropped, so nothing reaches the sink and the branch
+    // errors instead of publishing an unmarked archive.
+    const bool font_ok = font_installed && saw_error && named_cause && named_remedy && !font_result.received;
+    if (!font_ok) {
+      std::cerr << "Missing archive watermark font did not stop the archive: received=" << font_result.received
+                << " error=" << saw_error << " cause=" << named_cause << " remedy=" << named_remedy
+                << " eos=" << saw_eos << '\n';
+    }
+    gst_object_unref(font_bus);
+    gst_element_set_state(font_pipeline, GST_STATE_NULL);
+    if (font_caps)
+      gst_object_unref(font_caps);
+    if (font_sink)
+      gst_object_unref(font_sink);
+    gst_object_unref(font_pipeline);
+    if (!font_ok)
+      return 1;
+  }
+
 #if defined(__aarch64__)
   // Exercise both real Jetson EGL plane layouts between nvvideoconvert and an
   // archive encoder, then inspect the resulting YUV luma on the test branch.

@@ -103,6 +103,11 @@ struct Limits {
   size_t upload_bytes{kMaximumUploadBytes};
 };
 enum class RenderStatus { kOk, kCapacity, kBusy, kInvalidArgument, kFontUnavailable, kCudaError };
+// Short stable name for logs and error messages.
+const char* ToString(RenderStatus status);
+// What to do about the status, or "" when there is nothing to suggest. Keeps
+// the remedy in one place so a new report site cannot forget it.
+const char* Remedy(RenderStatus status);
 struct RenderResult {
   RenderStatus status{RenderStatus::kOk};
   cudaError_t cuda_error{cudaSuccess};
