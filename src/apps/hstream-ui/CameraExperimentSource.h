@@ -11,7 +11,9 @@
 absl::Status ResolveExperimentStitchingSettings(
     const YAML::Node& config,
     bool automatic_high_bit_depth,
-    hm::playtracker_replay::StitchingMedia* media);
+    hm::playtracker_replay::StitchingMedia* media,
+    const YAML::Node& baseline = YAML::Node(),
+    const YAML::Node& user = YAML::Node());
 
 // Resolves the previously configured left/right playlists and validates the
 // existing maps. Never recalibrates a historical experiment implicitly.

@@ -8,6 +8,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <unistd.h>
@@ -1042,7 +1043,8 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWork
 
 absl::Status PromoteStitchingExperiment(
     const StitchingExperimentWorkspace& experiment,
-    const fs::path& game_directory) {
+    const fs::path& game_directory,
+    const std::optional<StitchingExperimentBlend>& blend) {
   return hm::stitching::HuginProject::PromoteArtifactsAndConfig(
       experiment.game_directory, game_directory, [&]() -> absl::StatusOr<std::string> {
         try {
@@ -1058,11 +1060,12 @@ absl::Status PromoteStitchingExperiment(
         HM_ASSIGN_OR_RETURN(
             selected,
             BuildStitchingExperimentSelectionConfig(
-                experiment.game_directory / "config.yaml", game_directory / "config.yaml"));
+                experiment.game_directory / "config.yaml", game_directory / "config.yaml", blend));
         try {
-          HM_RETURN_IF_ERROR(copy_match_bundles(experiment.game_directory, game_directory, YAML::Load(selected)));
+          const YAML::Node selected_config = YAML::Load(selected);
+          HM_RETURN_IF_ERROR(copy_match_bundles(experiment.game_directory, game_directory, selected_config));
           HM_RETURN_IF_ERROR(
-              copy_frame_inspection_for_promotion(experiment.game_directory, game_directory, YAML::Load(selected)));
+              copy_frame_inspection_for_promotion(experiment.game_directory, game_directory, selected_config));
         } catch (const YAML::Exception& error) {
           return absl::InvalidArgumentError("Invalid promoted frame inspection: " + std::string(error.what()));
         }
@@ -1072,7 +1075,8 @@ absl::Status PromoteStitchingExperiment(
 
 absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     const fs::path& experiment_config,
-    const fs::path& game_config) {
+    const fs::path& game_config,
+    const std::optional<StitchingExperimentBlend>& blend) {
   try {
     YAML::Node selected = YAML::LoadFile(experiment_config.string());
     YAML::Node current = YAML::LoadFile(game_config.string());
@@ -1144,6 +1148,9 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
       hm::stitching::write_projection_crop_review(current, geometry);
     }
     remove_downstream_generation(current);
+    // Blend is an explicit render choice, independent of the candidate's calibration settings.
+    if (blend.has_value())
+      HM_RETURN_IF_ERROR(hm::stitching::WriteBlendSettings(current, blend->mode, blend->feather_fraction));
     return YAML::Dump(current) + "\n";
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(

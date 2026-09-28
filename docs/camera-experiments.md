@@ -20,6 +20,12 @@ inference. The configured camera order, chapter order and synchronization offset
 are reused. Existing maps must produce the recorded canvas; preparation does not
 recalibrate them. Preserve historical maps if you later change the stitching.
 
+Original-camera preview uses the effective seam blend and feather width from the
+baseline, user settings, and selected game's configuration. Native stitcher aliases
+take precedence within each layer. Preparation freezes the resolved settings, and
+saved trials record them alongside the other stitching settings. Unsupported blend
+modes fail preparation before the GPU graph starts.
+
 An **uncropped Stitched archive** is also supported. It may be proportionally
 downsized, with up to two pixels of encoder alignment rounding, provided it has no
 padding or cropping. Camera coordinates remain in the recorded canvas and the

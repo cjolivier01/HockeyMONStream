@@ -541,6 +541,12 @@ struct StitchingExperimentDialog::Impl {
   StitchingExperimentVideoTarget* video{nullptr};
   QTimeEdit* preview_start{nullptr};
   QSpinBox* preview_duration{nullptr};
+  QComboBox* blend_mode{nullptr};
+  QDoubleSpinBox* blend_feather{nullptr};
+  QWidget* blend_feather_row{nullptr};
+  QString initial_blend_mode;
+  QString blend_settings_error;
+  double initial_blend_feather{0.05};
   QCheckBox* loop{nullptr};
   QPushButton* preview{nullptr};
   QPushButton* stop_preview{nullptr};
@@ -624,7 +630,7 @@ struct StitchingExperimentDialog::Impl {
   }
 
   QStringList base_arguments(const Candidate& candidate) const {
-    return {
+    QStringList args{
         "-g",
         QString::fromStdString(candidate.workspace->game_id),
         "--enable-sources=URI-MULTIPLE",
@@ -633,6 +639,43 @@ struct StitchingExperimentDialog::Impl {
         pipeline_config,
         QString("--options=%1").arg(kStitchedPreviewOptions),
     };
+    // Preparation and player scans construct the stitcher too. Pass the chosen supported mode
+    // there as well so an inherited offline-only mode cannot prevent the candidate from running.
+    if (const QString blend = blend_options(); !blend.isEmpty())
+      args << QString("--options=%1").arg(blend);
+    return args;
+  }
+
+  QString selected_blend_mode() const {
+    return blend_mode ? blend_mode->currentData().toString() : QString();
+  }
+
+  // Seam blend is a stitcher property, not a calibration input, so it never invalidates a
+  // candidate. Comparing two blends on one calibration costs a re-render and nothing else.
+  QString blend_options() const {
+    const QString mode = selected_blend_mode();
+    if (mode.isEmpty())
+      return {};
+    QStringList options{QString("stitching.blend_mode=%1").arg(mode)};
+    if (mode == "alpha" && blend_feather)
+      options << QString("stitching.blend_feather_fraction=%1").arg(blend_feather->value());
+    return options.join(',');
+  }
+
+  // Only an actual change is promoted. The combo starts on whatever the game already has, so a
+  // candidate chosen without touching it must not rewrite the operator's seam blend.
+  std::optional<StitchingExperimentBlend> promoted_blend() const {
+    const QString mode = selected_blend_mode();
+    if (mode.isEmpty())
+      return std::nullopt;
+    const bool feather_changed = mode == "alpha" && blend_feather && blend_feather->value() != initial_blend_feather;
+    if (mode == initial_blend_mode && !feather_changed)
+      return std::nullopt;
+    StitchingExperimentBlend blend;
+    blend.mode = mode.toStdString();
+    if (mode == "alpha" && blend_feather)
+      blend.feather_fraction = blend_feather->value();
+    return blend;
   }
 
   QProcessEnvironment candidate_environment(const Candidate& candidate) const {
@@ -2259,6 +2302,14 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void start_preview(bool validated = false) {
+    if (!blend_settings_error.isEmpty()) {
+      show_status(blend_settings_error, true);
+      return;
+    }
+    if (!hm::stitching::ParseBlendMode(selected_blend_mode().toStdString()).ok()) {
+      show_status("Choose a supported seam blend before previewing this candidate.", true);
+      return;
+    }
     if (preview_process && preview_process->state() != QProcess::NotRunning)
       return;
     const int row = table->currentRow();
@@ -2391,8 +2442,10 @@ struct StitchingExperimentDialog::Impl {
     const StitchingExperimentWorkspace workspace = *candidate.workspace;
     const std::string destination = game_directory.toStdString();
     const int sequence = candidate.sequence;
-    QThread* worker = QThread::create(
-        [workspace, destination, result]() { *result = PromoteStitchingExperiment(workspace, destination); });
+    const std::optional<StitchingExperimentBlend> blend = promoted_blend();
+    QThread* worker = QThread::create([workspace, destination, result, blend]() {
+      *result = PromoteStitchingExperiment(workspace, destination, blend);
+    });
     promotion_worker = worker;
     QObject::connect(worker, &QThread::finished, dialog, [this, worker, result, sequence]() {
       if (promotion_worker != worker)
@@ -3150,8 +3203,88 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   auto* duration_controls = new QHBoxLayout();
   duration_controls->addWidget(s.preview_duration);
   duration_controls->addWidget(s.loop);
+  s.blend_mode = new QComboBox();
+  s.blend_mode->setObjectName("stitchExperimentBlendMode");
+  s.blend_mode->setAccessibleName("Seam blend mode");
+  s.blend_mode->setToolTip(
+      "Seam blend is a render-time choice, not a calibration input, so switching it replays the\n"
+      "selected candidate without recalibrating. Laplacian mixes the cameras across every scale in\n"
+      "the overlap; alpha crossfades over a narrow band at the seam.");
+  s.blend_mode->addItem("Laplacian (multi-band)", "laplacian");
+  s.blend_mode->addItem("Alpha (feathered seam)", "alpha");
+  s.blend_mode->addItem("Hard seam (no blending)", "gpu-hard-seam");
+  auto* blend_label = new QLabel("Seam blend");
+  blend_label->setObjectName("stitchExperimentBlendModeLabel");
+  blend_label->setBuddy(s.blend_mode);
+  s.blend_feather = new QDoubleSpinBox();
+  s.blend_feather->setObjectName("stitchExperimentBlendFeather");
+  s.blend_feather->setAccessibleName("Seam feather width");
+  s.blend_feather->setToolTip(
+      "Crossfade width as a fraction of the narrowest camera image. Values much above 0.3 wash out\n"
+      "the detail the detector reads.");
+  s.blend_feather->setDecimals(3);
+  s.blend_feather->setRange(0.0, 1.0);
+  s.blend_feather->setSingleStep(0.01);
+  s.blend_feather->setValue(0.05);
+  s.blend_feather_row = new QWidget();
+  s.blend_feather_row->setObjectName("stitchExperimentBlendFeatherRow");
+  auto* feather_layout = new QHBoxLayout(s.blend_feather_row);
+  feather_layout->setContentsMargins(0, 0, 0, 0);
+  auto* feather_label = new QLabel("Feather width");
+  feather_label->setObjectName("stitchExperimentBlendFeatherLabel");
+  feather_label->setBuddy(s.blend_feather);
+  feather_layout->addWidget(feather_label);
+  feather_layout->addWidget(s.blend_feather, 1);
+  // Resolve the same baseline, user and game layers as the runner, including native aliases.
+  // An unsupported value is an explicit entry so choosing Laplacian is a real change to promote.
+  try {
+    const auto baseline = environment.contains("HM_CONFIG_ROOT")
+        ? hm::baseline_config::load_from_root(environment.value("HM_CONFIG_ROOT").toStdString())
+        : hm::baseline_config::load();
+    if (!baseline.ok())
+      throw std::runtime_error(baseline.status().ToString());
+    const auto user = hm::user_config::load_or_create();
+    if (!user.ok())
+      throw std::runtime_error(user.status().ToString());
+    const auto game =
+        hm::stitching::load_game_config_file(std::filesystem::path(game_directory.toStdString()) / "config.yaml");
+    if (!game.ok())
+      throw std::runtime_error(game.status().ToString());
+    const auto blend =
+        hm::stitching::ResolveBlendSettings(baseline->values, *user, game->value_or(YAML::Node(YAML::NodeType::Map)));
+    if (!blend.ok())
+      throw std::runtime_error(blend.status().ToString());
+    const QString mode = QString::fromStdString(blend->mode);
+    int index = s.blend_mode->findData(mode);
+    if (index < 0) {
+      s.blend_mode->addItem(mode + " (from config, not supported here)", mode);
+      index = s.blend_mode->count() - 1;
+    }
+    s.blend_mode->setCurrentIndex(index);
+    s.blend_feather->setValue(blend->feather_fraction);
+  } catch (const std::exception& error) {
+    s.blend_settings_error = "Cannot load seam blend settings: " + QString::fromUtf8(error.what());
+    s.blend_mode->addItem("Unavailable", QString());
+    s.blend_mode->setCurrentIndex(s.blend_mode->count() - 1);
+    s.blend_mode->setEnabled(false);
+    s.blend_mode->setToolTip(s.blend_settings_error);
+    s.blend_feather->setEnabled(false);
+  }
+  s.initial_blend_mode = s.selected_blend_mode();
+  s.initial_blend_feather = s.blend_feather->value();
+
+  const auto sync_blend_feather = [&s] {
+    if (s.blend_feather_row)
+      s.blend_feather_row->setVisible(s.selected_blend_mode() == "alpha");
+  };
+  QObject::connect(s.blend_mode, qOverload<int>(&QComboBox::currentIndexChanged), this, [sync_blend_feather] {
+    sync_blend_feather();
+  });
+  sync_blend_feather();
   preview_controls->addRow(start_label, s.preview_start);
   preview_controls->addRow(duration_label, duration_controls);
+  preview_controls->addRow(blend_label, s.blend_mode);
+  preview_controls->addRow(s.blend_feather_row);
   preview_layout->addLayout(preview_controls);
   auto* preview_actions = new QHBoxLayout();
   preview_actions->addWidget(s.preview);
@@ -3224,6 +3357,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.restore_persistent_store(s.initial_settings);
   if (!s.feature_settings_error.isEmpty())
     s.show_status(s.feature_settings_error, true);
+  if (!s.blend_settings_error.isEmpty())
+    s.show_status(s.blend_settings_error, true);
   s.update_controls();
 }
 

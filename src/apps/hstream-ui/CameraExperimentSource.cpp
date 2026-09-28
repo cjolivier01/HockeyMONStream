@@ -1,6 +1,8 @@
 #include "src/apps/hstream-ui/CameraExperimentSource.h"
 
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <QtCore/QFile>
@@ -22,6 +24,7 @@
 
 // Qt must be parsed before the GL/X11 headers used by stitching.
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 // apps-common uses a logging category owned by its embedding application.
 GST_DEBUG_CATEGORY(NVDS_APP);
@@ -59,8 +62,18 @@ void set_batch_query_contract(GstElement* element, guint size) {
 absl::Status ResolveExperimentStitchingSettings(
     const YAML::Node& config,
     bool automatic_high_bit_depth,
-    hm::playtracker_replay::StitchingMedia* media) {
+    hm::playtracker_replay::StitchingMedia* media,
+    const YAML::Node& baseline,
+    const YAML::Node& user) {
   try {
+    const auto blend = hm::stitching::ResolveBlendSettings(baseline, user, config);
+    if (!blend.ok())
+      return blend.status();
+    const auto mode = hm::stitching::ParseBlendMode(blend->mode);
+    if (!mode.ok())
+      return mode.status();
+    media->blend_mode = hm::stitching::BlendModeName(*mode);
+    media->blend_feather_fraction = blend->feather_fraction;
     media->rotation = 0;
     for (const char* path :
          {"pipeline.hmstitcher.post-stitch-rotate-degrees",
@@ -201,7 +214,14 @@ absl::StatusOr<hm::playtracker_replay::StitchingMedia> PrepareExperimentSources(
         automatic_high_bit_depth = automatic_high_bit_depth && depth.has_value() && *depth >= 10;
       }
     }
-    const auto settings = ResolveExperimentStitchingSettings(config, automatic_high_bit_depth, &media);
+    const auto baseline = hm::baseline_config::load();
+    if (!baseline.ok())
+      return baseline.status();
+    const auto user = hm::user_config::load_or_create();
+    if (!user.ok())
+      return user.status();
+    const auto settings =
+        ResolveExperimentStitchingSettings(config, automatic_high_bit_depth, &media, baseline->values, *user);
     if (!settings.ok())
       return settings;
     auto artifacts = hm::stitching::lock_validated_stitching_artifacts(media.directory);
@@ -319,7 +339,8 @@ bool CameraExperimentSource::Build(
   properties.precision(17);
   properties << "one-pass-mode=0;configure-only=0;show=0;stitch-compute-precision=fp16;expected-artifact-revision="
              << media.artifact_revision << ";left-frame-offset-ns=" << media.cameras[0].offset_ns
-             << ";right-frame-offset-ns=" << media.cameras[1].offset_ns
+             << ";right-frame-offset-ns=" << media.cameras[1].offset_ns << ";blend-mode=" << media.blend_mode
+             << ";blend-feather-fraction=" << media.blend_feather_fraction
              << ";post-stitch-rotate-degrees=" << media.rotation << ";high-bit-depth=" << media.high_bit_depth
              << ";exposure=" << (media.high_bit_depth ? media.exposure : 0.0)
              << ";shadow-lift=" << (media.high_bit_depth ? media.shadow_lift : 0.0)

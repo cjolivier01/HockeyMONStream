@@ -751,6 +751,8 @@ play-tracker:
           mapped_defaults["application"]["video-converter"].as<std::string>() == "nvvideoconvert" &&
           !mapped_defaults["hmstitcher"]["properties"]["max-output-width"].IsDefined() &&
           mapped_defaults["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp32" &&
+          mapped_defaults["hmstitcher"]["blend-mode"].as<std::string>() == "laplacian" &&
+          mapped_defaults["hmstitcher"]["blend-feather-fraction"].as<double>() == 0.05 &&
           mapped_defaults["hmplaycropper"]["no-crop"].as<int>() == 0 &&
           mapped_defaults["hmplaycropper"]["plot-play-tracking"].as<int>() == 0 &&
           mapped_defaults["hmplaycropper"]["plot-player-tracking"].as<int>() == 0 &&
@@ -1136,6 +1138,8 @@ play-tracker:
   structural_custom["hmstitcher"]["enable"] = 0;
   structural_custom["hmstitcher"]["minimize-blend"] = 1;
   structural_custom["hmstitcher"]["stitch-compute-precision"] = "fp16";
+  structural_custom["hmstitcher"]["blend-mode"] = "alpha";
+  structural_custom["hmstitcher"]["blend-feather-fraction"] = 0.2;
   structural_custom["hmstitcher"]["post_stitch_rotate_degrees"] = 37.0;
   structural_custom["hmplaycropper"]["no-crop"] = 1;
   structural_custom["hmplaycropper"]["plot-play-tracking"] = 1;
@@ -1164,6 +1168,8 @@ play-tracker:
           mapped_structural["application"]["video-converter"].as<std::string>() == "dsxvideoconvert" &&
           mapped_structural["hmstitcher"]["minimize-blend"].as<int>() == 1 &&
           mapped_structural["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp16" &&
+          mapped_structural["hmstitcher"]["blend-mode"].as<std::string>() == "alpha" &&
+          mapped_structural["hmstitcher"]["blend-feather-fraction"].as<double>() == 0.2 &&
           mapped_structural["hmstitcher"]["post-stitch-rotate-degrees"].as<double>() == 37.0 &&
           mapped_structural["hmplaycropper"]["no-crop"].as<int>() == 1 &&
           mapped_structural["hmplaycropper"]["plot-play-tracking"].as<int>() == 1 &&
@@ -1178,6 +1184,130 @@ play-tracker:
           mapped_structural["sink0"]["width"].as<int>() == 999 &&
           mapped_structural["sink6"]["interpolation-method"].as<int>() == 2,
       "Bundled defaults must fill omissions without replacing custom structural native values");
+
+  // A direct native override skips the canonical mapping's own validation. The plugin rejects a
+  // bad value, but its SetProperty failure is not fatal on the construction path, so an
+  // unvalidated multiblend would run and silently render Laplacian.
+  const auto structural_blend_case = [&](const char* key, const YAML::Node& value, const char* name) {
+    const fs::path path = root / (std::string("mapping-structural-") + name + ".yaml");
+    YAML::Node structural = YAML::Clone(mapping_structure);
+    structural["hmstitcher"][key] = value;
+    std::ofstream(path) << YAML::Dump(structural) << '\n';
+    const std::string game = std::string("mapping-structural-") + name;
+    fs::create_directories(games / game);
+    auto app = std::make_unique<hm::Configurator>(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    if (!app->configure().ok() || !app->underlay_config("pipeline", path.string()))
+      return absl::InternalError("fixture did not load");
+    return app->apply_supported_baseline_mappings();
+  };
+  ok &= expect(
+      !structural_blend_case("blend-mode", YAML::Node("multiblend"), "multiblend").ok(),
+      "A native blend-mode the live path cannot run must be rejected, not run as Laplacian");
+  ok &= expect(
+      !structural_blend_case("blend-feather-fraction", YAML::Node(5.0), "wide-feather").ok(),
+      "A native blend-feather-fraction outside [0, 1] must be rejected");
+  ok &= expect(
+      structural_blend_case("blend-mode", YAML::Node("gpu-hard-seam"), "hard-seam").ok(),
+      "A native blend-mode the live path can run must still be accepted");
+
+  // Both native spellings present: the configurator promotes one, and the plugin's YAML parser
+  // must land on the same one rather than on whichever its map iteration yields last.
+  const fs::path both_spellings_path = root / "mapping-structural-blend-both.yaml";
+  YAML::Node both_spellings = YAML::Clone(mapping_structure);
+  both_spellings["hmstitcher"]["blend-mode"] = "laplacian";
+  both_spellings["hmstitcher"]["blend_mode"] = "alpha";
+  std::ofstream(both_spellings_path) << YAML::Dump(both_spellings) << '\n';
+  fs::create_directories(games / "mapping-structural-blend-both");
+  auto blend_both = std::make_unique<hm::Configurator>(
+      "mapping-structural-blend-both", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool blend_both_loaded =
+      blend_both->configure().ok() && blend_both->underlay_config("pipeline", both_spellings_path.string());
+  const absl::Status blend_both_status =
+      blend_both_loaded ? blend_both->apply_supported_baseline_mappings() : absl::InternalError("did not load");
+  ok &= expect(
+      blend_both_status.ok() &&
+          blend_both->config()["pipeline"]["hmstitcher"]["blend-mode"].as<std::string>() == "laplacian",
+      "With both native spellings present the dashed one must win, deterministically");
+
+  const auto mapped_blend_case = [&](const char* game_yaml,
+                                     const std::vector<std::pair<std::string, std::string>>& cli,
+                                     const char* name) -> absl::StatusOr<YAML::Node> {
+    const std::string game = std::string("blend-layers-") + name;
+    fs::create_directories(games / game);
+    std::ofstream(games / game / "config.yaml") << game_yaml;
+    hm::Configurator app(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    auto status = app.configure();
+    if (!status.ok())
+      return status;
+    if (!app.underlay_config("pipeline", mapping_structure_path.string()))
+      return absl::InternalError("Blend fixture did not load");
+    for (const auto& [key, value] : cli) {
+      status = app.apply_config_item(key, value);
+      if (!status.ok())
+        return status;
+    }
+    // Normalization must remain stable when startup applies mappings more than once.
+    for (int pass = 0; pass < 2; ++pass) {
+      status = app.apply_supported_baseline_mappings();
+      if (!status.ok())
+        return status;
+    }
+    return YAML::Clone(app.config()["pipeline"]["hmstitcher"]);
+  };
+  const auto private_blend = mapped_blend_case(
+      "stitching: {blend_mode: laplacian, blend_feather_fraction: 0.1}\n"
+      "pipeline: {hmstitcher: {private-properties: {blend_mode: alpha, blend_feather_fraction: 0.2, show: 0}}}",
+      {},
+      "private");
+  ok &= expect(
+      private_blend.ok() && (*private_blend)["blend-mode"].as<std::string>() == "alpha" &&
+          (*private_blend)["blend-feather-fraction"].as<double>() == 0.2 &&
+          !(*private_blend)["private-properties"]["blend_mode"].IsDefined() &&
+          !(*private_blend)["private-properties"]["blend_feather_fraction"].IsDefined() &&
+          (*private_blend)["private-properties"]["show"].as<int>() == 0,
+      "Private blend aliases must win over same-layer canonical values and preserve unrelated properties");
+  const auto cli_blend = mapped_blend_case(
+      "pipeline: {hmstitcher: {private-properties: {blend-mode: multiblend, blend-feather-fraction: 5}}}",
+      {{"stitching.blend_mode", "alpha"}, {"stitching.blend_feather_fraction", "0"}},
+      "cli");
+  ok &= expect(
+      cli_blend.ok() && (*cli_blend)["blend-mode"].as<std::string>() == "alpha" &&
+          (*cli_blend)["blend-feather-fraction"].as<double>() == 0 &&
+          !(*cli_blend)["private-properties"]["blend-mode"].IsDefined(),
+      "CLI blend choices must replace even invalid lower-layer private values before validation and serialization");
+  ok &= expect(
+      !mapped_blend_case(
+           "pipeline: {hmstitcher: {private-properties: {blend-mode: multiblend}}}", {}, "invalid-private")
+              .ok() &&
+          !mapped_blend_case(
+               "pipeline: {hmstitcher: {private-properties: {blend-feather-fraction: .nan}}}", {}, "nan-private")
+               .ok(),
+      "Unsupported private blend modes and non-finite widths must fail configuration");
+  const auto null_blend = mapped_blend_case(
+      "stitching: {blend_mode: alpha, blend_feather_fraction: 0.3}\n"
+      "pipeline: {hmstitcher: {blend-mode: null, blend-feather-fraction: null}}",
+      {},
+      "null");
+  ok &= expect(
+      null_blend.ok() && (*null_blend)["blend-mode"].as<std::string>() == "alpha" &&
+          (*null_blend)["blend-feather-fraction"].as<double>() == 0.3,
+      "Null native blend leaves must inherit the canonical game values");
+  const auto inherit_blend =
+      mapped_blend_case("stitching: {blend_mode: null, blend_feather_fraction: null}", {}, "inherit-baseline");
+  ok &= expect(
+      inherit_blend.ok() && (*inherit_blend)["blend-mode"].as<std::string>() == "laplacian" &&
+          (*inherit_blend)["blend-feather-fraction"].as<double>() == 0.05,
+      "Null game blend leaves must inherit the baseline values");
+  for (const std::string& native_prefix : {"pipeline.hmstitcher.", "pipeline.hmstitcher.private-properties."}) {
+    const auto alias_blend = mapped_blend_case(
+        "stitching: {blend_mode: laplacian, blend_feather_fraction: 0.05}",
+        {{native_prefix + "blend_mode", "alpha"}, {native_prefix + "blend_feather_fraction", "0.2"}},
+        native_prefix.c_str());
+    ok &= expect(
+        alias_blend.ok() && (*alias_blend)["blend-mode"].as<std::string>() == "alpha" &&
+            (*alias_blend)["blend-feather-fraction"].as<double>() == 0.2,
+        "CLI native aliases must retain their priority through repeated startup mappings");
+  }
 
   const fs::path no_application_structure_path = root / "mapping-no-application-structure.yaml";
   YAML::Node no_application_structure = YAML::Clone(mapping_structure);
@@ -1210,6 +1340,8 @@ play-tracker:
   canonical_overrides["stitching"]["minimize_blend"] = true;
   canonical_overrides["stitching"]["max_output_width"] = 4096;
   canonical_overrides["stitching"]["dtype"] = "float16";
+  canonical_overrides["stitching"]["blend_mode"] = "alpha";
+  canonical_overrides["stitching"]["blend_feather_fraction"] = 0.08;
   canonical_overrides["stitching"]["post_stitch_rotate_degrees"] = 15.0;
   canonical_overrides["apply_camera"]["crop_output_image"] = false;
   canonical_overrides["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(21.0);
@@ -1254,6 +1386,8 @@ play-tracker:
           mapped_canonical["hmstitcher"]["minimize-blend"].as<int>() == 1 &&
           mapped_canonical["hmstitcher"]["properties"]["max-output-width"].as<int>() == 4096 &&
           mapped_canonical["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp16" &&
+          mapped_canonical["hmstitcher"]["blend-mode"].as<std::string>() == "alpha" &&
+          mapped_canonical["hmstitcher"]["blend-feather-fraction"].as<double>() == 0.08 &&
           mapped_canonical["hmstitcher"]["post-stitch-rotate-degrees"].as<double>() == 15.0 &&
           mapped_canonical["hmplaycropper"]["no-crop"].as<int>() == 1 &&
           mapped_canonical["hmplaycropper"]["plot-play-tracking"].as<int>() == 1 &&
@@ -1316,9 +1450,8 @@ play-tracker:
   const auto stale_runtime_persisted_polygon = hm::get_node(stale_runtime_after, "rink.scoreboard.perspective_polygon");
   const bool stale_runtime_polygon_cleared = stale_runtime_polygon_loaded &&
       !stale_runtime_native_polygon.has_value() && stale_runtime_persisted_polygon.has_value() &&
-      stale_runtime_persisted_polygon->IsNull() &&
-      stale_runtime_rotation_marker.has_value() && stale_runtime_rotation_marker->IsScalar() &&
-      stale_runtime_rotation_marker->as<double>() == 15.0;
+      stale_runtime_persisted_polygon->IsNull() && stale_runtime_rotation_marker.has_value() &&
+      stale_runtime_rotation_marker->IsScalar() && stale_runtime_rotation_marker->as<double>() == 15.0;
   if (!stale_runtime_polygon_cleared) {
     std::cerr << "stale runtime polygon configuration status: " << stale_runtime_polygon_status << '\n'
               << "runtime config: " << YAML::Dump(stale_runtime_polygon_configurator.config()) << '\n'

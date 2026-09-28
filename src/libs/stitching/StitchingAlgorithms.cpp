@@ -135,6 +135,142 @@ const char* MappingBackendName(MappingBackend backend) {
   return "nona";
 }
 
+const char* BlendModeName(BlendMode mode) {
+  switch (mode) {
+    case BlendMode::kLaplacian:
+      return "laplacian";
+    case BlendMode::kAlpha:
+      return "alpha";
+    case BlendMode::kHardSeam:
+      return "gpu-hard-seam";
+  }
+  return "laplacian";
+}
+
+absl::StatusOr<BlendMode> ParseBlendMode(const std::string& raw) {
+  // normalize_choice also maps '_' to '-', matching the plugin's normalized_property_value, so
+  // "Laplacian" and "gpu_hard_seam" are accepted on both the canonical and the native path.
+  const std::string value = normalize_choice(raw);
+  if (value == "laplacian")
+    return BlendMode::kLaplacian;
+  if (value == "alpha")
+    return BlendMode::kAlpha;
+  // HockeyMON's Python stitcher names the same mode "gpu-hard-seam"; accept both spellings.
+  if (value == "gpu-hard-seam" || value == "hard-seam" || value == "hard")
+    return BlendMode::kHardSeam;
+  return absl::InvalidArgumentError("blend mode must be laplacian, alpha or gpu-hard-seam: " + raw);
+}
+
+absl::StatusOr<ResolvedBlendSettings> ResolveBlendSettings(
+    const YAML::Node& baseline,
+    const YAML::Node& user,
+    const YAML::Node& game) {
+  return ResolveBlendSettings(std::vector<YAML::Node>{baseline, user, game});
+}
+
+absl::StatusOr<ResolvedBlendSettings> ResolveBlendSettings(const std::vector<YAML::Node>& layers) {
+  ResolvedBlendSettings settings;
+  YAML::Node selected_mode(YAML::NodeType::Undefined);
+  YAML::Node selected_feather(YAML::NodeType::Undefined);
+  try {
+    for (const YAML::Node& layer : layers) {
+      if (!layer.IsDefined() || layer.IsNull())
+        continue;
+      if (!layer.IsMap())
+        return absl::InvalidArgumentError("Blend settings configuration must be a map");
+      const auto read = [&](const char* section, const char* child, const char* key) {
+        const YAML::Node group = layer[section];
+        if (!group.IsDefined() || !group.IsMap())
+          return YAML::Node(YAML::NodeType::Undefined);
+        if (!child) {
+          const YAML::Node value = group[key];
+          return value.IsDefined() ? value : YAML::Node(YAML::NodeType::Undefined);
+        }
+        const YAML::Node nested = group[child];
+        if (!nested.IsDefined() || !nested.IsMap())
+          return YAML::Node(YAML::NodeType::Undefined);
+        const YAML::Node value = nested[key];
+        return value.IsDefined() ? value : YAML::Node(YAML::NodeType::Undefined);
+      };
+      const auto private_value = [&](const char* key) {
+        const YAML::Node properties = read("pipeline", "hmstitcher", "private-properties");
+        if (!properties.IsDefined() || !properties.IsMap())
+          return YAML::Node(YAML::NodeType::Undefined);
+        const YAML::Node value = properties[key];
+        return value.IsDefined() ? value : YAML::Node(YAML::NodeType::Undefined);
+      };
+      const auto selected = [&](const char* canonical, const char* alias, const char* native) {
+        for (const YAML::Node& value :
+             {read("pipeline", "hmstitcher", native),
+              read("pipeline", "hmstitcher", alias),
+              private_value(native),
+              private_value(alias),
+              read("stitching", nullptr, canonical)}) {
+          if (value.IsDefined() && !value.IsNull())
+            return value;
+        }
+        return YAML::Node(YAML::NodeType::Undefined);
+      };
+      const YAML::Node mode = selected("blend_mode", "blend_mode", "blend-mode");
+      if (mode.IsDefined())
+        selected_mode.reset(mode);
+      const YAML::Node feather = selected("blend_feather_fraction", "blend_feather_fraction", "blend-feather-fraction");
+      if (feather.IsDefined())
+        selected_feather.reset(feather);
+    }
+    // Validate only the winning values; an overridden invalid value cannot reject a valid choice.
+    if (selected_mode.IsDefined()) {
+      if (!selected_mode.IsScalar())
+        return absl::InvalidArgumentError("Seam blend mode must be a scalar");
+      settings.mode = selected_mode.as<std::string>();
+      if (settings.mode.empty())
+        return absl::InvalidArgumentError("Seam blend mode must not be empty");
+      const auto parsed = ParseBlendMode(settings.mode);
+      if (parsed.ok())
+        settings.mode = BlendModeName(*parsed);
+    }
+    if (selected_feather.IsDefined()) {
+      settings.feather_fraction = selected_feather.as<double>();
+      if (!std::isfinite(settings.feather_fraction) || settings.feather_fraction < 0.0 ||
+          settings.feather_fraction > 1.0)
+        return absl::InvalidArgumentError("Seam feather fraction must be a number in [0, 1]");
+    }
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid seam blend settings: " + std::string(error.what()));
+  }
+  return settings;
+}
+
+absl::Status WriteBlendSettings(
+    YAML::Node config,
+    const std::string& mode,
+    const std::optional<double>& feather_fraction) {
+  const auto parsed = ParseBlendMode(mode);
+  if (!parsed.ok())
+    return parsed.status();
+  if (feather_fraction.has_value() &&
+      (!std::isfinite(*feather_fraction) || *feather_fraction < 0.0 || *feather_fraction > 1.0))
+    return absl::InvalidArgumentError("Seam feather fraction must be a number in [0, 1]");
+  try {
+    config["stitching"]["blend_mode"] = BlendModeName(*parsed);
+    if (*parsed == BlendMode::kAlpha && feather_fraction.has_value())
+      config["stitching"]["blend_feather_fraction"] = *feather_fraction;
+    else
+      config["stitching"].remove("blend_feather_fraction");
+    if (config["pipeline"].IsMap() && config["pipeline"]["hmstitcher"].IsMap()) {
+      YAML::Node stitcher = config["pipeline"]["hmstitcher"];
+      for (const char* key : {"blend-mode", "blend_mode", "blend-feather-fraction", "blend_feather_fraction"}) {
+        stitcher.remove(key);
+        if (stitcher["private-properties"].IsMap())
+          stitcher["private-properties"].remove(key);
+      }
+    }
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Could not save seam blend settings: " + std::string(error.what()));
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value) {
   const std::string normalized = normalize_choice(value.empty() ? "nona" : value);
   if (normalized == "nona")

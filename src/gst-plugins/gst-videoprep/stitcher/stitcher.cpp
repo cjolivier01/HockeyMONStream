@@ -737,13 +737,29 @@ absl::Status StitcherPriv::ensure_stitcher() {
     hugin_generation_id_ = std::move(artifacts->generation_id);
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
     artifacts->artifact_lock.reset();
+    // Resolved once so all three pixel-type branches agree. Laplacian keeps the level count the
+    // stitcher has always used; alpha and hard seam ignore it.
+    hm::pano::BlendSettings blend_settings(kNumStitcherLaplacianLevels);
+    switch (blend_mode_) {
+      case hm::stitching::BlendMode::kLaplacian:
+        break;
+      case hm::stitching::BlendMode::kAlpha:
+        blend_settings = hm::pano::BlendSettings::Alpha(blend_feather_fraction_);
+        break;
+      case hm::stitching::BlendMode::kHardSeam:
+        blend_settings = hm::pano::BlendSettings::HardSeam();
+        break;
+    }
+    if (blend_mode_ != hm::stitching::BlendMode::kLaplacian) {
+      g_print("hmstitcher: blend mode %s\n", hm::stitching::BlendModeName(blend_mode_));
+    }
     if (high_bit_depth_) {
       g_print(
           "hmstitcher: using RGB10A2 input with fp16 stitch compute (%s)\n",
           fused_rgb10_remap_ ? "fused unpack/remap" : "staged unpack/remap");
       stitcher_rgb10_fp16_ = std::make_unique<STITCHER_RGB10_FP16>(
           /*batch_size=*/1,
-          /*num_levels=*/kNumStitcherLaplacianLevels,
+          /*blend=*/blend_settings,
           control_masks,
           /*quiet=*/false,
           /*minimize_blend=*/minimize_blend_,
@@ -753,7 +769,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
       g_print("hmstitcher: using fp16 stitch compute\n");
       stitcher_fp16_ = std::make_unique<STITCHER_FP16>(
           /*batch_size=*/1,
-          /*num_levels=*/kNumStitcherLaplacianLevels,
+          /*blend=*/blend_settings,
           control_masks,
           /*quiet=*/false,
           /*minimize_blend=*/minimize_blend_,
@@ -763,7 +779,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
       g_print("hmstitcher: using fp32 stitch compute\n");
       stitcher_fp32_ = std::make_unique<STITCHER_FP32>(
           /*batch_size=*/1,
-          /*num_levels=*/kNumStitcherLaplacianLevels,
+          /*blend=*/blend_settings,
           control_masks,
           /*quiet=*/false,
           /*minimize_blend=*/minimize_blend_,
@@ -1674,6 +1690,31 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       return false;
     }
     stitch_compute_precision_ = requested_precision;
+  } else if (prop.key == "blend-mode" || prop.key == "blend_mode") {
+    const absl::StatusOr<hm::stitching::BlendMode> requested = hm::stitching::ParseBlendMode(prop.value);
+    if (!requested.ok()) {
+      std::cerr << requested.status().message() << std::endl;
+      return false;
+    }
+    absl::MutexLock lk(&stitcher_mu_);
+    if (has_stitcher() && *requested != blend_mode_) {
+      std::cerr << "Cannot change blend mode after stitcher initialization" << std::endl;
+      return false;
+    }
+    blend_mode_ = *requested;
+  } else if (prop.key == "blend-feather-fraction" || prop.key == "blend_feather_fraction") {
+    double parsed_fraction = 0.0;
+    if (!parse_finite_double(prop.value, parsed_fraction) || parsed_fraction < 0.0 ||
+        parsed_fraction > hm::pano::BlendSettings::kMaxFeatherFraction) {
+      std::cerr << "Invalid blend feather fraction: " << prop.value << std::endl;
+      return false;
+    }
+    absl::MutexLock lk(&stitcher_mu_);
+    if (has_stitcher() && static_cast<float>(parsed_fraction) != blend_feather_fraction_) {
+      std::cerr << "Cannot change blend feather fraction after stitcher initialization" << std::endl;
+      return false;
+    }
+    blend_feather_fraction_ = static_cast<float>(parsed_fraction);
   } else if (
       prop.key == "post-stitch-rotate-degrees" || prop.key == "post_stitch_rotate_degrees" ||
       prop.key == "stitch-rotate-degrees" || prop.key == "stitch_rotate_degrees") {

@@ -6,6 +6,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <sys/syscall.h>
@@ -772,6 +773,123 @@ bool edited_match_workspace(const fs::path& root) {
 
 } // namespace
 
+bool resolved_seam_blend() {
+  using hm::stitching::ResolveBlendSettings;
+  const auto baseline = YAML::Load("stitching: {blend_mode: laplacian, blend_feather_fraction: 0.05}");
+  const auto user = YAML::Load("pipeline: {hmstitcher: {blend-mode: alpha, blend-feather-fraction: 0.2}}");
+  const std::string before = YAML::Dump(user);
+  const auto inherited = ResolveBlendSettings(baseline, user);
+  if (!expect(
+          inherited.ok() && inherited->mode == "alpha" && inherited->feather_fraction == 0.2,
+          "Native user settings must override canonical defaults"))
+    return false;
+  const auto canonical_game = YAML::Load("stitching: {blend_mode: hard-seam, blend_feather_fraction: 0.3}");
+  const auto overridden = ResolveBlendSettings(baseline, user, canonical_game);
+  if (!expect(
+          overridden.ok() && overridden->mode == "gpu-hard-seam" && overridden->feather_fraction == 0.3,
+          "A game canonical choice must override inherited native settings and normalize aliases"))
+    return false;
+  const auto private_game = YAML::Load(
+      "stitching: {blend_mode: laplacian}\n"
+      "pipeline: {hmstitcher: {private-properties: {blend_mode: Alpha, blend_feather_fraction: 0.4}}}");
+  const auto private_blend = ResolveBlendSettings(baseline, user, private_game);
+  if (!expect(
+          private_blend.ok() && private_blend->mode == "alpha" && private_blend->feather_fraction == 0.4,
+          "Private native properties must win over canonical settings at the same layer"))
+    return false;
+  auto native_game = YAML::Clone(private_game);
+  native_game["pipeline"]["hmstitcher"]["blend-mode"] = "hard";
+  native_game["pipeline"]["hmstitcher"]["blend_mode"] = "alpha";
+  const auto native = ResolveBlendSettings(baseline, user, native_game);
+  if (!expect(native.ok() && native->mode == "gpu-hard-seam", "Dashed top-level native values must win ties"))
+    return false;
+  const auto null_game = YAML::Load("stitching: {blend_mode: null, blend_feather_fraction: null}");
+  const auto null_blend = ResolveBlendSettings(baseline, user, null_game);
+  if (!expect(
+          null_blend.ok() && null_blend->mode == "alpha" && null_blend->feather_fraction == 0.2,
+          "Null settings must inherit the lower layer"))
+    return false;
+  const auto unsupported = ResolveBlendSettings(baseline, user, YAML::Load("stitching: {blend_mode: multiblend}"));
+  if (!expect(unsupported.ok() && unsupported->mode == "multiblend", "Unsupported modes must remain visible"))
+    return false;
+  for (const char* invalid : {".nan", "2", "bad", "[0.2]"}) {
+    const auto rejected = ResolveBlendSettings(
+        baseline, user, YAML::Load(std::string("stitching: {blend_feather_fraction: ") + invalid + "}"));
+    if (!expect(!rejected.ok(), "Invalid feather widths must not silently become defaults"))
+      return false;
+  }
+  return expect(YAML::Dump(user) == before, "Reading blend settings must not mutate the source layer");
+}
+
+// Seam blend is a render setting the operator chose while comparing candidates, so it is applied
+// on top of the selection config rather than reconciled with it.
+bool selected_seam_blend(const fs::path& root) {
+  const std::string selection =
+      "stitching:\n"
+      "  control_point_matcher: dedode-lightglue\n"
+      "  blend_mode: laplacian\n"
+      "pipeline:\n"
+      "  hmstitcher:\n"
+      "    blend-mode: gpu-hard-seam\n"
+      "    blend_feather_fraction: 0.8\n"
+      "    private-properties: {blend_mode: laplacian, blend-feather-fraction: 0.9, unrelated: keep}\n"
+      "game:\n"
+      "  videos:\n"
+      "    left: [cam1/left.mp4]\n";
+  const fs::path experiment_config = root / "selected-blend" / "candidate.yaml";
+  const fs::path game_config = root / "selected-blend" / "config.yaml";
+  if (!write(experiment_config, selection) || !write(game_config, selection))
+    return false;
+
+  StitchingExperimentBlend alpha;
+  alpha.mode = "alpha";
+  alpha.feather_fraction = 0.2;
+  const auto with_alpha = BuildStitchingExperimentSelectionConfig(experiment_config, game_config, alpha);
+  if (!expect(with_alpha.ok(), "Applying an alpha blend must succeed"))
+    return false;
+  const YAML::Node alpha_config = YAML::Load(*with_alpha);
+  if (!expect(
+          alpha_config["stitching"]["blend_mode"].as<std::string>() == "alpha" &&
+              alpha_config["stitching"]["blend_feather_fraction"].as<double>() == 0.2,
+          "Alpha must write both the mode and its width"))
+    return false;
+  if (!expect(
+          alpha_config["stitching"]["control_point_matcher"].as<std::string>() == "dedode-lightglue" &&
+              alpha_config["game"]["videos"]["left"][0].as<std::string>() == "cam1/left.mp4",
+          "Applying a blend must leave the rest of the selection config alone"))
+    return false;
+
+  const auto effective = hm::stitching::ResolveBlendSettings(YAML::Node(), YAML::Node(), alpha_config);
+  if (!expect(
+          effective.ok() && effective->mode == "alpha" && effective->feather_fraction == 0.2,
+          "Promotion must retire native properties that would override the selected blend") ||
+      !expect(
+          alpha_config["pipeline"]["hmstitcher"]["private-properties"]["unrelated"].as<std::string>() == "keep",
+          "Promotion must preserve unrelated private properties"))
+    return false;
+
+  // A mode without a width must not leave one behind for a later alpha to pick up.
+  StitchingExperimentBlend hard;
+  hard.mode = "gpu-hard-seam";
+  if (!write(game_config, *with_alpha))
+    return false;
+  const auto with_hard = BuildStitchingExperimentSelectionConfig(experiment_config, game_config, hard);
+  if (!expect(with_hard.ok(), "Applying a hard seam must succeed"))
+    return false;
+  const YAML::Node hard_config = YAML::Load(*with_hard);
+  if (!expect(
+          hard_config["stitching"]["blend_mode"].as<std::string>() == "gpu-hard-seam" &&
+              !hard_config["stitching"]["blend_feather_fraction"],
+          "A mode without a width must clear the stored width"))
+    return false;
+
+  if (!write(experiment_config, "stitching: [unbalanced"))
+    return false;
+  return expect(
+      !BuildStitchingExperimentSelectionConfig(experiment_config, game_config, alpha).ok(),
+      "Malformed input must be rejected rather than silently dropped");
+}
+
 int main() {
   char root_template[] = "/tmp/hstream-stitch-experiment-backend-XXXXXX";
   const char* created = ::mkdtemp(root_template);
@@ -788,6 +906,9 @@ int main() {
 
   if (!edited_match_workspace(root))
     return 24;
+
+  if (!resolved_seam_blend() || !selected_seam_blend(root))
+    return 25;
 
   const fs::path game = root / "game";
   const fs::path experiments = root / "experiments";

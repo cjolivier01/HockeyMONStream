@@ -71,7 +71,9 @@ bool find_non_null_yaml_alias(
 bool parse_finite_yaml_double_node(const YAML::Node& node, const char* key, double* out) {
   try {
     const double value = node.as<double>();
-    if (!std::isfinite(value)) {
+    // Both callers narrow to gfloat, so check the float too: 1e40 is a finite double that becomes
+    // inf on the way to the plugin.
+    if (!std::isfinite(value) || !std::isfinite(static_cast<float>(value))) {
       cout << "Invalid non-finite value for " << key << endl;
       return false;
     }
@@ -417,6 +419,37 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   SET_LOCATOR(locator, *config, calibration_frame_count);
   SET_LOCATOR(locator, *config, calibration_sample_span_ns);
   SET_LOCATOR_CHARS(locator, *config, stitch_compute_precision);
+  YAML::Node blend_mode_node;
+  if (find_non_null_yaml_alias(yaml_node, "blend-mode", "blend_mode", &blend_mode_node)) {
+    try {
+      const std::string blend_mode = blend_mode_node.as<std::string>();
+      if (blend_mode.size() >= sizeof(config->blend_mode)) {
+        cout << "Invalid blend-mode value: " << blend_mode << endl;
+        return false;
+      }
+      std::snprintf(config->blend_mode, sizeof(config->blend_mode), "%s", blend_mode.c_str());
+    } catch (const std::exception& exc) {
+      cout << "Invalid blend-mode value: " << exc.what() << endl;
+      return false;
+    }
+  }
+  locator.ignored.emplace("blend_mode");
+  locator.ignored.emplace("blend-mode");
+  // Both spellings, and null means inherit - same shape as post-stitch-rotate-degrees above.
+  double blend_feather_fraction = 0.0;
+  YAML::Node blend_feather_fraction_node;
+  const bool blend_feather_fraction_set = find_non_null_yaml_alias(
+      yaml_node, "blend-feather-fraction", "blend_feather_fraction", &blend_feather_fraction_node);
+  if (blend_feather_fraction_set &&
+      !parse_finite_yaml_double_node(blend_feather_fraction_node, "blend-feather-fraction", &blend_feather_fraction)) {
+    return false;
+  }
+  if (blend_feather_fraction_set) {
+    config->blend_feather_fraction = static_cast<gfloat>(blend_feather_fraction);
+  }
+  config->blend_feather_fraction_set = blend_feather_fraction_set ? TRUE : FALSE;
+  locator.ignored.emplace("blend_feather_fraction");
+  locator.ignored.emplace("blend-feather-fraction");
   SET_LOCATOR_CHARS(locator, *config, config_file);
   locator.ignored.emplace("properties");
   locator.ignored.emplace("private-properties");

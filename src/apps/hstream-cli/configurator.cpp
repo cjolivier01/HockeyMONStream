@@ -66,6 +66,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 
 namespace fs = std::filesystem;
@@ -5955,6 +5956,72 @@ absl::Status Configurator::map_common_config_keys() {
         return absl::InvalidArgumentError("stitching.dtype must be float32 or float16");
     }
 
+    // Resolve each spelling in its explicit layer before validating the winner. Private
+    // properties are serialized last by the bin builder, so leaving a losing alias there
+    // would bypass both CLI precedence and validation.
+    std::vector<YAML::Node> blend_layers(4);
+    for (auto& layer : blend_layers)
+      layer = YAML::Node(YAML::NodeType::Map);
+    const std::array<const char*, 10> blend_paths = {
+        "stitching.blend_mode",
+        "stitching.blend_feather_fraction",
+        "pipeline.hmstitcher.blend-mode",
+        "pipeline.hmstitcher.blend_mode",
+        "pipeline.hmstitcher.blend-feather-fraction",
+        "pipeline.hmstitcher.blend_feather_fraction",
+        "pipeline.hmstitcher.private-properties.blend-mode",
+        "pipeline.hmstitcher.private-properties.blend_mode",
+        "pipeline.hmstitcher.private-properties.blend-feather-fraction",
+        "pipeline.hmstitcher.private-properties.blend_feather_fraction"};
+    const auto copy_blend_value = [](YAML::Node layer, const std::string& path, const YAML::Node& value) {
+      const std::vector<std::string> keys = absl::StrSplit(path, '.');
+      for (size_t i = 0; i + 1 < keys.size(); ++i)
+        layer.reset(layer[keys[i]]);
+      layer[keys.back()] = YAML::Clone(value);
+    };
+    // Keep lower values available when a later layer explicitly asks to inherit with null.
+    const std::array<const char*, 3> saved_layers = {"baseline", "user", "game"};
+    for (size_t i = 0; i < saved_layers.size(); ++i) {
+      const YAML::Node saved = recording_config_layers_[saved_layers[i]];
+      for (const char* path : blend_paths) {
+        const auto value = get_node(saved, path);
+        if (value.has_value() && value->IsDefined())
+          copy_blend_value(blend_layers[i], path, *value);
+      }
+    }
+    for (const char* path : blend_paths) {
+      const auto value = get_node(config_, path);
+      if (value.has_value() && value->IsDefined())
+        copy_blend_value(blend_layers[std::max(0, explicit_value_rank(path))], path, *value);
+    }
+    hm::stitching::ResolvedBlendSettings blend;
+    HM_ASSIGN_OR_RETURN(blend, hm::stitching::ResolveBlendSettings(blend_layers));
+    const auto parsed_blend = hm::stitching::ParseBlendMode(blend.mode);
+    HM_RETURN_IF_ERROR(parsed_blend.status());
+    int mode_rank = 0;
+    int feather_rank = 0;
+    for (size_t rank = 0; rank < blend_layers.size(); ++rank) {
+      for (const char* path : blend_paths) {
+        const auto value = get_node(blend_layers[rank], path);
+        if (value.has_value() && value->IsDefined() && !value->IsNull()) {
+          int& selected_rank =
+              std::string_view(path).find("feather") == std::string_view::npos ? mode_rank : feather_rank;
+          selected_rank = static_cast<int>(rank);
+        }
+      }
+    }
+    for (const char* key : {"blend-mode", "blend_mode", "blend-feather-fraction", "blend_feather_fraction"}) {
+      stitcher.remove(key);
+      if (stitcher["private-properties"].IsMap())
+        stitcher["private-properties"].remove(key);
+    }
+    stitcher["blend-mode"] = hm::stitching::BlendModeName(*parsed_blend);
+    stitcher["blend-feather-fraction"] = blend.feather_fraction;
+    // Startup maps twice. Retain ownership after removing the original CLI aliases so
+    // a later pass cannot reclassify the normalized values as structural defaults.
+    explicit_value_ranks_["pipeline.hmstitcher.blend-mode"] = mode_rank;
+    explicit_value_ranks_["pipeline.hmstitcher.blend-feather-fraction"] = feather_rank;
+
     // Promote the highest-ranked legacy canonical spelling before mapping it
     // to the native stitcher property.
     const char* canonical_rotation_path = "stitching.post_stitch_rotate_degrees";
@@ -6020,12 +6087,14 @@ absl::Status Configurator::map_common_config_keys() {
     pipeline["player-analytics"] = YAML::Node(YAML::NodeType::Map);
   if (pipeline["player-analytics"].IsMap()) {
     YAML::Node analytics = pipeline["player-analytics"];
-    for (const auto& [canonical, native] : {
-        std::pair<const char*, const char*>("plot.plot_pose", "draw-pose"),
-        {"plot.plot_jersey_numbers", "draw-jerseys"}, {"plot.plot_actions", "draw-actions"}}) {
+    for (const auto& [canonical, native] :
+         {std::pair<const char*, const char*>("plot.plot_pose", "draw-pose"),
+          {"plot.plot_jersey_numbers", "draw-jerseys"},
+          {"plot.plot_actions", "draw-actions"}}) {
       std::optional<YAML::Node> source;
-      HM_ASSIGN_OR_RETURN(source, canonical_source(canonical,
-          std::string("pipeline.player-analytics.") + native, analytics[native], true));
+      HM_ASSIGN_OR_RETURN(
+          source,
+          canonical_source(canonical, std::string("pipeline.player-analytics.") + native, analytics[native], true));
       if (!source || source->IsNull())
         continue;
       try {

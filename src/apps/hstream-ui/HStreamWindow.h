@@ -402,6 +402,9 @@ class HStreamWindow : public QMainWindow {
   QStringList pipelineArguments(bool standalone = false) const;
   QString highBitDepthMode() const;
   QString detectorPrecision() const;
+  // Seam blend mode for the next run.
+  QString blendMode() const;
+  double blendFeatherFraction() const;
   std::vector<DetectorModel> detectorModels() const;
   QString detectorModel() const;
   QString detectorConfigPrefix() const;
@@ -410,6 +413,7 @@ class HStreamWindow : public QMainWindow {
   QString detectorConfigName() const;
   QString detectorEnginePath() const;
   void loadDetectorPrecision(const YAML::Node& config);
+  void loadBlendMode(const YAML::Node& config);
   void updateDefaultGpuMemoryProfile(const YAML::Node& game_config);
   void loadPlayerAnalyticsConfig(const YAML::Node& config);
   bool validatePlayerAnalyticsForRun();
@@ -565,6 +569,11 @@ class HStreamWindow : public QMainWindow {
   QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
+  QComboBox* blend_mode_combo_{nullptr};
+  QDoubleSpinBox* blend_feather_spin_{nullptr};
+  QWidget* blend_feather_row_{nullptr};
+  QString default_blend_mode_{"laplacian"};
+  double default_blend_feather_fraction_{0.05};
   QComboBox* control_point_resolution_combo_{nullptr};
   QString control_point_resolution_{"native"};
   QSpinBox* control_points_spin_{nullptr};
@@ -643,8 +652,6 @@ class HStreamWindow : public QMainWindow {
   std::vector<QLabel*> camera_preview_notices_;
   QTabWidget* program_control_tabs_{nullptr};
   PlayerAnalyticsControls* player_analytics_controls_{nullptr};
-  YAML::Node player_analytics_defaults_;
-  YAML::Node player_analytics_user_;
   QStringList active_player_analytics_arguments_;
   QString active_gpu_memory_profile_;
   QComboBox* gpu_memory_profile_combo_{nullptr};
@@ -880,6 +887,9 @@ class HStreamWindow : public QMainWindow {
   QLabel* stitched_color_precision_status_{nullptr};
   std::map<QString, double> camera_defaults_;
   YAML::Node baseline_config_;
+  // Keep explicit layers separate for settings with canonical/native alias precedence.
+  YAML::Node baseline_layer_;
+  YAML::Node user_layer_;
   QString baseline_config_root_;
   bool default_drivegpt_database_enabled_;
   QString default_stitch_frame_time_{"00:00:00"};
@@ -908,6 +918,8 @@ class HStreamWindow : public QMainWindow {
   QString development_bazel_bin_;
   QString saved_stitch_frame_time_;
   QString saved_control_point_resolution_{"native"};
+  QString saved_blend_mode_{"laplacian"};
+  double saved_blend_feather_fraction_{0.05};
   QString saved_control_point_matcher_;
   QString saved_mapping_backend_;
   hm::stitching::StitchCameraSelection saved_camera_selection_;

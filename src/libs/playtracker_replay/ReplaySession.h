@@ -55,6 +55,8 @@ struct StitchingMedia {
   double exposure{0};
   double shadow_lift{0};
   bool shadow_lift_black_point{false};
+  std::string blend_mode{"laplacian"};
+  double blend_feather_fraction{0.05};
 };
 
 struct MediaBinding {

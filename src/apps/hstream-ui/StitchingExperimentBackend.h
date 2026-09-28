@@ -125,14 +125,23 @@ struct StitchingExperimentFrameInspection {
 absl::StatusOr<StitchingExperimentFrameInspection> InspectStitchingExperimentFrames(
     const StitchingExperimentWorkspace& experiment);
 
+// A render-time seam blend chosen while comparing candidates. Not a calibration input, so it is
+// applied on top of the selection config rather than copied out of the experiment's own config.
+struct StitchingExperimentBlend {
+  std::string mode;
+  std::optional<double> feather_fraction;
+};
+
 // Builds the exact config document published by selection. Exposed so the
 // geometry invalidation contract can be checked without generating images.
 absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     const std::filesystem::path& experiment_config,
-    const std::filesystem::path& game_config);
+    const std::filesystem::path& game_config,
+    const std::optional<StitchingExperimentBlend>& blend = std::nullopt);
 
 // Publishes the already-generated candidate maps/seam without recalibrating,
 // then updates only stitching-owned config and invalidates dependent rink data.
 absl::Status PromoteStitchingExperiment(
     const StitchingExperimentWorkspace& experiment,
-    const std::filesystem::path& game_directory);
+    const std::filesystem::path& game_directory,
+    const std::optional<StitchingExperimentBlend>& blend = std::nullopt);

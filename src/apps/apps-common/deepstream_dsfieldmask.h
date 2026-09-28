@@ -201,6 +201,11 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   guint calibration_frame_count;
   gulong calibration_sample_span_ns;
   gchar stitch_compute_precision[32];
+  gchar blend_mode[32];
+  gfloat blend_feather_fraction;
+  // The struct is zero-initialized, so 0 cannot double as "unset": it is a legal width meaning a
+  // hard seam. This records whether the key was actually present.
+  gboolean blend_feather_fraction_set;
   // Runtime-only routing decision. This is derived from enabled sink types,
   // not parsed as a user-facing stitcher option.
   gboolean archive_stitched;

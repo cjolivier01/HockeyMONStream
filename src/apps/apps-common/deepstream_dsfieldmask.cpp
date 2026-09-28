@@ -683,6 +683,20 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   if (config->stitch_compute_precision[0] != '\0') {
     ppc << ";stitch-compute-precision=" << config->stitch_compute_precision;
   }
+  if (config->blend_mode[0] != '\0') {
+    // plugin-private-config is ';'-separated and '='-delimited, and the native property path can
+    // set this without going through ParseBlendMode, so a value carrying either would inject a
+    // second property.
+    const std::string blend_mode_value(config->blend_mode);
+    if (blend_mode_value.find_first_of(";=") != std::string::npos) {
+      NVGSTDS_ERR_MSG_V("Invalid blend-mode value: %s", config->blend_mode);
+      goto done;
+    }
+    ppc << ";blend-mode=" << blend_mode_value;
+  }
+  if (config->blend_feather_fraction_set) {
+    ppc << ";blend-feather-fraction=" << config->blend_feather_fraction;
+  }
   g_object_set(
       G_OBJECT(bin->elem_hmstitcher),
       "post-stitch-rotate-degrees",

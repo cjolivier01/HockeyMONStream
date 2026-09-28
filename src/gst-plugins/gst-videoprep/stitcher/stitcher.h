@@ -4,6 +4,7 @@
 #include "hstream/src/libs/common/Status.h"
 
 #include "cupano/cuda/cudaTypes.h"
+#include "cupano/pano/blendMode.h"
 #include "cupano/pano/cudaPano.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
@@ -11,6 +12,7 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 #include <atomic>
 #include <memory>
@@ -264,6 +266,10 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool high_bit_depth_output_{false};
   bool caps_initialized_{false};
   StitchComputePrecision stitch_compute_precision_{StitchComputePrecision::kFp32};
+  // Blend operator for the live stitch. A constructor argument to hm-cupano, so it cannot change
+  // once the stitcher exists.
+  hm::stitching::BlendMode blend_mode_{hm::stitching::BlendMode::kLaplacian};
+  float blend_feather_fraction_{hm::pano::BlendSettings::kDefaultFeatherFraction};
   std::atomic<float> shadow_lift_percent_{0.0f};
   std::atomic_bool lift_shadow_black_point_{false};
   std::atomic<float> exposure_{0.0f};

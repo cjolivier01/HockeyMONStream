@@ -137,6 +137,11 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// Combo data for a stitching.blend_mode the live path cannot run (HockeyMON's "multiblend").
+// Carried as a real entry so the operator can see what the config holds, and so choosing one of
+// the supported modes is a genuine index change rather than a no-op on the fallback.
+constexpr const char* kUnrepresentableBlendData = "__unrepresentable__";
+
 #if QT_CONFIG(xcb)
 // Qt's own XCB connection, or null when this is not an X11 session.
 xcb_connection_t* native_x11_connection() {
@@ -4788,8 +4793,8 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!user_overlay.ok())
     throw std::runtime_error(user_overlay.status().ToString());
   baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
-  player_analytics_defaults_ = YAML::Clone(loaded->values);
-  player_analytics_user_ = YAML::Clone(*user_overlay);
+  baseline_layer_ = YAML::Clone(loaded->values);
+  user_layer_ = YAML::Clone(*user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
 
   auto require = [this](const QString& path) {
@@ -4859,6 +4864,13 @@ void HStreamWindow::loadBaselineDefaults() {
         loaded->values, 0, std::numeric_limits<int>::max(), /*native_fallback_for_null_canonical=*/true);
   }
   default_run_autooptimizer_ = read_run_autooptimizer_from_config(baseline_config_, true);
+  const auto blend = hm::stitching::ResolveBlendSettings(baseline_layer_, user_layer_);
+  if (!blend.ok())
+    throw std::invalid_argument(blend.status().ToString());
+  const auto default_blend = hm::stitching::ParseBlendMode(blend->mode);
+  if (default_blend.ok())
+    default_blend_mode_ = QString::fromStdString(hm::stitching::BlendModeName(*default_blend));
+  default_blend_feather_fraction_ = blend->feather_fraction;
   const auto resolution = hm::stitching::read_control_point_resolution(baseline_config_);
   if (!resolution.ok())
     throw std::invalid_argument(resolution.status().ToString());
@@ -6990,9 +7002,6 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       row->addWidget(slider, 1, 0, 1, 2);
       color_layout->addWidget(row_widget);
     };
-    for (const CameraSliderSpec& spec : color_controls)
-      add_mirrored_slider(spec);
-
     const auto add_mirrored_checkbox = [this, color_layout](const QString& id, const QString& label) {
       const auto canonical = camera_checkboxes_.find(id);
       if (canonical == camera_checkboxes_.end() || !canonical->second)
@@ -7014,8 +7023,92 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       });
       color_layout->addWidget(checkbox);
     };
+    // Grouped by what they affect rather than by widget type: the black-point lift is a modifier
+    // on the shadow slider, and 10-bit belongs with exposure. Seam blend affects neither, so it
+    // sits at the end instead of splitting the two pairs.
+    const auto add_color_slider = [&](const char* id) {
+      const auto spec = std::find_if(color_controls.begin(), color_controls.end(), [id](const CameraSliderSpec& s) {
+        return std::strcmp(s.id, id) == 0;
+      });
+      if (spec == color_controls.end())
+        throw std::logic_error(std::string("No color slider spec for ") + id);
+      add_mirrored_slider(*spec);
+    };
+    add_color_slider("Bring_Up_Shadows");
     add_mirrored_checkbox("Lift_Shadow_Black_Point", "Lift black point too (stronger)");
+    add_color_slider("Exposure_x100");
     add_mirrored_checkbox("Use_10_Bit_Grading", "10-bit / FP16 mode (Auto / Force on / Force off, next run)");
+    {
+      auto* blend_row = new QWidget();
+      auto* blend_row_layout = new QHBoxLayout(blend_row);
+      blend_row_layout->setContentsMargins(0, 0, 0, 0);
+      auto* blend_label = new QLabel("Seam blend");
+      blend_label->setObjectName("blendModeLabel");
+      blend_mode_combo_ = new QComboBox();
+      blend_mode_combo_->setObjectName("blendModeCombo");
+      blend_mode_combo_->setAccessibleName("Seam blend mode");
+      blend_mode_combo_->setToolTip(
+          "Laplacian mixes the cameras across every scale in the overlap, which hides exposure\n"
+          "differences but softens detail the detector uses. Alpha crossfades over a narrow band\n"
+          "at the seam and leaves the rest of the overlap untouched. Takes effect on the next run.");
+      blend_mode_combo_->addItem("Laplacian (multi-band)", "laplacian");
+      blend_mode_combo_->addItem("Alpha (feathered seam)", "alpha");
+      blend_mode_combo_->addItem("Hard seam (no blending)", "gpu-hard-seam");
+      blend_label->setBuddy(blend_mode_combo_);
+      blend_row_layout->addWidget(blend_label);
+      blend_row_layout->addWidget(blend_mode_combo_, 1);
+      color_layout->addWidget(blend_row);
+
+      blend_feather_row_ = new QWidget();
+      blend_feather_row_->setObjectName("blendFeatherRow");
+      auto* feather_layout = new QHBoxLayout(blend_feather_row_);
+      feather_layout->setContentsMargins(0, 0, 0, 0);
+      auto* feather_label = new QLabel("Feather width");
+      feather_label->setObjectName("blendFeatherLabel");
+      blend_feather_spin_ = new QDoubleSpinBox();
+      blend_feather_spin_->setObjectName("blendFeatherFractionSpin");
+      blend_feather_spin_->setAccessibleName("Seam feather width");
+      blend_feather_spin_->setToolTip(
+          "Crossfade width as a fraction of the narrowest camera image. Wider blends hide exposure\n"
+          "differences better but smear detail across more of the overlap; values much above 0.3\n"
+          "wash out the detail the detector reads.");
+      blend_feather_spin_->setDecimals(3);
+      blend_feather_spin_->setRange(0.0, 1.0);
+      blend_feather_spin_->setSingleStep(0.01);
+      blend_feather_spin_->setValue(default_blend_feather_fraction_);
+      feather_label->setBuddy(blend_feather_spin_);
+      feather_layout->addWidget(feather_label);
+      feather_layout->addWidget(blend_feather_spin_, 1);
+      color_layout->addWidget(blend_feather_row_);
+
+      const auto sync_feather_visibility = [this] {
+        if (blend_feather_row_)
+          blend_feather_row_->setVisible(blendMode() == "alpha");
+      };
+      connect(
+          blend_mode_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, sync_feather_visibility] {
+            // Picking a supported mode retires the config's own value; otherwise the choice would
+            // be dropped from both the run arguments and the next save. The sentinel entry sits
+            // last, so removing it cannot shift the current index.
+            if (blendMode() != kUnrepresentableBlendData) {
+              const int stale = blend_mode_combo_->findData(kUnrepresentableBlendData);
+              if (stale >= 0) {
+                const QSignalBlocker blocker(blend_mode_combo_);
+                blend_mode_combo_->removeItem(stale);
+              }
+            }
+            sync_feather_visibility();
+            updatePresetDirtyState();
+          });
+      connect(blend_feather_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this] {
+        updatePresetDirtyState();
+      });
+      sync_feather_visibility();
+      // Apply the baseline default now that both widgets exist; a baseline of "alpha" must select
+      // alpha rather than leaving the combo on its first entry.
+      loadBlendMode(YAML::Node(YAML::NodeType::Map));
+    }
+
     stitched_color_precision_status_ = new QLabel();
     stitched_color_precision_status_->setObjectName("stitchedColorPrecisionStatus");
     stitched_color_precision_status_->setWordWrap(true);
@@ -9669,6 +9762,14 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
     }
   }
   args << QString("--options=pipeline.hmstitcher.properties.high-bit-depth=%1").arg(highBitDepthMode());
+  // A mode the live path cannot run stays whatever the config layers resolve to; overriding it
+  // here would silently run something else.
+  if (blendMode() != kUnrepresentableBlendData) {
+    args << QString("--options=stitching.blend_mode=%1").arg(blendMode());
+    if (blendMode() == "alpha") {
+      args << QString("--options=stitching.blend_feather_fraction=%1").arg(blendFeatherFraction(), 0, 'g', 4);
+    }
+  }
   const QString gpu_memory_profile = !standalone && !active_run_game_id_.isEmpty()
       ? active_gpu_memory_profile_
       : (gpu_memory_profile_user_selected_ && gpu_memory_profile_combo_
@@ -9715,6 +9816,14 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
 
 QString HStreamWindow::detectorPrecision() const {
   return detector_precision_combo_ ? detector_precision_combo_->currentData().toString() : QString();
+}
+
+QString HStreamWindow::blendMode() const {
+  return blend_mode_combo_ ? blend_mode_combo_->currentData().toString() : default_blend_mode_;
+}
+
+double HStreamWindow::blendFeatherFraction() const {
+  return blend_feather_spin_ ? blend_feather_spin_->value() : default_blend_feather_fraction_;
 }
 
 std::vector<HStreamWindow::DetectorModel> HStreamWindow::detectorModels() const {
@@ -9875,7 +9984,7 @@ void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config)
 void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
   if (!player_analytics_controls_)
     return;
-  YAML::Node defaults = YAML::Clone(player_analytics_defaults_);
+  YAML::Node defaults = YAML::Clone(baseline_layer_);
   const QString structural_path = pipelineConfigPath("ds_hockey_app_config.yaml");
   // Structural/native and bundled canonical defaults share rank zero. Keep the
   // user and game layers separate for drawing provenance in the controls.
@@ -9886,8 +9995,7 @@ void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
     defaults["pipeline"] = native_defaults.IsMap() ? merge_yaml_maps(structural, native_defaults)
                                                  : YAML::Clone(structural);
   }
-  player_analytics_controls_->loadConfig(
-      defaults, player_analytics_user_, config, QFileInfo(structural_path).absolutePath());
+  player_analytics_controls_->loadConfig(defaults, user_layer_, config, QFileInfo(structural_path).absolutePath());
 }
 
 bool HStreamWindow::validatePlayerAnalyticsForRun() {
@@ -9898,6 +10006,36 @@ bool HStreamWindow::validatePlayerAnalyticsForRun() {
     return true;
   appendLog("Player analytics prerequisites: " + error);
   return false;
+}
+
+void HStreamWindow::loadBlendMode(const YAML::Node& config) {
+  if (!blend_mode_combo_)
+    return;
+  const auto resolved = hm::stitching::ResolveBlendSettings(baseline_layer_, user_layer_, config);
+  if (!resolved.ok())
+    throw std::invalid_argument(resolved.status().ToString());
+  const auto parsed = hm::stitching::ParseBlendMode(resolved->mode);
+  const QString mode = QString::fromStdString(resolved->mode);
+  if (!parsed.ok())
+    appendLog(QString("seam blend mode %1 is not selectable here; leaving it unchanged").arg(mode));
+  {
+    const QSignalBlocker blocker(blend_mode_combo_);
+    const int stale = blend_mode_combo_->findData(kUnrepresentableBlendData);
+    if (stale >= 0)
+      blend_mode_combo_->removeItem(stale);
+    if (!parsed.ok()) {
+      blend_mode_combo_->addItem(QString("%1 (from config, not supported here)").arg(mode), kUnrepresentableBlendData);
+      set_combo_to_data(blend_mode_combo_, kUnrepresentableBlendData);
+    } else {
+      set_combo_to_data(blend_mode_combo_, mode);
+    }
+  }
+  if (blend_feather_spin_) {
+    const QSignalBlocker blocker(blend_feather_spin_);
+    blend_feather_spin_->setValue(resolved->feather_fraction);
+  }
+  if (blend_feather_row_)
+    blend_feather_row_->setVisible(blendMode() == "alpha");
 }
 
 void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
@@ -16363,6 +16501,7 @@ bool HStreamWindow::savePreset() {
                   .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
   }
   loadDetectorPrecision(config);
+  loadBlendMode(config);
   loadPlayerAnalyticsConfig(config);
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
   if (game_id_edit_) {
@@ -16376,6 +16515,11 @@ void HStreamWindow::resetCameraControls() {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (!pipeline_running)
     control_point_resolution_ = default_control_point_resolution_;
+  // Both are constructor arguments, so a reset can only change the next run. Guarded like every
+  // other next-run control here, so a reset during a live pipeline does not quietly discard the
+  // operator's choice for the run after it.
+  if (!pipeline_running)
+    loadBlendMode(YAML::Node(YAML::NodeType::Map));
   for (const auto& [id, value] : camera_defaults_) {
     const auto suppressed = suppressed_crop_rotation_controls_.find(id);
     if (suppressed != suppressed_crop_rotation_controls_.end()) {
@@ -16662,6 +16806,8 @@ void HStreamWindow::captureSavedControlState() {
   saved_run_autooptimizer_ = runAutooptimizer();
   saved_control_point_matcher_ = controlPointMatcher();
   saved_control_point_resolution_ = control_point_resolution_;
+  saved_blend_mode_ = blendMode();
+  saved_blend_feather_fraction_ = blendFeatherFraction();
   saved_mapping_backend_ = mappingBackend();
   saved_camera_selection_ = stitchCameraSelection();
   saved_projection_ = stitchProjection();
@@ -16710,7 +16856,8 @@ void HStreamWindow::updatePresetDirtyState() {
       saved_stitching_control_points_ != stitchingCalibrationControlPoints() ||
       saved_stitching_calibration_frame_count_ != stitchingCalibrationFrameCount() ||
       saved_stitch_max_output_width_ != stitchingMaxOutputWidth() || saved_run_autooptimizer_ != runAutooptimizer() ||
-      saved_control_point_resolution_ != control_point_resolution_ ||
+      saved_control_point_resolution_ != control_point_resolution_ || saved_blend_mode_ != blendMode() ||
+      saved_blend_feather_fraction_ != blendFeatherFraction() ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
       saved_camera_selection_ != stitchCameraSelection() || saved_projection_ != stitchProjection() ||
       saved_projection_parameters_ != projection_parameter_values_ || projection_framing_dirty;
@@ -16877,6 +17024,7 @@ void HStreamWindow::loadSavedControlConfig() {
   saved_control_config_load_error_ = "Game settings are still loading";
   control_point_resolution_ = default_control_point_resolution_;
   loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
+  loadBlendMode(YAML::Node(YAML::NodeType::Map));
   loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
   updateDefaultGpuMemoryProfile(YAML::Node(YAML::NodeType::Map));
   setStitchingIterationSettings(default_iteration_settings_);
@@ -17629,6 +17777,7 @@ void HStreamWindow::loadSavedControlConfig() {
       appendLog(QString("Loaded saved settings, but tracker defaults are unavailable: %1")
                     .arg(unavailable_playtracker_config_error_));
     loadDetectorPrecision(config);
+    loadBlendMode(config);
     loadPlayerAnalyticsConfig(config);
     saved_control_config_load_error_.clear();
     captureSavedControlState();
@@ -17966,6 +18115,16 @@ bool HStreamWindow::applySavedControlConfig(
   }
   config["stitching"]["control_point_matcher"] = selected_control_point_matcher.toStdString();
   config["stitching"]["control_point_resolution"] = control_point_resolution_.toStdString();
+  if (blendMode() != kUnrepresentableBlendData) {
+    const auto blend_status = hm::stitching::WriteBlendSettings(
+        config,
+        blendMode().toStdString(),
+        blendMode() == "alpha" ? std::optional<double>(blendFeatherFraction()) : std::nullopt);
+    if (!blend_status.ok()) {
+      appendLog(QString("could not save preset: %1").arg(blend_status.ToString().c_str()));
+      return false;
+    }
+  }
   remove_yaml_path(config, {"hstream_ui", "generated_control_point_resolution"});
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
   hm::stitching::write_stitch_camera_selection(config, selected_camera);
