@@ -8,6 +8,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <unistd.h>
@@ -1045,11 +1046,7 @@ absl::StatusOr<std::string> ApplyStitchingExperimentBlend(
     const StitchingExperimentBlend& blend) {
   try {
     YAML::Node patched = YAML::Load(selection_config);
-    patched["stitching"]["blend_mode"] = blend.mode;
-    // Only written for a mode that has one, so selecting Laplacian does not leave a stale width
-    // behind that alpha would silently pick up later.
-    if (blend.feather_fraction.has_value())
-      patched["stitching"]["blend_feather_fraction"] = *blend.feather_fraction;
+    HM_RETURN_IF_ERROR(hm::stitching::WriteBlendSettings(patched, blend.mode, blend.feather_fraction));
     return YAML::Dump(patched);
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Could not apply the selected seam blend: " + std::string(error.what()));

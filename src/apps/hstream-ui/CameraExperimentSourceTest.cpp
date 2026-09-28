@@ -11,6 +11,33 @@ int main() {
       if (!result.ok())
         throw std::runtime_error(result.ToString());
     };
+    resolve("{}");
+    if (media.blend_mode != "laplacian" || media.blend_feather_fraction != 0.05)
+      throw std::runtime_error("Missing blend settings must use the production defaults");
+    resolve("stitching: {blend_mode: alpha, blend_feather_fraction: 0}");
+    if (media.blend_mode != "alpha" || media.blend_feather_fraction != 0)
+      throw std::runtime_error("Camera experiments must retain an explicit zero feather width");
+    resolve(
+        "stitching: {blend_mode: laplacian, blend_feather_fraction: 0.1}\n"
+        "pipeline: {hmstitcher: {blend_mode: hard-seam, blend_feather_fraction: 0.2}}");
+    if (media.blend_mode != "gpu-hard-seam" || media.blend_feather_fraction != 0.2)
+      throw std::runtime_error("Native blend aliases must override canonical values in the same layer");
+    const auto layered = ResolveExperimentStitchingSettings(
+        YAML::Load("stitching: {blend_mode: alpha}"),
+        false,
+        &media,
+        YAML::Load("stitching: {blend_mode: laplacian, blend_feather_fraction: 0.05}"),
+        YAML::Load("pipeline: {hmstitcher: {blend-mode: hard-seam, blend-feather-fraction: 0.25}}"));
+    if (!layered.ok() || media.blend_mode != "alpha" || media.blend_feather_fraction != 0.25)
+      throw std::runtime_error("Camera experiments must resolve baseline, user and game blend layers");
+    for (const char* invalid :
+         {"stitching: {blend_mode: multiblend}",
+          "pipeline: {hmstitcher: {blend-mode: invalid}}",
+          "stitching: {blend_feather_fraction: .nan}",
+          "stitching: {blend_feather_fraction: 1.1}"}) {
+      if (ResolveExperimentStitchingSettings(YAML::Load(invalid), false, &media).ok())
+        throw std::runtime_error("Invalid experiment blend settings must fail before constructing the graph");
+    }
     resolve("stitching: {post_stitch_rotate_degrees: null}");
     if (media.rotation != 0)
       return 1;

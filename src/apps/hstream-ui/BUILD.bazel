@@ -187,10 +187,13 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        "//src/libs/common:baseline_config",
+        "//src/libs/common:user_config",
         "//src/libs/common:utils",
         "//src/apps/apps-common:deepstream_apps_common",
         "//src/libs/playtracker_replay",
         "//src/libs/stitching:stitching",
+        "//src/libs/stitching:stitching_algorithms",
         "@gstreamer",
         "@qt//:qt_core",
         "@yaml-cpp",

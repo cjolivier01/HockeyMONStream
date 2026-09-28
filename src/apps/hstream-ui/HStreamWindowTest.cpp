@@ -13205,6 +13205,41 @@ bool test_blend_mode() {
   if (!expect(blend->currentData().toString() == "laplacian", "Reset Controls must fall back to the default"))
     return false;
 
+  // The runner gives native aliases precedence at a layer. The UI must show those same values
+  // before adding its command-line overrides, and saving must retire the aliases.
+  std::ofstream(config_path)
+      << "stitching: {blend_mode: laplacian, blend_feather_fraction: 0.05}\n"
+         "pipeline: {hmstitcher: {private-properties: {blend_mode: Alpha, blend_feather_fraction: 0.234}}}\n";
+  games->setCurrentIndex(games->findText(other_game));
+  games->setCurrentIndex(games->findText(game));
+  if (!expect(
+          blend->currentData().toString() == "alpha" && feather->value() == 0.234,
+          "Native blend aliases must load into the controls"))
+    return false;
+  args = HStreamWindowTestAccess::standaloneArguments(&window).join(' ');
+  if (!expect(
+          args.contains("--options=stitching.blend_mode=alpha") &&
+              args.contains("--options=stitching.blend_feather_fraction=0.234"),
+          "Native blend settings must survive the UI runner overrides"))
+    return false;
+  blend->setCurrentIndex(blend->findData("gpu-hard-seam"));
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  saved = YAML::LoadFile(config_path);
+  if (!expect(
+          saved["stitching"]["blend_mode"].as<std::string>() == "gpu-hard-seam" &&
+              !saved["pipeline"]["hmstitcher"]["private-properties"]["blend_mode"],
+          "Saving a new blend must remove the native alias that would override it"))
+    return false;
+  std::ofstream(config_path) << "stitching: {blend_mode: alpha, blend_feather_fraction: 1.5}\n";
+  games->setCurrentIndex(games->findText(other_game));
+  games->setCurrentIndex(games->findText(game));
+  if (!expect(
+          !HStreamWindowTestAccess::savedControlConfigLoaded(&window),
+          "An invalid width must block loading instead of being silently clamped"))
+    return false;
+  std::ofstream(config_path) << "stitching: {blend_mode: laplacian}\n";
+
   // The feather row must follow what the combo shows, not the baseline default. The two disagree
   // exactly when the game's mode is unrepresentable and the baseline's is alpha: the sentinel is
   // selected, so an edit to a visible feather row would be dirtied and then discarded by the save.

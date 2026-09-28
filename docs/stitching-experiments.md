@@ -86,6 +86,13 @@ Select a ready row and choose **Play selected** (or double-click it). The existi
 the configured passage start and duration; Loop restarts that exact passage. The candidate matrix and results sit
 beside the preview, with passage start and duration on separate labeled rows below it.
 
+**Seam blend** and **Feather width** affect preview rendering without recalibrating a
+candidate. They start from the effective baseline, user, and game configuration,
+including native stitcher overrides. Unsupported modes remain visible until a supported
+mode is selected. **Use selected in main Program** saves an edited blend choice with
+the promoted calibration and clears conflicting game-level native blend aliases;
+an untouched choice preserves the game's existing settings.
+
 Drag a window edge or the bottom-right resize grip to resize the dialog, or use its title-bar maximize button.
 Both this dialog and the calibration-frame inspector also have an explicit **Maximize window / Restore window**
 icon at the top right. The inspector resizes independently of the experiment window. Each camera image and match

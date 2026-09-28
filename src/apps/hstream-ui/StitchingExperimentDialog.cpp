@@ -545,6 +545,7 @@ struct StitchingExperimentDialog::Impl {
   QDoubleSpinBox* blend_feather{nullptr};
   QWidget* blend_feather_row{nullptr};
   QString initial_blend_mode;
+  QString blend_settings_error;
   double initial_blend_feather{0.05};
   QCheckBox* loop{nullptr};
   QPushButton* preview{nullptr};
@@ -629,7 +630,7 @@ struct StitchingExperimentDialog::Impl {
   }
 
   QStringList base_arguments(const Candidate& candidate) const {
-    return {
+    QStringList args{
         "-g",
         QString::fromStdString(candidate.workspace->game_id),
         "--enable-sources=URI-MULTIPLE",
@@ -638,6 +639,11 @@ struct StitchingExperimentDialog::Impl {
         pipeline_config,
         QString("--options=%1").arg(kStitchedPreviewOptions),
     };
+    // Preparation and player scans construct the stitcher too. Pass the chosen supported mode
+    // there as well so an inherited offline-only mode cannot prevent the candidate from running.
+    if (const QString blend = blend_options(); !blend.isEmpty())
+      args << QString("--options=%1").arg(blend);
+    return args;
   }
 
   QString selected_blend_mode() const {
@@ -2296,6 +2302,14 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void start_preview(bool validated = false) {
+    if (!blend_settings_error.isEmpty()) {
+      show_status(blend_settings_error, true);
+      return;
+    }
+    if (!hm::stitching::ParseBlendMode(selected_blend_mode().toStdString()).ok()) {
+      show_status("Choose a supported seam blend before previewing this candidate.", true);
+      return;
+    }
     if (preview_process && preview_process->state() != QProcess::NotRunning)
       return;
     const int row = table->currentRow();
@@ -2354,8 +2368,6 @@ struct StitchingExperimentDialog::Impl {
     preview_environment.insert("HSTREAM_EXPERIMENT_PROCESS_TOKEN", preview_process_token);
     preview_process->setProcessEnvironment(preview_environment);
     QStringList args = base_arguments(candidate);
-    if (const QString blend = blend_options(); !blend.isEmpty())
-      args << QString("--options=%1").arg(blend);
     args << "--enable-sinks=RENDER"
          << "--show" << QString("--start-time=%1").arg(format_time(preview_start->time()))
          << QString("--time-limit=%1").arg(preview_duration->value())
@@ -3223,21 +3235,40 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   feather_label->setBuddy(s.blend_feather);
   feather_layout->addWidget(feather_label);
   feather_layout->addWidget(s.blend_feather, 1);
-  // Start on whatever the game already has, so the combo reads as the current state and an
-  // untouched promotion is a no-op. A value the live path cannot run leaves the default showing
-  // and, because it is then unchanged, is never written back.
+  // Resolve the same baseline, user and game layers as the runner, including native aliases.
+  // An unsupported value is an explicit entry so choosing Laplacian is a real change to promote.
   try {
-    const YAML::Node game_config = YAML::LoadFile(QDir(game_directory).filePath("config.yaml").toStdString());
-    const YAML::Node stitching = game_config["stitching"];
-    if (stitching && stitching["blend_mode"] && stitching["blend_mode"].IsScalar()) {
-      const int index = s.blend_mode->findData(QString::fromStdString(stitching["blend_mode"].as<std::string>()));
-      if (index >= 0)
-        s.blend_mode->setCurrentIndex(index);
+    const auto baseline = environment.contains("HM_CONFIG_ROOT")
+        ? hm::baseline_config::load_from_root(environment.value("HM_CONFIG_ROOT").toStdString())
+        : hm::baseline_config::load();
+    if (!baseline.ok())
+      throw std::runtime_error(baseline.status().ToString());
+    const auto user = hm::user_config::load_or_create();
+    if (!user.ok())
+      throw std::runtime_error(user.status().ToString());
+    const auto game =
+        hm::stitching::load_game_config_file(std::filesystem::path(game_directory.toStdString()) / "config.yaml");
+    if (!game.ok())
+      throw std::runtime_error(game.status().ToString());
+    const auto blend =
+        hm::stitching::ResolveBlendSettings(baseline->values, *user, game->value_or(YAML::Node(YAML::NodeType::Map)));
+    if (!blend.ok())
+      throw std::runtime_error(blend.status().ToString());
+    const QString mode = QString::fromStdString(blend->mode);
+    int index = s.blend_mode->findData(mode);
+    if (index < 0) {
+      s.blend_mode->addItem(mode + " (from config, not supported here)", mode);
+      index = s.blend_mode->count() - 1;
     }
-    if (stitching && stitching["blend_feather_fraction"] && stitching["blend_feather_fraction"].IsScalar())
-      s.blend_feather->setValue(stitching["blend_feather_fraction"].as<double>(0.05));
-  } catch (const YAML::Exception&) {
-    // No game config yet, or an unreadable one. The defaults above stand.
+    s.blend_mode->setCurrentIndex(index);
+    s.blend_feather->setValue(blend->feather_fraction);
+  } catch (const std::exception& error) {
+    s.blend_settings_error = "Cannot load seam blend settings: " + QString::fromUtf8(error.what());
+    s.blend_mode->addItem("Unavailable", QString());
+    s.blend_mode->setCurrentIndex(s.blend_mode->count() - 1);
+    s.blend_mode->setEnabled(false);
+    s.blend_mode->setToolTip(s.blend_settings_error);
+    s.blend_feather->setEnabled(false);
   }
   s.initial_blend_mode = s.selected_blend_mode();
   s.initial_blend_feather = s.blend_feather->value();
@@ -3326,6 +3357,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.restore_persistent_store(s.initial_settings);
   if (!s.feature_settings_error.isEmpty())
     s.show_status(s.feature_settings_error, true);
+  if (!s.blend_settings_error.isEmpty())
+    s.show_status(s.blend_settings_error, true);
   s.update_controls();
 }
 

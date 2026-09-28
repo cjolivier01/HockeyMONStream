@@ -137,9 +137,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Only a last-resort fallback; the real default comes from configs/baseline.yaml through
-// default_blend_feather_fraction_.
-constexpr double kBlendFeatherFractionFallback = 0.05;
 // Combo data for a stitching.blend_mode the live path cannot run (HockeyMON's "multiblend").
 // Carried as a real entry so the operator can see what the config holds, and so choosing one of
 // the supported modes is a genuine index change rather than a no-op on the fallback.
@@ -4796,6 +4793,8 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!user_overlay.ok())
     throw std::runtime_error(user_overlay.status().ToString());
   baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
+  blend_defaults_ = YAML::Clone(loaded->values);
+  blend_user_ = YAML::Clone(*user_overlay);
   player_analytics_defaults_ = YAML::Clone(loaded->values);
   player_analytics_user_ = YAML::Clone(*user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
@@ -4867,27 +4866,13 @@ void HStreamWindow::loadBaselineDefaults() {
         loaded->values, 0, std::numeric_limits<int>::max(), /*native_fallback_for_null_canonical=*/true);
   }
   default_run_autooptimizer_ = read_run_autooptimizer_from_config(baseline_config_, true);
-  {
-    // A separate node per lookup. yaml-cpp's assignment onto an already-bound node repoints the
-    // document node rather than rebinding the handle, so reusing one output here would erase the
-    // first key from baseline_config_ itself.
-    YAML::Node blend_mode_default;
-    if (lookup_yaml_path(baseline_config_, "stitching.blend_mode", &blend_mode_default) &&
-        blend_mode_default.IsScalar()) {
-      const auto parsed = hm::stitching::ParseBlendMode(blend_mode_default.as<std::string>());
-      if (parsed.ok())
-        default_blend_mode_ = QString::fromStdString(hm::stitching::BlendModeName(*parsed));
-    }
-    YAML::Node feather_default;
-    if (lookup_yaml_path(baseline_config_, "stitching.blend_feather_fraction", &feather_default) &&
-        feather_default.IsScalar()) {
-      try {
-        default_blend_feather_fraction_ = feather_default.as<double>();
-      } catch (const YAML::Exception&) {
-        default_blend_feather_fraction_ = kBlendFeatherFractionFallback;
-      }
-    }
-  }
+  const auto blend = hm::stitching::ResolveBlendSettings(blend_defaults_, blend_user_);
+  if (!blend.ok())
+    throw std::invalid_argument(blend.status().ToString());
+  const auto default_blend = hm::stitching::ParseBlendMode(blend->mode);
+  if (default_blend.ok())
+    default_blend_mode_ = QString::fromStdString(hm::stitching::BlendModeName(*default_blend));
+  default_blend_feather_fraction_ = blend->feather_fraction;
   const auto resolution = hm::stitching::read_control_point_resolution(baseline_config_);
   if (!resolution.ok())
     throw std::invalid_argument(resolution.status().ToString());
@@ -10030,23 +10015,14 @@ bool HStreamWindow::validatePlayerAnalyticsForRun() {
 void HStreamWindow::loadBlendMode(const YAML::Node& config) {
   if (!blend_mode_combo_)
     return;
-  const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
-  // A node per lookup, for the reason spelled out in loadBaselineDefaults.
-  YAML::Node mode_node;
-  QString mode = default_blend_mode_;
-  unrepresentable_blend_mode_.clear();
-  if (lookup_yaml_path(effective, "stitching.blend_mode", &mode_node) && mode_node.IsScalar()) {
-    const QString configured = QString::fromStdString(mode_node.as<std::string>());
-    const auto parsed = hm::stitching::ParseBlendMode(configured.toStdString());
-    if (parsed.ok()) {
-      mode = QString::fromStdString(hm::stitching::BlendModeName(*parsed));
-    } else {
-      // HockeyMON's offline stitcher shares this key and accepts values the live path does not
-      // (multiblend). Remember it so neither the run nor the next save silently replaces it.
-      unrepresentable_blend_mode_ = configured;
-      appendLog(QString("seam blend mode %1 is not selectable here; leaving it unchanged").arg(configured));
-    }
-  }
+  const auto resolved = hm::stitching::ResolveBlendSettings(blend_defaults_, blend_user_, config);
+  if (!resolved.ok())
+    throw std::invalid_argument(resolved.status().ToString());
+  const auto parsed = hm::stitching::ParseBlendMode(resolved->mode);
+  const QString mode = QString::fromStdString(resolved->mode);
+  unrepresentable_blend_mode_ = parsed.ok() ? QString() : mode;
+  if (!parsed.ok())
+    appendLog(QString("seam blend mode %1 is not selectable here; leaving it unchanged").arg(mode));
   {
     const QSignalBlocker blocker(blend_mode_combo_);
     const int stale = blend_mode_combo_->findData(kUnrepresentableBlendData);
@@ -10062,16 +10038,7 @@ void HStreamWindow::loadBlendMode(const YAML::Node& config) {
   }
   if (blend_feather_spin_) {
     const QSignalBlocker blocker(blend_feather_spin_);
-    double fraction = default_blend_feather_fraction_;
-    YAML::Node feather_node;
-    if (lookup_yaml_path(effective, "stitching.blend_feather_fraction", &feather_node) && feather_node.IsScalar()) {
-      try {
-        fraction = feather_node.as<double>();
-      } catch (const YAML::Exception&) {
-        fraction = default_blend_feather_fraction_;
-      }
-    }
-    blend_feather_spin_->setValue(fraction);
+    blend_feather_spin_->setValue(resolved->feather_fraction);
   }
   if (blend_feather_row_)
     blend_feather_row_->setVisible(blendMode() == "alpha");
@@ -16557,24 +16524,8 @@ void HStreamWindow::resetCameraControls() {
   // Both are constructor arguments, so a reset can only change the next run. Guarded like every
   // other next-run control here, so a reset during a live pipeline does not quietly discard the
   // operator's choice for the run after it.
-  if (!pipeline_running) {
-    if (blend_mode_combo_) {
-      const QSignalBlocker blocker(blend_mode_combo_);
-      set_combo_to_data(blend_mode_combo_, default_blend_mode_);
-      // The sentinel stood for unrepresentable_blend_mode_, which is being cleared. Leaving it
-      // selectable would offer a choice that no longer means anything.
-      const int stale = blend_mode_combo_->findData(kUnrepresentableBlendData);
-      if (stale >= 0)
-        blend_mode_combo_->removeItem(stale);
-    }
-    if (blend_feather_spin_) {
-      const QSignalBlocker blocker(blend_feather_spin_);
-      blend_feather_spin_->setValue(default_blend_feather_fraction_);
-    }
-    if (blend_feather_row_)
-      blend_feather_row_->setVisible(blendMode() == "alpha");
-    unrepresentable_blend_mode_.clear();
-  }
+  if (!pipeline_running)
+    loadBlendMode(YAML::Node(YAML::NodeType::Map));
   for (const auto& [id, value] : camera_defaults_) {
     const auto suppressed = suppressed_crop_rotation_controls_.find(id);
     if (suppressed != suppressed_crop_rotation_controls_.end()) {
@@ -18171,11 +18122,14 @@ bool HStreamWindow::applySavedControlConfig(
   config["stitching"]["control_point_matcher"] = selected_control_point_matcher.toStdString();
   config["stitching"]["control_point_resolution"] = control_point_resolution_.toStdString();
   if (unrepresentable_blend_mode_.isEmpty() && blendMode() != kUnrepresentableBlendData) {
-    config["stitching"]["blend_mode"] = blendMode().toStdString();
-    if (blendMode() == "alpha")
-      config["stitching"]["blend_feather_fraction"] = blendFeatherFraction();
-    else
-      remove_yaml_path(config, {"stitching", "blend_feather_fraction"});
+    const auto blend_status = hm::stitching::WriteBlendSettings(
+        config,
+        blendMode().toStdString(),
+        blendMode() == "alpha" ? std::optional<double>(blendFeatherFraction()) : std::nullopt);
+    if (!blend_status.ok()) {
+      appendLog(QString("could not save preset: %1").arg(blend_status.ToString().c_str()));
+      return false;
+    }
   }
   remove_yaml_path(config, {"hstream_ui", "generated_control_point_resolution"});
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();

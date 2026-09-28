@@ -1079,6 +1079,8 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
       stitching["exposure"] = media.stitching->exposure;
       stitching["shadow_lift"] = media.stitching->shadow_lift;
       stitching["shadow_lift_black_point"] = media.stitching->shadow_lift_black_point;
+      stitching["blend_mode"] = media.stitching->blend_mode;
+      stitching["blend_feather_fraction"] = media.stitching->blend_feather_fraction;
       for (const auto& source : media.stitching->cameras) {
         YAML::Node camera;
         camera["offset_ns"] = source.offset_ns;

@@ -1839,13 +1839,15 @@ void exercise_blend_preview(const QString& game, const QString& root) {
   write(
       game + "/config.yaml",
       "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n"
-      "stitching:\n  blend_mode: alpha\n  blend_feather_fraction: 0.2\n");
+      "stitching: {blend_mode: laplacian, blend_feather_fraction: 0.05}\n"
+      "pipeline: {hmstitcher: {private-properties: {blend_mode: Alpha, blend_feather_fraction: 0.2}}}\n");
   const QString captured = root + "/blend-preview-args";
   const QString runner = root + "/blend-runner.sh";
   write(
       runner,
       "#!/bin/sh\ncase \" $* \" in\n*' --enable-sinks=RENDER '*)\n"
       "printf '%s' \"$*\" > \"$HSTREAM_TEST_CAPTURED_ARGS\"\nexit 0;;\nesac\n"
+      "printf '%s' \"$*\" > \"$HSTREAM_TEST_CAPTURED_ARGS.calibration\"\n"
       "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/\"\n");
   require(
       QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
@@ -1872,6 +1874,9 @@ void exercise_blend_preview(const QString& game, const QString& root) {
   widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
   auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
   require(wait_until([&] { return status->text().startsWith("Batch complete."); }, 10000), "Blend batch stalled");
+  require(
+      read(captured + ".calibration").contains("--options=stitching.blend_mode=laplacian"),
+      "Calibration must receive the chosen blend so inherited offline modes cannot reject startup");
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   require(table->rowCount() == 1, "Blend fixture must produce one candidate");
   table->selectRow(0);
@@ -1902,6 +1907,25 @@ void exercise_blend_preview(const QString& game, const QString& root) {
 
   answer_close_guard(dialog, "stitchExperimentCloseDiscard", true);
   require(wait_until([&] { return !dialog.isVisible(); }, 5000), "Blend dialog did not close");
+
+  write(game + "/config.yaml", "stitching: {blend_mode: multiblend}\n");
+  StitchingExperimentDialog unsupported(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+  auto* unsupported_mode = widget<QComboBox>(unsupported, "stitchExperimentBlendMode");
+  require(
+      unsupported_mode->currentData().toString() == "multiblend" &&
+          unsupported_mode->currentText().contains("not supported"),
+      "Unsupported modes must remain visible rather than silently selecting Laplacian");
+  unsupported_mode->setCurrentIndex(unsupported_mode->findData("laplacian"));
+  require(
+      unsupported_mode->currentData().toString() == "laplacian",
+      "Selecting Laplacian must replace the unsupported initial choice");
+
+  write(game + "/config.yaml", "stitching: {blend_mode: alpha, blend_feather_fraction: 1.5}\n");
+  StitchingExperimentDialog invalid(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+  require(
+      !widget<QComboBox>(invalid, "stitchExperimentBlendMode")->isEnabled() &&
+          widget<QLabel>(invalid, "stitchExperimentStatus")->text().contains("Cannot load seam blend"),
+      "Invalid blend values must be reported rather than clamped to another preview setting");
 }
 
 void exercise_completed_dependency_removal(const QString& game, const QString& root) {
@@ -2433,6 +2457,12 @@ int main(int argc, char** argv) {
         QCoreApplication::processEvents();
         exercise_layout(dialog);
         std::cout << "Stitching experiment layout checks passed\n";
+        return 0;
+      }
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_BLEND_ONLY") != 0) {
+        exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
+        exercise_blend_preview(make_game("blend-preview"), fixture.path());
+        std::cout << "Stitching experiment blend checks passed\n";
         return 0;
       }
       exercise_frame_navigation(fixture.path());

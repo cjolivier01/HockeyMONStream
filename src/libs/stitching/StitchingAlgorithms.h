@@ -1,8 +1,11 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <string>
 #include <vector>
+
+#include <yaml-cpp/yaml.h>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -33,6 +36,27 @@ enum class BlendMode {
 const char* BlendModeName(BlendMode mode);
 BlendMode DefaultBlendMode();
 absl::StatusOr<BlendMode> ParseBlendMode(const std::string& value);
+
+struct ResolvedBlendSettings {
+  // Unsupported values are retained so callers can show them and require an explicit choice.
+  std::string mode{"laplacian"};
+  double feather_fraction{0.05};
+};
+
+// Resolve explicit layers in increasing precedence. At one layer native dashed properties win
+// over their underscore aliases, private-properties aliases, and canonical stitching keys.
+// Null means inherit.
+absl::StatusOr<ResolvedBlendSettings> ResolveBlendSettings(const std::vector<YAML::Node>& layers);
+absl::StatusOr<ResolvedBlendSettings> ResolveBlendSettings(
+    const YAML::Node& baseline,
+    const YAML::Node& user = YAML::Node(),
+    const YAML::Node& game = YAML::Node());
+
+// Save an explicit choice and retire native aliases that would otherwise override it at this layer.
+absl::Status WriteBlendSettings(
+    YAML::Node config,
+    const std::string& mode,
+    const std::optional<double>& feather_fraction = std::nullopt);
 
 enum class StitchProjection {
   kRectilinear,

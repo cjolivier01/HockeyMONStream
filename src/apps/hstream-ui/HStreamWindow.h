@@ -572,6 +572,8 @@ class HStreamWindow : public QMainWindow {
   QComboBox* blend_mode_combo_{nullptr};
   QDoubleSpinBox* blend_feather_spin_{nullptr};
   QWidget* blend_feather_row_{nullptr};
+  YAML::Node blend_defaults_;
+  YAML::Node blend_user_;
   QString default_blend_mode_{"laplacian"};
   double default_blend_feather_fraction_{0.05};
   QComboBox* control_point_resolution_combo_{nullptr};
