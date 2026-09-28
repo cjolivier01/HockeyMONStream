@@ -64,6 +64,20 @@ struct ConfiguratorTestAccess {
     configurator->explicit_value_ranks_.clear();
   }
 
+  static void set_memory_profile_layers(
+      Configurator* configurator,
+      const YAML::Node& baseline,
+      const YAML::Node& user,
+      const YAML::Node& game) {
+    configurator->recording_config_layers_ = YAML::Node(YAML::NodeType::Map);
+    configurator->recording_config_layers_["baseline"] = YAML::Clone(baseline);
+    configurator->recording_config_layers_["user"] = YAML::Clone(user);
+    configurator->recording_config_layers_["game"] = YAML::Clone(game);
+    configurator->explicit_value_ranks_.clear();
+    configurator->record_explicit_overlay(user, {}, 1);
+    configurator->record_explicit_overlay(game, {}, 2);
+  }
+
   static absl::Status apply_gpu_memory_profile(Configurator* configurator, uint64_t total_memory_bytes) {
     YAML::Node pipeline = configurator->config_["pipeline"];
     return configurator->apply_gpu_memory_profile(pipeline, total_memory_bytes);
@@ -195,6 +209,36 @@ int main() {
               "config_infer_yolov8_hockey.yaml",
       "GPUs above 8 GiB must retain the configured buffer and batch sizes");
 
+  hm::Configurator game_profile_ignored("", "", hm::Configurator::kUseConfigFileGpu);
+  YAML::Node game_profile_fixture = memory_profile_fixture();
+  game_profile_fixture["runtime"]["gpu_memory_profile"] = "low";
+  hm::ConfiguratorTestAccess::set_config(&game_profile_ignored, game_profile_fixture);
+  hm::ConfiguratorTestAccess::set_memory_profile_layers(
+      &game_profile_ignored,
+      YAML::Node(YAML::NodeType::Map),
+      YAML::Load("runtime: {gpu_memory_profile: standard}"),
+      YAML::Load("runtime: {gpu_memory_profile: low}"));
+  ok &= expect(
+      hm::ConfiguratorTestAccess::apply_gpu_memory_profile(&game_profile_ignored, 8 * kGiB).ok() &&
+          game_profile_ignored.config()["runtime"]["resolved_gpu_memory_profile"].as<std::string>() == "standard" &&
+          game_profile_ignored.config()["pipeline"]["source0"]["num-extra-surfaces"].as<int>() == 4,
+      "A game profile must not override the machine-local user memory policy");
+
+  hm::Configurator user_profile_forced("", "", hm::Configurator::kUseConfigFileGpu);
+  YAML::Node user_profile_fixture = memory_profile_fixture();
+  user_profile_fixture["runtime"]["gpu_memory_profile"] = "standard";
+  hm::ConfiguratorTestAccess::set_config(&user_profile_forced, user_profile_fixture);
+  hm::ConfiguratorTestAccess::set_memory_profile_layers(
+      &user_profile_forced,
+      YAML::Node(YAML::NodeType::Map),
+      YAML::Load("runtime: {gpu-memory-profile: low}"),
+      YAML::Load("runtime: {gpu_memory_profile: standard}"));
+  ok &= expect(
+      hm::ConfiguratorTestAccess::apply_gpu_memory_profile(&user_profile_forced, 16 * kGiB).ok() &&
+          user_profile_forced.config()["runtime"]["resolved_gpu_memory_profile"].as<std::string>() == "low" &&
+          user_profile_forced.config()["pipeline"]["source0"]["num-extra-surfaces"].as<int>() == 0,
+      "The machine-local user profile must apply independently of a game profile");
+
   hm::Configurator explicit_memory_settings("", "", hm::Configurator::kUseConfigFileGpu);
   hm::ConfiguratorTestAccess::set_config(&explicit_memory_settings, memory_profile_fixture());
   ok &= expect(
@@ -301,6 +345,9 @@ int main() {
           forced_low_memory.config()["pipeline"]["hmstitcher"]["num-output-buffers"].as<int>() == 1 &&
           forced_low_memory.config()["pipeline"]["primary-gie"]["batch-size"].as<int>() == 1,
       "An explicit low profile must apply low-memory settings on a GPU larger than 8 GiB");
+
+  if (std::getenv("HSTREAM_CONFIGURATOR_MEMORY_PROFILE_ONLY"))
+    return ok ? 0 : 1;
 
   const auto automatic_10_bit = hm::configurator_internal::decide_automatic_high_bit_depth({10U, 12U, 10U});
   const auto automatic_8_bit = hm::configurator_internal::decide_automatic_high_bit_depth({10U, 8U});

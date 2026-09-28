@@ -106,6 +106,12 @@ StitchingCanvasConstraintDecision decide_stitching_canvas_constraint_change(
 // Mirrors the runner's GPU precedence. Invalid or negative configured values
 // cannot name a CUDA ordinal and return no selection.
 std::optional<unsigned> configured_pipeline_gpu(const YAML::Node& effective_config);
+// Resolves the configured profile from the non-game baseline/user layers with
+// the runner's dashed/underscored alias precedence. An absent or entirely
+// non-scalar profile resolves to auto; invalid scalar values return an empty string.
+QString configured_gpu_memory_profile(
+    const YAML::Node& baseline_config,
+    const YAML::Node& user_config);
 
 } // namespace hm::ui_internal
 
