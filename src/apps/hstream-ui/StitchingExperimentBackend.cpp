@@ -1041,18 +1041,6 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWork
   }
 }
 
-absl::StatusOr<std::string> ApplyStitchingExperimentBlend(
-    const std::string& selection_config,
-    const StitchingExperimentBlend& blend) {
-  try {
-    YAML::Node patched = YAML::Load(selection_config);
-    HM_RETURN_IF_ERROR(hm::stitching::WriteBlendSettings(patched, blend.mode, blend.feather_fraction));
-    return YAML::Dump(patched);
-  } catch (const YAML::Exception& error) {
-    return absl::InvalidArgumentError("Could not apply the selected seam blend: " + std::string(error.what()));
-  }
-}
-
 absl::Status PromoteStitchingExperiment(
     const StitchingExperimentWorkspace& experiment,
     const fs::path& game_directory,
@@ -1072,26 +1060,23 @@ absl::Status PromoteStitchingExperiment(
         HM_ASSIGN_OR_RETURN(
             selected,
             BuildStitchingExperimentSelectionConfig(
-                experiment.game_directory / "config.yaml", game_directory / "config.yaml"));
+                experiment.game_directory / "config.yaml", game_directory / "config.yaml", blend));
         try {
-          HM_RETURN_IF_ERROR(copy_match_bundles(experiment.game_directory, game_directory, YAML::Load(selected)));
+          const YAML::Node selected_config = YAML::Load(selected);
+          HM_RETURN_IF_ERROR(copy_match_bundles(experiment.game_directory, game_directory, selected_config));
           HM_RETURN_IF_ERROR(
-              copy_frame_inspection_for_promotion(experiment.game_directory, game_directory, YAML::Load(selected)));
+              copy_frame_inspection_for_promotion(experiment.game_directory, game_directory, selected_config));
         } catch (const YAML::Exception& error) {
           return absl::InvalidArgumentError("Invalid promoted frame inspection: " + std::string(error.what()));
         }
-        // Applied after the selection config rather than copied out of the experiment's own
-        // config: the experiment never sets it, and it is not one of the calibration keys the
-        // selection reconciles.
-        if (blend.has_value())
-          HM_ASSIGN_OR_RETURN(selected, ApplyStitchingExperimentBlend(selected, *blend));
         return selected;
       });
 }
 
 absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     const fs::path& experiment_config,
-    const fs::path& game_config) {
+    const fs::path& game_config,
+    const std::optional<StitchingExperimentBlend>& blend) {
   try {
     YAML::Node selected = YAML::LoadFile(experiment_config.string());
     YAML::Node current = YAML::LoadFile(game_config.string());
@@ -1163,6 +1148,9 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
       hm::stitching::write_projection_crop_review(current, geometry);
     }
     remove_downstream_generation(current);
+    // Blend is an explicit render choice, independent of the candidate's calibration settings.
+    if (blend.has_value())
+      HM_RETURN_IF_ERROR(hm::stitching::WriteBlendSettings(current, blend->mode, blend->feather_fraction));
     return YAML::Dump(current) + "\n";
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(

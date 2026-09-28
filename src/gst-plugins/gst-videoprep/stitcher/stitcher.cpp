@@ -1691,8 +1691,7 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     }
     stitch_compute_precision_ = requested_precision;
   } else if (prop.key == "blend-mode" || prop.key == "blend_mode") {
-    const absl::StatusOr<hm::stitching::BlendMode> requested =
-        hm::stitching::ParseBlendMode(normalized_property_value(prop.value));
+    const absl::StatusOr<hm::stitching::BlendMode> requested = hm::stitching::ParseBlendMode(prop.value);
     if (!requested.ok()) {
       std::cerr << requested.status().message() << std::endl;
       return false;

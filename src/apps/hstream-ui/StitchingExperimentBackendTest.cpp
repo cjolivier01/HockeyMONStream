@@ -823,7 +823,7 @@ bool resolved_seam_blend() {
 
 // Seam blend is a render setting the operator chose while comparing candidates, so it is applied
 // on top of the selection config rather than reconciled with it.
-bool selected_seam_blend() {
+bool selected_seam_blend(const fs::path& root) {
   const std::string selection =
       "stitching:\n"
       "  control_point_matcher: dedode-lightglue\n"
@@ -836,11 +836,15 @@ bool selected_seam_blend() {
       "game:\n"
       "  videos:\n"
       "    left: [cam1/left.mp4]\n";
+  const fs::path experiment_config = root / "selected-blend" / "candidate.yaml";
+  const fs::path game_config = root / "selected-blend" / "config.yaml";
+  if (!write(experiment_config, selection) || !write(game_config, selection))
+    return false;
 
   StitchingExperimentBlend alpha;
   alpha.mode = "alpha";
   alpha.feather_fraction = 0.2;
-  const auto with_alpha = ApplyStitchingExperimentBlend(selection, alpha);
+  const auto with_alpha = BuildStitchingExperimentSelectionConfig(experiment_config, game_config, alpha);
   if (!expect(with_alpha.ok(), "Applying an alpha blend must succeed"))
     return false;
   const YAML::Node alpha_config = YAML::Load(*with_alpha);
@@ -867,7 +871,9 @@ bool selected_seam_blend() {
   // A mode without a width must not leave one behind for a later alpha to pick up.
   StitchingExperimentBlend hard;
   hard.mode = "gpu-hard-seam";
-  const auto with_hard = ApplyStitchingExperimentBlend(*with_alpha, hard);
+  if (!write(game_config, *with_alpha))
+    return false;
+  const auto with_hard = BuildStitchingExperimentSelectionConfig(experiment_config, game_config, hard);
   if (!expect(with_hard.ok(), "Applying a hard seam must succeed"))
     return false;
   const YAML::Node hard_config = YAML::Load(*with_hard);
@@ -877,8 +883,10 @@ bool selected_seam_blend() {
           "A mode without a width must clear the stored width"))
     return false;
 
+  if (!write(experiment_config, "stitching: [unbalanced"))
+    return false;
   return expect(
-      !ApplyStitchingExperimentBlend("stitching: [unbalanced", alpha).ok(),
+      !BuildStitchingExperimentSelectionConfig(experiment_config, game_config, alpha).ok(),
       "Malformed input must be rejected rather than silently dropped");
 }
 
@@ -899,7 +907,7 @@ int main() {
   if (!edited_match_workspace(root))
     return 24;
 
-  if (!resolved_seam_blend() || !selected_seam_blend())
+  if (!resolved_seam_blend() || !selected_seam_blend(root))
     return 25;
 
   const fs::path game = root / "game";

@@ -147,10 +147,6 @@ const char* BlendModeName(BlendMode mode) {
   return "laplacian";
 }
 
-BlendMode DefaultBlendMode() {
-  return BlendMode::kLaplacian;
-}
-
 absl::StatusOr<BlendMode> ParseBlendMode(const std::string& raw) {
   // normalize_choice also maps '_' to '-', matching the plugin's normalized_property_value, so
   // "Laplacian" and "gpu_hard_seam" are accepted on both the canonical and the native path.

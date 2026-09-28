@@ -268,7 +268,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   StitchComputePrecision stitch_compute_precision_{StitchComputePrecision::kFp32};
   // Blend operator for the live stitch. A constructor argument to hm-cupano, so it cannot change
   // once the stitcher exists.
-  hm::stitching::BlendMode blend_mode_{hm::stitching::DefaultBlendMode()};
+  hm::stitching::BlendMode blend_mode_{hm::stitching::BlendMode::kLaplacian};
   float blend_feather_fraction_{hm::pano::BlendSettings::kDefaultFeatherFraction};
   std::atomic<float> shadow_lift_percent_{0.0f};
   std::atomic_bool lift_shadow_black_point_{false};

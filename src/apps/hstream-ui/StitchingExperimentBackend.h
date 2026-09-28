@@ -125,14 +125,6 @@ struct StitchingExperimentFrameInspection {
 absl::StatusOr<StitchingExperimentFrameInspection> InspectStitchingExperimentFrames(
     const StitchingExperimentWorkspace& experiment);
 
-// Builds the exact config document published by selection. Exposed so the
-// geometry invalidation contract can be checked without generating images.
-absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
-    const std::filesystem::path& experiment_config,
-    const std::filesystem::path& game_config);
-
-// Publishes the already-generated candidate maps/seam without recalibrating,
-// then updates only stitching-owned config and invalidates dependent rink data.
 // A render-time seam blend chosen while comparing candidates. Not a calibration input, so it is
 // applied on top of the selection config rather than copied out of the experiment's own config.
 struct StitchingExperimentBlend {
@@ -140,13 +132,15 @@ struct StitchingExperimentBlend {
   std::optional<double> feather_fraction;
 };
 
-// Applies a chosen seam blend on top of an already-built selection config. Separate from the
-// selection itself because blend is a render setting, not one of the calibration keys the
-// selection reconciles.
-absl::StatusOr<std::string> ApplyStitchingExperimentBlend(
-    const std::string& selection_config,
-    const StitchingExperimentBlend& blend);
+// Builds the exact config document published by selection. Exposed so the
+// geometry invalidation contract can be checked without generating images.
+absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
+    const std::filesystem::path& experiment_config,
+    const std::filesystem::path& game_config,
+    const std::optional<StitchingExperimentBlend>& blend = std::nullopt);
 
+// Publishes the already-generated candidate maps/seam without recalibrating,
+// then updates only stitching-owned config and invalidates dependent rink data.
 absl::Status PromoteStitchingExperiment(
     const StitchingExperimentWorkspace& experiment,
     const std::filesystem::path& game_directory,

@@ -34,7 +34,6 @@ enum class BlendMode {
 };
 
 const char* BlendModeName(BlendMode mode);
-BlendMode DefaultBlendMode();
 absl::StatusOr<BlendMode> ParseBlendMode(const std::string& value);
 
 struct ResolvedBlendSettings {

@@ -4793,10 +4793,8 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!user_overlay.ok())
     throw std::runtime_error(user_overlay.status().ToString());
   baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
-  blend_defaults_ = YAML::Clone(loaded->values);
-  blend_user_ = YAML::Clone(*user_overlay);
-  player_analytics_defaults_ = YAML::Clone(loaded->values);
-  player_analytics_user_ = YAML::Clone(*user_overlay);
+  baseline_layer_ = YAML::Clone(loaded->values);
+  user_layer_ = YAML::Clone(*user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
 
   auto require = [this](const QString& path) {
@@ -4866,7 +4864,7 @@ void HStreamWindow::loadBaselineDefaults() {
         loaded->values, 0, std::numeric_limits<int>::max(), /*native_fallback_for_null_canonical=*/true);
   }
   default_run_autooptimizer_ = read_run_autooptimizer_from_config(baseline_config_, true);
-  const auto blend = hm::stitching::ResolveBlendSettings(blend_defaults_, blend_user_);
+  const auto blend = hm::stitching::ResolveBlendSettings(baseline_layer_, user_layer_);
   if (!blend.ok())
     throw std::invalid_argument(blend.status().ToString());
   const auto default_blend = hm::stitching::ParseBlendMode(blend->mode);
@@ -7093,7 +7091,6 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
             // be dropped from both the run arguments and the next save. The sentinel entry sits
             // last, so removing it cannot shift the current index.
             if (blendMode() != kUnrepresentableBlendData) {
-              unrepresentable_blend_mode_.clear();
               const int stale = blend_mode_combo_->findData(kUnrepresentableBlendData);
               if (stale >= 0) {
                 const QSignalBlocker blocker(blend_mode_combo_);
@@ -9767,7 +9764,7 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
   args << QString("--options=pipeline.hmstitcher.properties.high-bit-depth=%1").arg(highBitDepthMode());
   // A mode the live path cannot run stays whatever the config layers resolve to; overriding it
   // here would silently run something else.
-  if (unrepresentable_blend_mode_.isEmpty() && blendMode() != kUnrepresentableBlendData) {
+  if (blendMode() != kUnrepresentableBlendData) {
     args << QString("--options=stitching.blend_mode=%1").arg(blendMode());
     if (blendMode() == "alpha") {
       args << QString("--options=stitching.blend_feather_fraction=%1").arg(blendFeatherFraction(), 0, 'g', 4);
@@ -9987,7 +9984,7 @@ void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config)
 void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
   if (!player_analytics_controls_)
     return;
-  YAML::Node defaults = YAML::Clone(player_analytics_defaults_);
+  YAML::Node defaults = YAML::Clone(baseline_layer_);
   const QString structural_path = pipelineConfigPath("ds_hockey_app_config.yaml");
   // Structural/native and bundled canonical defaults share rank zero. Keep the
   // user and game layers separate for drawing provenance in the controls.
@@ -9998,8 +9995,7 @@ void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
     defaults["pipeline"] = native_defaults.IsMap() ? merge_yaml_maps(structural, native_defaults)
                                                  : YAML::Clone(structural);
   }
-  player_analytics_controls_->loadConfig(
-      defaults, player_analytics_user_, config, QFileInfo(structural_path).absolutePath());
+  player_analytics_controls_->loadConfig(defaults, user_layer_, config, QFileInfo(structural_path).absolutePath());
 }
 
 bool HStreamWindow::validatePlayerAnalyticsForRun() {
@@ -10015,12 +10011,11 @@ bool HStreamWindow::validatePlayerAnalyticsForRun() {
 void HStreamWindow::loadBlendMode(const YAML::Node& config) {
   if (!blend_mode_combo_)
     return;
-  const auto resolved = hm::stitching::ResolveBlendSettings(blend_defaults_, blend_user_, config);
+  const auto resolved = hm::stitching::ResolveBlendSettings(baseline_layer_, user_layer_, config);
   if (!resolved.ok())
     throw std::invalid_argument(resolved.status().ToString());
   const auto parsed = hm::stitching::ParseBlendMode(resolved->mode);
   const QString mode = QString::fromStdString(resolved->mode);
-  unrepresentable_blend_mode_ = parsed.ok() ? QString() : mode;
   if (!parsed.ok())
     appendLog(QString("seam blend mode %1 is not selectable here; leaving it unchanged").arg(mode));
   {
@@ -10028,9 +10023,8 @@ void HStreamWindow::loadBlendMode(const YAML::Node& config) {
     const int stale = blend_mode_combo_->findData(kUnrepresentableBlendData);
     if (stale >= 0)
       blend_mode_combo_->removeItem(stale);
-    if (!unrepresentable_blend_mode_.isEmpty()) {
-      blend_mode_combo_->addItem(
-          QString("%1 (from config, not supported here)").arg(unrepresentable_blend_mode_), kUnrepresentableBlendData);
+    if (!parsed.ok()) {
+      blend_mode_combo_->addItem(QString("%1 (from config, not supported here)").arg(mode), kUnrepresentableBlendData);
       set_combo_to_data(blend_mode_combo_, kUnrepresentableBlendData);
     } else {
       set_combo_to_data(blend_mode_combo_, mode);
@@ -18121,7 +18115,7 @@ bool HStreamWindow::applySavedControlConfig(
   }
   config["stitching"]["control_point_matcher"] = selected_control_point_matcher.toStdString();
   config["stitching"]["control_point_resolution"] = control_point_resolution_.toStdString();
-  if (unrepresentable_blend_mode_.isEmpty() && blendMode() != kUnrepresentableBlendData) {
+  if (blendMode() != kUnrepresentableBlendData) {
     const auto blend_status = hm::stitching::WriteBlendSettings(
         config,
         blendMode().toStdString(),
