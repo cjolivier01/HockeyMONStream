@@ -137,6 +137,36 @@ namespace fs = std::filesystem;
 
 namespace {
 
+#if QT_CONFIG(xcb)
+// Qt's own XCB connection, or null when this is not an X11 session.
+xcb_connection_t* native_x11_connection() {
+  if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
+    return nullptr;
+  auto* x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+  return x11 ? x11->connection() : nullptr;
+}
+#endif
+
+// Flush the queued X11 requests and wait for the server to catch up. This is
+// the platform half of QGuiApplication::sync(); the other half runs
+// QCoreApplication::processEvents() twice, which must not happen here. The one
+// call site is reached from QWidget::resizeEvent and from the runner's stdout
+// handler, and draining posted events from inside a geometry write delivers
+// the DeferredDelete for the animation QMainWindowLayout is driving on the
+// central widget while QVariantAnimationPrivate is still using it.
+//
+// Requests on one connection are processed in order and Qt already flushes
+// after unmapping a native child, so LetterboxRenderHost::layoutRenderSurface's
+// clearNativeArea() call does not actually depend on the ordering this
+// guarantees. It stays because it is what that clear was written to assume,
+// and it only runs when the overlay moves.
+void sync_native_display() {
+#if QT_CONFIG(xcb)
+  if (xcb_connection_t* connection = native_x11_connection())
+    std::free(xcb_get_input_focus_reply(connection, xcb_get_input_focus(connection), nullptr));
+#endif
+}
+
 // Keep fractional percentages without displaying a long tail of zeroes.
 class CameraDoubleSpinBox : public QDoubleSpinBox {
  protected:
@@ -609,10 +639,9 @@ class NativeVideoTarget : public QWidget {
 
   void clearNativeArea(const QRect& area) {
 #if QT_CONFIG(xcb)
-    if (area.isEmpty() || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
+    if (area.isEmpty())
       return;
-    auto* x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
-    xcb_connection_t* connection = x11 ? x11->connection() : nullptr;
+    xcb_connection_t* connection = native_x11_connection();
     if (!connection)
       return;
     const xcb_window_t target = static_cast<xcb_window_t>(winId());
@@ -807,8 +836,10 @@ class LetterboxRenderHost : public QWidget {
     if (remap_focus_button && old_focus_button_geometry.topLeft() != focus_button_->pos()) {
       // The renderer owns the target's pixels, so unmapping a native child
       // does not cause Qt to repaint its former rectangle. Clear only that
-      // tiny overlay area; the next GPU frame replaces it normally.
-      QGuiApplication::sync();
+      // tiny overlay area; the next GPU frame replaces it normally. This runs
+      // inside a geometry write, so it uses sync_native_display() rather than
+      // QGuiApplication::sync() and its posted-event drain.
+      sync_native_display();
       render_target_->clearNativeArea(old_focus_button_geometry);
     }
     if (remap_focus_button)
