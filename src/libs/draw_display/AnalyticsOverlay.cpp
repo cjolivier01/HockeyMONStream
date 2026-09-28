@@ -87,6 +87,30 @@ bool TouchesTile(const Command& c, uint32_t tx, uint32_t ty) {
 
 } // namespace
 
+const char* ToString(RenderStatus status) {
+  switch (status) {
+    case RenderStatus::kOk:
+      return "ok";
+    case RenderStatus::kCapacity:
+      return "capacity";
+    case RenderStatus::kBusy:
+      return "busy";
+    case RenderStatus::kInvalidArgument:
+      return "invalid-argument";
+    case RenderStatus::kFontUnavailable:
+      return "font-unavailable";
+    case RenderStatus::kCudaError:
+      return "cuda-error";
+  }
+  return "unknown";
+}
+
+const char* Remedy(RenderStatus status) {
+  return status == RenderStatus::kFontUnavailable
+      ? " (no monospace TTF at the DejaVu or Liberation paths; install fonts-dejavu-core)"
+      : "";
+}
+
 CommandList::CommandList(uint32_t capacity, uint32_t glyph_capacity)
     : capacity_(std::min(capacity, kMaximumCommands)), glyph_capacity_(std::min(glyph_capacity, kMaximumGlyphs)) {}
 void CommandList::Clear() noexcept {

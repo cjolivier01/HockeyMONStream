@@ -22,6 +22,7 @@
 #include <tuple>
 #include <vector>
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
 #include "cupano/pano/cudaMat.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
@@ -844,8 +845,14 @@ absl::Status PlayCropperPriv::GenerateOutput(
         if (rendered.status == RenderStatus::kOk) {
           if (player_commands_rendered)
             preview_transform.baked_player_layers = player_layers;
-        } else
-          return absl::InternalError("Program watermark could not be rendered");
+        } else {
+          // Refusing to emit unmarked Program output is deliberate, so the
+          // message has to say which condition stopped the mark: a missing
+          // font is fixed by installing one, a full tile budget is not.
+          return absl::InternalError(
+              absl::StrCat(
+                  "Program watermark could not be rendered: ", ToString(rendered.status), Remedy(rendered.status)));
+        }
       }
     }
     if ((player_layers || preview_overlay::find_overlay_snapshot_meta(frame_meta)) &&
