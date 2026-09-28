@@ -4577,6 +4577,57 @@ std::optional<unsigned> hm::ui_internal::configured_pipeline_gpu(const YAML::Nod
   }
 }
 
+QString hm::ui_internal::configured_gpu_memory_profile(
+    const YAML::Node& baseline_config,
+    const YAML::Node& user_config) {
+  struct ProfileAlias {
+    int rank{-1};
+    YAML::Node value;
+  } dashed, underscored;
+  const std::array<YAML::Node, 2> layers{baseline_config, user_config};
+  for (int rank = 0; rank < static_cast<int>(layers.size()); ++rank) {
+    YAML::Node runtime;
+    if (lookup_yaml_key(layers[rank], "runtime", &runtime) && !runtime.IsMap()) {
+      dashed = {};
+      underscored = {};
+      continue;
+    }
+    YAML::Node dashed_value;
+    if (lookup_yaml_path(layers[rank], "runtime.gpu-memory-profile", &dashed_value)) {
+      dashed = {rank, YAML::Clone(dashed_value)};
+    }
+    YAML::Node underscored_value;
+    if (lookup_yaml_path(layers[rank], "runtime.gpu_memory_profile", &underscored_value)) {
+      underscored = {rank, YAML::Clone(underscored_value)};
+    }
+  }
+  auto scalar_profile = [](const ProfileAlias& candidate) -> std::optional<QString> {
+    if (candidate.rank < 0 || !candidate.value.IsScalar())
+      return std::nullopt;
+    try {
+      return QString::fromStdString(candidate.value.as<std::string>()).trimmed().toLower().replace('_', '-');
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  const ProfileAlias& preferred = dashed.rank >= underscored.rank ? dashed : underscored;
+  const ProfileAlias& fallback = dashed.rank >= underscored.rank ? underscored : dashed;
+  std::optional<QString> configured = scalar_profile(preferred);
+  if (!configured)
+    configured = scalar_profile(fallback);
+  if (!configured)
+    return "auto";
+  QString profile = *configured;
+  if (profile == "low-memory")
+    profile = "low";
+  if (profile == "full" || profile == "normal")
+    profile = "standard";
+  if (profile == "auto" || profile == "low" || profile == "standard") {
+    return profile;
+  }
+  return {};
+}
+
 void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous) {
   auto restore_child = [](YAML::Node current_parent, YAML::Node previous_parent, const char* key) {
     YAML::Node previous_value;
@@ -9951,31 +10002,14 @@ void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config)
     }
   }
   const YAML::Node effective = merge_yaml_maps(defaults, game_config);
-  auto configured_profile = [](const YAML::Node& config) -> QString {
-    YAML::Node value;
-    if (!lookup_yaml_path(config, "runtime.gpu-memory-profile", &value) &&
-        !lookup_yaml_path(config, "runtime.gpu_memory_profile", &value)) {
-      return {};
-    }
-    if (!value.IsScalar())
-      return {};
-    QString profile = QString::fromStdString(value.as<std::string>()).trimmed().toLower().replace('_', '-');
-    if (profile == "low-memory")
-      profile = "low";
-    if (profile == "full" || profile == "normal")
-      profile = "standard";
-    return profile == "low" || profile == "standard" ? profile : QString();
-  };
-  QString profile = configured_profile(game_config);
-  if (profile.isEmpty())
-    profile = configured_profile(effective);
+  QString profile = hm::ui_internal::configured_gpu_memory_profile(baseline_layer_, user_layer_);
   const auto gpu = hm::ui_internal::configured_pipeline_gpu(effective);
-  if (profile.isEmpty() && gpu.has_value()) {
+  if (profile == "auto" && gpu.has_value()) {
     const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(*gpu);
     if (total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes))
       profile = "low";
   }
-  if (profile.isEmpty())
+  if (profile == "auto" || profile.isEmpty())
     profile = "standard";
   const QSignalBlocker blocker(gpu_memory_profile_combo_);
   set_combo_to_data(gpu_memory_profile_combo_, profile);
@@ -17821,6 +17855,8 @@ bool HStreamWindow::applySavedControlConfig(
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
   }
+  remove_yaml_path(config, {"runtime", "gpu-memory-profile"});
+  remove_yaml_path(config, {"runtime", "gpu_memory_profile"});
   const auto previous_mask_time = hm::stitching::read_rink_mask_frame_time(merge_yaml_maps(baseline_config_, config));
   if (!detectorPrecision().isEmpty() && detectorSelectionChanged()) {
     try {

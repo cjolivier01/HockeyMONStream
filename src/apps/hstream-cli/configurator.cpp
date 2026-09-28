@@ -5421,24 +5421,54 @@ void Configurator::apply_gpu_override(YAML::Node& pipeline) {
 absl::Status Configurator::apply_gpu_memory_profile(
     YAML::Node& pipeline,
     std::optional<uint64_t> detected_total_memory_bytes) {
-  auto profile_value = [&](const char* path) -> std::optional<std::string> {
+  struct ProfileAlias {
+    int rank{-1};
+    YAML::Node value;
+  } dashed, underscored;
+  auto capture_layer = [&](const YAML::Node& layer, int rank) {
+    const auto runtime = get_node(layer, "runtime");
+    if (runtime && !runtime->IsMap()) {
+      dashed = {};
+      underscored = {};
+      return;
+    }
+    if (const auto value = get_node(layer, "runtime.gpu-memory-profile"))
+      dashed = {rank, YAML::Clone(*value)};
+    if (const auto value = get_node(layer, "runtime.gpu_memory_profile"))
+      underscored = {rank, YAML::Clone(*value)};
+  };
+  const YAML::Node baseline_layer = recording_config_layers_["baseline"];
+  if (baseline_layer && baseline_layer.IsDefined()) {
+    capture_layer(baseline_layer, 0);
+    capture_layer(recording_config_layers_["user"], 1);
+  } else {
+    // Unit callers and embedders that supply an already-resolved config have
+    // no recorded input layers. Treat that config as the baseline.
+    capture_layer(config_, 0);
+  }
+  auto capture_cli = [&](const char* path, ProfileAlias* candidate) {
+    if (explicit_value_rank(path) < 3)
+      return;
     const auto value = get_node(config_, path);
-    if (!value || !value->IsScalar())
+    *candidate = {3, value ? YAML::Clone(*value) : YAML::Node()};
+  };
+  capture_cli("runtime.gpu-memory-profile", &dashed);
+  capture_cli("runtime.gpu_memory_profile", &underscored);
+
+  auto profile_value = [](const ProfileAlias& candidate) -> std::optional<std::string> {
+    if (candidate.rank < 0 || !candidate.value.IsScalar())
       return std::nullopt;
     try {
-      return value->as<std::string>();
+      return candidate.value.as<std::string>();
     } catch (const YAML::Exception&) {
       return std::nullopt;
     }
   };
-  const int dashed_rank = explicit_value_rank("runtime.gpu-memory-profile");
-  const int underscored_rank = explicit_value_rank("runtime.gpu_memory_profile");
-  std::optional<std::string> configured_profile = dashed_rank >= underscored_rank
-      ? profile_value("runtime.gpu-memory-profile")
-      : profile_value("runtime.gpu_memory_profile");
+  const ProfileAlias& preferred = dashed.rank >= underscored.rank ? dashed : underscored;
+  const ProfileAlias& fallback = dashed.rank >= underscored.rank ? underscored : dashed;
+  std::optional<std::string> configured_profile = profile_value(preferred);
   if (!configured_profile) {
-    configured_profile = dashed_rank >= underscored_rank ? profile_value("runtime.gpu_memory_profile")
-                                                         : profile_value("runtime.gpu-memory-profile");
+    configured_profile = profile_value(fallback);
   }
   std::string profile = configured_profile.value_or("auto");
   std::transform(profile.begin(), profile.end(), profile.begin(), [](unsigned char character) {

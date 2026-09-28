@@ -12955,6 +12955,34 @@ bool test_gpu_memory_profile() {
     return false;
   }
 
+  const YAML::Node baseline_profile = YAML::Load("runtime: {gpu_memory_profile: standard}");
+  const YAML::Node user_profile = YAML::Load("runtime: {gpu-memory-profile: low}");
+  const YAML::Node same_layer_aliases =
+      YAML::Load("runtime: {gpu-memory-profile: normal, gpu_memory_profile: low}");
+  const YAML::Node malformed_user_alias = YAML::Load("runtime: {gpu_memory_profile: null}");
+  const YAML::Node invalid_user_alias = YAML::Load("runtime: {gpu-memory-profile: invalid}");
+  const YAML::Node replaced_runtime = YAML::Load("runtime: null");
+  const QString resolved_user_low = hm::ui_internal::configured_gpu_memory_profile(baseline_profile, user_profile);
+  const QString resolved_same_layer = hm::ui_internal::configured_gpu_memory_profile(
+      baseline_profile, same_layer_aliases);
+  const QString resolved_malformed =
+      hm::ui_internal::configured_gpu_memory_profile(user_profile, malformed_user_alias);
+  const QString resolved_invalid = hm::ui_internal::configured_gpu_memory_profile(
+      baseline_profile, invalid_user_alias);
+  const QString resolved_replaced_runtime =
+      hm::ui_internal::configured_gpu_memory_profile(baseline_profile, replaced_runtime);
+  if (!expect(
+          resolved_user_low == "low" && resolved_same_layer == "standard" && resolved_malformed == "low" &&
+              resolved_invalid.isEmpty() && resolved_replaced_runtime == "auto",
+          "GPU memory mode must resolve machine-local aliases with the runner's fallback behavior")) {
+    std::cerr << "resolved profiles: user-low=" << resolved_user_low.toStdString()
+              << " same-layer=" << resolved_same_layer.toStdString()
+              << " malformed=" << resolved_malformed.toStdString()
+              << " invalid=" << resolved_invalid.toStdString()
+              << " replaced-runtime=" << resolved_replaced_runtime.toStdString() << '\n';
+    return false;
+  }
+
   QTemporaryDir profile_games;
   if (!profile_games.isValid())
     return false;
@@ -12970,6 +12998,13 @@ bool test_gpu_memory_profile() {
   if (!QDir().mkpath(game_directory))
     return false;
 
+  const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(0);
+  const QString expected_default =
+      total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes) ? "low" : "standard";
+  YAML::Node stale_game_profile(YAML::NodeType::Map);
+  stale_game_profile["runtime"]["gpu_memory_profile"] = expected_default == "low" ? "standard" : "low";
+  std::ofstream(QDir(game_directory).filePath("config.yaml").toStdString()) << stale_game_profile << '\n';
+
   HStreamWindow window;
   auto* games = require_child<QComboBox>(&window, "gameSelector");
   auto* profile = require_child<QComboBox>(&window, "gpuMemoryProfileCombo");
@@ -12978,12 +13013,9 @@ bool test_gpu_memory_profile() {
     return false;
   games->setCurrentIndex(games->findText(game_name));
 
-  const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(0);
-  const QString expected_default =
-      total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes) ? "low" : "standard";
   if (!expect(
           profile->currentData().toString() == expected_default,
-          "GPU memory mode must default from the shared 8 GiB policy")) {
+          "GPU memory mode must default from the local GPU and ignore a stale game profile")) {
     return false;
   }
   if (!expect(
