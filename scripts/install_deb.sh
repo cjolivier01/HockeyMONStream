@@ -416,17 +416,28 @@ source /etc/os-release
 # UBUNTU_CODENAME names the Ubuntu base they are assembled from, so resolve the
 # release through it and accept only the codenames HStream publishes for.
 UBUNTU_RELEASE=""
+UBUNTU_BASE_CODENAME=""
 if [[ "${ID:-}" == "ubuntu" ]]; then
   UBUNTU_RELEASE="${VERSION_ID:-}"
 elif [[ " ${ID_LIKE:-} " == *" ubuntu "* ]]; then
-  case "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" in
+  UBUNTU_BASE_CODENAME="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+  # Keep this table in sync with ubuntu_release() in scripts/deploy.sh.  Bases
+  # HStream does not publish for are still resolved so the failure below names
+  # the actual release instead of claiming the host is not a derivative.
+  case "${UBUNTU_BASE_CODENAME}" in
+    jammy) UBUNTU_RELEASE=22.04 ;;
     noble) UBUNTU_RELEASE=24.04 ;;
     resolute) UBUNTU_RELEASE=26.04 ;;
   esac
 fi
 if [[ -z "${UBUNTU_RELEASE}" ]]; then
-  echo "ERROR: HStream Debian artifacts require Ubuntu or an Ubuntu derivative." >&2
-  echo "Detected: ${PRETTY_NAME:-${ID:-unknown} ${VERSION_ID:-unknown}}" >&2
+  if [[ " ${ID_LIKE:-} " == *" ubuntu "* ]]; then
+    echo "ERROR: cannot map ${PRETTY_NAME:-${ID:-unknown}} onto a known Ubuntu base." >&2
+    echo "UBUNTU_CODENAME is ${UBUNTU_BASE_CODENAME:-unset}; expected jammy, noble or resolute." >&2
+  else
+    echo "ERROR: HStream Debian artifacts require Ubuntu or an Ubuntu derivative." >&2
+    echo "Detected: ${PRETTY_NAME:-${ID:-unknown} ${VERSION_ID:-unknown}}" >&2
+  fi
   exit 1
 fi
 case "${UBUNTU_RELEASE}" in
