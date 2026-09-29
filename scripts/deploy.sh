@@ -51,6 +51,12 @@ Optional make variables:
   PACKAGE_VERSION=VERSION   Override the source-derived package version.
   DEEPSTREAM_DEB=FILE      Use this DeepStream 9.1 amd64 artifact for desktops.
   DEPLOY_OUTPUT_DIR=DIR    Override the package output root (default: dist).
+
+When DEEPSTREAM_DEB is unset, deepstream-9.1_*_amd64.deb is looked up in
+../DeepStream/artifacts, the output root, ~/Downloads and ~, and the highest
+matching version wins. HSTREAM_DEEPSTREAM_CACHE=DIR prepends a directory.
+NVIDIA gates that .deb behind a Developer Program login, so it cannot be
+fetched automatically.
 USAGE
 }
 
@@ -308,15 +314,32 @@ REMOTE_DETECT
     "${previous_package:+${previous_package} }${previous:-not installed}"
 }
 
+# Directories searched for a DeepStream artifact when DEEPSTREAM_DEB is unset.
+# NVIDIA publishes the amd64 DeepStream .deb only behind a Developer Program
+# login -- it is absent from the CUDA apt repositories -- so the file always
+# arrives by hand.  Look where a manual download plausibly landed rather than
+# failing on one hardcoded path.  Set HSTREAM_DEEPSTREAM_CACHE to add a
+# location without editing this list.
+deepstream_search_dirs() {
+  local -a dirs=()
+  if [[ -n "${HSTREAM_DEEPSTREAM_CACHE:-}" ]]; then dirs+=("${HSTREAM_DEEPSTREAM_CACHE}"); fi
+  dirs+=("${TOPDIR}/../DeepStream/artifacts" "${DEPLOY_OUTPUT_DIR}")
+  if [[ -n "${HOME:-}" ]]; then dirs+=("${HOME}/Downloads" "${HOME}"); fi
+  printf '%s\n' "${dirs[@]}"
+}
+
 resolve_desktop_deepstream_deb() {
-  local candidate version selected_candidate="" selected_version=""
-  local -a candidates=()
+  local candidate version selected_candidate="" selected_version="" search_dir
+  local -a candidates=() search_dirs=()
 
   if [[ -n "${REQUESTED_DEEPSTREAM_DEB}" ]]; then
     candidates+=("${REQUESTED_DEEPSTREAM_DEB}")
   else
+    mapfile -t search_dirs < <(deepstream_search_dirs)
     shopt -s nullglob
-    candidates=("${TOPDIR}/../DeepStream/artifacts/"deepstream-9.1_*_amd64.deb)
+    for search_dir in "${search_dirs[@]}"; do
+      candidates+=("${search_dir}/"deepstream-9.1_*_amd64.deb)
+    done
     shopt -u nullglob
   fi
 
@@ -336,16 +359,34 @@ resolve_desktop_deepstream_deb() {
   done
   if [[ -n "${selected_candidate}" ]]; then
     DESKTOP_DEEPSTREAM_DEB="$(readlink -f "${selected_candidate}")"
+    printf '[deploy] Using DeepStream %s from %s\n' \
+      "${selected_version}" "${DESKTOP_DEEPSTREAM_DEB}"
     return 0
   fi
 
   if [[ -n "${REQUESTED_DEEPSTREAM_DEB}" ]]; then
     printf 'ERROR: DEEPSTREAM_DEB is not a supported DeepStream 9.1 amd64 package: %s\n' \
       "${REQUESTED_DEEPSTREAM_DEB}" >&2
-  else
-    printf 'ERROR: no DeepStream 9.1 amd64 artifact found under %s.\n' \
-      "${TOPDIR}/../DeepStream/artifacts" >&2
-    printf 'Pass DEEPSTREAM_DEB=/path/to/deepstream-9.1_*_amd64.deb.\n' >&2
+    printf 'Expected package deepstream-9.1, architecture amd64, version >= 9.1.0-1 and << 9.2.\n' >&2
+    return 1
+  fi
+
+  printf 'ERROR: no DeepStream 9.1 amd64 artifact found.\n' >&2
+  printf 'Searched for deepstream-9.1_*_amd64.deb in:\n' >&2
+  for search_dir in "${search_dirs[@]}"; do
+    if [[ -d "${search_dir}" ]]; then
+      printf '  %s\n' "${search_dir}" >&2
+    else
+      printf '  %s (missing)\n' "${search_dir}" >&2
+    fi
+  done
+  printf 'Put the package in one of those directories, or point at it directly:\n' >&2
+  printf '  make deploy NODES=... DEEPSTREAM_DEB=/path/to/deepstream-9.1_9.1.0-1_amd64.deb\n' >&2
+  printf 'HSTREAM_DEEPSTREAM_CACHE=DIR adds a directory to the list above.\n' >&2
+  if [[ -z "${HSTREAM_DEEPSTREAM_CACHE:-}" ]]; then
+    printf 'NVIDIA gates the amd64 .deb behind a Developer Program login; it is not in\n' >&2
+    printf 'the CUDA apt repositories, so it has to be downloaded by hand from\n' >&2
+    printf 'https://developer.nvidia.com/deepstream-download\n' >&2
   fi
   return 1
 }

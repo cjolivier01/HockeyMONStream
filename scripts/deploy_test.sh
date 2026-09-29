@@ -47,6 +47,17 @@ fi
 expect_equal "$(classify_target ubuntu "$(ubuntu_release neon 24.04 'ubuntu debian' noble)" \
   x86_64 desktop)" "desktop-ubuntu24.04-amd64" "KDE neon desktop classification"
 
+deepstream_dirs="$(TOPDIR=/repo DEPLOY_OUTPUT_DIR=/repo/dist HOME=/home/tester \
+  HSTREAM_DEEPSTREAM_CACHE= deepstream_search_dirs)"
+expect_equal "${deepstream_dirs}" \
+  "/repo/../DeepStream/artifacts
+/repo/dist
+/home/tester/Downloads
+/home/tester" "default DeepStream search path"
+expect_equal "$(TOPDIR=/repo DEPLOY_OUTPUT_DIR=/repo/dist HOME=/home/tester \
+  HSTREAM_DEEPSTREAM_CACHE=/srv/debs deepstream_search_dirs | head -n 1)" /srv/debs \
+  "HSTREAM_DEEPSTREAM_CACHE is searched first"
+
 parse_nodes " monster,stubby,user@mini "
 expect_equal "${#NODES_LIST[@]}" 3 "node count"
 expect_equal "${NODES_LIST[0]}" monster "first node"
