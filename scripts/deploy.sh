@@ -319,11 +319,12 @@ REMOTE_DETECT
 # login -- it is absent from the CUDA apt repositories -- so the file always
 # arrives by hand.  Look where a manual download plausibly landed rather than
 # failing on one hardcoded path.  Set HSTREAM_DEEPSTREAM_CACHE to add a
-# location without editing this list.
+# location without editing this list.  Paths are kept free of ".." so the
+# failure message can be read as the literal place to drop the file.
 deepstream_search_dirs() {
   local -a dirs=()
   if [[ -n "${HSTREAM_DEEPSTREAM_CACHE:-}" ]]; then dirs+=("${HSTREAM_DEEPSTREAM_CACHE}"); fi
-  dirs+=("${TOPDIR}/../DeepStream/artifacts" "${DEPLOY_OUTPUT_DIR}")
+  dirs+=("$(dirname "${TOPDIR}")/DeepStream/artifacts" "${DEPLOY_OUTPUT_DIR}")
   if [[ -n "${HOME:-}" ]]; then dirs+=("${HOME}/Downloads" "${HOME}"); fi
   printf '%s\n' "${dirs[@]}"
 }

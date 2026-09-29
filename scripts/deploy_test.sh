@@ -63,11 +63,11 @@ expect_equal "$(sed -n "s/^ *\([a-z]*\)) printf '\([0-9.]*\)' ;;$/\1/p" "${SCRIP
   "$(printf '%s\n' "${installer_codenames}" | wc -l)" \
   "deploy.sh and install_deb.sh cover the same number of Ubuntu bases"
 
-deepstream_dirs="$(TOPDIR=/repo DEPLOY_OUTPUT_DIR=/repo/dist HOME=/home/tester \
+deepstream_dirs="$(TOPDIR=/src/repo DEPLOY_OUTPUT_DIR=/src/repo/dist HOME=/home/tester \
   HSTREAM_DEEPSTREAM_CACHE='' deepstream_search_dirs)"
 expect_equal "${deepstream_dirs}" \
-  "/repo/../DeepStream/artifacts
-/repo/dist
+  "/src/DeepStream/artifacts
+/src/repo/dist
 /home/tester/Downloads
 /home/tester" "default DeepStream search path"
 expect_equal "$(TOPDIR=/repo DEPLOY_OUTPUT_DIR=/repo/dist HOME=/home/tester \
