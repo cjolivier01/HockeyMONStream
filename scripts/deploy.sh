@@ -39,6 +39,8 @@ Usage:
 The deployment runner detects each node over SSH, builds one package for each
 distinct supported target, and force-installs the matching package. Supported
 targets are Ubuntu 24.04/26.04 amd64 desktops and Ubuntu 22.04 arm64 Jetsons.
+Ubuntu derivatives (KDE neon, Pop!_OS, ...) are matched on their Ubuntu base
+release, taken from UBUNTU_CODENAME in /etc/os-release.
 Nodes must allow non-interactive SSH access and passwordless sudo.
 The invoking HStream repository must have no tracked or source-file changes.
 
@@ -49,6 +51,12 @@ Optional make variables:
   PACKAGE_VERSION=VERSION   Override the source-derived package version.
   DEEPSTREAM_DEB=FILE      Use this DeepStream 9.1 amd64 artifact for desktops.
   DEPLOY_OUTPUT_DIR=DIR    Override the package output root (default: dist).
+
+When DEEPSTREAM_DEB is unset, deepstream-9.1_*_amd64.deb is looked up in
+../DeepStream/artifacts, the output root, ~/Downloads and ~, and the highest
+matching version wins. HSTREAM_DEEPSTREAM_CACHE=DIR prepends a directory.
+NVIDIA gates that .deb behind a Developer Program login, so it cannot be
+fetched automatically.
 USAGE
 }
 
@@ -93,6 +101,32 @@ parse_nodes() {
     SEEN_NODES["${node}"]=1
     NODES_LIST+=("${node}")
   done
+}
+
+# Resolve the Ubuntu release a host is built on.  Ubuntu derivatives such as
+# KDE neon and Pop!_OS keep their own ID and VERSION_ID in /etc/os-release, and
+# some (Linux Mint, Zorin) use a VERSION_ID unrelated to any Ubuntu release, so
+# UBUNTU_CODENAME is the only trustworthy signal.  Only codenames HStream
+# actually publishes packages for are mapped; anything else stays unsupported.
+ubuntu_release() {
+  local os_id="$1"
+  local os_version="$2"
+  local id_like="$3"
+  local ubuntu_codename="$4"
+
+  if [[ "${os_id}" == ubuntu ]]; then
+    printf '%s' "${os_version}"
+    return 0
+  fi
+  if [[ " ${id_like} " != *" ubuntu "* ]]; then
+    return 1
+  fi
+  case "${ubuntu_codename}" in
+    jammy) printf '22.04' ;;
+    noble) printf '24.04' ;;
+    resolute) printf '26.04' ;;
+    *) return 1 ;;
+  esac
 }
 
 classify_target() {
@@ -186,7 +220,8 @@ require_clean_repository() {
 
 detect_node() {
   local node="$1"
-  local output identity marker os_id os_version architecture platform previous_package previous extra target_key
+  local output identity marker os_id os_version id_like ubuntu_codename architecture platform
+  local previous_package previous extra target_key base_os_id base_os_version
 
   printf '\n[%s] Detecting %s...\n' "${OPERATION}" "${node}"
   if ! output="$(ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s <<'REMOTE_DETECT'
@@ -212,8 +247,9 @@ for candidate in hstream hmstream; do
     break
   fi
 done
-printf '__HSTREAM_DEPLOY__|%s|%s|%s|%s|%s|%s\n' \
-  "${ID:-}" "${VERSION_ID:-}" "$(uname -m)" "${platform}" "${installed_package}" "${installed_version}"
+printf '__HSTREAM_DEPLOY__|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+  "${ID:-}" "${VERSION_ID:-}" "${ID_LIKE:-}" "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" \
+  "$(uname -m)" "${platform}" "${installed_package}" "${installed_version}"
 REMOTE_DETECT
   )"; then
     NODE_OS["${node}"]="unknown"
@@ -231,7 +267,8 @@ REMOTE_DETECT
     NODE_DETAIL["${node}"]="invalid OS detection response"
     return 1
   fi
-  IFS='|' read -r marker os_id os_version architecture platform previous_package previous extra <<< "${identity}"
+  IFS='|' read -r marker os_id os_version id_like ubuntu_codename architecture platform \
+    previous_package previous extra <<< "${identity}"
   if [[ "${marker}" != "__HSTREAM_DEPLOY__" || -n "${extra:-}" ]]; then
     NODE_OS["${node}"]="unknown"
     NODE_PLATFORM["${node}"]="unknown"
@@ -246,7 +283,18 @@ REMOTE_DETECT
   NODE_PREVIOUS["${node}"]="${previous:-}"
   NODE_INSTALLED["${node}"]="${previous:-}"
 
-  if ! target_key="$(classify_target "${os_id}" "${os_version}" "${architecture}" "${platform}")"; then
+  base_os_id="${os_id}"
+  base_os_version="${os_version}"
+  if base_os_version="$(ubuntu_release "${os_id}" "${os_version}" "${id_like}" "${ubuntu_codename}")"; then
+    base_os_id=ubuntu
+    if [[ "${os_id}" != ubuntu ]]; then
+      NODE_OS["${node}"]+=" (ubuntu ${base_os_version})"
+    fi
+  else
+    base_os_version="${os_version}"
+  fi
+
+  if ! target_key="$(classify_target "${base_os_id}" "${base_os_version}" "${architecture}" "${platform}")"; then
     NODE_TARGET["${node}"]="unsupported"
     NODE_RESULT["${node}"]="FAILED"
     NODE_DETAIL["${node}"]="unsupported ${os_id:-OS} ${os_version:-version} ${platform:-platform}/${architecture:-architecture}"
@@ -266,15 +314,33 @@ REMOTE_DETECT
     "${previous_package:+${previous_package} }${previous:-not installed}"
 }
 
+# Directories searched for a DeepStream artifact when DEEPSTREAM_DEB is unset.
+# NVIDIA publishes the amd64 DeepStream .deb only behind a Developer Program
+# login -- it is absent from the CUDA apt repositories -- so the file always
+# arrives by hand.  Look where a manual download plausibly landed rather than
+# failing on one hardcoded path.  Set HSTREAM_DEEPSTREAM_CACHE to add a
+# location without editing this list.  Paths are kept free of ".." so the
+# failure message can be read as the literal place to drop the file.
+deepstream_search_dirs() {
+  local -a dirs=()
+  if [[ -n "${HSTREAM_DEEPSTREAM_CACHE:-}" ]]; then dirs+=("${HSTREAM_DEEPSTREAM_CACHE}"); fi
+  dirs+=("$(dirname "${TOPDIR}")/DeepStream/artifacts" "${DEPLOY_OUTPUT_DIR}")
+  if [[ -n "${HOME:-}" ]]; then dirs+=("${HOME}/Downloads" "${HOME}"); fi
+  printf '%s\n' "${dirs[@]}"
+}
+
 resolve_desktop_deepstream_deb() {
-  local candidate version selected_candidate="" selected_version=""
-  local -a candidates=()
+  local candidate version selected_candidate="" selected_version="" search_dir
+  local -a candidates=() search_dirs=()
 
   if [[ -n "${REQUESTED_DEEPSTREAM_DEB}" ]]; then
     candidates+=("${REQUESTED_DEEPSTREAM_DEB}")
   else
+    mapfile -t search_dirs < <(deepstream_search_dirs)
     shopt -s nullglob
-    candidates=("${TOPDIR}/../DeepStream/artifacts/"deepstream-9.1_*_amd64.deb)
+    for search_dir in "${search_dirs[@]}"; do
+      candidates+=("${search_dir}/"deepstream-9.1_*_amd64.deb)
+    done
     shopt -u nullglob
   fi
 
@@ -294,16 +360,34 @@ resolve_desktop_deepstream_deb() {
   done
   if [[ -n "${selected_candidate}" ]]; then
     DESKTOP_DEEPSTREAM_DEB="$(readlink -f "${selected_candidate}")"
+    printf '[deploy] Using DeepStream %s from %s\n' \
+      "${selected_version}" "${DESKTOP_DEEPSTREAM_DEB}"
     return 0
   fi
 
   if [[ -n "${REQUESTED_DEEPSTREAM_DEB}" ]]; then
     printf 'ERROR: DEEPSTREAM_DEB is not a supported DeepStream 9.1 amd64 package: %s\n' \
       "${REQUESTED_DEEPSTREAM_DEB}" >&2
-  else
-    printf 'ERROR: no DeepStream 9.1 amd64 artifact found under %s.\n' \
-      "${TOPDIR}/../DeepStream/artifacts" >&2
-    printf 'Pass DEEPSTREAM_DEB=/path/to/deepstream-9.1_*_amd64.deb.\n' >&2
+    printf 'Expected package deepstream-9.1, architecture amd64, version >= 9.1.0-1 and << 9.2.\n' >&2
+    return 1
+  fi
+
+  printf 'ERROR: no DeepStream 9.1 amd64 artifact found.\n' >&2
+  printf 'Searched for deepstream-9.1_*_amd64.deb in:\n' >&2
+  for search_dir in "${search_dirs[@]}"; do
+    if [[ -d "${search_dir}" ]]; then
+      printf '  %s\n' "${search_dir}" >&2
+    else
+      printf '  %s (missing)\n' "${search_dir}" >&2
+    fi
+  done
+  printf 'Put the package in one of those directories, or point at it directly:\n' >&2
+  printf '  make deploy NODES=... DEEPSTREAM_DEB=/path/to/deepstream-9.1_9.1.0-1_amd64.deb\n' >&2
+  printf 'HSTREAM_DEEPSTREAM_CACHE=DIR adds a directory to the list above.\n' >&2
+  if [[ -z "${HSTREAM_DEEPSTREAM_CACHE:-}" ]]; then
+    printf 'NVIDIA gates the amd64 .deb behind a Developer Program login; it is not in\n' >&2
+    printf 'the CUDA apt repositories, so it has to be downloaded by hand from\n' >&2
+    printf 'https://developer.nvidia.com/deepstream-download\n' >&2
   fi
   return 1
 }

@@ -30,6 +30,50 @@ if classify_target ubuntu 24.04 aarch64 desktop >/dev/null; then
   fail "unsupported SBSA desktop was accepted"
 fi
 
+expect_equal "$(ubuntu_release ubuntu 24.04 'debian' noble)" 24.04 "native Ubuntu release"
+expect_equal "$(ubuntu_release neon 24.04 'ubuntu debian' noble)" 24.04 "KDE neon base release"
+expect_equal "$(ubuntu_release pop 22.04 'ubuntu debian' jammy)" 22.04 "Pop!_OS base release"
+expect_equal "$(ubuntu_release linuxmint 22 'ubuntu debian' noble)" 24.04 \
+  "derivative VERSION_ID is ignored in favor of UBUNTU_CODENAME"
+if ubuntu_release debian 12 'debian' bookworm >/dev/null; then
+  fail "non-Ubuntu distribution was accepted"
+fi
+if ubuntu_release neon 24.04 'ubuntu debian' '' >/dev/null; then
+  fail "derivative without UBUNTU_CODENAME was accepted"
+fi
+if ubuntu_release neon 24.04 'ubuntu debian' plucky >/dev/null; then
+  fail "derivative on an unpackaged Ubuntu base was accepted"
+fi
+expect_equal "$(classify_target ubuntu "$(ubuntu_release neon 24.04 'ubuntu debian' noble)" \
+  x86_64 desktop)" "desktop-ubuntu24.04-amd64" "KDE neon desktop classification"
+
+# install_deb.sh is copied to each node on its own, so it cannot source this
+# file and has to carry a second copy of the codename table.  Pin the two
+# together: extract the installer's table and require ubuntu_release() to agree
+# on every entry, then require the tables to be the same size so an entry added
+# to one but not the other fails here instead of on a user's machine.
+installer_codenames="$(sed -n 's/^ *\([a-z]*\)) UBUNTU_RELEASE=\([0-9.]*\) ;;$/\1 \2/p' \
+  "${SCRIPT_DIR}/install_deb.sh")"
+[[ -n "${installer_codenames}" ]] || fail "no codename table found in install_deb.sh"
+while read -r codename release; do
+  expect_equal "$(ubuntu_release derivative ignored 'ubuntu debian' "${codename}")" "${release}" \
+    "install_deb.sh maps ${codename} the same way deploy.sh does"
+done <<< "${installer_codenames}"
+expect_equal "$(sed -n "s/^ *\([a-z]*\)) printf '\([0-9.]*\)' ;;$/\1/p" "${SCRIPT_DIR}/deploy.sh" | wc -l)" \
+  "$(printf '%s\n' "${installer_codenames}" | wc -l)" \
+  "deploy.sh and install_deb.sh cover the same number of Ubuntu bases"
+
+deepstream_dirs="$(TOPDIR=/src/repo DEPLOY_OUTPUT_DIR=/src/repo/dist HOME=/home/tester \
+  HSTREAM_DEEPSTREAM_CACHE='' deepstream_search_dirs)"
+expect_equal "${deepstream_dirs}" \
+  "/src/DeepStream/artifacts
+/src/repo/dist
+/home/tester/Downloads
+/home/tester" "default DeepStream search path"
+expect_equal "$(TOPDIR=/repo DEPLOY_OUTPUT_DIR=/repo/dist HOME=/home/tester \
+  HSTREAM_DEEPSTREAM_CACHE=/srv/debs deepstream_search_dirs | head -n 1)" /srv/debs \
+  "HSTREAM_DEEPSTREAM_CACHE is searched first"
+
 parse_nodes " monster,stubby,user@mini "
 expect_equal "${#NODES_LIST[@]}" 3 "node count"
 expect_equal "${NODES_LIST[0]}" monster "first node"
