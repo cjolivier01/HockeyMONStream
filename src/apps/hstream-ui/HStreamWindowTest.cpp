@@ -276,6 +276,18 @@ struct HStreamWindowTestAccess {
     window->pipeline_process_ = nullptr;
   }
 
+  static QString pendingScoreboardProperty(HStreamWindow* window, const QString& property) {
+    for (const auto& pending : window->pending_runtime_controls_) {
+      if (pending.element == "playcropper0" && pending.property == property)
+        return pending.runtime_value;
+    }
+    return {};
+  }
+
+  static void acknowledgeScoreboardProperty(HStreamWindow* window, const QString& property, const QString& value) {
+    window->handleRuntimeControlResponse(QString("runtime property playcropper0 %1=%2").arg(property, value));
+  }
+
   static void setCalibrationPrecisionRunActive(HStreamWindow* window, bool active) {
     window->active_run_is_calibration_ = active;
     window->active_run_high_bit_depth_ = false;
@@ -13058,6 +13070,100 @@ bool test_gpu_memory_profile() {
       "Saving a preset must not persist the session GPU memory mode to YAML");
 }
 
+bool test_scoreboard_controls() {
+  QTemporaryDir root;
+  if (!root.isValid())
+    return false;
+  struct RestoreRoot {
+    QByteArray previous{qgetenv("HM_GAME_DIR")};
+    ~RestoreRoot() { qputenv("HM_GAME_DIR", previous); }
+  } restore;
+  qputenv("HM_GAME_DIR", root.path().toLocal8Bit());
+  for (const char* game : {"scoreboard-a", "scoreboard-b"})
+    QDir().mkpath(QDir(root.path()).filePath(game));
+  HStreamWindow window;
+  auto* games = require_child<QComboBox>(&window, "gameSelector");
+  auto* tabs = require_child<QTabWidget>(&window, "programControlTabs");
+  auto* sharpen = require_child<QSlider>(&window, "scoreboardSharpenAmountSlider");
+  auto* sharpen_value = require_child<QLabel>(&window, "scoreboardSharpenAmountValue");
+  auto* sharpen_spin = require_child<QDoubleSpinBox>(&window, "scoreboardSharpenAmountSpin");
+  auto* resize_filter = require_child<QComboBox>(&window, "scoreboardResizeFilterCombo");
+  auto* reselect = require_child<QPushButton>(&window, "scoreboardReselectButton");
+  auto* save = require_child<QPushButton>(&window, "savePresetButton");
+  if (!games || !tabs || !sharpen || !sharpen_value || !sharpen_spin || !resize_filter || !reselect || !save)
+    return false;
+  games->setCurrentIndex(games->findText("scoreboard-a"));
+  if (!expect(tabs->indexOf(sharpen->parentWidget()) >= 0, "Program needs a Scoreboard tab") ||
+      !expect(sharpen->value() == 0 && sharpen->maximum() == 2000 && sharpen_spin->maximum() == 100.0,
+              "scoreboard sharpening controls must range from 0 to 100") ||
+      !expect(resize_filter->currentData().toString() == "bilinear", "bilinear must remain the default filter") ||
+      !expect(!reselect->isEnabled(), "reselection needs a stitched snapshot"))
+    return false;
+  sharpen_spin->setValue(1.10);
+  if (!expect(sharpen->value() == 22, "numeric sharpening control must retain 0.05 steps"))
+    return false;
+  sharpen->setValue(19);
+  resize_filter->setCurrentIndex(resize_filter->findData("nearest"));
+  if (!expect(save->isEnabled(), "sharpening must mark the preset dirty") ||
+      !expect(sharpen_value->text() == "0.95", "slider must show 0.05 sharpening steps") ||
+      !expect(HStreamWindowTestAccess::standaloneArguments(&window).join(' ').contains(
+                  "--options=rink.scoreboard.sharpen_amount=0.95"),
+              "unsaved sharpening must reach the next runner") ||
+      !expect(HStreamWindowTestAccess::standaloneArguments(&window).join(' ').contains(
+                  "--options=rink.scoreboard.resize_filter=nearest"),
+              "unsaved resize filter must reach the next runner"))
+    return false;
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  const auto path = QDir(root.path()).filePath("scoreboard-a/config.yaml").toStdString();
+  const YAML::Node saved_scoreboard = YAML::LoadFile(path)["rink"]["scoreboard"];
+  if (!expect(saved_scoreboard["sharpen_amount"].as<double>() == 0.95,
+              "sharpening must persist to the game config") ||
+      !expect(saved_scoreboard["resize_filter"].as<std::string>() == "nearest",
+              "resize filter must persist to the game config"))
+    return false;
+  QFile snapshot(QDir(root.path()).filePath("scoreboard-a/s.png"));
+  if (!snapshot.open(QIODevice::WriteOnly) || snapshot.write("snapshot") != 8)
+    return false;
+  snapshot.close();
+  games->setCurrentIndex(games->findText("scoreboard-b"));
+  games->setCurrentIndex(games->findText("scoreboard-a"));
+  if (!expect(sharpen->value() == 19, "saved sharpening must reload") ||
+      !expect(resize_filter->currentData().toString() == "nearest", "saved resize filter must reload") ||
+      !expect(reselect->isEnabled(), "reselection must be available when the game has a stitched snapshot"))
+    return false;
+  if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+    return false;
+  resize_filter->setCurrentIndex(resize_filter->findData("bilinear"));
+  const bool filter_live = expect(
+      HStreamWindowTestAccess::pendingScoreboardProperty(&window, "scoreboard-resize-filter") == "bilinear",
+      "changing the resize filter must send a live Program property");
+  HStreamWindowTestAccess::acknowledgeScoreboardProperty(&window, "scoreboard-resize-filter", "bilinear");
+  sharpen->setValue(16);
+  QEventLoop loop;
+  QTimer::singleShot(130, &loop, &QEventLoop::quit);
+  loop.exec();
+  const bool sharpen_live = expect(
+      HStreamWindowTestAccess::pendingScoreboardProperty(&window, "scoreboard-sharpen-amount") == "0.80",
+      "moving the sharpening slider must send a live Program property");
+  HStreamWindowTestAccess::acknowledgeScoreboardProperty(&window, "scoreboard-sharpen-amount", "0.80");
+  sharpen_spin->setValue(100.0);
+  QTimer::singleShot(130, &loop, &QEventLoop::quit);
+  loop.exec();
+  const bool high_live = expect(
+      HStreamWindowTestAccess::pendingScoreboardProperty(&window, "scoreboard-sharpen-amount") == "100.00",
+      "maximum sharpening must be available live");
+  HStreamWindowTestAccess::acknowledgeScoreboardProperty(&window, "scoreboard-sharpen-amount", "100.00");
+  sharpen->setValue(0);
+  QTimer::singleShot(130, &loop, &QEventLoop::quit);
+  loop.exec();
+  const bool off_live = expect(
+      HStreamWindowTestAccess::pendingScoreboardProperty(&window, "scoreboard-sharpen-amount") == "0.00",
+      "moving sharpening to zero must disable it live");
+  HStreamWindowTestAccess::killStubPipelineProcess(&window);
+  return filter_live && sharpen_live && high_live && off_live;
+}
+
 bool test_blend_mode() {
   QTemporaryDir blend_games;
   if (!blend_games.isValid())
@@ -16582,9 +16688,13 @@ int main(int argc, char** argv) {
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_BLEND_ONLY"))
     return test_blend_mode() ? 0 : 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_SCOREBOARD_ONLY"))
+    return test_scoreboard_controls() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
     return test_detector_precision() && test_detector_model() ? 0 : 1;
   if (!test_blend_mode())
+    return 1;
+  if (!test_scoreboard_controls())
     return 1;
   if (!test_detector_precision())
     return 1;

@@ -6795,6 +6795,25 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-width", "rink.scoreboard.projected_width"));
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-height", "rink.scoreboard.projected_height"));
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-scale", "rink.scoreboard.scoreboard_scale"));
+  HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-resize-filter", "rink.scoreboard.resize_filter"));
+  const YAML::Node resize_filter = pipeline["hmplaycropper"]["scoreboard-resize-filter"];
+  if (resize_filter.IsDefined() && !resize_filter.IsNull()) {
+    if (!resize_filter.IsScalar() ||
+        (resize_filter.as<std::string>() != "bilinear" && resize_filter.as<std::string>() != "nearest"))
+      return absl::InvalidArgumentError("rink.scoreboard.resize_filter must be bilinear or nearest");
+  }
+  HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-sharpen-amount", "rink.scoreboard.sharpen_amount"));
+  const YAML::Node sharpen_amount = pipeline["hmplaycropper"]["scoreboard-sharpen-amount"];
+  if (sharpen_amount.IsDefined() && !sharpen_amount.IsNull()) {
+    double amount = 0.0;
+    try {
+      amount = sharpen_amount.as<double>();
+    } catch (const YAML::Exception&) {
+      return absl::InvalidArgumentError("rink.scoreboard.sharpen_amount must be a number between 0 and 100");
+    }
+    if (!std::isfinite(amount) || amount < 0.0 || amount > 100.0)
+      return absl::InvalidArgumentError("rink.scoreboard.sharpen_amount must be between 0 and 100");
+  }
 
   const std::string source_path = "rink.scoreboard.perspective_polygon";
   const std::string destination_path = "pipeline.hmplaycropper.scoreboard-perspective-polygon";

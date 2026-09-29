@@ -35,6 +35,24 @@ bool CheckCase(
   }
 
   bool okay = true;
+  GstElement* runtime_cropper = gst_bin_get_by_name(GST_BIN(bin.bin), "playcropper0");
+  okay &= runtime_cropper == bin.playcropper;
+  if (runtime_cropper) {
+    g_object_set(
+        G_OBJECT(runtime_cropper), "scoreboard-sharpen-amount", 100.0, "scoreboard-resize-filter", "nearest", NULL);
+    gboolean accepted = FALSE;
+    gdouble sharpen = 0.0;
+    gchar* filter = nullptr;
+    g_object_get(
+        G_OBJECT(runtime_cropper),
+        "last-property-set-ok", &accepted,
+        "scoreboard-sharpen-amount", &sharpen,
+        "scoreboard-resize-filter", &filter,
+        NULL);
+    okay &= accepted && sharpen == 100.0 && filter && std::strcmp(filter, "nearest") == 0;
+    g_free(filter);
+    gst_object_unref(runtime_cropper);
+  }
   for (bool playtracker : {false, true}) {
     for (bool tracker : {false, true}) {
       const auto producer = hm::gst::ResolveProgramTrackColorProducer(bin.playcropper, playtracker, tracker);
@@ -64,7 +82,7 @@ bool CheckCase(
   }
   gst_object_unref(bin.bin);
   if (!okay)
-    std::cerr << name << ": incorrect demand or upstream ownership\n";
+    std::cerr << name << ": incorrect runtime cropper name, demand, or upstream ownership\n";
   return okay;
 }
 bool CheckPlayTrackerDemand(bool demand, bool public_override, bool private_override) {

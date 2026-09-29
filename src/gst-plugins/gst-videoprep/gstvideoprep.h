@@ -85,6 +85,8 @@ struct GstVideoPrep
   gchar* plugin_type;
   gchar* plugin_private_config;
   gchar* scoreboard_perspective_polygon;
+  gchar* scoreboard_resize_filter;
+  gdouble scoreboard_sharpen_amount;
   gchar* stitched_output_authorization_id;
   gchar* stitched_output_scoreboard_polygon;
   gdouble post_stitch_rotate_degrees;
@@ -113,6 +115,8 @@ struct GstVideoPrep
   gboolean shadow_lift_black_point_set;
   gboolean exposure_set;
   gboolean scoreboard_perspective_polygon_set;
+  gboolean scoreboard_resize_filter_set;
+  gboolean scoreboard_sharpen_amount_set;
   guint property_set_sequence;
   guint plugin_private_config_sequence;
   guint post_stitch_rotate_degrees_sequence;
@@ -128,6 +132,8 @@ struct GstVideoPrep
   guint shadow_lift_black_point_sequence;
   guint exposure_sequence;
   guint scoreboard_perspective_polygon_sequence;
+  guint scoreboard_resize_filter_sequence;
+  guint scoreboard_sharpen_amount_sequence;
 
   // GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
 

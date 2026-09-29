@@ -565,6 +565,7 @@ cc_binary(
     deps = [
         ":ui_diagnostics",
         "//src/libs/common:process_diagnostics",
+        "//src/libs/stitching:stitching",
         ":action_icons",
         ":hstream_window",
         # DeepStream's nvbufsurface libraries use the CUDA Driver API. Link

@@ -1131,7 +1131,9 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
 
   setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
 
-  bin->playcropper = gst_element_factory_make("playcropper", NULL);
+  // All videoprep variants otherwise receive an auto-generated videoprepN name.
+  // Program runtime property commands address this element by its stable name.
+  bin->playcropper = gst_element_factory_make("playcropper", "playcropper0");
   if (!bin->playcropper) {
     NVGSTDS_ERR_MSG_V("Failed to create 'playcropper'");
     goto done;
@@ -1220,6 +1222,12 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
   }
   if (config->scoreboard_scale > 0) {
     ppc << ";scoreboard-scale=" << config->scoreboard_scale;
+  }
+  if (config->scoreboard_resize_filter[0]) {
+    ppc << ";scoreboard-resize-filter=" << config->scoreboard_resize_filter;
+  }
+  if (config->scoreboard_sharpen_amount > 0) {
+    ppc << ";scoreboard-sharpen-amount=" << config->scoreboard_sharpen_amount;
   }
   ppc << ";plot-play-tracking=" << config->plot_play_tracking;
   ppc << ";plot-player-tracking=" << config->plot_player_tracking;

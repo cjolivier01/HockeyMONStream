@@ -379,6 +379,24 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       scoreboard_scale_ = 1.0;
     }
     scoreboard_.reset();
+  } else if (key == "scoreboard-resize-filter") {
+    if (prop.value != "bilinear" && prop.value != "nearest")
+      return false;
+    scoreboard_resize_filter_ = prop.value == "nearest"
+        ? hm::scoreboard::Scoreboard<uchar4>::ResizeFilter::Nearest
+        : hm::scoreboard::Scoreboard<uchar4>::ResizeFilter::Bilinear;
+    if (scoreboard_)
+      scoreboard_->set_resize_filter(scoreboard_resize_filter_);
+  } else if (key == "scoreboard-sharpen-amount") {
+    char* end = nullptr;
+    errno = 0;
+    const float amount = std::strtof(prop.value.c_str(), &end);
+    if (end == prop.value.c_str() || !end || *end != '\0' || errno != 0 || !std::isfinite(amount) ||
+        amount < 0.0F || amount > 100.0F)
+      return false;
+    scoreboard_sharpen_amount_ = amount;
+    if (scoreboard_)
+      scoreboard_->set_sharpen_amount(amount);
   } else if (key == "plot-play-tracking") {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (key == "plot-player-tracking") {
@@ -1143,7 +1161,8 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     // that by throwing, and this runs on a bare worker thread.
     try {
       scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
-          scoreboard_perspective_polygion_, scoreboard_width, scoreboard_height);
+          scoreboard_perspective_polygion_, scoreboard_width, scoreboard_height,
+          /*autoAspect=*/true, /*clipBox=*/nullptr, scoreboard_sharpen_amount_, scoreboard_resize_filter_);
     } catch (const std::exception& e) {
       return absl::InvalidArgumentError(TO_STRING("Cannot build the scoreboard perspective transform: " << e.what()));
     }

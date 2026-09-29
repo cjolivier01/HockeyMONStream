@@ -420,6 +420,12 @@ class HStreamWindow : public QMainWindow {
   QString detectorEnginePath() const;
   void loadDetectorPrecision(const YAML::Node& config);
   void loadBlendMode(const YAML::Node& config);
+  void loadScoreboardSharpen(const YAML::Node& config);
+  double scoreboardSharpenAmount() const;
+  void scheduleScoreboardSharpen(int ticks);
+  void loadScoreboardResizeFilter(const YAML::Node& config);
+  void scheduleScoreboardResizeFilter(const QString& filter);
+  void reselectScoreboard();
   void updateDefaultGpuMemoryProfile(const YAML::Node& game_config);
   void loadPlayerAnalyticsConfig(const YAML::Node& config);
   bool validatePlayerAnalyticsForRun();
@@ -657,6 +663,11 @@ class HStreamWindow : public QMainWindow {
   std::vector<QWidget*> camera_preview_render_targets_;
   std::vector<QLabel*> camera_preview_notices_;
   QTabWidget* program_control_tabs_{nullptr};
+  QSlider* scoreboard_sharpen_slider_{nullptr};
+  QLabel* scoreboard_sharpen_value_{nullptr};
+  QDoubleSpinBox* scoreboard_sharpen_spin_{nullptr};
+  QComboBox* scoreboard_resize_filter_combo_{nullptr};
+  QPushButton* scoreboard_reselect_button_{nullptr};
   PlayerAnalyticsControls* player_analytics_controls_{nullptr};
   QStringList active_player_analytics_arguments_;
   QString active_gpu_memory_profile_;
@@ -859,6 +870,9 @@ class HStreamWindow : public QMainWindow {
   QString complete_log_;
   QString scoreboard_selector_url_;
   ScoreboardSelectionDialog* scoreboard_selection_dialog_{nullptr};
+  QProcess* scoreboard_reselection_process_{nullptr};
+  QString scoreboard_reselection_game_id_;
+  QString scoreboard_reselection_output_;
   ProjectionCropDialog* projection_crop_dialog_{nullptr};
   std::string pending_crop_geometry_;
   RinkLevelingDialog* rink_leveling_dialog_{nullptr};
@@ -926,6 +940,8 @@ class HStreamWindow : public QMainWindow {
   QString saved_control_point_resolution_{"native"};
   QString saved_blend_mode_{"laplacian"};
   double saved_blend_feather_fraction_{0.05};
+  double saved_scoreboard_sharpen_amount_{0.0};
+  QString saved_scoreboard_resize_filter_{"bilinear"};
   QString saved_control_point_matcher_;
   QString saved_mapping_backend_;
   hm::stitching::StitchCameraSelection saved_camera_selection_;
@@ -942,6 +958,11 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> scheduled_rotation_controls_;
   std::map<QString, double> scheduled_playtracker_controls_;
   std::map<QString, int> scheduled_playcropper_controls_;
+  std::optional<int> scheduled_scoreboard_sharpen_ticks_;
+  std::optional<QString> scheduled_scoreboard_resize_filter_;
+  bool scheduled_scoreboard_sharpen_ready_{false};
+  bool scoreboard_sharpen_timer_pending_{false};
+  quint64 scoreboard_sharpen_schedule_generation_{0};
   bool scheduled_rotation_controls_ready_{false};
   bool live_rotation_authorization_pending_{false};
   bool deferred_restart_requested_{false};

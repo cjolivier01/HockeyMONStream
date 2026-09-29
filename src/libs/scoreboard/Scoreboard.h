@@ -24,6 +24,7 @@ namespace scoreboard {
 template <typename T_pixel>
 class Scoreboard {
  public:
+  enum class ResizeFilter { Bilinear, Nearest };
   /**
    * @brief Constructs a Scoreboard object.
    *
@@ -32,13 +33,19 @@ class Scoreboard {
    * @param destHeight Desired output height.
    * @param autoAspect If true, adjusts the output dimensions based on the source aspect ratio.
    * @param clipBox Optional pointer to a clipping rectangle; if provided, it is subtracted from the source points.
+   * @param sharpen_amount GPU unsharp-mask strength for production RGBA output; 0 disables it.
    */
   Scoreboard(
       const std::vector<cv::Point2f>& srcPts,
       int destWidth,
       int destHeight,
       bool autoAspect = true,
-      const cv::Rect* clipBox = nullptr);
+      const cv::Rect* clipBox = nullptr,
+      float sharpen_amount = 0.0F,
+      ResizeFilter resize_filter = ResizeFilter::Bilinear);
+
+  void set_sharpen_amount(float amount);
+  void set_resize_filter(ResizeFilter filter);
 
   /**
    * @brief Applies the perspective warp transformation to the input image.
@@ -94,6 +101,10 @@ class Scoreboard {
   int destHeight_{0}; ///< Final output height.
   int destW_{0}; ///< Intermediate width (possibly scaled).
   int destH_{0}; ///< Intermediate height (possibly scaled).
+  float sharpen_amount_{0.0F};
+  float last_sharpen_amount_{0.0F};
+  ResizeFilter resize_filter_{ResizeFilter::Bilinear};
+  bool resize_filter_dirty_{false};
   cv::Mat perspectiveMatrix_; ///< Perspective transformation matrix.
   cv::Mat inversePerspectiveMatrix_; ///< Inverse of perspectiveMatrix_, precomputed for the warp kernels.
   std::unique_ptr<hm::CudaMat<T_pixel>> working_image_ ABSL_GUARDED_BY(mu_);

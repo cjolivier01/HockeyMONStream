@@ -8,12 +8,26 @@
 #include <QtWidgets/QMessageBox>
 
 #include <exception>
+#include <iostream>
+#include <string_view>
 
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "src/apps/hstream-ui/UiDiagnostics.h"
 
 int main(int argc, char** argv) {
   hm::diagnostics::Initialize("hstream-ui", argc ? argv[0] : nullptr);
+  // The Scoreboard tab starts this short-lived child so selection retains the
+  // native selector's generation checks without blocking Qt's event loop.
+  if (argc == 3 && std::string_view(argv[1]) == "--scoreboard-select") {
+    const absl::Status status = hm::stitching::ScoreboardSelector::Run(argv[2]);
+    if (!status.ok()) {
+      std::cerr << "Scoreboard selection: " << status << '\n';
+      return status.code() == absl::StatusCode::kCancelled ? 0 : 1;
+    }
+    std::cerr << "Scoreboard selection saved\n";
+    return 0;
+  }
   install_qt_diagnostics();
   hm::ui_internal::configure_application_identity();
 #if defined(Q_OS_LINUX)

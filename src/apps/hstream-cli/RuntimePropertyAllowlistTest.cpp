@@ -16,6 +16,11 @@ bool expect(bool condition, const char* message) {
 int main() {
   using hm::pipeline::is_allowlisted_runtime_property;
   if (!expect(
+      is_allowlisted_runtime_property("playcropper0", "scoreboard-sharpen-amount") &&
+          is_allowlisted_runtime_property("playcropper0", "scoreboard-resize-filter"),
+      "scoreboard appearance settings must be live-mutable on Program"))
+    return 1;
+  if (!expect(
           is_allowlisted_runtime_property("playcropper0", "shadow-lift"),
           "The production playcropper instance must accept live shadow lift") ||
       !expect(

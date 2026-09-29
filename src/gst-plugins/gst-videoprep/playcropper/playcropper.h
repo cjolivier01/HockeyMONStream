@@ -101,6 +101,9 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::string scoreboard_projected_width_;
   std::string scoreboard_projected_height_;
   float scoreboard_scale_{1.0};
+  hm::scoreboard::Scoreboard<uchar4>::ResizeFilter scoreboard_resize_filter_{
+      hm::scoreboard::Scoreboard<uchar4>::ResizeFilter::Bilinear};
+  float scoreboard_sharpen_amount_{0.0F};
   std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   bool scoreboard_disabled_{false};

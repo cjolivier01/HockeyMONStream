@@ -814,6 +814,8 @@ play-tracker:
           mapped_defaults["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%10" &&
           mapped_defaults["hmplaycropper"]["scoreboard-projected-height"].as<std::string>() == "%20" &&
           mapped_defaults["hmplaycropper"]["scoreboard-scale"].as<double>() == 1.0 &&
+          mapped_defaults["hmplaycropper"]["scoreboard-resize-filter"].as<std::string>() == "bilinear" &&
+          mapped_defaults["hmplaycropper"]["scoreboard-sharpen-amount"].as<double>() == 0.0 &&
           !mapped_defaults["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
       "Every supported non-tracker native default must be filled from the bundled canonical baseline");
 
@@ -1396,6 +1398,8 @@ play-tracker:
   canonical_overrides["rink"]["scoreboard"]["projected_width"] = "%11";
   canonical_overrides["rink"]["scoreboard"]["projected_height"] = "%22";
   canonical_overrides["rink"]["scoreboard"]["scoreboard_scale"] = 1.25;
+  canonical_overrides["rink"]["scoreboard"]["resize_filter"] = "nearest";
+  canonical_overrides["rink"]["scoreboard"]["sharpen_amount"] = 100.0;
   for (const auto& point : std::vector<std::pair<int, int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}}) {
     YAML::Node coordinates(YAML::NodeType::Sequence);
     coordinates.push_back(point.first);
@@ -1450,11 +1454,29 @@ play-tracker:
           mapped_canonical["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%11" &&
           mapped_canonical["hmplaycropper"]["scoreboard-projected-height"].as<std::string>() == "%22" &&
           mapped_canonical["hmplaycropper"]["scoreboard-scale"].as<double>() == 1.25 &&
+          mapped_canonical["hmplaycropper"]["scoreboard-resize-filter"].as<std::string>() == "nearest" &&
+          mapped_canonical["hmplaycropper"]["scoreboard-sharpen-amount"].as<double>() == 100.0 &&
           mapped_canonical["hmplaycropper"]["scoreboard-perspective-polygon"].as<std::string>() == "1,2,3,4,5,6,7,8" &&
           mapped_canonical["sink0"]["bitrate"].as<int>() == 123456 &&
           mapped_canonical["sink0"]["output-file"].as<std::string>() == "/tmp/canonical.mkv" &&
           mapped_canonical["sink0"]["width"].as<int>() == 1280 && mapped_canonical["sink0"]["height"].as<int>() == 720,
       "Explicit canonical game values must replace lower-ranked structural native values for every supported mapping");
+  hm::Configurator invalid_scoreboard_sharpen(
+      "mapping-canonical", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  ok &= expect(
+      invalid_scoreboard_sharpen.configure().ok() &&
+          invalid_scoreboard_sharpen.underlay_config("pipeline", structural_custom_path.string()) &&
+          invalid_scoreboard_sharpen.apply_config_item("rink.scoreboard.sharpen_amount", "101").ok() &&
+          absl::IsInvalidArgument(invalid_scoreboard_sharpen.apply_supported_baseline_mappings()),
+      "Scoreboard sharpening must reject strengths outside its supported range");
+  hm::Configurator invalid_scoreboard_filter(
+      "mapping-canonical", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  ok &= expect(
+      invalid_scoreboard_filter.configure().ok() &&
+          invalid_scoreboard_filter.underlay_config("pipeline", structural_custom_path.string()) &&
+          invalid_scoreboard_filter.apply_config_item("rink.scoreboard.resize_filter", "cubic").ok() &&
+          absl::IsInvalidArgument(invalid_scoreboard_filter.apply_supported_baseline_mappings()),
+      "Scoreboard resize filtering must reject unknown values");
 
   const fs::path stale_runtime_polygon_dir = games / "mapping-stale-runtime-polygon";
   fs::create_directories(stale_runtime_polygon_dir);

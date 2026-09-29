@@ -5109,6 +5109,11 @@ void HStreamWindow::loadBaselineDefaults() {
 
 HStreamWindow::~HStreamWindow() {
   qApp->removeEventFilter(this);
+  if (scoreboard_reselection_process_ && scoreboard_reselection_process_->state() != QProcess::NotRunning) {
+    disconnect(scoreboard_reselection_process_, nullptr, this, nullptr);
+    scoreboard_reselection_process_->kill();
+    scoreboard_reselection_process_->waitForFinished(1000);
+  }
   if (telemetry_publication_worker_)
     telemetry_publication_worker_->wait();
   finishArchiveJobLog();
@@ -6821,7 +6826,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   auto* association = new QLabel(
       program_stage
           ? "These controls affect Program frames after stitching. Detection precision applies on the next run; "
-            "other controls apply live. Save Preset keeps the settings."
+            "camera and scoreboard controls apply live. Save Preset keeps the settings."
           : "Stitch rotation affects the stitched canvas before play tracking. It applies live while the pipeline "
             "is running; Save Preset keeps it for the next run.");
   association->setObjectName(program_stage ? "programControlAssociation" : "stitchedControlAssociation");
@@ -6997,6 +7002,80 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     control_tabs->addTab(crop_page, "Crop Rotation");
     control_tabs->addTab(runtime_page, "Runtime");
     control_tabs->addTab(detection_page, "Detection");
+    auto* scoreboard_page = new QWidget();
+    scoreboard_page->setObjectName("programScoreboardTab");
+    auto* scoreboard_layout = new QVBoxLayout(scoreboard_page);
+    auto* sharpen_label = new QLabel("Sharpen scoreboard (live)");
+    scoreboard_sharpen_slider_ = new WheelPassthroughSlider(Qt::Horizontal);
+    scoreboard_sharpen_slider_->setObjectName("scoreboardSharpenAmountSlider");
+    scoreboard_sharpen_slider_->setRange(0, 2000);
+    scoreboard_sharpen_slider_->setSingleStep(1);
+    scoreboard_sharpen_slider_->setPageStep(20);
+    scoreboard_sharpen_slider_->setValue(0);
+    scoreboard_sharpen_slider_->setToolTip(
+        "0 leaves the scoreboard unchanged. Sharpening runs on the GPU after perspective correction and before "
+        "the scoreboard is drawn. Try 0.5 first; high values can amplify LED grid and compression artifacts.");
+    sharpen_label->setBuddy(scoreboard_sharpen_slider_);
+    scoreboard_layout->addWidget(sharpen_label);
+    scoreboard_sharpen_value_ = new QLabel("0.00");
+    scoreboard_sharpen_value_->setObjectName("scoreboardSharpenAmountValue");
+    scoreboard_layout->addWidget(scoreboard_sharpen_value_);
+    scoreboard_sharpen_spin_ = new QDoubleSpinBox();
+    scoreboard_sharpen_spin_->setObjectName("scoreboardSharpenAmountSpin");
+    scoreboard_sharpen_spin_->setRange(0.0, 100.0);
+    scoreboard_sharpen_spin_->setDecimals(2);
+    scoreboard_sharpen_spin_->setSingleStep(0.05);
+    scoreboard_sharpen_spin_->setValue(0.0);
+    scoreboard_sharpen_spin_->setToolTip("Enter an exact sharpening strength in 0.05 steps.");
+    scoreboard_layout->addWidget(scoreboard_sharpen_spin_);
+    scoreboard_layout->addWidget(scoreboard_sharpen_slider_);
+    connect(scoreboard_sharpen_slider_, &QSlider::valueChanged, this, [this](int ticks) {
+      scoreboard_sharpen_value_->setText(QString::number(ticks / 20.0, 'f', 2));
+      const QSignalBlocker spin_blocker(scoreboard_sharpen_spin_);
+      scoreboard_sharpen_spin_->setValue(ticks / 20.0);
+      updatePresetDirtyState();
+      scheduleScoreboardSharpen(ticks);
+    });
+    connect(scoreboard_sharpen_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double amount) {
+      scoreboard_sharpen_slider_->setValue(qRound(amount * 20.0));
+    });
+    connect(scoreboard_sharpen_slider_, &QSlider::sliderReleased, this, [this] {
+      if (scheduled_scoreboard_sharpen_ticks_) {
+        scheduled_scoreboard_sharpen_ready_ = true;
+        flushScheduledRuntimeControls();
+      }
+    });
+    auto* resize_label = new QLabel("Scoreboard resize filter (live)");
+    scoreboard_resize_filter_combo_ = new QComboBox();
+    scoreboard_resize_filter_combo_->setObjectName("scoreboardResizeFilterCombo");
+    scoreboard_resize_filter_combo_->addItem("Bilinear", "bilinear");
+    scoreboard_resize_filter_combo_->addItem("Nearest neighbor", "nearest");
+    scoreboard_resize_filter_combo_->setToolTip(
+        "Changes how the scoreboard crop is enlarged before perspective correction. "
+        "The perspective warp itself remains bilinear.");
+    resize_label->setBuddy(scoreboard_resize_filter_combo_);
+    scoreboard_layout->addWidget(resize_label);
+    scoreboard_layout->addWidget(scoreboard_resize_filter_combo_);
+    connect(scoreboard_resize_filter_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+      updatePresetDirtyState();
+      scheduleScoreboardResizeFilter(scoreboard_resize_filter_combo_->currentData().toString());
+    });
+    scoreboard_reselect_button_ = new QPushButton(action_icon(ActionIcon::Crop), "Reselect scoreboard corners…");
+    scoreboard_reselect_button_->setObjectName("scoreboardReselectButton");
+    scoreboard_reselect_button_->setToolTip(
+        "Open the stitched snapshot and adjust the scoreboard corners. Available while playback is stopped; "
+        "the new selection appears on the next run.");
+    scoreboard_layout->addWidget(scoreboard_reselect_button_);
+    connect(scoreboard_reselect_button_, &QPushButton::clicked, this, [this] { reselectScoreboard(); });
+    auto* scoreboard_note = new QLabel(
+        "The selected corners are saved immediately for this game. Sharpening and resize filtering change the "
+        "running Program; Save Preset keeps both settings.");
+    scoreboard_note->setWordWrap(true);
+    scoreboard_layout->addWidget(scoreboard_note);
+    scoreboard_layout->addStretch();
+    loadScoreboardSharpen(YAML::Node(YAML::NodeType::Map));
+    loadScoreboardResizeFilter(YAML::Node(YAML::NodeType::Map));
+    control_tabs->addTab(scoreboard_page, "Scoreboard");
     auto* analytics_scroll = new QScrollArea();
     analytics_scroll->setObjectName("playerAnalyticsScrollArea");
     analytics_scroll->setWidgetResizable(true);
@@ -9821,6 +9900,12 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
       args << QString("--options=stitching.blend_feather_fraction=%1").arg(blendFeatherFraction(), 0, 'g', 4);
     }
   }
+  if (scoreboard_sharpen_slider_ && scoreboardSharpenAmount() != saved_scoreboard_sharpen_amount_)
+    args << QString("--options=rink.scoreboard.sharpen_amount=%1").arg(scoreboardSharpenAmount(), 0, 'f', 2);
+  if (scoreboard_resize_filter_combo_ &&
+      scoreboard_resize_filter_combo_->currentData().toString() != saved_scoreboard_resize_filter_)
+    args << QString("--options=rink.scoreboard.resize_filter=%1")
+                .arg(scoreboard_resize_filter_combo_->currentData().toString());
   const QString gpu_memory_profile = !standalone && !active_run_game_id_.isEmpty()
       ? active_gpu_memory_profile_
       : (gpu_memory_profile_user_selected_ && gpu_memory_profile_combo_
@@ -10072,6 +10157,134 @@ void HStreamWindow::loadBlendMode(const YAML::Node& config) {
     blend_feather_row_->setVisible(blendMode() == "alpha");
 }
 
+void HStreamWindow::loadScoreboardSharpen(const YAML::Node& config) {
+  if (!scoreboard_sharpen_slider_)
+    return;
+  const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
+  YAML::Node value;
+  double amount = 0.0;
+  if (lookup_yaml_path(effective, "rink.scoreboard.sharpen_amount", &value) && !value.IsNull()) {
+    amount = value.as<double>();
+    if (!std::isfinite(amount) || amount < 0.0 || amount > 100.0)
+      throw std::invalid_argument("rink.scoreboard.sharpen_amount must be between 0 and 100");
+  }
+  const QSignalBlocker blocker(scoreboard_sharpen_slider_);
+  scoreboard_sharpen_slider_->setValue(qRound(amount * 20.0));
+  scoreboard_sharpen_value_->setText(QString::number(scoreboardSharpenAmount(), 'f', 2));
+  if (scoreboard_sharpen_spin_) {
+    const QSignalBlocker spin_blocker(scoreboard_sharpen_spin_);
+    scoreboard_sharpen_spin_->setValue(scoreboardSharpenAmount());
+  }
+}
+
+double HStreamWindow::scoreboardSharpenAmount() const {
+  return scoreboard_sharpen_slider_ ? scoreboard_sharpen_slider_->value() / 20.0 : 0.0;
+}
+
+void HStreamWindow::scheduleScoreboardSharpen(int ticks) {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || active_run_is_calibration_)
+    return;
+  scheduled_scoreboard_sharpen_ticks_ = ticks;
+  if (scoreboard_sharpen_timer_pending_)
+    return;
+  scoreboard_sharpen_timer_pending_ = true;
+  const quint64 generation = ++scoreboard_sharpen_schedule_generation_;
+  const quint64 run_generation = pipeline_run_generation_;
+  QTimer::singleShot(80, this, [this, generation, run_generation] {
+    if (generation != scoreboard_sharpen_schedule_generation_ || run_generation != pipeline_run_generation_)
+      return;
+    scoreboard_sharpen_timer_pending_ = false;
+    scheduled_scoreboard_sharpen_ready_ = true;
+    flushScheduledRuntimeControls();
+  });
+}
+
+void HStreamWindow::loadScoreboardResizeFilter(const YAML::Node& config) {
+  if (!scoreboard_resize_filter_combo_)
+    return;
+  const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
+  YAML::Node value;
+  QString filter = "bilinear";
+  if (lookup_yaml_path(effective, "rink.scoreboard.resize_filter", &value) && !value.IsNull())
+    filter = QString::fromStdString(value.as<std::string>());
+  if (filter != "bilinear" && filter != "nearest")
+    throw std::invalid_argument("rink.scoreboard.resize_filter must be bilinear or nearest");
+  const QSignalBlocker blocker(scoreboard_resize_filter_combo_);
+  set_combo_to_data(scoreboard_resize_filter_combo_, filter);
+}
+
+void HStreamWindow::scheduleScoreboardResizeFilter(const QString& filter) {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || active_run_is_calibration_)
+    return;
+  scheduled_scoreboard_resize_filter_ = filter;
+  flushScheduledRuntimeControls();
+}
+
+void HStreamWindow::reselectScoreboard() {
+  const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  if (game_id.isEmpty() || !ensureSavedControlConfigLoaded() ||
+      (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || scoreboard_reselection_process_)
+    return;
+  const QString game_dir = gameDirectory(game_id);
+  const QString image = QDir(game_dir).filePath("s.png");
+  if (!QFileInfo(image).isFile()) {
+    appendLog("Reselect scoreboard requires a stitched snapshot (s.png). Run the Program once to create it.");
+    return;
+  }
+  scoreboard_reselection_game_id_ = game_id;
+  scoreboard_reselection_output_.clear();
+  scoreboard_selector_url_.clear();
+  auto* process = new QProcess(this);
+  scoreboard_reselection_process_ = process;
+  process->setProcessChannelMode(QProcess::MergedChannels);
+  QProcessEnvironment selector_environment = QProcessEnvironment::systemEnvironment();
+  selector_environment.remove("HM_NO_SCOREBOARD");
+  selector_environment.insert("HM_SCOREBOARD_BIND_HOST", "127.0.0.1");
+  process->setProcessEnvironment(selector_environment);
+  connect(process, &QProcess::readyRead, this, [this, process] {
+    if (scoreboard_reselection_process_ != process)
+      return;
+    scoreboard_reselection_output_ += QString::fromUtf8(process->readAll());
+    scoreboard_reselection_output_ = scoreboard_reselection_output_.right(8192);
+    handleScoreboardSelectorOutput(scoreboard_reselection_output_);
+  });
+  connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+          [this, process](int exit_code, QProcess::ExitStatus status) {
+            if (scoreboard_reselection_process_ != process)
+              return;
+            const QString output = scoreboard_reselection_output_ + QString::fromUtf8(process->readAll());
+            scoreboard_reselection_process_ = nullptr;
+            scoreboard_reselection_game_id_.clear();
+            scoreboard_reselection_output_.clear();
+            scoreboard_selector_url_.clear();
+            if (scoreboard_selection_dialog_) {
+              scoreboard_selection_dialog_->closeAfterBackendCompletion();
+              scoreboard_selection_dialog_ = nullptr;
+            }
+            if (status == QProcess::NormalExit && exit_code == 0) {
+              appendLog(output.contains("Scoreboard selection saved")
+                            ? "scoreboard corners saved; the new selection applies on the next run"
+                            : "scoreboard reselection cancelled");
+            } else {
+              appendLog("scoreboard reselection failed: " + output.trimmed());
+            }
+            process->deleteLater();
+            updateRunControls();
+          });
+  connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
+    if (error != QProcess::FailedToStart || scoreboard_reselection_process_ != process)
+      return;
+    scoreboard_reselection_process_ = nullptr;
+    scoreboard_reselection_game_id_.clear();
+    scoreboard_reselection_output_.clear();
+    appendLog("scoreboard selector could not start: " + process->errorString());
+    process->deleteLater();
+    updateRunControls();
+  });
+  process->start(QCoreApplication::applicationFilePath(), {"--scoreboard-select", game_dir});
+  updateRunControls();
+}
+
 void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
   if (!detector_precision_combo_)
     return;
@@ -10205,6 +10418,10 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 
 void HStreamWindow::startPipeline() {
   hm::diagnostics::Breadcrumb("pipeline", "start requested");
+  if (scoreboard_reselection_process_) {
+    appendLog("finish scoreboard selection before starting playback");
+    return;
+  }
   if (!ensureSavedControlConfigLoaded() || !validatePlayerAnalyticsForRun())
     return;
   if (findChild<QDialog*>("stitchingExperimentDialog")) {
@@ -10903,6 +11120,11 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   ++scheduled_playcropper_control_generation_;
   scheduled_playcropper_controls_.clear();
   scheduled_playcropper_controls_ready_ = false;
+  ++scoreboard_sharpen_schedule_generation_;
+  scheduled_scoreboard_sharpen_ticks_.reset();
+  scheduled_scoreboard_resize_filter_.reset();
+  scheduled_scoreboard_sharpen_ready_ = false;
+  scoreboard_sharpen_timer_pending_ = false;
   publishing_playtracker_controls_.reset();
   scheduled_playtracker_force_all_targets_ = false;
   publishing_playtracker_force_all_targets_ = false;
@@ -11139,6 +11361,11 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   ++scheduled_playcropper_control_generation_;
   scheduled_playcropper_controls_.clear();
   scheduled_playcropper_controls_ready_ = false;
+  ++scoreboard_sharpen_schedule_generation_;
+  scheduled_scoreboard_sharpen_ticks_.reset();
+  scheduled_scoreboard_resize_filter_.reset();
+  scheduled_scoreboard_sharpen_ready_ = false;
+  scoreboard_sharpen_timer_pending_ = false;
   publishing_playtracker_controls_.reset();
   scheduled_playtracker_force_all_targets_ = false;
   publishing_playtracker_force_all_targets_ = false;
@@ -14570,7 +14797,8 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     }
 
     QVector<QPoint> initial_points;
-    const QString game_dir = gameDirectory(active_run_game_id_);
+    const QString selector_game_id = scoreboard_reselection_process_ ? scoreboard_reselection_game_id_ : active_run_game_id_;
+    const QString game_dir = gameDirectory(selector_game_id);
     const QString config_path = QDir(game_dir).filePath("config.yaml");
     try {
       if (QFileInfo(config_path).isFile()) {
@@ -14611,9 +14839,13 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     auto* dialog =
         new ScoreboardSelectionDialog(QUrl(url_text), QDir(game_dir).filePath("s.png"), initial_points, this);
     dialog->cancellationFailed = [this](const QString& reason) {
-      appendLog(QString("scoreboard selector cancellation failed; stopping pipeline: %1").arg(reason));
-      if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning)
+      if (scoreboard_reselection_process_) {
+        appendLog(QString("scoreboard selector cancellation failed; stopping selector: %1").arg(reason));
+        scoreboard_reselection_process_->kill();
+      } else {
+        appendLog(QString("scoreboard selector cancellation failed; stopping pipeline: %1").arg(reason));
         stopPipeline();
+      }
     };
     scoreboard_selection_dialog_ = dialog;
     connect(dialog, &QObject::destroyed, this, [this, dialog]() {
@@ -14629,7 +14861,7 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     return;
   }
 
-  if (!scoreboard_selector_url_.isEmpty() &&
+  if (!scoreboard_reselection_process_ && !scoreboard_selector_url_.isEmpty() &&
       (line.contains("Loaded scoreboard perspective polygon") || line.contains("Scoreboard overlay disabled"))) {
     if (preview_status_) {
       const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
@@ -16014,8 +16246,15 @@ void HStreamWindow::updateRunControls() {
   }
   if (start_button_) {
     start_button_->setEnabled(
-        !running && !finalizing && !archive_recovery_blocked && !live_rotation_authorization_pending_ &&
+        !running && !finalizing && !scoreboard_reselection_process_ && !archive_recovery_blocked &&
+        !live_rotation_authorization_pending_ &&
         !findChild<QDialog*>("highlightsDialog"));
+  }
+  if (scoreboard_reselect_button_) {
+    const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+    scoreboard_reselect_button_->setEnabled(
+        !running && !scoreboard_reselection_process_ && !game_id.isEmpty() &&
+        QFileInfo(QDir(gameDirectory(game_id)).filePath("s.png")).isFile());
   }
   if (pause_button_) {
     pause_button_->setEnabled(
@@ -16536,6 +16775,8 @@ bool HStreamWindow::savePreset() {
   }
   loadDetectorPrecision(config);
   loadBlendMode(config);
+  loadScoreboardSharpen(config);
+  loadScoreboardResizeFilter(config);
   loadPlayerAnalyticsConfig(config);
   appendLog(QString("preset saved %1").arg(QString::fromStdString(config_path.string())));
   if (game_id_edit_) {
@@ -16554,6 +16795,10 @@ void HStreamWindow::resetCameraControls() {
   // operator's choice for the run after it.
   if (!pipeline_running)
     loadBlendMode(YAML::Node(YAML::NodeType::Map));
+  if (!pipeline_running)
+    loadScoreboardSharpen(YAML::Node(YAML::NodeType::Map));
+  if (!pipeline_running)
+    loadScoreboardResizeFilter(YAML::Node(YAML::NodeType::Map));
   for (const auto& [id, value] : camera_defaults_) {
     const auto suppressed = suppressed_crop_rotation_controls_.find(id);
     if (suppressed != suppressed_crop_rotation_controls_.end()) {
@@ -16842,6 +17087,9 @@ void HStreamWindow::captureSavedControlState() {
   saved_control_point_resolution_ = control_point_resolution_;
   saved_blend_mode_ = blendMode();
   saved_blend_feather_fraction_ = blendFeatherFraction();
+  saved_scoreboard_sharpen_amount_ = scoreboardSharpenAmount();
+  saved_scoreboard_resize_filter_ =
+      scoreboard_resize_filter_combo_ ? scoreboard_resize_filter_combo_->currentData().toString() : "bilinear";
   saved_mapping_backend_ = mappingBackend();
   saved_camera_selection_ = stitchCameraSelection();
   saved_projection_ = stitchProjection();
@@ -16892,6 +17140,9 @@ void HStreamWindow::updatePresetDirtyState() {
       saved_stitch_max_output_width_ != stitchingMaxOutputWidth() || saved_run_autooptimizer_ != runAutooptimizer() ||
       saved_control_point_resolution_ != control_point_resolution_ || saved_blend_mode_ != blendMode() ||
       saved_blend_feather_fraction_ != blendFeatherFraction() ||
+      (scoreboard_sharpen_slider_ && saved_scoreboard_sharpen_amount_ != scoreboardSharpenAmount()) ||
+      (scoreboard_resize_filter_combo_ &&
+       saved_scoreboard_resize_filter_ != scoreboard_resize_filter_combo_->currentData().toString()) ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
       saved_camera_selection_ != stitchCameraSelection() || saved_projection_ != stitchProjection() ||
       saved_projection_parameters_ != projection_parameter_values_ || projection_framing_dirty;
@@ -17059,6 +17310,8 @@ void HStreamWindow::loadSavedControlConfig() {
   control_point_resolution_ = default_control_point_resolution_;
   loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
   loadBlendMode(YAML::Node(YAML::NodeType::Map));
+  loadScoreboardSharpen(YAML::Node(YAML::NodeType::Map));
+  loadScoreboardResizeFilter(YAML::Node(YAML::NodeType::Map));
   loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
   updateDefaultGpuMemoryProfile(YAML::Node(YAML::NodeType::Map));
   setStitchingIterationSettings(default_iteration_settings_);
@@ -17812,6 +18065,8 @@ void HStreamWindow::loadSavedControlConfig() {
                     .arg(unavailable_playtracker_config_error_));
     loadDetectorPrecision(config);
     loadBlendMode(config);
+    loadScoreboardSharpen(config);
+    loadScoreboardResizeFilter(config);
     loadPlayerAnalyticsConfig(config);
     saved_control_config_load_error_.clear();
     captureSavedControlState();
@@ -18161,6 +18416,11 @@ bool HStreamWindow::applySavedControlConfig(
       return false;
     }
   }
+  if (scoreboard_sharpen_slider_)
+    config["rink"]["scoreboard"]["sharpen_amount"] = scoreboardSharpenAmount();
+  if (scoreboard_resize_filter_combo_)
+    config["rink"]["scoreboard"]["resize_filter"] =
+        scoreboard_resize_filter_combo_->currentData().toString().toStdString();
   remove_yaml_path(config, {"hstream_ui", "generated_control_point_resolution"});
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
   hm::stitching::write_stitch_camera_selection(config, selected_camera);
@@ -20134,6 +20394,14 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
   }
 }
 
+static QString runtime_control_description(const QString& id, double value) {
+  if (id == "Scoreboard_Sharpen")
+    return QString("scoreboard sharpen=%1").arg(value, 0, 'f', 2);
+  if (id == "Scoreboard_Resize_Filter")
+    return QString("scoreboard resize filter=%1").arg(value == 1.0 ? "nearest" : "bilinear");
+  return QString("camera control %1=%2").arg(id).arg(value);
+}
+
 void HStreamWindow::failPendingRuntimeControls(const QString& reason) {
   for (const PendingRuntimeControl& pending : pending_runtime_controls_) {
     if (pending.property == "runtime-tuning-config-file" && pending.runtime_value != last_playtracker_runtime_snapshot_)
@@ -20142,7 +20410,7 @@ void HStreamWindow::failPendingRuntimeControls(const QString& reason) {
   for (const auto& [batch_id, batch] : runtime_control_batches_) {
     (void)batch_id;
     for (const auto& [control_id, control_value] : batch.controls) {
-      appendLog(QString("camera control %1=%2 apply=failed reason=%3").arg(control_id).arg(control_value).arg(reason));
+      appendLog(QString("%1 apply=failed reason=%2").arg(runtime_control_description(control_id, control_value), reason));
     }
   }
   pending_runtime_controls_.clear();
@@ -20155,10 +20423,8 @@ void HStreamWindow::finishRuntimeControlBatch(quint64 batch_id, bool failed, con
     return;
   const QString suffix = failed && !reason.isEmpty() ? " reason=" + reason : QString();
   for (const auto& [control_id, control_value] : batch->second.controls) {
-    appendLog(QString("camera control %1=%2 apply=%3%4")
-                  .arg(control_id)
-                  .arg(control_value)
-                  .arg(failed ? "failed" : "live", suffix));
+    appendLog(QString("%1 apply=%2%3")
+                  .arg(runtime_control_description(control_id, control_value), failed ? "failed" : "live", suffix));
   }
   runtime_control_batches_.erase(batch);
   flushScheduledRuntimeControls();
@@ -20290,15 +20556,14 @@ bool HStreamWindow::publishRuntimeControlBatch(
         pending_runtime_controls_.end());
     runtime_control_batches_.erase(batch_id);
     for (const auto& [control_id, control_value] : controls) {
-      appendLog(QString("camera control %1=%2 apply=failed reason=%3")
-                    .arg(control_id)
-                    .arg(control_value)
-                    .arg(ambiguous_live_rotation ? "incomplete pipeline command write" : "pipeline command write"));
+      appendLog(QString("%1 apply=failed reason=%2")
+                    .arg(runtime_control_description(control_id, control_value),
+                         ambiguous_live_rotation ? "incomplete pipeline command write" : "pipeline command write"));
     }
     return false;
   }
   for (const auto& [control_id, control_value] : controls) {
-    appendLog(QString("camera control %1=%2 apply=pending").arg(control_id).arg(control_value));
+    appendLog(QString("%1 apply=pending").arg(runtime_control_description(control_id, control_value)));
   }
   QTimer::singleShot(runtimeControlAckTimeoutMs(), this, [this, batch_id]() { timeoutRuntimeControlBatch(batch_id); });
   return true;
@@ -20687,6 +20952,24 @@ void HStreamWindow::flushScheduledRuntimeControls() {
     if (publishRotationRuntimeControls(std::move(controls), std::nullopt, std::nullopt)) {
       return;
     }
+  }
+  if (scheduled_scoreboard_sharpen_ready_ && scheduled_scoreboard_sharpen_ticks_) {
+    const int ticks = *scheduled_scoreboard_sharpen_ticks_;
+    scheduled_scoreboard_sharpen_ticks_.reset();
+    scheduled_scoreboard_sharpen_ready_ = false;
+    const double amount = ticks / 20.0;
+    publishRuntimeControlBatch(
+        {{"Scoreboard_Sharpen", amount}},
+        {{"playcropper0", "scoreboard-sharpen-amount", QString::number(amount, 'f', 2)}});
+    return;
+  }
+  if (scheduled_scoreboard_resize_filter_) {
+    const QString filter = *scheduled_scoreboard_resize_filter_;
+    scheduled_scoreboard_resize_filter_.reset();
+    publishRuntimeControlBatch(
+        {{"Scoreboard_Resize_Filter", filter == "nearest" ? 1.0 : 0.0}},
+        {{"playcropper0", "scoreboard-resize-filter", filter}});
+    return;
   }
   if (scheduled_playcropper_controls_ready_ && !scheduled_playcropper_controls_.empty()) {
     const std::map<QString, int> controls = std::move(scheduled_playcropper_controls_);

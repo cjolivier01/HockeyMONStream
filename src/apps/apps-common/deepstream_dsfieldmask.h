@@ -162,6 +162,8 @@ struct HmPlayCropperConfig : public NvDsHmVideoPrepConfig {
   gchar scoreboard_projected_width[32];
   gchar scoreboard_projected_height[32];
   gfloat scoreboard_scale;
+  gchar scoreboard_resize_filter[16];
+  gfloat scoreboard_sharpen_amount;
   gboolean plot_play_tracking;
   gboolean plot_player_tracking;
   gboolean transform_object_meta;

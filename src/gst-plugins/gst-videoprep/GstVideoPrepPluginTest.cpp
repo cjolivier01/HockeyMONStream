@@ -262,6 +262,16 @@ int main(int argc, char** argv) {
   const bool scoreboard_polygon_mutable_while_playing = scoreboard_polygon_spec &&
       (scoreboard_polygon_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0 &&
       (scoreboard_polygon_spec->flags & G_PARAM_READABLE) != 0;
+  GParamSpec* scoreboard_sharpen_spec =
+      g_object_class_find_property(G_OBJECT_GET_CLASS(element), "scoreboard-sharpen-amount");
+  GParamSpec* scoreboard_filter_spec =
+      g_object_class_find_property(G_OBJECT_GET_CLASS(element), "scoreboard-resize-filter");
+  const bool scoreboard_appearance_mutable_while_playing = scoreboard_sharpen_spec && scoreboard_filter_spec &&
+      (scoreboard_sharpen_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0 &&
+      (scoreboard_filter_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0 &&
+      G_PARAM_SPEC_VALUE_TYPE(scoreboard_sharpen_spec) == G_TYPE_DOUBLE &&
+      G_PARAM_SPEC_DOUBLE(scoreboard_sharpen_spec)->maximum == 100.0 &&
+      G_PARAM_SPEC_VALUE_TYPE(scoreboard_filter_spec) == G_TYPE_STRING;
   const bool invalid_black_point_rejected =
       !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"shadow-lift-black-point", "2"}});
   gboolean black_point_after_invalid = FALSE;
@@ -293,7 +303,8 @@ int main(int argc, char** argv) {
   gst_object_unref(element);
 
   if (!ok || !high_bit_depth_is_restart_only || !sink_accepts_rgb10 || !black_point_mutable_while_playing ||
-      !exposure_mutable_while_playing || !scoreboard_polygon_mutable_while_playing || !invalid_black_point_rejected ||
+      !exposure_mutable_while_playing || !scoreboard_polygon_mutable_while_playing ||
+      !scoreboard_appearance_mutable_while_playing || !invalid_black_point_rejected ||
       black_point_after_invalid != TRUE || !invalid_exposure_rejected ||
       std::abs(exposure_after_invalid - 1.0) > 1e-6 || !invalid_high_bit_depth_rejected ||
       high_bit_depth_after_invalid != TRUE || !invalid_epoch_rejected) {

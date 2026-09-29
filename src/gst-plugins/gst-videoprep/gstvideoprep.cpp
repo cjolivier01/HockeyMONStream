@@ -150,6 +150,8 @@ enum {
   PROP_POST_STITCH_ROTATE_DEGREES,
   PROP_STITCHED_OUTPUT_EPOCH,
   PROP_SCOREBOARD_PERSPECTIVE_POLYGON,
+  PROP_SCOREBOARD_RESIZE_FILTER,
+  PROP_SCOREBOARD_SHARPEN_AMOUNT,
   PROP_MAX_OUTPUT_WIDTH,
   PROP_FIXED_EDGE_ROTATION_ANGLE,
   PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT,
@@ -1195,6 +1197,28 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_SCOREBOARD_RESIZE_FILTER,
+      g_param_spec_string(
+          "scoreboard-resize-filter",
+          "Scoreboard resize filter",
+          "Nearest or bilinear sampling for the scoreboard ROI resize",
+          "bilinear",
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_SCOREBOARD_SHARPEN_AMOUNT,
+      g_param_spec_double(
+          "scoreboard-sharpen-amount",
+          "Scoreboard sharpen amount",
+          "Runtime unsharp-mask strength for the Program scoreboard",
+          0.0,
+          100.0,
+          0.0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_MAX_OUTPUT_WIDTH,
       g_param_spec_uint(
           "max-output-width",
@@ -1399,6 +1423,8 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   assert(!videoprep->plugin_type);
   videoprep->plugin_type = NULL; // strdup("videoprep");
   videoprep->scoreboard_perspective_polygon = NULL;
+  videoprep->scoreboard_resize_filter = NULL;
+  videoprep->scoreboard_sharpen_amount = 0.0;
   videoprep->stitched_output_authorization_id = NULL;
   videoprep->stitched_output_scoreboard_polygon = NULL;
   videoprep->post_stitch_rotate_degrees = 0.0;
@@ -1427,6 +1453,8 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->shadow_lift_black_point_set = FALSE;
   videoprep->exposure_set = FALSE;
   videoprep->scoreboard_perspective_polygon_set = FALSE;
+  videoprep->scoreboard_resize_filter_set = FALSE;
+  videoprep->scoreboard_sharpen_amount_set = FALSE;
   videoprep->property_set_sequence = 0;
   videoprep->plugin_private_config_sequence = 0;
   videoprep->post_stitch_rotate_degrees_sequence = 0;
@@ -1442,6 +1470,8 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->shadow_lift_black_point_sequence = 0;
   videoprep->exposure_sequence = 0;
   videoprep->scoreboard_perspective_polygon_sequence = 0;
+  videoprep->scoreboard_resize_filter_sequence = 0;
+  videoprep->scoreboard_sharpen_amount_sequence = 0;
   videoprep->priv_factory = new VideoPrepLibrary_Factory();
 
   videoprep->num_output_buffers = DEFAULT_NUM_OUTPUT_BUFFERS;
@@ -1490,6 +1520,8 @@ static void gst_videoprep_finalize(GObject* object) {
     g_free(videoprep->plugin_type);
   if (videoprep->scoreboard_perspective_polygon)
     g_free(videoprep->scoreboard_perspective_polygon);
+  if (videoprep->scoreboard_resize_filter)
+    g_free(videoprep->scoreboard_resize_filter);
   if (videoprep->stitched_output_authorization_id)
     g_free(videoprep->stitched_output_authorization_id);
   if (videoprep->stitched_output_scoreboard_polygon)
@@ -1635,6 +1667,38 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
         videoprep->scoreboard_perspective_polygon_sequence = previous_sequence;
       }
       g_free(previous);
+      break;
+    }
+    case PROP_SCOREBOARD_RESIZE_FILTER: {
+      gchar* previous = videoprep->scoreboard_resize_filter ? g_strdup(videoprep->scoreboard_resize_filter) : nullptr;
+      const gboolean previous_set = videoprep->scoreboard_resize_filter_set;
+      const guint previous_sequence = videoprep->scoreboard_resize_filter_sequence;
+      hm::gst::set_value(videoprep->scoreboard_resize_filter, value);
+      videoprep->scoreboard_resize_filter_set = TRUE;
+      videoprep->scoreboard_resize_filter_sequence = ++videoprep->property_set_sequence;
+      if (!videoprep->scoreboard_resize_filter ||
+          !set_priv_property("scoreboard-resize-filter", videoprep->scoreboard_resize_filter)) {
+        g_free(videoprep->scoreboard_resize_filter);
+        videoprep->scoreboard_resize_filter = previous;
+        previous = nullptr;
+        videoprep->scoreboard_resize_filter_set = previous_set;
+        videoprep->scoreboard_resize_filter_sequence = previous_sequence;
+      }
+      g_free(previous);
+      break;
+    }
+    case PROP_SCOREBOARD_SHARPEN_AMOUNT: {
+      const gdouble previous = videoprep->scoreboard_sharpen_amount;
+      const gboolean previous_set = videoprep->scoreboard_sharpen_amount_set;
+      const guint previous_sequence = videoprep->scoreboard_sharpen_amount_sequence;
+      videoprep->scoreboard_sharpen_amount = g_value_get_double(value);
+      videoprep->scoreboard_sharpen_amount_set = TRUE;
+      videoprep->scoreboard_sharpen_amount_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property("scoreboard-sharpen-amount", std::to_string(videoprep->scoreboard_sharpen_amount))) {
+        videoprep->scoreboard_sharpen_amount = previous;
+        videoprep->scoreboard_sharpen_amount_set = previous_set;
+        videoprep->scoreboard_sharpen_amount_sequence = previous_sequence;
+      }
       break;
     }
     case PROP_MAX_OUTPUT_WIDTH: {
@@ -1886,6 +1950,18 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
              Property("scoreboard-perspective-polygon", videoprep->scoreboard_perspective_polygon)) &&
         ok;
   }
+  if (videoprep->scoreboard_resize_filter_set && videoprep->scoreboard_resize_filter &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->scoreboard_resize_filter_sequence, "scoreboard-resize-filter")) {
+    ok = videoprep->priv->SetProperty(Property("scoreboard-resize-filter", videoprep->scoreboard_resize_filter)) && ok;
+  }
+  if (videoprep->scoreboard_sharpen_amount_set &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->scoreboard_sharpen_amount_sequence, "scoreboard-sharpen-amount")) {
+    ok = videoprep->priv->SetProperty(
+             Property("scoreboard-sharpen-amount", std::to_string(videoprep->scoreboard_sharpen_amount))) &&
+        ok;
+  }
   if (videoprep->max_output_width_set &&
       typed_property_wins_over_private_config_aliases(
           videoprep,
@@ -1990,6 +2066,12 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_SCOREBOARD_PERSPECTIVE_POLYGON:
       g_value_set_string(value, videoprep->scoreboard_perspective_polygon);
+      break;
+    case PROP_SCOREBOARD_RESIZE_FILTER:
+      g_value_set_string(value, videoprep->scoreboard_resize_filter ? videoprep->scoreboard_resize_filter : "bilinear");
+      break;
+    case PROP_SCOREBOARD_SHARPEN_AMOUNT:
+      g_value_set_double(value, videoprep->scoreboard_sharpen_amount);
       break;
     case PROP_MAX_OUTPUT_WIDTH:
       g_value_set_uint(value, videoprep->max_output_width);

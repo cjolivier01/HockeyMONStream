@@ -66,5 +66,10 @@ int main() {
     std::cerr << "Synthetic LED grid does not distinguish bilinear from nearest sampling\n";
     return 1;
   }
+  scoreboard.set_resize_filter(hm::scoreboard::Scoreboard<uchar3>::ResizeFilter::Nearest);
+  if (cv::norm(scoreboard.forward_cv(input), nearest, cv::NORM_INF) != 0.0) {
+    std::cerr << "Changing the scoreboard resize filter did not select nearest sampling\n";
+    return 1;
+  }
   return 0;
 }

@@ -1,4 +1,5 @@
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
+#include "hstream/src/libs/scoreboard/ScoreboardSharpen.h"
 #include "hstream/src/libs/common/Status.h"
 
 #include "cupano/pano/cudaMat.h"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <type_traits>
 
 #include <cuda_runtime.h>
 
@@ -90,11 +92,15 @@ Scoreboard<T_pixel>::Scoreboard(
     int destWidth,
     int destHeight,
     bool autoAspect,
-    const cv::Rect* clipBox)
-    : destWidth_(destWidth), destHeight_(destHeight) {
+    const cv::Rect* clipBox,
+    float sharpen_amount,
+    ResizeFilter resize_filter)
+    : destWidth_(destWidth), destHeight_(destHeight), sharpen_amount_(sharpen_amount), resize_filter_(resize_filter) {
   if (srcPts.size() != 4) {
     throw std::runtime_error("Scoreboard: exactly 4 source points required.");
   }
+  if (!std::isfinite(sharpen_amount_) || sharpen_amount_ < 0.0F || sharpen_amount_ > 100.0F)
+    throw std::invalid_argument("Scoreboard sharpen amount must be between 0 and 100.");
 
   // Order the points in clockwise order.
   // srcPts_ = orderPointsClockwise(srcPts);
@@ -183,21 +189,37 @@ Scoreboard<T_pixel>::Scoreboard(
   inversePerspectiveMatrix_ = inversePerspectiveMatrix(perspectiveMatrix_);
 }
 
+template <typename T_pixel>
+void Scoreboard<T_pixel>::set_sharpen_amount(float amount) {
+  if (!std::isfinite(amount) || amount < 0.0F || amount > 100.0F)
+    throw std::invalid_argument("Scoreboard sharpen amount must be between 0 and 100.");
+  absl::MutexLock lk(&mu_);
+  sharpen_amount_ = amount;
+}
+
+template <typename T_pixel>
+void Scoreboard<T_pixel>::set_resize_filter(ResizeFilter filter) {
+  absl::MutexLock lk(&mu_);
+  if (resize_filter_ != filter) {
+    resize_filter_ = filter;
+    resize_filter_dirty_ = true;
+  }
+}
+
 /**
  * @brief Applies the perspective warp transformation to the input image.
  */
 template <typename T_pixel>
 cv::Mat Scoreboard<T_pixel>::forward_cv(const cv::Mat& inputImage) {
+  absl::MutexLock lk(&mu_);
   // Extract the region of interest using the computed bounding box.
   cv::Mat srcImage = inputImage(bboxSrc_).clone();
 
   // Resize the source image to the intermediate dimensions.
   cv::Mat resizedImage;
-  // The scoreboard commonly contains an LED matrix whose fine grid aliases
-  // badly when the extracted ROI is enlarged with nearest-neighbor sampling.
-  // Match the production CUDA path's bilinear reconstruction so the
-  // perspective warp starts from a smoothly sampled image.
-  cv::resize(srcImage, resizedImage, cv::Size(destW_, destH_), 0, 0, cv::INTER_LINEAR);
+  cv::resize(
+      srcImage, resizedImage, cv::Size(destW_, destH_), 0, 0,
+      resize_filter_ == ResizeFilter::Nearest ? cv::INTER_NEAREST : cv::INTER_LINEAR);
 
   // Apply the perspective transformation.
   cv::Mat warpedImage;
@@ -219,6 +241,10 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     bool rewarp,
     cudaStream_t stream) {
   absl::MutexLock lk(&mu_);
+  if (resize_filter_dirty_) {
+    rewarp = true;
+    resize_filter_dirty_ = false;
+  }
   if (!warped_image_) {
     rewarp = true;
     working_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
@@ -246,10 +272,7 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         working_image_->width(),
         working_image_->height(),
         source_surface.get_image_format(),
-        // Smooth the high-frequency LED grid while enlarging the scoreboard
-        // ROI.  The following perspective warp is also bilinear, so this
-        // avoids baking nearest-neighbor checker artifacts into the overlay.
-        FILTER_LINEAR,
+        resize_filter_ == ResizeFilter::Nearest ? FILTER_POINT : FILTER_LINEAR,
         stream);
     if (cuerr != cudaSuccess) {
       return absl::InternalError(TO_STRING("Scoreboard cudaResizeROI failed: " << cudaGetErrorString(cuerr)));
@@ -278,13 +301,24 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     }
   }
 
+  if constexpr (std::is_same_v<T_pixel, uchar4>) {
+    if (sharpen_amount_ > 0.0F && (rewarp || sharpen_amount_ != last_sharpen_amount_)) {
+      const cudaError_t cuerr = sharpen_scoreboard(
+          warped_image_->data(), warped_image_->pitch(), working_image_->data(), working_image_->pitch(),
+          destWidth_, destHeight_, sharpen_amount_, stream);
+      if (cuerr != cudaSuccess)
+        return absl::InternalError(TO_STRING("Scoreboard sharpen failed: " << cudaGetErrorString(cuerr)));
+    }
+  }
+  last_sharpen_amount_ = sharpen_amount_;
+
   assert(dest_surface.bytes_per_pixel() == sizeof(T_pixel));
 
   cudaError_t cuErr = cudaOverlayPitch<T_pixel>(
-      warped_image_->data(),
+      sharpen_amount_ > 0.0F && std::is_same_v<T_pixel, uchar4> ? working_image_->data() : warped_image_->data(),
       destWidth_,
       destHeight_,
-      warped_image_->pitch(),
+      sharpen_amount_ > 0.0F && std::is_same_v<T_pixel, uchar4> ? working_image_->pitch() : warped_image_->pitch(),
       dest_surface.dataptr<T_pixel*>(),
       dest_surface.width(),
       dest_surface.height(),
