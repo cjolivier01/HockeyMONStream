@@ -39,6 +39,8 @@ Usage:
 The deployment runner detects each node over SSH, builds one package for each
 distinct supported target, and force-installs the matching package. Supported
 targets are Ubuntu 24.04/26.04 amd64 desktops and Ubuntu 22.04 arm64 Jetsons.
+Ubuntu derivatives (KDE neon, Pop!_OS, ...) are matched on their Ubuntu base
+release, taken from UBUNTU_CODENAME in /etc/os-release.
 Nodes must allow non-interactive SSH access and passwordless sudo.
 The invoking HStream repository must have no tracked or source-file changes.
 
@@ -93,6 +95,32 @@ parse_nodes() {
     SEEN_NODES["${node}"]=1
     NODES_LIST+=("${node}")
   done
+}
+
+# Resolve the Ubuntu release a host is built on.  Ubuntu derivatives such as
+# KDE neon and Pop!_OS keep their own ID and VERSION_ID in /etc/os-release, and
+# some (Linux Mint, Zorin) use a VERSION_ID unrelated to any Ubuntu release, so
+# UBUNTU_CODENAME is the only trustworthy signal.  Only codenames HStream
+# actually publishes packages for are mapped; anything else stays unsupported.
+ubuntu_release() {
+  local os_id="$1"
+  local os_version="$2"
+  local id_like="$3"
+  local ubuntu_codename="$4"
+
+  if [[ "${os_id}" == ubuntu ]]; then
+    printf '%s' "${os_version}"
+    return 0
+  fi
+  if [[ " ${id_like} " != *" ubuntu "* ]]; then
+    return 1
+  fi
+  case "${ubuntu_codename}" in
+    jammy) printf '22.04' ;;
+    noble) printf '24.04' ;;
+    resolute) printf '26.04' ;;
+    *) return 1 ;;
+  esac
 }
 
 classify_target() {
@@ -186,7 +214,8 @@ require_clean_repository() {
 
 detect_node() {
   local node="$1"
-  local output identity marker os_id os_version architecture platform previous_package previous extra target_key
+  local output identity marker os_id os_version id_like ubuntu_codename architecture platform
+  local previous_package previous extra target_key base_os_id base_os_version
 
   printf '\n[%s] Detecting %s...\n' "${OPERATION}" "${node}"
   if ! output="$(ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s <<'REMOTE_DETECT'
@@ -212,8 +241,9 @@ for candidate in hstream hmstream; do
     break
   fi
 done
-printf '__HSTREAM_DEPLOY__|%s|%s|%s|%s|%s|%s\n' \
-  "${ID:-}" "${VERSION_ID:-}" "$(uname -m)" "${platform}" "${installed_package}" "${installed_version}"
+printf '__HSTREAM_DEPLOY__|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+  "${ID:-}" "${VERSION_ID:-}" "${ID_LIKE:-}" "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" \
+  "$(uname -m)" "${platform}" "${installed_package}" "${installed_version}"
 REMOTE_DETECT
   )"; then
     NODE_OS["${node}"]="unknown"
@@ -231,7 +261,8 @@ REMOTE_DETECT
     NODE_DETAIL["${node}"]="invalid OS detection response"
     return 1
   fi
-  IFS='|' read -r marker os_id os_version architecture platform previous_package previous extra <<< "${identity}"
+  IFS='|' read -r marker os_id os_version id_like ubuntu_codename architecture platform \
+    previous_package previous extra <<< "${identity}"
   if [[ "${marker}" != "__HSTREAM_DEPLOY__" || -n "${extra:-}" ]]; then
     NODE_OS["${node}"]="unknown"
     NODE_PLATFORM["${node}"]="unknown"
@@ -246,7 +277,18 @@ REMOTE_DETECT
   NODE_PREVIOUS["${node}"]="${previous:-}"
   NODE_INSTALLED["${node}"]="${previous:-}"
 
-  if ! target_key="$(classify_target "${os_id}" "${os_version}" "${architecture}" "${platform}")"; then
+  base_os_id="${os_id}"
+  base_os_version="${os_version}"
+  if base_os_version="$(ubuntu_release "${os_id}" "${os_version}" "${id_like}" "${ubuntu_codename}")"; then
+    base_os_id=ubuntu
+    if [[ "${os_id}" != ubuntu ]]; then
+      NODE_OS["${node}"]+=" (ubuntu ${base_os_version})"
+    fi
+  else
+    base_os_version="${os_version}"
+  fi
+
+  if ! target_key="$(classify_target "${base_os_id}" "${base_os_version}" "${architecture}" "${platform}")"; then
     NODE_TARGET["${node}"]="unsupported"
     NODE_RESULT["${node}"]="FAILED"
     NODE_DETAIL["${node}"]="unsupported ${os_id:-OS} ${os_version:-version} ${platform:-platform}/${architecture:-architecture}"

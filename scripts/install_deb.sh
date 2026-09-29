@@ -411,22 +411,39 @@ if [[ ! -r /etc/os-release ]]; then
 fi
 # shellcheck disable=SC1091
 source /etc/os-release
-if [[ "${ID:-}" != "ubuntu" ]]; then
-  echo "ERROR: HStream Debian artifacts currently support Ubuntu only." >&2
+# Ubuntu derivatives such as KDE neon and Pop!_OS report their own ID, and some
+# (Linux Mint, Zorin) also report a VERSION_ID unrelated to any Ubuntu release.
+# UBUNTU_CODENAME names the Ubuntu base they are assembled from, so resolve the
+# release through it and accept only the codenames HStream publishes for.
+UBUNTU_RELEASE=""
+if [[ "${ID:-}" == "ubuntu" ]]; then
+  UBUNTU_RELEASE="${VERSION_ID:-}"
+elif [[ " ${ID_LIKE:-} " == *" ubuntu "* ]]; then
+  case "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" in
+    noble) UBUNTU_RELEASE=24.04 ;;
+    resolute) UBUNTU_RELEASE=26.04 ;;
+  esac
+fi
+if [[ -z "${UBUNTU_RELEASE}" ]]; then
+  echo "ERROR: HStream Debian artifacts require Ubuntu or an Ubuntu derivative." >&2
+  echo "Detected: ${PRETTY_NAME:-${ID:-unknown} ${VERSION_ID:-unknown}}" >&2
   exit 1
 fi
-case "${VERSION_ID:-}" in
+case "${UBUNTU_RELEASE}" in
   24.04) CUDA_REPOSITORY=ubuntu2404 ;;
   26.04) CUDA_REPOSITORY=ubuntu2604 ;;
   *)
-    echo "ERROR: unsupported Ubuntu release: ${VERSION_ID:-unknown} (expected 24.04 or 26.04)." >&2
+    echo "ERROR: unsupported Ubuntu release: ${UBUNTU_RELEASE} (expected 24.04 or 26.04)." >&2
     exit 1
     ;;
 esac
+if [[ "${ID:-}" != "ubuntu" ]]; then
+  echo "Treating ${PRETTY_NAME:-${ID:-unknown}} as its Ubuntu ${UBUNTU_RELEASE} base."
+fi
 
 HSTREAM_TARGET_UBUNTU="$(dpkg-deb -f "${HSTREAM_DEB}" X-HStream-Target-Ubuntu 2>/dev/null || true)"
-if [[ "${HSTREAM_TARGET_UBUNTU}" != "${VERSION_ID}" ]]; then
-  echo "ERROR: the selected HStream artifact targets Ubuntu ${HSTREAM_TARGET_UBUNTU:-unknown}, not ${VERSION_ID}." >&2
+if [[ "${HSTREAM_TARGET_UBUNTU}" != "${UBUNTU_RELEASE}" ]]; then
+  echo "ERROR: the selected HStream artifact targets Ubuntu ${HSTREAM_TARGET_UBUNTU:-unknown}, not ${UBUNTU_RELEASE}." >&2
   exit 1
 fi
 
@@ -471,7 +488,7 @@ trap cleanup EXIT
 # repair code.  Remove the uniquely owned HStream entry and disable only the
 # matching line in NVIDIA's legacy conffile before the first APT update.  A
 # normal failure restores both; a crash leaves only fewer active providers.
-if [[ "${VERSION_ID}" == "26.04" ]]; then
+if [[ "${UBUNTU_RELEASE}" == "26.04" ]]; then
   begin_compat_source_transition
   disable_installer_managed_cuda_sources ""
   disable_cuda_compat_sources "" "${CUDA_LEGACY_COMPAT_SOURCE}"
@@ -508,7 +525,7 @@ relax_ubuntu24_dependency_versions() {
   dpkg-deb --build --root-owner-group "${package_root}" "${output_deb}" >/dev/null
 }
 
-if [[ "${VERSION_ID}" == "26.04" ]]; then
+if [[ "${UBUNTU_RELEASE}" == "26.04" ]]; then
   relaxed_deepstream_dir="$(mktemp -d /tmp/hstream-deepstream-relaxed.XXXXXX)"
   relaxed_deepstream_deb="${relaxed_deepstream_dir}/deepstream-9.1-ubuntu26-relaxed.deb"
   echo "Relaxing Ubuntu 24.04-pinned DeepStream dependency versions for Ubuntu 26.04..."
@@ -523,7 +540,7 @@ curl -fsSLo "${keyring_deb}" \
 # NVIDIA currently publishes the TensorRT 10 / CUDA 13.2 packages consumed by
 # DeepStream 9.1 in its Ubuntu 24.04 repository. Resolute therefore needs that
 # compatibility repository in addition to its native CUDA repository.
-if [[ "${VERSION_ID}" == "26.04" ]]; then
+if [[ "${UBUNTU_RELEASE}" == "26.04" ]]; then
   compat_keyring_deb="$(mktemp --suffix=.deb /tmp/hstream-cuda-compat-keyring.XXXXXX)"
   curl -fsSLo "${compat_keyring_deb}" \
     "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb"
@@ -683,7 +700,7 @@ if [[ "${SIMULATE}" -eq 0 ]]; then
 fi
 
 if [[ "${SIMULATE}" -eq 1 ]]; then
-  echo "Dependency resolution succeeded for Ubuntu ${VERSION_ID}."
+  echo "Dependency resolution succeeded for Ubuntu ${UBUNTU_RELEASE}."
 else
   apt-get check
   echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HStream $(dpkg-query -W -f='${Version}' hstream)."

@@ -30,6 +30,23 @@ if classify_target ubuntu 24.04 aarch64 desktop >/dev/null; then
   fail "unsupported SBSA desktop was accepted"
 fi
 
+expect_equal "$(ubuntu_release ubuntu 24.04 'debian' noble)" 24.04 "native Ubuntu release"
+expect_equal "$(ubuntu_release neon 24.04 'ubuntu debian' noble)" 24.04 "KDE neon base release"
+expect_equal "$(ubuntu_release pop 22.04 'ubuntu debian' jammy)" 22.04 "Pop!_OS base release"
+expect_equal "$(ubuntu_release linuxmint 22 'ubuntu debian' noble)" 24.04 \
+  "derivative VERSION_ID is ignored in favor of UBUNTU_CODENAME"
+if ubuntu_release debian 12 'debian' bookworm >/dev/null; then
+  fail "non-Ubuntu distribution was accepted"
+fi
+if ubuntu_release neon 24.04 'ubuntu debian' '' >/dev/null; then
+  fail "derivative without UBUNTU_CODENAME was accepted"
+fi
+if ubuntu_release neon 24.04 'ubuntu debian' plucky >/dev/null; then
+  fail "derivative on an unpackaged Ubuntu base was accepted"
+fi
+expect_equal "$(classify_target ubuntu "$(ubuntu_release neon 24.04 'ubuntu debian' noble)" \
+  x86_64 desktop)" "desktop-ubuntu24.04-amd64" "KDE neon desktop classification"
+
 parse_nodes " monster,stubby,user@mini "
 expect_equal "${#NODES_LIST[@]}" 3 "node count"
 expect_equal "${NODES_LIST[0]}" monster "first node"
