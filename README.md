@@ -17,6 +17,11 @@ for other rink, court, and field sports.
 [Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) ·
 [Browse the source](src)
 
+![Program output from a youth game: the virtual camera pans across the rink to follow a rush from one end to the other](docs/assets/screenshots/auto-follow-cam.webp)
+
+*Unedited program output. The virtual camera follows the rush end to end; nobody is
+operating it.*
+
 ## What it does
 
 1. Reads synchronized recordings from two cameras, including GoPro and
@@ -26,6 +31,11 @@ for other rink, court, and field sports.
    the play.
 4. Adds optional scoreboard/graphics and writes an archive or routes video to
    live RTMP/RTSP outputs.
+
+![Two overlapping 7680x4320 camera views above the single 13891x3388 panorama the GPU stitches them into](docs/assets/screenshots/two-cameras-one-panorama.webp)
+
+*Step 2. Two fixed cameras overlap at center ice; calibration solves the overlap
+and the GPU blends them into one continuous canvas covering both goals.*
 
 The implementation is a DeepStream-style C++17 application (`hstream-cli`)
 with custom GStreamer, CUDA, and ONNX plugins for multi-camera synchronization,
@@ -66,6 +76,27 @@ with a private/self-signed publisher certificate, so Windows reports an unknown
 publisher unless that certificate is trusted. See the
 [installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html)
 and [Windows WSL details](docs/windows-wsl-installer.md) before installing.
+
+## See it in action
+
+Every image below is a capture of real output from this pipeline on real youth
+games. Nothing is a mockup. Capture details and the exact commands are recorded
+in [the screenshot provenance notes](docs/assets/screenshots/README.md).
+
+**The stitched panorama, live.** Both cameras blended into one canvas, covering
+both goals and both benches at once. This is what the tracker sees.
+
+![Live stitched panorama of a full ice sheet, both goals and both benches visible in one continuous frame](docs/assets/screenshots/whole-rink-live.webp)
+
+**The desktop UI.** `hstream-ui` drives the pipeline, with live previews of the
+program, stitched, and per-camera views and runtime tracking controls.
+
+![HStream UI playing a game with the program preview and live tracking controls](docs/assets/screenshots/vegas-kings-program.webp)
+
+**Four rinks, one pipeline.** The same build with per-game calibration, across
+four different venues, lighting setups, and camera placements.
+
+![Program output from four different rinks, each automatically framed by the same pipeline](docs/assets/screenshots/four-rinks.webp)
 
 ## Licensing
 
