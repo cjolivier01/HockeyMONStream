@@ -33,6 +33,7 @@ exports_files([
     "prepare_recording_int8.py",
     "quantize_detector_onnx.py",
     "capture_stitching_projection_frames.py",
+    "deepstream_artifact.sh",
     "deploy.sh",
     "install_deb.sh",
     "build_hugin_tools_jetson.sh",
@@ -131,5 +132,11 @@ sh_test(
     name = "deploy_test",
     size = "small",
     srcs = ["deploy_test.sh"],
-    data = ["deploy.sh"],
+    data = [
+        "deepstream_artifact.sh",
+        "deploy.sh",
+        # Read directly: the test pins install_deb.sh's codename table to
+        # deploy.sh's.
+        "install_deb.sh",
+    ],
 )

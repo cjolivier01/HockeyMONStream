@@ -63,16 +63,77 @@ expect_equal "$(sed -n "s/^ *\([a-z]*\)) printf '\([0-9.]*\)' ;;$/\1/p" "${SCRIP
   "$(printf '%s\n' "${installer_codenames}" | wc -l)" \
   "deploy.sh and install_deb.sh cover the same number of Ubuntu bases"
 
-deepstream_dirs="$(TOPDIR=/src/repo DEPLOY_OUTPUT_DIR=/src/repo/dist HOME=/home/tester \
-  HSTREAM_DEEPSTREAM_CACHE='' deepstream_search_dirs)"
+# scripts/deepstream_artifact.sh is shared with make_deb_docker.sh, so both
+# entry points find a hand-downloaded artifact in the same places.
+deepstream_dirs="$(TOPDIR=/src/repo HOME=/home/tester \
+  HSTREAM_DEEPSTREAM_CACHE='' deepstream_artifact_search_dirs /src/repo/dist)"
 expect_equal "${deepstream_dirs}" \
   "/src/DeepStream/artifacts
 /src/repo/dist
 /home/tester/Downloads
 /home/tester" "default DeepStream search path"
-expect_equal "$(TOPDIR=/repo DEPLOY_OUTPUT_DIR=/repo/dist HOME=/home/tester \
-  HSTREAM_DEEPSTREAM_CACHE=/srv/debs deepstream_search_dirs | head -n 1)" /srv/debs \
+expect_equal "$(TOPDIR=/repo HOME=/home/tester \
+  HSTREAM_DEEPSTREAM_CACHE=/srv/debs deepstream_artifact_search_dirs /repo/dist | head -n 1)" /srv/debs \
   "HSTREAM_DEEPSTREAM_CACHE is searched first"
+expect_equal "$(TOPDIR=/src/repo HOME='' HSTREAM_DEEPSTREAM_CACHE='' \
+  deepstream_artifact_search_dirs /src/repo/dist)" \
+  "/src/DeepStream/artifacts
+/src/repo/dist" "search path without HOME"
+
+# The newest supported artifact wins, so an old download left in ~/Downloads
+# does not shadow a fresh one in the sibling checkout.  A candidate is judged
+# on its control file, not its filename.
+if ! command -v dpkg-deb >/dev/null; then
+  echo "deploy_test: SKIPPING DeepStream resolver checks (dpkg-deb unavailable)" >&2
+else
+  fixture_root="$(mktemp -d)"
+  trap 'rm -rf "${fixture_root}"' EXIT
+  make_deepstream_fixture() {
+    local path="$1" version="$2" architecture="$3"
+    local root="${fixture_root}/build/$(basename "${path}")"
+    mkdir -p "${root}/DEBIAN" "$(dirname "${path}")"
+    cat >"${root}/DEBIAN/control" <<CONTROL
+Package: deepstream-9.1
+Version: ${version}
+Architecture: ${architecture}
+Maintainer: test <test@example.invalid>
+Description: deploy_test fixture
+CONTROL
+    dpkg-deb --build --root-owner-group "${root}" "${path}" >/dev/null
+  }
+
+  fixture_home="${fixture_root}/home"
+  fixture_topdir="${fixture_root}/tree/repo"
+  fixture_sibling="${fixture_root}/tree/DeepStream/artifacts"
+  mkdir -p "${fixture_topdir}"
+  make_deepstream_fixture "${fixture_home}/Downloads/deepstream-9.1_9.1.0-1_amd64.deb" 9.1.0-1 amd64
+  make_deepstream_fixture "${fixture_sibling}/deepstream-9.1_9.1.1-1_amd64.deb" 9.1.1-1 amd64
+  make_deepstream_fixture "${fixture_home}/deepstream-9.1_9.1.9-1_amd64.deb" 9.1.9-1 arm64
+  make_deepstream_fixture "${fixture_home}/deepstream-9.1_9.2.0-1_amd64.deb" 9.2.0-1 amd64
+
+  # Not $(...): the resolver reports through a global, which a subshell loses.
+  TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
+    deepstream_artifact_resolve test '' hint "${fixture_topdir}/dist" \
+    >"${fixture_root}/resolve.log" || fail "resolver rejected a usable artifact"
+  resolve_output="$(cat "${fixture_root}/resolve.log")"
+  expect_equal "${DEEPSTREAM_ARTIFACT}" "${fixture_sibling}/deepstream-9.1_9.1.1-1_amd64.deb" \
+    "newest supported amd64 artifact wins"
+  expect_equal "${resolve_output}" "[test] Using DeepStream 9.1.1-1 from ${DEEPSTREAM_ARTIFACT}" \
+    "resolver reports what it picked"
+
+  if TOPDIR="${fixture_root}/bare/repo" HOME="${fixture_root}/bare/home" \
+    HSTREAM_DEEPSTREAM_CACHE='' deepstream_artifact_resolve test '' hint \
+    "${fixture_root}/bare/repo/dist" >/dev/null 2>&1; then
+    fail "resolver accepted a tree with no usable artifact"
+  fi
+  if TOPDIR="${fixture_topdir}" deepstream_artifact_resolve test \
+    "${fixture_home}/deepstream-9.1_9.2.0-1_amd64.deb" hint >/dev/null 2>&1; then
+    fail "resolver accepted an out-of-range explicit artifact"
+  fi
+
+  rm -rf "${fixture_root}"
+  trap - EXIT
+fi
 
 parse_nodes " monster,stubby,user@mini "
 expect_equal "${#NODES_LIST[@]}" 3 "node count"
