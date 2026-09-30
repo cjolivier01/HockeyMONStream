@@ -4,21 +4,20 @@
 # Usage:
 #   scripts/make_deb_docker.sh --target-ubuntu=24.04 [--deepstream-deb=FILE]
 #   scripts/make_deb_docker.sh --target-ubuntu=26.04 [--deepstream-deb=FILE]
+#
+# Without --deepstream-deb, deepstream-9.1_*_amd64.deb is looked up the same
+# way deploy.sh looks it up: ../DeepStream/artifacts, the output root,
+# ~/Downloads and ~, highest matching version wins.  HSTREAM_DEEPSTREAM_CACHE
+# prepends a directory.
 set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/deepstream_artifact.sh
+source "${TOPDIR}/scripts/deepstream_artifact.sh"
 TARGET_UBUNTU=""
 DEEPSTREAM_DEB="${DEEPSTREAM_DEB:-}"
 OUTPUT_DIR=""
 PACKAGE_VERSION=""
-DEEPSTREAM_MIN_VERSION="9.1.0-1"
-DEEPSTREAM_MAX_VERSION="9.2~"
-
-deepstream_version_supported() {
-  local version="$1"
-  dpkg --compare-versions "${version}" ge "${DEEPSTREAM_MIN_VERSION}" &&
-    dpkg --compare-versions "${version}" lt "${DEEPSTREAM_MAX_VERSION}"
-}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,25 +40,10 @@ case "${TARGET_UBUNTU}" in
 esac
 
 if [[ -z "${DEEPSTREAM_DEB}" ]]; then
-  shopt -s nullglob
-  candidates=("${TOPDIR}/../DeepStream/artifacts/"deepstream-9.1_*_amd64.deb)
-  shopt -u nullglob
-  if [[ "${#candidates[@]}" -eq 0 ]]; then
-    echo "ERROR: no sibling DeepStream 9.1 artifact found; pass --deepstream-deb=FILE." >&2
-    echo "When using make, pass DEEPSTREAM_DEB=FILE instead." >&2
-    exit 1
-  fi
-  for candidate in "${candidates[@]}"; do
-    candidate_version="$(dpkg-deb -f "${candidate}" Version)"
-    if deepstream_version_supported "${candidate_version}"; then
-      DEEPSTREAM_DEB="${candidate}"
-      break
-    fi
-  done
-  if [[ -z "${DEEPSTREAM_DEB}" ]]; then
-    echo "ERROR: sibling DeepStream artifact version >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required." >&2
-    exit 1
-  fi
+  deepstream_artifact_resolve make_deb_docker "" \
+    "make deb TARGET_UBUNTU=${TARGET_UBUNTU} DEEPSTREAM_DEB=/path/to/deepstream-9.1_9.1.0-1_amd64.deb" \
+    "${OUTPUT_DIR:-${TOPDIR}/dist}" || exit 1
+  DEEPSTREAM_DEB="${DEEPSTREAM_ARTIFACT}"
 fi
 DEEPSTREAM_DEB="$(readlink -f "${DEEPSTREAM_DEB}")"
 if [[ ! -f "${DEEPSTREAM_DEB}" ]]; then
@@ -135,7 +119,7 @@ DOCKER_DEEPSTREAM_DEB="${DEEPSTREAM_DEB}"
 if [[ "${TARGET_UBUNTU}" == "26.04" ]]; then
   RELAXED_DEEPSTREAM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hstream-deepstream-deb.XXXXXX")"
   relaxed_deepstream_deb="${RELAXED_DEEPSTREAM_DIR}/deepstream-9.1_ubuntu26-relaxed.deb"
-  echo "[make_deb_docker] Relaxing Ubuntu 24.04-pinned DeepStream dependency versions for Ubuntu 26.04..."
+  echo "[make_deb_docker] Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
   "${TOPDIR}/scripts/remove_deb_dependencies.py" \
     --force \
     --output "${relaxed_deepstream_deb}" \

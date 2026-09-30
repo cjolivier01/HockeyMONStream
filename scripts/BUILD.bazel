@@ -33,6 +33,7 @@ exports_files([
     "prepare_recording_int8.py",
     "quantize_detector_onnx.py",
     "capture_stitching_projection_frames.py",
+    "deepstream_artifact.sh",
     "deploy.sh",
     "install_deb.sh",
     "build_hugin_tools_jetson.sh",
@@ -114,9 +115,28 @@ py_test(
     main = "compare_detection_accuracy_test.py",
 )
 
+py_test(
+    name = "remove_deb_dependencies_test",
+    size = "small",
+    srcs = [
+        "remove_deb_dependencies.py",
+        "remove_deb_dependencies_test.py",
+    ],
+    # Read directly: the test pins install_deb.sh's copy of the CUDA virtual
+    # package table to this module's.
+    data = ["install_deb.sh"],
+    main = "remove_deb_dependencies_test.py",
+)
+
 sh_test(
     name = "deploy_test",
     size = "small",
     srcs = ["deploy_test.sh"],
-    data = ["deploy.sh"],
+    data = [
+        "deepstream_artifact.sh",
+        "deploy.sh",
+        # Read directly: the test pins install_deb.sh's codename table to
+        # deploy.sh's.
+        "install_deb.sh",
+    ],
 )
