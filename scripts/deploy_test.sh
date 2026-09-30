@@ -131,6 +131,20 @@ CONTROL
     fail "resolver accepted an out-of-range explicit artifact"
   fi
 
+  # The resolver globs, but nullglob belongs to whoever sourced the library.
+  for nullglob_state in u s; do
+    shopt -"${nullglob_state}" nullglob
+    TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
+      deepstream_artifact_resolve test '' hint "${fixture_topdir}/dist" >/dev/null
+    if shopt -q nullglob && [[ "${nullglob_state}" == u ]]; then
+      fail "resolver left nullglob set"
+    fi
+    if ! shopt -q nullglob && [[ "${nullglob_state}" == s ]]; then
+      fail "resolver cleared the caller's nullglob"
+    fi
+  done
+  shopt -u nullglob
+
   rm -rf "${fixture_root}"
   trap - EXIT
 fi

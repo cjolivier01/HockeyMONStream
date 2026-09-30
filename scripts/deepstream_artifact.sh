@@ -49,17 +49,21 @@ deepstream_artifact_resolve() {
   shift 3
   local candidate version selected_candidate="" selected_version="" search_dir
   local -a candidates=() search_dirs=()
+  local nullglob_was_set=0
 
   DEEPSTREAM_ARTIFACT=""
   if [[ -n "${requested}" ]]; then
     candidates+=("${requested}")
   else
     mapfile -t search_dirs < <(deepstream_artifact_search_dirs "$@")
+    # Restore rather than clear: this is a sourced library and the setting
+    # belongs to the caller.
+    if shopt -q nullglob; then nullglob_was_set=1; fi
     shopt -s nullglob
     for search_dir in "${search_dirs[@]}"; do
       candidates+=("${search_dir}/"deepstream-9.1_*_amd64.deb)
     done
-    shopt -u nullglob
+    if [[ "${nullglob_was_set}" -eq 0 ]]; then shopt -u nullglob; fi
   fi
 
   for candidate in "${candidates[@]}"; do
