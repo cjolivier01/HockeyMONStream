@@ -17,6 +17,9 @@ camera geometry, and General Panini projection with parameters `100, -10, -10`.
 The horizontal projection field of view is 185 degrees, with automatic canvas
 sizing, saved leveling angles `[0, -24.675, -1.107]`, and a manual crop. The
 resulting stitched canvas is 13875 × 3853; the Program output is 7680 × 4320.
+Those canvas and leveling figures describe the calibration as of 2026-09-09. The
+game was recalibrated on 2026-09-12 to a 13891 × 3388 canvas with leveling
+`[0, -21.247, -1.088]`, which is what the README assets below were built from.
 
 To refresh these assets:
 
@@ -63,13 +66,17 @@ recording and corresponding media time binding.
 
 ## README assets
 
-Assembled on 2026-09-30 from source checkout `0d55128c` on an NVIDIA RTX 5090.
+Assembled on 2026-09-30 on an NVIDIA RTX 5090, from source checkout `0055cc53`
+(the branch point for this work).
 These four files, plus the existing `vegas-kings-program.webp` documented above,
 are embedded in the repository [README](../../../README.md).
-Every pixel of video in them is real pipeline output. Processing was limited to
-trimming, scaling, compositing onto a solid background, adding text labels, and
-WebP compression. No frame was retouched, and no detection box, overlay, or UI
-control was drawn or fabricated.
+Every frame in them was produced by this project: video frames from Program and
+stitched-archive output, and, in `two-cameras-one-panorama.webp`, three artifacts
+written by the stitching calibration (see that asset's note — `panorama.tif` is the
+enblend reference blend, not a runtime frame). Processing was limited to trimming,
+scaling, compositing onto a solid background, adding text labels, and WebP
+compression. No frame was retouched, and no detection box, overlay, or UI control
+was drawn or fabricated.
 
 | Asset | Dimensions | Size | Kind |
 | --- | --- | --- | --- |
@@ -79,8 +86,11 @@ control was drawn or fabricated.
 | `four-rinks.webp` | 1600 × 962 | 176 KB | Still composite |
 
 Animation is WebP rather than GIF on purpose. The same eight-second follow-cam
-clip is 2.4 MB as animated WebP and 25 MB as a 256-color GIF, because a
-full-frame pan over ice texture defeats GIF interframe compression. GitHub
+clip is 2.4 MB as animated WebP and 25.3 MB as a 256-color GIF
+(`palettegen=stats_mode=diff`, `paletteuse=dither=bayer:bayer_scale=5`), because a
+full-frame pan over ice texture defeats GIF interframe compression. Shortening to
+6.2 s and dropping to 720 px, 10 fps, 64 colors and no dithering still only reached
+5.8 MB. Other dither settings land higher; none get close to the WebP. GitHub
 serves committed `.webp` as `image/webp`, and a browser without animated-WebP
 support falls back to the first frame rather than failing.
 
@@ -210,9 +220,11 @@ none produced a publishable, correctly aligned image:
 - **GPU preview overlays** (`HSTREAM_UI_E2E_PREVIEW_OVERLAYS=players,play,rink`
   with `scripts/test_hstream_ui_e2e.sh --x11-preview`) need a real X server. This
   host runs Xwayland, where the embedded GPU preview never delivered a first
-  frame; the run sat at 0.00 FPS through four recovery attempts. This matches the
-  warning in [the E2E notes](../../hstream-ui-e2e-testing.md) that Xwayland is
-  unreliable for framebuffer grabs.
+  frame; the run sat at 0.00 FPS through four recovery attempts. This is
+  consistent with [the stitching-experiment notes](../../stitching-experiments.md),
+  which record that desktop captures "may be black under Xwayland even when the
+  OpenGL framebuffer contains" the frame, and that "Xwayland can reject framebuffer
+  capture".
 - **Burning boxes into encoded output**
   (`pipeline.hmplaycropper.plot-player-tracking=1`) needs the Program branch,
   which never produced frames in this headless configuration and hung in EOS
