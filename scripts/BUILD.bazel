@@ -114,6 +114,19 @@ py_test(
     main = "compare_detection_accuracy_test.py",
 )
 
+py_test(
+    name = "remove_deb_dependencies_test",
+    size = "small",
+    srcs = [
+        "remove_deb_dependencies.py",
+        "remove_deb_dependencies_test.py",
+    ],
+    # Read directly: the test pins install_deb.sh's copy of the CUDA virtual
+    # package table to this module's.
+    data = ["install_deb.sh"],
+    main = "remove_deb_dependencies_test.py",
+)
+
 sh_test(
     name = "deploy_test",
     size = "small",

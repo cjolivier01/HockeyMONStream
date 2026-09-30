@@ -135,7 +135,7 @@ DOCKER_DEEPSTREAM_DEB="${DEEPSTREAM_DEB}"
 if [[ "${TARGET_UBUNTU}" == "26.04" ]]; then
   RELAXED_DEEPSTREAM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hstream-deepstream-deb.XXXXXX")"
   relaxed_deepstream_deb="${RELAXED_DEEPSTREAM_DIR}/deepstream-9.1_ubuntu26-relaxed.deb"
-  echo "[make_deb_docker] Relaxing Ubuntu 24.04-pinned DeepStream dependency versions for Ubuntu 26.04..."
+  echo "[make_deb_docker] Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
   "${TOPDIR}/scripts/remove_deb_dependencies.py" \
     --force \
     --output "${relaxed_deepstream_deb}" \

@@ -508,7 +508,16 @@ fi
 apt-get update
 apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 
-relax_ubuntu24_dependency_versions() {
+# Keep this in sync with scripts/remove_deb_dependencies.py, which relaxes the
+# same artifact at package-build time.  Two pins block a 24.04 DeepStream deb
+# on 26.04: version relations carrying a 24.04 tag, and dependencies naming a
+# specific CUDA minor toolkit.  NVIDIA carries only a couple of minors per
+# release, so "cuda-cudart-13-0 | cuda-cudart-13-2" resolves nowhere on a host
+# whose CUDA repository publishes 13.1, 13.3 and 13.4.  Every CUDA 13 component
+# also provides a minor-independent virtual package, which is the one stable
+# way to depend on the major alone.  The virtual name is not derivable from the
+# binary name -- libcufft-13-3 provides libcufft.so.12 -- so it is a table.
+relax_deepstream_dependency_pins() {
   local input_deb="$1"
   local output_deb="$2"
   local package_root
@@ -520,17 +529,117 @@ relax_ubuntu24_dependency_versions() {
     exit 1
   fi
   awk '
-    /^[^[:space:]][^:]*:/ {
-      field = $0
-      sub(/:.*/, "", field)
-      in_relationship = field ~ /^(Depends|Pre-Depends|Recommends|Suggests)$/
+    BEGIN {
+      cuda_virtual["cuda-cudart"] = "libcudart.so.13"
+      cuda_virtual["cuda-cudart-dev"] = "libcudart.so.13-dev"
+      cuda_virtual["cuda-cupti"] = "libcupti.so.13"
+      cuda_virtual["cuda-cupti-dev"] = "libcupti.so.13-dev"
+      cuda_virtual["cuda-driver-dev"] = "libcuda.so.13-dev"
+      cuda_virtual["cuda-nvrtc"] = "libnvrtc.so.13"
+      cuda_virtual["cuda-nvrtc-dev"] = "libnvrtc.so.13-dev"
+      cuda_virtual["cuda-opencl"] = "libopencl.so.1"
+      cuda_virtual["cuda-opencl-dev"] = "libopencl.so.1-dev"
+      cuda_virtual["libcublas"] = "libcublas.so.13"
+      cuda_virtual["libcublas-dev"] = "libcublas.so.13-dev"
+      cuda_virtual["libcufft"] = "libcufft.so.12"
+      cuda_virtual["libcufft-dev"] = "libcufft.so.12-dev"
+      cuda_virtual["libcufile-dev"] = "libcufile.so.0-dev"
+      cuda_virtual["libcuobjclient-dev"] = "libcuobjclient.so.0-dev"
+      cuda_virtual["libcurand"] = "libcurand.so.10"
+      cuda_virtual["libcurand-dev"] = "libcurand.so.10-dev"
+      cuda_virtual["libcusolver"] = "libcusolver.so.12"
+      cuda_virtual["libcusolver-dev"] = "libcusolver.so.12-dev"
+      cuda_virtual["libcusparse"] = "libcusparse.so.12"
+      cuda_virtual["libcusparse-dev"] = "libcusparse.so.12-dev"
+      cuda_virtual["libnpp"] = "libnpp.so.13"
+      cuda_virtual["libnpp-dev"] = "libnpp.so.13-dev"
+      cuda_virtual["libnvfatbin"] = "libnvfatbin.so.13"
+      cuda_virtual["libnvfatbin-dev"] = "libnvfatbin.so.13-dev"
+      cuda_virtual["libnvjitlink"] = "libnvjitlink.so.13"
+      cuda_virtual["libnvjitlink-dev"] = "libnvjitlink.so.13-dev"
+      cuda_virtual["libnvjpeg"] = "libnvjpeg.so.13"
+      cuda_virtual["libnvjpeg-dev"] = "libnvjpeg.so.13-dev"
+      field_name = ""
+      field_text = ""
+    }
+    function relax_alternative(alternative,   name, rest, arch, colon, base) {
+      gsub(/^[ \t]+|[ \t]+$/, "", alternative)
+      if (!match(alternative, /^[^ \t(]+/))
+        return alternative
+      name = substr(alternative, 1, RLENGTH)
+      rest = substr(alternative, RLENGTH + 1)
+      colon = index(name, ":")
+      arch = ""
+      if (colon > 0) {
+        arch = substr(name, colon)
+        name = substr(name, 1, colon - 1)
+      }
+      if (match(name, /-13-[0-9]+$/)) {
+        base = substr(name, 1, RSTART - 1)
+        if (base in cuda_virtual)
+          name = cuda_virtual[base]
+      }
+      alternative = name arch rest
+      # Mirrors DEFAULT_VERSION_REGEX: the 24.04 has to start the version or
+      # follow a separator, so 1.24.04x and 124.04 are left alone.
+      sub(/[ \t]*\((<<|<=|=|>=|>>)[ \t]*(([^)]*[~+.:_-])?24[.]04([~+.:_-][^)]*)?|[^)]*ubuntu[0-9]*[~+.:_-]?24[.]04[^)]*)\)/, "", alternative)
+      gsub(/^[ \t]+|[ \t]+$/, "", alternative)
+      return alternative
+    }
+    function relax_value(value,   groups, group_count, i, alternatives, alternative_count,
+                         j, alternative, kept, kept_count, seen, out) {
+      group_count = split(value, groups, /,/)
+      out = ""
+      for (i = 1; i <= group_count; i++) {
+        alternative_count = split(groups[i], alternatives, /\|/)
+        kept = ""
+        kept_count = 0
+        delete seen
+        for (j = 1; j <= alternative_count; j++) {
+          alternative = relax_alternative(alternatives[j])
+          # Two minor pins of one component collapse onto the same virtual
+          # package, so the alternative would otherwise be repeated.
+          if (alternative == "" || (alternative in seen))
+            continue
+          seen[alternative] = 1
+          kept = (kept_count++ ? kept " | " : "") alternative
+        }
+        if (kept != "")
+          out = (out == "" ? "" : out ", ") kept
+      }
+      return out
+    }
+    function emit(  value) {
+      if (field_text == "")
+        return
+      if (field_name ~ /^(Depends|Pre-Depends|Recommends|Suggests)$/) {
+        value = field_text
+        sub(/^[^:]*:/, "", value)
+        gsub(/\n[ \t]*/, " ", value)
+        gsub(/^[ \t]+|[ \t]+$/, "", value)
+        printf "%s: %s\n", field_name, relax_value(value)
+      } else {
+        printf "%s", field_text
+      }
+      field_name = ""
+      field_text = ""
+    }
+    /^[ \t]/ {
+      if (field_text != "") {
+        field_text = field_text $0 "\n"
+        next
+      }
     }
     {
-      if (in_relationship) {
-        gsub(/[[:space:]]*\((<<|<=|=|>=|>>)[[:space:]]*[^)]*24[.]04[^)]*\)/, "")
+      emit()
+      field_text = $0 "\n"
+      field_name = ""
+      if ($0 ~ /^[^ \t][^:]*:/) {
+        field_name = $0
+        sub(/:.*/, "", field_name)
       }
-      print
     }
+    END { emit() }
   ' "${package_root}/DEBIAN/control" >"${package_root}/DEBIAN/control.relaxed"
   mv -f "${package_root}/DEBIAN/control.relaxed" "${package_root}/DEBIAN/control"
   dpkg-deb --build --root-owner-group "${package_root}" "${output_deb}" >/dev/null
@@ -539,8 +648,8 @@ relax_ubuntu24_dependency_versions() {
 if [[ "${UBUNTU_RELEASE}" == "26.04" ]]; then
   relaxed_deepstream_dir="$(mktemp -d /tmp/hstream-deepstream-relaxed.XXXXXX)"
   relaxed_deepstream_deb="${relaxed_deepstream_dir}/deepstream-9.1-ubuntu26-relaxed.deb"
-  echo "Relaxing Ubuntu 24.04-pinned DeepStream dependency versions for Ubuntu 26.04..."
-  relax_ubuntu24_dependency_versions "${DEEPSTREAM_DEB}" "${relaxed_deepstream_deb}"
+  echo "Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
+  relax_deepstream_dependency_pins "${DEEPSTREAM_DEB}" "${relaxed_deepstream_deb}"
   DEEPSTREAM_DEB="${relaxed_deepstream_deb}"
 fi
 
