@@ -85,6 +85,9 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static void reloadSavedControls(HStreamWindow* window) {
+    window->loadSavedControlConfig();
+  }
   static void preparedInt8(HStreamWindow* window, const QString& engine) {
     window->prepared_int8_engine_ = engine;
     window->prepared_int8_manifest_ = engine + ".json";
@@ -16536,6 +16539,93 @@ bool test_camera_experiment_initial_controls(HStreamWindow* window) {
                 "Camera experiments must start with the current main controls and keep their edits independent");
 }
 
+bool test_stitching_still() {
+  const QString game = "still-preview";
+  const QDir directory(QDir(QString::fromLocal8Bit(qgetenv("HM_GAME_DIR"))).filePath(game));
+  QDir().mkpath(directory.path());
+  YAML::Node config;
+  hm::stitching::StitchingBackendChoices choices;
+  choices.control_point_matcher = "superpoint-lightglue";
+  choices.mapping_backend = "nona";
+  choices.projection = "cylindrical";
+  choices.run_autooptimizer = true;
+  config["stitching"]["control_point_matcher"] = choices.control_point_matcher;
+  config["stitching"]["mapping_backend"] = choices.mapping_backend;
+  config["stitching"]["projection"] = choices.projection;
+  config["stitching"]["run_autooptimizer"] = choices.run_autooptimizer;
+  hm::stitching::write_stitch_camera_selection(config, choices.camera);
+  hm::stitching::write_stitch_projection_framing(config, choices.projection_framing);
+  config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "still-preview-a";
+  if (!hm::stitching::reserve_stitching_backend_generation_in_config(config, "still-preview-a", choices).ok())
+    return false;
+  const std::string original_config = YAML::Dump(config);
+  std::ofstream(directory.filePath("config.yaml").toStdString()) << original_config;
+
+  QImage image(800, 240, QImage::Format_RGB32);
+  image.fill(Qt::green);
+  if (!image.save(directory.filePath("s.png")))
+    return false;
+  HStreamWindow window;
+  window.show();
+  auto* games = require_child<QComboBox>(&window, "gameSelector");
+  games->setCurrentIndex(games->findText(game));
+  auto* tabs = require_child<QTabWidget>(&window, "previewTabs");
+  tabs->setCurrentIndex(1);
+  auto* still = require_child<QWidget>(&window, "stitchedCalibrationStillPreview");
+  auto* points = require_child<QSpinBox>(&window, "controlPointsSpin");
+  auto wait_visible = [&] {
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 10000) {
+      QApplication::processEvents();
+      if (still->isVisible())
+        return true;
+      QThread::msleep(10);
+    }
+    return false;
+  };
+  if (!expect(wait_visible(), "Main Stitched tab must display the current saved calibration"))
+    return false;
+  const int original = points->value();
+  points->setValue(original + 1);
+  if (!expect(still->isHidden(), "Unsaved stitching edits must immediately hide the calibration still"))
+    return false;
+  points->setValue(original);
+  if (!expect(wait_visible(), "Reverting an unsaved edit must restore the calibration still"))
+    return false;
+  config["stitching"]["projection"] = "equirectangular";
+  std::ofstream(directory.filePath("config.yaml").toStdString()) << config;
+  HStreamWindowTestAccess::reloadSavedControls(&window);
+  QElapsedTimer pause;
+  pause.start();
+  while (pause.elapsed() < 1500) {
+    QApplication::processEvents();
+    QThread::msleep(10);
+  }
+  if (!expect(still->isHidden(), "Reloading edited settings must not validate the old calibration image"))
+    return false;
+  std::ofstream(directory.filePath("config.yaml").toStdString()) << original_config;
+  HStreamWindowTestAccess::reloadSavedControls(&window);
+  if (!expect(wait_visible(), "Reloading matching settings must restore the still"))
+    return false;
+  choices.projection = "equirectangular";
+  config["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+  config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "still-preview-b";
+  if (!hm::stitching::reserve_stitching_backend_generation_in_config(config, "still-preview-b", choices).ok())
+    return false;
+  std::ofstream(directory.filePath("config.yaml").toStdString()) << config;
+  pause.restart();
+  while (pause.elapsed() < 1500) {
+    QApplication::processEvents();
+    QThread::msleep(10);
+  }
+  if (!expect(still->isHidden(), "External calibration for different settings must not replace the displayed choices"))
+    return false;
+  HStreamWindowTestAccess::reloadSavedControls(&window);
+  return expect(wait_visible(), "Selecting the externally completed settings must show the new calibration");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -16578,6 +16668,10 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STILL_ONLY"))
+    return test_stitching_still() ? 0 : 1;
+  if (!test_stitching_still())
+    return 1;
   if (!test_gpu_memory_profile())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_BLEND_ONLY"))

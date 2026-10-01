@@ -3,6 +3,7 @@
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
+#include "src/apps/hstream-ui/StitchingStillPreview.h"
 
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
@@ -600,6 +601,7 @@ struct StitchingExperimentDialog::Impl {
   QProcess::ExitStatus pending_candidate_exit_status{QProcess::CrashExit};
   QString pending_candidate_startup_error;
   int preview_candidate_row{-1};
+  StitchingStillPreview* still_preview{nullptr};
   bool close_completion_scheduled{false};
   int pending_dialog_result{QDialog::Rejected};
 
@@ -792,6 +794,14 @@ struct StitchingExperimentDialog::Impl {
     for (QWidget* input : std::array<QWidget*, 3>{control_points, frame_counts, start_frames})
       input->setEnabled(editing_batch);
     progress->setVisible(batch_started);
+    if (still_preview) {
+      const bool idle = selected && candidates[row].workspace && !preview_process && !preparation_worker &&
+          !promotion_worker && !batch_active && !stopping && !closing;
+      still_preview->setSource(
+          idle ? QString::fromStdString(candidates[row].workspace->game_directory.string()) : QString(),
+          idle && candidates[row].stored ? QString::fromStdString(candidates[row].stored->artifact_generation_id)
+                                         : QString());
+    }
   }
 
   bool candidate_has_inspection(const Candidate& candidate) const {
@@ -2302,6 +2312,7 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void start_preview(bool validated = false) {
+    still_preview->setSource({});
     if (!blend_settings_error.isEmpty()) {
       show_status(blend_settings_error, true);
       return;
@@ -3173,6 +3184,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   preview_header->addWidget(s.expand_preview);
   preview_layout->addLayout(preview_header);
   s.video = new StitchingExperimentVideoTarget(preview_panel);
+  s.still_preview = new StitchingStillPreview(s.video);
+  s.still_preview->setObjectName("stitchExperimentStillPreview");
   s.video->setObjectName("stitchExperimentVideo");
   preview_layout->addWidget(s.video, 1);
   auto* preview_controls = new QFormLayout();

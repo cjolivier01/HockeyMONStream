@@ -323,3 +323,19 @@ the test also requires the renderer acknowledgement after its first GPU
 presentation. The source game is unchanged. This opt-in script builds the
 Blackwell desktop configuration; the ordinary editor tests also run offscreen
 and on X11 to check physical maximization/restoration and mouse interactions.
+
+### Saved calibration preview
+
+While playback is stopped, selecting a completed candidate shows its saved
+`s.png` in the Stitched preview area, falling back to `panorama.tif` when the
+PNG is missing or unreadable. The main window's Stitched tab uses the same
+preview for the selected game's current calibration. Unsaved stitching edits,
+pending calibration, or a changed candidate generation clear it. Play clears
+it immediately; Stop restores the current selection's still when available.
+
+This is the saved calibration frame, so live color and seam-blend choices may
+look different during playback. No new frame is captured. `StitchingStillPreview`
+checks publication state on a worker and reads a display image bounded to 2048
+pixels per side, using the shared `CalibrationImage` PNG row decoder and a TIFF
+row decoder. Resizing preserves its aspect ratio. A completed reframe can show
+its panorama while its downstream rink-mask/PNG snapshot still needs rebuilding.

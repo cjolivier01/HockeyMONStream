@@ -1794,6 +1794,37 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   require(before.ok() && before->experiments.size() == 2, "Completed history must be durable");
   const auto removed_directory = before->experiments.front().workspace.game_directory;
   const auto retained_directory = before->experiments.back().workspace.game_directory;
+  auto* still = widget<QWidget>(dialog, "stitchExperimentStillPreview");
+  for (const auto& path : {removed_directory, retained_directory}) {
+    auto config = YAML::LoadFile((path / "config.yaml").string());
+    auto calibration = config["hstream_ui"]["stitching_calibration"];
+    calibration["status"] = "complete";
+    calibration.remove("stale_from");
+    calibration.remove("artifacts_invalidated");
+    write(QString::fromStdString((path / "config.yaml").string()), QByteArray::fromStdString(YAML::Dump(config)));
+    QImage image(800, 240, QImage::Format_RGB32);
+    image.fill(path == removed_directory ? Qt::red : Qt::blue);
+    require(image.save(QString::fromStdString((path / "s.png").string())), "Cannot save candidate still");
+  }
+  auto shows = [&](Qt::GlobalColor color) {
+    if (!still->isVisible())
+      return false;
+    const auto image = still->grab().toImage();
+    return !image.isNull() && image.pixelColor(image.width() / 2, image.height() / 2) == QColor(color);
+  };
+  require(wait_until([&] { return shows(Qt::red); }, 10000), "Selected completed candidate must show its still");
+  table->selectRow(1);
+  require(still->isHidden(), "Switching candidate must immediately hide the previous still");
+  require(wait_until([&] { return shows(Qt::blue); }, 10000), "Switching candidate must load its own image");
+  QFile::remove(preview_release);
+  QFile::remove(preview_started);
+  play->click();
+  require(still->isHidden(), "Play must clear the candidate still before process startup");
+  require(wait_until([&] { return stop->isEnabled(); }, 10000), "Candidate playback did not start");
+  write(preview_release, "0");
+  require(wait_until([&] { return shows(Qt::blue); }, 10000), "Playback completion must restore selected candidate");
+  table->selectRow(0);
+  require(wait_until([&] { return shows(Qt::red); }, 10000), "Returning to the first candidate must restore its image");
   const auto index_path = QString::fromStdString((store->directory / "index.yaml").string());
   const auto original_index = read(index_path);
   remove_completed_experiments(dialog, false);

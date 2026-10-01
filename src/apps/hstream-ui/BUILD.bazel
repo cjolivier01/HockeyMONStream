@@ -26,6 +26,10 @@ filegroup(
         "AnsiLogFormat.h",
         "ApplicationIdentity.cpp",
         "ApplicationIdentity.h",
+        "CalibrationImage.cpp",
+        "CalibrationImage.h",
+        "StitchingStillPreview.cpp",
+        "StitchingStillPreview.h",
         "CalibrationFrameView.cpp",
         "CalibrationFrameView.h",
         "HStreamWindow.cpp",
@@ -106,6 +110,41 @@ cc_test(
 )
 
 cc_library(
+    name = "calibration_image",
+    srcs = ["CalibrationImage.cpp"],
+    hdrs = ["CalibrationImage.h"],
+    copts = COMMON_COPTS,
+    linkopts = ["-lpng", "-ltiff"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_gui"],
+)
+
+cc_library(
+    name = "stitching_still_preview",
+    srcs = ["StitchingStillPreview.cpp"],
+    hdrs = ["StitchingStillPreview.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":calibration_image",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:transaction_state",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "stitching_still_preview_test",
+    srcs = ["StitchingStillPreviewTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":calibration_image", ":stitching_still_preview", "//src/libs/stitching:game_config", "@qt//:qt_widgets"],
+)
+
+cc_library(
     name = "scoreboard_selection_dialog",
     srcs = ["ScoreboardSelectionDialog.cpp"],
     hdrs = ["ScoreboardSelectionDialog.h"],
@@ -114,6 +153,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":calibration_image",
         ":action_icons",
         "@qt//:qt_network",
         "@qt//:qt_widgets",
@@ -359,6 +399,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":stitching_still_preview",
         ":action_icons",
         ":preview_dialog_window",
         ":match_editor_dialog",
@@ -490,6 +531,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":stitching_still_preview",
         "//src/libs/common:process_diagnostics",
         ":action_icons",
         ":ansi_log_format",
