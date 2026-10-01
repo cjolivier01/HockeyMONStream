@@ -128,6 +128,16 @@ py_test(
     main = "remove_deb_dependencies_test.py",
 )
 
+py_test(
+    name = "setup_pretrained_assets_test",
+    size = "small",
+    srcs = [
+        "setup_pretrained_assets.py",
+        "setup_pretrained_assets_test.py",
+    ],
+    main = "setup_pretrained_assets_test.py",
+)
+
 sh_test(
     name = "deploy_test",
     size = "small",
