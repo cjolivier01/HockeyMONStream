@@ -17,6 +17,11 @@ for other rink, court, and field sports.
 [Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) ·
 [Browse the source](src)
 
+![Looping clip of a hockey rink in which the view pans smoothly from one goal, across center ice, to the far goal, keeping the play in frame throughout](docs/assets/screenshots/auto-follow-cam.webp)
+
+*One continuous 8-second excerpt of program output, no cuts. The camera move is the
+pipeline's; nobody is operating it.*
+
 ## What it does
 
 1. Reads synchronized recordings from two cameras, including GoPro and
@@ -26,6 +31,13 @@ for other rink, court, and field sports.
    the play.
 4. Adds optional scoreboard/graphics and writes an archive or routes video to
    live RTMP/RTSP outputs.
+
+![Two fisheye camera views of the same rink, each covering one half and overlapping at center ice, above the single wide panorama they combine into, which shows both goals at once](docs/assets/screenshots/two-cameras-one-panorama.webp)
+
+*Both cameras see center ice and the painted "GHOST" wordmark; that shared region is
+what calibration solves for. The panorama here is the enblend reference blend written
+during calibration, which is how alignment gets checked — live frames take the
+hm-cupano GPU path instead.*
 
 The implementation is a DeepStream-style C++17 application (`hstream-cli`)
 with custom GStreamer, CUDA, and ONNX plugins for multi-camera synchronization,
@@ -49,6 +61,31 @@ HockeyMONStream provides an inspectable pipeline and runs on your NVIDIA GPU
 hardware without a HockeyMONStream subscription fee. The repository has mixed
 file-level licensing; see [Licensing](#licensing) before modifying or
 redistributing it.
+
+## See it in action
+
+These are real pipeline output on real youth games, not mockups. Two of them
+composite several real frames into one image; the source render, frame time and
+exact processing for each is recorded in
+[the screenshot provenance notes](docs/assets/screenshots/README.md).
+
+The stitched panorama the tracker runs on, covering both goals and both benches
+in a single canvas:
+
+![Looping clip of a wide stitched panorama showing an entire ice sheet at once, with both goals and both team benches in frame and play moving near center ice](docs/assets/screenshots/whole-rink-live.webp)
+
+`hstream-ui` drives the pipeline, with live previews of the program, stitched and
+per-camera views next to runtime tracking controls:
+
+![HStream UI playing Vegas Kings footage with the program preview and live tracking controls](docs/assets/screenshots/vegas-kings-program.webp)
+
+Four venues, four camera placements, one pipeline with per-game calibration:
+
+![Four program-output frames in a two-by-two grid labelled vegas-kings-1, sharks-14-p1, blackhawks-p1 and tv-14-1-p1, each a different rink framed automatically by the same pipeline](docs/assets/screenshots/four-rinks.webp)
+
+Most of these come from renders made before the "SportsAI HockeyMON" watermark
+landed on 2026-09-27, so they show frames without it. Current builds always burn
+it in and it cannot be turned off; see [the watermark notes](docs/watermark.md).
 
 ## Download
 
