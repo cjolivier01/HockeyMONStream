@@ -15,6 +15,7 @@
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
+#include "src/apps/hstream-ui/StitchingStillPreview.h"
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
 #include "src/apps/hstream-ui/TelemetryDbPublisher.h"
 
@@ -29,6 +30,7 @@
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSaveFile>
+#include <QtCore/QScopedValueRollback>
 #include <QtCore/QSet>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStandardPaths>
@@ -6440,6 +6442,8 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   auto* stitched_notice_layout = new QVBoxLayout(stitched_host);
   stitched_notice_layout->setContentsMargins(0, 0, 0, 0);
   stitched_notice_layout->addWidget(stitched_external_notice_);
+  stitching_still_preview_ = new StitchingStillPreview(stitched_host);
+  stitching_still_preview_->setObjectName("stitchedCalibrationStillPreview");
   stitched_status_ = new QLabel("Stitched canvas preview");
   stitched_status_->setObjectName("stitchedPreviewStatusLabel");
   auto* stitched_footer = new QHBoxLayout();
@@ -10204,6 +10208,9 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 }
 
 void HStreamWindow::startPipeline() {
+  QScopedValueRollback<bool> starting_still(stitching_still_starting_, true);
+  updateStitchingStillPreview();
+  QTimer::singleShot(0, this, [this] { updateStitchingStillPreview(); });
   hm::diagnostics::Breadcrumb("pipeline", "start requested");
   if (!ensureSavedControlConfigLoaded() || !validatePlayerAnalyticsForRun())
     return;
@@ -15981,7 +15988,48 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
   appendLog(focused ? QString("preview focus mode tab=%1").arg(tab_index) : "preview restored to normal layout");
 }
 
+void HStreamWindow::updateStitchingStillPreview() {
+  if (!stitching_still_preview_)
+    return;
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  const auto rotation = saved_camera_controls_.find("Stitch_Rotate_Degrees");
+  const bool current = !stitching_still_starting_ && !running && saved_control_config_load_error_.isEmpty() &&
+      !calibration_restart_requested_ && pending_crop_geometry_.empty() &&
+      saved_stitch_frame_time_ == stitchFrameTime() &&
+      saved_iteration_settings_.sync_method == stitchingIterationSettings().sync_method &&
+      saved_stitching_control_points_ == stitchingCalibrationControlPoints() &&
+      saved_stitching_calibration_frame_count_ == stitchingCalibrationFrameCount() &&
+      saved_stitch_max_output_width_ == stitchingMaxOutputWidth() && saved_run_autooptimizer_ == runAutooptimizer() &&
+      saved_control_point_resolution_ == control_point_resolution_ &&
+      saved_control_point_matcher_ == controlPointMatcher() && saved_mapping_backend_ == mappingBackend() &&
+      saved_camera_selection_ == stitchCameraSelection() && saved_projection_ == stitchProjection() &&
+      saved_projection_parameters_ == projection_parameter_values_ &&
+      saved_projection_framing_ == stitchProjectionFraming() && rotation != saved_camera_controls_.end() &&
+      rotation->second == cameraPresetControlValue("Stitch_Rotate_Degrees");
+  const QString game = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  if (!current || game.isEmpty()) {
+    stitching_still_preview_->setSource({});
+    return;
+  }
+  YAML::Node expected;
+  expected["stitching"]["control_point_matcher"] = controlPointMatcher().toStdString();
+  expected["stitching"]["control_point_resolution"] = control_point_resolution_.toStdString();
+  expected["stitching"]["mapping_backend"] = mappingBackend().toStdString();
+  expected["stitching"]["projection"] = stitchProjection().toStdString();
+  expected["stitching"]["run_autooptimizer"] = runAutooptimizer();
+  hm::stitching::write_stitch_camera_selection(expected, stitchCameraSelection());
+  hm::stitching::write_stitch_projection_framing(expected, stitchProjectionFraming());
+  const auto projection = hm::stitching::ParseStitchProjection(stitchProjection().toStdString());
+  if (!projection.ok()) {
+    stitching_still_preview_->setSource({});
+    return;
+  }
+  hm::stitching::write_stitch_projection_parameters(expected, *projection, stitchProjectionParameters());
+  stitching_still_preview_->setSource(gameDirectory(game), {}, QByteArray::fromStdString(YAML::Dump(expected)));
+}
+
 void HStreamWindow::updateRunControls() {
+  updateStitchingStillPreview();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = isArchiveFinalizing();
   const bool archive_recovery_was_cleared =
@@ -16869,6 +16917,7 @@ void HStreamWindow::updateCameraControlDependencies() {
 }
 
 void HStreamWindow::updatePresetDirtyState() {
+  updateStitchingStillPreview();
   // Refresh after both interactive edits and signal-blocked preset loads.
   updateCameraControlDependencies();
   if (!save_preset_button_)
@@ -17055,6 +17104,8 @@ bool HStreamWindow::ensureSavedControlConfigLoaded() {
 }
 
 void HStreamWindow::loadSavedControlConfig() {
+  if (stitching_still_preview_)
+    stitching_still_preview_->setSource({});
   saved_control_config_load_error_ = "Game settings are still loading";
   control_point_resolution_ = default_control_point_resolution_;
   loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));

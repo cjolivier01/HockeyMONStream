@@ -40,6 +40,7 @@
 #include <utility>
 #include <vector>
 
+class StitchingStillPreview;
 class QProcessEnvironment;
 class QCloseEvent;
 class QDialog;
@@ -490,6 +491,7 @@ class HStreamWindow : public QMainWindow {
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
+  void updateStitchingStillPreview();
   void synchronizeStitchedColorControls();
   void updateStitchedColorPrecisionControls();
   bool applySavedControlConfig(
@@ -652,6 +654,8 @@ class HStreamWindow : public QMainWindow {
   QWidget* preview_surface_{nullptr};
   QWidget* preview_render_target_{nullptr};
   QWidget* stitched_surface_{nullptr};
+  StitchingStillPreview* stitching_still_preview_{nullptr};
+  bool stitching_still_starting_{false};
   QWidget* stitched_render_target_{nullptr};
   std::vector<QWidget*> camera_preview_surfaces_;
   std::vector<QWidget*> camera_preview_render_targets_;

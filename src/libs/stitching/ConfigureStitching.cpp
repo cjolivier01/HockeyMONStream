@@ -1674,15 +1674,22 @@ bool test_dependency_tree(const std::string& dir_name, bool add_rink_mask) {
 absl::StatusOr<cv::Mat> download_image(surface::Surface surf) {
   cv::Mat cpu_img;
   if (surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA) {
-    CudaMat<uchar4> gpu_image(
-        SurfaceInfo{
-            .width = (int)surf.width(),
-            .height = (int)surf.height(),
-            .pitch = (int)surf.pitch(),
-            .data_ptr = surf.dataptr(),
-        },
-        /*B=*/1);
-    cpu_img = gpu_image.download();
+    cpu_img = cv::Mat(static_cast<int>(surf.height()), static_cast<int>(surf.width()), CV_8UC4);
+    const cudaError_t copy_status = cudaMemcpy2D(
+        cpu_img.data,
+        cpu_img.step,
+        surf.dataptr(),
+        surf.pitch(),
+        cpu_img.cols * cpu_img.elemSize(),
+        cpu_img.rows,
+        cudaMemcpyDeviceToHost);
+    if (copy_status != cudaSuccess) {
+      return absl::FailedPreconditionError(
+          TO_STRING("Unable to download RGBA calibration image from GPU: " << cudaGetErrorString(copy_status)));
+    }
+    // This existing calibration-only readback feeds OpenCV encoders/inference,
+    // which expect BGR(A), while the GPU surface stores R,G,B,A bytes.
+    cv::cvtColor(cpu_img, cpu_img, cv::COLOR_RGBA2BGRA);
   } else if (
       surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709 ||
       surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_2020) {
