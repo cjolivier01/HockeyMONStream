@@ -339,3 +339,9 @@ checks publication state on a worker and reads a display image bounded to 2048
 pixels per side, using the shared `CalibrationImage` PNG row decoder and a TIFF
 row decoder. Resizing preserves its aspect ratio. A completed reframe can show
 its panorama while its downstream rink-mask/PNG snapshot still needs rebuilding.
+
+Calibration snapshots convert GPU RGBA pixels to OpenCV's BGRA order before PNG
+encoding. Older `s.png` files made by the 8-bit snapshot path may have red and
+blue swapped; regenerating the snapshot with the corrected writer fixes both
+this preview and the scoreboard selector. Image readers do not swap existing
+files, since correctly encoded PNGs and 10-bit snapshots already use RGB order.

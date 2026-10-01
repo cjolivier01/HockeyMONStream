@@ -2248,6 +2248,81 @@ bool expect_stale_snapshot_publisher_is_rejected(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_snapshot_color_channels(const fs::path& tmpdir) {
+  int devices = 0;
+  if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
+    std::cout << "Skipping GPU snapshot color checks: no CUDA device\n";
+    return std::getenv("HSTREAM_TEST_SNAPSHOT_COLORS_ONLY") == nullptr;
+  }
+  const fs::path dir = tmpdir / "snapshot_colors";
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  auto lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+  if (!lock.ok())
+    return false;
+  const auto generation = hm::stitching::HuginProject::GenerationId(dir, **lock);
+  if (!generation.ok())
+    return false;
+  const auto output = hm::stitching::stitched_output_generation_id(*generation, 0.0, 160, 32);
+  if (!output.ok())
+    return false;
+  YAML::Node config;
+  config["rink"]["stitched_output_generation"] = *output;
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config)))
+    return false;
+  lock->reset();
+
+  for (const auto format :
+       {NVBUF_COLOR_FORMAT_RGBA, NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709, NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_2020}) {
+    const bool rgba8 = format == NVBUF_COLOR_FORMAT_RGBA;
+    for (const size_t pitch : {size_t(160 * 4), size_t(160 * 4 + 128)}) {
+      std::vector<uint32_t> pixels(pitch / 4 * 32, 0);
+      for (int y = 0; y < 32; ++y) {
+        for (int x = 0; x < 160; ++x) {
+          const int channel = (x + y) % 3;
+          pixels[y * pitch / 4 + x] =
+              rgba8 ? (255u << (8 * channel)) | (128u << 24) : (1023u << (10 * channel)) | (3u << 30);
+        }
+      }
+      void* device = nullptr;
+      if (cudaMalloc(&device, pixels.size() * sizeof(uint32_t)) != cudaSuccess)
+        return false;
+      const auto copied = cudaMemcpy(device, pixels.data(), pixels.size() * sizeof(uint32_t), cudaMemcpyHostToDevice);
+      NvBufSurfaceParams params{};
+      params.width = 160;
+      params.height = 32;
+      params.pitch = pitch;
+      params.dataPtr = device;
+      params.colorFormat = format;
+      const auto saved = copied == cudaSuccess
+          ? hm::stitching::save_stitched_image(dir.string(), hm::surface::Surface(&params), *output)
+          : absl::InternalError("Cannot upload snapshot fixture");
+      cudaFree(device);
+      const cv::Mat decoded = cv::imread((dir / "s.png").string(), cv::IMREAD_UNCHANGED);
+      if (!saved.ok() || decoded.size() != cv::Size(160, 32) || decoded.type() != (rgba8 ? CV_8UC4 : CV_16UC3)) {
+        std::cerr << "Cannot save/read GPU snapshot: " << saved << '\n';
+        return false;
+      }
+      for (int y = 0; y < decoded.rows; ++y) {
+        for (int x = 0; x < decoded.cols; ++x) {
+          const int bgr_channel = 2 - (x + y) % 3;
+          cv::Vec4b bgra(0, 0, 0, 128);
+          cv::Vec3w bgr(0, 0, 0);
+          bgra[bgr_channel] = 255;
+          bgr[bgr_channel] = 65535;
+          if (rgba8 ? decoded.at<cv::Vec4b>(y, x) != bgra : decoded.at<cv::Vec3w>(y, x) != bgr) {
+            std::cerr << "Snapshot changed RGB/alpha channels or row pitch: format=" << format << " pitch=" << pitch
+                      << " pixel=" << x << ',' << y << '\n';
+            return false;
+          }
+        }
+      }
+    }
+  }
+  std::cout << "GPU snapshot colors passed for RGBA8 and RGB10, tight and padded rows\n";
+  return true;
+}
+
 bool expect_validated_load_snapshot_rejects_path_replacement(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "validated_load_snapshot_replacement";
   fs::remove_all(dir);
@@ -2696,6 +2771,8 @@ int main() {
       fs::temp_directory_path() / ("configure_stitching_canvas_cap_test_" + std::to_string(::getpid()));
   fs::remove_all(tmpdir);
   fs::create_directories(tmpdir);
+  if (std::getenv("HSTREAM_TEST_SNAPSHOT_COLORS_ONLY"))
+    finish(tmpdir, expect_snapshot_color_channels(tmpdir) ? 0 : 57);
   // These synthetic provenance fixtures deliberately describe this camera
   // geometry. Keep their defaults explicit when the shipped presets change.
   const auto baseline = hm::baseline_config::load();
@@ -2888,6 +2965,8 @@ int main() {
   if (!expect_stale_snapshot_publisher_is_rejected(tmpdir)) {
     finish(tmpdir, 34);
   }
+  if (!expect_snapshot_color_channels(tmpdir))
+    finish(tmpdir, 57);
 
   if (!expect_validated_load_snapshot_rejects_path_replacement(tmpdir)) {
     finish(tmpdir, 42);
