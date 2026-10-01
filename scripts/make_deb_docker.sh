@@ -127,6 +127,26 @@ if [[ "${TARGET_UBUNTU}" == "26.04" ]]; then
   DOCKER_DEEPSTREAM_DEB="${relaxed_deepstream_deb}"
 fi
 
+# Native calibration models live in a content-addressed per-user cache that is
+# mounted read-only below, so the container cannot fetch one it is missing.
+# make_deb.sh requires every asset declared redistributable to exist and match
+# its digest, but those declarations are also on-demand: a machine that never
+# ran the matcher has no copy, and the staging step fails only after a full
+# compile.  Prefetch on the host against the same config make_deb.sh verifies,
+# so a missing or corrupt model is reported in seconds instead of at the end.
+MODEL_CACHE_SOURCE="${HSTREAM_MODEL_CACHE_DIR:-${HOME}/.cache/hstream/models}"
+if python3 -c "import yaml" >/dev/null 2>&1; then
+  echo "[make_deb_docker] Prefetching package-owned pretrained assets into ${MODEL_CACHE_SOURCE}..."
+  "${TOPDIR}/scripts/setup_pretrained_assets.py" \
+    --redistributable-only \
+    --model-cache-dir="${MODEL_CACHE_SOURCE}" \
+    "${TOPDIR}/configs/ds_hockey_app_config.yaml"
+else
+  # Never turn a missing host interpreter into a build failure: make_deb.sh
+  # still verifies these assets, just later and with a less direct message.
+  echo "[make_deb_docker] WARNING: python3 with PyYAML is unavailable; skipping the pretrained asset prefetch." >&2
+fi
+
 image_tag="hstream-deb-builder:ubuntu${TARGET_UBUNTU}"
 volume_suffix="${TARGET_UBUNTU//./}"
 cache_volume="hstream-deb-bazel-ubuntu${volume_suffix}"
@@ -159,11 +179,9 @@ if [[ -n "${PRETRAINED_SOURCE}" && -d "${PRETRAINED_SOURCE}" ]]; then
   docker_args+=(--volume "${PRETRAINED_SOURCE}:${PRETRAINED_SOURCE}:ro")
 fi
 
-# Native calibration models intentionally live in a content-addressed user
-# cache for source-tree runs.  Expose that cache read-only to the immutable
+# Expose the cache the prefetch above populated read-only to the immutable
 # package build; make_deb.sh verifies every declared digest before and after
 # copying the models into the package-owned pretrained tree.
-MODEL_CACHE_SOURCE="${HSTREAM_MODEL_CACHE_DIR:-${HOME}/.cache/hstream/models}"
 if [[ -d "${MODEL_CACHE_SOURCE}" ]]; then
   MODEL_CACHE_SOURCE="$(readlink -f "${MODEL_CACHE_SOURCE}")"
   docker_args+=(--volume "${MODEL_CACHE_SOURCE}:/root/.cache/hstream/models:ro")

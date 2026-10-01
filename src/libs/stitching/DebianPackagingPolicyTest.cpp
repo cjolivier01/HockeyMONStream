@@ -74,6 +74,11 @@ int main(int argc, char** argv) {
       contains(docker_runner, ":/root/.cache/hstream/models:ro") && contains(docker_runner, "HSTREAM_MODEL_CACHE_DIR"),
       "immutable Docker build must expose the content-addressed native model cache read-only");
   ok &= expect(
+      contains(docker_runner, "setup_pretrained_assets.py") && contains(docker_runner, "--redistributable-only") &&
+          contains(docker_runner, "--model-cache-dir=\"${MODEL_CACHE_SOURCE}\"") &&
+          contains(docker_runner, "configs/ds_hockey_app_config.yaml"),
+      "host must prefetch package-owned pretrained assets before the read-only cache is mounted");
+  ok &= expect(
       contains(installer, "X-HStream-Target-Ubuntu") && !contains(installer, "libc6 (>= 2.43)") &&
           !contains(installer, "Pin-Priority") && contains(installer, "old_deepstream_packages") &&
           contains(installer, "^deepstream-[0-9]+([.][0-9]+)*$") &&

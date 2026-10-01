@@ -24,6 +24,15 @@ except ImportError as exc:
 
 ASSET_KEYS = ("pretrained-assets", "assets", "downloads")
 YAML_SUFFIXES = {".yaml", ".yml"}
+# Source checkouts keep native models in this per-user content-addressed cache.
+# --model-cache-dir relocates exactly these targets so a packaging prefetch can
+# populate the directory the Docker build will mount.
+DEFAULT_MODEL_CACHE = "~/.cache/hstream/models"
+# yaml-cpp's boolean scalar tokens. AssetManager parses `redistributable` with
+# as<bool>(), so this script must accept the same spellings or the host prefetch
+# and the in-package verification would disagree about which assets ship.
+TRUE_TOKENS = frozenset({"y", "yes", "true", "on", "1"})
+FALSE_TOKENS = frozenset({"n", "no", "false", "off", "0"})
 
 
 def _load_yaml(path: Path) -> Any:
@@ -102,6 +111,31 @@ def _asset_target_path(spec: dict[str, Any], config: Any, config_path: Path) -> 
         raise ValueError(f"{config_path}: asset needs 'path', 'file', or 'property'")
 
     return _resolve_path(raw_path, config_path.parent)
+
+
+def _asset_flag(spec: dict[str, Any], key: str, config_path: Path) -> bool:
+    """Read a fail-closed boolean asset flag. An absent flag means false."""
+    if key not in spec:
+        return False
+    value = spec[key]
+    if isinstance(value, bool):
+        return value
+    token = str(value).strip().lower()
+    if token in TRUE_TOKENS:
+        return True
+    if token in FALSE_TOKENS:
+        return False
+    raise ValueError(f"{config_path}: asset {key} must be a boolean scalar")
+
+
+def _effective_target(spec: dict[str, Any], config: Any, config_path: Path, args: argparse.Namespace) -> Path:
+    target = _asset_target_path(spec, config, config_path)
+    override = getattr(args, "model_cache_dir", "") or ""
+    if not override:
+        return target
+    if target.parent != _resolve_path(DEFAULT_MODEL_CACHE, config_path.parent):
+        return target
+    return _resolve_path(override, config_path.parent) / target.name
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -252,7 +286,7 @@ def _process_asset(spec: dict[str, Any], config: Any, config_path: Path, args: a
     if not url and not command:
         raise ValueError(f"{config_path}: asset needs 'url', 'source', or 'command'")
 
-    target = _asset_target_path(spec, config, config_path)
+    target = _effective_target(spec, config, config_path, args)
     downloaded = False
     if not target.exists() or target.stat().st_size == 0:
         if command:
@@ -300,15 +334,33 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print downloads without writing files")
     parser.add_argument("--print-targets", action="store_true", help="print declared asset target paths and exit")
     parser.add_argument("--timeout", type=float, default=60.0, help="download timeout in seconds")
+    parser.add_argument(
+        "--redistributable-only",
+        action="store_true",
+        help="act only on assets declared redistributable, matching the set staged into binary packages",
+    )
+    parser.add_argument(
+        "--model-cache-dir",
+        default="",
+        help=f"directory to use in place of {DEFAULT_MODEL_CACHE} for assets declared there",
+    )
     args = parser.parse_args(argv)
 
     for config_path in _collect_config_files(args.configs):
         config = _load_yaml(config_path)
         for spec in _iter_asset_specs(config):
+            if args.redistributable_only and not _asset_flag(spec, "redistributable", config_path):
+                continue
             if args.print_targets:
-                print(_asset_target_path(spec, config, config_path))
+                print(_effective_target(spec, config, config_path, args))
             else:
-                _process_asset(spec, config, config_path, args)
+                # Callers run this as a build gate, where a traceback buries the
+                # one line that says which asset is wrong.
+                try:
+                    _process_asset(spec, config, config_path, args)
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                    print(f"error: {spec.get('name', '<unnamed>')}: {exc}", file=sys.stderr)
+                    return 1
 
     return 0
 
