@@ -22,6 +22,11 @@ contain at most 64 queued candidates. By default every candidate reuses the game
 rink-leveling rotation. Clear that option to add pitch/roll variants as comma-separated `pitch/roll` pairs, for
 example `0/0,-1.5/0.5`. Explicit variants preserve the game's saved yaw.
 
+**Control-point matcher** offers the same finder/matcher choices as Stitched Controls: **SuperPoint + LightGlue**,
+**DeDoDe + LightGlue**, **LoFTR (EfficientLoFTR outdoor)**, and **AKAZE + M-LDB + Hamming**.
+Select a matcher and add options, then change it and add more to compare otherwise identical solves.
+Each candidate retains its matcher in the **Matcher** column, across reopening and promotion to the game.
+
 **Feature image size** offers the same SuperPoint choices as the main controls: **Native (full size)**,
 **1K (1024 px long edge)**, and **2K (2048 × 1152)**. It starts from the saved effective game setting.
 Change the size and add options again to compare otherwise identical solves; the **Image size** column records
@@ -44,7 +49,7 @@ at the first calibration frame and defaults to 60 seconds, bounded to 300 second
 the existing detector and Program ice-mask pruning; people surviving that filter include players and referees.
 Tracking is not required. The baseline prepares its rink mask before scanning, while the scan requires that exact
 existing mask and adds no video readbacks. Selected synchronized pairs are replayed exactly for a separate calibration.
-The first pair remains the anchor, and a one-frame candidate needs no scan. All variants with the same frame count share one frozen selection: changing control-point limits, image size or rotation
+The first pair remains the anchor, and a one-frame candidate needs no scan. All variants with the same frame count share one frozen selection: changing control-point limits, matcher, image size or rotation
 runs only another solve. The first search duration is authoritative for that count. A different frame count can
 establish another selection; an incompatible reference time for an established count is an error. Baselines count toward the 64-row limit; removing one removes its dependent automatic rows.
 

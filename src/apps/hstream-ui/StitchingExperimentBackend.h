@@ -20,6 +20,8 @@ struct StitchingExperimentSettings {
   std::optional<std::string> control_point_resolution;
   // Explicit immutable replacement; nullopt requests automatic matching.
   std::optional<std::string> manual_control_points;
+  // Frozen automatic matcher; legacy nullopt retains config inheritance.
+  std::optional<std::string> control_point_matcher;
 };
 
 struct StitchingExperimentWorkspace {

@@ -596,6 +596,27 @@ bool experiment_resolutions(const fs::path& root) {
             selected["stitching"]["control_point_resolution"].as<std::string>() == size,
         "Main's previous generated marker must not undo the promoted size");
   }
+  for (const std::string matcher : {"superpoint-lightglue", "dedode-lightglue", "loftr", "akaze-hamming"}) {
+    settings.control_point_matcher = matcher;
+    const auto workspace = CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence);
+    if (!expect(workspace.ok(), "explicit matcher candidate must be created"))
+      return false;
+    const auto promoted =
+        BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+    if (!expect(promoted.ok(), "candidate matcher must be promotable"))
+      return false;
+    const YAML::Node selected = YAML::Load(*promoted);
+    ok &= expect(
+        workspace->settings.control_point_matcher == matcher &&
+            selected["stitching"]["control_point_matcher"].as<std::string>() == matcher &&
+            !selected["hstream_ui"]["generated_stitching_backend_choices"].IsDefined(),
+        "promotion must retain the candidate matcher without an older generated UI choice");
+  }
+  settings.control_point_matcher = "invalid-matcher";
+  ok &= expect(
+      !CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence).ok(),
+      "invalid matcher must be rejected before creating a workspace");
+  settings.control_point_matcher.reset();
   settings.control_point_resolution.reset();
   const auto inherited = CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence);
   ok &= expect(

@@ -526,6 +526,7 @@ struct StitchingExperimentDialog::Impl {
   QLineEdit* frame_counts{nullptr};
   QLineEdit* start_frames{nullptr};
   QComboBox* control_point_resolution{nullptr};
+  QComboBox* control_point_matcher{nullptr};
   YAML::Node feature_defaults;
   QString feature_settings_error;
   bool feature_size_selectable{false};
@@ -790,6 +791,7 @@ struct StitchingExperimentDialog::Impl {
     rotations->setEnabled(editing_batch && !shared_rotation->isChecked());
     prefer_player_frames->setEnabled(editing_batch);
     scan_duration->setEnabled(editing_batch && prefer_player_frames->isChecked());
+    control_point_matcher->setEnabled(editing_batch && feature_settings_error.isEmpty());
     control_point_resolution->setEnabled(editing_batch && feature_settings_error.isEmpty() && feature_size_selectable);
     for (QWidget* input : std::array<QWidget*, 3>{control_points, frame_counts, start_frames})
       input->setEnabled(editing_batch);
@@ -1798,25 +1800,64 @@ struct StitchingExperimentDialog::Impl {
         hm::stitch_frame_time_to_nanoseconds(right.stitch_frame_time) &&
         left.rink_rotation_degrees == right.rink_rotation_degrees &&
         left.control_point_resolution == right.control_point_resolution &&
+        left.control_point_matcher == right.control_point_matcher &&
         left.manual_control_points == right.manual_control_points;
+  }
+
+  void update_feature_size(const QString& size) {
+    const auto matcher =
+        hm::stitching::ParseControlPointMatcher(control_point_matcher->currentData().toString().toStdString());
+    if (!matcher.ok())
+      return;
+    control_point_resolution->clear();
+    feature_size_selectable = *matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue;
+    if (feature_size_selectable) {
+      control_point_resolution->addItem("Native (full size)", "native");
+      control_point_resolution->addItem("1K (1024 px long edge)", "1k");
+      control_point_resolution->addItem("2K (2048 × 1152)", "2k");
+      control_point_resolution->setCurrentIndex(control_point_resolution->findData(size));
+      control_point_resolution->setToolTip(
+          "SuperPoint + LightGlue input size. Native uses the original pixels; 1K uses a 1024-pixel long edge; "
+          "2K fits each image into 2048 × 1152. Resizing preserves aspect ratio. "
+          "Each added candidate keeps this choice independently of later changes.");
+    } else {
+      const QString fixed = fixed_feature_size(*matcher);
+      control_point_resolution->addItem(fixed, size);
+      control_point_resolution->setToolTip("This matcher uses a fixed processing size: " + fixed + ".");
+    }
+  }
+
+  hm::stitching::ControlPointMatcher candidate_matcher(const Candidate& candidate) const {
+    if (candidate.settings.control_point_matcher) {
+      const auto matcher = hm::stitching::ParseControlPointMatcher(*candidate.settings.control_point_matcher);
+      if (!matcher.ok())
+        throw std::runtime_error(matcher.status().ToString());
+      return *matcher;
+    }
+    YAML::Node effective = YAML::Clone(feature_defaults);
+    if (candidate.workspace) {
+      const auto config = hm::stitching::load_game_config_file(candidate.workspace->game_directory / "config.yaml");
+      if (!config.ok() || !config->has_value())
+        throw std::runtime_error("Candidate configuration is unavailable");
+      overlay_feature_settings(effective, **config);
+    }
+    return feature_matcher(effective);
+  }
+
+  QString candidate_matcher_label(const Candidate& candidate) const {
+    try {
+      const QString name = hm::stitching::ControlPointMatcherName(candidate_matcher(candidate));
+      return control_point_matcher->itemText(control_point_matcher->findData(name));
+    } catch (const std::exception&) {
+      return "Unavailable";
+    }
   }
 
   QString candidate_image_size(const Candidate& candidate) const {
     try {
-      YAML::Node effective = YAML::Clone(feature_defaults);
-      if (candidate.workspace) {
-        const auto config = hm::stitching::load_game_config_file(candidate.workspace->game_directory / "config.yaml");
-        if (!config.ok() || !config->has_value())
-          return "Unavailable";
-        overlay_feature_settings(effective, **config);
-        const QString fixed = fixed_feature_size(feature_matcher(effective));
-        if (!fixed.isEmpty())
-          return fixed;
-      } else {
-        // Pending additions use the same matcher as the current editor.
-        if (!feature_size_selectable)
-          return control_point_resolution->currentText();
-      }
+      const QString fixed = fixed_feature_size(candidate_matcher(candidate));
+      if (!fixed.isEmpty())
+        return fixed;
       if (!candidate.settings.control_point_resolution)
         return "Inherited";
       const auto& resolution = *candidate.settings.control_point_resolution;
@@ -1852,6 +1893,7 @@ struct StitchingExperimentDialog::Impl {
                                            : "Saved frame set",
         frame_selection_policy(candidate).first,
         candidate_image_size(candidate),
+        candidate_matcher_label(candidate),
     };
     for (int column = 0; column < columns.size(); ++column) {
       auto* item = new QTableWidgetItem(columns[column]);
@@ -1932,6 +1974,7 @@ struct StitchingExperimentDialog::Impl {
                     ? std::nullopt
                     : std::optional<std::array<double, 3>>(rink_rotations->at(rotation_index)),
                 .control_point_resolution = control_point_resolution->currentData().toString().toStdString(),
+                .control_point_matcher = control_point_matcher->currentData().toString().toStdString(),
             };
             auto saved = ReusableStitchingExperimentSelectionFingerprint(game_directory.toStdString(), settings);
             if (!saved.ok()) {
@@ -3051,6 +3094,14 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.start_frames = new QLineEdit(stitch_frame_time);
   s.start_frames->setObjectName("stitchExperimentStartFrames");
   s.start_frames->setPlaceholderText("00:05:00,00:10:00.500");
+  s.control_point_matcher = new QComboBox();
+  s.control_point_matcher->setObjectName("stitchExperimentControlPointMatcher");
+  s.control_point_matcher->addItem("SuperPoint + LightGlue", "superpoint-lightglue");
+  s.control_point_matcher->addItem("DeDoDe + LightGlue", "dedode-lightglue");
+  s.control_point_matcher->addItem("LoFTR (EfficientLoFTR outdoor)", "loftr");
+  s.control_point_matcher->addItem("AKAZE + M-LDB + Hamming", "akaze-hamming");
+  s.control_point_matcher->setToolTip(
+      "Finder and matcher used to produce stitching control points. Each added candidate keeps its own choice.");
   s.control_point_resolution = new QComboBox();
   s.control_point_resolution->setObjectName("stitchExperimentControlPointResolution");
   try {
@@ -3079,27 +3130,21 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       throw std::runtime_error(resolution.status().ToString());
     const auto matcher = feature_matcher(effective);
     const QString size = hm::stitching::ControlPointResolutionName(*resolution);
-    s.feature_size_selectable = matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue;
-    if (s.feature_size_selectable) {
-      s.control_point_resolution->addItem("Native (full size)", "native");
-      s.control_point_resolution->addItem("1K (1024 px long edge)", "1k");
-      s.control_point_resolution->addItem("2K (2048 × 1152)", "2k");
-      s.control_point_resolution->setCurrentIndex(s.control_point_resolution->findData(size));
-      s.control_point_resolution->setToolTip(
-          "SuperPoint + LightGlue input size. Native uses the original pixels; 1K uses a 1024-pixel long edge; "
-          "2K fits each image into 2048 × 1152. Resizing preserves aspect ratio. "
-          "Each added candidate keeps this choice independently of later changes.");
-    } else {
-      const QString fixed = fixed_feature_size(matcher);
-      s.control_point_resolution->addItem(fixed, size);
-      s.control_point_resolution->setToolTip("This matcher uses a fixed processing size: " + fixed + ".");
-    }
+    const QString matcher_name = hm::stitching::ControlPointMatcherName(matcher);
+    s.control_point_matcher->setCurrentIndex(s.control_point_matcher->findData(matcher_name));
+    s.initial_settings.control_point_matcher = matcher_name.toStdString();
+    s.update_feature_size(size);
     s.initial_settings.control_point_resolution = size.toStdString();
   } catch (const std::exception& error) {
     s.feature_settings_error = "Cannot load feature image settings: " + QString::fromUtf8(error.what());
     s.control_point_resolution->addItem("Unavailable");
     s.control_point_resolution->setToolTip(s.feature_settings_error);
   }
+  connect(s.control_point_matcher, &QComboBox::currentIndexChanged, this, [&s]() {
+    const QString size = s.control_point_resolution->currentData().toString();
+    s.update_feature_size(size);
+    s.update_controls();
+  });
   s.shared_rotation = new QCheckBox("Use the game’s saved rink leveling for every candidate");
   s.shared_rotation->setObjectName("stitchExperimentSharedRotation");
   s.shared_rotation->setChecked(true);
@@ -3109,6 +3154,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.rotations->setEnabled(false);
   connect(s.shared_rotation, &QCheckBox::toggled, this, [&s](bool checked) { s.rotations->setEnabled(!checked); });
   matrix_layout->addRow("CP limits per frame pair", s.control_points);
+  matrix_layout->addRow("Control-point matcher", s.control_point_matcher);
   matrix_layout->addRow("Feature image size", s.control_point_resolution);
   matrix_layout->addRow("Frame counts", s.frame_counts);
   matrix_layout->addRow("First calibration frames", s.start_frames);
@@ -3161,10 +3207,18 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   auto* candidate_layout = new QVBoxLayout(candidate_panel);
   candidate_layout->setContentsMargins(0, 0, 0, 0);
   candidate_layout->addWidget(matrix_group);
-  s.table = new QTableWidget(0, 8);
+  s.table = new QTableWidget(0, 9);
   s.table->setObjectName("stitchExperimentCandidates");
   s.table->setHorizontalHeaderLabels(
-      {"Candidate", "CP", "Frames", "First frame", "Rink pitch / roll", "Status", "Frame selection", "Image size"});
+      {"Candidate",
+       "CP",
+       "Frames",
+       "First frame",
+       "Rink pitch / roll",
+       "Status",
+       "Frame selection",
+       "Image size",
+       "Matcher"});
   s.table->horizontalHeaderItem(1)->setToolTip("Maximum control points per synchronized frame pair.");
   s.table->setSelectionBehavior(QAbstractItemView::SelectRows);
   s.table->setSelectionMode(QAbstractItemView::SingleSelection);

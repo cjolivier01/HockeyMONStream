@@ -507,6 +507,33 @@ bool resolution_settings(const fs::path& root) {
   return ok;
 }
 
+bool matcher_settings(const fs::path& root) {
+  auto store = open_store(root);
+  auto legacy = make_record(store, "matcher", 1);
+  bool ok = expect(SaveStitchingExperiment(store, legacy).ok(), "legacy matcher inheritance remains readable");
+  auto record = make_record(store, "matcher", 2);
+  record.workspace.settings.control_point_matcher = "loftr";
+  auto config = YAML::LoadFile((record.workspace.game_directory / "config.yaml").string());
+  config["stitching"]["control_point_matcher"] = "loftr";
+  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  ok &= expect(SaveStitchingExperiment(store, record).ok(), "explicit matcher persists");
+  const auto restored = LoadStitchingExperimentStore(store);
+  ok &= expect(
+      restored.ok() && restored->experiments.size() == 2 &&
+          !restored->experiments[0].workspace.settings.control_point_matcher &&
+          restored->experiments[1].workspace.settings.control_point_matcher == "loftr",
+      "history distinguishes a frozen matcher from legacy inheritance");
+  config["stitching"]["control_point_matcher"] = "akaze-hamming";
+  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  ok &= expect(!SaveStitchingExperiment(store, record).ok(), "workspace matcher changes invalidate saved settings");
+  record.workspace.settings.control_point_matcher = "akaze-hamming";
+  ok &= expect(!SaveStitchingExperiment(store, record).ok(), "a catalog matcher cannot change even if config agrees");
+  auto invalid = make_record(store, "matcher", 3);
+  invalid.workspace.settings.control_point_matcher = "invalid";
+  ok &= expect(!SaveStitchingExperiment(store, invalid).ok(), "invalid matchers cannot enter the catalog");
+  return ok;
+}
+
 bool manual_match_settings(const fs::path& root) {
   auto store = open_store(root);
   auto record = make_record(store, "manual", 1);
@@ -535,6 +562,7 @@ bool run(const fs::path& root) {
   bool ok = true;
   ok &= manual_match_settings(root / "manual-settings");
   ok &= resolution_settings(root / "resolution-settings");
+  ok &= matcher_settings(root / "matcher-settings");
   ok &= stopped_process_with_corrupt_config(root / "stopped-corrupt-config");
   ok &= retained_main_counts(root / "retained-main-counts");
   {
