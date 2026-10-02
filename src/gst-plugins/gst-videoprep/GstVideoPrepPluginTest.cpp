@@ -104,6 +104,36 @@ bool expect_reverse_fixate_preserves_input_dimensions() {
   return ok;
 }
 
+bool expect_square_pixel_output_caps() {
+  bool ok = true;
+  for (const char* factory : {"hmstitcher", "playcropper"}) {
+    GstElement* element = gst_element_factory_make(factory, nullptr);
+    if (!element)
+      return false;
+    GstCaps* input = make_nvmm_rgba_caps(7680, 4320);
+    // The output canvas defines its own geometry, even for anamorphic input.
+    gst_caps_set_simple(input, "pixel-aspect-ratio", GST_TYPE_FRACTION, 4, 3, nullptr);
+    for (bool high_bit : {false, true}) {
+      g_object_set(element, "high-bit-depth-output", high_bit, nullptr);
+      GstCaps* output = GST_BASE_TRANSFORM_GET_CLASS(element)->transform_caps(
+          GST_BASE_TRANSFORM(element), GST_PAD_SINK, input, nullptr);
+      gint numerator = 0;
+      gint denominator = 0;
+      ok = output &&
+          gst_structure_get_fraction(
+               gst_caps_get_structure(output, 0), "pixel-aspect-ratio", &numerator, &denominator) &&
+          numerator == 1 && denominator == 1 && ok;
+      if (output)
+        gst_caps_unref(output);
+    }
+    gst_caps_unref(input);
+    gst_object_unref(element);
+  }
+  if (!ok)
+    std::cerr << "Video preparation output must declare square pixels before downstream negotiation\n";
+  return ok;
+}
+
 bool expect_stitch_rotation_requires_atomic_epoch_at_runtime() {
   GstElement* element = gst_element_factory_make("hmstitcher", nullptr);
   if (!element) {
@@ -136,7 +166,7 @@ int main(int argc, char** argv) {
       return 1;
     }
   }
-  if (!expect_reverse_fixate_preserves_input_dimensions()) {
+  if (!expect_reverse_fixate_preserves_input_dimensions() || !expect_square_pixel_output_caps()) {
     return 1;
   }
   if (!expect_stitch_rotation_requires_atomic_epoch_at_runtime()) {

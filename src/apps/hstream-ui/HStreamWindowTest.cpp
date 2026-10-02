@@ -85,6 +85,19 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static QString activeArchivePath(HStreamWindow* window, const QString& output) {
+    return output == "archive-program-4k" ? window->active_program_4k_output_path_
+        : output == "archive-stitched"    ? window->active_stitched_archive_output_path_
+                                          : window->active_archive_output_path_;
+  }
+  static bool useMatchingDevelopmentRuntime(HStreamWindow* window) {
+    const QString application = QDir(QCoreApplication::applicationDirPath()).filePath("hstream-ui");
+    window->development_bazel_bin_ = hm::ui_internal::matching_development_bazel_bin(application);
+    window->development_runtime_root_ = hm::ui_internal::development_runtime_root_for_application(application);
+    window->development_pipeline_runner_ = hm::ui_internal::matching_development_pipeline_runner(application);
+    return !window->development_bazel_bin_.isEmpty() && !window->development_runtime_root_.isEmpty() &&
+        !window->development_pipeline_runner_.isEmpty();
+  }
   static void reloadSavedControls(HStreamWindow* window) {
     window->loadSavedControlConfig();
   }
@@ -7199,11 +7212,11 @@ bool test_output_controls(HStreamWindow* window) {
   archive->setChecked(false);
   program_4k->setChecked(true);
   if (!expect(
-          archive->isChecked() &&
-              HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains(
-                  "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE") &&
+          !archive->isChecked() &&
+              HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains("ENCODE_PROGRAM_4K_FILE") &&
+              !HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains("ENCODE_FILE") &&
               program_4k_path->text().contains("program_4k_output"),
-          "4K checkbox must enable both Program outputs with a distinct planned copy path"))
+          "4K checkbox must independently enable its output with a distinct planned path"))
     return false;
   mode->setCurrentIndex(mode->findData("stitch-calibration"));
   if (!expect(
@@ -7213,8 +7226,9 @@ bool test_output_controls(HStreamWindow* window) {
     return false;
   mode->setCurrentIndex(mode->findData("program"));
   archive->setChecked(false);
-  if (!expect(!program_4k->isChecked(), "Disabling the main archive must disable its optional 4K copy"))
+  if (!expect(program_4k->isChecked(), "Disabling the main archive must preserve the independent 4K output"))
     return false;
+  program_4k->setChecked(false);
 
   activate(spare);
   if (!expect(window->outputStateText("spare-rtmp") == "ENABLED", "Spare RTMP toggle should enable the output")) {
@@ -7251,9 +7265,6 @@ bool test_output_controls(HStreamWindow* window) {
       archive_path->text().contains(relative_planned_path),
       "A relative HM_OUTPUT_WORK_DIR should resolve from the backend working directory in both the UI and backend");
   mode->setCurrentIndex(mode->findData("stitch-calibration"));
-  const QString calibration_planned_path =
-      QDir(QDir(QDir::currentPath()).filePath("relative-output-test/archive-relative-path-test"))
-          .filePath("stitched_output-with-audio.mkv");
   const QStringList calibration_archive_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   const bool calibration_archive_path_unmodified = std::none_of(
       calibration_archive_arguments.cbegin(), calibration_archive_arguments.cend(), [](const QString& argument) {
@@ -7261,13 +7272,23 @@ bool test_output_controls(HStreamWindow* window) {
             argument.startsWith("--options=video_out.output_video_path=");
       });
   const bool calibration_archive_routed = expect(
-      archive_path->text().contains(calibration_planned_path) &&
-          calibration_archive_arguments.contains("--enable-sinks=RENDER,ENCODE_STITCHED_FILE") &&
-          calibration_archive_path_unmodified && !stitched_archive->isEnabled() &&
+      !archive->isEnabled() && calibration_archive_arguments.contains("--enable-sinks=RENDER") &&
+          calibration_archive_path_unmodified && stitched_archive->isEnabled() &&
           !calibration_archive_arguments.join(' ').contains("RTMP") &&
           !calibration_archive_arguments.join(' ').contains("RTSP"),
-      "Stitching Calibration Archive File must record the stitched sink without overriding native or canonical "
-      "custom archive paths or enabling streams");
+      "Stitching Calibration must disable Program Archive File without enabling streams");
+  archive->setChecked(false);
+  stitched_archive->setChecked(true);
+  if (!expect(
+          HStreamWindowTestAccess::pipelineArguments(window).contains("--enable-sinks=RENDER,ENCODE_STITCHED_FILE"),
+          "Calibration must allow Archive Stitched without Archive File"))
+    return false;
+  stitched_archive->setChecked(false);
+  if (!expect(
+          !HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains("ENCODE_STITCHED_FILE"),
+          "Calibration must allow deselecting Archive Stitched"))
+    return false;
+  archive->setChecked(true);
   mode->setCurrentIndex(mode->findData("program"));
   stitched_archive->setChecked(true);
   const QStringList dual_archive_arguments = HStreamWindowTestAccess::pipelineArguments(window);
@@ -7277,6 +7298,10 @@ bool test_output_controls(HStreamWindow* window) {
           stitched_archive_path->text().contains("stitched_output-with-audio.mkv"),
       "Program mode must independently route Program and stitched archives when both toggles are checked");
   stitched_archive->setChecked(false);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OUTPUT_SELECTION_ONLY")) {
+    qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
+    return relative_override_resolved && calibration_archive_routed && dual_archive_routed;
+  }
 
   qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
   game_id_edit->setText("archive-label-refresh-test");
@@ -15157,22 +15182,6 @@ bool submit_no_scoreboard(HStreamWindow* window, QString* error) {
   return submitted;
 }
 
-QString find_encoded_e2e_output(const QString& output_root, const QString& game_id) {
-  const QDir game_output(QDir(output_root).filePath(game_id));
-  if (!game_output.exists()) {
-    return {};
-  }
-  QFileInfo newest;
-  const QFileInfoList candidates =
-      game_output.entryInfoList({"*.mkv", "*.mp4", "*.mov"}, QDir::Files | QDir::Readable, QDir::Time);
-  for (const QFileInfo& candidate : candidates) {
-    if (candidate.size() > 64 * 1024 && (!newest.exists() || candidate.lastModified() > newest.lastModified())) {
-      newest = candidate;
-    }
-  }
-  return newest.exists() ? newest.absoluteFilePath() : QString();
-}
-
 bool write_e2e_text(const QString& path, const QString& contents) {
   const QByteArray bytes = contents.toUtf8();
   QFile file(path);
@@ -15436,6 +15445,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     }
     mode->setCurrentIndex(mode_index);
   }
+  const bool calibration_only = run_mode == "stitch-calibration";
+  const bool wait_for_eos = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_WAIT_FOR_EOS");
   const int configured_control_points = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_CONTROL_POINTS");
   if (configured_control_points > 0) {
     control_points->setValue(configured_control_points);
@@ -15453,8 +15464,13 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     activate(show_play_tracking);
   if (preview_overlays.contains("rink") && !show_rink_mask->isChecked())
     activate(show_rink_mask);
-  if (!archive->isChecked()) {
-    activate(archive);
+  const QStringList requested_outputs =
+      qEnvironmentVariable("HSTREAM_UI_E2E_OUTPUTS", "archive-file").split(',', Qt::SkipEmptyParts);
+  for (const QString& output : {QString("archive-file"), QString("archive-stitched"), QString("archive-program-4k")}) {
+    auto* toggle = require_child<QCheckBox>(window, ("outputToggle_" + output).toUtf8().constData());
+    if (!toggle || (requested_outputs.contains(output) && !toggle->isEnabled()))
+      return false;
+    toggle->setChecked(requested_outputs.contains(output));
   }
   activate(start);
   const auto stop_and_preserve_failure = [&]() {
@@ -15541,9 +15557,11 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       }
       return surface->property("previewRendererState").toString() == "ready";
     };
-    preview_tabs->setCurrentIndex(0);
-    program_target_acknowledged = wait_for_renderer(program_surface);
-    program_preview = capture_channel("program", "program-preview-surface.png");
+    if (!calibration_only) {
+      preview_tabs->setCurrentIndex(0);
+      program_target_acknowledged = wait_for_renderer(program_surface);
+      program_preview = capture_channel("program", "program-preview-surface.png");
+    }
 
     if (timer.elapsed() >= deadline_ms)
       return;
@@ -15560,10 +15578,13 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 
     if (timer.elapsed() >= deadline_ms)
       return;
-    preview_tabs->setCurrentIndex(0);
-    program_target_acknowledged = program_target_acknowledged || wait_for_renderer(program_surface);
-    x11_previews_captured = program_target_acknowledged && stitched_target_acknowledged &&
-        camera1_target_acknowledged && program_preview.passed && stitched_preview.passed && camera1_preview.passed;
+    if (!calibration_only) {
+      preview_tabs->setCurrentIndex(0);
+      program_target_acknowledged = program_target_acknowledged || wait_for_renderer(program_surface);
+    }
+    x11_previews_captured = (calibration_only || (program_target_acknowledged && program_preview.passed)) &&
+        stitched_target_acknowledged && camera1_target_acknowledged && stitched_preview.passed &&
+        camera1_preview.passed;
     if (!x11_previews_captured && interaction_error.isEmpty())
       interaction_error = "one or more GPU preview captures were blank or not acknowledged";
     if (!x11_previews_captured) {
@@ -15607,7 +15628,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     }
     const int configured_record_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_RECORD_MS");
     const int record_ms = configured_record_ms > 0 ? configured_record_ms : 6000;
-    if (observed_first_frame && timer.elapsed() - first_frame_at_ms >= record_ms &&
+    if (!wait_for_eos && observed_first_frame && timer.elapsed() - first_frame_at_ms >= record_ms &&
         (!verify_x11_preview || x11_previews_captured)) {
       break;
     }
@@ -15640,8 +15661,23 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       playback_progress->toolTip().contains("ETA:") && playback_progress->format().contains("ETA ") &&
       playback_fps_label.match(playback_progress->format()).hasMatch();
   const bool require_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR");
-  activate(stop);
+  QMap<QString, QString> working_outputs;
+  for (const QString& output : requested_outputs)
+    working_outputs[output] = HStreamWindowTestAccess::activeArchivePath(window, output);
+  if (window->pipelineStateText() != "STOPPED")
+    activate(stop);
   for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(100);
+  }
+  QElapsedTimer finalize_timer;
+  finalize_timer.start();
+  const auto outputs_saved = [&]() {
+    return std::all_of(requested_outputs.cbegin(), requested_outputs.cend(), [&](const QString& output) {
+      return window->outputStateText(output) == "SAVED";
+    });
+  };
+  while (wait_for_eos && !outputs_saved() && finalize_timer.elapsed() < 120000) {
     QApplication::processEvents();
     QTest::qWait(100);
   }
@@ -15667,7 +15703,18 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   const bool fatal_log_issue = final_log.contains("ERROR from element") || final_log.contains("FAILED_PRECONDITION:") ||
       final_log.contains("Segmentation fault") || final_log.contains("CUDA error:");
 
-  const QString output_path = find_encoded_e2e_output(qEnvironmentVariable("HM_OUTPUT_WORK_DIR"), game_id);
+  QString output_path;
+  const QMap<QString, QString> output_labels = {
+      {"archive-file", "archiveOutputPath"},
+      {"archive-stitched", "stitchedArchiveOutputPath"},
+      {"archive-program-4k", "program4kOutputPath"}};
+  for (const QString& output : requested_outputs) {
+    auto* label = window->findChild<QLabel*>(output_labels.value(output));
+    if (label && label->text().startsWith("Completed archive: "))
+      output_path = label->text().mid(QString("Completed archive: ").size());
+    else if (!wait_for_eos)
+      output_path = working_outputs.value(output);
+  }
   const QString panorama_path = QDir(window->gameDirectoryText()).filePath("panorama.tif");
   bool visual_match = false;
   QString visual_verifier_output;
@@ -15689,6 +15736,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 
   QString report;
   report += QString("game_id: %1\n").arg(game_id);
+  report += QString("run_mode: %1\noutputs: %2\n").arg(run_mode, requested_outputs.join(','));
   report += QString("preview_overlays: %1\n").arg(preview_overlays.join(','));
   report += QString("output: %1\n").arg(output_path);
   report += QString("panorama: %1\n").arg(panorama_path);
@@ -15698,12 +15746,19 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   report += QString("log_issue_lines: %1\n").arg(log_issue_count);
   report += QString("fatal_log_issue: %1\n").arg(fatal_log_issue ? "true" : "false");
   report += QString("x11_program_preview: %1\n")
-                .arg(program_preview.passed ? "PASS" : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
+                .arg(
+                    calibration_only             ? "OMITTED"
+                        : program_preview.passed ? "PASS"
+                                                 : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
   report += QString("x11_stitched_preview: %1\n")
                 .arg(stitched_preview.passed ? "PASS" : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
   report += QString("x11_camera1_preview: %1\n")
                 .arg(camera1_preview.passed ? "PASS" : (verify_x11_preview ? "FAIL" : "NOT_RUN"));
-  report += QString("program_preview_channel: %1\n").arg(program_channel_observed ? "OBSERVED" : "MISSING");
+  report += QString("program_preview_channel: %1\n")
+                .arg(
+                    calibration_only               ? "OMITTED"
+                        : program_channel_observed ? "OBSERVED"
+                                                   : "MISSING");
   report += QString("stitched_preview_channel: %1\n").arg(stitched_channel_observed ? "OBSERVED" : "MISSING");
   report += QString("camera1_preview_channel: %1\n").arg(camera1_channel_observed ? "OBSERVED" : "MISSING");
   report += QString("visual_match: %1\n").arg(visual_match ? "PASS" : "FAIL");
@@ -15721,16 +15776,20 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       !expect(observed_first_frame, "Real UI run should process frames at positive FPS") ||
       !expect(observed_playback_progress, "Real UI run should expose backend playback progress in the Qt bar") ||
       !expect(
-          !verify_x11_preview || (stitched_target_acknowledged && program_target_acknowledged),
+          !verify_x11_preview || (stitched_target_acknowledged && (calibration_only || program_target_acknowledged)),
           "Program and Stitched tabs should be acknowledged as live native render targets") ||
       !expect(
-          !verify_x11_preview || (program_preview.passed && stitched_preview.passed && camera1_preview.passed),
+          !verify_x11_preview ||
+              ((calibration_only || program_preview.passed) && stitched_preview.passed && camera1_preview.passed),
           "Program, Stitched, and Camera 1 surfaces should all contain non-blank video") ||
       !expect(
-          !verify_x11_preview || (program_channel_observed && stitched_channel_observed && camera1_channel_observed),
+          !verify_x11_preview ||
+              ((calibration_only || program_channel_observed) && stitched_channel_observed && camera1_channel_observed),
           "Program, Stitched, and Camera 1 must be supplied by their distinct backend preview channels") ||
       !expect(!fatal_log_issue, "Real UI run should not emit a fatal pipeline log signature") ||
-      !expect(!output_path.isEmpty(), "Archive output should contain a finalized encoded video") ||
+      !expect(
+          (!wait_for_eos || outputs_saved()) && QFileInfo(output_path).size() > 64 * 1024,
+          "Archives must contain video; completed runs must finish MP4 publication") ||
       !expect(visual_match, "Encoded output should geometrically match panorama.tif")) {
     std::cerr << final_log.toStdString() << '\n';
     return false;
@@ -16641,6 +16700,10 @@ int main(int argc, char** argv) {
     }
     QApplication app(argc, argv);
     HStreamWindow window;
+    if (!HStreamWindowTestAccess::useMatchingDevelopmentRuntime(&window)) {
+      std::cerr << "E2E requires hstream-ui and hstream-cli from the matching Bazel build\n";
+      return 1;
+    }
     window.show();
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_COMPLETION_ONLY"))
       return run_real_calibration_completion_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
@@ -16668,6 +16731,11 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OUTPUT_SELECTION_ONLY")) {
+    HStreamWindow window;
+    window.show();
+    return test_output_controls(&window) ? 0 : 1;
+  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STILL_ONLY"))
     return test_stitching_still() ? 0 : 1;
   if (!test_stitching_still())

@@ -153,10 +153,13 @@ int main(int argc, char** argv) {
     GstCaps* caps = gst_pad_get_current_caps(pad);
     gint width = 0;
     gint height = 0;
+    gint par_n = 0;
+    gint par_d = 0;
     if (!caps || !gst_structure_get_int(gst_caps_get_structure(caps, 0), "width", &width) ||
         !gst_structure_get_int(gst_caps_get_structure(caps, 0), "height", &height) ||
         width != static_cast<gint>(entry.second.first) || height != static_cast<gint>(entry.second.second) ||
-        !gst_caps_features_contains(gst_caps_get_features(caps, 0), "memory:NVMM"))
+        !gst_structure_get_fraction(gst_caps_get_structure(caps, 0), "pixel-aspect-ratio", &par_n, &par_d) ||
+        par_n != 1 || par_d != 1 || !gst_caps_features_contains(gst_caps_get_features(caps, 0), "memory:NVMM"))
       ok = false;
     std::cout << GST_ELEMENT_NAME(entry.first) << ": " << width << 'x' << height << '\n';
     if (caps)

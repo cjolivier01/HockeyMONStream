@@ -637,6 +637,9 @@ static GstCaps* gst_videoprep_transform_caps(
           output_batch_size,
           NULL);
     }
+    // Stitching and Program cropping define a new square-pixel canvas. Leaving PAR
+    // unconstrained lets downstream converters invent an anamorphic display ratio.
+    gst_caps_set_simple(new_caps, "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1, NULL);
     feature = gst_caps_features_new("memory:NVMM", NULL);
     gst_caps_set_features(new_caps, 0, feature);
     if (videoprep->high_bit_depth_output) {

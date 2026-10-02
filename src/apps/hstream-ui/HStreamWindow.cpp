@@ -6618,9 +6618,8 @@ void HStreamWindow::configureControlHelp() {
   help(
       "runModeCombo",
       "Choose Program for the full output pipeline, or Stitching Calibration for a stitching-only graph without "
-      "detection, tracking, rink-mask filtering, cropping, or Program output. Archive File records the stitched "
-      "canvas with audio in this mode. In Program mode, Archive File records Program while Archive Stitched can "
-      "simultaneously record the full stitched canvas.");
+      "detection, tracking, rink-mask filtering, cropping, or Program output. Archive Stitched records the stitched "
+      "canvas with audio in either mode. Archive File and Encode 4K Program independently record Program output.");
   help(
       "controlPointsSpin",
       "Set the maximum number of feature control points per synchronized frame pair. Contributions add across "
@@ -6696,12 +6695,12 @@ void HStreamWindow::configureControlHelp() {
       "Enable the local RTSP server output for the next Program run. Changes made while playing apply on the next run.");
   help(
       "outputToggle_archive-file",
-      "Encode an archive during the next Program or Stitching Calibration run. Calibration records the stitched "
-      "canvas with audio; Program records its normal output. Work is written below the configured output root, then "
+      "Encode the full-size Program output during the next Program run. Use Archive Stitched for the stitched "
+      "canvas. Work is written below the configured output root, then "
       "a successful run is losslessly finalized as a fast-start MP4 in the game directory.");
   help(
       "outputToggle_archive-stitched",
-      "Encode the full stitched canvas with audio during the next Program run, independently of the Program archive. "
+      "Encode the full stitched canvas with audio in Program or Stitching Calibration mode. "
       "Known 10-bit-or-higher inputs use HEVC Main10 SDR Rec.709; otherwise the stitched archive remains 8-bit. "
       "The completed work file is losslessly finalized as a fast-start MP4 in the game directory.");
   help(
@@ -7460,7 +7459,7 @@ bool HStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
 QStringList HStreamWindow::enabledSinkNames() const {
   QStringList sinks;
   for (const auto& [id, toggle] : output_toggles_) {
-    if (!toggle || !toggle->isChecked()) {
+    if (!toggle || !toggle->isChecked() || (isCalibrationRun() && id != "archive-stitched")) {
       continue;
     }
     if (id.contains("youtube") || id.contains("rtmp")) {
@@ -9742,10 +9741,7 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
     QStringList sinks;
     if (render_video || embed_render_window)
       sinks << "RENDER";
-    const auto archive_toggle = output_toggles_.find("archive-file");
-    const bool archive_enabled =
-        archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
-    if (archive_enabled)
+    if (output_toggles_.at("archive-stitched")->isChecked())
       sinks << "ENCODE_STITCHED_FILE";
     if (sinks.isEmpty())
       sinks << "FAKE";
@@ -10247,14 +10243,10 @@ void HStreamWindow::startPipeline() {
     archive_finalize_blocked_source_path_.clear();
     releaseArchiveFinalizerOwnership(true);
   }
-  const auto blocked_archive_toggle = output_toggles_.find("archive-file");
-  const bool blocked_archive_enabled = blocked_archive_toggle != output_toggles_.end() &&
-      blocked_archive_toggle->second && blocked_archive_toggle->second->isChecked();
-  const auto blocked_stitched_archive_toggle = output_toggles_.find("archive-stitched");
-  const bool blocked_stitched_archive_enabled = blocked_stitched_archive_toggle != output_toggles_.end() &&
-      blocked_stitched_archive_toggle->second && blocked_stitched_archive_toggle->second->isChecked();
-  if ((blocked_archive_enabled || blocked_stitched_archive_enabled) &&
-      !archive_finalize_blocked_source_path_.isEmpty()) {
+  const QStringList requested_sinks = enabledSinkNames();
+  const bool archive_requested = requested_sinks.contains("ENCODE_FILE") ||
+      requested_sinks.contains("ENCODE_STITCHED_FILE") || requested_sinks.contains("ENCODE_PROGRAM_4K_FILE");
+  if (archive_requested && !archive_finalize_blocked_source_path_.isEmpty()) {
     appendLog(QString("archive run blocked until the retained work file is moved to safety: %1")
                   .arg(archive_finalize_blocked_source_path_));
     updateRunControls();
@@ -10304,13 +10296,8 @@ void HStreamWindow::startPipeline() {
   active_run_minimum_source_bit_depth_ = 0;
   updateStitchedColorPrecisionControls();
   const QStringList active_sinks = enabledSinkNames();
-  const auto seek_archive_toggle = output_toggles_.find("archive-file");
-  const bool seek_archive_enabled = seek_archive_toggle != output_toggles_.end() && seek_archive_toggle->second &&
-      seek_archive_toggle->second->isChecked();
-  // Stitching-only mode ignores Program routes and only supports the stitched archive output.
   active_run_local_render_only_ = (!render_video_toggle_ || render_video_toggle_->isChecked()) &&
-      (active_run_is_calibration_ ? !seek_archive_enabled
-                                  : active_sinks.size() == 1 && active_sinks.front() == "RENDER");
+      active_sinks.size() == 1 && active_sinks.front() == "RENDER";
   updatePlaybackSeekControls();
   calibration_waiting_for_playback_restart_ = false;
   calibration_playback_restart_observed_ = false;
@@ -10398,15 +10385,13 @@ void HStreamWindow::startPipeline() {
   pending_archive_finalizations_.clear();
   archive_finalize_failure_summaries_.clear();
   const auto archive_toggle = output_toggles_.find("archive-file");
-  const bool archive_enabled =
-      archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
+  const bool archive_enabled = !isCalibrationRun() && archive_toggle != output_toggles_.end() &&
+      archive_toggle->second && archive_toggle->second->isChecked();
   const auto stitched_archive_toggle = output_toggles_.find("archive-stitched");
-  const bool stitched_archive_enabled = !active_run_is_calibration_ &&
-      stitched_archive_toggle != output_toggles_.end() && stitched_archive_toggle->second &&
-      stitched_archive_toggle->second->isChecked();
-  const bool program_4k_enabled =
-      !active_run_is_calibration_ && archive_enabled && output_toggles_.at("archive-program-4k")->isChecked();
-  if (archive_enabled || stitched_archive_enabled) {
+  const bool stitched_archive_enabled = stitched_archive_toggle != output_toggles_.end() &&
+      stitched_archive_toggle->second && stitched_archive_toggle->second->isChecked();
+  const bool program_4k_enabled = !active_run_is_calibration_ && output_toggles_.at("archive-program-4k")->isChecked();
+  if (archive_enabled || stitched_archive_enabled || program_4k_enabled) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
     const QString archive_run_id = QString("%1-%2")
@@ -10423,8 +10408,9 @@ void HStreamWindow::startPipeline() {
     if (program_4k_enabled) {
       active_program_4k_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, false, true);
     }
-    const QString primary_archive_path =
-        !active_archive_output_path_.isEmpty() ? active_archive_output_path_ : active_stitched_archive_output_path_;
+    const QString primary_archive_path = !active_archive_output_path_.isEmpty() ? active_archive_output_path_
+        : !active_program_4k_output_path_.isEmpty()                             ? active_program_4k_output_path_
+                                                                                : active_stitched_archive_output_path_;
     const QString archive_dir = QFileInfo(primary_archive_path).absolutePath();
     if (!QDir().mkpath(archive_dir)) {
       if (archive_enabled)
@@ -10445,7 +10431,7 @@ void HStreamWindow::startPipeline() {
       updateRunControls();
       return;
     }
-    archive_job_log_is_stitched_ = active_archive_output_path_.isEmpty() || active_run_is_calibration_;
+    archive_job_log_output_kind_ = archive_enabled ? "program" : program_4k_enabled ? "program-4k" : "stitched";
     beginArchiveJobLog(primary_archive_path, archive_run_id);
     if (archive_enabled) {
       output_states_["archive-file"]->setText("WRITING");
@@ -11979,15 +11965,15 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
         (reported_kind.isEmpty() &&
          (active_run_is_calibration_ ||
           (active_archive_output_path_.isEmpty() && !active_stitched_archive_output_path_.isEmpty())));
-    QString& output_path = reported_kind == "program-4k" ? active_program_4k_output_path_
-        : stitched && !active_run_is_calibration_        ? active_stitched_archive_output_path_
-                                                         : active_archive_output_path_;
-    QString& recovery_path = reported_kind == "program-4k" ? active_program_4k_recovery_path_
-        : stitched && !active_run_is_calibration_          ? active_stitched_archive_recovery_path_
-                                                           : active_archive_recovery_path_;
-    QLabel* path_label = reported_kind == "program-4k" ? program_4k_output_path_label_
-        : stitched && !active_run_is_calibration_      ? stitched_archive_output_path_label_
-                                                       : archive_output_path_label_;
+    QString& output_path = reported_kind == "program-4k"              ? active_program_4k_output_path_
+        : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_output_path_
+                                                                      : active_archive_output_path_;
+    QString& recovery_path = reported_kind == "program-4k"            ? active_program_4k_recovery_path_
+        : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_recovery_path_
+                                                                      : active_archive_recovery_path_;
+    QLabel* path_label = reported_kind == "program-4k"                ? program_4k_output_path_label_
+        : stitched && !active_stitched_archive_output_path_.isEmpty() ? stitched_archive_output_path_label_
+                                                                      : archive_output_path_label_;
     if (output_path.isEmpty())
       return;
     recovery_path = QFileInfo(recovery_match.captured(3)).absoluteFilePath();
@@ -12009,31 +11995,32 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
       (reported_kind.isEmpty() &&
        (active_run_is_calibration_ ||
         (active_archive_output_path_.isEmpty() && !active_stitched_archive_output_path_.isEmpty())));
-  QString& output_path = reported_kind == "program-4k" ? active_program_4k_output_path_
-      : stitched && !active_run_is_calibration_        ? active_stitched_archive_output_path_
-                                                       : active_archive_output_path_;
-  QString& recovery_path = reported_kind == "program-4k" ? active_program_4k_recovery_path_
-      : stitched && !active_run_is_calibration_          ? active_stitched_archive_recovery_path_
-                                                         : active_archive_recovery_path_;
-  qint64& initial_size = reported_kind == "program-4k" ? active_program_4k_initial_size_
-      : stitched && !active_run_is_calibration_        ? active_stitched_archive_initial_size_
-                                                       : active_archive_initial_size_;
-  qint64& initial_mtime = reported_kind == "program-4k" ? active_program_4k_initial_mtime_ms_
-      : stitched && !active_run_is_calibration_         ? active_stitched_archive_initial_mtime_ms_
-                                                        : active_archive_initial_mtime_ms_;
-  bool& video_is_hevc = reported_kind == "program-4k" ? active_program_4k_video_is_hevc_
-      : stitched && !active_run_is_calibration_       ? active_stitched_archive_video_is_hevc_
-                                                      : active_archive_video_is_hevc_;
-  QLabel* path_label = reported_kind == "program-4k" ? program_4k_output_path_label_
-      : stitched && !active_run_is_calibration_      ? stitched_archive_output_path_label_
-                                                     : archive_output_path_label_;
+  QString& output_path = reported_kind == "program-4k"              ? active_program_4k_output_path_
+      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_output_path_
+                                                                    : active_archive_output_path_;
+  QString& recovery_path = reported_kind == "program-4k"            ? active_program_4k_recovery_path_
+      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_recovery_path_
+                                                                    : active_archive_recovery_path_;
+  qint64& initial_size = reported_kind == "program-4k"              ? active_program_4k_initial_size_
+      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_initial_size_
+                                                                    : active_archive_initial_size_;
+  qint64& initial_mtime = reported_kind == "program-4k"             ? active_program_4k_initial_mtime_ms_
+      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_initial_mtime_ms_
+                                                                    : active_archive_initial_mtime_ms_;
+  bool& video_is_hevc = reported_kind == "program-4k"               ? active_program_4k_video_is_hevc_
+      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_video_is_hevc_
+                                                                    : active_archive_video_is_hevc_;
+  QLabel* path_label = reported_kind == "program-4k"                ? program_4k_output_path_label_
+      : stitched && !active_stitched_archive_output_path_.isEmpty() ? stitched_archive_output_path_label_
+                                                                    : archive_output_path_label_;
   if (output_path.isEmpty())
     return;
   const QString resolved_path = QFileInfo(match.captured(7)).absoluteFilePath();
   if (resolved_path.isEmpty()) {
     return;
   }
-  if (reported_kind != "program-4k" && archive_job_log_is_stitched_ == stitched)
+  const QString output_kind = reported_kind.isEmpty() ? (stitched ? "stitched" : "program") : reported_kind;
+  if (archive_job_log_output_kind_ == output_kind)
     resolveArchiveJobLogPath(resolved_path);
   const bool path_changed = resolved_path != output_path;
   output_path = resolved_path;
@@ -12665,8 +12652,8 @@ bool HStreamWindow::isArchiveFinalizing() const {
 
 void HStreamWindow::updateArchiveOutputPathLabel() {
   const auto archive_toggle = output_toggles_.find("archive-file");
-  const bool archive_enabled =
-      archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
+  const bool archive_enabled = !isCalibrationRun() && archive_toggle != output_toggles_.end() &&
+      archive_toggle->second && archive_toggle->second->isChecked();
   const auto stitched_archive_toggle = output_toggles_.find("archive-stitched");
   const bool stitched_archive_enabled = stitched_archive_toggle != output_toggles_.end() &&
       stitched_archive_toggle->second && stitched_archive_toggle->second->isChecked();
@@ -12698,7 +12685,7 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
             : QString("Current stitched archive: %1\nPrevious archive retained for recovery: %2\nRoute change applies "
                       "to the next run")
                   .arg(active_stitched_archive_output_path_, active_stitched_archive_recovery_path_));
-  } else if (stitched_archive_output_path_label_ && stitched_archive_enabled && !isCalibrationRun()) {
+  } else if (stitched_archive_output_path_label_ && stitched_archive_enabled) {
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     stitched_archive_output_path_label_->setText(QString("Stitched archive: %1")
                                                      .arg(archive_output_path(
@@ -12706,9 +12693,7 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
                                                          game_id_edit_ ? game_id_edit_->text().trimmed() : QString(),
                                                          true)));
   } else if (stitched_archive_output_path_label_) {
-    stitched_archive_output_path_label_->setText(
-        isCalibrationRun() ? "Archive File records the stitched canvas in this mode"
-                           : "Stitched archive path will be shown when enabled");
+    stitched_archive_output_path_label_->setText("Stitched archive path will be shown when enabled");
   }
   if (program_4k_output_path_label_) {
     if (pipeline_running && !active_program_4k_output_path_.isEmpty()) {
@@ -16041,13 +16026,15 @@ void HStreamWindow::updateRunControls() {
       QTimer::singleShot(0, this, [this]() { startNextArchiveFinalization(); });
   }
   const auto archive_toggle = output_toggles_.find("archive-file");
-  const bool archive_enabled =
-      archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
+  const bool archive_enabled = !isCalibrationRun() && archive_toggle != output_toggles_.end() &&
+      archive_toggle->second && archive_toggle->second->isChecked();
   const auto stitched_archive_toggle = output_toggles_.find("archive-stitched");
   const bool stitched_archive_enabled = stitched_archive_toggle != output_toggles_.end() &&
       stitched_archive_toggle->second && stitched_archive_toggle->second->isChecked();
   const bool archive_recovery_blocked =
-      (archive_enabled || stitched_archive_enabled) && !archive_finalize_blocked_source_path_.isEmpty();
+      (archive_enabled || stitched_archive_enabled ||
+       (!isCalibrationRun() && output_toggles_.at("archive-program-4k")->isChecked())) &&
+      !archive_finalize_blocked_source_path_.isEmpty();
   if (!pipeline_state_) {
     return;
   }
@@ -16081,24 +16068,23 @@ void HStreamWindow::updateRunControls() {
     stitching_experiments_button_->setEnabled(!running && !finalizing);
   if (highlights_button_)
     highlights_button_->setEnabled(!running && !finalizing && !isCalibrationRun());
+  if (archive_toggle != output_toggles_.end() && archive_toggle->second)
+    archive_toggle->second->setEnabled(!running && !finalizing && !isCalibrationRun());
   if (const auto copy = output_toggles_.find("archive-program-4k"); copy != output_toggles_.end() && copy->second) {
     copy->second->setEnabled(!running && !finalizing && !isCalibrationRun());
     set_control_help(
         copy->second,
-        "Save an additional HEVC Program MP4 with audio for YouTube upload, scaled to fit 3840x2160 while "
-        "preserving aspect ratio. Also enables Archive File. Telemetry refers only to the main Program video. "
+        "Save an HEVC Program MP4 with audio for YouTube upload, scaled to fit 3840x2160 while "
+        "preserving aspect ratio. Select independently of Archive File. Telemetry refers to the full-size Program video. "
         "Available in Program mode.");
   }
   if (const auto stitched_archive = output_toggles_.find("archive-stitched");
       stitched_archive != output_toggles_.end() && stitched_archive->second) {
-    stitched_archive->second->setEnabled(!running && !finalizing && !isCalibrationRun());
+    stitched_archive->second->setEnabled(!running && !finalizing);
     set_control_help(
         stitched_archive->second,
-        isCalibrationRun()
-            ? "Archive File already records the stitched canvas with audio in Stitching Calibration mode; Archive "
-              "Stitched is an independent Program-mode output."
-            : "Encode the full stitched canvas with audio alongside the independently selectable Program archive. "
-              "Known 10-bit-or-higher inputs use HEVC Main10 SDR Rec.709; otherwise it remains 8-bit.");
+        "Encode the full stitched canvas with audio in Program or Stitching Calibration mode. "
+        "Known 10-bit-or-higher inputs use HEVC Main10 SDR Rec.709; otherwise it remains 8-bit.");
   }
   if (control_points_spin_) {
     control_points_spin_->setEnabled(!running && !finalizing);
@@ -19834,10 +19820,6 @@ void HStreamWindow::toggleOutput(const QString& id, bool enabled) {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   output_states_[id]->setText(pipeline_running ? "NEXT RUN" : (enabled ? "ENABLED" : "STOPPED"));
   appendLog(QString("output route %1 %2").arg(id, enabled ? "enabled" : "disabled"));
-  if (id == "archive-program-4k" && enabled)
-    output_toggles_.at("archive-file")->setChecked(true);
-  if (id == "archive-file" && !enabled)
-    output_toggles_.at("archive-program-4k")->setChecked(false);
   if (id == "archive-file" || id == "archive-stitched" || id == "archive-program-4k") {
     updateArchiveOutputPathLabel();
   }
