@@ -13954,7 +13954,12 @@ void HStreamWindow::finishCompletedArchivePresentation(
                          : QString("; source retained at %1").arg(archive_finalize_source_path_))));
   const bool more_archives = !pending_archive_finalizations_.empty();
   const bool batch_has_failures = !archive_finalize_failure_summaries_.isEmpty();
-  if (!more_archives && active_run_telemetry_requested_) {
+  if (!more_archives && active_run_telemetry_requested_ && !batch_has_failures &&
+      !active_telemetry_manifest_path_.isEmpty()) {
+    // A 4K-only run has no full-size video to pair with telemetry. Publish its
+    // database independently, retaining the full-size coordinate contract.
+    startStandaloneTelemetryPublication(archive_finalize_game_id_);
+  } else if (!more_archives && active_run_telemetry_requested_) {
     appendLog(
         active_telemetry_manifest_path_.isEmpty()
             ? "DriveGPT database export was requested, but the pipeline did not report its working manifest"
@@ -13965,7 +13970,7 @@ void HStreamWindow::finishCompletedArchivePresentation(
     active_run_telemetry_requested_ = false;
     active_telemetry_manifest_path_.clear();
   }
-  if (!more_archives)
+  if (!more_archives && !telemetry_publication_worker_)
     finishArchiveJobLog();
   startNextArchiveFinalization();
   if (!more_archives && batch_has_failures) {
@@ -16069,7 +16074,7 @@ void HStreamWindow::updateRunControls() {
   if (highlights_button_)
     highlights_button_->setEnabled(!running && !finalizing && !isCalibrationRun());
   if (archive_toggle != output_toggles_.end() && archive_toggle->second)
-    archive_toggle->second->setEnabled(!running && !finalizing && !isCalibrationRun());
+    archive_toggle->second->setEnabled(!isCalibrationRun());
   if (const auto copy = output_toggles_.find("archive-program-4k"); copy != output_toggles_.end() && copy->second) {
     copy->second->setEnabled(!running && !finalizing && !isCalibrationRun());
     set_control_help(

@@ -134,6 +134,55 @@ bool expect_square_pixel_output_caps() {
   return ok;
 }
 
+bool expect_fixed_geometry_preserves_memory_negotiation() {
+  GstElement* element = gst_element_factory_make("playcropper", nullptr);
+  GstElement* peer = gst_element_factory_make("capsfilter", nullptr);
+  if (!element || !peer)
+    return false;
+  g_object_set(element, "output-width", 640u, "output-height", 360u, nullptr);
+  GstCaps* peer_caps = make_nvmm_rgba_caps(640, 360);
+  gst_caps_set_simple(
+      peer_caps,
+      "pixel-aspect-ratio",
+      GST_TYPE_FRACTION,
+      1,
+      1,
+      "nvbuf-memory-type",
+      G_TYPE_STRING,
+      "nvbuf-mem-cuda-unified",
+      "gpu-id",
+      G_TYPE_INT,
+      1,
+      nullptr);
+  g_object_set(peer, "caps", peer_caps, nullptr);
+  bool ok = gst_element_link(element, peer);
+  GstCaps* input = make_nvmm_rgba_caps(320, 180);
+  gst_caps_set_simple(input, "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1, nullptr);
+  auto* klass = GST_BASE_TRANSFORM_GET_CLASS(element);
+  GstCaps* output = klass->transform_caps(GST_BASE_TRANSFORM(element), GST_PAD_SINK, input, nullptr);
+  output = klass->fixate_caps(GST_BASE_TRANSFORM(element), GST_PAD_SINK, input, output);
+  guint gpu_id = 0;
+  gint memory_type = 0;
+  g_object_get(element, "gpu-id", &gpu_id, "nvbuf-memory-type", &memory_type, nullptr);
+  gint caps_gpu = 0, width = 0, height = 0;
+  const GstStructure* caps = output ? gst_caps_get_structure(output, 0) : nullptr;
+  ok = ok && caps && gst_structure_get_int(caps, "gpu-id", &caps_gpu) && caps_gpu == 1 && gpu_id == 1 &&
+      memory_type == 3 &&
+      g_strcmp0(gst_structure_get_string(caps, "nvbuf-memory-type"), "nvbuf-mem-cuda-unified") == 0 &&
+      gst_structure_get_int(caps, "width", &width) && width == 640 && gst_structure_get_int(caps, "height", &height) &&
+      height == 360;
+  if (!ok)
+    std::cerr << "Fixed square-pixel geometry must still negotiate downstream memory and GPU settings\n";
+  if (output)
+    gst_caps_unref(output);
+  gst_caps_unref(input);
+  gst_caps_unref(peer_caps);
+  gst_element_unlink(element, peer);
+  gst_object_unref(peer);
+  gst_object_unref(element);
+  return ok;
+}
+
 bool expect_stitch_rotation_requires_atomic_epoch_at_runtime() {
   GstElement* element = gst_element_factory_make("hmstitcher", nullptr);
   if (!element) {
@@ -166,7 +215,8 @@ int main(int argc, char** argv) {
       return 1;
     }
   }
-  if (!expect_reverse_fixate_preserves_input_dimensions() || !expect_square_pixel_output_caps()) {
+  if (!expect_reverse_fixate_preserves_input_dimensions() || !expect_square_pixel_output_caps() ||
+      !expect_fixed_geometry_preserves_memory_negotiation()) {
     return 1;
   }
   if (!expect_stitch_rotation_requires_atomic_epoch_at_runtime()) {

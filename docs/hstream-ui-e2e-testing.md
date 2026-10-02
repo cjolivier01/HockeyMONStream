@@ -68,7 +68,9 @@ and plugins from the same Bazel build as the test executable.
 `archive-stitched`, and `archive-program-4k` checkboxes (default: `archive-file`).
 `HSTREAM_UI_E2E_RUN_MODE=stitch-calibration` exercises stitched-only playback
 with `HSTREAM_UI_E2E_OUTPUTS=archive-stitched`; the omitted Program preview is
-excluded from that mode's checks.
+excluded from that mode's checks. Set `HSTREAM_UI_E2E_STANDALONE_TELEMETRY=1`
+with 4K-only output and `HSTREAM_UI_E2E_WAIT_FOR_EOS=1` to enable DriveGPT
+and require its independent database publication after video completion.
 
 ## Evidence retained
 

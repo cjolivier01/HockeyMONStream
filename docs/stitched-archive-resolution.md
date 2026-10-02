@@ -59,6 +59,8 @@ when selected alone, and **Archive Stitched** records the stitched canvas in
 both Program and Stitching Calibration modes. The two Program outputs are
 disabled in Stitching Calibration. Each selected output is finalized to its
 own MP4 when the run completes. Stop retains the interrupted working MKV.
+A successful 4K-only run publishes requested DriveGPT telemetry independently
+to the game directory; its coordinates still describe the full-size Program.
 
 Stitcher/cropper output caps and fitted encoder caps explicitly declare square
 pixels. Without that constraint, converter negotiation can invent an anamorphic

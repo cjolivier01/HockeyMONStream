@@ -15447,6 +15447,13 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   }
   const bool calibration_only = run_mode == "stitch-calibration";
   const bool wait_for_eos = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_WAIT_FOR_EOS");
+  const bool require_standalone_telemetry = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_STANDALONE_TELEMETRY");
+  if (require_standalone_telemetry) {
+    auto* telemetry = require_child<QCheckBox>(window, "drivegptCsvCheck");
+    if (!telemetry)
+      return false;
+    telemetry->setChecked(true);
+  }
   const int configured_control_points = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_CONTROL_POINTS");
   if (configured_control_points > 0) {
     control_points->setValue(configured_control_points);
@@ -15673,6 +15680,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   QElapsedTimer finalize_timer;
   finalize_timer.start();
   const auto outputs_saved = [&]() {
+    if (require_standalone_telemetry &&
+        !window->completeLogText().contains("DriveGPT database copied to the game directory:"))
+      return false;
     return std::all_of(requested_outputs.cbegin(), requested_outputs.cend(), [&](const QString& output) {
       return window->outputStateText(output) == "SAVED";
     });
