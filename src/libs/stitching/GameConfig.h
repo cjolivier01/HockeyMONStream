@@ -93,6 +93,10 @@ absl::StatusOr<bool> materialize_rink_mask_frame_time(YAML::Node& config, const 
 bool restore_generated_stitch_rink_context(YAML::Node& config);
 absl::StatusOr<bool> materialize_stitch_rink_context(YAML::Node& config, const YAML::Node& effective);
 
+// Restore saved private intent only when the complete generated backend tuple
+// still matches. Shared by CLI loading and experiment configuration.
+bool restore_generated_stitching_backend_choices(YAML::Node& config);
+
 absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML::Node& config);
 bool restore_generated_control_point_resolution(YAML::Node& config);
 absl::StatusOr<bool> materialize_control_point_resolution(YAML::Node& config, const YAML::Node& effective);

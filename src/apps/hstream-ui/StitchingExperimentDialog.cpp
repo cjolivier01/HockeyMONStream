@@ -3122,6 +3122,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       throw std::runtime_error(saved.status().ToString());
     if (saved->has_value()) {
       YAML::Node game = YAML::Clone(**saved);
+      hm::stitching::restore_generated_stitching_backend_choices(game);
       hm::stitching::restore_generated_control_point_resolution(game);
       overlay_feature_settings(effective, game);
     }

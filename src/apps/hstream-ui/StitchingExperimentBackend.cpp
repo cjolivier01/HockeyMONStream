@@ -796,8 +796,9 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
       HM_ASSIGN_OR_RETURN(resolution, hm::stitching::ParseControlPointResolution(saved_resolution.as<std::string>()));
       settings.control_point_resolution = hm::stitching::ControlPointResolutionName(resolution);
     }
-    YAML::Node saved_matcher =
-        stitching && stitching.IsMap() ? stitching["control_point_matcher"] : YAML::Node(YAML::NodeType::Undefined);
+    YAML::Node saved_matcher(YAML::NodeType::Undefined);
+    if (stitching && stitching.IsMap() && stitching["control_point_matcher"])
+      saved_matcher.reset(stitching["control_point_matcher"]);
     if (calibration["status"].as<std::string>("") == "complete" && claim && claim.IsMap() &&
         claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>("") &&
         claim["control_point_matcher"]) {
@@ -915,6 +916,7 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     YAML::Node config = YAML::LoadFile(source_config.string());
     if (!config || !config.IsMap())
       return absl::InvalidArgumentError("The selected game config must contain a YAML map");
+    hm::stitching::restore_generated_stitching_backend_choices(config);
     StitchingExperimentSettings frozen_settings = settings;
     const YAML::Node source_stitching = static_cast<const YAML::Node&>(config)["stitching"];
     const YAML::Node source_matcher = source_stitching && source_stitching.IsMap()

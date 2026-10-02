@@ -1093,6 +1093,321 @@ absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML:
   }
 }
 
+bool restore_generated_stitching_backend_choices(YAML::Node& config) {
+  // This restoration is shared by CLI loading and experiment editing. Inspect
+  // the whole generated tuple before changing any member, so an explicit edit
+  // never activates stale restoration metadata for the other settings.
+  const auto get_node = [](const YAML::Node& root, const std::string& path) -> std::optional<YAML::Node> {
+    YAML::Node current = root;
+    size_t start = 0;
+    while (start < path.size()) {
+      const size_t end = path.find('.', start);
+      if (!current.IsMap())
+        return std::nullopt;
+      const YAML::Node next = static_cast<const YAML::Node&>(current)[path.substr(start, end - start)];
+      if (!next.IsDefined())
+        return std::nullopt;
+      current.reset(next);
+      if (end == std::string::npos)
+        break;
+      start = end + 1;
+    }
+    return current;
+  };
+  const auto remove_yaml_key_path = [](YAML::Node& root, const std::initializer_list<std::string>& path) {
+    YAML::Node current = root;
+    std::vector<std::pair<YAML::Node, std::string>> parents;
+    const std::vector<std::string> keys(path);
+    for (size_t index = 0; index < keys.size(); ++index) {
+      if (!current.IsMap())
+        return;
+      const YAML::Node next = static_cast<const YAML::Node&>(current)[keys[index]];
+      if (!next.IsDefined())
+        return;
+      if (index + 1 == keys.size()) {
+        current.remove(keys[index]);
+        break;
+      }
+      parents.emplace_back(current, keys[index]);
+      current.reset(next);
+    }
+    for (auto it = parents.rbegin(); it != parents.rend(); ++it) {
+      YAML::Node child = it->first[it->second];
+      if (!child.IsMap() || child.size() != 0)
+        break;
+      it->first.remove(it->second);
+    }
+  };
+
+  const auto generated_matcher =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher");
+  const auto generated_backend = get_node(config, "hstream_ui.generated_stitching_backend_choices.mapping_backend");
+  const auto generated_autooptimizer =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.run_autooptimizer");
+  const auto generated_projection = get_node(config, "hstream_ui.generated_stitching_backend_choices.projection");
+  const auto generated_projection_parameters =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.projection_parameters");
+  const auto generated_projection_framing =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.projection_framing");
+  const auto previous_projection =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_projection");
+  const auto previous_projection_parameters =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_projection_parameters");
+  const auto previous_projection_framing =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_projection_framing");
+  const auto previous_matcher =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher");
+  const auto previous_backend =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend");
+  const auto previous_autooptimizer =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer");
+  const auto previous_generated_projection_parameters =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters");
+  const auto private_matcher = get_node(config, "stitching.control_point_matcher");
+  const auto private_backend = get_node(config, "stitching.mapping_backend");
+  const auto private_autooptimizer = get_node(config, "stitching.run_autooptimizer");
+  const auto private_projection = get_node(config, "stitching.projection");
+  const auto private_projection_framing = get_node(config, "stitching.projection_framing");
+  auto numeric_sequence = [](const std::optional<YAML::Node>& node) -> std::optional<std::vector<double>> {
+    if (!node.has_value() || !node->IsSequence())
+      return std::nullopt;
+    try {
+      std::vector<double> values;
+      values.reserve(node->size());
+      for (const YAML::Node& value : *node) {
+        if (!value.IsScalar())
+          return std::nullopt;
+        const double parsed = value.as<double>();
+        if (!std::isfinite(parsed))
+          return std::nullopt;
+        values.push_back(parsed);
+      }
+      return values;
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  auto parsed_projection = [](const std::optional<YAML::Node>& node) -> std::optional<StitchProjection> {
+    if (!node.has_value() || !node->IsScalar())
+      return std::nullopt;
+    try {
+      const auto projection = ParseStitchProjection(node->as<std::string>());
+      if (!projection.ok())
+        return std::nullopt;
+      return *projection;
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  auto parsed_matcher = [](const std::optional<YAML::Node>& node) -> std::optional<ControlPointMatcher> {
+    if (!node.has_value() || !node->IsScalar())
+      return std::nullopt;
+    try {
+      const auto matcher = ParseControlPointMatcher(node->as<std::string>());
+      return matcher.ok() ? std::optional<ControlPointMatcher>(*matcher) : std::nullopt;
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  auto parsed_backend = [](const std::optional<YAML::Node>& node) -> std::optional<MappingBackend> {
+    if (!node.has_value() || !node->IsScalar())
+      return std::nullopt;
+    try {
+      const auto backend = ParseMappingBackend(node->as<std::string>());
+      return backend.ok() ? std::optional<MappingBackend>(*backend) : std::nullopt;
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  auto parsed_boolean = [](const std::optional<YAML::Node>& node) -> std::optional<bool> {
+    if (!node.has_value() || !node->IsScalar())
+      return std::nullopt;
+    try {
+      return node->as<bool>();
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  auto parsed_framing = [](const std::optional<YAML::Node>& node) -> std::optional<StitchProjectionFraming> {
+    if (!node.has_value() || !node->IsMap())
+      return std::nullopt;
+    YAML::Node wrapper(YAML::NodeType::Map);
+    wrapper["stitching"]["projection_framing"] = YAML::Clone(*node);
+    const auto framing = read_stitch_projection_framing(wrapper);
+    return framing.ok() ? std::optional<StitchProjectionFraming>(*framing) : std::nullopt;
+  };
+  auto canonical_projection_name =
+      [&parsed_projection](const std::optional<YAML::Node>& node) -> std::optional<std::string> {
+    const auto projection = parsed_projection(node);
+    if (!projection.has_value())
+      return std::nullopt;
+    return std::string(StitchProjectionName(*projection));
+  };
+  bool generated_autooptimizer_matches_private = !generated_autooptimizer.has_value();
+  if (generated_autooptimizer.has_value() && generated_autooptimizer->IsScalar() && private_autooptimizer.has_value() &&
+      private_autooptimizer->IsScalar()) {
+    try {
+      generated_autooptimizer_matches_private =
+          private_autooptimizer->as<bool>() == generated_autooptimizer->as<bool>();
+    } catch (const YAML::Exception&) {
+      generated_autooptimizer_matches_private = false;
+    }
+  }
+  const auto generated_projection_value = parsed_projection(generated_projection);
+  const auto private_projection_value = parsed_projection(private_projection);
+  const auto generated_matcher_value = parsed_matcher(generated_matcher);
+  const auto private_matcher_value = parsed_matcher(private_matcher);
+  const auto generated_backend_value = parsed_backend(generated_backend);
+  const auto private_backend_value = parsed_backend(private_backend);
+  const bool generated_projection_matches_private =
+      (!generated_projection.has_value() && !private_projection.has_value()) ||
+      (generated_projection_value.has_value() && private_projection_value.has_value() &&
+       *generated_projection_value == *private_projection_value);
+  bool generated_projection_parameters_match_private = !generated_projection_parameters.has_value();
+  if (generated_projection_parameters.has_value() && generated_projection.has_value() &&
+      generated_projection->IsScalar()) {
+    const auto projection = ParseStitchProjection(generated_projection->as<std::string>());
+    const auto generated_values = numeric_sequence(generated_projection_parameters);
+    const auto private_values = projection.ok()
+        ? read_stitch_projection_parameters(config, *projection)
+        : absl::StatusOr<std::vector<double>>(absl::InvalidArgumentError("invalid generated projection"));
+    generated_projection_parameters_match_private =
+        generated_values.has_value() && private_values.ok() && *generated_values == *private_values;
+  }
+  bool generated_projection_framing_matches_private = !generated_projection_framing.has_value();
+  if (generated_projection_framing.has_value()) {
+    const auto generated_value = parsed_framing(generated_projection_framing);
+    const auto private_value = parsed_framing(private_projection_framing);
+    generated_projection_framing_matches_private = generated_value.has_value() && private_value.has_value() &&
+        *generated_value == *private_value && generated_value->rotation_inherited == private_value->rotation_inherited;
+  }
+  const auto metadata_parameters_valid = [&numeric_sequence](
+                                             const std::optional<YAML::Node>& parameters,
+                                             const std::optional<StitchProjection>& projection) {
+    if (!parameters.has_value())
+      return true;
+    const auto values = numeric_sequence(parameters);
+    return projection.has_value() && values.has_value() &&
+        ValidateStitchProjectionParameters(*projection, *values).ok();
+  };
+  const auto previous_projection_value =
+      previous_projection.has_value() ? parsed_projection(previous_projection) : generated_projection_value;
+  const bool previous_projection_parameters_valid =
+      metadata_parameters_valid(previous_projection_parameters, previous_projection_value);
+  const bool previous_generated_projection_parameters_valid =
+      metadata_parameters_valid(previous_generated_projection_parameters, generated_projection_value);
+  const bool previous_matcher_valid = !previous_matcher.has_value() || parsed_matcher(previous_matcher).has_value();
+  const bool previous_backend_valid = !previous_backend.has_value() || parsed_backend(previous_backend).has_value();
+  const bool previous_projection_valid =
+      !previous_projection.has_value() || parsed_projection(previous_projection).has_value();
+  const bool previous_autooptimizer_valid =
+      !previous_autooptimizer.has_value() || parsed_boolean(previous_autooptimizer).has_value();
+  const bool previous_projection_framing_valid =
+      !previous_projection_framing.has_value() || parsed_framing(previous_projection_framing).has_value();
+  const auto previous_backend_value = parsed_backend(previous_backend);
+  const auto previous_autooptimizer_value = parsed_boolean(previous_autooptimizer);
+  bool previous_backend_tuple_valid = true;
+  if (previous_backend_value.has_value()) {
+    std::optional<StitchProjection> effective_previous_projection = parsed_projection(previous_projection);
+    if (!effective_previous_projection.has_value() && !previous_projection.has_value() &&
+        *previous_backend_value != MappingBackend::kNona) {
+      effective_previous_projection = StitchProjection::kRectilinear;
+    }
+    previous_backend_tuple_valid =
+        (!effective_previous_projection.has_value() ||
+         ValidateMappingBackendProjection(*previous_backend_value, *effective_previous_projection).ok()) &&
+        (*previous_backend_value != MappingBackend::kNona || !previous_autooptimizer_value.has_value() ||
+         *previous_autooptimizer_value);
+  }
+  const bool generated_matches_private = generated_matcher_value.has_value() && private_matcher_value.has_value() &&
+      *generated_matcher_value == *private_matcher_value && generated_backend_value.has_value() &&
+      private_backend_value.has_value() && *generated_backend_value == *private_backend_value &&
+      generated_autooptimizer_matches_private && generated_projection_matches_private &&
+      generated_projection_parameters_match_private && generated_projection_framing_matches_private &&
+      previous_projection_parameters_valid && previous_projection_framing_valid &&
+      previous_generated_projection_parameters_valid && previous_matcher_valid && previous_backend_valid &&
+      previous_projection_valid && previous_autooptimizer_valid && previous_backend_tuple_valid;
+  if (!generated_matches_private) {
+    return false;
+  }
+
+  if (previous_matcher.has_value() && previous_matcher->IsScalar()) {
+    config["stitching"]["control_point_matcher"] = previous_matcher->as<std::string>();
+  } else {
+    remove_yaml_key_path(config, {"stitching", "control_point_matcher"});
+  }
+  if (previous_backend.has_value() && previous_backend->IsScalar()) {
+    config["stitching"]["mapping_backend"] = previous_backend->as<std::string>();
+  } else {
+    remove_yaml_key_path(config, {"stitching", "mapping_backend"});
+  }
+  if (generated_autooptimizer.has_value()) {
+    if (previous_autooptimizer.has_value() && previous_autooptimizer->IsScalar()) {
+      try {
+        config["stitching"]["run_autooptimizer"] = previous_autooptimizer->as<bool>();
+      } catch (const YAML::Exception&) {
+        remove_yaml_key_path(config, {"stitching", "run_autooptimizer"});
+      }
+    } else {
+      remove_yaml_key_path(config, {"stitching", "run_autooptimizer"});
+    }
+  }
+  if (previous_projection.has_value() && previous_projection->IsScalar()) {
+    config["stitching"]["projection"] = previous_projection->as<std::string>();
+  } else {
+    // Projection predates the generated-choice metadata. Preserve the
+    // historical rectilinear contract when restoring an older OpenCV backend
+    // that therefore has no previous_projection field.
+    const auto restored_backend = get_node(config, "stitching.mapping_backend");
+    const auto parsed_backend = restored_backend.has_value() && restored_backend->IsScalar()
+        ? ParseMappingBackend(restored_backend->as<std::string>())
+        : absl::StatusOr<MappingBackend>(absl::InvalidArgumentError("missing mapping backend"));
+    if (parsed_backend.ok() && *parsed_backend != MappingBackend::kNona) {
+      config["stitching"]["projection"] = StitchProjectionName(StitchProjection::kRectilinear);
+    } else {
+      remove_yaml_key_path(config, {"stitching", "projection"});
+    }
+  }
+  if (generated_projection_parameters.has_value() && generated_projection.has_value() &&
+      generated_projection->IsScalar()) {
+    const auto generated_parameter_projection = canonical_projection_name(generated_projection);
+    if (generated_parameter_projection.has_value()) {
+      remove_yaml_key_path(config, {"stitching", "projection_parameters", *generated_parameter_projection});
+      if (previous_generated_projection_parameters.has_value() &&
+          previous_generated_projection_parameters->IsSequence()) {
+        config["stitching"]["projection_parameters"][*generated_parameter_projection] =
+            YAML::Clone(*previous_generated_projection_parameters);
+      }
+    }
+    const auto restored_parameter_projection =
+        previous_projection.has_value() && previous_projection->IsScalar() ? previous_projection : generated_projection;
+    const auto restored_parameter_projection_name = canonical_projection_name(restored_parameter_projection);
+    if (restored_parameter_projection_name.has_value() && previous_projection_parameters.has_value() &&
+        previous_projection_parameters->IsSequence()) {
+      const bool restores_generated_projection = generated_parameter_projection.has_value() &&
+          *restored_parameter_projection_name == *generated_parameter_projection;
+      const auto current_parameters =
+          get_node(config, "stitching.projection_parameters." + *restored_parameter_projection_name);
+      if (restores_generated_projection || !current_parameters.has_value()) {
+        config["stitching"]["projection_parameters"][*restored_parameter_projection_name] =
+            YAML::Clone(*previous_projection_parameters);
+      }
+    }
+  }
+  if (generated_projection_framing.has_value()) {
+    // Preserve the private map's original sparsity so omitted fields keep
+    // inheriting from lower config layers after the generated override is
+    // retired. parsed_framing() above has already validated this map.
+    if (previous_projection_framing.has_value() && previous_projection_framing->IsMap()) {
+      config["stitching"]["projection_framing"] = YAML::Clone(*previous_projection_framing);
+    } else {
+      remove_yaml_key_path(config, {"stitching", "projection_framing"});
+    }
+  }
+  remove_yaml_key_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
+  return true;
+}
+
 bool restore_generated_control_point_resolution(YAML::Node& config) {
   const YAML::Node values = config;
   const YAML::Node ui = values && values.IsMap() ? values["hstream_ui"] : YAML::Node();

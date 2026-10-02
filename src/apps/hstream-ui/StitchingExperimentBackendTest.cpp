@@ -555,6 +555,63 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
       "ordinary artifact promotion must not require available media");
 }
 
+bool experiment_generated_backend_choices(const fs::path& root) {
+  const fs::path game = root / "generated-backend-game";
+  YAML::Node source = YAML::Load(R"(
+stitching:
+  control_point_matcher: loftr
+  mapping_backend: opencv-magsac
+  projection: rectilinear
+  run_autooptimizer: false
+hstream_ui:
+  generated_stitching_backend_choices:
+    control_point_matcher: loftr
+    mapping_backend: opencv-magsac
+    projection: rectilinear
+    run_autooptimizer: false
+    previous_control_point_matcher: superpoint-lightglue
+    previous_mapping_backend: nona
+    previous_projection: cylindrical
+    previous_run_autooptimizer: true
+)");
+  if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
+      !write(game / "config.yaml", YAML::Dump(source)))
+    return false;
+  StitchingExperimentSettings settings{100, 1, "00:00:00", std::nullopt};
+  settings.control_point_matcher = "dedode-lightglue";
+  const auto workspace = CreateStitchingExperimentWorkspace(game, root / "generated-session", settings, 1);
+  if (!expect(workspace.ok(), "candidate must restore generated backend choices before applying its matcher"))
+    return false;
+  const YAML::Node config = YAML::LoadFile((workspace->game_directory / "config.yaml").string());
+  bool ok = expect(
+      config["stitching"]["control_point_matcher"].as<std::string>() == "dedode-lightglue" &&
+          config["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          config["stitching"]["projection"].as<std::string>() == "cylindrical" &&
+          config["stitching"]["run_autooptimizer"].as<bool>() &&
+          !config["hstream_ui"]["generated_stitching_backend_choices"].IsDefined(),
+      "choosing a matcher must not freeze transient backend, projection or optimizer overrides");
+  const auto promoted =
+      BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+  if (!expect(promoted.ok(), "restored backend and chosen matcher must be promotable"))
+    return false;
+  const YAML::Node selected = YAML::Load(*promoted);
+  ok &= expect(
+      selected["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          selected["stitching"]["control_point_matcher"].as<std::string>() == "dedode-lightglue",
+      "promotion must retain the restored backend and explicit matcher");
+  settings.control_point_matcher.reset();
+  const auto inherited = CreateStitchingExperimentWorkspace(game, root / "generated-session", settings, 2);
+  ok &= expect(
+      inherited.ok() && inherited->settings.control_point_matcher == "superpoint-lightglue",
+      "inherited matcher must freeze saved intent instead of a transient generated choice");
+  source["stitching"]["control_point_matcher"] = "akaze-hamming";
+  const auto before = YAML::Dump(source);
+  ok &= expect(
+      !hm::stitching::restore_generated_stitching_backend_choices(source) && YAML::Dump(source) == before,
+      "an explicit edit must keep stale restoration metadata from changing other tuple members");
+  return ok;
+}
+
 bool experiment_resolutions(const fs::path& root) {
   const fs::path game = root / "resolution-game";
   YAML::Node source;
@@ -566,13 +623,16 @@ bool experiment_resolutions(const fs::path& root) {
   calibration["invalidation_id"] = "saved-main";
   calibration["backend_generation"]["invalidation_id"] = "saved-main";
   calibration["backend_generation"]["control_point_resolution"] = "native";
+  calibration["backend_generation"]["control_point_matcher"] = "loftr";
   if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
       !write(game / "config.yaml", YAML::Dump(source)))
     return false;
   StitchingExperimentSettings settings{100, 2, "00:00:00", std::nullopt, "2k"};
+  settings.control_point_matcher = "akaze-hamming";
   auto main = MainStitchingExperimentWorkspace(game, settings);
   bool ok = expect(
-      main.ok() && main->has_value() && (**main).settings.control_point_resolution == "native",
+      main.ok() && main->has_value() && (**main).settings.control_point_resolution == "native" &&
+          (**main).settings.control_point_matcher == "loftr",
       "Main reports its saved generation's Native size instead of the displayed experiment size");
   int sequence = 0;
   for (const std::string size : {"native", "1k", "2k"}) {
@@ -979,6 +1039,7 @@ int main() {
   }
 
   bool ok = true;
+  ok &= expect(experiment_generated_backend_choices(root), "experiment generated choices must restore saved intent");
   ok &= expect(experiment_resolutions(root), "experiment image sizes must persist and promote independently");
   ok &= expect(durable_workspace_publication(root), "queued workspaces must be durable before catalog publication");
   ok &= expect(ordinary_frame_inspection(*workspace), "ordinary calibration inspection must remain bound to its row");

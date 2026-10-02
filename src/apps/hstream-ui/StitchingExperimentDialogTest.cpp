@@ -476,6 +476,39 @@ void exercise_resolution_queue(const QString& game, const QString& root) {
       "Invalid current size must block new candidates without blocking already frozen queued solves");
 }
 
+void exercise_generated_matcher(const QString& game, const QString& root) {
+  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  config["stitching"]["control_point_matcher"] = "loftr";
+  config["stitching"]["mapping_backend"] = "opencv-magsac";
+  config["stitching"]["projection"] = "rectilinear";
+  config["hstream_ui"]["generated_stitching_backend_choices"] = YAML::Load(R"(
+control_point_matcher: loftr
+mapping_backend: opencv-magsac
+projection: rectilinear
+previous_control_point_matcher: superpoint-lightglue
+previous_mapping_backend: nona
+previous_projection: cylindrical
+)");
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  StitchingExperimentDialog dialog(
+      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+  require(
+      widget<QComboBox>(dialog, "stitchExperimentControlPointMatcher")->currentData() == "superpoint-lightglue" &&
+          widget<QComboBox>(dialog, "stitchExperimentControlPointResolution")->isEnabled(),
+      "Experiments must initialize from saved matcher intent rather than a previous temporary CLI override");
+  add_options(dialog);
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open generated matcher test store");
+  const auto saved = LoadStitchingExperimentStore(*store);
+  require(saved.ok() && saved->experiments.size() == 1, "Restored matcher candidate must persist");
+  const auto yaml = YAML::LoadFile((saved->experiments[0].workspace.game_directory / "config.yaml").string());
+  require(
+      yaml["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
+          yaml["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          yaml["stitching"]["projection"].as<std::string>() == "cylindrical",
+      "Queued candidates must preserve the restored backend while freezing their matcher");
+}
+
 void exercise_matcher_queue(const QString& game, const QString& root) {
   auto config = YAML::Load(read(game + "/config.yaml").toStdString());
   config["stitching"]["control_point_matcher"] = "dedode-lightglue";
@@ -2556,6 +2589,7 @@ int main(int argc, char** argv) {
       exercise_frame_navigation(fixture.path());
       exercise_resolution_queue(make_game("resolutions"), fixture.path());
       exercise_matcher_queue(make_game("matchers"), fixture.path());
+      exercise_generated_matcher(make_game("generated-matcher"), fixture.path());
       exercise_player_queue(make_game("queue"), fixture.path());
       exercise_queued_reopen(make_game("queued-reopen"), fixture.path());
       exercise_preparation_failure(make_game("partial-preparation"), fixture.path());
