@@ -476,6 +476,97 @@ void exercise_resolution_queue(const QString& game, const QString& root) {
       "Invalid current size must block new candidates without blocking already frozen queued solves");
 }
 
+void exercise_generated_matcher(const QString& game, const QString& root) {
+  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  config["stitching"]["control_point_matcher"] = "loftr";
+  config["stitching"]["mapping_backend"] = "opencv-magsac";
+  config["stitching"]["projection"] = "rectilinear";
+  config["hstream_ui"]["generated_stitching_backend_choices"] = YAML::Load(R"(
+control_point_matcher: loftr
+mapping_backend: opencv-magsac
+projection: rectilinear
+previous_control_point_matcher: superpoint-lightglue
+previous_mapping_backend: nona
+previous_projection: cylindrical
+)");
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  StitchingExperimentDialog dialog(
+      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+  require(
+      widget<QComboBox>(dialog, "stitchExperimentControlPointMatcher")->currentData() == "superpoint-lightglue" &&
+          widget<QComboBox>(dialog, "stitchExperimentControlPointResolution")->isEnabled(),
+      "Experiments must initialize from saved matcher intent rather than a previous temporary CLI override");
+  add_options(dialog);
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open generated matcher test store");
+  const auto saved = LoadStitchingExperimentStore(*store);
+  require(saved.ok() && saved->experiments.size() == 1, "Restored matcher candidate must persist");
+  const auto yaml = YAML::LoadFile((saved->experiments[0].workspace.game_directory / "config.yaml").string());
+  require(
+      yaml["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
+          yaml["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          yaml["stitching"]["projection"].as<std::string>() == "cylindrical",
+      "Queued candidates must preserve the restored backend while freezing their matcher");
+}
+
+void exercise_matcher_queue(const QString& game, const QString& root) {
+  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  config["stitching"]["control_point_matcher"] = "dedode-lightglue";
+  config["stitching"]["control_point_resolution"] = "1k";
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  const std::array<std::string, 4> choices{"superpoint-lightglue", "dedode-lightglue", "loftr", "akaze-hamming"};
+  QStringList labels;
+  {
+    StitchingExperimentDialog dialog(
+        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+    auto* matcher = widget<QComboBox>(dialog, "stitchExperimentControlPointMatcher");
+    auto* size = widget<QComboBox>(dialog, "stitchExperimentControlPointResolution");
+    auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+    require(
+        matcher->count() == 4 && matcher->currentData() == "dedode-lightglue",
+        "Matcher choices must match main controls and initialize from the effective game setting");
+    for (const auto& choice : choices) {
+      matcher->setCurrentIndex(matcher->findData(QString::fromStdString(choice)));
+      require(
+          size->isEnabled() == (choice == "superpoint-lightglue"), "Only SuperPoint may offer variable feature sizes");
+      labels.push_back(matcher->currentText());
+      add_options(dialog);
+      add_options(dialog);
+    }
+    require(table->rowCount() == 4, "Matcher variants must be distinct and identical additions deduplicated");
+    matcher->setCurrentIndex(matcher->findData("superpoint-lightglue"));
+    require(size->currentData() == "1k", "Switching matchers must preserve the selected SuperPoint size");
+    const auto store = OpenStitchingExperimentStore(game.toStdString());
+    require(store.ok(), "Cannot open matcher test store");
+    const auto saved = LoadStitchingExperimentStore(*store);
+    require(saved.ok() && saved->experiments.size() == choices.size(), "Every matcher must persist");
+    for (size_t row = 0; row < choices.size(); ++row) {
+      const auto& workspace = saved->experiments[row].workspace;
+      const auto yaml = YAML::LoadFile((workspace.game_directory / "config.yaml").string());
+      require(
+          workspace.settings.control_point_matcher == choices[row] &&
+              yaml["stitching"]["control_point_matcher"].as<std::string>() == choices[row] &&
+              table->item(static_cast<int>(row), 8)->text() == labels[static_cast<int>(row)],
+          "Queued settings, configs and labels must retain their own matcher");
+      require(
+          table->item(static_cast<int>(row), 7)->text() ==
+              (row == 0       ? "1K"
+                   : row == 1 ? "1024 × 576"
+                   : row == 2 ? "1600 px maximum"
+                              : "1920 px maximum"),
+          "Each row must describe its own processing size after the editor changes");
+    }
+  }
+  config["stitching"]["control_point_matcher"] = "loftr";
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  StitchingExperimentDialog reopened(
+      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+  auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
+  require(table->rowCount() == 4, "Reopening must restore matcher variants");
+  for (int row = 0; row < 4; ++row)
+    require(table->item(row, 8)->text() == labels[row], "Saved matcher labels must survive main config changes");
+}
+
 void exercise_player_queue(const QString& game, const QString& root) {
   auto initial = YAML::Load(read(game + "/config.yaml").toStdString());
   initial["game"]["stitching"]["frame_offsets"]["left"] = 0;
@@ -1777,8 +1868,7 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
       require(
           !widget<QWidget>(dialog, "stitchExperimentCandidatePanel")->isVisible(), "Preview must focus before stop");
       stop->click();
-      require(
-          widget<QWidget>(dialog, "stitchExperimentCandidatePanel")->isVisible(), "Stop must restore the layout");
+      require(widget<QWidget>(dialog, "stitchExperimentCandidatePanel")->isVisible(), "Stop must restore the layout");
     } else
       write(preview_release, QByteArray::number(exit_code));
     require(wait_until([&] { return play->isEnabled(); }, 10000), "Preview did not release the native target");
@@ -2498,6 +2588,8 @@ int main(int argc, char** argv) {
       }
       exercise_frame_navigation(fixture.path());
       exercise_resolution_queue(make_game("resolutions"), fixture.path());
+      exercise_matcher_queue(make_game("matchers"), fixture.path());
+      exercise_generated_matcher(make_game("generated-matcher"), fixture.path());
       exercise_player_queue(make_game("queue"), fixture.path());
       exercise_queued_reopen(make_game("queued-reopen"), fixture.path());
       exercise_preparation_failure(make_game("partial-preparation"), fixture.path());

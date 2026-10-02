@@ -321,6 +321,11 @@ absl::Status configure_candidate(
     config["stitching"].remove("manual_control_points");
     config["hstream_ui"]["stitching_calibration"].remove("match_snapshot");
   }
+  if (settings.control_point_matcher) {
+    config["stitching"]["control_point_matcher"] = *settings.control_point_matcher;
+    // The accepted experiment choice must not be restored to an older UI value.
+    config["hstream_ui"].remove("generated_stitching_backend_choices");
+  }
   if (settings.control_point_resolution) {
     config["stitching"]["control_point_resolution"] = *settings.control_point_resolution;
     config["hstream_ui"].remove("generated_control_point_resolution");
@@ -776,6 +781,7 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
     settings.manual_control_points = manual.empty() ? std::nullopt : std::make_optional(manual);
     // This row describes the saved solve, not the current experiment controls.
     settings.control_point_resolution.reset();
+    settings.control_point_matcher.reset();
     const YAML::Node claim = calibration["backend_generation"];
     const YAML::Node stitching = config["stitching"];
     YAML::Node saved_resolution =
@@ -789,6 +795,19 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
       hm::stitching::ControlPointResolution resolution;
       HM_ASSIGN_OR_RETURN(resolution, hm::stitching::ParseControlPointResolution(saved_resolution.as<std::string>()));
       settings.control_point_resolution = hm::stitching::ControlPointResolutionName(resolution);
+    }
+    YAML::Node saved_matcher(YAML::NodeType::Undefined);
+    if (stitching && stitching.IsMap() && stitching["control_point_matcher"])
+      saved_matcher.reset(stitching["control_point_matcher"]);
+    if (calibration["status"].as<std::string>("") == "complete" && claim && claim.IsMap() &&
+        claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>("") &&
+        claim["control_point_matcher"]) {
+      saved_matcher.reset(claim["control_point_matcher"]);
+    }
+    if (saved_matcher && !saved_matcher.IsNull()) {
+      hm::stitching::ControlPointMatcher matcher;
+      HM_ASSIGN_OR_RETURN(matcher, hm::stitching::ParseControlPointMatcher(saved_matcher.as<std::string>()));
+      settings.control_point_matcher = hm::stitching::ControlPointMatcherName(matcher);
     }
     settings.control_points = calibration["control_points"].as<int>(settings.control_points);
     settings.frame_count = fingerprint.empty()
@@ -829,6 +848,11 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     const StitchingExperimentSettings& settings,
     int sequence,
     bool allow_linked_inputs) {
+  if (settings.control_point_matcher) {
+    if (settings.control_point_matcher->empty())
+      return absl::InvalidArgumentError("An explicit experiment control-point matcher must not be empty");
+    HM_RETURN_IF_ERROR(hm::stitching::ParseControlPointMatcher(*settings.control_point_matcher).status());
+  }
   if (settings.control_points <= 0 || settings.frame_count <= 0 || sequence <= 0)
     return absl::InvalidArgumentError("Stitching experiment counts and sequence must be positive");
   if (settings.control_point_resolution) {
@@ -892,8 +916,20 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     YAML::Node config = YAML::LoadFile(source_config.string());
     if (!config || !config.IsMap())
       return absl::InvalidArgumentError("The selected game config must contain a YAML map");
+    hm::stitching::restore_generated_stitching_backend_choices(config);
     StitchingExperimentSettings frozen_settings = settings;
     const YAML::Node source_stitching = static_cast<const YAML::Node&>(config)["stitching"];
+    const YAML::Node source_matcher = source_stitching && source_stitching.IsMap()
+        ? source_stitching["control_point_matcher"]
+        : YAML::Node(YAML::NodeType::Undefined);
+    if (settings.control_point_matcher || (source_matcher && !source_matcher.IsNull())) {
+      hm::stitching::ControlPointMatcher matcher;
+      HM_ASSIGN_OR_RETURN(
+          matcher,
+          hm::stitching::ParseControlPointMatcher(
+              settings.control_point_matcher ? *settings.control_point_matcher : source_matcher.as<std::string>()));
+      frozen_settings.control_point_matcher = hm::stitching::ControlPointMatcherName(matcher);
+    }
     const YAML::Node source_resolution = source_stitching && source_stitching.IsMap()
         ? source_stitching["control_point_resolution"]
         : YAML::Node(YAML::NodeType::Undefined);
