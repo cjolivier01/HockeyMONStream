@@ -3,14 +3,14 @@
 The UI acceptance test exercises the same Qt button handlers as an operator:
 
 1. load the selected game;
-2. configure display rendering for the selected test mode and enable **Archive File**;
+2. configure display rendering and select the requested archive checkboxes;
 3. click **Play**;
 4. observe the private native scoreboard-selector URL and submit **No scoreboard**;
 5. wait for positive pipeline FPS while recording several seconds;
-6. click **Stop** and require a finalized encoded video;
+6. click **Stop** and inspect the working MKV, or wait for completion and require published MP4s;
 7. compare sampled encoded frames with `panorama.tif` using SIFT features and a RANSAC homography.
 
-Positive FPS alone is deliberately insufficient. The visual check requires at
+Positive FPS alone is deliberately insufficient. The visual check requires square pixels and at
 least 20 geometrically consistent feature matches and a 35% inlier fraction,
 so a healthy pipeline processing the wrong game fails.
 
@@ -55,14 +55,22 @@ to the source game. Configured stitching artifacts are reflinked (or copied
 when reflinks are not available), while `config.yaml`, UI state, locks, and
 encoded output remain isolated. The source game is not modified.
 
-On X11, the backend retains independent ordinary BGRx samples for the final
-program render, the raw stitched canvas, and each camera source, then serves
-bounded JPEG preview frames through HStream's private runtime-command channel.
-The acceptance test requires all three distinct channel acknowledgements in
-addition to non-blank pixels. Qt paints those frames in the tabs. This avoids relying on a video
-sink painting directly into a child window, which is unreliable across Qt
-backing stores, compositors, and mixed-DPI desktops. It does not alter the
-full-resolution encode branch.
+On X11, the backend renders NVMM video through CUDA/OpenGL into the native
+preview windows. The acceptance test requests bounded diagnostic captures of
+the presented GPU framebuffer; ordinary playback performs no CPU frame readback.
+The test requires distinct channel acknowledgements and non-blank images, then
+checks the recorded working MKV after Stop. With
+`HSTREAM_UI_E2E_WAIT_FOR_EOS=1`, it waits for natural completion and requires all
+selected outputs to finish MP4 publication. It selects the CLI
+and plugins from the same Bazel build as the test executable.
+
+`HSTREAM_UI_E2E_OUTPUTS` selects comma-separated `archive-file`,
+`archive-stitched`, and `archive-program-4k` checkboxes (default: `archive-file`).
+`HSTREAM_UI_E2E_RUN_MODE=stitch-calibration` exercises stitched-only playback
+with `HSTREAM_UI_E2E_OUTPUTS=archive-stitched`; the omitted Program preview is
+excluded from that mode's checks. Set `HSTREAM_UI_E2E_STANDALONE_TELEMETRY=1`
+with 4K-only output and `HSTREAM_UI_E2E_WAIT_FOR_EOS=1` to enable DriveGPT
+and require its independent database publication after video completion.
 
 ## Evidence retained
 
@@ -74,10 +82,7 @@ The artifact directory contains:
 - `program-preview-surface.png`, `stitched-preview-surface.png`,
   `camera1-preview-surface.png`, and `preview-report.txt`: live X11 evidence
   when `--x11-preview` is used;
-- `backend-main-preview.jpg`, `backend-stitched-preview.jpg`, and
-  `backend-source0-preview.jpg`: the first retained backend frames delivered
-  to the Qt preview during an X11 run;
-- `encoded-output/`: the actual archive written by the UI-selected sink;
+- `encoded-output/`: working archives; finalized MP4s are published in the sandbox game directory;
 - `encoded-frame.jpg`: the best sampled output frame;
 - `panorama-reference.jpg`: a review-sized panorama;
 - `panorama-feature-matches.jpg`: inlier feature links between output and panorama;

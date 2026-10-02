@@ -1398,6 +1398,10 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
   glClear(GL_COLOR_BUFFER_BIT);
   glViewport(viewport_x, viewport_y, viewport_width, viewport_height);
+  // Video is opaque. Overlay passes leave blending enabled, and packed 10-bit
+  // conversion can supply non-opaque alpha even though its RGB is valid video.
+  glDisable(GL_BLEND);
+  glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
   glEnable(GL_TEXTURE_2D);
   glBindTexture(GL_TEXTURE_2D, state->texture);
   glBegin(GL_QUADS);

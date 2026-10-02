@@ -19,6 +19,8 @@ namespace fs = std::filesystem;
 namespace {
 
 struct VisualMatchResult {
+  double pixel_aspect_numerator = 0;
+  double pixel_aspect_denominator = 0;
   int panorama_keypoints = 0;
   int frame_keypoints = 0;
   int ratio_matches = 0;
@@ -49,6 +51,8 @@ VisualMatchResult compare_video_to_panorama(const fs::path& video_path, const fs
     return best;
   }
 
+  best.pixel_aspect_numerator = video.get(cv::CAP_PROP_SAR_NUM);
+  best.pixel_aspect_denominator = video.get(cv::CAP_PROP_SAR_DEN);
   const cv::Mat panorama_scaled = scaled_for_match(panorama);
   cv::Mat panorama_gray;
   cv::cvtColor(panorama_scaled, panorama_gray, cv::COLOR_BGR2GRAY);
@@ -205,7 +209,8 @@ int main(int argc, char** argv) {
   }
 
   const VisualMatchResult result = compare_video_to_panorama(video_path, panorama_path);
-  const bool passed = result.homography_inliers >= minimum_inliers() && result.inlier_fraction >= 0.35;
+  const bool square_pixels = result.pixel_aspect_numerator == 1 && result.pixel_aspect_denominator == 1;
+  const bool passed = square_pixels && result.homography_inliers >= minimum_inliers() && result.inlier_fraction >= 0.35;
   if (!result.frame.empty()) {
     cv::imwrite((artifact_dir / "encoded-frame.jpg").string(), result.frame);
   }
@@ -218,6 +223,7 @@ int main(int argc, char** argv) {
   }
 
   std::ostringstream report;
+  report << "pixel_aspect_ratio: " << result.pixel_aspect_numerator << ':' << result.pixel_aspect_denominator << '\n';
   report << "panorama_keypoints: " << result.panorama_keypoints << '\n';
   report << "frame_keypoints: " << result.frame_keypoints << '\n';
   report << "ratio_matches: " << result.ratio_matches << '\n';

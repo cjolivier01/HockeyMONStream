@@ -73,6 +73,10 @@ GstPadProbeReturn update_dimensions(GstPad*, GstPadProbeInfo* info, gpointer dat
       "height",
       G_TYPE_INT,
       static_cast<gint>(fitted->second),
+      "pixel-aspect-ratio",
+      GST_TYPE_FRACTION,
+      1,
+      1,
       nullptr);
   g_object_set(state->caps_filter, "caps", caps, nullptr);
   gst_caps_unref(caps);

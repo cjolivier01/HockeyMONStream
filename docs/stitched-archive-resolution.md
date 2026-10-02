@@ -52,3 +52,19 @@ color: unsupported NVIDIA transforms can emit nonempty encoded buffers containin
 blank pixels. This bounded CPU decode exists only in the manual test.
 On Jetson, add `--config=jetson` to these commands. For headless SSH checks,
 unset a forwarded `DISPLAY` so NVIDIA EGL uses the local device.
+
+Desktop output selection is independent: **Archive File** records full-size
+Program output, **Encode 4K Program** records only the bounded Program output
+when selected alone, and **Archive Stitched** records the stitched canvas in
+both Program and Stitching Calibration modes. The two Program outputs are
+disabled in Stitching Calibration. Each selected output is finalized to its
+own MP4 when the run completes. Stop retains the interrupted working MKV.
+A successful 4K-only run publishes requested DriveGPT telemetry independently
+to the game directory; its coordinates still describe the full-size Program.
+
+Stitcher/cropper output caps and fitted encoder caps explicitly declare square
+pixels. Without that constraint, converter negotiation can invent an anamorphic
+pixel aspect ratio even when the encoded frame dimensions are correct. GPU
+previews draw the video texture with blending disabled before drawing overlays;
+packed 10-bit conversion can leave low alpha in RGBA video, which must not make
+the video transparent on subsequent frames.

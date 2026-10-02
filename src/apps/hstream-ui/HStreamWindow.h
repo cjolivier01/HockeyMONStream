@@ -795,7 +795,7 @@ class HStreamWindow : public QMainWindow {
   qint64 active_stitched_archive_initial_size_{-1};
   qint64 active_stitched_archive_initial_mtime_ms_{-1};
   bool active_stitched_archive_video_is_hevc_{false};
-  bool archive_job_log_is_stitched_{false};
+  QString archive_job_log_output_kind_;
   std::deque<PendingArchiveFinalization> pending_archive_finalizations_;
   QProcess* archive_finalize_process_{nullptr};
   QThread* telemetry_publication_worker_{nullptr};

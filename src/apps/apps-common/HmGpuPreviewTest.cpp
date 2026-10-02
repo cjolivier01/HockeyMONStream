@@ -949,8 +949,10 @@ bool run_rink_mask_reactivation_test(Window window) {
 bool run_renderer_test(Display* display, Window window) {
   GError* error = nullptr;
   GstElement* pipeline = gst_parse_launch(
-      "videotestsrc pattern=black num-buffers=5 ! "
-      "video/x-raw,width=640,height=360,framerate=30/1 ! "
+      // Match the low alpha produced by packed 10-bit to RGBA conversion. Every
+      // video frame must remain opaque after the previous frame's overlays.
+      "videotestsrc pattern=solid-color foreground-color=0x030000ff num-buffers=5 ! "
+      "video/x-raw,format=RGBA,width=640,height=360,framerate=30/1 ! "
       "nvvideoconvert gpu-id=0 nvbuf-memory-type=2 output-buffers=1 ! "
       "video/x-raw(memory:NVMM),format=RGBA,width=640,height=360 ! "
       // This source has no DeepStream frame metadata. The stitched preview
@@ -1007,18 +1009,29 @@ bool run_renderer_test(Display* display, Window window) {
     gst_message_unref(message);
   }
 
+  bool eos = false;
+  GstMessage* terminal =
+      gst_bus_timed_pop_filtered(bus, 5 * GST_SECOND, static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+  if (terminal) {
+    eos = GST_MESSAGE_TYPE(terminal) == GST_MESSAGE_EOS;
+    gst_message_unref(terminal);
+  }
+
   std::vector<std::uint8_t> rgba;
   unsigned width = 0;
   unsigned height = 0;
   std::string capture_error;
   sink = gst_bin_get_by_name(GST_BIN(pipeline), "preview");
   const bool captured = hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error);
+  const size_t center = (static_cast<size_t>(height / 2) * width + width / 2) * 4;
+  const bool opaque_video =
+      captured && rgba.size() > center + 2 && rgba[center + 2] >= 240 && rgba[center] < 16 && rgba[center + 1] < 16;
   bool watermark_visible = false;
   if (captured && width >= 352 && height >= 111 && rgba.size() >= static_cast<size_t>(width) * height * 4U) {
     for (unsigned y = height - 111; y < height && !watermark_visible; ++y)
       for (unsigned x = width - 352; x < width - 31; ++x) {
         const size_t pixel = (static_cast<size_t>(y) * width + x) * 4U;
-        if (rgba[pixel] > rgba[pixel + 1] + 20 && rgba[pixel] > rgba[pixel + 2] + 20) {
+        if (rgba[pixel] > rgba[pixel + 1] + 20 && rgba[pixel + 2] < 240) {
           watermark_visible = true;
           break;
         }
@@ -1050,13 +1063,6 @@ bool run_renderer_test(Display* display, Window window) {
       ? std::pair<std::uint8_t, std::uint8_t>{0, 0}
       : std::minmax({*std::min_element(rgba.begin(), rgba.end()), *std::max_element(rgba.begin(), rgba.end())});
 
-  bool eos = false;
-  GstMessage* terminal =
-      gst_bus_timed_pop_filtered(bus, 5 * GST_SECOND, static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
-  if (terminal) {
-    eos = GST_MESSAGE_TYPE(terminal) == GST_MESSAGE_EOS;
-    gst_message_unref(terminal);
-  }
   // The UI owns the foreign XID and may destroy it before the sink transitions
   // to NULL. Cleanup must use the sink's private GLX drawable in that case.
   XDestroyWindow(display, window);
@@ -1072,12 +1078,12 @@ bool run_renderer_test(Display* display, Window window) {
       bounded_rgba.size() <= hm::gpu_preview::kMaximumPresentedFrameCaptureBytes;
   const bool capture_recovery_ok = !injected_capture && !failed_capture_error.empty() && recovered_capture &&
       recovered_capture_width == 640 && recovered_capture_height == 360 && !recovered_capture_rgba.empty();
-  if (!ready || !eos || !captured || !watermark_visible || width != 640 || height != 360 || maximum == minimum ||
-      !capture_recovery_ok || !bounded_capture_ok || !stale_xid_cleanup) {
+  if (!ready || !eos || !captured || !opaque_video || !watermark_visible || width != 640 || height != 360 ||
+      maximum == minimum || !capture_recovery_ok || !bounded_capture_ok || !stale_xid_cleanup) {
     std::cerr << "GPU preview did not expose its presented texture: ready=" << ready << " captured=" << captured
               << " watermark=" << watermark_visible << " range=" << static_cast<int>(maximum - minimum)
-              << " error=" << capture_error << " bounded-capture=" << bounded_capture
-              << " bounded-size=" << bounded_width << 'x' << bounded_height
+              << " opaque-video=" << opaque_video << " error=" << capture_error
+              << " bounded-capture=" << bounded_capture << " bounded-size=" << bounded_width << 'x' << bounded_height
               << " bounded-error=" << bounded_capture_error << " capture-recovery=" << capture_recovery_ok << '\n';
     return false;
   }

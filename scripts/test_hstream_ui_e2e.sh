@@ -84,6 +84,7 @@ done < <(find "${source_game}" -mindepth 1 -maxdepth 1 -print0)
 
 cd "${repo_root}"
 bazelisk build --config=opt --cpu=k8 \
+  //src/apps/hstream-ui:hstream-ui \
   //src/apps/hstream-ui:hstream_ui_test \
   //src/apps/hstream-ui:hstream_ui_visual_verifier \
   //src/apps/hstream-cli:hstream-cli \
@@ -111,13 +112,15 @@ e2e_env=(
   "HSTREAM_SCOREBOARD_BROWSER=/bin/true"
   "HSTREAM_UI_E2E_GAME_ID=${game_id}"
   "HSTREAM_UI_E2E_PREPARE_GAME=1"
-  "HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR=1"
-  "HSTREAM_UI_E2E_RUN_MODE=program"
+  "HSTREAM_UI_E2E_RUN_MODE=${HSTREAM_UI_E2E_RUN_MODE:-program}"
   "HSTREAM_UI_E2E_TIMEOUT_MS=${HSTREAM_UI_E2E_TIMEOUT_MS:-180000}"
   "HSTREAM_UI_E2E_RECORD_MS=${HSTREAM_UI_E2E_RECORD_MS:-${e2e_record_default}}"
   "HSTREAM_UI_E2E_ARTIFACT_DIR=${artifact_dir}"
   "HSTREAM_UI_E2E_VISUAL_VERIFIER=${repo_root}/bazel-bin/src/apps/hstream-ui/hstream_ui_visual_verifier"
 )
+if [[ ${HSTREAM_UI_E2E_RUN_MODE:-program} == program ]]; then
+  e2e_env+=("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR=1")
+fi
 if [[ ${verify_x11_preview} == 1 ]]; then
   e2e_env+=("HSTREAM_UI_E2E_VERIFY_X11_PREVIEW=1")
 fi

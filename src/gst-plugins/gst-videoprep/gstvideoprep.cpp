@@ -453,65 +453,63 @@ static GstCaps* gst_videoprep_fixate_caps(
       ++count;
     if (count == 2) {
       GST_DEBUG_OBJECT(trans, "dimensions already set to %dx%d, not fixating", w, h);
-      g_print("%s: line=%d ---- %s\n", GST_ELEMENT_NAME(trans), __LINE__, gst_caps_to_string(othercaps));
-      return othercaps;
-    }
-
-    gst_structure_get_int(ins, "width", &from_w);
-    gst_structure_get_int(ins, "height", &from_h);
-
-    if (!gst_video_calculate_display_ratio(&num, &den, from_w, from_h, from_par_n, from_par_d, to_par_n, to_par_d)) {
-      GST_ELEMENT_ERROR(
-          trans, CORE, NEGOTIATION, (NULL), ("Error calculating the output scaled size - integer overflow"));
-      g_print("%s: line=%d ---- %s\n", GST_ELEMENT_NAME(trans), __LINE__, gst_caps_to_string(othercaps));
-      return othercaps;
-    }
-
-    GST_DEBUG_OBJECT(
-        trans,
-        "scaling input with %dx%d and PAR %d/%d to output PAR %d/%d",
-        from_w,
-        from_h,
-        from_par_n,
-        from_par_d,
-        to_par_n,
-        to_par_d);
-    GST_DEBUG_OBJECT(trans, "resulting output should respect ratio of %d/%d", num, den);
-
-    /* now find a width x height that respects this display ratio.
-     * prefer those that have one of w/h the same as the incoming video
-     * using wd / hd = num / den */
-
-    /* if one of the output width or height is fixed, we work from there */
-    if (h) {
-      GST_DEBUG_OBJECT(trans, "height is fixed,scaling width");
-      w = (guint)gst_util_uint64_scale_int(h, num, den);
-    } else if (w) {
-      GST_DEBUG_OBJECT(trans, "width is fixed, scaling height");
-      h = (guint)gst_util_uint64_scale_int(w, den, num);
     } else {
-      /* none of width or height is fixed, figure out both of them based only on
-       * the input width and height */
-      /* check hd / den is an integer scale factor, and scale wd with the PAR */
-      if (from_h % den == 0) {
-        GST_DEBUG_OBJECT(trans, "keeping video height");
-        h = from_h;
+      gst_structure_get_int(ins, "width", &from_w);
+      gst_structure_get_int(ins, "height", &from_h);
+
+      if (!gst_video_calculate_display_ratio(&num, &den, from_w, from_h, from_par_n, from_par_d, to_par_n, to_par_d)) {
+        GST_ELEMENT_ERROR(
+            trans, CORE, NEGOTIATION, (NULL), ("Error calculating the output scaled size - integer overflow"));
+        g_print("%s: line=%d ---- %s\n", GST_ELEMENT_NAME(trans), __LINE__, gst_caps_to_string(othercaps));
+        return othercaps;
+      }
+
+      GST_DEBUG_OBJECT(
+          trans,
+          "scaling input with %dx%d and PAR %d/%d to output PAR %d/%d",
+          from_w,
+          from_h,
+          from_par_n,
+          from_par_d,
+          to_par_n,
+          to_par_d);
+      GST_DEBUG_OBJECT(trans, "resulting output should respect ratio of %d/%d", num, den);
+
+      /* now find a width x height that respects this display ratio.
+       * prefer those that have one of w/h the same as the incoming video
+       * using wd / hd = num / den */
+
+      /* if one of the output width or height is fixed, we work from there */
+      if (h) {
+        GST_DEBUG_OBJECT(trans, "height is fixed,scaling width");
         w = (guint)gst_util_uint64_scale_int(h, num, den);
-      } else if (from_w % num == 0) {
-        GST_DEBUG_OBJECT(trans, "keeping video width");
-        w = from_w;
+      } else if (w) {
+        GST_DEBUG_OBJECT(trans, "width is fixed, scaling height");
         h = (guint)gst_util_uint64_scale_int(w, den, num);
       } else {
-        GST_DEBUG_OBJECT(trans, "approximating but keeping video height");
-        h = from_h;
-        w = (guint)gst_util_uint64_scale_int(h, num, den);
+        /* none of width or height is fixed, figure out both of them based only on
+         * the input width and height */
+        /* check hd / den is an integer scale factor, and scale wd with the PAR */
+        if (from_h % den == 0) {
+          GST_DEBUG_OBJECT(trans, "keeping video height");
+          h = from_h;
+          w = (guint)gst_util_uint64_scale_int(h, num, den);
+        } else if (from_w % num == 0) {
+          GST_DEBUG_OBJECT(trans, "keeping video width");
+          w = from_w;
+          h = (guint)gst_util_uint64_scale_int(w, den, num);
+        } else {
+          GST_DEBUG_OBJECT(trans, "approximating but keeping video height");
+          h = from_h;
+          w = (guint)gst_util_uint64_scale_int(h, num, den);
+        }
       }
-    }
-    GST_DEBUG_OBJECT(trans, "scaling to %dx%d", w, h);
+      GST_DEBUG_OBJECT(trans, "scaling to %dx%d", w, h);
 
-    /* now fixate */
-    gst_structure_fixate_field_nearest_int(outs, "width", w);
-    gst_structure_fixate_field_nearest_int(outs, "height", h);
+      /* now fixate */
+      gst_structure_fixate_field_nearest_int(outs, "width", w);
+      gst_structure_fixate_field_nearest_int(outs, "height", h);
+    }
   } else {
     gint width, height;
 
@@ -637,6 +635,9 @@ static GstCaps* gst_videoprep_transform_caps(
           output_batch_size,
           NULL);
     }
+    // Stitching and Program cropping define a new square-pixel canvas. Leaving PAR
+    // unconstrained lets downstream converters invent an anamorphic display ratio.
+    gst_caps_set_simple(new_caps, "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1, NULL);
     feature = gst_caps_features_new("memory:NVMM", NULL);
     gst_caps_set_features(new_caps, 0, feature);
     if (videoprep->high_bit_depth_output) {
