@@ -3516,14 +3516,17 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     const fs::path& output_path,
     const fs::path& recovery_name_base) {
   struct stat output_stat{};
-  const int output_fd = ::open(output_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  int output_fd = ::open(output_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (output_fd < 0) {
     if (errno == ENOENT)
       return std::optional<fs::path>();
     return absl::InternalError(
         TO_STRING("Failed to inspect archive work file \"" << output_path.string() << "\": " << std::strerror(errno)));
   }
-  absl::Cleanup close_output = [output_fd]() { ::close(output_fd); };
+  absl::Cleanup close_output = [&output_fd]() {
+    if (output_fd >= 0)
+      ::close(output_fd);
+  };
   struct stat named_output_stat{};
   if (::fstat(output_fd, &output_stat) != 0 || ::lstat(output_path.c_str(), &named_output_stat) != 0 ||
       !same_file_identity(output_stat, named_output_stat)) {
@@ -3782,6 +3785,38 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     // The recovery guards are the durable transaction record once the source
     // pathnames are retired.  Persist them before crossing that boundary.
     HM_RETURN_IF_ERROR(sync_parent_directory(recovery_path));
+
+    // NFS keeps an unlinked pathname as a hidden .nfs* entry while a descriptor
+    // still resolves through it. Reopen the durable published names before
+    // retiring the source names, while retaining the same inode identities.
+    const auto reopen_published = [](const fs::path& path, const struct stat& expected) -> absl::StatusOr<int> {
+      const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+      struct stat current{};
+      if (fd < 0 || ::fstat(fd, &current) != 0 || !S_ISREG(current.st_mode) ||
+          !same_file_identity(current, expected)) {
+        if (fd >= 0)
+          ::close(fd);
+        return absl::FailedPreconditionError(TO_STRING("Published archive changed at \"" << path.string() << "\""));
+      }
+      return fd;
+    };
+    auto published_video_fd = reopen_published(recovery_path, output_stat);
+    if (!published_video_fd.ok())
+      return published_video_fd.status();
+    absl::StatusOr<int> published_log_fd = -1;
+    if (has_output_log) {
+      published_log_fd = reopen_published(recovery_log_path, output_log_stat);
+      if (!published_log_fd.ok()) {
+        ::close(*published_video_fd);
+        return published_log_fd.status();
+      }
+    }
+    ::close(output_fd);
+    output_fd = *published_video_fd;
+    if (has_output_log) {
+      ::close(output_log_fd);
+      output_log_fd = *published_log_fd;
+    }
 
     const absl::Status source_cleanup =
         remove_archive_entry_if_owned(output_path, output_stat, "archive work file", &recovery_path, &output_stat);

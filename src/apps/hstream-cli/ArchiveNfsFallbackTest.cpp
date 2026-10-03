@@ -57,6 +57,28 @@ int main() {
       !fs::exists(first_pin) && !fs::exists(second_pin) && !fs::exists(first_cleanup) && !fs::exists(second_cleanup);
   if (!passed)
     std::cerr << "Interrupted NFS cleanup recovery failed: " << chained_recovery.status() << '\n';
+
+  // A crash can leave the private fallback as the only publication. Restoring
+  // it to a public name uses the hard-link branch when rename flags fail.
+  const fs::path restored_configured = root / "restored.mkv";
+  const fs::path restored_source =
+      root / "restored.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-aabbccddeeff.mkv";
+  const fs::path restored_video = root / "restored-finalization-failed.mkv";
+  const fs::path restore_cleanup = root / "hstream-cleanup-v2-11111111-2222-4333-8444-555555555555";
+  add_cleanup_record(restore_cleanup, restored_source);
+  std::ofstream(restore_cleanup / "guard", std::ios::binary) << "trusted interrupted video";
+  fs::create_hard_link(restore_cleanup / "guard", restore_cleanup / "fallback");
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED", "1", TRUE);
+  const auto restored_recovery = hm::configurator_internal::recover_stale_archive_work_files(restored_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
+  std::ifstream restored_stream(restored_video, std::ios::binary);
+  const std::string restored_content{std::istreambuf_iterator<char>(restored_stream), std::istreambuf_iterator<char>()};
+  restored_stream.close();
+  const bool restore_passed = restored_recovery.ok() && restored_recovery->size() == 1 &&
+      restored_recovery->front() == restored_video && restored_content == "trusted interrupted video" &&
+      !fs::exists(restored_source) && !fs::exists(restore_cleanup);
+  if (!restore_passed)
+    std::cerr << "Public NFS fallback restoration failed: " << restored_recovery.status() << '\n';
   remove_fixture();
-  return passed ? 0 : 1;
+  return passed && restore_passed ? 0 : 1;
 }
