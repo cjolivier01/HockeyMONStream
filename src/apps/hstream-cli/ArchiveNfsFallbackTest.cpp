@@ -167,7 +167,9 @@ int main() {
       : absl::InternalError("disappearing source fixture is unavailable");
   g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REMOVE_SOURCE_BEFORE_ARCHIVE_QUARANTINE");
   const bool fallback_retained = !vanished_first.ok() && !fs::exists(vanished_source) && fs::exists(vanished_fallback);
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED", "1", TRUE);
   const auto vanished_restart = hm::configurator_internal::recover_stale_archive_work_files(vanished_source);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
   std::ifstream vanished_stream(vanished_source, std::ios::binary);
   const std::string vanished_content{std::istreambuf_iterator<char>(vanished_stream), std::istreambuf_iterator<char>()};
   vanished_stream.close();
@@ -175,6 +177,45 @@ int main() {
       vanished_content == "retained after disappearance" && !fs::exists(vanished_fallback);
   if (!vanished_passed)
     std::cerr << "Disappearing source recovery failed: " << vanished_first << "; " << vanished_restart.status() << '\n';
+
+  // Rollback removes the published log after a failed source quarantine. An
+  // open descriptor on that log leaves a .nfs* entry in the private cleanup
+  // directory, preventing the directory from being retired.
+  const fs::path rollback_dir = root / "rollback";
+  fs::create_directory(rollback_dir);
+  const fs::path rollback_source = rollback_dir / "recording.mkv";
+  const fs::path rollback_log = rollback_source.string() + ".log";
+  const fs::path rollback_recovery = rollback_dir / "recording-finalization-failed.mkv";
+  const fs::path rollback_recovery_log = rollback_recovery.string() + ".log";
+  std::ofstream(rollback_source, std::ios::binary) << "trusted rollback video";
+  std::ofstream(rollback_log, std::ios::binary) << "trusted rollback log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED", "1", TRUE);
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE", "1", TRUE);
+  const auto rollback = hm::configurator_internal::preserve_existing_archive_work_file(rollback_source);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
+  std::ifstream rollback_video_stream(rollback_source, std::ios::binary);
+  const std::string rollback_video_content{
+      std::istreambuf_iterator<char>(rollback_video_stream), std::istreambuf_iterator<char>()};
+  rollback_video_stream.close();
+  std::ifstream rollback_log_stream(rollback_log, std::ios::binary);
+  const std::string rollback_log_content{
+      std::istreambuf_iterator<char>(rollback_log_stream), std::istreambuf_iterator<char>()};
+  rollback_log_stream.close();
+  bool rollback_cleanup_retired = true;
+  for (const auto& entry : fs::directory_iterator(rollback_dir)) {
+    const std::string name = entry.path().filename().string();
+    if (name.rfind("hstream-cleanup-v2-", 0) == 0 || name.rfind(".nfs", 0) == 0)
+      rollback_cleanup_retired = false;
+  }
+  const bool rollback_passed = !rollback.ok() && rollback_video_content == "trusted rollback video" &&
+      rollback_log_content == "trusted rollback log" && fs::exists(rollback_recovery) &&
+      !fs::exists(rollback_recovery_log) && rollback_cleanup_retired;
+  if (!rollback_passed)
+    std::cerr << "NFS log rollback failed: " << rollback.status() << '\n';
   remove_fixture();
-  return recorded_passed && passed && restore_passed && guarded_passed && rescue_passed && vanished_passed ? 0 : 1;
+  return recorded_passed && passed && restore_passed && guarded_passed && rescue_passed && vanished_passed &&
+          rollback_passed
+      ? 0
+      : 1;
 }

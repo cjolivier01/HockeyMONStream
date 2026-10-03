@@ -3824,6 +3824,14 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     const absl::Status source_cleanup =
         remove_archive_entry_if_owned(output_path, output_stat, "archive work file", &recovery_path, &output_stat);
     if (!source_cleanup.ok()) {
+      // Rollback may remove the published log link. Release the descriptors
+      // rebound to published names first so NFS can retire those names.
+      ::close(output_fd);
+      output_fd = -1;
+      if (output_log_fd >= 0) {
+        ::close(output_log_fd);
+        output_log_fd = -1;
+      }
       auto current_recovery_log = inspect_archive_entry(recovery_log_path, "partial recovery sidecar after cleanup");
       if (current_recovery_log.ok() && current_recovery_log->has_value() &&
           same_file_identity(current_recovery_log->value(), expected_published_log_stat)) {
