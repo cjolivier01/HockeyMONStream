@@ -2393,22 +2393,22 @@ absl::Status remove_archive_entry_if_owned(
   ::close(pinned_fd);
   pinned_fd = -1;
 
+  const char* remove_source_before_quarantine =
+      g_getenv("HSTREAM_CONFIGURATOR_TEST_REMOVE_SOURCE_BEFORE_ARCHIVE_QUARANTINE");
+  if (remove_source_before_quarantine && path.string() == remove_source_before_quarantine) {
+    g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REMOVE_SOURCE_BEFORE_ARCHIVE_QUARANTINE");
+    ::unlinkat(parent_fd, filename.c_str(), 0);
+  }
+
   if (rename_archive_entry_no_replace(parent_fd, filename.c_str(), cleanup_fd, "entry") != 0) {
     const int saved_errno = errno;
-    const absl::Status fallback_retirement =
-        retire_durable_archive_removal_fallback(cleanup_fd, parent_fd, *durable_removal_fallback, pinned_stat);
-    if (fallback_retirement.ok()) {
-      retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
-      ::fsync(parent_fd);
-    }
+    // An absent source may leave the public fallback as the inode's only
+    // remaining name. Keep it and its cleanup record for restart recovery.
     ::close(cleanup_fd);
-    ::close(pinned_fd);
     ::close(parent_fd);
-    if (saved_errno == ENOENT && fallback_retirement.ok())
-      return absl::OkStatus();
     return absl::InternalError(TO_STRING(
         "Failed to quarantine " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)
-                                << (fallback_retirement.ok() ? "" : TO_STRING("; " << fallback_retirement.message()))));
+                                << "; cleanup fallback retained"));
   }
   const char* quarantine_interrupt = g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
   if (quarantine_interrupt && (std::strcmp(quarantine_interrupt, "1") == 0 || path.string() == quarantine_interrupt)) {

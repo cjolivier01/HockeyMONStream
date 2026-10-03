@@ -7,6 +7,7 @@
 
 #include <glib.h>
 #include <gst/gst.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 GST_DEBUG_CATEGORY(NVDS_APP);
@@ -151,6 +152,29 @@ int main() {
       occupied_content == "foreign video" && !fs::exists(rescue_guard);
   if (!rescue_passed)
     std::cerr << "Guarded NFS rescue failed: " << rescue_recovery.status() << '\n';
+
+  // If the source disappears after the durable fallback is published, a
+  // failed quarantine must leave that last link for the next reconciliation.
+  const fs::path vanished_source = root / "vanished.mkv";
+  const fs::path vanished_fallback = vanished_source.string() + ".hstream-cleanup-pin";
+  std::ofstream(vanished_source, std::ios::binary) << "retained after disappearance";
+  struct stat vanished_stat{};
+  const bool vanished_stat_ok = ::lstat(vanished_source.c_str(), &vanished_stat) == 0;
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REMOVE_SOURCE_BEFORE_ARCHIVE_QUARANTINE", vanished_source.c_str(), TRUE);
+  const absl::Status vanished_first = vanished_stat_ok
+      ? hm::configurator_internal::remove_archive_entry_if_owned_for_test(
+            vanished_source, static_cast<uintmax_t>(vanished_stat.st_dev), static_cast<uintmax_t>(vanished_stat.st_ino))
+      : absl::InternalError("disappearing source fixture is unavailable");
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REMOVE_SOURCE_BEFORE_ARCHIVE_QUARANTINE");
+  const bool fallback_retained = !vanished_first.ok() && !fs::exists(vanished_source) && fs::exists(vanished_fallback);
+  const auto vanished_restart = hm::configurator_internal::recover_stale_archive_work_files(vanished_source);
+  std::ifstream vanished_stream(vanished_source, std::ios::binary);
+  const std::string vanished_content{std::istreambuf_iterator<char>(vanished_stream), std::istreambuf_iterator<char>()};
+  vanished_stream.close();
+  const bool vanished_passed = fallback_retained && vanished_restart.ok() && vanished_restart->empty() &&
+      vanished_content == "retained after disappearance" && !fs::exists(vanished_fallback);
+  if (!vanished_passed)
+    std::cerr << "Disappearing source recovery failed: " << vanished_first << "; " << vanished_restart.status() << '\n';
   remove_fixture();
-  return recorded_passed && passed && restore_passed && guarded_passed && rescue_passed ? 0 : 1;
+  return recorded_passed && passed && restore_passed && guarded_passed && rescue_passed && vanished_passed ? 0 : 1;
 }
