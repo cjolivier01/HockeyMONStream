@@ -461,6 +461,7 @@ deploy_desktop() {
   local installer="$3"
   local remote_dir deb_name installer_name deepstream_name status=0
 
+  printf '[deploy] %s: preparing upload directory...\n' "${node}"
   if ! remote_dir="$(create_remote_directory "${node}")"; then
     return 1
   fi
@@ -468,7 +469,8 @@ deploy_desktop() {
   installer_name="$(basename "${installer}")"
   deepstream_name="$(basename "${DESKTOP_DEEPSTREAM_DEB}")"
 
-  if ! scp -q -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" \
+  printf '[deploy] %s: uploading HStream, installer, and DeepStream (this can take several minutes)...\n' "${node}"
+  if ! scp -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" \
     "${deb}" "${installer}" "${DESKTOP_DEEPSTREAM_DEB}" "${node}:${remote_dir}/"; then
     status=1
   elif ! ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s -- \
@@ -478,6 +480,7 @@ remote_dir="$1"
 installer_name="$2"
 deepstream_name="$3"
 deb_name="$4"
+printf '[deploy] Upload complete; starting desktop installation on %s...\n' "$(hostname)"
 chmod 0755 "${remote_dir}/${installer_name}"
 sudo -n "${remote_dir}/${installer_name}" \
   --force-hstream \
@@ -496,12 +499,14 @@ deploy_jetson() {
   local deb="$2"
   local remote_dir deb_name status=0
 
+  printf '[deploy] %s: preparing upload directory...\n' "${node}"
   if ! remote_dir="$(create_remote_directory "${node}")"; then
     return 1
   fi
   deb_name="$(basename "${deb}")"
 
-  if ! scp -q -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" \
+  printf '[deploy] %s: uploading HStream (this can take several minutes)...\n' "${node}"
+  if ! scp -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" \
     "${deb}" "${node}:${remote_dir}/"; then
     status=1
   elif ! ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s -- \
@@ -509,6 +514,7 @@ deploy_jetson() {
 set -euo pipefail
 remote_dir="$1"
 deb_name="$2"
+printf '[deploy] Upload complete; starting Jetson installation on %s...\n' "$(hostname)"
 export DEBIAN_FRONTEND=noninteractive
 sudo -n apt-get install -y --no-install-recommends --reinstall --allow-downgrades \
   "${remote_dir}/${deb_name}"
@@ -533,7 +539,7 @@ deploy_node() {
     return 1
   fi
 
-  printf '\n[deploy] Installing %s on %s...\n' "$(basename "${deb}")" "${node}"
+  printf '\n[deploy] Deploying %s to %s...\n' "$(basename "${deb}")" "${node}"
   case "${target_key}" in
     desktop-*)
       if ! deploy_desktop "${node}" "${deb}" "${TARGET_INSTALLER[${target_key}]}"; then
