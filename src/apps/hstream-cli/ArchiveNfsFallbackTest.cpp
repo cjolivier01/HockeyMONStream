@@ -242,7 +242,9 @@ int main() {
   late_log_stream.close();
   const bool late_passed = late_pair_retained && late_restart.ok() && late_restart->size() == 1 &&
       late_restart->front() == late_recovery && late_video_content == "late video" && late_log_content == "late log" &&
-      !fs::exists(late_recovery.string() + ".hstream-pin") && !fs::exists(late_recovery_log.string() + ".hstream-pin");
+      !fs::exists(late_log) && !fs::exists(late_log.string() + ".hstream-pin") &&
+      !fs::exists(late_source.string() + ".hstream-pin") && !fs::exists(late_recovery.string() + ".hstream-pin") &&
+      !fs::exists(late_recovery_log.string() + ".hstream-pin");
   if (!late_passed)
     std::cerr << "Late archive cleanup recovery failed: " << late_first.status() << "; " << late_restart.status()
               << '\n';

@@ -4974,9 +4974,11 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
 
     if (has_trusted_log) {
       const std::string source_log_suffix = extension + ".log";
+      const std::string configured_log_name = configured_path.filename().string() + ".log";
       for (const fs::path& possible_source_log : directory_entries) {
         const std::string source_log_name = possible_source_log.filename().string();
-        if (!absl::StartsWith(source_log_name, prefix) || !absl::EndsWith(source_log_name, source_log_suffix))
+        if (source_log_name != configured_log_name &&
+            (!absl::StartsWith(source_log_name, prefix) || !absl::EndsWith(source_log_name, source_log_suffix)))
           continue;
         auto source_log_stat = inspect_archive_entry(possible_source_log, "interrupted archive source log");
         if (!source_log_stat.ok())
@@ -4995,9 +4997,11 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     }
     if (has_trusted_log) {
       const std::string source_log_guard_suffix = extension + ".log.hstream-pin";
+      const std::string configured_log_guard_name = configured_path.filename().string() + ".log.hstream-pin";
       for (const fs::path& possible_source_log_guard : directory_entries) {
         const std::string guard_name = possible_source_log_guard.filename().string();
-        if (!absl::StartsWith(guard_name, prefix) || !absl::EndsWith(guard_name, source_log_guard_suffix))
+        if (guard_name != configured_log_guard_name &&
+            (!absl::StartsWith(guard_name, prefix) || !absl::EndsWith(guard_name, source_log_guard_suffix)))
           continue;
         auto source_log_guard = inspect_archive_entry(possible_source_log_guard, "interrupted source log guard");
         if (!source_log_guard.ok())
@@ -5015,9 +5019,11 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
       }
     }
     const std::string source_video_guard_suffix = extension + ".hstream-pin";
+    const std::string configured_video_guard_name = configured_path.filename().string() + ".hstream-pin";
     for (const fs::path& possible_source_guard : directory_entries) {
       const std::string guard_name = possible_source_guard.filename().string();
-      if (!absl::StartsWith(guard_name, prefix) || !absl::EndsWith(guard_name, source_video_guard_suffix))
+      if (guard_name != configured_video_guard_name &&
+          (!absl::StartsWith(guard_name, prefix) || !absl::EndsWith(guard_name, source_video_guard_suffix)))
         continue;
       auto source_guard = inspect_archive_entry(possible_source_guard, "interrupted source video guard");
       if (!source_guard.ok())
