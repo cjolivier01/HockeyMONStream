@@ -111,6 +111,20 @@ cc_test(
 )
 
 cc_test(
+    name = "archive_nfs_fallback_test",
+    srcs = [
+        "ArchiveNfsFallbackTest.cpp",
+        "StitcherOnePassConfig.h",
+        "configurator.cpp",
+        "configurator.h",
+        "deepstream_app.h",
+    ],
+    copts = HSTREAM_CLI_COPTS,
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    deps = HSTREAM_CLI_DEPS,
+)
+
+cc_test(
     name = "configurator_persistence_test",
     srcs = [
         "ConfiguratorPersistenceTest.cpp",

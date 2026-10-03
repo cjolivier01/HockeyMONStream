@@ -1631,14 +1631,64 @@ absl::StatusOr<std::optional<struct stat>> inspect_archive_entry(const fs::path&
       TO_STRING("Failed to inspect " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)));
 }
 
+absl::StatusOr<int> open_verified_archive_publication(const fs::path& path, const struct stat& expected_stat) {
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  struct stat current_stat{};
+  if (fd < 0 || ::fstat(fd, &current_stat) != 0 || !S_ISREG(current_stat.st_mode) ||
+      !same_file_identity(current_stat, expected_stat)) {
+    if (fd >= 0)
+      ::close(fd);
+    return absl::FailedPreconditionError(TO_STRING("Published archive changed at \"" << path.string() << "\""));
+  }
+  return fd;
+}
+
 int rename_archive_entry_no_replace(
     int source_directory_fd,
     const char* source_name,
     int destination_directory_fd,
     const char* destination_name) {
   constexpr unsigned int kRenameNoReplace = 1;
-  return static_cast<int>(::syscall(
-      SYS_renameat2, source_directory_fd, source_name, destination_directory_fd, destination_name, kRenameNoReplace));
+  const bool force_unsupported = g_getenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED") != nullptr;
+  if (!force_unsupported && ::syscall(
+          SYS_renameat2, source_directory_fd, source_name, destination_directory_fd, destination_name,
+          kRenameNoReplace) == 0)
+    return 0;
+  const int rename_errno = force_unsupported ? EINVAL : errno;
+  if (rename_errno != EINVAL && rename_errno != EOPNOTSUPP && rename_errno != ENOSYS) {
+    errno = rename_errno;
+    return -1;
+  }
+
+  // NFS commonly rejects renameat2 flags. Moves from a public source into our
+  // locked, private cleanup directory must remain atomic: link then unlink
+  // could delete a foreign source that replaces the original between calls.
+  const bool private_destination = std::strcmp(destination_name, "entry") == 0 ||
+      std::strcmp(destination_name, "fallback") == 0 ||
+      std::strcmp(destination_name, "committed") == 0;
+  if (private_destination) {
+    struct stat destination_stat{};
+    if (::fstatat(destination_directory_fd, destination_name, &destination_stat, AT_SYMLINK_NOFOLLOW) == 0) {
+      errno = EEXIST;
+      return -1;
+    }
+    if (errno != ENOENT)
+      return -1;
+    return ::renameat(source_directory_fd, source_name, destination_directory_fd, destination_name);
+  }
+
+  // Public restoration starts from a transaction-owned private name. A hard
+  // link gives its public destination atomic no-replace publication.
+  if (::linkat(source_directory_fd, source_name, destination_directory_fd, destination_name, 0) != 0)
+    return -1;
+  struct stat source_stat{}, linked_stat{};
+  if (::fstatat(source_directory_fd, source_name, &source_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+      ::fstatat(destination_directory_fd, destination_name, &linked_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !same_file_identity(source_stat, linked_stat)) {
+    errno = ESTALE;
+    return -1;
+  }
+  return ::unlinkat(source_directory_fd, source_name, 0);
 }
 
 constexpr char kArchiveCleanupDirectoryPrefix[] = "hstream-cleanup-v2-";
@@ -2215,7 +2265,7 @@ absl::Status remove_archive_entry_if_owned(
         TO_STRING("Refusing to remove replaced " << description << " \"" << path.string() << "\""));
   }
 
-  const int pinned_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  int pinned_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   struct stat pinned_stat{};
   if (pinned_fd < 0 || ::fstat(pinned_fd, &pinned_stat) != 0 || !S_ISREG(pinned_stat.st_mode) ||
       !matches_expected(pinned_stat, expected_stat)) {
@@ -2337,22 +2387,28 @@ absl::Status remove_archive_entry_if_owned(
     return durable_removal_fallback.status();
   }
 
+  // The durable fallback now pins the inode. An open descriptor on the name
+  // being removed makes NFS create a hidden .nfs* file in the cleanup directory,
+  // which prevents that directory from being retired.
+  ::close(pinned_fd);
+  pinned_fd = -1;
+
+  const char* remove_source_before_quarantine =
+      g_getenv("HSTREAM_CONFIGURATOR_TEST_REMOVE_SOURCE_BEFORE_ARCHIVE_QUARANTINE");
+  if (remove_source_before_quarantine && path.string() == remove_source_before_quarantine) {
+    g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REMOVE_SOURCE_BEFORE_ARCHIVE_QUARANTINE");
+    ::unlinkat(parent_fd, filename.c_str(), 0);
+  }
+
   if (rename_archive_entry_no_replace(parent_fd, filename.c_str(), cleanup_fd, "entry") != 0) {
     const int saved_errno = errno;
-    const absl::Status fallback_retirement =
-        retire_durable_archive_removal_fallback(cleanup_fd, parent_fd, *durable_removal_fallback, pinned_stat);
-    if (fallback_retirement.ok()) {
-      retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
-      ::fsync(parent_fd);
-    }
+    // An absent source may leave the public fallback as the inode's only
+    // remaining name. Keep it and its cleanup record for restart recovery.
     ::close(cleanup_fd);
-    ::close(pinned_fd);
     ::close(parent_fd);
-    if (saved_errno == ENOENT && fallback_retirement.ok())
-      return absl::OkStatus();
     return absl::InternalError(TO_STRING(
         "Failed to quarantine " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)
-                                << (fallback_retirement.ok() ? "" : TO_STRING("; " << fallback_retirement.message()))));
+                                << "; cleanup fallback retained"));
   }
   const char* quarantine_interrupt = g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
   if (quarantine_interrupt && (std::strcmp(quarantine_interrupt, "1") == 0 || path.string() == quarantine_interrupt)) {
@@ -2588,26 +2644,13 @@ absl::Status remove_archive_entry_if_owned(
   const int close_cleanup_errno = errno;
   int directory_sync_result = 0;
   int directory_sync_errno = 0;
-  int restore_after_sync_result = 0;
-  int restore_after_sync_errno = 0;
   if (remove_guard_result == 0 && fallback_retirement.ok() && close_cleanup_result == 0 && remove_cleanup_result == 0) {
     directory_sync_result = ::fsync(parent_fd);
     directory_sync_errno = errno;
-    if (directory_sync_result != 0) {
-      // Reaching here means the guard was unlinked and the transaction
-      // directory retired, so the inode has no links left and this restore
-      // cannot actually succeed: link_pinned_file fails with ENOENT once
-      // nlink reaches zero, by either of its two strategies. The UI path
-      // rolls back from the still-present cleanup guard instead.
-      restore_after_sync_result = hm::link_pinned_file(pinned_fd, parent_fd, filename.c_str());
-      restore_after_sync_errno = errno;
-      if (restore_after_sync_result == 0)
-        ::fsync(parent_fd);
-    }
   }
   const int close_parent_result = ::close(parent_fd);
   const int close_parent_errno = errno;
-  const int close_pinned_result = ::close(pinned_fd);
+  const int close_pinned_result = pinned_fd >= 0 ? ::close(pinned_fd) : 0;
   const int close_pinned_errno = errno;
   if (remove_guard_result != 0 || !fallback_retirement.ok() || close_cleanup_result != 0 ||
       remove_cleanup_result != 0 || directory_sync_result != 0 || close_parent_result != 0 ||
@@ -2625,12 +2668,7 @@ absl::Status remove_archive_entry_if_owned(
                                     : (close_parent_result != 0 ? close_parent_errno : close_pinned_errno)))));
     return absl::InternalError(TO_STRING(
         "Removed " << description << " \"" << path.string() << "\" but failed to make cleanup durable: "
-                   << (fallback_retirement.ok() ? std::strerror(saved_errno) : fallback_retirement.message())
-                   << (directory_sync_result != 0
-                           ? (restore_after_sync_result == 0
-                                  ? "; the original pathname was restored"
-                                  : TO_STRING("; pathname restore failed: " << std::strerror(restore_after_sync_errno)))
-                           : "")));
+                   << (fallback_retirement.ok() ? std::strerror(saved_errno) : fallback_retirement.message())));
   }
   return absl::OkStatus();
 }
@@ -3492,14 +3530,17 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     const fs::path& output_path,
     const fs::path& recovery_name_base) {
   struct stat output_stat{};
-  const int output_fd = ::open(output_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  int output_fd = ::open(output_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (output_fd < 0) {
     if (errno == ENOENT)
       return std::optional<fs::path>();
     return absl::InternalError(
         TO_STRING("Failed to inspect archive work file \"" << output_path.string() << "\": " << std::strerror(errno)));
   }
-  absl::Cleanup close_output = [output_fd]() { ::close(output_fd); };
+  absl::Cleanup close_output = [&output_fd]() {
+    if (output_fd >= 0)
+      ::close(output_fd);
+  };
   struct stat named_output_stat{};
   if (::fstat(output_fd, &output_stat) != 0 || ::lstat(output_path.c_str(), &named_output_stat) != 0 ||
       !same_file_identity(output_stat, named_output_stat)) {
@@ -3758,10 +3799,50 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     // The recovery guards are the durable transaction record once the source
     // pathnames are retired.  Persist them before crossing that boundary.
     HM_RETURN_IF_ERROR(sync_parent_directory(recovery_path));
+    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_GUARD_PUBLICATION")) {
+      g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_GUARD_PUBLICATION");
+      return absl::UnavailableError("archive recovery interruption requested after guard publication");
+    }
+
+    // NFS keeps an unlinked pathname as a hidden .nfs* entry while a descriptor
+    // still resolves through it. Reopen the durable published names before
+    // retiring the source names, while retaining the same inode identities.
+    auto published_video_fd = open_verified_archive_publication(recovery_path, output_stat);
+    if (!published_video_fd.ok())
+      return published_video_fd.status();
+    absl::StatusOr<int> published_log_fd = -1;
+    if (has_output_log) {
+      published_log_fd = open_verified_archive_publication(recovery_log_path, output_log_stat);
+      if (!published_log_fd.ok()) {
+        ::close(*published_video_fd);
+        return published_log_fd.status();
+      }
+    }
+    ::close(output_fd);
+    output_fd = *published_video_fd;
+    if (has_output_log) {
+      ::close(output_log_fd);
+      output_log_fd = *published_log_fd;
+    }
 
     const absl::Status source_cleanup =
         remove_archive_entry_if_owned(output_path, output_stat, "archive work file", &recovery_path, &output_stat);
     if (!source_cleanup.ok()) {
+      // Rollback may remove the published log link. Release the descriptors
+      // rebound to published names first so NFS can retire those names.
+      ::close(output_fd);
+      output_fd = -1;
+      if (output_log_fd >= 0) {
+        ::close(output_log_fd);
+        output_log_fd = -1;
+      }
+      auto current_source = inspect_archive_entry(output_path, "archive work file after failed cleanup");
+      if (!current_source.ok())
+        return current_source.status();
+      // Cleanup can report a durability or close failure after retiring the
+      // source name. Keep the published pair and guards for restart then.
+      if (!current_source->has_value() || !same_file_identity(current_source->value(), output_stat))
+        return source_cleanup;
       auto current_recovery_log = inspect_archive_entry(recovery_log_path, "partial recovery sidecar after cleanup");
       if (current_recovery_log.ok() && current_recovery_log->has_value() &&
           same_file_identity(current_recovery_log->value(), expected_published_log_stat)) {
@@ -4568,7 +4649,8 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     bool source_video_still_exists = false;
     for (const fs::path& possible_source : directory_entries) {
       const std::string source_name = possible_source.filename().string();
-      if (!absl::StartsWith(source_name, prefix) || !absl::EndsWith(source_name, extension))
+      if (source_name != configured_path.filename().string() &&
+          (!absl::StartsWith(source_name, prefix) || !absl::EndsWith(source_name, extension)))
         continue;
       auto source_stat = inspect_archive_entry(possible_source, "active interrupted archive source");
       if (!source_stat.ok())
@@ -4581,7 +4663,7 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     if (source_video_still_exists)
       continue;
 
-    const int trusted_video_fd = ::open(recovery_guard_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    int trusted_video_fd = ::open(recovery_guard_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     struct stat pinned_video_stat{};
     if (trusted_video_fd < 0 || ::fstat(trusted_video_fd, &pinned_video_stat) != 0 ||
         !same_file_identity(pinned_video_stat, trusted_video_stat)) {
@@ -4590,7 +4672,7 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
       return absl::FailedPreconditionError(
           TO_STRING("Interrupted archive recovery guard changed at \"" << recovery_guard_path.string() << "\""));
     }
-    absl::Cleanup close_trusted_video = [trusted_video_fd]() { ::close(trusted_video_fd); };
+    absl::Cleanup close_trusted_video = [&trusted_video_fd]() { ::close(trusted_video_fd); };
     int trusted_log_fd = -1;
     if (has_trusted_log) {
       trusted_log_fd = ::open(recovery_log_guard_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
@@ -4606,6 +4688,26 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     absl::Cleanup close_trusted_log = [&trusted_log_fd]() {
       if (trusted_log_fd >= 0)
         ::close(trusted_log_fd);
+    };
+    const auto bind_trusted_publications = [&](const fs::path& video_path, const fs::path& log_path) -> absl::Status {
+      auto published_video_fd = open_verified_archive_publication(video_path, trusted_video_stat);
+      if (!published_video_fd.ok())
+        return published_video_fd.status();
+      absl::StatusOr<int> published_log_fd = -1;
+      if (has_trusted_log) {
+        published_log_fd = open_verified_archive_publication(log_path, trusted_log_stat);
+        if (!published_log_fd.ok()) {
+          ::close(*published_video_fd);
+          return published_log_fd.status();
+        }
+      }
+      ::close(trusted_video_fd);
+      trusted_video_fd = *published_video_fd;
+      if (has_trusted_log) {
+        ::close(trusted_log_fd);
+        trusted_log_fd = *published_log_fd;
+      }
+      return absl::OkStatus();
     };
 
     auto visible_video = inspect_archive_entry(recovery_path, "interrupted archive recovery file");
@@ -4664,6 +4766,8 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
         } else if (other_log_guard->has_value() || other_visible_log->has_value()) {
           continue;
         }
+
+        HM_RETURN_IF_ERROR(bind_trusted_publications(other_path, other_log_path));
 
         if (visible_log->has_value() &&
             ((duplicate_log_stat.has_value() && same_file_identity(visible_log->value(), duplicate_log_stat.value())) ||
@@ -4800,6 +4904,7 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
         if (has_trusted_log)
           HM_RETURN_IF_ERROR(sync_archive_and_parent(candidate_log, &trusted_log_stat, "rescued archive recovery log"));
         HM_RETURN_IF_ERROR(sync_parent_directory(candidate));
+        HM_RETURN_IF_ERROR(bind_trusted_publications(candidate, candidate_log));
         if (!has_trusted_log && visible_log->has_value() &&
             same_file_identity(visible_log->value(), trusted_video_stat)) {
           HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
@@ -4870,11 +4975,15 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
           &trusted_video_stat));
     }
 
+    HM_RETURN_IF_ERROR(bind_trusted_publications(committed_path, committed_log_path));
+
     if (has_trusted_log) {
       const std::string source_log_suffix = extension + ".log";
+      const std::string configured_log_name = configured_path.filename().string() + ".log";
       for (const fs::path& possible_source_log : directory_entries) {
         const std::string source_log_name = possible_source_log.filename().string();
-        if (!absl::StartsWith(source_log_name, prefix) || !absl::EndsWith(source_log_name, source_log_suffix))
+        if (source_log_name != configured_log_name &&
+            (!absl::StartsWith(source_log_name, prefix) || !absl::EndsWith(source_log_name, source_log_suffix)))
           continue;
         auto source_log_stat = inspect_archive_entry(possible_source_log, "interrupted archive source log");
         if (!source_log_stat.ok())
@@ -4893,9 +5002,11 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     }
     if (has_trusted_log) {
       const std::string source_log_guard_suffix = extension + ".log.hstream-pin";
+      const std::string configured_log_guard_name = configured_path.filename().string() + ".log.hstream-pin";
       for (const fs::path& possible_source_log_guard : directory_entries) {
         const std::string guard_name = possible_source_log_guard.filename().string();
-        if (!absl::StartsWith(guard_name, prefix) || !absl::EndsWith(guard_name, source_log_guard_suffix))
+        if (guard_name != configured_log_guard_name &&
+            (!absl::StartsWith(guard_name, prefix) || !absl::EndsWith(guard_name, source_log_guard_suffix)))
           continue;
         auto source_log_guard = inspect_archive_entry(possible_source_log_guard, "interrupted source log guard");
         if (!source_log_guard.ok())
@@ -4913,9 +5024,11 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
       }
     }
     const std::string source_video_guard_suffix = extension + ".hstream-pin";
+    const std::string configured_video_guard_name = configured_path.filename().string() + ".hstream-pin";
     for (const fs::path& possible_source_guard : directory_entries) {
       const std::string guard_name = possible_source_guard.filename().string();
-      if (!absl::StartsWith(guard_name, prefix) || !absl::EndsWith(guard_name, source_video_guard_suffix))
+      if (guard_name != configured_video_guard_name &&
+          (!absl::StartsWith(guard_name, prefix) || !absl::EndsWith(guard_name, source_video_guard_suffix)))
         continue;
       auto source_guard = inspect_archive_entry(possible_source_guard, "interrupted source video guard");
       if (!source_guard.ok())
@@ -5071,6 +5184,14 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
         recovery_lock_fd = -1;
         return candidate_cleanup;
       }
+      // The work pathname is gone. Release its ownership lock descriptor
+      // before unlinking the lock name, or NFS leaves a private .nfs* entry.
+      if (recovery_lock_fd >= 0 && ::close(recovery_lock_fd) != 0)
+        cleanup_errno = errno;
+      recovery_lock_fd = -1;
+      if (cleanup_errno != 0) {
+        return absl::InternalError(TO_STRING("Failed to close archive work ownership lock: " << std::strerror(cleanup_errno)));
+      }
       absl::Status lock_cleanup = absl::OkStatus();
       if (have_recovery_lock_identity) {
         if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_OWNER_LOCK")) {
@@ -5088,9 +5209,6 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
         lock_cleanup =
             remove_archive_entry_if_owned(recovery_lock_path, recovery_lock_stat, "archive work ownership lock");
       }
-      if (recovery_lock_fd >= 0 && ::close(recovery_lock_fd) != 0 && cleanup_errno == 0)
-        cleanup_errno = errno;
-      recovery_lock_fd = -1;
       HM_RETURN_IF_ERROR(sync_parent_directory(candidate));
       if (!lock_cleanup.ok())
         return lock_cleanup;
@@ -5120,15 +5238,21 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
       return recovery.status();
     }
     if (recovery_lock_fd >= 0) {
+      // The video has been published under its recovery name. No writer may
+      // still own this stale run; close the lock's old pathname before removal.
+      const int lock_close_result = ::close(recovery_lock_fd);
+      const int lock_close_errno = errno;
+      recovery_lock_fd = -1;
+      if (lock_close_result != 0) {
+        return absl::InternalError(
+            TO_STRING("Failed to close archive work ownership lock: " << std::strerror(lock_close_errno)));
+      }
       if (have_recovery_lock_identity) {
         const absl::Status lock_cleanup =
             remove_archive_entry_if_owned(recovery_lock_path, recovery_lock_stat, "archive work ownership lock");
-        if (!lock_cleanup.ok()) {
-          ::close(recovery_lock_fd);
+        if (!lock_cleanup.ok())
           return lock_cleanup;
-        }
       }
-      ::close(recovery_lock_fd);
     }
     if (recovery->has_value())
       recovered.push_back(recovery->value());
