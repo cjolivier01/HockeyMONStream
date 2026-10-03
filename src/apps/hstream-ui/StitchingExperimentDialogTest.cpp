@@ -577,7 +577,10 @@ void exercise_player_queue(const QString& game, const QString& root) {
   const QString arguments = root + "/runner-arguments.txt";
   write(
       runner,
-      "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HSTREAM_TEST_ARGUMENTS\"\nprintf '%s\\n' 'FAILED_PRECONDITION: Player overlap mapping canvas mismatch'\nexit 13\n");
+      "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HSTREAM_TEST_ARGUMENTS\"\n"
+      "printf '%s\\n' 'HSTREAM_CALIBRATION stage=calibration status=failed message=Player overlap mapping canvas mismatch' "
+      "'HSTREAM_CALIBRATION stage=calibration status=failed message=Pipeline failed during stitching calibration' "
+      "'INTERNAL: App run failed'\nexit 13\n");
   require(
       QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
       "Cannot make test runner executable");

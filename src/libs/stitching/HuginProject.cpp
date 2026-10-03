@@ -1407,6 +1407,7 @@ void remove_mapping_outputs(const fs::path& directory) {
 absl::Status run_autooptimiser(
     const std::string& autooptimiser,
     const fs::path& directory,
+    double configured_horizontal_fov,
     const std::function<bool()>& is_cancelled = {}) {
   std::vector<std::string> command = {autooptimiser, "-a", "-l", "-s", "-q"};
   command.insert(command.end(), {"-o", "autooptimiser_out.pto", "hm_project.pto"});
@@ -1424,6 +1425,50 @@ absl::Status run_autooptimiser(
     return absl::FailedPreconditionError(
         "Hugin control-point optimization RMS is too large: " + std::to_string(rms) + " pixels");
   }
+  // A collapsed lens can still have an acceptable control-point RMS. Reject
+  // it before accepting alignment so the ordinary per-pair fallback can run,
+  // rather than asking Nona to render a degenerate panorama. Allow a generous
+  // fourfold FOV adjustment relative to the selected camera profile.
+  std::string optimized;
+  HM_ASSIGN_OR_RETURN(optimized, read_file(directory / "autooptimiser_out.pto"));
+  std::istringstream lines(optimized);
+  std::string line;
+  std::vector<double> camera_fovs;
+  while (std::getline(lines, line)) {
+    if (line.rfind("i ", 0) != 0)
+      continue;
+    double fov = std::numeric_limits<double>::quiet_NaN();
+    std::istringstream tokens(line);
+    std::string token;
+    while (tokens >> token) {
+      if (token.size() < 2 || token[0] != 'v')
+        continue;
+      try {
+        size_t parsed = 0;
+        if (token[1] == '=') {
+          const size_t linked = std::stoull(token.substr(2), &parsed);
+          if (parsed == token.size() - 2 && linked < camera_fovs.size())
+            fov = camera_fovs[linked];
+        } else {
+          fov = std::stod(token.substr(1), &parsed);
+          if (parsed != token.size() - 1)
+            fov = std::numeric_limits<double>::quiet_NaN();
+        }
+      } catch (const std::exception&) {
+        fov = std::numeric_limits<double>::quiet_NaN();
+      }
+      break;
+    }
+    if (!std::isfinite(fov) || fov < configured_horizontal_fov / 4.0 || fov >= 180.0 ||
+        fov > configured_horizontal_fov * 4.0) {
+      return absl::FailedPreconditionError(
+          "Degenerate Hugin camera " + std::to_string(camera_fovs.size()) + " horizontal FOV: " + std::to_string(fov) +
+          " degrees (configured " + std::to_string(configured_horizontal_fov) + " degrees)");
+    }
+    camera_fovs.push_back(fov);
+  }
+  if (camera_fovs.size() != 2)
+    return absl::FailedPreconditionError("Optimized Hugin project must contain two camera images");
   return absl::OkStatus();
 }
 
@@ -2380,7 +2425,7 @@ absl::Status HuginProject::Configure(
     auto autooptimiser = executable("HM_AUTOOPTIMISER", "autooptimiser");
     if (!autooptimiser.ok())
       return autooptimiser.status();
-    status = run_autooptimiser(*autooptimiser, staging, options.is_cancelled);
+    status = run_autooptimiser(*autooptimiser, staging, options.horizontal_fov, options.is_cancelled);
     if (!status.ok())
       return status;
     if (options.alignment_complete)
