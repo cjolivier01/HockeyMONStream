@@ -1637,8 +1637,44 @@ int rename_archive_entry_no_replace(
     int destination_directory_fd,
     const char* destination_name) {
   constexpr unsigned int kRenameNoReplace = 1;
-  return static_cast<int>(::syscall(
-      SYS_renameat2, source_directory_fd, source_name, destination_directory_fd, destination_name, kRenameNoReplace));
+  const bool force_unsupported = g_getenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED") != nullptr;
+  if (!force_unsupported && ::syscall(
+          SYS_renameat2, source_directory_fd, source_name, destination_directory_fd, destination_name,
+          kRenameNoReplace) == 0)
+    return 0;
+  const int rename_errno = force_unsupported ? EINVAL : errno;
+  if (rename_errno != EINVAL && rename_errno != EOPNOTSUPP && rename_errno != ENOSYS) {
+    errno = rename_errno;
+    return -1;
+  }
+
+  // NFS commonly rejects renameat2 flags. These destinations are either names
+  // in our locked private cleanup directory or public regular-file paths.
+  const bool private_destination = std::strcmp(destination_name, "entry") == 0 ||
+      std::strcmp(destination_name, "fallback") == 0 ||
+      std::strcmp(destination_name, "committed") == 0;
+  struct stat destination_stat{};
+  if (::fstatat(destination_directory_fd, destination_name, &destination_stat, AT_SYMLINK_NOFOLLOW) == 0) {
+    errno = EEXIST;
+    return -1;
+  }
+  if (errno != ENOENT)
+    return -1;
+  if (private_destination)
+    return ::renameat(source_directory_fd, source_name, destination_directory_fd, destination_name);
+
+  // A hard link gives public publication no-replace semantics. The source is
+  // owned by the private cleanup transaction while it is retired.
+  if (::linkat(source_directory_fd, source_name, destination_directory_fd, destination_name, 0) != 0)
+    return -1;
+  struct stat source_stat{}, linked_stat{};
+  if (::fstatat(source_directory_fd, source_name, &source_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+      ::fstatat(destination_directory_fd, destination_name, &linked_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !same_file_identity(source_stat, linked_stat)) {
+    errno = ESTALE;
+    return -1;
+  }
+  return ::unlinkat(source_directory_fd, source_name, 0);
 }
 
 constexpr char kArchiveCleanupDirectoryPrefix[] = "hstream-cleanup-v2-";
@@ -2215,7 +2251,7 @@ absl::Status remove_archive_entry_if_owned(
         TO_STRING("Refusing to remove replaced " << description << " \"" << path.string() << "\""));
   }
 
-  const int pinned_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  int pinned_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   struct stat pinned_stat{};
   if (pinned_fd < 0 || ::fstat(pinned_fd, &pinned_stat) != 0 || !S_ISREG(pinned_stat.st_mode) ||
       !matches_expected(pinned_stat, expected_stat)) {
@@ -2336,6 +2372,12 @@ absl::Status remove_archive_entry_if_owned(
     ::close(parent_fd);
     return durable_removal_fallback.status();
   }
+
+  // The durable fallback now pins the inode. An open descriptor on the name
+  // being removed makes NFS create a hidden .nfs* file in the cleanup directory,
+  // which prevents that directory from being retired.
+  ::close(pinned_fd);
+  pinned_fd = -1;
 
   if (rename_archive_entry_no_replace(parent_fd, filename.c_str(), cleanup_fd, "entry") != 0) {
     const int saved_errno = errno;
@@ -2588,26 +2630,13 @@ absl::Status remove_archive_entry_if_owned(
   const int close_cleanup_errno = errno;
   int directory_sync_result = 0;
   int directory_sync_errno = 0;
-  int restore_after_sync_result = 0;
-  int restore_after_sync_errno = 0;
   if (remove_guard_result == 0 && fallback_retirement.ok() && close_cleanup_result == 0 && remove_cleanup_result == 0) {
     directory_sync_result = ::fsync(parent_fd);
     directory_sync_errno = errno;
-    if (directory_sync_result != 0) {
-      // Reaching here means the guard was unlinked and the transaction
-      // directory retired, so the inode has no links left and this restore
-      // cannot actually succeed: link_pinned_file fails with ENOENT once
-      // nlink reaches zero, by either of its two strategies. The UI path
-      // rolls back from the still-present cleanup guard instead.
-      restore_after_sync_result = hm::link_pinned_file(pinned_fd, parent_fd, filename.c_str());
-      restore_after_sync_errno = errno;
-      if (restore_after_sync_result == 0)
-        ::fsync(parent_fd);
-    }
   }
   const int close_parent_result = ::close(parent_fd);
   const int close_parent_errno = errno;
-  const int close_pinned_result = ::close(pinned_fd);
+  const int close_pinned_result = pinned_fd >= 0 ? ::close(pinned_fd) : 0;
   const int close_pinned_errno = errno;
   if (remove_guard_result != 0 || !fallback_retirement.ok() || close_cleanup_result != 0 ||
       remove_cleanup_result != 0 || directory_sync_result != 0 || close_parent_result != 0 ||
@@ -2625,12 +2654,7 @@ absl::Status remove_archive_entry_if_owned(
                                     : (close_parent_result != 0 ? close_parent_errno : close_pinned_errno)))));
     return absl::InternalError(TO_STRING(
         "Removed " << description << " \"" << path.string() << "\" but failed to make cleanup durable: "
-                   << (fallback_retirement.ok() ? std::strerror(saved_errno) : fallback_retirement.message())
-                   << (directory_sync_result != 0
-                           ? (restore_after_sync_result == 0
-                                  ? "; the original pathname was restored"
-                                  : TO_STRING("; pathname restore failed: " << std::strerror(restore_after_sync_errno)))
-                           : "")));
+                   << (fallback_retirement.ok() ? std::strerror(saved_errno) : fallback_retirement.message())));
   }
   return absl::OkStatus();
 }
