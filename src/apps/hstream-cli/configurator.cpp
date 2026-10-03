@@ -3799,6 +3799,10 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     // The recovery guards are the durable transaction record once the source
     // pathnames are retired.  Persist them before crossing that boundary.
     HM_RETURN_IF_ERROR(sync_parent_directory(recovery_path));
+    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_GUARD_PUBLICATION")) {
+      g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_GUARD_PUBLICATION");
+      return absl::UnavailableError("archive recovery interruption requested after guard publication");
+    }
 
     // NFS keeps an unlinked pathname as a hidden .nfs* entry while a descriptor
     // still resolves through it. Reopen the durable published names before
@@ -4645,7 +4649,8 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     bool source_video_still_exists = false;
     for (const fs::path& possible_source : directory_entries) {
       const std::string source_name = possible_source.filename().string();
-      if (!absl::StartsWith(source_name, prefix) || !absl::EndsWith(source_name, extension))
+      if (source_name != configured_path.filename().string() &&
+          (!absl::StartsWith(source_name, prefix) || !absl::EndsWith(source_name, extension)))
         continue;
       auto source_stat = inspect_archive_entry(possible_source, "active interrupted archive source");
       if (!source_stat.ok())

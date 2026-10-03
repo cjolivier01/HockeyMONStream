@@ -248,9 +248,43 @@ int main() {
   if (!late_passed)
     std::cerr << "Late archive cleanup recovery failed: " << late_first.status() << "; " << late_restart.status()
               << '\n';
+
+  // Recovery guards can be durable while the configured source is still
+  // present. Restart must leave that transaction for source preservation.
+  const fs::path early_dir = root / "early-guards";
+  fs::create_directory(early_dir);
+  const fs::path early_source = early_dir / "recording.mkv";
+  const fs::path early_log = early_source.string() + ".log";
+  const fs::path early_recovery = early_dir / "recording-finalization-failed.mkv";
+  const fs::path early_recovery_log = early_recovery.string() + ".log";
+  std::ofstream(early_source, std::ios::binary) << "early video";
+  std::ofstream(early_log, std::ios::binary) << "early log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED", "1", TRUE);
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_GUARD_PUBLICATION", "1", TRUE);
+  const auto early_first = hm::configurator_internal::preserve_existing_archive_work_file(early_source);
+  const auto early_restart = hm::configurator_internal::recover_stale_archive_work_files(early_source);
+  const bool early_source_retained = !early_first.ok() && early_restart.ok() && early_restart->empty() &&
+      fs::exists(early_source) && fs::exists(early_log) && fs::exists(early_source.string() + ".hstream-pin") &&
+      fs::exists(early_log.string() + ".hstream-pin");
+  const auto early_final = hm::configurator_internal::preserve_existing_archive_work_file(early_source);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
+  std::ifstream early_video_stream(early_recovery, std::ios::binary);
+  const std::string early_video_content{
+      std::istreambuf_iterator<char>(early_video_stream), std::istreambuf_iterator<char>()};
+  early_video_stream.close();
+  std::ifstream early_log_stream(early_recovery_log, std::ios::binary);
+  const std::string early_log_content{
+      std::istreambuf_iterator<char>(early_log_stream), std::istreambuf_iterator<char>()};
+  early_log_stream.close();
+  const bool early_passed = early_source_retained && early_final.ok() && early_final->has_value() &&
+      early_final->value() == early_recovery && early_video_content == "early video" &&
+      early_log_content == "early log" && !fs::exists(early_source) && !fs::exists(early_log);
+  if (!early_passed)
+    std::cerr << "Early archive guard recovery failed: " << early_first.status() << "; " << early_restart.status()
+              << "; " << early_final.status() << '\n';
   remove_fixture();
   return recorded_passed && passed && restore_passed && guarded_passed && rescue_passed && vanished_passed &&
-          rollback_passed && late_passed
+          rollback_passed && late_passed && early_passed
       ? 0
       : 1;
 }
