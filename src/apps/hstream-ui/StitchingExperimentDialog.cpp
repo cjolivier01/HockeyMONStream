@@ -1212,12 +1212,16 @@ struct StitchingExperimentDialog::Impl {
   QString candidate_process_error(const Candidate& candidate) const {
     const QRegularExpression error(
         "(?:FAILED_PRECONDITION|INVALID_ARGUMENT|ABORTED|INTERNAL|RESOURCE_EXHAUSTED|NOT_FOUND|UNAVAILABLE|DATA_LOSS|CANCELLED):[^\\r\\n]+|"
-        "ERROR from pipeline:[^\\r\\n]+|HSTREAM_CALIBRATION[^\\r\\n]*status=error[^\\r\\n]*message=([^\\r\\n]+)");
+        "ERROR from [^:\\r\\n]+:[^\\r\\n]+|HSTREAM_CALIBRATION[^\\r\\n]*status=(?:error|failed)[^\\r\\n]*message=([^\\r\\n]+)");
     auto matches = error.globalMatch(candidate.process_output_tail);
     QString result;
     while (matches.hasNext()) {
       const auto match = matches.next();
-      result = match.captured(1).isEmpty() ? match.captured(0) : match.captured(1);
+      const QString message = (match.captured(1).isEmpty() ? match.captured(0) : match.captured(1)).trimmed();
+      const bool generic =
+          message == "INTERNAL: App run failed" || message == "Pipeline failed during stitching calibration";
+      if (result.isEmpty() || !generic)
+        result = message;
     }
     return result.left(1500);
   }

@@ -462,6 +462,7 @@ bool test_owned_solve_publication(
               owned_optimizer,
               "'" + optimizer +
                   "' \"$@\"\n"
+                  "sed -i '/^i /d' autooptimiser_out.pto\n"
                   "printf '%s\\n' 'i w64 h48 f0 v127.2 r0 p0 y10 n\"left.png\"' "
                   "'i w64 h48 f0 v127.2 r0 p0 y30 n\"right.png\"' >> autooptimiser_out.pto\n"),
           "owned solve optimizer must retain representative camera geometry"))
@@ -570,9 +571,9 @@ bool test_owned_solve_publication(
   ok &= expect(
       !saved["stitching"]["control_points"] && !saved["game"]["stitching"]["control_points"] &&
           saved["stitching"]["frame_offsets"].size() == 2 &&
-          saved["rink"]["scoreboard"]["perspective_polygon"].IsNull() &&
-          !saved["rink"]["ice_contours_mask_count"] && !saved["rink"]["ice_contours_mask_centroid"] &&
-          !saved["rink"]["ice_contours_combined_bbox"] && !saved["rink"]["stitched_output_generation"] &&
+          saved["rink"]["scoreboard"]["perspective_polygon"].IsNull() && !saved["rink"]["ice_contours_mask_count"] &&
+          !saved["rink"]["ice_contours_mask_centroid"] && !saved["rink"]["ice_contours_combined_bbox"] &&
+          !saved["rink"]["stitched_output_generation"] &&
           !saved["rink"]["stitched_output_persisted_rotation_degrees"] &&
           saved["rink"]["scoreboard"]["name"].as<std::string>("") == "retained" &&
           saved["unrelated"].as<std::string>("") == "preserved" && !fs::exists(game / "rink_mask_0.png") &&
@@ -590,8 +591,16 @@ bool test_reframe_publication(const std::filesystem::path& root) {
   auto promoted = HuginProject::PromoteArtifacts(root / "game", game);
   if (!expect(promoted.ok(), "reframe fixture must promote a complete version-10 generation"))
     return false;
-  std::ofstream(game / "autooptimiser_out.pto", std::ios::app) << "i w64 h48 f0 v100 r0 p0 y10 n\"left.png\"\n"
-                                                                  "i w64 h48 f0 v100 r0 p0 y30 n\"right.png\"\n";
+  std::istringstream source_project(read_text_file(game / "autooptimiser_out.pto"));
+  std::ofstream reframe_project(game / "autooptimiser_out.pto");
+  std::string source_line;
+  while (std::getline(source_project, source_line)) {
+    if (source_line.rfind("i ", 0) != 0)
+      reframe_project << source_line << '\n';
+  }
+  reframe_project << "i w64 h48 f0 v100 r0 p0 y10 n\"left.png\"\n"
+                     "i w64 h48 f0 v100 r0 p0 y30 n\"right.png\"\n";
+  reframe_project.close();
   std::string provenance = read_text_file(game / "stitching_canvas_provenance");
   for (size_t index = 0; index < 3; ++index) {
     const std::string key = "projection-rotation-" + std::to_string(index) + '=';
@@ -976,7 +985,8 @@ int main(int argc, char** argv) {
           "printf '%s\\n' \"$*\" > '" + pto_gen_args.string() +
               "'\n"
               "printf '%s\\n' '# hugin project file' 'p f2 w100 h50 v180 n\"TIFF_m c:LZW r:CROP\"' '# control points' "
-              "'#hugin_optimizeReferenceImage 0' > hm_project.pto\n"),
+              "'#hugin_optimizeReferenceImage 0' 'i w64 h48 f0 v108 r0 p0 y10 n\"left.png\"' "
+              "'i w64 h48 f0 v=0 r0 p0 y30 n\"right.png\"' > hm_project.pto\n"),
       "fake pto_gen must be created");
   ok &= expect(
       write_tool(
@@ -2406,6 +2416,32 @@ int main(int argc, char** argv) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
   ok &= expect(previous_project == after_degenerate, "degenerate remaps must preserve the prior Hugin generation");
+  const fs::path collapsed_optimizer = root / "collapsed-autooptimiser";
+  for (const std::string& fov : {"0.198047105780453", "nan", "180", "=9"}) {
+    ok &= expect(
+        write_tool(
+            collapsed_optimizer,
+            "'" + autooptimiser.string() +
+                "' \"$@\"\n"
+                "sed -i 's/ v108 / v" +
+                fov + " /' autooptimiser_out.pto\n"),
+        "degenerate optimizer fixture must exist");
+    ::setenv("HM_AUTOOPTIMISER", collapsed_optimizer.c_str(), 1);
+    auto collapsed_options = options;
+    bool alignment_accepted = false;
+    bool canvas_started = false;
+    collapsed_options.alignment_complete = [&] { alignment_accepted = true; };
+    collapsed_options.progress = [&](const std::string& stage, const std::string&, const std::string&) {
+      canvas_started |= stage == "canvas";
+    };
+    const auto collapsed = hm::stitching::HuginProject::Configure(root / "game", matches, collapsed_options);
+    ok &= expect(
+        absl::IsFailedPrecondition(collapsed) &&
+            collapsed.message().find("Degenerate Hugin camera") != std::string::npos && !alignment_accepted &&
+            !canvas_started && read_text_file(root / "game" / "autooptimiser_out.pto") == previous_project,
+        "collapsed or invalid camera FOV must permit candidate fallback before rendering and preserve published artifacts");
+  }
+  ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
   ok &= expect(
       write_tool(
           nona,

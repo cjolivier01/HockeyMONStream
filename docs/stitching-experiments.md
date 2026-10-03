@@ -152,6 +152,12 @@ The control-point maximum limits retained matches per synchronized frame pair ra
 keypoint count. Selected matches add across pairs without another global cap: 100 CP with 2 frames supplies
 up to 200 matches to geometric validation. Pairs with fewer usable matches contribute only what they have;
 if the pooled solve is rejected, individual-pair fallback attempts retain the per-pair cap.
+Hugin solutions must also retain a finite rectilinear camera FOV within a factor of four of
+the configured camera FOV. A collapsed lens can pass the optimizer's RMS check while
+producing unusable maps; rejecting it before accepting alignment allows the same per-pair
+fallback. Failures after accepted alignment still stop the candidate without retrying
+canvas generation or publication. The failed row retains the specific calibration error
+instead of replacing it with the runner's final `INTERNAL: App run failed` summary.
 Existing saved calibrations keep their original matches; rerun calibration to apply this selection policy.
 Capped selection balances occupied height bands before horizontal
 cells to preserve available near-side points when the back wall is more textured.
