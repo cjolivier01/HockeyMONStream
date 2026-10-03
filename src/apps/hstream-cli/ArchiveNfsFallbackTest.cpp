@@ -213,9 +213,42 @@ int main() {
       !fs::exists(rollback_recovery_log) && rollback_cleanup_retired;
   if (!rollback_passed)
     std::cerr << "NFS log rollback failed: " << rollback.status() << '\n';
+
+  // A late cleanup error can arrive after the video source name is gone.
+  // Retain the published pair and guards so restart can finish the log move.
+  const fs::path late_dir = root / "late-error";
+  fs::create_directory(late_dir);
+  const fs::path late_source = late_dir / "recording.mkv";
+  const fs::path late_log = late_source.string() + ".log";
+  const fs::path late_recovery = late_dir / "recording-finalization-failed.mkv";
+  const fs::path late_recovery_log = late_recovery.string() + ".log";
+  std::ofstream(late_source, std::ios::binary) << "late video";
+  std::ofstream(late_log, std::ios::binary) << "late log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED", "1", TRUE);
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_ARCHIVE_PRIVATE_GUARD_UNLINK_FAILURE", late_source.c_str(), TRUE);
+  const auto late_first = hm::configurator_internal::preserve_existing_archive_work_file(late_source);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_ARCHIVE_PRIVATE_GUARD_UNLINK_FAILURE");
+  const bool late_pair_retained = !late_first.ok() && !fs::exists(late_source) && fs::exists(late_recovery) &&
+      fs::exists(late_recovery_log) && fs::exists(late_recovery.string() + ".hstream-pin") &&
+      fs::exists(late_recovery_log.string() + ".hstream-pin");
+  const auto late_restart = hm::configurator_internal::recover_stale_archive_work_files(late_source);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
+  std::ifstream late_video_stream(late_recovery, std::ios::binary);
+  const std::string late_video_content{
+      std::istreambuf_iterator<char>(late_video_stream), std::istreambuf_iterator<char>()};
+  late_video_stream.close();
+  std::ifstream late_log_stream(late_recovery_log, std::ios::binary);
+  const std::string late_log_content{std::istreambuf_iterator<char>(late_log_stream), std::istreambuf_iterator<char>()};
+  late_log_stream.close();
+  const bool late_passed = late_pair_retained && late_restart.ok() && late_restart->size() == 1 &&
+      late_restart->front() == late_recovery && late_video_content == "late video" && late_log_content == "late log" &&
+      !fs::exists(late_recovery.string() + ".hstream-pin") && !fs::exists(late_recovery_log.string() + ".hstream-pin");
+  if (!late_passed)
+    std::cerr << "Late archive cleanup recovery failed: " << late_first.status() << "; " << late_restart.status()
+              << '\n';
   remove_fixture();
   return recorded_passed && passed && restore_passed && guarded_passed && rescue_passed && vanished_passed &&
-          rollback_passed
+          rollback_passed && late_passed
       ? 0
       : 1;
 }

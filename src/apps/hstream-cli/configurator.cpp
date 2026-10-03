@@ -3832,6 +3832,13 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
         ::close(output_log_fd);
         output_log_fd = -1;
       }
+      auto current_source = inspect_archive_entry(output_path, "archive work file after failed cleanup");
+      if (!current_source.ok())
+        return current_source.status();
+      // Cleanup can report a durability or close failure after retiring the
+      // source name. Keep the published pair and guards for restart then.
+      if (!current_source->has_value() || !same_file_identity(current_source->value(), output_stat))
+        return source_cleanup;
       auto current_recovery_log = inspect_archive_entry(recovery_log_path, "partial recovery sidecar after cleanup");
       if (current_recovery_log.ok() && current_recovery_log->has_value() &&
           same_file_identity(current_recovery_log->value(), expected_published_log_stat)) {
