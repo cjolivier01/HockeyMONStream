@@ -1660,9 +1660,25 @@ int rename_archive_entry_no_replace(
     return -1;
   }
 
-  // NFS commonly rejects renameat2 flags. These are regular files, so a hard
-  // link preserves no-replace semantics for both public and private names.
-  // If interrupted between link and unlink, reconciliation sees both names.
+  // NFS commonly rejects renameat2 flags. Moves from a public source into our
+  // locked, private cleanup directory must remain atomic: link then unlink
+  // could delete a foreign source that replaces the original between calls.
+  const bool private_destination = std::strcmp(destination_name, "entry") == 0 ||
+      std::strcmp(destination_name, "fallback") == 0 ||
+      std::strcmp(destination_name, "committed") == 0;
+  if (private_destination) {
+    struct stat destination_stat{};
+    if (::fstatat(destination_directory_fd, destination_name, &destination_stat, AT_SYMLINK_NOFOLLOW) == 0) {
+      errno = EEXIST;
+      return -1;
+    }
+    if (errno != ENOENT)
+      return -1;
+    return ::renameat(source_directory_fd, source_name, destination_directory_fd, destination_name);
+  }
+
+  // Public restoration starts from a transaction-owned private name. A hard
+  // link gives its public destination atomic no-replace publication.
   if (::linkat(source_directory_fd, source_name, destination_directory_fd, destination_name, 0) != 0)
     return -1;
   struct stat source_stat{}, linked_stat{};
