@@ -5,11 +5,10 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
-#include <iomanip>
-#include <sstream>
 #include <tuple>
 
 #include "PlayerFrameDetectorIdentity.h"
+#include "PlayerFrameScanSettings.h"
 #include "deepstream_app.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/common/Status.h"
@@ -60,23 +59,6 @@ absl::StatusOr<std::string> generation(const fs::path& directory) {
   if (!lock.ok())
     return lock.status();
   return stitching::HuginProject::GenerationId(directory, **lock);
-}
-
-std::string mask_settings(GstElement* element) {
-  gfloat raise = 0, lower = 0;
-  gboolean strict = FALSE;
-  g_object_get(
-      element,
-      "raise-bbox-center-by-height-ratio",
-      &raise,
-      "lower-bbox-bottom-by-height-ratio",
-      &lower,
-      "require-existing-mask",
-      &strict,
-      nullptr);
-  std::ostringstream result;
-  result << std::setprecision(9) << "raise=" << raise << ";lower=" << lower << ";strict=" << strict;
-  return result.str();
 }
 
 absl::StatusOr<stitching::PlayerFramePairIdentity> pair_identity(const hm::StitchingFramePair& pair) {
@@ -161,7 +143,7 @@ absl::Status PlayerFrameScan::Attach() {
   g_object_get(filter, "require-existing-mask", &strict, nullptr);
   if (!strict)
     return error("rink masking must require an existing mask");
-  context_["fieldmask_settings"] = mask_settings(filter);
+  context_["fieldmask_settings"] = PlayerFrameScanMaskSettings(filter);
   for (const auto& [element, name, callback] :
        {std::tuple<GstElement*, const char*, GstPadProbeCallback>{detector, "sink", Gate},
         std::tuple<GstElement*, const char*, GstPadProbeCallback>{fieldmask, "src", Observe}}) {

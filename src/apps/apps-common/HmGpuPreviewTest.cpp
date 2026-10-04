@@ -979,10 +979,16 @@ bool run_rink_mask_reactivation_test(Window window, bool extents = false) {
           std::string error;
           if (!hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &error))
             return false;
-          for (size_t i = 0; i + 3 < rgba.size(); i += 4)
-            if (rgba[i] > 10 || rgba[i + 1] > 10 || rgba[i + 2] > 10)
+          // The mandatory red watermark remains after diagnostic overlays are
+          // hidden. Every rink layer (green mask, magenta inset, blue feet and
+          // yellow centers) contributes green or blue on this black fixture.
+          bool watermark_visible = false;
+          for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
+            if (rgba[i + 1] > 10 || rgba[i + 2] > 10)
               return false;
-          return true;
+            watermark_visible |= rgba[i] > 10;
+          }
+          return watermark_visible;
         },
         std::chrono::seconds(10));
   }
@@ -1004,7 +1010,8 @@ bool run_rink_mask_reactivation_test(Window window, bool extents = false) {
     std::cerr << "Rink mask did not reload after same-generation renderer quiesce/reactivation: initial="
               << initially_loaded << " captured=" << rink_captured << " visible=" << rink_visible
               << " capture-size=" << rink_width << 'x' << rink_height << " capture-error=" << rink_capture_error
-              << " quiesced=" << quiesced << " cleared=" << cache_cleared << " reloaded=" << reloaded << '\n';
+              << " quiesced=" << quiesced << " cleared=" << cache_cleared << " reloaded=" << reloaded
+              << " hidden=" << hidden << '\n';
   }
   return passed;
 }

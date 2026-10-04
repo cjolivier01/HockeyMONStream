@@ -47,6 +47,8 @@ foot point in the far half; they have no additional test point. The canonical
 `lower_bbox_bottom_by_height_ratio`, `raise_bbox_center_by_height_ratio`, and
 `left_bbox_by_half_width_ratio`/`right_bbox_by_half_width_ratio` retain these
 sampling settings. All four are declared in the synchronized baseline.
+Player-rich frame scans record all sampling offsets and mask insets from the
+effective filter in their selection provenance, including native and CLI overrides.
 
 Markers show where the displayed tracked boxes would be tested. The filter
 itself runs on detections before tracking, so a smoothed/predicted tracked box

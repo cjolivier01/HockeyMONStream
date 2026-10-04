@@ -437,6 +437,16 @@ cc_test(
 )
 
 cc_test(
+    name = "player_frame_scan_settings_test",
+    srcs = ["PlayerFrameScanSettings.h", "PlayerFrameScanSettingsTest.cpp"],
+    data = ["//src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so"],
+    deps = [
+        "//src/gst-plugins/testutils:gst_plugin_test_harness",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
     name = "player_frame_scan_mask_test",
     srcs = ["PlayerFrameScanMask.h", "PlayerFrameScanMaskTest.cpp"],
     deps = [
