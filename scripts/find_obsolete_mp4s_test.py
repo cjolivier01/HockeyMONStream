@@ -76,6 +76,18 @@ class PlexLinksTest(unittest.TestCase):
                 else:
                     collision.unlink()
 
+    def test_published_program_is_not_a_cleanup_candidate(self):
+        chosen = self.video('game/program_4k_output-2.mp4')
+        self.video('game/stitched_output-3.mp4')
+        script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        command = [sys.executable, str(script), str(self.root)]
+        ordinary = subprocess.run(command, check=True, capture_output=True, text=True)
+        self.assertIn(str(chosen.relative_to(self.root)), ordinary.stdout)
+        published = subprocess.run(command + ['--symlink-plex', '--plex-dir', str(self.plex)],
+                                   check=True, capture_output=True, text=True)
+        self.assertEqual(published.stdout, '')
+        self.assertEqual((self.plex / 'game.mp4').resolve(), chosen)
+
     def test_cli_opt_in_default_override_and_missing_directory(self):
         chosen = self.video('game/tracking_output-2.mp4')
         obsolete = self.video('game/tracking_output-1.mp4')

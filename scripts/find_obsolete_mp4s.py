@@ -144,11 +144,12 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
     return sorted(obsolete)
 
 
-def symlink_plex_programs(root: Path, destination: Path) -> None:
-    """Publish the newest Program MP4 from each immediate game directory."""
+def symlink_plex_programs(root: Path, destination: Path) -> set[Path]:
+    """Publish immediate games and return targets to preserve from cleanup."""
+    published: set[Path] = set()
     if not destination.is_dir():
         print(f"Skipping Plex links: not an existing directory: {destination}", file=sys.stderr)
-        return
+        return published
     destination = destination.resolve()
     for game in sorted(root.iterdir()):
         # Do not traverse directory aliases or archived seasons' game directories.
@@ -190,9 +191,11 @@ def symlink_plex_programs(root: Path, destination: Path) -> None:
             temporary = Path(staging) / link.name
             temporary.symlink_to(source)
             temporary.replace(link)
+        published.add(source)
         for old in old_links:
             if old != link:
                 old.unlink()
+    return published
 
 
 def main() -> None:
@@ -231,10 +234,11 @@ def main() -> None:
     args = parser.parse_args()
 
     root = args.root.resolve()
-    if args.symlink_plex:
-        symlink_plex_programs(root, args.plex_dir.expanduser())
+    published = symlink_plex_programs(root, args.plex_dir.expanduser()) if args.symlink_plex else set()
     obsolete = find_obsolete_mp4s(root)
     for path in obsolete:
+        if path in published:
+            continue
         print(path if args.absolute else path.relative_to(root))
 
 
