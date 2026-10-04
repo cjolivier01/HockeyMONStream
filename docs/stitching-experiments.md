@@ -38,6 +38,10 @@ Adding options prepares each private game directory on a worker and saves the qu
 persistent experiment cache. Camera chapters and matching
 camera-calibration sidecars are input symlinks to the selected game, while generated stitching artifacts and
 configuration stay isolated. The dialog remains responsive during preparation; queued rows survive closing it.
+Resolved camera playlists retain the workspace-local symlink names when orientation is saved, so a player scan's
+frozen chapter paths remain reusable by sibling candidates and after promotion.
+In-game media and calibration-file aliases also retain their local names when copied into a workspace, including
+the `left_calibration.json` and `right_calibration.json` names used for AKAZE lens calibration.
 **Start batch** locks the queue and runs its candidates serially through
 `hstream-cli --stitching-calibration-only` with a fake sink, so the batch can be left unattended. This graph omits
 Program crop, inference, rink masking, and play tracking. Completed candidates remain available for comparison after
@@ -56,6 +60,7 @@ establish another selection; an incompatible reference time for an established c
 An empty passage or insufficient separated people leaves the automatic row unavailable with a reason. Source,
 model, inference, or mask failures are errors. The ordinary baseline remains available. Automatic frame selection
 does not guarantee improved alignment or that the feature matcher uses player points; compare the moving results.
+If preparing a shared selection fails, dependent rows include the selection owner's error in their status and tooltip.
 
 The **Frame selection** column records each row's actual policy: ordinary capture, the ordinary baseline used
 for a search, anchor-only capture, or pending/saved player-rich selection. It follows the row's retained inputs
@@ -63,6 +68,11 @@ and dependencies, independently of the checkbox's current state.
 
 Candidate solves preserve existing camera synchronization while regenerating control points, maps, panorama, and
 rink masks. Missing offsets are still resolved by the runner; independently changed offsets remain a selection error.
+A new player scan reuses a baseline only when its reference time and saved source-game configuration revision
+match the request. Retrying after a cancelled or unsuccessful scan with changed settings creates a fresh baseline.
+Queued rows retain their source revision across reopening; adding variants to an unfrozen queue with changed or
+unknown source settings requires running or removing that saved queue first. Already frozen frames retain their
+existing reuse rules.
 
 **Remove selected** deletes stopped queued, failed, recovered, or completed experiments and their dependent rows,
 including private images, configurations, logs, and any frozen selection owned by a removed experiment. Removing
@@ -305,6 +315,8 @@ Use `--gpu-player-smoke` instead of `--gpu-smoke` to exercise a baseline with ri
 player scan, exact selected-pair replay, frame inspection with thumbnails, moving comparison and final promotion.
 It then reopens the dialog, inspects Main without a runner, and solves another same-count option from retained PNGs,
 checking every input digest and requiring no new player search or frame capture.
+Set `QT_QPA_PLATFORM=offscreen HSTREAM_TEST_HEADLESS=1` to skip X11 video presentation while retaining real GPU
+calibration, scanning, inspection, promotion, Program playback through a fake sink, and saved-frame reuse checks.
 `HSTREAM_TEST_PLAYER_ANCHOR=HH:MM:SS[.mmm]` selects the action passage for that mode. The input must contain enough
 on-ice people for the requested pair count; unavailable coverage is intentionally a failed smoke test.
 

@@ -49,23 +49,54 @@ bool is_video(const fs::path& path) {
 absl::StatusOr<fs::path> normalized_source(
     const fs::path& source_game_directory,
     const fs::path& configured,
-    const char* description = "video") {
+    bool calibration_asset = false) {
+  const std::string description = calibration_asset ? "calibration asset" : "video";
   if (configured.empty())
     return absl::InvalidArgumentError("Configured experiment input path must not be empty");
+  for (const auto& component : configured) {
+    if (component == "..")
+      return absl::InvalidArgumentError("Experiment input paths must not traverse parent directories");
+  }
   fs::path source = configured;
   if (source.is_relative())
     source = source_game_directory / source;
   std::error_code error;
   const fs::path canonical_source = fs::canonical(source, error);
   if (error || !fs::is_regular_file(canonical_source))
-    return absl::NotFoundError("Experiment input " + std::string(description) + " is missing: " + source.string());
+    return absl::NotFoundError("Experiment input " + description + " is missing: " + source.string());
   const fs::path canonical_game = fs::canonical(source_game_directory, error);
   if (error)
     return absl::NotFoundError("Experiment game directory is unavailable");
-  fs::path relative = canonical_source.lexically_relative(canonical_game);
-  if (relative.empty() || relative == "." || relative.is_absolute() || *relative.begin() == "..")
+  const fs::path canonical_relative = canonical_source.lexically_relative(canonical_game);
+  const auto inside_game = [](const fs::path& relative) {
+    return !relative.empty() && relative != "." && !relative.is_absolute() && *relative.begin() != "..";
+  };
+  if (!inside_game(canonical_relative))
     return absl::InvalidArgumentError(
-        "Experiment input " + std::string(description) + " must be inside the selected game: " + configured.string());
+        "Experiment input " + description + " must be inside the selected game: " + configured.string());
+  const bool supported_target = calibration_asset
+      ? std::regex_match(canonical_source.filename().string(), kCalibrationAsset)
+      : is_video(canonical_source);
+  if (!supported_target)
+    return absl::InvalidArgumentError("Experiment input " + description + " resolves to an unsupported file");
+
+  // Canonical paths validate ownership and file type, but the local name is
+  // part of camera playlists and sidecar lookup (notably left_calibration.json).
+  // Preserve that name when linking an in-game alias into a private workspace.
+  const fs::path absolute_game = fs::absolute(source_game_directory, error).lexically_normal();
+  if (error)
+    return absl::InvalidArgumentError("Unable to resolve the selected game's directory");
+  const fs::path absolute_source = fs::absolute(source, error).lexically_normal();
+  if (error)
+    return absl::InvalidArgumentError("Unable to resolve experiment input " + description);
+  fs::path relative = absolute_source.lexically_relative(absolute_game);
+  // Configured absolute paths can also name the physical root of a selected
+  // game-directory alias. Preserve their in-game spelling in that case too.
+  if (!inside_game(relative))
+    relative = absolute_source.lexically_relative(canonical_game);
+  if (!inside_game(relative))
+    return absl::InvalidArgumentError(
+        "Experiment input " + description + " must be named inside the selected game: " + configured.string());
   return relative;
 }
 
@@ -179,7 +210,7 @@ absl::Status link_auto_videos(
         continue;
       }
       fs::path relative;
-      HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, entry.path(), "video"));
+      HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, entry.path()));
       if (!is_video(relative))
         return absl::InvalidArgumentError(
             "Auto-discovered experiment video resolves to a non-video file: " + entry.path().string());
@@ -212,7 +243,7 @@ absl::Status link_calibration_assets(
       HM_ASSIGN_OR_RETURN(
           relative,
           allow_linked_inputs ? linked_workspace_source(source_game_directory, entry.path(), true)
-                              : normalized_source(source_game_directory, entry.path(), "calibration asset"));
+                              : normalized_source(source_game_directory, entry.path(), true));
       if (!std::regex_match(relative.filename().string(), kCalibrationAsset))
         return absl::InvalidArgumentError(
             "Experiment calibration asset resolves to a reserved file: " + entry.path().string());

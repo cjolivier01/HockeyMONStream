@@ -254,6 +254,11 @@ void validate_record(const StitchingExperimentStore& store, const StoredStitchin
            record.saved_selection_fingerprint.find_first_not_of("0123456789abcdef") == std::string::npos),
       "Invalid inherited experiment selection fingerprint");
   require(
+      record.source_config_revision.empty() ||
+          (record.source_config_revision.size() == 64 &&
+           record.source_config_revision.find_first_not_of("0123456789abcdef") == std::string::npos),
+      "Invalid experiment source config revision");
+  require(
       (record.state != "running" && record.state != "scan") || !record.process_token.empty(),
       "Running experiments require a persisted process token");
   require(
@@ -283,6 +288,8 @@ YAML::Node record_yaml(const StitchingExperimentStore& store, const StoredStitch
   node["baseline_workspace_key"] = record.baseline_workspace_key;
   node["selection_owner_workspace_key"] = record.selection_owner_workspace_key;
   node["saved_selection"] = record.saved_selection_fingerprint;
+  if (!record.source_config_revision.empty())
+    node["source_config_revision"] = record.source_config_revision;
   node["scan_duration_seconds"] = record.scan_duration_seconds;
   node["requires_ice_mask"] = record.requires_ice_mask;
   node["failure"] = record.failure;
@@ -308,6 +315,7 @@ StoredStitchingExperiment parse_record(const StitchingExperimentStore& store, co
        "baseline_workspace_key",
        "selection_owner_workspace_key",
        "saved_selection",
+       "source_config_revision",
        "scan_duration_seconds",
        "requires_ice_mask",
        "failure",
@@ -337,6 +345,8 @@ StoredStitchingExperiment parse_record(const StitchingExperimentStore& store, co
   record.baseline_workspace_key = string_value(node["baseline_workspace_key"], 520, true);
   record.selection_owner_workspace_key = string_value(node["selection_owner_workspace_key"], 520, true);
   record.saved_selection_fingerprint = string_value(node["saved_selection"], 64, true);
+  if (node["source_config_revision"])
+    record.source_config_revision = string_value(node["source_config_revision"], 64);
   record.scan_duration_seconds = sequence("scan_duration_seconds");
   require(node["requires_ice_mask"].IsScalar(), "Experiment mask flag is invalid");
   record.requires_ice_mask = node["requires_ice_mask"].as<bool>();
@@ -786,6 +796,7 @@ absl::Status SaveStitchingExperiment(
               found->baseline_workspace_key == experiment.baseline_workspace_key &&
               found->selection_owner_workspace_key == experiment.selection_owner_workspace_key &&
               found->saved_selection_fingerprint == experiment.saved_selection_fingerprint &&
+              found->source_config_revision == experiment.source_config_revision &&
               found->scan_duration_seconds == experiment.scan_duration_seconds,
           "An experiment row cannot change its owner or solve settings");
       require(

@@ -698,8 +698,10 @@ void exercise_player_queue(const QString& game, const QString& root) {
       "Runner log must render split ANSI sequences while preserving literal text and line breaks");
   require(log->document()->blockCount() > 3, "Log lines must remain separate blocks for bounded history");
   auto colored = log->document()->find("colored");
-  const QColor expected = log->palette().color(QPalette::Base).lightness() < 128 ? QColor("#bf616a") : QColor("#b42318");
-  require(!colored.isNull() && colored.charFormat().foreground().color() == expected,
+  const QColor expected =
+      log->palette().color(QPalette::Base).lightness() < 128 ? QColor("#bf616a") : QColor("#b42318");
+  require(
+      !colored.isNull() && colored.charFormat().foreground().color() == expected,
       "Runner log must apply the shared ANSI foreground color");
   table->selectRow(0);
   bool retained_color = false;
@@ -716,7 +718,8 @@ void exercise_player_queue(const QString& game, const QString& root) {
   });
   widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton")->click();
   require(retained_color, "Retained runner logs must render ANSI colors too");
-  require(read(QString::fromStdString((baseline / "runner.log").string())).contains('\x1b'),
+  require(
+      read(QString::fromStdString((baseline / "runner.log").string())).contains('\x1b'),
       "Display formatting must preserve the original retained runner output");
   require(remove->isEnabled(), "Failed attempts must be removable after their runners stop");
   remove->click();
@@ -797,7 +800,9 @@ void exercise_queued_reopen(const QString& game, const QString& root) {
     require(
         table->item(0, 5)->text().contains("Player overlap mapping canvas mismatch") &&
             table->item(1, 5)->text().contains("baseline calibration failed") &&
-            table->item(3, 5)->text().contains("shared frame selection"),
+            table->item(3, 5)->text().contains("shared frame selection") &&
+            table->item(3, 5)->text().contains("Player overlap mapping canvas mismatch") &&
+            table->item(3, 5)->toolTip() == table->item(3, 5)->text(),
         "Restored cross-session dependencies must fail closed when their baseline fails");
     restored.reject();
     require(wait_until([&] { return !restored.isVisible(); }, 1000), "Completed restored queue did not close");
@@ -1057,6 +1062,138 @@ QueuedOwnerFixture queued_owner_fixture(const QString& game, const QString& root
   return fixture;
 }
 
+void exercise_baseline_retry(const QString& game, const QString& root, const std::string& change) {
+  auto fixture = queued_owner_fixture(game, root);
+  fixture.owner.state = "failed";
+  fixture.owner.failure = "Cancelled before a frame selection was frozen";
+  require(SaveStitchingExperiment(fixture.store, fixture.owner).ok(), "Cannot retain failed selection fixture");
+  if (change == "unchanged") {
+    // The unchanged reuse path persists its existing baseline again. Exercise
+    // a queued baseline so the fixture does not need panorama artifacts.
+    fixture.baseline.state = "queued";
+    require(SaveStitchingExperiment(fixture.store, fixture.baseline).ok(), "Cannot queue reusable baseline fixture");
+  }
+  QString reference = "00:00:00";
+  if (change == "reference") {
+    reference = "00:00:10";
+  } else if (change == "source") {
+    auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+    config["stitching"]["camera_fov"]["horizontal_fov"] = 126.5;
+    config["game"]["stitching"]["frame_offsets"]["left"] = 0;
+    config["game"]["stitching"]["frame_offsets"]["right"] = 5;
+    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  } else if (change == "legacy") {
+    const QString path = QString::fromStdString((fixture.store.directory / "index.yaml").string());
+    auto catalog = YAML::Load(read(path).toStdString());
+    for (auto row : catalog["experiments"])
+      row.remove("source_config_revision");
+    write(path, QByteArray::fromStdString(YAML::Dump(catalog)));
+  }
+  StitchingExperimentDialog reopened(
+      game,
+      root + "/record-runner.sh",
+      root,
+      root + "/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      150,
+      2,
+      reference);
+  reopened.show();
+  add_options(reopened);
+  auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
+  const bool fresh_baseline = change != "unchanged";
+  const auto catalog = LoadStitchingExperimentStore(fixture.store);
+  if (!catalog.ok() || catalog->experiments.size() != (fresh_baseline ? 4 : 3))
+    std::cerr << "Baseline retry " << change << ": "
+              << widget<QLabel>(reopened, "stitchExperimentStatus")->text().toStdString() << '\n';
+  require(
+      catalog.ok() && catalog->experiments.size() == (fresh_baseline ? 4 : 3) &&
+          table->rowCount() == static_cast<int>(catalog->experiments.size()),
+      "A retry must reuse only a baseline with the same source snapshot and reference");
+  const auto& owner = catalog->experiments.back();
+  const auto& baseline = catalog->experiments[fresh_baseline ? 2 : 0];
+  require(
+      owner.baseline_workspace_key ==
+              baseline.workspace.game_directory.lexically_relative(fixture.store.directory).generic_string() &&
+          owner.source_config_revision == baseline.source_config_revision &&
+          owner.source_config_revision ==
+              QCryptographicHash::hash(read(game + "/config.yaml"), QCryptographicHash::Sha256).toHex().toStdString() &&
+          baseline.workspace.settings.stitch_frame_time == reference.toStdString(),
+      "A retry's selection owner must bind the compatible baseline and actual source revision");
+  if (change == "source") {
+    for (const auto* row : {&baseline, &owner}) {
+      const auto config = YAML::LoadFile((row->workspace.game_directory / "config.yaml").string());
+      require(
+          config["stitching"]["camera_fov"]["horizontal_fov"].as<double>() == 126.5 &&
+              config["game"]["stitching"]["frame_offsets"]["right"].as<double>() == 5,
+          "A retried baseline and candidate must retain corrected camera and synchronization settings");
+    }
+  }
+  if (fresh_baseline)
+    answer_close_guard(reopened, "stitchExperimentCloseDiscard", false);
+  else
+    reopened.reject();
+  require(wait_until([&] { return !reopened.isVisible(); }, 1000), "Baseline retry fixture did not close");
+}
+
+void exercise_queued_source_change(const QString& game, const QString& root, bool during_copy) {
+  const auto environment = QProcessEnvironment::systemEnvironment();
+  {
+    StitchingExperimentDialog queued(
+        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+    queued.show();
+    add_options(queued);
+    queued.reject();
+    require(wait_until([&] { return !queued.isVisible(); }, 1000), "Source-change fixture queue did not close");
+  }
+  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  config["stitching"]["camera_fov"]["horizontal_fov"] = 126.5;
+  config["game"]["stitching"]["frame_offsets"]["left"] = 0;
+  config["game"]["stitching"]["frame_offsets"]["right"] = 5;
+  const QByteArray changed = QByteArray::fromStdString(YAML::Dump(config));
+  if (!during_copy)
+    write(game + "/config.yaml", changed);
+  StitchingExperimentDialog reopened(
+      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 150, 2, "00:00:00");
+  reopened.show();
+  auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
+  auto* status = widget<QLabel>(reopened, "stitchExperimentStatus");
+  bool changed_during_copy = false;
+  if (during_copy) {
+    QObject::connect(table, &QTableWidget::itemChanged, &reopened, [&](QTableWidgetItem* item) {
+      if (!changed_during_copy && item->row() == 2 && item->column() == 5 && item->text() == "Queued") {
+        changed_during_copy = true;
+        write(game + "/config.yaml", changed);
+      }
+    });
+  }
+  widget<QPushButton>(reopened, "addStitchExperimentsToBatchButton")->click();
+  require(
+      wait_until(
+          [&] {
+            return during_copy ? status->text().startsWith("Could not persist the queued candidates:")
+                               : status->text().contains("different or unverified source settings");
+          },
+          10000),
+      "Changed source settings must fail clearly before joining an unfinished selection");
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot inspect source-change fixture store");
+  const auto catalog = LoadStitchingExperimentStore(*store);
+  require(
+      catalog.ok() && catalog->experiments.size() == 2 &&
+          (!during_copy || (changed_during_copy && table->item(2, 5)->text().contains("configuration changed"))),
+      "A rejected addition must preserve the saved queue without claiming different source inputs");
+  if (during_copy) {
+    table->selectRow(2);
+    widget<QPushButton>(reopened, "removeStitchExperimentFromBatchButton")->click();
+  }
+  require(
+      table->rowCount() == 2 && widget<QPushButton>(reopened, "startStitchExperimentBatchButton")->isEnabled(),
+      "Removing a rejected addition must leave the saved queue runnable");
+  reopened.reject();
+  require(wait_until([&] { return !reopened.isVisible(); }, 1000), "Rejected source-change addition did not close");
+}
+
 void exercise_pre_run_cancellation(const QString& game, const QString& root) {
   const auto fixture = queued_owner_fixture(game, root);
   const QString arguments = game + "/runner-arguments.txt";
@@ -1290,7 +1427,9 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
         ReusableStitchingExperimentSelectionFingerprint(record.workspace.game_directory, record.workspace.settings);
     require(
         actual.ok() && *actual == plan.fingerprint && record.saved_selection_fingerprint == plan.fingerprint &&
-            record.selection_fingerprint == plan.fingerprint && table->item(row, 0)->text().startsWith("Players"),
+            record.selection_fingerprint == plan.fingerprint && table->item(row, 0)->text().startsWith("Players") &&
+            record.source_config_revision ==
+                QCryptographicHash::hash(read(game + "/config.yaml"), QCryptographicHash::Sha256).toHex().toStdString(),
         "Ordinary, baseline and dependent rows must bind both saved fingerprints and their label to the copied plan");
   }
   // Main now requests another count. The copied frame set must still own count
@@ -2296,6 +2435,10 @@ void exercise(
         throw std::runtime_error(
             QString("Candidate %1 failed: %2").arg(row + 1).arg(table->item(row, 5)->text()).toStdString());
       table->selectRow(row);
+      // Permit real-media calibration/scan/promotion checks without opening
+      // windows on an operator's active desktop. GPU presentation needs X11.
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_HEADLESS") != 0)
+        continue;
       QCoreApplication::processEvents();
       require(play->isEnabled(), "Ready candidate cannot preview");
       const int log_offset = log->toPlainText().size();
@@ -2623,6 +2766,12 @@ int main(int argc, char** argv) {
       exercise_generated_matcher(make_game("generated-matcher"), fixture.path());
       exercise_player_queue(make_game("queue"), fixture.path());
       exercise_queued_reopen(make_game("queued-reopen"), fixture.path());
+      exercise_baseline_retry(make_game("baseline-reference-retry"), fixture.path(), "reference");
+      exercise_baseline_retry(make_game("baseline-source-retry"), fixture.path(), "source");
+      exercise_baseline_retry(make_game("baseline-legacy-retry"), fixture.path(), "legacy");
+      exercise_baseline_retry(make_game("baseline-unchanged-retry"), fixture.path(), "unchanged");
+      exercise_queued_source_change(make_game("queued-source-change"), fixture.path(), false);
+      exercise_queued_source_change(make_game("queued-source-copy-race"), fixture.path(), true);
       exercise_preparation_failure(make_game("partial-preparation"), fixture.path());
       exercise_pre_run_cancellation(make_game("pre-run-cancel"), fixture.path());
       exercise_unexpected_pre_run_selection(make_game("unexpected-pre-run-plan"), fixture.path());

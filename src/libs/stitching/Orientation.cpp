@@ -356,9 +356,18 @@ absl::Status orientation_internal::save_orientation_config(
     paths.reserve(chapters.size());
     for (const auto& [_, chapter_path] : chapters) {
       std::error_code error;
-      fs::path relative = fs::relative(chapter_path, game_dir, error);
+      // Keep workspace-local media links named inside the workspace. fs::relative
+      // canonicalizes symlinks, escaping to the original game and breaking the
+      // frozen player-frame playlist when it is handed to another experiment.
+      const fs::path absolute_chapter = fs::absolute(chapter_path, error).lexically_normal();
       if (error)
         return absl::InternalError("Failed to relativize video path: " + error.message());
+      const fs::path absolute_game = fs::absolute(game_dir, error).lexically_normal();
+      if (error)
+        return absl::InternalError("Failed to resolve game directory: " + error.message());
+      const fs::path relative = absolute_chapter.lexically_relative(absolute_game);
+      if (relative.empty())
+        return absl::InvalidArgumentError("Video path cannot be made relative to the game directory");
       paths.push_back(relative.string());
     }
     return absl::OkStatus();

@@ -775,28 +775,6 @@ absl::Status prepare_inference_config(
   properties["onnx-file"] = cached_onnx.string();
   const bool secondary = section_name.rfind("secondary-gie", 0) == 0;
   fs::path cached_engine = derived_engine_path(cached_onnx, properties, section, pipeline, secondary);
-  const fs::path runtime_config = model_directory / (inference_path.stem().string() + ".runtime.yaml");
-  for (const auto& file : external_files) {
-    const fs::path target = model_directory / file.relative_path;
-    const auto overlaps = [&](const fs::path& output) {
-      const fs::path relative = target.lexically_relative(output);
-      return !relative.empty() && *relative.begin() != "..";
-    };
-    bool conflict = overlaps(cached_onnx) || overlaps(runtime_config) || overlaps(cached_engine) ||
-        overlaps(model_directory /
-                 ("." + runtime_config.filename().string() + "." + std::to_string(::getpid()) + ".tmp"));
-    for (const char* mode : {"fp32", "fp16", "int8"})
-      conflict |= overlaps(derived_engine_path(cached_onnx, properties, section, pipeline, secondary, mode));
-    if (conflict)
-      return absl::InvalidArgumentError(
-          "ONNX external tensor location conflicts with cache output: " + target.string());
-    auto status = ensure_private_directory(target.parent_path());
-    if (!status.ok())
-      return status;
-    status = publish_model_file(file.source, target, file.sha256);
-    if (!status.ok())
-      return status;
-  }
   auto lock_status = acquire_engine_lock(*root / "engine-build.lock");
   if (!lock_status.ok())
     return lock_status;
@@ -816,6 +794,43 @@ absl::Status prepare_inference_config(
   properties["model-engine-file"] = cached_engine.string();
   if (section_engine_override)
     section["model-engine-file"] = cached_engine.string();
+
+  // Parser paths are launch-local even when their contents share one engine.
+  // Keep each effective runtime config stable while another runner starts.
+  auto runtime_digest = hm::assets::AssetManager::Sha256Bytes(YAML::Dump(inference));
+  if (!runtime_digest.ok()) {
+    release_engine_locks();
+    return runtime_digest.status();
+  }
+  const fs::path runtime_config =
+      model_directory / (inference_path.stem().string() + "." + *runtime_digest + ".runtime.yaml");
+  for (const auto& file : external_files) {
+    const fs::path target = model_directory / file.relative_path;
+    const auto overlaps = [&](const fs::path& output) {
+      const fs::path relative = target.lexically_relative(output);
+      return !relative.empty() && *relative.begin() != "..";
+    };
+    bool conflict = overlaps(cached_onnx) || overlaps(runtime_config) || overlaps(cached_engine) ||
+        overlaps(model_directory /
+                 ("." + runtime_config.filename().string() + "." + std::to_string(::getpid()) + ".tmp"));
+    for (const char* mode : {"fp32", "fp16", "int8"})
+      conflict |= overlaps(derived_engine_path(cached_onnx, properties, section, pipeline, secondary, mode));
+    if (conflict) {
+      release_engine_locks();
+      return absl::InvalidArgumentError(
+          "ONNX external tensor location conflicts with cache output: " + target.string());
+    }
+    auto status = ensure_private_directory(target.parent_path());
+    if (!status.ok()) {
+      release_engine_locks();
+      return status;
+    }
+    status = publish_model_file(file.source, target, file.sha256);
+    if (!status.ok()) {
+      release_engine_locks();
+      return status;
+    }
+  }
 
   auto publish_status = publish_yaml(runtime_config, inference);
   if (!publish_status.ok()) {
