@@ -6,6 +6,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
+import sys
+import tempfile
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -141,6 +144,57 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
     return sorted(obsolete)
 
 
+def symlink_plex_programs(root: Path, destination: Path) -> None:
+    """Publish the newest Program MP4 from each immediate game directory."""
+    if not destination.is_dir():
+        print(f"Skipping Plex links: not an existing directory: {destination}", file=sys.stderr)
+        return
+    destination = destination.resolve()
+    for game in sorted(root.iterdir()):
+        # Do not traverse directory aliases or archived seasons' game directories.
+        if game.is_symlink() or not game.is_dir() or game.resolve() == destination:
+            continue
+        candidates = []
+        for path in game.iterdir():
+            match = VIDEO_RE.fullmatch(path.name)
+            if not match or match.group("ext").lower() != "mp4" or not path.is_file():
+                continue
+            base = match.group("base").lower().removesuffix("-with-audio")
+            is_4k = base.endswith(("program_4k_output", "program-4k_output"))
+            if not is_4k and not base.endswith("tracking_output"):
+                continue
+            candidates.append((int(match.group("version") or 0), is_4k,
+                               "-with-audio" in match.group("base").lower(), path))
+        if not candidates:
+            continue
+        source = max(candidates)[-1].absolute()
+        link = destination / f"{game.name}.mp4"
+        old_links = []
+        game_root = game.resolve()
+        for entry in destination.iterdir():
+            if not entry.is_symlink():
+                continue
+            # Lexical targets also identify dangling links to removed exports.
+            target = Path(os.path.abspath(entry.parent / entry.readlink()))
+            try:
+                belongs_to_game = target.is_relative_to(game_root) or target.resolve().is_relative_to(game_root)
+            except (OSError, RuntimeError):
+                belongs_to_game = target.is_relative_to(game_root)
+            if belongs_to_game:
+                old_links.append(entry)
+        if os.path.lexists(link) and link not in old_links:
+            print(f"Skipping Plex link: destination belongs to another file or game: {link}", file=sys.stderr)
+            continue
+        # Publish first so a failed link creation leaves the old library intact.
+        with tempfile.TemporaryDirectory(prefix=".plex-link-", dir=destination) as staging:
+            temporary = Path(staging) / link.name
+            temporary.symlink_to(source)
+            temporary.replace(link)
+        for old in old_links:
+            if old != link:
+                old.unlink()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -161,9 +215,24 @@ def main() -> None:
         action="store_true",
         help="Print absolute paths instead of paths relative to the scan root.",
     )
+    parser.add_argument(
+        "--symlink-plex",
+        action="store_true",
+        help=("Link each immediate child game's newest Program MP4 into Plex as GAME-ID.mp4; "
+              "prefer 4K within the newest generation and replace all links into that game. "
+              "Stitched exports and deeper directories are excluded."),
+    )
+    parser.add_argument(
+        "--plex-dir",
+        type=Path,
+        default=Path("~/Plex"),
+        help="Existing destination directory for --symlink-plex (default: ~/Plex).",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
+    if args.symlink_plex:
+        symlink_plex_programs(root, args.plex_dir.expanduser())
     obsolete = find_obsolete_mp4s(root)
     for path in obsolete:
         print(path if args.absolute else path.relative_to(root))

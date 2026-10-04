@@ -150,3 +150,11 @@ sh_test(
         "install_deb.sh",
     ],
 )
+
+py_test(
+    name = "find_obsolete_mp4s_test",
+    imports = ["."],
+    size = "small",
+    srcs = ["find_obsolete_mp4s.py", "find_obsolete_mp4s_test.py"],
+    main = "find_obsolete_mp4s_test.py",
+)
