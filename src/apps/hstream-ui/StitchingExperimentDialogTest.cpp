@@ -28,6 +28,7 @@
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPixmap>
 #include <QtGui/QScreen>
+#include <QtGui/QTextCursor>
 #include <QtGui/QWheelEvent>
 #include <QtGui/QWindow>
 #include <QtWidgets/QApplication>
@@ -578,6 +579,7 @@ void exercise_player_queue(const QString& game, const QString& root) {
   write(
       runner,
       "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HSTREAM_TEST_ARGUMENTS\"\n"
+      "printf '\\033['; sleep 0.1; printf '31mcolored <error>  text\\033[0m\\n'\n"
       "printf '%s\\n' 'HSTREAM_CALIBRATION stage=calibration status=failed message=Player overlap mapping canvas mismatch' "
       "'HSTREAM_CALIBRATION stage=calibration status=failed message=Pipeline failed during stitching calibration' "
       "'INTERNAL: App run failed'\nexit 13\n");
@@ -687,9 +689,35 @@ void exercise_player_queue(const QString& game, const QString& root) {
   require(
       table->item(0, 5)->text().contains("Player overlap mapping canvas mismatch") &&
           table->item(0, 5)->toolTip().contains("Runner exited 13") &&
-          table->item(1, 5)->text().contains("baseline calibration failed"),
+          table->item(1, 5)->text().contains("baseline calibration failed") &&
+          table->item(1, 5)->text().contains("Player overlap mapping canvas mismatch"),
       "A failed bootstrap must prevent its dependent scan from launching");
+  auto* log = widget<QPlainTextEdit>(dialog, "stitchExperimentLog");
+  require(
+      log->toPlainText().contains("colored <error>  text\n") && !log->toPlainText().contains(QChar(0x1b)),
+      "Runner log must render split ANSI sequences while preserving literal text and line breaks");
+  require(log->document()->blockCount() > 3, "Log lines must remain separate blocks for bounded history");
+  auto colored = log->document()->find("colored");
+  const QColor expected = log->palette().color(QPalette::Base).lightness() < 128 ? QColor("#bf616a") : QColor("#b42318");
+  require(!colored.isNull() && colored.charFormat().foreground().color() == expected,
+      "Runner log must apply the shared ANSI foreground color");
   table->selectRow(0);
+  bool retained_color = false;
+  QTimer::singleShot(0, &dialog, [&]() {
+    if (auto* viewer = dialog.findChild<QDialog*>("stitchExperimentRunnerLogViewer")) {
+      auto* contents = viewer->findChild<QPlainTextEdit*>("stitchExperimentRetainedRunnerLog");
+      if (contents) {
+        const auto match = contents->document()->find("colored");
+        retained_color = !match.isNull() && match.charFormat().foreground().color() == expected &&
+            !contents->toPlainText().contains(QChar(0x1b));
+      }
+      viewer->accept();
+    }
+  });
+  widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton")->click();
+  require(retained_color, "Retained runner logs must render ANSI colors too");
+  require(read(QString::fromStdString((baseline / "runner.log").string())).contains('\x1b'),
+      "Display formatting must preserve the original retained runner output");
   require(remove->isEnabled(), "Failed attempts must be removable after their runners stop");
   remove->click();
   const auto removed = LoadStitchingExperimentStore(*store);

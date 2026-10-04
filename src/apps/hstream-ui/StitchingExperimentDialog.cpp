@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
@@ -78,6 +79,23 @@
 #endif
 
 namespace {
+
+void insert_log_output(QPlainTextEdit* log, QString text) {
+  text.replace("\r\n", "\n");
+  text.replace('\r', '\n');
+  const bool dark = log->palette().color(QPalette::Base).lightness() < 128;
+  log->moveCursor(QTextCursor::End);
+  auto cursor = log->textCursor();
+  const auto lines = text.split('\n');
+  for (int index = 0; index < lines.size(); ++index) {
+    if (index != 0)
+      cursor.insertBlock();
+    cursor.insertHtml("<span style=\"white-space:pre-wrap\">" + hm::ui::ansi_to_html(lines[index], dark) + "</span>");
+    cursor.setCharFormat(QTextCharFormat());
+  }
+  log->setTextCursor(cursor);
+  log->ensureCursorVisible();
+}
 
 void add_image_navigation(QVBoxLayout* layout, CalibrationFrameView* view) {
   auto* controls = new QHBoxLayout();
@@ -1098,6 +1116,16 @@ struct StitchingExperimentDialog::Impl {
       candidate.requires_ice_mask = record.requires_ice_mask;
       candidate.has_selected_frames = !record.selection_fingerprint.empty();
       candidate.failure = QString::fromStdString(record.failure);
+      if (candidate.failure.startsWith("Unavailable: baseline calibration failed")) {
+        const auto baseline = std::find_if(catalog->experiments.begin(), catalog->experiments.end(), [&](const auto& row) {
+          return row.workspace.game_directory.lexically_relative(store->directory).generic_string() ==
+              record.baseline_workspace_key;
+        });
+        if (baseline != catalog->experiments.end() && !baseline->failure.empty())
+          candidate.failure = QString("Unavailable: baseline calibration failed (Baseline %1): %2")
+                                  .arg(candidate.baseline_sequence)
+                                  .arg(QString::fromStdString(baseline->failure));
+      }
       const bool pending_owner = record.state == "running" || record.state == "scan" || record.state == "quarantined" ||
           record.process_session_id != 0 || !record.process_token.empty();
       if (pending_owner &&
@@ -1203,10 +1231,14 @@ struct StitchingExperimentDialog::Impl {
         QString& tail = candidates[running_candidate].process_output_tail;
         tail = (tail + output).right(64 * 1024);
       }
-      log->moveCursor(QTextCursor::End);
-      log->insertPlainText(output);
-      log->moveCursor(QTextCursor::End);
     }
+    // QProcess chunks can split an escape sequence. Render complete lines and
+    // flush the final unterminated line when this runner exits.
+    QString pending = process->property("pendingAnsiLogLine").toString() + output;
+    const int end = process->state() == QProcess::NotRunning ? pending.size() : pending.lastIndexOf('\n') + 1;
+    if (end > 0)
+      insert_log_output(log, pending.left(end));
+    process->setProperty("pendingAnsiLogLine", pending.mid(end));
   }
 
   QString candidate_process_error(const Candidate& candidate) const {
@@ -1227,9 +1259,7 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void append_output_message(const QString& message) {
-    log->moveCursor(QTextCursor::End);
-    log->insertPlainText(message);
-    log->moveCursor(QTextCursor::End);
+    insert_log_output(log, message);
   }
 
   Candidate* baseline_for(const Candidate& candidate) {
@@ -1592,9 +1622,13 @@ struct StitchingExperimentDialog::Impl {
       Candidate* baseline = baseline_for(candidate);
       if (!baseline || !baseline->complete || !baseline->workspace) {
         candidate.failure = "Unavailable: baseline calibration failed";
+        if (baseline && !baseline->failure.isEmpty())
+          candidate.failure += QString(" (Baseline %1): %2").arg(baseline->sequence).arg(baseline->failure);
         (void)persist_candidate(candidate, "failed");
         (void)release_reservation(candidate);
         table->item(candidate.row, 5)->setText(candidate.failure);
+        table->item(candidate.row, 5)->setToolTip(candidate.failure);
+        append_output_message(QString("Candidate %1: %2\n").arg(candidate.sequence).arg(candidate.failure));
         QTimer::singleShot(0, dialog, [this]() { launch_next_candidate(); });
         return;
       }
@@ -1905,6 +1939,7 @@ struct StitchingExperimentDialog::Impl {
       table->setItem(row, column, item);
     }
     table->item(row, 6)->setToolTip(frame_selection_policy(candidate).second);
+    table->item(row, 5)->setToolTip(candidate.failure);
     if (settings.manual_control_points)
       table->item(row, 1)->setToolTip(
           "Uses every saved manual match across all pairs; the automatic per-pair cap does not apply.");
@@ -2557,7 +2592,9 @@ struct StitchingExperimentDialog::Impl {
     location->setTextInteractionFlags(Qt::TextSelectableByMouse);
     location->setWordWrap(true);
     layout->addWidget(location);
-    auto* contents = new QPlainTextEdit(QString::fromUtf8(bytes));
+    auto* contents = new QPlainTextEdit();
+    insert_log_output(contents, QString::fromUtf8(bytes));
+    contents->moveCursor(QTextCursor::Start);
     contents->setObjectName("stitchExperimentRetainedRunnerLog");
     contents->setReadOnly(true);
     layout->addWidget(contents, 1);
