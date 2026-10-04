@@ -132,7 +132,8 @@ counts remain available when requested again. Source/reference conflicts and cor
 fail explicitly. Older plans created before input persistence may replay their exact selected timestamps once to
 materialize the missing PNG bundle; opening the inspector never does that work.
 **View runner log** shows the highlighted row's retained output, including after reopening. The viewer reads at
-most the last 1 MiB; the complete log stays with that candidate on disk.
+most the last 1 MiB; the complete log stays with that candidate on disk. Both the live log and retained-output
+viewer render terminal colors through the shared `AnsiLogFormat` helper; saved logs keep their original escapes.
 
 Each pair has left/right thumbnails from the exact images extracted for matching. They become available when that
 pair is extracted and remain inspectable if solving subsequently fails. Thumbnail creation reuses the CPU images
@@ -158,6 +159,7 @@ producing unusable maps; rejecting it before accepting alignment allows the same
 fallback. Failures after accepted alignment still stop the candidate without retrying
 canvas generation or publication. The failed row retains the specific calibration error
 instead of replacing it with the runner's final `INTERNAL: App run failed` summary.
+Players rows blocked by a failed baseline include that baseline's number and failure reason in their status and tooltip.
 Existing saved calibrations keep their original matches; rerun calibration to apply this selection policy.
 Capped selection balances occupied height bands before horizontal
 cells to preserve available near-side points when the back wall is more textured.

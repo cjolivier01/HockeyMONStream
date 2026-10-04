@@ -399,6 +399,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":ansi_log_format",
         ":stitching_still_preview",
         ":action_icons",
         ":preview_dialog_window",
