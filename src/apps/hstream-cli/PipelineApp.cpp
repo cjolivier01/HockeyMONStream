@@ -130,11 +130,7 @@ absl::StatusOr<hm::stitching::ControlPointMatcher> selected_stitching_matcher(co
   // This decides which matcher asset is provisioned, so it must agree with the
   // matcher calibration actually runs. configs/baseline.yaml owns the default;
   // substituting one here would download a graph the run never loads.
-  try {
-    return hm::stitching::resolve_control_point_matcher(config);
-  } catch (const std::exception& error) {
-    return absl::InvalidArgumentError(std::string("Invalid stitching.control_point_matcher setting: ") + error.what());
-  }
+  return hm::stitching::resolve_control_point_matcher(config);
 }
 
 void emit_preview_protocol(const char* message) {

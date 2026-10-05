@@ -201,13 +201,16 @@ int main() {
     cv::Mat matcher_right = akaze ? left(cv::Rect(320, 0, 640, left.rows)).clone() : right;
     const bool superpoint = matcher_case.matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue;
     const char* game_dir = std::getenv("HM_SUPERPOINT_SMOKE_GAME_DIR");
-    const bool real_superpoint_images = superpoint && game_dir != nullptr && *game_dir != '\0';
-    if (real_superpoint_images) {
+    // Saved camera frames apply to every backend, not just SuperPoint, so the
+    // selectable matchers can be compared on the same real pair. The synthetic
+    // fixtures below are zero-parallax self-crops and cannot stand in for that.
+    const bool real_images = game_dir != nullptr && *game_dir != '\0';
+    if (real_images) {
       constexpr int flags = cv::IMREAD_COLOR | cv::IMREAD_ANYDEPTH | cv::IMREAD_IGNORE_ORIENTATION;
       matcher_left = cv::imread((fs::path(game_dir) / "left.png").string(), flags);
       matcher_right = cv::imread((fs::path(game_dir) / "right.png").string(), flags);
       if (matcher_left.empty() || matcher_right.empty()) {
-        std::cerr << "FAIL: SuperPoint game fixture must contain left.png and right.png\n";
+        std::cerr << "FAIL: smoke game fixture must contain left.png and right.png\n";
         return 1;
       }
     } else if (superpoint) {
@@ -228,7 +231,11 @@ int main() {
                 << " inference: " << (matches.ok() ? "too few matches" : matches.status().ToString()) << '\n';
       return 1;
     }
-    if (superpoint && !real_superpoint_images) {
+    if (real_images) {
+      std::cout << "Real-frame matches: " << matcher_case.name << " accepted " << matches->accepted_match_count
+                << " and selected " << matches->selected.size() << '\n';
+    }
+    if (superpoint && !real_images) {
       size_t translated = 0;
       for (const auto& match : matches->accepted) {
         if (cv::norm(match.right - match.left - cv::Point2f(7.0f, 3.0f)) < 2.0)

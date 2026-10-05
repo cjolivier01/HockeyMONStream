@@ -38,13 +38,26 @@ results on real footage.
   cross-check. It requires no model asset, runs on CPU, retains at most 2000
   detector keypoints per image, and processes at a maximum dimension of 1920
   pixels. It is the only backend that consumes the optional fisheye lens
-  profile (`left_calibration.json` / `right_calibration.json` in the game
-  directory): when present, matching runs on undistorted frames and the profile
+  profile: a single `left_calibration.json` in the game directory, which
+  carries both cameras as `left_uniforms` and `right_uniforms` (there is no
+  `right_calibration.json`). When present, matching runs on undistorted frames and the profile
   fingerprint enters canvas provenance, so adding or removing it invalidates
   existing calibration. When absent, calibration logs `AKAZE lens calibration
   not found at ...` to stderr and matches the original camera frames — that
   notice is informational, not an error. A present profile requires an OpenCV
-  mapping backend; the shipped `nona` backend rejects it (see below).
+  mapping backend; the shipped `nona` backend rejects it, as described in the
+  upgrade note above.
+
+  AKAZE also assumes a specific two-camera overlap geometry, which the neural
+  backends do not. Detection is masked to the facing half of each frame (right
+  half of the left camera, left half of the right camera) and to the vertical
+  band `y ∈ [0.05, 0.95]`. A match then survives only if it lies in the facing
+  half of both frames, within `y ∈ [0.2, 0.8]` in both, and the two rows agree
+  to within 8% of image height. That row-agreement test assumes near-rectified
+  cameras, so a rig whose overlap falls outside the inner halves, or whose
+  horizons differ by more than 8% of frame height, can yield no usable matches
+  regardless of scene texture. Filtering needs at least 8 survivors, and 6
+  after fundamental-matrix rejection.
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
   with the 2K canvas described below by default on every platform. In explicit native mode, images are
   converted to grayscale floats in `[0,1]` and padded on the right/bottom with
