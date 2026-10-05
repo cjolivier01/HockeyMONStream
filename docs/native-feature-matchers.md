@@ -26,6 +26,13 @@ graph. This covers the matcher only — calibration still downloads the ice-rink
 Mask2Former model and still creates that session on CUDA first, so a stock run
 is not yet GPU-free or download-free end to end.
 
+AKAZE is the default on match quality, not just on packaging: across thousands
+of real stitching matches on rink footage, SuperPoint + LightGlue produced
+worse alignments than AKAZE. The synthetic coverage in this repo does not
+reflect that, so do not infer the ordering from the tests or from the fact that
+SuperPoint is the learned backend. Change the default only against measured
+results on real footage.
+
 - `akaze-hamming` (default) uses OpenCV AKAZE with binary M-LDB descriptors,
   Hamming distance, a strict 0.75 Lowe ratio in both directions, and a mutual
   cross-check. It requires no model asset, runs on CPU, retains at most 2000
