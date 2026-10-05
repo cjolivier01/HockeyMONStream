@@ -308,9 +308,9 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto"],
   deps = [
-        ":game_config",
-    ":feature_matcher",
     ":canvas_constraint_check",
+    ":feature_matcher",
+    ":game_config",
     ":transaction_state",
     "//src/libs/common:status",
     "//src/libs/common:utils",
@@ -801,6 +801,7 @@ cc_test(
   name = "calibration_matches_test",
   srcs = ["CalibrationMatchesTest.cpp"],
   deps = [
+    ":game_config",
     ":calibration_matches",
     "@opencv_linux//:opencv",
   ],

@@ -28,6 +28,8 @@ struct CalibrationMatchSet {
   std::string automatic_fingerprint;
   std::string selection_fingerprint;
   std::string source_context;
+  // Always assigned from the persisted document before use. Explicit so the
+  // value stays greppable; it is not the shipped default.
   ControlPointMatcher matcher{ControlPointMatcher::kSuperPointLightGlue};
   AkazeMatchingCalibration calibration;
   bool manual{false};

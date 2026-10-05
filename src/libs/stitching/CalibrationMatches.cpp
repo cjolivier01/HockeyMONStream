@@ -564,7 +564,7 @@ absl::Status ValidateCalibrationMatchInputs(
     return absl::FailedPreconditionError(
         "Edited matches belong to different camera sources, synchronization, reference time or frame count; create a new automatic candidate");
   try {
-    auto matcher = read_control_point_matcher(config);
+    auto matcher = resolve_control_point_matcher(config);
     if (!matcher.ok())
       return matcher.status();
     if (*matcher != set.matcher)

@@ -85,7 +85,7 @@ void write(const fs::path& path, const std::string& bytes) {
 
 StitchingBackendChoices choices(const YAML::Node& config) {
   StitchingBackendChoices result;
-  result.control_point_matcher = ControlPointMatcherName(value(read_control_point_matcher(config)));
+  result.control_point_matcher = ControlPointMatcherName(value(resolve_control_point_matcher(config)));
   result.mapping_backend = "nona";
   result.projection = config["stitching"]["projection"].as<std::string>();
   result.run_autooptimizer = true;

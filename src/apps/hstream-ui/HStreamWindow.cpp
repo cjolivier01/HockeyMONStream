@@ -4929,7 +4929,7 @@ void HStreamWindow::loadBaselineDefaults() {
     throw std::invalid_argument(resolution.status().ToString());
   default_control_point_resolution_ = hm::stitching::ControlPointResolutionName(*resolution);
   control_point_resolution_ = default_control_point_resolution_;
-  const auto matcher = hm::stitching::read_control_point_matcher(baseline_config_);
+  const auto matcher = hm::stitching::resolve_control_point_matcher(baseline_config_);
   if (!matcher.ok())
     throw std::invalid_argument(matcher.status().ToString());
   default_control_point_matcher_ = hm::stitching::ControlPointMatcherName(*matcher);

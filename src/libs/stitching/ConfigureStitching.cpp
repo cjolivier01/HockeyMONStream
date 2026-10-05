@@ -2122,8 +2122,13 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
       return absl::InvalidArgumentError(
           "stitching matcher, mapping backend, projection, and camera configuration must be scalar values");
     }
+    // This reads a bare game overlay, which may inherit the matcher. Load the
+    // baseline once here and reuse it for the camera layering below.
+    const auto baseline = hm::baseline_config::load();
+    if (!baseline.ok())
+      return baseline.status();
     ControlPointMatcher matcher;
-    HM_ASSIGN_OR_RETURN(matcher, read_control_point_matcher(**loaded));
+    HM_ASSIGN_OR_RETURN(matcher, resolve_control_point_matcher(**loaded, baseline->values));
     MappingBackend backend = MappingBackend::kNona;
     if (backend_present)
       HM_ASSIGN_OR_RETURN(backend, ParseMappingBackend(backend_node.as<std::string>()));
@@ -2137,9 +2142,6 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     StitchProjectionFraming projection_framing;
     HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(**loaded));
     StitchCameraSelection camera;
-    const auto baseline = hm::baseline_config::load();
-    if (!baseline.ok())
-      return baseline.status();
     YAML::Node effective_camera_config = YAML::Clone(baseline->values);
     for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
       const YAML::Node value = stitching[key];
@@ -2926,7 +2928,7 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
   MappingBackend mapping_backend = MappingBackend::kNona;
   bool run_autooptimizer = true;
   StitchProjection projection = StitchProjection::kGeneralPanini;
-  HM_ASSIGN_OR_RETURN(control_point_matcher, read_control_point_matcher(config));
+  HM_ASSIGN_OR_RETURN(control_point_matcher, resolve_control_point_matcher(config));
   HM_ASSIGN_OR_RETURN(
       mapping_backend,
       ParseMappingBackend(

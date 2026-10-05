@@ -160,6 +160,7 @@ class FeatureMatcher {
       const std::function<bool()>& is_cancelled) const;
 
   ControlPointResolution resolution_{DefaultControlPointResolution()};
+  // Always assigned by the constructor; not a default matcher.
   ControlPointMatcher matcher_{ControlPointMatcher::kSuperPointLightGlue};
   std::unique_ptr<hm::onnx::Session> session_;
   int input_channels_{0};

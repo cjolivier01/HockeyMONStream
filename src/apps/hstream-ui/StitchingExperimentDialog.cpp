@@ -241,7 +241,7 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
 }
 
 hm::stitching::ControlPointMatcher feature_matcher(const YAML::Node& config) {
-  const auto matcher = hm::stitching::read_control_point_matcher(config);
+  const auto matcher = hm::stitching::resolve_control_point_matcher(config);
   if (!matcher.ok())
     throw std::runtime_error(matcher.status().ToString());
   return *matcher;

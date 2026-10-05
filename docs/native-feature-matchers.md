@@ -1,14 +1,43 @@
 # Native stitching feature matchers
 
+## Upgrading from a SuperPoint default
+
+The shipped default changed from `superpoint-lightglue` to `akaze-hamming`. Two
+consequences for existing games:
+
+- **Calibration is invalidated for games that inherited the default.** The next
+  save or run reports `the selected control-point matcher changed` and
+  recalibrates. Games that pin `stitching.control_point_matcher` explicitly are
+  unaffected. To keep the previous behavior, set
+  `stitching.control_point_matcher: superpoint-lightglue` in the user or game
+  layer.
+- **A game holding a fisheye lens profile now fails on the shipped mapping
+  backend.** Only AKAZE reads `left_calibration.json`, so under the old default
+  the file was inert. With AKAZE selected, a present profile plus the shipped
+  `nona` backend is rejected: *"Calibrated AKAZE control points are rectified
+  and require an OpenCV mapping backend"*. Either select an OpenCV
+  `stitching.mapping_backend`, pin a different matcher, or move the profile out
+  of the game directory.
+
 `stitching.control_point_matcher` accepts four native, Python-free runtime
 backends. The default is `akaze-hamming`: it is the only backend that needs no
-model asset and no GPU, so a stock configuration calibrates without downloading
-a matcher graph or depending on a CUDA execution provider.
+model asset, so a stock configuration calibrates without downloading a matcher
+graph. This covers the matcher only — calibration still downloads the ice-rink
+Mask2Former model and still creates that session on CUDA first, so a stock run
+is not yet GPU-free or download-free end to end.
 
 - `akaze-hamming` (default) uses OpenCV AKAZE with binary M-LDB descriptors,
   Hamming distance, a strict 0.75 Lowe ratio in both directions, and a mutual
-  cross-check. It does not require a model asset, runs on CPU, and processes at
-  a maximum dimension of 1920 pixels.
+  cross-check. It requires no model asset, runs on CPU, retains at most 2000
+  detector keypoints per image, and processes at a maximum dimension of 1920
+  pixels. It is the only backend that consumes the optional fisheye lens
+  profile (`left_calibration.json` / `right_calibration.json` in the game
+  directory): when present, matching runs on undistorted frames and the profile
+  fingerprint enters canvas provenance, so adding or removing it invalidates
+  existing calibration. When absent, calibration logs `AKAZE lens calibration
+  not found at ...` to stderr and matches the original camera frames — that
+  notice is informational, not an error. A present profile requires an OpenCV
+  mapping backend; the shipped `nona` backend rejects it (see below).
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
   with the 2K canvas described below by default on every platform. In explicit native mode, images are
   converted to grayscale floats in `[0,1]` and padded on the right/bottom with
@@ -31,12 +60,14 @@ a matcher graph or depending on a CUDA execution provider.
   `SpatialHub/efficient-loftr-onnx` revision
   `2c4515cbfd4866663db0ca1b3e02c55163dc5a75`. The UI spells out that this is
   the EfficientLoFTR variant rather than the original Kornia LoFTR graph.
+
 **Max control points** (`stitching.max_control_points`) limits retained matched
 correspondences per synchronized frame pair, not raw SuperPoint detections. SuperPoint still extracts at most
 2048 keypoints per image; valid LightGlue matches must score strictly above 0.2.
 The UI accepts limits from 10 to 5000. General calibration and saved-point replay
-require at least 10 usable matches; OpenCV AKAZE retains its specialized six-match
-floor. General MAGSAC calibration still requires at least eight inliers and checks
+require at least 10 usable matches. AKAZE drops to a specialized six-match floor
+only when it is paired with an OpenCV mapping backend; with the shipped `nona`
+backend the default AKAZE path still requires 10. General MAGSAC calibration still requires at least eight inliers and checks
 their spatial coverage at a 10-point budget, so a small or poorly distributed set
 can fail calibration. Calibrated AKAZE retains its separate small-set consensus and
 coverage rules.

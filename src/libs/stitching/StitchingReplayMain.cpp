@@ -1,3 +1,4 @@
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <cmath>
@@ -45,8 +46,7 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   // hide this source coordinate-space distinction by changing its matcher.
   const auto provenance = checked(stitching::HuginProject::ReadCanvasProvenance(source, *lock));
   const auto source_matcher = checked(
-      stitching::ParseControlPointMatcher(
-          (*source_config)["stitching"]["control_point_matcher"].as<std::string>(std::string())));
+      stitching::resolve_control_point_matcher(*source_config));
   const bool rectified_provenance = provenance.has_value() && provenance->akaze_calibration_fingerprint.has_value() &&
       provenance->akaze_calibration_fingerprint->rfind("sha256:", 0) == 0;
   if (rectified_provenance ||
@@ -74,8 +74,7 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   stitching::HuginProject::Options options;
   options.mapping_backend = stitching::MappingBackend::kNona;
   options.run_autooptimizer = true;
-  options.control_point_matcher = checked(
-      stitching::ParseControlPointMatcher(config["stitching"]["control_point_matcher"].as<std::string>(std::string())));
+  options.control_point_matcher = checked(stitching::resolve_control_point_matcher(config));
   options.projection = checked(stitching::ParseStitchProjection(config["stitching"]["projection"].as<std::string>()));
   options.projection_parameters = checked(stitching::read_stitch_projection_parameters(config, *options.projection));
   options.projection_framing = checked(stitching::read_stitch_projection_framing(config));
