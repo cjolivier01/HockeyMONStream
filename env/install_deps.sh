@@ -55,6 +55,14 @@ TENSORRT_PACKAGES=(
 CUDA_COMPAT_KEYRING='/usr/share/keyrings/hstream-cuda-ubuntu2404-compat.gpg'
 CUDA_COMPAT_RELEASE='ubuntu2404'
 
+# Deliberately not /etc/apt/preferences.d/hstream-tensorrt10, which
+# scripts/install_deb.sh deletes. That installer only needs the TensorRT 10
+# runtime, which coexists with a newer SDK, so a pin there would pointlessly
+# downgrade someone's TensorRT 11. A build host is the other case: the
+# unversioned -dev packages own /usr/include/NvInfer.h, and that header has to
+# stay on 10 for the engines we build to load under DeepStream 9.1.
+TENSORRT_PREFERENCES='/etc/apt/preferences.d/hstream-build-tensorrt10'
+
 has_candidate() {
   apt-cache policy "$1" 2>/dev/null |
     awk '/^  Candidate:/ { found = $2 != "(none)" } END { exit !found }'
@@ -151,6 +159,35 @@ add_cuda_compat_repository() {
   return "${status}"
 }
 
+# Installing the right version is not enough on its own. NVIDIA publishes
+# TensorRT 11 under these same unversioned names at a higher version, so it is
+# the candidate, and `apt full-upgrade` takes it without comment. Hold the
+# development packages back; the versioned runtimes stay unpinned so a TensorRT
+# 11 SDK can still be installed alongside.
+hold_tensorrt_10_development() {
+  local package
+  local -a development=()
+
+  for package in "${TENSORRT_PACKAGES[@]}"; do
+    case "${package}" in
+      *-dev) development+=("${package}") ;;
+    esac
+  done
+  [ "${#development[@]}" -gt 0 ] || return 0
+
+  # Priority 1001 is what allows a downgrade, matching --allow-downgrades above.
+  # The glob keeps the newest 10.x, and +cuda13.2 sorts above the +cuda12.9
+  # build of the same release.
+  printf '%s\n' \
+    "# Written by env/install_deps.sh." \
+    "# DeepStream 9.1 links libnvinfer.so.10, so the headers in /usr that" \
+    "# bazel/tensorrt_sdk_repository.bzl compiles against have to stay on 10." \
+    "Package: ${development[*]}" \
+    "Pin: version 10.*" \
+    "Pin-Priority: 1001" |
+    sudo tee "${TENSORRT_PREFERENCES}" >/dev/null
+}
+
 install_tensorrt_10() {
   local version package
   local -a pinned=()
@@ -173,6 +210,7 @@ install_tensorrt_10() {
   # so an installed TensorRT 11 SDK has to step aside for the version DeepStream
   # needs.
   sudo apt-get install -y --allow-downgrades "${pinned[@]}" || return 1
+  hold_tensorrt_10_development || return 1
 
   # The unversioned /usr development links must now resolve to TensorRT 10.
   # dpkg-query still reports packages that were removed without being purged,
