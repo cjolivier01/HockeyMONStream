@@ -308,6 +308,7 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto"],
   deps = [
+        ":game_config",
     ":feature_matcher",
     ":canvas_constraint_check",
     ":transaction_state",

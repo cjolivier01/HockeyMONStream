@@ -46,7 +46,7 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   const auto provenance = checked(stitching::HuginProject::ReadCanvasProvenance(source, *lock));
   const auto source_matcher = checked(
       stitching::ParseControlPointMatcher(
-          (*source_config)["stitching"]["control_point_matcher"].as<std::string>("superpoint-lightglue")));
+          (*source_config)["stitching"]["control_point_matcher"].as<std::string>(std::string())));
   const bool rectified_provenance = provenance.has_value() && provenance->akaze_calibration_fingerprint.has_value() &&
       provenance->akaze_calibration_fingerprint->rfind("sha256:", 0) == 0;
   if (rectified_provenance ||
@@ -75,8 +75,7 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   options.mapping_backend = stitching::MappingBackend::kNona;
   options.run_autooptimizer = true;
   options.control_point_matcher = checked(
-      stitching::ParseControlPointMatcher(
-          config["stitching"]["control_point_matcher"].as<std::string>("superpoint-lightglue")));
+      stitching::ParseControlPointMatcher(config["stitching"]["control_point_matcher"].as<std::string>(std::string())));
   options.projection = checked(stitching::ParseStitchProjection(config["stitching"]["projection"].as<std::string>()));
   options.projection_parameters = checked(stitching::read_stitch_projection_parameters(config, *options.projection));
   options.projection_framing = checked(stitching::read_stitch_projection_framing(config));

@@ -41,11 +41,18 @@ const char* ControlPointMatcherName(ControlPointMatcher matcher) {
     case ControlPointMatcher::kAkazeHamming:
       return "akaze-hamming";
   }
-  return "superpoint-lightglue";
+  // Unreachable: the switch covers every enumerator. Not a default matcher.
+  return "akaze-hamming";
 }
 
 absl::StatusOr<ControlPointMatcher> ParseControlPointMatcher(const std::string& value) {
-  std::string normalized = value.empty() ? "superpoint-lightglue" : value;
+  // No compiled-in matcher: the operative default ships in configs/baseline.yaml.
+  // Callers resolve layered configuration through read_control_point_matcher.
+  if (value.empty()) {
+    return absl::InvalidArgumentError(
+        "stitching.control_point_matcher is not set; configs/baseline.yaml must define it");
+  }
+  std::string normalized = value;
   std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char character) {
     return character == '_' ? '-' : static_cast<char>(std::tolower(character));
   });
@@ -66,7 +73,7 @@ absl::StatusOr<ControlPointMatcher> ParseControlPointMatcher(const std::string& 
   }
   return absl::InvalidArgumentError(
       "Unsupported native control-point matcher \"" + value +
-      "\"; choose superpoint-lightglue, dedode-lightglue, loftr, or akaze-hamming");
+      "\"; choose akaze-hamming, superpoint-lightglue, dedode-lightglue, or loftr");
 }
 
 } // namespace hm::stitching

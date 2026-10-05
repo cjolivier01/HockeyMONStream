@@ -195,9 +195,12 @@ void metadata_and_bounds(const fs::path& game) {
   const auto minimal = YAML::Load("game: {videos: {left: [cam1.mp4], right: [cam2.mp4]}}");
   auto defaulted_set = set;
   defaulted_set.source_context = take(CalibrationMatchSourceContext(minimal, game));
+  // A layer that omits the matcher inherits configs/baseline.yaml rather than a
+  // compiled-in default, so the saved set must carry the shipped baseline value.
+  defaulted_set.matcher = ControlPointMatcher::kAkazeHamming;
   require(
       ValidateCalibrationMatchInputs(defaulted_set, minimal, game, 2).ok(),
-      "Absent optional stitching, anchor, matcher and offsets must use defaults");
+      "Absent optional stitching, anchor, matcher and offsets must inherit the baseline defaults");
   auto equivalent = YAML::Clone(minimal);
   equivalent["stitching"]["stitch_frame_time"] = "00:00:00";
   equivalent["game"]["stitching"]["frame_offsets"]["left"] = 0.0;

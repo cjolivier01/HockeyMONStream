@@ -85,7 +85,7 @@ void write(const fs::path& path, const std::string& bytes) {
 
 StitchingBackendChoices choices(const YAML::Node& config) {
   StitchingBackendChoices result;
-  result.control_point_matcher = "superpoint-lightglue";
+  result.control_point_matcher = ControlPointMatcherName(value(read_control_point_matcher(config)));
   result.mapping_backend = "nona";
   result.projection = config["stitching"]["projection"].as<std::string>();
   result.run_autooptimizer = true;
@@ -104,6 +104,9 @@ YAML::Node fixture(const fs::path& root) {
   fs::create_directories(root);
   auto config = YAML::Clone(value(hm::baseline_config::load()).values);
   config["stitching"]["calibration_frame_count"] = 2;
+  // Pin the matcher so this fixture keeps exercising a resolution-bearing
+  // neural backend rather than following the shipped baseline default.
+  config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   config["stitching"]["control_point_resolution"] = "native";
   config["stitching"]["control_point_execution_provider"] = "cpu";
   config["stitching"]["max_output_width"] = 0;

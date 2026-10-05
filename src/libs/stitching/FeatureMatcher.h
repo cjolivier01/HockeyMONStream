@@ -79,7 +79,7 @@ class FeatureMatcher {
 
   static absl::StatusOr<std::unique_ptr<FeatureMatcher>> Create(
       const std::string& model_path,
-      ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue,
+      ControlPointMatcher matcher,
       AkazeMatchingCalibration akaze_calibration = {},
       ControlPointResolution resolution = DefaultControlPointResolution(),
       hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda,

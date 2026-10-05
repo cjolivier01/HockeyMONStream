@@ -81,7 +81,9 @@ class HuginProject {
     std::string camera_configuration{"gopro-mission-1"};
     std::optional<size_t> max_canvas_dimension;
     std::optional<size_t> max_output_width;
-    ControlPointMatcher control_point_matcher{ControlPointMatcher::kSuperPointLightGlue};
+    // Callers set this from the resolved configuration; the initializer only
+    // avoids an indeterminate value and is not a default matcher.
+    ControlPointMatcher control_point_matcher{};
     ControlPointResolution control_point_resolution{ControlPointResolution::kNative};
     std::string calibration_frame_selection_fingerprint;
     std::string calibration_frame_diagnostics;

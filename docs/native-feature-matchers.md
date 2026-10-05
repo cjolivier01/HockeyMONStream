@@ -1,8 +1,14 @@
 # Native stitching feature matchers
 
 `stitching.control_point_matcher` accepts four native, Python-free runtime
-backends:
+backends. The default is `akaze-hamming`: it is the only backend that needs no
+model asset and no GPU, so a stock configuration calibrates without downloading
+a matcher graph or depending on a CUDA execution provider.
 
+- `akaze-hamming` (default) uses OpenCV AKAZE with binary M-LDB descriptors,
+  Hamming distance, a strict 0.75 Lowe ratio in both directions, and a mutual
+  cross-check. It does not require a model asset, runs on CPU, and processes at
+  a maximum dimension of 1920 pixels.
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
   with the 2K canvas described below by default on every platform. In explicit native mode, images are
   converted to grayscale floats in `[0,1]` and padded on the right/bottom with
@@ -25,10 +31,6 @@ backends:
   `SpatialHub/efficient-loftr-onnx` revision
   `2c4515cbfd4866663db0ca1b3e02c55163dc5a75`. The UI spells out that this is
   the EfficientLoFTR variant rather than the original Kornia LoFTR graph.
-- `akaze-hamming` uses OpenCV AKAZE with binary M-LDB descriptors, Hamming
-  distance, a strict 0.75 Lowe ratio in both directions, and a mutual
-  cross-check. It does not require a model asset.
-
 **Max control points** (`stitching.max_control_points`) limits retained matched
 correspondences per synchronized frame pair, not raw SuperPoint detections. SuperPoint still extracts at most
 2048 keypoints per image; valid LightGlue matches must score strictly above 0.2.

@@ -2122,9 +2122,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
       return absl::InvalidArgumentError(
           "stitching matcher, mapping backend, projection, and camera configuration must be scalar values");
     }
-    ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue;
-    if (matcher_present)
-      HM_ASSIGN_OR_RETURN(matcher, ParseControlPointMatcher(matcher_node.as<std::string>()));
+    ControlPointMatcher matcher;
+    HM_ASSIGN_OR_RETURN(matcher, read_control_point_matcher(**loaded));
     MappingBackend backend = MappingBackend::kNona;
     if (backend_present)
       HM_ASSIGN_OR_RETURN(backend, ParseMappingBackend(backend_node.as<std::string>()));
@@ -2923,14 +2922,11 @@ absl::StatusOr<bool> read_bool_or_default(
 }
 
 absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAML::Node& config) {
-  ControlPointMatcher control_point_matcher = ControlPointMatcher::kSuperPointLightGlue;
+  ControlPointMatcher control_point_matcher;
   MappingBackend mapping_backend = MappingBackend::kNona;
   bool run_autooptimizer = true;
   StitchProjection projection = StitchProjection::kGeneralPanini;
-  HM_ASSIGN_OR_RETURN(
-      control_point_matcher,
-      ParseControlPointMatcher(read_scalar_or_default(
-          config, {"stitching", "control_point_matcher"}, ControlPointMatcherName(control_point_matcher))));
+  HM_ASSIGN_OR_RETURN(control_point_matcher, read_control_point_matcher(config));
   HM_ASSIGN_OR_RETURN(
       mapping_backend,
       ParseMappingBackend(

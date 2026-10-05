@@ -1079,6 +1079,40 @@ absl::StatusOr<bool> materialize_rink_mask_frame_time(YAML::Node& config, const 
   return YAML::Dump(config) != before;
 }
 
+absl::StatusOr<ControlPointMatcher> read_control_point_matcher(const YAML::Node& config) {
+  // Returns the scalar this layer declares, or nullopt when it inherits one.
+  const auto declared = [](const YAML::Node& root) -> absl::StatusOr<std::optional<std::string>> {
+    const YAML::Node stitching = root && root.IsMap() ? root["stitching"] : YAML::Node();
+    const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_matcher"] : YAML::Node();
+    if (!value || value.IsNull())
+      return std::optional<std::string>();
+    if (!value.IsScalar())
+      return absl::InvalidArgumentError("stitching.control_point_matcher must be a scalar value");
+    return std::optional<std::string>(value.as<std::string>());
+  };
+  try {
+    std::optional<std::string> configured;
+    HM_ASSIGN_OR_RETURN(configured, declared(config));
+    if (configured.has_value())
+      return ParseControlPointMatcher(*configured);
+    // A caller may hold a bare overlay that inherits the matcher. Resolve it
+    // from baseline.yaml rather than from a compiled-in default, so the shipped
+    // configuration stays the single source of truth.
+    const auto baseline = hm::baseline_config::load();
+    if (!baseline.ok())
+      return baseline.status();
+    std::optional<std::string> inherited;
+    HM_ASSIGN_OR_RETURN(inherited, declared(baseline->values));
+    if (!inherited.has_value()) {
+      return absl::InvalidArgumentError(
+          "stitching.control_point_matcher is not set; " + baseline->path.string() + " must define it");
+    }
+    return ParseControlPointMatcher(*inherited);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read control-point matcher: " + std::string(exception.what()));
+  }
+}
+
 absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML::Node& config) {
   try {
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();

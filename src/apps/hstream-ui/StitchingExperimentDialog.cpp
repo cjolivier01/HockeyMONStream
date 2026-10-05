@@ -241,10 +241,7 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
 }
 
 hm::stitching::ControlPointMatcher feature_matcher(const YAML::Node& config) {
-  const YAML::Node stitching = config["stitching"];
-  const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_matcher"] : YAML::Node();
-  const auto matcher = hm::stitching::ParseControlPointMatcher(
-      value && !value.IsNull() ? value.as<std::string>() : "superpoint-lightglue");
+  const auto matcher = hm::stitching::read_control_point_matcher(config);
   if (!matcher.ok())
     throw std::runtime_error(matcher.status().ToString());
   return *matcher;

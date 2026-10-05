@@ -97,6 +97,12 @@ absl::StatusOr<bool> materialize_stitch_rink_context(YAML::Node& config, const Y
 // still matches. Shared by CLI loading and experiment configuration.
 bool restore_generated_stitching_backend_choices(YAML::Node& config);
 
+// Resolves stitching.control_point_matcher. The default ships in
+// configs/baseline.yaml and any overlay may override it; a layer that inherits
+// the matcher falls back to the baseline document. There is no compiled-in
+// matcher, so a baseline that omits the key is a configuration error.
+absl::StatusOr<ControlPointMatcher> read_control_point_matcher(const YAML::Node& config);
+
 absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML::Node& config);
 bool restore_generated_control_point_resolution(YAML::Node& config);
 absl::StatusOr<bool> materialize_control_point_resolution(YAML::Node& config, const YAML::Node& effective);
