@@ -392,7 +392,8 @@ cc_library(
 cc_binary(
   name = "stitching-replay",
   srcs = ["StitchingReplayMain.cpp"],
-  deps = [":hugin_project"],
+  deps = [
+    ":game_config",":hugin_project"],
 )
 
 sh_test(
@@ -779,7 +780,8 @@ cc_library(
 cc_test(
   name = "stitching_reframe_test",
   srcs = ["StitchingReframeTest.cpp"],
-  deps = [":stitching_reframe"],
+  deps = [
+    ":game_config",":stitching_reframe"],
 )
 
 cc_library(

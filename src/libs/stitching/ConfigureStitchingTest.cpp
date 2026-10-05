@@ -765,9 +765,11 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
     return false;
 
   YAML::Node fov_only_config;
-  // Pin the recorded matcher here too; otherwise compatibility fails on the
-  // matcher check before it ever reaches the camera FOV check this case proves.
+  // Pin both algorithm settings the recorded provenance carries. Either one
+  // left to inherit short-circuits compatibility on its own check before the
+  // camera FOV comparison this case exists to prove is ever reached.
   fov_only_config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  fov_only_config["stitching"]["control_point_resolution"] = "native";
   fov_only_config["stitching"]["camera_fov"]["horizontal_fov"] = 109.0;
   if (!write_text_file(dir / "config.yaml", YAML::Dump(fov_only_config) + "\n") ||
       !expect_configured(dir, false, "a game-private source FOV-only override must invalidate existing maps")) {

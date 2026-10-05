@@ -214,6 +214,36 @@ int main() {
   std::ofstream(root / "config.yaml") << "unrelated:\n  keep: true\n";
   ok &= test_player_frame_selection_state(root / "player-selection");
 
+  using hm::stitching::ControlPointMatcher;
+  using hm::stitching::resolve_control_point_matcher;
+  // The shipped baseline owns the matcher default; there is no compiled-in
+  // fallback, so dropping or renaming the key must fail loudly here.
+  const auto shipped = resolve_control_point_matcher(YAML::Node());
+  ok &= expect(
+      shipped.ok() && *shipped == ControlPointMatcher::kAkazeHamming,
+      "configs/baseline.yaml must declare akaze-hamming as the shipped control-point matcher");
+  YAML::Node declaring_overlay;
+  declaring_overlay["stitching"]["control_point_matcher"] = "loftr";
+  const auto overridden = resolve_control_point_matcher(declaring_overlay);
+  ok &= expect(
+      overridden.ok() && *overridden == ControlPointMatcher::kLoFTR,
+      "a layer that declares the matcher must override the baseline");
+  YAML::Node supplied_baseline;
+  supplied_baseline["stitching"]["control_point_matcher"] = "dedode-lightglue";
+  const auto inherited = resolve_control_point_matcher(YAML::Node(), supplied_baseline);
+  ok &= expect(
+      inherited.ok() && *inherited == ControlPointMatcher::kDeDoDeLightGlue,
+      "an inheriting layer must resolve from the supplied baseline rather than from disk");
+  YAML::Node baseline_without_key(YAML::NodeType::Map);
+  baseline_without_key["stitching"]["projection"] = "cylindrical";
+  ok &= expect(
+      !resolve_control_point_matcher(YAML::Node(), baseline_without_key).ok(),
+      "a supplied baseline that omits the matcher must be a configuration error");
+  YAML::Node non_scalar_matcher;
+  non_scalar_matcher["stitching"]["control_point_matcher"] = YAML::Load("[bad, type]");
+  ok &= expect(
+      !resolve_control_point_matcher(non_scalar_matcher).ok(), "a non-scalar matcher must be rejected");
+
   using hm::stitching::ControlPointResolution;
   YAML::Node resolution_private(YAML::NodeType::Map);
   const auto alternate_resolution = ControlPointResolution::k1K;

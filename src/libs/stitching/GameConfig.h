@@ -105,7 +105,8 @@ bool restore_generated_stitching_backend_choices(YAML::Node& config);
 // A layer that declares the matcher resolves without touching the filesystem.
 // A layer that inherits it reads `baseline` when supplied; otherwise this
 // LOADS the process baseline through hm::baseline_config::load(), which
-// resolves HM_CONFIG_ROOT/runfiles//opt/hstream/configs and parses the file.
+// resolves HM_CONFIG_ROOT, runfiles, or /opt/hstream/configs and parses
+// the file.
 // Callers holding a merged or baseline document should pass it.
 absl::StatusOr<ControlPointMatcher> resolve_control_point_matcher(
     const YAML::Node& config,
