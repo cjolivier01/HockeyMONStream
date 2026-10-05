@@ -308,6 +308,7 @@ def configure_game(
     invalidation_id: str,
     control_points: int,
     frame_count: int,
+    control_point_matcher: str,
 ) -> None:
   with config_path.open("r", encoding="utf-8") as stream:
     config = yaml.safe_load(stream) or {}
@@ -329,7 +330,7 @@ def configure_game(
           "invalidation_id": invalidation_id,
           "backend_generation": {
               "invalidation_id": invalidation_id,
-              "control_point_matcher": "superpoint-lightglue",
+              "control_point_matcher": control_point_matcher,
               "mapping_backend": backend,
               "projection": projection,
               "run_autooptimizer": backend == "nona",
@@ -341,7 +342,7 @@ def configure_game(
   stitching = config.setdefault("stitching", {})
   stitching.update(
       {
-          "control_point_matcher": "superpoint-lightglue",
+          "control_point_matcher": control_point_matcher,
           "mapping_backend": backend,
           "projection": projection,
           "run_autooptimizer": backend == "nona",
@@ -542,7 +543,15 @@ def run_state(
   max_output_width = int(state.get("max_output_width", 0))
   framing = projection_framing(state)
   invalidation_id = f"matrix-{sequence:03d}-{state_id(backend, projection, parameters, framing)}"
-  configure_game(work_root / game_id / "config.yaml", state, invalidation_id, control_points, frame_count)
+  control_point_matcher = str(state.get("control_point_matcher", args.control_point_matcher))
+  configure_game(
+      work_root / game_id / "config.yaml",
+      state,
+      invalidation_id,
+      control_points,
+      frame_count,
+      control_point_matcher,
+  )
   environment = os.environ.copy()
   environment.update(
       {
@@ -797,6 +806,11 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument(
       "--mode", choices=("framing", "projections", "boundaries", "all"), default="framing"
   )
+  # Deliberately pinned rather than inherited. This matrix sweeps nona rows and
+  # its fixtures carry left_calibration.json, which calibrated AKAZE rejects
+  # under nona, so the shipped akaze-hamming default would hard-fail them.
+  # Override per run or per state to sweep a different matcher.
+  parser.add_argument("--control-point-matcher", default="superpoint-lightglue")
   parser.add_argument("--control-points", type=int, default=900)
   parser.add_argument("--frame-count", type=int, default=4)
   parser.add_argument(

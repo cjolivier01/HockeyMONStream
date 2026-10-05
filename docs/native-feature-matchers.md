@@ -5,12 +5,18 @@
 The shipped default changed from `superpoint-lightglue` to `akaze-hamming`. Two
 consequences for existing games:
 
-- **Calibration is invalidated for games that inherited the default.** The next
-  save or run reports `the selected control-point matcher changed` and
-  recalibrates. Games that pin `stitching.control_point_matcher` explicitly are
-  unaffected. To keep the previous behavior, set
+- **Calibration is invalidated for most games that inherited the default.** The
+  next save or run reports `the selected control-point matcher changed` and
+  recalibrates. Two exceptions keep their existing artifacts: a game that pins
+  `stitching.control_point_matcher` explicitly, and a game whose `config.yaml`
+  declares *none* of the tracked stitching settings (matcher, mapping backend,
+  projection, camera config or FOV, control-point resolution, frame selection,
+  manual control points) — that game skips the algorithm comparison entirely
+  and keeps SuperPoint-derived artifacts until something else invalidates them.
+  To keep the previous behavior deliberately, set
   `stitching.control_point_matcher: superpoint-lightglue` in the user or game
-  layer.
+  layer. A custom `HM_CONFIG_ROOT` baseline must declare the key at all; there
+  is no compiled-in fallback, so omitting it is a startup error.
 - **A game holding a fisheye lens profile now fails on the shipped mapping
   backend.** Only AKAZE reads `left_calibration.json`, so under the old default
   the file was inert. With AKAZE selected, a present profile plus the shipped
@@ -36,10 +42,20 @@ on the CPU provider:
 | `akaze-hamming` | 594 | 0.28 s |
 | `superpoint-lightglue` at `2k` | 417 | 1.92 s |
 
-Reproduce with
-`HM_SUPERPOINT_SMOKE_GAME_DIR=/path/to/game HM_MATCHER_SMOKE_NAME=akaze-hamming`
-against `//src/libs/stitching:native_model_smoke_test`, which prints accepted
-and selected counts for whichever backend is selected. The synthetic fixtures
+Reproduce one row at a time, switching `HM_MATCHER_SMOKE_NAME` between
+`akaze-hamming` and `superpoint-lightglue`:
+
+```
+HM_REQUIRE_ONNX_MODEL_TESTS=1 HM_SUPERPOINT_SMOKE_GAME_DIR=/path/to/game \
+  HM_MATCHER_SMOKE_NAME=akaze-hamming \
+  bazel test //src/libs/stitching:native_model_smoke_test \
+  --test_output=all --nocache_test_results
+```
+
+The counts are printed, so `--test_output=all` is required to see them and
+`--nocache_test_results` to re-run. `HM_REQUIRE_ONNX_MODEL_TESTS=1` matters
+even for AKAZE: the test also loads the rink model, and without it a missing
+asset makes the run skip and still report success. The synthetic fixtures
 in this repo are zero-parallax self-crops and say nothing about relative
 quality, so do not infer the ordering from the tests or from the fact that
 SuperPoint is the learned backend. Change the default only against measured
@@ -69,7 +85,11 @@ results on real footage.
   cameras, so a rig whose overlap falls outside the inner halves, or whose
   horizons differ by more than 8% of frame height, can yield no usable matches
   regardless of scene texture. Filtering needs at least 8 survivors, and 6
-  after fundamental-matrix rejection.
+  after fundamental-matrix rejection. The corresponding failures read
+  `AKAZE produced no usable M-LDB descriptors`,
+  `AKAZE produced fewer than eight mutual overlap matches for epipolar
+  filtering`, and `AKAZE fundamental-matrix filtering retained fewer than six
+  matches`; all three point at rig geometry or overlap, not at the limit above.
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
   with the 2K canvas described below by default on every platform. In explicit native mode, images are
   converted to grayscale floats in `[0,1]` and padded on the right/bottom with
@@ -94,8 +114,11 @@ results on real footage.
   the EfficientLoFTR variant rather than the original Kornia LoFTR graph.
 
 **Max control points** (`stitching.max_control_points`) limits retained matched
-correspondences per synchronized frame pair, not raw SuperPoint detections. SuperPoint still extracts at most
+correspondences per synchronized frame pair, not raw detections. SuperPoint still extracts at most
 2048 keypoints per image; valid LightGlue matches must score strictly above 0.2.
+The default AKAZE path instead retains at most 2000 detector keypoints per
+image and applies no score threshold: its score is `1 - hamming/bits`, used
+only to rank candidates during selection.
 The UI accepts limits from 10 to 5000. General calibration and saved-point replay
 require at least 10 usable matches. AKAZE drops to a specialized six-match floor
 only when it is paired with an OpenCV mapping backend; with the shipped `nona`
@@ -250,7 +273,7 @@ repeatability using identical saved camera images, model files, resolution,
 and provider, comparing keypoints, match indices, scores, and selected control
 points both within a session and across fresh processes.
 
-On an RTX 5090, HStream's matcher processed a pair of 7680 × 4320 frames in
+On an RTX 5090, SuperPoint + LightGlue on CUDA processed a pair of 7680 × 4320 frames in
 0.995 seconds with 45 accepted matches; 2K took 0.294 seconds with 315 accepted
 matches on the same pair. The earlier 56.16 seconds / 39 matches
 measurement used CPU. Jetson Orin also completed the native 8K pair on CUDA
@@ -271,8 +294,11 @@ saved camera frames, set
 `//src/libs/stitching:native_model_smoke_test`; this reads `left.png` and
 `right.png` without modifying the game's calibration. Set
 `HM_REQUIRE_ONNX_MODEL_TESTS=1` to fail if model assets are unavailable. Set
-`HM_SUPERPOINT_SMOKE_RESOLUTION=native` or `1k` to override the 2K default. All modes
-verify synthetic translation in the original source coordinates. Set
+`HM_SUPERPOINT_SMOKE_RESOLUTION=native` or `1k` to override the 2K default. All SuperPoint synthetic
+modes verify translation in the original source coordinates; the real-image
+mode asserts accepted-match counts instead. Despite its name,
+`HM_SUPERPOINT_SMOKE_GAME_DIR` now selects real frames for whichever backend
+is under test, not only SuperPoint. Set
 `HM_MATCHER_SMOKE_NAME=superpoint-lightglue` to test rink segmentation and only
 that matcher without requiring unrelated model assets. Set
 `HM_RINK_SMOKE_IMAGE=/path/to/frame.png` to compare the selected provider's rink
