@@ -1,13 +1,3 @@
-config_setting(
-    name = "aarch64-linux-gnu",
-    constraint_values = ["@platforms//cpu:aarch64"],
-)
-
-config_setting(
-    name = "x86_64-linux-gnu",
-    constraint_values = ["@platforms//cpu:x86_64"],
-)
-
 cc_library(
     name = "libsoup",
     hdrs = glob([
