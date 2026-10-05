@@ -230,6 +230,9 @@ To understand and edit `config_infer_primary.txt` file, read the [DeepStream Plu
   locations must stay within the model directory. Builds are locked across
   HStream processes until inference initialization completes. The runner logs the resolved cache
   path and whether an engine already exists there.
+  Runtime YAML filenames include a digest of their final contents. Runs that share
+  an engine but use different staged parser paths keep separate configs, so starting
+  playback cannot change an active player scan's detector configuration.
 
   An existing explicitly configured engine is preserved. BF16 engines still
   require offline preparation with a matching TensorRT SDK. INT8 can use

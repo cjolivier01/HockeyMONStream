@@ -38,6 +38,9 @@ struct StoredStitchingExperiment {
   std::string baseline_workspace_key;
   std::string selection_owner_workspace_key;
   std::string saved_selection_fingerprint;
+  // SHA-256 of the source config snapshot copied when this row was prepared.
+  // Legacy rows leave this empty and cannot authorize a fresh baseline scan.
+  std::string source_config_revision;
   int scan_duration_seconds{60};
   bool requires_ice_mask{false};
   std::string failure;

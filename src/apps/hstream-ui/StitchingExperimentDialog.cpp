@@ -530,6 +530,9 @@ struct StitchingExperimentDialog::Impl {
     // Only additions made in this dialog suppress repeated Add requests. Saved
     // rows remain input owners, while a reopened matrix may intentionally rerun.
     QByteArray requested_config_revision;
+    // Unlike Add deduplication, source provenance survives reopening so a new
+    // player scan cannot borrow a baseline from different camera settings.
+    QByteArray source_config_revision;
   };
 
   StitchingExperimentDialog* dialog;
@@ -854,6 +857,7 @@ struct StitchingExperimentDialog::Impl {
       saved.baseline_sequence = candidate.baseline_sequence;
       saved.selection_owner_sequence = candidate.selection_owner_sequence;
       saved.saved_selection_fingerprint = candidate.saved_selection_fingerprint;
+      saved.source_config_revision = candidate.source_config_revision.toHex().toStdString();
       saved.scan_duration_seconds = candidate.scan_duration_seconds;
     }
     return saved;
@@ -888,83 +892,128 @@ struct StitchingExperimentDialog::Impl {
     const auto session_root = session->path().toStdString();
     const auto persistent = *store;
     std::map<int, std::string> workspace_keys;
+    std::map<int, std::pair<QByteArray, bool>> source_snapshots;
     for (const Candidate& candidate : candidates) {
-      if (candidate.workspace && candidate.stored)
+      if (candidate.workspace && candidate.stored) {
         workspace_keys[candidate.sequence] =
             candidate.workspace->game_directory.lexically_relative(persistent.directory).generic_string();
-    }
-    QThread* worker = QThread::create([result, source_game, session_root, persistent, workspace_keys]() mutable {
-      for (Candidate& candidate : result->rows) {
-        if (!result->status.ok()) {
-          candidate.failure = "Unavailable: an earlier queued workspace could not be prepared";
-          candidate.queued = false;
-          continue;
-        }
-        if ((candidate.baseline_sequence && !workspace_keys.count(candidate.baseline_sequence)) ||
-            (candidate.selection_owner_sequence && candidate.selection_owner_sequence != candidate.sequence &&
-             !workspace_keys.count(candidate.selection_owner_sequence))) {
-          result->status = absl::FailedPreconditionError("A queued candidate dependency was not durably prepared");
-          candidate.failure = QString::fromStdString(result->status.ToString());
-          candidate.queued = false;
-          continue;
-        }
-        auto workspace =
-            CreateStitchingExperimentWorkspace(source_game, session_root, candidate.settings, candidate.sequence);
-        if (!workspace.ok()) {
-          candidate.failure = QString::fromStdString(workspace.status().ToString());
-          candidate.queued = false;
-          result->status = workspace.status();
-          continue;
-        }
-        candidate.workspace = *workspace;
-        candidate.settings = workspace->settings;
-        // Add's earlier main lookup may race a config update before this copy.
-        // Bind both the queue expectation and catalog to the snapshot we own.
-        const auto fingerprint =
-            ReusableStitchingExperimentSelectionFingerprint(workspace->game_directory, candidate.settings);
-        if (!fingerprint.ok()) {
-          candidate.failure = QString::fromStdString(fingerprint.status().ToString());
-          candidate.queued = false;
-          result->status = fingerprint.status();
-          continue;
-        }
-        if (!candidate.saved_selection_fingerprint.empty() && *fingerprint != candidate.saved_selection_fingerprint) {
-          result->status =
-              absl::AbortedError("The saved frame selection changed while this candidate was being prepared");
-          candidate.failure = QString::fromStdString(result->status.ToString());
-          candidate.queued = false;
-          continue;
-        }
-        candidate.saved_selection_fingerprint = *fingerprint;
-        const auto workspace_key = workspace->game_directory.lexically_relative(persistent.directory).generic_string();
-        StoredStitchingExperiment record;
-        record.workspace = *workspace;
-        record.state = "queued";
-        record.sequence = candidate.sequence;
-        record.baseline_sequence = candidate.baseline_sequence;
-        record.selection_owner_sequence = candidate.selection_owner_sequence;
-        if (candidate.baseline_sequence)
-          record.baseline_workspace_key = workspace_keys.at(candidate.baseline_sequence);
-        if (candidate.selection_owner_sequence)
-          record.selection_owner_workspace_key = candidate.selection_owner_sequence == candidate.sequence
-              ? workspace_key
-              : workspace_keys.at(candidate.selection_owner_sequence);
-        record.saved_selection_fingerprint = candidate.saved_selection_fingerprint;
-        record.scan_duration_seconds = candidate.scan_duration_seconds;
-        record.requires_ice_mask = candidate.requires_ice_mask;
-        record.selection_fingerprint = candidate.saved_selection_fingerprint;
-        const auto saved = SaveStitchingExperiment(persistent, record);
-        if (!saved.ok()) {
-          candidate.failure = QString::fromStdString(saved.ToString());
-          candidate.queued = false;
-          result->status = saved;
-        } else {
-          candidate.has_selected_frames = !record.selection_fingerprint.empty();
-          candidate.stored = std::move(record);
-          workspace_keys[candidate.sequence] = workspace_key;
-        }
+        source_snapshots[candidate.sequence] = {candidate.source_config_revision, candidate.has_selected_frames};
       }
-    });
+    }
+    QThread* worker =
+        QThread::create([result, source_game, session_root, persistent, workspace_keys, source_snapshots]() mutable {
+          for (Candidate& candidate : result->rows) {
+            if (!result->status.ok()) {
+              candidate.failure = "Unavailable: an earlier queued workspace could not be prepared";
+              candidate.queued = false;
+              continue;
+            }
+            if ((candidate.baseline_sequence && !workspace_keys.count(candidate.baseline_sequence)) ||
+                (candidate.selection_owner_sequence && candidate.selection_owner_sequence != candidate.sequence &&
+                 !workspace_keys.count(candidate.selection_owner_sequence))) {
+              result->status = absl::FailedPreconditionError("A queued candidate dependency was not durably prepared");
+              candidate.failure = QString::fromStdString(result->status.ToString());
+              candidate.queued = false;
+              continue;
+            }
+            const auto workspace = [&]() -> absl::StatusOr<StitchingExperimentWorkspace> {
+              // Keep the revision and the backend's config read on one protected
+              // snapshot, then release the config lock before catalog publication.
+              auto lock = hm::stitching::GameConfigTransactionLock::Acquire(source_game);
+              if (!lock.ok())
+                return lock.status();
+              auto snapshot = hm::stitching::read_bounded_regular_file_no_follow(
+                  std::filesystem::path(source_game) / "config.yaml", 4 * 1024 * 1024, "source game config");
+              if (!snapshot.ok())
+                return snapshot.status();
+              candidate.source_config_revision =
+                  QCryptographicHash::hash(QByteArray::fromStdString(*snapshot), QCryptographicHash::Sha256);
+              try {
+                const YAML::Node config = YAML::Load(*snapshot);
+                const YAML::Node stitching = config["stitching"];
+                const YAML::Node selection = stitching && stitching.IsMap() ? stitching["calibration_frame_selection"]
+                                                                            : YAML::Node(YAML::NodeType::Undefined);
+                const bool copied_selection = selection && selection["selected"].IsSequence() &&
+                    selection["selected"].size() == static_cast<size_t>(candidate.settings.frame_count);
+                const bool frozen_owner = candidate.selection_owner_sequence &&
+                    candidate.selection_owner_sequence != candidate.sequence &&
+                    source_snapshots.at(candidate.selection_owner_sequence).second;
+                if (!copied_selection && !frozen_owner) {
+                  for (int dependency : {candidate.baseline_sequence, candidate.selection_owner_sequence}) {
+                    if (!dependency || dependency == candidate.sequence)
+                      continue;
+                    const auto& [revision, frozen] = source_snapshots.at(dependency);
+                    if (!frozen && (revision.isEmpty() || revision != candidate.source_config_revision))
+                      return absl::AbortedError(
+                          "Source game configuration changed since the queued player selection was prepared; "
+                          "run or remove that saved batch before adding candidates");
+                  }
+                }
+              } catch (const YAML::Exception& error) {
+                return absl::InvalidArgumentError("Invalid source game config: " + std::string(error.what()));
+              }
+              return CreateStitchingExperimentWorkspace(
+                  source_game, session_root, candidate.settings, candidate.sequence);
+            }();
+            if (!workspace.ok()) {
+              candidate.failure = QString::fromStdString(workspace.status().ToString());
+              candidate.queued = false;
+              result->status = workspace.status();
+              continue;
+            }
+            candidate.workspace = *workspace;
+            candidate.settings = workspace->settings;
+            // Add's earlier main lookup may race a config update before this copy.
+            // Bind both the queue expectation and catalog to the snapshot we own.
+            const auto fingerprint =
+                ReusableStitchingExperimentSelectionFingerprint(workspace->game_directory, candidate.settings);
+            if (!fingerprint.ok()) {
+              candidate.failure = QString::fromStdString(fingerprint.status().ToString());
+              candidate.queued = false;
+              result->status = fingerprint.status();
+              continue;
+            }
+            if (!candidate.saved_selection_fingerprint.empty() &&
+                *fingerprint != candidate.saved_selection_fingerprint) {
+              result->status =
+                  absl::AbortedError("The saved frame selection changed while this candidate was being prepared");
+              candidate.failure = QString::fromStdString(result->status.ToString());
+              candidate.queued = false;
+              continue;
+            }
+            candidate.saved_selection_fingerprint = *fingerprint;
+            const auto workspace_key =
+                workspace->game_directory.lexically_relative(persistent.directory).generic_string();
+            StoredStitchingExperiment record;
+            record.workspace = *workspace;
+            record.state = "queued";
+            record.sequence = candidate.sequence;
+            record.baseline_sequence = candidate.baseline_sequence;
+            record.selection_owner_sequence = candidate.selection_owner_sequence;
+            if (candidate.baseline_sequence)
+              record.baseline_workspace_key = workspace_keys.at(candidate.baseline_sequence);
+            if (candidate.selection_owner_sequence)
+              record.selection_owner_workspace_key = candidate.selection_owner_sequence == candidate.sequence
+                  ? workspace_key
+                  : workspace_keys.at(candidate.selection_owner_sequence);
+            record.saved_selection_fingerprint = candidate.saved_selection_fingerprint;
+            record.source_config_revision = candidate.source_config_revision.toHex().toStdString();
+            record.scan_duration_seconds = candidate.scan_duration_seconds;
+            record.requires_ice_mask = candidate.requires_ice_mask;
+            record.selection_fingerprint = candidate.saved_selection_fingerprint;
+            const auto saved = SaveStitchingExperiment(persistent, record);
+            if (!saved.ok()) {
+              candidate.failure = QString::fromStdString(saved.ToString());
+              candidate.queued = false;
+              result->status = saved;
+            } else {
+              candidate.has_selected_frames = !record.selection_fingerprint.empty();
+              candidate.stored = std::move(record);
+              workspace_keys[candidate.sequence] = workspace_key;
+              source_snapshots[candidate.sequence] = {candidate.source_config_revision, candidate.has_selected_frames};
+            }
+          }
+        });
     preparation_worker = worker;
     QObject::connect(worker, &QThread::finished, dialog, [this, worker, result, first_row]() {
       if (preparation_worker != worker)
@@ -1107,6 +1156,7 @@ struct StitchingExperimentDialog::Impl {
       candidate.queued = record.state == "queued";
       candidate.stored = record;
       candidate.saved_selection_fingerprint = record.saved_selection_fingerprint;
+      candidate.source_config_revision = QByteArray::fromHex(QByteArray::fromStdString(record.source_config_revision));
       candidate.scan_duration_seconds = record.scan_duration_seconds;
       candidate.baseline_sequence =
           record.baseline_workspace_key.empty() ? 0 : restored_sequences[record.baseline_workspace_key];
@@ -1117,10 +1167,11 @@ struct StitchingExperimentDialog::Impl {
       candidate.has_selected_frames = !record.selection_fingerprint.empty();
       candidate.failure = QString::fromStdString(record.failure);
       if (candidate.failure.startsWith("Unavailable: baseline calibration failed")) {
-        const auto baseline = std::find_if(catalog->experiments.begin(), catalog->experiments.end(), [&](const auto& row) {
-          return row.workspace.game_directory.lexically_relative(store->directory).generic_string() ==
-              record.baseline_workspace_key;
-        });
+        const auto baseline =
+            std::find_if(catalog->experiments.begin(), catalog->experiments.end(), [&](const auto& row) {
+              return row.workspace.game_directory.lexically_relative(store->directory).generic_string() ==
+                  record.baseline_workspace_key;
+            });
         if (baseline != catalog->experiments.end() && !baseline->failure.empty())
           candidate.failure = QString("Unavailable: baseline calibration failed (Baseline %1): %2")
                                   .arg(candidate.baseline_sequence)
@@ -1645,9 +1696,13 @@ struct StitchingExperimentDialog::Impl {
         candidate.selection_owner_sequence != candidate.sequence) {
       Candidate* owner = selection_owner_for(candidate);
       if (!owner || !owner->has_selected_frames || !owner->workspace || owner->selection_reuse_blocked) {
-        candidate.failure = "Unavailable: the shared frame selection was not safely frozen";
+        candidate.failure = "Unavailable: the shared frame selection could not be prepared";
+        if (owner && !owner->failure.isEmpty())
+          candidate.failure += QString(" (Players %1): %2").arg(owner->sequence).arg(owner->failure);
         (void)persist_candidate(candidate, "failed");
         table->item(candidate.row, 5)->setText(candidate.failure);
+        table->item(candidate.row, 5)->setToolTip(candidate.failure);
+        append_output_message(QString("Candidate %1: %2\n").arg(candidate.sequence).arg(candidate.failure));
         QTimer::singleShot(0, dialog, [this]() { launch_next_candidate(); });
         return;
       }
@@ -1990,6 +2045,7 @@ struct StitchingExperimentDialog::Impl {
     std::vector<Candidate> additions;
     const auto append_addition = [&](Candidate candidate) {
       candidate.requested_config_revision = config_revision;
+      candidate.source_config_revision = config_revision;
       additions.push_back(std::move(candidate));
     };
     std::set<int> required_baselines;
@@ -2042,6 +2098,14 @@ struct StitchingExperimentDialog::Impl {
               show_status("This frame count is unavailable: " + owner->failure, true);
               return;
             }
+            if (saved->empty() && owner && !owner->has_selected_frames &&
+                (owner->source_config_revision.isEmpty() || owner->source_config_revision != config_revision)) {
+              show_status(
+                  "The queued player selection has different or unverified source settings. "
+                  "Run or remove its saved batch before adding candidates.",
+                  true);
+              return;
+            }
             const Candidate* same_count = owner ? owner : find([&](const Candidate& item) {
               return item.settings.frame_count == frame_count && !item.main_calibration && item.queued;
             });
@@ -2084,7 +2148,10 @@ struct StitchingExperimentDialog::Impl {
               const Candidate* baseline = find([&](const Candidate& item) {
                 return !item.main_calibration && (item.queued || (item.complete && item.requires_ice_mask)) &&
                     item.settings.frame_count == frame_count && item.selection_owner_sequence == 0 &&
-                    item.saved_selection_fingerprint.empty();
+                    item.saved_selection_fingerprint.empty() && !item.source_config_revision.isEmpty() &&
+                    item.source_config_revision == config_revision &&
+                    hm::stitch_frame_time_to_nanoseconds(item.settings.stitch_frame_time) ==
+                    hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time);
               });
               const int baseline_sequence = baseline ? baseline->sequence : ++sequence;
               if (!baseline)

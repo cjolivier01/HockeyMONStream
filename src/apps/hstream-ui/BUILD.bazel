@@ -455,6 +455,7 @@ cc_test(
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:player_frame_input_store",
         "//src/libs/stitching:player_frame_selection",
         "//src/libs/stitching:stitching",
         "@opencv_linux//:opencv",

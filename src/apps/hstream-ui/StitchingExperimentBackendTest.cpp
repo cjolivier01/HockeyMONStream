@@ -5,6 +5,7 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
@@ -182,6 +183,145 @@ bool durable_workspace_publication(const fs::path& root) {
   ok &= expect(
       !duplicate.ok() && absl::IsAlreadyExists(duplicate.status()), "initial workspace creation must remain exclusive");
   return ok;
+}
+
+bool in_game_input_aliases(const fs::path& root) {
+  using namespace hm::stitching;
+  const fs::path game = root / "alias-game";
+  const fs::path experiments = root / "alias-experiments";
+  constexpr const char* kCamera =
+      R"({"width":7680,"height":4320,"fx":4975.75,"fy":4983.25,"cx":3824.5,"cy":2173.5,"d":[0.217,0.103,0.205,0.112]})";
+  if (!write(game / "recordings" / "left-source.mp4", "left recording") ||
+      !write(game / "recordings" / "right-source.mp4", "right recording") ||
+      !write(
+          game / "profiles" / "calibration.json",
+          std::string("{\"left_uniforms\":") + kCamera + ",\"right_uniforms\":" + kCamera + "}") ||
+      !write(
+          game / "config.yaml",
+          "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n"
+          "  stitching:\n    frame_offsets: {left: 0, right: 0}\n"
+          "stitching:\n  stitch_frame_time: '00:00:08'\n"))
+    return false;
+  fs::create_symlink("recordings/left-source.mp4", game / "left.mp4");
+  fs::create_symlink("recordings/right-source.mp4", game / "right.mp4");
+  fs::create_symlink("profiles/calibration.json", game / "left_calibration.json");
+  const StitchingExperimentSettings settings{100, 2, "00:00:08", std::nullopt};
+  const auto ordinary = CreateStitchingExperimentWorkspace(game, experiments, settings, 1);
+  if (!expect(ordinary.ok(), "in-game media and calibration aliases must be supported"))
+    return false;
+  const auto original_lens = load_akaze_matching_calibration(game);
+  const auto candidate_lens = load_akaze_matching_calibration(ordinary->game_directory);
+  if (!expect(
+          original_lens.ok() && candidate_lens.ok() && candidate_lens->left && candidate_lens->right &&
+              original_lens->source_profile_fingerprint == candidate_lens->source_profile_fingerprint,
+          "an aliased left_calibration.json must retain the same AKAZE lens model in the candidate") ||
+      !expect(
+          fs::is_symlink(ordinary->game_directory / "left.mp4") &&
+              fs::read_symlink(ordinary->game_directory / "left.mp4") == fs::canonical(game / "left.mp4"),
+          "a private media link must preserve its alias name and point directly at the original file"))
+    return false;
+
+  YAML::Node config = YAML::LoadFile((game / "config.yaml").string());
+  YAML::Node absolute_config = YAML::Clone(config);
+  absolute_config["game"]["videos"]["left"][0] = (game / "left.mp4").string();
+  absolute_config["game"]["videos"]["right"][0] = (game / "right.mp4").string();
+  const fs::path game_alias = root / "alias-game-directory";
+  fs::create_directory_symlink(game, game_alias);
+  if (!write(game / "config.yaml", YAML::Dump(absolute_config)))
+    return false;
+  const auto directory_alias = CreateStitchingExperimentWorkspace(game_alias, experiments, settings, 1);
+  if (!expect(
+          directory_alias.ok() && fs::is_symlink(directory_alias->game_directory / "left.mp4"),
+          "physical absolute input names must remain usable when the selected game directory is an alias"))
+    return false;
+  if (!write(game / "config.yaml", YAML::Dump(config)))
+    return false;
+  const auto context = player_frame_source_context(config, 8 * kPlayerFrameSecond);
+  if (!context.ok())
+    return false;
+  PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 2;
+  plan.context = {
+      {"source_context", *context},
+      {"baseline_generation", "fixture"},
+      {"output_generation", "fixture"},
+      {"detector_identity", "fixture"},
+      {"rink_mask_sha256", "fixture"},
+      {"rink_mask_revision", "fixture"},
+      {"fieldmask_settings", "fixture"},
+      {"output_rotation_degrees", "0"},
+      {"decode_anchor_ns", "8000000000"}};
+  for (const char* filename : {"left.mp4", "right.mp4"}) {
+    const auto source = BindPlayerFrameSource(game / filename);
+    if (!source.ok())
+      return false;
+    plan.sources.push_back(*source);
+  }
+  for (uint64_t index = 0; index < 2; ++index) {
+    PlayerFrameObservation frame;
+    frame.pair.timeline_pts_ns = index * kPlayerFrameSecond;
+    for (size_t camera = 0; camera < 2; ++camera)
+      frame.pair.cameras[camera] = {plan.sources[camera].path, (8 + index) * kPlayerFrameSecond};
+    frame.coverage = {5};
+    frame.eligible_people = 1;
+    frame.size_band_counts = {1, 0, 0};
+    frame.quality = 1;
+    plan.selected.push_back(frame);
+  }
+  const auto fingerprint = PlayerFrameSelectionFingerprint(plan);
+  if (!fingerprint.ok())
+    return false;
+  plan.fingerprint = *fingerprint;
+  const fs::path png = game / "input.png";
+  if (!cv::imwrite(png.string(), cv::Mat(8, 8, CV_8UC3, cv::Scalar(1, 2, 3))) ||
+      !PublishPlayerFrameInputs(game, plan, {{{png, png}}, {{png, png}}}).ok())
+    return false;
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
+  if (!write(game / "config.yaml", YAML::Dump(config)))
+    return false;
+  const auto selected = CreateStitchingExperimentWorkspace(game, experiments, settings, 2);
+  if (!expect(selected.ok(), "workspace localization must not change a frozen alias playlist"))
+    return false;
+  const auto copied_inputs = LoadPlayerFrameInputs(selected->game_directory, plan);
+  const auto promoted =
+      BuildStitchingExperimentSelectionConfig(selected->game_directory / "config.yaml", game / "config.yaml");
+  if (!expect(
+          copied_inputs.ok() && copied_inputs->has_value() && promoted.ok() &&
+              validate_player_frame_selection_sources(YAML::Load(*promoted)).ok(),
+          "alias-bound selected inputs must copy and promote without changing their frozen context"))
+    return false;
+  const auto clone = CreateStitchingExperimentEditableCopy(*selected, experiments, 3);
+  if (!expect(
+          clone.ok() && fs::is_symlink(clone->game_directory / "left_calibration.json"),
+          "editable copies must keep the localized sidecar alias"))
+    return false;
+
+  fs::remove(game / "left_calibration.json");
+  fs::create_symlink("config.yaml", game / "left_calibration.json");
+  const auto reserved_sidecar = CreateStitchingExperimentWorkspace(game, experiments, settings, 4);
+  if (!expect(
+          !reserved_sidecar.ok() && absl::IsInvalidArgument(reserved_sidecar.status()),
+          "preserving sidecar aliases must not permit targets with reserved names"))
+    return false;
+  fs::remove(game / "left_calibration.json");
+  fs::create_symlink("profiles/calibration.json", game / "left_calibration.json");
+  fs::remove(game / "left.mp4");
+  fs::create_symlink("config.yaml", game / "left.mp4");
+  const auto nonvideo = CreateStitchingExperimentWorkspace(game, experiments, settings, 5);
+  if (!expect(
+          !nonvideo.ok() && absl::IsInvalidArgument(nonvideo.status()),
+          "preserving media aliases must not permit targets with non-video names"))
+    return false;
+  fs::remove(game / "left.mp4");
+  fs::create_symlink("recordings/left-source.mp4", game / "left.mp4");
+  config["game"]["videos"]["left"][0] = "recordings/../left.mp4";
+  if (!write(game / "config.yaml", YAML::Dump(config)))
+    return false;
+  const auto traversal = CreateStitchingExperimentWorkspace(game, experiments, settings, 6);
+  return expect(
+      !traversal.ok() && absl::IsInvalidArgument(traversal.status()),
+      "input localization must reject traversal rather than change its meaning across directory links");
 }
 
 bool ordinary_frame_inspection(const StitchingExperimentWorkspace& workspace) {
@@ -1042,6 +1182,7 @@ int main() {
   ok &= expect(experiment_generated_backend_choices(root), "experiment generated choices must restore saved intent");
   ok &= expect(experiment_resolutions(root), "experiment image sizes must persist and promote independently");
   ok &= expect(durable_workspace_publication(root), "queued workspaces must be durable before catalog publication");
+  ok &= expect(in_game_input_aliases(root), "in-game input aliases must preserve calibration and selected frames");
   ok &= expect(ordinary_frame_inspection(*workspace), "ordinary calibration inspection must remain bound to its row");
   ok &= expect(inherited_camera_handoff(root), "candidate handoff must freeze inherited baseline camera and FOV");
   ok &= expect(

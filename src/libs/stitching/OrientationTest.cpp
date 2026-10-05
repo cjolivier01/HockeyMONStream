@@ -79,6 +79,30 @@ int main() {
     }
     fs::remove_all(lr_root, error);
 
+    const fs::path media_root = std::string(created) + "-media";
+    const fs::path experiment_root = media_root / "stitching-experiments" / "candidate";
+    touch(media_root / "GX010082.MP4");
+    touch(media_root / "GX020082.MP4");
+    touch(media_root / "cam2" / "right.mp4");
+    fs::create_directories(experiment_root / "cam2");
+    for (const fs::path& relative : {fs::path("GX010082.MP4"), fs::path("GX020082.MP4"), fs::path("cam2/right.mp4")})
+      fs::create_symlink(media_root / relative, experiment_root / relative);
+    const auto linked_save = hm::stitching::orientation_internal::save_orientation_config(
+        experiment_root,
+        {{1, (experiment_root / "GX010082.MP4").string()}, {2, (experiment_root / "GX020082.MP4").string()}},
+        {{1, (experiment_root / "cam2" / "right.mp4").string()}},
+        "");
+    ok &= expect(linked_save.ok(), "linked experiment orientation must save");
+    if (linked_save.ok()) {
+      const auto linked = YAML::LoadFile((experiment_root / "config.yaml").string());
+      ok &= expect(
+          linked["game"]["videos"]["left"][0].as<std::string>() == "GX010082.MP4" &&
+              linked["game"]["videos"]["left"][1].as<std::string>() == "GX020082.MP4" &&
+              linked["game"]["videos"]["right"][0].as<std::string>() == "cam2/right.mp4",
+          "orientation must retain local media links and chapter order instead of escaping to their targets");
+    }
+    fs::remove_all(media_root, error);
+
     const fs::path completed_root = std::string(created) + "-completed-owner";
     fs::create_directories(completed_root / "cam1");
     fs::create_directories(completed_root / "cam2");

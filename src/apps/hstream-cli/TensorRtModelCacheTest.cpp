@@ -489,6 +489,11 @@ int main(int argc, char** argv) {
       prepare_cache(second_loader_pipeline, configs).ok(),
       "the same parser staged for a second launch must prepare successfully");
   const fs::path second_loader_runtime = second_loader_pipeline["primary-gie"]["config-file"].as<std::string>();
+  ok &= expect(
+      second_loader_runtime != loader_runtime &&
+          YAML::LoadFile(loader_runtime.string())["property"]["custom-lib-path"].as<std::string>() ==
+              staged_yolo.string(),
+      "a second launch must not overwrite the first runner's detector config or parser identity");
   if (fs::is_regular_file(second_loader_runtime)) {
     const YAML::Node second_loader_cached = YAML::LoadFile(second_loader_runtime.string());
     ok &= expect(

@@ -611,6 +611,7 @@ bool run(const fs::path& root) {
   ok &= expect(alias.ok() && alias->directory == store.directory, "a game alias resolves to the same owned store");
 
   auto ordinary = make_record(store, "session-a", 1);
+  ordinary.source_config_revision = std::string(64, 'a');
   ordinary.state = "complete";
   ordinary.artifact_generation_id = "ordinary-artifact-generation";
   ok &=
@@ -636,6 +637,14 @@ bool run(const fs::path& root) {
       restored->experiments[0].artifact_generation_id == ordinary.artifact_generation_id &&
           restored->experiments[0].failure == ordinary.failure,
       "restored rows retain artifact identity and failure diagnostics");
+  ok &= expect(
+      restored->experiments[0].source_config_revision == ordinary.source_config_revision &&
+          restored->experiments[1].source_config_revision.empty(),
+      "source snapshot revisions survive reopening while legacy rows remain readable");
+  auto changed_source = ordinary;
+  changed_source.source_config_revision = std::string(64, 'b');
+  ok &= expect(
+      !SaveStitchingExperiment(store, changed_source).ok(), "saved source snapshot provenance cannot be replaced");
 
   auto owner = make_record(store, "session-a", 2);
   owner.baseline_sequence = 1;
@@ -825,6 +834,12 @@ bool run(const fs::path& root) {
   invalid = YAML::Load(valid_index);
   invalid["version"] = 99;
   ok &= invalid_index(YAML::Dump(invalid), "unknown catalog versions fail explicitly");
+  invalid = YAML::Load(valid_index);
+  invalid["experiments"][0]["source_config_revision"] = std::string(64, 'z');
+  ok &= invalid_index(YAML::Dump(invalid), "source config revisions require a SHA-256 hex digest");
+  invalid = YAML::Load(valid_index);
+  invalid["experiments"][0]["source_config_revision"] = std::string(65, 'a');
+  ok &= invalid_index(YAML::Dump(invalid), "source config revisions have a bounded length");
   invalid = YAML::Load(valid_index);
   while (invalid["experiments"].size() <= kMaximumStoredStitchingExperiments)
     invalid["experiments"].push_back(YAML::Clone(invalid["experiments"][0]));
