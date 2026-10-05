@@ -28,8 +28,20 @@ is not yet GPU-free or download-free end to end.
 
 AKAZE is the default on match quality, not just on packaging: across thousands
 of real stitching matches on rink footage, SuperPoint + LightGlue produced
-worse alignments than AKAZE. The synthetic coverage in this repo does not
-reflect that, so do not infer the ordering from the tests or from the fact that
+worse alignments than AKAZE. On one saved 7680 × 4320 rink pair, both backends
+on the CPU provider:
+
+| Matcher | Accepted matches | Time |
+| --- | --- | --- |
+| `akaze-hamming` | 594 | 0.28 s |
+| `superpoint-lightglue` at `2k` | 417 | 1.92 s |
+
+Reproduce with
+`HM_SUPERPOINT_SMOKE_GAME_DIR=/path/to/game HM_MATCHER_SMOKE_NAME=akaze-hamming`
+against `//src/libs/stitching:native_model_smoke_test`, which prints accepted
+and selected counts for whichever backend is selected. The synthetic fixtures
+in this repo are zero-parallax self-crops and say nothing about relative
+quality, so do not infer the ordering from the tests or from the fact that
 SuperPoint is the learned backend. Change the default only against measured
 results on real footage.
 
