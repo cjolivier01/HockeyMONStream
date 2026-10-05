@@ -33,14 +33,26 @@ gst_cc_plugin(
         "-Wno-error=write-strings",
         "-DIN_GSTVIDEOPREP_PLUGIN=1",
     ],
+    # The DeepStream search path has to precede the default linker paths.
+    # Older NVIDIA packages (nvv4l2 7.1.0, for one) drop CUDA 12 copies of
+    # libnvbufsurface.so and libnvbufsurftransform.so into /usr/lib/<triple>,
+    # which would otherwise win over the installed SDK. CUDA stays first so
+    # libnppig.so still comes from the toolkit.
     linkopts = select({
-        ":jetson": ["-L/opt/jetson-sysroot/usr/local/cuda/targets/aarch64-linux/lib"],
+        ":jetson": [
+            "-L/opt/jetson-sysroot/usr/local/cuda/targets/aarch64-linux/lib",
+            "-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib",
+        ],
         ":arm64-sbsa": [
             "-L/usr/local/cuda/targets/sbsa-linux/lib",
             "-L/usr/local/cuda/targets/aarch64-linux/lib",
             "-L/usr/local/cuda/lib64",
+            "-L/opt/nvidia/deepstream/deepstream/lib",
         ],
-        "//conditions:default": ["-L/usr/local/cuda/targets/x86_64-linux/lib"],
+        "//conditions:default": [
+            "-L/usr/local/cuda/targets/x86_64-linux/lib",
+            "-L/opt/nvidia/deepstream/deepstream/lib",
+        ],
     }) + [
         "-l:libnppig.so",
         "-lnppc_static",

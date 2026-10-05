@@ -2,6 +2,11 @@ load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 package(default_visibility = ["//visibility:public"])
 
+config_setting(
+    name = "jetson",
+    values = {"define": "target_platform=jetson"},
+)
+
 gst_cc_plugin(
     name = "gstdsxvideoconvert",
     srcs = [
@@ -19,7 +24,14 @@ gst_cc_plugin(
         "-Wextra",
         "-Werror",
     ],
-    linkopts = [
+    # Search DeepStream's own lib directory first. Older NVIDIA packages
+    # (nvv4l2 7.1.0, for one) drop CUDA 12 copies of libnvbufsurface.so and
+    # libnvbufsurftransform.so into /usr/lib/<triple>, which is a default
+    # linker path and would otherwise win over the installed SDK.
+    linkopts = select({
+        ":jetson": ["-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib"],
+        "//conditions:default": ["-L/opt/nvidia/deepstream/deepstream/lib"],
+    }) + [
         "-Wl,--version-script=$(location exports.map)",
         "-l:libnvdsbufferpool.so",
         "-l:libnvbufsurface.so",

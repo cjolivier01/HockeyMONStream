@@ -175,10 +175,13 @@ install_tensorrt_10() {
   sudo apt-get install -y --allow-downgrades "${pinned[@]}" || return 1
 
   # The unversioned /usr development links must now resolve to TensorRT 10.
-  dpkg-query -W -f='${binary:Package} ${Version}\n' 2>/dev/null |
-    awk '$1 ~ /^(tensorrt|libnvinfer|libnvonnxparsers)/ && $1 ~ /-dev$/ && $2 !~ /^10[.]/ {
+  # dpkg-query still reports packages that were removed without being purged,
+  # so skip anything that is no longer installed.
+  dpkg-query -W -f='${db:Status-Status} ${binary:Package} ${Version}\n' 2>/dev/null |
+    awk '$1 == "installed" && $2 ~ /^(tensorrt|libnvinfer|libnvonnxparsers)/ &&
+         $2 ~ /-dev$/ && $3 !~ /^10[.]/ {
            bad = 1
-           print "Unexpected TensorRT development package: " $0 > "/dev/stderr"
+           print "Unexpected TensorRT development package: " $2 " " $3 > "/dev/stderr"
          }
          END { exit bad }'
 }
