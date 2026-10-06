@@ -240,11 +240,8 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
   }
 }
 
-hm::stitching::ControlPointMatcher feature_matcher(const YAML::Node& config) {
-  const YAML::Node stitching = config["stitching"];
-  const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_matcher"] : YAML::Node();
-  const auto matcher = hm::stitching::ParseControlPointMatcher(
-      value && !value.IsNull() ? value.as<std::string>() : "superpoint-lightglue");
+hm::stitching::ControlPointMatcher feature_matcher(const YAML::Node& config, const YAML::Node& baseline = {}) {
+  const auto matcher = hm::stitching::resolve_control_point_matcher(config, baseline);
   if (!matcher.ok())
     throw std::runtime_error(matcher.status().ToString());
   return *matcher;
@@ -3237,7 +3234,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     const auto resolution = hm::stitching::read_control_point_resolution(effective);
     if (!resolution.ok())
       throw std::runtime_error(resolution.status().ToString());
-    const auto matcher = feature_matcher(effective);
+    // Prefer the baseline this dialog resolved from the candidate's
+    // HM_CONFIG_ROOT over the process baseline.
+    const auto matcher = feature_matcher(effective, baseline->values);
     const QString size = hm::stitching::ControlPointResolutionName(*resolution);
     const QString matcher_name = hm::stitching::ControlPointMatcherName(matcher);
     s.control_point_matcher->setCurrentIndex(s.control_point_matcher->findData(matcher_name));

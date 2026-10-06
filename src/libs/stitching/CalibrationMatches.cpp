@@ -1,5 +1,7 @@
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 
+#include "hstream/src/libs/stitching/GameConfig.h"
+
 #include <fcntl.h>
 #include <linux/fs.h>
 #include <openssl/evp.h>
@@ -562,10 +564,7 @@ absl::Status ValidateCalibrationMatchInputs(
     return absl::FailedPreconditionError(
         "Edited matches belong to different camera sources, synchronization, reference time or frame count; create a new automatic candidate");
   try {
-    const auto configured_matcher = optional_child(optional_child(config, "stitching"), "control_point_matcher");
-    auto matcher = ParseControlPointMatcher(
-        configured_matcher && !configured_matcher.IsNull() ? configured_matcher.as<std::string>()
-                                                           : "superpoint-lightglue");
+    auto matcher = resolve_control_point_matcher(config);
     if (!matcher.ok())
       return matcher.status();
     if (*matcher != set.matcher)

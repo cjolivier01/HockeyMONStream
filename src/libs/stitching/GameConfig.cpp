@@ -1079,6 +1079,49 @@ absl::StatusOr<bool> materialize_rink_mask_frame_time(YAML::Node& config, const 
   return YAML::Dump(config) != before;
 }
 
+absl::StatusOr<ControlPointMatcher> resolve_control_point_matcher(
+    const YAML::Node& config,
+    const YAML::Node& baseline) {
+  // Returns the scalar this layer declares, or nullopt when it inherits one.
+  const auto declared = [](const YAML::Node& root) -> absl::StatusOr<std::optional<std::string>> {
+    const YAML::Node stitching = root && root.IsMap() ? root["stitching"] : YAML::Node();
+    const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_matcher"] : YAML::Node();
+    if (!value || value.IsNull())
+      return std::optional<std::string>();
+    if (!value.IsScalar())
+      return absl::InvalidArgumentError("stitching.control_point_matcher must be a scalar value");
+    return std::optional<std::string>(value.as<std::string>());
+  };
+  const auto name_or_error = [](const std::optional<std::string>& inherited,
+                                const std::string& source) -> absl::StatusOr<ControlPointMatcher> {
+    if (!inherited.has_value())
+      return absl::InvalidArgumentError("stitching.control_point_matcher is not set; " + source + " must define it");
+    return ParseControlPointMatcher(*inherited);
+  };
+  try {
+    std::optional<std::string> configured;
+    HM_ASSIGN_OR_RETURN(configured, declared(config));
+    if (configured.has_value())
+      return ParseControlPointMatcher(*configured);
+    // A caller may hold a bare overlay that inherits the matcher. Resolve it
+    // from the baseline document rather than from a compiled-in default, so the
+    // shipped configuration stays the single source of truth.
+    if (baseline && baseline.IsMap()) {
+      std::optional<std::string> supplied;
+      HM_ASSIGN_OR_RETURN(supplied, declared(baseline));
+      return name_or_error(supplied, "the supplied baseline configuration");
+    }
+    const auto loaded = hm::baseline_config::load();
+    if (!loaded.ok())
+      return loaded.status();
+    std::optional<std::string> inherited;
+    HM_ASSIGN_OR_RETURN(inherited, declared(loaded->values));
+    return name_or_error(inherited, loaded->path.string());
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read control-point matcher: " + std::string(exception.what()));
+  }
+}
+
 absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML::Node& config) {
   try {
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();

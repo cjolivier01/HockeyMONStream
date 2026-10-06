@@ -172,9 +172,13 @@ stitching:
   control_points:
     m_kpts0: null
     m_kpts1: null
-  control_point_matcher: "superpoint-lightglue"
-  # SuperPoint defaults to 2k on every platform; auto also resolves to 2k. Native and 1k remain explicit choices.
-  # Other matchers retain their fixed processing sizes.
+  # Required: there is no compiled-in default, so removing this key is an error.
+  # AKAZE needs no model asset, runs on CPU, and aligns rink footage better than
+  # SuperPoint + LightGlue in practice. Neural matchers remain explicit choices.
+  control_point_matcher: "akaze-hamming"
+  # Applies only to SuperPoint, which defaults to 2k on every platform; auto also
+  # resolves to 2k. Native and 1k remain explicit choices. Other matchers,
+  # including the default AKAZE, retain their fixed processing sizes.
   control_point_resolution: "2k"
   # Neural control-point matchers: cuda (default) or cpu. No automatic CPU fallback.
   control_point_execution_provider: "cuda"

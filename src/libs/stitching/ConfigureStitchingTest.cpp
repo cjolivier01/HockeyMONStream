@@ -723,6 +723,9 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   config["stitching"]["mapping_backend"] = "nona";
   config["stitching"]["projection"] = "cylindrical";
   config["stitching"]["control_point_resolution"] = "native";
+  // Pin the matcher these synthetic provenance fixtures record, so this case
+  // keeps exercising mapping changes rather than the shipped baseline default.
+  config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
     return false;
   if (!expect_configured(dir, false, "legacy provenance must not mask a selected projection"))
@@ -762,6 +765,11 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
     return false;
 
   YAML::Node fov_only_config;
+  // Pin both algorithm settings the recorded provenance carries. Either one
+  // left to inherit short-circuits compatibility on its own check before the
+  // camera FOV comparison this case exists to prove is ever reached.
+  fov_only_config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  fov_only_config["stitching"]["control_point_resolution"] = "native";
   fov_only_config["stitching"]["camera_fov"]["horizontal_fov"] = 109.0;
   if (!write_text_file(dir / "config.yaml", YAML::Dump(fov_only_config) + "\n") ||
       !expect_configured(dir, false, "a game-private source FOV-only override must invalidate existing maps")) {
@@ -2436,6 +2444,9 @@ bool expect_unreliable_load_preserves_player_plan_validation(const fs::path& tmp
   config["stitching"]["mapping_backend"] = "nona";
   config["stitching"]["projection"] = "equirectangular";
   config["stitching"]["control_point_resolution"] = "native";
+  // Match the matcher these synthetic provenance fixtures record, so the case
+  // keeps exercising player-plan validation rather than the baseline default.
+  config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   const std::string selected_config = YAML::Dump(config) + "\n";
   if (!write_player_frame_canvas_provenance(directory, plan.fingerprint) ||

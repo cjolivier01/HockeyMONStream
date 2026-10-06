@@ -4929,15 +4929,10 @@ void HStreamWindow::loadBaselineDefaults() {
     throw std::invalid_argument(resolution.status().ToString());
   default_control_point_resolution_ = hm::stitching::ControlPointResolutionName(*resolution);
   control_point_resolution_ = default_control_point_resolution_;
-  YAML::Node control_point_matcher;
-  if (lookup_yaml_path(baseline_config_, "stitching.control_point_matcher", &control_point_matcher) &&
-      control_point_matcher.IsScalar()) {
-    const QString configured = QString::fromStdString(control_point_matcher.as<std::string>());
-    const auto canonical = canonical_control_point_matcher_choice(configured);
-    if (canonical.has_value()) {
-      default_control_point_matcher_ = *canonical;
-    }
-  }
+  const auto matcher = hm::stitching::resolve_control_point_matcher(baseline_config_);
+  if (!matcher.ok())
+    throw std::invalid_argument(matcher.status().ToString());
+  default_control_point_matcher_ = hm::stitching::ControlPointMatcherName(*matcher);
   YAML::Node mapping_backend;
   if (lookup_yaml_path(baseline_config_, "stitching.mapping_backend", &mapping_backend) && mapping_backend.IsScalar()) {
     const QString configured = QString::fromStdString(mapping_backend.as<std::string>());

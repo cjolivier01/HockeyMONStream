@@ -127,16 +127,10 @@ class PlayerModelPreparationSignals {
 };
 
 absl::StatusOr<hm::stitching::ControlPointMatcher> selected_stitching_matcher(const YAML::Node& config) {
-  std::string configured;
-  try {
-    configured = hm::get_node_value(config, "stitching.control_point_matcher", std::string("superpoint-lightglue"));
-  } catch (const std::exception& error) {
-    return absl::InvalidArgumentError(std::string("Invalid stitching.control_point_matcher setting: ") + error.what());
-  }
-  auto matcher = hm::stitching::ParseControlPointMatcher(configured);
-  if (!matcher.ok())
-    return matcher.status();
-  return *matcher;
+  // This decides which matcher asset is provisioned, so it must agree with the
+  // matcher calibration actually runs. configs/baseline.yaml owns the default;
+  // substituting one here would download a graph the run never loads.
+  return hm::stitching::resolve_control_point_matcher(config);
 }
 
 void emit_preview_protocol(const char* message) {

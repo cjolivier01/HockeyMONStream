@@ -41,7 +41,8 @@ configuration stay isolated. The dialog remains responsive during preparation; q
 Resolved camera playlists retain the workspace-local symlink names when orientation is saved, so a player scan's
 frozen chapter paths remain reusable by sibling candidates and after promotion.
 In-game media and calibration-file aliases also retain their local names when copied into a workspace, including
-the `left_calibration.json` and `right_calibration.json` names used for AKAZE lens calibration.
+the `left_calibration.json` name AKAZE reads for lens calibration. That one file carries both cameras as
+`left_uniforms` and `right_uniforms`; a `right_calibration.json` is copied if present but is never read.
 **Start batch** locks the queue and runs its candidates serially through
 `hstream-cli --stitching-calibration-only` with a fake sink, so the batch can be left unattended. This graph omits
 Program crop, inference, rink masking, and play tracking. Completed candidates remain available for comparison after

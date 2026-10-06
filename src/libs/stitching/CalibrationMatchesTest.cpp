@@ -1,5 +1,7 @@
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 
+#include "hstream/src/libs/stitching/GameConfig.h"
+
 #include <unistd.h>
 
 #include <cmath>
@@ -195,9 +197,13 @@ void metadata_and_bounds(const fs::path& game) {
   const auto minimal = YAML::Load("game: {videos: {left: [cam1.mp4], right: [cam2.mp4]}}");
   auto defaulted_set = set;
   defaulted_set.source_context = take(CalibrationMatchSourceContext(minimal, game));
+  // A layer that omits the matcher inherits the baseline rather than a
+  // compiled-in default. Resolve it instead of pinning a literal, so this case
+  // keeps asserting inheritance if the shipped default ever changes again.
+  defaulted_set.matcher = take(resolve_control_point_matcher(YAML::Node()));
   require(
       ValidateCalibrationMatchInputs(defaulted_set, minimal, game, 2).ok(),
-      "Absent optional stitching, anchor, matcher and offsets must use defaults");
+      "Absent optional stitching, anchor, matcher and offsets must inherit the baseline defaults");
   auto equivalent = YAML::Clone(minimal);
   equivalent["stitching"]["stitch_frame_time"] = "00:00:00";
   equivalent["game"]["stitching"]["frame_offsets"]["left"] = 0.0;

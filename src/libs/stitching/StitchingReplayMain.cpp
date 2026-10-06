@@ -1,3 +1,4 @@
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <cmath>
@@ -44,15 +45,22 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   // original PNGs and cannot consume the KB4 lens profile; a preset must not
   // hide this source coordinate-space distinction by changing its matcher.
   const auto provenance = checked(stitching::HuginProject::ReadCanvasProvenance(source, *lock));
-  const auto source_matcher = checked(
-      stitching::ParseControlPointMatcher(
-          (*source_config)["stitching"]["control_point_matcher"].as<std::string>("superpoint-lightglue")));
-  const bool rectified_provenance = provenance.has_value() && provenance->akaze_calibration_fingerprint.has_value() &&
-      provenance->akaze_calibration_fingerprint->rfind("sha256:", 0) == 0;
-  if (rectified_provenance ||
-      (source_matcher == stitching::ControlPointMatcher::kAkazeHamming && fs::exists(source / "left_calibration.json")))
+  const auto source_matcher = provenance && provenance->control_point_matcher
+      ? *provenance->control_point_matcher
+      : checked(stitching::resolve_control_point_matcher(*source_config));
+  // Provenance describes the saved points. Today's defaults and a profile
+  // added after calibration cannot change their original coordinate space.
+  // Supported versions 2–5 predate AKAZE and contain original-image points;
+  // version 6 introduced both calibrated AKAZE and its fingerprint metadata.
+  const bool rectified = provenance
+      ? provenance->akaze_calibration_fingerprint &&
+          provenance->akaze_calibration_fingerprint->rfind("sha256:", 0) == 0
+      : source_matcher == stitching::ControlPointMatcher::kAkazeHamming &&
+          fs::exists(source / "left_calibration.json");
+  if (rectified)
     throw std::runtime_error("Replay cannot use calibrated AKAZE rectified control points with Nona");
   auto config = YAML::Clone(*source_config);
+  config["stitching"]["control_point_matcher"] = stitching::ControlPointMatcherName(source_matcher);
   const auto overlay = YAML::LoadFile(preset.string());
   if (!overlay.IsMap())
     throw std::runtime_error("Preset must be a YAML map");
@@ -74,9 +82,7 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   stitching::HuginProject::Options options;
   options.mapping_backend = stitching::MappingBackend::kNona;
   options.run_autooptimizer = true;
-  options.control_point_matcher = checked(
-      stitching::ParseControlPointMatcher(
-          config["stitching"]["control_point_matcher"].as<std::string>("superpoint-lightglue")));
+  options.control_point_matcher = checked(stitching::resolve_control_point_matcher(config));
   options.projection = checked(stitching::ParseStitchProjection(config["stitching"]["projection"].as<std::string>()));
   options.projection_parameters = checked(stitching::read_stitch_projection_parameters(config, *options.projection));
   options.projection_framing = checked(stitching::read_stitch_projection_framing(config));

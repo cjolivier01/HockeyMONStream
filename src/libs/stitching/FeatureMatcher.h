@@ -79,7 +79,7 @@ class FeatureMatcher {
 
   static absl::StatusOr<std::unique_ptr<FeatureMatcher>> Create(
       const std::string& model_path,
-      ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue,
+      ControlPointMatcher matcher,
       AkazeMatchingCalibration akaze_calibration = {},
       ControlPointResolution resolution = DefaultControlPointResolution(),
       hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda,
@@ -160,6 +160,7 @@ class FeatureMatcher {
       const std::function<bool()>& is_cancelled) const;
 
   ControlPointResolution resolution_{DefaultControlPointResolution()};
+  // Always assigned by the constructor; not a default matcher.
   ControlPointMatcher matcher_{ControlPointMatcher::kSuperPointLightGlue};
   std::unique_ptr<hm::onnx::Session> session_;
   int input_channels_{0};

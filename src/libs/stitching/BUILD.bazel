@@ -308,8 +308,9 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto"],
   deps = [
-    ":feature_matcher",
     ":canvas_constraint_check",
+    ":feature_matcher",
+    ":game_config",
     ":transaction_state",
     "//src/libs/common:status",
     "//src/libs/common:utils",
@@ -391,7 +392,8 @@ cc_library(
 cc_binary(
   name = "stitching-replay",
   srcs = ["StitchingReplayMain.cpp"],
-  deps = [":hugin_project"],
+  deps = [
+    ":game_config",":hugin_project"],
 )
 
 sh_test(
@@ -464,8 +466,10 @@ cc_test(
     "HM_REQUIRE_ONNX_MODEL_TESTS",
     "HM_RINK_ONNX_MODEL",
     "HM_RINK_SMOKE_IMAGE",
+    "HM_MATCHER_SMOKE_PROFILE_DIR",
     "HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL",
     "HM_SUPERPOINT_SMOKE_GAME_DIR",
+    "HM_SUPERPOINT_SMOKE_RESOLUTION",
     "HOME",
   ],
   deps = [
@@ -778,7 +782,8 @@ cc_library(
 cc_test(
   name = "stitching_reframe_test",
   srcs = ["StitchingReframeTest.cpp"],
-  deps = [":stitching_reframe"],
+  deps = [
+    ":game_config",":stitching_reframe"],
 )
 
 cc_library(
@@ -800,6 +805,7 @@ cc_test(
   name = "calibration_matches_test",
   srcs = ["CalibrationMatchesTest.cpp"],
   deps = [
+    ":game_config",
     ":calibration_matches",
     "@opencv_linux//:opencv",
   ],

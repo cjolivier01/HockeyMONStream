@@ -906,7 +906,8 @@ class HStreamWindow : public QMainWindow {
   int default_stitch_max_output_width_{0};
   bool default_run_autooptimizer_{true};
   QString default_control_point_resolution_{"native"};
-  QString default_control_point_matcher_{"superpoint-lightglue"};
+  // Seeded from the resolved baseline; configs/baseline.yaml owns the default.
+  QString default_control_point_matcher_;
   QString default_mapping_backend_{"nona"};
   std::vector<hm::stitching::StitchCameraConfiguration> camera_configurations_;
   hm::stitching::StitchCameraSelection default_camera_selection_;
