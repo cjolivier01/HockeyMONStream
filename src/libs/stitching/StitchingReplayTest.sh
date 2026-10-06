@@ -104,3 +104,26 @@ for matcher in superpoint-lightglue akaze-hamming; do
     grep -q "control_point_matcher: $expected_matcher" "$output/config.yaml"
   done
 done
+
+# Versions 2–5 predate AKAZE metadata and describe original-image points too.
+# Their missing fingerprint must not revive the current-default/profile guess.
+for version in 2 3 4 5; do
+  case "$version" in
+    2) lines=9 ;;
+    3) lines=11 ;;
+    4) lines=12 ;;
+    5) lines=16 ;;
+  esac
+  head -n "$lines" "$fixture/source/stitching_canvas_provenance" |
+    sed -e "s/^version=.*/version=$version/" -e 's/^mapping-backend=.*/mapping-backend=nona/' \
+      > "$fixture/count-source/stitching_canvas_provenance"
+  for preset in count-preset preset; do
+    output="$fixture/legacy-$version-$preset"
+    if "$replay" "$fixture/count-source" "$output" "$fixture/$preset.yaml" > "$fixture/legacy-log" 2>&1; then
+      echo 'Replay unexpectedly succeeded without camera images' >&2
+      exit 1
+    fi
+    grep -q 'left.png' "$fixture/legacy-log"
+    test -f "$output/config.yaml"
+  done
+done

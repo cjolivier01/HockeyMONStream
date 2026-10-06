@@ -50,9 +50,11 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
       : checked(stitching::resolve_control_point_matcher(*source_config));
   // Provenance describes the saved points. Today's defaults and a profile
   // added after calibration cannot change their original coordinate space.
-  const bool has_calibration_provenance = provenance && provenance->akaze_calibration_fingerprint.has_value();
-  const bool rectified = has_calibration_provenance
-      ? provenance->akaze_calibration_fingerprint->rfind("sha256:", 0) == 0
+  // Supported versions 2–5 predate AKAZE and contain original-image points;
+  // version 6 introduced both calibrated AKAZE and its fingerprint metadata.
+  const bool rectified = provenance
+      ? provenance->akaze_calibration_fingerprint &&
+          provenance->akaze_calibration_fingerprint->rfind("sha256:", 0) == 0
       : source_matcher == stitching::ControlPointMatcher::kAkazeHamming &&
           fs::exists(source / "left_calibration.json");
   if (rectified)
