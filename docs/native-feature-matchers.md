@@ -25,6 +25,11 @@ consequences for existing games:
   `stitching.mapping_backend`, pin a different matcher, or move the profile out
   of the game directory.
 
+Saved-point replay uses recorded canvas provenance to determine whether its
+points are rectified. A new default or a later lens-profile file does not turn
+saved original-image points into calibrated AKAZE points. Replay still rejects
+points recorded with a calibrated AKAZE profile under `nona`.
+
 `stitching.control_point_matcher` accepts four native, Python-free runtime
 backends. The default is `akaze-hamming`: it is the only backend that needs no
 model asset, so a stock configuration calibrates without downloading a matcher

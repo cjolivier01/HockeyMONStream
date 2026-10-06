@@ -76,3 +76,31 @@ if "$replay" "$fixture/source" "$fixture/output" "$fixture/preset.yaml" > "$fixt
 fi
 grep -q 'calibrated AKAZE rectified control points' "$fixture/log"
 test ! -e "$fixture/output"
+
+# Raw saved points stay raw after a default change or a later lens-profile
+# addition. Exercise both recorded neural points and uncalibrated AKAZE,
+# without a source matcher override and with/without a preset override.
+sed -i '/control_point_matcher:/d' "$fixture/count-source/config.yaml"
+printf '%s\n' '{}' > "$fixture/count-source/left_calibration.json"
+for matcher in superpoint-lightglue akaze-hamming; do
+  fingerprint=not-applicable
+  if [[ "$matcher" == akaze-hamming ]]; then
+    fingerprint=absent
+  fi
+  sed -e "s/^control-point-matcher=.*/control-point-matcher=$matcher/" \
+      -e "s/^akaze-calibration-fingerprint=.*/akaze-calibration-fingerprint=$fingerprint/" \
+      "$fixture/source/stitching_canvas_provenance" > "$fixture/count-source/stitching_canvas_provenance"
+  for preset in count-preset preset; do
+    output="$fixture/raw-$matcher-$preset"
+    if "$replay" "$fixture/count-source" "$output" "$fixture/$preset.yaml" > "$fixture/raw-log" 2>&1; then
+      echo 'Replay unexpectedly succeeded without camera images' >&2
+      exit 1
+    fi
+    grep -q 'left.png' "$fixture/raw-log"
+    expected_matcher="$matcher"
+    if [[ "$preset" == preset ]]; then
+      expected_matcher=superpoint-lightglue
+    fi
+    grep -q "control_point_matcher: $expected_matcher" "$output/config.yaml"
+  done
+done

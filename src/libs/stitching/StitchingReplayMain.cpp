@@ -45,14 +45,20 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   // original PNGs and cannot consume the KB4 lens profile; a preset must not
   // hide this source coordinate-space distinction by changing its matcher.
   const auto provenance = checked(stitching::HuginProject::ReadCanvasProvenance(source, *lock));
-  const auto source_matcher = checked(
-      stitching::resolve_control_point_matcher(*source_config));
-  const bool rectified_provenance = provenance.has_value() && provenance->akaze_calibration_fingerprint.has_value() &&
-      provenance->akaze_calibration_fingerprint->rfind("sha256:", 0) == 0;
-  if (rectified_provenance ||
-      (source_matcher == stitching::ControlPointMatcher::kAkazeHamming && fs::exists(source / "left_calibration.json")))
+  const auto source_matcher = provenance && provenance->control_point_matcher
+      ? *provenance->control_point_matcher
+      : checked(stitching::resolve_control_point_matcher(*source_config));
+  // Provenance describes the saved points. Today's defaults and a profile
+  // added after calibration cannot change their original coordinate space.
+  const bool has_calibration_provenance = provenance && provenance->akaze_calibration_fingerprint.has_value();
+  const bool rectified = has_calibration_provenance
+      ? provenance->akaze_calibration_fingerprint->rfind("sha256:", 0) == 0
+      : source_matcher == stitching::ControlPointMatcher::kAkazeHamming &&
+          fs::exists(source / "left_calibration.json");
+  if (rectified)
     throw std::runtime_error("Replay cannot use calibrated AKAZE rectified control points with Nona");
   auto config = YAML::Clone(*source_config);
+  config["stitching"]["control_point_matcher"] = stitching::ControlPointMatcherName(source_matcher);
   const auto overlay = YAML::LoadFile(preset.string());
   if (!overlay.IsMap())
     throw std::runtime_error("Preset must be a YAML map");
