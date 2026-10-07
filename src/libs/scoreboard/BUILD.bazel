@@ -1,4 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 INCLUDE_PREFIX = "hstream/src/libs/scoreboard"
 
@@ -9,6 +10,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":scoreboard_cuda",
         "//src/libs/common:utils",
         "@com_google_absl//absl/synchronization",
         "@hm-cupano//src/pano:cuda_matrix",
@@ -16,6 +18,14 @@ cc_library(
         "@jetson-utils//display",
         "@opencv_linux//:opencv",
     ],
+)
+
+cuda_library(
+    name = "scoreboard_cuda",
+    srcs = ["ScoreboardCuda.cu"],
+    hdrs = ["ScoreboardCuda.h"],
+    copts = ["-Xcompiler=-fPIC"],
+    deps = ["//toolchains/jetson:cuda_runtime"],
 )
 
 cc_binary(

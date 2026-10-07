@@ -1,4 +1,5 @@
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
+#include "ScoreboardCuda.h"
 #include "hstream/src/libs/common/Status.h"
 
 #include "cupano/pano/cudaMat.h"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <type_traits>
 
 #include <cuda_runtime.h>
 
@@ -253,6 +255,14 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
         stream);
     if (cuerr != cudaSuccess) {
       return absl::InternalError(TO_STRING("Scoreboard cudaResizeROI failed: " << cudaGetErrorString(cuerr)));
+    }
+
+    if constexpr (std::is_same_v<T_pixel, uchar4>) {
+      cuerr = make_scoreboard_opaque(
+          working_image_->data(), working_image_->pitch(), working_image_->width(), working_image_->height(), stream);
+      if (cuerr != cudaSuccess) {
+        return absl::InternalError(TO_STRING("Scoreboard alpha preparation failed: " << cudaGetErrorString(cuerr)));
+      }
     }
 
     static const float border[] = {0, 0, 0, 0};
