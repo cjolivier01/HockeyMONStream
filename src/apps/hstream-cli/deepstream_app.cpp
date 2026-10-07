@@ -411,6 +411,25 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         msg_src_elem = GST_ELEMENT_PARENT(msg_src_elem);
       }
 
+      // GstFileSrc reports the OS read error but omits its location from the
+      // bus message. Read it from the element that posted the error, so a
+      // playlist boundary cannot make us report the next chapter instead.
+      if (bin_found) {
+        GstElement* error_element = GST_ELEMENT(GST_MESSAGE_SRC(message));
+        GstElementFactory* factory = gst_element_get_factory(error_element);
+        if (factory && g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), "filesrc") == 0) {
+          gchar* location = nullptr;
+          g_object_get(error_element, "location", &location, nullptr);
+          g_printerr(
+              "Source file error: source=%u path=%s gst-domain=%s gst-code=%d\n",
+              i,
+              location ? location : "(unknown)",
+              g_quark_to_string(error->domain),
+              error->code);
+          g_free(location);
+        }
+      }
+
       if ((i != bin->num_bins) && (appCtx->config.multi_source_config[0].type == NV_DS_SOURCE_RTSP)) {
         // Error from one of RTSP source.
         NvDsSrcBin* subBin = &bin->sub_bins[i];
