@@ -112,7 +112,7 @@ def assert_scoreboard(name, frame, reference):
     expected = reference[area].astype(np.float32)
     error = float(np.abs(actual - expected).mean())
     print(f"{name}: scoreboard mean absolute RGB error {error:.1f}")
-    if error >= 40:
+    if error >= 20:
         raise AssertionError(f"{name} does not contain the source scoreboard at the Program top-left")
 
 
@@ -199,8 +199,9 @@ def main():
             raise AssertionError("Program GPU preview capture is missing")
         reference = scoreboard_reference(source, stitched, program.shape[1], program.shape[0])
         assert_scoreboard("Program archive", program, reference)
-        assert_scoreboard("4K Program archive", program_4k, cv2.resize(reference, (reference.shape[1] // 2,
-                                                                                   reference.shape[0] // 2)))
+        assert_scoreboard("4K Program archive", program_4k,
+                          cv2.resize(reference, (round(reference.shape[1] * program_4k.shape[1] / program.shape[1]),
+                                                 round(reference.shape[0] * program_4k.shape[0] / program.shape[0]))))
         assert_scoreboard("Program GPU preview", preview_image,
                           cv2.resize(reference, (round(reference.shape[1] * preview_image.shape[1] / program.shape[1]),
                                                  round(reference.shape[0] * preview_image.shape[0] / program.shape[0]))))

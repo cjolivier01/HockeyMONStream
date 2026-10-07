@@ -286,6 +286,13 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     if (cuerr != cudaSuccess) {
       return absl::InternalError(TO_STRING("Scoreboard warpPerspectiveCudaRaw failed: " << cudaGetErrorString(cuerr)));
     }
+    if constexpr (std::is_same_v<T_pixel, uchar4>) {
+      cuerr = unpremultiply_scoreboard(
+          warped_image_->data(), warped_image_->pitch(), warped_image_->width(), warped_image_->height(), stream);
+      if (cuerr != cudaSuccess) {
+        return absl::InternalError(TO_STRING("Scoreboard edge alpha correction failed: " << cudaGetErrorString(cuerr)));
+      }
+    }
   }
 
   assert(dest_surface.bytes_per_pixel() == sizeof(T_pixel));

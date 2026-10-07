@@ -257,6 +257,7 @@ py_test(
     size = "enormous",
     tags = ["local", "manual", "no-cache", "requires-deepstream-hw"],
     timeout = "eternal",
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
 )
 
 cc_test(

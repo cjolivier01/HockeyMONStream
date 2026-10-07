@@ -44,3 +44,14 @@ cc_test(
         "@opencv_linux//:opencv",
     ],
 )
+
+cc_test(
+    name = "scoreboard_cuda_alpha_test",
+    srcs = ["ScoreboardCudaAlphaTest.cpp"],
+    tags = ["manual", "requires-deepstream-hw"],
+    deps = [
+        ":scoreboard_cuda",
+        "@jetson-utils//cuda:cuda_lib",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+)
