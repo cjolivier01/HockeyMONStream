@@ -240,6 +240,26 @@ cc_test(
     timeout = "eternal",
 )
 
+py_test(
+    name = "scoreboard_overlay_e2e_test",
+    srcs = ["ScoreboardOverlayE2eTest.py"],
+    main = "ScoreboardOverlayE2eTest.py",
+    args = [
+        "$(location :hstream-cli)",
+        "$(location //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so)",
+        "$(location //configs:ds_hockey_app_config.yaml)",
+    ],
+    data = [
+        ":hstream-cli",
+        "//configs:ds_hockey_app_config.yaml",
+        "//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so",
+    ],
+    size = "enormous",
+    tags = ["local", "manual", "no-cache", "requires-deepstream-hw"],
+    timeout = "eternal",
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
+)
+
 cc_test(
     name = "terminal_progress_ui_test",
     srcs = [
