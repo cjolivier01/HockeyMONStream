@@ -1,6 +1,14 @@
 TOPDIR := $(shell pwd)
 BAZEL ?= bazelisk
 BUILD_CONFIG ?= opt
+
+# Forward `make -j N` to Bazel as --jobs=N. GNU make normalizes -jN/-j N/--jobs=N
+# into a single "-jN" word in MAKEFLAGS; a bare "-j" (unlimited) maps to Bazel's
+# "auto". Override directly with `make BAZEL_JOBS=16 ...`; with neither, Bazel
+# keeps its own default.
+MAKE_JOBS_FLAG := $(firstword $(filter -j%,$(MAKEFLAGS)))
+BAZEL_JOBS ?= $(if $(MAKE_JOBS_FLAG),$(or $(patsubst -j%,%,$(MAKE_JOBS_FLAG)),auto),)
+BAZEL_JOBS_FLAG := $(if $(strip $(BAZEL_JOBS)),--jobs=$(strip $(BAZEL_JOBS)),)
 JETSON_SYSROOT ?= /opt/jetson-sysroot
 HOST_ARCH := $(shell uname -m)
 IS_JETSON_HOST := $(shell \
@@ -40,23 +48,23 @@ all: print_targets
 	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release
 
 perf:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 debug:
-	$(BAZEL) build --config=debug $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
+	$(BAZEL) build --config=debug $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 gstdebug:
-	$(BAZEL) build --config=gstdebug $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
+	$(BAZEL) build --config=gstdebug $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 x86_64:
-	$(BAZEL) build --config=opt --cpu=k8 $(HOST_CUDA_FLAGS) //...
+	$(BAZEL) build --config=opt --cpu=k8 $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 arm64:
 	@if [ "$(HOST_ARCH)" != "aarch64" ]; then \
 		echo "arm64 target is for native non-Jetson arm64/SBSA hosts (for example GB300)." >&2; \
 		exit 1; \
 	fi
-	$(BAZEL) build --config=opt --config=arm64 //...
+	$(BAZEL) build --config=opt --config=arm64 $(BAZEL_JOBS_FLAG) //...
 
 jetson:
 	@if [ "$(HOST_ARCH)" = "aarch64" ] && [ ! -e "$(JETSON_SYSROOT)" ]; then \
@@ -67,31 +75,31 @@ jetson:
 		echo "Jetson sysroot not found at $(JETSON_SYSROOT). Run JETSON_HOST=<user@jetson> scripts/sync_jetson_sysroot.sh [DEST]." >&2; \
 		exit 1; \
 	fi
-	$(BAZEL) build --config=jetson --action_env=JETSON_SYSROOT=$(JETSON_SYSROOT) --define=JETSON_SYSROOT=$(JETSON_SYSROOT) //...
+	$(BAZEL) build --config=jetson --action_env=JETSON_SYSROOT=$(JETSON_SYSROOT) --define=JETSON_SYSROOT=$(JETSON_SYSROOT) $(BAZEL_JOBS_FLAG) //...
 
 test:
-	$(BAZEL) test --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //...
+	$(BAZEL) test --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 qualify-native-onnx:
 	scripts/qualify_native_onnx.sh
 
 hstream-cli:
-	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-cli:hstream-cli
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-cli:hstream-cli
 
 hstream-job:
-	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-job:hstream-job
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-job:hstream-job
 
 hstream-assets:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-assets:hstream-assets
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-assets:hstream-assets
 
 hstream-ui:
-	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-ui:hstream-ui
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-ui:hstream-ui
 
 yolo-custom-lib:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo
 
 hstream-gst-plugins:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) \
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) \
 		//src/gst-plugins/gst-dsxvideoconvert:libgstdsxvideoconvert.so \
 		//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \
 		//src/gst-plugins/gst-playtracker:libgstplaytracker.so \
@@ -109,7 +117,7 @@ run-hstream-ui: hstream-ui
 	bazel-bin/src/apps/hstream-ui/hstream-ui
 
 video-player:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/video-player:video-player
+	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/video-player:video-player
 
 run-video-player: video-player
 	bazel-bin/src/apps/video-player/video-player --help
@@ -180,6 +188,9 @@ distclean expunge:
 print_targets:
 	@printf '%s\n' \
 		"Available make targets (run 'make <target>'):" \
+		'' \
+		"'make -j N <target>' forwards N to Bazel as --jobs=N (bare -j means --jobs=auto);" \
+		'override directly with BAZEL_JOBS=N.' \
 		'' \
 		'Build Outputs' \
 		'-------------' \
