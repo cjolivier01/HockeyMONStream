@@ -36,6 +36,7 @@ exports_files([
     "deepstream_artifact.sh",
     "deploy.sh",
     "install_deb.sh",
+    "hstream_instat_generate_team_only_reports.py",
     "build_hugin_tools_jetson.sh",
     "delete_release.sh",
     "make_deb.sh",
