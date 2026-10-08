@@ -122,6 +122,10 @@ source1:
   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010097.MP4
   # uri: file:///home/colivier/Videos/mlk-heat-1/GX010016.MP4
   num-sources: 1
+  # Must match source0: the surface count is applied per source, so leaving this
+  # unset left the second camera on the N_DECODE_SURFACES=16 default and kept
+  # ~1 GB of the 8K 10-bit decode pool that source0's tuning already gave back.
+  num-decode-surfaces: 6
   gpu-id: 0
   cuda-memory-type: 0
   source-id: 1
