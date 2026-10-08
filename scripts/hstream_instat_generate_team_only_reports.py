@@ -194,6 +194,7 @@ class Renderer:
 
     def page(self, pdf: Path, page_number: int) -> Image.Image:
         output = self.temp / f"render-{self.render_count:04d}"
+        rendered_path = output.with_suffix(".png")
         self.render_count += 1
         subprocess.run(
             [
@@ -204,8 +205,11 @@ class Renderer:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        with Image.open(output.with_suffix(".png")) as rendered:
-            return rendered.convert("RGB")
+        try:
+            with Image.open(rendered_path) as rendered:
+                return rendered.convert("RGB")
+        finally:
+            rendered_path.unlink(missing_ok=True)
 
 
 def draw_header(
@@ -337,7 +341,7 @@ def filter_team_summary(
     else:
         masks = [
             (.203, .10, .258, .37), (.490, .10, .578, .37),
-            (.490, .65, .578, .94),
+            (.490, .65, .558, .94),
             (.020, .400, .340, .705),
         ]
     for mask in masks:
@@ -353,13 +357,13 @@ def filter_team_summary(
         align="center",
     )
     leader_groups = [
-        (.131, .147, .193, "INSTAT INDEX"),
-        (.233, .248, .292, "TIME ON ICE"),
-        (.334, .350, .394, "SHOTS"),
-        (.436, .452, .496, "SHOTS ON GOAL"),
-        (.538, .553, .597, "FACEOFFS WON"),
-        (.640, .655, .699, "HITS"),
-        (.741, .756, .801, "HITS AGAINST"),
+        (.131, .147, .203, "INSTAT INDEX"),
+        (.233, .248, .302, "TIME ON ICE"),
+        (.334, .350, .404, "SHOTS"),
+        (.436, .452, .506, "SHOTS ON GOAL"),
+        (.538, .553, .607, "FACEOFFS WON"),
+        (.640, .655, .709, "HITS"),
+        (.741, .756, .811, "HITS AGAINST"),
     ]
     selected_x0, selected_x1 = ((.665, .810) if selected_index == 0 else (.810, .972))
     leader_rows = []
