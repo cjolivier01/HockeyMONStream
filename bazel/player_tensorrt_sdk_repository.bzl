@@ -1,5 +1,15 @@
 """Select a coherent TensorRT SDK matching the installed DeepStream runtime."""
 
+load(
+    "//bazel:tensorrt_sdk_common.bzl",
+    "deepstream_infer",
+    "elf_machine",
+    "include_dir",
+    "needed_major",
+    "readelf",
+    "version_from_header",
+)
+
 # Development headers only: the already installed DeepStream runtime supplies
 # the libraries. Never install packages or change /usr from a repository rule.
 _TRT_10_16_HEADERS = [
@@ -7,25 +17,6 @@ _TRT_10_16_HEADERS = [
     ("libnvonnxparsers-dev_10.16.1.11-1+cuda13.2_amd64.deb", "9904cbbc32d4b0f8eb665ffd2758ee10b74a3a3afb19c8e164b2c4a83a98bcd1"),
 ]
 _NVIDIA_PACKAGES = "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/"
-
-def _version_from_header(text):
-    values = {}
-    for line in text.splitlines():
-        parts = [word for word in line.replace("\t", " ").split(" ") if word]
-        if len(parts) >= 3 and parts[0] == "#define":
-            values[parts[1]] = parts[2]
-    version = []
-    for field in ["MAJOR", "MINOR", "PATCH", "BUILD"]:
-        value = values.get("NV_TENSORRT_" + field, "")
-        version.append(values.get(value, value))
-    return version
-
-def _include_dir(ctx, root):
-    for suffix in ["include", "include/aarch64-linux-gnu", "include/x86_64-linux-gnu"]:
-        candidate = ctx.path(root + "/" + suffix)
-        if all([candidate.get_child(name).exists for name in ["NvInfer.h", "NvInferVersion.h", "NvOnnxParser.h"]]):
-            return candidate
-    return None
 
 def _libraries(ctx, root, major, machine):
     for suffix in ["lib", "lib64", "lib/aarch64-linux-gnu", "lib/x86_64-linux-gnu"]:
@@ -40,56 +31,12 @@ def _libraries(ctx, root, major, machine):
         if coherent:
             for name, library in libraries.items():
                 expected = "[lib" + name + ".so." + major + "]"
-                soname = [line for line in _readelf(ctx, library, "-d").splitlines() if "(SONAME)" in line]
+                soname = [line for line in readelf(ctx, library, "-d").splitlines() if "(SONAME)" in line]
                 coherent = coherent and bool(soname) and expected in soname[0]
-                coherent = coherent and (not machine or _elf_machine(ctx, library) == machine)
+                coherent = coherent and (not machine or elf_machine(ctx, library) == machine)
         if coherent:
             return libraries
     fail("No complete TensorRT {} runtime at {}. Set HSTREAM_PLAYER_TENSORRT_SDK_ROOT to a compatible SDK.".format(major, root))
-
-def _readelf(ctx, path, flag):
-    tool = ctx.which("readelf")
-    if not tool:
-        fail("readelf is required to verify the player TensorRT SDK.")
-    result = ctx.execute([tool, flag, path], environment = {"LC_ALL": "C"})
-    if result.return_code:
-        fail("Cannot inspect TensorRT/DeepStream library {}: {}".format(path, result.stderr))
-    return result.stdout
-
-def _elf_machine(ctx, path):
-    for line in _readelf(ctx, path, "-h").splitlines():
-        if "Machine:" in line:
-            return line.split("Machine:")[1].strip()
-    fail("Cannot determine ELF architecture for {}".format(path))
-
-def _needed_major(ctx, ds_infer):
-    for line in _readelf(ctx, ds_infer, "-d").splitlines():
-        if "(NEEDED)" in line and "[libnvinfer.so." in line:
-            major = line.split("[libnvinfer.so.")[1].split("]")[0]
-            if major.isdigit():
-                return major
-    fail("Cannot determine the TensorRT runtime required by {}".format(ds_infer))
-
-def _deepstream_infer(ctx, cross):
-    override = ctx.os.environ.get("DEEPSTREAM_ROOT")
-    roots = [override] if override else [
-        "/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream",
-        "/opt/nvidia/deepstream/deepstream",
-    ]
-    if not override and not cross:
-        roots = roots[::-1]
-    # Match conditional_local_repository's first existing root, including its
-    # explicit override and native/sysroot preference.
-    for root in roots:
-        path = ctx.path(root)
-        if path.exists:
-            infer = path.get_child("lib/libnvds_infer.so")
-            if not infer.exists:
-                fail("DeepStream at {} has no lib/libnvds_infer.so".format(root))
-            return infer
-    if override:
-        fail("DEEPSTREAM_ROOT does not exist: {}".format(override))
-    return None
 
 def _library_release(library):
     version = library.realpath.basename.split(".so.")[-1].split(".")
@@ -142,23 +89,23 @@ def _managed_headers(ctx, libraries, ds_machine, version, cross):
     # The parser development package also contains a static archive and linker
     # symlink. Neither participates in this SDK; link only the verified runtime.
     ctx.delete("development/usr/lib")
-    return _include_dir(ctx, str(ctx.path("development/usr")))
+    return include_dir(ctx, str(ctx.path("development/usr")))
 
 def _player_tensorrt_sdk_impl(ctx):
     override = ctx.os.environ.get("HSTREAM_PLAYER_TENSORRT_SDK_ROOT")
     cross = ctx.os.environ.get("HM_BAZEL_PREFER_FIRST_LOCAL_PATH") == "1"
     root = override or ("/opt/jetson-sysroot/usr" if cross else "/usr")
-    ds_infer = _deepstream_infer(ctx, cross)
-    include = _include_dir(ctx, root)
-    header_version = _version_from_header(ctx.read(include.get_child("NvInferVersion.h"))) if include else [""] * 4
-    major = _needed_major(ctx, ds_infer) if ds_infer else header_version[0]
+    ds_infer = deepstream_infer(ctx, cross)
+    include = include_dir(ctx, root)
+    header_version = version_from_header(ctx.read(include.get_child("NvInferVersion.h"))) if include else [""] * 4
+    major = needed_major(ctx, ds_infer) if ds_infer else header_version[0]
     if not major or not major.isdigit():
         fail("Cannot determine a compatible player TensorRT SDK. Set HSTREAM_PLAYER_TENSORRT_SDK_ROOT.")
     if override and header_version[0] != major:
         fail("Explicit player TensorRT SDK at {} has header major {} but DeepStream requires {}. Select a coherent SDK; explicit overrides never fall back.".format(root, header_version[0] or "missing", major))
-    machine = _elf_machine(ctx, ds_infer) if ds_infer else None
+    machine = elf_machine(ctx, ds_infer) if ds_infer else None
     libraries = _libraries(ctx, root, major, machine)
-    machine = machine or _elf_machine(ctx, libraries["nvinfer"])
+    machine = machine or elf_machine(ctx, libraries["nvinfer"])
     runtime_version = _runtime_version(ctx, libraries["nvinfer"], cross)
     parser_release = _library_release(libraries["nvonnxparser"])
     if parser_release != runtime_version[:3]:
@@ -167,7 +114,7 @@ def _player_tensorrt_sdk_impl(ctx):
         if override:
             fail("Explicit player TensorRT SDK headers {} disagree with runtime {} at {}. Explicit overrides never fall back.".format(".".join(header_version), ".".join(runtime_version), root))
         include = _managed_headers(ctx, libraries, machine, runtime_version, cross)
-    if not include or _version_from_header(ctx.read(include.get_child("NvInferVersion.h")))[:len(runtime_version)] != runtime_version:
+    if not include or version_from_header(ctx.read(include.get_child("NvInferVersion.h")))[:len(runtime_version)] != runtime_version:
         fail("No compatible player TensorRT headers were found.")
     ctx.symlink(include, "include")
     ctx.symlink(libraries["nvinfer"], "lib/libnvinfer.so")
