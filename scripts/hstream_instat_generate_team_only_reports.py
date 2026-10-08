@@ -41,6 +41,7 @@ FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 MATCHUP_RE = re.compile(r"^(.*?)\s+(\d+)\s*:\s*(\d+)\s+(.*?)$")
 DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 XHTML = {"x": "http://www.w3.org/1999/xhtml"}
+RESAMPLE_LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
 
 
 @dataclass(frozen=True)
@@ -189,13 +190,11 @@ class Renderer:
     def __init__(self, dpi: int, temp: Path):
         self.dpi = dpi
         self.temp = temp
-        self.cache: dict[tuple[Path, int], Image.Image] = {}
+        self.render_count = 0
 
     def page(self, pdf: Path, page_number: int) -> Image.Image:
-        key = (pdf.resolve(), page_number)
-        if key in self.cache:
-            return self.cache[key].copy()
-        output = self.temp / f"render-{len(self.cache):04d}"
+        output = self.temp / f"render-{self.render_count:04d}"
+        self.render_count += 1
         subprocess.run(
             [
                 "pdftoppm", "-f", str(page_number), "-l", str(page_number),
@@ -205,9 +204,8 @@ class Renderer:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        image = Image.open(output.with_suffix(".png")).convert("RGB")
-        self.cache[key] = image
-        return image.copy()
+        with Image.open(output.with_suffix(".png")) as rendered:
+            return rendered.convert("RGB")
 
 
 def draw_header(
@@ -413,7 +411,7 @@ def filter_player_table(
     )
     max_width, max_height = int(width * .95), int(height * .72)
     scale = min(max_width / crop.width, max_height / crop.height)
-    crop = crop.resize((int(crop.width * scale), int(crop.height * scale)), Image.Resampling.LANCZOS)
+    crop = crop.resize((int(crop.width * scale), int(crop.height * scale)), RESAMPLE_LANCZOS)
     page.paste(crop, ((width - crop.width) // 2, int(height * .18)))
     return page
 
@@ -536,9 +534,10 @@ def generate_player(report: Report, team: str, renderer: Renderer, output_dir: P
         )
     ]
     for new_page, (source_page, _) in enumerate(entries, start=2):
+        rendered = sample if new_page == 2 else renderer.page(report.path, source_page)
         pages.append(
             draw_header(
-                renderer.page(report.path, source_page),
+                rendered,
                 team,
                 "player",
                 report.display_date,
@@ -606,10 +605,12 @@ def main() -> int:
         for index, report in enumerate(selected_reports, start=1):
             print(f"[{index}/{len(selected_reports)}] {report.path.name}")
             try:
+                relative_parent = report.path.relative_to(directory).parent
+                report_output_dir = output_dir / relative_parent
                 if report.kind == "match":
-                    created.append(generate_match(report, team, renderer, output_dir))
+                    created.append(generate_match(report, team, renderer, report_output_dir))
                 else:
-                    created.append(generate_player(report, team, renderer, output_dir))
+                    created.append(generate_player(report, team, renderer, report_output_dir))
             except Exception as exc:  # keep processing other reports
                 failed.append((report.path, str(exc)))
                 print(f"  ERROR: {exc}", file=sys.stderr)

@@ -178,7 +178,9 @@ scripts/hstream_instat_generate_team_only_reports.py /path/to/reports
 Use `--team "Team Name"` for non-interactive runs. The Debian package installs
 the script under `/opt/hstream/scripts` and exposes it as
 `hstream-instat-generate-team-only-reports`. The offline utility requires
-Python 3, Pillow, and Poppler; the package declares those dependencies.
+Python 3, Pillow, and Poppler; the package declares those dependencies. With
+`--recursive`, generated files mirror the source subdirectory layout under the
+output directory so same-named reports cannot overwrite one another.
 
 ## Models / Pretrained Assets
 
