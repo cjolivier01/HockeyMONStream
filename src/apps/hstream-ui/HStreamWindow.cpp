@@ -197,6 +197,12 @@ constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
 constexpr int kRuntimeControlAckTimeoutMs = 3000;
+// How long SIGINT gets before we SIGKILL the pipeline. Sized to outlast the
+// CLI's own shutdown watchdog (kShutdownWatchdogGraceUs in deepstream_app.cpp,
+// which hard-exits around 13 s after the stop request) so a wedged teardown
+// reports which thread stalled instead of dying anonymously here. Costs
+// nothing on a healthy stop: waitForFinished returns as soon as it exits.
+constexpr int kPipelineTerminateGraceMs = 30000;
 constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
 constexpr char kUiDirectoryName[] = "hstream-ui";
 constexpr char kLegacyUiDirectoryName[] = ".hstream-ui";
@@ -10809,7 +10815,7 @@ void HStreamWindow::stopPipeline() {
 #else
   pipeline_process_->terminate();
 #endif
-  if (!pipeline_process_->waitForFinished(15000)) {
+  if (!pipeline_process_->waitForFinished(kPipelineTerminateGraceMs)) {
     appendLog("pipeline did not exit after terminate; killing");
 #ifdef Q_OS_UNIX
     if (pid > 0 && pipeline_uses_process_group_) {

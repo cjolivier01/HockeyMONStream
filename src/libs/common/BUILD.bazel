@@ -246,6 +246,12 @@ cc_test(
 )
 
 cc_test(
+    name = "watchdog_budget_test",
+    srcs = ["WatchdogBudgetTest.cpp"],
+    deps = [":utils"],
+)
+
+cc_test(
     name = "video_bit_depth_test",
     srcs = ["VideoBitDepthTest.cpp"],
     deps = [

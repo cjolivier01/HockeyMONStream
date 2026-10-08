@@ -46,6 +46,29 @@ an orderly return from the entry point; a missing marker alone is not proof of
 a crash (SIGKILL, system shutdown, an unavailable writer, and parent death can
 all omit it).
 
+## Wedged shutdown
+
+A GStreamer teardown can hang instead of crashing: the `GST_STATE_NULL`
+transition runs synchronously in the caller, so a streaming thread that died
+holding a pad lock stalls it forever and no handler runs. The CLI arms a
+watchdog around those calls. When one overruns its budget the process writes
+the stalled thread and a collapsed dump of every other thread's name and
+`wchan` to stderr and to `events.log`, records a `shutdown-watchdog`
+breadcrumb, and exits 70.
+
+So a `shutdown-watchdog` breadcrumb immediately before `process-exit` with code
+70 means the teardown was abandoned, not that it completed. Output being
+finalized at the time is lost. The thread dump names where each thread was
+parked, which is usually enough to tell a stuck encoder or decoder release
+apart from a pad lock left behind by an earlier failure.
+
+`HM_SHUTDOWN_WATCHDOG_SECONDS` overrides the budget; `0` disables the watchdog
+entirely, which is the right setting when attaching a debugger to a hang. The
+default fires about 13 s after a stop request. Both supervisors that kill the
+CLI — the UI's `kPipelineTerminateGraceMs` and the calibration matrix script's
+`PROCESS_GROUP_INTERRUPT_GRACE_SECONDS` — are sized to outlast that, so raising
+the budget past 30 s means the process gets SIGKILLed before it can report.
+
 ## Cost and failure behavior
 
 There are no new frame probes, video readbacks, GPU transfers, frame images,

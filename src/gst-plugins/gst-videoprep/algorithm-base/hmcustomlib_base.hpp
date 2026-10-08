@@ -203,8 +203,10 @@ inline GstBufferPool* DSCustomLibraryBase::CreateBufferPool(BufferPoolConfig* po
 
   config = gst_buffer_pool_get_config(m_buf_pool);
 
+  // Debug-only sanity check on the caps; the pool is sized from pool_config,
+  // not from these dimensions, so nothing downstream reads ww/hh.
   int ww = 0, hh = 0;
-  bool ok = getCapsDimensions(outcaps, ww, hh);
+  [[maybe_unused]] const bool ok = getCapsDimensions(outcaps, ww, hh);
   assert(ok);
 
   GST_INFO_OBJECT(m_element, "in videoconvert caps = %" GST_PTR_FORMAT "\n", outcaps);

@@ -140,6 +140,15 @@ GstReferencedObject<GstElement*> get_pipeline_element(GstElement* element);
 
 GstMessage* gst_nvmessage_force_pipeline_eos(GstObject* obj, bool force_eos);
 
+// Parses an HM_SHUTDOWN_WATCHDOG_SECONDS-style budget into microseconds.
+// Returns fallback_us when configured is null, empty, or not a whole number of
+// seconds that can be scaled without overflow; zero disables the caller's
+// watchdog. Rejecting rather than clamping is deliberate: g_ascii_strtoll
+// saturates at G_MAXINT64 on overflow, and scaling that would wrap to either a
+// negative budget (silently no watchdog) or a small positive one (killing
+// healthy shutdowns), both worse than ignoring the override.
+gint64 parse_watchdog_budget_us(const char* configured, gint64 fallback_us);
+
 bool post_force_pipeline_eos(GstElement* element);
 
 bool gst_message_parse_force_pipeline_eos(GstMessage* message, bool* force_eos);
