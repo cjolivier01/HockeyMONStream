@@ -224,9 +224,13 @@ CudaStatus rotateNvBufSurfaceWithNPP(
   assert(in_surface->colorFormat == out_surface->colorFormat);
   assert(in_surface->colorFormat == NVBUF_COLOR_FORMAT_RGBA);
 
-  // Set source and destination ROI
-  NppiRect srcROI = {0, 0, static_cast<int>(in_surface.width()), static_cast<int>(in_surface.height())};
-  NppiRect dstROI = {0, 0, static_cast<int>(out_surface.width()), static_cast<int>(out_surface.height())};
+  // Set source and destination ROI. These only feed the assertions below:
+  // cudaWarpAffine works over the full surfaces, so nothing reads them in an
+  // NDEBUG build.
+  [[maybe_unused]] NppiRect srcROI = {
+      0, 0, static_cast<int>(in_surface.width()), static_cast<int>(in_surface.height())};
+  [[maybe_unused]] NppiRect dstROI = {
+      0, 0, static_cast<int>(out_surface.width()), static_cast<int>(out_surface.height())};
 
   // assert(srcROI.width == dstROI.width);
   // assert(srcROI.height == dstROI.height);
