@@ -22,7 +22,11 @@ import time
 import yaml
 
 
-PROCESS_GROUP_INTERRUPT_GRACE_SECONDS = 10.0
+# Outlasts the CLI's shutdown watchdog (kShutdownWatchdogGraceUs in
+# deepstream_app.cpp, which hard-exits roughly 13 s after the stop request) so
+# a wedged teardown gets to report which thread stalled before we SIGKILL the
+# group. A healthy run still exits immediately; this only bounds the bad case.
+PROCESS_GROUP_INTERRUPT_GRACE_SECONDS = 30.0
 PROCESS_GROUP_FINAL_GRACE_SECONDS = 1.0
 PROCESS_GROUP_KILL_WAIT_SECONDS = 2.0
 

@@ -19,6 +19,7 @@
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -2560,22 +2561,30 @@ namespace {
 constexpr int kShutdownWatchdogExitCode = 70;
 
 // Extra time a GST_STATE_NULL transition gets beyond the caller's own deadline
-// before the watchdog calls it wedged. Generous on purpose: a loaded GPU can
-// take seconds to release encoder and decoder contexts, and killing a teardown
-// that is merely slow would lose output that a hang would not.
-constexpr gint64 kShutdownWatchdogGraceUs = 20 * G_USEC_PER_SEC;
+// before the watchdog calls it wedged.
+//
+// This has to clear a healthy teardown -- measured around 2.7 s for a 4K
+// archive run -- by enough margin that a loaded GPU releasing encoder and
+// decoder contexts is never mistaken for a hang, because killing a teardown
+// that is merely slow loses output that a hang would not. It also has to stay
+// under whatever supervisor is waiting on us, or the watchdog is dead code:
+// HStreamWindow SIGKILLs the pipeline after kPipelineTerminateGraceMs and
+// run_stitching_calibration_matrix.py SIGKILLs the process group after
+// PROCESS_GROUP_INTERRUPT_GRACE_SECONDS. Both are set from this budget; raise
+// them together.
+constexpr gint64 kShutdownWatchdogGraceUs = 8 * G_USEC_PER_SEC;
 
-gint64 shutdown_watchdog_grace_us() {
-  const char* configured = g_getenv("HM_SHUTDOWN_WATCHDOG_SECONDS");
-  if (!configured || !*configured) {
-    return kShutdownWatchdogGraceUs;
-  }
-  gchar* end = nullptr;
-  const gint64 seconds = g_ascii_strtoll(configured, &end, 10);
-  if (end == configured || *end || seconds < 0) {
-    return kShutdownWatchdogGraceUs;
-  }
-  return seconds * G_USEC_PER_SEC; // Zero disables the watchdog.
+// The same guard on the teardown path, which also runs for in-place pipeline
+// reconstruction (the periodic recreate timer, the stitch-frame restart, and
+// runtime seek) and so can fire on a session that is still recording. Nothing
+// external is waiting to kill that process, so this budget only has to beat
+// "never" -- buy margin against a false positive rather than racing a killer.
+constexpr gint64 kTeardownWatchdogGraceUs = 30 * G_USEC_PER_SEC;
+
+// Zero from the environment disables the watchdog, which is what you want when
+// attaching a debugger to a hang.
+gint64 watchdog_grace_us(gint64 fallback_us) {
+  return hm::parse_watchdog_budget_us(g_getenv("HM_SHUTDOWN_WATCHDOG_SECONDS"), fallback_us);
 }
 
 // Reads a short /proc entry, trimming the trailing newline. Raw syscalls only:
@@ -2598,10 +2607,10 @@ std::string read_proc_field(const std::string& path) {
   return std::string(buffer, length);
 }
 
-// Names the kernel routine every thread is parked in. This is the only way
-// left to find the lock owner once the watchdog decides to hard-exit:
-// gst_element_get_state() is unusable here because even a zero timeout takes
-// the state lock the stalled transition is holding.
+// Names the kernel routine every thread is parked in. Reading /proc is the
+// only introspection left once the watchdog decides to hard-exit: asking
+// GStreamer anything means taking GStreamer locks, and an unidentified
+// GStreamer lock is the whole reason we are here.
 //
 // Identical entries collapse to one counted line. CUDA and TensorRT keep well
 // over a hundred idle workers parked on the same futex, and listing them
@@ -2647,11 +2656,19 @@ std::string describe_threads(long blocked_tid) {
 // synchronously in the calling thread, so a streaming thread that died holding
 // a pad lock -- which is exactly what a failed bufferpool activation leaves
 // behind -- wedges shutdown forever. The caller's own deadline cannot help: it
-// is checked before and after that call, never across it, which also makes the
-// "transition did not complete" handler unreachable. Arm this around the call
-// so the process says why it is stuck and dies instead of hanging silently.
+// is checked before and after that call, never across it, so control never
+// comes back to compare against it, which is also why the "transition did not
+// complete" handler below never runs on a wedge. (The gst_element_get_state()
+// that follows does honor its timeout -- it waits on GST_OBJECT_LOCK, not the
+// state lock -- but a wedged set_state() means we never reach it.) Arm this
+// around the call so the process says why it is stuck and dies instead of
+// hanging silently.
 class ShutdownWatchdog {
  public:
+  // operation must outlive the watchdog; callers pass string literals. Holding
+  // a borrowed pointer rather than a std::string keeps the member initializer
+  // list allocation-free, which matters because a throw from here escapes into
+  // a caller that is holding app_lock with no RAII guard on it.
   ShutdownWatchdog(const char* operation, gint64 budget_us)
       : operation_(operation ? operation : "shutdown"), blocked_tid_(::syscall(SYS_gettid)) {
     if (budget_us <= 0) {
@@ -2660,15 +2677,25 @@ class ShutdownWatchdog {
     try {
       worker_ = std::thread([this, budget_us]() {
         std::unique_lock<std::mutex> lock(mutex_);
-        // Keep the lock across fire(): once we have decided to kill the
-        // process, a late completion must not race us into a half-done exit.
-        if (!finished_.wait_for(lock, std::chrono::microseconds(budget_us), [this]() { return done_; })) {
+        const bool completed =
+            finished_.wait_for(lock, std::chrono::microseconds(budget_us), [this]() { return done_; });
+        lock.unlock();
+        // Drop the lock before firing. fire() writes to stderr, which may be a
+        // pipe to a parent that is not draining it, and the destructor blocks
+        // on this same mutex -- holding it across the write turns the hang we
+        // are reporting into a second, quieter one. Releasing it lets a late
+        // completion proceed instead, which is harmless: the process is going
+        // down either way, and _exit() cannot be half-done.
+        if (!completed) {
           fire(operation_, blocked_tid_, budget_us);
         }
       });
-    } catch (const std::system_error&) {
-      // Out of threads during teardown. An unguarded transition is still
-      // better than refusing to shut down at all.
+    } catch (...) {
+      // std::thread's constructor throws system_error when the process is out
+      // of threads and bad_alloc when it is out of memory -- both plausible
+      // during a teardown that follows an allocation failure. An unguarded
+      // transition is still better than unwinding into a caller that would
+      // leak app_lock or trip a noexcept destructor.
     }
   }
 
@@ -2688,24 +2715,30 @@ class ShutdownWatchdog {
   }
 
  private:
-  static void fire(const std::string& operation, long blocked_tid, gint64 budget_us) {
+  static void fire(const char* operation, long blocked_tid, gint64 budget_us) {
+    // Self-guard, same reasoning as crash_timeout() in ProcessDiagnostics.cpp:
+    // every step below can itself block on the resource that wedged us. The
+    // default SIGALRM action terminates the process, so this needs no handler.
+    std::signal(SIGALRM, SIG_DFL);
+    ::alarm(5);
     const std::string threads = describe_threads(blocked_tid);
     // stderr and the diagnostics writer only, never GLib or GStreamer logging:
     // the whole premise is that some GStreamer lock is unavailable.
+    std::fflush(stdout);
     std::fprintf(
         stderr,
         "FATAL: %s did not finish within %" G_GINT64_FORMAT " s; shutdown is wedged. Thread states:\n%s",
-        operation.c_str(),
+        operation,
         budget_us / G_USEC_PER_SEC,
         threads.c_str());
     std::fflush(stderr);
     hm::diagnostics::Breadcrumb("shutdown-watchdog", operation);
-    hm::diagnostics::Log("shutdown-watchdog", operation + " wedged; thread states:\n" + threads);
+    hm::diagnostics::Log("shutdown-watchdog", std::string(operation) + " wedged; thread states:\n" + threads);
     hm::diagnostics::Finish(kShutdownWatchdogExitCode);
     ::_exit(kShutdownWatchdogExitCode);
   }
 
-  std::string operation_;
+  const char* operation_;
   long blocked_tid_;
   std::mutex mutex_;
   std::condition_variable finished_;
@@ -2790,11 +2823,18 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
   GstState stopped_current = GST_STATE_VOID_PENDING;
   GstState stopped_pending = GST_STATE_VOID_PENDING;
   {
-    // Both calls below can block without bound -- set_state() because the
-    // downward transition is synchronous, get_state() because it takes the
-    // state lock before honoring any timeout -- so the deadline this function
-    // tracks is only advisory across them. The watchdog makes it binding.
-    gint64 watchdog_us = shutdown_watchdog_grace_us();
+    // set_state() runs the downward transition synchronously and can block
+    // without bound, so the deadline this function tracks is only advisory
+    // across it -- nothing re-checks the clock until it returns. The watchdog
+    // makes it binding.
+    //
+    // Folding whatever is left of the deadline into the budget makes the fire
+    // time a constant from function entry, however the EOS wait above happened
+    // to split it: an error path that skipped the wait arms early with a large
+    // budget, a timed-out wait arms late with a small one, and both land at
+    // deadline + grace. That is the number the supervisor timeouts are sized
+    // against, so it needs to stay predictable.
+    gint64 watchdog_us = watchdog_grace_us(kShutdownWatchdogGraceUs);
     if (watchdog_us > 0) {
       const gint64 now = g_get_monotonic_time();
       watchdog_us += now >= deadline ? 0 : deadline - now;
@@ -2850,10 +2890,13 @@ void destroy_pipeline(AppCtx* appCtx) {
 
   g_mutex_lock(&appCtx->app_lock);
   if (appCtx->pipeline.pipeline) {
-    destroy_smart_record_bin(&appCtx->pipeline.multi_src_bin);
     // Same unbounded synchronous transition, and this one runs under app_lock,
     // so wedging here also starves the bus callbacks that would report it.
-    ShutdownWatchdog watchdog("Pipeline teardown GST_STATE_NULL transition", shutdown_watchdog_grace_us());
+    // destroy_smart_record_bin() is inside the guard because it joins the
+    // smart-record threads and can stall on the same teardown.
+    ShutdownWatchdog watchdog(
+        "Pipeline teardown GST_STATE_NULL transition", watchdog_grace_us(kTeardownWatchdogGraceUs));
+    destroy_smart_record_bin(&appCtx->pipeline.multi_src_bin);
     gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_NULL);
   }
   g_cond_wait_until(&appCtx->app_cond, &appCtx->app_lock, end_time);
@@ -2916,7 +2959,14 @@ void destroy_pipeline(AppCtx* appCtx) {
       appCtx->pipeline.bus_id = 0;
     }
     gst_object_unref(bus);
-    gst_object_unref(appCtx->pipeline.pipeline);
+    {
+      // The last reference: dispose walks the bin unlinking pads, so it takes
+      // the same pad locks a dead streaming thread may still hold. Guard it
+      // too -- a hang here is just as terminal as one in the transition, and
+      // far more confusing because the pipeline has already reached NULL.
+      ShutdownWatchdog watchdog("Pipeline dispose", watchdog_grace_us(kTeardownWatchdogGraceUs));
+      gst_object_unref(appCtx->pipeline.pipeline);
+    }
     appCtx->pipeline.pipeline = NULL;
     pause_perf_measurement(&appCtx->perf_struct);
 
