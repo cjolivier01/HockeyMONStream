@@ -165,6 +165,23 @@ directory (`~/.local/share`, or `XDG_DATA_HOME`) before showing its window, so
 the desktop taskbar can identify command-line launches. Existing custom or
 package-installed desktop entries take precedence.
 
+## InStat team-only PDF reports
+
+`scripts/hstream_instat_generate_team_only_reports.py` scans a directory of
+InStat hockey match/player PDFs, lists the teams it finds, and creates filtered
+reports for the selected team without changing the source PDFs:
+
+```bash
+scripts/hstream_instat_generate_team_only_reports.py /path/to/reports
+```
+
+Use `--team "Team Name"` for non-interactive runs. The Debian package installs
+the script under `/opt/hstream/scripts` and exposes it as
+`hstream-instat-generate-team-only-reports`. The offline utility requires
+Python 3, Pillow, and Poppler; the package declares those dependencies. With
+`--recursive`, generated files mirror the source subdirectory layout under the
+output directory so same-named reports cannot overwrite one another.
+
 ## Models / Pretrained Assets
 
 The default `configs/config_infer_yolox_hockey.yaml` declares the YOLOX-s COCO assets it needs under

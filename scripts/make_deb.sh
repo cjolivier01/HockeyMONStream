@@ -1025,9 +1025,10 @@ UISH
   chmod 755 "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh"
 fi
 
-# A short-lived older package left its runtime calibration tree unowned after
-# upgrades. Current releases are fully native, so remove only that exact legacy
-# install-prefix residue during configuration.
+# A short-lived older package left its Python calibration tree unowned after
+# upgrades. Runtime calibration is now native, so remove only that exact legacy
+# install-prefix residue during configuration. The standalone InStat PDF tool
+# under scripts/ is unrelated to this legacy tree.
 cat > "${STAGING}/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e
@@ -1039,10 +1040,17 @@ POSTINST
 chmod 0755 "${STAGING}/DEBIAN/postinst"
 
 # ---------- package-owned command wrappers ----------
+install -m 0755 \
+  "${TOPDIR}/scripts/hstream_instat_generate_team_only_reports.py" \
+  "${STAGING}${INSTALL_PREFIX}/scripts/hstream_instat_generate_team_only_reports.py"
+
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
 ln -s "${INSTALL_PREFIX}/bin/hstream-job" "${STAGING}/usr/bin/hstream-job"
 ln -s "${INSTALL_PREFIX}/bin/hstream-assets" "${STAGING}/usr/bin/hstream-assets"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream"
+ln -s \
+  "${INSTALL_PREFIX}/scripts/hstream_instat_generate_team_only_reports.py" \
+  "${STAGING}/usr/bin/hstream-instat-generate-team-only-reports"
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   ln -s "${INSTALL_PREFIX}/hstream-ui.sh" "${STAGING}/usr/bin/hstream-ui"
   install -m 0644 \
@@ -1357,6 +1365,9 @@ Depends: ${SHLIB_DEPENDS},
  ffmpeg,
  fonts-dejavu-core,
  perl,
+ poppler-utils,
+ python3,
+ python3-pil,
  gstreamer1.0-plugins-bad,
  gstreamer1.0-nice${RUNTIME_TOOL_DEPENDS}
 Description: ${PACKAGE_DESCRIPTION}
@@ -1373,9 +1384,18 @@ Description: ${PACKAGE_DESCRIPTION}
  ${UI_LAUNCH_HELP}
 CONTROL
 
-if find "${STAGING}${INSTALL_PREFIX}" -type f \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit \
-  | grep -q .; then
-  echo "ERROR: Python runtime files unexpectedly entered the native HStream package." >&2
+unexpected_python_file="$(find "${STAGING}${INSTALL_PREFIX}" -type f \
+  \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) \
+  ! -path "${STAGING}${INSTALL_PREFIX}/scripts/hstream_instat_generate_team_only_reports.py" \
+  -print -quit)"
+if [[ -n "${unexpected_python_file}" ]]; then
+  echo "ERROR: an unexpected Python runtime file entered the HStream package: ${unexpected_python_file}" >&2
+  exit 1
+fi
+if [[ ! -x "${STAGING}${INSTALL_PREFIX}/scripts/hstream_instat_generate_team_only_reports.py" ]] ||
+   [[ "$(readlink "${STAGING}/usr/bin/hstream-instat-generate-team-only-reports")" != \
+      "${INSTALL_PREFIX}/scripts/hstream_instat_generate_team_only_reports.py" ]]; then
+  echo "ERROR: the InStat team-only report command was not staged correctly." >&2
   exit 1
 fi
 if grep -RIE '(python3|PYTHONPATH|HM_PYTHON|setup_pretrained_assets[.]py|hmlib[.]cli)' \
