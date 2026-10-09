@@ -181,7 +181,11 @@ bool DualRecorderService::BuildPipeline(const DualRecordOptions &opt, std::strin
     // Add branch elements to the pipeline and link in-order
     gst_bin_add_many(GST_BIN(pipeline_), b[i].src, b[i].caps, b[i].queue, b[i].enc, b[i].parser, b[i].mux, b[i].sink, NULL);
     if (!gst_element_link_many(b[i].src, b[i].caps, b[i].queue, b[i].enc, b[i].parser, b[i].mux, b[i].sink, NULL)) {
-      if (err) *err = "link failed"; return false; }
+      if (err) {
+        *err = "link failed";
+      }
+      return false;
+    }
   }
 
   // Use NONE start-time so both branches start from the same running time

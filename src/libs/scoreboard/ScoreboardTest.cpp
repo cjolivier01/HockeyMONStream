@@ -1,6 +1,5 @@
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
 
-#include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <cstdlib>
 #include <iostream>
@@ -49,10 +48,6 @@ int main(int argc, char** argv) {
   // cv::Mat warpedImage = scoreboard.forward_cv(image);
   cv::Mat warpedImage = scoreboard.forward_cuda(image);
   // cv::Mat warpedImage = scoreboard.forward(image);
-
-  // Display the warped image.
-  //cv::imshow("Warped Image", warpedImage);
-  //cv::waitKey(0);
 
   return 0;
 }

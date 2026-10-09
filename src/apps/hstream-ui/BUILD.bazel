@@ -5,6 +5,13 @@ COMMON_COPTS = [
     "c++",
     "-std=c++17",
     "-fPIC",
+    # Qt's inline members are emitted as weak globals in every translation unit
+    # that uses them, and from a .so they escape into the global symbol table --
+    # ~1200 of them per library here. Any other Qt in the process then risks
+    # binding to ours instead of its own. Qt's own build uses this flag for the
+    # same reason; it leaves vtables and typeinfo alone, so moc and dynamic_cast
+    # are unaffected.
+    "-fvisibility-inlines-hidden",
 ]
 
 config_setting(
@@ -499,6 +506,55 @@ cc_test(
 )
 
 cc_library(
+    name = "archive_catalog",
+    srcs = ["ArchiveCatalog.cpp"],
+    hdrs = ["ArchiveCatalog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [":highlight_plan", "@qt//:qt_core"],
+)
+
+cc_test(
+    name = "archive_catalog_test",
+    srcs = ["ArchiveCatalogTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":archive_catalog", "@qt//:qt_core"],
+)
+
+cc_library(
+    name = "highlights_encode_settings",
+    srcs = ["HighlightsEncodeSettings.cpp"],
+    hdrs = ["HighlightsEncodeSettings.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_core"],
+)
+
+cc_test(
+    name = "highlights_encode_settings_test",
+    srcs = ["HighlightsEncodeSettingsTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlights_encode_settings", "@qt//:qt_core"],
+)
+
+cc_library(
+    name = "highlights_archive_player",
+    srcs = ["HighlightsArchivePlayer.cpp"],
+    hdrs = ["HighlightsArchivePlayer.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/apps/apps-common:hm_gpu_preview",
+        "@gstreamer",
+        "@qt//:qt_core",
+    ],
+)
+
+cc_library(
     name = "highlights_dialog",
     srcs = ["HighlightsDialog.cpp"],
     hdrs = ["HighlightsDialog.h"],
@@ -506,10 +562,12 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":action_icons",
+        ":archive_catalog",
         ":preview_dialog_window",
         ":ansi_log_format",
         ":highlight_plan",
-        ":scoreboard_selection_dialog",
+        ":highlights_archive_player",
+        ":highlights_encode_settings",
         "@qt//:qt_widgets",
     ],
 )
@@ -521,7 +579,7 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     tags = ["local", "manual"],
-    deps = [":highlights_dialog", "@qt//:qt_widgets"],
+    deps = [":archive_catalog", ":highlights_dialog", "@qt//:qt_widgets"],
 )
 
 cc_library(
@@ -538,6 +596,7 @@ cc_library(
         ":action_icons",
         ":ansi_log_format",
         ":application_identity",
+        ":archive_catalog",
         ":camera_experiment_dialog",
         ":highlights_dialog",
         ":pipeline_inspector_widget",
@@ -636,6 +695,10 @@ cc_binary(
 cc_test(
     name = "hstream_ui_test",
     srcs = ["HStreamWindowTest.cpp"],
+    # Drives the whole window through several thousand assertions, including
+    # fake pipeline processes and crop-dialog round trips; the medium default
+    # implied by size is not enough.
+    timeout = "long",
     data = [
         "//configs:play_tracker_config.yaml",
         "//configs:ds_hockey_app_config.yaml",
@@ -656,6 +719,7 @@ cc_test(
     },
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        ":archive_catalog",
         ":hstream_window",
         ":projection_crop_dialog",
         ":rink_leveling_dialog",

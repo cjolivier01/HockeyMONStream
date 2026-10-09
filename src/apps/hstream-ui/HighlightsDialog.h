@@ -1,15 +1,19 @@
 #pragma once
 
+#include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/HighlightPlan.h"
+#include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
 
 #include <QtCore/QList>
-#include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
+#include <QtCore/QString>
+#include <QtCore/QStringList>
 #include <QtCore/QVector>
 #include <QtWidgets/QDialog>
 
-class QCheckBox;
+#include <memory>
+
 class QCloseEvent;
 class QKeyEvent;
 class QComboBox;
@@ -19,22 +23,24 @@ class QPushButton;
 class QSplitter;
 class QTableWidget;
 class QTextEdit;
-class ScoreboardSelectionDialog;
+class QTimer;
 class PreviewFocusButton;
 
 namespace hm::ui {
 
+class HighlightsArchivePlayer;
 class HighlightsVideoTarget;
+
+// Plans highlight intervals for a game and cuts them out of an already
+// published destination archive. Preview is a seek inside that archive and
+// export is a single ffmpeg pass over it; the capture pipeline is never re-run.
 class HighlightsDialog : public QDialog {
  public:
   HighlightsDialog(
       QString game_id,
       QString game_dir,
-      QString runner,
-      QString working_dir,
-      QString output_root,
       QProcessEnvironment env,
-      QStringList base_runner_args,
+      QVector<ArchiveEntry> archives,
       QWidget* parent = nullptr);
   ~HighlightsDialog() override;
 
@@ -47,15 +53,13 @@ class HighlightsDialog : public QDialog {
   void keyPressEvent(QKeyEvent* event) override;
 
  private:
-  enum class Job { kNone, kPreview, kExport };
-  enum class Stage { kIdle, kCli, kProbe, kVideoPackets, kConcat };
-  struct Chunk {
+  enum class Job { kNone, kInspect, kPreview, kExport };
+  enum class Stage { kIdle, kProbe, kEncoders, kEncode, kJoin };
+  // A planned interval resolved onto the selected archive's own timeline.
+  struct Clip {
     HighlightInterval interval;
-    QStringList paths;
-    QVector<qint64> format_start_time_ms;
-    QVector<qint64> video_start_time_ms;
-    QVector<qint64> effective_duration_ms;
-    bool source_eos{false};
+    qint64 archive_start_ms{0};
+    qint64 archive_end_ms{0};
   };
 
   void refreshTable();
@@ -67,78 +71,88 @@ class HighlightsDialog : public QDialog {
   void updateInterval();
   void removeInterval();
   void moveInterval(int delta);
+
+  const ArchiveEntry* selectedArchive() const;
+  qint64 archiveDurationMs() const;
+  void refreshArchiveChoices();
+  void applyArchiveSelection();
+  void commitArchiveOffset();
+  // Maps a planned interval onto the archive. Returns an explanation when the
+  // interval does not lie inside it.
+  QString resolveClip(const HighlightInterval& interval, Clip* clip) const;
+  bool buildQueue(bool selected, QVector<Clip>* clips, QString* error) const;
+
   void beginPreview(bool selected, bool loop);
   void beginExport(bool selected);
-  void beginJob(Job job, bool selected, bool loop);
-  void runNextClip();
-  void startProbe();
-  void startVideoPacketProbe();
-  void startConcat();
-  void publishConcat();
+  void pollPreview();
+  void stopPreview();
+
+  void startInspection();
+  void startEncoderQuery();
+  void startEncode();
+  void startNextPart();
+  bool writePartManifest(const QString& manifest_path, QString* error) const;
+  void startJoin();
+  void publishEncode();
   void finishJob(bool success, const QString& message);
   void requestActiveProcessStop();
   void readProcessOutput();
   void appendProcessError(const QString& output, bool flush = false);
-  void consumeVideoPacketOutput(const QString& output, bool flush);
+  void consumeEncodeProgress(const QString& output);
   void processFinished(int code, QProcess::ExitStatus status);
   void appendLog(const QString& line);
   bool embeddedPreviewAvailable() const;
-  void handleScoreboardSelectorOutput(const QString& output);
-  void closeScoreboardSelector();
   void setPreviewFocused(bool focused);
-  QStringList cliArguments(const HighlightInterval& interval, const QStringList& routes) const;
-  QString routeOutputPath(int clip_index, const QString& route) const;
   QString finalOutputPath(const QString& route) const;
-  static QString routeSink(const QString& route);
-  static QString routeName(int sink_id);
 
   QString game_id_;
   QString game_dir_;
-  QString runner_;
-  QString working_dir_;
-  QString output_root_;
   QProcessEnvironment env_;
-  QStringList base_runner_args_;
+  QVector<ArchiveEntry> archives_;
   QString plan_path_;
   QString plan_load_error_;
   HighlightPlan plan_;
   HighlightPlan frozen_plan_;
-  QVector<HighlightInterval> queue_;
-  QVector<Chunk> chunks_;
-  QStringList routes_;
+  QVector<Clip> queue_;
+
+  int archive_index_{-1};
+  qint64 archive_offset_ms_{0};
+  ArchiveMediaInfo media_;
+  bool media_valid_{false};
+  QString media_path_;
+  QString media_error_;
+  HighlightsEncodeSettings encode_settings_;
+  QStringList encoders_;
+  bool encoders_known_{false};
+
   QString work_dir_;
-  QString publication_work_dir_;
   QString final_partial_path_;
-  QStringList published_paths_;
+  QStringList encode_parts_;
+  QString encode_status_prefix_;
+  int encode_part_index_{0};
+  qint64 encode_done_ms_{0};
+  QString current_route_;
+  QString published_path_;
   QString process_output_buffer_;
   QString process_error_buffer_;
-  QString scoreboard_selector_output_tail_;
-  QString scoreboard_selector_url_;
   QString probe_output_;
-  QString probe_packet_buffer_;
-  QString probe_baseline_;
-  double probe_video_start_seconds_{0};
-  double probe_video_end_seconds_{0};
-  bool probe_saw_video_packet_{false};
-  bool probe_video_packet_error_{false};
-  QStringList route_video_codecs_;
-  QVector<bool> route_has_audio_;
-  QString current_route_;
-  QString current_expected_path_;
-  int queue_index_{0};
-  int probe_clip_index_{0};
-  int probe_route_index_{0};
-  int concat_route_index_{0};
+  qint64 encode_total_ms_{0};
+  int encode_percent_{-1};
+
   quint64 job_generation_{0};
   bool loop_{false};
   bool cancelling_{false};
   bool close_when_stopped_{false};
   int close_result_{QDialog::Rejected};
-  QString current_cli_result_;
   Job job_{Job::kNone};
   Stage stage_{Stage::kIdle};
   QProcess process_;
-  QPointer<ScoreboardSelectionDialog> scoreboard_selection_dialog_;
+
+  bool preview_supported_{false};
+  std::unique_ptr<HighlightsArchivePlayer> player_;
+  QString player_path_;
+  QTimer* preview_timer_{nullptr};
+  int preview_segment_{-1};
 
   QTableWidget* table_{nullptr};
   QSplitter* preview_splitter_{nullptr};
@@ -147,14 +161,15 @@ class HighlightsDialog : public QDialog {
   QVector<QWidget*> preview_focus_hidden_;
   QList<int> preview_splitter_sizes_;
   bool preview_focused_{false};
+  QLabel* archive_label_{nullptr};
+  QComboBox* archive_combo_{nullptr};
+  QLineEdit* archive_offset_edit_{nullptr};
+  QLabel* archive_detail_{nullptr};
   QLineEdit* label_edit_{nullptr};
   QComboBox* mode_combo_{nullptr};
   QLineEdit* first_edit_{nullptr};
   QLineEdit* second_edit_{nullptr};
   QLineEdit* base_name_edit_{nullptr};
-  QCheckBox* program_check_{nullptr};
-  QCheckBox* program_4k_check_{nullptr};
-  QCheckBox* stitched_check_{nullptr};
   QPushButton* add_button_{nullptr};
   QPushButton* update_button_{nullptr};
   QPushButton* remove_button_{nullptr};

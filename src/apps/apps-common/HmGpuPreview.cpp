@@ -706,6 +706,30 @@ bool make_context_current(GstHmGpuPreviewSink* self) {
       "could not make GLX context current on the preview window");
 }
 
+// Present as soon as a frame is ready instead of waiting for the next vblank.
+// The pipeline, not the monitor, decides when a preview frame is due: a 59.94
+// fps archive against a 60 Hz display misses a refresh every few seconds, and
+// each miss costs a whole refresh period. Measured on a 4K archive, that held
+// playback to 0.88x and starved the audio branch; without the wait it runs at
+// 1.00x. Tearing is the trade, and it is the right one for a monitor window.
+void disable_vertical_sync(RendererState* state) {
+  if (!state->display || state->window_id == 0)
+    return;
+  const auto load = [](const char* name) {
+    return glXGetProcAddressARB(reinterpret_cast<const GLubyte*>(name));
+  };
+  if (auto* ext = reinterpret_cast<void (*)(Display*, GLXDrawable, int)>(load("glXSwapIntervalEXT"))) {
+    ext(state->display, static_cast<GLXDrawable>(state->window_id), 0);
+    return;
+  }
+  if (auto* mesa = reinterpret_cast<int (*)(unsigned int)>(load("glXSwapIntervalMESA"))) {
+    mesa(0);
+    return;
+  }
+  if (auto* sgi = reinterpret_cast<int (*)(int)>(load("glXSwapIntervalSGI")))
+    sgi(0);
+}
+
 bool make_cleanup_context_current(GstHmGpuPreviewSink* self) {
   RendererState* state = self->state;
   if (state->cleanup_window != 0 &&
@@ -807,6 +831,7 @@ bool initialize_renderer(GstHmGpuPreviewSink* self) {
     post_sink_failure(self, "could not create a GLX context for the preview XID");
     return false;
   }
+  disable_vertical_sync(state);
   if (!cuda_succeeded(self, cudaSetDevice(state->gpu_id), "cudaSetDevice")) {
     release_context(state);
     return false;

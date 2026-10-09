@@ -289,6 +289,9 @@ class HStreamWindow : public QMainWindow {
       bool source_was_replaced);
   void completeArchiveFinalization();
   void finishCompletedArchivePresentation(qint64 final_size, bool source_removed, bool source_was_replaced);
+  // Records the game-time origin of a freshly published archive, which the file
+  // itself does not carry. Highlights reads it to keep its times in game time.
+  void writeCompletedArchiveSidecar();
   void showArchiveFinalizationFailure(const QString& failure_detail);
   void failArchiveFinalization(const QString& message);
   bool acquireArchiveFinalizerOwnership(const QString& source_path, QString* error);
@@ -490,6 +493,9 @@ class HStreamWindow : public QMainWindow {
       bool* applied = nullptr);
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
+  // Re-reads the game directory for published archives. Highlights has nothing
+  // to cut from until one exists, so the button follows this.
+  void refreshArchiveAvailability();
   void updateRunControls();
   void updateStitchingStillPreview();
   void synchronizeStitchedColorControls();
@@ -833,6 +839,9 @@ class HStreamWindow : public QMainWindow {
   bool archive_finalize_failed_{false};
   bool archive_finalize_is_stitched_{false};
   QString archive_finalize_output_id_{"archive-file"};
+  // --start-time of the run that is producing the archives being finalized.
+  qint64 active_run_start_time_ms_{0};
+  bool have_published_archives_{false};
   bool active_run_is_calibration_{false};
   bool active_run_high_bit_depth_{false};
   bool active_run_high_bit_depth_resolved_{false};

@@ -10,8 +10,6 @@ int main(int argc, char** argv) {
   int capture_width = 3840;
   int capture_height = 2160;
   int fps = 30;
-  bool show = false;
-  bool interactive = false;
   bool verbose = false;
   bool async = false;
   (void)async;
@@ -26,10 +24,6 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) {
         device_id = std::stoi(argv[++i]);
       }
-    } else if (arg == "--interative") {
-      interactive = true;
-    } else if (arg == "--show") {
-      show = true;
     } else if (arg == "-v" || arg == "--verbose") {
       verbose = true;
     } else if (arg == "-w" || arg == "--width") {
@@ -59,16 +53,8 @@ int main(int argc, char** argv) {
     }
   }
 
-  absl::Status status = hm::camera::auto_focus_csi_camera(
-      device_id,
-      i2c_bus,
-      capture_width,
-      capture_height,
-      fps,
-      /*fps_d=*/1,
-      show,
-      interactive,
-      verbose);
+  absl::Status status =
+      hm::camera::auto_focus_csi_camera(device_id, i2c_bus, capture_width, capture_height, fps, /*fps_d=*/1, verbose);
   if (!status.ok()) {
     std::cerr << status << std::endl;
   }

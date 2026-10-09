@@ -26,17 +26,10 @@ absl::Status auto_focus_csi_camera(
     int height,
     int fps_n,
     int fps_d,
-    bool show,
-    bool interactive,
     bool verbose,
     bool force = false);
 
-absl::Status auto_focus_cameras(
-    const std::vector<CameraConnection>& cameras,
-    bool show,
-    bool interactive,
-    bool verbose,
-    bool force = false);
+absl::Status auto_focus_cameras(const std::vector<CameraConnection>& cameras, bool verbose, bool force = false);
 
 } // namespace camera
 } // namespace hm

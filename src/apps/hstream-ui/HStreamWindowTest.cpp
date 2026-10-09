@@ -1,10 +1,12 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
@@ -1020,6 +1022,87 @@ void activate(QAbstractButton* button) {
   QApplication::processEvents();
 }
 
+// Runs `open`, which blocks inside the crop editor's exec(), and hands the
+// dialog to `handle` once it is really on screen; the dialog is cancelled
+// afterwards unless `handle` already dismissed it. Returns whether one opened.
+//
+// The poll has to repeat rather than fire once. Opening the editor pumps
+// events on its way to exec(), so a single shot can land while the dialog does
+// not exist yet; it then finds nothing, returns, and the suite blocks in exec()
+// forever with nothing left to close it. Waiting for the dialog from inside a
+// one-shot is worse still, because the code that creates it sits below that
+// frame on the stack. Every tick must therefore return promptly until the
+// dialog is up.
+template <typename Open, typename Handle>
+bool with_projection_crop_dialog(Open open, Handle handle) {
+  QTimer poll;
+  bool seen = false;
+  QObject::connect(&poll, &QTimer::timeout, [&]() {
+    if (seen)
+      return;
+    ProjectionCropDialog* dialog = nullptr;
+    for (QWidget* top : QApplication::topLevelWidgets()) {
+      if (auto* candidate = dynamic_cast<ProjectionCropDialog*>(top); candidate && candidate->isVisible())
+        dialog = candidate;
+    }
+    if (!dialog)
+      return;
+    seen = true;
+    poll.stop();
+    handle(dialog);
+    if (dialog->isVisible())
+      dialog->close();
+  });
+  poll.start(10);
+  open();
+  poll.stop();
+  QApplication::processEvents();
+  return seen;
+}
+
+// Opens the crop editor, runs `adjust` once its preview is up, and confirms,
+// retrying while the editor refuses. It refuses in two transient ways, and
+// both ask the reader to reopen rather than to wait: the still-preview worker
+// holds the artifact lock the preview needs, and Confirm bails when the
+// calibration moved underneath the editor. Doing what it asks beats racing the
+// worker, which is otherwise a coin flip on a loaded machine.
+//
+// Two more refusals are silent rather than transient, and both are a click on
+// an insensitive button: Adjust crop goes insensitive while a pipeline the
+// previous step started winds down, and the editor's own Confirm stays
+// insensitive until nona has finished drawing the preview. Neither costs any
+// time, so retrying through them spends the whole budget in a few milliseconds
+// and the step fails on a loaded machine while succeeding on an idle one.
+// Wait for each button instead.
+template <typename Adjust>
+bool confirm_projection_crop(QAbstractButton* crop_button, Adjust adjust) {
+  bool confirmed = false;
+  for (int attempt = 0; attempt < 24 && !confirmed; ++attempt) {
+    for (int wait = 0; wait < 400 && !crop_button->isEnabled(); ++wait)
+      QTest::qWait(50);
+    if (!crop_button->isEnabled())
+      break;
+    with_projection_crop_dialog([&]() { activate(crop_button); }, [&](ProjectionCropDialog* dialog) {
+      auto* status = dialog->findChild<QLabel*>("projectionCropStatus");
+      auto* accept = dialog->findChild<QPushButton*>("acceptProjectionCropButton");
+      const auto preview_refused = [&]() {
+        return status && status->text().startsWith("Stitching calibration is being updated");
+      };
+      const auto ready = [&]() { return !dialog->sourceRevision().isEmpty() && accept->isEnabled(); };
+      for (int wait = 0; wait < 500 && !ready() && !preview_refused(); ++wait)
+        QTest::qWait(20);
+      if (!ready())
+        return;
+      adjust(dialog);
+      accept->click();
+      confirmed = !dialog->isVisible();
+    });
+    if (!confirmed)
+      QTest::qWait(250);
+  }
+  return confirmed;
+}
+
 bool select_list_item(QListWidget* list, const QString& text) {
   for (int i = 0; i < list->count(); ++i) {
     if (list->item(i)->text().contains(text)) {
@@ -1676,6 +1759,9 @@ bool test_window_title_tracks_selected_game(HStreamWindow* window) {
     return false;
   }
 
+  // Earlier tests share this window and may have left a game selected, so
+  // establish the empty state rather than assuming it.
+  game_id->clear();
   if (!expect(
           window->windowTitle() == "HStream UI", "Window title should omit the game suffix when none is selected")) {
     return false;
@@ -2678,26 +2764,48 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
 bool test_highlights_dialog_controls(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* highlights = require_child<QPushButton>(window, "highlightsButton");
+  auto* refresh_games = require_child<QPushButton>(window, "refreshGamesButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!start || !highlights || !mode)
+  if (!start || !highlights || !refresh_games || !mode)
     return false;
   mode->setCurrentIndex(mode->findData("program"));
   QApplication::processEvents();
-  if (!expect(start->isEnabled() && highlights->isEnabled(), "Program mode must allow a highlights job"))
+  if (!expect(
+          start->isEnabled() && !highlights->isEnabled() && highlights->toolTip().contains("Publish an archive"),
+          "Highlights must stay out of reach while the game has nothing published to cut from"))
+    return false;
+  // Highlights reads a published archive rather than re-running the pipeline,
+  // so a file on disk is the entire precondition; nothing has to have run here.
+  const QString staged_archive =
+      QDir(window->gameDirectoryText()).filePath(window->gameIdText() + "-tracking_output-with-audio-1.mp4");
+  {
+    QFile file(staged_archive);
+    if (!expect(
+            file.open(QIODevice::WriteOnly) && file.write("archive") == 7, "Could not stage a published archive"))
+      return false;
+  }
+  activate(refresh_games);
+  if (!expect(highlights->isEnabled(), "Refresh must notice an archive that arrived from outside this window"))
     return false;
   activate(highlights);
   auto* dialog = window->findChild<QDialog*>("highlightsDialog");
   if (!expect(dialog && !start->isEnabled(), "Opening Highlights must block the main pipeline"))
     return false;
+  // The dialog inspects the archive with ffprobe as it opens, and a close
+  // arriving mid-inspection is deferred until that process is reaped. The main
+  // window then re-enables its controls one event-loop turn after the dialog is
+  // destroyed, so wait for the button rather than for the dialog alone.
   dialog->close();
-  for (int attempt = 0; attempt < 50 && window->findChild<QDialog*>("highlightsDialog"); ++attempt) {
-    QApplication::processEvents();
-    QThread::msleep(1);
-  }
-  QApplication::processEvents();
-  return expect(
-      !window->findChild<QDialog*>("highlightsDialog") && start->isEnabled(),
-      "Closing Highlights must reenable the main pipeline");
+  for (int attempt = 0; attempt < 500 && (window->findChild<QDialog*>("highlightsDialog") || !start->isEnabled());
+       ++attempt)
+    QTest::qWait(10);
+  const bool reenabled = !window->findChild<QDialog*>("highlightsDialog") && start->isEnabled();
+  // Leave the game directory as it was found: a stray archive would shift the
+  // generation numbering every later test computes against.
+  QFile::remove(staged_archive);
+  activate(refresh_games);
+  return expect(reenabled, "Closing Highlights must reenable the main pipeline") &&
+      expect(!highlights->isEnabled(), "Removing the last archive must put Highlights back out of reach");
 }
 
 bool set_test_calibration_status(HStreamWindow* window, const std::string& status, int control_points = 1500) {
@@ -3732,10 +3840,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   projection->setCurrentIndex(projection->findData("general-panini"));
   QApplication::processEvents();
-  const bool general_panini_framing_defaults = projection_auto_fov->isEnabled() && !projection_auto_fov->isChecked() &&
-      projection_horizontal_fov->isEnabled() && projection_horizontal_fov->value() == 180.0 &&
-      projection_horizontal_fov->maximum() == 319.91 && projection_auto_canvas->isEnabled() &&
+  // configs/baseline.yaml configures General Panini with Auto FOV on and holds
+  // 195 degrees for manual use. Auto FOV leaves that saved value alone and
+  // lifts the spin's ceiling to 360 so it survives a round trip untouched.
+  const bool general_panini_framing_defaults = projection_auto_fov->isEnabled() && projection_auto_fov->isChecked() &&
+      !projection_horizontal_fov->isEnabled() && projection_horizontal_fov->value() == 195.0 &&
+      projection_horizontal_fov->maximum() == 360.0 && projection_auto_canvas->isEnabled() &&
       projection_auto_canvas->isChecked() && projection_auto_crop->isEnabled() && !projection_auto_crop->isChecked();
+  projection_auto_fov->setChecked(false);
+  QApplication::processEvents();
+  // Turning Auto FOV off hands the fixed value back to the user, now bounded by
+  // what General Panini can actually represent.
+  const bool general_panini_fixed_fov_limit =
+      projection_horizontal_fov->isEnabled() && projection_horizontal_fov->maximum() == 319.91;
   projection_auto_fov->setChecked(true);
   QApplication::processEvents();
   const bool auto_fov_disables_fixed_value = !projection_horizontal_fov->isEnabled();
@@ -3894,12 +4011,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   projection->setCurrentIndex(projection->findData(original_projection));
   mapping_backend->setCurrentIndex(mapping_backend->findData(original_mapping_backend));
   QApplication::processEvents();
-  if (!general_panini_framing_defaults || !auto_fov_disables_fixed_value || !rectilinear_fov_limit ||
+  if (!general_panini_framing_defaults || !general_panini_fixed_fov_limit || !auto_fov_disables_fixed_value ||
+      !rectilinear_fov_limit ||
       !wide_projection_fov_limit || !general_panini_fov_restored || !general_panini_parameters_visible ||
       !albers_parameters_visible || !biplane_parameters_visible || !triplane_parameters_visible ||
       !fixed_panini_parameters_hidden || !parameters_hidden_for_native_backend || !all_projection_layouts_legible ||
       !all_projection_artifacts_captured) {
     std::cerr << "projection-control diagnostics: panini-defaults=" << general_panini_framing_defaults
+              << " panini-fixed-limit=" << general_panini_fixed_fov_limit
               << " auto-disables-fixed=" << auto_fov_disables_fixed_value
               << " rectilinear-limit=" << rectilinear_fov_limit << " wide-limit=" << wide_projection_fov_limit
               << " panini-restored=" << general_panini_fov_restored
@@ -3964,7 +4083,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               projection->findData("general-panini") >= 0 && all_nona_projections_enabled && only_rectilinear_enabled &&
               general_panini_parameters_visible && albers_parameters_visible && biplane_parameters_visible &&
               triplane_parameters_visible && fixed_panini_parameters_hidden && parameters_hidden_for_native_backend &&
-              general_panini_framing_defaults && auto_fov_disables_fixed_value && rectilinear_fov_limit &&
+              general_panini_framing_defaults && general_panini_fixed_fov_limit && auto_fov_disables_fixed_value &&
+              rectilinear_fov_limit &&
               wide_projection_fov_limit && general_panini_fov_restored && !projection_auto_fov->isEnabled() &&
               !projection_horizontal_fov->isEnabled() && !projection_auto_canvas->isEnabled() &&
               !projection_auto_crop->isEnabled() && all_projection_layouts_legible && all_projection_artifacts_captured,
@@ -6200,7 +6320,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
       !expect(
           !window->logText().contains(QChar(0x1b)), "ANSI control characters should not appear in plain log text") ||
-      !expect(log->toHtml().contains("#81a1c1"), "ANSI foreground color should render as rich log text") ||
+      // The palette decides which of the two contrast variants the log paints
+      // with, so pick the same one hm::ui::ansi_to_html would rather than
+      // assuming the desktop theme this runs under.
+      !expect(
+          log->toHtml().contains(log->palette().color(QPalette::Base).lightness() < 128 ? "#81a1c1" : "#1d4ed8"),
+          "ANSI foreground color should render as rich log text") ||
       !expect(window->pipelineStateText() == "PLAYING", "Test runner should keep calibration process running")) {
     return false;
   }
@@ -7816,6 +7941,14 @@ bool test_output_controls(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", "250");
   drivegpt_csv->setChecked(true);
+  // The archive itself starts at zero no matter where the run was seeked to, so
+  // the run's own offset is the only record of what game time its first frame
+  // holds. Highlights needs it to read game-time intervals against the file.
+  auto* archive_playback_start = require_child<QTimeEdit>(window, "playbackStartTimeEdit");
+  if (!archive_playback_start)
+    return false;
+  archive_playback_start->setTime(QTime(0, 9, 56, 500));
+  QApplication::processEvents();
   activate(start);
   QDialog* finalize_dialog = nullptr;
   QProgressBar* finalize_progress = nullptr;
@@ -7929,6 +8062,13 @@ bool test_output_controls(HStreamWindow* window) {
           window->logText().contains(QString("completed archive published: %1").arg(replaced_completed_target)),
       "Finalization must remux the pinned source FD, skip dangling names, republish a target replaced during sync, "
       "and leave replacement source, target, and ownership-lock paths untouched");
+  hm::ui::ArchiveEntry published_sidecar;
+  const bool sidecar_loaded = hm::ui::LoadArchiveSidecar(replaced_completed_target, &published_sidecar);
+  const bool archive_origin_recorded = expect(
+      sidecar_loaded && QFileInfo::exists(hm::ui::ArchiveSidecarPath(replaced_completed_target)) &&
+          published_sidecar.game_id == window->gameIdText() && published_sidecar.kind == "program" &&
+          published_sidecar.start_time_known && published_sidecar.start_time_ms == 596500,
+      "A published archive must record the game time its first frame holds");
   bool telemetry_deployed = true;
   for (const QString& stem : telemetry_stems) {
     QFile published_file(QDir(window->gameDirectoryText()).filePath(stem + "-5.csv"));
@@ -8656,7 +8796,8 @@ bool test_output_controls(HStreamWindow* window) {
       path_visible_before_start && path_prepared && nonlocal_seek_blocked && interrupted_archive_preserved &&
       missing_new_output_reported && job_log_persisted && incomplete_exit_log_guarded && same_filesystem_log_rollback &&
       cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
-      durability_sync_responsive && telemetry_copy_responsive && telemetry_deployed && target_cleanup_race_recovered &&
+      archive_origin_recorded && durability_sync_responsive && telemetry_copy_responsive && telemetry_deployed &&
+      target_cleanup_race_recovered &&
       ui_cleanup_restart_reconciled && ui_cleanup_reconciliation_race_safe && source_cleanup_sync_failure_recovered &&
       cleanup_directory_sync_failure_safe && guard_sync_failure_moved && failed_archive_retained &&
       no_log_recovery_reserved && post_quarantine_recovery_safe && recovery_publication_sync_failure_safe &&
@@ -9440,31 +9581,24 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(crop_button && crop_button->isEnabled(), "The crop editor is available for a stopped NONA game"))
     return false;
   bool crop_dialog_seen = false;
-  QTimer::singleShot(0, [&]() {
-    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-    if (!dialog)
-      return;
-    auto* mode = dialog->findChild<QComboBox*>("projectionCropMode");
-    auto* keep = dialog->findChild<QCheckBox*>("projectionCropKeepWidth");
-    crop_dialog_seen = mode && keep && mode->currentData() == "manual";
-    if (crop_dialog_seen)
-      keep->setChecked(true);
-    dialog->reject();
-  });
-  activate(crop_button);
+  with_projection_crop_dialog(
+      [&]() { activate(crop_button); },
+      [&](ProjectionCropDialog* dialog) {
+        auto* mode = dialog->findChild<QComboBox*>("projectionCropMode");
+        auto* keep = dialog->findChild<QCheckBox*>("projectionCropKeepWidth");
+        crop_dialog_seen = mode && keep && mode->currentData() == "manual";
+        if (crop_dialog_seen)
+          keep->setChecked(true);
+      });
   if (!expect(crop_dialog_seen && !save->isEnabled(), "Cancel in the crop editor must preserve the loaded preset"))
     return false;
-  QTimer::singleShot(0, [&]() {
-    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-    if (!dialog)
-      return;
+  with_projection_crop_dialog([&]() { activate(crop_button); }, [](ProjectionCropDialog* dialog) {
     dialog->findChild<QComboBox*>("projectionCropMode")->setCurrentIndex(2);
     dialog->findChild<QCheckBox*>("projectionCropKeepWidth")->setChecked(true);
     dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(30);
     dialog->findChild<QDoubleSpinBox*>("projectionCropBottom")->setValue(10);
     dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
   });
-  activate(crop_button);
   if (!expect(save->isEnabled(), "A manual crop selection marks the preset dirty"))
     return false;
   activate(save);
@@ -9531,7 +9665,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       "\ncamera-configuration=gopro-mission-1\ncamera-horizontal-fov=126.5\ncamera-vertical-fov=94.5\n"
       "control-point-matcher=" +
       QByteArray::fromStdString(crop_choices.control_point_matcher) +
-      "\nakaze-calibration-fingerprint=not-applicable"
+      // Provenance only carries a fingerprint for AKAZE; every other matcher has
+      // to say so explicitly, and a mismatch is rejected outright.
+      "\nakaze-calibration-fingerprint=" +
+      QByteArray(crop_choices.control_point_matcher == "akaze-hamming" ? "absent" : "not-applicable") +
       "\nprojection-rotation-0=0\nprojection-rotation-1=-35\nprojection-rotation-2=3\n"
       "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0.3\nprojection-crop-3=0.9\n"
       "control-point-resolution=" +
@@ -9579,17 +9716,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!automatic_crop_dialog)
     return false;
   automatic_crop_dialog->setChecked(false);
-  bool suppressed_dialog_opened = false;
-  QTimer suppress_guard;
-  QObject::connect(&suppress_guard, &QTimer::timeout, [&] {
-    if (auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget())) {
-      suppressed_dialog_opened = true;
-      dialog->close();
-    }
-  });
-  suppress_guard.start(10);
-  const bool suppressed_review = HStreamWindowTestAccess::ensureProjectionCropReviewed(window);
-  suppress_guard.stop();
+  bool suppressed_review = false;
+  const bool suppressed_dialog_opened = with_projection_crop_dialog(
+      [&]() { suppressed_review = HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
+      [](ProjectionCropDialog*) {});
   automatic_crop_dialog->setChecked(true);
   if (!expect(
           suppressed_review && !suppressed_dialog_opened,
@@ -9598,14 +9728,12 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     return false;
   }
   bool startup_crop_opened = false;
-  QTimer::singleShot(0, [&]() {
-    auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
-    startup_crop_opened = dialog && dialog->findChild<QComboBox*>("projectionCropMode")->currentData() == "full";
-    if (dialog)
-      dialog->close();
-  });
-  const bool startup_cancelled = !HStreamWindowTestAccess::ensureProjectionCropReviewed(window);
-  QApplication::processEvents();
+  bool startup_cancelled = false;
+  with_projection_crop_dialog(
+      [&]() { startup_cancelled = !HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
+      [&](ProjectionCropDialog* dialog) {
+        startup_crop_opened = dialog->findChild<QComboBox*>("projectionCropMode")->currentData() == "full";
+      });
   if (!expect(
           startup_crop_opened && startup_cancelled,
           "Unreviewed calibration must prompt with no cropping even after an inactive projection was edited")) {
@@ -9615,22 +9743,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   projection->setCurrentIndex(projection->findData("general-panini"));
   compression->setValue(inactive_compression);
   projection->setCurrentIndex(projection->findData("cylindrical"));
-  bool crop_preview_ready = false;
-  QTimer::singleShot(0, [&]() {
-    auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
-    if (!dialog)
-      return;
-    for (int attempt = 0; attempt < 250 && dialog->sourceRevision().isEmpty(); ++attempt)
-      QTest::qWait(20);
-    crop_preview_ready = !dialog->sourceRevision().isEmpty();
-    if (crop_preview_ready)
-      dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
-    else
-      dialog->close();
-  });
-  activate(crop_button);
+  const bool crop_confirmed =
+      confirm_projection_crop(crop_button, [](ProjectionCropDialog*) {});
   if (!expect(
-          crop_preview_ready && save->isEnabled() && HStreamWindowTestAccess::hasPendingCalibrationView(window),
+          crop_confirmed && save->isEnabled() && HStreamWindowTestAccess::hasPendingCalibrationView(window),
           "Confirming an unchanged crop for the first time must remember that the geometry was reviewed")) {
     qputenv("PATH", crop_original_path);
     return false;
@@ -9642,15 +9758,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     qputenv("PATH", crop_original_path);
     return false;
   }
-  startup_crop_opened = false;
-  QTimer::singleShot(0, [&]() {
-    auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
-    startup_crop_opened = dialog != nullptr;
-    if (dialog)
-      dialog->close();
-  });
-  const bool startup_reused = HStreamWindowTestAccess::ensureProjectionCropReviewed(window);
-  QApplication::processEvents();
+  bool startup_reused = false;
+  startup_crop_opened = with_projection_crop_dialog(
+      [&]() { startup_reused = HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
+      [](ProjectionCropDialog*) {});
   if (!expect(
           startup_reused && !startup_crop_opened,
           "An unchanged, reviewed calibration must start without another crop popup")) {
@@ -9658,24 +9769,13 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     return false;
   }
   for (double top_trim : {35.0, 30.0}) {
-    QTimer::singleShot(0, [&]() {
-      auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
-      if (!dialog)
-        return;
-      for (int attempt = 0; attempt < 250 && dialog->sourceRevision().isEmpty(); ++attempt)
-        QTest::qWait(20);
-      crop_preview_ready = !dialog->sourceRevision().isEmpty();
-      if (crop_preview_ready) {
-        dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(top_trim);
-        dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
-      } else {
-        dialog->close();
-      }
-    });
-    activate(crop_button);
+    const bool trim_confirmed =
+        confirm_projection_crop(crop_button, [top_trim](ProjectionCropDialog* dialog) {
+          dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(top_trim);
+        });
     const bool changed_crop = top_trim == 35.0;
     if (!expect(
-            crop_preview_ready && save->isEnabled() == changed_crop &&
+            trim_confirmed && save->isEnabled() == changed_crop &&
                 HStreamWindowTestAccess::hasPendingCalibrationView(window) == changed_crop,
             "Reverting a staged crop must remove its save guard")) {
       qputenv("PATH", crop_original_path);
@@ -10019,15 +10119,17 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   generated_framing_choices["previous_projection_framing"] = YAML::Load("{horizontal_fov: 185}");
   std::ofstream(config_path) << YAML::Dump(generated_framing_override) << '\n';
   activate(create);
+  // The partial map supplies only the FOV, so the rest of the framing comes
+  // from configs/baseline.yaml: Auto FOV on, automatic canvas, no auto crop.
   const bool partial_previous_framing_inherits_defaults = expect(
-      !auto_fov->isChecked() && horizontal_fov->value() == 185.0 && auto_canvas->isChecked() && !auto_crop->isChecked(),
+      auto_fov->isChecked() && horizontal_fov->value() == 185.0 && auto_canvas->isChecked() && !auto_crop->isChecked(),
       "UI load must merge partial previous projection framing over effective inherited defaults");
 
   generated_framing_choices.remove("previous_projection_framing");
   std::ofstream(config_path) << YAML::Dump(generated_framing_override) << '\n';
   activate(create);
   const bool absent_previous_framing_restores_defaults = expect(
-      !auto_fov->isChecked() && horizontal_fov->value() == 180.0 && auto_canvas->isChecked() && !auto_crop->isChecked(),
+      auto_fov->isChecked() && horizontal_fov->value() == 195.0 && auto_canvas->isChecked() && !auto_crop->isChecked(),
       "UI load must restore inherited projection framing when generated choices displaced no private map");
 
   YAML::Node explicit_zero_generated = YAML::Clone(generated_framing_override);
@@ -10141,9 +10243,15 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       "A saved OpenCV preset must keep the inherited 180-degree framing as clean state");
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
+  // Auto FOV, which baseline.yaml turns on, holds the saved value and lifts the
+  // spin's ceiling to 360. Hugin's limit only binds the fixed value.
+  auto_fov->setChecked(false);
+  QApplication::processEvents();
   const bool nona_rectilinear_clamps_fov = expect(
       horizontal_fov->value() == 179.0,
       "NONA Rectilinear must constrain the fixed horizontal FOV to Hugin's 179-degree limit");
+  auto_fov->setChecked(true);
+  QApplication::processEvents();
   mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
   QApplication::processEvents();
   const bool inactive_opencv_framing_is_clean = expect(
@@ -10468,7 +10576,7 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
           "Clean Stitching should preserve user-authored stitching and non-calibration config")) {
     return false;
   }
-  for (const YAML::Node framing : {
+  for (const YAML::Node& framing : {
            cleaned_stitching["stitching"]["projection_framing"],
            cleaned_stitching["hstream_ui"]["generated_stitching_backend_choices"]["projection_framing"],
            cleaned_stitching["hstream_ui"]["generated_stitching_backend_choices"]["previous_projection_framing"],
@@ -10498,7 +10606,9 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() == 11, "Native-effective controls should be grouped by associated stage")) {
+  // Program: Tracking, Motion, Color, Crop Rotation, Runtime, Detection, Players.
+  // Stitched: Rotation, Color & Precision, Alignment, Projection, Rink.
+  if (!expect(window->cameraTabCount() == 12, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -13935,7 +14045,9 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   auto* seek = require_child<QSlider>(&window, "playbackSeekSlider");
   auto* forward = require_child<QPushButton>(&window, "playbackSeekForward10Button");
   auto* clean = require_child<QPushButton>(&window, "cleanStitchingButton");
-  auto* archive = require_child<QCheckBox>(&window, "outputToggle_archive-file");
+  // The stitched archive is the only output a calibration run emits, so it is
+  // also the only one that can make such a run more than local rendering.
+  auto* archive = require_child<QCheckBox>(&window, "outputToggle_archive-stitched");
   if (!game_id || !create || !save || !reset || !start || !stop || !mode || !gyro || !crop || !posts || !playback ||
       !reference || !frames || !control_points || !seek || !forward || !archive || !clean)
     return false;
