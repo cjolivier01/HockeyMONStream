@@ -765,7 +765,7 @@ void HighlightsDialog::updateControls() {
   loop_button_->setEnabled(can_preview && !plan_.intervals.isEmpty());
   export_selected_button_->setEnabled(cuttable && selected);
   export_all_button_->setEnabled(cuttable && !plan_.intervals.isEmpty());
-  stop_button_->setEnabled(!idle || preview_focused_);
+  stop_button_->setEnabled((!idle && job_ != Job::kInspect) || preview_focused_);
 }
 
 void HighlightsDialog::addInterval() {
@@ -1215,10 +1215,16 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
       media_valid_ = true;
       media_error_.clear();
       if (archive_index_ >= 0 && archive_index_ < archives_.size()) {
+        // Only what the probe actually measured. The entry goes back to the
+        // sidecar when the start time is edited, and a container that would not
+        // give up its duration should not erase the one publication recorded.
         ArchiveEntry& entry = archives_[archive_index_];
-        entry.width = media_.width;
-        entry.height = media_.height;
-        entry.duration_ms = static_cast<qint64>(std::llround(media_.duration_seconds * 1000.0));
+        if (media_.width > 0 && media_.height > 0) {
+          entry.width = media_.width;
+          entry.height = media_.height;
+        }
+        if (media_.duration_seconds > 0.0)
+          entry.duration_ms = static_cast<qint64>(std::llround(media_.duration_seconds * 1000.0));
         refreshArchiveChoices();
       }
       const qint64 duration = archiveDurationMs();
@@ -1335,9 +1341,12 @@ void HighlightsDialog::publishEncode() {
 
 void HighlightsDialog::finishJob(bool success, const QString& message) {
   const Job completed = job_;
-  // Stopping an export is not a failure anyone needs to diagnose, and the parts
-  // written so far can run to tens of gigabytes for an 8K reel.
-  const bool discarded = cancelling_;
+  // Only a failure with something to look at is worth keeping. Stopping an
+  // export is not a failure anyone needs to diagnose and its parts can run to
+  // tens of gigabytes for an 8K reel, and a failure that happened before the
+  // first part was written has nothing in the directory to show.
+  const bool keep_work_files = completed == Job::kExport && !success && !cancelling_ && !work_dir_.isEmpty() &&
+      !QDir(work_dir_).isEmpty();
   job_ = Job::kNone;
   stage_ = Stage::kIdle;
   cancelling_ = false;
@@ -1347,7 +1356,7 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
     video_->setRendererActive(false);
   }
   QString detail = message;
-  if (!success && !discarded && completed == Job::kExport && !work_dir_.isEmpty())
+  if (keep_work_files)
     detail += " Work files retained in " + work_dir_ + ".";
   status_->setText(detail);
   // A successful inspection has already written its own, longer description of
@@ -1356,8 +1365,9 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
     appendLog(message);
   if (completed == Job::kInspect && !success)
     archive_detail_->setText(message);
-  if (completed == Job::kExport) {
-    if (success || discarded)
+  // QDir("") is the current working directory, so never hand it the empty path.
+  if (completed == Job::kExport && !work_dir_.isEmpty()) {
+    if (!keep_work_files)
       QDir(work_dir_).removeRecursively();
     work_dir_.clear();
   }
@@ -1375,6 +1385,12 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
 void HighlightsDialog::stop() {
   setPreviewFocused(false);
   if (!isBusy() || cancelling_)
+    return;
+  // Reading the archive is a quick ffprobe that preview and export are both
+  // gated on, and the only thing that starts it again is picking an archive --
+  // which is not even on screen when the game has exactly one. Leave it be;
+  // closing the dialog still cancels it.
+  if (job_ == Job::kInspect && !close_when_stopped_)
     return;
   cancelling_ = true;
   loop_ = false;

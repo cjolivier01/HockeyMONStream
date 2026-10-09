@@ -511,6 +511,38 @@ int main(int argc, char** argv) {
   }
   incompatible_file.close();
 
+  // An export that fails before writing its first part has nothing to retain,
+  // so it must not strand a work directory in the game folder or offer one up
+  // for inspection.
+  const QString broken_dir = temporary.filePath("broken-game");
+  if (!QDir().mkpath(broken_dir))
+    return 1;
+  if (!QFile::copy(program_archive, QDir(broken_dir).filePath("broken-game-tracking_output-with-audio-1.mp4")))
+    return 1;
+  QProcessEnvironment broken_env = env;
+  broken_env.insert("HSTREAM_UI_FFMPEG", "hstream-highlights-no-such-ffmpeg");
+  hm::ui::HighlightsDialog broken_dialog(
+      "broken-game", broken_dir, broken_env, hm::ui::DiscoverArchives(broken_dir, "broken-game"));
+  if (!settle(&broken_dialog, 30000))
+    return 1;
+  // The copy carries no sidecar, so this archive's timeline starts at zero.
+  if (!addRange(&broken_dialog, "Doomed", "00:00:00.500", "00:00:02.500"))
+    return 1;
+  broken_dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
+  if (!settle(&broken_dialog, 30000))
+    return 1;
+  if (!statusOf(&broken_dialog).contains("Could not start hstream-highlights-no-such-ffmpeg")) {
+    std::cerr << "The export did not get as far as running ffmpeg: " << statusOf(&broken_dialog).toStdString()
+              << std::endl;
+    return 1;
+  }
+  if (statusOf(&broken_dialog).contains("Work files retained") ||
+      !QDir(broken_dir).entryList({".highlights-export-*"}, QDir::Dirs | QDir::Hidden).isEmpty()) {
+    std::cerr << "A failed export with nothing written left a work directory behind: "
+              << statusOf(&broken_dialog).toStdString() << std::endl;
+    return 1;
+  }
+
   // A game with nothing published must explain itself rather than crash.
   const QString empty_dir = temporary.filePath("empty-game");
   if (!QDir().mkpath(empty_dir))
