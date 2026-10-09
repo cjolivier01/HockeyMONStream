@@ -72,7 +72,7 @@ QString HighlightTrackingDatabasePath(const QString& directory, const QString& g
   const QDir dir(directory);
   const auto match = QRegularExpression(R"(-([0-9]+)$)").match(QFileInfo(archive).completeBaseName());
   bool valid = false;
-  const uint64_t generation = match.hasMatch() ? match.captured(1).toULongLong(&valid) : 1;
+  const uint64_t generation = match.hasMatch() ? match.captured(1).toULongLong(&valid) : 0;
   if (match.hasMatch() && !valid)
     return {};
   if (match.hasMatch()) {
@@ -93,7 +93,7 @@ QString HighlightTrackingDatabasePath(const QString& directory, const QString& g
     if (QFileInfo::exists(legacy))
       return legacy;
   }
-  return expected;
+  return match.hasMatch() || QFileInfo::exists(expected) ? expected : QString();
 }
 QStringList HighlightTrackingRuns(const QString& path, const QString& game, QString* error) {
   QStringList result;

@@ -77,10 +77,19 @@ int main(int argc, char** argv) {
     check(legacy.open(QIODevice::WriteOnly), "reserve legacy generation");
     legacy.close();
     check(!telemetry_csv_destination_paths_available(game, "-12"), "legacy database suffix remains occupied");
+    check(!publish_telemetry_database(source, game, QString("-12")).ok, "reject fixed legacy database generation");
+    check(
+        !publish_telemetry_database(source, game, QString("-0012")).ok,
+        "leading zeroes cannot bypass legacy generation collision");
+    check(!QFileInfo::exists(QDir(game).filePath("game-one_telemetry-12.db")), "collision leaves no new marker");
     const auto after_legacy = publish_telemetry_database(source, game);
     check(
         after_legacy.ok && after_legacy.published_paths.front().endsWith("game-one_telemetry-13.db"),
         "numbering advances beyond legacy database generations");
+    QFile sqlite_alias(root.filePath("game/hm_telemetry-014.sqlite"));
+    check(sqlite_alias.open(QIODevice::WriteOnly), "reserve legacy SQLite generation");
+    sqlite_alias.close();
+    check(!publish_telemetry_database(source, game, QString("-14")).ok, "reject legacy SQLite generation alias");
     hm::recording::Database copy(first.published_paths.front().toStdString());
     hm::recording::Database original(source.toStdString());
     hm::recording::Statement a(copy.get(), "SELECT run_id FROM runs"), b(original.get(), "SELECT run_id FROM runs");

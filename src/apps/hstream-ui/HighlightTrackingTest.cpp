@@ -51,6 +51,16 @@ int main() {
   if (HighlightTrackingDatabasePath(dir.path(), "game", dir.filePath("game-tracking_output-with-audio.mp4")) !=
       bare.fileName())
     return 1;
+  if (!bare.remove() ||
+      !HighlightTrackingDatabasePath(dir.path(), "game", dir.filePath("game-tracking_output-with-audio.mp4")).isEmpty())
+    return 1;
+  QFile named_zero(dir.filePath("game_telemetry-0.db"));
+  if (!named_zero.open(QIODevice::WriteOnly))
+    return 1;
+  named_zero.close();
+  if (HighlightTrackingDatabasePath(dir.path(), "game", dir.filePath("game-tracking_output-with-audio.mp4")) !=
+      named_zero.fileName())
+    return 1;
   const QString path = dir.filePath("tracks.sqlite");
   QString error;
   QFile file(path);

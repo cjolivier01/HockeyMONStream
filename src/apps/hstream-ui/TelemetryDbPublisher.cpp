@@ -50,6 +50,8 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     if (games.Next())
       throw std::runtime_error("Game-directory publication requires recordings from one game");
     hm::recording::TelemetryDatabaseStem(game_id);
+    if (suffix && !telemetry_csv_destination_paths_available(publication_directory, *suffix))
+      throw std::runtime_error("Telemetry generation already exists or cannot be checked");
     QTemporaryFile stage(QDir(publication_directory).filePath(".hstream-database-XXXXXX"));
     if (!stage.open())
       throw std::runtime_error(stage.errorString().toStdString());
