@@ -91,6 +91,11 @@ int main() {
       ParseArchiveMediaInfo(archive_probe("hevc", "yuv420p10le", R"("29400000")", false), &ten_bit, &error) &&
           ten_bit.bit_depth == 10 && !ten_bit.has_audio,
       "pixel-format suffixes must reveal the sample depth, and a silent archive must report no audio");
+  ArchiveMediaInfo semiplanar;
+  ok &= expect(
+      ParseArchiveMediaInfo(archive_probe("hevc", "nv12", R"("29400000")", false), &semiplanar, &error) &&
+          semiplanar.bit_depth == 8,
+      "nv12 names its chroma layout, not a twelve bit sample depth");
   ArchiveMediaInfo rejected;
   ok &= expect(
       !ParseArchiveMediaInfo(R"({"streams":[{"codec_type":"audio"}],"format":{}})", &rejected, &error) &&

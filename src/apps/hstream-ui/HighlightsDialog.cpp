@@ -156,7 +156,8 @@ HighlightsDialog::HighlightsDialog(
   root->addLayout(heading);
 
   auto* source_row = new QHBoxLayout();
-  source_row->addWidget(new QLabel("Source", this));
+  archive_label_ = new QLabel("Source", this);
+  source_row->addWidget(archive_label_);
   archive_combo_ = new QComboBox(this);
   archive_combo_->setObjectName("highlightArchiveCombo");
   archive_combo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
@@ -530,7 +531,11 @@ void HighlightsDialog::refreshArchiveChoices() {
     archive_combo_->addItem(archiveChoiceLabel(entry), entry.path);
   if (archive_index_ >= 0 && archive_index_ < archives_.size())
     archive_combo_->setCurrentIndex(archive_index_);
-  archive_combo_->setVisible(archives_.size() > 1);
+  // With one archive there is nothing to choose between, and the detail line
+  // below already names the file.
+  const bool choosable = archives_.size() > 1;
+  archive_combo_->setVisible(choosable);
+  archive_label_->setVisible(choosable);
 }
 
 void HighlightsDialog::applyArchiveSelection() {
@@ -976,42 +981,138 @@ void HighlightsDialog::startEncoderQuery() {
 }
 
 void HighlightsDialog::startEncode() {
-  const ArchiveEntry* archive = selectedArchive();
-  if (!archive) {
+  if (!selectedArchive()) {
     finishJob(false, "The selected archive is no longer available.");
     return;
   }
   encode_settings_ = DeriveHighlightsEncodeSettings(media_, encoders_, env_);
   final_partial_path_ = QDir(work_dir_).filePath("joined.mp4");
-
-  QStringList arguments{"-hide_banner", "-nostdin", "-n", "-nostats", "-progress", "pipe:1"};
-  QString filter;
-  for (int index = 0; index < queue_.size(); ++index) {
-    // Seeking each input, then joining with the concat filter, makes the cut
-    // frame-exact: every output frame is re-encoded from a decoded source
-    // frame rather than copied from the nearest keyframe.
-    arguments << "-ss" << ffmpegSeconds(queue_[index].archive_start_ms) << "-to"
-              << ffmpegSeconds(queue_[index].archive_end_ms) << "-i" << archive->path;
-    filter += QString("[%1:v:0]").arg(index);
-    if (media_.has_audio)
-      filter += QString("[%1:a:0]").arg(index);
-  }
-  filter += QString("concat=n=%1:v=1:a=%2[v]").arg(queue_.size()).arg(media_.has_audio ? 1 : 0);
-  if (media_.has_audio)
-    filter += "[a]";
-  arguments << "-filter_complex" << filter << "-map" << "[v]";
-  if (media_.has_audio)
-    arguments << "-map" << "[a]";
-  arguments << encode_settings_.arguments << "-movflags" << "+faststart" << final_partial_path_;
-
-  stage_ = Stage::kEncode;
-  process_output_buffer_.clear();
+  encode_part_index_ = 0;
+  encode_parts_.clear();
+  encode_done_ms_ = 0;
   appendLog(QString("Encoding %1 interval%2 with %3 at %4 Mb/s (%5 bits per pixel from the source)")
                 .arg(queue_.size())
                 .arg(queue_.size() == 1 ? "" : "s", encode_settings_.video_encoder)
                 .arg(encode_settings_.video_bit_rate / 1e6, 0, 'f', 1)
                 .arg(encode_settings_.bits_per_pixel, 0, 'f', 4));
-  status_->setText("Encoding highlights…");
+  startNextPart();
+}
+
+// Cuts one interval out of the archive. Seeking the input and re-encoding is
+// frame-exact: ffmpeg decodes from the keyframe ahead of the in-point and drops
+// the lead-in.
+//
+// Each interval gets its own ffmpeg because the alternatives both scale badly.
+// Handing ffmpeg one seeked -i per clip and joining them with the concat filter
+// opens every input at once: eight 4K clips peaked at 7.3 GB, and an 8K program
+// archive multiplies that by four. The concat demuxer keeps one segment open,
+// but its in-points only snap to keyframes -- `select=concatdec_select` trims
+// the video lead-in and `aselect` silently does not trim the audio, so the two
+// streams drift apart by the lead-in at every join. One clip at a time holds
+// peak memory at a single decoder plus a single encoder, whatever the clip
+// count.
+void HighlightsDialog::startNextPart() {
+  const ArchiveEntry* archive = selectedArchive();
+  if (!archive) {
+    finishJob(false, "The selected archive is no longer available.");
+    return;
+  }
+  const Clip& clip = queue_.at(encode_part_index_);
+  // A lone interval is the finished video, so encode it straight to the output
+  // and skip the join entirely.
+  const QString part_path = queue_.size() == 1
+      ? final_partial_path_
+      : QDir(work_dir_).filePath(QString("part-%1.mp4").arg(encode_part_index_ + 1, 4, 10, QChar('0')));
+  encode_parts_ << part_path;
+
+  QStringList arguments{
+      "-hide_banner",
+      "-nostdin",
+      "-n",
+      "-nostats",
+      "-progress",
+      "pipe:1",
+      "-ss",
+      ffmpegSeconds(clip.archive_start_ms),
+      "-to",
+      ffmpegSeconds(clip.archive_end_ms),
+      "-i",
+      archive->path,
+      "-map",
+      "0:v:0"};
+  if (media_.has_audio)
+    arguments << "-map" << "0:a:0";
+  arguments << encode_settings_.arguments;
+  if (queue_.size() == 1)
+    arguments << "-movflags" << "+faststart";
+  arguments << part_path;
+
+  stage_ = Stage::kEncode;
+  process_output_buffer_.clear();
+  encode_percent_ = -1;
+  encode_status_prefix_ = queue_.size() == 1
+      ? QString("Encoding highlights…")
+      : QString("Encoding %1 of %2: %3…")
+            .arg(encode_part_index_ + 1)
+            .arg(queue_.size())
+            .arg(clip.interval.label);
+  status_->setText(encode_status_prefix_);
+  process_.setWorkingDirectory(work_dir_);
+  process_.setProcessEnvironment(env_);
+  process_.start(env_.value("HSTREAM_UI_FFMPEG", "ffmpeg"), arguments);
+}
+
+bool HighlightsDialog::writePartManifest(const QString& manifest_path, QString* error) const {
+  QByteArray manifest = "ffconcat version 1.0\n";
+  for (const QString& part : encode_parts_) {
+    // The demuxer reads single-quoted paths, and the quote is the only byte
+    // that needs help getting through.
+    QByteArray quoted = QFile::encodeName(part);
+    quoted.replace("'", "'\\''");
+    manifest += "file '" + quoted + "'\n";
+  }
+  QFile file(manifest_path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(manifest) != manifest.size() ||
+      !file.flush()) {
+    *error = "Could not write the highlights clip list: " + file.errorString();
+    return false;
+  }
+  return true;
+}
+
+// Joins the finished parts. Each part is a whole file, so the concat demuxer
+// has no in-points to snap and the video copies through untouched. The audio is
+// re-encoded: a part's AAC stream runs up to one 1024-sample frame (21 ms)
+// longer than its video, and concat advances each stream by its own length, so
+// copying audio too would walk the two apart by that much at every join.
+void HighlightsDialog::startJoin() {
+  const QString manifest_path = QDir(work_dir_).filePath("parts.ffconcat");
+  QString manifest_error;
+  if (!writePartManifest(manifest_path, &manifest_error)) {
+    finishJob(false, manifest_error);
+    return;
+  }
+  QStringList arguments{
+      "-hide_banner", "-nostdin", "-n", "-nostats", "-f", "concat", "-safe", "0", "-i", manifest_path,
+      "-map",         "0:v:0"};
+  if (media_.has_audio)
+    arguments << "-map" << "0:a:0";
+  arguments << "-c:v" << "copy";
+  if (media_.has_audio) {
+    arguments << "-c:a" << "aac" << "-b:a" << QString::number(encode_settings_.audio_bit_rate) << "-af"
+              << "aresample=async=1:first_pts=0";
+    if (media_.audio_sample_rate > 0)
+      arguments << "-ar" << QString::number(media_.audio_sample_rate);
+    if (media_.audio_channels > 0)
+      arguments << "-ac" << QString::number(media_.audio_channels);
+  }
+  if (encode_settings_.hevc)
+    arguments << "-tag:v" << "hvc1";
+  arguments << "-movflags" << "+faststart" << final_partial_path_;
+
+  stage_ = Stage::kJoin;
+  process_output_buffer_.clear();
+  status_->setText("Joining highlights…");
   process_.setWorkingDirectory(work_dir_);
   process_.setProcessEnvironment(env_);
   process_.start(env_.value("HSTREAM_UI_FFMPEG", "ffmpeg"), arguments);
@@ -1041,12 +1142,14 @@ void HighlightsDialog::consumeEncodeProgress(const QString& output) {
     const qint64 completed_us = progressMicroseconds(line.mid(QString("out_time=").size()));
     if (completed_us < 0)
       continue;
-    const int percent =
-        static_cast<int>(std::clamp<qint64>(completed_us / 1000 * 100 / encode_total_ms_, 0, 100));
+    // Each part reports from zero, so the bar tracks the whole queue rather
+    // than restarting on every interval.
+    const int percent = static_cast<int>(
+        std::clamp<qint64>((encode_done_ms_ + completed_us / 1000) * 100 / encode_total_ms_, 0, 100));
     if (percent == encode_percent_)
       continue;
     encode_percent_ = percent;
-    status_->setText(QString("Encoding highlights… %1%").arg(percent));
+    status_->setText(QString("%1 %2%").arg(encode_status_prefix_).arg(percent));
   }
   if (process_output_buffer_.size() > 8192)
     process_output_buffer_.clear();
@@ -1055,10 +1158,10 @@ void HighlightsDialog::consumeEncodeProgress(const QString& output) {
 void HighlightsDialog::appendProcessError(const QString& output, bool flush) {
   process_error_buffer_ += output;
   while (true) {
-    const int newline = process_error_buffer_.indexOf('\n');
-    const int carriage_return = process_error_buffer_.indexOf('\r');
-    const int boundary = newline < 0 ? carriage_return
-                                    : carriage_return < 0 ? newline : std::min(newline, carriage_return);
+    const qsizetype newline = process_error_buffer_.indexOf('\n');
+    const qsizetype carriage_return = process_error_buffer_.indexOf('\r');
+    const qsizetype boundary = newline < 0 ? carriage_return
+                                           : carriage_return < 0 ? newline : std::min(newline, carriage_return);
     if (boundary < 0)
       break;
     appendLog(process_error_buffer_.left(boundary));
@@ -1089,7 +1192,7 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
     finishJob(
         false,
         QString("%1 failed with exit code %2. See the log below.")
-            .arg(finished_stage == Stage::kEncoders || finished_stage == Stage::kEncode ? "ffmpeg" : "ffprobe")
+            .arg(finished_stage == Stage::kProbe ? "ffprobe" : "ffmpeg")
             .arg(code));
     return;
   }
@@ -1140,6 +1243,16 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
       return;
     }
     case Stage::kEncode:
+      encode_done_ms_ +=
+          queue_.at(encode_part_index_).archive_end_ms - queue_.at(encode_part_index_).archive_start_ms;
+      if (++encode_part_index_ < queue_.size())
+        startNextPart();
+      else if (queue_.size() > 1)
+        startJoin();
+      else
+        publishEncode();
+      return;
+    case Stage::kJoin:
       publishEncode();
       return;
     case Stage::kIdle:

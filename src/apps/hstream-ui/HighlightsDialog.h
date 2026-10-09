@@ -54,7 +54,7 @@ class HighlightsDialog : public QDialog {
 
  private:
   enum class Job { kNone, kInspect, kPreview, kExport };
-  enum class Stage { kIdle, kProbe, kEncoders, kEncode };
+  enum class Stage { kIdle, kProbe, kEncoders, kEncode, kJoin };
   // A planned interval resolved onto the selected archive's own timeline.
   struct Clip {
     HighlightInterval interval;
@@ -90,6 +90,9 @@ class HighlightsDialog : public QDialog {
   void startInspection();
   void startEncoderQuery();
   void startEncode();
+  void startNextPart();
+  bool writePartManifest(const QString& manifest_path, QString* error) const;
+  void startJoin();
   void publishEncode();
   void finishJob(bool success, const QString& message);
   void requestActiveProcessStop();
@@ -124,6 +127,10 @@ class HighlightsDialog : public QDialog {
 
   QString work_dir_;
   QString final_partial_path_;
+  QStringList encode_parts_;
+  QString encode_status_prefix_;
+  int encode_part_index_{0};
+  qint64 encode_done_ms_{0};
   QString current_route_;
   QString published_path_;
   QString process_output_buffer_;
@@ -154,6 +161,7 @@ class HighlightsDialog : public QDialog {
   QVector<QWidget*> preview_focus_hidden_;
   QList<int> preview_splitter_sizes_;
   bool preview_focused_{false};
+  QLabel* archive_label_{nullptr};
   QComboBox* archive_combo_{nullptr};
   QLineEdit* archive_offset_edit_{nullptr};
   QLabel* archive_detail_{nullptr};

@@ -66,6 +66,11 @@ int pixel_format_bit_depth(const QString& pixel_format, const QJsonObject& strea
   const double raw = number_field(stream, "bits_per_raw_sample");
   if (raw >= 9.0 && raw <= 16.0)
     return static_cast<int>(raw);
+  // nv12 and friends spell their chroma layout in digits rather than their
+  // depth, and they are all eight bit.
+  static const QRegularExpression semiplanar_layout(R"(^nv(?:12|21|16|24|42)$)");
+  if (semiplanar_layout.match(pixel_format).hasMatch())
+    return 8;
   static const QRegularExpression depth_suffix(R"((\d{2})(?:le|be)?$)");
   const QRegularExpressionMatch match = depth_suffix.match(pixel_format);
   if (match.hasMatch()) {

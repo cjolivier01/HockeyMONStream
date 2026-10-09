@@ -366,6 +366,31 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // One interval is already the finished video, so it is encoded straight to
+  // the output with no join pass. That shortcut still has to publish.
+  dialog.findChild<QTableWidget*>("highlightsTable")->setCurrentCell(0, 0);
+  dialog.findChild<QPushButton*>("highlightExportSelectedButton")->click();
+  if (!settle(&dialog, 180000))
+    return 1;
+  const QString single = QDir(game_dir).filePath("test-game-highlights-program-3.mp4");
+  QByteArray single_probe;
+  if (!QFileInfo::exists(single) ||
+      !run("ffprobe", {"-v", "error", "-show_streams", "-show_format", "-of", "json", single}, &single_probe))
+    return 1;
+  const QJsonObject single_root = QJsonDocument::fromJson(single_probe).object();
+  if (std::abs(single_root.value("format").toObject().value("duration").toString().toDouble() - 2.0) > 0.1 ||
+      single_root.value("streams").toArray().size() != 2) {
+    std::cerr << "A single-interval export did not produce a two second clip: " << single_probe.constData()
+              << std::endl;
+    return 1;
+  }
+  int only_red = 0;
+  int only_blue = 0;
+  if (!samplePixel(single, "1.0", &only_red, &only_blue) || only_red < only_blue + 50) {
+    std::cerr << "The single-interval export did not come from the first half of the archive" << std::endl;
+    return 1;
+  }
+
   // Out-of-range intervals are named, not clamped or silently skipped.
   if (!addRange(&dialog, "Late", "00:10:05", "00:10:08"))
     return 1;
