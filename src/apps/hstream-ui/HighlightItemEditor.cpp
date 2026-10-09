@@ -307,7 +307,7 @@ class Editor : public QDialog {
         return;
       QString error;
       QImage image;
-      if (RasterHighlightCard(item.card, game_dir, &image, &error)) {
+      if (RasterHighlightCard(item.card, game_dir, &image, &error, QSize(media.width, media.height))) {
         target->card = image;
 
         target->update();
@@ -317,7 +317,7 @@ class Editor : public QDialog {
     left->addStretch();
     if (read_card()) {
       QString e;
-      RasterHighlightCard(item.card, game_dir, &target->card, &e);
+      RasterHighlightCard(item.card, game_dir, &target->card, &e, QSize(media.width, media.height));
     }
   }
   void refresh_cues(int select) {
@@ -360,7 +360,7 @@ class Editor : public QDialog {
           QString("%1, %2, %3").arg(relative_time(p.time_ms - item.start_ms)).arg(p.x, 0, 'f', 5).arg(p.y, 0, 'f', 5));
     keys->setPlainText(rows.join('\n'));
   }
-  bool read_cue(HighlightAnnotation* a) {
+  bool read_cue(HighlightAnnotation* a, bool allow_empty_motion = false) {
     qint64 s = 0, e = 0;
     QString error;
     if (!parse_relative(start->text(), &s, &error) || !parse_relative(end->text(), &e, &error)) {
@@ -402,7 +402,10 @@ class Editor : public QDialog {
       }
       a->positions.append({item.start_ms + time, px, py});
     }
-    if (!ValidateHighlightAnnotation(*a, &error)) {
+    auto validation = *a;
+    if (allow_empty_motion && validation.positions.isEmpty())
+      validation.motion = "fixed";
+    if (!ValidateHighlightAnnotation(validation, &error)) {
       status->setText(error);
       return false;
     }
@@ -421,8 +424,19 @@ class Editor : public QDialog {
     return true;
   }
   void inspect_frame() {
-    if (!apply_cue())
-      return;
+    auto preview_item = item;
+    const int row = loaded_row;
+    if (row >= 0 && row < item.annotations.size()) {
+      auto a = item.annotations[row];
+      if (!read_cue(&a, true))
+        return;
+      // Inspection must work before the author clicks the first movement point.
+      // Keep the incomplete cue in the controls, but omit it from this preview.
+      if (a.motion != "fixed" && a.positions.isEmpty())
+        preview_item.annotations.removeAt(row);
+      else
+        preview_item.annotations[row] = a;
+    }
     if (!HighlightReelPipeline::PreviewAvailable() || QGuiApplication::platformName() != "xcb") {
       status->setText("Frame inspection requires the NVIDIA/X11 preview");
       return;
@@ -432,7 +446,7 @@ class Editor : public QDialog {
     r.asset_root = game_dir;
     r.archive_offset_ms = offset;
     r.media = media;
-    r.items = {item};
+    r.items = {preview_item};
     r.window_id = target->winId();
     r.inspect_game_ms = item.start_ms + std::llround(inspect->value() * 1000);
     QString error;

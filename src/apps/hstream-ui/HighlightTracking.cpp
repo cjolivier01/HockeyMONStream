@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/HighlightTracking.h"
 #include <QtCore/QStringList>
+#include <algorithm>
 #include <cmath>
 #include "hstream/src/libs/recording/Database.h"
 
@@ -113,11 +114,16 @@ bool HighlightTrackingChoices(
           duplicate = true;
       if (duplicate)
         continue;
-      QPointF p0, p1;
+      QPointF p0, p1, p2, p3;
       if (!point(s, route, s.Real(2), s.Real(3), &p0) ||
-          !point(s, route, s.Real(2) + s.Real(4), s.Real(3) + s.Real(5), &p1))
+          !point(s, route, s.Real(2) + s.Real(4), s.Real(3) + s.Real(5), &p1) ||
+          !point(s, route, s.Real(2) + s.Real(4), s.Real(3), &p2) ||
+          !point(s, route, s.Real(2), s.Real(3) + s.Real(5), &p3))
         continue;
-      c.box = QRectF(p0, p1).normalized();
+      // Rotation can put either remaining corner beyond the original diagonal.
+      c.box = QRectF(
+          QPointF(std::min({p0.x(), p1.x(), p2.x(), p3.x()}), std::min({p0.y(), p1.y(), p2.y(), p3.y()})),
+          QPointF(std::max({p0.x(), p1.x(), p2.x(), p3.x()}), std::max({p0.y(), p1.y(), p2.y(), p3.y()})));
       choices->append(c);
     }
     if (choices->isEmpty())

@@ -24,7 +24,7 @@ For example, create an arrow at 0–2 seconds and explicitly create another at 8
 
 Cards have editable text, background/text colors, type size/weight, and duration. Enable **Matchup** for two team names, optional heading and logos, and a required valid `YYYY-MM-DD` game date. A date already present in the game identifier prefills the field; an unknown date stays empty. The current/export date is never substituted. Generic section cards need no date.
 
-**Choose A/B logo** imports a bounded raster image into the game's `highlight-assets/` directory as a content-addressed PNG. Original files can then move without breaking the reel. Logos fit proportionally next to the team names. Missing retained assets fail preview/export with an explanation. Cards have silent stereo audio and can be previewed or exported alone without an archive.
+**Choose A/B logo** imports a bounded raster image into the game's `highlight-assets/` directory as a content-addressed PNG. Original files can then move without breaking the reel. Logos fit proportionally next to the team names. The card layout fits uniformly into the archive aspect ratio, with the chosen background filling any margins, so panorama exports keep logos and text proportional. Missing retained assets fail preview/export with an explanation. Cards have silent stereo audio and can be previewed or exported alone without an archive.
 
 ## Playback and export
 

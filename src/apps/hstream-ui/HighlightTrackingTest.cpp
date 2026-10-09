@@ -69,6 +69,13 @@ int main() {
         std::cerr << "Program rotation/crop mismatch\n";
         return 1;
       }
+      const QPointF shoulder(
+          (300 - 5 * std::cos(radians) + 95 * std::sin(radians) - 100) / 400,
+          (200 - 5 * std::sin(radians) - 95 * std::cos(radians) - 50) / 300);
+      if (!choice.box.contains(shoulder)) {
+        std::cerr << "Rotated player shoulder excluded from click selection\n";
+        return 1;
+      }
     }
   if (HighlightTrackingChoices(path, "run", "stitched", 5000, 0, &choices, &error)) {
     std::cerr << "Missing time accepted\n";

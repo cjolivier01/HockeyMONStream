@@ -112,8 +112,12 @@ struct Texture {
   void* value{nullptr};
   int width{0}, height{0};
   QPointF origin;
+  QSize reference_size;
   explicit Texture(const HighlightTexture& tile)
-      : width(tile.image.width()), height(tile.image.height()), origin(tile.origin) {
+      : width(tile.image.width()),
+        height(tile.image.height()),
+        origin(tile.origin),
+        reference_size(tile.reference_size) {
     const QImage image = tile.image.convertToFormat(QImage::Format_RGBA8888);
     cuda_check(cudaMalloc(&value, size_t(width) * height * 4));
     const auto result = cudaMemcpy2D(
@@ -353,8 +357,8 @@ struct HighlightReelPipeline::Impl {
                 t.height,
                 std::lround((anchor->x() + t.origin.x()) * width),
                 std::lround((anchor->y() + t.origin.y()) * height),
-                std::max(1, int(std::lround(t.width * width / 1920.0))),
-                std::max(1, int(std::lround(t.height * height / 1080.0))),
+                std::max(1, int(std::lround(double(t.width) * width / t.reference_size.width()))),
+                std::max(1, int(std::lround(double(t.height) * height / t.reference_size.height()))),
                 stream));
       }
     }
@@ -568,12 +572,12 @@ struct HighlightReelPipeline::Impl {
     if (item.is_card) {
       QImage image;
       QString e;
-      if (!RasterHighlightCard(item.card, request.asset_root, &image, &e))
+      if (!RasterHighlightCard(item.card, request.asset_root, &image, &e, QSize(width, height)))
         throw std::runtime_error(e.toStdString());
       upload({image, {}});
     } else
       for (const auto& a : item.annotations)
-        upload(RasterHighlightAnnotation(a));
+        upload(RasterHighlightAnnotation(a, QSize(width, height)));
     qint64 length = HighlightItemDuration(item);
     const GstClockTime step = gst_util_uint64_scale(GST_SECOND, fps_d, fps_n), base = base_ms * GST_MSECOND;
     if (item.is_card) {

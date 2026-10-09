@@ -77,24 +77,29 @@ std::optional<QPointF> HighlightAnchor(const HighlightAnnotation& a, qint64 ms) 
   return QPointF(before.x + (next->x - before.x) * t, before.y + (next->y - before.y) * t);
 }
 
-HighlightTexture RasterHighlightAnnotation(const HighlightAnnotation& a) {
-  const QPointF end(a.dx * kWidth, a.dy * kHeight);
-  const double stroke = a.thickness * kHeight;
+HighlightTexture RasterHighlightAnnotation(const HighlightAnnotation& a, QSize output_size) {
+  if (!output_size.isValid())
+    output_size = QSize(kWidth, kHeight);
+  const QSize reference = output_size.scaled(kWidth, kHeight, Qt::KeepAspectRatio);
+  const int width = std::max(1, reference.width()), height = std::max(1, reference.height());
+  const QPointF end(a.dx * width, a.dy * height);
+  const double stroke = a.thickness * height;
   const double head = std::max(stroke * 3.5, 12.0);
   QRectF bounds;
   if (a.kind == "text") {
-    const QFont f = font(a.size * kHeight, a.weight);
-    bounds = QFontMetricsF(f).boundingRect(QRectF(0, 0, kWidth, kHeight), Qt::TextWordWrap, a.text);
+    const QFont f = font(a.size * height, a.weight);
+    bounds = QFontMetricsF(f).boundingRect(QRectF(0, 0, width, height), Qt::TextWordWrap, a.text);
     bounds.moveTopLeft(QPointF(0, 0));
   } else {
     bounds = QRectF(QPointF(0, 0), end).normalized().adjusted(-head, -head, head, head);
   }
   // One small static raster per cue. Large/offscreen shapes are clipped to a
   // bounded asset rather than allocating an unbounded image.
-  bounds = bounds.intersected(QRectF(-kWidth, -kHeight, kWidth * 2, kHeight * 2));
+  bounds = bounds.intersected(QRectF(-width, -height, width * 2, height * 2));
   const QRect r = bounds.toAlignedRect();
   HighlightTexture tile;
-  tile.origin = QPointF(double(r.x()) / kWidth, double(r.y()) / kHeight);
+  tile.reference_size = QSize(width, height);
+  tile.origin = QPointF(double(r.x()) / width, double(r.y()) / height);
   tile.image = QImage(std::max(1, r.width()), std::max(1, r.height()), QImage::Format_RGBA8888);
   tile.image.fill(Qt::transparent);
   QPainter p(&tile.image);
@@ -103,9 +108,9 @@ HighlightTexture RasterHighlightAnnotation(const HighlightAnnotation& a) {
   p.translate(-r.x(), -r.y());
   p.setPen(QPen(QColor(a.color), stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
   if (a.kind == "text") {
-    p.setFont(font(a.size * kHeight, a.weight));
+    p.setFont(font(a.size * height, a.weight));
     p.setPen(QColor(a.color));
-    p.drawText(QRectF(0, 0, kWidth, kHeight), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, a.text);
+    p.drawText(QRectF(0, 0, width, height), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, a.text);
   } else if (a.kind == "box") {
     p.drawRect(QRectF(QPointF(0, 0), end).normalized());
   } else {
@@ -122,7 +127,12 @@ HighlightTexture RasterHighlightAnnotation(const HighlightAnnotation& a) {
   return tile;
 }
 
-bool RasterHighlightCard(const HighlightCard& c, const QString& root, QImage* image, QString* error) {
+bool RasterHighlightCard(
+    const HighlightCard& c,
+    const QString& root,
+    QImage* image,
+    QString* error,
+    QSize output_size) {
   HighlightInterval item;
   item.is_card = true;
   item.card = c;
@@ -131,11 +141,20 @@ bool RasterHighlightCard(const HighlightCard& c, const QString& root, QImage* im
   QImage a, b;
   if (c.matchup && (!logo(c.logo_a, root, &a, error) || !logo(c.logo_b, root, &b, error)))
     return false;
-  *image = QImage(kWidth, kHeight, QImage::Format_RGBA8888);
+  if (!output_size.isValid())
+    output_size = QSize(kWidth, kHeight);
+  // Fit the reference layout uniformly into the output aspect. Bound the static
+  // raster independently of export resolution; the GPU scales it with the frame.
+  const QSize fitted = output_size.scaled(kWidth, kHeight, Qt::KeepAspectRatio);
+  const QSize raster_size(std::max(1, fitted.width()), std::max(1, fitted.height()));
+  *image = QImage(raster_size, QImage::Format_RGBA8888);
   image->fill(QColor(c.background));
   QPainter p(image);
   p.setRenderHint(QPainter::Antialiasing);
   p.setRenderHint(QPainter::SmoothPixmapTransform);
+  const double scale = std::min(double(raster_size.width()) / kWidth, double(raster_size.height()) / kHeight);
+  p.translate((raster_size.width() - kWidth * scale) / 2, (raster_size.height() - kHeight * scale) / 2);
+  p.scale(scale, scale);
   p.setPen(QColor(c.color));
   if (!c.matchup) {
     fitted_text(p, QRectF(140, 140, 1640, 800), c.heading, c.size * kHeight, c.weight);

@@ -11,6 +11,16 @@ bool expect(bool c, const char* s) {
     std::cerr << s << '\n';
   return c;
 }
+QRect red_bounds(const QImage& image) {
+  QRect bounds;
+  for (int y = 0; y < image.height(); ++y)
+    for (int x = 0; x < image.width(); ++x) {
+      const QColor pixel = image.pixelColor(x, y);
+      if (pixel.red() > 200 && pixel.green() < 50 && pixel.blue() < 50)
+        bounds |= QRect(x, y, 1, 1);
+    }
+  return bounds;
+}
 } // namespace
 int main(int argc, char** argv) {
   QGuiApplication app(argc, argv);
@@ -70,6 +80,21 @@ int main(int argc, char** argv) {
   ok &= expect(
       RasterHighlightCard(card.card, dir.path(), &image, &error) && image.size() == QSize(1920, 1080),
       "Matchup survives original logo removal");
+  for (const QSize output : {QSize(4096, 1024), QSize(1080, 1920)}) {
+    ok &= expect(RasterHighlightCard(card.card, dir.path(), &image, &error, output), "Aspect-aware card rendering");
+    const QRect bounds = red_bounds(image);
+    ok &= expect(
+        !bounds.isEmpty() && std::abs(double(bounds.width()) / bounds.height() - 2.0) < .05,
+        "Wide and portrait cards preserve retained logo proportions");
+  }
+  a.text = "WHISTLE!";
+  a.size = .1;
+  const auto wide_text = RasterHighlightAnnotation(a, QSize(4096, 1024));
+  a.size *= 480.0 / 1080;
+  const auto same_height_text = RasterHighlightAnnotation(a);
+  ok &= expect(
+      wide_text.image.size() == same_height_text.image.size() && wide_text.reference_size == QSize(1920, 480),
+      "Panorama cue typography uses image height and retains glyph proportions");
   card.card.logo_b = "missing.png";
   ok &= expect(
       !RasterHighlightCard(card.card, dir.path(), &image, &error), "Missing logo must fail instead of disappearing");

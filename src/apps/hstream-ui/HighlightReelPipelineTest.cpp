@@ -3,6 +3,7 @@
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
+#include <QtGui/QImage>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QWidget>
 #include <cmath>
@@ -238,6 +239,28 @@ int main(int argc, char** argv) {
   r.output_path = dir.filePath("card.mp4");
   if (!pipeline.Start(r, &error) || !wait(pipeline))
     return 1;
+  // A panorama card must keep a square logo square in the encoded result.
+  QImage logo(80, 80, QImage::Format_RGBA8888);
+  logo.fill(Qt::green);
+  const QString logo_path = dir.filePath("logo.png");
+  if (!logo.save(logo_path))
+    return 1;
+  auto panorama = r;
+  panorama.media.width = 1280;
+  panorama.media.height = 320;
+  panorama.items[0].card.matchup = true;
+  panorama.items[0].card.team_a = "Home";
+  panorama.items[0].card.team_b = "Away";
+  panorama.items[0].card.date = "2026-10-08";
+  panorama.items[0].card.logo_a = logo_path;
+  panorama.output_path = dir.filePath("panorama-card.mp4");
+  if (!pipeline.Start(panorama, &error) || !wait(pipeline) ||
+      !pixel(panorama.output_path, .2, 470, 110, &red, &green, &blue) || green < 150 || red > 80 ||
+      !pixel(panorama.output_path, .2, 540, 180, &red, &green, &blue) || green < 150 || red > 80 ||
+      !pixel(panorama.output_path, .2, 550, 110, &red, &green, &blue) || red < 150 || green > 80) {
+    std::cerr << "Panorama card distorted or misplaced the logo\n";
+    return 1;
+  }
   card.card.duration_ms = 600000;
   r.items = {card};
   r.output_path = dir.filePath("cancel.mp4");
