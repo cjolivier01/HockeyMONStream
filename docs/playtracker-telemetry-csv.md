@@ -21,9 +21,9 @@ and is not enabled for stitching-calibration-only runs.
 
 ## HockeyMOM compatibility
 
-Each run reserves one generation across all artifacts. Bare filenames are used
-only when none of the corresponding artifacts already exists; otherwise the
-new generation is greater than every existing numeric suffix. Generation
+Each run reserves one positive file version across all artifacts, starting at
+`-1`. The new version is greater than every existing numeric suffix. Older
+unnumbered recordings remain readable. Generation
 selection is serialized by a directory lock, and every artifact is created
 with exclusive, no-symlink-following semantics. Existing files are never
 truncated or replaced.

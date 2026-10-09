@@ -8,7 +8,7 @@ before the first selected sample, including living boxes, motion, and player his
 ## Record the inputs
 
 Enable **DriveGPT database** when recording. Each completed run publishes one
-`hstream_telemetry-N.db` in the game directory. It contains detections, ordered
+`<game-id>_telemetry-N.db` in the game directory. It contains detections, ordered
 tracks, camera outputs, timestamps, configuration history, rink masks, exact
 native inputs, and periodic checkpoints. No CSV companions or saved stitched MP4
 are required. See [telemetry databases](telemetry-database.md) for the shared format.
@@ -132,7 +132,7 @@ without video playback or an X11 display:
 
 ```sh
 QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/camera_experiment_dialog_test \
-  --confirmation /path/hstream_telemetry.db
+  --confirmation /path/my-game_telemetry-1.db
 ```
 
 The dialog test also has an opt-in real GPU exercise. Supply a completed recording,

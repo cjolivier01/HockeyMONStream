@@ -1,7 +1,7 @@
-#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
-#include "src/apps/hstream-ui/PreviewDialogWindow.h"
 #include "hstream/src/libs/recording/Database.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/PreviewDialogWindow.h"
 
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentPreviewWorker.h"
@@ -46,8 +46,8 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <future>
 #include <functional>
+#include <future>
 #include <limits>
 #include <map>
 #include <optional>
@@ -146,8 +146,10 @@ class CameraPathPlot : public QWidget {
 
 QString completed_manifest(const QString& directory) {
   const QDir dir(directory);
-  for (const QFileInfo& info : dir.entryInfoList({"hstream_telemetry*.db"}, QDir::Files, QDir::Time)) {
+  for (const QFileInfo& info : dir.entryInfoList({"*_telemetry*.db"}, QDir::Files, QDir::Time)) {
     try {
+      if (!hm::recording::TelemetryDatabaseGeneration(info.fileName().toStdString()))
+        continue;
       hm::recording::Database db(info.absoluteFilePath().toStdString());
       db.Validate();
       hm::recording::Statement runs(db.get(), "SELECT 1 FROM runs WHERE completed=1 LIMIT 1");

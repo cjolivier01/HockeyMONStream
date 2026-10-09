@@ -331,9 +331,10 @@ bool verify_telemetry_seek_rejection(
   }
 
   try {
-    const fs::path telemetry_database = telemetry_csv_dir / "hstream_telemetry.db";
+    const fs::path telemetry_database = telemetry_csv_dir / (telemetry_csv_dir.filename().string() + "_telemetry-1.db");
     if (!check(
-            fs::is_regular_file(telemetry_database) && !fs::exists(telemetry_csv_dir / "hstream_telemetry-1.db"),
+            fs::is_regular_file(telemetry_database) &&
+                !fs::exists(telemetry_csv_dir / (telemetry_csv_dir.filename().string() + "_telemetry-2.db")),
             "a rejected seek must finalize exactly one telemetry database")) {
       return false;
     }
@@ -387,7 +388,7 @@ bool verify_telemetry_seek_allowed_when_disabled(
               std::string::npos,
           "an earlier nonempty telemetry alias must not override the final empty value") ||
       !expect(
-          !fs::exists(telemetry_csv_dir / "hstream_telemetry.db"),
+          !fs::exists(telemetry_csv_dir / (telemetry_csv_dir.filename().string() + "_telemetry-1.db")),
           "a final empty telemetry property must leave the exporter disabled") ||
       !expect(process.Interrupt(), "last-empty telemetry capture process SIGINT must be delivered")) {
     process.DumpOutput();

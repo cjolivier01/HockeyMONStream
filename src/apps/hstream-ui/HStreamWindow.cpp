@@ -1343,13 +1343,11 @@ QString available_final_archive_path(
     if (::lstat(encoded_candidate.constData(), &candidate_stat) != 0 && errno == ENOENT &&
         ::lstat(encoded_guard.constData(), &guard_stat) != 0 && errno == ENOENT &&
         (!require_telemetry_paths ||
-         hm::ui_internal::telemetry_csv_destination_paths_available(
-             game_dir, suffix == 0 ? QString("") : QString("-%1").arg(suffix))))
+         hm::ui_internal::telemetry_csv_destination_paths_available(game_dir, QString("-%1").arg(suffix))))
 #else
     if (!QFileInfo::exists(candidate) &&
         (!require_telemetry_paths ||
-         hm::ui_internal::telemetry_csv_destination_paths_available(
-             game_dir, suffix == 0 ? QString("") : QString("-%1").arg(suffix))))
+         hm::ui_internal::telemetry_csv_destination_paths_available(game_dir, QString("-%1").arg(suffix))))
 #endif
       return candidate;
   }
@@ -1372,7 +1370,7 @@ QString failed_archive_candidate(const QString& source_path, int suffix) {
   QString source_base = source.completeBaseName();
   source_base.remove(unique_archive_run_suffix_pattern());
   const QString base = source_base + "-finalization-failed";
-  const QString filename = suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
+  const QString filename = QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
   return QDir(source.absolutePath()).filePath(filename);
 }
 
@@ -1684,9 +1682,8 @@ QString rescue_open_file_no_replace(
       *error = "the pinned source identity is unavailable";
     return {};
   }
-  for (int suffix = 0; suffix < 1000; ++suffix) {
-    const QString candidate = suffix == 0 ? preferred_path + ".hstream-rescue"
-                                          : QString("%1.hstream-rescue-%2").arg(preferred_path).arg(suffix);
+  for (int suffix = 1; suffix <= 1000; ++suffix) {
+    const QString candidate = QString("%1.hstream-rescue-%2").arg(preferred_path).arg(suffix);
     int saved_errno = 0;
     struct stat published_stat = expected_stat;
     bool published = link_open_file_no_replace(source_fd, candidate, &saved_errno);
@@ -14189,7 +14186,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
 
     QString failed_archive_path;
     QString recovery_move_error;
-    for (int suffix = 0; suffix < 1000; ++suffix) {
+    for (int suffix = 1; suffix <= 1000; ++suffix) {
       const QString candidate = failed_archive_candidate(original_archive_path, suffix);
       const QString candidate_log = candidate + ".log";
       struct stat reservation_stat {};
@@ -14239,7 +14236,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         candidate_log_is_marker = true;
       }
 
-      if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION") && suffix == 1) {
+      if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION") && suffix == 2) {
         QFile collision(candidate);
         if (collision.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
           collision.write("injected recovery video collision");
@@ -14269,7 +14266,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         break;
       }
 
-      if (!candidate_log_is_marker && suffix == 2 &&
+      if (!candidate_log_is_marker && suffix == 3 &&
           qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT")) {
         QString replacement_cleanup_error;
         if (remove_path_if_same_identity(
@@ -14365,7 +14362,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
       }
 
       if (candidate_log_is_marker) {
-        if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_MARKER_REPLACEMENT") && suffix == 0) {
+        if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_MARKER_REPLACEMENT") && suffix == 1) {
           QString marker_cleanup_error;
           if (remove_path_if_same_identity(
                   candidate_log, reservation_stat, &marker_cleanup_error, candidate, &original_archive_stat)) {

@@ -523,7 +523,8 @@ class Editor : public QDialog {
     keys->setMaximumHeight(120);
     keys->setPlaceholderText("00:00:01, 0.5, 0.3\n00:00:02, 0.6, 0.35");
     f->addRow("Positions: clip time, X, Y", keys);
-    db = line(f, "Telemetry database", QDir(game_dir).filePath(game_id + ".telemetry.sqlite"));
+    db = line(f, "Telemetry database", HighlightTrackingDatabasePath(game_dir, game_id, archive));
+    db->setObjectName("highlightTelemetryDatabase");
     pts_offset = line(f, "Telemetry PTS minus game time (ms)", "0");
     runs = new QComboBox(this);
     tracks = new QComboBox(this);

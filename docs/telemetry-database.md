@@ -1,6 +1,10 @@
 # Telemetry databases
 
-Enable **DriveGPT database** before a Program run. Hstream writes one SQLite file in `~/hstream_output/<game-id>` (or `HM_OUTPUT_WORK_DIR`). On successful pipeline shutdown, the UI copies a closed snapshot to the game directory as `hstream_telemetry-N.db`, with the finalized video's suffix. Without video encoding, it chooses the next available generation. Existing recordings are never overwritten. The working file may initially be unsuffixed; subsequent working generations increase beyond existing database/manifest suffixes.
+Enable **DriveGPT database** before a Program run. Hstream writes `<game-id>_telemetry-N.db` in `~/hstream_output/<game-id>` (or `${HM_OUTPUT_WORK_DIR}/<game-id>`). New working generations start at 1 and advance beyond existing database/manifest suffixes. On successful pipeline shutdown, the UI copies a closed snapshot to the game directory using the same naming convention and the finalized video's suffix. Without video encoding, it chooses the next available generation. Existing recordings are never overwritten. Older `hstream_telemetry[-N].db` and `hm_telemetry[-N].db` files remain readable.
+
+Database publication shares `.hm-output-publication.lock` with HockeyMON and holds it through version selection and publication. Concurrent publishers cannot claim different filename spellings of one numeric version.
+
+`N` is a file version: the first is `-1`, followed by `-2`, and so on. New video, database, legacy CSV/replay/configuration exports, and recovery files always carry a positive version. Publication rejects an empty or zero suffix. Old unnumbered files remain readable. Calibration names such as `rink_mask_0.png` use camera indices; an archived run snapshot adds its version, such as `rink_mask_0-1.png`.
 
 Direct runs enable recording with:
 
@@ -9,7 +13,7 @@ Direct runs enable recording with:
 --options=pipeline.ds-playtracker.private-properties.telemetry-game-id=my-game
 ```
 
-`telemetry-csv-dir` remains a configuration alias and now writes a database. Source game identity defaults to the output directory basename if not explicitly supplied. The UI supplies it explicitly. Keep game IDs consistent across repeated passes over the same physical game.
+`telemetry-csv-dir` remains a configuration alias and now writes a database. The game ID stored in the database also supplies its filename prefix. Source game identity defaults to the output directory basename if not explicitly supplied. The UI supplies it explicitly. Keep game IDs consistent across repeated passes over the same physical game.
 
 ## Contents and identities
 
@@ -34,6 +38,8 @@ Rink capture shares the immutable CPU calibration mask already held by field mas
 Native checkpoints remain periodic (normally every 120 frames, plus initialization and policy/reset boundaries). Full state serialization on every frame is not introduced. SQLite uses FULL synchronization and a rollback journal; a journal can exist while recording. A completed file is closed and self-contained. Game-directory publication uses a SQLite snapshot, verifies its integrity, synchronizes it, and links it without replacement before synchronizing the directory.
 
 ## Consumers
+
+Highlights defaults to the database matching the selected archive's numeric suffix: `my-game-tracking_output-with-audio-2.mp4` uses `my-game_telemetry-2.db`. It accepts older database names for that same generation when the new name is absent. Choose a database explicitly when the archive uses a custom name; run/archive binding remains explicit.
 
 Camera experiments read the database directly, select a run, query the checkpoint before the requested in point, and replay exact native inputs to reconstruct full state. Trials clone that state. Preview hardware-decodes original camera chapters and stitches on the GPU, or uses an uncropped proportionally scaled archive. Preserve the historical source configuration and stitching maps; media/time binding is still explicit. A 16K-wide canvas is never required to be encoded for this workflow.
 

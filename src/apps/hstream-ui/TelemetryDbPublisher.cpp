@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/TelemetryDbPublisher.h"
 #include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -11,6 +13,29 @@
 #include "hstream/src/libs/recording/Database.h"
 
 namespace {
+class PublicationLock {
+ public:
+  explicit PublicationLock(const QString& directory) {
+    const QByteArray path = QFile::encodeName(QDir(directory).filePath(".hm-output-publication.lock"));
+    fd_ = open(path.constData(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd_ < 0)
+      throw std::runtime_error("Cannot open telemetry publication lock");
+    struct stat info {};
+    if (fstat(fd_, &info) != 0 || !S_ISREG(info.st_mode) || flock(fd_, LOCK_EX) != 0) {
+      close(fd_);
+      throw std::runtime_error("Cannot acquire telemetry publication lock");
+    }
+  }
+  ~PublicationLock() {
+    close(fd_);
+  }
+  PublicationLock(const PublicationLock&) = delete;
+  PublicationLock& operator=(const PublicationLock&) = delete;
+
+ private:
+  int fd_{-1};
+};
+
 QString resolved_existing_directory_path(const QString& directory) {
   const QFileInfo info(directory);
   const QString canonical = info.canonicalFilePath();
@@ -25,17 +50,34 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     const std::optional<QString>& suffix) {
   TelemetryCsvPublicationResult result;
   try {
-    if (suffix && !QRegularExpression(R"(^(-\d+)?$)").match(*suffix).hasMatch())
+    if (suffix && !QRegularExpression(R"(^-0*[1-9]\d*$)").match(*suffix).hasMatch())
       throw std::runtime_error("Invalid database generation suffix");
+    std::optional<uint64_t> fixed_generation;
+    if (suffix) {
+      bool valid = true;
+      fixed_generation = suffix->mid(1).toULongLong(&valid);
+      if (!valid)
+        throw std::runtime_error("Database generation exceeds integer range");
+    }
     const QString publication_directory = resolved_existing_directory_path(directory);
     if (!QDir(publication_directory).exists())
       throw std::runtime_error("Game directory does not exist");
+    const PublicationLock publication_lock(publication_directory);
     hm::recording::Database input(source.toStdString());
     input.Validate();
     input.Exec("BEGIN");
     hm::recording::Statement runs(input.get(), "SELECT count(*),sum(completed),sum(sample_count) FROM runs");
     if (!runs.Next() || !runs.Int(0) || runs.Int(0) != runs.Int(1) || runs.Int(2) <= 0)
       throw std::runtime_error("Only completed recordings can be published");
+    hm::recording::Statement games(input.get(), "SELECT DISTINCT game_id FROM runs");
+    if (!games.Next())
+      throw std::runtime_error("Telemetry database has no source game ID");
+    const std::string game_id = games.Text(0);
+    if (games.Next())
+      throw std::runtime_error("Game-directory publication requires recordings from one game");
+    hm::recording::TelemetryDatabaseStem(game_id);
+    if (suffix && !telemetry_csv_destination_paths_available(publication_directory, *suffix))
+      throw std::runtime_error("Telemetry generation already exists or cannot be checked");
     QTemporaryFile stage(QDir(publication_directory).filePath(".hstream-database-XXXXXX"));
     if (!stage.open())
       throw std::runtime_error(stage.errorString().toStdString());
@@ -70,17 +112,20 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     if (dir < 0)
       throw std::runtime_error("Cannot open database publication directory");
     QString destination;
-    const qint64 first = suffix ? 0 : next_archive_generation(publication_directory);
-    if (first < 0) {
+    const qint64 first = suffix ? 1 : next_archive_generation(publication_directory);
+    if (first < 1) {
       close(dir);
       throw std::runtime_error("Cannot determine next database generation");
     }
     for (uint64_t generation = first;; ++generation) {
-      const QString part = suffix ? *suffix : (generation ? "-" + QString::number(generation) : QString());
-      destination = QDir(publication_directory).filePath("hstream_telemetry" + part + ".db");
+      const uint64_t number = fixed_generation.value_or(generation);
+      const QString filename = suffix
+          ? QString::fromStdString(hm::recording::TelemetryDatabaseStem(game_id)) + *suffix + ".db"
+          : QString::fromStdString(hm::recording::TelemetryDatabaseFilename(game_id, number));
+      destination = QDir(publication_directory).filePath(filename);
       if (link(QFile::encodeName(staged_path).constData(), QFile::encodeName(destination).constData()) == 0)
         break;
-      if (errno != EEXIST || suffix) {
+      if (errno != EEXIST || suffix || generation == UINT64_MAX) {
         close(dir);
         throw std::runtime_error("Database destination exists or cannot be published");
       }

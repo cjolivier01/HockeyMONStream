@@ -37,7 +37,7 @@ int main() {
       root / "recorded.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-aabbccddeeff.mkv";
   const fs::path recorded_lock = recorded_work.string() + ".hstream-owner-lock";
   const fs::path recorded_log = recorded_work.string() + ".log";
-  const fs::path recorded_video = root / "recorded-finalization-failed.mkv";
+  const fs::path recorded_video = root / "recorded-finalization-failed-1.mkv";
   std::ofstream(recorded_work, std::ios::binary) << "recorded video";
   std::ofstream(recorded_lock, std::ios::binary);
   std::ofstream(recorded_log, std::ios::binary) << "recorded log";
@@ -93,7 +93,7 @@ int main() {
   const fs::path restored_configured = root / "restored.mkv";
   const fs::path restored_source =
       root / "restored.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-aabbccddeeff.mkv";
-  const fs::path restored_video = root / "restored-finalization-failed.mkv";
+  const fs::path restored_video = root / "restored-finalization-failed-1.mkv";
   const fs::path restore_cleanup = root / "hstream-cleanup-v2-11111111-2222-4333-8444-555555555555";
   add_cleanup_record(restore_cleanup, restored_source);
   std::ofstream(restore_cleanup / "guard", std::ios::binary) << "trusted interrupted video";
@@ -113,7 +113,7 @@ int main() {
   // The source may already be retired while the recovery pair's identity
   // guards remain. Their open descriptors must move to the published names.
   const fs::path guarded_configured = root / "guarded.mkv";
-  const fs::path guarded_video = root / "guarded-finalization-failed.mkv";
+  const fs::path guarded_video = root / "guarded-finalization-failed-1.mkv";
   const fs::path guarded_log = guarded_video.string() + ".log";
   const fs::path guarded_video_pin = guarded_video.string() + ".hstream-pin";
   const fs::path guarded_log_pin = guarded_log.string() + ".hstream-pin";
@@ -133,8 +133,8 @@ int main() {
   // A foreign file can occupy the original recovery name after an
   // interruption. Rescue publishes the guarded inode under the next name.
   const fs::path rescue_configured = root / "rescued.mkv";
-  const fs::path occupied_recovery = root / "rescued-finalization-failed.mkv";
-  const fs::path rescued_video = root / "rescued-finalization-failed-1.mkv";
+  const fs::path occupied_recovery = root / "rescued-finalization-failed-1.mkv";
+  const fs::path rescued_video = root / "rescued-finalization-failed-2.mkv";
   const fs::path rescue_guard = occupied_recovery.string() + ".hstream-pin";
   std::ofstream(occupied_recovery, std::ios::binary) << "foreign video";
   std::ofstream(rescue_guard, std::ios::binary) << "rescued video";
@@ -185,7 +185,7 @@ int main() {
   fs::create_directory(rollback_dir);
   const fs::path rollback_source = rollback_dir / "recording.mkv";
   const fs::path rollback_log = rollback_source.string() + ".log";
-  const fs::path rollback_recovery = rollback_dir / "recording-finalization-failed.mkv";
+  const fs::path rollback_recovery = rollback_dir / "recording-finalization-failed-1.mkv";
   const fs::path rollback_recovery_log = rollback_recovery.string() + ".log";
   std::ofstream(rollback_source, std::ios::binary) << "trusted rollback video";
   std::ofstream(rollback_log, std::ios::binary) << "trusted rollback log";
@@ -220,7 +220,7 @@ int main() {
   fs::create_directory(late_dir);
   const fs::path late_source = late_dir / "recording.mkv";
   const fs::path late_log = late_source.string() + ".log";
-  const fs::path late_recovery = late_dir / "recording-finalization-failed.mkv";
+  const fs::path late_recovery = late_dir / "recording-finalization-failed-1.mkv";
   const fs::path late_recovery_log = late_recovery.string() + ".log";
   std::ofstream(late_source, std::ios::binary) << "late video";
   std::ofstream(late_log, std::ios::binary) << "late log";
@@ -255,7 +255,7 @@ int main() {
   fs::create_directory(early_dir);
   const fs::path early_source = early_dir / "recording.mkv";
   const fs::path early_log = early_source.string() + ".log";
-  const fs::path early_recovery = early_dir / "recording-finalization-failed.mkv";
+  const fs::path early_recovery = early_dir / "recording-finalization-failed-1.mkv";
   const fs::path early_recovery_log = early_recovery.string() + ".log";
   std::ofstream(early_source, std::ios::binary) << "early video";
   std::ofstream(early_log, std::ios::binary) << "early log";

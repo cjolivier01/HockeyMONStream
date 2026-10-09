@@ -1,6 +1,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryDb.h"
 #include <unistd.h>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include "hstream/src/libs/recording/Database.h"
@@ -13,6 +14,14 @@ void check(bool condition, const std::string& error) {
 }
 int main(int argc, char** argv) {
   try {
+    bool rejected_zero = false;
+    try {
+      TelemetryDatabaseFilename("game-one", 0);
+    } catch (const std::invalid_argument&) {
+      rejected_zero = true;
+    }
+    check(rejected_zero, "new database filenames reject version zero");
+    check(TelemetryDatabaseGeneration("hm_telemetry.db") == 0, "legacy unnumbered databases remain readable");
     char tmp[] = "/tmp/hstream-db-test-XXXXXX";
     check(mkdtemp(tmp), "mkdtemp");
     const std::filesystem::path directory = argc > 1 ? argv[1] : tmp;
@@ -23,6 +32,7 @@ int main(int argc, char** argv) {
             .ok(),
         "start");
     const auto path = writer.output_manifest();
+    check(std::filesystem::path(path).filename() == "game-one_telemetry-1.db", "game-named first generation");
     {
       Database db(path);
       db.Validate();
@@ -74,9 +84,27 @@ int main(int argc, char** argv) {
         !std::filesystem::exists(path + "-wal") && !std::filesystem::exists(path + "-journal"),
         "closed publication is one file");
     PlayTrackerTelemetryDb second;
-    check(second.Start(directory.string(), {"s", "s"}, {"e", "e"}).ok(), "second start");
-    check(second.output_manifest() != path, "new generation never replaces prior data");
+    check(second.Start(directory.string(), {"s", "s"}, {"e", "e"}, {}, 2048, "game-one").ok(), "second start");
+    check(
+        std::filesystem::path(second.output_manifest()).filename() == "game-one_telemetry-2.db",
+        "new generation advances without replacing prior data");
     second.Stop();
+    std::ofstream(directory / "hstream_telemetry-9.json") << "legacy generation";
+    std::ofstream(directory / "hm_telemetry-10.db") << "legacy database";
+    PlayTrackerTelemetryDb mixed;
+    check(mixed.Start(directory.string() + "/", {"s", "s"}, {"e", "e"}).ok(), "mixed legacy directory");
+    check(
+        std::filesystem::path(mixed.output_manifest()).filename() == directory.filename().string() + "_telemetry-11.db",
+        "default game ID tolerates trailing separator and numbering advances beyond legacy recordings");
+    mixed.Stop();
+    PlayTrackerTelemetryDb whitespace;
+    check(
+        whitespace.Start((directory / "   ").string() + "/", {"s", "s"}, {"e", "e"}).ok(),
+        "quoted whitespace output directory remains supported");
+    check(
+        std::filesystem::path(whitespace.output_manifest()).filename() == "   _telemetry-1.db",
+        "directory-derived game ID is preserved");
+    whitespace.Stop();
     writer.MarkRunOutcome(TelemetryRunOutcome::kFailed);
     {
       Database db(path);

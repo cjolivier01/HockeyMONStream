@@ -60,13 +60,15 @@ int main(int argc, char** argv) {
       valid = false;
       return;
     }
+    valid &= dialog->findChild<QLineEdit*>("highlightTelemetryDatabase")->text() == dir.filePath("game_telemetry-7.db");
     dialog->findChild<QLineEdit*>("highlightCueText")->setText("Holding penalty");
     dialog->findChild<QListWidget*>("highlightAnnotations")->setCurrentRow(1);
     dialog->findChild<QLineEdit*>("highlightCueText")->setText("WHISTLE!");
     dialog->findChild<QDialogButtonBox*>("highlightItemButtons")->button(QDialogButtonBox::Save)->click();
   });
-  if (!EditHighlightItem(&clip, dir.path(), "game", {}, {}, 0, {}, nullptr) || !valid ||
-      clip.annotations[0].text != "Holding penalty" || clip.annotations[1].text != "WHISTLE!")
+  if (!EditHighlightItem(
+          &clip, dir.path(), "game", dir.filePath("game-tracking_output-with-audio-7.mp4"), {}, 0, {}, nullptr) ||
+      !valid || clip.annotations[0].text != "Holding penalty" || clip.annotations[1].text != "WHISTLE!")
     return 1;
   QTimer::singleShot(0, [&] {
     auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());

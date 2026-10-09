@@ -276,28 +276,32 @@ absl::Status PlayTrackerTelemetryDb::Start(
     fs::create_directories(directory);
     p.run_id = hm::recording::NewGuid();
     p.capacity = capacity;
-    uint64_t first_generation = 0;
-    const std::regex pattern(R"(^hstream_telemetry(?:-([0-9]+))?\.(?:db|json)$)");
+    fs::path directory_path = fs::path(directory).lexically_normal();
+    if (directory_path.filename().empty())
+      directory_path = directory_path.parent_path();
+    const std::string source_game_id = game_id.empty() ? directory_path.filename().string() : game_id;
+    uint64_t first_generation = 1;
+    const std::regex legacy_manifest(R"(^hstream_telemetry(?:-([0-9]+))?\.json$)");
     for (const auto& entry : fs::directory_iterator(directory)) {
       std::smatch match;
       const std::string filename = entry.path().filename().string();
-      if (std::regex_match(filename, match, pattern)) {
-        const uint64_t previous = match[1].matched ? std::stoull(match[1]) : 0;
-        if (previous == UINT64_MAX)
+      auto previous = hm::recording::TelemetryDatabaseGeneration(filename);
+      if (!previous && std::regex_match(filename, match, legacy_manifest))
+        previous = match[1].matched ? std::stoull(match[1]) : 0;
+      if (previous) {
+        if (*previous == UINT64_MAX)
           throw std::runtime_error("Recording generation exceeds integer range");
-        first_generation = std::max(first_generation, previous + 1);
+        first_generation = std::max(first_generation, *previous + 1);
       }
     }
     for (uint64_t generation = first_generation;; ++generation) {
-      p.path =
-          (fs::path(directory) / ("hstream_telemetry" + (generation ? "-" + std::to_string(generation) : "") + ".db"))
-              .string();
+      p.path = (fs::path(directory) / hm::recording::TelemetryDatabaseFilename(source_game_id, generation)).string();
       int fd = open(p.path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
       if (fd >= 0) {
         close(fd);
         break;
       }
-      if (errno != EEXIST)
+      if (errno != EEXIST || generation == UINT64_MAX)
         throw std::runtime_error("Cannot reserve telemetry database: " + p.path);
     }
     p.db = std::make_unique<Database>(p.path, true);
@@ -307,7 +311,7 @@ absl::Status PlayTrackerTelemetryDb::Start(
         p.db->get(),
         "INSERT INTO runs(run_id,game_id,started_utc,producer,source_config,effective_config) VALUES(?,?,?,?,?,?)");
     run.Bind(1, p.run_id);
-    run.Bind(2, game_id.empty() ? fs::path(directory).filename().string() : game_id);
+    run.Bind(2, source_game_id);
     run.Bind(3, now());
     run.Bind(4, "hstream");
     run.Bind(5, source.contents);

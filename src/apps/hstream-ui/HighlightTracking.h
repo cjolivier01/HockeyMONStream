@@ -9,6 +9,8 @@ struct HighlightTrackChoice {
   qint64 geometry{0}, seek{0}, reset{0}, source{0};
   QRectF box;
 };
+// Prefer the selected archive's generation; never substitute a different run's suffix.
+QString HighlightTrackingDatabasePath(const QString& game_directory, const QString& game_id, const QString& archive);
 QStringList HighlightTrackingRuns(const QString& database, const QString& game, QString* error);
 bool HighlightTrackingChoices(
     const QString& database,

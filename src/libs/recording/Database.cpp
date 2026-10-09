@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <iomanip>
 #include <limits>
+#include <regex>
 #include <sstream>
 #include "hstream/src/libs/recording/Schema.h"
 
@@ -125,5 +126,24 @@ std::string NewGuid() {
 }
 const char* Schema() {
   return kRecordingSchema;
+}
+std::string TelemetryDatabaseStem(const std::string& game_id) {
+  if (game_id.empty() || game_id.find('\0') != std::string::npos)
+    throw std::runtime_error("Telemetry requires a nonempty game ID without NUL characters");
+  static const std::regex separators(R"([\\/]+)");
+  return std::regex_replace(game_id, separators, "_") + "_telemetry";
+}
+std::string TelemetryDatabaseFilename(const std::string& game_id, uint64_t generation) {
+  if (generation == 0)
+    throw std::invalid_argument("Telemetry version must start at one");
+  return TelemetryDatabaseStem(game_id) + "-" + std::to_string(generation) + ".db";
+}
+std::optional<uint64_t> TelemetryDatabaseGeneration(const std::string& filename) {
+  static const std::regex numbered(R"(^.+_telemetry-([0-9]+)\.(?:db|sqlite)$)");
+  static const std::regex legacy(R"(^(?:hstream|hm)_telemetry(?:-([0-9]+))?\.(?:db|sqlite)$)");
+  std::smatch match;
+  if (!std::regex_match(filename, match, numbered) && !std::regex_match(filename, match, legacy))
+    return std::nullopt;
+  return match[1].matched ? std::stoull(match[1]) : 0;
 }
 } // namespace hm::recording

@@ -62,4 +62,10 @@ class Database {
 };
 std::string NewGuid();
 const char* Schema();
+// New recordings always have a game ID and a positive numeric version in their filename.
+std::string TelemetryDatabaseStem(const std::string& game_id);
+std::string TelemetryDatabaseFilename(const std::string& game_id, uint64_t generation);
+// Also recognizes old hm/hstream database names for discovery and collision checks.
+// Returns nullopt for unrelated files; an overflowing generation throws.
+std::optional<uint64_t> TelemetryDatabaseGeneration(const std::string& filename);
 } // namespace hm::recording

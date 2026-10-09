@@ -370,7 +370,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
       {"rink_mask_0", ".png"},
       {".hstream-rink-mask", ".png"},
   };
-  uint64_t first_generation = 0;
+  uint64_t first_generation = 1;
   fs::directory_iterator entry(output_directory_, error);
   const fs::directory_iterator end;
   while (entry != end) {
@@ -422,7 +422,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
       break;
     }
     const uint64_t generation = first_generation + attempt;
-    suffix_ = generation == 0 ? "" : absl::StrCat("-", generation);
+    suffix_ = absl::StrCat("-", generation);
     tracking_filename_ = suffixed_name("tracking", suffix_, ".csv");
     detections_filename_ = suffixed_name("detections", suffix_, ".csv");
     camera_filename_ = suffixed_name("camera", suffix_, ".csv");

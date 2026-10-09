@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-from find_obsolete_mp4s import symlink_plex_programs
+from find_obsolete_mp4s import find_obsolete_mp4s, symlink_plex_programs
 
 
 class PlexLinksTest(unittest.TestCase):
@@ -25,6 +25,13 @@ class PlexLinksTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
         return path
+
+    def test_game_named_database_generations_and_legacy_recordings(self):
+        legacy = self.video('game/hstream_telemetry-2.db')
+        older = self.video('game/game_telemetry-3.db')
+        current = self.video('game/game_telemetry-7.db')
+        self.assertEqual(set(find_obsolete_mp4s(self.root)), {legacy, older})
+        self.assertTrue(current.is_file())
 
     def test_latest_generation_then_4k_and_shallow_scan(self):
         self.video('sharks/tracking_output-2.mp4')

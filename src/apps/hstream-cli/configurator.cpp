@@ -451,7 +451,7 @@ absl::Status sync_archive_and_parent(
 }
 
 fs::path archive_recovery_candidate(const fs::path& output_path, int suffix) {
-  const std::string suffix_text = suffix == 0 ? "" : "-" + std::to_string(suffix);
+  const std::string suffix_text = "-" + std::to_string(suffix);
   return output_path.parent_path() /
       (output_path.stem().string() + "-finalization-failed" + suffix_text + output_path.extension().string());
 }
@@ -3918,7 +3918,7 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     return absl::OkStatus();
   };
 
-  for (int suffix = 0; suffix < 1000; ++suffix) {
+  for (int suffix = 1; suffix <= 1000; ++suffix) {
     const fs::path recovery_path = archive_recovery_candidate(recovery_name_base, suffix);
     const fs::path recovery_log_path = archive_log_sidecar(recovery_path);
     const fs::path recovery_guard_path = recovery_path.string() + ".hstream-pin";
@@ -4820,7 +4820,7 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     fs::path committed_log_path = recovery_log_path;
     if (!visible_video_is_trusted || !visible_log_is_trusted) {
       bool rescued = false;
-      for (int suffix = 0; suffix < 1000; ++suffix) {
+      for (int suffix = 1; suffix <= 1000; ++suffix) {
         const fs::path candidate = archive_recovery_candidate(configured_path, suffix);
         const fs::path candidate_log = archive_log_sidecar(candidate);
         const fs::path candidate_guard = candidate.string() + ".hstream-pin";

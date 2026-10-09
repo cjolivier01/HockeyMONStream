@@ -675,7 +675,7 @@ int main() {
   hm::playtracker::PlayTrackerTelemetryCsv atomic_manifest_exporter;
   const absl::Status atomic_manifest_start = atomic_manifest_exporter.Start(
       atomic_manifest_directory.string(), source_config.string(), effective_config.string(), 8);
-  const fs::path atomic_manifest_path = atomic_manifest_directory / "hstream_telemetry.json";
+  const fs::path atomic_manifest_path = atomic_manifest_directory / "hstream_telemetry-1.json";
   const std::string initial_atomic_manifest = read_file(atomic_manifest_path);
   const std::string pre_rename_phase = "fsync:manifest:test-pre-rename";
   hm::playtracker::PlayTrackerTelemetryCsvTestPeer::FailSync(atomic_manifest_exporter, pre_rename_phase);
@@ -787,8 +787,10 @@ int main() {
       expect(!changed_mask_exporter.StageRinkMask("different mask"), "a changed mask must immediately fail staging");
   changed_mask_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
   changed_mask_exporter.Stop();
-  changed_mask_valid &= expect(!fs::exists(changed_mask_directory / "tracking.csv") &&
-      read_file(changed_mask_directory / "hstream_telemetry.json").find("\"completed\": false") != std::string::npos,
+  changed_mask_valid &= expect(
+      !fs::exists(changed_mask_directory / "tracking-1.csv") &&
+          read_file(changed_mask_directory / "hstream_telemetry-1.json").find("\"completed\": false") !=
+              std::string::npos,
       "a changed mask must not publish a generation with a mismatched single snapshot");
 
   const fs::path mask_working_directory = directory / "mask-working";
@@ -800,7 +802,7 @@ int main() {
     hm::playtracker::PlayTrackerTelemetryCsv run_exporter;
     mask_reuse_valid &=
         run_exporter.Start(mask_working_directory.string(), source_config.string(), effective_config.string()).ok();
-    const std::string suffix = run == 0 ? "" : "-" + std::to_string(run);
+    const std::string suffix = "-" + std::to_string(run + 1);
     const fs::path working_mask = mask_working_directory / ("rink_mask_0" + suffix + ".png");
     mask_reuse_valid &=
         expect(run_exporter.StageRinkMask(read_file(game_mask)), "each run must stage its loaded mask at startup");
@@ -810,7 +812,7 @@ int main() {
           !fs::equivalent(game_mask, working_mask), "working snapshot must have storage independent of the game mask");
     } else if (run == 1) {
       mask_reuse_valid &= expect(
-          fs::equivalent(working_mask, mask_working_directory / "rink_mask_0.png") &&
+          fs::equivalent(working_mask, mask_working_directory / "rink_mask_0-1.png") &&
               fs::last_write_time(working_mask) == original_mtime,
           "an unchanged mask must reuse working storage without rewriting it");
       std::ofstream(game_mask) << "updated mask";
@@ -819,15 +821,15 @@ int main() {
           "editing the game mask during a run must not change its working snapshot");
     } else {
       mask_reuse_valid &= expect(
-          !fs::equivalent(working_mask, mask_working_directory / "rink_mask_0-1.png") &&
+          !fs::equivalent(working_mask, mask_working_directory / "rink_mask_0-2.png") &&
               read_file(working_mask) == "updated mask" &&
-              read_file(mask_working_directory / "rink_mask_0-1.png") == "original mask",
+              read_file(mask_working_directory / "rink_mask_0-2.png") == "original mask",
           "a changed mask in a later run must retain both versions");
       fs::remove(game_mask);
-      fs::remove(mask_working_directory / "rink_mask_0.png");
+      fs::remove(mask_working_directory / "rink_mask_0-1.png");
       mask_reuse_valid &= expect(
           read_file(working_mask) == "updated mask" &&
-              read_file(mask_working_directory / "rink_mask_0-1.png") == "original mask",
+              read_file(mask_working_directory / "rink_mask_0-2.png") == "original mask",
           "removing source or earlier snapshot names must preserve run copies");
     }
     run_exporter.TryEnqueue(make_policy_sample(true));
@@ -855,7 +857,7 @@ int main() {
     failure_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
     failure_exporter.Stop();
     mask_failure_valid &= expect(
-        !fs::exists(failure_directory / "tracking.csv"),
+        !fs::exists(failure_directory / "tracking-1.csv"),
         "failed mask staging must prevent training publication: " + phase);
   }
 
