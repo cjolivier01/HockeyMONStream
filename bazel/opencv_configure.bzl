@@ -79,11 +79,13 @@ def _build_file_content(
         use_conda,
         lib_dir = "lib",
         soname_suffix = None):
+    # Deliberately no libopencv_highgui: it pulls in GTK/Qt5, and Qt5 loaded
+    # alongside our own Qt6 makes Qt's weak inline symbols collide at dynamic
+    # link time. Nothing here needs a desktop window from OpenCV.
     libs = [
         "libopencv_core.so",
         "libopencv_calib3d.so",
         "libopencv_features2d.so",
-        "libopencv_highgui.so",
         "libopencv_imgcodecs.so",
         "libopencv_imgproc.so",
         "libopencv_video.so",

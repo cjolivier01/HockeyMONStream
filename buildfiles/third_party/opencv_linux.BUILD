@@ -56,7 +56,7 @@ cc_library(
         "-l:libopencv_core.so",
         "-l:libopencv_calib3d.so",
         #"-l:libopencv_features2d.so",
-        "-l:libopencv_highgui.so",
+        # No highgui on purpose: it drags in GTK/Qt5, which collides with our Qt6.
         "-l:libopencv_imgcodecs.so",
         "-l:libopencv_imgproc.so",
         "-l:libopencv_video.so",

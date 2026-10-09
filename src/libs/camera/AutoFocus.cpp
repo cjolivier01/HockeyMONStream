@@ -2,6 +2,7 @@
 #include "hstream/src/libs/camera/MediaCtl.h"
 #include "hstream/src/libs/common/utils.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -16,7 +17,9 @@
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 
-#include <opencv2/opencv.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/videoio.hpp>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -156,16 +159,14 @@ std::string gstreamer_pipeline(
   return std::string(pipeline);
 }
 
-// Opens the camera stream, displays the image, and auto-adjusts the focus.
-absl::Status show_camera(
+// Opens the camera stream and auto-adjusts the focus.
+absl::Status focus_camera(
     int device_id,
     Focuser& focuser,
     int capture_width,
     int capture_height,
     int fps_n,
     int fps_d,
-    bool show,
-    bool interactive,
     bool verbose) {
   int max_index = 10;
   double max_value = 0.0;
@@ -181,8 +182,6 @@ absl::Status show_camera(
   }
 
   cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
-
-  const std::string window_name = std::string("CSI /dev/video") + std::to_string(device_id);
 
   if (focuser.bus == -1) {
     int bus_check = find_working_bus(0, 16, {});
@@ -200,27 +199,16 @@ absl::Status show_camera(
   int skip_frame = 6;
 
   if (cap.isOpened()) {
-    auto cleanup_cv2 = absl::Cleanup([&cap, show]() {
-      cap.release();
-      if (show) {
-        cv::destroyAllWindows();
-      }
-    });
+    auto cleanup_cv2 = absl::Cleanup([&cap]() { cap.release(); });
 
     constexpr int kFocalDistanceIncrement = 4;
 
-    if (show) {
-      cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
-    }
     std::cout << "Focusing camera sensor device " << device_id << std::flush;
-    while (!show || cv::getWindowProperty("CSI Camera", cv::WND_PROP_AUTOSIZE) >= 0) {
+    while (true) {
       cv::Mat img;
       if (!cap.read(img)) {
         std::cerr << "Failed to capture frame." << std::endl;
         break;
-      }
-      if (show) {
-        cv::imshow("CSI Camera", img);
       }
 
       if (skip_frame == 0) {
@@ -255,25 +243,9 @@ absl::Status show_camera(
       } else {
         skip_frame--;
       }
-      // Wait for a key, or just delay
-      const int keyCode = cv::waitKey(16) & 0xFF;
-      if (interactive) {
-        if (keyCode == 27) { // ESC key to exit
-          break;
-        } else if (keyCode == 10 || keyCode == 32) { // ENTER or SPACE resets focusing
-          max_index = 10;
-          max_value = 0.0;
-          last_value = 0.0;
-          dec_count = 0;
-          focal_distance = 10;
-          focus_finished = false;
-        } else if (keyCode && keyCode != 255) {
-          if (verbose) {
-            std::cout << "keyCode = " << keyCode << std::endl;
-          }
-        }
-      }
-      if (!interactive && focus_finished) {
+      // Give the lens time to settle before the next measurement.
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      if (focus_finished) {
         break;
       }
     }
@@ -302,8 +274,6 @@ absl::Status auto_focus_csi_camera(
     int height,
     int fps_n,
     int fps_d,
-    bool show,
-    bool interactive,
     bool verbose,
     bool force) {
   if (!force) {
@@ -313,7 +283,7 @@ absl::Status auto_focus_csi_camera(
     }
   }
   Focuser focuser(i2c_bus);
-  auto status = show_camera(sensor_id, focuser, width, height, fps_n, fps_d, show, interactive, verbose);
+  auto status = focus_camera(sensor_id, focuser, width, height, fps_n, fps_d, verbose);
   if (status.ok()) {
     absl::MutexLock lk(&af_cache.mu);
     af_cache.focused_sensors[sensor_id] = i2c_bus;
@@ -321,20 +291,12 @@ absl::Status auto_focus_csi_camera(
   return status;
 }
 
-absl::Status auto_focus_cameras(
-    const std::vector<CameraConnection>& cameras,
-    bool show,
-    bool interactive,
-    bool verbose,
-    bool force) {
-  show = true;
-  verbose = true;
-
+absl::Status auto_focus_cameras(const std::vector<CameraConnection>& cameras, bool verbose, bool force) {
   std::vector<std::unique_ptr<std::thread>> threads(cameras.size());
   std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
   for (size_t i = 0; i < cameras.size(); ++i) {
     const CameraConnection& camera = cameras[i];
-    threads.at(i) = std::make_unique<std::thread>([index = i, &camera, &statuses, show, interactive, verbose, force]() {
+    threads.at(i) = std::make_unique<std::thread>([index = i, &camera, &statuses, verbose, force]() {
       setThreadName(std::string("AutoFocus-") + std::to_string(camera.sensor_id));
       statuses.at(index) = auto_focus_csi_camera(
           camera.sensor_id,
@@ -343,8 +305,6 @@ absl::Status auto_focus_cameras(
           camera.height,
           camera.fps_n,
           camera.fps_d,
-          show,
-          interactive,
           verbose,
           force);
     });

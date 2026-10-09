@@ -2366,8 +2366,7 @@ absl::Status PipelineApplication::auto_focus_cameras(const std::vector<std::shar
   if (cameras.empty()) {
     return absl::OkStatus();
   }
-  return hm::camera::auto_focus_cameras(
-      cameras, /*show=*/false, /*interactive=*/false, /*verbose=*/false, /*force=*/force_reconfigure_);
+  return hm::camera::auto_focus_cameras(cameras, /*verbose=*/false, /*force=*/force_reconfigure_);
 }
 
 absl::Status PipelineApplication::createMainLoop(
