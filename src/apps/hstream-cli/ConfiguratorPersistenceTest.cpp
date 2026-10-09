@@ -1345,7 +1345,7 @@ play-tracker:
       inherit_blend.ok() && (*inherit_blend)["blend-mode"].as<std::string>() == "laplacian" &&
           (*inherit_blend)["blend-feather-fraction"].as<double>() == 0.05,
       "Null game blend leaves must inherit the baseline values");
-  for (const std::string& native_prefix : {"pipeline.hmstitcher.", "pipeline.hmstitcher.private-properties."}) {
+  for (const std::string native_prefix : {"pipeline.hmstitcher.", "pipeline.hmstitcher.private-properties."}) {
     const auto alias_blend = mapped_blend_case(
         "stitching: {blend_mode: laplacian, blend_feather_fraction: 0.05}",
         {{native_prefix + "blend_mode", "alpha"}, {native_prefix + "blend_feather_fraction", "0.2"}},

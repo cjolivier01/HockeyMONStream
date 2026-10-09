@@ -1311,7 +1311,8 @@ bool expect_doubled_canvas_limits(const fs::path& tmpdir) {
       return false;
     const auto canvas = hm::stitching::stitching_canvas_size(dir.string());
     if (allowed)
-      return canvas.ok() && canvas->width == width && canvas->height == height;
+      return canvas.ok() && canvas->width == static_cast<size_t>(width) &&
+          canvas->height == static_cast<size_t>(height);
     return absl::IsResourceExhausted(canvas.status());
   };
   if (!check(19695, 12460, true) || !check(65536, 1, true) || !check(65537, 1, false) || !check(16384, 16384, true) ||

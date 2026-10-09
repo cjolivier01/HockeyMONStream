@@ -24,6 +24,21 @@ absl::Status error(const std::string& message) {
   return absl::FailedPreconditionError("Player detector identity: " + message);
 }
 
+// Deleters written as function objects rather than `decltype(&fclose)`: a
+// pointer spelled from the declaration drags the libc attributes along with it
+// and the compiler then warns that it has to drop them.
+struct FileCloser {
+  void operator()(FILE* file) const {
+    fclose(file);
+  }
+};
+
+struct LibraryCloser {
+  void operator()(void* library) const {
+    dlclose(library);
+  }
+};
+
 std::string hex(const unsigned char* bytes, unsigned int count) {
   std::ostringstream output;
   output.imbue(std::locale::classic());
@@ -41,7 +56,7 @@ absl::StatusOr<std::string> digest_string(const std::string& bytes) {
 }
 
 absl::StatusOr<std::string> digest_file(const fs::path& path) {
-  std::unique_ptr<FILE, decltype(&fclose)> file(fopen(path.c_str(), "rb"), &fclose);
+  std::unique_ptr<FILE, FileCloser> file(fopen(path.c_str(), "rb"));
   struct stat before{}, after{};
   if (!file || fstat(fileno(file.get()), &before) || !S_ISREG(before.st_mode) || before.st_size <= 0)
     return error("missing or invalid input " + path.string());
@@ -85,8 +100,7 @@ absl::StatusOr<fs::path> resolve_parser(const YAML::Node& value, const fs::path&
   // TensorRT parser libraries may register factories in process-global
   // registries. Keep their code resident after inspecting it, as inference
   // will consume those registrations during the immediately following preroll.
-  std::unique_ptr<void, decltype(&dlclose)> library(
-      dlopen(requested.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE), &dlclose);
+  std::unique_ptr<void, LibraryCloser> library(dlopen(requested.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE));
   if (!library) {
     const char* reason = dlerror();
     return error("cannot resolve parser " + requested.string() + ": " + (reason ? reason : "unknown loader error"));

@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
     wrong_size.mask(cv::Mat(size, CV_8UC1, cv::Scalar(255)));
     ok &= expect(!ValidatePlayerFrameScanMask(wrong_size.frame).ok(), "width or height mismatch fails closed");
   }
-  for (const std::string& revision : {"old-generation:owner", "output-generation:old-owner", ""}) {
+  for (const std::string revision : {"old-generation:owner", "output-generation:old-owner", ""}) {
     Frame stale;
     ok &= stale.output();
     stale.mask(cv::Mat(48, 64, CV_8UC1, cv::Scalar(255)), revision);

@@ -546,7 +546,8 @@ bool test_owned_solve_publication(
   const auto published_project = HuginProject::ReadProject(game / "autooptimiser_out.pto");
   ok &= expect(
       published_project.ok() && published_project->size() > 1024 * 1024 &&
-          std::count(published_project->begin(), published_project->end(), '\n') >= large_matches.size(),
+          std::count(published_project->begin(), published_project->end(), '\n') >=
+              static_cast<std::ptrdiff_t>(large_matches.size()),
       "owned multi-frame solve must publish and read back all points in a project larger than 1 MiB");
   const fs::path oversized = root / "oversized-project.pto";
   std::ofstream(oversized) << "p f2 w100 h50 v180\n";
@@ -2417,7 +2418,7 @@ int main(int argc, char** argv) {
   }();
   ok &= expect(previous_project == after_degenerate, "degenerate remaps must preserve the prior Hugin generation");
   const fs::path collapsed_optimizer = root / "collapsed-autooptimiser";
-  for (const std::string& fov : {"0.198047105780453", "nan", "180", "=9"}) {
+  for (const std::string fov : {"0.198047105780453", "nan", "180", "=9"}) {
     ok &= expect(
         write_tool(
             collapsed_optimizer,
