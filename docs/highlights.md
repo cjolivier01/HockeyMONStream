@@ -6,7 +6,7 @@ Add event times and durations, or exact source ranges. Times accept seconds, `MM
 
 ## Cues and detail annotations
 
-Select a video row and open **Annotations / card**. Inspect a chosen clip time to hold an authored GPU frame. Click the image to position a fixed cue, then refresh the frame to inspect the result. Add each cue yourself; nothing repeats or inserts a later marker automatically. The default is a yellow blinking arrow lasting up to two seconds.
+Select a video row and open **Annotations / card**. The dialog opens with the control column at the width its labels and fields need and the preview taking the rest; the splitter can widen the controls further but not below that width, and the preview's top-right icon hides them for a full-width frame. Inspect a chosen clip time to hold an authored GPU frame. Click the image to position a fixed cue, then refresh the frame to inspect the result. Add each cue yourself; nothing repeats or inserts a later marker automatically. The default is a yellow blinking arrow lasting up to two seconds.
 
 Each cue has independent clip-relative start/end controls, type (`arrow`, `text`, `box`), color, size, stroke thickness, text weight, and blink phase. Coordinates and dimensions are fractions of the output image. An arrow's X/Y is its tail; its end offsets specify direction and length. Boxes use the same offsets as dimensions. Text begins at X/Y. Several cues can overlap. **Apply cue** saves the current controls; changing the selected cue and saving the dialog also apply them.
 
@@ -24,7 +24,7 @@ For example, create an arrow at 0–2 seconds and explicitly create another at 8
 
 Cards have editable text, background/text colors, type size/weight, and duration. Enable **Matchup** for two team names, optional heading and logos, and a required valid `YYYY-MM-DD` game date. A date already present in the game identifier prefills the field; an unknown date stays empty. The current/export date is never substituted. Generic section cards need no date.
 
-**Choose A/B logo** imports a bounded raster image into the game's `highlight-assets/` directory as a content-addressed PNG. Original files can then move without breaking the reel. Logos fit proportionally next to the team names. The card layout fits uniformly into the archive aspect ratio, with the chosen background filling any margins, so panorama exports keep logos and text proportional. Missing retained assets fail preview/export with an explanation. Cards have silent stereo audio and can be previewed or exported alone without an archive.
+**Choose A/B logo** imports a bounded raster image into the game's `highlight-assets/` directory as a content-addressed PNG. Original files can then be moved or deleted without breaking the reel. A logo path typed or pasted into the field, or carried in by a plan authored elsewhere, is imported the same way when the card is saved, and the field is rewritten to the stored copy; a path that resolves to nothing is left alone so a card whose artwork is already missing stays editable. Logos fit proportionally next to the team names. The card layout fits uniformly into the archive aspect ratio, with the chosen background filling any margins, so panorama exports keep logos and text proportional. Missing retained assets fail preview/export with an explanation. Cards have silent stereo audio and can be previewed or exported alone without an archive.
 
 ## Playback and export
 

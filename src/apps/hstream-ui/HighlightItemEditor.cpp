@@ -8,6 +8,7 @@
 #include <QtGui/QGuiApplication>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
+#include <QtGui/QScreen>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
@@ -22,8 +23,10 @@
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include "src/apps/hstream-ui/ActionIcons.h"
@@ -152,6 +155,32 @@ class Editor : public QDialog {
     connect(b, &QPushButton::clicked, this, std::move(action));
     return b;
   }
+  // The form is what this dialog is for, so it opens at the width its longest
+  // label and widest field actually need, and the preview takes the remainder.
+  // A QScrollArea's own minimum is a bare scrollbar, so a splitter left to its
+  // own devices shrinks the controls until nothing is readable.
+  void size_controls(QVBoxLayout* root, QSplitter* splitter, QScrollArea* scroll, QWidget* controls, QWidget* buttons) {
+    const QScreen* display = screen() ? screen() : QGuiApplication::primaryScreen();
+    const QSize room = display ? display->availableGeometry().size() : QSize(1920, 1080);
+    const QMargins margins = root->contentsMargins();
+    const int frame = 2 * scroll->frameWidth();
+    const QSize form = controls->sizeHint();
+    // Reserve the vertical scrollbar: the taller forms need one, and claiming its
+    // width up front keeps the fields off a horizontal scrollbar.
+    const int width =
+        std::min(form.width() + frame + scroll->verticalScrollBar()->sizeHint().width(), room.width() / 2);
+    scroll->setMinimumWidth(width);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setChildrenCollapsible(false);
+    const int preview = std::max(target->minimumWidth(), 780);
+    const int chrome = margins.top() + margins.bottom() + 2 * root->spacing() + status->sizeHint().height() +
+        buttons->sizeHint().height();
+    resize(
+        std::min(width + splitter->handleWidth() + preview + margins.left() + margins.right(), room.width()),
+        std::clamp(form.height() + frame + chrome, 850, room.height() - 80));
+    splitter->setSizes({width, preview});
+  }
   Editor(
       const HighlightInterval& original,
       QString dir,
@@ -172,7 +201,6 @@ class Editor : public QDialog {
     setObjectName("highlightItemEditor");
     setWindowTitle(item.is_card ? "Title / intermission card" : "Clip annotations");
     configure_preview_dialog_window(this);
-    resize(1250, 850);
     auto* root = new QVBoxLayout(this);
     auto* splitter = new QSplitter(this);
     root->addWidget(splitter, 1);
@@ -180,7 +208,6 @@ class Editor : public QDialog {
     scroll->setWidgetResizable(true);
     auto* controls = new QWidget(scroll);
     auto* left = new QVBoxLayout(controls);
-    scroll->setWidget(controls);
     auto* preview = new QWidget(splitter);
     auto* right = new QVBoxLayout(preview);
     auto* actions = new QHBoxLayout;
@@ -212,9 +239,14 @@ class Editor : public QDialog {
       card_controls(left);
     else
       annotation_controls(left, right);
+    // QScrollArea caches the scrolled widget's size hint when it adopts it, so the
+    // controls must already exist. An empty hint leaves the splitter convinced the
+    // form wants nothing and hands the whole window to the preview.
+    scroll->setWidget(controls);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
     buttons->setObjectName("highlightItemButtons");
     root->addWidget(buttons);
+    size_controls(root, splitter, scroll, controls, buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, [&] {
       QString error;
       if (item.is_card ? read_card() : apply_cue(false)) {
@@ -244,15 +276,42 @@ class Editor : public QDialog {
   ~Editor() override {
     pipeline.Cancel();
   }
+  // Card artwork has to outlive wherever the author picked it from, so anything
+  // naming a file outside the game's highlight-assets directory is copied in and
+  // the card keeps the content-addressed relative path. The file chooser already
+  // imports; this covers paths that were typed, pasted, or carried in by a plan
+  // authored elsewhere. A name that resolves to nothing is left alone so a reel
+  // whose artwork has already gone missing stays editable.
+  bool adopt_logo(QLineEdit* field, QString* stored) {
+    const QString entered = field->text().trimmed();
+    const QDir game(game_dir);
+    const QString absolute = game.absoluteFilePath(entered);
+    if (entered.isEmpty() || !QFileInfo::exists(absolute) ||
+        QFileInfo(absolute).absolutePath() == game.absoluteFilePath("highlight-assets")) {
+      *stored = entered;
+      return true;
+    }
+    QString path, error;
+    if (!ImportHighlightLogo(absolute, game_dir, &path, &error)) {
+      status->setText(error);
+      return false;
+    }
+    field->setText(path);
+    *stored = path;
+    return true;
+  }
   bool read_card() {
+    QString logo_a, logo_b;
+    if (!adopt_logo(la, &logo_a) || !adopt_logo(lb, &logo_b))
+      return false;
     auto& c = item.card;
     c.matchup = matchup->isChecked();
     c.heading = heading->text();
     c.team_a = a->text();
     c.team_b = b->text();
     c.date = date->text();
-    c.logo_a = la->text();
-    c.logo_b = lb->text();
+    c.logo_a = logo_a;
+    c.logo_b = logo_b;
     c.background = bg->text();
     c.color = fg->text();
     c.duration_ms = std::llround(duration->value() * 1000);
@@ -282,8 +341,8 @@ class Editor : public QDialog {
         initial = m.captured(1);
     }
     date = line(f, "Game date (YYYY-MM-DD)", initial, "highlightGameDate");
-    la = line(f, "Team A logo", c.logo_a);
-    lb = line(f, "Team B logo", c.logo_b);
+    la = line(f, "Team A logo", c.logo_a, "highlightLogoA");
+    lb = line(f, "Team B logo", c.logo_b, "highlightLogoB");
     auto* logos = new QHBoxLayout;
     left->addLayout(logos);
     auto choose = [&](QLineEdit* dest) {
