@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/HighlightsDialog.h"
 
-#include <QtCore/QDateTime>
+#include "src/apps/hstream-ui/ArchiveCatalog.h"
+
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -12,15 +13,11 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
-#include <QtCore/QTimer>
-#include <QtGui/QGuiApplication>
 #include <QtGui/QKeyEvent>
 #include <QtWidgets/QApplication>
-#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSizeGrip>
@@ -33,10 +30,12 @@
 
 namespace {
 
+QApplication* application = nullptr;
+
 bool run(const QString& program, const QStringList& args, QByteArray* output = nullptr) {
   QProcess process;
   process.start(program, args);
-  if (!process.waitForFinished(30000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+  if (!process.waitForFinished(120000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
     std::cerr << process.readAllStandardError().constData() << std::endl;
     return false;
   }
@@ -45,149 +44,132 @@ bool run(const QString& program, const QStringList& args, QByteArray* output = n
   return true;
 }
 
-bool sample(const QString& path, const QString& color, int frequency) {
-  return run("ffmpeg", {"-hide_banner", "-loglevel",
-                        "error",        "-y",
-                        "-f",           "lavfi",
-                        "-i",           "color=c=" + color + ":s=96x64:r=30:d=3",
-                        "-f",           "lavfi",
-                        "-i",           QString("sine=frequency=%1:sample_rate=48000:duration=3").arg(frequency),
-                        "-c:v",         "libx264",
-                        "-pix_fmt",     "yuv420p",
-                        "-g",           "30",
-                        "-c:a",         "aac",
-                        "-shortest",    path});
+// A published archive is two visibly different halves, so a cut can be checked
+// by sampling a pixel rather than by trusting the reported duration.
+bool publishArchive(const QString& path, const QString& first_color, const QString& second_color, int size) {
+  const QString geometry = QString("%1x%2").arg(size).arg(size * 3 / 4);
+  return run(
+      "ffmpeg",
+      {"-hide_banner",
+       "-loglevel",
+       "error",
+       "-y",
+       "-f",
+       "lavfi",
+       "-i",
+       "color=c=" + first_color + ":s=" + geometry + ":r=30:d=3",
+       "-f",
+       "lavfi",
+       "-i",
+       "sine=frequency=440:sample_rate=48000:duration=3",
+       "-f",
+       "lavfi",
+       "-i",
+       "color=c=" + second_color + ":s=" + geometry + ":r=30:d=3",
+       "-f",
+       "lavfi",
+       "-i",
+       "sine=frequency=660:sample_rate=48000:duration=3",
+       "-filter_complex",
+       "[0:v][1:a][2:v][3:a]concat=n=2:v=1:a=1[v][a]",
+       "-map",
+       "[v]",
+       "-map",
+       "[a]",
+       "-c:v",
+       "libx264",
+       "-pix_fmt",
+       "yuv420p",
+       "-g",
+       "30",
+       "-c:a",
+       "aac",
+       path});
 }
 
-bool addRange(hm::ui::HighlightsDialog* dialog, const QString& name, const QString& start, const QString& end) {
-  auto* label = dialog->findChild<QLineEdit*>("highlightLabelEdit");
-  auto* first = dialog->findChild<QLineEdit*>("highlightFirstTimeEdit");
-  auto* second = dialog->findChild<QLineEdit*>("highlightSecondTimeEdit");
-  auto* mode = dialog->findChild<QComboBox*>("highlightModeCombo");
-  auto* add = dialog->findChild<QPushButton*>("highlightAddButton");
-  if (!label || !first || !second || !mode || !add)
-    return false;
-  mode->setCurrentIndex(1);
-  label->setText(name);
-  first->setText(start);
-  second->setText(end);
-  add->click();
-  return dialog->findChild<QTableWidget*>("highlightsTable")->rowCount() == (name == "First" ? 1 : 2);
-}
-
-bool waitForExport(
-    QApplication* app,
-    hm::ui::HighlightsDialog* dialog,
-    const QString& output,
-    int maximum_iterations,
-    bool* scoreboard_selected = nullptr) {
-  for (int i = 0; i < maximum_iterations && (dialog->isBusy() || !QFileInfo::exists(output)); ++i) {
-    app->processEvents();
-    if (scoreboard_selected && !*scoreboard_selected) {
-      auto* no_scoreboard = dialog->findChild<QPushButton*>("scoreboardNoScoreboardButton");
-      if (no_scoreboard && no_scoreboard->isVisible()) {
-        *scoreboard_selected = true;
-        QTimer::singleShot(0, app, [app] {
-          if (auto* confirmation = qobject_cast<QMessageBox*>(app->activeModalWidget()))
-            confirmation->button(QMessageBox::Yes)->click();
-        });
-        no_scoreboard->click();
-      }
-    }
-    if (!dialog->isBusy() && !QFileInfo::exists(output))
-      break;
-    QThread::msleep(10);
-  }
-  if (!dialog->isBusy() && QFileInfo::exists(output))
+bool writeSidecar(const QString& archive_path, const QString& game_id, const QString& kind, qint64 start_time_ms) {
+  hm::ui::ArchiveEntry entry;
+  entry.path = archive_path;
+  entry.game_id = game_id;
+  entry.kind = kind;
+  entry.start_time_ms = start_time_ms;
+  entry.start_time_known = true;
+  QString error;
+  if (hm::ui::SaveArchiveSidecar(entry, &error))
     return true;
-  std::cerr << "Export did not finish: " << dialog->findChild<QLabel*>("highlightStatus")->text().toStdString()
-            << std::endl;
-  if (auto* log = dialog->findChild<QTextEdit*>("highlightLog"))
-    std::cerr << log->toPlainText().toStdString() << std::endl;
+  std::cerr << error.toStdString() << std::endl;
   return false;
 }
 
-int realGameE2E(QApplication* app) {
-  const QString game_dir = qEnvironmentVariable("HSTREAM_HIGHLIGHTS_E2E_GAME_DIR");
-  const QString runner = qEnvironmentVariable("HSTREAM_HIGHLIGHTS_E2E_RUNNER");
-  const QString working_dir = qEnvironmentVariable("HSTREAM_HIGHLIGHTS_E2E_WORKING_DIR");
-  if (!QFileInfo(runner).isFile() || !QFileInfo(game_dir).isDir() || working_dir.isEmpty()) {
-    std::cerr << "E2E runner, game directory, or working directory is missing" << std::endl;
-    return 1;
+bool settle(hm::ui::HighlightsDialog* dialog, int milliseconds) {
+  for (int elapsed = 0; elapsed < milliseconds && dialog->isBusy(); ++elapsed) {
+    application->processEvents();
+    QThread::msleep(1);
   }
-  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-  env.insert("HM_GAME_DIR", QFileInfo(game_dir).absolutePath());
-  const QStringList base_args = {
-      "-g",
-      "tv-14-1-p1",
-      "--enable-sources=URI-MULTIPLE",
-      "-c",
-      QDir(working_dir).filePath("configs/ds_hockey_app_config.yaml"),
-      "--options=pipeline.hmaudio.enable=1"};
-  hm::ui::HighlightsDialog dialog(
-      "tv-14-1-p1",
-      game_dir,
-      runner,
-      working_dir,
-      qEnvironmentVariable("HSTREAM_HIGHLIGHTS_E2E_OUTPUT_ROOT", QDir::tempPath()),
-      env,
-      base_args);
-  dialog.show();
-  app->processEvents();
-  if (!addRange(&dialog, "First", "5", "7") || !addRange(&dialog, "Second", "0:15", "0:17"))
-    return 1;
-  auto* base_name = dialog.findChild<QLineEdit*>("highlightBaseNameEdit");
-  base_name->setText("e2e-" + QString::number(QDateTime::currentMSecsSinceEpoch()));
-  dialog.findChild<QCheckBox*>("highlightProgram4kCheck")->setChecked(true);
-  dialog.findChild<QCheckBox*>("highlightStitchedCheck")->setChecked(true);
-  dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
-  bool scoreboard_selected = false;
-  for (const QString route : {"program", "program_4k", "stitched"}) {
-    const QString output = QDir(game_dir).filePath(QString("tv-14-1-p1-%1-%2-1.mp4").arg(base_name->text(), route));
-    if (!waitForExport(
-            app,
-            &dialog,
-            output,
-            90000,
-            qEnvironmentVariableIsSet("HSTREAM_HIGHLIGHTS_E2E_SELECT_NO_SCOREBOARD") ? &scoreboard_selected : nullptr))
-      return 1;
-    QByteArray probe;
-    if (!run("ffprobe", {"-v", "error", "-show_streams", "-show_format", "-of", "json", output}, &probe))
-      return 1;
-    const QJsonObject root = QJsonDocument::fromJson(probe).object();
-    const double duration = root.value("format").toObject().value("duration").toString().toDouble();
-    if (std::abs(duration - 4.0) > 0.5 || root.value("streams").toArray().size() != 2) {
-      std::cerr << "Unexpected " << route.toStdString() << " duration or stream layout: " << probe.constData()
-                << std::endl;
-      return 1;
-    }
-    std::cout << route.toStdString() << " " << output.toStdString() << " duration=" << duration << std::endl;
-  }
-  if (qEnvironmentVariableIsSet("HSTREAM_HIGHLIGHTS_E2E_SELECT_NO_SCOREBOARD") && !scoreboard_selected) {
-    std::cerr << "Highlights did not open the missing-scoreboard selector" << std::endl;
-    return 1;
-  }
-  dialog.findChild<QTableWidget*>("highlightsTable")->setCurrentCell(0, 0);
-  dialog.findChild<QPushButton*>("highlightPreviewSelectedButton")->click();
-  for (int i = 0; i < 12000 && dialog.isBusy(); ++i) {
-    app->processEvents();
-    QThread::msleep(10);
-  }
-  if (dialog.isBusy() || dialog.findChild<QLabel*>("highlightStatus")->text() != "Preview complete.") {
-    std::cerr << "Embedded Program preview failed: "
-              << dialog.findChild<QLabel*>("highlightStatus")->text().toStdString() << std::endl;
-    std::cerr << dialog.findChild<QTextEdit*>("highlightLog")->toPlainText().toStdString() << std::endl;
-    return 1;
-  }
-  return 0;
+  application->processEvents();
+  if (!dialog->isBusy())
+    return true;
+  std::cerr << "Dialog stayed busy: " << dialog->findChild<QLabel*>("highlightStatus")->text().toStdString()
+            << std::endl;
+  return false;
+}
+
+QString statusOf(hm::ui::HighlightsDialog* dialog) {
+  return dialog->findChild<QLabel*>("highlightStatus")->text();
+}
+
+bool addRange(hm::ui::HighlightsDialog* dialog, const QString& name, const QString& start, const QString& end) {
+  auto* table = dialog->findChild<QTableWidget*>("highlightsTable");
+  const int before = table->rowCount();
+  dialog->findChild<QComboBox*>("highlightModeCombo")->setCurrentIndex(1);
+  dialog->findChild<QLineEdit*>("highlightLabelEdit")->setText(name);
+  dialog->findChild<QLineEdit*>("highlightFirstTimeEdit")->setText(start);
+  dialog->findChild<QLineEdit*>("highlightSecondTimeEdit")->setText(end);
+  dialog->findChild<QPushButton*>("highlightAddButton")->click();
+  if (table->rowCount() == before + 1)
+    return true;
+  std::cerr << "Could not add " << name.toStdString() << ": " << statusOf(dialog).toStdString() << std::endl;
+  return false;
+}
+
+QString cell(hm::ui::HighlightsDialog* dialog, int row, int column) {
+  auto* item = dialog->findChild<QTableWidget*>("highlightsTable")->item(row, column);
+  return item ? item->text() : QString();
+}
+
+// The "In archive" cell is a dash when the interval does not fit, and the two
+// archive timestamps otherwise. Checking the ends keeps the test off the exact
+// separator character.
+bool mapsTo(hm::ui::HighlightsDialog* dialog, int row, const QString& start, const QString& end) {
+  const QString text = cell(dialog, row, 5);
+  return text.startsWith(start) && text.endsWith(end);
+}
+
+bool unmapped(hm::ui::HighlightsDialog* dialog, int row) {
+  return !cell(dialog, row, 5).contains(':');
+}
+
+// Mean red and blue of one decoded frame, so clip order and content can be
+// asserted without decoding the whole output.
+bool samplePixel(const QString& path, const QString& at, int* red, int* blue) {
+  QByteArray pixel;
+  if (!run(
+          "ffmpeg",
+          {"-hide_banner", "-loglevel", "error", "-ss", at, "-i", path, "-frames:v", "1", "-vf", "scale=1:1",
+           "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"},
+          &pixel) ||
+      pixel.size() != 3)
+    return false;
+  *red = static_cast<unsigned char>(pixel[0]);
+  *blue = static_cast<unsigned char>(pixel[2]);
+  return true;
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
-  if (qEnvironmentVariableIsSet("HSTREAM_HIGHLIGHTS_E2E_GAME_DIR"))
-    return realGameE2E(&app);
+  application = &app;
   if (QStandardPaths::findExecutable("ffmpeg").isEmpty() || QStandardPaths::findExecutable("ffprobe").isEmpty()) {
     std::cerr << "ffmpeg and ffprobe are required" << std::endl;
     return 1;
@@ -195,52 +177,34 @@ int main(int argc, char** argv) {
   QTemporaryDir temporary(QDir::tempPath() + "/hstream-highlights-test-XXXXXX");
   if (!temporary.isValid())
     return 1;
-  const QString red = temporary.filePath("red.mkv");
-  const QString blue = temporary.filePath("blue.mkv");
-  if (!sample(red, "red", 440) || !sample(blue, "blue", 660))
-    return 1;
   const QString game_dir = temporary.filePath("test-game");
   if (!QDir().mkpath(game_dir))
     return 1;
-  const QString runner = temporary.filePath("fake-runner.sh");
-  QFile script(runner);
-  if (!script.open(QIODevice::WriteOnly | QIODevice::Text))
+  const QString program_archive = QDir(game_dir).filePath("test-game-tracking_output-with-audio-1.mp4");
+  const QString reduced_archive = QDir(game_dir).filePath("test-game-program_4k_output-with-audio-1.mp4");
+  if (!publishArchive(program_archive, "red", "blue", 320) ||
+      !publishArchive(reduced_archive, "green", "white", 160) ||
+      !writeSidecar(program_archive, "test-game", "program", 600000) ||
+      !writeSidecar(reduced_archive, "test-game", "program_4k", 1200000))
     return 1;
-  script.write(R"(#!/bin/sh
-set -eu
-test -n "${HSTREAM_UI_PARENT_PID:-}"
-out=
-sample="$HSTREAM_TEST_RED"
-echo "$*" >> "$HSTREAM_TEST_CALLS"
-printf '\033[3' >&2
-sleep 0.05
-printf '1mcolored runner line\033[0m\nERROR first line\n  detail\n' >&2
-for arg in "$@"; do
-  case "$arg" in
-    --start-time=00:00:10*) sample="$HSTREAM_TEST_BLUE" ;;
-    --options=pipeline.sink2.output-file=*) out="${arg#--options=pipeline.sink2.output-file=}" ;;
-  esac
-done
-if [ -z "$out" ]; then
-  echo "HSTREAM_CLIP_RESULT reason=end-boundary"
-  exit 0
-fi
-cp "$sample" "$out"
-echo "HSTREAM_OUTPUT type=archive sink=2 kind=program existed=0 size=0 mtime-ms=-1 codec=h264 path=$out"
-echo "HSTREAM_CLIP_RESULT reason=end-boundary"
-)");
-  script.close();
-  if (!script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner))
+
+  QVector<hm::ui::ArchiveEntry> archives = hm::ui::DiscoverArchives(game_dir, "test-game");
+  if (archives.size() != 2 || archives.at(0).kind != "program" || archives.at(1).kind != "program_4k") {
+    std::cerr << "Published archives were not discovered in preference order" << std::endl;
     return 1;
+  }
+
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-  env.insert("HSTREAM_TEST_RED", red);
-  env.insert("HSTREAM_TEST_BLUE", blue);
-  const QString calls = temporary.filePath("calls.log");
-  env.insert("HSTREAM_TEST_CALLS", calls);
-  hm::ui::HighlightsDialog dialog(
-      "test-game", game_dir, runner, temporary.path(), temporary.path(), env, {"-g", "test-game"});
+  // Keep the test off the GPU and off whatever encoders this host happens to
+  // have; the encoder choice itself is covered by its own unit test.
+  env.insert("HSTREAM_UI_HIGHLIGHTS_VIDEO_ENCODER", "libx264");
+  env.insert("HSTREAM_UI_HIGHLIGHTS_VIDEO_PRESET", "ultrafast");
+
+  hm::ui::HighlightsDialog dialog("test-game", game_dir, env, archives);
   dialog.show();
-  app.processEvents();
+  if (!settle(&dialog, 30000))
+    return 1;
+
   auto* maximize_window = dialog.findChild<QToolButton*>("maximizeHighlightsWindowButton");
   auto* resize_grip = dialog.findChild<QSizeGrip*>();
   if (!dialog.windowFlags().testFlag(Qt::WindowMaximizeButtonHint) || !dialog.isSizeGripEnabled() || !resize_grip ||
@@ -276,11 +240,9 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
     std::cerr << "Highlights window did not restore" << std::endl;
     return 1;
   }
-  if (!dialog.findChild<QWidget*>("highlightVideo"))
-    return 1;
   auto* expand_preview = dialog.findChild<QToolButton*>("highlightExpandPreviewButton");
-  if (!expand_preview || expand_preview->icon().isNull() || !expand_preview->text().isEmpty() ||
-      expand_preview->accessibleName() != "Maximize preview")
+  if (!dialog.findChild<QWidget*>("highlightVideo") || !expand_preview || expand_preview->icon().isNull() ||
+      !expand_preview->text().isEmpty() || expand_preview->accessibleName() != "Maximize preview")
     return 1;
   expand_preview->click();
   app.processEvents();
@@ -313,25 +275,54 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
       return 1;
     }
   }
-  if (!addRange(&dialog, "First", "0", "1") || !addRange(&dialog, "Second", "0:10", "0:11")) {
-    std::cerr << "Could not add two ranges" << std::endl;
+
+  auto* archive_combo = dialog.findChild<QComboBox*>("highlightArchiveCombo");
+  auto* archive_offset = dialog.findChild<QLineEdit*>("highlightArchiveOffsetEdit");
+  auto* archive_detail = dialog.findChild<QLabel*>("highlightArchiveDetail");
+  if (!archive_combo || !archive_offset || !archive_detail || archive_combo->count() != 2 ||
+      !archive_combo->isVisible()) {
+    std::cerr << "Two archives must be offered for selection" << std::endl;
     return 1;
   }
-  auto* export_all = dialog.findChild<QPushButton*>("highlightExportAllButton");
-  if (!export_all)
+  if (!archive_combo->itemText(0).contains("Program") || !archive_combo->itemText(0).contains("320") ||
+      !archive_combo->itemText(0).contains("240") || !archive_combo->itemText(0).contains("starts 00:10:00") ||
+      !archive_combo->itemText(1).contains("4K Program")) {
+    std::cerr << "Archive labels did not describe the sources: " << archive_combo->itemText(0).toStdString()
+              << std::endl;
     return 1;
-  export_all->click();
+  }
+  if (archive_offset->text() != "00:10:00" || !archive_detail->text().contains("covers 00:10:00 to 00:10:06") ||
+      !archive_detail->text().contains("H264") || !archive_detail->text().contains("with audio")) {
+    std::cerr << "Inspection did not describe the selected archive: " << archive_detail->text().toStdString()
+              << std::endl;
+    return 1;
+  }
+
+  // Intervals are kept in game time; the archive's own timeline starts at the
+  // sidecar's offset.
+  if (!addRange(&dialog, "First", "00:10:00.500", "00:10:02.500") ||
+      !addRange(&dialog, "Second", "00:10:03.500", "00:10:05.500"))
+    return 1;
+  if (!mapsTo(&dialog, 0, "00:00:00.500", "00:00:02.500") || !mapsTo(&dialog, 1, "00:00:03.500", "00:00:05.500")) {
+    std::cerr << "Game times were not mapped onto the archive: " << cell(&dialog, 0, 5).toStdString() << std::endl;
+    return 1;
+  }
+
+  // Preview needs the GPU renderer and an X11 display; this test runs offscreen.
+  if (dialog.findChild<QPushButton*>("highlightPreviewAllButton")->isEnabled() ||
+      dialog.findChild<QPushButton*>("highlightLoopButton")->isEnabled() ||
+      !dialog.findChild<QPushButton*>("highlightExportAllButton")->isEnabled()) {
+    std::cerr << "Preview must be disabled without a renderer while export stays available" << std::endl;
+    return 1;
+  }
+
+  dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
+  if (!settle(&dialog, 180000))
+    return 1;
   const QString output = QDir(game_dir).filePath("test-game-highlights-program-1.mp4");
-  if (!waitForExport(&app, &dialog, output, 3000))
-    return 1;
-  auto* log = dialog.findChild<QTextEdit*>("highlightLog");
-  if (!log || !log->toPlainText().contains("colored runner line") || log->toPlainText().contains(QChar(0x1b)) ||
-      (!log->toHtml().contains("#b42318") && !log->toHtml().contains("#bf616a"))) {
-    std::cerr << "Highlights log did not render terminal color" << std::endl;
-    return 1;
-  }
-  if (!log->toPlainText().contains("ERROR first line\n  detail")) {
-    std::cerr << "Highlights log did not preserve multiline stderr" << std::endl;
+  if (!QFileInfo::exists(output) || !statusOf(&dialog).contains("Highlights saved")) {
+    std::cerr << "Export did not publish: " << statusOf(&dialog).toStdString() << std::endl;
+    std::cerr << dialog.findChild<QTextEdit*>("highlightLog")->toPlainText().toStdString() << std::endl;
     return 1;
   }
   QByteArray probe;
@@ -339,120 +330,145 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
     return 1;
   const QJsonObject root = QJsonDocument::fromJson(probe).object();
   const double duration = root.value("format").toObject().value("duration").toString().toDouble();
-  if (std::abs(duration - 2.0) > 0.3 || root.value("streams").toArray().size() != 2) {
+  if (std::abs(duration - 4.0) > 0.1 || root.value("streams").toArray().size() != 2) {
     std::cerr << "Unexpected joined streams or duration: " << probe.constData() << std::endl;
     return 1;
   }
-  for (const auto& sample_time : {std::pair<QString, bool>{"0.2", true}, {"1.3", false}}) {
-    QByteArray pixel;
-    if (!run(
-            "ffmpeg",
-            {"-hide_banner",
-             "-loglevel",
-             "error",
-             "-ss",
-             sample_time.first,
-             "-i",
-             output,
-             "-frames:v",
-             "1",
-             "-vf",
-             "scale=1:1",
-             "-pix_fmt",
-             "rgb24",
-             "-f",
-             "rawvideo",
-             "pipe:1"},
-            &pixel) ||
-        pixel.size() != 3)
-      return 1;
-    const unsigned char red_value = static_cast<unsigned char>(pixel[0]);
-    const unsigned char blue_value = static_cast<unsigned char>(pixel[2]);
-    if (sample_time.second ? red_value < blue_value + 50 : blue_value < red_value + 50) {
-      std::cerr << "Joined clips are out of order" << std::endl;
-      return 1;
-    }
-  }
-  log->verticalScrollBar()->setValue(log->verticalScrollBar()->maximum());
-  export_all->click();
-  if (!waitForExport(&app, &dialog, QDir(game_dir).filePath("test-game-highlights-program-2.mp4"), 3000))
+  int red = 0;
+  int blue = 0;
+  if (!samplePixel(output, "0.5", &red, &blue) || red < blue + 50) {
+    std::cerr << "The first clip did not come from the first half of the archive" << std::endl;
     return 1;
-  app.processEvents();
+  }
+  if (!samplePixel(output, "3.0", &red, &blue) || blue < red + 50) {
+    std::cerr << "The second clip did not come from the second half of the archive" << std::endl;
+    return 1;
+  }
+  // The work directory lives inside the game directory so publication can hard
+  // link out of it; a successful export must not leave it behind.
+  if (!QDir(game_dir).entryList({".highlights-export-*"}, QDir::Dirs | QDir::Hidden).isEmpty()) {
+    std::cerr << "A successful export left its work directory behind" << std::endl;
+    return 1;
+  }
+
+  auto* log = dialog.findChild<QTextEdit*>("highlightLog");
+  log->verticalScrollBar()->setValue(log->verticalScrollBar()->maximum());
+  dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
+  if (!settle(&dialog, 180000))
+    return 1;
+  if (!QFileInfo::exists(QDir(game_dir).filePath("test-game-highlights-program-2.mp4"))) {
+    std::cerr << "A second export did not take the next generation" << std::endl;
+    return 1;
+  }
   if (log->verticalScrollBar()->maximum() == 0 ||
       log->verticalScrollBar()->value() != log->verticalScrollBar()->maximum()) {
     std::cerr << "Highlights log did not follow the newest line" << std::endl;
     return 1;
   }
-  auto* preview_all = dialog.findChild<QPushButton*>("highlightPreviewAllButton");
-  preview_all->click();
-  for (int i = 0; i < 3000 && dialog.isBusy(); ++i) {
-    app.processEvents();
-    QThread::msleep(1);
-  }
-  QFile call_log(calls);
-  if (dialog.isBusy() || !call_log.open(QIODevice::ReadOnly))
+
+  // Out-of-range intervals are named, not clamped or silently skipped.
+  if (!addRange(&dialog, "Late", "00:10:05", "00:10:08"))
     return 1;
-  const QStringList calls_list = QString::fromUtf8(call_log.readAll()).split('\n', Qt::SkipEmptyParts);
-  if (calls_list.size() < 6)
-    return 1;
-  const QString& preview_call = calls_list[calls_list.size() - 2];
-  const bool has_preview_window = preview_call.contains("--ui-preview-windows=program:");
-  const bool has_preview_realtime = preview_call.contains("--ui-preview-realtime");
-  const bool has_preview_active = preview_call.contains("--ui-preview-active=program");
-#if defined(__x86_64__) && !defined(IS_TEGRA)
-  const bool expected_embedded = QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
-#else
-  const bool expected_embedded = false;
-#endif
-  if (!preview_call.contains("--enable-sinks=RENDER") || !preview_call.contains("--start-time=00:00:00") ||
-      has_preview_window != expected_embedded || has_preview_realtime != expected_embedded ||
-      has_preview_active != expected_embedded ||
-      !calls_list.last().contains("--enable-sinks=RENDER") || !calls_list.last().contains("--start-time=00:00:10")) {
-    std::cerr << "Preview did not play both intervals with render-only output" << std::endl;
+  if (!unmapped(&dialog, 2)) {
+    std::cerr << "An interval past the archive end must not report a mapping" << std::endl;
     return 1;
   }
-  dialog.findChild<QTableWidget*>("highlightsTable")->setCurrentCell(0, 0);
-  dialog.findChild<QPushButton*>("highlightLoopSelectedButton")->click();
+  dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
   app.processEvents();
-  expand_preview->click();
+  if (dialog.isBusy() || !statusOf(&dialog).contains("\"Late\" ends after this archive, which stops at 00:10:06")) {
+    std::cerr << "Export did not refuse an interval past the archive end: " << statusOf(&dialog).toStdString()
+              << std::endl;
+    return 1;
+  }
+  dialog.findChild<QTableWidget*>("highlightsTable")->setCurrentCell(2, 0);
+  dialog.findChild<QPushButton*>("highlightRemoveButton")->click();
+  if (!addRange(&dialog, "Early", "00:09:59", "00:10:01"))
+    return 1;
+  dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
   app.processEvents();
-  dialog.findChild<QPushButton*>("highlightStopButton")->click();
+  if (dialog.isBusy() || !statusOf(&dialog).contains("\"Early\" starts 00:00:01 before this archive begins")) {
+    std::cerr << "Export did not refuse an interval before the archive start: " << statusOf(&dialog).toStdString()
+              << std::endl;
+    return 1;
+  }
+  dialog.findChild<QTableWidget*>("highlightsTable")->setCurrentCell(2, 0);
+  dialog.findChild<QPushButton*>("highlightRemoveButton")->click();
+
+  // An edited offset re-reads the same game times against the archive and
+  // survives a round trip through the other archive.
+  archive_offset->setText("00:00:00");
+  emit archive_offset->editingFinished();
   app.processEvents();
-  if (!dialog.findChild<QTableWidget*>("highlightsTable")->isVisible() ||
-      expand_preview->accessibleName() != "Maximize preview") {
-    std::cerr << "Stopping preview did not restore the Highlights layout" << std::endl;
+  if (!unmapped(&dialog, 0) || !statusOf(&dialog).contains("archive starting at 00:00:00")) {
+    std::cerr << "Editing the offset did not re-read the intervals: " << statusOf(&dialog).toStdString() << std::endl;
     return 1;
   }
-  for (int i = 0; i < 1000 && dialog.isBusy(); ++i) {
-    app.processEvents();
-    QThread::msleep(1);
-  }
-  if (dialog.isBusy()) {
-    std::cerr << "Loop stop did not cancel the queued preview" << std::endl;
+  archive_combo->setCurrentIndex(1);
+  if (!settle(&dialog, 30000))
+    return 1;
+  if (archive_offset->text() != "00:20:00" || !archive_detail->text().contains("covers 00:20:00 to 00:20:06") ||
+      !archive_detail->text().contains("program_4k_output")) {
+    std::cerr << "Selecting the other archive did not re-inspect it: " << archive_detail->text().toStdString()
+              << std::endl;
     return 1;
   }
-  const QString incompatible_game_dir = temporary.filePath("incompatible-game");
-  if (!QDir().mkpath(incompatible_game_dir))
+  archive_combo->setCurrentIndex(0);
+  if (!settle(&dialog, 30000))
     return 1;
-  const QString incompatible_plan_path = QDir(incompatible_game_dir).filePath("highlights.json");
+  if (archive_offset->text() != "00:00:00") {
+    std::cerr << "The edited offset was lost when the archive was reselected" << std::endl;
+    return 1;
+  }
+  archive_offset->setText("00:10:00");
+  emit archive_offset->editingFinished();
+  app.processEvents();
+  if (!mapsTo(&dialog, 0, "00:00:00.500", "00:00:02.500"))
+    return 1;
+  archive_offset->setText("nonsense");
+  emit archive_offset->editingFinished();
+  app.processEvents();
+  if (archive_offset->text() != "00:10:00" || !statusOf(&dialog).contains("Invalid archive start time")) {
+    std::cerr << "An unreadable offset must be rejected and reverted" << std::endl;
+    return 1;
+  }
+
+  // Escape closes the dialog when nothing is running.
+  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+  QApplication::sendEvent(&dialog, &escape);
+  app.processEvents();
+  if (dialog.isVisible()) {
+    std::cerr << "Escape did not close an idle Highlights dialog" << std::endl;
+    return 1;
+  }
+
+  // An unreadable plan blocks every edit, and inspection still reports the
+  // archive without overwriting the explanation.
+  const QString incompatible_dir = temporary.filePath("incompatible-game");
+  if (!QDir().mkpath(incompatible_dir))
+    return 1;
+  const QString incompatible_plan_path = QDir(incompatible_dir).filePath("highlights.json");
   const QByteArray incompatible_plan = R"({"schema":2,"base_name":"future","intervals":[]})";
   QFile incompatible_file(incompatible_plan_path);
   if (!incompatible_file.open(QIODevice::WriteOnly) ||
       incompatible_file.write(incompatible_plan) != incompatible_plan.size())
     return 1;
   incompatible_file.close();
+  const QString incompatible_archive =
+      QDir(incompatible_dir).filePath("incompatible-game-tracking_output-with-audio-1.mp4");
+  if (!QFile::copy(program_archive, incompatible_archive))
+    return 1;
   hm::ui::HighlightsDialog incompatible_dialog(
       "incompatible-game",
-      incompatible_game_dir,
-      runner,
-      temporary.path(),
-      temporary.path(),
+      incompatible_dir,
       env,
-      {"-g", "incompatible-game"});
+      hm::ui::DiscoverArchives(incompatible_dir, "incompatible-game"));
+  if (!settle(&incompatible_dialog, 30000))
+    return 1;
   if (incompatible_dialog.findChild<QPushButton*>("highlightAddButton")->isEnabled() ||
       incompatible_dialog.findChild<QLineEdit*>("highlightBaseNameEdit")->isEnabled() ||
-      !incompatible_dialog.findChild<QLabel*>("highlightStatus")->text().contains("Unsupported highlights schema")) {
-    std::cerr << "An unreadable highlight plan must block edits" << std::endl;
+      !statusOf(&incompatible_dialog).contains("Unsupported highlights schema")) {
+    std::cerr << "An unreadable highlight plan must block edits: "
+              << statusOf(&incompatible_dialog).toStdString() << std::endl;
     return 1;
   }
   incompatible_dialog.findChild<QPushButton*>("highlightAddButton")->click();
@@ -460,285 +476,18 @@ echo "HSTREAM_CLIP_RESULT reason=end-boundary"
     std::cerr << "Editing an unreadable plan must not replace it" << std::endl;
     return 1;
   }
-  const QString short_video = temporary.filePath("short-video.mkv");
-  if (!run(
-          "ffmpeg",
-          {"-hide_banner",
-           "-loglevel",
-           "error",
-           "-y",
-           "-f",
-           "lavfi",
-           "-i",
-           "color=c=red:s=96x64:r=30:d=1",
-           "-f",
-           "lavfi",
-           "-i",
-           "sine=frequency=440:sample_rate=48000:duration=3",
-           "-c:v",
-           "libx264",
-           "-pix_fmt",
-           "yuv420p",
-           "-c:a",
-           "aac",
-           short_video}))
+  incompatible_file.close();
+
+  // A game with nothing published must explain itself rather than crash.
+  const QString empty_dir = temporary.filePath("empty-game");
+  if (!QDir().mkpath(empty_dir))
     return 1;
-  const QString short_video_game_dir = temporary.filePath("short-video-game");
-  if (!QDir().mkpath(short_video_game_dir))
-    return 1;
-  QProcessEnvironment short_video_env = env;
-  short_video_env.insert("HSTREAM_TEST_RED", short_video);
-  hm::ui::HighlightsDialog short_video_dialog(
-      "short-video-game",
-      short_video_game_dir,
-      runner,
-      temporary.path(),
-      temporary.path(),
-      short_video_env,
-      {"-g", "short-video-game"});
-  if (!addRange(&short_video_dialog, "First", "00:00:00", "00:00:03"))
-    return 1;
-  short_video_dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
-  for (int i = 0; i < 3000 && short_video_dialog.isBusy(); ++i) {
-    app.processEvents();
-    QThread::msleep(10);
-  }
-  if (short_video_dialog.isBusy() ||
-      !short_video_dialog.findChild<QLabel*>("highlightStatus")->text().contains("video ended before") ||
-      QFileInfo::exists(QDir(short_video_game_dir).filePath("short-video-game-highlights-program-1.mp4"))) {
-    std::cerr << "A long audio stream must not hide an incomplete video clip" << std::endl;
-    return 1;
-  }
-  const QString eos_runner = temporary.filePath("eos-runner.sh");
-  QFile eos_script(eos_runner);
-  if (!eos_script.open(QIODevice::WriteOnly | QIODevice::Text))
-    return 1;
-  eos_script.write(R"(#!/bin/sh
-set -eu
-program=
-stitched=
-for arg in "$@"; do
-  case "$arg" in
-    --options=pipeline.sink2.output-file=*) program="${arg#--options=pipeline.sink2.output-file=}" ;;
-    --options=pipeline.sink5.output-file=*) stitched="${arg#--options=pipeline.sink5.output-file=}" ;;
-  esac
-done
-cp "$HSTREAM_TEST_RED" "$program"
-cp "$HSTREAM_TEST_SHORT" "$stitched"
-echo "HSTREAM_OUTPUT type=archive sink=2 kind=program path=$program"
-echo "HSTREAM_OUTPUT type=archive sink=5 kind=stitched path=$stitched"
-echo "HSTREAM_CLIP_RESULT reason=source-eos"
-)");
-  eos_script.close();
-  if (!eos_script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner))
-    return 1;
-  const QString eos_game_dir = temporary.filePath("eos-game");
-  if (!QDir().mkpath(eos_game_dir))
-    return 1;
-  QProcessEnvironment eos_env = env;
-  eos_env.insert("HSTREAM_TEST_SHORT", short_video);
-  hm::ui::HighlightsDialog eos_dialog(
-      "eos-game", eos_game_dir, eos_runner, temporary.path(), temporary.path(), eos_env, {"-g", "eos-game"});
-  if (!addRange(&eos_dialog, "First", "00:00:00", "00:00:03"))
-    return 1;
-  eos_dialog.findChild<QCheckBox*>("highlightStitchedCheck")->setChecked(true);
-  eos_dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
-  for (int i = 0; i < 3000 && eos_dialog.isBusy(); ++i) {
-    app.processEvents();
-    QThread::msleep(10);
-  }
-  if (eos_dialog.isBusy() ||
-      !eos_dialog.findChild<QLabel*>("highlightStatus")->text().contains("different video lengths") ||
-      QFileInfo::exists(QDir(eos_game_dir).filePath("eos-game-highlights-program-1.mp4"))) {
-    std::cerr << "Source EOS must not publish outputs with different video lengths" << std::endl;
-    return 1;
-  }
-  const QString primed_video = temporary.filePath("primed-video.mkv");
-  if (!run(
-          "ffmpeg",
-          {"-hide_banner",
-           "-loglevel",
-           "error",
-           "-y",
-           "-f",
-           "lavfi",
-           "-i",
-           "color=c=red:s=96x64:r=60:d=1",
-           "-f",
-           "lavfi",
-           "-i",
-           "sine=frequency=440:sample_rate=48000:duration=1",
-           "-c:v",
-           "libx264",
-           "-bf",
-           "0",
-           "-c:a",
-           "aac",
-           primed_video}))
-    return 1;
-  const QString primed_game_dir = temporary.filePath("primed-game");
-  if (!QDir().mkpath(primed_game_dir))
-    return 1;
-  QProcessEnvironment primed_env = env;
-  primed_env.insert("HSTREAM_TEST_RED", primed_video);
-  primed_env.insert("HSTREAM_TEST_BLUE", primed_video);
-  hm::ui::HighlightsDialog primed_dialog(
-      "primed-game", primed_game_dir, runner, temporary.path(), temporary.path(), primed_env, {"-g", "primed-game"});
-  if (!addRange(&primed_dialog, "First", "00:00:00", "00:00:01") ||
-      !addRange(&primed_dialog, "Second", "00:00:10", "00:00:11"))
-    return 1;
-  primed_dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
-  const QString primed_output = QDir(primed_game_dir).filePath("primed-game-highlights-program-1.mp4");
-  if (!waitForExport(&app, &primed_dialog, primed_output, 3000))
-    return 1;
-  QByteArray packet_count;
-  if (!run(
-          "ffprobe",
-          {"-v",
-           "error",
-           "-select_streams",
-           "v:0",
-           "-count_packets",
-           "-show_entries",
-           "stream=nb_read_packets",
-           "-of",
-           "default=noprint_wrappers=1:nokey=1",
-           primed_output},
-          &packet_count) ||
-      packet_count.trimmed() != "120") {
-    std::cerr << "AAC priming must not drop the last video packet from either clip" << std::endl;
-    return 1;
-  }
-  const QString signal_runner = temporary.filePath("signal-runner.sh");
-  QFile signal_script(signal_runner);
-  if (!signal_script.open(QIODevice::WriteOnly | QIODevice::Text))
-    return 1;
-  signal_script.write(R"(#!/bin/sh
-set -eu
-test -n "${HSTREAM_UI_PARENT_PID:-}"
-printf '%s\n' "$*" >> "$HSTREAM_TEST_CALLS"
-trap 'printf INT > "$HSTREAM_TEST_SIGNAL"; echo "HSTREAM_CLIP_RESULT reason=end-boundary"; exit 0' INT
-trap 'printf TERM > "$HSTREAM_TEST_SIGNAL"; exit 0' TERM
-printf ready > "$HSTREAM_TEST_READY"
-while :; do sleep 0.1; done
-)");
-  signal_script.close();
-  if (!signal_script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner))
-    return 1;
-  const QString signal_game_dir = temporary.filePath("signal-game");
-  if (!QDir().mkpath(signal_game_dir))
-    return 1;
-  QProcessEnvironment signal_env = env;
-  const QString signal_path = temporary.filePath("signal.txt");
-  const QString ready_path = temporary.filePath("ready.txt");
-  signal_env.insert("HSTREAM_TEST_SIGNAL", signal_path);
-  signal_env.insert("HSTREAM_TEST_READY", ready_path);
-  hm::ui::HighlightsDialog signal_dialog(
-      "signal-game",
-      signal_game_dir,
-      signal_runner,
-      temporary.path(),
-      temporary.path(),
-      signal_env,
-      {"-g", "signal-game"});
-  if (!addRange(&signal_dialog, "First", "00:00:00", "00:00:01"))
-    return 1;
-  signal_dialog.findChild<QPushButton*>("highlightPreviewSelectedButton")->click();
-  for (int i = 0; i < 1000 && !QFileInfo::exists(ready_path); ++i) {
-    app.processEvents();
-    QThread::msleep(1);
-  }
-  if (!QFileInfo::exists(ready_path)) {
-    std::cerr << "The signal fixture did not start" << std::endl;
-    return 1;
-  }
-  signal_dialog.findChild<QPushButton*>("highlightStopButton")->click();
-  for (int i = 0; i < 3000 && signal_dialog.isBusy(); ++i) {
-    app.processEvents();
-    QThread::msleep(1);
-  }
-  QFile signal_file(signal_path);
-  if (signal_dialog.isBusy() || !signal_file.open(QIODevice::ReadOnly) || signal_file.readAll() != "INT") {
-    std::cerr << "Stopping a clip must request graceful SIGINT shutdown" << std::endl;
-    return 1;
-  }
-  signal_file.close();
-  QFile::remove(signal_path);
-  QFile::remove(ready_path);
-  signal_dialog.findChild<QPushButton*>("highlightPreviewSelectedButton")->click();
-  signal_dialog.findChild<QPushButton*>("highlightStopButton")->click();
-  for (int i = 0; i < 3000 && signal_dialog.isBusy(); ++i) {
-    app.processEvents();
-    QThread::msleep(1);
-  }
-  if (signal_dialog.isBusy()) {
-    std::cerr << "Stopping while the runner starts must still cancel the job" << std::endl;
-    return 1;
-  }
-  QFile::remove(signal_path);
-  QFile::remove(ready_path);
-  signal_dialog.show();
-  signal_dialog.findChild<QPushButton*>("highlightPreviewSelectedButton")->click();
-  for (int i = 0; i < 1000 && !QFileInfo::exists(ready_path); ++i) {
-    app.processEvents();
-    QThread::msleep(1);
-  }
-  if (!QFileInfo::exists(ready_path))
-    return 1;
-  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
-  QApplication::sendEvent(&signal_dialog, &escape);
-  if (!signal_dialog.isVisible() || !signal_dialog.isBusy()) {
-    std::cerr << "Escape bypassed asynchronous Highlights shutdown" << std::endl;
-    return 1;
-  }
-  for (int i = 0; i < 3000 && (signal_dialog.isBusy() || signal_dialog.isVisible()); ++i) {
-    app.processEvents();
-    QThread::msleep(1);
-  }
-  QFile escape_signal(signal_path);
-  if (signal_dialog.isBusy() || signal_dialog.isVisible() || !escape_signal.open(QIODevice::ReadOnly) ||
-      escape_signal.readAll() != "INT") {
-    std::cerr << "Escape did not stop and close Highlights after runner shutdown" << std::endl;
-    return 1;
-  }
-  const auto signal_call_count = [&calls]() {
-    QFile file(calls);
-    if (!file.open(QIODevice::ReadOnly))
-      return -1;
-    return static_cast<int>(QString::fromUtf8(file.readAll()).split('\n', Qt::SkipEmptyParts).size());
-  };
-  const int calls_before_teardown = signal_call_count();
-  const QString teardown_game_dir = temporary.filePath("teardown-game");
-  if (calls_before_teardown < 0 || !QDir().mkpath(teardown_game_dir))
-    return 1;
-  QFile::remove(ready_path);
-  auto* teardown_dialog = new hm::ui::HighlightsDialog(
-      "teardown-game",
-      teardown_game_dir,
-      signal_runner,
-      temporary.path(),
-      temporary.path(),
-      signal_env,
-      {"-g", "teardown-game"});
-  if (!addRange(teardown_dialog, "First", "00:00:00", "00:00:01") ||
-      !addRange(teardown_dialog, "Second", "00:00:10", "00:00:11")) {
-    delete teardown_dialog;
-    return 1;
-  }
-  teardown_dialog->findChild<QPushButton*>("highlightPreviewAllButton")->click();
-  for (int i = 0; i < 1000 && !QFileInfo::exists(ready_path); ++i) {
-    app.processEvents();
-    QThread::msleep(1);
-  }
-  if (!QFileInfo::exists(ready_path)) {
-    delete teardown_dialog;
-    std::cerr << "The teardown fixture did not start" << std::endl;
-    return 1;
-  }
-  delete teardown_dialog;
+  hm::ui::HighlightsDialog empty_dialog("empty-game", empty_dir, env, {});
   app.processEvents();
-  if (signal_call_count() != calls_before_teardown + 1) {
-    std::cerr << "Dialog teardown must not launch the next clip" << std::endl;
+  if (empty_dialog.isBusy() ||
+      !empty_dialog.findChild<QLabel*>("highlightArchiveDetail")->text().contains("No published archive") ||
+      empty_dialog.findChild<QPushButton*>("highlightExportAllButton")->isEnabled()) {
+    std::cerr << "A game with no archive must disable cutting and say why" << std::endl;
     return 1;
   }
   return 0;
