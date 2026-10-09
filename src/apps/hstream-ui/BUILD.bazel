@@ -554,7 +554,6 @@ cc_library(
     ],
 )
 
-
 cc_library(
     name = "highlights_dialog",
     srcs = ["HighlightsDialog.cpp"],
@@ -572,7 +571,6 @@ cc_library(
         "@qt//:qt_widgets",
     ],
 )
-
 
 cc_test(
     name = "highlights_dialog_test",

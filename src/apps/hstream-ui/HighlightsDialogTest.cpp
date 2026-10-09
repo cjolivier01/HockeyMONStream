@@ -428,6 +428,14 @@ int main(int argc, char** argv) {
     std::cerr << "Editing the offset did not re-read the intervals: " << statusOf(&dialog).toStdString() << std::endl;
     return 1;
   }
+  // The correction is written back beside the archive, so an archive published
+  // before sidecars existed does not need its origin retyped on every visit.
+  hm::ui::ArchiveEntry remembered;
+  if (!hm::ui::LoadArchiveSidecar(program_archive, &remembered) || !remembered.start_time_known ||
+      remembered.start_time_ms != 0) {
+    std::cerr << "An edited archive offset was not recorded in the sidecar" << std::endl;
+    return 1;
+  }
   archive_combo->setCurrentIndex(1);
   if (!settle(&dialog, 30000))
     return 1;

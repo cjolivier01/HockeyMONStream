@@ -239,6 +239,16 @@ absl::Status focus_camera(
             focus_finished = true;
             std::cout << "Done." << std::endl;
           }
+        } else if (!focus_finished) {
+          // The sweep reached the end of the lens travel without six
+          // consecutive decreases. Settle on the sharpest frame it did see:
+          // there is no preview window left to close, so nothing else would
+          // ever end this loop.
+          if (!focusing(focuser, max_index, verbose)) {
+            return absl::InternalError("Could not focus camera");
+          }
+          focus_finished = true;
+          std::cout << "Done." << std::endl;
         }
       } else {
         skip_frame--;

@@ -404,6 +404,10 @@ HighlightsDialog::~HighlightsDialog() {
       process_.waitForFinished(1000);
     }
   }
+  // finishJob() normally clears this; take the abandoned parts with us if the
+  // process never reported in.
+  if (!work_dir_.isEmpty())
+    QDir(work_dir_).removeRecursively();
 }
 
 bool HighlightsDialog::isBusy() const {
@@ -583,6 +587,12 @@ void HighlightsDialog::commitArchiveOffset() {
     const QSignalBlocker blocker(archive_offset_edit_);
     archive_offset_edit_->setText(FormatHighlightTime(archive_offset_ms_));
   }
+  // Record the correction beside the archive. An archive published before this
+  // feature existed has no origin of its own, and retyping it on every visit is
+  // the kind of chore that gets it wrong eventually.
+  QString sidecar_error;
+  if (!SaveArchiveSidecar(archives_[archive_index_], &sidecar_error))
+    appendLog("Could not remember this archive's start time: " + sidecar_error);
   refreshArchiveChoices();
   refreshTable();
   status_->setText("Highlight times are now read against an archive starting at " +
@@ -1189,11 +1199,7 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
       finishJob(false, media_error_);
       return;
     }
-    finishJob(
-        false,
-        QString("%1 failed with exit code %2. See the log below.")
-            .arg(finished_stage == Stage::kProbe ? "ffprobe" : "ffmpeg")
-            .arg(code));
+    finishJob(false, QString("ffmpeg failed with exit code %1. See the log below.").arg(code));
     return;
   }
   switch (finished_stage) {
@@ -1329,6 +1335,9 @@ void HighlightsDialog::publishEncode() {
 
 void HighlightsDialog::finishJob(bool success, const QString& message) {
   const Job completed = job_;
+  // Stopping an export is not a failure anyone needs to diagnose, and the parts
+  // written so far can run to tens of gigabytes for an 8K reel.
+  const bool discarded = cancelling_;
   job_ = Job::kNone;
   stage_ = Stage::kIdle;
   cancelling_ = false;
@@ -1338,7 +1347,7 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
     video_->setRendererActive(false);
   }
   QString detail = message;
-  if (!success && completed == Job::kExport && !work_dir_.isEmpty())
+  if (!success && !discarded && completed == Job::kExport && !work_dir_.isEmpty())
     detail += " Work files retained in " + work_dir_ + ".";
   status_->setText(detail);
   // A successful inspection has already written its own, longer description of
@@ -1348,7 +1357,7 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
   if (completed == Job::kInspect && !success)
     archive_detail_->setText(message);
   if (completed == Job::kExport) {
-    if (success)
+    if (success || discarded)
       QDir(work_dir_).removeRecursively();
     work_dir_.clear();
   }
