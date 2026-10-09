@@ -72,6 +72,19 @@ int main() {
         "an archive with no sidecar must report an unknown start time");
   }
 
+  // A game id is free text, so it can hold the characters a shell glob would
+  // read as wildcards.
+  ok &= expect(
+      write_file(path_for("gse[1]?x-tracking_output-with-audio-1.mp4"), "a"),
+      "an archive for a game id with glob characters must be writable");
+  const QVector<ArchiveEntry> bracketed = DiscoverArchives(directory.path(), "gse[1]?x");
+  ok &= expect(
+      bracketed.size() == 1 && bracketed.at(0).kind == "program" && bracketed.at(0).generation == 1,
+      "a game id with glob characters must still find its archive");
+  ok &= expect(
+      DiscoverArchives(directory.path(), "gse-16a").size() == 4,
+      "another game's archive must not leak into this one");
+
   ok &= expect(
       ArchiveSidecarPath("/games/x.mp4") == "/games/x.mp4.hstream-archive.json",
       "the sidecar must sit beside the archive under a predictable name");

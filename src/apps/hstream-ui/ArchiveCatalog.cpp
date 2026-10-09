@@ -135,8 +135,10 @@ QVector<ArchiveEntry> DiscoverArchives(const QString& game_dir, const QString& g
       QString(R"(^%1-(tracking|stitched|program_4k)_output(?:-with-audio)?(?:-(\d+))?(?i:\.mp4)$)")
           .arg(QRegularExpression::escape(safe)));
   QDir directory(game_dir);
-  const QStringList names =
-      directory.entryList({safe + "-*_output*"}, QDir::Files | QDir::NoSymLinks, QDir::Name);
+  // No name filter: a game id is free text and QDir globs would read any
+  // bracket or question mark in it as a wildcard, quietly matching nothing.
+  // The pattern above is the only filter.
+  const QStringList names = directory.entryList(QDir::Files | QDir::NoSymLinks, QDir::Name);
   for (const QString& name : names) {
     const QRegularExpressionMatch match = pattern.match(name);
     if (!match.hasMatch())
