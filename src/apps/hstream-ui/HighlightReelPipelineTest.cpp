@@ -63,6 +63,34 @@ bool pixel(const QString& file, double time, int x, int y, int* r, int* g, int* 
   *b = uchar(bytes[2]);
   return true;
 }
+qint64 audio_level(const QString& file, double time, double length) {
+  QByteArray pcm;
+  if (!run(
+          "ffmpeg",
+          {"-v",
+           "error",
+           "-ss",
+           QString::number(time),
+           "-t",
+           QString::number(length),
+           "-i",
+           file,
+           "-vn",
+           "-ac",
+           "1",
+           "-ar",
+           "48000",
+           "-f",
+           "s16le",
+           "pipe:1"},
+          &pcm) ||
+      pcm.size() < 2)
+    return -1;
+  qint64 energy = 0;
+  for (int i = 0; i + 1 < pcm.size(); i += 2)
+    energy += std::abs(qint16(quint8(pcm[i]) | (quint16(quint8(pcm[i + 1])) << 8)));
+  return energy / (pcm.size() / 2);
+}
 } // namespace
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
@@ -183,6 +211,49 @@ int main(int argc, char** argv) {
     energy += std::abs(qint16(quint8(pcm[i]) | (quint16(quint8(pcm[i + 1])) << 8)));
   if (pcm.isEmpty() || energy / (pcm.size() / 2) > 20) {
     std::cerr << "Card audio was not silent\n";
+    return 1;
+  }
+  // MP4 empty edits preserve delayed audio in a segment even when decoded PTS
+  // begins at zero. It must stay silent before its actual archive start time.
+  const QString delayed_source = dir.filePath("delayed-audio.mp4");
+  if (!run(
+          "ffmpeg",
+          {"-v",
+           "error",
+           "-f",
+           "lavfi",
+           "-i",
+           "color=c=blue:s=640x360:r=30:d=4",
+           "-itsoffset",
+           "2",
+           "-f",
+           "lavfi",
+           "-i",
+           "sine=frequency=440:sample_rate=48000:duration=2",
+           "-c:v",
+           "libx264",
+           "-g",
+           "30",
+           "-c:a",
+           "aac",
+           delayed_source}))
+    return 1;
+  auto delayed = r;
+  delayed.archive_path = delayed_source;
+  delayed.output_path = dir.filePath("delayed-reel.mp4");
+  auto before_audio = clip, during_audio = clip;
+  before_audio.start_ms = 10000;
+  before_audio.end_ms = 11000;
+  before_audio.annotations.clear();
+  during_audio.start_ms = 12500;
+  during_audio.end_ms = 13500;
+  during_audio.annotations.clear();
+  delayed.items = {before_audio, card, during_audio};
+  if (!pipeline.Start(delayed, &error) || !wait(pipeline))
+    return 1;
+  const qint64 silent_level = audio_level(delayed.output_path, .1, .7);
+  if (silent_level < 0 || silent_level > 20 || audio_level(delayed.output_path, 2, .5) < 500) {
+    std::cerr << "MP4 edit-list audio lost its archive time\n";
     return 1;
   }
   const QString source10 = dir.filePath("source10.mp4");

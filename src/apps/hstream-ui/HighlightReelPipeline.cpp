@@ -62,6 +62,15 @@ void set_caps(GstElement* e, GstCaps* c) {
   g_object_set(e, "caps", c, nullptr);
   gst_caps_unref(c);
 }
+GstClockTime source_time(GstSample* sample) {
+  GstBuffer* buffer = gst_sample_get_buffer(sample);
+  const GstSegment* segment = gst_sample_get_segment(sample);
+  if (!buffer || !GST_BUFFER_PTS_IS_VALID(buffer) || !segment || segment->format != GST_FORMAT_TIME)
+    return GST_CLOCK_TIME_NONE;
+  // MP4 edit lists can rebase decoded PTS while retaining the original archive
+  // position in segment.time. Trims and audio placement use that stream time.
+  return gst_segment_to_stream_time(segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer));
+}
 QString bus_error(GstElement* graph) {
   GstBus* bus = gst_element_get_bus(graph);
   GstMessage* m = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR);
@@ -418,13 +427,21 @@ struct HighlightReelPipeline::Impl {
           }
           last = Clock::now();
           GstBuffer* b = gst_sample_get_buffer(sample);
+          const GstClockTime time = source_time(sample);
+          if (!GST_CLOCK_TIME_IS_VALID(time)) {
+            gst_sample_unref(sample);
+            throw std::runtime_error("Decoded audio has no source timestamp");
+          }
+          const qint64 index = first + qint64(gst_util_uint64_scale_round(time, kRate, GST_SECOND)) - start;
+          if (index >= end) {
+            gst_sample_unref(sample);
+            break;
+          }
           GstMapInfo map{};
-          if (!GST_BUFFER_PTS_IS_VALID(b) || !gst_buffer_map(b, &map, GST_MAP_READ)) {
+          if (!gst_buffer_map(b, &map, GST_MAP_READ)) {
             gst_sample_unref(sample);
             throw std::runtime_error("Invalid decoded audio");
           }
-          const qint64 index =
-              first + qint64(gst_util_uint64_scale_round(GST_BUFFER_PTS(b), kRate, GST_SECOND)) - start;
           const qint64 count = map.size / kAudioBytes;
           const qint64 from = std::max(cursor, index), to = std::min(end, index + count);
           if (from < to) {
@@ -644,27 +661,28 @@ struct HighlightReelPipeline::Impl {
         }
         last = Clock::now();
         GstBuffer* buffer = gst_sample_get_buffer(sample);
-        if (!GST_BUFFER_PTS_IS_VALID(buffer)) {
+        const GstClockTime source_pts = source_time(sample);
+        if (!GST_CLOCK_TIME_IS_VALID(source_pts)) {
           gst_sample_unref(sample);
           throw std::runtime_error("Archive video has no timestamp");
         }
-        const GstClockTime source_pts = GST_BUFFER_PTS(buffer);
         if (source_pts >= GstClockTime(end) * GST_MSECOND) {
           gst_sample_unref(sample);
           break;
         }
         const GstClockTime source_duration = GST_BUFFER_DURATION_IS_VALID(buffer) ? GST_BUFFER_DURATION(buffer) : step;
-        if (source_pts + source_duration <= GstClockTime(begin) * GST_MSECOND) {
+        const GstClockTime trim_start = std::max(source_pts, GstClockTime(begin) * GST_MSECOND);
+        const GstClockTime trim_end = std::min(source_pts + source_duration, GstClockTime(end) * GST_MSECOND);
+        // Rational frame timestamps can leave a one-nanosecond overlap at an
+        // exact cut. The hardware encoder uses microsecond timestamps; discard
+        // these rounding tails rather than submitting two frames at one PTS.
+        if (trim_end <= trim_start + GST_USECOND) {
           gst_sample_unref(sample);
           continue;
         }
-        const GstClockTime local =
-            source_pts > GstClockTime(begin) * GST_MSECOND ? source_pts - begin * GST_MSECOND : 0;
-        const GstClockTime duration = std::min(
-            GST_BUFFER_DURATION_IS_VALID(buffer) ? GST_BUFFER_DURATION(buffer) : step,
-            GstClockTime(length) * GST_MSECOND - local);
-        const qint64 game_ms =
-            request.archive_offset_ms + std::max(source_pts, GstClockTime(begin) * GST_MSECOND) / GST_MSECOND;
+        const GstClockTime local = trim_start - begin * GST_MSECOND;
+        const GstClockTime duration = trim_end - trim_start;
+        const qint64 game_ms = request.archive_offset_ms + trim_start / GST_MSECOND;
         try {
           frame(buffer, item, game_ms, base + local, duration, textures);
         } catch (...) {

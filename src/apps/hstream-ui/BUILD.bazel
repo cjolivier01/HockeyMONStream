@@ -962,3 +962,14 @@ cc_test(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":highlight_item_editor", "@qt//:qt_widgets"],
 )
+
+cc_test(
+    name = "highlight_item_editor_interaction_test",
+    srcs = ["HighlightItemEditorInteractionTest.cpp"],
+    copts = COMMON_COPTS,
+    tags = ["manual", "requires-x11", "local"],
+    env = {"QT_QPA_PLATFORM": "xcb"},
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_item_editor", "@qt//:qt_widgets"],
+)

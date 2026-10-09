@@ -118,6 +118,7 @@ class Editor : public QDialog {
   QCheckBox* binding{nullptr};
   QCheckBox* pick_track{nullptr};
   QVector<HighlightTrackChoice> choices;
+  qint64 pending_frame_ms{-1}, held_frame_ms{-1}, choices_frame_ms{-1};
   int loaded_row{-1};
   std::function<void()> restore_preview;
   QLineEdit *heading{nullptr}, *a{nullptr}, *b{nullptr}, *date{nullptr}, *la{nullptr}, *lb{nullptr}, *bg{nullptr},
@@ -228,11 +229,14 @@ class Editor : public QDialog {
     connect(&timer, &QTimer::timeout, this, [&] {
       const auto s = pipeline.Poll();
       if (!s.error.isEmpty()) {
+        pending_frame_ms = held_frame_ms = -1;
         status->setText(s.error);
         timer.stop();
         target->active(false);
       } else if (s.finished) {
         timer.stop();
+        held_frame_ms = s.cancelled ? -1 : pending_frame_ms;
+        pending_frame_ms = -1;
         status->setText("Click the image to position the cue. Inspect another time to add a manual keyframe.");
       }
     });
@@ -450,12 +454,14 @@ class Editor : public QDialog {
     r.window_id = target->winId();
     r.inspect_game_ms = item.start_ms + std::llround(inspect->value() * 1000);
     QString error;
+    pending_frame_ms = held_frame_ms = -1;
     target->active(true);
     if (!pipeline.Start(r, &error)) {
       status->setText(error);
       target->active(false);
       return;
     }
+    pending_frame_ms = r.inspect_game_ms;
     timer.start();
     status->setText("Decoding the selected frame…");
   }
@@ -563,8 +569,13 @@ class Editor : public QDialog {
                               .arg(c.seek)
                               .arg(c.reset)
                               .arg(c.source));
+        choices_frame_ms = item.start_ms + time;
+        tracks->setCurrentIndex(-1);
         pick_track->setChecked(true);
-        status->setText("Click the player/referee at this time or select its recorded ID");
+        status->setText(
+            held_frame_ms == choices_frame_ms
+                ? "Click the player/referee at this time or select its recorded ID"
+                : "Inspect clip time " + relative_time(time) + " to click a player/referee, or select its recorded ID");
       } else
         status->setText(error);
     });
@@ -602,6 +613,7 @@ class Editor : public QDialog {
     });
     auto invalidate = [this] {
       choices.clear();
+      choices_frame_ms = -1;
       tracks->clear();
       binding->setChecked(false);
       pick_track->setChecked(false);
@@ -626,6 +638,7 @@ class Editor : public QDialog {
     inspector->addWidget(inspect);
     button(inspector, "Inspect / refresh frame", ActionIcon::Play, [&] { inspect_frame(); });
     button(inspector, "Stop", ActionIcon::Stop, [&] {
+      pending_frame_ms = held_frame_ms = -1;
       pipeline.Cancel();
       timer.stop();
       target->active(false);
@@ -634,7 +647,24 @@ class Editor : public QDialog {
     target->click = [&](QPointF p) {
       if (cues->currentRow() < 0)
         return;
+      if (held_frame_ms < 0 || held_frame_ms != item.start_ms + std::llround(inspect->value() * 1000)) {
+        if (pick_track->isChecked())
+          tracks->setCurrentIndex(-1);
+        status->setText("Inspect / refresh the selected time before clicking the image");
+        return;
+      }
       if (pick_track->isChecked()) {
+        if (choices.isEmpty()) {
+          status->setText("Find tracks before clicking a recorded player/referee");
+          return;
+        }
+        if (held_frame_ms != choices_frame_ms) {
+          tracks->setCurrentIndex(-1);
+          status->setText(
+              "Inspect clip time " + relative_time(choices_frame_ms - item.start_ms) +
+              " before clicking a recorded track");
+          return;
+        }
         for (int i = 0; i < choices.size(); ++i)
           if (choices[i].box.contains(p)) {
             tracks->setCurrentIndex(i);
@@ -643,7 +673,7 @@ class Editor : public QDialog {
           }
         status->setText("No recorded track at that point");
       } else if (motion->currentText() == "keyframes") {
-        const qint64 time = std::llround(inspect->value() * 1000);
+        const qint64 time = held_frame_ms - item.start_ms;
         QStringList rows = keys->toPlainText().split('\n', Qt::SkipEmptyParts);
         QStringList updated;
         bool inserted = false;
@@ -668,7 +698,7 @@ class Editor : public QDialog {
         a.blink = false;
         a.x = 0;
         a.y = 0;
-        const auto base = HighlightAnchor(a, item.start_ms + std::llround(inspect->value() * 1000));
+        const auto base = HighlightAnchor(a, held_frame_ms);
         if (!base) {
           status->setText("No recorded anchor at this time; use manual keyframes to correct the detail");
           return;
