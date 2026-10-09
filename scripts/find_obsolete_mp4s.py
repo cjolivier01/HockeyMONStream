@@ -22,7 +22,8 @@ VIDEO_RE = re.compile(
 TELEMETRY_RE = re.compile(
     r"^(?:tracking|detections|camera|camera_fast|hstream_frame_index|hstream_config_events)"
     r"(?:-(?P<version>\d+))?\.csv$"
-    r"|^hstream_telemetry(?:-(?P<database_version>\d+))?\.(?:db|sqlite|json)$"
+    r"|^(?:hm|hstream)_telemetry(?:-(?P<database_version>\d+))?\.(?:db|sqlite|json)$"
+    r"|^.+_telemetry-(?P<game_database_version>\d+)\.(?:db|sqlite)$"
     r"|^hstream_replay(?:-(?P<replay_version>\d+))?\.jsonl$",
     re.IGNORECASE,
 )

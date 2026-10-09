@@ -1,4 +1,7 @@
 #include "src/apps/hstream-ui/HighlightTracking.h"
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
+#include <QtCore/QRegularExpression>
 #include <QtCore/QStringList>
 #include <algorithm>
 #include <cmath>
@@ -65,6 +68,33 @@ bool point(Statement& row, const QString& route, double x, double y, QPointF* p)
   return std::isfinite(p->x()) && std::isfinite(p->y());
 }
 } // namespace
+QString HighlightTrackingDatabasePath(const QString& directory, const QString& game, const QString& archive) {
+  const QDir dir(directory);
+  const auto match = QRegularExpression(R"(-([0-9]+)$)").match(QFileInfo(archive).completeBaseName());
+  bool valid = false;
+  const uint64_t generation = match.hasMatch() ? match.captured(1).toULongLong(&valid) : 1;
+  if (match.hasMatch() && !valid)
+    return {};
+  if (match.hasMatch()) {
+    const QString literal =
+        dir.filePath(qstring(hm::recording::TelemetryDatabaseStem(string(game))) + "-" + match.captured(1) + ".db");
+    if (QFileInfo::exists(literal))
+      return literal;
+  }
+  // Discovery also reads earlier version-zero recordings; the writer's
+  // filename helper deliberately rejects creating those now.
+  const QString expected = dir.filePath(
+      qstring(hm::recording::TelemetryDatabaseStem(string(game))) + "-" + QString::number(generation) + ".db");
+  if (match.hasMatch() && QFileInfo::exists(expected))
+    return expected;
+  const QString suffix = match.hasMatch() ? "-" + match.captured(1) : QString();
+  for (const auto& prefix : {QString("hstream_telemetry"), QString("hm_telemetry")}) {
+    const QString legacy = dir.filePath(prefix + suffix + ".db");
+    if (QFileInfo::exists(legacy))
+      return legacy;
+  }
+  return expected;
+}
 QStringList HighlightTrackingRuns(const QString& path, const QString& game, QString* error) {
   QStringList result;
   try {

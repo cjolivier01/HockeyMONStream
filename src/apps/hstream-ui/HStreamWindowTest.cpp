@@ -1168,8 +1168,8 @@ bool write_fake_runner(const QString& path) {
   file.write("        try:\n");
   file.write("            if os.path.getsize(archive_path) > 0:\n");
   file.write("                stem, extension = os.path.splitext(archive_path)\n");
-  file.write("                recovery_path = stem + '-finalization-failed' + extension\n");
-  file.write("                suffix = 0\n");
+  file.write("                recovery_path = stem + '-finalization-failed-1' + extension\n");
+  file.write("                suffix = 1\n");
   file.write("                while os.path.exists(recovery_path):\n");
   file.write("                    suffix += 1\n");
   file.write("                    recovery_path = stem + '-finalization-failed-' + str(suffix) + extension\n");
@@ -7442,7 +7442,7 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("custom-archive.mkv");
   const QString expected_job_log = expected_path + ".log";
   const QString restarted_recovery_path =
-      QDir(QFileInfo(expected_path).absolutePath()).filePath("custom-archive-finalization-failed.mkv");
+      QDir(QFileInfo(expected_path).absolutePath()).filePath("custom-archive-finalization-failed-1.mkv");
   QDir().mkpath(QFileInfo(expected_path).absolutePath());
   QFile::remove(planned_path);
   QFile::remove(expected_job_log);
@@ -8270,7 +8270,7 @@ bool test_output_controls(HStreamWindow* window) {
   const QString target_cleanup_race_source =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("target-cleanup-race.mkv");
   const QString target_cleanup_race_recovery = QDir(QFileInfo(target_cleanup_race_source).absolutePath())
-                                                   .filePath("target-cleanup-race-finalization-failed.mkv");
+                                                   .filePath("target-cleanup-race-finalization-failed-1.mkv");
   QFile::remove(target_cleanup_race_source);
   QFile::remove(target_cleanup_race_source + ".log");
   QFile::remove(target_cleanup_race_recovery);
@@ -8404,7 +8404,7 @@ bool test_output_controls(HStreamWindow* window) {
   const QString source_sync_failure =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("source-sync-failure.mkv");
   const QString source_sync_failure_recovery =
-      QDir(QFileInfo(source_sync_failure).absolutePath()).filePath("source-sync-failure-finalization-failed.mkv");
+      QDir(QFileInfo(source_sync_failure).absolutePath()).filePath("source-sync-failure-finalization-failed-1.mkv");
   QFile::remove(source_sync_failure);
   QFile::remove(source_sync_failure + ".log");
   QFile::remove(source_sync_failure_recovery);
@@ -8450,20 +8450,20 @@ bool test_output_controls(HStreamWindow* window) {
               "tracking_output-with-audio.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-"
               "aabbccddeeff.mkv");
   const QString dangling_log_video =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed.mkv");
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-1.mkv");
   const QString dangling_log_path = dangling_log_video + ".log";
   const QString injected_collision_video =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-1.mkv");
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-2.mkv");
   const QString injected_collision_log = injected_collision_video + ".log";
   const QString replaced_log_video =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-2.mkv");
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-3.mkv");
   const QString replaced_log_path = replaced_log_video + ".log";
   const QString failed_recovery =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-3.mkv");
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-4.mkv");
   const QString failed_source_log = failed_source + ".log";
   const QString failed_recovery_log = failed_recovery + ".log";
-  const QString failed_recovery_rescue = failed_recovery + ".hstream-rescue";
-  const QString failed_recovery_log_rescue = failed_recovery_log + ".hstream-rescue";
+  const QString failed_recovery_rescue = failed_recovery + ".hstream-rescue-1";
+  const QString failed_recovery_log_rescue = failed_recovery_log + ".hstream-rescue-1";
   const QStringList finalized_before_failure =
       QDir(window->gameDirectoryText())
           .entryList(
@@ -8590,9 +8590,9 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(QDir(output_root.path()).filePath(window->gameIdText()))
           .filePath("no-log.hstream-run-v3-99999998-77777777-00112233-4455-6677-8899-aabbccddeeff.mkv");
   const QString no_log_replaced_marker =
-      QDir(QFileInfo(no_log_source).absolutePath()).filePath("no-log-finalization-failed.mkv.log");
+      QDir(QFileInfo(no_log_source).absolutePath()).filePath("no-log-finalization-failed-1.mkv.log");
   const QString no_log_recovery =
-      QDir(QFileInfo(no_log_source).absolutePath()).filePath("no-log-finalization-failed-1.mkv");
+      QDir(QFileInfo(no_log_source).absolutePath()).filePath("no-log-finalization-failed-2.mkv");
   QFile::remove(no_log_source);
   QFile::remove(no_log_source + ".log");
   QFile::remove(no_log_replaced_marker);
@@ -8632,9 +8632,9 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(QDir(output_root.path()).filePath(window->gameIdText()))
           .filePath("cleanup-race.hstream-run-v3-99999997-66666666-00112233-4455-6677-8899-aabbccddeeff.mkv");
   const QString cleanup_race_replaced =
-      QDir(QFileInfo(cleanup_race_source).absolutePath()).filePath("cleanup-race-finalization-failed.mkv");
-  const QString cleanup_race_recovery =
       QDir(QFileInfo(cleanup_race_source).absolutePath()).filePath("cleanup-race-finalization-failed-1.mkv");
+  const QString cleanup_race_recovery =
+      QDir(QFileInfo(cleanup_race_source).absolutePath()).filePath("cleanup-race-finalization-failed-2.mkv");
   QFile::remove(cleanup_race_source);
   QFile::remove(cleanup_race_source + ".log");
   QFile::remove(cleanup_race_replaced);
@@ -8674,7 +8674,7 @@ bool test_output_controls(HStreamWindow* window) {
   const QString publication_sync_failure_log = publication_sync_failure_source + ".log";
   const QString publication_sync_failure_recovery =
       QDir(QFileInfo(publication_sync_failure_source).absolutePath())
-          .filePath("recovery-publication-sync-failure-finalization-failed.mkv");
+          .filePath("recovery-publication-sync-failure-finalization-failed-1.mkv");
   const QString publication_sync_failure_manual = publication_sync_failure_source + ".manually-retained";
   QFile::remove(publication_sync_failure_source);
   QFile::remove(publication_sync_failure_log);
@@ -9063,7 +9063,7 @@ bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false)
     const QString failed_recovery =
         QFileInfo(failed_source)
             .dir()
-            .filePath(QFileInfo(failed_source).completeBaseName() + "-finalization-failed.mkv");
+            .filePath(QFileInfo(failed_source).completeBaseName() + "-finalization-failed-1.mkv");
     const QString failed_log = failed_recovery + ".log";
     QLabel* failed_path_label = fail_program ? archive_path : stitched_archive_path;
     auto* finalize_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
@@ -9121,9 +9121,9 @@ bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false)
   }
   qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL");
   const QString both_failed_program_recovery =
-      QDir(output_root.path()).filePath("dual-both-fail-program-finalization-failed.mkv");
+      QDir(output_root.path()).filePath("dual-both-fail-program-finalization-failed-1.mkv");
   const QString both_failed_stitched_recovery =
-      QDir(output_root.path()).filePath("dual-both-fail-stitched-finalization-failed.mkv");
+      QDir(output_root.path()).filePath("dual-both-fail-stitched-finalization-failed-1.mkv");
   QFile both_failed_program_log(both_failed_program_recovery + ".log");
   QFile both_failed_stitched_log(both_failed_stitched_recovery + ".log");
   const bool both_failed_program_log_opened = both_failed_program_log.open(QIODevice::ReadOnly | QIODevice::Text);
@@ -16396,7 +16396,7 @@ bool test_early_finalization_failure_retains_log_guard(HStreamWindow* window, co
       window, configured_path, versioned_source, "early-failure", &versioned_log, &versioned_guard);
   const bool versioned_pair_guarded = QFileInfo::exists(versioned_log) && QFileInfo::exists(versioned_guard);
 
-  const QString recovered_source = QDir(root).filePath("early-failure-finalization-failed.mkv");
+  const QString recovered_source = QDir(root).filePath("early-failure-finalization-failed-1.mkv");
   QString recovered_log;
   QString recovered_guard;
   HStreamWindowTestAccess::finishArchiveJobLogAfterFinalizationFailure(

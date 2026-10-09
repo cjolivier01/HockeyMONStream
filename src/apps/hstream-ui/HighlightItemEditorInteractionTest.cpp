@@ -48,6 +48,9 @@ HighlightReelPipeline::Status HighlightReelPipeline::Poll() const {
 QStringList HighlightTrackingRuns(const QString&, const QString&, QString*) {
   return {"run"};
 }
+QString HighlightTrackingDatabasePath(const QString& directory, const QString& game, const QString&) {
+  return directory + "/" + game + "_telemetry-1.db";
+}
 bool HighlightTrackingChoices(
     const QString&,
     const QString&,

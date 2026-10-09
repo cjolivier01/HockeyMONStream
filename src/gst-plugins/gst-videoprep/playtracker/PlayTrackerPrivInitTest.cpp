@@ -595,7 +595,7 @@ int main() {
   priv.Shutdown();
   priv.Shutdown();
   if (fs::exists(telemetry_dir / "tracking.csv") || fs::exists(telemetry_dir / "detections.csv") || [&] {
-        hm::recording::Database db((telemetry_dir / "hstream_telemetry.db").string());
+        hm::recording::Database db((telemetry_dir / (telemetry_dir.filename().string() + "_telemetry-1.db")).string());
         hm::recording::Statement q(db.get(), "SELECT completed FROM runs");
         return !q.Next() || q.Int(0) != 0;
       }()) {
@@ -607,7 +607,7 @@ int main() {
     return 38;
   }
   {
-    hm::recording::Database db((telemetry_dir / "hstream_telemetry.db").string());
+    hm::recording::Database db((telemetry_dir / (telemetry_dir.filename().string() + "_telemetry-1.db")).string());
     hm::recording::Statement detection(
         db.get(),
         "SELECT sample_id,left,top,width,height,score,class_id FROM detections ORDER BY sample_id,ordinal LIMIT 1");
@@ -668,7 +668,8 @@ int main() {
   const bool late_failure_handled = late_failure_priv.HandleEvent(late_failure);
   gst_event_unref(late_failure);
   const bool late_failure_finalized = late_failure_priv.SetProperty(hm::Property("finalize-telemetry", "1"));
-  hm::recording::Database late_db((late_failure_dir / "hstream_telemetry.db").string());
+  hm::recording::Database late_db(
+      (late_failure_dir / (late_failure_dir.filename().string() + "_telemetry-1.db")).string());
   hm::recording::Statement late_run(late_db.get(), "SELECT completed,outcome FROM runs");
   if (!late_eos_handled || !late_failure_handled || !late_failure_finalized || !late_run.Next() ||
       late_run.Int(0) != 0 || late_run.Text(1) != "failed" || fs::exists(late_failure_dir / "tracking.csv") ||
@@ -712,7 +713,7 @@ int main() {
   if (!geometry_priv.SetProperty(hm::Property("finalize-telemetry", "1")))
     return 43;
   {
-    hm::recording::Database db((geometry_dir / "hstream_telemetry.db").string());
+    hm::recording::Database db((geometry_dir / (geometry_dir.filename().string() + "_telemetry-1.db")).string());
     hm::recording::Statement checkpoints(db.get(), "SELECT sample_id FROM checkpoints ORDER BY sample_id");
     std::vector<int64_t> samples;
     while (checkpoints.Next())
@@ -723,7 +724,7 @@ int main() {
     }
   }
   hm::playtracker_replay::PrepareOptions geometry_options;
-  geometry_options.manifest_path = (geometry_dir / "hstream_telemetry.db").string();
+  geometry_options.manifest_path = (geometry_dir / (geometry_dir.filename().string() + "_telemetry-1.db")).string();
   geometry_options.start_seconds = 0.2;
   geometry_options.duration_seconds = 0.05;
   const auto geometry_session = hm::playtracker_replay::ReplaySession::Prepare(geometry_options);

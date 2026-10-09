@@ -2,7 +2,8 @@
 #include <optional>
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
 namespace hm::ui_internal {
-// A null suffix selects the first unused generation, independently of video encoding.
+// nullopt selects the next available positive version, independently of video encoding.
+// An explicit suffix must be "-N" with N >= 1.
 TelemetryCsvPublicationResult publish_telemetry_database(
     const QString& source,
     const QString& directory,

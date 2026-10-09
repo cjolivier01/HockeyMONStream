@@ -23,7 +23,7 @@ int main(int argc, char** argv) {
     const QString work = root.filePath("work"), game = root.filePath("game");
     QDir().mkpath(game);
     PlayTrackerTelemetryDb writer;
-    check(writer.Start(work.toStdString(), {"s", "s"}, {"e", "e"}).ok(), "writer");
+    check(writer.Start(work.toStdString(), {"s", "s"}, {"e", "e"}, {}, 2048, "game-one").ok(), "writer");
     const QString source = QString::fromStdString(writer.output_manifest());
     check(!publish_telemetry_database(source, game).ok, "reject incomplete source");
     TelemetrySample s;
@@ -37,11 +37,21 @@ int main(int argc, char** argv) {
     const auto first = publish_telemetry_database(source, game, QString("-2"));
     check(first.ok, first.error.toStdString());
     check(
-        QDir(game).entryList(QDir::Files) == QStringList{"hstream_telemetry-2.db"},
-        "one database copied with exact suffix");
+        QDir(game).entryList(QDir::Files) == QStringList{"game-one_telemetry-2.db"},
+        "one database copied with recorded game ID and exact suffix");
     check(!telemetry_csv_destination_paths_available(game, "-2"), "video suffix selection sees database collisions");
     check(!publish_telemetry_database(source, game, QString("-2")).ok, "cannot overwrite previous recording");
     check(!publish_telemetry_database(source, game, QString("/../bad")).ok, "reject invalid suffix");
+    for (const QString& suffix : {QString(""), QString("-0"), QString("-000")})
+      check(!publish_telemetry_database(source, game, suffix).ok, "reject unnumbered and zero versions");
+    const QString fresh_game = root.filePath("fresh-game");
+    check(QDir().mkpath(fresh_game), "fresh game directory");
+    const auto initial = publish_telemetry_database(source, fresh_game);
+    check(initial.ok && initial.published_paths.front().endsWith("game-one_telemetry-1.db"), "first version is one");
+    const auto padded = publish_telemetry_database(source, fresh_game, QString("-007"));
+    check(
+        padded.ok && padded.published_paths.front().endsWith("game-one_telemetry-007.db"),
+        "preserve positive suffix spelling");
     const QString symlink_target_game = root.filePath("symlink-target-game");
     const QString symlink_game = root.filePath("symlink-game");
     check(QDir().mkpath(symlink_target_game), "symlink target game directory");
@@ -52,17 +62,25 @@ int main(int argc, char** argv) {
     const auto through_symlink = publish_telemetry_database(source, symlink_game, QString("-5"));
     check(through_symlink.ok, through_symlink.error.toStdString());
     check(
-        QFileInfo::exists(QDir(symlink_target_game).filePath("hstream_telemetry-5.db")),
+        QFileInfo::exists(QDir(symlink_target_game).filePath("game-one_telemetry-5.db")),
         "database published through symlinked game directory");
     check(
         !telemetry_csv_destination_paths_available(symlink_game, "-5"),
         "symlinked game directory suffix collision is visible after database publication");
     const auto second = publish_telemetry_database(source, game);
     check(
-        second.ok && second.published_paths.front().endsWith("hstream_telemetry-3.db"),
+        second.ok && second.published_paths.front().endsWith("game-one_telemetry-3.db"),
         "standalone publication chooses an available suffix");
     const auto third = publish_telemetry_database(source, game);
-    check(third.ok && third.published_paths.front().endsWith("hstream_telemetry-4.db"), "standalone next generation");
+    check(third.ok && third.published_paths.front().endsWith("game-one_telemetry-4.db"), "standalone next generation");
+    QFile legacy(root.filePath("game/hstream_telemetry-12.db"));
+    check(legacy.open(QIODevice::WriteOnly), "reserve legacy generation");
+    legacy.close();
+    check(!telemetry_csv_destination_paths_available(game, "-12"), "legacy database suffix remains occupied");
+    const auto after_legacy = publish_telemetry_database(source, game);
+    check(
+        after_legacy.ok && after_legacy.published_paths.front().endsWith("game-one_telemetry-13.db"),
+        "numbering advances beyond legacy database generations");
     hm::recording::Database copy(first.published_paths.front().toStdString());
     hm::recording::Database original(source.toStdString());
     hm::recording::Statement a(copy.get(), "SELECT run_id FROM runs"), b(original.get(), "SELECT run_id FROM runs");

@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
+#include "hstream/src/libs/recording/Database.h"
 #include "src/apps/hstream-ui/TelemetryDbPublisher.h"
 
 #include <QtCore/QDir>
@@ -1088,7 +1089,7 @@ qint64 next_archive_generation(const QString& game_directory) {
   QString error;
   if (directory_fd.get() < 0 || !read_directory_entries(directory_fd.get(), &entries, &error))
     return -1;
-  const std::array<QRegularExpression, 3> patterns = {{
+  const std::array<QRegularExpression, 4> patterns = {{
       QRegularExpression(
           R"(^(?:.*-)?(?:tracking|stitched|program_4k)_output(?:-with-audio)?(?:-(\d+))?\.(?:mp4|mkv|mov|m4v|avi)(?:\.hstream-pin)?$)",
           QRegularExpression::CaseInsensitiveOption),
@@ -1096,6 +1097,7 @@ qint64 next_archive_generation(const QString& game_directory) {
           R"(^(?:tracking|detections|camera|camera_fast|hstream_frame_index|hstream_config_events)(?:-(\d+))?\.csv$)"),
       QRegularExpression(
           R"(^(?:rink_mask_\d+|hstream_telemetry|hstream_replay)(?:-(\d+))?\.(?:png|json|jsonl|db|sqlite)$)"),
+      QRegularExpression(R"(^.+_telemetry-(\d+)\.(?:db|sqlite)$)"),
   }};
   qint64 next = 1;
   for (const auto& entry : entries) {
@@ -1114,7 +1116,7 @@ qint64 next_archive_generation(const QString& game_directory) {
 }
 
 bool telemetry_csv_destination_paths_available(const QString& game_directory, const QString& destination_suffix) {
-  if (!QRegularExpression(R"(^(-\d+)?$)").match(destination_suffix).hasMatch())
+  if (!QRegularExpression(R"(^-0*[1-9]\d*$)").match(destination_suffix).hasMatch())
     return false;
   const QString publication_directory = resolved_existing_directory_path(game_directory);
   const QByteArray encoded_game_directory = QFile::encodeName(publication_directory);
@@ -1126,9 +1128,18 @@ bool telemetry_csv_destination_paths_available(const QString& game_directory, co
   QString error;
   if (!read_directory_entries(game_directory_fd.get(), &entries, &error))
     return false;
+  bool valid = true;
+  const uint64_t requested = destination_suffix.mid(1).toULongLong(&valid);
+  if (!valid)
+    return false;
   for (const QByteArray& entry : entries) {
-    if (entry == ("hstream_telemetry" + destination_suffix + ".db").toUtf8() ||
-        allowed_staging_artifact(entry, destination_suffix))
+    std::optional<uint64_t> generation;
+    try {
+      generation = hm::recording::TelemetryDatabaseGeneration(QFile::decodeName(entry).toStdString());
+    } catch (const std::exception&) {
+      return false;
+    }
+    if ((generation && *generation == requested) || allowed_staging_artifact(entry, destination_suffix))
       return false;
   }
   return true;
@@ -1142,7 +1153,9 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
   if (manifest_path.endsWith(".db") || manifest_path.endsWith(".sqlite"))
     return publish_telemetry_database(manifest_path, game_directory, destination_suffix);
   TelemetryCsvPublicationResult result;
-  if (!QRegularExpression(R"(^(-\d+)?$)").match(destination_suffix).hasMatch()) {
+  bool valid_suffix = false;
+  destination_suffix.mid(1).toULongLong(&valid_suffix);
+  if (!QRegularExpression(R"(^-0*[1-9]\d*$)").match(destination_suffix).hasMatch() || !valid_suffix) {
     result.error = QString("invalid telemetry destination suffix: %1").arg(destination_suffix);
     return result;
   }

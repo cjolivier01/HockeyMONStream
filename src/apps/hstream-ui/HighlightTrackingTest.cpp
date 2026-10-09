@@ -8,6 +8,49 @@
 using namespace hm::ui;
 int main() {
   QTemporaryDir dir;
+  const QString archive = dir.filePath("game-tracking_output-with-audio-7.mp4");
+  const QString named = dir.filePath("game_telemetry-7.db");
+  if (HighlightTrackingDatabasePath(dir.path(), "game", archive) != named)
+    return 1;
+  QFile legacy(dir.filePath("hstream_telemetry-7.db"));
+  if (!legacy.open(QIODevice::WriteOnly))
+    return 1;
+  legacy.close();
+  if (HighlightTrackingDatabasePath(dir.path(), "game", archive) != legacy.fileName())
+    return 1;
+  QFile current(named);
+  if (!current.open(QIODevice::WriteOnly))
+    return 1;
+  current.close();
+  if (HighlightTrackingDatabasePath(dir.path(), "game", archive) != named ||
+      HighlightTrackingDatabasePath(dir.path(), "game", dir.filePath("game-stitched_output-with-audio-8.mp4")) !=
+          dir.filePath("game_telemetry-8.db"))
+    return 1;
+  QFile padded(dir.filePath("game_telemetry-0007.db"));
+  if (!padded.open(QIODevice::WriteOnly))
+    return 1;
+  padded.close();
+  if (HighlightTrackingDatabasePath(dir.path(), "game", dir.filePath("game-tracking_output-with-audio-0007.mp4")) !=
+      padded.fileName())
+    return 1;
+  QFile zero(dir.filePath("hstream_telemetry-0.db"));
+  if (!zero.open(QIODevice::WriteOnly))
+    return 1;
+  zero.close();
+  if (HighlightTrackingDatabasePath(dir.path(), "game", dir.filePath("game-tracking_output-with-audio-0.mp4")) !=
+      zero.fileName())
+    return 1;
+  QFile bare(dir.filePath("hm_telemetry.db"));
+  if (!bare.open(QIODevice::WriteOnly))
+    return 1;
+  bare.close();
+  QFile first(dir.filePath("game_telemetry-1.db"));
+  if (!first.open(QIODevice::WriteOnly))
+    return 1;
+  first.close();
+  if (HighlightTrackingDatabasePath(dir.path(), "game", dir.filePath("game-tracking_output-with-audio.mp4")) !=
+      bare.fileName())
+    return 1;
   const QString path = dir.filePath("tracks.sqlite");
   QString error;
   QFile file(path);

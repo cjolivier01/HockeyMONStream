@@ -310,7 +310,15 @@ int main(int argc, char** argv) {
   valid &= expect(
       hm::ui_internal::finalized_archive_csv_suffix(
           QDir(game).filePath("sabercats-16a-tracking_output-with-audio.mp4"), "sabercats-16a") == "",
-      "first video generation must use bare CSV names");
+      "legacy unnumbered video names remain readable");
+  for (const QString& suffix : {QString(""), QString("-0"), QString("-000")}) {
+    valid &= expect(
+        !hm::ui_internal::telemetry_csv_destination_paths_available(game, suffix),
+        "new publication must require a positive version");
+    valid &= expect(
+        !hm::ui_internal::publish_telemetry_csvs(manifest_path, game, suffix).ok,
+        "CSV publication must reject unnumbered and zero versions");
+  }
   valid &= expect(
       hm::ui_internal::finalized_archive_csv_suffix(QDir(game).filePath("unrelated.mp4"), "sabercats-16a").isNull(),
       "unrelated video names must not produce a CSV suffix");
