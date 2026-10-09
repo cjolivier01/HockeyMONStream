@@ -28,12 +28,10 @@ class PreviewFocusButton;
 
 namespace hm::ui {
 
-class HighlightsArchivePlayer;
+class HighlightReelPipeline;
 class HighlightsVideoTarget;
 
-// Plans highlight intervals for a game and cuts them out of an already
-// published destination archive. Preview is a seek inside that archive and
-// export is a single ffmpeg pass over it; the capture pipeline is never re-run.
+// Authors ordered archive clips, timed cues and cards, with a native GPU reel pipeline.
 class HighlightsDialog : public QDialog {
  public:
   HighlightsDialog(
@@ -54,7 +52,7 @@ class HighlightsDialog : public QDialog {
 
  private:
   enum class Job { kNone, kInspect, kPreview, kExport };
-  enum class Stage { kIdle, kProbe, kEncoders, kEncode, kJoin };
+  enum class Stage { kIdle, kProbe, kEncode };
   // A planned interval resolved onto the selected archive's own timeline.
   struct Clip {
     HighlightInterval interval;
@@ -88,17 +86,14 @@ class HighlightsDialog : public QDialog {
   void stopPreview();
 
   void startInspection();
-  void startEncoderQuery();
-  void startEncode();
-  void startNextPart();
-  bool writePartManifest(const QString& manifest_path, QString* error) const;
-  void startJoin();
   void publishEncode();
   void finishJob(bool success, const QString& message);
   void requestActiveProcessStop();
   void readProcessOutput();
   void appendProcessError(const QString& output, bool flush = false);
-  void consumeEncodeProgress(const QString& output);
+  void editItem();
+  void addCard();
+  void duplicateItem();
   void processFinished(int code, QProcess::ExitStatus status);
   void appendLog(const QString& line);
   bool embeddedPreviewAvailable() const;
@@ -121,19 +116,13 @@ class HighlightsDialog : public QDialog {
   bool media_valid_{false};
   QString media_path_;
   QString media_error_;
-  HighlightsEncodeSettings encode_settings_;
-  QStringList encoders_;
-  bool encoders_known_{false};
 
   QString work_dir_;
   QString final_partial_path_;
-  QStringList encode_parts_;
-  QString encode_status_prefix_;
-  int encode_part_index_{0};
-  qint64 encode_done_ms_{0};
+
   QString current_route_;
   QString published_path_;
-  QString process_output_buffer_;
+
   QString process_error_buffer_;
   QString probe_output_;
   qint64 encode_total_ms_{0};
@@ -149,10 +138,9 @@ class HighlightsDialog : public QDialog {
   QProcess process_;
 
   bool preview_supported_{false};
-  std::unique_ptr<HighlightsArchivePlayer> player_;
-  QString player_path_;
+  std::unique_ptr<HighlightReelPipeline> player_;
+
   QTimer* preview_timer_{nullptr};
-  int preview_segment_{-1};
 
   QTableWidget* table_{nullptr};
   QSplitter* preview_splitter_{nullptr};
@@ -171,6 +159,9 @@ class HighlightsDialog : public QDialog {
   QLineEdit* second_edit_{nullptr};
   QLineEdit* base_name_edit_{nullptr};
   QPushButton* add_button_{nullptr};
+  QPushButton* card_button_{nullptr};
+  QPushButton* edit_item_button_{nullptr};
+  QPushButton* duplicate_button_{nullptr};
   QPushButton* update_button_{nullptr};
   QPushButton* remove_button_{nullptr};
   QPushButton* up_button_{nullptr};

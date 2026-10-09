@@ -1,0 +1,11 @@
+# Highlight editor validation
+
+Validated on x86_64 with an RTX 5090 and DeepStream 9.1.
+
+- Full tree: `HSTREAM_TENSORRT_SDK_ROOT=/home/colivier/.cache/hstream/player-sdk/trt10.16/usr bazelisk build --config=opt --config=blackwell --cpu=k8 //...` passes. This host has TensorRT 11 system headers while DeepStream loads TensorRT 10; the matching installed SDK is required for the existing detector builder.
+- `bazelisk test --config=opt --config=blackwell --cpu=k8 //src/apps/hstream-ui/... //src/apps/apps-common/...` passes all 39 tests with the same SDK setting. The modified model/editor tests and the GPU dialog export test were rerun after the final persistence changes.
+- `QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/highlight_reel_pipeline_test` passes. It decodes the exported file independently to check a timed box, expiration, clip/card order, a 4.2-second mixed timeline, silent card audio, ten-bit HEVC output from a silent source, cards without an archive, cancellation, GPU frame inspection, window resizing and preview looping. FFmpeg generates test fixtures and acts as the independent decoder; production rendering/export never invokes it.
+- `bazelisk build --config=jetson //src/libs/highlights:texture_blend` passes with the local Jetson sysroot. The full CLI cross-build cannot analyze the existing `@onnxruntime_linux_jetson` repository because its BUILD file is missing. The desktop targets remain incompatible with Jetson, matching the existing Qt UI boundary.
+- `bazelisk build --config=opt --config=arm64 //src/libs/highlights:texture_blend` passes on this x86 host. This checks the SBSA configuration only, not native ARM64 execution. No native SBSA host was available. `ssh -o BatchMode=yes -o ConnectTimeout=5 stubby uname -m` failed with “No route to host,” so Jetson runtime checks were unavailable.
+
+Tracked cues require the author to verify the recorded run/archive association and geometry mode because legacy publication sidecars have no telemetry run identity. Saved observations are scoped to a single source, geometry, seek and reset segment. Tests cover Program rotation/crop conversion, duplicate IDs in separate seek segments, missing observations, and immutable source times through card insertion and trims. A recorded bounding box does not establish a hand position; manual keyframes provide those corrections.

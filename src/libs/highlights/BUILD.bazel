@@ -1,0 +1,13 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+cc_library(
+    name = "texture_blend_headers",
+    hdrs = ["TextureBlend.h"],
+    visibility = ["//visibility:public"],
+    deps = ["//toolchains/jetson:cuda_runtime", "@local_cuda//:cuda"],
+)
+cuda_library(
+    name = "texture_blend",
+    srcs = ["TextureBlend.cu"],
+    visibility = ["//visibility:public"],
+    deps = [":texture_blend_headers"],
+)

@@ -1,7 +1,8 @@
 #include "src/apps/hstream-ui/HighlightsDialog.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
-#include "src/apps/hstream-ui/HighlightsArchivePlayer.h"
+#include "src/apps/hstream-ui/HighlightItemEditor.h"
+#include "src/apps/hstream-ui/HighlightReelPipeline.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
 
 #include <QtCore/QDir>
@@ -92,27 +93,6 @@ QString safeFileComponent(QString value) {
   return value.left(64);
 }
 
-// ffmpeg's -ss/-to take seconds; milliseconds are exact at six decimals.
-QString ffmpegSeconds(qint64 milliseconds) {
-  return QString::number(static_cast<double>(milliseconds) / 1000.0, 'f', 6);
-}
-
-// "00:01:23.456789" as written by `-progress pipe:1`.
-qint64 progressMicroseconds(const QString& value) {
-  const QStringList fields = value.trimmed().split(':');
-  if (fields.size() != 3)
-    return -1;
-  bool hours_ok = false;
-  bool minutes_ok = false;
-  bool seconds_ok = false;
-  const qint64 hours = fields[0].toLongLong(&hours_ok);
-  const qint64 minutes = fields[1].toLongLong(&minutes_ok);
-  const double seconds = fields[2].toDouble(&seconds_ok);
-  if (!hours_ok || !minutes_ok || !seconds_ok || hours < 0 || minutes < 0 || seconds < 0 || !std::isfinite(seconds))
-    return -1;
-  return static_cast<qint64>(std::llround(((static_cast<double>(hours) * 60.0 + minutes) * 60.0 + seconds) * 1e6));
-}
-
 QString archiveChoiceLabel(const ArchiveEntry& entry) {
   QStringList parts{ArchiveKindDisplayName(entry.kind)};
   if (entry.generation > 0)
@@ -176,7 +156,17 @@ HighlightsDialog::HighlightsDialog(
   connect(archive_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
     if (isBusy() || index < 0 || index == archive_index_)
       return;
+    const int previous_index = archive_index_;
+    const QString previous_path = plan_.archive_path;
     archive_index_ = index;
+    plan_.archive_path = archives_[index].path;
+    if (!savePlan()) {
+      archive_index_ = previous_index;
+      plan_.archive_path = previous_path;
+      const QSignalBlocker blocker(archive_combo_);
+      archive_combo_->setCurrentIndex(previous_index);
+      return;
+    }
     applyArchiveSelection();
   });
   connect(archive_offset_edit_, &QLineEdit::editingFinished, this, &HighlightsDialog::commitArchiveOffset);
@@ -264,6 +254,18 @@ HighlightsDialog::HighlightsDialog(
   down_button_->setObjectName("highlightDownButton");
   for (auto* button : {add_button_, update_button_, remove_button_, up_button_, down_button_})
     edit_actions->addWidget(button);
+  card_button_ = new QPushButton(action_icon(ActionIcon::Add), "Add card", this);
+  card_button_->setObjectName("highlightAddCardButton");
+  edit_item_button_ = new QPushButton(action_icon(ActionIcon::Apply), "Annotations / card", this);
+  edit_item_button_->setObjectName("highlightEditItemButton");
+  duplicate_button_ = new QPushButton(action_icon(ActionIcon::Add), "Duplicate", this);
+  duplicate_button_->setObjectName("highlightDuplicateButton");
+  edit_actions->addWidget(card_button_);
+  edit_actions->addWidget(edit_item_button_);
+  edit_actions->addWidget(duplicate_button_);
+  connect(card_button_, &QPushButton::clicked, this, &HighlightsDialog::addCard);
+  connect(edit_item_button_, &QPushButton::clicked, this, &HighlightsDialog::editItem);
+  connect(duplicate_button_, &QPushButton::clicked, this, &HighlightsDialog::duplicateItem);
   edit_actions->addStretch();
   root->addLayout(edit_actions);
   connect(add_button_, &QPushButton::clicked, this, &HighlightsDialog::addInterval);
@@ -368,7 +370,7 @@ HighlightsDialog::HighlightsDialog(
   connect(preview_timer_, &QTimer::timeout, this, &HighlightsDialog::pollPreview);
   // Probing the renderer costs a GStreamer registry scan, so only ask on a
   // platform that could host it at all.
-  preview_supported_ = embeddedPreviewAvailable() && HighlightsArchivePlayer::Available();
+  preview_supported_ = embeddedPreviewAvailable() && HighlightReelPipeline::PreviewAvailable();
 
   QString load_error;
   if (!LoadHighlightPlan(plan_path_, &plan_, &load_error)) {
@@ -378,13 +380,31 @@ HighlightsDialog::HighlightsDialog(
     status_->setText("Ready. Intervals are saved with this game.");
   }
   base_name_edit_->setText(plan_.base_name);
+  int saved_index = -1;
+  for (int i = 0; i < archives_.size(); ++i)
+    if (archives_[i].path == plan_.archive_path)
+      saved_index = i;
+  if (!plan_.archive_path.isEmpty() && saved_index < 0) {
+    ArchiveEntry missing;
+    missing.path = plan_.archive_path;
+    missing.game_id = game_id_;
+    missing.kind = "program";
+    archives_.append(missing);
+    saved_index = archives_.size() - 1;
+  }
   refreshArchiveChoices();
   if (!archives_.isEmpty()) {
-    archive_index_ = 0;
+    archive_index_ = saved_index >= 0 ? saved_index : 0;
+    plan_.archive_path = archives_[archive_index_].path;
+    {
+      const QSignalBlocker blocker(archive_combo_);
+      archive_combo_->setCurrentIndex(archive_index_);
+    }
     applyArchiveSelection();
   } else {
-    archive_detail_->setText("No published archive was found for this game. Publish a run before previewing or "
-                             "exporting highlights.");
+    archive_detail_->setText(
+        "No published archive was found for this game. Publish a run before previewing or "
+        "exporting highlights.");
   }
   refreshTable();
   updateControls();
@@ -431,7 +451,6 @@ void HighlightsDialog::done(int result) {
     return;
   }
   player_.reset();
-  player_path_.clear();
   QDialog::done(result);
 }
 
@@ -555,11 +574,7 @@ void HighlightsDialog::applyArchiveSelection() {
   media_ = ArchiveMediaInfo();
   media_path_.clear();
   media_error_.clear();
-  encode_settings_ = HighlightsEncodeSettings();
-  if (player_path_ != archive->path) {
-    player_.reset();
-    player_path_.clear();
-  }
+  player_.reset();
   refreshTable();
   startInspection();
 }
@@ -595,11 +610,19 @@ void HighlightsDialog::commitArchiveOffset() {
     appendLog("Could not remember this archive's start time: " + sidecar_error);
   refreshArchiveChoices();
   refreshTable();
-  status_->setText("Highlight times are now read against an archive starting at " +
-                   FormatHighlightTime(archive_offset_ms_) + ".");
+  status_->setText(
+      "Highlight times are now read against an archive starting at " + FormatHighlightTime(archive_offset_ms_) + ".");
 }
 
 QString HighlightsDialog::resolveClip(const HighlightInterval& interval, Clip* clip) const {
+  if (interval.is_card) {
+    if (clip) {
+      clip->interval = interval;
+      clip->archive_start_ms = 0;
+      clip->archive_end_ms = interval.card.duration_ms;
+    }
+    return {};
+  }
   const qint64 start = interval.start_ms - archive_offset_ms_;
   const qint64 end = interval.end_ms - archive_offset_ms_;
   if (end <= start)
@@ -621,14 +644,6 @@ QString HighlightsDialog::resolveClip(const HighlightInterval& interval, Clip* c
 
 bool HighlightsDialog::buildQueue(bool selected, QVector<Clip>* clips, QString* error) const {
   clips->clear();
-  if (!selectedArchive()) {
-    *error = "No published archive was found for this game.";
-    return false;
-  }
-  if (!media_valid_) {
-    *error = media_error_.isEmpty() ? "The archive has not finished being read yet." : media_error_;
-    return false;
-  }
   QVector<HighlightInterval> wanted;
   if (selected) {
     const int row = table_->currentRow();
@@ -645,6 +660,10 @@ bool HighlightsDialog::buildQueue(bool selected, QVector<Clip>* clips, QString* 
     return false;
   }
   for (const HighlightInterval& interval : wanted) {
+    if (!interval.is_card && (!selectedArchive() || !media_valid_)) {
+      *error = media_error_.isEmpty() ? "Select a readable published archive for video clips." : media_error_;
+      return false;
+    }
     Clip clip;
     const QString problem = resolveClip(interval, &clip);
     if (!problem.isEmpty()) {
@@ -662,14 +681,18 @@ void HighlightsDialog::refreshTable() {
   for (int row = 0; row < plan_.intervals.size(); ++row) {
     const auto& interval = plan_.intervals[row];
     Clip clip;
-    const QString problem = selectedArchive() ? resolveClip(interval, &clip) : QString("has no archive to cut from");
+    const QString problem =
+        (interval.is_card || selectedArchive()) ? resolveClip(interval, &clip) : QString("has no archive to cut from");
     const QStringList cells = {
         interval.label,
-        interval.event_mode ? "Event " + FormatHighlightTime(interval.event_ms) : "Range",
-        FormatHighlightTime(interval.start_ms),
-        FormatHighlightTime(interval.end_ms),
-        FormatHighlightTime(interval.end_ms - interval.start_ms),
-        problem.isEmpty()
+        interval.is_card          ? (interval.card.matchup ? "Matchup card" : "Text card")
+            : interval.event_mode ? "Event " + FormatHighlightTime(interval.event_ms)
+                                  : "Range",
+        interval.is_card ? QString("—") : FormatHighlightTime(interval.start_ms),
+        interval.is_card ? QString("—") : FormatHighlightTime(interval.end_ms),
+        FormatHighlightTime(HighlightItemDuration(interval)),
+        interval.is_card ? QString("Generated")
+            : problem.isEmpty()
             ? FormatHighlightTime(clip.archive_start_ms) + "–" + FormatHighlightTime(clip.archive_end_ms)
             : QString("—")};
     for (int column = 0; column < cells.size(); ++column) {
@@ -741,7 +764,7 @@ void HighlightsDialog::updateControls() {
   const bool idle = !isBusy();
   const bool editable = idle && plan_load_error_.isEmpty();
   const bool selected = table_->currentRow() >= 0 && table_->currentRow() < plan_.intervals.size();
-  const bool cuttable = editable && media_valid_;
+  const bool cuttable = editable;
   for (auto* widget :
        {static_cast<QWidget*>(table_),
         static_cast<QWidget*>(archive_combo_),
@@ -754,6 +777,9 @@ void HighlightsDialog::updateControls() {
     widget->setEnabled(editable);
   archive_offset_edit_->setEnabled(editable && selectedArchive() != nullptr);
   add_button_->setEnabled(editable);
+  card_button_->setEnabled(editable);
+  edit_item_button_->setEnabled(editable && selected);
+  duplicate_button_->setEnabled(editable && selected);
   update_button_->setEnabled(editable && selected);
   remove_button_->setEnabled(editable && selected);
   up_button_->setEnabled(editable && selected && table_->currentRow() > 0);
@@ -785,7 +811,11 @@ void HighlightsDialog::updateInterval() {
   const int row = table_->currentRow();
   if (row < 0 || row >= plan_.intervals.size())
     return;
-  HighlightInterval interval;
+  if (plan_.intervals[row].is_card) {
+    editItem();
+    return;
+  }
+  HighlightInterval interval = plan_.intervals[row];
   if (!readEditor(&interval))
     return;
   const auto previous = plan_.intervals[row];
@@ -846,86 +876,149 @@ void HighlightsDialog::startInspection() {
 void HighlightsDialog::beginPreview(bool selected, bool loop) {
   if (isBusy() || !plan_load_error_.isEmpty())
     return;
-  if (!preview_supported_) {
-    status_->setText("Preview needs NVIDIA graphics on an X11 display. Export still works from here.");
-    return;
-  }
-  const ArchiveEntry* archive = selectedArchive();
   QVector<Clip> clips;
   QString error;
   if (!buildQueue(selected, &clips, &error)) {
     status_->setText(error);
     return;
   }
-  if (!player_)
-    player_ = std::make_unique<HighlightsArchivePlayer>();
-  video_->setRendererActive(true);
-  if (player_path_ != archive->path) {
-    if (!player_->Open(archive->path, static_cast<quint64>(video_->winId()), media_.width, media_.height, &error)) {
-      video_->setRendererActive(false);
-      player_.reset();
-      status_->setText(error);
-      appendLog(error);
-      return;
-    }
-    player_path_ = archive->path;
+  HighlightReelPipeline::Request request;
+  if (const auto* archive = selectedArchive())
+    request.archive_path = archive->path;
+  request.asset_root = game_dir_;
+  request.archive_offset_ms = archive_offset_ms_;
+  request.media = media_;
+  if (request.media.width <= 0) {
+    request.media.width = 1920;
+    request.media.height = 1080;
+    request.media.frame_rate = 30;
   }
-  QVector<HighlightsArchivePlayer::Segment> segments;
-  segments.reserve(clips.size());
-  for (const Clip& clip : clips)
-    segments.push_back({clip.archive_start_ms, clip.archive_end_ms});
-  if (!player_->Play(segments, loop, &error)) {
-    video_->setRendererActive(false);
+  request.window_id = video_->winId();
+  request.loop = loop;
+  for (const auto& clip : clips)
+    request.items.append(clip.interval);
+  player_ = std::make_unique<HighlightReelPipeline>();
+  if (!player_->Start(request, &error)) {
+    player_.reset();
     status_->setText(error);
-    appendLog(error);
     return;
   }
+  video_->setRendererActive(true);
   queue_ = clips;
   job_ = Job::kPreview;
-  stage_ = Stage::kIdle;
-  ++job_generation_;
   loop_ = loop;
   cancelling_ = false;
-  preview_segment_ = -1;
   log_->clear();
-  appendLog(QString("Previewing %1 interval%2 from %3")
-                .arg(clips.size())
-                .arg(clips.size() == 1 ? "" : "s", QFileInfo(archive->path).fileName()));
+  appendLog("Native GPU reel preview");
   status_->setText("Starting preview…");
   preview_timer_->start();
   updateControls();
 }
 
 void HighlightsDialog::pollPreview() {
-  if (job_ != Job::kPreview || !player_)
+  if ((job_ != Job::kPreview && job_ != Job::kExport) || !player_)
     return;
-  const HighlightsArchivePlayer::Status status = player_->Poll();
-  if (!status.error.isEmpty()) {
-    stopPreview();
-    finishJob(false, status.error);
-    return;
-  }
+  const auto status = player_->Poll();
   if (status.finished) {
-    stopPreview();
-    finishJob(true, "Preview complete.");
+    player_.reset();
+    preview_timer_->stop();
+    if (cancelling_) {
+      finishJob(false, "Highlights job stopped.");
+      return;
+    }
+    if (!status.error.isEmpty()) {
+      finishJob(false, status.error);
+      return;
+    }
+    if (job_ == Job::kExport)
+      publishEncode();
+    else
+      finishJob(true, "Preview complete.");
     return;
   }
-  if (status.segment >= 0 && status.segment < queue_.size() && status.segment != preview_segment_) {
-    preview_segment_ = status.segment;
-    const Clip& clip = queue_[status.segment];
-    status_->setText(QString("%1 %2 of %3: %4")
-                         .arg(loop_ ? "Looping" : "Previewing")
-                         .arg(status.segment + 1)
-                         .arg(queue_.size())
-                         .arg(clip.interval.label));
-  }
+  if (job_ == Job::kExport) {
+    status_->setText(
+        QString("Encoding reel… %1%")
+            .arg(status.total_ms > 0 ? std::clamp<qint64>(status.position_ms * 100 / status.total_ms, 0, 100) : 0));
+  } else
+    status_->setText(
+        QString("%1 reel · %2").arg(loop_ ? "Looping" : "Previewing", FormatHighlightTime(status.position_ms)));
 }
 
 void HighlightsDialog::stopPreview() {
-  preview_timer_->stop();
-  preview_segment_ = -1;
   if (player_)
-    player_->Stop();
+    player_->Cancel();
+}
+
+void HighlightsDialog::editItem() {
+  const int row = table_->currentRow();
+  if (isBusy() || row < 0 || row >= plan_.intervals.size())
+    return;
+  auto item = plan_.intervals[row];
+  const auto* archive = selectedArchive();
+  if (!item.is_card && !media_valid_) {
+    status_->setText("Select a readable archive before editing annotations");
+    return;
+  }
+  if (!EditHighlightItem(
+          &item,
+          game_dir_,
+          game_id_,
+          archive ? archive->path : QString(),
+          archive ? archive->kind : QString(),
+          archive_offset_ms_,
+          media_,
+          this))
+    return;
+  const auto previous = plan_.intervals[row];
+  plan_.intervals[row] = item;
+  if (!savePlan()) {
+    plan_.intervals[row] = previous;
+    return;
+  }
+  refreshTable();
+}
+
+void HighlightsDialog::addCard() {
+  if (isBusy())
+    return;
+  HighlightInterval item;
+  item.is_card = true;
+  item.label = "Title card";
+  const auto* archive = selectedArchive();
+  if (!EditHighlightItem(
+          &item,
+          game_dir_,
+          game_id_,
+          archive ? archive->path : QString(),
+          archive ? archive->kind : QString(),
+          archive_offset_ms_,
+          media_,
+          this))
+    return;
+  item.label = item.card.heading.isEmpty() ? "Matchup" : item.card.heading;
+  const int row = table_->currentRow() < 0 ? plan_.intervals.size() : table_->currentRow() + 1;
+  plan_.intervals.insert(row, item);
+  if (!savePlan()) {
+    plan_.intervals.removeAt(row);
+    return;
+  }
+  refreshTable();
+  table_->setCurrentCell(row, 0);
+}
+
+void HighlightsDialog::duplicateItem() {
+  const int row = table_->currentRow();
+  if (isBusy() || row < 0 || row >= plan_.intervals.size())
+    return;
+  const auto copy = plan_.intervals[row];
+  plan_.intervals.insert(row + 1, copy);
+  if (!savePlan()) {
+    plan_.intervals.removeAt(row + 1);
+    return;
+  }
+  refreshTable();
+  table_->setCurrentCell(row + 1, 0);
 }
 
 void HighlightsDialog::beginExport(bool selected) {
@@ -959,7 +1052,7 @@ void HighlightsDialog::beginExport(bool selected) {
   work.setAutoRemove(false);
   work_dir_ = work.path();
   queue_ = clips;
-  current_route_ = selectedArchive()->kind;
+  current_route_ = selectedArchive() ? selectedArchive()->kind : "cards";
   published_path_.clear();
   encode_total_ms_ = 0;
   for (const Clip& clip : queue_)
@@ -970,199 +1063,39 @@ void HighlightsDialog::beginExport(bool selected) {
   ++job_generation_;
   loop_ = false;
   cancelling_ = false;
-  process_output_buffer_.clear();
   process_error_buffer_.clear();
   log_->clear();
   status_->setText("Preparing to encode highlights…");
   updateControls();
-  if (encoders_known_)
-    startEncode();
-  else
-    startEncoderQuery();
-}
-
-void HighlightsDialog::startEncoderQuery() {
-  stage_ = Stage::kEncoders;
-  probe_output_.clear();
-  status_->setText("Checking which encoders ffmpeg offers…");
-  process_.setWorkingDirectory(work_dir_);
-  process_.setProcessEnvironment(env_);
-  process_.start(env_.value("HSTREAM_UI_FFMPEG", "ffmpeg"), {"-hide_banner", "-encoders"});
-}
-
-void HighlightsDialog::startEncode() {
-  if (!selectedArchive()) {
-    finishJob(false, "The selected archive is no longer available.");
+  final_partial_path_ = QDir(work_dir_).filePath("reel.mp4");
+  HighlightReelPipeline::Request request;
+  if (const auto* archive = selectedArchive())
+    request.archive_path = archive->path;
+  request.asset_root = game_dir_;
+  request.output_path = final_partial_path_;
+  request.archive_offset_ms = archive_offset_ms_;
+  request.media = media_;
+  if (request.media.width <= 0) {
+    request.media.width = 1920;
+    request.media.height = 1080;
+    request.media.frame_rate = 30;
+  }
+  for (const auto& clip : queue_)
+    request.items.append(clip.interval);
+  player_ = std::make_unique<HighlightReelPipeline>();
+  if (!player_->Start(request, &error)) {
+    player_.reset();
+    finishJob(false, error);
     return;
   }
-  encode_settings_ = DeriveHighlightsEncodeSettings(media_, encoders_, env_);
-  final_partial_path_ = QDir(work_dir_).filePath("joined.mp4");
-  encode_part_index_ = 0;
-  encode_parts_.clear();
-  encode_done_ms_ = 0;
-  appendLog(QString("Encoding %1 interval%2 with %3 at %4 Mb/s (%5 bits per pixel from the source)")
-                .arg(queue_.size())
-                .arg(queue_.size() == 1 ? "" : "s", encode_settings_.video_encoder)
-                .arg(encode_settings_.video_bit_rate / 1e6, 0, 'f', 1)
-                .arg(encode_settings_.bits_per_pixel, 0, 'f', 4));
-  startNextPart();
-}
-
-// Cuts one interval out of the archive. Seeking the input and re-encoding is
-// frame-exact: ffmpeg decodes from the keyframe ahead of the in-point and drops
-// the lead-in.
-//
-// Each interval gets its own ffmpeg because the alternatives both scale badly.
-// Handing ffmpeg one seeked -i per clip and joining them with the concat filter
-// opens every input at once: eight 4K clips peaked at 7.3 GB, and an 8K program
-// archive multiplies that by four. The concat demuxer keeps one segment open,
-// but its in-points only snap to keyframes -- `select=concatdec_select` trims
-// the video lead-in and `aselect` silently does not trim the audio, so the two
-// streams drift apart by the lead-in at every join. One clip at a time holds
-// peak memory at a single decoder plus a single encoder, whatever the clip
-// count.
-void HighlightsDialog::startNextPart() {
-  const ArchiveEntry* archive = selectedArchive();
-  if (!archive) {
-    finishJob(false, "The selected archive is no longer available.");
-    return;
-  }
-  const Clip& clip = queue_.at(encode_part_index_);
-  // A lone interval is the finished video, so encode it straight to the output
-  // and skip the join entirely.
-  const QString part_path = queue_.size() == 1
-      ? final_partial_path_
-      : QDir(work_dir_).filePath(QString("part-%1.mp4").arg(encode_part_index_ + 1, 4, 10, QChar('0')));
-  encode_parts_ << part_path;
-
-  QStringList arguments{
-      "-hide_banner",
-      "-nostdin",
-      "-n",
-      "-nostats",
-      "-progress",
-      "pipe:1",
-      "-ss",
-      ffmpegSeconds(clip.archive_start_ms),
-      "-to",
-      ffmpegSeconds(clip.archive_end_ms),
-      "-i",
-      archive->path,
-      "-map",
-      "0:v:0"};
-  if (media_.has_audio)
-    arguments << "-map" << "0:a:0";
-  arguments << encode_settings_.arguments;
-  if (queue_.size() == 1)
-    arguments << "-movflags" << "+faststart";
-  arguments << part_path;
-
   stage_ = Stage::kEncode;
-  process_output_buffer_.clear();
-  encode_percent_ = -1;
-  encode_status_prefix_ = queue_.size() == 1
-      ? QString("Encoding highlights…")
-      : QString("Encoding %1 of %2: %3…")
-            .arg(encode_part_index_ + 1)
-            .arg(queue_.size())
-            .arg(clip.interval.label);
-  status_->setText(encode_status_prefix_);
-  process_.setWorkingDirectory(work_dir_);
-  process_.setProcessEnvironment(env_);
-  process_.start(env_.value("HSTREAM_UI_FFMPEG", "ffmpeg"), arguments);
-}
-
-bool HighlightsDialog::writePartManifest(const QString& manifest_path, QString* error) const {
-  QByteArray manifest = "ffconcat version 1.0\n";
-  for (const QString& part : encode_parts_) {
-    // The demuxer reads single-quoted paths, and the quote is the only byte
-    // that needs help getting through.
-    QByteArray quoted = QFile::encodeName(part);
-    quoted.replace("'", "'\\''");
-    manifest += "file '" + quoted + "'\n";
-  }
-  QFile file(manifest_path);
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(manifest) != manifest.size() ||
-      !file.flush()) {
-    *error = "Could not write the highlights clip list: " + file.errorString();
-    return false;
-  }
-  return true;
-}
-
-// Joins the finished parts. Each part is a whole file, so the concat demuxer
-// has no in-points to snap and the video copies through untouched. The audio is
-// re-encoded: a part's AAC stream runs up to one 1024-sample frame (21 ms)
-// longer than its video, and concat advances each stream by its own length, so
-// copying audio too would walk the two apart by that much at every join.
-void HighlightsDialog::startJoin() {
-  const QString manifest_path = QDir(work_dir_).filePath("parts.ffconcat");
-  QString manifest_error;
-  if (!writePartManifest(manifest_path, &manifest_error)) {
-    finishJob(false, manifest_error);
-    return;
-  }
-  QStringList arguments{
-      "-hide_banner", "-nostdin", "-n", "-nostats", "-f", "concat", "-safe", "0", "-i", manifest_path,
-      "-map",         "0:v:0"};
-  if (media_.has_audio)
-    arguments << "-map" << "0:a:0";
-  arguments << "-c:v" << "copy";
-  if (media_.has_audio) {
-    arguments << "-c:a" << "aac" << "-b:a" << QString::number(encode_settings_.audio_bit_rate) << "-af"
-              << "aresample=async=1:first_pts=0";
-    if (media_.audio_sample_rate > 0)
-      arguments << "-ar" << QString::number(media_.audio_sample_rate);
-    if (media_.audio_channels > 0)
-      arguments << "-ac" << QString::number(media_.audio_channels);
-  }
-  if (encode_settings_.hevc)
-    arguments << "-tag:v" << "hvc1";
-  arguments << "-movflags" << "+faststart" << final_partial_path_;
-
-  stage_ = Stage::kJoin;
-  process_output_buffer_.clear();
-  status_->setText("Joining highlights…");
-  process_.setWorkingDirectory(work_dir_);
-  process_.setProcessEnvironment(env_);
-  process_.start(env_.value("HSTREAM_UI_FFMPEG", "ffmpeg"), arguments);
+  preview_timer_->start();
+  appendLog("Native GPU decode/render/encode → MP4");
 }
 
 void HighlightsDialog::readProcessOutput() {
-  const QString stdout_text = QString::fromLocal8Bit(process_.readAllStandardOutput());
+  probe_output_ += QString::fromLocal8Bit(process_.readAllStandardOutput());
   appendProcessError(QString::fromLocal8Bit(process_.readAllStandardError()));
-  if (stage_ == Stage::kProbe || stage_ == Stage::kEncoders) {
-    probe_output_ += stdout_text;
-    return;
-  }
-  if (stage_ == Stage::kEncode)
-    consumeEncodeProgress(stdout_text);
-}
-
-void HighlightsDialog::consumeEncodeProgress(const QString& output) {
-  process_output_buffer_ += output;
-  while (true) {
-    const qsizetype newline = process_output_buffer_.indexOf('\n');
-    if (newline < 0)
-      break;
-    const QString line = process_output_buffer_.left(newline).trimmed();
-    process_output_buffer_.remove(0, newline + 1);
-    if (!line.startsWith("out_time=") || encode_total_ms_ <= 0)
-      continue;
-    const qint64 completed_us = progressMicroseconds(line.mid(QString("out_time=").size()));
-    if (completed_us < 0)
-      continue;
-    // Each part reports from zero, so the bar tracks the whole queue rather
-    // than restarting on every interval.
-    const int percent = static_cast<int>(
-        std::clamp<qint64>((encode_done_ms_ + completed_us / 1000) * 100 / encode_total_ms_, 0, 100));
-    if (percent == encode_percent_)
-      continue;
-    encode_percent_ = percent;
-    status_->setText(QString("%1 %2%").arg(encode_status_prefix_).arg(percent));
-  }
-  if (process_output_buffer_.size() > 8192)
-    process_output_buffer_.clear();
 }
 
 void HighlightsDialog::appendProcessError(const QString& output, bool flush) {
@@ -1171,7 +1104,8 @@ void HighlightsDialog::appendProcessError(const QString& output, bool flush) {
     const qsizetype newline = process_error_buffer_.indexOf('\n');
     const qsizetype carriage_return = process_error_buffer_.indexOf('\r');
     const qsizetype boundary = newline < 0 ? carriage_return
-                                           : carriage_return < 0 ? newline : std::min(newline, carriage_return);
+        : carriage_return < 0              ? newline
+                                           : std::min(newline, carriage_return);
     if (boundary < 0)
       break;
     appendLog(process_error_buffer_.left(boundary));
@@ -1199,7 +1133,7 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
       finishJob(false, media_error_);
       return;
     }
-    finishJob(false, QString("ffmpeg failed with exit code %1. See the log below.").arg(code));
+    finishJob(false, QString("Archive inspection failed with exit code %1. See the log below.").arg(code));
     return;
   }
   switch (finished_stage) {
@@ -1239,8 +1173,9 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
               .arg(
                   selectedArchive() && selectedArchive()->start_time_known
                       ? QString()
-                      : QString(" (no recorded start time — set \"Archive starts at\" if highlight times are in "
-                                "game time)")));
+                      : QString(
+                            " (no recorded start time — set \"Archive starts at\" if highlight times are in "
+                            "game time)")));
       finishJob(
           true,
           plan_load_error_.isEmpty()
@@ -1248,24 +1183,7 @@ void HighlightsDialog::processFinished(int code, QProcess::ExitStatus status) {
               : "Could not load highlights: " + plan_load_error_ + ". Fix the file and reopen Highlights.");
       return;
     }
-    case Stage::kEncoders: {
-      encoders_ = ParseFfmpegEncoderList(probe_output_);
-      encoders_known_ = true;
-      startEncode();
-      return;
-    }
     case Stage::kEncode:
-      encode_done_ms_ +=
-          queue_.at(encode_part_index_).archive_end_ms - queue_.at(encode_part_index_).archive_start_ms;
-      if (++encode_part_index_ < queue_.size())
-        startNextPart();
-      else if (queue_.size() > 1)
-        startJoin();
-      else
-        publishEncode();
-      return;
-    case Stage::kJoin:
-      publishEncode();
       return;
     case Stage::kIdle:
       return;
@@ -1286,7 +1204,7 @@ QString HighlightsDialog::finalOutputPath(const QString& route) const {
 void HighlightsDialog::publishEncode() {
   const QFileInfo partial(final_partial_path_);
   if (!partial.isFile() || partial.size() <= 0) {
-    finishJob(false, "FFmpeg reported success but produced no joined video.");
+    finishJob(false, "Native reel pipeline produced no finalized video.");
     return;
   }
   QString destination = finalOutputPath(current_route_);
@@ -1345,14 +1263,15 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
   // export is not a failure anyone needs to diagnose and its parts can run to
   // tens of gigabytes for an 8K reel, and a failure that happened before the
   // first part was written has nothing in the directory to show.
-  const bool keep_work_files = completed == Job::kExport && !success && !cancelling_ && !work_dir_.isEmpty() &&
-      !QDir(work_dir_).isEmpty();
+  const bool keep_work_files =
+      completed == Job::kExport && !success && !cancelling_ && !work_dir_.isEmpty() && !QDir(work_dir_).isEmpty();
   job_ = Job::kNone;
   stage_ = Stage::kIdle;
   cancelling_ = false;
   loop_ = false;
+  preview_timer_->stop();
+  player_.reset();
   if (completed == Job::kPreview) {
-    stopPreview();
     video_->setRendererActive(false);
   }
   QString detail = message;
@@ -1396,10 +1315,14 @@ void HighlightsDialog::stop() {
   loop_ = false;
   if (job_ == Job::kPreview) {
     stopPreview();
-    finishJob(false, "Preview stopped.");
+    status_->setText("Stopping preview…");
     return;
   }
   status_->setText("Stopping highlights job…");
+  if (player_) {
+    player_->Cancel();
+    return;
+  }
   if (process_.state() == QProcess::NotRunning) {
     finishJob(false, "Highlights job stopped.");
     return;
