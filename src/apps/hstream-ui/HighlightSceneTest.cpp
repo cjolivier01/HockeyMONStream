@@ -73,7 +73,9 @@ int main(int argc, char** argv) {
   const QString source = dir.filePath("team.png");
   logo.save(source);
   QString stored;
-  ok &= expect(ImportHighlightLogo(source, dir.path(), &stored, &error), "Logo copied to content-addressed game asset");
+  ok &= expect(
+      ImportHighlightLogo(source, dir.path(), &stored, &error) == HighlightLogoImportResult::Imported,
+      "Logo copied to content-addressed game asset");
   QFile::remove(source);
   card.card.logo_a = stored;
   QImage image;

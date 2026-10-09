@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HighlightItemEditor.h"
+#include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -7,6 +8,7 @@
 #include <QtGui/QGuiApplication>
 #include <QtGui/QImage>
 #include <QtGui/QScreen>
+#include <QtGui/QWindow>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
@@ -18,6 +20,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QVBoxLayout>
 #include <algorithm>
 #include <iostream>
 #include "src/apps/hstream-ui/HighlightScene.h"
@@ -35,9 +38,16 @@ bool usable_controls(QDialog* dialog) {
   auto* scroll = dialog->findChild<QScrollArea*>();
   if (!splitter || !scroll || !scroll->widget())
     return false;
-  const QScreen* display = QGuiApplication::primaryScreen();
+  const QScreen* display = dialog->screen();
   const int room = display ? display->availableGeometry().width() : 1920;
-  const int wanted = std::min(scroll->widget()->sizeHint().width(), room / 2);
+  if (dialog->width() > room || (display && dialog->height() > display->availableGeometry().height())) {
+    std::cout << "editor " << dialog->width() << "x" << dialog->height() << " exceeds the available screen\n";
+    return false;
+  }
+  const QMargins margins = dialog->layout()->contentsMargins();
+  const int available = room - margins.left() - margins.right() - splitter->handleWidth() -
+      splitter->widget(1)->minimumSizeHint().width();
+  const int wanted = std::min({scroll->widget()->sizeHint().width(), room / 2, available});
   if (wanted <= 0 || splitter->sizes().value(0) < wanted || scroll->minimumWidth() < wanted) {
     std::cout << "controls opened at " << splitter->sizes().value(0) << "/" << scroll->minimumWidth() << " of "
               << wanted << " needed\n";
@@ -96,6 +106,14 @@ int main(int argc, char** argv) {
       return;
     }
     valid &= usable_controls(dialog);
+    // With multiple screens (for example offscreen:configfile=...), verify
+    // that moving from a large display to a small one releases the old minimum.
+    for (QScreen* display : app.screens()) {
+      dialog->windowHandle()->setScreen(display);
+      app.processEvents();
+      app.processEvents();
+      valid &= usable_controls(dialog);
+    }
     valid &= dialog->findChild<QLineEdit*>("highlightTelemetryDatabase")->text() == dir.filePath("game_telemetry-7.db");
     dialog->findChild<QLineEdit*>("highlightCueText")->setText("Holding penalty");
     dialog->findChild<QListWidget*>("highlightAnnotations")->setCurrentRow(1);
@@ -163,16 +181,36 @@ int main(int argc, char** argv) {
     return 1;
   }
   // Reopening must keep the stored copy rather than re-importing it each time.
-  // The path alone proves nothing -- the store is content-addressed, so a
-  // re-import lands on the same name -- so count the files it holds.
+  // Re-import overwrites the same content-addressed filename, so preserve a
+  // known modification time to catch unnecessary decoding and disk writes.
   const QString adopted = logo.card.logo_a;
   const int stored = assets(dir.path());
+  const QDateTime retained_time = QDateTime::fromMSecsSinceEpoch(1000000000000);
+  QFile retained(dir.filePath(adopted));
+  if (!retained.open(QIODevice::ReadWrite) || !retained.setFileTime(retained_time, QFileDevice::FileModificationTime))
+    return 1;
+  retained.close();
   QTimer::singleShot(0, [&] {
     auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
     dialog->findChild<QDialogButtonBox*>("highlightItemButtons")->button(QDialogButtonBox::Save)->click();
   });
   if (!EditHighlightItem(&logo, dir.path(), "game", {}, {}, 0, {}, nullptr) || logo.card.logo_a != adopted ||
-      assets(dir.path()) != stored)
+      assets(dir.path()) != stored || QFileInfo(retained).lastModified() != retained_time)
+    return 1;
+  // An absolute reference to an already-retained asset must become relative
+  // without rewriting the image, and still render when the game moves.
+  logo.card.logo_a = dir.filePath(adopted);
+  QTimer::singleShot(0, [&] {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    dialog->findChild<QDialogButtonBox*>("highlightItemButtons")->button(QDialogButtonBox::Save)->click();
+  });
+  if (!EditHighlightItem(&logo, dir.path(), "game", {}, {}, 0, {}, nullptr) || logo.card.logo_a != adopted ||
+      QFileInfo(retained).lastModified() != retained_time)
+    return 1;
+  QTemporaryDir moved;
+  if (!QDir().rename(dir.filePath("highlight-assets"), moved.filePath("highlight-assets")) ||
+      !RasterHighlightCard(logo.card, moved.path(), &rendered, &error) ||
+      !QDir().rename(moved.filePath("highlight-assets"), dir.filePath("highlight-assets")))
     return 1;
   // Opening a card and cancelling must not write into the game. Importing from
   // the shared read path left an orphan behind every time an author looked at a
@@ -183,6 +221,55 @@ int main(int argc, char** argv) {
   blue.fill(Qt::blue);
   if (!blue.save(untouched))
     return 1;
+  // Validation must run before asset publication. A failed Save followed by
+  // Cancel must leave neither a copied logo nor a rewritten path behind.
+  HighlightInterval invalid = logo;
+  invalid.card.date.clear();
+  invalid.card.logo_a = untouched;
+  QTimer::singleShot(0, [&] {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    dialog->findChild<QDialogButtonBox*>("highlightItemButtons")->button(QDialogButtonBox::Save)->click();
+    valid &= dialog->isVisible() && assets(dir.path()) == stored &&
+        dialog->findChild<QLineEdit*>("highlightLogoA")->text() == untouched;
+    dialog->reject();
+  });
+  if (EditHighlightItem(&invalid, dir.path(), "game", {}, {}, 0, {}, nullptr) || !valid) {
+    std::cout << "invalid card imported artwork before validation\n";
+    return 1;
+  }
+  // An unreadable source can stay broken, but a readable source whose retained
+  // copy could not be written must not silently remain dependent on Pictures.
+  QTemporaryDir blocked;
+  QFile obstacle(blocked.filePath("highlight-assets"));
+  if (!obstacle.open(QIODevice::WriteOnly))
+    return 1;
+  obstacle.close();
+  HighlightInterval unretained = logo;
+  unretained.card.logo_a = untouched;
+  QTimer::singleShot(0, [&] {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    auto* save = dialog->findChild<QDialogButtonBox*>("highlightItemButtons")->button(QDialogButtonBox::Save);
+    save->click();
+    valid &= dialog->isVisible() &&
+        dialog->findChild<QLabel*>("highlightItemStatus")->text().contains("highlight-assets") &&
+        dialog->findChild<QLineEdit*>("highlightLogoA")->text() == untouched;
+    if (!valid) {
+      dialog->reject();
+      return;
+    }
+    // Retrying after the storage problem is fixed should adopt the image.
+    valid &= obstacle.remove();
+    save->click();
+    if (dialog->isVisible()) {
+      valid = false;
+      dialog->reject();
+    }
+  });
+  if (!EditHighlightItem(&unretained, blocked.path(), "game", {}, {}, 0, {}, nullptr) || !valid ||
+      !unretained.card.logo_a.startsWith("highlight-assets/")) {
+    std::cout << "readable artwork retention failure was not recoverable\n";
+    return 1;
+  }
   HighlightInterval browsed = logo;
   browsed.card.logo_a = untouched;
   QTimer::singleShot(0, [&] {
