@@ -65,16 +65,18 @@ bool pixel(const QString& file, double time, int x, int y, int* r, int* g, int* 
 }
 qint64 audio_level(const QString& file, double time, double length) {
   QByteArray pcm;
+  // Decode preroll before trimming; an input seek to zero can omit AAC's
+  // negative-timestamp packet and reset its overlap state in the oracle.
   if (!run(
           "ffmpeg",
           {"-v",
            "error",
+           "-i",
+           file,
            "-ss",
            QString::number(time),
            "-t",
            QString::number(length),
-           "-i",
-           file,
            "-vn",
            "-ac",
            "1",
@@ -90,6 +92,54 @@ qint64 audio_level(const QString& file, double time, double length) {
   for (int i = 0; i + 1 < pcm.size(); i += 2)
     energy += std::abs(qint16(quint8(pcm[i]) | (quint16(quint8(pcm[i + 1])) << 8)));
   return energy / (pcm.size() / 2);
+}
+bool increasing_timestamps(const QString& file) {
+  QByteArray packets;
+  if (!run(
+          "ffprobe",
+          {"-v",
+           "error",
+           "-select_streams",
+           "v:0",
+           "-show_entries",
+           "packet=pts_time,dts_time",
+           "-of",
+           "csv=p=0",
+           file},
+          &packets))
+    return false;
+  double previous_pts = -1, previous_dts = -1;
+  for (const QByteArray& row : packets.split('\n')) {
+    if (row.trimmed().isEmpty())
+      continue;
+    const auto fields = row.split(',');
+    bool valid_pts = false, valid_dts = false;
+    const double pts = fields.value(0).toDouble(&valid_pts), dts = fields.value(1).toDouble(&valid_dts);
+    if (!valid_pts || !valid_dts || pts <= previous_pts || dts <= previous_dts) {
+      std::cerr << "Duplicate or reversed encoded frame timestamps: " << row.constData() << '\n';
+      return false;
+    }
+    previous_pts = pts;
+    previous_dts = dts;
+  }
+  return previous_pts >= 0;
+}
+bool transient_span(const QString& file, double first_ms, double last_ms) {
+  QByteArray pcm;
+  if (!run("ffmpeg", {"-v", "error", "-i", file, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1"}, &pcm))
+    return false;
+  qint64 first = -1, last = -1;
+  for (int i = 0; i + 1 < pcm.size(); i += 2)
+    if (std::abs(qint16(quint8(pcm[i]) | (quint16(quint8(pcm[i + 1])) << 8))) > 3000) {
+      if (first < 0)
+        first = i / 2;
+      last = i / 2;
+    }
+  if (first < 0 || std::abs(first / 48.0 - first_ms) > 2 || std::abs(last / 48.0 - last_ms) > 2) {
+    std::cerr << "Misaligned or missing audio transient: " << first / 48.0 << " .. " << last / 48.0 << " ms\n";
+    return false;
+  }
+  return true;
 }
 } // namespace
 int main(int argc, char** argv) {
@@ -137,7 +187,7 @@ int main(int argc, char** argv) {
   card.is_card = true;
   card.card.heading = "WHISTLE!";
   card.card.background = "#ff0000";
-  card.card.duration_ms = 750;
+  card.card.duration_ms = 1000;
   auto second = clip;
   second.start_ms = 13350;
   second.end_ms = 14750;
@@ -164,10 +214,12 @@ int main(int argc, char** argv) {
           "ffprobe",
           {"-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", output},
           &duration) ||
-      std::abs(duration.trimmed().toDouble() - 4.2) > .08) {
+      std::abs(duration.trimmed().toDouble() - 4.45) > .08) {
     std::cerr << "Bad mixed duration " << duration.constData();
     return 1;
   }
+  if (!increasing_timestamps(output))
+    return 1;
   int red, green, blue;
   if (!pixel(output, .2, 62, 36, &red, &green, &blue) || red < 150 || green < 150) {
     std::cerr << "Missing authored box\n";
@@ -254,6 +306,49 @@ int main(int argc, char** argv) {
   const qint64 silent_level = audio_level(delayed.output_path, .1, .7);
   if (silent_level < 0 || silent_level > 20 || audio_level(delayed.output_path, 2, .5) < 500) {
     std::cerr << "MP4 edit-list audio lost its archive time\n";
+    return 1;
+  }
+  const QString transients = dir.filePath("transients.mkv");
+  if (!run(
+          "ffmpeg",
+          {"-v",
+           "error",
+           "-f",
+           "lavfi",
+           "-i",
+           "color=c=blue:s=640x360:r=30:d=4",
+           "-f",
+           "lavfi",
+           "-i",
+           "aevalsrc=0.8*sin(2*PI*1000*t)*(between(t\\,2.45\\,2.55)+between(t\\,3.125\\,3.145)):s=48000:d=4",
+           "-c:v",
+           "libx264",
+           "-g",
+           "30",
+           "-c:a",
+           "pcm_s16le",
+           transients}))
+    return 1;
+  auto transient = r;
+  transient.archive_path = transients;
+  transient.output_path = dir.filePath("transient-reel.mp4");
+  auto transient_clip = before_audio;
+  transient_clip.start_ms = 12250;
+  transient_clip.end_ms = 13150;
+  transient.items = {transient_clip};
+  if (!pipeline.Start(transient, &error) || !wait(pipeline) || !transient_span(transient.output_path, 200, 895))
+    return 1;
+  // AAC preroll must remain encoded for overlap state. Dropping its packet
+  // instead of editing presentation attenuates the first 20 ms of this cut.
+  transient_clip.start_ms = 12450;
+  transient_clip.end_ms = 12550;
+  transient.items = {transient_clip};
+  transient.output_path = dir.filePath("transient-start.mp4");
+  if (!pipeline.Start(transient, &error) || !wait(pipeline))
+    return 1;
+  const qint64 start_level = audio_level(transient.output_path, 0, .02);
+  if (start_level < 10000) {
+    std::cerr << "AAC preroll lost initial transient samples: level=" << start_level << '\n';
     return 1;
   }
   const QString source10 = dir.filePath("source10.mp4");

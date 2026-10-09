@@ -665,6 +665,7 @@ class Editor : public QDialog {
               " before clicking a recorded track");
           return;
         }
+        tracks->setCurrentIndex(-1);
         for (int i = 0; i < choices.size(); ++i)
           if (choices[i].box.contains(p)) {
             tracks->setCurrentIndex(i);

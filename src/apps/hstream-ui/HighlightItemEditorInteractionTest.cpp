@@ -152,6 +152,10 @@ int main(int argc, char** argv) {
     ok &= attached.isEmpty();
     inspector->setValue(0);
     click(.2, .4);
+    click(.5, .4);
+    action("Attach selected track");
+    ok &= attached.isEmpty();
+    click(.2, .4);
     action("Attach selected track");
     ok &= attached == "42";
     action("Stop");

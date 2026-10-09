@@ -16,6 +16,7 @@
 #include <thread>
 #include <vector>
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
+#include "src/apps/hstream-ui/HighlightMp4Audio.h"
 #include "src/apps/hstream-ui/HighlightScene.h"
 #include "src/libs/highlights/TextureBlend.h"
 
@@ -565,7 +566,7 @@ struct HighlightReelPipeline::Impl {
       check(
           gst_element_link_many(vq, convert, filter, enc, parser, mux, file, nullptr),
           "Could not link native reel encoder/mux");
-      GstElement *ac = element(graph.value, "audioconvert"), *ae = element(graph.value, "voaacenc"),
+      GstElement *ac = element(graph.value, "audioconvert"), *ae = element(graph.value, "avenc_aac"),
                  *ap = element(graph.value, "aacparse");
       g_object_set(ae, "bitrate", 192000, nullptr);
       check(gst_element_link_many(aq, ac, ae, ap, mux, nullptr), "Could not link native reel audio encoder");
@@ -600,9 +601,17 @@ struct HighlightReelPipeline::Impl {
     if (item.is_card) {
       std::thread audio([&] { audio_item(nullptr, 0, length, base_ms); });
       try {
-        for (GstClockTime t = 0; t < GstClockTime(length) * GST_MSECOND && !stopped(); t += step)
-          if (!frame(nullptr, item, 0, base + t, std::min(step, GstClockTime(length) * GST_MSECOND - t), textures))
+        const GstClockTime end = length * GST_MSECOND;
+        for (guint64 index = 0; !stopped(); ++index) {
+          // Scale each index rather than accumulating a truncated frame step.
+          // Exact 30/60 fps card ends must not leave a tiny duplicate-PTS frame.
+          const GstClockTime t = gst_util_uint64_scale(index, GST_SECOND * guint64(fps_d), fps_n);
+          if (t >= end || end - t <= GST_USECOND)
             break;
+          const GstClockTime next = gst_util_uint64_scale(index + 1, GST_SECOND * guint64(fps_d), fps_n);
+          if (!frame(nullptr, item, 0, base + t, std::min(next, end) - t, textures))
+            break;
+        }
       } catch (...) {
         failed = true;
         audio.join();
@@ -761,6 +770,18 @@ struct HighlightReelPipeline::Impl {
         }
         gst_object_unref(bus);
         check(ended || stopped(), "Reel encoder/mux did not finalize within 60 seconds");
+        if (ended && !stopped() && !request.window_id) {
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            output = nullptr;
+          }
+          check(
+              gst_element_set_state(graph.value, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE,
+              "Could not close completed reel output");
+          QString e;
+          if (!FinalizeHighlightMp4Audio(request.output_path, base_ms, &e))
+            throw std::runtime_error(e.toStdString());
+        }
       }
       // Inspection keeps the GPU sink and displayed frame alive for authoring.
       if (request.inspect_game_ms >= 0 && !stopped()) {
