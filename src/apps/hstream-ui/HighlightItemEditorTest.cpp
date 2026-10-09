@@ -1,9 +1,12 @@
 #include "src/apps/hstream-ui/HighlightItemEditor.h"
+#include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
+#include <QtGui/QGuiApplication>
 #include <QtGui/QImage>
+#include <QtGui/QScreen>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
@@ -15,19 +18,26 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSplitter>
+#include <algorithm>
 #include <iostream>
 #include "src/apps/hstream-ui/HighlightScene.h"
 using namespace hm::ui;
 namespace {
-// The controls are the point of the dialog, so they must open at a width that
-// shows their labels and fields. A QScrollArea's own minimum is a bare
+int assets(const QString& game) {
+  return QDir(game + "/highlight-assets").entryList(QDir::Files).size();
+}
+// The controls are the point of the dialog, so they must open at the width the
+// form prefers -- not merely the width it can survive -- or half the screen
+// where that is all there is to give. A QScrollArea's own minimum is a bare
 // scrollbar, and the splitter used to hand the preview everything else.
 bool usable_controls(QDialog* dialog) {
   auto* splitter = dialog->findChild<QSplitter*>();
   auto* scroll = dialog->findChild<QScrollArea*>();
   if (!splitter || !scroll || !scroll->widget())
     return false;
-  const int wanted = scroll->widget()->minimumSizeHint().width();
+  const QScreen* display = QGuiApplication::primaryScreen();
+  const int room = display ? display->availableGeometry().width() : 1920;
+  const int wanted = std::min(scroll->widget()->sizeHint().width(), room / 2);
   if (wanted <= 0 || splitter->sizes().value(0) < wanted || scroll->minimumWidth() < wanted) {
     std::cout << "controls opened at " << splitter->sizes().value(0) << "/" << scroll->minimumWidth() << " of "
               << wanted << " needed\n";
@@ -153,12 +163,80 @@ int main(int argc, char** argv) {
     return 1;
   }
   // Reopening must keep the stored copy rather than re-importing it each time.
+  // The path alone proves nothing -- the store is content-addressed, so a
+  // re-import lands on the same name -- so count the files it holds.
   const QString adopted = logo.card.logo_a;
+  const int stored = assets(dir.path());
   QTimer::singleShot(0, [&] {
     auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
     dialog->findChild<QDialogButtonBox*>("highlightItemButtons")->button(QDialogButtonBox::Save)->click();
   });
-  if (!EditHighlightItem(&logo, dir.path(), "game", {}, {}, 0, {}, nullptr) || logo.card.logo_a != adopted)
+  if (!EditHighlightItem(&logo, dir.path(), "game", {}, {}, 0, {}, nullptr) || logo.card.logo_a != adopted ||
+      assets(dir.path()) != stored)
+    return 1;
+  // Opening a card and cancelling must not write into the game. Importing from
+  // the shared read path left an orphan behind every time an author looked at a
+  // card, and nothing ever reclaims highlight-assets.
+  QTemporaryDir cancelled;
+  const QString untouched = cancelled.filePath("cancel.png");
+  QImage blue(40, 40, QImage::Format_RGBA8888);
+  blue.fill(Qt::blue);
+  if (!blue.save(untouched))
+    return 1;
+  HighlightInterval browsed = logo;
+  browsed.card.logo_a = untouched;
+  QTimer::singleShot(0, [&] {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    valid &= dialog->findChild<QLineEdit*>("highlightLogoA")->text() == untouched;
+    dialog->reject();
+  });
+  EditHighlightItem(&browsed, dir.path(), "game", {}, {}, 0, {}, nullptr);
+  if (!valid || assets(dir.path()) != stored || browsed.card.logo_a != untouched)
+    return 1;
+  // Artwork that exists but cannot be decoded is already broken; preview and
+  // export say so clearly. Saving must still commit the rest of the card rather
+  // than trapping the author behind a field they may not have come to edit.
+  const QString junk = dir.filePath("notanimage.png");
+  QFile unreadable(junk);
+  if (!unreadable.open(QIODevice::WriteOnly) || unreadable.write("not a png") < 0)
+    return 1;
+  unreadable.close();
+  HighlightInterval broken = logo;
+  broken.card.logo_a = junk;
+  QTimer::singleShot(0, [&] {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    dialog->findChild<QLineEdit*>("highlightTeamA")->setText("Rangers");
+    dialog->findChild<QDialogButtonBox*>("highlightItemButtons")->button(QDialogButtonBox::Save)->click();
+    if (dialog->isVisible()) {
+      valid = false;
+      std::cout << "unreadable artwork blocked the save: "
+                << dialog->findChild<QLabel*>("highlightItemStatus")->text().toStdString() << "\n";
+      dialog->reject();
+    }
+  });
+  if (!EditHighlightItem(&broken, dir.path(), "game", {}, {}, 0, {}, nullptr) || !valid ||
+      broken.card.team_a != "Rangers" || broken.card.logo_a != junk || assets(dir.path()) != stored)
+    return 1;
+  // A section card never draws logos at all, so a stale path in the field is
+  // not worth importing and must not block the text the author came to change.
+  HighlightInterval section;
+  section.is_card = true;
+  section.card.matchup = false;
+  section.card.heading = "Second period";
+  section.card.logo_a = junk;
+  QTimer::singleShot(0, [&] {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    dialog->findChild<QLineEdit*>("highlightCardHeading")->setText("Third period");
+    dialog->findChild<QDialogButtonBox*>("highlightItemButtons")->button(QDialogButtonBox::Save)->click();
+    if (dialog->isVisible()) {
+      valid = false;
+      std::cout << "section card blocked by an unused logo: "
+                << dialog->findChild<QLabel*>("highlightItemStatus")->text().toStdString() << "\n";
+      dialog->reject();
+    }
+  });
+  if (!EditHighlightItem(&section, dir.path(), "game", {}, {}, 0, {}, nullptr) || !valid ||
+      section.card.heading != "Third period" || section.card.logo_a != junk)
     return 1;
   return 0;
 }

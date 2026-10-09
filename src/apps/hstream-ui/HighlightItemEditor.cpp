@@ -176,9 +176,13 @@ class Editor : public QDialog {
     const int preview = std::max(target->minimumWidth(), 780);
     const int chrome = margins.top() + margins.bottom() + 2 * root->spacing() + status->sizeHint().height() +
         buttons->sizeHint().height();
+    // Prefer the taller default so the cue list and its controls are both
+    // visible, but a short display always wins: on a 1366x768 panel there is
+    // less than 850 to give, and a dialog taller than the screen hides its own
+    // buttons.
+    const int height = std::min(std::max(form.height() + frame + chrome, 850), room.height() - 80);
     resize(
-        std::min(width + splitter->handleWidth() + preview + margins.left() + margins.right(), room.width()),
-        std::clamp(form.height() + frame + chrome, 850, room.height() - 80));
+        std::min(width + splitter->handleWidth() + preview + margins.left() + margins.right(), room.width()), height);
     splitter->setSizes({width, preview});
   }
   Editor(
@@ -249,6 +253,8 @@ class Editor : public QDialog {
     size_controls(root, splitter, scroll, controls, buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, [&] {
       QString error;
+      if (item.is_card)
+        adopt_logos();
       if (item.is_card ? read_card() : apply_cue(false)) {
         if (NormalizeHighlightInterval(&item, &error))
           accept();
@@ -276,42 +282,41 @@ class Editor : public QDialog {
   ~Editor() override {
     pipeline.Cancel();
   }
-  // Card artwork has to outlive wherever the author picked it from, so anything
-  // naming a file outside the game's highlight-assets directory is copied in and
-  // the card keeps the content-addressed relative path. The file chooser already
-  // imports; this covers paths that were typed, pasted, or carried in by a plan
-  // authored elsewhere. A name that resolves to nothing is left alone so a reel
-  // whose artwork has already gone missing stays editable.
-  bool adopt_logo(QLineEdit* field, QString* stored) {
-    const QString entered = field->text().trimmed();
+  // Card artwork has to outlive wherever the author picked it from, so saving
+  // copies anything named outside the game's highlight-assets directory into it
+  // and rewrites the field to the content-addressed relative path. Only a
+  // matchup card draws logos, so only it is worth importing for. Artwork that
+  // cannot be read is left exactly as typed: it is already broken, and preview
+  // and export name the problem far better than a dialog that silently refuses
+  // to save the team names the author came to fix. Save alone adopts; opening a
+  // card or previewing it must not write to the game.
+  void adopt_logos() {
+    if (!matchup->isChecked())
+      return;
     const QDir game(game_dir);
-    const QString absolute = game.absoluteFilePath(entered);
-    if (entered.isEmpty() || !QFileInfo::exists(absolute) ||
-        QFileInfo(absolute).absolutePath() == game.absoluteFilePath("highlight-assets")) {
-      *stored = entered;
-      return true;
+    const QString store = game.absoluteFilePath("highlight-assets");
+    for (QLineEdit* field : {la, lb}) {
+      const QString entered = field->text().trimmed();
+      const QString absolute = game.absoluteFilePath(entered);
+      if (entered.isEmpty() || !QFileInfo::exists(absolute))
+        continue;
+      QString path, error;
+      if (QFileInfo(absolute).absolutePath() == store)
+        path = game.relativeFilePath(absolute); // already stored, but named absolutely
+      else if (!ImportHighlightLogo(absolute, game_dir, &path, &error))
+        continue;
+      field->setText(path);
     }
-    QString path, error;
-    if (!ImportHighlightLogo(absolute, game_dir, &path, &error)) {
-      status->setText(error);
-      return false;
-    }
-    field->setText(path);
-    *stored = path;
-    return true;
   }
   bool read_card() {
-    QString logo_a, logo_b;
-    if (!adopt_logo(la, &logo_a) || !adopt_logo(lb, &logo_b))
-      return false;
     auto& c = item.card;
     c.matchup = matchup->isChecked();
     c.heading = heading->text();
     c.team_a = a->text();
     c.team_b = b->text();
     c.date = date->text();
-    c.logo_a = logo_a;
-    c.logo_b = logo_b;
+    c.logo_a = la->text().trimmed();
+    c.logo_b = lb->text().trimmed();
     c.background = bg->text();
     c.color = fg->text();
     c.duration_ms = std::llround(duration->value() * 1000);
