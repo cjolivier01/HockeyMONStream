@@ -1340,7 +1340,7 @@ if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   PACKAGE_CONTENTS="Installs the HStream CLI/UI binaries"
   UI_LAUNCH_HELP="Launch the UI with: ${INSTALL_PREFIX}/hstream-ui.sh
  or via the hstream-ui wrapper in /usr/bin/hstream-ui."
-  RUNTIME_TOOL_DEPENDS=$',\n hugin-tools,\n enblend'
+  RUNTIME_TOOL_DEPENDS=$',\n hugin-tools,\n enblend,\n gstreamer1.0-libav'
 else
   PACKAGE_DESCRIPTION="HStream video pipeline application for Jetson"
   PACKAGE_CONTENTS="Installs the HStream CLI and pinned native Hugin calibration tools"

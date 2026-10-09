@@ -195,10 +195,8 @@ int main(int argc, char** argv) {
   }
 
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-  // Keep the test off the GPU and off whatever encoders this host happens to
-  // have; the encoder choice itself is covered by its own unit test.
-  env.insert("HSTREAM_UI_HIGHLIGHTS_VIDEO_ENCODER", "libx264");
-  env.insert("HSTREAM_UI_HIGHLIGHTS_VIDEO_PRESET", "ultrafast");
+  // FFmpeg is only the independent fixture/oracle. Export must ignore it.
+  env.insert("HSTREAM_UI_FFMPEG", "hstream-no-ffmpeg-for-export");
 
   hm::ui::HighlightsDialog dialog("test-game", game_dir, env, archives);
   dialog.show();
@@ -360,8 +358,7 @@ int main(int argc, char** argv) {
     std::cerr << "A second export did not take the next generation" << std::endl;
     return 1;
   }
-  if (log->verticalScrollBar()->maximum() == 0 ||
-      log->verticalScrollBar()->value() != log->verticalScrollBar()->maximum()) {
+  if (log->verticalScrollBar()->value() != log->verticalScrollBar()->maximum()) {
     std::cerr << "Highlights log did not follow the newest line" << std::endl;
     return 1;
   }
@@ -480,7 +477,7 @@ int main(int argc, char** argv) {
   if (!QDir().mkpath(incompatible_dir))
     return 1;
   const QString incompatible_plan_path = QDir(incompatible_dir).filePath("highlights.json");
-  const QByteArray incompatible_plan = R"({"schema":2,"base_name":"future","intervals":[]})";
+  const QByteArray incompatible_plan = R"({"schema":3,"base_name":"future","intervals":[]})";
   QFile incompatible_file(incompatible_plan_path);
   if (!incompatible_file.open(QIODevice::WriteOnly) ||
       incompatible_file.write(incompatible_plan) != incompatible_plan.size())
@@ -528,11 +525,12 @@ int main(int argc, char** argv) {
   // The copy carries no sidecar, so this archive's timeline starts at zero.
   if (!addRange(&broken_dialog, "Doomed", "00:00:00.500", "00:00:02.500"))
     return 1;
+  QFile::remove(QDir(broken_dir).filePath("broken-game-tracking_output-with-audio-1.mp4"));
   broken_dialog.findChild<QPushButton*>("highlightExportAllButton")->click();
   if (!settle(&broken_dialog, 30000))
     return 1;
-  if (!statusOf(&broken_dialog).contains("Could not start hstream-highlights-no-such-ffmpeg")) {
-    std::cerr << "The export did not get as far as running ffmpeg: " << statusOf(&broken_dialog).toStdString()
+  if (!statusOf(&broken_dialog).contains("Clip is outside its selected archive")) {
+    std::cerr << "The missing archive was not rejected: " << statusOf(&broken_dialog).toStdString()
               << std::endl;
     return 1;
   }

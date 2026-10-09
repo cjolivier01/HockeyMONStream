@@ -135,6 +135,16 @@ int main() {
       "invalid save must preserve the previous plan");
   after.close();
 
+  ok &= expect(
+      write_text(
+          path,
+          R"({"schema":1,"base_name":"legacy","intervals":[{"label":"Goal","event_mode":false,"event_ms":0,"duration_ms":0,"start_ms":1000,"end_ms":2000}]})"),
+      "legacy fixture written");
+  HighlightPlan legacy;
+  ok &= expect(
+      LoadHighlightPlan(path, &legacy, &error) && legacy.intervals.size() == 1 && !legacy.intervals[0].is_card &&
+          legacy.intervals[0].annotations.isEmpty(),
+      "schema 1 interval plans migrate without inventing cues or cards");
   ok &= expect(write_text(path, "{broken"), "invalid JSON fixture must be writable");
   ok &= expect(
       !LoadHighlightPlan(path, &loaded, &error) && loaded.intervals.size() == 2,
@@ -142,7 +152,7 @@ int main() {
   ok &= expect(
       write_text(
           path,
-          QJsonDocument(QJsonObject{{"schema", 2}, {"base_name", "goals"}, {"intervals", QJsonArray{}}}).toJson()),
+          QJsonDocument(QJsonObject{{"schema", 3}, {"base_name", "goals"}, {"intervals", QJsonArray{}}}).toJson()),
       "unsupported schema fixture must be writable");
   ok &= expect(!LoadHighlightPlan(path, &loaded, &error), "unsupported schema must fail clearly");
   return ok ? 0 : 1;

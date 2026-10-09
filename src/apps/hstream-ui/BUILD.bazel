@@ -555,6 +555,52 @@ cc_library(
 )
 
 cc_library(
+    name = "highlight_scene",
+    srcs = ["HighlightScene.cpp"],
+    hdrs = ["HighlightScene.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_plan", "@qt//:qt_gui"],
+)
+
+cc_library(
+    name = "highlight_tracking",
+    srcs = ["HighlightTracking.cpp"],
+    hdrs = ["HighlightTracking.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_plan", "//src/libs/recording:recording", "@qt//:qt_core"],
+)
+
+cc_library(
+    name = "highlight_mp4_audio",
+    srcs = ["HighlightMp4Audio.cpp"],
+    hdrs = ["HighlightMp4Audio.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_core"],
+)
+
+cc_library(
+    name = "highlight_reel_pipeline",
+    srcs = ["HighlightReelPipeline.cpp"],
+    hdrs = ["HighlightReelPipeline.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_scene", ":highlight_mp4_audio", ":highlights_encode_settings", "//src/libs/highlights:texture_blend",
+            "//src/apps/apps-common:hm_gpu_preview", "@deepstream//:deepstream_lib", "@gstreamer", "@qt//:qt_gui"],
+)
+
+cc_library(
+    name = "highlight_item_editor",
+    srcs = ["HighlightItemEditor.cpp"],
+    hdrs = ["HighlightItemEditor.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_reel_pipeline", ":highlight_tracking", ":action_icons", ":preview_dialog_window", "@qt//:qt_widgets"],
+)
+
+cc_library(
     name = "highlights_dialog",
     srcs = ["HighlightsDialog.cpp"],
     hdrs = ["HighlightsDialog.h"],
@@ -566,7 +612,8 @@ cc_library(
         ":preview_dialog_window",
         ":ansi_log_format",
         ":highlight_plan",
-        ":highlights_archive_player",
+        ":highlight_reel_pipeline",
+        ":highlight_item_editor",
         ":highlights_encode_settings",
         "@qt//:qt_widgets",
     ],
@@ -578,7 +625,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    tags = ["local", "manual"],
+    tags = ["local", "manual", "requires-gpu"],
     deps = [":archive_catalog", ":highlights_dialog", "@qt//:qt_widgets"],
 )
 
@@ -887,4 +934,59 @@ cc_test(
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "highlight_scene_test",
+    srcs = ["HighlightSceneTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_scene", "@qt//:qt_gui"],
+)
+
+cc_test(
+    name = "highlight_reel_pipeline_test",
+    srcs = ["HighlightReelPipelineTest.cpp"],
+    copts = COMMON_COPTS,
+    tags = ["manual", "requires-gpu", "local"],
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_reel_pipeline", "@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "highlight_tracking_test",
+    srcs = ["HighlightTrackingTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_tracking", ":highlight_scene", "//src/libs/recording:recording", "@qt//:qt_core"],
+)
+
+cc_test(
+    name = "highlight_item_editor_test",
+    srcs = ["HighlightItemEditorTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_item_editor", "@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "highlight_mp4_audio_test",
+    srcs = ["HighlightMp4AudioTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_mp4_audio", "@qt//:qt_core"],
+)
+
+cc_test(
+    name = "highlight_item_editor_interaction_test",
+    srcs = ["HighlightItemEditorInteractionTest.cpp"],
+    copts = COMMON_COPTS,
+    tags = ["manual", "requires-x11", "local"],
+    env = {"QT_QPA_PLATFORM": "xcb"},
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_item_editor", "@qt//:qt_widgets"],
 )
