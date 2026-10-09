@@ -2,6 +2,8 @@
 
 Enable **DriveGPT database** before a Program run. Hstream writes `<game-id>_telemetry-N.db` in `~/hstream_output/<game-id>` (or `${HM_OUTPUT_WORK_DIR}/<game-id>`). New working generations start at 1 and advance beyond existing database/manifest suffixes. On successful pipeline shutdown, the UI copies a closed snapshot to the game directory using the same naming convention and the finalized video's suffix. Without video encoding, it chooses the next available generation. Existing recordings are never overwritten. Older `hstream_telemetry[-N].db` and `hm_telemetry[-N].db` files remain readable.
 
+Database publication shares `.hm-output-publication.lock` with HockeyMON and holds it through version selection and publication. Concurrent publishers cannot claim different filename spellings of one numeric version.
+
 `N` is a file version: the first is `-1`, followed by `-2`, and so on. New video, database, legacy CSV/replay/configuration exports, and recovery files always carry a positive version. Publication rejects an empty or zero suffix. Old unnumbered files remain readable. Calibration names such as `rink_mask_0.png` use camera indices; an archived run snapshot adds its version, such as `rink_mask_0-1.png`.
 
 Direct runs enable recording with:

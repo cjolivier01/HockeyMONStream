@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/TelemetryDbPublisher.h"
 #include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -11,6 +13,29 @@
 #include "hstream/src/libs/recording/Database.h"
 
 namespace {
+class PublicationLock {
+ public:
+  explicit PublicationLock(const QString& directory) {
+    const QByteArray path = QFile::encodeName(QDir(directory).filePath(".hm-output-publication.lock"));
+    fd_ = open(path.constData(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd_ < 0)
+      throw std::runtime_error("Cannot open telemetry publication lock");
+    struct stat info {};
+    if (fstat(fd_, &info) != 0 || !S_ISREG(info.st_mode) || flock(fd_, LOCK_EX) != 0) {
+      close(fd_);
+      throw std::runtime_error("Cannot acquire telemetry publication lock");
+    }
+  }
+  ~PublicationLock() {
+    close(fd_);
+  }
+  PublicationLock(const PublicationLock&) = delete;
+  PublicationLock& operator=(const PublicationLock&) = delete;
+
+ private:
+  int fd_{-1};
+};
+
 QString resolved_existing_directory_path(const QString& directory) {
   const QFileInfo info(directory);
   const QString canonical = info.canonicalFilePath();
@@ -37,6 +62,7 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     const QString publication_directory = resolved_existing_directory_path(directory);
     if (!QDir(publication_directory).exists())
       throw std::runtime_error("Game directory does not exist");
+    const PublicationLock publication_lock(publication_directory);
     hm::recording::Database input(source.toStdString());
     input.Validate();
     input.Exec("BEGIN");

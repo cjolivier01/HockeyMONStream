@@ -1,10 +1,14 @@
 #include "src/apps/hstream-ui/TelemetryDbPublisher.h"
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QTemporaryDir>
+#include <chrono>
+#include <future>
 #include <iostream>
 #include <stdexcept>
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryDb.h"
@@ -52,6 +56,24 @@ int main(int argc, char** argv) {
     check(
         padded.ok && padded.published_paths.front().endsWith("game-one_telemetry-007.db"),
         "preserve positive suffix spelling");
+    const QString concurrent_game = root.filePath("concurrent-game");
+    check(QDir().mkpath(concurrent_game), "concurrent publication directory");
+    const QByteArray lock_path = QFile::encodeName(QDir(concurrent_game).filePath(".hm-output-publication.lock"));
+    const int lock_fd = open(lock_path.constData(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    check(lock_fd >= 0 && flock(lock_fd, LOCK_EX) == 0, "hold shared publication lock");
+    auto plain_job = std::async(std::launch::async, [&] {
+      return publish_telemetry_database(source, concurrent_game, QString("-1"));
+    });
+    auto padded_job = std::async(std::launch::async, [&] {
+      return publish_telemetry_database(source, concurrent_game, QString("-001"));
+    });
+    const bool plain_waiting = plain_job.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+    const bool padded_waiting = padded_job.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+    close(lock_fd);
+    const auto plain_result = plain_job.get(), padded_result = padded_job.get();
+    check(plain_waiting && padded_waiting, "database publishers honor the shared publication lock");
+    check(plain_result.ok != padded_result.ok, "concurrent spellings cannot publish the same numeric version");
+    check(QDir(concurrent_game).entryList({"*.db"}, QDir::Files).size() == 1, "one numeric version is visible");
     const QString symlink_target_game = root.filePath("symlink-target-game");
     const QString symlink_game = root.filePath("symlink-game");
     check(QDir().mkpath(symlink_target_game), "symlink target game directory");
