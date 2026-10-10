@@ -22,5 +22,12 @@ bool RasterHighlightCard(
     QImage* image,
     QString* error,
     QSize output_size = QSize(1920, 1080));
-bool ImportHighlightLogo(const QString& source, const QString& game_dir, QString* relative_path, QString* error);
+// An editor may keep already-broken artwork, but must report a failed attempt
+// to retain readable artwork instead of silently keeping an external path.
+enum class HighlightLogoImportResult { Imported, UnreadableSource, StorageFailure };
+HighlightLogoImportResult ImportHighlightLogo(
+    const QString& source,
+    const QString& game_dir,
+    QString* relative_path,
+    QString* error);
 } // namespace hm::ui

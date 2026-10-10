@@ -178,23 +178,31 @@ bool RasterHighlightCard(
   return true;
 }
 
-bool ImportHighlightLogo(const QString& source, const QString& game, QString* path, QString* error) {
+HighlightLogoImportResult ImportHighlightLogo(
+    const QString& source,
+    const QString& game,
+    QString* path,
+    QString* error) {
   QImage image;
   if (!logo(source, game, &image, error) || image.isNull())
-    return false;
+    return HighlightLogoImportResult::UnreadableSource;
+  auto storage_failure = [&](const QString& message) {
+    fail(error, message);
+    return HighlightLogoImportResult::StorageFailure;
+  };
   QByteArray bytes;
   QBuffer buffer(&bytes);
   buffer.open(QIODevice::WriteOnly);
   if (!image.save(&buffer, "PNG"))
-    return fail(error, "Could not encode logo");
+    return storage_failure("Could not encode logo");
   const QString relative = "highlight-assets/" +
       QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()) + ".png";
   if (!QDir(game).mkpath("highlight-assets"))
-    return fail(error, "Could not create highlight-assets");
+    return storage_failure("Could not create highlight-assets");
   QSaveFile file(QDir(game).filePath(relative));
   if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
-    return fail(error, "Could not save logo: " + file.errorString());
+    return storage_failure("Could not save logo: " + file.errorString());
   *path = relative;
-  return true;
+  return HighlightLogoImportResult::Imported;
 }
 } // namespace hm::ui

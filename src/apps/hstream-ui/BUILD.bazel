@@ -969,7 +969,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_item_editor", "@qt//:qt_widgets"],
+    deps = [":highlight_item_editor", ":highlight_scene", "@qt//:qt_widgets"],
 )
 
 cc_test(

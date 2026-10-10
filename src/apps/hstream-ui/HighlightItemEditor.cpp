@@ -8,6 +8,9 @@
 #include <QtGui/QGuiApplication>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
+#include <QtGui/QScreen>
+#include <QtGui/QShowEvent>
+#include <QtGui/QWindow>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
@@ -22,8 +25,10 @@
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include "src/apps/hstream-ui/ActionIcons.h"
@@ -121,6 +126,8 @@ class Editor : public QDialog {
   qint64 pending_frame_ms{-1}, held_frame_ms{-1}, choices_frame_ms{-1};
   int loaded_row{-1};
   std::function<void()> restore_preview;
+  std::function<void()> fit_to_screen;
+  bool watching_screen{false};
   QLineEdit *heading{nullptr}, *a{nullptr}, *b{nullptr}, *date{nullptr}, *la{nullptr}, *lb{nullptr}, *bg{nullptr},
       *fg{nullptr};
   QDoubleSpinBox *duration{nullptr}, *card_size{nullptr}, *card_weight{nullptr};
@@ -152,6 +159,65 @@ class Editor : public QDialog {
     connect(b, &QPushButton::clicked, this, std::move(action));
     return b;
   }
+  // The form is what this dialog is for, so it opens at the width its longest
+  // label and widest field actually need, and the preview takes the remainder.
+  // A QScrollArea's own minimum is a bare scrollbar, so a splitter left to its
+  // own devices shrinks the controls until nothing is readable.
+  void size_controls(
+      QVBoxLayout* root,
+      QSplitter* splitter,
+      QScrollArea* scroll,
+      QWidget* controls,
+      QWidget* buttons,
+      bool initial = true) {
+    const QScreen* display = screen() ? screen() : QGuiApplication::primaryScreen();
+    const QSize room = display ? display->availableGeometry().size() : QSize(1920, 1080);
+    const QMargins margins = root->contentsMargins();
+    const int frame = 2 * scroll->frameWidth();
+    const QSize form = controls->sizeHint();
+    // Reserve the vertical scrollbar: the taller forms need one, and claiming its
+    // width up front keeps the fields off a horizontal scrollbar.
+    const int horizontal_chrome = margins.left() + margins.right() + splitter->handleWidth();
+    const int preview_minimum = splitter->widget(1)->minimumSizeHint().width();
+    const int available_controls = std::max(0, room.width() - horizontal_chrome - preview_minimum);
+    const int width = std::min(
+        {form.width() + frame + scroll->verticalScrollBar()->sizeHint().width(), room.width() / 2, available_controls});
+    scroll->setMinimumWidth(width);
+    if (!initial) {
+      // Dropping a pane's minimum posts a layout request. Refresh it now so
+      // resize() is not clamped to the previous screen's dialog minimum.
+      splitter->refresh();
+      root->invalidate();
+      root->activate();
+      if (!isMaximized())
+        resize(std::min(this->width(), room.width()), std::min(this->height(), room.height() - 80));
+      return;
+    }
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setChildrenCollapsible(false);
+    const int preview = std::max(target->minimumWidth(), 780);
+    const int chrome = margins.top() + margins.bottom() + 2 * root->spacing() + status->sizeHint().height() +
+        buttons->sizeHint().height();
+    // Prefer the taller default so the cue list and its controls are both
+    // visible, but a short display always wins: on a 1366x768 panel there is
+    // less than 850 to give, and a dialog taller than the screen hides its own
+    // buttons.
+    const int height = std::min(std::max(form.height() + frame + chrome, 850), room.height() - 80);
+    resize(std::min(width + horizontal_chrome + preview, room.width()), height);
+    splitter->setSizes({width, preview});
+  }
+  void showEvent(QShowEvent* event) override {
+    QDialog::showEvent(event);
+    if (!watching_screen && windowHandle()) {
+      watching_screen = true;
+      connect(windowHandle(), &QWindow::screenChanged, this, [this] {
+        // Refit after the screen transition, outside Qt's geometry update.
+        QTimer::singleShot(0, this, fit_to_screen);
+      });
+    }
+    fit_to_screen();
+  }
   Editor(
       const HighlightInterval& original,
       QString dir,
@@ -172,7 +238,6 @@ class Editor : public QDialog {
     setObjectName("highlightItemEditor");
     setWindowTitle(item.is_card ? "Title / intermission card" : "Clip annotations");
     configure_preview_dialog_window(this);
-    resize(1250, 850);
     auto* root = new QVBoxLayout(this);
     auto* splitter = new QSplitter(this);
     root->addWidget(splitter, 1);
@@ -180,7 +245,6 @@ class Editor : public QDialog {
     scroll->setWidgetResizable(true);
     auto* controls = new QWidget(scroll);
     auto* left = new QVBoxLayout(controls);
-    scroll->setWidget(controls);
     auto* preview = new QWidget(splitter);
     auto* right = new QVBoxLayout(preview);
     auto* actions = new QHBoxLayout;
@@ -212,15 +276,23 @@ class Editor : public QDialog {
       card_controls(left);
     else
       annotation_controls(left, right);
+    // QScrollArea caches the scrolled widget's size hint when it adopts it, so the
+    // controls must already exist. An empty hint leaves the splitter convinced the
+    // form wants nothing and hands the whole window to the preview.
+    scroll->setWidget(controls);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
     buttons->setObjectName("highlightItemButtons");
     root->addWidget(buttons);
+    size_controls(root, splitter, scroll, controls, buttons);
+    fit_to_screen = [=] { size_controls(root, splitter, scroll, controls, buttons, false); };
     connect(buttons, &QDialogButtonBox::accepted, this, [&] {
       QString error;
       if (item.is_card ? read_card() : apply_cue(false)) {
-        if (NormalizeHighlightInterval(&item, &error))
+        if (NormalizeHighlightInterval(&item, &error)) {
+          if (item.is_card && !adopt_logos())
+            return;
           accept();
-        else
+        } else
           status->setText(error);
       }
     });
@@ -244,6 +316,42 @@ class Editor : public QDialog {
   ~Editor() override {
     pipeline.Cancel();
   }
+  // Card artwork has to outlive wherever the author picked it from, so saving
+  // copies anything named outside the game's highlight-assets directory into it
+  // and rewrites the field to the content-addressed relative path. Only a
+  // matchup card draws logos, so only it is worth importing for. Artwork that
+  // cannot be read is left exactly as typed: it is already broken, and preview
+  // and export name the problem far better than a dialog that silently refuses
+  // to save the team names the author came to fix. Save alone adopts; opening a
+  // card or previewing it must not write to the game.
+  bool adopt_logos() {
+    if (!matchup->isChecked())
+      return true;
+    const QDir game(game_dir);
+    const QString store = game.absoluteFilePath("highlight-assets");
+    for (QLineEdit* field : {la, lb}) {
+      const QString entered = field->text().trimmed();
+      const QString absolute = game.absoluteFilePath(entered);
+      if (entered.isEmpty() || !QFileInfo::exists(absolute))
+        continue;
+      QString path, error;
+      if (QFileInfo(absolute).absolutePath() == store)
+        path = game.relativeFilePath(absolute); // already stored, but named absolutely
+      else {
+        const auto result = ImportHighlightLogo(absolute, game_dir, &path, &error);
+        if (result == HighlightLogoImportResult::UnreadableSource)
+          continue;
+        if (result != HighlightLogoImportResult::Imported) {
+          status->setText(error);
+          return false;
+        }
+      }
+      field->setText(path);
+    }
+    item.card.logo_a = la->text().trimmed();
+    item.card.logo_b = lb->text().trimmed();
+    return true;
+  }
   bool read_card() {
     auto& c = item.card;
     c.matchup = matchup->isChecked();
@@ -251,8 +359,8 @@ class Editor : public QDialog {
     c.team_a = a->text();
     c.team_b = b->text();
     c.date = date->text();
-    c.logo_a = la->text();
-    c.logo_b = lb->text();
+    c.logo_a = la->text().trimmed();
+    c.logo_b = lb->text().trimmed();
     c.background = bg->text();
     c.color = fg->text();
     c.duration_ms = std::llround(duration->value() * 1000);
@@ -282,8 +390,8 @@ class Editor : public QDialog {
         initial = m.captured(1);
     }
     date = line(f, "Game date (YYYY-MM-DD)", initial, "highlightGameDate");
-    la = line(f, "Team A logo", c.logo_a);
-    lb = line(f, "Team B logo", c.logo_b);
+    la = line(f, "Team A logo", c.logo_a, "highlightLogoA");
+    lb = line(f, "Team B logo", c.logo_b, "highlightLogoB");
     auto* logos = new QHBoxLayout;
     left->addLayout(logos);
     auto choose = [&](QLineEdit* dest) {
@@ -292,7 +400,7 @@ class Editor : public QDialog {
       if (source.isEmpty())
         return;
       QString path, error;
-      if (ImportHighlightLogo(source, game_dir, &path, &error))
+      if (ImportHighlightLogo(source, game_dir, &path, &error) == HighlightLogoImportResult::Imported)
         dest->setText(path);
       else
         status->setText(error);
