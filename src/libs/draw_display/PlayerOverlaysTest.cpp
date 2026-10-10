@@ -452,6 +452,47 @@ void IgnoredPlayers() {
   for (size_t i = 0; i < limited.size(); ++i)
     Check(limited.data()[i].kind != a::detail::Kind::kGlyph, "capacity rendered a partial IGNORED label");
 }
+
+void IgnoredAndSemanticLabels() {
+  // Program draws all layers together; previews collect ignored diagnostics
+  // from the immutable snapshot before independently requested semantic text.
+  for (bool snapshot : {false, true}) {
+    Frame frame;
+    auto* player = frame.Object();
+    po::set_player_ignored(*player, true);
+    frame.Attach(Result());
+    if (snapshot) {
+      Check(po::add_overlay_snapshot_meta(frame.frame), "attach ignored semantic snapshot");
+      po::set_player_ignored(*player, false);
+    }
+    for (bool cropped : {false, true}) {
+      auto transform = Transform();
+      const auto* t = cropped ? &transform : nullptr;
+      const float width = cropped ? 1280 : 800, height = cropped ? 720 : 600;
+      a::CommandList ignored, semantic;
+      a::AddIgnoredPlayerLabel(player->rect_params, t, width, height, &ignored);
+      a::BuildPlayerOverlays(frame.frame, a::kJerseys | a::kActions, .3F, t, width, height, &semantic);
+      Check(ignored.size() == 7 && semantic.size() == 9, "combined labels lost glyphs");
+      Check(semantic.data()[0].y0 >= ignored.data()[0].y1, "jersey label overlaps IGNORED");
+      Check(semantic.data()[2].y0 >= semantic.data()[0].y1, "action label overlaps jersey");
+      const auto count = allocations.load();
+      semantic.Clear();
+      a::BuildPlayerOverlays(frame.frame, a::kJerseys | a::kActions, .3F, t, width, height, &semantic);
+      Check(allocations.load() == count, "warmed combined labels allocated");
+    }
+  }
+  // A snapshot requested only for play geometry has no player decisions.
+  Frame play_only;
+  auto* player = play_only.Object();
+  po::set_player_ignored(*player, true);
+  play_only.Attach(Result());
+  Check(po::add_selected_overlay_snapshot_meta(play_only.frame, false, true, nullptr), "attach play-only snapshot");
+  a::CommandList list;
+  a::BuildPlayerOverlays(play_only.frame, a::kPlayerBoxes | a::kJerseys, .3F, nullptr, 800, 600, &list);
+  Check(
+      list.size() == 13 && list.data()[11].y0 >= list.data()[4].y1,
+      "play-only snapshot lost ignored semantic row separation");
+}
 } // namespace
 int main() {
   struct Test {
@@ -467,7 +508,8 @@ int main() {
       {"zero_confidence", ZeroConfidenceNeverDraws},
       {"baked_boxes", BakedBoxesNeverDraw},
       {"labels_require_visible_player", LabelsRequireVisiblePlayer},
-      {"ignored_players", IgnoredPlayers}};
+      {"ignored_players", IgnoredPlayers},
+      {"ignored_and_semantic_labels", IgnoredAndSemanticLabels}};
   unsigned failures = 0;
   for (const auto& test : cases) {
     try {

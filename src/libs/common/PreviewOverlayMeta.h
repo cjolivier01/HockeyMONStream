@@ -23,6 +23,7 @@ inline constexpr NvOSD_ColorParams kIgnoredPlayerColor{0.5, 0.5, 0.5, 1.0};
 
 struct PlayerRect {
   NvOSD_RectParams rect;
+  uint64_t track_id{UNTRACKED_OBJECT_ID};
   bool ignored{false};
 };
 

@@ -166,8 +166,25 @@ void BuildPlayerOverlays(
   }
   if (!(layers & (kJerseys | kActions)))
     return;
+  const auto* snapshot = preview_overlay::find_overlay_snapshot_meta(frame);
+  const auto is_ignored = [frame, snapshot](uint64_t id) {
+    if (snapshot && !snapshot->player_rects.empty())
+      return std::any_of(snapshot->player_rects.begin(), snapshot->player_rects.end(), [id](const auto& player) {
+        return player.ignored && player.track_id == id;
+      });
+    for (const auto* item = frame->obj_meta_list; item; item = item->next) {
+      const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
+      if (object && object->class_id == 0 && object->object_id == id)
+        return preview_overlay::player_is_ignored(*object);
+    }
+    return false;
+  };
   for (size_t i = 0; i < result->player_count; ++i) {
     const auto& player = result->players[i];
+    const bool jersey = (layers & kJerseys) && player.jersey.text[0] && player.jersey.expires_at >= result->pts_ns;
+    const bool action = (layers & kActions) && player.action.label >= 0 && player.action.expires_at >= result->pts_ns;
+    if (!jersey && !action)
+      continue;
     const Color color = PlayerColor(player.color_slot);
     const auto& box = player.box;
     const std::array<Point, 4> corners{
@@ -185,6 +202,10 @@ void BuildPlayerOverlays(
     const float height = 24 * scale;
     x = std::clamp(x, 0.0F, coordinate_width);
     y = std::max(height, y) - height;
+    // Reserve the row above an ignored player for its camera-exclusion label.
+    // Keep semantic rows stable across the independent box visibility switch.
+    if (is_ignored(player.track_id))
+      y += height;
     const auto label = [&](std::string_view text) {
       if (text.empty())
         return;
@@ -193,9 +214,9 @@ void BuildPlayerOverlays(
       commands->AddText(x, y, height, text, color);
       y += height;
     };
-    if ((layers & kJerseys) && player.jersey.text[0] && player.jersey.expires_at >= result->pts_ns)
+    if (jersey)
       label(player.jersey.text.data());
-    if ((layers & kActions) && player.action.label >= 0 && player.action.expires_at >= result->pts_ns)
+    if (action)
       label(player.action_text.data());
   }
 }

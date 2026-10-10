@@ -108,6 +108,8 @@ remove the player from object tracking or analytics. `cam_ignore_largest` enable
 `cam_ignore_largest_count` (default one), and the size filters always retain at
 least three players. With three or fewer tracked players, none are size-excluded.
 Disabling player boxes also hides these labels.
+Jersey/action text uses a separate row for ignored players so it cannot cover
+`IGNORED`; that row stays stable across the independent box visibility switch.
 
 `PlayTrackerCtx` stores the per-frame exclusion flag in application-owned
 `NvDsObjectMeta::misc_obj_info[0]`. `PreviewOverlayMeta` freezes it beside each
