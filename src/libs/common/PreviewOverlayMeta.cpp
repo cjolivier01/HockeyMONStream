@@ -212,7 +212,7 @@ bool add_selected_overlay_snapshot_meta(
       for (NvDsMetaList* item = frame_meta->obj_meta_list; item; item = item->next) {
         auto* object_meta = static_cast<NvDsObjectMeta*>(item->data);
         if (object_meta && object_meta->class_id == 0 && object_meta->object_id != UNTRACKED_OBJECT_ID)
-          snapshot->player_rects.push_back(object_meta->rect_params);
+          snapshot->player_rects.push_back({object_meta->rect_params, player_is_ignored(*object_meta)});
       }
     }
     if (include_play) {

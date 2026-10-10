@@ -400,6 +400,58 @@ void LabelsRequireVisiblePlayer() {
   transform.crop_top = 80;
   Check(commands_for({0, 0, 100, 100}, transform) == 9, "Visible rotated player lost labels");
 }
+
+void IgnoredPlayers() {
+  Frame source;
+  auto* ignored = source.Object();
+  source.Object(101);
+  po::set_player_ignored(*ignored, true);
+  // Color assignment must not erase the independent camera exclusion flag.
+  po::TrackColorState colors;
+  Check(colors.Apply(source.frame), "color join failed");
+  Frame copy;
+  copy.CopyFrom(source);
+  po::set_player_ignored(*ignored, false);
+  a::CommandList list;
+  auto transform = Transform();
+  a::BuildPlayerOverlays(copy.frame, a::kPlayerBoxes, .3F, &transform, 1280, 720, &list);
+  Check(list.size() == 15, "copied ignored player lost its box or seven-glyph label");
+  unsigned glyphs = 0, gray_lines = 0;
+  constexpr char text[] = "IGNORED";
+  for (size_t i = 0; i < list.size(); ++i) {
+    const auto& cmd = list.data()[i];
+    if (cmd.kind == a::detail::Kind::kGlyph) {
+      Check(cmd.glyph == static_cast<unsigned>(text[glyphs++] - 32), "wrong ignored label");
+      Color(cmd.color, po::kIgnoredPlayerColor);
+      Near(cmd.y0, ExpectedProgram(140, 100).y - 16, "ignored label not above rotated box");
+    } else if (
+        std::abs(cmd.color.red - .5F) < .001F && std::abs(cmd.color.green - .5F) < .001F &&
+        std::abs(cmd.color.blue - .5F) < .001F) {
+      ++gray_lines;
+    }
+  }
+  Check(glyphs == 7 && gray_lines == 4, "ignored box is not gray or ordinary box changed");
+  const auto before = allocations.load();
+  list.Clear();
+  a::BuildPlayerOverlays(copy.frame, a::kPlayerBoxes, .3F, &transform, 1280, 720, &list);
+  Check(allocations.load() == before, "warmed ignored-label construction allocated");
+  list.Clear();
+  a::BuildPlayerOverlays(copy.frame, 0, .3F, nullptr, 800, 600, &list);
+  transform.baked_player_layers = a::kPlayerBoxes;
+  a::BuildPlayerOverlays(copy.frame, a::kPlayerBoxes, .3F, &transform, 1280, 720, &list);
+  Check(list.empty(), "disabled/baked boxes emitted ignored labels");
+  a::BuildPlayerOverlays(source.frame, a::kPlayerBoxes, .3F, nullptr, 800, 600, &list);
+  Check(list.size() == 8, "cleared exclusion retained label");
+  list.Clear();
+  auto offscreen = ignored->rect_params;
+  offscreen.left = -1000;
+  a::AddIgnoredPlayerLabel(offscreen, nullptr, 800, 600, &list);
+  Check(list.empty(), "offscreen ignored player emitted a floating label");
+  a::CommandList limited(10);
+  a::BuildPlayerOverlays(copy.frame, a::kPlayerBoxes, .3F, nullptr, 800, 600, &limited);
+  for (size_t i = 0; i < limited.size(); ++i)
+    Check(limited.data()[i].kind != a::detail::Kind::kGlyph, "capacity rendered a partial IGNORED label");
+}
 } // namespace
 int main() {
   struct Test {
@@ -414,7 +466,8 @@ int main() {
       {"baked_transform_and_empty", BakedTransformsAndEmpty},
       {"zero_confidence", ZeroConfidenceNeverDraws},
       {"baked_boxes", BakedBoxesNeverDraw},
-      {"labels_require_visible_player", LabelsRequireVisiblePlayer}};
+      {"labels_require_visible_player", LabelsRequireVisiblePlayer},
+      {"ignored_players", IgnoredPlayers}};
   unsigned failures = 0;
   for (const auto& test : cases) {
     try {

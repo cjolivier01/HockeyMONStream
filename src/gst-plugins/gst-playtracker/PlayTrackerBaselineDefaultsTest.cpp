@@ -22,6 +22,105 @@ bool expect(bool condition, const char* message) {
   return condition;
 }
 
+bool verify_player_exclusions(const YAML::Node& yaml) {
+  namespace overlay = hm::preview_overlay;
+  const hm::BBox arena(0, 0, 2000, 1000);
+  auto config = gst_hm_playtracker::create_play_tracker_config(arena, yaml);
+  config.ignore_largest_bbox = true;
+  config.ignore_largest_bbox_count = 1;
+  config.ignore_outlier_players = false;
+  DsPlayTrackerCtx context;
+  context.arena_box = arena;
+  auto& tracker = context.play_trackers[0];
+  tracker.play_tracker_config = config;
+  tracker.base_play_tracker_config = config;
+  tracker.play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(arena, config);
+  DsPlayTrackerCtxSetPreviewOverlayFlags(&context, kPreviewOverlayPlayers);
+  bool ok = true;
+  // Exercise the real DeepStream adapter and pinned native tracker, including
+  // live tuning on the same tracker. Tracker coordinates are half metadata size.
+  struct Case {
+    int players, count;
+    bool oversized, drawing;
+    int expected;
+  };
+  for (const auto test :
+       {Case{5, 1, false, true, 1},
+        Case{5, 2, false, true, 2},
+        Case{5, 0, false, true, 0},
+        Case{5, 0, true, true, 1},
+        Case{3, 2, true, true, 0},
+        Case{5, 1, false, false, 1}}) {
+    DsPlayTrackerRuntimeTuning tuning;
+    tuning.ignore_largest_bbox_count = test.count;
+    tuning.ignore_oversized_bboxes = test.oversized;
+    tuning.oversized_bbox_percent = 100;
+    ok &= expect(DsPlayTrackerCtxApplyRuntimeTuning(&context, tuning).ok(), "Apply live exclusion settings");
+    DsPlayTrackerCtxSetPreviewOverlayFlags(&context, test.drawing ? kPreviewOverlayPlayers : 0);
+    auto* batch = nvds_create_batch_meta(1);
+    auto* frame = batch ? nvds_acquire_frame_meta_from_pool(batch) : nullptr;
+    if (!expect(frame != nullptr, "Allocate exclusion fixture"))
+      return false;
+    nvds_add_frame_meta_to_batch(batch, frame);
+    frame->source_frame_width = 2000;
+    frame->source_frame_height = 1000;
+    std::vector<NvDsObjectMeta*> objects;
+    for (int i = 0; i < test.players; ++i) {
+      auto* object = nvds_acquire_obj_meta_from_pool(batch);
+      object->class_id = 0;
+      object->object_id = (uint64_t{1} << 40) + i;
+      object->tracker_bbox_info.org_bbox_coords = {
+          i == 0 ? 50.0F : 500.0F + i * 25, 100.0F, i == 0 ? 200.0F : 20.0F, i == 0 ? 200.0F : 40.0F};
+      const auto& box = object->tracker_bbox_info.org_bbox_coords;
+      object->rect_params.left = box.left * 2;
+      object->rect_params.top = box.top * 2;
+      object->rect_params.width = box.width * 2;
+      object->rect_params.height = box.height * 2;
+      // A stale flag must clear when this frame no longer excludes that ID.
+      overlay::set_player_ignored(*object, test.drawing);
+      nvds_add_obj_meta_to_frame(frame, object, nullptr);
+      objects.push_back(object);
+    }
+    NvBufSurfaceParams surface{};
+    surface.width = 1000;
+    surface.height = 500;
+    GstDsPlayTrackerFrame input;
+    input.frame_meta = frame;
+    input.input_surf_params = &surface;
+    ok &= expect(DsPlayTrackerProcessFrame(&context, input, nullptr), "Process native exclusion frame");
+    const auto& results = input.play_tracker_results;
+    ok &= expect(
+        results.size_ignored_tracking_boxes.size() == static_cast<size_t>(test.expected),
+        "Native count/oversized/minimum-three filtering differs");
+    if (test.expected) {
+      ok &= expect(
+          results.size_ignored_tracking_boxes[0].tracking_id == objects[0]->object_id,
+          "Native tracker did not exclude the largest area");
+      ok &= expect(
+          results.final_cluster_box.left >= 1000, "Excluded foreground player still enlarged the camera cluster");
+    }
+    const auto* snapshot = overlay::find_overlay_snapshot_meta(frame);
+    if (test.drawing) {
+      ok &= expect(snapshot && snapshot->player_rects.size() == objects.size(), "Snapshot retains all player boxes");
+      int marked = 0, saved = 0;
+      for (auto* object : objects)
+        marked += overlay::player_is_ignored(*object);
+      if (snapshot)
+        for (const auto& player : snapshot->player_rects)
+          saved += player.ignored;
+      ok &= expect(marked == test.expected && saved == test.expected, "Ignored metadata must match native results");
+      if (test.expected)
+        ok &= expect(overlay::player_is_ignored(*objects[0]), "Largest full-width track ID was not marked");
+    } else {
+      ok &= expect(
+          !snapshot && !overlay::player_is_ignored(*objects[0]),
+          "Drawing disabled should filter without producing overlay metadata");
+    }
+    nvds_destroy_batch_meta(batch);
+  }
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -79,6 +178,7 @@ live-boxes:
   const auto& fast = config.living_boxes[0];
   const auto& follower = config.living_boxes[1];
   bool ok = true;
+  ok &= verify_player_exclusions(yaml);
   ok &= expect(!config.no_wide_start && !config.ignore_largest_bbox, "Global baseline booleans should be honored");
   for (const char* key : {"no-wide-start", "no_wide_start"}) {
     for (const auto& [value, expected] : {std::pair{"true", true}, {"false", false}, {"1", true}, {"0", false}}) {

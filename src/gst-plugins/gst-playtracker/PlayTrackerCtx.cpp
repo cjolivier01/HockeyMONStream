@@ -1027,6 +1027,23 @@ bool DsPlayTrackerAttachPreviewSnapshot(DsPlayTrackerCtx* ctx, GstDsPlayTrackerF
       g_printerr("HSTREAM_PREVIEW_OVERLAY status=player-colors-unavailable\n");
     return false;
   }
+  if (ctx->initParams.color_players || (flags & kPreviewOverlayPlayers)) {
+    const auto& results = frame.play_tracker_results;
+    for (auto* item = frame.frame_meta->obj_meta_list; item; item = item->next) {
+      auto* object = static_cast<NvDsObjectMeta*>(item->data);
+      if (!object || object->class_id != 0 || object->object_id == UNTRACKED_OBJECT_ID)
+        continue;
+      const auto matches = [object](const hm::play_tracker::Track& track) {
+        return track.tracking_id == object->object_id;
+      };
+      const bool ignored =
+          std::any_of(
+              results.size_ignored_tracking_boxes.begin(), results.size_ignored_tracking_boxes.end(), matches) ||
+          (results.leftmost_tracking_bbox && matches(*results.leftmost_tracking_bbox)) ||
+          (results.rightmost_tracking_bbox && matches(*results.rightmost_tracking_bbox));
+      hm::preview_overlay::set_player_ignored(*object, ignored);
+    }
+  }
   if (flags == 0 || hm::preview_overlay::find_overlay_snapshot_meta(frame.frame_meta))
     return true;
 

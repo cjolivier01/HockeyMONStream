@@ -137,17 +137,17 @@ int main(int argc, char** argv) {
     return 2;
   const auto* snapshot = hm::preview_overlay::find_overlay_snapshot_meta(first.meta);
   if (!snapshot || snapshot->player_rects.size() != 2 ||
-      !((Same(snapshot->player_rects[0].border_color, first_color) &&
-         Same(snapshot->player_rects[1].border_color, second_color)) ||
-        (Same(snapshot->player_rects[1].border_color, first_color) &&
-         Same(snapshot->player_rects[0].border_color, second_color)))) {
+      !((Same(snapshot->player_rects[0].rect.border_color, first_color) &&
+         Same(snapshot->player_rects[1].rect.border_color, second_color)) ||
+        (Same(snapshot->player_rects[1].rect.border_color, first_color) &&
+         Same(snapshot->player_rects[0].rect.border_color, second_color)))) {
     std::cerr << "Immutable snapshot lost shared player colors or included an untracked object\n";
     return 3;
   }
   // Later ordinary metadata mutations cannot change the Stitched tee's snapshot.
-  const auto saved_snapshot_color = snapshot->player_rects[0].border_color;
+  const auto saved_snapshot_color = snapshot->player_rects[0].rect.border_color;
   first.objects[0]->rect_params.border_color = {0, 0, 0, 0};
-  if (!Same(snapshot->player_rects[0].border_color, saved_snapshot_color))
+  if (!Same(snapshot->player_rects[0].rect.border_color, saved_snapshot_color))
     return 4;
 
   Frame reordered(20000000, {large_id + 32, large_id});

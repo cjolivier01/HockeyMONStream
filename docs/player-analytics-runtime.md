@@ -101,6 +101,20 @@ history readiness/resets. Interpret retained labels separately from fresh infere
 
 ## Drawing and desktop controls
 
+Player boxes show camera-excluded players in gray with `IGNORED` above the box,
+in both Program output and GPU previews. The marker comes from the current native
+play-tracker result, including largest-count and oversized exclusions; it does not
+remove the player from object tracking or analytics. `cam_ignore_largest` enables
+`cam_ignore_largest_count` (default one), and the size filters always retain at
+least three players. With three or fewer tracked players, none are size-excluded.
+Disabling player boxes also hides these labels.
+
+`PlayTrackerCtx` stores the per-frame exclusion flag in application-owned
+`NvDsObjectMeta::misc_obj_info[0]`. `PreviewOverlayMeta` freezes it beside each
+rectangle before the tracked tee, so Program transformations cannot change the
+Stitched view's decision. The existing CUDA/GL command compositors draw the labels;
+there is no video readback or separate inference pass.
+
 The Program Controls **Players** tab offers next-run pose, jersey and action
 compute toggles, model selectors, jersey ROI mode and optional tracker ReID.
 Save Preset changes only edited leaves. Unsaved choices are included in launch

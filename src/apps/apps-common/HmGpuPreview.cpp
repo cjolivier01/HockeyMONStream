@@ -1016,23 +1016,26 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
 
   if (state->show_player_tracking.load() &&
       (!program_transform || !(program_transform->baked_player_layers & hm::player_analytics::kDrawPlayerBoxes))) {
-    auto add_player_rect = [&](const NvOSD_RectParams& rect,
-                               const hm::preview_overlay::PlayCropperTransform* transform) {
-      add_rect_paths(
-          &overlays,
-          rect.left,
-          rect.top,
-          rect.width,
-          rect.height,
-          std::max(2.0F, static_cast<float>(rect.border_width)),
-          overlay_color(rect.border_color),
-          false,
-          {},
-          transform);
-    };
+    auto add_player_rect =
+        [&](const NvOSD_RectParams& rect, bool ignored, const hm::preview_overlay::PlayCropperTransform* transform) {
+          add_rect_paths(
+              &overlays,
+              rect.left,
+              rect.top,
+              rect.width,
+              rect.height,
+              std::max(2.0F, static_cast<float>(rect.border_width)),
+              overlay_color(ignored ? hm::preview_overlay::kIgnoredPlayerColor : rect.border_color),
+              false,
+              {},
+              transform);
+          if (ignored)
+            hm::draw_display::analytics::AddIgnoredPlayerLabel(
+                rect, transform, overlays.coordinate_width, overlays.coordinate_height, &state->player_commands);
+        };
     if (snapshot) {
-      for (const NvOSD_RectParams& rect : snapshot->player_rects)
-        add_player_rect(rect, program_transform);
+      for (const auto& player : snapshot->player_rects)
+        add_player_rect(player.rect, player.ignored, program_transform);
     } else {
       const auto* object_transform =
           program_transform && !program_transform->object_meta_transformed ? program_transform : nullptr;
@@ -1040,7 +1043,8 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
         auto* object_meta = static_cast<NvDsObjectMeta*>(item->data);
         if (!object_meta || object_meta->class_id != 0 || object_meta->object_id == UNTRACKED_OBJECT_ID)
           continue;
-        add_player_rect(object_meta->rect_params, object_transform);
+        add_player_rect(
+            object_meta->rect_params, hm::preview_overlay::player_is_ignored(*object_meta), object_transform);
       }
     }
   }
