@@ -1,5 +1,9 @@
 INCLUDE_PREFIX = "deepstream"
 
+# DeepStream 9.1.1 moved public headers out of sources/. Older desktop SDKs
+# and Jetson still use sources/includes; preserve the same include spellings.
+SDK_INCLUDE_ROOT = "includes" if glob(["includes/nvdsmeta.h"]) else "sources/includes"
+
 config_setting(
     name = "jetson",
     constraint_values = ["@platforms//cpu:aarch64"],
@@ -68,14 +72,14 @@ cc_library(
     name = "deepstream_includes",
     srcs = [],
     hdrs = glob([
-        "sources/includes/**/*.h*",
-        "sources/includes/nvdsinferserver/*.h",
+        SDK_INCLUDE_ROOT + "/**/*.h*",
     ]),
     include_prefix = "deepstream/sources/includes",
     includes = [
-        "sources/includes",
-        "sources/includes/nvdsinferserver",
+        SDK_INCLUDE_ROOT,
+        SDK_INCLUDE_ROOT + "/nvdsinferserver",
     ],
+    strip_include_prefix = SDK_INCLUDE_ROOT,
     visibility = ["//visibility:public"],
     deps = [
     ],
