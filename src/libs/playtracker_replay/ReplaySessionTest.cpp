@@ -289,7 +289,11 @@ int main(int argc, char** argv) {
         same_frames((*legacy)->baseline(), (*session)->baseline(), 0.01),
         "legacy reconstruction agrees with exact checkpoint replay");
     const fs::path explicit_config = directory / "explicit-legacy.yaml";
-    fs::copy_file(directory / "legacy" / "play_tracker_effective.yaml", explicit_config);
+    const auto legacy_manifest = YAML::LoadFile(options.manifest_path);
+    fs::copy_file(
+        fs::path(options.manifest_path).parent_path() /
+            legacy_manifest["config_provenance"]["effective_artifact"].as<std::string>(),
+        explicit_config);
     options.legacy_config_path = explicit_config.string();
     auto explicit_legacy = ReplaySession::Prepare(options);
     check(explicit_legacy.ok(), explicit_legacy.status().ToString());
@@ -315,7 +319,8 @@ int main(int argc, char** argv) {
     std::ofstream(cadence_options.manifest_path) << bad_manifest;
     check(!ReplaySession::Prepare(cadence_options).ok(), "artifact cannot escape recording directory");
     std::ofstream(cadence_options.manifest_path) << good_manifest;
-    const auto replay_path = directory / "cadence" / "hstream_replay.jsonl";
+    const auto replay_path = fs::path(cadence_options.manifest_path).parent_path() /
+        YAML::Load(good_manifest)["sidecars"]["replay"].as<std::string>();
     std::ifstream replay_input(replay_path);
     std::string replay_contents((std::istreambuf_iterator<char>(replay_input)), {});
     const auto field = replay_contents.find("\"sample_id\":1");
@@ -329,7 +334,7 @@ int main(int argc, char** argv) {
         !(*session)->SaveTrial((*session)->manifest_path(), *candidate, binding).ok(),
         "cannot overwrite original telemetry manifest");
     check(!(*session)->SaveTrial(binding.path, *candidate, binding).ok(), "cannot overwrite bound source media");
-    const auto runtime_config = directory / "exact" / "play_tracker_runtime_tuning-1.yaml";
+    const auto runtime_config = directory / "exact" / "play_tracker_runtime_tuning-1-1.yaml";
     check(fs::is_regular_file(runtime_config), "fixture records runtime configuration artifact");
     const auto runtime_before = YAML::Dump(YAML::LoadFile(runtime_config.string()));
     check(

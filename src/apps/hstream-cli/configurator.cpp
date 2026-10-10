@@ -8416,8 +8416,13 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   std::vector<double> private_projection_parameters;
   HM_ASSIGN_OR_RETURN(
       private_projection_parameters, stitching::read_stitch_projection_parameters(private_config_, projection));
+  // Omitted private framing leaves inherit the baseline/user layer. Comparing
+  // them against the parser's structural defaults would spuriously rewrite a
+  // restored partial map and discard its generated-choice provenance.
+  const YAML::Node private_framing_config =
+      merge_nodes(YAML::Clone(lower_layer_config_), YAML::Clone(private_config_), false);
   stitching::StitchProjectionFraming private_projection_framing;
-  HM_ASSIGN_OR_RETURN(private_projection_framing, stitching::read_stitch_projection_framing(private_config_));
+  HM_ASSIGN_OR_RETURN(private_projection_framing, stitching::read_stitch_projection_framing(private_framing_config));
   YAML::Node private_camera_config = YAML::Clone(lower_layer_config_);
   const YAML::Node private_stitching = private_config_["stitching"];
   if (private_stitching && private_stitching.IsMap()) {

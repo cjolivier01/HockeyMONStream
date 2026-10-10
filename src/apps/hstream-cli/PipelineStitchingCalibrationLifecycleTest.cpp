@@ -571,10 +571,12 @@ bool write_game_config(
     const std::string& invalidation_id,
     bool artifacts_invalidated,
     int frame_count = 0,
-    const std::string& control_point_matcher = std::string()) {
+    const std::string& control_point_matcher = "superpoint-lightglue") {
   std::ofstream output(path);
   // The synthetic views were generated for this geometry. Keep the fixture
-  // independent of changes to the shipped physical-camera defaults.
+  // independent of changes to the shipped physical-camera defaults. The
+  // repeated grid also needs the neural matcher used to qualify this fixture;
+  // dedicated AKAZE cases select that matcher explicitly.
   output << "game:\n"
          << "  videos:\n"
          << "    left: [cam1/GX010001.MP4]\n"
@@ -758,7 +760,10 @@ int main(int argc, char** argv) {
            "-f",
            "lavfi",
            "-i",
-           "testsrc2=size=960x540:rate=15,drawgrid=width=37:height=29:thickness=2:color=white@0.6,format=yuv420p",
+           // Use the same qualified view at zero and delayed calibration times.
+           // Moving testsrc patterns can produce ambiguous matches at time zero.
+           "testsrc2=size=960x540:rate=15,drawgrid=width=37:height=29:thickness=2:color=white@0.6,"
+           "trim=start_frame=899:end_frame=900,loop=loop=-1:size=1:start=0,setpts=N/(15*TB),format=yuv420p",
            "-f",
            "lavfi",
            "-i",
@@ -1016,7 +1021,8 @@ int main(int argc, char** argv) {
                   /*time_limit_seconds=*/0,
                   /*stitch_rotate_degrees=*/{},
                   /*supply_runtime_invalidation=*/true,
-                  /*rink_inference_delay_ms=*/0,
+                  // Keep calibration active until the one-second timer fires.
+                  /*rink_inference_delay_ms=*/3000,
                   /*supply_control_points_environment=*/true,
                   /*same_stage_instances=*/1,
                   /*completion_timeout_ms=*/0,
@@ -1961,6 +1967,7 @@ int main(int argc, char** argv) {
   }
 
   if (!ok) {
+    periodic_recreation.DumpOutput("periodic recreation");
     initial.DumpOutput("initial calibration");
     configure_only_invalid_seam.DumpOutput("configure-only invalid-seam validation");
     one_pass_invalid_seam.DumpOutput("one-pass invalid-seam validation");

@@ -89,7 +89,7 @@ class Cropper : public hm::playcropper::PlayCropperPriv {
 
 class Metadata {
  public:
-  Metadata() {
+  explicit Metadata(bool ignored = false) {
     source = nvds_create_batch_meta(1);
     program = nvds_create_batch_meta(1);
     Check(source && program, "batch metadata allocation failed");
@@ -111,6 +111,7 @@ class Metadata {
     player->rect_params.top = 160;
     player->rect_params.width = 80;
     player->rect_params.height = 120;
+    preview::set_player_ignored(*player, ignored);
     nvds_add_obj_meta_to_frame(original, player, nullptr);
     auto* camera = nvds_acquire_obj_meta_from_pool(source);
     Check(camera, "camera box allocation failed");
@@ -167,10 +168,13 @@ std::vector<unsigned char> Run(
     uint32_t layers,
     bool suppress,
     float confidence,
-    bool invalid_output = false) {
-  Metadata meta;
+    bool invalid_output = false,
+    bool ignored = false) {
+  Metadata meta(ignored);
   Cropper cropper(stream);
   Check(cropper.SetProperty({"player-overlay-layers", std::to_string(layers)}), "layer setting rejected");
+  Check(cropper.SetProperty({"plot-player-tracking", (layers & pa::kDrawPlayerBoxes) ? "1" : "0"}),
+        "player box setting rejected");
   Check(cropper.SetProperty({"player-joint-confidence", std::to_string(confidence)}), "confidence rejected");
   if (suppress)
     cropper.Suppress();
@@ -258,6 +262,22 @@ int main(int argc, char** argv) {
     const auto drawn = Run(stream, input, output, pa::kDrawPose, false, 0.3F);
     Check(drawn != off && ColoredAt(drawn, 160, 88, 64), "actual cropper did not draw at transformed joint position");
     Check(!ColoredAt(drawn, 160, 70, 55), "joint was drawn at naive scale instead of crop/rotation position");
+    const auto ignored = Run(stream, input, output, pa::kDrawPlayerBoxes, false, .3F, false, true);
+    unsigned label_pixels = 0;
+    // The fixture's transformed box begins near (72,39). Its upright label
+    // occupies the strip above it; neither the box border nor watermark does.
+    for (unsigned y = 27; y < 36; ++y) {
+      for (unsigned x = 74; x < 126; ++x) {
+        const size_t pixel = (y * 160 + x) * 4;
+        if (ignored[pixel] != off[pixel]) {
+          Check(
+              ignored[pixel] == ignored[pixel + 1] && ignored[pixel + 1] == ignored[pixel + 2],
+              "IGNORED label is not gray");
+          ++label_pixels;
+        }
+      }
+    }
+    Check(label_pixels > 10, "actual Program GPU output omitted the IGNORED label above the box");
     Run(stream, input, output, pa::kDrawPose, true, 0.3F);
 #if !defined(__aarch64__)
     // Backing allocation remains RGBA-sized. Only its declared output format

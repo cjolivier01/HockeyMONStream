@@ -249,6 +249,7 @@ class IsolatedGameTest(unittest.TestCase):
 class ProcessGroupTest(unittest.TestCase):
   def run_state_args(self, pipeline: Path) -> argparse.Namespace:
     return argparse.Namespace(
+        control_point_matcher="akaze-hamming",
         control_points=900,
         frame_count=4,
         max_live_canvas_dimension=2048,
@@ -333,6 +334,7 @@ class ProcessGroupTest(unittest.TestCase):
                 sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
                 import run_stitching_calibration_matrix as matrix
                 args = argparse.Namespace(
+                    control_point_matcher="akaze-hamming",
                     control_points=900, frame_count=4, max_live_canvas_dimension=2048,
                     hstream_cli=Path({str(pipeline)!r}), workspace=Path({str(Path(__file__).resolve().parents[1])!r}),
                     config_root=Path({str(Path(__file__).resolve().parents[1] / 'configs')!r}),
@@ -366,6 +368,8 @@ class ProcessGroupTest(unittest.TestCase):
           if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=2)
+          process.stdout.close()
+          process.stderr.close()
           if pipeline_pid.is_file():
             child_pid = int(pipeline_pid.read_text(encoding="utf-8"))
             try:

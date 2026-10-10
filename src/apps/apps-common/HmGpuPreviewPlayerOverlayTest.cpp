@@ -22,7 +22,7 @@ void Check(bool condition, const char* message) {
 
 // Real collect_preview_overlays caller, metadata only: no GL context, video
 // readback, compositor substitution or reproduction of its selection algorithm.
-GstBuffer* Buffer(bool transform, uint32_t baked) {
+GstBuffer* Buffer(bool transform, uint32_t baked, bool ignored = false, bool snapshot = true) {
   auto* batch = nvds_create_batch_meta(1);
   Check(batch, "batch allocation failed");
   auto* frame = nvds_acquire_frame_meta_from_pool(batch);
@@ -62,8 +62,13 @@ GstBuffer* Buffer(bool transform, uint32_t baked) {
   object->rect_params.width = 100;
   object->rect_params.height = 180;
   object->rect_params.border_color = {1, 0, 0, 1};
+  preview::set_player_ignored(*object, ignored);
   nvds_add_obj_meta_to_frame(frame, object, nullptr);
-  Check(preview::add_overlay_snapshot_meta(frame), "snapshot attachment failed");
+  if (snapshot) {
+    Check(preview::add_overlay_snapshot_meta(frame), "snapshot attachment failed");
+    // Preview must use the frozen decision even after downstream mutation.
+    preview::set_player_ignored(*object, false);
+  }
   if (transform) {
     preview::PlayCropperTransform crop{
         320, 240, 640, 480, 40, 0, 90, 105, 0, 30, 180, 150, 160, 120, 3.1875F, false, baked};
@@ -116,6 +121,29 @@ int main(int argc, char** argv) {
     Check(
         disabled.analytics_command_count == 0 && disabled.path_count > 0,
         "disabled semantic drawing retained commands or disabled independent box diagnostics");
+    for (bool snapshot : {true, false}) {
+      auto* ignored = Buffer(true, 0, true, snapshot);
+      for (const char* channel : {"stitched", "program"}) {
+        g_object_set(sink, "channel", channel, "show-player-tracking", TRUE, nullptr);
+        const auto marked = gpu::inspect_preview_overlays_for_test(sink, ignored);
+        Check(marked.analytics_command_count == 7 && marked.path_count > 0, "box-only preview omitted IGNORED label");
+        for (const auto& color : marked.colors)
+          Check(color[0] == .5 && color[1] == .5 && color[2] == .5 && color[3] == 1, "preview ignored box is not gray");
+        g_object_set(sink, "show-player-tracking", FALSE, nullptr);
+        const auto hidden = gpu::inspect_preview_overlays_for_test(sink, ignored);
+        Check(
+            hidden.analytics_command_count == 0 && hidden.path_count == 0,
+            "player box switch left ignored overlays visible");
+      }
+      gst_buffer_unref(ignored);
+    }
+    g_object_set(sink, "channel", "program", "show-player-tracking", TRUE, nullptr);
+    auto* ignored_baked = Buffer(true, pa::kDrawPlayerBoxes, true);
+    const auto marked_baked = gpu::inspect_preview_overlays_for_test(sink, ignored_baked);
+    Check(
+        marked_baked.analytics_command_count == 0 && marked_baked.path_count == 0,
+        "Program preview repeated baked ignored overlays");
+    gst_buffer_unref(ignored_baked);
     gst_buffer_unref(missing);
     gst_buffer_unref(fresh);
     gst_buffer_unref(baked);

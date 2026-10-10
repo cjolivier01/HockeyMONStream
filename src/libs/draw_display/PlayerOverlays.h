@@ -16,6 +16,15 @@ enum PlayerLayer : uint32_t {
   kActions = player_analytics::kDrawActions
 };
 
+// Shared by Program's CUDA overlay and the GPU preview's box diagnostics.
+// The label is upright above the transformed box, and omitted if off-crop.
+void AddIgnoredPlayerLabel(
+    const NvOSD_RectParams& rect,
+    const preview_overlay::PlayCropperTransform* transform,
+    float coordinate_width,
+    float coordinate_height,
+    CommandList* commands);
+
 // CPU metadata only. Caller skips this function when layers==0. A Program
 // transform maps original metadata pixels to owned output pixels; null means
 // Stitched coordinates. Baked layers are excluded before metadata traversal.

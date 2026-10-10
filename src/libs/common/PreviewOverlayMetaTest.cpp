@@ -90,6 +90,7 @@ int main(int argc, char** argv) {
   player_meta->rect_params.width = 56.0F;
   player_meta->rect_params.height = 78.0F;
   player_meta->rect_params.border_width = 4;
+  hm::preview_overlay::set_player_ignored(*player_meta, true);
   nvds_add_obj_meta_to_frame(frame_meta, player_meta, nullptr);
   nonplayer_meta->class_id = 1;
   nonplayer_meta->object_id = 18;
@@ -124,16 +125,17 @@ int main(int argc, char** argv) {
   }
   const auto* snapshot = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta);
   player_meta->rect_params.left = 999.0F;
+  hm::preview_overlay::set_player_ignored(*player_meta, false);
   display_meta->rect_params[0].left = 998.0F;
   display_meta->line_params[0].x1 = 997;
   display_meta->arrow_params[0].x1 = 996;
   display_meta->circle_params[0].xc = 995;
   const bool snapshot_ok = snapshot && near(snapshot->coordinate_width, 4096.0F) &&
       near(snapshot->coordinate_height, 2048.0F) && snapshot->player_rects.size() == 1 &&
-      near(snapshot->player_rects[0].left, 123.0F) && snapshot->play_rects.size() == 1 &&
-      near(snapshot->play_rects[0].left, 345.0F) && snapshot->play_lines.size() == 1 &&
-      snapshot->play_lines[0].x1 == 10 && snapshot->play_arrows.size() == 1 && snapshot->play_arrows[0].x1 == 50 &&
-      snapshot->play_circles.size() == 1 && snapshot->play_circles[0].xc == 91;
+      near(snapshot->player_rects[0].rect.left, 123.0F) && snapshot->player_rects[0].ignored &&
+      snapshot->play_rects.size() == 1 && near(snapshot->play_rects[0].left, 345.0F) &&
+      snapshot->play_lines.size() == 1 && snapshot->play_lines[0].x1 == 10 && snapshot->play_arrows.size() == 1 &&
+      snapshot->play_arrows[0].x1 == 50 && snapshot->play_circles.size() == 1 && snapshot->play_circles[0].xc == 91;
   if (!snapshot_ok || !hm::preview_overlay::add_overlay_snapshot_meta(frame_meta) ||
       hm::preview_overlay::find_overlay_snapshot_meta(frame_meta) != snapshot) {
     std::cerr << "Preview overlay snapshot changed with downstream metadata or was attached twice\n";
@@ -200,7 +202,9 @@ int main(int argc, char** argv) {
       near(attached_transform->angle_degrees, transform.angle_degrees) && duplicate_rejected &&
       !hm::preview_overlay::find_playcropper_transform_meta(stitched_frame) &&
       program_snapshot->player_rects.size() == 1 && stitched_snapshot->player_rects.size() == 1 &&
-      near(program_snapshot->player_rects[0].left, 123.0F) && near(stitched_snapshot->player_rects[0].left, 123.0F);
+      program_snapshot->player_rects[0].ignored && stitched_snapshot->player_rects[0].ignored &&
+      near(program_snapshot->player_rects[0].rect.left, 123.0F) &&
+      near(stitched_snapshot->player_rects[0].rect.left, 123.0F);
   if (program_output)
     gst_buffer_unref(program_output);
   if (stitched_output)

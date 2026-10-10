@@ -8,6 +8,25 @@
 
 namespace hm::preview_overlay {
 
+// Application-owned object metadata, copied by nvds_copy_obj_meta(). A tagged
+// value avoids treating arbitrary upstream misc data as a camera exclusion.
+// Slot 0 is reserved by HStream for this per-frame flag; tracking IDs and the
+// palette lease remain unchanged when a player is excluded from camera logic.
+inline bool player_is_ignored(const NvDsObjectMeta& object) {
+  return object.misc_obj_info[0] == 0x485349474e4f5245LL;
+}
+inline void set_player_ignored(NvDsObjectMeta& object, bool ignored) {
+  object.misc_obj_info[0] = ignored ? 0x485349474e4f5245LL : 0;
+}
+
+inline constexpr NvOSD_ColorParams kIgnoredPlayerColor{0.5, 0.5, 0.5, 1.0};
+
+struct PlayerRect {
+  NvOSD_RectParams rect;
+  uint64_t track_id{UNTRACKED_OBJECT_ID};
+  bool ignored{false};
+};
+
 struct Point {
   float x{0.0F};
   float y{0.0F};
@@ -44,7 +63,7 @@ struct PlayCropperTransform {
 struct OverlaySnapshot {
   float coordinate_width{0.0F};
   float coordinate_height{0.0F};
-  std::vector<NvOSD_RectParams> player_rects;
+  std::vector<PlayerRect> player_rects;
   std::vector<NvOSD_RectParams> play_rects;
   std::vector<NvOSD_LineParams> play_lines;
   std::vector<NvOSD_ArrowParams> play_arrows;

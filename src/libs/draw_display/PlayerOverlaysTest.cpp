@@ -400,6 +400,99 @@ void LabelsRequireVisiblePlayer() {
   transform.crop_top = 80;
   Check(commands_for({0, 0, 100, 100}, transform) == 9, "Visible rotated player lost labels");
 }
+
+void IgnoredPlayers() {
+  Frame source;
+  auto* ignored = source.Object();
+  source.Object(101);
+  po::set_player_ignored(*ignored, true);
+  // Color assignment must not erase the independent camera exclusion flag.
+  po::TrackColorState colors;
+  Check(colors.Apply(source.frame), "color join failed");
+  Frame copy;
+  copy.CopyFrom(source);
+  po::set_player_ignored(*ignored, false);
+  a::CommandList list;
+  auto transform = Transform();
+  a::BuildPlayerOverlays(copy.frame, a::kPlayerBoxes, .3F, &transform, 1280, 720, &list);
+  Check(list.size() == 15, "copied ignored player lost its box or seven-glyph label");
+  unsigned glyphs = 0, gray_lines = 0;
+  constexpr char text[] = "IGNORED";
+  for (size_t i = 0; i < list.size(); ++i) {
+    const auto& cmd = list.data()[i];
+    if (cmd.kind == a::detail::Kind::kGlyph) {
+      Check(cmd.glyph == static_cast<unsigned>(text[glyphs++] - 32), "wrong ignored label");
+      Color(cmd.color, po::kIgnoredPlayerColor);
+      Near(cmd.y0, ExpectedProgram(140, 100).y - 16, "ignored label not above rotated box");
+    } else if (
+        std::abs(cmd.color.red - .5F) < .001F && std::abs(cmd.color.green - .5F) < .001F &&
+        std::abs(cmd.color.blue - .5F) < .001F) {
+      ++gray_lines;
+    }
+  }
+  Check(glyphs == 7 && gray_lines == 4, "ignored box is not gray or ordinary box changed");
+  const auto before = allocations.load();
+  list.Clear();
+  a::BuildPlayerOverlays(copy.frame, a::kPlayerBoxes, .3F, &transform, 1280, 720, &list);
+  Check(allocations.load() == before, "warmed ignored-label construction allocated");
+  list.Clear();
+  a::BuildPlayerOverlays(copy.frame, 0, .3F, nullptr, 800, 600, &list);
+  transform.baked_player_layers = a::kPlayerBoxes;
+  a::BuildPlayerOverlays(copy.frame, a::kPlayerBoxes, .3F, &transform, 1280, 720, &list);
+  Check(list.empty(), "disabled/baked boxes emitted ignored labels");
+  a::BuildPlayerOverlays(source.frame, a::kPlayerBoxes, .3F, nullptr, 800, 600, &list);
+  Check(list.size() == 8, "cleared exclusion retained label");
+  list.Clear();
+  auto offscreen = ignored->rect_params;
+  offscreen.left = -1000;
+  a::AddIgnoredPlayerLabel(offscreen, nullptr, 800, 600, &list);
+  Check(list.empty(), "offscreen ignored player emitted a floating label");
+  a::CommandList limited(10);
+  a::BuildPlayerOverlays(copy.frame, a::kPlayerBoxes, .3F, nullptr, 800, 600, &limited);
+  for (size_t i = 0; i < limited.size(); ++i)
+    Check(limited.data()[i].kind != a::detail::Kind::kGlyph, "capacity rendered a partial IGNORED label");
+}
+
+void IgnoredAndSemanticLabels() {
+  // Program draws all layers together; previews collect ignored diagnostics
+  // from the immutable snapshot before independently requested semantic text.
+  for (bool snapshot : {false, true}) {
+    Frame frame;
+    auto* player = frame.Object();
+    po::set_player_ignored(*player, true);
+    frame.Attach(Result());
+    if (snapshot) {
+      Check(po::add_overlay_snapshot_meta(frame.frame), "attach ignored semantic snapshot");
+      po::set_player_ignored(*player, false);
+    }
+    for (bool cropped : {false, true}) {
+      auto transform = Transform();
+      const auto* t = cropped ? &transform : nullptr;
+      const float width = cropped ? 1280 : 800, height = cropped ? 720 : 600;
+      a::CommandList ignored, semantic;
+      a::AddIgnoredPlayerLabel(player->rect_params, t, width, height, &ignored);
+      a::BuildPlayerOverlays(frame.frame, a::kJerseys | a::kActions, .3F, t, width, height, &semantic);
+      Check(ignored.size() == 7 && semantic.size() == 9, "combined labels lost glyphs");
+      Check(semantic.data()[0].y0 >= ignored.data()[0].y1, "jersey label overlaps IGNORED");
+      Check(semantic.data()[2].y0 >= semantic.data()[0].y1, "action label overlaps jersey");
+      const auto count = allocations.load();
+      semantic.Clear();
+      a::BuildPlayerOverlays(frame.frame, a::kJerseys | a::kActions, .3F, t, width, height, &semantic);
+      Check(allocations.load() == count, "warmed combined labels allocated");
+    }
+  }
+  // A snapshot requested only for play geometry has no player decisions.
+  Frame play_only;
+  auto* player = play_only.Object();
+  po::set_player_ignored(*player, true);
+  play_only.Attach(Result());
+  Check(po::add_selected_overlay_snapshot_meta(play_only.frame, false, true, nullptr), "attach play-only snapshot");
+  a::CommandList list;
+  a::BuildPlayerOverlays(play_only.frame, a::kPlayerBoxes | a::kJerseys, .3F, nullptr, 800, 600, &list);
+  Check(
+      list.size() == 13 && list.data()[11].y0 >= list.data()[4].y1,
+      "play-only snapshot lost ignored semantic row separation");
+}
 } // namespace
 int main() {
   struct Test {
@@ -414,7 +507,9 @@ int main() {
       {"baked_transform_and_empty", BakedTransformsAndEmpty},
       {"zero_confidence", ZeroConfidenceNeverDraws},
       {"baked_boxes", BakedBoxesNeverDraw},
-      {"labels_require_visible_player", LabelsRequireVisiblePlayer}};
+      {"labels_require_visible_player", LabelsRequireVisiblePlayer},
+      {"ignored_players", IgnoredPlayers},
+      {"ignored_and_semantic_labels", IgnoredAndSemanticLabels}};
   unsigned failures = 0;
   for (const auto& test : cases) {
     try {

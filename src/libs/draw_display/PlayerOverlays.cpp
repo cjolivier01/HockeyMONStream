@@ -50,6 +50,38 @@ bool VisibleBox(const std::array<Point, 4>& corners, float width, float height) 
 }
 } // namespace
 
+void AddIgnoredPlayerLabel(
+    const NvOSD_RectParams& rect,
+    const preview_overlay::PlayCropperTransform* transform,
+    float coordinate_width,
+    float coordinate_height,
+    CommandList* commands) {
+  if (!commands || !std::isfinite(coordinate_width) || !std::isfinite(coordinate_height) || coordinate_width <= 0 ||
+      coordinate_height <= 0 || rect.width <= 0 || rect.height <= 0)
+    return;
+  const auto map = [transform](Point point) {
+    return transform ? preview_overlay::metadata_to_output(*transform, point) : point;
+  };
+  const std::array<Point, 4> corners{
+      {map({rect.left, rect.top}),
+       map({rect.left + rect.width, rect.top}),
+       map({rect.left + rect.width, rect.top + rect.height}),
+       map({rect.left, rect.top + rect.height})}};
+  if (!VisibleBox(corners, coordinate_width, coordinate_height))
+    return;
+  float x = corners[0].x, y = corners[0].y;
+  for (const auto& point : corners) {
+    x = std::min(x, point.x);
+    y = std::min(y, point.y);
+  }
+  const float height = 24 * std::clamp(coordinate_height / 1080.0F, 0.5F, 8.0F);
+  constexpr std::string_view label = "IGNORED";
+  x = std::clamp(x, 0.0F, std::max(0.0F, coordinate_width - label.size() * height * 2 / 3));
+  y = std::max(0.0F, y - height);
+  const auto& c = preview_overlay::kIgnoredPlayerColor;
+  commands->AddText(x, y, height, label, {float(c.red), float(c.green), float(c.blue), float(c.alpha)});
+}
+
 void BuildPlayerOverlays(
     const NvDsFrameMeta* frame,
     uint32_t layers,
@@ -88,7 +120,8 @@ void BuildPlayerOverlays(
            map({rect.left + rect.width, rect.top}),
            map({rect.left + rect.width, rect.top + rect.height}),
            map({rect.left, rect.top + rect.height})}};
-      const auto& c = rect.border_color;
+      const bool ignored = preview_overlay::player_is_ignored(*object);
+      const auto& c = ignored ? preview_overlay::kIgnoredPlayerColor : rect.border_color;
       const Color color{
           static_cast<float>(c.red),
           static_cast<float>(c.green),
@@ -99,6 +132,8 @@ void BuildPlayerOverlays(
         const auto& b = points[(i + 1) % points.size()];
         commands->AddLine(a.x, a.y, b.x, b.y, line_width, color);
       }
+      if (ignored)
+        AddIgnoredPlayerLabel(rect, transform, coordinate_width, coordinate_height, commands);
     }
   }
   if (!(layers & (kPose | kJerseys | kActions)))
@@ -131,8 +166,25 @@ void BuildPlayerOverlays(
   }
   if (!(layers & (kJerseys | kActions)))
     return;
+  const auto* snapshot = preview_overlay::find_overlay_snapshot_meta(frame);
+  const auto is_ignored = [frame, snapshot](uint64_t id) {
+    if (snapshot && !snapshot->player_rects.empty())
+      return std::any_of(snapshot->player_rects.begin(), snapshot->player_rects.end(), [id](const auto& player) {
+        return player.ignored && player.track_id == id;
+      });
+    for (const auto* item = frame->obj_meta_list; item; item = item->next) {
+      const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
+      if (object && object->class_id == 0 && object->object_id == id)
+        return preview_overlay::player_is_ignored(*object);
+    }
+    return false;
+  };
   for (size_t i = 0; i < result->player_count; ++i) {
     const auto& player = result->players[i];
+    const bool jersey = (layers & kJerseys) && player.jersey.text[0] && player.jersey.expires_at >= result->pts_ns;
+    const bool action = (layers & kActions) && player.action.label >= 0 && player.action.expires_at >= result->pts_ns;
+    if (!jersey && !action)
+      continue;
     const Color color = PlayerColor(player.color_slot);
     const auto& box = player.box;
     const std::array<Point, 4> corners{
@@ -150,6 +202,10 @@ void BuildPlayerOverlays(
     const float height = 24 * scale;
     x = std::clamp(x, 0.0F, coordinate_width);
     y = std::max(height, y) - height;
+    // Reserve the row above an ignored player for its camera-exclusion label.
+    // Keep semantic rows stable across the independent box visibility switch.
+    if (is_ignored(player.track_id))
+      y += height;
     const auto label = [&](std::string_view text) {
       if (text.empty())
         return;
@@ -158,9 +214,9 @@ void BuildPlayerOverlays(
       commands->AddText(x, y, height, text, color);
       y += height;
     };
-    if ((layers & kJerseys) && player.jersey.text[0] && player.jersey.expires_at >= result->pts_ns)
+    if (jersey)
       label(player.jersey.text.data());
-    if ((layers & kActions) && player.action.label >= 0 && player.action.expires_at >= result->pts_ns)
+    if (action)
       label(player.action_text.data());
   }
 }
