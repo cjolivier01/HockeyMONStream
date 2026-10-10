@@ -276,12 +276,18 @@ bool link_fixture(const fs::path& source_game, const fs::path& test_game) {
       "rink_mask_0.png",
       "s.png",
       "seam_file.png",
+      "stitching_canvas_provenance",
+      "stitching_generation_id",
   };
   for (const std::string& name : artifacts) {
     if (!fs::is_regular_file(source_game / name)) {
       continue;
     }
-    fs::create_symlink(fs::absolute(source_game / name), test_game / name, ec);
+    // Calibration readers pin regular files with O_NOFOLLOW. Keep this private
+    // fixture independent of the operator's original artifact generation.
+    fs::copy_file(source_game / name, test_game / name, ec);
+    if (!ec)
+      fs::last_write_time(test_game / name, fs::last_write_time(source_game / name), ec);
     if (ec) {
       return false;
     }

@@ -4821,8 +4821,11 @@ play-tracker:
   ok &= expect(
       !source_link_race.ok() && source_link_race_source_content == "injected foreign archive source before link" &&
           source_link_race_recovery_content == "trusted source pinned before recovery link" &&
-          !fs::exists(source_link_race_recovery.string() + ".log"),
-      "Recovery publication must link the pinned source inode and leave a replacement source pathname untouched");
+          fs::equivalent(source_link_race_recovery, source_link_race_recovery.string() + ".log") &&
+          fs::equivalent(source_link_race_recovery, source_link_race_recovery.string() + ".hstream-pin") &&
+          fs::equivalent(source_link_race_recovery, source_link_race_source.string() + ".hstream-pin"),
+      "Recovery publication must retain the pinned inode, no-log marker and restart guards while leaving a "
+      "replacement source pathname untouched");
 
   const auto interrupted_after_source_cleanup_is_reconciled =
       [&](const std::string& name, bool has_log, bool remove_visible_video) {

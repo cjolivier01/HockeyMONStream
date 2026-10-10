@@ -963,7 +963,9 @@ int main(int argc, char** argv) {
             argv[1],
             playlist_seek_config,
             "URI-MULTIPLE",
-            "RENDER",
+            // The extra clocked sink keeps this timer-based recreation test
+            // alive; the headless render terminator intentionally runs unpaced.
+            "RENDER,FAKE",
             true,
             {},
             {"--start-time=00:06:30", "--options=pipeline.tests.pipeline-recreate-sec=5"}),
