@@ -984,8 +984,10 @@ static gboolean gst_videoprep_sink_event(GstPad* sinkpad, GstObject* bscope, Gst
 
   if (videoprep->priv) {
     ret = videoprep->priv->HandleEvent(event);
-    if (!ret)
+    if (!ret) {
+      gst_event_unref(event);
       return ret;
+    }
   }
 
   ret = videoprep->parent_sink_event_fn(sinkpad, bscope, event);

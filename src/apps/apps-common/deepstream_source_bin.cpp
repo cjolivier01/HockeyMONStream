@@ -13,9 +13,12 @@
 #include <glib-2.0/glib-object.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -42,6 +45,55 @@
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
+
+GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(const gchar* uri) {
+  struct CachedDuration {
+    struct stat identity;
+    GstClockTime duration;
+  };
+  static std::mutex cache_mutex;
+  static std::map<std::string, CachedDuration> cache;
+  const auto same_file = [](const struct stat& a, const struct stat& b) {
+    return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size &&
+        a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
+        a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
+  };
+  gchar* filename = g_filename_from_uri(uri, nullptr, nullptr);
+  struct stat before{};
+  const bool cacheable = filename && stat(filename, &before) == 0 && S_ISREG(before.st_mode);
+  if (cacheable) {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    const auto found = cache.find(uri);
+    if (found != cache.end() && same_file(before, found->second.identity)) {
+      g_free(filename);
+      return found->second.duration;
+    }
+  }
+  // Discoverer may initialize decoders just to obtain the container duration.
+  // Do this once per unchanged chapter, rather than again on every seek.
+  GError* error = nullptr;
+  GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
+  GstDiscovererInfo* info = discoverer ? gst_discoverer_discover_uri(discoverer, uri, &error) : nullptr;
+  GstClockTime duration = info ? gst_discoverer_info_get_duration(info) : GST_CLOCK_TIME_NONE;
+  const GstDiscovererResult result = info ? gst_discoverer_info_get_result(info) : GST_DISCOVERER_ERROR;
+  if (info)
+    gst_discoverer_info_unref(info);
+  if (discoverer)
+    g_object_unref(discoverer);
+  if (error)
+    g_error_free(error);
+  if (!discovery_has_usable_duration(result, duration))
+    duration = GST_CLOCK_TIME_NONE;
+  struct stat after{};
+  if (cacheable && GST_CLOCK_TIME_IS_VALID(duration) && stat(filename, &after) == 0 && same_file(before, after)) {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    if (cache.size() >= 512)
+      cache.clear();
+    cache[uri] = {after, duration};
+  }
+  g_free(filename);
+  return duration;
+}
 
 static gboolean install_mux_eosmonitor_probe = FALSE;
 static gint uri_playlist_initial_seek_failure_injected = FALSE;
@@ -2208,7 +2260,8 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
 
       GST_CAT_DEBUG(NVDS_APP, "Decodebin linked to pipeline");
     }
-    if (link_result.status == UriDecodePadLinkStatus::kLinked && link_result.initial_seek_blocked) {
+    if (link_result.status == UriDecodePadLinkStatus::kLinked && link_result.initial_seek_blocked &&
+        !g_getenv("HM_TEST_URI_PLAYLIST_SUPPRESS_INITIAL_SEEK_READY")) {
       gst_element_post_message(
           bin->src_elem,
           gst_message_new_application(
@@ -4058,24 +4111,9 @@ gboolean configure_uri_playlist_initial_offsets(
     const GstClockTime target = source_id == audio_source_id ? std::min(video_target, start_time_ns) : video_target;
     plans[source_id].target = target;
     while (plans[source_id].index < source->num_uri_list) {
-      GError* error = nullptr;
-      GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
-      GstDiscovererInfo* info = discoverer
-          ? gst_discoverer_discover_uri(discoverer, source->uri_list[plans[source_id].index], &error)
-          : nullptr;
-      const GstClockTime duration = info ? gst_discoverer_info_get_duration(info) : GST_CLOCK_TIME_NONE;
-      const GstDiscovererResult result = info ? gst_discoverer_info_get_result(info) : GST_DISCOVERER_ERROR;
-      if (info) {
-        gst_discoverer_info_unref(info);
-      }
-      if (discoverer) {
-        g_object_unref(discoverer);
-      }
-      if (error) {
-        g_error_free(error);
-      }
-      if (!hm::uri_playlist_internal::discovery_has_usable_duration(result, duration) ||
-          duration > G_MAXUINT64 - plans[source_id].skipped_base) {
+      const GstClockTime duration =
+          hm::uri_playlist_internal::discover_uri_playlist_duration(source->uri_list[plans[source_id].index]);
+      if (!GST_CLOCK_TIME_IS_VALID(duration) || duration > G_MAXUINT64 - plans[source_id].skipped_base) {
         break;
       }
       if (plans[source_id].skipped_base + duration > target) {
@@ -4157,24 +4195,9 @@ gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 
       return FALSE;
     }
     while (plans[source_id].index < source->num_uri_list) {
-      GError* error = nullptr;
-      GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
-      GstDiscovererInfo* info = discoverer
-          ? gst_discoverer_discover_uri(discoverer, source->uri_list[plans[source_id].index], &error)
-          : nullptr;
-      const GstClockTime duration = info ? gst_discoverer_info_get_duration(info) : GST_CLOCK_TIME_NONE;
-      const GstDiscovererResult result = info ? gst_discoverer_info_get_result(info) : GST_DISCOVERER_ERROR;
-      if (info) {
-        gst_discoverer_info_unref(info);
-      }
-      if (discoverer) {
-        g_object_unref(discoverer);
-      }
-      if (error) {
-        g_error_free(error);
-      }
-      if (!hm::uri_playlist_internal::discovery_has_usable_duration(result, duration) ||
-          duration > G_MAXUINT64 - plans[source_id].skipped_base) {
+      const GstClockTime duration =
+          hm::uri_playlist_internal::discover_uri_playlist_duration(source->uri_list[plans[source_id].index]);
+      if (!GST_CLOCK_TIME_IS_VALID(duration) || duration > G_MAXUINT64 - plans[source_id].skipped_base) {
         return FALSE;
       }
       if (plans[source_id].skipped_base + duration > start_time_ns) {

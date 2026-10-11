@@ -2,6 +2,7 @@
 
 #include <QtCore/QString>
 #include <QtCore/QVector>
+#include <optional>
 
 namespace hm::ui {
 
@@ -58,6 +59,9 @@ struct HighlightPlan {
   QVector<HighlightInterval> intervals;
   QString base_name{"highlights"};
   QString archive_path;
+  // Intervals remain absolute source times; the editor presents offsets from
+  // this origin. Missing in legacy plans, which inherit the main playback start.
+  std::optional<qint64> playback_start_ms;
 };
 
 // Times use the recording's logical timeline. The upper bound keeps milliseconds
@@ -65,6 +69,9 @@ struct HighlightPlan {
 bool ParseHighlightTime(const QString& text, qint64* milliseconds, QString* error = nullptr);
 QString FormatHighlightTime(qint64 milliseconds);
 bool NormalizeHighlightInterval(HighlightInterval* interval, QString* error = nullptr);
+// Move clips and authored cues together, retaining their offsets. Transactional
+// on invalid ranges; recorded-track cues require an explicit new binding.
+bool SetHighlightPlaybackStart(HighlightPlan* plan, qint64 start_ms, QString* error = nullptr);
 bool ValidateHighlightAnnotation(const HighlightAnnotation& annotation, QString* error = nullptr);
 qint64 HighlightItemDuration(const HighlightInterval& item);
 bool LoadHighlightPlan(const QString& path, HighlightPlan* plan, QString* error = nullptr);

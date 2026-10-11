@@ -112,7 +112,8 @@ HighlightsDialog::HighlightsDialog(
     QString game_dir,
     QProcessEnvironment env,
     QVector<ArchiveEntry> archives,
-    QWidget* parent)
+    QWidget* parent,
+    qint64 playback_start_ms)
     : QDialog(parent, Qt::Window),
       game_id_(std::move(game_id)),
       game_dir_(std::move(game_dir)),
@@ -125,8 +126,8 @@ HighlightsDialog::HighlightsDialog(
   resize(1220, 700);
   auto* root = new QVBoxLayout(this);
   auto* intro = new QLabel(
-      "Highlights are cut from a published archive of this game. Add event times or exact ranges in game time. "
-      "Enter seconds, MM:SS, or HH:MM:SS (optional .mmm). Event clips use 75% of the duration before the event.");
+      "Highlights are cut from a published archive of this game. Enter nonnegative offsets from Playback start. "
+      "Use seconds (12.5), MM:SS (90:23), or HH:MM:SS. Event clips use 75% of the duration before the event.");
   intro->setWordWrap(true);
   auto* heading = new QHBoxLayout();
   heading->addWidget(intro, 1);
@@ -148,6 +149,14 @@ HighlightsDialog::HighlightsDialog(
   archive_offset_edit_->setMaximumWidth(130);
   archive_offset_edit_->setPlaceholderText("00:00:00");
   source_row->addWidget(archive_offset_edit_);
+  source_row->addWidget(new QLabel("Playback start", this));
+  playback_start_edit_ = new QLineEdit(this);
+  playback_start_edit_->setObjectName("highlightPlaybackStartEdit");
+  playback_start_edit_->setMaximumWidth(130);
+  playback_start_edit_->setToolTip(
+      "Inherited from the main Playback start for a new plan. Changing it moves clips and authored cues while "
+      "keeping their offsets fixed. The archive's start remains independent.");
+  source_row->addWidget(playback_start_edit_);
   root->addLayout(source_row);
   archive_detail_ = new QLabel(this);
   archive_detail_->setObjectName("highlightArchiveDetail");
@@ -170,13 +179,14 @@ HighlightsDialog::HighlightsDialog(
     applyArchiveSelection();
   });
   connect(archive_offset_edit_, &QLineEdit::editingFinished, this, &HighlightsDialog::commitArchiveOffset);
+  connect(playback_start_edit_, &QLineEdit::editingFinished, this, &HighlightsDialog::commitPlaybackStart);
 
   preview_splitter_ = new QSplitter(Qt::Horizontal, this);
   preview_splitter_->setObjectName("highlightPreviewSplitter");
   preview_splitter_->setChildrenCollapsible(false);
   table_ = new QTableWidget(0, 6, preview_splitter_);
   table_->setObjectName("highlightsTable");
-  table_->setHorizontalHeaderLabels({"Name", "Input", "Start", "End", "Length", "In archive"});
+  table_->setHorizontalHeaderLabels({"Name", "Input", "Start offset", "End offset", "Length", "Archive offset"});
   table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
   for (int column = 1; column < 6; ++column)
     table_->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
@@ -224,14 +234,19 @@ HighlightsDialog::HighlightsDialog(
   first_edit_ = new QLineEdit(this);
   first_edit_->setObjectName("highlightFirstTimeEdit");
   first_edit_->setPlaceholderText("e.g. 32 or 14:12");
-  editor->addRow("Event / start", first_edit_);
+  auto* first_label = new QLabel("Event offset", this);
+  editor->addRow(first_label, first_edit_);
   second_edit_ = new QLineEdit(this);
   second_edit_->setObjectName("highlightSecondTimeEdit");
   second_edit_->setPlaceholderText("e.g. 32 or 14:12");
-  editor->addRow("Duration / end", second_edit_);
+  auto* second_label = new QLabel("Duration", this);
+  editor->addRow(second_label, second_edit_);
   root->addLayout(editor);
-  connect(mode_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
-    first_edit_->setPlaceholderText(mode_combo_->currentData().toBool() ? "Event: 32 or 14:12" : "Start: 32 or 14:12");
+  first_edit_->setToolTip("Offset from Playback start; zero or greater. Examples: 12.5, 14:12, 90:23, 01:30:23.");
+  connect(mode_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, first_label, second_label](int) {
+    first_label->setText(mode_combo_->currentData().toBool() ? "Event offset" : "Start offset");
+    second_label->setText(mode_combo_->currentData().toBool() ? "Duration" : "End offset");
+    first_edit_->setPlaceholderText("Offset: 32 or 90:23");
     second_edit_->setPlaceholderText(
         mode_combo_->currentData().toBool() ? "Duration: 32 or 14:12" : "End: 32 or 14:12");
   });
@@ -379,6 +394,16 @@ HighlightsDialog::HighlightsDialog(
   } else {
     status_->setText("Ready. Intervals are saved with this game.");
   }
+  if (!plan_.playback_start_ms) {
+    // Legacy plans store absolute moments. Preserve those clips when adopting
+    // an origin; an earlier existing clip must never turn into a negative offset.
+    qint64 inherited = std::max<qint64>(0, playback_start_ms);
+    for (const auto& item : plan_.intervals)
+      if (!item.is_card)
+        inherited = std::min(inherited, item.start_ms);
+    plan_.playback_start_ms = inherited;
+  }
+  playback_start_edit_->setText(FormatHighlightTime(*plan_.playback_start_ms));
   base_name_edit_->setText(plan_.base_name);
   int saved_index = -1;
   for (int i = 0; i < archives_.size(); ++i)
@@ -675,6 +700,24 @@ bool HighlightsDialog::buildQueue(bool selected, QVector<Clip>* clips, QString* 
   return true;
 }
 
+void HighlightsDialog::commitPlaybackStart() {
+  if (isBusy() || !plan_load_error_.isEmpty())
+    return;
+  qint64 start = 0;
+  QString error;
+  const HighlightPlan previous = plan_;
+  if (!ParseHighlightTime(playback_start_edit_->text(), &start, &error) ||
+      !SetHighlightPlaybackStart(&plan_, start, &error)) {
+    status_->setText("Invalid Playback start: " + error);
+  } else if (!savePlan()) {
+    plan_ = previous;
+  } else {
+    refreshTable();
+    loadEditor(table_->currentRow());
+  }
+  playback_start_edit_->setText(FormatHighlightTime(*plan_.playback_start_ms));
+}
+
 void HighlightsDialog::refreshTable() {
   const int selected = table_->currentRow();
   table_->setRowCount(plan_.intervals.size());
@@ -686,10 +729,10 @@ void HighlightsDialog::refreshTable() {
     const QStringList cells = {
         interval.label,
         interval.is_card          ? (interval.card.matchup ? "Matchup card" : "Text card")
-            : interval.event_mode ? "Event " + FormatHighlightTime(interval.event_ms)
+            : interval.event_mode ? "Event offset " + FormatHighlightTime(interval.event_ms - *plan_.playback_start_ms)
                                   : "Range",
-        interval.is_card ? QString("—") : FormatHighlightTime(interval.start_ms),
-        interval.is_card ? QString("—") : FormatHighlightTime(interval.end_ms),
+        interval.is_card ? QString("—") : FormatHighlightTime(interval.start_ms - *plan_.playback_start_ms),
+        interval.is_card ? QString("—") : FormatHighlightTime(interval.end_ms - *plan_.playback_start_ms),
         FormatHighlightTime(HighlightItemDuration(interval)),
         interval.is_card ? QString("Generated")
             : problem.isEmpty()
@@ -717,8 +760,10 @@ void HighlightsDialog::loadEditor(int row) {
   const auto& interval = plan_.intervals[row];
   label_edit_->setText(interval.label);
   mode_combo_->setCurrentIndex(interval.event_mode ? 0 : 1);
-  first_edit_->setText(FormatHighlightTime(interval.event_mode ? interval.event_ms : interval.start_ms));
-  second_edit_->setText(FormatHighlightTime(interval.event_mode ? interval.duration_ms : interval.end_ms));
+  first_edit_->setText(
+      FormatHighlightTime((interval.event_mode ? interval.event_ms : interval.start_ms) - *plan_.playback_start_ms));
+  second_edit_->setText(
+      FormatHighlightTime(interval.event_mode ? interval.duration_ms : interval.end_ms - *plan_.playback_start_ms));
 }
 
 bool HighlightsDialog::readEditor(HighlightInterval* interval) {
@@ -729,9 +774,14 @@ bool HighlightsDialog::readEditor(HighlightInterval* interval) {
   qint64 second = 0;
   if (!ParseHighlightTime(first_edit_->text(), &first, &error) ||
       !ParseHighlightTime(second_edit_->text(), &second, &error)) {
-    status_->setText("Invalid time: " + error);
+    status_->setText("Invalid offset or duration (use zero or greater): " + error);
     return false;
   }
+  // Both operands are individually bounded by the parser; their sum is still
+  // safely within qint64 and NormalizeHighlightInterval checks the media limit.
+  first += *plan_.playback_start_ms;
+  if (!interval->event_mode)
+    second += *plan_.playback_start_ms;
   if (interval->event_mode) {
     interval->event_ms = first;
     interval->duration_ms = second;
@@ -741,6 +791,10 @@ bool HighlightsDialog::readEditor(HighlightInterval* interval) {
   }
   if (!NormalizeHighlightInterval(interval, &error)) {
     status_->setText("Invalid interval: " + error);
+    return false;
+  }
+  if (interval->start_ms < *plan_.playback_start_ms) {
+    status_->setText("The duration extends before Playback start; use a later event offset or a shorter duration.");
     return false;
   }
   return true;
@@ -769,6 +823,7 @@ void HighlightsDialog::updateControls() {
        {static_cast<QWidget*>(table_),
         static_cast<QWidget*>(archive_combo_),
         static_cast<QWidget*>(archive_offset_edit_),
+        static_cast<QWidget*>(playback_start_edit_),
         static_cast<QWidget*>(label_edit_),
         static_cast<QWidget*>(mode_combo_),
         static_cast<QWidget*>(first_edit_),

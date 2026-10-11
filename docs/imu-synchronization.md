@@ -106,5 +106,21 @@ The seek slider and ±10-second buttons work in local render-only Program and
 Stitching playback after calibration finishes. Positions are relative to
 Playback start. Seeking stays disabled during calibration, while recording or
 streaming, or during DriveGPT database capture. A seek selected while paused
-is applied on resume. Seeking rebuilds the decoder pipeline, so a short pause
-while it restarts is expected.
+is applied on resume. Ordinary seeks reopen only the file readers, decoders and
+exact-pair mux at the target chapter/keyframe. The stitch maps, inference engine,
+GPU pools and Program/Stitched previews stay loaded. Native object tracking
+starts a new epoch. Legacy source-render windows and standalone audio retain
+the full-rebuild fallback.
+
+Chapter duration discovery is cached within the process for unchanged local
+files, avoiding temporary decoder initialization on repeated seeks. File
+replacement, size or timestamp changes invalidate the cached duration; failed
+probes and remote URIs are not cached.
+
+When a compatible completed DriveGPT database is available in the game
+directory, seeking restores an indexed native checkpoint and replays recorded
+metadata up to the target to seed the camera position and motion. Live camera
+tuning stays in effect. If there is no usable recording, the retained play
+tracker continues from its last camera position. `HSTREAM_SEEK_TRACKER` explains
+which state was used; `HSTREAM_SEEK_TIMING` measures request to first completed
+output, and `HSTREAM_SEEK_PHASE` separates source reopening from frame startup.

@@ -39,7 +39,8 @@ class HighlightsDialog : public QDialog {
       QString game_dir,
       QProcessEnvironment env,
       QVector<ArchiveEntry> archives,
-      QWidget* parent = nullptr);
+      QWidget* parent = nullptr,
+      qint64 playback_start_ms = 0);
   ~HighlightsDialog() override;
 
   bool isBusy() const;
@@ -75,6 +76,7 @@ class HighlightsDialog : public QDialog {
   void refreshArchiveChoices();
   void applyArchiveSelection();
   void commitArchiveOffset();
+  void commitPlaybackStart();
   // Maps a planned interval onto the archive. Returns an explanation when the
   // interval does not lie inside it.
   QString resolveClip(const HighlightInterval& interval, Clip* clip) const;
@@ -152,6 +154,7 @@ class HighlightsDialog : public QDialog {
   QLabel* archive_label_{nullptr};
   QComboBox* archive_combo_{nullptr};
   QLineEdit* archive_offset_edit_{nullptr};
+  QLineEdit* playback_start_edit_{nullptr};
   QLabel* archive_detail_{nullptr};
   QLineEdit* label_edit_{nullptr};
   QComboBox* mode_combo_{nullptr};

@@ -2,7 +2,21 @@
 
 Open **Highlights…** after selecting a saved game. Select a published Program, 4K Program, or Stitched archive. Highlights reads that archive; it does not restitch cameras or rerun detection. The archive sidecar supplies its game-time origin. **Archive starts at** corrects older archives and remembers the correction beside the file.
 
-Add event times and durations, or exact source ranges. Times accept seconds, `MM:SS`, or `HH:MM:SS`, with optional `.mmm`. Event clips include 75% of the entered duration before the event and 25% after it. The table is the reel sequence: move, duplicate, or remove rows. **Add card** inserts an ordinary row after the selection, so titles and intermissions can appear anywhere, and adjacent clips can have direct cuts.
+**Playback start** inherits the main window's value for a new plan and is editable
+and saved with the highlights. Enter an **Event offset** and duration, or **Start
+offset** and **End offset**, all relative to that reference. Offsets accept zero
+or greater: seconds (`12.5`), `MM:SS` (`90:23` means 90 minutes and 23 seconds), or
+`HH:MM:SS`, with optional `.mmm`. Event clips include 75% of the duration before
+the event and 25% after it; choose an offset/duration that keeps the clip at or
+after Playback start.
+
+Changing Playback start keeps offsets fixed and moves clips and authored cues
+together. Recorded-track cues must be removed and attached again at the new
+times before moving it. **Archive starts at** remains the selected file's
+independent game-time origin. Legacy plans retain their absolute clip moments;
+their initial playback reference is lowered if needed to avoid negative offsets.
+The table is the reel sequence: move, duplicate, or remove rows. **Add card**
+inserts a row after the selection, so titles and intermissions can appear anywhere.
 
 ## Cues and detail annotations
 

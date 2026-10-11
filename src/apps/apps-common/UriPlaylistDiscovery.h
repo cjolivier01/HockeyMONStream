@@ -9,4 +9,8 @@ inline bool discovery_has_usable_duration(GstDiscovererResult result, GstClockTi
   return discovered_container && GST_CLOCK_TIME_IS_VALID(duration) && duration > 0;
 }
 
+// Successful local-file probes are reused while file identity, size and times
+// remain unchanged. Remote URIs and failures are never cached.
+GstClockTime discover_uri_playlist_duration(const gchar* uri);
+
 } // namespace hm::uri_playlist_internal

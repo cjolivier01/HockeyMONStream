@@ -307,6 +307,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":action_icons",
+        ":archive_catalog",
+        ":highlight_plan",
         ":preview_dialog_window",
         "//src/libs/recording",
         ":camera_experiment_source",

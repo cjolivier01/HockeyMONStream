@@ -39,14 +39,19 @@ the old camera view and cannot reveal pixels outside that crop.
    select the game/run in **Recording**. Choose **Original cameras ·
    stitch during replay** and the original game directory, or **Saved uncropped
    panorama** and an existing archive.
-3. Set **In recording** (seconds relative to the first telemetry sample) and
-   **Duration** (normally 10–30 seconds). The end is exclusive.
-4. Set **First selected frame in video** to the matching video's timestamp, in
-   seconds. For original cameras, this is the position in the synchronized source
-   timeline, before any recording-specific start offset. This is an explicit time
-   binding: matching dimensions cannot establish that the sources contain the
-   same footage or use the historical maps. Confirm the source and geometry
-   checkbox after checking their identity and alignment.
+3. Check **Playback start**, inherited from the main window and editable only in
+   this dialog. Set **Start offset** relative to it and **Duration** (normally
+   10–30 seconds). All time fields accept seconds (`12.5`), `MM:SS` (`90:23`
+   means 90 minutes and 23 seconds), or `HH:MM:SS`, including milliseconds.
+   Offsets must be zero or greater. The end is exclusive. Changing this dialog
+   never writes Playback start back to the main app configuration.
+4. **Video start offset** follows Start offset and can be corrected independently
+   for differently aligned media. The archived recording's launch origin maps
+   source time to telemetry time; older captures without that provenance assume
+   their first sample corresponds to Playback start. Saved panoramas with an
+   archive sidecar use its own source-time origin. Confirm the source and geometry
+   checkbox after checking identity and alignment; matching dimensions alone
+   cannot establish that sources contain the same footage.
 5. Click **Prepare historical start**. Preparation queries the nearest preceding checkpoint and
    advances through the original inputs to the selected boundary. It verifies the
    recorded camera trajectory before making the session available.

@@ -274,6 +274,17 @@ bool StitcherPriv::HandleEvent(GstEvent* event) {
   if (!event) {
     return true;
   }
+  if (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP) {
+    // Wait for old work to retire before accepting the replacement decoders'
+    // sequence zero. Calibration and the GPU workspace remain valid.
+    const bool handled = Super::HandleEvent(event);
+    last_stitched_frame_num_.reset();
+    std::lock_guard<std::mutex> lock(eos_mu_);
+    eos_source_ids_.clear();
+    eos_snapshot_by_surface_.clear();
+    pipeline_eos_seen_ = false;
+    return handled;
+  }
   if ((GstNvEventType)GST_EVENT_TYPE(event) == GST_NVEVENT_STREAM_EOS) {
     guint source_id = 0;
     gst_nvevent_parse_stream_eos(event, &source_id);

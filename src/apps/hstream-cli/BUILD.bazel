@@ -30,6 +30,8 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/playtracker_replay",
+    "//src/libs/recording",
     ":player_model_cache",
     "//src/libs/common:process_diagnostics",
     "//src/libs/stitching:rink_mask_frame_time",

@@ -85,10 +85,6 @@ void print_pad_properties(GstPad* pad) {
   g_free(caps_str);
   gst_caps_unref(caps);
 
-  // Print other properties
-  gint latency;
-  g_object_get(G_OBJECT(pad), "latency", &latency, NULL);
-  g_print("Latency: %d\n", latency);
 }
 
 gboolean link_element_to_streammux_sink_pad(GstElement* streammux, GstElement* elem, gint index) {
@@ -115,8 +111,10 @@ gboolean link_element_to_streammux_sink_pad(GstElement* streammux, GstElement* e
     NVGSTDS_ERR_MSG_V("Failed to get src pad from '%s'", GST_ELEMENT_NAME(elem));
     goto done;
   }
-  print_pad_properties(src_pad);
-  print_pad_properties(mux_sink_pad);
+  if (gst_debug_get_default_threshold() >= GST_LEVEL_DEBUG) {
+    print_pad_properties(src_pad);
+    print_pad_properties(mux_sink_pad);
+  }
   if (gst_pad_link(src_pad, mux_sink_pad) != GST_PAD_LINK_OK) {
     NVGSTDS_ERR_MSG_V("Failed to link '%s' and '%s'", GST_ELEMENT_NAME(streammux), GST_ELEMENT_NAME(elem));
     goto done;

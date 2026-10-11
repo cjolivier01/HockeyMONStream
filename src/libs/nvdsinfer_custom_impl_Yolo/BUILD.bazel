@@ -6,7 +6,7 @@ cc_binary(
     srcs = glob([
         "*.cpp",
         "layers/*.cpp",
-    ]),
+    ], exclude = ["*Test.cpp"]),
     copts = [
         "-Wall",
         "-std=c++17",
@@ -18,6 +18,10 @@ cc_binary(
     linkopts = [
         "-shared",
         "-Wl,-z,defs",
+        # TensorRT retains the REGISTER_TENSORRT_PLUGIN creator for the process.
+        # DeepStream dlcloses custom libraries on graph teardown; unloading this
+        # creator leaves a dangling registry entry that crashes the next load.
+        "-Wl,-z,nodelete",
         "-Wno-error=deprecated-declarations",
         "-Wl,--start-group",
         "-lnvinfer_plugin",
@@ -43,6 +47,15 @@ cc_binary(
     ],
     linkshared = True,
     visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "plugin_lifetime_test",
+    srcs = ["PluginLifetimeTest.cpp"],
+    args = ["$(location :nvdsinfer_custom_impl_Yolo)"],
+    data = [":nvdsinfer_custom_impl_Yolo"],
+    deps = ["@deepstream//:deepstream_includes", "@local_cuda//:cuda"],
+    linkopts = ["-lnvinfer", "-ldl"],
 )
 
 cuda_library(

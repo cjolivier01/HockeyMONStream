@@ -98,6 +98,9 @@ class ReplaySession {
   uint64_t end_pts_ns() const;
   const std::string& provenance() const;
   const std::string& manifest_path() const;
+  // Native state immediately before the first selected sample, after replay
+  // from the nearest indexed checkpoint. No video decoding is involved.
+  std::string starting_checkpoint() const;
 
  private:
   static absl::StatusOr<std::shared_ptr<ReplaySession>> PrepareDatabase(

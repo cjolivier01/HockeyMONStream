@@ -5,6 +5,7 @@
 #include "hstream/src/libs/recording/Database.h"
 
 #include "absl/status/status.h"
+#include "hockeymon/csrc/play_tracker/PlayTrackerSnapshot.h"
 
 #include <cuda_runtime.h>
 #include <gst/gst.h>
@@ -471,6 +472,53 @@ int main() {
     return 20;
   }
 
+  // Playback seeks retain camera state but retire native object IDs. A
+  // compatible recorded state may then seed the camera without undoing tuning.
+  const auto before_seek = context->play_trackers.at(0).play_tracker->snapshot();
+  GstEvent* preserve = gst_event_new_flush_stop(TRUE);
+  gst_structure_set(
+      gst_event_writable_structure(preserve), "hstream-preserve-playtracker", G_TYPE_BOOLEAN, TRUE, nullptr);
+  const bool preserved = priv.HandleEvent(preserve);
+  gst_event_unref(preserve);
+  auto retained = context->play_trackers.at(0).play_tracker->snapshot();
+  if (!preserved || retained.living_boxes.back().bbox.left != before_seek.living_boxes.back().bbox.left ||
+      retained.living_boxes.back().bbox.right != before_seek.living_boxes.back().bbox.right ||
+      !retained.detector.tracks.empty()) {
+    std::cerr << "playback seek lost camera position or retained stale object IDs\n";
+    return 25;
+  }
+  auto recorded = retained;
+  recorded.living_boxes.back().bbox.left += 5;
+  recorded.living_boxes.back().bbox.right += 5;
+  recorded.living_boxes.back().config.max_speed_x += 10;
+  const auto send_seed = [&](const hm::play_tracker::PlayTrackerSnapshot& state) {
+    const std::string checkpoint = hm::play_tracker::serialize_snapshot(state);
+    GstEvent* seed = gst_event_new_custom(
+        GST_EVENT_CUSTOM_DOWNSTREAM,
+        gst_structure_new("hstream-playtracker-seed", "checkpoint", G_TYPE_STRING, checkpoint.c_str(), nullptr));
+    const bool result = priv.HandleEvent(seed);
+    gst_event_unref(seed);
+    return result;
+  };
+  if (!send_seed(recorded)) {
+    std::cerr << "compatible recorded camera seed was rejected\n";
+    return 26;
+  }
+  const auto seeded = context->play_trackers.at(0).play_tracker->snapshot();
+  if (seeded.living_boxes.back().bbox.left != recorded.living_boxes.back().bbox.left ||
+      seeded.living_boxes.back().config.max_speed_x != retained.living_boxes.back().config.max_speed_x) {
+    std::cerr << "recorded camera seed lost position or overwrote current tuning\n";
+    return 27;
+  }
+  recorded.living_boxes.back().config.name = "incompatible-camera";
+  recorded.config.living_boxes.back().name = "incompatible-camera";
+  if (send_seed(recorded) ||
+      context->play_trackers.at(0).play_tracker->snapshot().living_boxes.back().bbox.left !=
+          seeded.living_boxes.back().bbox.left) {
+    std::cerr << "incompatible camera seed was accepted or partially applied\n";
+    return 28;
+  }
+
   GstEvent* flush_stop = gst_event_new_flush_stop(FALSE);
   const bool flush_handled = priv.HandleEvent(flush_stop);
   gst_event_unref(flush_stop);
@@ -637,8 +685,8 @@ int main() {
     if (!geometry.Next() || geometry.Int(0) != 1)
       return 21;
     hm::recording::Statement seek(
-        db.get(), "SELECT count(*) FROM config_events WHERE sample_boundary=13 AND kind='seek' AND key='flush-stop'");
-    if (!seek.Next() || seek.Int(0) != 1)
+        db.get(), "SELECT sample_boundary FROM config_events WHERE kind='seek' AND key='flush-stop' ORDER BY event_id");
+    if (!seek.Next() || seek.Int(0) != 13 || !seek.Next() || seek.Int(0) != 14 || seek.Next())
       return 21;
     hm::recording::Statement repeated(db.get(), "SELECT count(*) FROM config_events WHERE value=?");
     repeated.Bind(1, repeated_tuning.string());
