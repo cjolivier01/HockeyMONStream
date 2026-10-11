@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/HighlightsDialog.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
@@ -46,9 +47,9 @@
 
 namespace hm::ui {
 
-class HighlightsVideoTarget : public QWidget {
+class HighlightsVideoTarget : public hm::ui::NativePreviewSurface {
  public:
-  explicit HighlightsVideoTarget(QWidget* parent) : QWidget(parent) {
+  explicit HighlightsVideoTarget(QWidget* parent) : NativePreviewSurface(parent) {
     if (QGuiApplication::platformName() == "xcb")
       setAttribute(Qt::WA_NativeWindow);
     setMinimumSize(320, 180);

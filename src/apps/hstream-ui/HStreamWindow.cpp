@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
@@ -620,9 +621,9 @@ class StitchingCalibrationDialog : public QDialog {
   bool close_allowed_{false};
 };
 
-class NativeVideoTarget : public QWidget {
+class NativeVideoTarget : public hm::ui::NativePreviewSurface {
  public:
-  explicit NativeVideoTarget(QWidget* parent = nullptr) : QWidget(parent) {
+  explicit NativeVideoTarget(QWidget* parent = nullptr) : NativePreviewSurface(parent) {
     // X11 video-overlay sinks paint this native child directly.  Keep Qt's
     // backing store from repainting the child black after the video sink has
     // presented a frame.  WA_PaintOnScreen requires paintEngine() to return

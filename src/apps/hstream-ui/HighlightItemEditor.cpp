@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/HighlightItemEditor.h"
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
@@ -53,13 +54,13 @@ bool parse_relative(const QString& text, qint64* ms, QString* error = nullptr) {
     *ms = -*ms;
   return true;
 }
-class Target : public QWidget {
+class Target : public hm::ui::NativePreviewSurface {
  public:
   bool native{false};
   QImage card;
   double aspect{16.0 / 9};
   std::function<void(QPointF)> click;
-  explicit Target(QWidget* p) : QWidget(p) {
+  explicit Target(QWidget* p) : NativePreviewSurface(p) {
     setMinimumSize(320, 180);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     if (QGuiApplication::platformName() == "xcb")

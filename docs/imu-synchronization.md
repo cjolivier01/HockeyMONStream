@@ -109,8 +109,10 @@ streaming, or during DriveGPT database capture. A seek selected while paused
 is applied on resume. Ordinary seeks reopen only the file readers, decoders and
 exact-pair mux at the target chapter/keyframe. The stitch maps, inference engine,
 GPU pools and Program/Stitched previews stay loaded. Native object tracking
-starts a new epoch. Legacy source-render windows and standalone audio retain
-the full-rebuild fallback.
+starts a new epoch. The lightweight audio branch resets its hardware sample
+buffer too: retaining the previous sample cursor can stall the audio clock
+after a seek and leave normal-speed video waiting indefinitely. Legacy
+source-render windows and standalone audio retain the full-rebuild fallback.
 
 Chapter duration discovery is cached within the process for unchanged local
 files, avoiding temporary decoder initialization on repeated seeks. File

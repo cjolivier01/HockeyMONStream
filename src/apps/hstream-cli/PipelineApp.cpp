@@ -8233,6 +8233,17 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
   cancel_uri_playlist_frame_barrier(&sources);
   if (!stop_sources_for_seek(app))
     return FALSE;
+  // A flushed ALSA ring buffer can retain its old hardware sample cursor while
+  // the new stream starts at zero. Its clock then stays stopped until enough
+  // audio arrives to refill that old cursor, while exact-pair audio gating is
+  // waiting for video paced by the same clock. Reset only the lightweight
+  // audio branches to READY so their ring buffers start a fresh sample epoch.
+  for (auto& instance : app->pipeline.instance_bins) {
+    if (instance.hmaudio_bin.bin &&
+        (gst_element_set_state(instance.hmaudio_bin.bin, GST_STATE_READY) == GST_STATE_CHANGE_FAILURE ||
+         !gst_element_sync_state_with_parent(instance.hmaudio_bin.bin)))
+      return FALSE;
+  }
   for (const auto& link : links) {
     GstPad* pad = gst_element_get_static_pad(sources.bin, link.name.c_str());
     if (pad) {

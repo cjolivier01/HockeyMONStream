@@ -1115,8 +1115,8 @@ int main(int argc, char** argv) {
             seek_process.output().find("Destroy pipeline", seek_mark) == std::string::npos,
         "source seek must retain the tuned processing graph without rebuilding or replaying its settings");
     ok &= expect(
-        seek_process.WaitForProgressAtOrBeyond(10, seek_mark, std::chrono::seconds(12)),
-        "post-seek progress must come from media at or beyond the requested position");
+        seek_process.WaitForProgressAtOrBeyond(11, seek_mark, std::chrono::seconds(12)),
+        "post-seek playback must advance beyond its first acknowledged frame");
     const size_t relative_seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek-relative 10000000000 3\n"), "relative local seek command must be delivered");
     const std::string relative_response = "HSTREAM_SEEK status=ok generation=3 position_ns=";
@@ -1162,8 +1162,8 @@ int main(int argc, char** argv) {
             std::chrono::seconds(20)),
         "seek must select the next physical chapter and complete from pristine exact-pair state");
     ok &= expect(
-        seek_process.WaitForProgressAtOrBeyond(1810, cross_chapter_seek_mark, std::chrono::seconds(12)),
-        "cross-chapter progress must report the achieved logical playlist position");
+        seek_process.WaitForProgressAtOrBeyond(1811, cross_chapter_seek_mark, std::chrono::seconds(12)),
+        "cross-chapter playback must keep advancing after the seek acknowledgement");
     const size_t backward_chapter_seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek 20000000000 10\n"), "backward chapter seek command must be delivered");
     ok &= expect(

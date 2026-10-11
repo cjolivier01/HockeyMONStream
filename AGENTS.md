@@ -53,6 +53,8 @@ Notes:
 - Dialogs with preview windows must let the whole dialog resize and maximize. Use a normal Qt window type, a title-bar maximize button, a resize grip, and an in-dialog Maximize/Restore control as in Stitching Experiments. This applies to Highlights and Camera Experiments too. Put an icon-only Maximize/Restore control at the preview's top-right; Stop must restore the normal preview layout.
 - Never drain posted events from inside a geometry write. `QCoreApplication::processEvents()` — and `QGuiApplication::sync()`, which calls it twice — delivers deferred deletes for objects Qt's own geometry machinery is still standing on, so calling either from `resizeEvent`, `moveEvent` or `setGeometry` frees them mid-use; the instance we hit was the animation `QMainWindowLayout` runs on the central widget. Waiting for the X server is not a reason to reach for them there, because requests on one connection are already processed in order; if a geometry write really does need the server to catch up, round-trip the XCB connection directly, as `sync_native_display()` in `HStreamWindow.cpp` does. Outside a geometry write `QGuiApplication::sync()` is fine — test drivers that want the full pump still use it.
 
+Native preview widgets share `NativePreviewSurface`: while an external sink owns the pixels, resize/remap clears the X11 surface to black without pumping Qt events or reading video back. Ordinary Qt updates preserve rendered frames. A resized SIGSTOP-paused preview stays black until playback resumes.
+
 ## Testing Guidelines
 - Keep tests small and colocated. Name sources `*Test.cpp` and targets `<name>_test`.
 - Tests are simple binaries; run via `bazelisk run //<path>:<target>`. If using frameworks (e.g., Abseil), follow existing library deps.

@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
@@ -122,9 +123,9 @@ constexpr char kStitchedPreviewOptions[] =
     "pipeline.streammux.batched-push-timeout=2147483647,pipeline.streammux.frame-num-reset-on-stream-reset=0,"
     "pipeline.streammux.frame-num-reset-on-eos=0,pipeline.hmstitcher.show=0";
 
-class StitchingExperimentVideoTarget : public QWidget {
+class StitchingExperimentVideoTarget : public hm::ui::NativePreviewSurface {
  public:
-  explicit StitchingExperimentVideoTarget(QWidget* parent) : QWidget(parent) {
+  explicit StitchingExperimentVideoTarget(QWidget* parent) : NativePreviewSurface(parent) {
     if (QGuiApplication::platformName() == "xcb")
       setAttribute(Qt::WA_NativeWindow);
     setMinimumSize(320, 180);

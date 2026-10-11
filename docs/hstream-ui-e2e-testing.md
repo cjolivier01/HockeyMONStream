@@ -122,3 +122,11 @@ the default of 20. Lowering it should be accompanied by inspection of
 `panorama-feature-matches.jpg`; the 35% inlier-fraction requirement remains.
 `HSTREAM_UI_E2E_RECORD_MS` can extend the post-FPS recording interval; the
 default is 6000 ms.
+
+The focused native background regression runs with
+`QT_QPA_PLATFORM=xcb xvfb-run -a bazel-bin/src/apps/hstream-ui/native_preview_surface_test`.
+It paints stale native pixels, grows and shrinks the preview without new video,
+and verifies a black background after resize/remap. It also checks that ordinary
+Qt updates preserve renderer pixels and resize does not deliver posted events.
+A resized process-paused preview remains black until playback resumes; the
+runner cannot redraw while SIGSTOP-paused.

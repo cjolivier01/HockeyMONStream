@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
@@ -106,9 +107,9 @@ std::optional<qint64> recording_source_origin(const replay::PrepareOptions& opti
   return std::nullopt;
 }
 
-class ExperimentVideoTarget : public QWidget {
+class ExperimentVideoTarget : public hm::ui::NativePreviewSurface {
  public:
-  explicit ExperimentVideoTarget(QWidget* parent) : QWidget(parent) {
+  explicit ExperimentVideoTarget(QWidget* parent) : NativePreviewSurface(parent) {
     if (QGuiApplication::platformName() == "xcb") {
       setAttribute(Qt::WA_NativeWindow);
       setAttribute(Qt::WA_PaintOnScreen);
