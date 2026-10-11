@@ -1706,6 +1706,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
     struct PreviewProbeState {
       GstElement* sink{nullptr};
+      bool realtime{false};
       GstClockTime last_pts{GST_CLOCK_TIME_NONE};
       std::chrono::steady_clock::time_point last_emission;
       bool have_last_emission{false};
@@ -1729,7 +1730,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             }
           }
         }
-        if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+        if (!state->realtime && (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
           const auto now = std::chrono::steady_clock::now();
           constexpr auto kMinimumWallPeriod = std::chrono::nanoseconds(GST_SECOND / 30);
           if (state->have_last_emission && now - state->last_emission < kMinimumWallPeriod)
@@ -1777,7 +1778,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       g_object_set(
           G_OBJECT(queue),
           "leaky",
-          2,
+          ui_preview_realtime_ ? 0 : 2,
           "max-size-buffers",
           1,
           "max-size-bytes",
@@ -1840,7 +1841,9 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "generation",
           static_cast<guint64>(active_ui_preview_generation_),
           "sync",
-          FALSE,
+          ui_preview_realtime_,
+          "max-lateness",
+          gint64{-1},
           "async",
           FALSE,
           "qos",
@@ -1854,12 +1857,12 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       if (link_elements &&
           !gst_element_link_many(ingress_isolation, queue, isolation, converter, caps_filter, sink, nullptr))
         return false;
-      // Rate-limit before the queue so high-frame-rate inputs do not wake the
-      // preview task for frames that will be discarded.
+      // Unrestricted processing bounds preview work to 30 fps. Paced playback
+      // retains every frame and uses its timestamp, including 50/60 fps video.
       GstPad* probe_pad = gst_element_get_static_pad(ingress_isolation, "src");
       if (!probe_pad)
         return false;
-      auto* probe_state = new PreviewProbeState{GST_ELEMENT(gst_object_ref(sink))};
+      auto* probe_state = new PreviewProbeState{GST_ELEMENT(gst_object_ref(sink)), ui_preview_realtime_ != FALSE};
       gst_pad_add_probe(
           probe_pad,
           static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
@@ -2910,12 +2913,19 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &headless_render_video_,
        "Replace render-type video output with an unsynchronized fakesink while retaining render audio routing",
        nullptr},
-      {"ui-preview-realtime",
+      {"render-realtime",
        0,
        0,
        G_OPTION_ARG_NONE,
        &ui_preview_realtime_,
-       "Keep an embedded preview's render branch synchronized to the source clock",
+       "Play local video and audio at normal speed without dropping late video frames (also paces processing)",
+       nullptr},
+      {"ui-preview-realtime",
+       0,
+       G_OPTION_FLAG_HIDDEN,
+       G_OPTION_ARG_NONE,
+       &ui_preview_realtime_,
+       "Alias for --render-realtime",
        nullptr},
       {"stitching-calibration-only",
        0,
@@ -3306,8 +3316,9 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     active_ui_preview_channel_ = ui_preview_channel_explicitly_disabled_ ? std::string() : initial_ui_preview_channel_;
     active_ui_preview_generation_ = 1;
   }
-  if (ui_preview_realtime_ && (ui_preview_window_ids_.empty() || headless_render_video_))
-    return absl::InvalidArgumentError("--ui-preview-realtime requires embedded preview windows without headless render");
+  if (ui_preview_realtime_ && headless_render_video_)
+    return absl::InvalidArgumentError("--render-realtime cannot be combined with --headless-render-video");
+  set_render_playback_realtime(ui_preview_realtime_);
   set_embedded_gpu_preview_video_mode(
       headless_render_video_ || !ui_preview_window_ids_.empty(),
       (stitching_calibration_only_ || ui_preview_realtime_) && !headless_render_video_ &&

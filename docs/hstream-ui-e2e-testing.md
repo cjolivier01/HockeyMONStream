@@ -14,6 +14,26 @@ Positive FPS alone is deliberately insufficient. The visual check requires squar
 least 20 geometrically consistent feature matches and a 35% inlier fraction,
 so a healthy pipeline processing the wrong game fails.
 
+The **Play at normal speed** checkbox beside **Render video** is an opt-in,
+session-only playback choice. Select it before Play; it is disabled when rendering
+is off or a run is active. The runner's `--render-realtime` option clocks local
+video and audio from their timestamps, disables preview frame sampling/leaky
+queues, and retains late video frames (`max-lateness=-1`, `qos=false`). The render
+terminator prerolls before the playback clock starts. Hidden previews remain gated.
+Slow processing can make playback stutter; it does not trigger frame skipping.
+
+The setting does not alter archive frames, timestamps, audio samples, encoding
+settings, or exported jobs. Backpressure does limit encoding throughput to playback
+speed. Pacing stays fixed for the run, including while Render video temporarily
+hides/mutes the monitor; Stop allows choosing unrestricted processing again.
+Playback uses the negotiated media timeline and does not select or convert mixed
+camera frame rates.
+
+Focused checks: run `uri_multiple_pipeline_test --render-realtime-only` for clock
+pacing, slow processing, unchanged output timestamps and monitor-audio policy;
+run `hstream_ui_test` with `HSTREAM_UI_TEST_REALTIME_ONLY=1` for checkbox gating
+and launch/export arguments.
+
 For a fast UI-only regression run, the X11 interaction test uses real Qt mouse
 events against native XCB widgets under a window manager. It verifies native
 parent, geometry, and map state while exercising stopped double-click, live

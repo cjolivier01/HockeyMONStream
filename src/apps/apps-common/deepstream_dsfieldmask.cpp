@@ -552,13 +552,19 @@ bool create_render_audio_branch(
   }
   const gboolean initially_muted = g_strcmp0(g_getenv("HSTREAM_RENDER_AUDIO_MUTED"), "1") == 0;
   g_object_set(G_OBJECT(volume), "mute", initially_muted, NULL);
-  // The local monitor is an observational, downstream-leaky branch just like the GPU previews. The processing and
+  // Normally the local monitor is an observational, downstream-leaky branch. The processing and
   // archive paths may intentionally run faster than real time, so a clock-synchronized ALSA sink can lag behind the
   // logical media timeline. At a URI chapter boundary, the new decoder's serialized allocation query would then sit
   // behind the future-dated monitor buffer and indirectly starve every video buffer pool until wall time caught up.
   // Let ALSA pace its own writes without a GStreamer presentation-clock wait; the independent archive branch retains
   // every audio sample and its original timestamps.
-  g_object_set(G_OBJECT(audiosink), "sync", FALSE, "async", FALSE, NULL);
+  const gboolean realtime = render_playback_realtime();
+  if (realtime) {
+    // Apply backpressure only in explicitly paced playback. Archive audio
+    // retains its own lossless queue and unchanged sample timestamps.
+    g_object_set(G_OBJECT(queue), "leaky", 0, NULL);
+  }
+  g_object_set(G_OBJECT(audiosink), "sync", realtime, "async", FALSE, "max-lateness", gint64{-1}, "qos", FALSE, NULL);
   if (*hmaudio_config->alsa_dest_device) {
     g_object_set(G_OBJECT(audiosink), "device", hmaudio_config->alsa_dest_device, NULL);
   }

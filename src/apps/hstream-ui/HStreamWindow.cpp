@@ -5910,12 +5910,23 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   render_video_toggle_->setToolTip(
       "Show the active GPU preview and play local monitor audio; this can be changed while the pipeline is running");
   connect(render_video_toggle_, &QCheckBox::toggled, this, [this](bool enabled) {
+    if (realtime_playback_toggle_)
+      realtime_playback_toggle_->setEnabled(
+          enabled && !isArchiveFinalizing() &&
+          (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning));
     for (QCheckBox* toggle : {show_player_tracking_toggle_, show_play_tracking_toggle_, show_rink_mask_toggle_}) {
       if (toggle)
         toggle->setEnabled(enabled && !isCalibrationRun());
     }
     setRuntimeVideoRendering(enabled);
   });
+
+  realtime_playback_toggle_ = new QCheckBox("Play at normal speed");
+  realtime_playback_toggle_->setObjectName("realtimePlaybackCheck");
+  realtime_playback_toggle_->setToolTip(
+      "Pace video and local audio using the output timestamps. Slow processing keeps every video frame. "
+      "Archives keep their frame rate and content, but encoding progresses at playback speed. "
+      "Choose before pressing Play; pacing stays fixed until Stop, even if Render video is turned off.");
 
   show_player_tracking_toggle_ = new QCheckBox("Player boxes");
   show_player_tracking_toggle_->setObjectName("showPlayerTrackingCheck");
@@ -5969,6 +5980,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   status_bar->addStretch(1);
   status_bar->addWidget(run_mode_selector_);
   status_bar->addWidget(render_video_toggle_);
+  status_bar->addWidget(realtime_playback_toggle_);
   status_bar->addWidget(show_player_tracking_toggle_);
   status_bar->addWidget(show_play_tracking_toggle_);
   status_bar->addWidget(show_rink_mask_toggle_);
@@ -9734,6 +9746,8 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
        test_embedded_preview);
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
+  if (!standalone && render_video && realtime_playback_toggle_ && realtime_playback_toggle_->isChecked())
+    args << "--render-realtime";
   if (!standalone && active_force_reconfigure_)
     args << "--force-reconfigure";
   if (!standalone && !active_calibration_invalidation_id_.isEmpty())
@@ -16163,6 +16177,9 @@ void HStreamWindow::updateRunControls() {
   if (render_video_toggle_) {
     render_video_toggle_->setEnabled(!running || pipeline_render_embedded_);
   }
+  if (realtime_playback_toggle_)
+    realtime_playback_toggle_->setEnabled(
+        !running && !finalizing && render_video_toggle_ && render_video_toggle_->isChecked());
   if (drivegpt_csv_toggle_) {
     drivegpt_csv_toggle_->setEnabled(!running && !finalizing);
   }

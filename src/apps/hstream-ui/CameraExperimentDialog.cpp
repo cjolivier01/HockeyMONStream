@@ -218,6 +218,7 @@ struct CameraExperimentDialog::Impl {
   QCheckBox* fast{nullptr};
   QCheckBox* follower{nullptr};
   QCheckBox* loop{nullptr};
+  QCheckBox* realtime{nullptr};
   QLineEdit* trial_name{nullptr};
   QComboBox* comparison{nullptr};
   QPushButton* prepare{nullptr};
@@ -351,6 +352,7 @@ struct CameraExperimentDialog::Impl {
     timeline->setEnabled(!active && prepared && !playing);
     previous->setEnabled(!active && prepared && !playing);
     next->setEnabled(!active && prepared && !playing);
+    realtime->setEnabled(editable);
     play->setEnabled(!calculating && !closing_result && prepared && (!loading || playing));
     play->setText(playing ? "Pause" : "Play preview");
     play->setIcon(action_icon(playing ? ActionIcon::Pause : ActionIcon::Play));
@@ -586,8 +588,10 @@ struct CameraExperimentDialog::Impl {
     const auto window = video->winId(); // QWidget access stays on Qt's thread.
     const bool reopen = !preview_open;
     const bool repeat = loop->isChecked();
+    const bool normal_speed = realtime->isChecked();
     preview.Submit(
-        [media, frames, width, height, end, window, reopen, repeat, play_video, index](auto& engine, auto* error) {
+        [media, frames, width, height, end, window, reopen, repeat, normal_speed, play_video, index](
+            auto& engine, auto* error) {
           if (reopen &&
               !engine.Open(
                   media,
@@ -599,6 +603,7 @@ struct CameraExperimentDialog::Impl {
                   error))
             return false;
           engine.SetLoop(repeat);
+          engine.SetRealtime(normal_speed);
           return engine.SetTrajectory(frames, end, error, play_video, index);
         });
     preview_open = true;
@@ -907,6 +912,13 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.loop = new QCheckBox("Repeat range");
   s.loop->setObjectName("experimentLoop");
   s.loop->setChecked(true);
+  s.realtime = new QCheckBox("Play at normal speed");
+  s.realtime->setObjectName("experimentRealtimePlayback");
+  s.realtime->setChecked(true);
+  s.realtime->setToolTip(
+      "Use video timestamps to play at normal speed, retaining late frames when processing is slow. "
+      "Pause or Stop to change this; it applies when you next press Play preview. "
+      "Camera Experiments previews video only.");
   s.comparison = new QComboBox();
   s.comparison->setObjectName("experimentComparison");
   s.comparison->setMinimumWidth(180);
@@ -915,6 +927,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   transport->addWidget(s.stop_preview);
   transport->addWidget(next);
   transport->addWidget(s.loop);
+  transport->addWidget(s.realtime);
   transport->addStretch();
   transport->addWidget(new QLabel("View"));
   transport->addWidget(s.comparison);
@@ -1113,7 +1126,11 @@ CameraExperimentDialog::CameraExperimentDialog(
     }
     if (state.preview_open) {
       const auto index = state.current;
-      state.preview.Submit([index](auto& engine, auto* error) { return engine.Seek(index, true, error); });
+      const bool realtime = state.realtime->isChecked();
+      state.preview.Submit([index, realtime](auto& engine, auto* error) {
+        engine.SetRealtime(realtime);
+        return engine.Seek(index, true, error);
+      });
       state.playing = true;
       state.update_controls();
     } else {

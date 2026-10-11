@@ -48,6 +48,7 @@ static GMutex server_cnt_lock;
 static std::set<guint> rtsp_audio_sink_ids;
 static std::atomic<bool> embedded_gpu_preview_video_mode{false};
 static std::atomic<bool> embedded_gpu_preview_preserve_timing{false};
+static std::atomic<bool> realtime_render_playback{false};
 
 void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids) {
   rtsp_audio_sink_ids.clear();
@@ -61,6 +62,14 @@ void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids) {
 void set_embedded_gpu_preview_video_mode(gboolean enabled, gboolean preserve_render_timing) {
   embedded_gpu_preview_preserve_timing = preserve_render_timing != FALSE;
   embedded_gpu_preview_video_mode = enabled != FALSE;
+}
+
+void set_render_playback_realtime(gboolean enabled) {
+  realtime_render_playback = enabled != FALSE;
+}
+
+gboolean render_playback_realtime() {
+  return realtime_render_playback.load();
 }
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
@@ -1142,6 +1151,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   const bool use_xvideo = use_xvideo_render_sink();
 #endif
   const bool gpu_preview_fake = embedded_gpu_preview_video_mode.load();
+  const bool realtime = render_playback_realtime() && config->type != NV_DS_SINK_FAKE;
   const bool unsynchronized_gpu_preview = gpu_preview_fake && !embedded_gpu_preview_preserve_timing.load();
 #ifdef IS_TEGRA
   const bool scaled_nv3d_render =
@@ -1265,6 +1275,14 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
       gpu_preview_fake ? FALSE : config->qos,
       NULL);
 #endif
+
+  if (realtime) {
+    // Preroll the output before starting the clock: model/calibration startup
+    // must not make the first frames late and cause a fast catch-up burst.
+    // BaseSink waits for timestamps but never drops late frames or asks
+    // upstream elements to skip work. The render queue remains non-leaky.
+    g_object_set(G_OBJECT(bin->sink), "sync", TRUE, "async", TRUE, "max-lateness", gint64{-1}, "qos", FALSE, NULL);
+  }
 
   if (!gpu_preview_fake &&
       (!prop.integrated

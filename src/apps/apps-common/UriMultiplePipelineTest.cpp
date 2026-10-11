@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -752,7 +753,74 @@ int run_scaled_render_sink_caps() {
   return 0;
 }
 
-int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_muted) {
+// Exercise the actual render-bin policy with a second, unpaced output branch.
+// Timestamped system-memory test frames are sufficient for the embedded
+// render terminator; production GPU preview/conversion is unchanged.
+int run_realtime_render_pacing(bool slow, bool realtime) {
+  GstElement* pipeline = gst_parse_launch(
+      "videotestsrc num-buffers=24 ! video/x-raw,width=16,height=16,framerate=60/1 ! "
+      "identity name=compute ! tee name=outputs "
+      "outputs. ! queue ! fakesink name=archive sync=false async=false signal-handoffs=true",
+      nullptr);
+  if (!pipeline)
+    return 1;
+  NvDsSinkSubBinConfig config{};
+  config.enable = TRUE;
+  config.type = NV_DS_SINK_RENDER_DRM; // Substituted with the UI's fakesink on every platform.
+  config.sync = FALSE; // Explicit playback must override the configured render policy.
+  config.render_config.qos = TRUE;
+  NvDsSinkBin render{};
+  set_embedded_gpu_preview_video_mode(TRUE);
+  set_render_playback_realtime(realtime);
+  const bool created = create_sink_bin(1, &config, &render, 0);
+  set_render_playback_realtime(FALSE);
+  set_embedded_gpu_preview_video_mode(FALSE);
+  if (!created) {
+    gst_object_unref(pipeline);
+    return 2;
+  }
+  gst_bin_add(GST_BIN(pipeline), render.bin);
+  GstElement* outputs = gst_bin_get_by_name(GST_BIN(pipeline), "outputs");
+  const bool linked = gst_element_link(outputs, render.bin);
+  gst_object_unref(outputs);
+  if (!linked) {
+    gst_object_unref(pipeline);
+    return 3;
+  }
+  GstElement* compute = gst_bin_get_by_name(GST_BIN(pipeline), "compute");
+  g_object_set(compute, "sleep-time", slow ? 25000U : 0U, nullptr);
+  gst_object_unref(compute);
+  std::vector<GstClockTime> presented;
+  std::vector<GstClockTime> archived;
+  const auto record = +[](GstElement*, GstBuffer* buffer, GstPad*, gpointer data) {
+    static_cast<std::vector<GstClockTime>*>(data)->push_back(GST_BUFFER_PTS(buffer));
+  };
+  g_object_set(render.sub_bins[0].sink, "signal-handoffs", TRUE, nullptr);
+  g_signal_connect(render.sub_bins[0].sink, "handoff", G_CALLBACK(record), &presented);
+  GstElement* archive = gst_bin_get_by_name(GST_BIN(pipeline), "archive");
+  g_signal_connect(archive, "handoff", G_CALLBACK(record), &archived);
+  gst_object_unref(archive);
+  const auto start = std::chrono::steady_clock::now();
+  const int rc = run_pipeline(pipeline, 10);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  if (rc)
+    return rc;
+  if (presented.size() != 24 || archived != presented) {
+    std::cerr << "Paced render must preserve every frame and the archive timeline\n";
+    return 4;
+  }
+  for (guint i = 0; i < archived.size(); ++i) {
+    if (archived[i] != gst_util_uint64_scale(i, GST_SECOND, 60))
+      return 5;
+  }
+  if (realtime && elapsed < std::chrono::milliseconds(380)) {
+    std::cerr << "Clock-paced 60 fps playback finished too early\n";
+    return 6;
+  }
+  return 0;
+}
+
+int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_muted, bool realtime = false) {
   GstElement* pipeline =
       gst_pipeline_new(initially_muted ? "hmaudio-muted-render-test" : "hmaudio-audible-render-test");
   GstElement* render_sink_marker = gst_element_factory_make("fakesink", nullptr);
@@ -784,7 +852,9 @@ int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_mut
   NvDsSrcBin src_bins[MAX_SOURCE_BINS]{};
   NvDsHmAudioBin audio_bin{};
   g_setenv("HSTREAM_RENDER_AUDIO_MUTED", initially_muted ? "1" : "0", TRUE);
+  set_render_playback_realtime(realtime);
   const bool created = create_hmaudio_bin(GST_BIN(pipeline), &audio_cfg, &audio_bin, src_bins, sink_configs, &sink_bin);
+  set_render_playback_realtime(FALSE);
   g_unsetenv("HSTREAM_RENDER_AUDIO_MUTED");
   gst_object_unref(GST_OBJECT(render_sink_marker));
   if (!created || !audio_bin.bin) {
@@ -809,8 +879,26 @@ int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_mut
   gboolean actual_muted = FALSE;
   gboolean audio_sync = TRUE;
   gboolean audio_async = TRUE;
+  gboolean audio_qos = TRUE;
+  gint64 max_lateness = 0;
   g_object_get(G_OBJECT(volume), "mute", &actual_muted, NULL);
-  g_object_get(G_OBJECT(audiosink), "sync", &audio_sync, "async", &audio_async, NULL);
+  g_object_get(
+      G_OBJECT(audiosink),
+      "sync",
+      &audio_sync,
+      "async",
+      &audio_async,
+      "qos",
+      &audio_qos,
+      "max-lateness",
+      &max_lateness,
+      NULL);
+  GstElement* queue = gst_bin_get_by_name(GST_BIN(audio_bin.bin), "hmaudio_branch_sink0_queue");
+  gint leaky = -1;
+  if (queue) {
+    g_object_get(queue, "leaky", &leaky, nullptr);
+    gst_object_unref(queue);
+  }
   gst_object_unref(GST_OBJECT(volume));
   gst_object_unref(GST_OBJECT(audiosink));
   gst_object_unref(GST_OBJECT(pipeline));
@@ -818,9 +906,9 @@ int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_mut
     std::cerr << "Expected initial local render-audio mute=" << initially_muted << ", got " << actual_muted << '\n';
     return 5;
   }
-  if (audio_sync || audio_async) {
-    std::cerr << "Local render audio must not clock-block lossless archive processing; sync=" << audio_sync
-              << ", async=" << audio_async << '\n';
+  if (audio_sync != realtime || audio_async || audio_qos || max_lateness != -1 || leaky != (realtime ? 0 : 2)) {
+    std::cerr << "Unexpected local audio timing policy; realtime=" << realtime << " sync=" << audio_sync
+              << ", async=" << audio_async << " leaky=" << leaky << '\n';
     return 6;
   }
   return 0;
@@ -1278,6 +1366,20 @@ int run_lossless_two_camera_mux(
   return 0;
 }
 
+int run_realtime_render_tests() {
+  for (bool realtime : {false, true}) {
+    for (bool slow : {false, true}) {
+      const int rc = run_realtime_render_pacing(slow, realtime);
+      if (rc)
+        return rc;
+    }
+    const int rc = run_render_audio_initial_mute("/tmp/unused-render-audio-test.wav", false, realtime);
+    if (rc)
+      return rc;
+  }
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1286,6 +1388,10 @@ int main(int argc, char** argv) {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   if (argc == 2 && std::string(argv[1]) == "--render-video-sink-only")
     return run_headless_render_video_sink();
+  if (const int rc = run_realtime_render_tests())
+    return rc;
+  if (argc == 2 && std::string(argv[1]) == "--render-realtime-only")
+    return 0;
 
   const fs::path tmpdir = fs::temp_directory_path() / ("uri_multiple_pipeline_test_" + std::to_string(::getpid()));
   fs::remove_all(tmpdir);
