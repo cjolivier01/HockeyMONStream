@@ -114,6 +114,19 @@ buffer too: retaining the previous sample cursor can stall the audio clock
 after a seek and leave normal-speed video waiting indefinitely. Legacy
 source-render windows and standalone audio retain the full-rebuild fallback.
 
+DeepStream inference can also report the previous epoch's `FLUSHING` result
+after accepting its first new buffer. That stops the upstream queue even when
+the inference worker subsequently finishes successfully. The seek path arms a
+one-shot input probe: if this stale result occurs, a serialized event waits for
+the accepted buffer and reads its actual result before returning to the queue.
+`HSTREAM_SEEK_INFERENCE` records this recovery. Real flushing and downstream
+errors still propagate. The probe removes itself before normal playback.
+
+When checking repeated seeks, verify sustained output FPS after each seek,
+including backward jumps and chapter changes. A seek acknowledgment proves only
+the first completed output; a queried position can keep advancing with audio
+while video is stuck, so neither alone proves continued rendering.
+
 Chapter duration discovery is cached within the process for unchanged local
 files, avoiding temporary decoder initialization on repeated seeks. File
 replacement, size or timestamp changes invalidate the cached duration; failed

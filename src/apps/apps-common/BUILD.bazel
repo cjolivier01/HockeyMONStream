@@ -1,6 +1,21 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "async_inference_seek_recovery",
+    srcs = ["AsyncInferenceSeekRecovery.cpp"],
+    hdrs = ["AsyncInferenceSeekRecovery.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "async_inference_seek_recovery_test",
+    srcs = ["AsyncInferenceSeekRecoveryTest.cpp"],
+    deps = [":async_inference_seek_recovery"],
+)
+
+cc_library(
     name = "encoder_dimensions",
     srcs = ["EncoderDimensions.cpp"],
     hdrs = ["EncoderDimensions.h"],

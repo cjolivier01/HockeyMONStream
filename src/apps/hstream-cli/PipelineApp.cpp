@@ -66,6 +66,7 @@
 
 #include "TelemetryConfiguration.h"
 #include "TensorRtModelCache.h"
+#include "hstream/src/apps/apps-common/AsyncInferenceSeekRecovery.h"
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
@@ -8334,6 +8335,10 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
     if (!gst_pad_send_event(link.peer, flush))
       return FALSE;
   }
+  if (app->config.primary_gie_config.enable &&
+      app->config.primary_gie_config.plugin_type == NV_DS_GIE_PLUGIN_INFER &&
+      !hm::ArmAsyncInferenceSeekRecovery(app->pipeline.common_elements.primary_gie_bin.primary_gie))
+    return FALSE;
   // FLUSH_STOP does not discard NvDCF's native object histories. Explicitly
   // retire the old streams before the replacement mux starts publishing frames;
   // this works independently of the optional tracking-id-reset-mode setting.

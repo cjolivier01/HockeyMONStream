@@ -30,6 +30,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/apps/apps-common:async_inference_seek_recovery",
     "//src/libs/playtracker_replay",
     "//src/libs/recording",
     ":player_model_cache",
