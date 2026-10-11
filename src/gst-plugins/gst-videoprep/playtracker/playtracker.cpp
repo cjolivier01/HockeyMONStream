@@ -14,6 +14,7 @@
 #include <sstream>
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "hockeymon/csrc/play_tracker/PlayTrackerSnapshot.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CudaStreamCompletionFence.h"
@@ -433,6 +434,44 @@ BufferResult PlayTrackerPriv::ProcessBuffer(GstBuffer* inbuf) {
 
 bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
   const GstStructure* structure = event ? gst_event_get_structure(event) : nullptr;
+  if (structure && gst_structure_has_name(structure, "hstream-playtracker-seed")) {
+    std::lock_guard<std::mutex> lk(context_mu_);
+    const char* checkpoint = gst_structure_get_string(structure, "checkpoint");
+    if (!checkpoint || !pt_context_ || pt_context_->play_trackers.size() != 1)
+      return false;
+    try {
+      auto seed = hm::play_tracker::deserialize_snapshot(checkpoint);
+      auto& tracker = pt_context_->play_trackers.begin()->second;
+      const auto current = tracker.play_tracker->snapshot();
+      if (seed.living_boxes.size() != current.living_boxes.size())
+        return false;
+      for (size_t i = 0; i < seed.living_boxes.size(); ++i) {
+        const auto& a = seed.living_boxes[i].config.arena_box;
+        const auto& b = current.living_boxes[i].config.arena_box;
+        if (!a || !b || a->left != b->left || a->top != b->top || a->right != b->right || a->bottom != b->bottom ||
+            seed.living_boxes[i].config.name != current.living_boxes[i].config.name)
+          return false;
+        seed.living_boxes[i].config = current.living_boxes[i].config;
+      }
+      // The recorded camera dynamics are a useful starting guess; today's
+      // controls still own the policy. Object IDs belong to a different native
+      // tracker epoch, so historical player velocities must not be reused.
+      seed.config = current.config;
+      seed.detector = current.detector;
+      seed.detector.tracks.clear();
+      auto restored = hm::play_tracker::PlayTracker::from_snapshot(seed);
+      tracker.play_tracker = std::move(restored);
+      tracker.has_received_tracks = true;
+      prev_play_tracker_results_ = {};
+      for (const auto& box : seed.living_boxes)
+        prev_play_tracker_results_.tracking_boxes.push_back(box.bbox);
+      frame_counter_ = 0;
+      return true;
+    } catch (const std::exception& error) {
+      g_printerr("Could not seed play tracker: %s\n", error.what());
+      return false;
+    }
+  }
   if (structure && gst_structure_has_name(structure, "hstream-playtracker-telemetry-failed")) {
     telemetry_csv_.MarkRunOutcome(TelemetryRunOutcome::kFailed);
     return Super::HandleEvent(event);
@@ -451,8 +490,18 @@ bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
     // owns this same context mutex.
     const bool handled = Super::HandleEvent(event);
     std::lock_guard<std::mutex> lk(context_mu_);
-    DsPlayTrackerCtxResetTracking(pt_context_);
-    prev_play_tracker_results_ = hm::play_tracker::PlayTrackerResults{};
+    gboolean preserve = FALSE;
+    if (!structure || !gst_structure_get_boolean(structure, "hstream-preserve-playtracker", &preserve) || !preserve) {
+      DsPlayTrackerCtxResetTracking(pt_context_);
+      prev_play_tracker_results_ = hm::play_tracker::PlayTrackerResults{};
+    } else if (pt_context_) {
+      pt_context_->player_colors.Reset();
+      for (auto& [source, tracker] : pt_context_->play_trackers) {
+        auto state = tracker.play_tracker->snapshot();
+        state.detector.tracks.clear();
+        tracker.play_tracker = hm::play_tracker::PlayTracker::from_snapshot(state);
+      }
+    }
     frame_counter_ = 0;
     ++telemetry_seek_epoch_;
     ++replay_reset_epoch_;

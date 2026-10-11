@@ -20,9 +20,11 @@
 #include <QtWidgets/QToolButton>
 
 #include <atomic>
+#include <cmath>
 #include <functional>
 #include <future>
 #include <iostream>
+#include <vector>
 
 namespace {
 
@@ -47,8 +49,32 @@ bool wait_until(const std::function<bool()>& ready, int timeout_ms = 60000) {
 }
 
 bool smoke() {
-  CameraExperimentDialog first;
+  CameraExperimentDialog first({}, nullptr, {}, 420000);
   CameraExperimentDialog second;
+  auto* playback_start = widget<QDoubleSpinBox>(first, "experimentPlaybackStart");
+  auto* start_offset = widget<QDoubleSpinBox>(first, "experimentIn");
+  if (playback_start->value() != 420 || playback_start->text() != "00:07:00") {
+    std::cerr << "Camera experiment did not inherit Playback start\n";
+    return false;
+  }
+  for (const auto& [text, seconds] :
+       std::vector<std::pair<QString, double>>{{"90:23", 5423}, {"12.125", 12.125}, {"01:02:03.5", 3723.5}}) {
+    start_offset->findChild<QLineEdit*>()->setText(text);
+    start_offset->interpretText();
+    if (start_offset->value() != seconds) {
+      std::cerr << "Camera experiment rejected an abbreviated offset\n";
+      return false;
+    }
+  }
+  start_offset->findChild<QLineEdit*>()->setText("-1");
+  start_offset->interpretText();
+  if (start_offset->value() < 0)
+    return false;
+  playback_start->setValue(600);
+  if (widget<QDoubleSpinBox>(second, "experimentPlaybackStart")->value() != 0) {
+    std::cerr << "Camera experiment playback origin leaked to another dialog\n";
+    return false;
+  }
   first.show();
   QCoreApplication::processEvents();
   auto* maximize_window = widget<QToolButton>(first, "maximizeCameraExperimentWindowButton");
@@ -258,7 +284,8 @@ bool confirmation(const QString& manifest) {
 
 bool e2e(const QStringList& args) {
   if (args.size() < 8) {
-    std::cerr << "Usage: --e2e MANIFEST PANORAMA ARTIFACT_DIR IN DURATION VIDEO_FIRST [ARENA] [CONFIG]\n";
+    std::cerr
+        << "Usage: --e2e MANIFEST PANORAMA ARTIFACT_DIR OFFSET DURATION VIDEO_OFFSET [ARENA] [CONFIG] [PLAYBACK_START]\n";
     return false;
   }
   const QString artifacts = args[4];
@@ -271,7 +298,8 @@ bool e2e(const QStringList& args) {
   QObject::connect(
       &responsiveness, &QTimer::timeout, [&] { longest_gap = std::max(longest_gap, heartbeat.restart()); });
   responsiveness.start(10);
-  CameraExperimentDialog dialog(QFileInfo(args[2]).absolutePath());
+  CameraExperimentDialog dialog(
+      QFileInfo(args[2]).absolutePath(), nullptr, {}, args.size() > 10 ? std::llround(args[10].toDouble() * 1000) : 0);
   dialog.show();
   widget<QLineEdit>(dialog, "experimentManifest")->setText(args[2]);
   widget<QLineEdit>(dialog, "experimentMedia")->setText(args[3]);

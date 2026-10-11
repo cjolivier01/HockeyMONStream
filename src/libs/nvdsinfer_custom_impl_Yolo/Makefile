@@ -68,12 +68,13 @@ ifeq ($(shell ldconfig -p | grep -q libnvparsers && echo 1 || echo 0), 1)
 endif
 
 LIBS+= -lnvinfer_plugin -lnvinfer -lnvonnxparser -L/usr/local/cuda-$(CUDA_VER)/lib64 -lcudart -lcublas -lstdc++fs
-LFLAGS:= -shared -Wl,--start-group $(LIBS) -Wl,--end-group
+# TensorRT retains the static plugin creator after DeepStream closes its handle.
+LFLAGS:= -shared -Wl,-z,nodelete -Wl,--start-group $(LIBS) -Wl,--end-group
 
 INCS:= $(wildcard layers/*.h)
 INCS+= $(wildcard *.h)
 
-SRCFILES:= $(filter-out calibrator.cpp, $(wildcard *.cpp))
+SRCFILES:= $(filter-out calibrator.cpp %Test.cpp, $(wildcard *.cpp))
 
 ifeq ($(OPENCV), 1)
 	SRCFILES+= calibrator.cpp

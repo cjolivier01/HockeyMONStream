@@ -65,6 +65,10 @@ int main() {
   ok &= expect(
       !ParseHighlightTime("00:60:00", &milliseconds, &error) && !error.isEmpty(), "invalid minutes must be rejected");
   ok &= expect(!ParseHighlightTime("14:60", &milliseconds, &error), "invalid two-field seconds must be rejected");
+  ok &= expect(!ParseHighlightTime("-1.5", &milliseconds, &error), "negative offsets must be rejected");
+  ok &= expect(
+      ParseHighlightTime("90:23.125", &milliseconds, &error) && milliseconds == 5423125,
+      "offsets accept minutes above 59 and fractional seconds together");
   ok &= expect(!ParseHighlightTime("9223372037", &milliseconds, &error), "oversized seconds must be rejected");
   ok &= expect(
       !ParseHighlightTime("999999999:00:00", &milliseconds, &error),
@@ -96,6 +100,25 @@ int main() {
   explicit_interval.event_mode = false;
   explicit_interval.start_ms = 230010;
   explicit_interval.end_ms = 245123;
+
+  HighlightPlan moving;
+  moving.playback_start_ms = 60000;
+  moving.intervals = {event, explicit_interval};
+  hm::ui::HighlightAnnotation cue;
+  cue.start_ms = 120000;
+  cue.end_ms = 122000;
+  cue.motion = "keyframes";
+  cue.positions = {{120000, 0.2, 0.3}, {122000, 0.4, 0.5}};
+  moving.intervals[0].annotations = {cue};
+  ok &= expect(
+      hm::ui::SetHighlightPlaybackStart(&moving, 90000, &error) && moving.intervals[0].event_ms == 150000 &&
+          moving.intervals[0].start_ms == 120000 && moving.intervals[1].start_ms == 260010 &&
+          moving.intervals[0].annotations[0].positions[0].time_ms == 150000,
+      "changing playback origin preserves clip and authored-keyframe offsets");
+  ok &= expect(
+      !hm::ui::SetHighlightPlaybackStart(&moving, 9223372036854LL, &error) && moving.playback_start_ms == 90000 &&
+          moving.intervals[0].event_ms == 150000,
+      "overflowing origin changes leave the complete plan unchanged");
   ok &= expect(NormalizeHighlightInterval(&explicit_interval, &error), "explicit bounds must normalize");
   explicit_interval.end_ms = explicit_interval.start_ms;
   ok &= expect(!NormalizeHighlightInterval(&explicit_interval, &error), "zero length intervals must be rejected");
@@ -106,6 +129,12 @@ int main() {
   if (!directory.isValid())
     return 1;
   const QString path = directory.filePath("highlights.json");
+  HighlightPlan restored_origin;
+  ok &= expect(
+      SaveHighlightPlan(directory.filePath("origin.json"), moving, &error) &&
+          LoadHighlightPlan(directory.filePath("origin.json"), &restored_origin, &error) &&
+          restored_origin.playback_start_ms == 90000 && restored_origin.intervals[0].event_ms == 150000,
+      "playback origin and absolute clip moments survive saving and reopening");
   HighlightPlan loaded;
   loaded.base_name = "stale";
   loaded.intervals.push_back(event);

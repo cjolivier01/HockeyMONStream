@@ -1,6 +1,9 @@
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/ArchiveCatalog.h"
+#include "src/apps/hstream-ui/HighlightPlan.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
 
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
@@ -56,9 +59,57 @@
 namespace {
 namespace replay = hm::playtracker_replay;
 
-class ExperimentVideoTarget : public QWidget {
+class ExperimentTimeEdit : public QDoubleSpinBox {
+ protected:
+  QString textFromValue(double seconds) const override {
+    return hm::ui::FormatHighlightTime(std::llround(seconds * 1000));
+  }
+  double valueFromText(const QString& text) const override {
+    qint64 ms = 0;
+    return hm::ui::ParseHighlightTime(text, &ms) ? ms / 1000.0 : value();
+  }
+  QValidator::State validate(QString& text, int&) const override {
+    qint64 ms = 0;
+    if (hm::ui::ParseHighlightTime(text, &ms) && ms / 1000.0 >= minimum() && ms / 1000.0 <= maximum())
+      return QValidator::Acceptable;
+    for (const QChar c : text)
+      if (!c.isDigit() && c != ':' && c != '.' && !c.isSpace())
+        return QValidator::Invalid;
+    return QValidator::Intermediate;
+  }
+};
+
+// Telemetry PTS usually begins at zero even when the original cameras started
+// later. Use the archived launch origin to bind the selected source moment.
+std::optional<qint64> recording_source_origin(const replay::PrepareOptions& options) {
+  if (!QString::fromStdString(options.manifest_path).endsWith(".db") &&
+      !QString::fromStdString(options.manifest_path).endsWith(".sqlite"))
+    return std::nullopt;
+  hm::recording::Database db(options.manifest_path);
+  db.Validate();
+  hm::recording::Statement config(
+      db.get(),
+      "SELECT artifact_contents FROM config_events WHERE run_id=? AND kind='run-configuration' "
+      "AND length(artifact_contents)<=16777216 ORDER BY event_id LIMIT 1");
+  config.Bind(1, options.run_id);
+  if (!config.Next())
+    return std::nullopt;
+  const YAML::Node recorded = YAML::Load(config.Text(0));
+  if (recorded["launch"]["start-time-ns"])
+    return recorded["launch"]["start-time-ns"].as<uint64_t>() / 1000000;
+  const YAML::Node ui = recorded["game-at-launch"]["hstream_ui"];
+  const std::string value = ui["playback_start_time"].as<std::string>("");
+  qint64 ms = 0;
+  if (hm::ui::ParseHighlightTime(QString::fromStdString(value), &ms))
+    for (const auto& arg : ui["job"]["arguments"])
+      if (arg.as<std::string>() == "--start-time=" + value)
+        return ms;
+  return std::nullopt;
+}
+
+class ExperimentVideoTarget : public hm::ui::NativePreviewSurface {
  public:
-  explicit ExperimentVideoTarget(QWidget* parent) : QWidget(parent) {
+  explicit ExperimentVideoTarget(QWidget* parent) : NativePreviewSurface(parent) {
     if (QGuiApplication::platformName() == "xcb") {
       setAttribute(Qt::WA_NativeWindow);
       setAttribute(Qt::WA_PaintOnScreen);
@@ -210,6 +261,7 @@ struct CameraExperimentDialog::Impl {
   QLineEdit* game_path{nullptr};
   QComboBox* source_mode{nullptr};
   QDoubleSpinBox* in{nullptr};
+  QDoubleSpinBox* playback_start{nullptr};
   QDoubleSpinBox* duration{nullptr};
   QDoubleSpinBox* video_origin{nullptr};
   QLineEdit* legacy_arena{nullptr};
@@ -277,10 +329,14 @@ struct CameraExperimentDialog::Impl {
     return (original_cameras() ? game_path : media_path)->text().trimmed();
   }
   replay::MediaBinding media_binding() const {
+    qint64 media_ms = std::llround((playback_start->value() + video_origin->value()) * 1000);
+    hm::ui::ArchiveEntry archive;
+    if (!prepared_stitching && hm::ui::LoadArchiveSidecar(prepared_media, &archive) && archive.start_time_known)
+      media_ms -= archive.start_time_ms;
     return {
         prepared_stitching ? QDir(prepared_media).filePath("config.yaml").toStdString() : prepared_media.toStdString(),
         selected->front().pts_ns,
-        static_cast<std::uint64_t>(std::llround(video_origin->value() * 1e9)),
+        media_ms < 0 ? std::numeric_limits<uint64_t>::max() : static_cast<std::uint64_t>(media_ms) * 1000000,
         media_size.first,
         media_size.second,
         prepared_stitching};
@@ -490,8 +546,20 @@ struct CameraExperimentDialog::Impl {
     close_preview();
     busy(true);
     show_status("Preparing historical state and verifying the original camera trajectory…");
-    work = std::async(std::launch::async, [options, token, media, raw]() {
+    const qint64 playback_ms = std::llround(playback_start->value() * 1000);
+    work = std::async(std::launch::async, [options, token, media, raw, playback_ms]() mutable {
       WorkResult result;
+      try {
+        const qint64 recorded_origin = recording_source_origin(options).value_or(playback_ms);
+        options.start_seconds += (playback_ms - recorded_origin) / 1000.0;
+        if (options.start_seconds < 0) {
+          result.error = "Playback start plus Start offset precedes the selected recording";
+          return result;
+        }
+      } catch (const std::exception& error) {
+        result.error = error.what();
+        return result;
+      }
       auto prepared = replay::ReplaySession::Prepare(options, token.get());
       if (!prepared.ok()) {
         result.error = prepared.status().ToString();
@@ -580,6 +648,10 @@ struct CameraExperimentDialog::Impl {
       return false;
     }
     binding = media_binding();
+    if (binding.video_origin_pts_ns > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      show_status("Playback start plus Video start offset precedes the selected archive.", true);
+      return false;
+    }
     const auto media = binding;
     const auto frames = selected;
     const auto width = session->width();
@@ -754,7 +826,8 @@ struct CameraExperimentDialog::Impl {
 CameraExperimentDialog::CameraExperimentDialog(
     const QString& game_directory,
     QWidget* parent,
-    const std::map<QString, double>& camera_controls)
+    const std::map<QString, double>& camera_controls,
+    qint64 playback_start_ms)
     : QDialog(parent, Qt::Window), impl_(std::make_unique<Impl>(this)) {
   auto& s = *impl_;
   s.initial_controls = camera_controls;
@@ -855,19 +928,21 @@ CameraExperimentDialog::CameraExperimentDialog(
   auto* range = new QHBoxLayout();
   auto time_control = [&](const char* name, const QString& label, double initial, double maximum) {
     range->addWidget(new QLabel(label));
-    auto* value = new QDoubleSpinBox();
+    auto* value = new ExperimentTimeEdit();
     value->setObjectName(name);
     value->setRange(0, maximum);
     value->setDecimals(3);
-    value->setSuffix(" s");
+    value->setToolTip("Zero or greater: seconds (12.5), MM:SS (90:23), or HH:MM:SS, with optional milliseconds.");
     value->setValue(initial);
     range->addWidget(value);
     return value;
   };
-  s.in = time_control("experimentIn", "In recording", 0, 86400);
+  s.playback_start = time_control("experimentPlaybackStart", "Playback start", playback_start_ms / 1000.0, 1e8);
+  s.playback_start->setToolTip("Inherited from the main window. Changes apply only to this experiment.");
+  s.in = time_control("experimentIn", "Start offset", 0, 1e8);
   s.duration = time_control("experimentDuration", "Duration", 10, 120);
   s.duration->setMinimum(0.1);
-  s.video_origin = time_control("experimentVideoOrigin", "First selected frame in video", 0, 86400);
+  s.video_origin = time_control("experimentVideoOrigin", "Video start offset", 0, 1e8);
   range->addStretch();
   source_layout->addRow(range);
   s.uncropped = new QCheckBox();
@@ -1091,7 +1166,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   for (QLineEdit* source : {s.manifest, s.media_path, s.game_path, s.legacy_arena, s.legacy_config})
     connect(source, &QLineEdit::textChanged, this, [this]() { impl_->invalidate_source(); });
   connect(s.run_id, &QComboBox::currentIndexChanged, this, [this]() { impl_->invalidate_source(); });
-  for (QDoubleSpinBox* source : {s.in, s.duration})
+  for (QDoubleSpinBox* source : {s.in, s.duration, s.playback_start})
     connect(source, &QDoubleSpinBox::valueChanged, this, [this]() { impl_->invalidate_source(); });
   connect(s.video_origin, &QDoubleSpinBox::valueChanged, this, [this]() { impl_->close_preview(); });
   connect(s.uncropped, &QCheckBox::toggled, this, [this](bool checked) {
@@ -1151,6 +1226,10 @@ CameraExperimentDialog::CameraExperimentDialog(
     if (path.isEmpty())
       return;
     const auto media = state.media_binding();
+    if (media.video_origin_pts_ns > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      state.show_status("Playback start plus Video start offset precedes the selected archive.", true);
+      return;
+    }
     const auto status = state.session->SaveTrial(path.toStdString(), state.trials[index], media);
     state.show_status(
         status.ok() ? "Trial and its source/video binding saved." : QString::fromStdString(status.ToString()),

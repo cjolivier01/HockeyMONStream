@@ -198,6 +198,50 @@ int main(int argc, char** argv) {
   // FFmpeg is only the independent fixture/oracle. Export must ignore it.
   env.insert("HSTREAM_UI_FFMPEG", "hstream-no-ffmpeg-for-export");
 
+  // The inherited playback origin is separate from the archive origin. Offsets
+  // become absolute clip moments only at the editor boundary.
+  const QString offset_dir = QDir(game_dir).filePath("offset-plan");
+  if (!QDir().mkpath(offset_dir))
+    return 1;
+  {
+    hm::ui::HighlightsDialog offsets("test-game", offset_dir, env, archives, nullptr, 600000);
+    if (!settle(&offsets, 30000))
+      return 1;
+    auto* playback_start = offsets.findChild<QLineEdit*>("highlightPlaybackStartEdit");
+    if (!playback_start || playback_start->text() != "00:10:00" || !addRange(&offsets, "Offset clip", "0.5", "2.5") ||
+        !mapsTo(&offsets, 0, "00:00:00.500", "00:00:02.500")) {
+      std::cerr << "Highlights did not inherit Playback start or resolve offsets against it\n";
+      return 1;
+    }
+    playback_start->setText("10:00.125");
+    emit playback_start->editingFinished();
+    hm::ui::HighlightPlan offset_plan;
+    QString error;
+    if (!hm::ui::LoadHighlightPlan(QDir(offset_dir).filePath("highlights.json"), &offset_plan, &error) ||
+        offset_plan.playback_start_ms != 600125 || offset_plan.intervals[0].start_ms != 600625 ||
+        offsets.findChild<QLineEdit*>("highlightFirstTimeEdit")->text() != "00:00:00.500") {
+      std::cerr << "Changing Playback start did not retain the entered offset\n";
+      return 1;
+    }
+    offsets.findChild<QLineEdit*>("highlightFirstTimeEdit")->setText("-1");
+    offsets.findChild<QPushButton*>("highlightAddButton")->click();
+    if (offsets.findChild<QTableWidget*>("highlightsTable")->rowCount() != 1 ||
+        !statusOf(&offsets).contains("Invalid offset")) {
+      std::cerr << "Negative highlight offset was accepted\n";
+      return 1;
+    }
+    if (!addRange(&offsets, "Long offset", "90:23", "5424.125"))
+      return 1;
+  }
+  {
+    hm::ui::HighlightsDialog restored("test-game", offset_dir, env, archives, nullptr, 300000);
+    if (!settle(&restored, 30000) ||
+        restored.findChild<QLineEdit*>("highlightPlaybackStartEdit")->text() != "00:10:00.125") {
+      std::cerr << "The edited Highlights playback origin was not retained\n";
+      return 1;
+    }
+  }
+
   hm::ui::HighlightsDialog dialog("test-game", game_dir, env, archives);
   dialog.show();
   if (!settle(&dialog, 30000))

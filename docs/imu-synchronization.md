@@ -106,5 +106,36 @@ The seek slider and ±10-second buttons work in local render-only Program and
 Stitching playback after calibration finishes. Positions are relative to
 Playback start. Seeking stays disabled during calibration, while recording or
 streaming, or during DriveGPT database capture. A seek selected while paused
-is applied on resume. Seeking rebuilds the decoder pipeline, so a short pause
-while it restarts is expected.
+is applied on resume. Ordinary seeks reopen only the file readers, decoders and
+exact-pair mux at the target chapter/keyframe. The stitch maps, inference engine,
+GPU pools and Program/Stitched previews stay loaded. Native object tracking
+starts a new epoch. The lightweight audio branch resets its hardware sample
+buffer too: retaining the previous sample cursor can stall the audio clock
+after a seek and leave normal-speed video waiting indefinitely. Legacy
+source-render windows and standalone audio retain the full-rebuild fallback.
+
+DeepStream inference can also report the previous epoch's `FLUSHING` result
+after accepting its first new buffer. That stops the upstream queue even when
+the inference worker subsequently finishes successfully. The seek path arms a
+one-shot input probe: if this stale result occurs, a serialized event waits for
+the accepted buffer and reads its actual result before returning to the queue.
+`HSTREAM_SEEK_INFERENCE` records this recovery. Real flushing and downstream
+errors still propagate. The probe removes itself before normal playback.
+
+When checking repeated seeks, verify sustained output FPS after each seek,
+including backward jumps and chapter changes. A seek acknowledgment proves only
+the first completed output; a queried position can keep advancing with audio
+while video is stuck, so neither alone proves continued rendering.
+
+Chapter duration discovery is cached within the process for unchanged local
+files, avoiding temporary decoder initialization on repeated seeks. File
+replacement, size or timestamp changes invalidate the cached duration; failed
+probes and remote URIs are not cached.
+
+When a compatible completed DriveGPT database is available in the game
+directory, seeking restores an indexed native checkpoint and replays recorded
+metadata up to the target to seed the camera position and motion. Live camera
+tuning stays in effect. If there is no usable recording, the retained play
+tracker continues from its last camera position. `HSTREAM_SEEK_TRACKER` explains
+which state was used; `HSTREAM_SEEK_TIMING` measures request to first completed
+output, and `HSTREAM_SEEK_PHASE` separates source reopening from frame startup.

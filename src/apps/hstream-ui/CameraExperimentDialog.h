@@ -14,7 +14,8 @@ class CameraExperimentDialog : public QDialog {
   explicit CameraExperimentDialog(
       const QString& game_directory = {},
       QWidget* parent = nullptr,
-      const std::map<QString, double>& camera_controls = {});
+      const std::map<QString, double>& camera_controls = {},
+      qint64 playback_start_ms = 0);
   ~CameraExperimentDialog() override;
   bool captureScreenshot(const QString& path, QString* error = nullptr);
   void done(int result) override;

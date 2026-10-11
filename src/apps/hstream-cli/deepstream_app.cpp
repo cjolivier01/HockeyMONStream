@@ -3004,6 +3004,12 @@ void destroy_pipeline_for_recreate(AppCtx* appCtx) {
   destroy_pipeline(appCtx);
 }
 
+gboolean stop_sources_for_seek(AppCtx* appCtx) {
+  ShutdownWatchdog watchdog("Playback seek source teardown", watchdog_grace_us(kTeardownWatchdogGraceUs));
+  return gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PAUSED) != GST_STATE_CHANGE_FAILURE &&
+      gst_element_set_state(appCtx->pipeline.multi_src_bin.bin, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+}
+
 gboolean pause_pipeline(AppCtx* appCtx) {
   if (!appCtx || !appCtx->pipeline.pipeline) {
     return FALSE;

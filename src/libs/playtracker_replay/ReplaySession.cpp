@@ -382,6 +382,10 @@ struct ReplaySession::Impl {
 };
 ReplaySession::ReplaySession(std::shared_ptr<const Impl> impl) : impl_(std::move(impl)) {}
 
+std::string ReplaySession::starting_checkpoint() const {
+  return hm::play_tracker::serialize_snapshot(impl_->start.snapshot);
+}
+
 absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
     const PrepareOptions& options,
     const std::atomic<bool>* cancelled) {

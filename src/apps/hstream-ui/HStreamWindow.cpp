@@ -1,3 +1,4 @@
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
@@ -620,9 +621,9 @@ class StitchingCalibrationDialog : public QDialog {
   bool close_allowed_{false};
 };
 
-class NativeVideoTarget : public QWidget {
+class NativeVideoTarget : public hm::ui::NativePreviewSurface {
  public:
-  explicit NativeVideoTarget(QWidget* parent = nullptr) : QWidget(parent) {
+  explicit NativeVideoTarget(QWidget* parent = nullptr) : NativePreviewSurface(parent) {
     // X11 video-overlay sinks paint this native child directly.  Keep Qt's
     // backing store from repainting the child black after the video sink has
     // presented a frame.  WA_PaintOnScreen requires paintEngine() to return
@@ -1135,26 +1136,25 @@ QString stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_r
     }
   }
 
-  QDirIterator plugin_it(
-      root.absolutePath(), QStringList({"libnvdsgst_*.so", "libgst*.so"}), QDir::Files, QDirIterator::Subdirectories);
-  while (plugin_it.hasNext()) {
-    const QFileInfo plugin(plugin_it.next());
-    const QString path = plugin.absoluteFilePath();
-    if (path.contains("/testutils/") || path.contains(".runfiles/")) {
-      continue;
-    }
-    const QString link_path = runtime_dir.filePath(plugin.fileName());
-    QFile::remove(link_path);
-    QFile::link(plugin.canonicalFilePath(), link_path);
-    prepend_env_path(env, "LD_LIBRARY_PATH", plugin.absolutePath());
-  }
-
-  QDirIterator lib_it(root.absolutePath(), QStringList("*.so"), QDir::Files, QDirIterator::Subdirectories);
-  while (lib_it.hasNext()) {
-    const QFileInfo lib(lib_it.next());
-    const QString path = lib.absoluteFilePath();
-    if (!path.contains(".runfiles/")) {
-      prepend_env_path(env, "LD_LIBRARY_PATH", lib.absolutePath());
+  QStringList pending_directories{root.absolutePath()};
+  while (!pending_directories.isEmpty()) {
+    const QDir directory(pending_directories.takeLast());
+    for (const QFileInfo& entry : directory.entryInfoList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot)) {
+      const QString name = entry.fileName();
+      if (entry.isDir()) {
+        // QDirIterator's filename filter does not prune directories. Avoid
+        // traversing test runfiles (and traversing the same tree twice).
+        if (!entry.isSymLink() && !name.endsWith(".runfiles") && name != "testutils" && name != "_objs" &&
+            name != "_virtual_includes")
+          pending_directories.push_back(entry.absoluteFilePath());
+      } else if (name.endsWith(".so")) {
+        prepend_env_path(env, "LD_LIBRARY_PATH", entry.absolutePath());
+        if (name.startsWith("libnvdsgst_") || name.startsWith("libgst")) {
+          const QString link_path = runtime_dir.filePath(name);
+          QFile::remove(link_path);
+          QFile::link(entry.canonicalFilePath(), link_path);
+        }
+      }
     }
   }
 
@@ -6004,7 +6004,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     std::map<QString, double> current_controls;
     for (const auto& [id, value] : camera_defaults_)
       current_controls[id] = cameraControlValue(id);
-    auto* dialog = new CameraExperimentDialog(gameDirectoryText(), this, current_controls);
+    auto* dialog = new CameraExperimentDialog(
+        gameDirectoryText(), this, current_controls, playback_start_time_edit_->time().msecsSinceStartOfDay());
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
   });
@@ -6105,8 +6106,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       return;
     const QString game_id = game_id_edit_->text().trimmed();
     const QString game_dir = gameDirectory(game_id);
-    // Highlights are cut out of an already published archive with ffmpeg, so
-    // the pipeline's runtime environment deliberately stays out of the way.
+    // Highlights reads an already published archive through its own native
+    // pipeline and inherits the editable playback origin from this window.
     const QVector<hm::ui::ArchiveEntry> archives = hm::ui::DiscoverArchives(game_dir, game_id);
     if (archives.isEmpty()) {
       refreshArchiveAvailability();
@@ -6116,7 +6117,12 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       return;
     }
     auto* dialog = new hm::ui::HighlightsDialog(
-        game_id, game_dir, QProcessEnvironment::systemEnvironment(), archives, this);
+        game_id,
+        game_dir,
+        QProcessEnvironment::systemEnvironment(),
+        archives,
+        this,
+        playback_start_time_edit_->time().msecsSinceStartOfDay());
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowModality(Qt::WindowModal);
     connect(dialog, &QObject::destroyed, this, [this] {

@@ -25,6 +25,7 @@
 
 #include <cuda_runtime_api.h>
 #include <dlfcn.h>
+#include <gst-nvevent.h>
 #include <gst/gstbin.h>
 #include <gst/video/video.h>
 #include <gst/video/videooverlay.h>
@@ -65,6 +66,7 @@
 
 #include "TelemetryConfiguration.h"
 #include "TensorRtModelCache.h"
+#include "hstream/src/apps/apps-common/AsyncInferenceSeekRecovery.h"
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
@@ -78,6 +80,8 @@
 #include "hstream/src/libs/common/TrackColorMeta.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/pipeline_controller/GstPropertyService.h"
+#include "hstream/src/libs/playtracker_replay/ReplaySession.h"
+#include "hstream/src/libs/recording/Database.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "hstream/src/libs/stitching/CalibrationModels.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
@@ -684,7 +688,18 @@ void stage_bazel_gst_plugins(const fs::path& cache_root, const fs::path& bazel_b
     }
   }
 
-  for (const fs::directory_entry& entry : fs::recursive_directory_iterator(bazel_plugin_root, ec)) {
+  for (auto it = fs::recursive_directory_iterator(bazel_plugin_root, ec);
+       !ec && it != fs::recursive_directory_iterator();
+       it.increment(ec)) {
+    const fs::directory_entry& entry = *it;
+    const std::string name = entry.path().filename().string();
+    // Reject subtrees before entering them. Filtering their files afterwards
+    // still walks thousands of runfiles on every UI/CLI launch.
+    if (name == "testutils" || name == "_objs" || name == "_virtual_includes" ||
+        entry.path().extension() == ".runfiles") {
+      it.disable_recursion_pending();
+      continue;
+    }
     if (ec || !entry.is_regular_file()) {
       continue;
     }
@@ -1531,6 +1546,7 @@ absl::Status PipelineApplication::configureInstances(
       archive["launch"]["stage-index"] = stage_index;
       archive["launch"]["gpu-override"] = override_gpu_id_;
       archive["launch"]["ui-preview"] = app_ctx->config.hmsticher_config.ui_preview != 0;
+      archive["launch"]["start-time-ns"] = start_time_ns_;
       YAML::Node reference_inputs;
       reference_inputs["resolved"] = YAML::Clone(archive["resolved"]);
       reference_inputs["app"]["config-file"] = fs::absolute(app_ctx->app_config_file()).string();
@@ -1686,10 +1702,13 @@ absl::Status PipelineApplication::createPipelines(
 }
 
 absl::Status PipelineApplication::configure_source_preview_sinks(
-    const std::vector<std::shared_ptr<HmApp>>& app_contexts) {
+    const std::vector<std::shared_ptr<HmApp>>& app_contexts,
+    bool sources_only) {
   if (!ui_preview_window_ids_.empty()) {
-    preview_overlay_producers_.clear();
-    preview_overlay_probe_flags_.store(0, std::memory_order_release);
+    if (!sources_only) {
+      preview_overlay_producers_.clear();
+      preview_overlay_probe_flags_.store(0, std::memory_order_release);
+    }
     if (app_contexts.size() != 1) {
       return absl::InvalidArgumentError("GPU-native UI previews require exactly one active pipeline context");
     }
@@ -1887,7 +1906,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     const auto& app_context = app_contexts.front();
     NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
     const auto program_target = ui_preview_window_ids_.find("program");
-    if (program_target != ui_preview_window_ids_.end()) {
+    if (!sources_only && program_target != ui_preview_window_ids_.end()) {
       GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_gpu_preview_queue");
       GstElement* ingress_isolation =
           gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_ingress_isolation");
@@ -1921,14 +1940,15 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
     GstElement* preview_overlay_producer = app_context->pipeline.dsplaytracker_bin.elem_dsplaytracker;
-    if (preview_overlay_producer)
+    if (!sources_only && preview_overlay_producer)
       preview_overlay_producers_.push_back(preview_overlay_producer);
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
     GstElement* tracked_preview_source = hm::gst::SelectTrackedPreviewSource(
         app_context->pipeline.dsplaytracker_bin.bin,
         app_context->pipeline.common_elements.player_analytics,
         app_context->pipeline.common_elements.tracker_bin.bin);
-    if ((program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
+    if (!sources_only &&
+        (program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
         !preview_overlay_producer) {
       GstElement* snapshot_source = tracked_preview_source ? tracked_preview_source : stitcher.elem_hmstitcher;
       const char* snapshot_pad = "src";
@@ -1941,7 +1961,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
         return absl::InternalError("Could not install the post-tracker GPU overlay snapshot producer");
       }
     }
-    if (stitched_target != ui_preview_window_ids_.end()) {
+    if (!sources_only && stitched_target != ui_preview_window_ids_.end()) {
       GstElement* playtracker = tracked_preview_source;
       if (playtracker) {
         GstPad* playtracker_src = gst_element_get_static_pad(playtracker, "src");
@@ -5890,10 +5910,8 @@ bool PipelineApplication::seek_runtime_impl(
   const bool telemetry_capture_active =
       app_context->config.dsplaytracker_config.enable && !configured_telemetry_csv_dir.empty();
   if (telemetry_capture_active) {
-    // Runtime seek replaces the complete GStreamer graph, including the
-    // vpplaytracker instance that owns the active telemetry exporter. Reject
-    // before teardown so a capture can never silently discard its pre-seek
-    // segment or publish only the final replacement generation.
+    // Lossless captures must not skip source frames or splice playback epochs.
+    // Reject before mutating sources or the telemetry owner's camera state.
     return reject("rejected", "telemetry-capture-active");
   }
   GstElement* pipeline = app_context->pipeline.pipeline;
@@ -6001,12 +6019,9 @@ bool PipelineApplication::seek_runtime_impl(
       source.uri_list = g_strdup(source.uri);
     }
   }
-  // Rebuild from pristine source state at the selected epoch. URI-MULTIPLE is
-  // a logical multi-file camera playlist whose exact-pair counters and current
-  // physical chapters cannot be rewound safely by a flushing seek. Recreation
-  // reuses the startup positioning path, so chapter selection, camera offsets,
-  // source-linked audio, play tracking, and native tracking all cross the
-  // timeline boundary as one generation.
+  // Reopen sources at the selected epoch using the startup chapter/keyframe
+  // planner. Retain the GPU processing graph; only legacy preview topologies
+  // and standalone audio need the full reconstruction fallback.
   runtime_seek_pending_ = RuntimeSeekPending{
       .app_ctx = app_context,
       .generation = generation,
@@ -6145,6 +6160,10 @@ void PipelineApplication::advance_runtime_seek() {
     finish_runtime_seek("failed", app_context->eos_received ? "end-of-stream" : "pipeline-stopped");
     return;
   }
+  // Source readiness can be announced while the retained graph is changing
+  // state. Recheck the blocked pads after publication as well as listening for
+  // the one-shot bus notification, so an early notification cannot stall seek.
+  position_initial_sources_if_ready(app_context);
   if (std::chrono::steady_clock::now() >= pending.deadline) {
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
     finish_runtime_seek("failed", "first-frame-timeout");
@@ -6164,6 +6183,12 @@ void PipelineApplication::finish_runtime_seek(const char* status, const char* re
   runtime_seek_frame_generation_.store(0, std::memory_order_release);
   const RuntimeSeekPending completed = std::move(*runtime_seek_pending_);
   runtime_seek_pending_.reset();
+  g_print(
+      "HSTREAM_SEEK_TIMING generation=%" G_GUINT64_FORMAT " elapsed_ms=%lld\n",
+      completed.generation,
+      static_cast<long long>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - completed.started)
+              .count()));
   if (reason) {
     g_print(
         "HSTREAM_SEEK status=%s generation=%" G_GUINT64_FORMAT " reason=%s\n", status, completed.generation, reason);
@@ -6667,26 +6692,41 @@ void PipelineApplication::handle_bus_message_static(AppCtx* app_ctx, GstMessage*
   }
 }
 
+void PipelineApplication::position_initial_sources_if_ready(AppCtx* app_ctx) {
+  auto& sources = app_ctx->pipeline.multi_src_bin;
+  if (!sources.uri_playlist_barrier_initialized)
+    return;
+  g_mutex_lock(&sources.uri_playlist_barrier_mutex);
+  const bool pending = sources.uri_playlist_initial_seek_pending;
+  g_mutex_unlock(&sources.uri_playlist_barrier_mutex);
+  if (!pending || !seek_uri_playlist_initial_positions(&sources))
+    return;
+  const guint64 fallback_ns = uri_playlist_initial_seek_fallback_ns(&sources);
+  if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == app_ctx &&
+      runtime_seek_pending_->phase == RuntimeSeekPhase::kWaitingForFrame) {
+    const guint fallback_timeout_ms = fallback_ns > 0 ? runtime_seek_fallback_timeout_ms(fallback_ns)
+                                                    : runtime_seek_transition_timeout_ms();
+    // Decoder positioning is synchronous. Start the first-output allowance
+    // after it completes, so a frame already queued by the decoder can reach
+    // the main context before the timeout is evaluated.
+    runtime_seek_pending_->deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(fallback_timeout_ms);
+    if (fallback_ns == 0)
+      return;
+    g_print(
+        "HSTREAM_SEEK_FALLBACK status=active generation=%" G_GUINT64_FORMAT " decoded_trim_ns=%" G_GUINT64_FORMAT
+        " timeout_ms=%u\n",
+        runtime_seek_pending_->generation,
+        fallback_ns,
+        fallback_timeout_ms);
+    std::fflush(stdout);
+  }
+}
+
 void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* message) {
   if (app_ctx && message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_APPLICATION) {
     const GstStructure* structure = gst_message_get_structure(message);
     if (structure && gst_structure_has_name(structure, "hstream-uri-playlist-initial-seek-ready")) {
-      if (seek_uri_playlist_initial_positions(&app_ctx->pipeline.multi_src_bin)) {
-        const guint64 fallback_ns = uri_playlist_initial_seek_fallback_ns(&app_ctx->pipeline.multi_src_bin);
-        if (fallback_ns > 0 && runtime_seek_pending_ && runtime_seek_pending_->app_ctx == app_ctx &&
-            runtime_seek_pending_->phase == RuntimeSeekPhase::kWaitingForFrame) {
-          const guint fallback_timeout_ms = runtime_seek_fallback_timeout_ms(fallback_ns);
-          runtime_seek_pending_->deadline =
-              std::chrono::steady_clock::now() + std::chrono::milliseconds(fallback_timeout_ms);
-          g_print(
-              "HSTREAM_SEEK_FALLBACK status=active generation=%" G_GUINT64_FORMAT " decoded_trim_ns=%" G_GUINT64_FORMAT
-              " timeout_ms=%u\n",
-              runtime_seek_pending_->generation,
-              fallback_ns,
-              fallback_timeout_ms);
-          std::fflush(stdout);
-        }
-      }
+      position_initial_sources_if_ready(app_ctx);
       return;
     }
     guint64 recovery_generation = 0;
@@ -8033,6 +8073,300 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   return ret;
 }
 
+void PipelineApplication::seed_runtime_playtracker(HmApp* app, uint64_t absolute_position_ns) {
+  GstElement* tracker = app->pipeline.dsplaytracker_bin.elem_dsplaytracker;
+  if (!tracker || !game_id_ || !*game_id_)
+    return;
+  const auto started = std::chrono::steady_clock::now();
+  const std::string game = *game_id_;
+  try {
+    std::vector<std::pair<uint64_t, fs::path>> candidates;
+    for (const auto& entry : fs::directory_iterator(hm::Configurator::get_game_dir(game))) {
+      if (!entry.is_regular_file())
+        continue;
+      const auto generation = hm::recording::TelemetryDatabaseGeneration(entry.path().filename().string());
+      if (generation)
+        candidates.emplace_back(*generation, entry.path());
+    }
+    std::sort(candidates.rbegin(), candidates.rend());
+    for (const auto& [generation, path] : candidates) {
+      try {
+        hm::recording::Database db(path.string());
+        db.Validate();
+        hm::recording::Statement run(
+            db.get(), "SELECT run_id FROM runs WHERE completed=1 AND game_id=? ORDER BY started_utc DESC LIMIT 1");
+        run.Bind(1, game);
+        if (!run.Next())
+          continue;
+        const std::string run_id = run.Text(0);
+        hm::recording::Statement config(
+            db.get(),
+            "SELECT artifact_contents FROM config_events WHERE run_id=? AND kind='run-configuration' "
+            "AND length(artifact_contents)<=16777216 ORDER BY event_id LIMIT 1");
+        config.Bind(1, run_id);
+        if (!config.Next())
+          throw std::runtime_error("recording has no source timeline provenance");
+        const YAML::Node recorded = YAML::Load(config.Text(0));
+        const YAML::Node resolved = recorded["resolved"];
+        const YAML::Node current = app->configurator().config();
+        const std::string revision = resolved["rink"]["stitched_output_generation"].as<std::string>("");
+        if (revision.empty() || revision != current["rink"]["stitched_output_generation"].as<std::string>("") ||
+            YAML::Dump(resolved["game"]["videos"]) != YAML::Dump(current["game"]["videos"]) ||
+            resolved["pipeline"]["hmstitcher"]["left-frame-offset-ns"].as<uint64_t>() !=
+                app->config.hmsticher_config.left_frame_offset_ns ||
+            resolved["pipeline"]["hmstitcher"]["right-frame-offset-ns"].as<uint64_t>() !=
+                app->config.hmsticher_config.right_frame_offset_ns)
+          throw std::runtime_error("recording cameras, synchronization or stitching geometry differ");
+        uint64_t origin = 0;
+        bool legacy_origin = false;
+        if (recorded["launch"]["start-time-ns"]) {
+          origin = recorded["launch"]["start-time-ns"].as<uint64_t>();
+        } else {
+          // Older UI captures retained their launch job and playback start,
+          // but not the CLI's explicit timeline origin. Accept the best guess
+          // only when both archived values agree. Never borrow today's start.
+          const YAML::Node ui = recorded["game-at-launch"]["hstream_ui"];
+          const std::string value = ui["playback_start_time"].as<std::string>("");
+          const auto parsed = parse_time_option("recorded-start-time", value.c_str());
+          bool matches = false;
+          for (const auto& arg : ui["job"]["arguments"]) {
+            matches = matches || arg.as<std::string>() == "--start-time=" + value;
+          }
+          if (!parsed.ok() || !matches)
+            throw std::runtime_error("recording has no unambiguous playback origin");
+          origin = *parsed;
+          legacy_origin = true;
+        }
+        if (absolute_position_ns < origin)
+          throw std::runtime_error("seek precedes recording");
+        hm::playtracker_replay::PrepareOptions options;
+        options.manifest_path = path.string();
+        options.run_id = run_id;
+        options.start_seconds = double(absolute_position_ns - origin) / GST_SECOND;
+        options.duration_seconds = 0.1;
+        const auto replay = hm::playtracker_replay::ReplaySession::Prepare(options);
+        if (!replay.ok())
+          throw std::runtime_error(replay.status().ToString());
+        const std::string checkpoint = (*replay)->starting_checkpoint();
+        GstEvent* event = gst_event_new_custom(
+            GST_EVENT_CUSTOM_DOWNSTREAM,
+            gst_structure_new("hstream-playtracker-seed", "checkpoint", G_TYPE_STRING, checkpoint.c_str(), nullptr));
+        if (!gst_element_send_event(tracker, event))
+          throw std::runtime_error("play tracker rejected incompatible recorded state");
+        g_print(
+            "HSTREAM_SEEK_TRACKER source=recording database=%s origin=%s elapsed_ms=%lld\n",
+            path.c_str(),
+            legacy_origin ? "archived-ui-best-guess" : "recorded",
+            static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started)
+                    .count()));
+        return;
+      } catch (const std::exception& error) {
+        g_print("HSTREAM_SEEK_TRACKER skipped=%s reason=%s\n", path.c_str(), error.what());
+      }
+    }
+  } catch (const std::exception& error) {
+    g_print("HSTREAM_SEEK_TRACKER reason=%s\n", error.what());
+  }
+  g_print("HSTREAM_SEEK_TRACKER source=last-position\n");
+}
+
+// Replace only the file readers, decoders and exact-pair mux. Downstream
+// elements remain PAUSED, retaining the stitch maps, TensorRT engine, pools and
+// camera policy. This uses the same chapter/keyframe positioning as startup.
+gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t target_ns) {
+  auto* app = static_cast<HmApp*>(app_ctx);
+  auto& sources = app->pipeline.multi_src_bin;
+  struct Link {
+    std::string name;
+    GstPad* peer;
+    int audio_source{-1};
+  };
+  std::vector<Link> links;
+  auto cleanup = absl::MakeCleanup([&] {
+    for (const auto& link : links)
+      gst_object_unref(link.peer);
+  });
+  GstIterator* iterator = gst_element_iterate_src_pads(sources.bin);
+  GValue item = G_VALUE_INIT;
+  while (gst_iterator_next(iterator, &item) == GST_ITERATOR_OK) {
+    auto* pad = GST_PAD(g_value_get_object(&item));
+    GstPad* peer = gst_pad_get_peer(pad);
+    if (peer) {
+      int audio_source = -1;
+      GstPad* target = GST_PAD(gst_object_ref(pad));
+      while (GST_IS_GHOST_PAD(target)) {
+        GstPad* next = gst_ghost_pad_get_target(GST_GHOST_PAD(target));
+        gst_object_unref(target);
+        target = next;
+        if (!target)
+          break;
+      }
+      if (target) {
+        for (guint i = 0; i < sources.num_bins; ++i) {
+          if (GST_OBJECT_PARENT(target) == GST_OBJECT(sources.sub_bins[i].uri_audio_tee))
+            audio_source = static_cast<int>(i);
+        }
+        gst_object_unref(target);
+      }
+      links.push_back({GST_PAD_NAME(pad), peer, audio_source});
+    }
+    g_value_reset(&item);
+  }
+  g_value_unset(&item);
+  gst_iterator_free(iterator);
+  if (links.empty())
+    return FALSE;
+  for (const auto& link : links) {
+    if (link.name != "src" && link.audio_source < 0)
+      return FALSE;
+  }
+
+  const auto started = std::chrono::steady_clock::now();
+  const guint delay_ms = test_delay_ms("HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS");
+  if (delay_ms > 0)
+    g_usleep(static_cast<gulong>(delay_ms) * 1000);
+  g_print("HSTREAM_SEEK_PHASE phase=sources-stop\n");
+  // Flush downstream before joining decoders: queued GPU work and sink clock
+  // waits must release the old surfaces before the source pool can retire.
+  for (const auto& link : links)
+    gst_pad_send_event(link.peer, gst_event_new_flush_start());
+  cancel_uri_playlist_frame_barrier(&sources);
+  if (!stop_sources_for_seek(app))
+    return FALSE;
+  // A flushed ALSA ring buffer can retain its old hardware sample cursor while
+  // the new stream starts at zero. Its clock then stays stopped until enough
+  // audio arrives to refill that old cursor, while exact-pair audio gating is
+  // waiting for video paced by the same clock. Reset only the lightweight
+  // audio branches to READY so their ring buffers start a fresh sample epoch.
+  for (auto& instance : app->pipeline.instance_bins) {
+    if (instance.hmaudio_bin.bin &&
+        (gst_element_set_state(instance.hmaudio_bin.bin, GST_STATE_READY) == GST_STATE_CHANGE_FAILURE ||
+         !gst_element_sync_state_with_parent(instance.hmaudio_bin.bin)))
+      return FALSE;
+  }
+  for (const auto& link : links) {
+    GstPad* pad = gst_element_get_static_pad(sources.bin, link.name.c_str());
+    if (pad) {
+      gst_pad_unlink(pad, link.peer);
+      gst_object_unref(pad);
+    }
+  }
+  for (auto it = ui_preview_channels_.begin(); it != ui_preview_channels_.end();) {
+    if (it->first.rfind("source", 0) == 0)
+      it = ui_preview_channels_.erase(it);
+    else
+      ++it;
+  }
+  if (!gst_bin_remove(GST_BIN(app->pipeline.pipeline), sources.bin))
+    return FALSE;
+  release_uri_playlist_generation_state(&sources);
+  sources = {};
+  // The bus watch is detached while the worker owns the graph. A retiring
+  // source can reach EOS before it stops; its queued messages must not stop
+  // the replacement epoch. Full reconstruction discarded this bus implicitly.
+  GstBus* bus = gst_element_get_bus(app->pipeline.pipeline);
+  gst_bus_set_flushing(bus, TRUE);
+  gst_bus_set_flushing(bus, FALSE);
+  gst_object_unref(bus);
+  if (g_getenv("HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_DESTROY")) {
+    g_print("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=after-destroy\n");
+    return FALSE;
+  }
+  runtime_playback_offset_ns_.store(target_ns, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(playback_timing_mu_);
+    observed_playback_by_instance_.erase(app->index);
+  }
+  g_print("HSTREAM_SEEK_PHASE phase=sources-create\n");
+  if (!create_multi_source_bin(app->config.num_source_sub_bins, app->config.multi_source_config, &sources) ||
+      !gst_bin_add(GST_BIN(app->pipeline.pipeline), sources.bin))
+    return FALSE;
+  if (g_getenv("HM_TEST_PIPELINE_RECREATE_FAIL_DURING_CREATE")) {
+    g_print("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=during-create\n");
+    return FALSE;
+  }
+  if (app->config.streammux_config.is_parsed &&
+      !set_streammux_properties(&app->config.streammux_config, sources.streammux))
+    return FALSE;
+  if (!defer_uri_playlist_main_context_callbacks(&sources))
+    return FALSE;
+  if (g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_REPLACEMENT_PLAYLIST_CALLBACK")) {
+    const gboolean queued = queue_uri_playlist_switch_callback_for_test(&sources, 0, 1);
+    g_print(
+        "HSTREAM_URI_PLAYLIST_CALLBACK status=%s action=replacement-switch source=0\n",
+        queued ? "unsafe-queued" : "replacement-fenced");
+    if (queued)
+      return FALSE;
+  }
+  const guint post_create_delay_ms = test_delay_ms("HM_TEST_RUNTIME_SEEK_POST_CREATE_DELAY_MS");
+  if (post_create_delay_ms > 0)
+    g_usleep(static_cast<gulong>(post_create_delay_ms) * 1000);
+  const auto positioned = app->configurator().prepare_initial_pipeline_position(
+      app->pipeline, app->config, initial_pipeline_position_ns(app));
+  if (!positioned.ok() || !arm_uri_playlist_initial_seeks(&sources)) {
+    g_printerr("Source seek positioning failed: %s\n", positioned.ToString().c_str());
+    return FALSE;
+  }
+  for (const auto& link : links) {
+    if (link.audio_source >= 0) {
+      auto& source = sources.sub_bins[link.audio_source];
+      GstPad* tee_pad = gst_element_request_pad_simple(source.uri_audio_tee, "src_%u");
+      if (!tee_pad)
+        return FALSE;
+      const std::string name = "uri_audio_src_" + std::to_string(source.uri_audio_link_count++);
+      GstPad* sub_pad = gst_ghost_pad_new(name.c_str(), tee_pad);
+      gst_object_unref(tee_pad);
+      if (!sub_pad || !gst_element_add_pad(source.bin, sub_pad))
+        return FALSE;
+      GstPad* outer_pad = gst_ghost_pad_new(link.name.c_str(), sub_pad);
+      if (!outer_pad || !gst_element_add_pad(sources.bin, outer_pad))
+        return FALSE;
+    }
+    GstPad* pad = gst_element_get_static_pad(sources.bin, link.name.c_str());
+    const bool linked = pad && gst_pad_link(pad, link.peer) == GST_PAD_LINK_OK;
+    if (pad)
+      gst_object_unref(pad);
+    if (!linked)
+      return FALSE;
+    GstEvent* flush = gst_event_new_flush_stop(TRUE);
+    gst_structure_set(
+        gst_event_writable_structure(flush), "hstream-preserve-playtracker", G_TYPE_BOOLEAN, TRUE, nullptr);
+    if (!gst_pad_send_event(link.peer, flush))
+      return FALSE;
+  }
+  if (app->config.primary_gie_config.enable &&
+      app->config.primary_gie_config.plugin_type == NV_DS_GIE_PLUGIN_INFER &&
+      !hm::ArmAsyncInferenceSeekRecovery(app->pipeline.common_elements.primary_gie_bin.primary_gie))
+    return FALSE;
+  // FLUSH_STOP does not discard NvDCF's native object histories. Explicitly
+  // retire the old streams before the replacement mux starts publishing frames;
+  // this works independently of the optional tracking-id-reset-mode setting.
+  if (GstElement* tracker = app->pipeline.common_elements.tracker_bin.tracker) {
+    for (guint i = 0; i < sources.num_bins; ++i) {
+      if (!gst_element_send_event(tracker, gst_nvevent_new_pad_deleted(i)) ||
+          !gst_element_send_event(tracker, gst_nvevent_new_pad_added(i)))
+        return FALSE;
+    }
+  }
+  seed_runtime_playtracker(app, initial_pipeline_position_ns(app));
+  const auto preview_status = configure_source_preview_sinks(stage_app_contexts_.at(current_stage_), true);
+  if (!preview_status.ok()) {
+    g_printerr("Source preview seek failed: %s\n", preview_status.ToString().c_str());
+    return FALSE;
+  }
+  // The replacement source PTS starts at zero. Resume the retained audio and
+  // display sinks against that new clock origin as well.
+  gst_element_set_start_time(app->pipeline.pipeline, 0);
+  if (!gst_element_sync_state_with_parent(sources.bin))
+    return FALSE;
+  g_print(
+      "HSTREAM_SEEK_PHASE phase=sources-ready elapsed_ms=%lld\n",
+      static_cast<long long>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count()));
+  return TRUE;
+}
+
 void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation) {
   if (g_getenv("HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS")) {
     g_print("HSTREAM_SEEK_RECREATION status=started generation=%" G_GUINT64_FORMAT "\n", generation);
@@ -8041,7 +8375,15 @@ void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64
   gboolean success = FALSE;
   bool topology_changed = false;
   try {
-    success = recreate_pipeline_impl(app_ctx, false, true, target_ns, generation, &topology_changed);
+    bool source_linked_audio = true;
+    for (const auto& audio : app_ctx->config.hmaudio_config)
+      source_linked_audio = source_linked_audio && (!audio.enable || audio.src == SRC_SOURCE_BIN);
+    if (source_render_window_ids_.empty() && !app_ctx->config.use_nvmultiurisrcbin && source_linked_audio) {
+      topology_changed = true;
+      success = seek_runtime_sources(app_ctx, target_ns);
+    } else {
+      success = recreate_pipeline_impl(app_ctx, false, true, target_ns, generation, &topology_changed);
+    }
   } catch (const std::exception& error) {
     g_printerr("Runtime seek reconstruction threw an exception: %s\n", error.what());
   } catch (...) {
@@ -8202,12 +8544,17 @@ int main(int argc, char* argv[]) {
     }
   }
 #endif
-  const auto runtime_status = configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
+  const std::string runtime_pid = std::to_string(static_cast<unsigned long>(::getpid()));
+  const char* prepared_pid = std::getenv("HSTREAM_RUNTIME_ENV_PID");
+  const auto runtime_status = prepared_pid && runtime_pid == prepared_pid
+      ? absl::OkStatus()
+      : configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
   if (!runtime_status.ok()) {
     g_printerr("hstream-cli runtime setup failed: %s\n", runtime_status.ToString().c_str());
     return 78;
   }
   if (!std::getenv("HSTREAM_RUNTIME_ENV_READY")) {
+    setenv("HSTREAM_RUNTIME_ENV_PID", runtime_pid.c_str(), 1);
     setenv("HSTREAM_RUNTIME_ENV_READY", "1", 1);
     if (argc > 0 && argv[0]) {
       if (std::strchr(argv[0], '/')) {

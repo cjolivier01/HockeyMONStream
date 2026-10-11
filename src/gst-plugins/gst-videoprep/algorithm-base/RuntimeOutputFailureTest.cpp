@@ -109,7 +109,7 @@ bool expect_nonfatal_pool_statuses() {
   return ok;
 }
 
-bool expect_single_input_failure(GstElement* element, GstBus* bus, cudaStream_t stream) {
+bool expect_single_input_failure(GstElement* element, GstBus* bus, cudaStream_t stream, bool seek_after_eos) {
   FailingRuntimeSize algorithm;
   GstCaps* caps =
       gst_caps_from_string("video/x-raw(memory:NVMM),format=RGBA,width=16,height=16,framerate=30/1,batch-size=2");
@@ -123,6 +123,17 @@ bool expect_single_input_failure(GstElement* element, GstBus* bus, cudaStream_t 
   gst_caps_unref(caps);
   if (!expect(initialized.ok(), "the runtime-sized worker must initialize without allocating its output pool"))
     return false;
+
+  if (seek_after_eos) {
+    for (int epoch = 0; epoch < 2; ++epoch) {
+      for (GstEvent* event : {gst_event_new_eos(), gst_event_new_flush_start(), gst_event_new_flush_stop(TRUE)}) {
+        const bool handled = algorithm.HandleEvent(event);
+        gst_event_unref(event);
+        if (!expect(handled, "a flushing seek after EOS must restart the retained worker"))
+          return false;
+      }
+    }
+  }
 
   // Only the NvBufSurface envelope is needed: the injected sizing error happens
   // before surface access, GPU allocation, matching, or output generation.
@@ -169,6 +180,11 @@ bool expect_single_input_failure(GstElement* element, GstBus* bus, cudaStream_t 
         algorithm.m_processCV.wait_for(lock, std::chrono::seconds(1), [&] { return algorithm.outputthread_stopped; });
   }
   ok &= expect(stopped, "a fatal sizing error must stop the worker without more input");
+  GstEvent* flush = gst_event_new_flush_stop(TRUE);
+  algorithm.HandleEvent(flush);
+  gst_event_unref(flush);
+  ok &= expect(algorithm.outputthread_stopped && algorithm.shutdown_requested_,
+               "a flushing seek must never revive a worker stopped by a fatal error");
   algorithm.Shutdown();
   delete algorithm.m_outputThread;
   algorithm.m_outputThread = nullptr;
@@ -204,7 +220,8 @@ int main(int argc, char** argv) {
     return 1;
   gst_bin_add(GST_BIN(pipeline), element);
   GstBus* bus = gst_element_get_bus(pipeline);
-  ok &= expect_single_input_failure(element, bus, stream);
+  ok &= expect_single_input_failure(element, bus, stream, false);
+  ok &= expect_single_input_failure(element, bus, stream, true);
   gst_object_unref(bus);
   gst_element_set_state(pipeline, GST_STATE_NULL);
   gst_object_unref(pipeline);

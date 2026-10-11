@@ -476,6 +476,28 @@ bool CustomAlgorithmBase::HandleEvent(GstEvent* event) {
         const guint64 in_flight = in_flight_flush_generation_.load(std::memory_order_acquire);
         return in_flight == G_MAXUINT64 || in_flight >= current_generation;
       });
+      // EOS may have drained this worker while clocked downstream sinks were
+      // still displaying the old epoch. A flushing seek can reuse its models
+      // and pools, but must restart the stopped worker before accepting input.
+      // Shutdown and fatal errors remain terminal.
+      if (m_outputThread && m_stop && !shutdown_requested_.load(std::memory_order_acquire)) {
+        m_processCV.wait(lock, [this] { return outputthread_stopped; });
+        if (m_outputThread->joinable())
+          m_outputThread->join();
+        delete m_outputThread;
+        m_outputThread = nullptr;
+        m_stop = FALSE;
+        outputthread_stopped = false;
+        eos_sent_ = false;
+        try {
+          m_outputThread = new std::thread(&CustomAlgorithmBase::OutputThread, this);
+        } catch (const std::exception& error) {
+          m_stop = TRUE;
+          outputthread_stopped = true;
+          GST_ERROR_OBJECT(m_element, "Could not restart output after EOS: %s", error.what());
+          return false;
+        }
+      }
     } break;
     case GST_EVENT_EOS: {
       std::unique_lock<std::mutex> lock(m_processLock);

@@ -317,6 +317,40 @@ bool NormalizeHighlightInterval(HighlightInterval* interval, QString* error) {
   return true;
 }
 
+bool SetHighlightPlaybackStart(HighlightPlan* plan, qint64 start_ms, QString* error) {
+  if (!plan || !valid_milliseconds(start_ms))
+    return fail(error, "Playback start must be a nonnegative time within the pipeline time range");
+  const qint64 delta = start_ms - plan->playback_start_ms.value_or(0);
+  HighlightPlan updated = *plan;
+  auto shift = [delta](qint64& value) {
+    value += delta;
+    return valid_milliseconds(value);
+  };
+  for (auto& item : updated.intervals) {
+    if (item.is_card)
+      continue;
+    if (!shift(item.start_ms) || !shift(item.end_ms) || (item.event_mode && !shift(item.event_ms)))
+      return fail(error, "Moving Playback start puts a clip outside the pipeline time range");
+    for (auto& cue : item.annotations) {
+      if (delta != 0 && cue.motion == "track")
+        return fail(
+            error, "Remove recorded-track cues before moving Playback start, then attach tracks at the new times");
+      if (!shift(cue.start_ms) || !shift(cue.end_ms))
+        return fail(error, "Moving Playback start puts an annotation before zero or beyond the pipeline time range");
+      for (auto& position : cue.positions)
+        if (!shift(position.time_ms))
+          return fail(error, "Moving Playback start puts a keyframe outside the pipeline time range");
+    }
+    if (!NormalizeHighlightInterval(&item, error))
+      return false;
+    if (item.start_ms < start_ms)
+      return fail(error, "An event's duration extends before Playback start; shorten it or use a later offset");
+  }
+  updated.playback_start_ms = start_ms;
+  *plan = std::move(updated);
+  return true;
+}
+
 bool LoadHighlightPlan(const QString& path, HighlightPlan* plan, QString* error) {
   if (!plan)
     return fail(error, "No highlight plan destination was supplied");
@@ -346,6 +380,12 @@ bool LoadHighlightPlan(const QString& path, HighlightPlan* plan, QString* error)
 
   HighlightPlan loaded;
   loaded.base_name = root.value("base_name").toString();
+  if (root.contains("playback_start_ms")) {
+    qint64 start = 0;
+    if (!read_milliseconds(root, "playback_start_ms", &start, error))
+      return false;
+    loaded.playback_start_ms = start;
+  }
   if (schema == 2) {
     if (!root.value("archive_path").isString())
       return fail(error, "Reel archive path must be a string");
@@ -389,6 +429,8 @@ bool LoadHighlightPlan(const QString& path, HighlightPlan* plan, QString* error)
         *error = QString("Highlight %1: %2").arg(index + 1).arg(*error);
       return false;
     }
+    if (!interval.is_card && loaded.playback_start_ms && interval.start_ms < *loaded.playback_start_ms)
+      return fail(error, "A highlight starts before Playback start");
     loaded.intervals.push_back(std::move(interval));
   }
   *plan = std::move(loaded);
@@ -396,6 +438,8 @@ bool LoadHighlightPlan(const QString& path, HighlightPlan* plan, QString* error)
 }
 
 bool SaveHighlightPlan(const QString& path, const HighlightPlan& plan, QString* error) {
+  if (plan.playback_start_ms && !valid_milliseconds(*plan.playback_start_ms))
+    return fail(error, "Invalid Playback start");
   if (!valid_base_name(plan.base_name))
     return fail(error, "Highlight base name must use letters, numbers, spaces, '_' or '-', up to 64 characters");
   QJsonArray rows;
@@ -409,6 +453,8 @@ bool SaveHighlightPlan(const QString& path, const HighlightPlan& plan, QString* 
         *error = QString("Highlight %1: %2").arg(index + 1).arg(*error);
       return false;
     }
+    if (!interval.is_card && plan.playback_start_ms && interval.start_ms < *plan.playback_start_ms)
+      return fail(error, "A highlight starts before Playback start");
     QJsonArray annotations;
     for (const auto& a : interval.annotations) {
       position_count += a.positions.size();
@@ -429,8 +475,10 @@ bool SaveHighlightPlan(const QString& path, const HighlightPlan& plan, QString* 
             {"end_ms", interval.end_ms},
         });
   }
-  const QJsonObject root{
+  QJsonObject root{
       {"schema", 2}, {"base_name", plan.base_name}, {"archive_path", plan.archive_path}, {"intervals", rows}};
+  if (plan.playback_start_ms)
+    root.insert("playback_start_ms", *plan.playback_start_ms);
   QSaveFile file(path);
   if (!file.open(QIODevice::WriteOnly))
     return fail(error, QString("Could not save highlights at %1: %2").arg(path, file.errorString()));

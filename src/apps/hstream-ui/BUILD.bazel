@@ -65,6 +65,8 @@ filegroup(
         "PlayerAnalyticsControls.cpp",
         "PlayerAnalyticsControls.h",
         "PreviewDialogWindow.h",
+        "NativePreviewSurface.cpp",
+        "NativePreviewSurface.h",
         "ScoreboardSelectionDialog.cpp",
         "ScoreboardSelectionDialog.h",
         "StitchingExperimentBackend.cpp",
@@ -89,6 +91,25 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = ["@qt//:qt_widgets"],
+)
+
+cc_library(
+    name = "native_preview_surface",
+    srcs = ["NativePreviewSurface.cpp"],
+    hdrs = ["NativePreviewSurface.h"],
+    copts = COMMON_COPTS,
+    linkopts = ["-lxcb"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "native_preview_surface_test",
+    srcs = ["NativePreviewSurfaceTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local", "manual"],
+    deps = [":native_preview_surface", "@qt//:qt_widgets"],
 )
 
 cc_library(
@@ -306,7 +327,10 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":native_preview_surface",
         ":action_icons",
+        ":archive_catalog",
+        ":highlight_plan",
         ":preview_dialog_window",
         "//src/libs/recording",
         ":camera_experiment_source",
@@ -406,6 +430,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":native_preview_surface",
         ":ansi_log_format",
         ":stitching_still_preview",
         ":action_icons",
@@ -597,7 +622,7 @@ cc_library(
     hdrs = ["HighlightItemEditor.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_reel_pipeline", ":highlight_tracking", ":action_icons", ":preview_dialog_window", "@qt//:qt_widgets"],
+    deps = [":native_preview_surface", ":highlight_reel_pipeline", ":highlight_tracking", ":action_icons", ":preview_dialog_window", "@qt//:qt_widgets"],
 )
 
 cc_library(
@@ -607,6 +632,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        ":native_preview_surface",
         ":action_icons",
         ":archive_catalog",
         ":preview_dialog_window",
@@ -638,6 +664,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":native_preview_surface",
         ":stitching_still_preview",
         "//src/libs/common:process_diagnostics",
         ":action_icons",

@@ -231,6 +231,9 @@ class PipelineApplication {
     bool topology_changed{false};
   };
   void runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation);
+  gboolean seek_runtime_sources(AppCtx* app_ctx, uint64_t target_ns);
+  void seed_runtime_playtracker(HmApp* app_ctx, uint64_t absolute_position_ns);
+  void position_initial_sources_if_ready(AppCtx* app_ctx);
   bool dispatch_runtime_seek_recreation_completion();
   gboolean complete_runtime_seek_recreation(RuntimeSeekRecreationResult result);
   void publish_inspector_topology();
@@ -239,7 +242,9 @@ class PipelineApplication {
   static gboolean inject_stitching_calibration_error_static(gpointer arg);
   gboolean inject_stitching_calibration_error();
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
-  absl::Status configure_source_preview_sinks(const std::vector<std::shared_ptr<HmApp>>& app_contexts);
+  absl::Status configure_source_preview_sinks(
+      const std::vector<std::shared_ptr<HmApp>>& app_contexts,
+      bool sources_only = false);
 
  private:
   // std::vector<std::unique_ptr<HmApp>> app_ctx_;
@@ -380,6 +385,7 @@ class PipelineApplication {
     uint64_t target_ns{0};
     RuntimeSeekPhase phase{RuntimeSeekPhase::kRecreating};
     std::chrono::steady_clock::time_point deadline;
+    std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
   };
   std::optional<RuntimeSeekPending> runtime_seek_pending_;
   std::thread runtime_seek_recreation_thread_;

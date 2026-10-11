@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include "hockeymon/csrc/play_tracker/PlayTrackerSnapshot.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryCsv.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryDb.h"
@@ -228,6 +229,12 @@ int main(int argc, char** argv) {
     check(
         same_frames((*database_session)->baseline(), (*session)->baseline()),
         "database checkpoint replay matches CSV history");
+    const auto seek_state = hm::play_tracker::deserialize_snapshot((*database_session)->starting_checkpoint());
+    const auto csv_state = hm::play_tracker::deserialize_snapshot((*session)->starting_checkpoint());
+    check(
+        hm::play_tracker::serialize_snapshot(seek_state) == hm::play_tracker::serialize_snapshot(csv_state),
+        "indexed seek checkpoint is fast-forwarded to the same pre-frame state as complete history replay");
+    check(seek_state.state.tick_count_ > 30, "seek state advances beyond the preceding checkpoint");
     {
       hm::recording::Database db(database_options.manifest_path, true);
       db.Exec("UPDATE checkpoints SET state='unreadable old checkpoint' WHERE sample_id=1");

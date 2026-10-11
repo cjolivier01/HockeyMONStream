@@ -372,6 +372,7 @@ void toggle_show_bbox_text(AppCtx* appCtx);
 
 void destroy_pipeline(AppCtx* appCtx);
 void destroy_pipeline_for_recreate(AppCtx* appCtx);
+gboolean stop_sources_for_seek(AppCtx* appCtx);
 gboolean attach_pipeline_bus_watch(AppCtx* appCtx);
 void detach_pipeline_bus_watch(AppCtx* appCtx);
 gboolean dispatch_pending_pipeline_bus_messages(AppCtx* appCtx);

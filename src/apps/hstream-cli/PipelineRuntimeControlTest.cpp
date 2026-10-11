@@ -963,10 +963,11 @@ int main(int argc, char** argv) {
             argv[1],
             playlist_seek_config,
             "URI-MULTIPLE",
-            // The extra clocked sink keeps this timer-based recreation test
-            // alive; the headless render terminator intentionally runs unpaced.
-            "RENDER,FAKE",
-            true,
+            // This tests startup positioning and periodic recreation, not a
+            // runtime seek. Use the clocked fake sink so the tiny fixture does
+            // not reach EOS before the five-second recreation timer fires.
+            "FAKE",
+            false,
             {},
             {"--start-time=00:06:30", "--options=pipeline.tests.pipeline-recreate-sec=5"}),
         "delayed playback must start with exact-paired camera sources");
@@ -1059,7 +1060,7 @@ int main(int argc, char** argv) {
         seek_process.WaitFor("HSTREAM_PIPELINE_READER status=released", seek_mark),
         "recreation must wait for an in-flight pipeline reader before destroying its generation");
     ok &= expect(
-        seek_process.WaitFor("Destroy pipeline", seek_mark),
+        seek_process.WaitFor("HSTREAM_SEEK_PHASE phase=sources-stop", seek_mark),
         "pipeline replacement must proceed after the shared reader fence is released");
     ok &= expect(
         seek_process.WaitFor(
@@ -1073,7 +1074,7 @@ int main(int argc, char** argv) {
         "an accelerated hardware-decoder seek must rebuild NVDEC before admitting post-seek pixels");
     const std::string& reader_output = seek_process.output();
     const size_t reader_released = reader_output.find("HSTREAM_PIPELINE_READER status=released", seek_mark);
-    const size_t reader_destroy = reader_output.find("Destroy pipeline", seek_mark);
+    const size_t reader_destroy = reader_output.find("HSTREAM_SEEK_PHASE phase=sources-stop", seek_mark);
     ok &= expect(
         reader_released != std::string::npos && reader_destroy != std::string::npos && reader_released < reader_destroy,
         "pipeline replacement must begin only after the shared reader fence is released");
@@ -1110,11 +1111,12 @@ int main(int argc, char** argv) {
             replacement_graph_mark),
         "the newly published inspector generation must accept fresh graph requests");
     ok &= expect(
-        seek_process.WaitFor(runtime_tuning_response_prefix, seek_mark),
-        "replacement pipeline must restore acknowledged live zoom tuning before completing the seek");
+        seek_process.output().find(runtime_tuning_response_prefix, seek_mark) == std::string::npos &&
+            seek_process.output().find("Destroy pipeline", seek_mark) == std::string::npos,
+        "source seek must retain the tuned processing graph without rebuilding or replaying its settings");
     ok &= expect(
-        seek_process.WaitForProgressAtOrBeyond(10, seek_mark, std::chrono::seconds(12)),
-        "post-seek progress must come from media at or beyond the requested position");
+        seek_process.WaitForProgressAtOrBeyond(11, seek_mark, std::chrono::seconds(12)),
+        "post-seek playback must advance beyond its first acknowledged frame");
     const size_t relative_seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek-relative 10000000000 3\n"), "relative local seek command must be delivered");
     const std::string relative_response = "HSTREAM_SEEK status=ok generation=3 position_ns=";
@@ -1160,8 +1162,8 @@ int main(int argc, char** argv) {
             std::chrono::seconds(20)),
         "seek must select the next physical chapter and complete from pristine exact-pair state");
     ok &= expect(
-        seek_process.WaitForProgressAtOrBeyond(1810, cross_chapter_seek_mark, std::chrono::seconds(12)),
-        "cross-chapter progress must report the achieved logical playlist position");
+        seek_process.WaitForProgressAtOrBeyond(1811, cross_chapter_seek_mark, std::chrono::seconds(12)),
+        "cross-chapter playback must keep advancing after the seek acknowledgement");
     const size_t backward_chapter_seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek 20000000000 10\n"), "backward chapter seek command must be delivered");
     ok &= expect(
@@ -1296,6 +1298,7 @@ int main(int argc, char** argv) {
             {
                 {"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_INTER_SOURCE_DELAY_MS", "250"},
                 {"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_REPORT_RELINK", "1"},
+                {"HM_TEST_URI_PLAYLIST_SUPPRESS_INITIAL_SEEK_READY", "1"},
             }),
         "multi-video-track seek process must start");
     ok &= expect(multi_track_seek_process.WaitFor("Pipeline running"), "multi-track pipeline must reach PLAYING");
@@ -1375,10 +1378,11 @@ int main(int argc, char** argv) {
             std::chrono::seconds(3)),
         "reconstruction deadline must be dispatched while the worker is still delayed");
     ok &= expect(
-        timed_out_seek_process.WaitFor("Recreate pipeline", timed_out_seek_mark, std::chrono::seconds(8)),
+        timed_out_seek_process.WaitFor(
+            "HSTREAM_SEEK_PHASE phase=sources-create", timed_out_seek_mark, std::chrono::seconds(8)),
         "timed-out worker must still return AppCtx in a valid replacement generation");
     const size_t timed_out_recreated_at =
-        timed_out_seek_process.output().find("Recreate pipeline", timed_out_seek_mark);
+        timed_out_seek_process.output().find("HSTREAM_SEEK_PHASE phase=sources-create", timed_out_seek_mark);
     ok &= expect(
         timed_out_recreated_at != std::string::npos &&
             timed_out_seek_process.WaitFor(
