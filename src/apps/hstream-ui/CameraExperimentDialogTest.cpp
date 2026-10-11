@@ -6,6 +6,7 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
+#include <QtGui/QImage>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -14,8 +15,8 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
-#include <QtWidgets/QSlider>
 #include <QtWidgets/QSizeGrip>
+#include <QtWidgets/QSlider>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QToolButton>
 
@@ -110,6 +111,13 @@ bool smoke() {
   }
   realtime->setChecked(false);
   if (!widget<QCheckBox>(second, "experimentRealtimePlayback")->isChecked())
+    return false;
+  for (const char* name : {"experimentDrawPlayers", "experimentDrawPlayTracking"}) {
+    widget<QCheckBox>(first, name)->setChecked(true);
+    if (widget<QCheckBox>(second, name)->isChecked())
+      return false;
+  }
+  if (widget<QCheckBox>(first, "experimentDrawRinkMask")->isEnabled())
     return false;
   auto* controls_panel = widget<QWidget>(first, "experimentControlsPanel");
   auto* video = widget<QWidget>(first, "experimentVideoTarget");
@@ -393,6 +401,50 @@ bool e2e(const QStringList& args) {
   }
   if (!capture("experiment-trial-a.png"))
     return false;
+  // Change one layer at a time on the same paused frame. Compare only GPU
+  // preview pixels, so checkbox painting cannot satisfy the drawing check.
+  const auto* target = widget<QWidget>(dialog, "experimentVideoTarget");
+  const QRect logical_rect(target->mapTo(&dialog, QPoint(0, 0)), target->size());
+  const QImage clean_capture(QDir(artifacts).filePath("experiment-trial-a.png"));
+  const double sx = double(clean_capture.width()) / dialog.width();
+  const double sy = double(clean_capture.height()) / dialog.height();
+  const QRect video_rect(
+      qRound(logical_rect.x() * sx),
+      qRound(logical_rect.y() * sy),
+      qRound(logical_rect.width() * sx),
+      qRound(logical_rect.height() * sy));
+  const QImage clean = clean_capture.copy(video_rect);
+  for (const char* name : {"experimentDrawPlayers", "experimentDrawPlayTracking", "experimentDrawRinkMask"}) {
+    auto* toggle = widget<QCheckBox>(dialog, name);
+    if (!toggle->isEnabled()) {
+      if (std::string(name) == "experimentDrawRinkMask" && !args[2].endsWith(".db"))
+        continue; // Legacy CSV contains no historical mask.
+      std::cerr << "Missing prepared drawing: " << name << '\n';
+      return false;
+    }
+    toggle->setChecked(true);
+    if (!wait_until([&] { return screenshot->isEnabled(); }))
+      return false;
+    const QString path = QDir(artifacts).filePath(QString::fromLatin1(name) + ".png");
+    QString error;
+    if (!dialog.captureScreenshot(path, &error)) {
+      std::cerr << "Overlay capture failed: " << error.toStdString() << '\n';
+      return false;
+    }
+    const QImage drawn = QImage(path).copy(video_rect);
+    int different = 0;
+    for (int y = 0; y < clean.height(); ++y)
+      for (int x = 0; x < clean.width(); ++x)
+        different += clean.pixel(x, y) != drawn.pixel(x, y);
+    if (different < 50 || timeline->value() != comparison_frame) {
+      std::cerr << "Paused overlay did not draw on the same GPU frame: " << name << " changed=" << different << '\n';
+      return false;
+    }
+    std::cout << name << " changed " << different << " preview pixels on paused frame " << comparison_frame << '\n';
+    toggle->setChecked(false);
+    if (!wait_until([&] { return screenshot->isEnabled(); }))
+      return false;
+  }
   const QString before_step = widget<QLabel>(dialog, "experimentFrameStatus")->text();
   widget<QPushButton>(dialog, "experimentNext")->click();
   if (!wait_until(

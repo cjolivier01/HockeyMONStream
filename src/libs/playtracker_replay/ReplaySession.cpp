@@ -234,12 +234,78 @@ Tracker restore(const StartingState& state) {
 StartingState capture(const Tracker& tracker, const Frame& previous) {
   return {tracker.play_tracker->snapshot(), tracker.base_play_tracker_config, tracker.has_received_tracks, previous};
 }
-Frame step(Tracker* tracker, const Sample& sample, const Frame& previous) {
+class OverlayBuilder {
+ public:
+  OverlayBuilder() : batch_(nvds_create_batch_meta(1), nvds_destroy_batch_meta) {
+    require(bool(batch_), "Could not allocate replay drawing metadata");
+  }
+  std::shared_ptr<const hm::preview_overlay::OverlaySnapshot> Build(
+      const Tracker& tracker,
+      const Sample& sample,
+      const hm::play_tracker::PlayTrackerResults& output) {
+    auto* frame = nvds_acquire_frame_meta_from_pool(batch_.get());
+    require(frame != nullptr, "Could not allocate replay drawing frame");
+    nvds_add_frame_meta_to_batch(batch_.get(), frame);
+    frame->source_frame_width = sample.width;
+    frame->source_frame_height = sample.height;
+    frame->frame_num = sample.original.sample_id;
+    frame->buf_pts = sample.original.pts_ns;
+    for (size_t i = 0; i < sample.ids.size(); ++i) {
+      auto* object = nvds_acquire_obj_meta_from_pool(batch_.get());
+      require(object != nullptr, "Could not allocate recorded player drawing");
+      object->class_id = 0;
+      object->object_id = sample.ids[i];
+      const auto& box = sample.boxes[i];
+      object->rect_params = {};
+      object->rect_params.left = box.left;
+      object->rect_params.top = box.top;
+      object->rect_params.width = box.width();
+      object->rect_params.height = box.height();
+      object->rect_params.border_width = 2;
+      const auto matches = [&](const auto& track) { return track.tracking_id == object->object_id; };
+      hm::preview_overlay::set_player_ignored(
+          *object,
+          std::any_of(output.size_ignored_tracking_boxes.begin(), output.size_ignored_tracking_boxes.end(), matches) ||
+              (output.leftmost_tracking_bbox && matches(*output.leftmost_tracking_bbox)) ||
+              (output.rightmost_tracking_bbox && matches(*output.rightmost_tracking_bbox)));
+      nvds_add_obj_meta_to_frame(frame, object, nullptr);
+    }
+    require(colors_.Apply(frame), "Could not color recorded players");
+    // Only dimensions are used by shared drawing; this is not a video surface.
+    NvBufSurfaceParams dimensions{};
+    dimensions.width = sample.width;
+    dimensions.height = sample.height;
+    GstDsPlayTrackerFrame drawing;
+    drawing.frame_meta = frame;
+    drawing.input_surf_params = &dimensions;
+    drawing.play_tracker_results = output;
+    const auto status = DsPlayTrackerDrawCpuToDisplayMeta(tracker, sample.arena, drawing);
+    require(status.ok(), status.ToString());
+    require(hm::preview_overlay::add_overlay_snapshot_meta(frame), "Could not capture replay drawing");
+    auto result =
+        std::make_shared<hm::preview_overlay::OverlaySnapshot>(*hm::preview_overlay::find_overlay_snapshot_meta(frame));
+    bytes_ += sizeof(*result) + result->player_rects.size() * sizeof(hm::preview_overlay::PlayerRect) +
+        result->play_rects.size() * sizeof(NvOSD_RectParams) + result->play_lines.size() * sizeof(NvOSD_LineParams) +
+        result->play_arrows.size() * sizeof(NvOSD_ArrowParams) +
+        result->play_circles.size() * sizeof(NvOSD_CircleParams);
+    require(bytes_ <= 128ULL * 1024 * 1024, "Replay drawings exceed 128 MiB; select a shorter passage");
+    nvds_remove_frame_meta_from_batch(batch_.get(), frame);
+    return result;
+  }
+
+ private:
+  std::unique_ptr<NvDsBatchMeta, decltype(&nvds_destroy_batch_meta)> batch_;
+  hm::preview_overlay::TrackColorState colors_;
+  size_t bytes_{0};
+};
+
+Frame step(Tracker* tracker, const Sample& sample, const Frame& previous, OverlayBuilder* drawing = nullptr) {
   Frame result = sample.original;
   result.fast = previous.fast;
   result.follower = previous.follower;
+  hm::play_tracker::PlayTrackerResults output;
   if (sample.stepped) {
-    const auto output = DsPlayTrackerStepCpu(tracker, sample.ids, sample.boxes);
+    output = DsPlayTrackerStepCpu(tracker, sample.ids, sample.boxes);
     result.fast.reset();
     result.follower.reset();
     if (!output.tracking_boxes.empty()) {
@@ -247,6 +313,8 @@ Frame step(Tracker* tracker, const Sample& sample, const Frame& previous) {
       result.follower = output.tracking_boxes.back();
     }
   }
+  if (drawing)
+    result.overlays = drawing->Build(*tracker, sample, output);
   return result;
 }
 void parity(const Frame& expected, const Frame& actual, double tolerance) {
@@ -377,6 +445,8 @@ struct ReplaySession::Impl {
   StartingState start;
   std::vector<Sample> samples;
   std::vector<Frame> original, baseline;
+  std::string rink_mask_png;
+  std::string rink_mask_unavailable_reason{"This recording has no archived rink mask."};
   uint32_t width{0}, height{0};
   uint64_t end_pts_ns{0};
 };
@@ -458,6 +528,39 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
     checkpoint.Bind(6, geometry);
     require(checkpoint.Next(), "A native checkpoint is required before the selected sample in this segment");
     const uint64_t warmup = checkpoint.Int(0);
+    if (options.prepare_overlays) {
+      Statement mask(
+          db.get(),
+          "SELECT mask_codec,CASE WHEN length(mask)<=8388608 THEN mask END,mask_sha256,mask_to_tracking,coordinate_space "
+          "FROM geometries WHERE run_id=? AND geometry_id=?");
+      mask.Bind(1, run);
+      mask.Bind(2, geometry);
+      if (mask.Next() && !mask.IsNull(0)) {
+        try {
+          require(mask.Text(0) == "png" && !mask.IsNull(1), "Archived rink mask is unsupported or exceeds 8 MiB.");
+          require(mask.Text(4) == "original_stitched_pixels", "Archived rink mask has unsupported coordinates.");
+          const auto matrix = YAML::Load(mask.Text(3));
+          require(matrix.IsSequence() && matrix.size() == 2, "Archived rink mask has no canvas transform.");
+          for (size_t row = 0; row < 2; ++row) {
+            require(matrix[row].IsSequence() && matrix[row].size() == 3, "Invalid archived mask transform.");
+            for (size_t col = 0; col < 3; ++col)
+              require(
+                  matrix[row][col].as<double>() == (row == col ? 1.0 : 0.0),
+                  "Archived rink mask is not in the recorded canvas coordinates.");
+          }
+          auto bytes = mask.Bytes(1);
+          gchar* digest = g_compute_checksum_for_data(
+              G_CHECKSUM_SHA256, reinterpret_cast<const guchar*>(bytes.data()), bytes.size());
+          const bool matches = digest && mask.Text(2) == digest;
+          g_free(digest);
+          require(matches, "Archived rink mask checksum differs from its recording.");
+          impl->rink_mask_png = std::move(bytes);
+          impl->rink_mask_unavailable_reason.clear();
+        } catch (const std::exception& error) {
+          impl->rink_mask_unavailable_reason = error.what();
+        }
+      }
+    }
     auto camera = [&](uint64_t sample, Frame& result) {
       Statement q(
           db.get(), "SELECT role,left,top,width,height FROM cameras WHERE run_id=? AND sample_id=? ORDER BY role");
@@ -474,6 +577,11 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
       require(result.fast.has_value() == result.follower.has_value(), "Recording has unmatched camera outputs");
     };
     Frame previous_reference, previous_baseline;
+    std::unique_ptr<OverlayBuilder> original_drawing, baseline_drawing;
+    if (options.prepare_overlays) {
+      original_drawing = std::make_unique<OverlayBuilder>();
+      baseline_drawing = std::make_unique<OverlayBuilder>();
+    }
     Statement previous(
         db.get(),
         "SELECT sample_id,pts_ns FROM frames WHERE run_id=? AND sample_id<? AND source_id=? AND seek_epoch=? AND reset_epoch=? AND geometry_id=? ORDER BY sample_id DESC LIMIT 1");
@@ -579,14 +687,15 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
         impl->width = sample.width;
         impl->height = sample.height;
       }
-      previous_reference = step(&*reference, sample, previous_reference);
+      previous_reference = step(&*reference, sample, previous_reference, baseline ? original_drawing.get() : nullptr);
+      sample.original.overlays = previous_reference.overlays;
       parity(sample.original, previous_reference, 0.02);
       if (baseline) {
         retained_tracks += sample.ids.size();
         require(
             impl->samples.size() < kMaxRangeSamples && retained_tracks <= kMaxRangeTracks,
             "Selected range exceeds replay storage limit");
-        previous_baseline = step(&*baseline, sample, previous_baseline);
+        previous_baseline = step(&*baseline, sample, previous_baseline, baseline_drawing.get());
         previous_baseline.edge_rotation_left =
             impl->original.empty() ? sample.original.edge_rotation_left : impl->original.front().edge_rotation_left;
         previous_baseline.edge_rotation_right =
@@ -693,6 +802,11 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::Prepare(
     std::optional<Tracker> reference;
     std::optional<Tracker> baseline;
     Frame previous_reference, previous_baseline;
+    std::unique_ptr<OverlayBuilder> original_drawing, baseline_drawing;
+    if (options.prepare_overlays) {
+      original_drawing = std::make_unique<OverlayBuilder>();
+      baseline_drawing = std::make_unique<OverlayBuilder>();
+    }
     std::optional<Sample> previous_sample;
     uint64_t origin = 0, in = 0, out = 0;
     bool started = false, reached_out = false;
@@ -903,14 +1017,15 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::Prepare(
         impl->height = sample.height;
         started = true;
       }
-      previous_reference = step(&*reference, sample, previous_reference);
+      previous_reference = step(&*reference, sample, previous_reference, baseline ? original_drawing.get() : nullptr);
+      sample.original.overlays = previous_reference.overlays;
       parity(sample.original, previous_reference, exact ? 0.02 : options.legacy_tolerance_pixels);
       if (started) {
         retained_tracks += sample.ids.size();
         require(
             impl->samples.size() < kMaxRangeSamples && retained_tracks <= kMaxRangeTracks,
             "Selected range exceeds bounded replay sample/track storage; select a shorter range");
-        previous_baseline = step(&*baseline, sample, previous_baseline);
+        previous_baseline = step(&*baseline, sample, previous_baseline, baseline_drawing.get());
         // A trial freezes camera geometry at its fork, just like its policy.
         previous_baseline.edge_rotation_left =
             impl->original.empty() ? sample.original.edge_rotation_left : impl->original.front().edge_rotation_left;
@@ -948,9 +1063,12 @@ absl::StatusOr<TrialResult> ReplaySession::RunTrial(
     hm::play_tracker::validate_snapshot(tracker.play_tracker->snapshot());
     TrialResult result{std::move(name), tuning, {}};
     Frame previous = impl_->start.previous;
+    std::unique_ptr<OverlayBuilder> drawing;
+    if (impl_->options.prepare_overlays)
+      drawing = std::make_unique<OverlayBuilder>();
     for (const auto& sample : impl_->samples) {
       check_cancel(cancelled);
-      previous = step(&tracker, sample, previous);
+      previous = step(&tracker, sample, previous, drawing.get());
       previous.edge_rotation_left = impl_->original.front().edge_rotation_left;
       previous.edge_rotation_right = impl_->original.front().edge_rotation_right;
       result.frames.push_back(previous);
@@ -980,6 +1098,12 @@ uint64_t ReplaySession::end_pts_ns() const {
 }
 const std::string& ReplaySession::provenance() const {
   return impl_->provenance;
+}
+const std::string& ReplaySession::rink_mask_png() const {
+  return impl_->rink_mask_png;
+}
+const std::string& ReplaySession::rink_mask_unavailable_reason() const {
+  return impl_->rink_mask_unavailable_reason;
 }
 const std::string& ReplaySession::manifest_path() const {
   return impl_->options.manifest_path;

@@ -229,6 +229,47 @@ int main(int argc, char** argv) {
     check(
         same_frames((*database_session)->baseline(), (*session)->baseline()),
         "database checkpoint replay matches CSV history");
+    check(
+        !(*database_session)->baseline().front().overlays && (*database_session)->rink_mask_png().empty(),
+        "seek preparation does not allocate drawings or load mask blobs");
+    auto drawing_options = database_options;
+    drawing_options.prepare_overlays = true;
+    auto drawing_session = ReplaySession::Prepare(drawing_options);
+    check(drawing_session.ok(), drawing_session.status().ToString());
+    check(
+        same_frames((*drawing_session)->baseline(), (*database_session)->baseline()),
+        "preparing drawing preserves the camera trajectory");
+    check(
+        !(*drawing_session)->rink_mask_png().empty() && (*drawing_session)->rink_mask_unavailable_reason().empty(),
+        "drawing uses the selected recording's archived mask");
+    const auto& overlay = (*drawing_session)->baseline().front().overlays;
+    check(
+        overlay && overlay->player_rects.size() == 12 && !overlay->play_lines.empty(),
+        "drawing includes the actual recorded players and native motion/threshold geometry");
+    check(
+        overlay->coordinate_width == (*drawing_session)->width() &&
+            overlay->coordinate_height == (*drawing_session)->height(),
+        "drawing stays in recorded canvas coordinates");
+    DsPlayTrackerRuntimeTuning filtered;
+    filtered.ignore_largest_bbox_count = 2;
+    auto filtered_trial = (*drawing_session)->RunTrial("filtered", filtered);
+    check(filtered_trial.ok(), filtered_trial.status().ToString());
+    const auto& filtered_players = filtered_trial->frames.front().overlays->player_rects;
+    check(
+        std::count_if(filtered_players.begin(), filtered_players.end(), [](const auto& p) { return p.ignored; }) >= 2,
+        "trial drawing marks players ignored by its own filtering");
+    check(
+        filtered_players.front().rect.border_color.red == overlay->player_rects.front().rect.border_color.red,
+        "player colors remain stable across comparisons");
+    {
+      hm::recording::Database db(drawing_options.manifest_path, true);
+      db.Exec("UPDATE geometries SET mask_sha256='invalid'");
+    }
+    auto corrupt_mask = ReplaySession::Prepare(drawing_options);
+    check(
+        corrupt_mask.ok() && (*corrupt_mask)->rink_mask_png().empty() &&
+            !(*corrupt_mask)->rink_mask_unavailable_reason().empty(),
+        "bad mask disables that overlay without losing trials");
     const auto seek_state = hm::play_tracker::deserialize_snapshot((*database_session)->starting_checkpoint());
     const auto csv_state = hm::play_tracker::deserialize_snapshot((*session)->starting_checkpoint());
     check(

@@ -68,6 +68,11 @@ RinkMaskLoadResult load_rink_mask_png(
     const RinkMaskDecoder& decoder = {},
     const RinkMaskOpenObserver& open_observer = {},
     const RinkMaskLoadOptions& options = {});
+// Same bounded decoder for an archived PNG already held in memory.
+RinkMaskLoadResult decode_rink_mask_png(
+    const std::vector<std::uint8_t>& compressed,
+    const RinkMaskDecoder& decoder = {},
+    const RinkMaskLoadOptions& options = {});
 bool rink_mask_dimensions_match(
     const RinkMaskImage& image,
     std::uint32_t expected_width,

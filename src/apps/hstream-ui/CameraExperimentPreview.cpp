@@ -90,6 +90,8 @@ struct CameraExperimentPreview::Impl {
   std::optional<std::pair<std::size_t, bool>> pending_seek;
   bool loop{true};
   std::atomic<bool> realtime{true};
+  std::atomic<bool> draw_players{false}, draw_play{false}, draw_rink{false};
+  std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask;
   std::size_t target{0};
   std::optional<std::size_t> presented;
   std::string error;
@@ -320,6 +322,11 @@ struct CameraExperimentPreview::Impl {
           "fixed-edge-rotation-angle-right",
           static_cast<double>(self->frames->at(*index).edge_rotation_right),
           nullptr);
+      const auto& overlay = self->frames->at(*index).overlays;
+      if (overlay && !hm::preview_overlay::add_prepared_overlay_snapshot_meta(frame, *overlay)) {
+        self->error = "Could not attach recorded preview drawings.";
+        return GST_PAD_PROBE_DROP;
+      }
       const auto& camera = self->frames->at(*index).follower;
       if (camera) {
         NvDsObjectMeta* object = nvds_acquire_obj_meta_from_pool(batch);
@@ -360,7 +367,8 @@ bool CameraExperimentPreview::Open(
     std::uint64_t window_id,
     double left_rotation,
     double right_rotation,
-    std::string* error) {
+    std::string* error,
+    std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask) {
   Close();
   if (!canvas_width || !canvas_height || !media.width || !media.height || !window_id ||
       media.video_origin_pts_ns > G_MAXINT64 || media.telemetry_origin_pts_ns > G_MAXINT64)
@@ -383,6 +391,7 @@ bool CameraExperimentPreview::Open(
   s.window_id = window_id;
   s.left_rotation = left_rotation;
   s.right_rotation = right_rotation;
+  s.rink_mask = std::move(rink_mask);
   // Original-camera graph construction/teardown and chapter discovery run
   // off the Qt thread. The selected start becomes known in SetTrajectory.
   return media.stitching ? true : s.build_graph(error);
@@ -462,7 +471,7 @@ bool CameraExperimentPreview::Impl::build_graph(std::string* error) {
       "window-id",
       window_id,
       "channel",
-      "experiment",
+      "program", // Apply playcropper's exact crop/rotation to recorded drawing coordinates.
       "sync",
       s.realtime.load() ? TRUE : FALSE,
       "max-lateness",
@@ -472,8 +481,15 @@ bool CameraExperimentPreview::Impl::build_graph(std::string* error) {
       "qos",
       FALSE,
       "enable-last-sample",
-      FALSE,
+      TRUE, // One retained GPU frame lets drawing toggles update a paused preview.
+      "show-player-tracking",
+      s.draw_players.load(),
+      "show-play-tracking",
+      s.draw_play.load(),
+      "show-rink-mask",
+      s.draw_rink.load(),
       nullptr);
+  hm::gpu_preview::configure_recorded_rink_mask(s.sink, s.rink_mask);
   hm::gpu_preview::set_source_geometry(s.sink, 1280, 720);
   const bool linked = gst_element_link_many(s.converter, capsfilter, s.cropper, s.sink, nullptr);
   if (!linked) {
@@ -633,6 +649,18 @@ void CameraExperimentPreview::Pause() {
     } else {
       gst_element_set_state(impl_->graph, GST_STATE_PAUSED);
     }
+  }
+}
+
+void CameraExperimentPreview::SetOverlays(bool players, bool play, bool rink) {
+  auto& s = *impl_;
+  s.draw_players = players;
+  s.draw_play = play;
+  s.draw_rink = rink;
+  if (!s.rebuilding.valid() && s.sink) {
+    g_object_set(s.sink, "show-player-tracking", players, "show-play-tracking", play, "show-rink-mask", rink, nullptr);
+    if (!s.playing && !s.seeking)
+      hm::gpu_preview::redraw_last_sample(s.sink);
   }
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hstream/src/apps/apps-common/RinkMaskImage.h"
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 
 #include <cstdint>
@@ -32,7 +33,8 @@ class CameraExperimentPreview {
       std::uint64_t window_id,
       double left_rotation,
       double right_rotation,
-      std::string* error);
+      std::string* error,
+      std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask = {});
   bool SetTrajectory(
       std::shared_ptr<const std::vector<Frame>> frames,
       std::uint64_t end_pts_ns,
@@ -42,6 +44,7 @@ class CameraExperimentPreview {
   bool Seek(std::size_t index, bool play, std::string* error);
   void Pause();
   void SetLoop(bool loop);
+  void SetOverlays(bool players, bool play, bool rink);
   // Applied on the next Seek/SetTrajectory, which establishes a new clock segment.
   void SetRealtime(bool realtime);
   Status Poll();
