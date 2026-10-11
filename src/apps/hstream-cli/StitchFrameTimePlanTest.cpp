@@ -68,6 +68,12 @@ int main() {
           .empty(),
       "A single default-time calibration context does not need a playback restart");
   ok &= expect(
+      hm::pipeline_internal::stitch_frame_rewind_candidates(0, 0, {{true, false, false}}, true) ==
+              std::vector<size_t>({0}) &&
+          hm::pipeline_internal::stitch_frame_rewind_candidates(0, 0, {{true, true, false}}, true).empty() &&
+          hm::pipeline_internal::stitch_frame_rewind_candidates(0, 0, {{false, false, false}}, true).empty(),
+      "Normal-speed playback must restart after calibration at zero, exactly once");
+  ok &= expect(
       hm::pipeline_internal::stitch_frame_rewind_request_is_current(
           /*request_stage=*/2,
           /*request_generation=*/4,

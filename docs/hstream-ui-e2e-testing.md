@@ -19,7 +19,10 @@ session-only playback choice. Select it before Play; it is disabled when renderi
 is off or a run is active. The runner's `--render-realtime` option clocks local
 video and audio from their timestamps, disables preview frame sampling/leaky
 queues, and retains late video frames (`max-lateness=-1`, `qos=false`). The render
-terminator prerolls before the playback clock starts. Hidden previews remain gated.
+terminator prerolls before the playback clock starts. Calibration runs with the
+unrestricted monitor policy so collecting frame pairs and crossing URI chapters
+cannot wait on output preroll. After calibration, playback recreates the graph at
+the requested start (including zero) and enables pacing. Hidden previews remain gated.
 Slow processing can make playback stutter; it does not trigger frame skipping.
 
 The setting does not alter archive frames, timestamps, audio samples, encoding
@@ -30,7 +33,8 @@ Playback uses the negotiated media timeline and does not select or convert mixed
 camera frame rates.
 
 Focused checks: run `uri_multiple_pipeline_test --render-realtime-only` for clock
-pacing, slow processing, unchanged output timestamps and monitor-audio policy;
+pacing, calibration preroll, slow processing, unchanged output timestamps and
+monitor-audio policy; `stitch_frame_time_plan_test` covers calibration restart at zero;
 run `hstream_ui_test` with `HSTREAM_UI_TEST_REALTIME_ONLY=1` for checkbox gating
 and launch/export arguments.
 

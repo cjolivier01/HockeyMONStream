@@ -64,8 +64,8 @@ void set_embedded_gpu_preview_video_mode(gboolean enabled, gboolean preserve_ren
   embedded_gpu_preview_video_mode = enabled != FALSE;
 }
 
-void set_render_playback_realtime(gboolean enabled) {
-  realtime_render_playback = enabled != FALSE;
+void set_render_playback_realtime(gboolean enabled, gboolean preparing_calibration) {
+  realtime_render_playback = enabled && !preparing_calibration;
 }
 
 gboolean render_playback_realtime() {

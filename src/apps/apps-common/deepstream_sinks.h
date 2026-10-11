@@ -190,7 +190,10 @@ void set_rtsp_audio_sink_ids(const gint* sink_ids, guint num_sink_ids);
 // moving seam comparisons run at playback speed.
 void set_embedded_gpu_preview_video_mode(gboolean enabled, gboolean preserve_render_timing = FALSE);
 // Next-run local playback policy. Does not change encoder sinks or media timestamps.
-void set_render_playback_realtime(gboolean enabled);
+// Construction policy: calibration must reach PLAYING without output preroll
+// so it can collect multiple frames and advance URI chapters. Its replacement
+// graph enables paced playback after calibration completes.
+void set_render_playback_realtime(gboolean enabled, gboolean preparing_calibration = FALSE);
 gboolean render_playback_realtime();
 gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncoderConfig* config);
 gboolean link_webrtc_rtp_src_to_sink(
