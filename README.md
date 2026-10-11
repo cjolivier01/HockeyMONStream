@@ -165,6 +165,36 @@ directory (`~/.local/share`, or `XDG_DATA_HOME`) before showing its window, so
 the desktop taskbar can identify command-line launches. Existing custom or
 package-installed desktop entries take precedence.
 
+### Prepare a DeepStream Debian package
+
+To prepare DeepStream without building HStream or running Docker:
+
+```bash
+make deepstream-deb-ubuntu24
+make deepstream-deb-ubuntu26
+```
+
+These targets find the newest supported DeepStream 9.1 amd64 download in
+`~/Downloads`, `~`, or `../DeepStream/artifacts`. Set `DEEPSTREAM_DEB=/path/to/file.deb`
+to select one explicitly, or `HSTREAM_DEEPSTREAM_CACHE=/path/to/downloads` to
+add a search directory. The NVIDIA download must already exist locally.
+
+Outputs are named `deepstream-9.1_<version>_amd64.ubuntu24.04.deb` and
+`deepstream-9.1_<version>_amd64.ubuntu26.04.deb`, under `dist/ubuntu24.04/` and
+`dist/ubuntu26.04/` respectively. Override the directory with `DEB_OUTPUT_DIR`.
+Each target prints the resulting path and an `apt-get install` command; run
+that command on the matching Ubuntu release with NVIDIA's CUDA repository
+configured for its dependencies.
+
+The 24.04 package is an unchanged copy. The 26.04 package uses the same
+dependency adjustments as `make deb-ubuntu26`: remove Ubuntu 24.04-specific
+version pins and replace CUDA 13 minor-toolkit pins with their ABI-compatible
+virtual packages. This changes metadata only; it does not rebuild NVIDIA's
+binaries or Python wheels for Ubuntu 26.04. The original download is preserved.
+
+After upgrading an installed SDK, run `bazelisk sync --only=deepstream` before
+the next native build so Bazel refreshes its cached SDK directory listing.
+
 ## InStat team-only PDF reports
 
 `scripts/hstream_instat_generate_team_only_reports.py` scans a directory of

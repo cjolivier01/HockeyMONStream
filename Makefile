@@ -45,7 +45,8 @@ all: print_targets
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hstream-job hstream-cli run-hstream-cli hstream-ui run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
-	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release
+	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release \
+	deepstream-deb deepstream-deb-ubuntu24 deepstream-deb-ubuntu26
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
@@ -132,6 +133,15 @@ deb-ubuntu24:
 deb-ubuntu26:
 	$(MAKE) deb TARGET_UBUNTU=26.04
 
+deepstream-deb:
+	scripts/make_deepstream_deb.sh --target-ubuntu=$(TARGET_UBUNTU) --output-dir="$(DEB_OUTPUT_DIR)" $(if $(DEEPSTREAM_DEB),--deepstream-deb="$(DEEPSTREAM_DEB)",)
+
+deepstream-deb-ubuntu24:
+	$(MAKE) deepstream-deb TARGET_UBUNTU=24.04
+
+deepstream-deb-ubuntu26:
+	$(MAKE) deepstream-deb TARGET_UBUNTU=26.04
+
 deb-jetson:
 	@echo "Jetson Debian package output directory: $(JETSON_DEB_OUTPUT_DIR)"
 	scripts/make_deb_jetson.sh --host="$(JETSON_DEB_HOST)" --output-dir="$(JETSON_DEB_OUTPUT_DIR)" $(if $(PACKAGE_VERSION),--version="$(PACKAGE_VERSION)",)
@@ -216,6 +226,9 @@ print_targets:
 		'deb            Build in Docker; write the package under dist/ubuntu<version> (override DEB_OUTPUT_DIR).' \
 		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (pass DEEPSTREAM_DEB=/path/to/deb if needed).' \
 		'deb-ubuntu26   Build the Ubuntu 26.04 package in Docker (output under dist/ubuntu26.04).' \
+		'deepstream-deb Prepare the downloaded DeepStream amd64 package for TARGET_UBUNTU (override DEB_OUTPUT_DIR).' \
+		'deepstream-deb-ubuntu24 Copy the original DeepStream package to dist/ubuntu24.04.' \
+		'deepstream-deb-ubuntu26 Write the dependency-relaxed DeepStream package to dist/ubuntu26.04.' \
 		'deb-jetson     Build the Ubuntu 22.04 arm64 package on $(JETSON_DEB_HOST) (output under dist/jetson).' \
 		'deploy         Detect, build, and force-install on comma-separated NODES (required).' \
 		'undeploy       Remove HStream from comma-separated NODES without removing DeepStream.' \
