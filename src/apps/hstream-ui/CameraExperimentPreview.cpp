@@ -13,6 +13,7 @@
 #include <nvdsmeta.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -88,6 +89,7 @@ struct CameraExperimentPreview::Impl {
   bool initial_seek_pending{false};
   std::optional<std::pair<std::size_t, bool>> pending_seek;
   bool loop{true};
+  std::atomic<bool> realtime{true};
   std::size_t target{0};
   std::optional<std::size_t> presented;
   std::string error;
@@ -462,7 +464,9 @@ bool CameraExperimentPreview::Impl::build_graph(std::string* error) {
       "channel",
       "experiment",
       "sync",
-      TRUE,
+      s.realtime.load() ? TRUE : FALSE,
+      "max-lateness",
+      gint64{-1},
       "async",
       media.stitching ? FALSE : TRUE,
       "qos",
@@ -553,6 +557,7 @@ bool CameraExperimentPreview::Seek(std::size_t index, bool play, std::string* er
     });
     return true;
   }
+  g_object_set(s.sink, "sync", s.realtime.load() ? TRUE : FALSE, nullptr);
   std::uint64_t start = 0;
   {
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -633,6 +638,10 @@ void CameraExperimentPreview::Pause() {
 
 void CameraExperimentPreview::SetLoop(bool loop) {
   impl_->loop = loop;
+}
+
+void CameraExperimentPreview::SetRealtime(bool realtime) {
+  impl_->realtime = realtime;
 }
 
 CameraExperimentPreview::Status CameraExperimentPreview::Poll() {

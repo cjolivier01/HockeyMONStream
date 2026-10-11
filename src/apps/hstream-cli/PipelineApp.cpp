@@ -1603,6 +1603,8 @@ absl::Status PipelineApplication::createPipelines(
   }
   for (guint i = 0; i < app_contexts.size(); i++) {
     hm::diagnostics::Breadcrumb("pipeline", "create instance=" + std::to_string(i));
+    set_render_playback_realtime(
+        ui_preview_realtime_, app_contexts[i]->configurator().stitching_calibration_required());
     if (!create_pipeline(
             app_contexts[i].get(),
             nullptr,
@@ -1695,6 +1697,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
         select_video_converter_for_element_creation(app_contexts.front()->config, "GPU-native previews"));
     constexpr guint64 kPreviewImageBudgetBytes = 64ULL * 1024ULL * 1024ULL;
     guint64 preview_image_bytes = 0;
+    const gboolean realtime = render_playback_realtime();
     const hm::pipeline_internal::PreviewOverlaySelection overlay_selection = preview_overlay_state_.selection();
     const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
     const std::string rink_mask_file = (hm::Configurator::get_game_dir(game_id) / "rink_mask_0.png").string();
@@ -1706,6 +1709,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
     struct PreviewProbeState {
       GstElement* sink{nullptr};
+      bool realtime{false};
       GstClockTime last_pts{GST_CLOCK_TIME_NONE};
       std::chrono::steady_clock::time_point last_emission;
       bool have_last_emission{false};
@@ -1729,7 +1733,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             }
           }
         }
-        if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+        if (!state->realtime && (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
           const auto now = std::chrono::steady_clock::now();
           constexpr auto kMinimumWallPeriod = std::chrono::nanoseconds(GST_SECOND / 30);
           if (state->have_last_emission && now - state->last_emission < kMinimumWallPeriod)
@@ -1777,7 +1781,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       g_object_set(
           G_OBJECT(queue),
           "leaky",
-          2,
+          realtime ? 0 : 2,
           "max-size-buffers",
           1,
           "max-size-bytes",
@@ -1840,7 +1844,9 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "generation",
           static_cast<guint64>(active_ui_preview_generation_),
           "sync",
-          FALSE,
+          realtime,
+          "max-lateness",
+          gint64{-1},
           "async",
           FALSE,
           "qos",
@@ -1854,12 +1860,12 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       if (link_elements &&
           !gst_element_link_many(ingress_isolation, queue, isolation, converter, caps_filter, sink, nullptr))
         return false;
-      // Rate-limit before the queue so high-frame-rate inputs do not wake the
-      // preview task for frames that will be discarded.
+      // Unrestricted processing bounds preview work to 30 fps. Paced playback
+      // retains every frame and uses its timestamp, including 50/60 fps video.
       GstPad* probe_pad = gst_element_get_static_pad(ingress_isolation, "src");
       if (!probe_pad)
         return false;
-      auto* probe_state = new PreviewProbeState{GST_ELEMENT(gst_object_ref(sink))};
+      auto* probe_state = new PreviewProbeState{GST_ELEMENT(gst_object_ref(sink)), realtime != FALSE};
       gst_pad_add_probe(
           probe_pad,
           static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
@@ -2910,12 +2916,19 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &headless_render_video_,
        "Replace render-type video output with an unsynchronized fakesink while retaining render audio routing",
        nullptr},
-      {"ui-preview-realtime",
+      {"render-realtime",
        0,
        0,
        G_OPTION_ARG_NONE,
        &ui_preview_realtime_,
-       "Keep an embedded preview's render branch synchronized to the source clock",
+       "Play local video and audio at normal speed without dropping late video frames (also paces processing)",
+       nullptr},
+      {"ui-preview-realtime",
+       0,
+       G_OPTION_FLAG_HIDDEN,
+       G_OPTION_ARG_NONE,
+       &ui_preview_realtime_,
+       "Alias for --render-realtime",
        nullptr},
       {"stitching-calibration-only",
        0,
@@ -3306,8 +3319,8 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     active_ui_preview_channel_ = ui_preview_channel_explicitly_disabled_ ? std::string() : initial_ui_preview_channel_;
     active_ui_preview_generation_ = 1;
   }
-  if (ui_preview_realtime_ && (ui_preview_window_ids_.empty() || headless_render_video_))
-    return absl::InvalidArgumentError("--ui-preview-realtime requires embedded preview windows without headless render");
+  if (ui_preview_realtime_ && headless_render_video_)
+    return absl::InvalidArgumentError("--render-realtime cannot be combined with --headless-render-video");
   set_embedded_gpu_preview_video_mode(
       headless_render_video_ || !ui_preview_window_ids_.empty(),
       (stitching_calibration_only_ || ui_preview_realtime_) && !headless_render_video_ &&
@@ -6953,8 +6966,8 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
         context && stitch_frame_rewind_pending_contexts_.count(context.get()) != 0,
     });
   }
-  for (const size_t index :
-       hm::pipeline_internal::stitch_frame_rewind_candidates(start_time_ns_, stitch_frame_time_ns_, states)) {
+  for (const size_t index : hm::pipeline_internal::stitch_frame_rewind_candidates(
+           start_time_ns_, stitch_frame_time_ns_, states, ui_preview_realtime_)) {
     AppCtx* context = active_stage->second[index].get();
     stitch_frame_rewind_pending_contexts_.insert(context);
   }
@@ -6987,8 +7000,8 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
   } else if (
       stitch_frame_rewind_pending_contexts_.empty() &&
       stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
-    // When both start and reference times are zero, a single context needs no recreation, but calibration
-    // work still must not consume normal playback progress or time limits.
+    // With unrestricted playback and both times at zero, a single context needs
+    // no recreation, but calibration must not consume playback progress or time limits.
     // Publish a fresh baseline before enabling those callbacks.
     reset_playback_timing_state(current_stage_);
     {
@@ -7916,6 +7929,10 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     runtime_playback_offset_ns_.store(runtime_seek_target_ns, std::memory_order_release);
   }
   g_print("Recreate pipeline\n");
+  set_render_playback_realtime(
+      ui_preview_realtime_,
+      static_cast<HmApp*>(app_ctx_ptr)->configurator().stitching_calibration_required() &&
+          stitch_frame_rewound_contexts_.count(app_ctx_ptr) == 0);
   if (!create_pipeline(
           app_ctx_ptr,
           nullptr,

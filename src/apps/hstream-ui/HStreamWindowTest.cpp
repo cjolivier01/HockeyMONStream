@@ -16807,6 +16807,46 @@ bool test_stitching_still() {
   return expect(wait_visible(), "Selecting the externally completed settings must show the new calibration");
 }
 
+bool test_realtime_playback_selection() {
+  HStreamWindow window;
+  auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
+  auto* realtime = require_child<QCheckBox>(&window, "realtimePlaybackCheck");
+  if (!render || !realtime)
+    return false;
+  const auto original = HStreamWindowTestAccess::pipelineArguments(&window);
+  if (!expect(
+          realtime->isEnabled() && !realtime->isChecked() && !original.contains("--render-realtime"),
+          "Normal-speed playback must be opt-in"))
+    return false;
+  realtime->setChecked(true);
+  auto paced = HStreamWindowTestAccess::pipelineArguments(&window);
+  if (!expect(
+          paced.removeAll("--render-realtime") == 1 && paced == original,
+          "Pacing must leave archive selection and native encoding options unchanged") ||
+      !expect(
+          !HStreamWindowTestAccess::standaloneArguments(&window).contains("--render-realtime"),
+          "Exported jobs must not inherit local playback pacing"))
+    return false;
+  render->setChecked(false);
+  if (!expect(
+          !realtime->isEnabled() && realtime->isChecked() &&
+              !HStreamWindowTestAccess::pipelineArguments(&window).contains("--render-realtime"),
+          "Render-off must disable pacing while retaining the checkbox preference"))
+    return false;
+  render->setChecked(true);
+  if (!expect(
+          realtime->isEnabled() && HStreamWindowTestAccess::pipelineArguments(&window).contains("--render-realtime"),
+          "Restoring rendering must restore the chosen playback pacing"))
+    return false;
+  if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+    return false;
+  HStreamWindowTestAccess::refreshRunControls(&window);
+  const bool locked = !realtime->isEnabled();
+  HStreamWindowTestAccess::killStubPipelineProcess(&window);
+  HStreamWindowTestAccess::refreshRunControls(&window);
+  return expect(locked && realtime->isEnabled(), "Playback must lock pacing until Stop");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -16853,6 +16893,10 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (!test_realtime_playback_selection())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_REALTIME_ONLY"))
+    return 0;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OUTPUT_SELECTION_ONLY")) {
     HStreamWindow window;
     window.show();

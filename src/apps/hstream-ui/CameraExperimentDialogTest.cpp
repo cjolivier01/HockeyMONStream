@@ -77,6 +77,14 @@ bool smoke() {
   }
   auto* preview_focus = widget<QToolButton>(first, "maximizeCameraExperimentPreviewButton");
   auto* preview_stop = widget<QPushButton>(first, "experimentStopPreview");
+  auto* realtime = widget<QCheckBox>(first, "experimentRealtimePlayback");
+  if (!realtime || !realtime->isEnabled() || !realtime->isChecked()) {
+    std::cerr << "Camera preview should expose its existing normal-speed default\n";
+    return false;
+  }
+  realtime->setChecked(false);
+  if (!widget<QCheckBox>(second, "experimentRealtimePlayback")->isChecked())
+    return false;
   auto* controls_panel = widget<QWidget>(first, "experimentControlsPanel");
   auto* video = widget<QWidget>(first, "experimentVideoTarget");
   const WId original_target = video->winId();
@@ -320,6 +328,11 @@ bool e2e(const QStringList& args) {
   };
   // Require visible frame progress before using screenshots as playback evidence.
   auto* play = widget<QPushButton>(dialog, "experimentPlay");
+  auto* realtime = widget<QCheckBox>(dialog, "experimentRealtimePlayback");
+  if (play->text() == "Pause" && realtime->isEnabled()) {
+    std::cerr << "Playback pacing must be locked while the preview is playing\n";
+    return false;
+  }
   const QString first_frame = widget<QLabel>(dialog, "experimentFrameStatus")->text();
   if (!wait_until(
           [&]() {
@@ -335,6 +348,8 @@ bool e2e(const QStringList& args) {
     std::cerr << "Pause did not restore editable camera controls\n";
     return false;
   }
+  if (!realtime->isEnabled())
+    return false;
   widget<QTabWidget>(dialog, "experimentControlTabs")->setCurrentIndex(1);
   auto* timeline = widget<QSlider>(dialog, "experimentTimeline");
   const int comparison_frame = timeline->maximum() / 2;

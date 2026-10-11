@@ -42,6 +42,8 @@ class CameraExperimentPreview {
   bool Seek(std::size_t index, bool play, std::string* error);
   void Pause();
   void SetLoop(bool loop);
+  // Applied on the next Seek/SetTrajectory, which establishes a new clock segment.
+  void SetRealtime(bool realtime);
   Status Poll();
   bool Capture(const std::string& path, std::string* error);
   void Close();

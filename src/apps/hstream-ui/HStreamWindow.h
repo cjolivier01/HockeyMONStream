@@ -698,6 +698,7 @@ class HStreamWindow : public QMainWindow {
   QPushButton* clean_stitching_button_{nullptr};
   QPushButton* stop_button_{nullptr};
   QCheckBox* render_video_toggle_{nullptr};
+  QCheckBox* realtime_playback_toggle_{nullptr};
   QCheckBox* show_player_tracking_toggle_{nullptr};
   QCheckBox* show_play_tracking_toggle_{nullptr};
   QCheckBox* show_rink_mask_toggle_{nullptr};

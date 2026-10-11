@@ -28,13 +28,16 @@ inline uint64_t stitch_frame_initial_position(
 inline std::vector<size_t> stitch_frame_rewind_candidates(
     uint64_t start_time_ns,
     uint64_t stitch_frame_time_ns,
-    const std::vector<StitchFrameRewindState>& states) {
+    const std::vector<StitchFrameRewindState>& states,
+    bool realtime_playback = false) {
   std::vector<size_t> candidates;
   const size_t unfinished_calibration_contexts =
       static_cast<size_t>(std::count_if(states.begin(), states.end(), [](const StitchFrameRewindState& state) {
         return state.calibration_required && !state.rewind_complete;
       }));
-  if (start_time_ns == 0 && stitch_frame_time_ns == 0 && unfinished_calibration_contexts < 2) {
+  // Paced playback needs a fresh graph/clock after unrestricted calibration,
+  // including when calibration and playback both start at zero.
+  if (!realtime_playback && start_time_ns == 0 && stitch_frame_time_ns == 0 && unfinished_calibration_contexts < 2) {
     return candidates;
   }
   for (size_t index = 0; index < states.size(); ++index) {
