@@ -1,9 +1,9 @@
-#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/HighlightPlan.h"
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
 
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
@@ -249,6 +249,8 @@ struct CameraExperimentDialog::Impl {
   struct WorkResult {
     std::shared_ptr<replay::ReplaySession> session;
     std::optional<replay::TrialResult> trial;
+    std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask;
+    std::string rink_mask_reason;
     std::string error;
     std::pair<unsigned, unsigned> media_size;
     QString media_path;
@@ -271,6 +273,10 @@ struct CameraExperimentDialog::Impl {
   QCheckBox* follower{nullptr};
   QCheckBox* loop{nullptr};
   QCheckBox* realtime{nullptr};
+  QCheckBox* draw_players{nullptr};
+  QCheckBox* draw_play{nullptr};
+  QCheckBox* draw_rink{nullptr};
+  std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask;
   QLineEdit* trial_name{nullptr};
   QComboBox* comparison{nullptr};
   QPushButton* prepare{nullptr};
@@ -409,6 +415,9 @@ struct CameraExperimentDialog::Impl {
     previous->setEnabled(!active && prepared && !playing);
     next->setEnabled(!active && prepared && !playing);
     realtime->setEnabled(editable);
+    draw_players->setEnabled(!active);
+    draw_play->setEnabled(!active);
+    draw_rink->setEnabled(!active && prepared && bool(rink_mask));
     play->setEnabled(!calculating && !closing_result && prepared && (!loading || playing));
     play->setText(playing ? "Pause" : "Play preview");
     play->setIcon(action_icon(playing ? ActionIcon::Pause : ActionIcon::Play));
@@ -519,6 +528,7 @@ struct CameraExperimentDialog::Impl {
     if (work.valid())
       return;
     replay::PrepareOptions options;
+    options.prepare_overlays = true;
     options.manifest_path = manifest->text().trimmed().toStdString();
     options.run_id = run_id->currentData().toString().toStdString();
     options.start_seconds = in->value();
@@ -566,6 +576,24 @@ struct CameraExperimentDialog::Impl {
         return result;
       }
       result.session = *prepared;
+      result.rink_mask_reason = result.session->rink_mask_unavailable_reason();
+      const auto& png = result.session->rink_mask_png();
+      if (!png.empty()) {
+        hm::gpu_preview::RinkMaskLoadOptions mask_options;
+        mask_options.downsample_to_texture_budget = true;
+        mask_options.maximum_source_dimension = std::max(result.session->width(), result.session->height());
+        mask_options.maximum_source_pixels = hm::gpu_preview::kMaximumPreviewRinkMaskSourcePixels;
+        mask_options.maximum_resource_bytes = hm::gpu_preview::kMaximumPreviewRinkMaskResourceBytes;
+        auto decoded = hm::gpu_preview::decode_rink_mask_png({png.begin(), png.end()}, {}, mask_options);
+        if (decoded &&
+            hm::gpu_preview::rink_mask_dimensions_match(
+                decoded.image, result.session->width(), result.session->height())) {
+          result.rink_mask = std::make_shared<const hm::gpu_preview::RinkMaskImage>(std::move(decoded.image));
+        } else {
+          result.rink_mask_reason =
+              decoded ? "Archived rink mask does not match the recorded canvas." : decoded.message;
+        }
+      }
       result.media_path = media;
       if (raw) {
         auto sources = PrepareExperimentSources(media.toStdString(), result.session->width(), result.session->height());
@@ -661,23 +689,40 @@ struct CameraExperimentDialog::Impl {
     const bool reopen = !preview_open;
     const bool repeat = loop->isChecked();
     const bool normal_speed = realtime->isChecked();
-    preview.Submit(
-        [media, frames, width, height, end, window, reopen, repeat, normal_speed, play_video, index](
-            auto& engine, auto* error) {
-          if (reopen &&
-              !engine.Open(
-                  media,
-                  width,
-                  height,
-                  window,
-                  frames->front().edge_rotation_left,
-                  frames->front().edge_rotation_right,
-                  error))
-            return false;
-          engine.SetLoop(repeat);
-          engine.SetRealtime(normal_speed);
-          return engine.SetTrajectory(frames, end, error, play_video, index);
-        });
+    const bool players = draw_players->isChecked(), play_drawing = draw_play->isChecked();
+    const bool rink = draw_rink->isChecked() && bool(rink_mask);
+    const auto mask = rink_mask;
+    preview.Submit([media,
+                    frames,
+                    width,
+                    height,
+                    end,
+                    window,
+                    reopen,
+                    repeat,
+                    normal_speed,
+                    play_video,
+                    index,
+                    players,
+                    play_drawing,
+                    rink,
+                    mask](auto& engine, auto* error) {
+      if (reopen &&
+          !engine.Open(
+              media,
+              width,
+              height,
+              window,
+              frames->front().edge_rotation_left,
+              frames->front().edge_rotation_right,
+              error,
+              mask))
+        return false;
+      engine.SetOverlays(players, play_drawing, rink);
+      engine.SetLoop(repeat);
+      engine.SetRealtime(normal_speed);
+      return engine.SetTrajectory(frames, end, error, play_video, index);
+    });
     preview_open = true;
     playing = play_video;
     frame_ready = false;
@@ -767,6 +812,12 @@ struct CameraExperimentDialog::Impl {
       } else if (result.session) {
         close_preview();
         session = std::move(result.session);
+        rink_mask = std::move(result.rink_mask);
+        draw_rink->setToolTip(
+            rink_mask ? "Draw the rink mask archived with this recording."
+                      : QString::fromStdString(result.rink_mask_reason));
+        if (!rink_mask)
+          draw_rink->setChecked(false);
         source_dirty = false;
         trials.clear();
         media_size = result.media_size;
@@ -959,6 +1010,31 @@ CameraExperimentDialog::CameraExperimentDialog(
   auto* video_frame = new QGroupBox("Program preview");
   auto* video_layout = new QVBoxLayout(video_frame);
   auto* preview_header = new QHBoxLayout();
+  s.draw_players = new QCheckBox("Player boxes");
+  s.draw_players->setObjectName("experimentDrawPlayers");
+  s.draw_players->setToolTip("Draw recorded player boxes; gray IGNORED labels follow the selected trial's filtering.");
+  s.draw_play = new QCheckBox("Play tracking");
+  s.draw_play->setObjectName("experimentDrawPlayTracking");
+  s.draw_play->setToolTip("Draw the selected camera policy's boxes, thresholds, clusters, and movement state.");
+  s.draw_rink = new QCheckBox("Rink mask");
+  s.draw_rink->setObjectName("experimentDrawRinkMask");
+  s.draw_rink->setEnabled(false);
+  s.draw_rink->setToolTip("Prepare a recording with an archived rink mask to enable this drawing.");
+  for (auto* toggle : {s.draw_players, s.draw_play, s.draw_rink}) {
+    preview_header->addWidget(toggle);
+    connect(toggle, &QCheckBox::toggled, this, [this]() {
+      auto& state = *impl_;
+      if (!state.preview_open)
+        return;
+      const bool players = state.draw_players->isChecked(), play = state.draw_play->isChecked();
+      const bool rink = state.draw_rink->isChecked() && bool(state.rink_mask);
+      state.preview.Submit([players, play, rink](auto& engine, auto*) {
+        engine.SetOverlays(players, play, rink);
+        return true;
+      });
+      state.update_controls();
+    });
+  }
   preview_header->addStretch();
   s.focus_button = new PreviewFocusButton(video_frame);
   s.focus_button->setObjectName("maximizeCameraExperimentPreviewButton");

@@ -6,6 +6,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/recording",
+        "//src/libs/common:preview_overlay_meta",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
         "@com_google_absl//absl/status:statusor",
@@ -21,6 +22,7 @@ cc_test(
         ":playtracker_replay",
         "@opencv_linux//:opencv",
         "//src/libs/recording",
+        "//src/libs/common:preview_overlay_meta",
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_db",
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_csv",
         "//src/gst-plugins/gst-playtracker:playtracker_context",

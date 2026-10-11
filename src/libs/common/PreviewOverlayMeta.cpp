@@ -251,6 +251,25 @@ bool add_selected_overlay_snapshot_meta(
   }
 }
 
+bool add_prepared_overlay_snapshot_meta(NvDsFrameMeta* frame_meta, const OverlaySnapshot& snapshot) noexcept {
+  try {
+    if (!frame_meta || !frame_meta->base_meta.batch_meta || find_overlay_snapshot_meta(frame_meta))
+      return false;
+    auto copy = std::make_unique<OverlaySnapshot>(snapshot);
+    auto* meta = nvds_acquire_user_meta_from_pool(frame_meta->base_meta.batch_meta);
+    if (!meta)
+      return false;
+    meta->user_meta_data = copy.release();
+    meta->base_meta.meta_type = overlay_snapshot_meta_type();
+    meta->base_meta.copy_func = copy_overlay_snapshot_meta;
+    meta->base_meta.release_func = release_overlay_snapshot_meta;
+    nvds_add_user_meta_to_frame(frame_meta, meta);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 bool add_overlay_snapshot_meta(NvDsFrameMeta* frame_meta, OverlaySnapshotExceptionInjection injection) noexcept {
   return add_selected_overlay_snapshot_meta(
       frame_meta, true, true, frame_meta ? frame_meta->display_meta_list : nullptr, injection);

@@ -110,6 +110,9 @@ void DsPlayTrackerCtxResetTracking(DsPlayTrackerCtx* ctx);
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream);
 
 absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame);
+// Shared metadata-only drawing for historical replay and the live tracker.
+absl::Status DsPlayTrackerDrawCpuToDisplayMeta(
+    const DsPlayTrackerCtx::PlayTracker& tracker, const hm::BBox& arena, GstDsPlayTrackerFrame& frame);
 
 // Deinitialize library context
 void DsPlayTrackerCtxDeinit(DsPlayTrackerCtx* ctx);

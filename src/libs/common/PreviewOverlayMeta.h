@@ -99,6 +99,8 @@ bool add_playcropper_transform_meta(
 const PlayCropperTransform* find_playcropper_transform_meta(const NvDsFrameMeta* frame_meta);
 
 NvDsMetaType overlay_snapshot_meta_type();
+// Attach already prepared immutable replay drawing using the ordinary copy/release contract.
+bool add_prepared_overlay_snapshot_meta(NvDsFrameMeta* frame_meta, const OverlaySnapshot& snapshot) noexcept;
 bool add_overlay_snapshot_meta(
     NvDsFrameMeta* frame_meta,
     OverlaySnapshotExceptionInjection injection = OverlaySnapshotExceptionInjection::kNone) noexcept;

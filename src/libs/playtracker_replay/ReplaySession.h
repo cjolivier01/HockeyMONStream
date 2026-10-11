@@ -12,6 +12,7 @@
 #include "absl/status/statusor.h"
 #include "hockeymon/csrc/play_tracker/BoxUtils.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 
 namespace hm::playtracker_replay {
 
@@ -22,6 +23,7 @@ struct Frame {
   std::optional<hm::BBox> follower;
   float edge_rotation_left{0};
   float edge_rotation_right{0};
+  std::shared_ptr<const hm::preview_overlay::OverlaySnapshot> overlays;
 };
 
 struct PrepareOptions {
@@ -36,6 +38,8 @@ struct PrepareOptions {
   // It is still required to pass measured trajectory agreement.
   std::string legacy_config_path;
   double legacy_tolerance_pixels{0.5};
+  // Experiments opt in; fast-forwarded playback seeks keep the lightweight path.
+  bool prepare_overlays{false};
 };
 
 struct CameraMedia {
@@ -98,6 +102,9 @@ class ReplaySession {
   uint64_t end_pts_ns() const;
   const std::string& provenance() const;
   const std::string& manifest_path() const;
+  // Historical PNG from the selected database geometry, never the current game's mask.
+  const std::string& rink_mask_png() const;
+  const std::string& rink_mask_unavailable_reason() const;
   // Native state immediately before the first selected sample, after replay
   // from the nearest indexed checkpoint. No video decoding is involved.
   std::string starting_checkpoint() const;

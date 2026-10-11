@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -105,6 +106,13 @@ void set_callback_exception_injection_for_test(
 void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptionInjection injection);
 // Next-run resolved preferences; layers are already gated by compute enables.
 void configure_player_analytics(GstElement* sink, unsigned layers, float joint_confidence);
+struct RinkMaskImage;
+// Explicit historical mask, validated/decoded once by the replay owner. Its
+// canvas must match each frame's recorded coordinate space, including scaled archives.
+void configure_recorded_rink_mask(GstElement* sink, std::shared_ptr<const RinkMaskImage> mask);
+// For a paused replay with enable-last-sample=true. Reuses that one GPU buffer;
+// never decodes/seeks or reads video pixels back to the CPU.
+bool redraw_last_sample(GstElement* sink);
 PreviewOverlayInspection inspect_preview_overlays_for_test(GstElement* sink, GstBuffer* buffer);
 bool renderer_rink_mask_loaded_for_test(
     GstElement* sink,

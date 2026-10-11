@@ -214,6 +214,28 @@ RinkMaskLoadResult load_rink_mask_png(
         continue;
       return failed(RinkMaskLoadStatus::kInvalidPngHeader, "compressed PNG could not be read completely");
     }
+    return decode_rink_mask_png(compressed, decoder, options);
+  } catch (const cv::Exception&) {
+    return failed(RinkMaskLoadStatus::kDecodeFailed, "OpenCV decode threw an exception");
+  } catch (const std::bad_alloc&) {
+    return failed(RinkMaskLoadStatus::kDecodeFailed, "rink-mask allocation failed");
+  } catch (const std::exception&) {
+    return failed(RinkMaskLoadStatus::kDecodeFailed, "rink-mask decoder threw a standard exception");
+  } catch (...) {
+    return failed(RinkMaskLoadStatus::kDecodeFailed, "rink-mask decode failed with an unknown exception");
+  }
+}
+
+RinkMaskLoadResult decode_rink_mask_png(
+    const std::vector<std::uint8_t>& compressed,
+    const RinkMaskDecoder& decoder,
+    const RinkMaskLoadOptions& options) {
+  try {
+    const std::uint64_t file_size = compressed.size();
+    if (file_size > kMaximumRinkMaskCompressedBytes)
+      return failed(RinkMaskLoadStatus::kCompressedFileTooLarge, "compressed PNG exceeds 8 MiB");
+    if (file_size < kPngHeaderBytes)
+      return failed(RinkMaskLoadStatus::kInvalidPngHeader, "PNG header is truncated");
     if (!std::equal(kPngSignature.begin(), kPngSignature.end(), compressed.begin()) ||
         read_big_endian_u32(compressed.data() + 8) != 13U || std::memcmp(compressed.data() + 12, "IHDR", 4) != 0) {
       return failed(RinkMaskLoadStatus::kInvalidPngHeader, "PNG signature or IHDR is invalid");
@@ -239,7 +261,8 @@ RinkMaskLoadResult load_rink_mask_png(
     const std::uint64_t resident_bytes = options.downsample_to_texture_budget
         ? pixels + texture_pixels * 2ULL
         : texture_pixels * kResidentCopiesPerPixel;
-    if (resident_bytes > options.maximum_resource_bytes || file_size > options.maximum_resource_bytes - resident_bytes) {
+    if (resident_bytes > options.maximum_resource_bytes ||
+        file_size > options.maximum_resource_bytes - resident_bytes) {
       return failed(
           RinkMaskLoadStatus::kResourceBudgetExceeded,
           "compressed, decoded, upload, and texture resources exceed the rink-mask preview budget");
@@ -281,7 +304,8 @@ bool rink_mask_dimensions_match(
     std::uint32_t expected_height) {
   const std::uint32_t canvas_width = image.canvas_width ? image.canvas_width : image.width;
   const std::uint32_t canvas_height = image.canvas_height ? image.canvas_height : image.height;
-  return expected_width > 0 && expected_height > 0 && canvas_width == expected_width && canvas_height == expected_height;
+  return expected_width > 0 && expected_height > 0 && canvas_width == expected_width &&
+      canvas_height == expected_height;
 }
 
 const char* rink_mask_load_status_name(RinkMaskLoadStatus status) {

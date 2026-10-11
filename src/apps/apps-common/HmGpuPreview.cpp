@@ -568,6 +568,7 @@ struct RendererState {
   std::atomic<bool> show_play_tracking{false};
   std::atomic<bool> show_rink_mask{false};
   std::string rink_mask_file;
+  std::shared_ptr<const hm::gpu_preview::RinkMaskImage> recorded_rink_mask;
   bool rink_mask_dirty{true};
   GLuint rink_mask_texture{0};
   guint rink_mask_width{0};
@@ -715,9 +716,7 @@ bool make_context_current(GstHmGpuPreviewSink* self) {
 void disable_vertical_sync(RendererState* state) {
   if (!state->display || state->window_id == 0)
     return;
-  const auto load = [](const char* name) {
-    return glXGetProcAddressARB(reinterpret_cast<const GLubyte*>(name));
-  };
+  const auto load = [](const char* name) { return glXGetProcAddressARB(reinterpret_cast<const GLubyte*>(name)); };
   if (auto* ext = reinterpret_cast<void (*)(Display*, GLXDrawable, int)>(load("glXSwapIntervalEXT"))) {
     ext(state->display, static_cast<GLXDrawable>(state->window_id), 0);
     return;
@@ -1171,8 +1170,12 @@ std::optional<std::uint32_t> exact_positive_dimension(float dimension) {
 
 bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   RendererState* state = self->state;
-  const float expected_width_value = overlays.stitched_surface_width;
-  const float expected_height_value = overlays.stitched_surface_height;
+  const float expected_width_value = state->recorded_rink_mask && overlays.program_transform
+      ? overlays.program_transform->metadata_width
+      : overlays.stitched_surface_width;
+  const float expected_height_value = state->recorded_rink_mask && overlays.program_transform
+      ? overlays.program_transform->metadata_height
+      : overlays.stitched_surface_height;
   const auto expected_width = exact_positive_dimension(expected_width_value);
   const auto expected_height = exact_positive_dimension(expected_height_value);
   const guint requested_width = expected_width.value_or(0);
@@ -1214,7 +1217,7 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
   state->rink_mask_canvas_width = 0;
   state->rink_mask_canvas_height = 0;
   state->rink_mask_output_generation.clear();
-  if (state->rink_mask_file.empty()) {
+  if (state->rink_mask_file.empty() && !state->recorded_rink_mask) {
     state->rink_mask_dirty = false;
     state->rink_mask_consecutive_failures = 0;
     return false;
@@ -1223,6 +1226,14 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
   absl::Status artifact_status;
   if (!expected_width || !expected_height) {
     artifact_status = absl::FailedPreconditionError("preview frame has invalid stitched-canvas dimensions");
+  } else if (state->recorded_rink_mask) {
+    // The historical mask is bound by the replay session, independently of the
+    // current game's calibration generation. Still require exact recorded dimensions.
+    if (!hm::gpu_preview::rink_mask_dimensions_match(*state->recorded_rink_mask, *expected_width, *expected_height)) {
+      artifact_status = absl::FailedPreconditionError("recorded mask differs from the frame's coordinate space");
+    } else {
+      loaded.image = *state->recorded_rink_mask;
+    }
   } else if (overlays.stitched_output_generation.empty()) {
     artifact_status = absl::FailedPreconditionError("preview frame has no stitched-output generation metadata");
   } else {
@@ -2531,6 +2542,41 @@ void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptio
 #else
   (void)sink;
   (void)injection;
+#endif
+}
+
+void configure_recorded_rink_mask(GstElement* sink, std::shared_ptr<const RinkMaskImage> mask) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  std::lock_guard<std::mutex> lock(self->state->mutex);
+  if (self->state->recorded_rink_mask == mask)
+    return;
+  self->state->recorded_rink_mask = std::move(mask);
+  self->state->rink_mask_dirty = true;
+  self->state->rink_mask_failure_reported = false;
+  self->state->rink_mask_retry_after = {};
+#else
+  (void)sink;
+  (void)mask;
+#endif
+}
+
+bool redraw_last_sample(GstElement* sink) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return false;
+  GstSample* sample = gst_base_sink_get_last_sample(GST_BASE_SINK(sink));
+  if (!sample)
+    return false;
+  GstBuffer* buffer = gst_sample_get_buffer(sample);
+  const bool ok = buffer && preview_sink_render(GST_BASE_SINK(sink), buffer) == GST_FLOW_OK;
+  gst_sample_unref(sample);
+  return ok;
+#else
+  (void)sink;
+  return false;
 #endif
 }
 

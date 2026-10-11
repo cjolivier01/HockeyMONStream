@@ -1245,16 +1245,21 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 }
 
 absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame) {
+  return DsPlayTrackerDrawCpuToDisplayMeta(ctx->play_trackers[frame.frame_meta->source_id], ctx->arena_box, frame);
+}
+
+absl::Status DsPlayTrackerDrawCpuToDisplayMeta(
+    const DsPlayTrackerCtx::PlayTracker& play_tracker_ctx, const hm::BBox& arena, GstDsPlayTrackerFrame& frame) {
   ScaleXY scale_xy = get_scale_xy(frame);
   const auto& scale_x = scale_xy.scale_x;
   const auto& scale_y = scale_xy.scale_y;
 
   hm::utils::PlotContext plotter(frame.frame_meta, "");
   // Plot any nontrivial arena box
-  if (ctx->arena_box.left > 0 || ctx->arena_box.top > 0 ||
-      ctx->arena_box.width() < frame.frame_meta->source_frame_width ||
-      ctx->arena_box.height() < frame.frame_meta->source_frame_height) {
-    plotter.plot_rect(ctx->arena_box, 2, hm::utils::ColorRGBA{255, 64, 64, 255});
+  if (arena.left > 0 || arena.top > 0 ||
+      arena.width() < frame.frame_meta->source_frame_width ||
+      arena.height() < frame.frame_meta->source_frame_height) {
+    plotter.plot_rect(arena, 2, hm::utils::ColorRGBA{255, 64, 64, 255});
   }
   for (const auto& cluster_item : frame.play_tracker_results.cluster_boxes) {
     plotter.plot_rect(
@@ -1265,7 +1270,6 @@ absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrac
   }
   for (size_t i = 0, n = frame.play_tracker_results.tracking_boxes.size(); i < n; ++i) {
     // plotter.plot_rect(frame.play_tracker_results.tracking_boxes[i], 5, track_colors.at(i));
-    auto& play_tracker_ctx = ctx->play_trackers[frame.frame_meta->source_id];
     if (play_tracker_ctx.play_tracker) {
       std::shared_ptr<hm::play_tracker::ILivingBox> lbox = play_tracker_ctx.play_tracker->get_live_box(i);
       hm::play_tracker::ILivingBox* following_box =

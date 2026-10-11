@@ -80,6 +80,21 @@ Experiments use their own controls and tracker instances, independent of live
 Program controls and presets. Changes in an open experiment do not change the
 main window, and later main-window changes do not overwrite the experiment.
 
+**Player boxes**, **Play tracking**, and **Rink mask** above the preview can change
+while playing or paused. Player boxes use the recorded observations, with stable
+colors and gray `IGNORED` labels for the selected camera policy's exclusions.
+Play tracking uses the same camera boxes, thresholds, clusters, and movement
+geometry as the live preview, computed for Original, Baseline, or the selected
+trial. These drawing choices stay in this dialog and do not change camera policy.
+
+The rink mask comes from the selected database's archived geometry, not the
+current game's calibration. Missing, invalid, or unsupported archived masks disable
+that toggle with an explanation. Legacy CSV recordings can draw players and
+tracking but do not contain a historical rink mask. Scaled panoramas and camera
+rotation use the production cropper's coordinate transform for every layer.
+Changing drawings on a paused frame reuses one retained GPU output buffer; it does
+not seek, rerun inference, or reconstruct the source graph.
+
 Preparation and preview startup, seeks, loops, and teardown run in the background.
 **Play at normal speed** is checked by default, preserving timestamp-paced playback.
 Uncheck it to process the preview as fast as possible. It is grayed out while
@@ -126,7 +141,11 @@ to the selected time. Maps are validated again against the prepared revision at
 load, so changes require preparation again. Archive loops reuse their decoder
 graph. Video stays GPU-resident during playback; an explicit screenshot performs one bounded readback of the displayed
 preview. Qt preview requires the existing x86_64/X11 GPU environment. Native replay,
-capture, and backend tests also run on ARM64/Jetson.
+capture, and backend tests also run on ARM64/Jetson. Experiment preparation opts
+into bounded, immutable drawing snapshots through the shared native drawing
+routine. Ordinary playback seek preparation leaves this work disabled. Archived
+mask PNGs use the existing bounded decoder once during background preparation;
+this is static recording data, not video readback.
 
 Relevant test targets:
 
