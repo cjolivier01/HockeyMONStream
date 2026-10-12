@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -116,6 +117,51 @@ struct MuxBatchStats {
   std::map<guint, guint64> next_decoded_sequence_by_source;
   std::vector<std::vector<std::pair<guint, guint>>> batch_frames;
 };
+
+struct DecoderSettingsStats {
+  guint extra_surfaces = 0;
+  gboolean low_latency = FALSE;
+  std::atomic<guint> verified{0};
+  std::atomic<guint> incorrect{0};
+};
+
+void inspect_hardware_decoder(GstBin*, GstBin*, GstElement* element, gpointer data) {
+  auto* stats = static_cast<DecoderSettingsStats*>(data);
+  GstElementFactory* factory = gst_element_get_factory(element);
+  const char* klass = factory ? gst_element_factory_get_metadata(factory, GST_ELEMENT_METADATA_KLASS) : nullptr;
+  if (!klass || !strstr(klass, "Decoder") || !strstr(klass, "Video"))
+    return;
+  if (g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), "nvv4l2decoder") != 0) {
+    ++stats->incorrect;
+    return;
+  }
+  GstPad* pad = gst_element_get_static_pad(element, "src");
+  if (!pad) {
+    ++stats->incorrect;
+    return;
+  }
+  gst_pad_add_probe(
+      pad,
+      GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+      [](GstPad* pad, GstPadProbeInfo* info, gpointer data) {
+        if (GST_EVENT_TYPE(GST_PAD_PROBE_INFO_EVENT(info)) != GST_EVENT_CAPS)
+          return GST_PAD_PROBE_OK;
+        auto* stats = static_cast<DecoderSettingsStats*>(data);
+        GstElement* decoder = gst_pad_get_parent_element(pad);
+        guint extra = G_MAXUINT;
+        gboolean latency = !stats->low_latency;
+        g_object_get(decoder, "num-extra-surfaces", &extra, "low-latency-mode", &latency, nullptr);
+        gst_object_unref(decoder);
+        if (extra == stats->extra_surfaces && latency == stats->low_latency)
+          ++stats->verified;
+        else
+          ++stats->incorrect;
+        return GST_PAD_PROBE_REMOVE;
+      },
+      stats,
+      nullptr);
+  gst_object_unref(pad);
+}
 
 enum class ExpectedPipelineFailure {
   kNone,
@@ -260,7 +306,12 @@ bool run_shell(const std::string& cmd) {
   return status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
-bool make_synthetic_mp4(const fs::path& path, double seconds, int hue_degrees, int audio_frequency) {
+bool make_synthetic_mp4(
+    const fs::path& path,
+    double seconds,
+    int hue_degrees,
+    int audio_frequency,
+    bool hevc_main10 = false) {
   std::stringstream cmd;
   cmd << "ffmpeg -hide_banner -loglevel error -y "
       << "-f lavfi -i "
@@ -270,9 +321,15 @@ bool make_synthetic_mp4(const fs::path& path, double seconds, int hue_degrees, i
   }
   cmd << "-t " << seconds << " ";
   if (audio_frequency > 0) {
-    cmd << "-shortest -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 64k ";
+    cmd << "-shortest -c:a aac -b:a 64k ";
   } else {
-    cmd << "-an -c:v libx264 -preset ultrafast -pix_fmt yuv420p ";
+    cmd << "-an ";
+  }
+  if (hevc_main10) {
+    cmd << "-c:v libx265 -preset ultrafast -pix_fmt yuv420p10le "
+        << "-x265-params 'pools=1:frame-threads=1:bframes=0:ref=1:log-level=error' ";
+  } else {
+    cmd << "-c:v libx264 -preset ultrafast -pix_fmt yuv420p ";
   }
   cmd << "-movflags +faststart " << shell_quote(path);
   return run_shell(cmd.str());
@@ -1157,15 +1214,34 @@ int run_lossless_two_camera_mux(
     GstClockTime right_initial_offset = 0,
     GstClockTime start_time = 0,
     bool pause_before_playing = false,
-    guint64 expected_total_frames = 0) {
+    guint64 expected_total_frames = 0,
+    guint extra_surfaces = 0,
+    gboolean low_latency = FALSE,
+    bool verify_decoder_settings = false) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1, include_right_uri_list);
+  for (auto& config : configs) {
+    config.num_extra_surfaces = extra_surfaces;
+    config.low_latency_mode = low_latency;
+  }
 
   NvDsSrcParentBin src_parent{};
   if (!create_multi_source_bin(2, configs, &src_parent)) {
     std::cerr << "Failed to create lossless two-camera source bin\n";
     return 2;
+  }
+  DecoderSettingsStats decoder_stats[2];
+  for (guint source_id = 0; source_id < 2; ++source_id) {
+    decoder_stats[source_id].extra_surfaces = extra_surfaces;
+    decoder_stats[source_id].low_latency = low_latency;
+    if (verify_decoder_settings) {
+      g_signal_connect(
+          src_parent.sub_bins[source_id].src_elem,
+          "deep-element-added",
+          G_CALLBACK(inspect_hardware_decoder),
+          &decoder_stats[source_id]);
+    }
   }
   if ((left_initial_offset || right_initial_offset || start_time) &&
       !configure_uri_playlist_initial_offsets(
@@ -1212,8 +1288,10 @@ int run_lossless_two_camera_mux(
     std::cerr << "Failed to create lossless mux pipeline/sinks\n";
     return 3;
   }
-  g_object_set(G_OBJECT(sink), "sync", FALSE, "async", FALSE, NULL);
-  g_object_set(G_OBJECT(audio_sink), "sync", FALSE, "async", FALSE, NULL);
+  // This observer consumes batches. Retaining the last borrowed decoder frame
+  // until the next batch would create a cycle with chapter retirement.
+  g_object_set(G_OBJECT(sink), "sync", FALSE, "async", FALSE, "enable-last-sample", FALSE, NULL);
+  g_object_set(G_OBJECT(audio_sink), "sync", FALSE, "async", FALSE, "enable-last-sample", FALSE, NULL);
   gst_bin_add_many(GST_BIN(pipeline), src_parent.bin, sink, audio_sink, NULL);
   if (audio_delay) {
     g_object_set(G_OBJECT(audio_delay), "sleep-time", static_cast<guint>(audio_sleep_time_us), NULL);
@@ -1273,6 +1351,17 @@ int run_lossless_two_camera_mux(
     std::cerr << "Lossless mux failure diagnostics: audio_buffers=" << audio_stats.buffers
               << ", audio_eos_events=" << audio_stats.eos_events << "\n";
     return rc;
+  }
+  if (verify_decoder_settings) {
+    for (guint source_id = 0; source_id < 2; ++source_id) {
+      const guint expected = source_id == 0 ? left_uris.size() : right_uris.size();
+      if (decoder_stats[source_id].verified != expected || decoder_stats[source_id].incorrect != 0) {
+        std::cerr << "Decoder settings not exercised for source " << source_id
+                  << ": verified=" << decoder_stats[source_id].verified
+                  << " incorrect=" << decoder_stats[source_id].incorrect << " expected=" << expected << '\n';
+        return 11;
+      }
+    }
   }
   const size_t expected_complete_chapters = std::min(left_uris.size(), right_uris.size());
   if (expected_total_frames > 0) {
@@ -1367,6 +1456,14 @@ int run_lossless_two_camera_mux(
     return 7;
   }
   for (guint source_id = 0; source_id < 2; ++source_id) {
+    if (verify_decoder_settings &&
+        (video_timeline_stats[source_id].invalid_timestamps != 0 ||
+         video_timeline_stats[source_id].discontinuities != 0)) {
+      std::cerr << "Decoder matrix video timeline failed for source " << source_id
+                << ": invalid=" << video_timeline_stats[source_id].invalid_timestamps
+                << ", discontinuities=" << video_timeline_stats[source_id].discontinuities << '\n';
+      return 7;
+    }
     if (video_timeline_stats[source_id].buffers == 0 ||
         !GST_CLOCK_TIME_IS_VALID(video_timeline_stats[source_id].first_pts) ||
         video_timeline_stats[source_id].first_pts > GST_SECOND / 10) {
@@ -1433,8 +1530,11 @@ int main(int argc, char** argv) {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   if (argc == 2 && std::string(argv[1]) == "--render-video-sink-only")
     return run_headless_render_video_sink();
-  if (const int rc = run_realtime_render_tests())
-    return rc;
+  const bool decoder_matrix_only = argc == 2 && std::string(argv[1]) == "--decoder-matrix-only";
+  if (!decoder_matrix_only) {
+    if (const int rc = run_realtime_render_tests())
+      return rc;
+  }
   if (argc == 2 && std::string(argv[1]) == "--render-realtime-only")
     return 0;
 
@@ -1469,6 +1569,61 @@ int main(int argc, char** argv) {
   const std::vector<std::string> right_uris{to_file_uri(b0), to_file_uri(b1), to_file_uri(b2)};
   const std::vector<std::string> shifted_right_uris{
       to_file_uri(shifted_b0), to_file_uri(shifted_b1), to_file_uri(shifted_b2)};
+
+  std::vector<std::string> main10, shifted_main10;
+  for (unsigned chapter = 0; chapter < 3; ++chapter) {
+    const fs::path path = tmpdir / ("main10_" + std::to_string(chapter) + ".mp4");
+    if (!make_synthetic_mp4(path, 1, chapter * 60, 440, true)) {
+      fs::remove_all(tmpdir);
+      return 2;
+    }
+    main10.push_back(to_file_uri(path));
+    const fs::path shifted_path = tmpdir / ("main10_shifted_" + std::to_string(chapter) + ".mp4");
+    const double duration = chapter == 0 ? 0.8 : (chapter == 1 ? 1.2 : 1.0);
+    if (!make_synthetic_mp4(shifted_path, duration, chapter * 60 + 30, 494, true)) {
+      fs::remove_all(tmpdir);
+      return 2;
+    }
+    shifted_main10.push_back(to_file_uri(shifted_path));
+  }
+  // Decoder allocation/retention changes must preserve complete, exact pairs
+  // across both aligned and staggered chapter boundaries. Small synthetic
+  // inputs qualify ownership/counts; the full-canvas memory regression is in
+  // scripts/test_uri_playlist_memory.py.
+  for (const bool main10_codec : {false, true}) {
+    for (const guint extra_surfaces : {0U, 1U, 2U}) {
+      for (const bool low_latency : {false, true}) {
+        std::cout << "Decoder matrix: main10=" << main10_codec << " extra=" << extra_surfaces
+                  << " low-latency=" << low_latency << std::endl;
+        const int matrix_rc = run_lossless_two_camera_mux(
+            main10_codec ? main10 : left_uris,
+            main10_codec ? shifted_main10 : shifted_right_uris,
+            true,
+            0,
+            0,
+            ExpectedPipelineFailure::kNone,
+            0,
+            -1,
+            0,
+            0,
+            0,
+            0,
+            false,
+            45,
+            extra_surfaces,
+            low_latency,
+            true);
+        if (matrix_rc != 0) {
+          fs::remove_all(tmpdir);
+          return matrix_rc;
+        }
+      }
+    }
+  }
+  if (decoder_matrix_only) {
+    fs::remove_all(tmpdir);
+    return 0;
+  }
 
   // The startup seek leaves three seconds in chapter one. The next chapter
   // must not introduce a three-second audio hole that blocks the archive mux.
