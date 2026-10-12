@@ -1,6 +1,15 @@
 INCLUDE_PREFIX = "hstream/src/libs/common/"
 
 cc_library(
+    name = "shutdown_watchdog",
+    srcs = ["ShutdownWatchdog.cpp"],
+    hdrs = ["ShutdownWatchdog.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":process_diagnostics", "@glib"],
+)
+
+cc_library(
     name = "tensorrt_gpu_identity",
     srcs = ["TensorRtGpuIdentity.cpp"],
     hdrs = ["TensorRtGpuIdentity.h"],

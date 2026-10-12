@@ -35,6 +35,7 @@ HSTREAM_CLI_DEPS = [
     "//src/libs/recording",
     ":player_model_cache",
     "//src/libs/common:process_diagnostics",
+    "//src/libs/common:shutdown_watchdog",
     "//src/libs/stitching:rink_mask_frame_time",
     "//src/libs/assets:asset_manager",
     "//src/libs/common:tensorrt_gpu_identity",
@@ -138,6 +139,18 @@ cc_test(
     ],
     copts = HSTREAM_CLI_COPTS,
     data = ["//configs:ds_hockey_app_config.yaml"],
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    deps = HSTREAM_CLI_DEPS,
+)
+
+cc_test(
+    name = "pipeline_graceful_stop_test",
+    srcs = [
+        "PipelineGracefulStopTest.cpp",
+        "deepstream_app.cpp",
+        "configurator.cpp",
+    ] + glob(["*.h"]),
+    copts = HSTREAM_CLI_COPTS,
     linkopts = HSTREAM_CLI_LINKOPTS,
     deps = HSTREAM_CLI_DEPS,
 )

@@ -583,7 +583,7 @@ gint64 parse_watchdog_budget_us(const char* configured, gint64 fallback_us) {
   gchar* end = nullptr;
   const gint64 seconds = g_ascii_strtoll(configured, &end, 10);
   if (end == configured || *end || seconds < 0 || seconds > G_MAXINT64 / G_USEC_PER_SEC) {
-    g_printerr("Ignoring invalid shutdown watchdog budget '%s'; using default\n", configured);
+    g_printerr("Ignoring invalid watchdog budget '%s'; using default\n", configured);
     return fallback_us;
   }
   return seconds * G_USEC_PER_SEC;

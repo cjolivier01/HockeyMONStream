@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 
+#include "absl/cleanup/cleanup.h"
+
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
@@ -292,6 +294,26 @@ struct HStreamWindowTestAccess {
     window->pipeline_process_->waitForFinished(5000);
     delete window->pipeline_process_;
     window->pipeline_process_ = nullptr;
+  }
+
+  static void toggleProcessPause(HStreamWindow* window) {
+    window->pauseOrResumePipeline();
+  }
+  static void reportProcessPause(HStreamWindow* window, const QString& status, quint64 generation) {
+    window->handleProcessPauseOutput(
+        QString("HSTREAM_PROCESS_PAUSE status=%1 generation=%2").arg(status).arg(generation));
+  }
+  static quint64 pendingProcessPause(HStreamWindow* window) {
+    return window->pending_process_pause_generation_;
+  }
+  static quint64 pendingProcessResume(HStreamWindow* window) {
+    return window->pending_process_resume_generation_;
+  }
+  static bool processPaused(HStreamWindow* window) {
+    return window->pipeline_paused_;
+  }
+  static bool processStopRequested(HStreamWindow* window) {
+    return window->pipeline_stop_requested_;
   }
 
   static void setCalibrationPrecisionRunActive(HStreamWindow* window, bool active) {
@@ -1018,8 +1040,14 @@ T* require_child(HStreamWindow* window, const char* name) {
 }
 
 void activate(QAbstractButton* button) {
+  const bool was_enabled = button->isEnabled();
   button->click();
   QApplication::processEvents();
+  if (was_enabled && button->objectName() == "pausePipelineButton") {
+    for (int i = 0; i < 100 && !button->isEnabled(); ++i) {
+      QTest::qWait(10);
+    }
+  }
 }
 
 // Runs `open`, which blocks inside the crop editor's exec(), and hands the
@@ -1495,6 +1523,13 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "        print('HSTREAM_PREVIEW_RUNTIME status=ready channel=' + channel + ' generation=' + generation, "
       "flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@process-pause '):\n");
+  file.write("        generation = line.rstrip('\\n').split(' ', 1)[1]\n");
+  file.write("        print('HSTREAM_PROCESS_PAUSE status=prepared generation=' + generation, flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@process-resume '):\n");
+  file.write("        print('HSTREAM_PROCESS_PAUSE status=resumed generation=' + line.split()[1], flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@reset-progress-rate'):\n");
   file.write("        generation = line.rstrip('\\n').split(' ', 1)[1]\n");
@@ -16849,6 +16884,57 @@ bool test_realtime_playback_selection() {
 
 } // namespace
 
+bool test_process_pause_protocol() {
+#ifdef Q_OS_UNIX
+  HStreamWindow window;
+  if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+    return false;
+  auto cleanup = absl::MakeCleanup([&] { HStreamWindowTestAccess::killStubPipelineProcess(&window); });
+  HStreamWindowTestAccess::toggleProcessPause(&window);
+  const quint64 generation = HStreamWindowTestAccess::pendingProcessPause(&window);
+  HStreamWindowTestAccess::reportProcessPause(&window, "prepared", generation + 1);
+  if (!expect(
+          generation && !HStreamWindowTestAccess::processPaused(&window),
+          "An unmatched prepare ACK must not pause the runner"))
+    return false;
+  HStreamWindowTestAccess::reportProcessPause(&window, "prepared", generation);
+  if (!expect(HStreamWindowTestAccess::processPaused(&window), "A matched prepare ACK must pause the runner"))
+    return false;
+  HStreamWindowTestAccess::toggleProcessPause(&window);
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation + 1);
+  if (!expect(
+          !HStreamWindowTestAccess::processPaused(&window) &&
+              HStreamWindowTestAccess::pendingProcessResume(&window) == generation,
+          "Resume must release SIGSTOP and retain its generation until a matching ACK"))
+    return false;
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation);
+  if (!expect(
+          !HStreamWindowTestAccess::pendingProcessResume(&window), "A matched resume ACK must complete the handshake"))
+    return false;
+  HStreamWindowTestAccess::toggleProcessPause(&window);
+  const quint64 missing = HStreamWindowTestAccess::pendingProcessPause(&window);
+  // Qt timers can be delivered late. Observe cancellation before injecting a
+  // deliberately late ACK instead of assuming a fixed sleep fired the timer.
+  if (!expect(
+          missing && QTest::qWaitFor([&] { return !HStreamWindowTestAccess::pendingProcessPause(&window); }, 8000),
+          "A missing prepare ACK must cancel the pending pause"))
+    return false;
+  // A late prepare ACK must not SIGSTOP a process whose pause was cancelled.
+  HStreamWindowTestAccess::reportProcessPause(&window, "prepared", missing);
+  if (!expect(
+          !HStreamWindowTestAccess::processPaused(&window) &&
+              HStreamWindowTestAccess::pendingProcessResume(&window) == missing,
+          "A late prepare ACK must leave the runner active while resume confirmation is pending"))
+    return false;
+  if (!expect(
+          QTest::qWaitFor([&] { return HStreamWindowTestAccess::processStopRequested(&window); }, 8000),
+          "Missing resume ACK must stop playback rather than disable stall monitoring")) {
+    return false;
+  }
+#endif
+  return true;
+}
+
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
   if (!test_path_scoped_auto_rollback() || !test_matching_development_runtime_selection() ||
@@ -16893,6 +16979,12 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (!test_process_pause_protocol()) {
+    std::cerr << "test_process_pause_protocol failed\n";
+    return 1;
+  }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PAUSE_ONLY"))
+    return 0;
   if (!test_realtime_playback_selection())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_REALTIME_ONLY"))
