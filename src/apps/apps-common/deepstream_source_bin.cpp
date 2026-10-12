@@ -31,7 +31,9 @@
 #include "deepstream_common.h"
 #include "deepstream_sources.h"
 #include "hstream/src/apps/apps-common/HStreamLosslessMux.h"
+#include "hstream/src/apps/apps-common/UriPlaylistCapturePoolDrain.h"
 #include "hstream/src/apps/apps-common/UriPlaylistDiscovery.h"
+#include "hstream/src/libs/common/ShutdownWatchdog.h"
 
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
@@ -418,6 +420,61 @@ static std::vector<NvDsSrcBin*> uri_playlist_sources(NvDsSrcParentBin* parent) {
   return sources;
 }
 
+namespace {
+GMutex uri_playlist_process_clock_mutex;
+gboolean uri_playlist_process_paused = FALSE;
+gint64 uri_playlist_process_pause_started_us = 0;
+gint64 uri_playlist_process_paused_us = 0;
+
+gint64 uri_playlist_process_time_us() {
+  g_mutex_lock(&uri_playlist_process_clock_mutex);
+  const gint64 now = uri_playlist_process_paused ? uri_playlist_process_pause_started_us : g_get_monotonic_time();
+  const gint64 active_us = now - uri_playlist_process_paused_us;
+  g_mutex_unlock(&uri_playlist_process_clock_mutex);
+  return active_us;
+}
+
+// Call with the barrier mutex held. Measuring native pauses on the process
+// clock also excludes an overlapping SIGSTOP without counting it twice.
+gint64 uri_playlist_wait_time_locked(const NvDsSrcParentBin* parent) {
+  const gint64 now =
+      parent->uri_playlist_waits_paused ? parent->uri_playlist_pause_started_us : uri_playlist_process_time_us();
+  return now - parent->uri_playlist_paused_us;
+}
+} // namespace
+
+void set_uri_playlist_process_paused(gboolean paused) {
+  g_mutex_lock(&uri_playlist_process_clock_mutex);
+  if (paused != uri_playlist_process_paused) {
+    const gint64 now = g_get_monotonic_time();
+    if (paused) {
+      uri_playlist_process_pause_started_us = now;
+    } else {
+      uri_playlist_process_paused_us += now - uri_playlist_process_pause_started_us;
+    }
+    uri_playlist_process_paused = paused;
+  }
+  g_mutex_unlock(&uri_playlist_process_clock_mutex);
+}
+
+void set_uri_playlist_waits_paused(NvDsSrcParentBin* parent, gboolean paused) {
+  if (!parent || !parent->uri_playlist_barrier_initialized) {
+    return;
+  }
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  if (paused != parent->uri_playlist_waits_paused) {
+    const gint64 now = uri_playlist_process_time_us();
+    if (paused) {
+      parent->uri_playlist_pause_started_us = now;
+    } else {
+      parent->uri_playlist_paused_us += now - parent->uri_playlist_pause_started_us;
+    }
+    parent->uri_playlist_waits_paused = paused;
+    g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+  }
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+}
+
 // Fold every field a live URI-playlist branch advances into a single value, so
 // a waiter can tell "my peer is slow" from "my peer stopped". Any change counts
 // as progress; folding rather than summing keeps two opposite field changes from
@@ -462,10 +519,11 @@ class UriPlaylistWaitMonitor {
   explicit UriPlaylistWaitMonitor(NvDsSrcParentBin* parent)
       : parent_(parent),
         token_(uri_playlist_progress_token_locked(parent)),
-        started_us_(g_get_monotonic_time()),
+        started_us_(uri_playlist_wait_time_locked(parent)),
         progressed_us_(started_us_),
         warned_us_(started_us_),
-        poll_deadline_(started_us_ + poll_interval_us()) {}
+        sampled_us_(started_us_),
+        poll_deadline_(g_get_monotonic_time() + poll_interval_us()) {}
 
   gint64 wake_deadline() const {
     return poll_deadline_;
@@ -486,7 +544,8 @@ class UriPlaylistWaitMonitor {
   // Call with the barrier mutex held. TRUE once nothing anywhere in the
   // playlist has moved for the whole budget.
   gboolean stalled_locked() {
-    const gint64 now = g_get_monotonic_time();
+    const gint64 now = uri_playlist_wait_time_locked(parent_);
+    sampled_us_ = now;
     const guint64 token = uri_playlist_progress_token_locked(parent_);
     if (token != token_) {
       token_ = token;
@@ -498,7 +557,7 @@ class UriPlaylistWaitMonitor {
   }
 
   gboolean should_warn() {
-    const gint64 now = g_get_monotonic_time();
+    const gint64 now = sampled_us_;
     if (now - warned_us_ < kUriPlaylistBarrierDiagnosticIntervalUs) {
       return FALSE;
     }
@@ -507,10 +566,10 @@ class UriPlaylistWaitMonitor {
   }
 
   gint64 waited_seconds() const {
-    return (g_get_monotonic_time() - started_us_) / G_TIME_SPAN_SECOND;
+    return (sampled_us_ - started_us_) / G_TIME_SPAN_SECOND;
   }
   gint64 stalled_seconds() const {
-    return (g_get_monotonic_time() - progressed_us_) / G_TIME_SPAN_SECOND;
+    return (sampled_us_ - progressed_us_) / G_TIME_SPAN_SECOND;
   }
 
  private:
@@ -525,6 +584,7 @@ class UriPlaylistWaitMonitor {
   gint64 started_us_;
   gint64 progressed_us_;
   gint64 warned_us_;
+  gint64 sampled_us_;
   gint64 poll_deadline_;
 };
 
@@ -985,7 +1045,18 @@ void stop_uri_playlist_sources_gracefully(NvDsSrcParentBin* parent) {
   // synthetic EOS has already closed their logical branches.
   for (NvDsSrcBin* source : sources) {
     if (source->src_elem) {
-      gst_element_set_state(source->src_elem, GST_STATE_NULL);
+      // Parent PLAYING -> PAUSED -> NULL teardown must not raise this already
+      // retired reader back to PAUSED and allocate another decoder pool.
+      gst_element_set_locked_state(source->src_elem, TRUE);
+      if (gst_element_set_state(source->src_elem, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE) {
+        g_mutex_lock(&source->uri_decode_pad_selection_mutex);
+        g_object_set_data(G_OBJECT(source->src_elem), "hstream-uri-playlist-video-decoder", nullptr);
+        g_mutex_unlock(&source->uri_decode_pad_selection_mutex);
+        if (auto* drain = static_cast<hm::UriPlaylistCapturePoolDrain*>(
+                g_object_get_data(G_OBJECT(source->bin), "hstream-uri-capture-pool-drain"))) {
+          drain->Release();
+        }
+      }
     }
   }
   for (NvDsSrcBin* source : sources) {
@@ -1384,7 +1455,7 @@ static void maybe_complete_uri_playlist_boundary(NvDsSrcBin* bin, guint uri_inde
   }
   g_mutex_unlock(mutex);
   if (schedule_switch) {
-    schedule_uri_playlist_main_context_callback(bin, 1, switch_to_next_uri, "switch", &bin->uri_switch_source_id);
+    schedule_uri_playlist_main_context_callback(bin, 10, switch_to_next_uri, "switch", &bin->uri_switch_source_id);
   } else if (end_playlist) {
     mark_uri_playlist_terminal(bin);
   }
@@ -1884,6 +1955,12 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
   }
 
   if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+    if (probe_data->is_video) {
+      if (auto* drain = static_cast<hm::UriPlaylistCapturePoolDrain*>(
+              g_object_get_data(G_OBJECT(bin->bin), "hstream-uri-capture-pool-drain"))) {
+        drain->Observe(GST_BUFFER(info->data));
+      }
+    }
     const GstPadProbeReturn initial_trim_result = trim_initial_uri_playlist_buffer(pad, info, probe_data);
     if (initial_trim_result != GST_PAD_PROBE_OK) {
       return initial_trim_result;
@@ -2742,6 +2819,8 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_playlist_initial_seek_audio_probe = 0;
   bin->uri_switch_count = 0;
   bin->uri_switch_pending = FALSE;
+  bin->uri_list_reader_retired = FALSE;
+  bin->uri_list_retire_started_us = 0;
   bin->uri_list_decoded_frame_count = 0;
   bin->uri_list_released_video_end = GST_CLOCK_TIME_NONE;
   bin->uri_list_mux_delivered_sequence = G_MAXUINT64;
@@ -2775,6 +2854,15 @@ static gboolean switch_to_next_uri(gpointer data) {
   if (!bin || !bin->config || !bin->src_elem || !bin->bin || !bin->uri_list || bin->num_uri_list < 2) {
     return FALSE;
   }
+  // Runtime pause preparation and this callback run on the same main context.
+  // Do not start a synchronous watchdog between its ACK and SIGSTOP/SIGCONT;
+  // resume restores the process clock before this callback can retire anything.
+  g_mutex_lock(&uri_playlist_process_clock_mutex);
+  const gboolean process_paused = uri_playlist_process_paused;
+  g_mutex_unlock(&uri_playlist_process_clock_mutex);
+  if (process_paused) {
+    return TRUE;
+  }
   NvDsSourceConfig* config = bin->config;
   GMutex* mutex = uri_playlist_mutex(bin);
   g_mutex_lock(mutex);
@@ -2794,19 +2882,72 @@ static gboolean switch_to_next_uri(gpointer data) {
       return FALSE;
     }
   }
+  const gboolean retired = bin->uri_list_reader_retired;
   g_mutex_unlock(mutex);
 
-  if (gst_element_set_state(bin->src_elem, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
-    GST_ERROR_OBJECT(bin->src_elem, "Can't set URI source element to NULL for uri switch");
-    cancel_uri_playlist_source(bin, TRUE);
-    GST_ELEMENT_ERROR(
-        bin->src_elem,
-        STREAM,
-        FAILED,
-        ("Could not stop the current camera chapter"),
-        ("source=%u next_uri=%u", bin->source_id, next_index));
-    return FALSE;
+  if (!retired) {
+    // Parent pause/seek transitions must not reopen the old URI while its
+    // downstream borrowers drain. This also keeps Observe serialized with Drain.
+    gst_element_set_locked_state(bin->src_elem, TRUE);
+    hm::ShutdownWatchdog watchdog(
+        "Camera chapter reader retirement",
+        hm::parse_watchdog_budget_us(g_getenv("HM_SHUTDOWN_WATCHDOG_SECONDS"), 30 * G_TIME_SPAN_SECOND));
+    if (gst_element_set_state(bin->src_elem, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+      cancel_uri_playlist_source(bin, TRUE);
+      GST_ELEMENT_ERROR(
+          bin->src_elem,
+          STREAM,
+          FAILED,
+          ("Could not stop the current camera chapter"),
+          ("source=%u next_uri=%u", bin->source_id, next_index));
+      return FALSE;
+    }
+    // Initial positioning retains the selected decoder. Release that owner as
+    // well; its capture pool may otherwise never become exclusively ours.
+    g_mutex_lock(&bin->uri_decode_pad_selection_mutex);
+    g_object_set_data(G_OBJECT(bin->src_elem), "hstream-uri-playlist-video-decoder", nullptr);
+    g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
+    g_mutex_lock(mutex);
+    bin->uri_list_reader_retired = TRUE;
+    bin->uri_list_retire_started_us =
+        bin->parent_bin ? uri_playlist_wait_time_locked(bin->parent_bin) : uri_playlist_process_time_us();
+    g_mutex_unlock(mutex);
   }
+
+  auto* drain = static_cast<hm::UriPlaylistCapturePoolDrain*>(
+      g_object_get_data(G_OBJECT(bin->bin), "hstream-uri-capture-pool-drain"));
+  if (drain &&
+      !drain->Drain(hm::parse_watchdog_budget_us(g_getenv("HM_SHUTDOWN_WATCHDOG_SECONDS"), 30 * G_TIME_SPAN_SECOND))) {
+    g_mutex_lock(mutex);
+    const gint64 now =
+        bin->parent_bin ? uri_playlist_wait_time_locked(bin->parent_bin) : uri_playlist_process_time_us();
+    const gint64 waited_us = now - bin->uri_list_retire_started_us;
+    const gint64 budget_us = uri_playlist_barrier_stall_budget_us();
+    g_mutex_unlock(mutex);
+    if (budget_us > 0 && waited_us >= budget_us) {
+      cancel_uri_playlist_source(bin, TRUE);
+      GST_ELEMENT_ERROR(
+          bin->src_elem,
+          STREAM,
+          FAILED,
+          ("The previous camera chapter did not release its decoder buffers"),
+          ("source=%u waited_seconds=%" G_GINT64_FORMAT, bin->source_id, waited_us / G_TIME_SPAN_SECOND));
+      return FALSE;
+    }
+    // Retry the same generation-fenced callback. Keep the old chapter identity
+    // until its queued frames return; neither EOS nor a flush may drop them.
+    return TRUE;
+  }
+  g_mutex_lock(mutex);
+  const gint64 drained_at =
+      bin->parent_bin ? uri_playlist_wait_time_locked(bin->parent_bin) : uri_playlist_process_time_us();
+  const gint64 drain_ms = (drained_at - bin->uri_list_retire_started_us) / G_TIME_SPAN_MILLISECOND;
+  g_mutex_unlock(mutex);
+  g_print(
+      "HSTREAM_URI_PLAYLIST_HANDOFF source=%u next_uri=%u drain_ms=%" G_GINT64_FORMAT "\n",
+      bin->source_id,
+      next_index,
+      drain_ms);
 
   // Reset all state before the decoder can expose a pad for the new URI. The frame sequence deliberately does not
   // reset: URI files are chapters in one logical camera stream.
@@ -2817,6 +2958,7 @@ static gboolean switch_to_next_uri(gpointer data) {
     return FALSE;
   }
   bin->src_buffer_probe = 0;
+  bin->uri_list_reader_retired = FALSE;
   bin->uri_list_index = next_index;
   ++bin->uri_switch_count;
   bin->uri_list_segment_stop = GST_CLOCK_TIME_NONE;
@@ -2837,6 +2979,7 @@ static gboolean switch_to_next_uri(gpointer data) {
 
   // Restart only the URI decode element. Keeping the source bin and downstream muxer running avoids exposing a
   // chapter stream reset to nvstreammux.
+  gst_element_set_locked_state(bin->src_elem, FALSE);
   if (!gst_element_sync_state_with_parent(bin->src_elem)) {
     GST_ERROR_OBJECT(bin->src_elem, "Couldn't sync URI source element with parent after uri switch");
     cancel_uri_playlist_source(bin, TRUE);
@@ -2855,6 +2998,10 @@ static gboolean switch_to_next_uri(gpointer data) {
   const gboolean cancelled_during_restart = uri_playlist_terminal_locked(bin);
   g_mutex_unlock(mutex);
   if (cancelled_during_restart) {
+    hm::ShutdownWatchdog watchdog(
+        "Cancelled camera chapter reader retirement",
+        hm::parse_watchdog_budget_us(g_getenv("HM_SHUTDOWN_WATCHDOG_SECONDS"), 30 * G_TIME_SPAN_SECOND));
+    gst_element_set_locked_state(bin->src_elem, TRUE);
     gst_element_set_state(bin->src_elem, GST_STATE_NULL);
   }
   return FALSE;
@@ -3971,6 +4118,12 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
 
   // Initialize optional playlist support before setting properties on uridecodebin.
   init_uri_playlist(bin, config);
+  if (bin->uri_list && bin->num_uri_list > 1) {
+    g_object_set_data_full(
+        G_OBJECT(bin->bin), "hstream-uri-capture-pool-drain", new hm::UriPlaylistCapturePoolDrain, [](gpointer data) {
+          delete static_cast<hm::UriPlaylistCapturePoolDrain*>(data);
+        });
+  }
 
   if (g_strrstr(config->uri, "file:/")) {
     config->live_source = FALSE;
@@ -4174,6 +4327,9 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   bin->uri_playlist_terminal = FALSE;
   bin->uri_playlist_barrier_failed = FALSE;
   bin->uri_playlist_delivery_aborted = FALSE;
+  bin->uri_playlist_waits_paused = FALSE;
+  bin->uri_playlist_pause_started_us = 0;
+  bin->uri_playlist_paused_us = 0;
   bin->uri_playlist_initial_offsets_configured = FALSE;
   bin->uri_playlist_initial_seek_pending = FALSE;
   bin->uri_playlist_initial_seek_fallback_ns = 0;

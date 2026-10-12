@@ -337,6 +337,7 @@ class PipelineApplication {
   std::map<int, ProgressState> progress_states_;
   std::map<long, std::map<int, hm::PlaybackProgressMetrics>> ui_progress_by_stage_;
   uint64_t playback_progress_generation_{0};
+  uint64_t process_pause_generation_{0};
   std::unique_ptr<hm::TerminalProgressUi> progress_ui_;
   std::mutex playback_timing_mu_;
   std::chrono::steady_clock::time_point timed_run_last_progress_wall_;

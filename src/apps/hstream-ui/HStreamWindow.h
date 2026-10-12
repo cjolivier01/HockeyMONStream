@@ -241,6 +241,8 @@ class HStreamWindow : public QMainWindow {
   bool handleStartupProgressOutput(const QString& line);
   bool handleHighBitDepthOutput(const QString& line);
   bool handlePlaybackProgressOutput(const QString& line);
+  bool resumeProcessPause(quint64 generation);
+  bool handleProcessPauseOutput(const QString& line);
   bool handlePlaybackSeekOutput(const QString& line);
   void setPlaybackStartupStage(const QString& stage, const QString& detail);
   void resetPlaybackProgress(bool starting);
@@ -720,6 +722,9 @@ class HStreamWindow : public QMainWindow {
   QString active_telemetry_manifest_path_;
   QString active_run_completed_archive_suffix_;
   bool pipeline_paused_{false};
+  quint64 process_pause_generation_{0};
+  quint64 pending_process_pause_generation_{0};
+  quint64 pending_process_resume_generation_{0};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
   bool pipeline_final_output_draining_{false};

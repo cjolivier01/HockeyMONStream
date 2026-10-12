@@ -51,7 +51,8 @@ all omit it).
 A GStreamer teardown can hang instead of crashing: the `GST_STATE_NULL`
 transition runs synchronously in the caller, so a streaming thread that died
 holding a pad lock stalls it forever and no handler runs. The CLI arms a
-watchdog around those calls. When one overruns its budget the process writes
+watchdog before source retirement, EOS delivery, and the final NULL transition,
+so a decoder stuck in the first step is covered too. When the stop overruns its budget the process writes
 the stalled thread and a collapsed dump of every other thread's name and
 `wchan` to stderr and to `events.log`, records a `shutdown-watchdog`
 breadcrumb, and exits 70.
@@ -92,9 +93,23 @@ alongside `waited_seconds`: the first is how long nothing moved, the second how
 long that waiter had been blocked, and a large gap between them means the
 playlist was making progress for most of the wait.
 
+These durations count active playback time. Native pauses and the bounded
+model-initialization preroll suspend the clock. The desktop prepares a pause
+through stdin and waits for `HSTREAM_PROCESS_PAUSE status=prepared` before
+sending SIGSTOP; after SIGCONT it waits for the matching `status=resumed`
+acknowledgment. Missing resume acknowledgments stop the run rather than leave
+stall detection suspended. Overlapping native and process pauses count once.
+
 `HM_URI_PLAYLIST_BARRIER_STALL_SECONDS` overrides the budget, which defaults to
 300 s; `0` disables the check and restores the old wait-forever behavior, which
 is what you want when attaching a debugger to a live hang.
+
+Chapter replacement also waits for the previous decoder capture pools to finish
+destruction before opening the next URI. This prevents transient decoder-memory
+overlap; see `docs/native-canvas-memory.md`. A retained borrower has the same
+pause-aware stall budget. Synchronous reader retirement and pool finalization
+use independent 30 s guards, overridden by `HM_SHUTDOWN_WATCHDOG_SECONDS`.
+`HSTREAM_URI_PLAYLIST_HANDOFF` reports the successful drain duration.
 
 ## Cost and failure behavior
 

@@ -547,8 +547,11 @@ absl::Status pause_pipeline_for_model_initialization(
   if (!pipeline) {
     return absl::InvalidArgumentError("Missing pipeline while initializing models");
   }
-  if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE)
+  set_uri_playlist_waits_paused(&app_ctx->pipeline.multi_src_bin, TRUE);
+  if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+    set_uri_playlist_waits_paused(&app_ctx->pipeline.multi_src_bin, FALSE);
     return absl::InternalError("Failed to set pipeline to PAUSED");
+  }
   constexpr auto kModelInitializationTimeout = std::chrono::minutes(15);
   constexpr auto kCancellationTimeout = std::chrono::seconds(5);
   constexpr GstClockTime kPollInterval = 100 * GST_MSECOND;
@@ -2661,8 +2664,7 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
       g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
     }
     app_context->eos_received = TRUE;
-    stop_uri_playlist_sources_gracefully(&app_context->pipeline.multi_src_bin);
-    if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+    if (!stop_pipeline_gracefully(app_context.get(), 5 * GST_SECOND)) {
       return absl::InternalError("Interrupted calibration pipeline could not be stopped");
     }
     return absl::OkStatus();
@@ -2692,6 +2694,7 @@ absl::Status PipelineApplication::playPipelines(
       g_print("\ncan't set pipeline to playing state.\n");
       return absl::InternalError("can't set pipeline to playing state");
     }
+    set_uri_playlist_waits_paused(&app_contexts[i]->pipeline.multi_src_bin, FALSE);
     emit_ui_startup("frames", "Pipeline is running; waiting for the first processed frame");
     cleanup_stack.push([this, app_ctx = app_contexts[i]]() {
       auto status = stopPipeline(std::move(app_ctx));
@@ -4316,6 +4319,8 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@seek <position-ns> <generation>: Seek local-render-only playback relative to the configured run start\n"
       "\t@seek-relative <delta-ns> <generation>: Jump from the pipeline's current playback position\n"
       "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
+      "\t@process-pause <generation>: Suspend stall accounting and acknowledge before desktop SIGSTOP\n"
+      "\t@process-resume <generation>: Restore stall accounting after desktop SIGCONT\n"
       "\t@inspect-pipeline <request-id> <stage> <topology-generation>: Return bound live pipeline topology\n"
       "\t@inspect-properties <request-id> <stage> <generation> <app-index> <base64-element-path>: Return "
       "selected-node properties\n"
@@ -5696,6 +5701,32 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kSeekCommand = "seek";
   const std::string trimmed_line = trim_ascii(line);
   hm::diagnostics::Breadcrumb("runtime-command", trimmed_line.substr(0, trimmed_line.find_first_of(" \t")));
+  const bool prepare_process_pause = trimmed_line.rfind("process-pause ", 0) == 0;
+  const bool resume_process_pause = trimmed_line.rfind("process-resume ", 0) == 0;
+  if (prepare_process_pause || resume_process_pause) {
+    guint64 generation = 0;
+    if (!parse_uint64_strict(trim_ascii(trimmed_line.substr(trimmed_line.find(' ') + 1)), &generation) ||
+        generation == 0) {
+      g_printerr("runtime command failed: process pause/resume requires a positive generation\n");
+      return false;
+    }
+    if (prepare_process_pause && generation > process_pause_generation_) {
+      process_pause_generation_ = generation;
+      set_uri_playlist_process_paused(TRUE);
+      // The UI may stop all threads as soon as it reads this acknowledgment.
+      g_print("HSTREAM_PROCESS_PAUSE status=prepared generation=%" G_GUINT64_FORMAT "\n", generation);
+      std::fflush(stdout);
+      return true;
+    }
+    if (resume_process_pause && generation == process_pause_generation_) {
+      set_uri_playlist_process_paused(FALSE);
+      g_print("HSTREAM_PROCESS_PAUSE status=resumed generation=%" G_GUINT64_FORMAT "\n", generation);
+      std::fflush(stdout);
+      return true;
+    }
+    g_printerr("runtime command ignored: stale process pause/resume generation=%" G_GUINT64_FORMAT "\n", generation);
+    return false;
+  }
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
   if (hm::pipeline_internal::is_preview_overlay_command(trimmed_line)) {
     hm::pipeline_internal::PreviewOverlayCommand command;

@@ -1,6 +1,24 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "uri_playlist_capture_pool_drain",
+    srcs = ["UriPlaylistCapturePoolDrain.cpp"],
+    hdrs = ["UriPlaylistCapturePoolDrain.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/common:shutdown_watchdog",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "uri_playlist_capture_pool_drain_test",
+    srcs = ["UriPlaylistCapturePoolDrainTest.cpp"],
+    deps = [":uri_playlist_capture_pool_drain"],
+)
+
+cc_library(
     name = "async_inference_seek_recovery",
     srcs = ["AsyncInferenceSeekRecovery.cpp"],
     hdrs = ["AsyncInferenceSeekRecovery.h"],
@@ -330,6 +348,8 @@ cc_library(
         ":hstream_batch_demux",
         ":hstream_lossless_nvstreammux",
         ":rink_mask_image",
+        ":uri_playlist_capture_pool_drain",
+        "//src/libs/common:shutdown_watchdog",
         "//src/libs/camera",
         "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/common:fs",

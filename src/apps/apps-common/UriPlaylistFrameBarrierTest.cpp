@@ -1,6 +1,9 @@
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 
 #include <gst/gst.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -34,17 +37,20 @@ class BarrierFixture {
   BarrierFixture() {
     g_mutex_init(&parent_.uri_playlist_barrier_mutex);
     g_cond_init(&parent_.uri_playlist_barrier_cond);
+    parent_.uri_playlist_barrier_initialized = TRUE;
     parent_.num_bins = 2;
     parent_.uri_playlist_next_frame_sequence = 0;
     parent_.uri_playlist_paired_video_end = GST_CLOCK_TIME_NONE;
     parent_.uri_playlist_exact_pairing_enabled = TRUE;
 
+    bus_ = gst_bus_new();
     for (guint source_id = 0; source_id < 2; ++source_id) {
       NvDsSrcBin& source = parent_.sub_bins[source_id];
       source.parent_bin = &parent_;
       source.source_id = source_id;
       source.bin = gst_bin_new(nullptr);
       source.src_elem = gst_element_factory_make("fakesrc", nullptr);
+      gst_element_set_bus(source.src_elem, bus_);
       source.num_uri_list = 1;
       source.uri_list = g_new0(gchar*, 2);
       source.uri_list[0] = g_strdup("file:///barrier-test.mp4");
@@ -66,6 +72,7 @@ class BarrierFixture {
       }
       g_strfreev(source.uri_list);
     }
+    gst_object_unref(bus_);
     g_cond_clear(&parent_.uri_playlist_barrier_cond);
     g_mutex_clear(&parent_.uri_playlist_barrier_mutex);
   }
@@ -91,7 +98,21 @@ class BarrierFixture {
     return false;
   }
 
+  bool hasStreamError() {
+    GstMessage* error = gst_bus_pop_filtered(bus_, GST_MESSAGE_ERROR);
+    if (!error) {
+      return false;
+    }
+    GError* parsed = nullptr;
+    gst_message_parse_error(error, &parsed, nullptr);
+    const bool failed = parsed && parsed->domain == GST_STREAM_ERROR && parsed->code == GST_STREAM_ERROR_FAILED;
+    g_clear_error(&parsed);
+    gst_message_unref(error);
+    return failed;
+  }
+
  private:
+  GstBus* bus_ = nullptr;
   NvDsSrcParentBin parent_{};
 };
 
@@ -153,7 +174,7 @@ bool wedged_peer_is_reported_instead_of_hanging() {
   const bool state_ok = parent->uri_playlist_next_frame_sequence == 0 && parent->uri_playlist_terminal &&
       parent->uri_playlist_barrier_failed && parent->uri_playlist_delivery_aborted;
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
-  if (pending.get() != 0 || !state_ok) {
+  if (pending.get() != 0 || !state_ok || !fixture.hasStreamError()) {
     std::cerr << "Wedged peer did not fail the frame barrier\n";
     return false;
   }
@@ -258,6 +279,97 @@ bool peer_progress_defers_stall_detection() {
   return true;
 }
 
+bool native_pause_excludes_stall_time() {
+  ScopedStallBudget budget("1");
+  BarrierFixture fixture;
+  auto pending = std::async(
+      std::launch::async, [&] { return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND); });
+  if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(1))) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    return false;
+  }
+  set_uri_playlist_waits_paused(fixture.parent(), TRUE);
+  // Exercise overlapping native/process pauses, which must not be counted twice.
+  set_uri_playlist_process_paused(TRUE);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  set_uri_playlist_process_paused(FALSE);
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  const bool stayed_pending = pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
+  set_uri_playlist_waits_paused(fixture.parent(), FALSE);
+  const bool paired = wait_at_uri_playlist_frame_barrier(fixture.source(1), 0, GST_SECOND);
+  return stayed_pending && paired && pending.get();
+}
+
+bool process_pause_excludes_sigstop_time() {
+  // Prepare before SIGSTOP. After SIGCONT, let the waiter run before the resume
+  // command; no expired wall-clock deadline may fail its otherwise healthy pair.
+  const pid_t child = fork();
+  if (child == 0) {
+    ScopedStallBudget budget("1");
+    BarrierFixture fixture;
+    auto pending = std::async(
+        std::launch::async, [&] { return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND); });
+    if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(1))) {
+      _exit(1);
+    }
+    set_uri_playlist_process_paused(TRUE);
+    raise(SIGSTOP);
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const bool stayed_pending = pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
+    set_uri_playlist_process_paused(FALSE);
+    const bool paired = wait_at_uri_playlist_frame_barrier(fixture.source(1), 0, GST_SECOND);
+    _exit(stayed_pending && paired && pending.get() ? 0 : 1);
+  }
+  if (child < 0) {
+    return false;
+  }
+  int status = 0;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  pid_t result = 0;
+  while (result == 0 && std::chrono::steady_clock::now() < deadline) {
+    result = waitpid(child, &status, WUNTRACED | WNOHANG);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (result != child || !WIFSTOPPED(status)) {
+    kill(child, SIGKILL);
+    waitpid(child, &status, 0);
+    return false;
+  }
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  kill(child, SIGCONT);
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (waitpid(child, &status, WNOHANG) == child) {
+      return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  kill(child, SIGKILL);
+  waitpid(child, &status, 0);
+  return false;
+}
+
+bool resumed_stall_still_reports_failure() {
+  ScopedStallBudget budget("1");
+  BarrierFixture fixture;
+  auto pending = std::async(
+      std::launch::async, [&] { return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND); });
+  if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(1))) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    return false;
+  }
+  set_uri_playlist_waits_paused(fixture.parent(), TRUE);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const bool stayed_pending = pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
+  set_uri_playlist_waits_paused(fixture.parent(), FALSE);
+  if (pending.wait_for(std::chrono::seconds(4)) != std::future_status::ready) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    std::cerr << "Resume did not restore stall detection\n";
+    return false;
+  }
+  return stayed_pending && !pending.get() && fixture.parent()->uri_playlist_barrier_failed;
+}
+
 bool cancellation_wakes_waiter_promptly() {
   BarrierFixture fixture;
   std::atomic<int> wait_result{-1};
@@ -320,7 +432,9 @@ int main(int argc, char** argv) {
   g_unsetenv(kStallBudgetVariable);
   if (!delayed_peer_outlives_old_timeout() || !wedged_peer_is_reported_instead_of_hanging() ||
       !signal_noise_does_not_mask_a_wedged_peer() || !peer_progress_defers_stall_detection() ||
-      !cancellation_wakes_waiter_promptly() || !mismatched_sequences_fail_without_deadlock()) {
+      !native_pause_excludes_stall_time() || !process_pause_excludes_sigstop_time() ||
+      !resumed_stall_still_reports_failure() || !cancellation_wakes_waiter_promptly() ||
+      !mismatched_sequences_fail_without_deadlock()) {
     return 1;
   }
   return 0;

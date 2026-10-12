@@ -186,6 +186,9 @@ typedef struct {
   gulong uri_playlist_initial_seek_audio_probe;
   guint uri_switch_count;
   gboolean uri_switch_pending;
+  /** The old chapter reader is NULL; wait for capture-pool destruction before replacing it. */
+  gboolean uri_list_reader_retired;
+  gint64 uri_list_retire_started_us;
   /**
    * Main-context work scheduled by decoder streaming threads must not outlive
    * the GstPipeline generation that scheduled it. These fields are accessed
@@ -246,6 +249,10 @@ struct NvDsSrcParentBin {
   gboolean uri_playlist_barrier_failed;
   /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */
   gboolean uri_playlist_delivery_aborted;
+  /** Excludes native pipeline PAUSED time from the no-progress budget. Guarded by the barrier mutex. */
+  gboolean uri_playlist_waits_paused;
+  gint64 uri_playlist_pause_started_us;
+  gint64 uri_playlist_paused_us;
   gboolean uri_playlist_initial_offsets_configured;
   /** Block decoded buffers until every selected chapter has received its initial keyframe seek. */
   gboolean uri_playlist_initial_seek_pending;
@@ -253,6 +260,11 @@ struct NvDsSrcParentBin {
   guint64 uri_playlist_initial_seek_fallback_ns;
   gulong nvstreammux_eosmonitor_probe;
 };
+
+/** Publish process pause before acknowledging a desktop SIGSTOP; clear only after SIGCONT's resume command. */
+void set_uri_playlist_process_paused(gboolean paused);
+/** Suspend stall accounting before a native PAUSED transition; resume after PLAYING completes. */
+void set_uri_playlist_waits_paused(NvDsSrcParentBin* parent, gboolean paused);
 
 /**
  * Configure coherent initial source positioning before the pipeline leaves NULL/READY. Unlike a flushing seek after

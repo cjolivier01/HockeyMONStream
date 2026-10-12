@@ -69,3 +69,15 @@ A private copy of the exported `~/Videos/gse-16a/hstream-job.sh` was tested on a
 The initial fused run completed 60.093 seconds of video, 3,603 consecutive frames and completed EOS telemetry without `CUDA_LAUNCH_BLOCKING`. Peak process VRAM was 5,482 MiB; peak total was 7,351 MiB including desktop, with 327.77 seconds elapsed. That run used the equivalent pool counts before they became explicit controls. Final-code validation is recorded in the PR.
 
 A bounded test is not a whole-recording reliability guarantee. Qualification checks frame continuity, actual processed video duration, geometry, telemetry completion, errors and watchdogs; process exit status alone is insufficient.
+
+## Decoder memory at chapter boundaries
+
+Stopping a URI reader does not immediately free its NVIDIA decoder. Queued or shallow-copied video buffers keep the capture pool alive, and that pool's finalizer releases the vendor decoder context. Opening the next chapter before this finishes briefly overlaps both decoder allocations.
+
+On an 8 GiB Quadro RTX 4000 with two 7680 × 4320 HEVC Main10 cameras, a 14,406 × 4,694 stitched canvas, render, Program 4K archive and audio, this overlap caused `cuvidCreateDecoder` to return CUDA error 2 (out of memory). The plugin then waited indefinitely for a decoder-header event. The old decoder was destroyed about 260 ms after the failed allocation. Extra decoder surfaces did not fix the full graph and increased memory pressure.
+
+The playlist retains one reference to each original capture pool before making buffers writable. At a chapter boundary it locks the old reader in NULL, releases the selected decoder reference, and asynchronously waits until the retained pool reference is the only owner. Its final unref then completes vendor destruction synchronously before the next URI is started. Weak notifications alone cannot provide this guarantee because they precede finalization. No video copies, extra surfaces, pool sizes, detector batches or memory-profile defaults change. Both profiles use this lifetime ordering; steady-state processing is unchanged.
+
+The borrower wait uses the pause-aware playlist stall budget. Synchronous reader retirement and pool destruction have independent 30-second guards using `HM_SHUTDOWN_WATCHDOG_SECONDS` (zero disables them). Prepared desktop process pauses defer chapter callbacks until resume, so a SIGSTOP pause cannot consume those guards. Final shutdown also locks retired readers in NULL to prevent a parent state transition from reopening them.
+
+The qualified 15-second replay starts at 00:12:40 and crosses both first chapter boundaries. It completed 906 video frames at 3840 × 2160, retained audio, and exited normally. A vendor trace confirmed both old `cuvidDestroyDecoder` calls returned successfully before their replacement `cuvidCreateDecoder` calls. Peak process GPU memory was 5,574 MiB. A larger GPU can tolerate the old overlap, but media size matters too: the Meshy comparison used a 32 GiB RTX 5090 and 3840 × 2160 inputs, one quarter of the local input pixels.

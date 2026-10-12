@@ -10714,6 +10714,8 @@ void HStreamWindow::startPipeline() {
   pipeline_uses_process_group_ = false;
 #endif
   pipeline_paused_ = false;
+  pending_process_pause_generation_ = 0;
+  pending_process_resume_generation_ = 0;
   pipeline_stop_requested_ = false;
   pipeline_final_output_draining_ = false;
 
@@ -10762,16 +10764,49 @@ void HStreamWindow::pauseOrResumePipeline() {
     appendLog("pause requested while a playback seek is still completing");
     return;
   }
+  if (pending_process_pause_generation_ != 0 || pending_process_resume_generation_ != 0) {
+    return;
+  }
 #ifdef Q_OS_UNIX
   const qint64 pid = pipeline_process_->processId();
   if (pid <= 0) {
     appendLog("pause requested before process id was available");
     return;
   }
-  const int signal = pipeline_paused_ ? SIGCONT : SIGSTOP;
+  if (!pipeline_paused_) {
+    // Publish the pause to the runner before stopping its threads. Otherwise
+    // a waiter can wake first after SIGCONT and count the entire pause as a stall.
+    const quint64 generation = ++process_pause_generation_;
+    pending_process_pause_generation_ = generation;
+    const QByteArray command = QString("@process-pause %1\n").arg(generation).toUtf8();
+    if (pipeline_process_->write(command) != command.size()) {
+      pending_process_pause_generation_ = 0;
+      appendLog("could not prepare pipeline pause");
+      updateRunControls();
+      return;
+    }
+    const quint64 run = pipeline_run_generation_;
+    QTimer::singleShot(5000, this, [this, generation, run]() {
+      if (run == pipeline_run_generation_ && pending_process_pause_generation_ == generation) {
+        pending_process_pause_generation_ = 0;
+        if (!resumeProcessPause(generation)) {
+          stopPipeline();
+          return;
+        }
+        appendLog("pipeline pause was not acknowledged; playback continues");
+        updateRunControls();
+      }
+    });
+    updateRunControls();
+    return;
+  }
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
-  if (::kill(target, signal) != 0) {
+  if (::kill(target, SIGCONT) != 0) {
     appendLog("failed to signal pipeline process for pause/resume");
+    return;
+  }
+  if (!resumeProcessPause(process_pause_generation_)) {
+    stopPipeline();
     return;
   }
   pipeline_paused_ = !pipeline_paused_;
@@ -10821,6 +10856,8 @@ void HStreamWindow::stopPipeline() {
     return;
   }
   appendLog("pipeline stop requested");
+  pending_process_pause_generation_ = 0;
+  pending_process_resume_generation_ = 0;
   pipeline_stop_requested_ = true;
   deferred_playback_seek_ns_.reset();
   pending_playback_seek_target_ns_.reset();
@@ -10916,6 +10953,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
       "finished code=" + std::to_string(exit_code) +
           " status=" + (exit_status == QProcess::CrashExit ? "crashed" : "normal"));
   ++scheduled_rotation_control_generation_;
+  pending_process_pause_generation_ = 0;
+  pending_process_resume_generation_ = 0;
   scheduled_rotation_controls_.clear();
   scheduled_rotation_controls_ready_ = false;
   ++scheduled_playtracker_control_generation_;
@@ -11003,6 +11042,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
       false,
       "archive-program-4k");
   pipeline_paused_ = false;
+  pending_process_pause_generation_ = 0;
+  pending_process_resume_generation_ = 0;
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
   if (scoreboard_selection_dialog_)
@@ -11220,6 +11261,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   if (calibration_pending_ && !calibration_dialog_failed_)
     failStitchingCalibration(QString("The calibration process could not continue: %1").arg(error_message));
   pipeline_paused_ = false;
+  pending_process_pause_generation_ = 0;
+  pending_process_resume_generation_ = 0;
   pending_playback_seek_generation_ = 0;
   playback_seek_recovery_generation_ = 0;
   deferred_playback_seek_ns_.reset();
@@ -11343,7 +11386,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
       trimmed.startsWith("Trying stitching calibration frame pair");
   if (calibration_pending_ || trimmed.startsWith("HSTREAM_CALIBRATION") || calibration_preamble)
     recordStitchingCalibrationDiagnostic(trimmed);
-  if (handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
+  if (handleProcessPauseOutput(trimmed) || handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
       handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||
       handlePreviewOverlayDiagnostic(trimmed) || handlePreviewOverlayResponse(trimmed) ||
       (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed))) {
@@ -11405,6 +11448,64 @@ bool HStreamWindow::handleHighBitDepthOutput(const QString& line) {
                     minimum_depth,
                     match.captured(4)));
   updateStitchedColorPrecisionControls();
+  return true;
+}
+
+bool HStreamWindow::resumeProcessPause(quint64 generation) {
+  const QByteArray command = QString("@process-resume %1\n").arg(generation).toUtf8();
+  if (!pipeline_process_ || pipeline_process_->write(command) != command.size()) {
+    appendLog("could not restore pipeline stall monitoring; stopping playback");
+    return false;
+  }
+  pending_process_resume_generation_ = generation;
+  const quint64 run = pipeline_run_generation_;
+  QTimer::singleShot(5000, this, [this, generation, run]() {
+    if (run == pipeline_run_generation_ && pending_process_resume_generation_ == generation) {
+      appendLog("pipeline resume was not acknowledged; stopping playback");
+      stopPipeline();
+    }
+  });
+  return true;
+}
+
+bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
+  static const QRegularExpression prepared(
+      QStringLiteral("^HSTREAM_PROCESS_PAUSE status=(prepared|resumed) generation=([0-9]+)$"));
+  if (!line.startsWith("HSTREAM_PROCESS_PAUSE ")) {
+    return false;
+  }
+  const QRegularExpressionMatch match = prepared.match(line);
+  const quint64 generation = match.hasMatch() ? match.captured(2).toULongLong() : 0;
+  if (generation != 0 && match.captured(1) == "resumed") {
+    if (generation == pending_process_resume_generation_) {
+      pending_process_resume_generation_ = 0;
+      updateRunControls();
+    }
+    return true;
+  }
+  if (generation == 0 || generation != pending_process_pause_generation_ || pipeline_stop_requested_ ||
+      !pipeline_process_ || pipeline_process_->state() != QProcess::Running) {
+    return true;
+  }
+  pending_process_pause_generation_ = 0;
+#ifdef Q_OS_UNIX
+  const qint64 pid = pipeline_process_->processId();
+  const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
+  if (pid <= 0 || ::kill(target, SIGSTOP) != 0) {
+    if (!resumeProcessPause(generation)) {
+      stopPipeline();
+      return true;
+    }
+    appendLog("failed to pause pipeline process");
+    updateRunControls();
+    return true;
+  }
+  pipeline_paused_ = true;
+  pipeline_state_->setText("PAUSED");
+  preview_status_->setText("Pipeline paused");
+  appendLog("pipeline paused");
+  updateRunControls();
+#endif
   return true;
 }
 
@@ -11698,7 +11799,8 @@ void HStreamWindow::updatePlaybackSeekControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (pause_button_) {
     pause_button_->setEnabled(
-        running && pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0);
+        running && pending_process_pause_generation_ == 0 && pending_process_resume_generation_ == 0 &&
+        pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0);
   }
   if (program_control_tabs_) {
     program_control_tabs_->setEnabled(
@@ -11715,6 +11817,7 @@ void HStreamWindow::updatePlaybackSeekControls() {
   const bool rendering = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool allowed = running && active_run_local_render_only_ && !active_run_telemetry_requested_ &&
       !calibration_pending_ && rendering && playback_seek_channel_available_ && playback_duration_ns_ > 0 &&
+      pending_process_pause_generation_ == 0 && pending_process_resume_generation_ == 0 &&
       pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
   playback_seek_slider_->setEnabled(allowed);
   if (playback_seek_back_button_)
@@ -16107,7 +16210,8 @@ void HStreamWindow::updateRunControls() {
   }
   if (pause_button_) {
     pause_button_->setEnabled(
-        running && pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0);
+        running && pending_process_pause_generation_ == 0 && pending_process_resume_generation_ == 0 &&
+        pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0);
     pause_button_->setText(pipeline_paused_ ? "Resume" : "Pause");
     pause_button_->setIcon(action_icon(pipeline_paused_ ? ActionIcon::Play : ActionIcon::Pause));
   }
