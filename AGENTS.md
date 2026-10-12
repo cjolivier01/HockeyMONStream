@@ -171,5 +171,3 @@ camera files / live sources -> decode and batch -> hmstitcher
 ## Testing misc
 All tests should pass before oppening a PR
 All tests should pass before and after each review round.
-
-
