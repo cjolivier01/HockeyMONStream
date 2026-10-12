@@ -19,6 +19,7 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -616,19 +617,25 @@ static GstPadProbeReturn gate_uri_playlist_audio_buffer(
          logical_end > parent->uri_playlist_paired_video_end) &&
         !bin->uri_list_video_eos_seen;
   };
-  UriPlaylistWaitMonitor monitor(parent);
+  // Most audio buffers are already behind the paired frontier and never wait. Building the
+  // monitor eagerly would fold the progress token and scan the environment for every one of
+  // them, under the mutex that serializes both decoder threads and the mux probe.
+  std::optional<UriPlaylistWaitMonitor> monitor;
   gboolean audio_stalled = FALSE;
   while (awaiting_paired_video()) {
-    g_cond_wait_until(&parent->uri_playlist_barrier_cond, mutex, monitor.wake_deadline());
-    if (!awaiting_paired_video() || !monitor.poll_due()) {
+    if (!monitor) {
+      monitor.emplace(parent);
+    }
+    g_cond_wait_until(&parent->uri_playlist_barrier_cond, mutex, monitor->wake_deadline());
+    if (!awaiting_paired_video() || !monitor->poll_due()) {
       continue;
     }
-    if (monitor.stalled_locked()) {
+    if (monitor->stalled_locked()) {
       audio_stalled = TRUE;
       fail_uri_playlist_stall_locked(parent);
       break;
     }
-    if (monitor.should_warn()) {
+    if (monitor->should_warn()) {
       GST_ELEMENT_WARNING(
           bin->src_elem,
           STREAM,
@@ -639,12 +646,12 @@ static GstPadProbeReturn gate_uri_playlist_audio_buffer(
            bin->source_id,
            logical_end,
            parent->uri_playlist_paired_video_end,
-           monitor.waited_seconds()));
+           monitor->waited_seconds()));
     }
   }
   if (audio_stalled) {
-    const gint64 stalled_seconds = monitor.stalled_seconds();
-    const gint64 waited_seconds = monitor.waited_seconds();
+    const gint64 stalled_seconds = monitor->stalled_seconds();
+    const gint64 waited_seconds = monitor->waited_seconds();
     g_mutex_unlock(mutex);
     GST_ELEMENT_ERROR(
         bin->src_elem,
