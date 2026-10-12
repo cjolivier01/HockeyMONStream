@@ -447,9 +447,14 @@ static guint64 uri_playlist_progress_token_locked(NvDsSrcParentBin* parent) {
 }
 
 // Bounds the URI-playlist waits without ever shortening a wait on a peer that is
-// still alive. Every timed wake re-reads the shared progress token: a changed
-// token restarts the stall budget, an unchanged one spends it. The periodic
+// still alive. Each poll re-reads the shared progress token: a changed token
+// restarts the stall budget, an unchanged one spends it. The periodic
 // diagnostic keeps its own cadence so a short budget cannot flood the log.
+//
+// The poll deadline is absolute and is re-armed only once it has passed. These
+// waits retry on every condition signal and every spurious wakeup, so deriving
+// the deadline from "now" on each wakeup would let a stuck-but-noisy playlist
+// run forever without once evaluating its own progress.
 class UriPlaylistWaitMonitor {
  public:
   // Construct with the barrier mutex held.
@@ -458,17 +463,27 @@ class UriPlaylistWaitMonitor {
         token_(uri_playlist_progress_token_locked(parent)),
         started_us_(g_get_monotonic_time()),
         progressed_us_(started_us_),
-        warned_us_(started_us_) {}
+        warned_us_(started_us_),
+        poll_deadline_(started_us_ + poll_interval_us()) {}
 
   gint64 wake_deadline() const {
-    const gint64 budget_us = uri_playlist_barrier_stall_budget_us();
-    const gint64 interval_us = budget_us > 0 ? std::min(kUriPlaylistBarrierDiagnosticIntervalUs, budget_us)
-                                             : kUriPlaylistBarrierDiagnosticIntervalUs;
-    return g_get_monotonic_time() + interval_us;
+    return poll_deadline_;
   }
 
-  // Call with the barrier mutex held after a wait times out. TRUE once nothing
-  // anywhere in the playlist has moved for the whole budget.
+  // TRUE once the poll deadline has passed, whatever woke the waiter. Re-arms
+  // for the next interval, so the caller evaluates progress exactly once per
+  // interval however many times it was signalled meanwhile.
+  gboolean poll_due() {
+    const gint64 now = g_get_monotonic_time();
+    if (now < poll_deadline_) {
+      return FALSE;
+    }
+    poll_deadline_ = now + poll_interval_us();
+    return TRUE;
+  }
+
+  // Call with the barrier mutex held. TRUE once nothing anywhere in the
+  // playlist has moved for the whole budget.
   gboolean stalled_locked() {
     const gint64 now = g_get_monotonic_time();
     const guint64 token = uri_playlist_progress_token_locked(parent_);
@@ -498,11 +513,18 @@ class UriPlaylistWaitMonitor {
   }
 
  private:
+  static gint64 poll_interval_us() {
+    const gint64 budget_us = uri_playlist_barrier_stall_budget_us();
+    return budget_us > 0 ? std::min(kUriPlaylistBarrierDiagnosticIntervalUs, budget_us)
+                         : kUriPlaylistBarrierDiagnosticIntervalUs;
+  }
+
   NvDsSrcParentBin* parent_;
   guint64 token_;
   gint64 started_us_;
   gint64 progressed_us_;
   gint64 warned_us_;
+  gint64 poll_deadline_;
 };
 
 // Call with the barrier mutex held. Ends the playlist for every waiter; the
@@ -597,8 +619,8 @@ static GstPadProbeReturn gate_uri_playlist_audio_buffer(
   UriPlaylistWaitMonitor monitor(parent);
   gboolean audio_stalled = FALSE;
   while (awaiting_paired_video()) {
-    if (g_cond_wait_until(&parent->uri_playlist_barrier_cond, mutex, monitor.wake_deadline()) ||
-        !awaiting_paired_video()) {
+    g_cond_wait_until(&parent->uri_playlist_barrier_cond, mutex, monitor.wake_deadline());
+    if (!awaiting_paired_video() || !monitor.poll_due()) {
       continue;
     }
     if (monitor.stalled_locked()) {
@@ -1034,9 +1056,8 @@ static UriPlaylistDeliveryWaitResult wait_for_committed_uri_playlist_delivery(
   UriPlaylistWaitMonitor monitor(parent);
   gboolean stalled = FALSE;
   while (!all_delivered() && !parent->uri_playlist_delivery_aborted) {
-    if (g_cond_wait_until(
-            &parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, monitor.wake_deadline()) ||
-        all_delivered() || parent->uri_playlist_delivery_aborted) {
+    g_cond_wait_until(&parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, monitor.wake_deadline());
+    if (all_delivered() || parent->uri_playlist_delivery_aborted || !monitor.poll_due()) {
       continue;
     }
     if (monitor.stalled_locked()) {
@@ -1264,9 +1285,10 @@ gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, G
     } else {
       UriPlaylistWaitMonitor monitor(parent);
       while (!parent->uri_playlist_terminal && parent->uri_playlist_next_frame_sequence <= sequence) {
-        if (g_cond_wait_until(
-                &parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, monitor.wake_deadline()) ||
-            parent->uri_playlist_terminal || parent->uri_playlist_next_frame_sequence > sequence) {
+        g_cond_wait_until(
+            &parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, monitor.wake_deadline());
+        if (parent->uri_playlist_terminal || parent->uri_playlist_next_frame_sequence > sequence ||
+            !monitor.poll_due()) {
           continue;
         }
         if (monitor.stalled_locked()) {

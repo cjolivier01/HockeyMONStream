@@ -166,6 +166,49 @@ bool wedged_peer_is_reported_instead_of_hanging() {
   return true;
 }
 
+// A wedged playlist can still be noisy: teardown, delivery and cancellation
+// paths all broadcast the shared condition, and these waits retry on every
+// signal. Deriving the next wake from "now" on each retry would let that noise
+// postpone the stall check indefinitely, so the detector keeps an absolute
+// deadline and evaluates progress once per interval however often it is woken.
+bool signal_noise_does_not_mask_a_wedged_peer() {
+  ScopedStallBudget budget("2");
+  BarrierFixture fixture;
+  std::atomic<bool> stop_signalling{false};
+  std::thread noise([&] {
+    NvDsSrcParentBin* parent = fixture.parent();
+    while (!stop_signalling) {
+      g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+      g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+      g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+  auto pending = std::async(std::launch::async, [&fixture] {
+    return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND) ? 1 : 0;
+  });
+  const bool finished = pending.wait_for(std::chrono::seconds(60)) == std::future_status::ready;
+  stop_signalling = true;
+  noise.join();
+  if (!finished) {
+    std::cerr << "Condition signals masked a wedged peer indefinitely\n";
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    pending.wait();
+    return false;
+  }
+
+  NvDsSrcParentBin* parent = fixture.parent();
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  const bool state_ok = parent->uri_playlist_next_frame_sequence == 0 && parent->uri_playlist_terminal &&
+      parent->uri_playlist_barrier_failed;
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  if (pending.get() != 0 || !state_ok) {
+    std::cerr << "A wedged peer under condition noise did not fail the frame barrier\n";
+    return false;
+  }
+  return true;
+}
+
 // The counterpart invariant: a camera that is still decoding its new chapter is
 // slow, not wedged, and must be waited on however long it takes. Keep the
 // playlist visibly moving for several stall budgets without ever signalling the
@@ -276,8 +319,8 @@ int main(int argc, char** argv) {
   // so make sure the surrounding environment cannot shorten it.
   g_unsetenv(kStallBudgetVariable);
   if (!delayed_peer_outlives_old_timeout() || !wedged_peer_is_reported_instead_of_hanging() ||
-      !peer_progress_defers_stall_detection() || !cancellation_wakes_waiter_promptly() ||
-      !mismatched_sequences_fail_without_deadlock()) {
+      !signal_noise_does_not_mask_a_wedged_peer() || !peer_progress_defers_stall_detection() ||
+      !cancellation_wakes_waiter_promptly() || !mismatched_sequences_fail_without_deadlock()) {
     return 1;
   }
   return 0;
