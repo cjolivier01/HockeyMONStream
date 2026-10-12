@@ -132,6 +132,21 @@ static void release_uri_playlist_initial_seek_blockers(NvDsSrcParentBin* parent)
 // cancellation during error/application teardown.
 constexpr gint64 kUriPlaylistBarrierDiagnosticIntervalUs = 30 * G_TIME_SPAN_SECOND;
 
+// Slow is not the same as wedged. A peer that is still moving is waited on with
+// no wall-clock limit, but a branch that stops moving altogether never recovers:
+// a chapter switch whose replacement decodebin cannot finish preroll parks its
+// peer in the barrier, and the diagnostic above then re-arms forever while the
+// whole pipeline is frozen and nothing reaches the bus. Report that instead of
+// waiting out the rest of the run. Zero disables the check.
+constexpr gint64 kUriPlaylistBarrierStallBudgetUs = 300 * G_TIME_SPAN_SECOND;
+
+static gint64 uri_playlist_barrier_stall_budget_us() {
+  // Deliberately re-read instead of cached: the regression test exercises
+  // several budgets in one process, and a diagnostic-rate getenv costs nothing.
+  return hm::parse_watchdog_budget_us(
+      g_getenv("HM_URI_PLAYLIST_BARRIER_STALL_SECONDS"), kUriPlaylistBarrierStallBudgetUs);
+}
+
 static GMutex* uri_playlist_mutex(NvDsSrcBin* bin);
 
 // Deterministic test-only rendezvous for the scheduler/suspender source-
@@ -402,6 +417,107 @@ static std::vector<NvDsSrcBin*> uri_playlist_sources(NvDsSrcParentBin* parent) {
   return sources;
 }
 
+// Fold every field a live URI-playlist branch advances into a single value, so
+// a waiter can tell "my peer is slow" from "my peer stopped". Any change counts
+// as progress; folding rather than summing keeps two opposite field changes from
+// cancelling out. Callers must hold the barrier mutex.
+static guint64 uri_playlist_progress_token_locked(NvDsSrcParentBin* parent) {
+  guint64 token = 0;
+  const auto mix = [&token](guint64 value) { token = (token ^ value) * 1099511628211ull; };
+  if (!parent) {
+    return token;
+  }
+  mix(parent->uri_playlist_next_frame_sequence);
+  mix(parent->uri_playlist_paired_video_end);
+  for (const NvDsSrcBin* source : uri_playlist_sources(parent)) {
+    mix(source->uri_list_decoded_frame_count);
+    mix(source->uri_list_initial_positioned_frame_count);
+    mix(source->uri_list_terminal_dropped_frame_count);
+    mix(source->uri_list_frame_ready_sequence);
+    mix(source->uri_list_mux_delivered_sequence);
+    mix(source->uri_list_last_pts);
+    mix(source->uri_switch_count);
+    mix(static_cast<guint64>(source->uri_switch_pending != FALSE) |
+        (static_cast<guint64>(source->uri_list_video_eos_seen != FALSE) << 1) |
+        (static_cast<guint64>(source->uri_audio_has_pad != FALSE) << 2) |
+        (static_cast<guint64>(source->uri_audio_eos_seen != FALSE) << 3) |
+        (static_cast<guint64>(source->uri_list_pads_complete != FALSE) << 4));
+  }
+  return token;
+}
+
+// Bounds the URI-playlist waits without ever shortening a wait on a peer that is
+// still alive. Every timed wake re-reads the shared progress token: a changed
+// token restarts the stall budget, an unchanged one spends it. The periodic
+// diagnostic keeps its own cadence so a short budget cannot flood the log.
+class UriPlaylistWaitMonitor {
+ public:
+  // Construct with the barrier mutex held.
+  explicit UriPlaylistWaitMonitor(NvDsSrcParentBin* parent)
+      : parent_(parent),
+        token_(uri_playlist_progress_token_locked(parent)),
+        started_us_(g_get_monotonic_time()),
+        progressed_us_(started_us_),
+        warned_us_(started_us_) {}
+
+  gint64 wake_deadline() const {
+    const gint64 budget_us = uri_playlist_barrier_stall_budget_us();
+    const gint64 interval_us = budget_us > 0 ? std::min(kUriPlaylistBarrierDiagnosticIntervalUs, budget_us)
+                                             : kUriPlaylistBarrierDiagnosticIntervalUs;
+    return g_get_monotonic_time() + interval_us;
+  }
+
+  // Call with the barrier mutex held after a wait times out. TRUE once nothing
+  // anywhere in the playlist has moved for the whole budget.
+  gboolean stalled_locked() {
+    const gint64 now = g_get_monotonic_time();
+    const guint64 token = uri_playlist_progress_token_locked(parent_);
+    if (token != token_) {
+      token_ = token;
+      progressed_us_ = now;
+      return FALSE;
+    }
+    const gint64 budget_us = uri_playlist_barrier_stall_budget_us();
+    return budget_us > 0 && now - progressed_us_ >= budget_us;
+  }
+
+  gboolean should_warn() {
+    const gint64 now = g_get_monotonic_time();
+    if (now - warned_us_ < kUriPlaylistBarrierDiagnosticIntervalUs) {
+      return FALSE;
+    }
+    warned_us_ = now;
+    return TRUE;
+  }
+
+  gint64 waited_seconds() const {
+    return (g_get_monotonic_time() - started_us_) / G_TIME_SPAN_SECOND;
+  }
+  gint64 stalled_seconds() const {
+    return (g_get_monotonic_time() - progressed_us_) / G_TIME_SPAN_SECOND;
+  }
+
+ private:
+  NvDsSrcParentBin* parent_;
+  guint64 token_;
+  gint64 started_us_;
+  gint64 progressed_us_;
+  gint64 warned_us_;
+};
+
+// Call with the barrier mutex held. Ends the playlist for every waiter; the
+// caller reports the error once it has dropped the mutex.
+static void fail_uri_playlist_stall_locked(NvDsSrcParentBin* parent) {
+  parent->uri_playlist_barrier_failed = TRUE;
+  parent->uri_playlist_delivery_aborted = TRUE;
+  parent->uri_playlist_terminal = TRUE;
+  for (NvDsSrcBin* source : uri_playlist_sources(parent)) {
+    source->uri_list_permanently_ended = TRUE;
+    source->uri_switch_pending = FALSE;
+  }
+  g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+}
+
 static GstPadProbeReturn fail_uri_playlist_audio_gate(NvDsSrcBin* bin, const char* reason) {
   cancel_uri_playlist_source(bin, TRUE);
   GST_ELEMENT_ERROR(
@@ -472,11 +588,54 @@ static GstPadProbeReturn gate_uri_playlist_audio_buffer(
 
   GMutex* mutex = uri_playlist_mutex(bin);
   g_mutex_lock(mutex);
-  while (!uri_playlist_terminal_locked(bin) &&
-         (!GST_CLOCK_TIME_IS_VALID(parent->uri_playlist_paired_video_end) ||
-          logical_end > parent->uri_playlist_paired_video_end) &&
-         !bin->uri_list_video_eos_seen) {
-    g_cond_wait(&parent->uri_playlist_barrier_cond, mutex);
+  const auto awaiting_paired_video = [bin, parent, logical_end]() {
+    return !uri_playlist_terminal_locked(bin) &&
+        (!GST_CLOCK_TIME_IS_VALID(parent->uri_playlist_paired_video_end) ||
+         logical_end > parent->uri_playlist_paired_video_end) &&
+        !bin->uri_list_video_eos_seen;
+  };
+  UriPlaylistWaitMonitor monitor(parent);
+  gboolean audio_stalled = FALSE;
+  while (awaiting_paired_video()) {
+    if (g_cond_wait_until(&parent->uri_playlist_barrier_cond, mutex, monitor.wake_deadline()) ||
+        !awaiting_paired_video()) {
+      continue;
+    }
+    if (monitor.stalled_locked()) {
+      audio_stalled = TRUE;
+      fail_uri_playlist_stall_locked(parent);
+      break;
+    }
+    if (monitor.should_warn()) {
+      GST_ELEMENT_WARNING(
+          bin->src_elem,
+          STREAM,
+          FAILED,
+          ("Still waiting for the paired camera video; no audio will be discarded"),
+          ("source=%u logical_end=%" G_GUINT64_FORMAT " paired_video_end=%" G_GUINT64_FORMAT
+           " waited_seconds=%" G_GINT64_FORMAT,
+           bin->source_id,
+           logical_end,
+           parent->uri_playlist_paired_video_end,
+           monitor.waited_seconds()));
+    }
+  }
+  if (audio_stalled) {
+    const gint64 stalled_seconds = monitor.stalled_seconds();
+    const gint64 waited_seconds = monitor.waited_seconds();
+    g_mutex_unlock(mutex);
+    GST_ELEMENT_ERROR(
+        bin->src_elem,
+        STREAM,
+        FAILED,
+        ("A camera stopped producing frames; source audio can no longer be aligned"),
+        ("source=%u logical_end=%" G_GUINT64_FORMAT " waited_seconds=%" G_GINT64_FORMAT
+         " stalled_seconds=%" G_GINT64_FORMAT,
+         bin->source_id,
+         logical_end,
+         waited_seconds,
+         stalled_seconds));
+    return GST_PAD_PROBE_DROP;
   }
   const gboolean terminal = uri_playlist_terminal_locked(bin);
   const gboolean drain_terminal_audio = terminal && bin->uri_terminal_audio_drain_pending;
@@ -872,13 +1031,20 @@ static UriPlaylistDeliveryWaitResult wait_for_committed_uri_playlist_delivery(
                  source->uri_list_mux_delivered_sequence >= committed_sequence;
            });
   };
-  const gint64 wait_started = g_get_monotonic_time();
-  gint64 diagnostic_deadline = wait_started + kUriPlaylistBarrierDiagnosticIntervalUs;
+  UriPlaylistWaitMonitor monitor(parent);
+  gboolean stalled = FALSE;
   while (!all_delivered() && !parent->uri_playlist_delivery_aborted) {
-    if (!g_cond_wait_until(
-            &parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, diagnostic_deadline) &&
-        !all_delivered() && !parent->uri_playlist_delivery_aborted) {
-      const gint64 now = g_get_monotonic_time();
+    if (g_cond_wait_until(
+            &parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, monitor.wake_deadline()) ||
+        all_delivered() || parent->uri_playlist_delivery_aborted) {
+      continue;
+    }
+    if (monitor.stalled_locked()) {
+      stalled = TRUE;
+      fail_uri_playlist_stall_locked(parent);
+      break;
+    }
+    if (monitor.should_warn()) {
       GST_ELEMENT_WARNING(
           bin->src_elem,
           STREAM,
@@ -887,13 +1053,27 @@ static UriPlaylistDeliveryWaitResult wait_for_committed_uri_playlist_delivery(
           ("source=%u committed_sequence=%" G_GUINT64_FORMAT " waited_seconds=%" G_GINT64_FORMAT,
            bin->source_id,
            committed_sequence,
-           (now - wait_started) / G_TIME_SPAN_SECOND));
-      diagnostic_deadline = now + kUriPlaylistBarrierDiagnosticIntervalUs;
+           monitor.waited_seconds()));
     }
   }
   const gboolean delivered = all_delivered();
   const gboolean cancelled = parent->uri_playlist_delivery_aborted;
+  const gint64 stalled_seconds = monitor.stalled_seconds();
+  const gint64 waited_seconds = monitor.waited_seconds();
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  if (stalled) {
+    GST_ELEMENT_ERROR(
+        bin->src_elem,
+        STREAM,
+        FAILED,
+        ("A committed camera pair stopped making progress towards nvstreammux"),
+        ("source=%u committed_sequence=%" G_GUINT64_FORMAT " waited_seconds=%" G_GINT64_FORMAT
+         " stalled_seconds=%" G_GINT64_FORMAT,
+         bin->source_id,
+         committed_sequence,
+         waited_seconds,
+         stalled_seconds));
+  }
   if (cancelled) {
     return UriPlaylistDeliveryWaitResult::kCancelled;
   }
@@ -1024,6 +1204,9 @@ gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, G
   }
 
   gboolean report_failure = FALSE;
+  gboolean report_stall = FALSE;
+  gint64 stall_waited_seconds = 0;
+  gint64 stalled_seconds = 0;
   g_mutex_lock(&parent->uri_playlist_barrier_mutex);
   if (parent->uri_playlist_terminal) {
     g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
@@ -1079,13 +1262,21 @@ gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, G
       }
       g_cond_broadcast(&parent->uri_playlist_barrier_cond);
     } else {
-      const gint64 wait_started = g_get_monotonic_time();
-      gint64 diagnostic_deadline = wait_started + kUriPlaylistBarrierDiagnosticIntervalUs;
+      UriPlaylistWaitMonitor monitor(parent);
       while (!parent->uri_playlist_terminal && parent->uri_playlist_next_frame_sequence <= sequence) {
-        if (!g_cond_wait_until(
-                &parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, diagnostic_deadline) &&
-            !parent->uri_playlist_terminal && parent->uri_playlist_next_frame_sequence <= sequence) {
-          const gint64 now = g_get_monotonic_time();
+        if (g_cond_wait_until(
+                &parent->uri_playlist_barrier_cond, &parent->uri_playlist_barrier_mutex, monitor.wake_deadline()) ||
+            parent->uri_playlist_terminal || parent->uri_playlist_next_frame_sequence > sequence) {
+          continue;
+        }
+        if (monitor.stalled_locked()) {
+          fail_uri_playlist_stall_locked(parent);
+          report_stall = TRUE;
+          stall_waited_seconds = monitor.waited_seconds();
+          stalled_seconds = monitor.stalled_seconds();
+          break;
+        }
+        if (monitor.should_warn()) {
           GST_ELEMENT_WARNING(
               bin->src_elem,
               STREAM,
@@ -1097,8 +1288,7 @@ gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, G
                sequence,
                sources[0]->uri_list_frame_ready_sequence,
                sources[1]->uri_list_frame_ready_sequence,
-               (now - wait_started) / G_TIME_SPAN_SECOND));
-          diagnostic_deadline = now + kUriPlaylistBarrierDiagnosticIntervalUs;
+               monitor.waited_seconds()));
         }
       }
     }
@@ -1121,6 +1311,21 @@ gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, G
          sources.size(),
          sources.size() > 0 ? sources[0]->uri_list_frame_ready_sequence : G_MAXUINT64,
          sources.size() > 1 ? sources[1]->uri_list_frame_ready_sequence : G_MAXUINT64));
+  }
+  if (report_stall) {
+    GST_ELEMENT_ERROR(
+        bin->src_elem,
+        STREAM,
+        FAILED,
+        ("A camera stopped producing frames; the lossless pair can no longer be completed"),
+        ("source=%u sequence=%" G_GUINT64_FORMAT " peer0_ready=%" G_GUINT64_FORMAT " peer1_ready=%" G_GUINT64_FORMAT
+         " waited_seconds=%" G_GINT64_FORMAT " stalled_seconds=%" G_GINT64_FORMAT,
+         bin->source_id,
+         sequence,
+         sources[0]->uri_list_frame_ready_sequence,
+         sources[1]->uri_list_frame_ready_sequence,
+         stall_waited_seconds,
+         stalled_seconds));
   }
   return released;
 }
