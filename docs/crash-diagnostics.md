@@ -69,6 +69,33 @@ CLI — the UI's `kPipelineTerminateGraceMs` and the calibration matrix script's
 `PROCESS_GROUP_INTERRUPT_GRACE_SECONDS` — are sized to outlast that, so raising
 the budget past 30 s means the process gets SIGKILLed before it can report.
 
+## Wedged playback
+
+A lossless URI playlist can hang while the pipeline is still running. Exact
+pairing holds each decoded frame until both cameras have produced the same
+sequence number, so a chapter switch whose replacement `decodebin` never
+finishes preroll parks its peer in the frame barrier. Nothing crashes and
+nothing reaches the bus; the run simply stops producing output.
+
+The signature is a `Still waiting for the matching camera frame` warning that
+repeats every 30 s with a growing `waited_seconds` and an unchanging
+`peerN_ready`. The two other playlist waits — the audio gate and the committed
+delivery wait — log their own variants of the same message.
+
+Each of those waits tracks whether anything in the playlist is still moving,
+not how long it has been waiting, because a camera that is merely slow must
+still complete its pair. Once no source has advanced a frame, sequence,
+timestamp, or chapter for the whole budget, the wait posts a
+`camera stopped producing frames` error and ends the playlist, so the run fails
+with a diagnosis instead of freezing. The error carries `stalled_seconds`
+alongside `waited_seconds`: the first is how long nothing moved, the second how
+long that waiter had been blocked, and a large gap between them means the
+playlist was making progress for most of the wait.
+
+`HM_URI_PLAYLIST_BARRIER_STALL_SECONDS` overrides the budget, which defaults to
+300 s; `0` disables the check and restores the old wait-forever behavior, which
+is what you want when attaching a debugger to a live hang.
+
 ## Cost and failure behavior
 
 There are no new frame probes, video readbacks, GPU transfers, frame images,
