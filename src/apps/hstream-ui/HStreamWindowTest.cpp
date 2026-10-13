@@ -4075,9 +4075,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitched_controls->isAncestorOf(stitched_precision_status) && !camera1_host->isAncestorOf(max_speed_x) &&
               !camera1_host->isAncestorOf(bring_up_shadows) && !camera1_host->isAncestorOf(rotate) &&
               alignment_page->isAncestorOf(control_point_matcher) && alignment_page->isAncestorOf(mapping_backend) &&
-              alignment_page->isAncestorOf(camera_configuration) &&
-              alignment_page->isAncestorOf(camera_horizontal_fov) &&
-              alignment_page->isAncestorOf(camera_vertical_fov) && projection_page->isAncestorOf(projection) &&
+              projection_page->isAncestorOf(camera_configuration) &&
+              projection_page->isAncestorOf(camera_horizontal_fov) &&
+              projection_page->isAncestorOf(camera_vertical_fov) && projection_page->isAncestorOf(projection) &&
               alignment_page->isAncestorOf(control_points) && alignment_page->isAncestorOf(stitch_frame_time) &&
               projection_page->isAncestorOf(stitch_max_output_width) &&
               alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 7 &&
@@ -9698,6 +9698,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   crop_choices.projection = "cylindrical";
   crop_choices.run_autooptimizer = true;
   crop_choices.camera = {"gopro-mission-1", 126.5, 94.5};
+  // This synthetic version-10 PTO uses neutral optics, independently of the
+  // current camera profile defaults.
+  hm::stitching::write_stitch_camera_selection(crop_preview_config, crop_choices.camera);
   const auto crop_framing = hm::stitching::read_stitch_projection_framing(crop_preview_config);
   const auto crop_resolution = hm::stitching::read_control_point_resolution(crop_preview_config);
   const auto crop_provider = hm::stitching::read_control_point_execution_provider(crop_preview_config);

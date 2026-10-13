@@ -7294,34 +7294,34 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     alignment_layout->addWidget(control_point_matcher_combo_, 4, 1);
     alignment_layout->addWidget(mapping_label, 5, 0);
     alignment_layout->addWidget(mapping_backend_combo_, 5, 1);
-    alignment_layout->addWidget(camera_configuration_label, 6, 0);
-    alignment_layout->addWidget(camera_configuration_combo_, 6, 1);
-    alignment_layout->addWidget(camera_horizontal_fov_label, 7, 0);
-    alignment_layout->addWidget(camera_horizontal_fov_spin_, 7, 1);
-    alignment_layout->addWidget(camera_vertical_fov_label, 8, 0);
-    alignment_layout->addWidget(camera_vertical_fov_spin_, 8, 1);
-    alignment_layout->addWidget(input_lens_widget_, 9, 0, 1, 2);
-    alignment_layout->addWidget(run_autooptimizer_check_, 10, 0, 1, 2);
-    alignment_layout->addWidget(clean_stitching_button_, 11, 0, 1, 2);
-    alignment_layout->setRowStretch(12, 1);
+    alignment_layout->addWidget(run_autooptimizer_check_, 6, 0, 1, 2);
+    alignment_layout->addWidget(clean_stitching_button_, 7, 0, 1, 2);
+    alignment_layout->setRowStretch(8, 1);
 
     auto* projection_layout = add_stitching_tab("stitchingProjection", "Projection");
-    projection_layout->addWidget(projection_label, 0, 0);
-    projection_layout->addWidget(projection_combo_, 0, 1);
+    projection_layout->addWidget(camera_configuration_label, 0, 0);
+    projection_layout->addWidget(camera_configuration_combo_, 0, 1);
+    projection_layout->addWidget(camera_horizontal_fov_label, 1, 0);
+    projection_layout->addWidget(camera_horizontal_fov_spin_, 1, 1);
+    projection_layout->addWidget(camera_vertical_fov_label, 2, 0);
+    projection_layout->addWidget(camera_vertical_fov_spin_, 2, 1);
+    projection_layout->addWidget(input_lens_widget_, 3, 0, 1, 2);
+    projection_layout->addWidget(projection_label, 4, 0);
+    projection_layout->addWidget(projection_combo_, 4, 1);
     for (size_t index = 0; index < projection_parameter_spins_.size(); ++index) {
-      projection_layout->addWidget(projection_parameter_labels_[index], static_cast<int>(index) + 1, 0);
-      projection_layout->addWidget(projection_parameter_spins_[index], static_cast<int>(index) + 1, 1);
-      projection_layout->addWidget(projection_parameter_checks_[index], static_cast<int>(index) + 1, 0, 1, 2);
+      projection_layout->addWidget(projection_parameter_labels_[index], static_cast<int>(index) + 5, 0);
+      projection_layout->addWidget(projection_parameter_spins_[index], static_cast<int>(index) + 5, 1);
+      projection_layout->addWidget(projection_parameter_checks_[index], static_cast<int>(index) + 5, 0, 1, 2);
     }
-    projection_layout->addWidget(projection_fov_label, 4, 0);
-    projection_layout->addWidget(projection_fov_controls, 4, 1);
-    projection_layout->addWidget(projection_auto_canvas_check_, 5, 0, 1, 2);
-    projection_layout->addWidget(projection_auto_crop_check_, 6, 0);
-    projection_layout->addWidget(projection_crop_button_, 6, 1);
-    projection_layout->addWidget(max_width_label, 7, 0);
-    projection_layout->addWidget(stitch_max_output_width_spin_, 7, 1);
-    projection_layout->addWidget(show_crop_dialog_check_, 8, 0, 1, 2);
-    projection_layout->setRowStretch(9, 1);
+    projection_layout->addWidget(projection_fov_label, 8, 0);
+    projection_layout->addWidget(projection_fov_controls, 8, 1);
+    projection_layout->addWidget(projection_auto_canvas_check_, 9, 0, 1, 2);
+    projection_layout->addWidget(projection_auto_crop_check_, 10, 0);
+    projection_layout->addWidget(projection_crop_button_, 10, 1);
+    projection_layout->addWidget(max_width_label, 11, 0);
+    projection_layout->addWidget(stitch_max_output_width_spin_, 11, 1);
+    projection_layout->addWidget(show_crop_dialog_check_, 12, 0, 1, 2);
+    projection_layout->setRowStretch(13, 1);
 
     auto* rink_layout = add_stitching_tab("stitchingRink", "Rink");
     auto* rink_label = new QLabel("Rink");

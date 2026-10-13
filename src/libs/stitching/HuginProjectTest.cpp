@@ -494,7 +494,7 @@ bool test_owned_solve_publication(
       true,
       DefaultStitchProjectionParameters(*options.projection),
       options.projection_framing};
-  choices.camera = {options.camera_configuration, options.horizontal_fov, options.vertical_fov};
+  choices.camera = {options.camera_configuration, options.horizontal_fov, options.vertical_fov, options.input_lens};
   choices.control_point_resolution = options.control_point_resolution;
   options.expected_invalidation_id = "owned-solve";
   options.expected_backend_choices = choices;
@@ -524,9 +524,7 @@ bool test_owned_solve_publication(
   config["stitching"]["mapping_backend"] = choices.mapping_backend;
   config["stitching"]["projection"] = choices.projection;
   config["stitching"]["run_autooptimizer"] = true;
-  config["stitching"]["camera_config"] = choices.camera.configuration;
-  config["stitching"]["camera_fov"]["horizontal_fov"] = choices.camera.horizontal_fov;
-  config["stitching"]["camera_fov"]["vertical_fov"] = choices.camera.vertical_fov;
+  write_stitch_camera_selection(config, choices.camera);
   write_stitch_projection_framing(config, choices.projection_framing);
   const auto claimed = reserve_stitching_backend_generation_in_config(config, "owned-solve", choices);
   if (!expect(claimed.ok(), "owned solve fixture must reserve the full worker tuple")) {

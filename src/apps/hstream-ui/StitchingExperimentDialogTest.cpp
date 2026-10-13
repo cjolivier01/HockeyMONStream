@@ -628,16 +628,18 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   require(restored_table->rowCount() == 3, "Reopened lens additions must follow the ordinary retry policy");
   auto* profiles = widget<QComboBox>(reopened, "stitchExperimentCameraConfiguration");
   profiles->setCurrentIndex(profiles->findData("gopro-mission-1"));
-  require(widget<QComboBox>(reopened, "inputLensProjectionCombo")->currentData() == "rectilinear" &&
-              widget<QComboBox>(reopened, "inputLensOptimizationCombo")->currentData() == "auto" &&
-              widget<QDoubleSpinBox>(reopened, "inputLensCenterYSpin")->value() == 0,
+  require(widget<QComboBox>(reopened, "inputLensProjectionCombo")->currentData() == "full-frame-fisheye" &&
+              widget<QComboBox>(reopened, "inputLensOptimizationCombo")->currentData() == "fixed" &&
+              std::abs(widget<QDoubleSpinBox>(reopened, "inputLensCenterYSpin")->value() -
+                       camera.input_lens.center_offset[1] * 100) < 0.000001,
           "Changing the candidate camera must reset its lens to the selected profile defaults");
   add_options(reopened);
   require(restored_table->rowCount() == 4, "Changed camera profile must create a separate candidate");
   const auto changed_profile = LoadStitchingExperimentStore(*store);
   require(changed_profile.ok() && changed_profile->experiments.back().workspace.settings.camera &&
               changed_profile->experiments.back().workspace.settings.camera->configuration == "gopro-mission-1" &&
-              changed_profile->experiments.back().workspace.settings.camera->input_lens == StitchInputLens{},
+              changed_profile->experiments.back().workspace.settings.camera->horizontal_fov == 108 &&
+              changed_profile->experiments.back().workspace.settings.camera->input_lens == camera.input_lens,
           "Candidate history must freeze the selected camera and its lens defaults");
 }
 

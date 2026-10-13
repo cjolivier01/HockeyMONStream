@@ -374,13 +374,14 @@ files, since correctly encoded PNGs and 10-bit snapshots already use RGB order.
 
 ### Input lens correction
 
-Stitched Controls → Alignment → Input lens models the original camera images;
+Stitched Controls → Projection groups the camera selection, source FOV, and
+Input lens controls together. Input lens models the original camera images;
 Stitched Controls → Projection → Output projection shapes the panorama. General
 Panini can therefore be used with full-frame fisheye input. The camera horizontal
 FOV belongs to the input lens, not the output panorama.
 
-Stitching Experiments exposes the same controls under **Edit input lens for new
-candidates**, with a camera horizontal FOV field. Each added candidate freezes
+Stitching Experiments shows the same Input lens controls below its camera
+selection and horizontal FOV field. Each added candidate freezes
 these settings, shows them in the Input lens column tooltip, and restores them
 when history is reopened. Add another candidate after changing the values to
 compare corrections. Promotion carries its input optics into the game. A lens
@@ -394,7 +395,8 @@ displays center offsets as percentages. Both cameras share the correction and
 must have equal image dimensions. These are Hugin coefficients, not OpenCV or
 GoPro KB4 coefficients; do not copy values between those models.
 
-Absent settings preserve the existing automatic rectilinear fit. `refine` fits
+Absent game settings inherit the selected camera profile. A profile without lens
+settings uses automatic rectilinear fitting. `refine` fits
 FOV, b, and center while retaining a/c; `fixed` holds the input FOV and all lens
 values while still aligning camera poses. Non-default lens correction requires
 NONA and cannot be combined with rectified AKAZE calibration profiles. It affects
@@ -406,7 +408,11 @@ Camera input-lens defaults live alongside the FOV in `stitching.camera_configs` 
 (or the user configuration). Selecting a camera in either dialog loads its FOV and lens defaults. The game can
 override individual fields under `stitching.input_lens`; saved candidates freeze all resolved values. Define
 separate profiles for different recording modes, since Wide/Linear, aspect ratio and stabilization crop can change
-the source optics. The bundled profiles keep neutral automatic fitting until measured defaults are supplied.
+the source optics. Mission 1 defaults to the saved `vegas-kings-1` input optics:
+108° horizontal / 90° vertical FOV, full-frame fisheye, fixed correction,
+distortion `[0, 0.0208293582808693, 0]`, and normalized center offsets
+`[-0.0013154349398449218, 0.14355981616751806]`. Other bundled profiles retain
+neutral automatic fitting.
 For example, a calibrated profile may contain:
 
 ```yaml

@@ -3365,11 +3365,6 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   });
   matrix_layout->addRow("Camera configuration", s.camera_configuration);
   matrix_layout->addRow("Camera horizontal FOV", s.camera_horizontal_fov);
-  auto* show_input_lens = new QCheckBox("Edit input lens for new candidates");
-  show_input_lens->setObjectName("stitchExperimentShowInputLens");
-  s.input_lens->setVisible(false);
-  connect(show_input_lens, &QCheckBox::toggled, s.input_lens, &QWidget::setVisible);
-  matrix_layout->addRow(show_input_lens);
   matrix_layout->addRow(s.input_lens);
   matrix_layout->addRow("Frame counts", s.frame_counts);
   matrix_layout->addRow("First calibration frames", s.start_frames);
