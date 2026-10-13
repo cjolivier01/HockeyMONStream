@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import re
@@ -199,6 +200,31 @@ def symlink_plex_programs(root: Path, destination: Path) -> set[Path]:
     return published
 
 
+def write_job_scripts(root: Path) -> None:
+    """Save an hstream-job script in each immediate game directory."""
+    for game in sorted(root.iterdir()):
+        # Do not traverse directory aliases or archived seasons' game directories.
+        if game.is_symlink() or not game.is_dir():
+            continue
+        # hstream-job reads the game's config.yaml; other directories are not games.
+        if not (game / "config.yaml").is_file():
+            continue
+        try:
+            # The default output is the game directory's own hstream-job.sh.
+            completed = subprocess.run(
+                ["hstream-job", "--force", "--game-dir", str(game)],
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            print(f"Skipping job scripts: cannot run hstream-job: {error}", file=sys.stderr)
+            return
+        if completed.returncode != 0:
+            detail = (completed.stderr.strip() or completed.stdout.strip()
+                      or f"exit status {completed.returncode}")
+            print(f"Skipping job script for {game.name}: {detail}", file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -232,10 +258,19 @@ def main() -> None:
         default=Path("~/Plex"),
         help="Existing destination directory for --symlink-plex (default: ~/Plex).",
     )
+    parser.add_argument(
+        "--write-jobs",
+        action="store_true",
+        help=("Save hstream-job.sh in each immediate child game directory by running "
+              "hstream-job --force --game-dir GAME. Directories without a config.yaml "
+              "and deeper directories are excluded."),
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
     published = symlink_plex_programs(root, args.plex_dir.expanduser()) if args.symlink_plex else set()
+    if args.write_jobs:
+        write_job_scripts(root)
     obsolete = find_obsolete_mp4s(root)
     for path in obsolete:
         if path in published:
