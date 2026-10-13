@@ -2793,6 +2793,8 @@ int main() {
   YAML::Node fixture_baseline = YAML::Clone(baseline->values);
   fixture_baseline["stitching"]["camera_configs"]["gopro-mission-1"]["horizontal_fov"] = 127.2;
   fixture_baseline["stitching"]["camera_configs"]["gopro-mission-1"]["vertical_fov"] = 95.0;
+  fixture_baseline["stitching"]["camera_configs"]["gopro-mission-1"]["input_lens"] =
+      hm::stitching::WriteStitchInputLens({});
   const fs::path fixture_config_root = tmpdir / "baseline";
   fs::create_directory(fixture_config_root);
   if (!write_text_file(fixture_config_root / "baseline.yaml", YAML::Dump(fixture_baseline)))
