@@ -105,6 +105,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   bool scoreboard_disabled_{false};
   bool scoreboard_configure_attempted_{false};
+  std::atomic<bool> scoreboard_selection_cancelled_{false};
   std::chrono::steady_clock::time_point scoreboard_config_poll_after_{};
   std::string scoreboard_output_generation_;
   std::string scoreboard_output_authorization_id_;

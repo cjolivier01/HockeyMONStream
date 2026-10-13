@@ -347,6 +347,11 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
 }
 
 bool PlayCropperPriv::SetProperty(const Property& prop) {
+  // The selector runs with mu_process_ held. Cancellation must not wait for it.
+  if (prop.key == "cancel-pending-work") {
+    scoreboard_selection_cancelled_.store(true, std::memory_order_release);
+    return true;
+  }
   absl::WriterMutexLock lk(&mu_process_);
   // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
   std::string key = prop.key;
@@ -965,7 +970,11 @@ absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
 absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
     surface::Surface stitched_surface,
     const NvDsFrameMeta* frame_meta) {
-  if (scoreboard_disabled_ || !scoreboard_perspective_polygion_.empty()) {
+  const auto is_cancelled = [this] {
+    return scoreboard_selection_cancelled_.load(std::memory_order_acquire) ||
+        shutdown_requested_.load(std::memory_order_acquire);
+  };
+  if (is_cancelled() || scoreboard_disabled_ || !scoreboard_perspective_polygion_.empty()) {
     return absl::OkStatus();
   }
   // Re-reading the game config is how a polygon published after startup could
@@ -1021,7 +1030,10 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
     HM_RETURN_IF_ERROR(stitching::save_stitched_image(game_dir.string(), stitched_surface, producer_output_generation));
   }
 
-  HM_RETURN_IF_ERROR(stitching::configure_scoreboard(game_dir.string()));
+  const auto selection = stitching::configure_scoreboard(game_dir.string(), is_cancelled);
+  if (absl::IsCancelled(selection) && is_cancelled())
+    return absl::OkStatus(); // Keep draining queued output for EOS finalization.
+  HM_RETURN_IF_ERROR(selection);
   return LoadScoreboardPerspectiveFromConfig();
 }
 

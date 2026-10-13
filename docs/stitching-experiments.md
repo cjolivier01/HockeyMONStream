@@ -371,3 +371,58 @@ encoding. Older `s.png` files made by the 8-bit snapshot path may have red and
 blue swapped; regenerating the snapshot with the corrected writer fixes both
 this preview and the scoreboard selector. Image readers do not swap existing
 files, since correctly encoded PNGs and 10-bit snapshots already use RGB order.
+
+### Input lens correction
+
+Stitched Controls → Alignment → Input lens models the original camera images;
+Stitched Controls → Projection → Output projection shapes the panorama. General
+Panini can therefore be used with full-frame fisheye input. The camera horizontal
+FOV belongs to the input lens, not the output panorama.
+
+Stitching Experiments exposes the same controls under **Edit input lens for new
+candidates**, with a camera horizontal FOV field. Each added candidate freezes
+these settings, shows them in the Input lens column tooltip, and restores them
+when history is reopened. Add another candidate after changing the values to
+compare corrections. Promotion carries its input optics into the game. A lens
+change requires a new alignment; output projection/crop changes may reuse an
+alignment with unchanged optics.
+
+The optional `stitching.input_lens` map accepts `projection` (`rectilinear` or
+`full-frame-fisheye`), `optimization` (`auto`, `refine`, or `fixed`), `distortion`
+(Hugin a/b/c), and `center_offset` (Hugin d/source-width, e/source-height). The UI
+displays center offsets as percentages. Both cameras share the correction and
+must have equal image dimensions. These are Hugin coefficients, not OpenCV or
+GoPro KB4 coefficients; do not copy values between those models.
+
+Absent settings preserve the existing automatic rectilinear fit. `refine` fits
+FOV, b, and center while retaining a/c; `fixed` holds the input FOV and all lens
+values while still aligning camera poses. Non-default lens correction requires
+NONA and cannot be combined with rectified AKAZE calibration profiles. It affects
+calibration maps; live video still uses the existing GPU remap path. Values must
+be fitted to the recording's camera mode, resolution, and crop, rather than
+assumed from the GoPro model name.
+
+Camera input-lens defaults live alongside the FOV in `stitching.camera_configs` in `configs/baseline.yaml`
+(or the user configuration). Selecting a camera in either dialog loads its FOV and lens defaults. The game can
+override individual fields under `stitching.input_lens`; saved candidates freeze all resolved values. Define
+separate profiles for different recording modes, since Wide/Linear, aspect ratio and stabilization crop can change
+the source optics. The bundled profiles keep neutral automatic fitting until measured defaults are supplied.
+For example, a calibrated profile may contain:
+
+```yaml
+stitching:
+  camera_configs:
+    gopro-wide-calibrated:
+      display_name: "GoPro Wide (calibrated mode)"
+      horizontal_fov: 121.4
+      vertical_fov: 90
+      input_lens:
+        projection: full-frame-fisheye
+        optimization: fixed
+        distortion: [0, 0.02, 0]
+        center_offset: [0, 0]
+  camera_config: gopro-wide-calibrated
+```
+
+These example coefficients illustrate the schema; use values calibrated for the recording mode. Input lens
+projection describes the original images; `stitching.projection: general-panini` still controls the output panorama.

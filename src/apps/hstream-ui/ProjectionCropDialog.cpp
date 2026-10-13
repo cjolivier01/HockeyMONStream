@@ -547,8 +547,10 @@ void ProjectionCropDialog::loadPreview() {
       const QString parameters = projection_parameters_.empty()
           ? "none"
           : QString::fromStdString(hm::stitching::FormatStitchProjectionParameters(projection_parameters_));
-      if (!parsed.ok() || withoutCrop(*parsed) != withoutCrop(initial_) || fields.value("mapping-backend") != "nona" ||
-          fields.value("projection") != projection_ || fields.value("projection-parameters") != parameters ||
+      const auto lens = hm::stitching::ParseStitchInputLens(fields.value("input-lens", "{}").toStdString());
+      if (!lens.ok() || *lens != camera_.input_lens || !parsed.ok() || withoutCrop(*parsed) != withoutCrop(initial_) ||
+          fields.value("mapping-backend") != "nona" || fields.value("projection") != projection_ ||
+          fields.value("projection-parameters") != parameters ||
           fields.value("camera-configuration").toStdString() != camera_.configuration || !h_ok || !v_ok ||
           horizontal != camera_.horizontal_fov || vertical != camera_.vertical_fov) {
         previewFailed("Calibrate the current projection and camera settings before previewing the crop.");

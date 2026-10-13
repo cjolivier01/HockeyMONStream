@@ -45,6 +45,8 @@ filegroup(
         "HighlightPlan.h",
         "HighlightsDialog.cpp",
         "HighlightsDialog.h",
+        "InputLensWidget.cpp",
+        "InputLensWidget.h",
         "Int8PreparationDialog.cpp",
         "Int8PreparationDialog.h",
         "CameraControlSpecs.h",
@@ -433,6 +435,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":input_lens_widget",
         ":native_preview_surface",
         ":ansi_log_format",
         ":stitching_still_preview",
@@ -667,6 +670,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":input_lens_widget",
         ":native_preview_surface",
         ":stitching_still_preview",
         "//src/libs/common:process_diagnostics",
@@ -1020,4 +1024,22 @@ cc_test(
     env_inherit = ["DISPLAY", "XAUTHORITY"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":highlight_item_editor", "@qt//:qt_widgets"],
+)
+
+cc_library(
+    name = "input_lens_widget",
+    srcs = ["InputLensWidget.cpp"],
+    hdrs = ["InputLensWidget.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["//src/libs/stitching:game_config", "@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "input_lens_widget_test",
+    srcs = ["InputLensWidgetTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":input_lens_widget", "//src/libs/stitching:game_config", "@qt//:qt_widgets"],
 )

@@ -8426,7 +8426,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   YAML::Node private_camera_config = YAML::Clone(lower_layer_config_);
   const YAML::Node private_stitching = private_config_["stitching"];
   if (private_stitching && private_stitching.IsMap()) {
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
       const YAML::Node value = private_stitching[key];
       if (value && value.IsDefined())
         private_camera_config["stitching"][key] = YAML::Clone(value);
@@ -9201,6 +9201,7 @@ absl::Status Configurator::complete_configuration(
               "mapping_backend",
               "run_autooptimizer",
               "camera_config",
+              "input_lens",
               "camera_fov"})
           latest["stitching"][key] = YAML::Clone(desired["stitching"][key]);
         // Record resolved framing even when the request inherited a rink angle.

@@ -568,6 +568,79 @@ void exercise_matcher_queue(const QString& game, const QString& root) {
     require(table->item(row, 8)->text() == labels[row], "Saved matcher labels must survive main config changes");
 }
 
+void exercise_input_lens_queue(const QString& game, const QString& root) {
+  using namespace hm::stitching;
+  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  StitchCameraSelection camera{"gopro-hero-11", 121.413487813061, 90};
+  camera.input_lens.projection = "full-frame-fisheye";
+  camera.input_lens.optimization = "fixed";
+  camera.input_lens.distortion[1] = 0.0208293582808693;
+  camera.input_lens.center_offset = {-10.102540338009 / 7680, 620.178405843678 / 4320};
+  write_stitch_camera_selection(config, camera);
+  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  {
+    StitchingExperimentDialog dialog(
+        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+    require(
+        widget<QComboBox>(dialog, "inputLensProjectionCombo")->currentData() == "full-frame-fisheye" &&
+            widget<QComboBox>(dialog, "inputLensOptimizationCombo")->currentData() == "fixed",
+        "Experiment lens controls must initialize from the game");
+    require(
+        std::abs(
+            widget<QDoubleSpinBox>(dialog, "inputLensCenterYSpin")->value() -
+            camera.input_lens.center_offset[1] * 100) < 0.000001,
+        "Center offsets must display percentages");
+    add_options(dialog);
+    widget<QDoubleSpinBox>(dialog, "inputLensBSpin")->setValue(0.03);
+    add_options(dialog);
+    add_options(dialog);
+    auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+    require(table->rowCount() == 2, "Different lens corrections must create distinct candidates");
+    require(
+        table->item(0, 9)->toolTip().contains("0.020829") && table->item(1, 9)->toolTip().contains("0.03"),
+        "Candidate table must describe each frozen lens");
+  }
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open input lens store");
+  const auto saved = LoadStitchingExperimentStore(*store);
+  require(saved.ok() && saved->experiments.size() == 2, "Lens candidates must survive closing the dialog");
+  for (size_t row = 0; row < 2; ++row) {
+    auto expected = camera;
+    if (row)
+      expected.input_lens.distortion[1] = 0.03;
+    const auto& workspace = saved->experiments[row].workspace;
+    const auto yaml = YAML::LoadFile((workspace.game_directory / "config.yaml").string());
+    const auto actual = read_stitch_camera_selection(yaml);
+    require(
+        workspace.settings.camera == expected && actual.ok() && *actual == expected,
+        "Candidate config and saved history must retain full precision optics and FOV");
+  }
+  StitchingExperimentDialog reopened(
+      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+  auto* restored_table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
+  require(restored_table->rowCount() == 2 && restored_table->item(0, 9)->toolTip().contains("0.020829") &&
+              restored_table->item(1, 9)->toolTip().contains("0.03"),
+          "Reopening must restore both exact lens variants");
+  // A new dialog deliberately permits another solve; only repeated additions
+  // in the same dialog are deduplicated.
+  add_options(reopened);
+  add_options(reopened);
+  require(restored_table->rowCount() == 3, "Reopened lens additions must follow the ordinary retry policy");
+  auto* profiles = widget<QComboBox>(reopened, "stitchExperimentCameraConfiguration");
+  profiles->setCurrentIndex(profiles->findData("gopro-mission-1"));
+  require(widget<QComboBox>(reopened, "inputLensProjectionCombo")->currentData() == "rectilinear" &&
+              widget<QComboBox>(reopened, "inputLensOptimizationCombo")->currentData() == "auto" &&
+              widget<QDoubleSpinBox>(reopened, "inputLensCenterYSpin")->value() == 0,
+          "Changing the candidate camera must reset its lens to the selected profile defaults");
+  add_options(reopened);
+  require(restored_table->rowCount() == 4, "Changed camera profile must create a separate candidate");
+  const auto changed_profile = LoadStitchingExperimentStore(*store);
+  require(changed_profile.ok() && changed_profile->experiments.back().workspace.settings.camera &&
+              changed_profile->experiments.back().workspace.settings.camera->configuration == "gopro-mission-1" &&
+              changed_profile->experiments.back().workspace.settings.camera->input_lens == StitchInputLens{},
+          "Candidate history must freeze the selected camera and its lens defaults");
+}
+
 void exercise_player_queue(const QString& game, const QString& root) {
   auto initial = YAML::Load(read(game + "/config.yaml").toStdString());
   initial["game"]["stitching"]["frame_offsets"]["left"] = 0;
@@ -2763,6 +2836,7 @@ int main(int argc, char** argv) {
       exercise_frame_navigation(fixture.path());
       exercise_resolution_queue(make_game("resolutions"), fixture.path());
       exercise_matcher_queue(make_game("matchers"), fixture.path());
+      exercise_input_lens_queue(make_game("input-lens"), fixture.path());
       exercise_generated_matcher(make_game("generated-matcher"), fixture.path());
       exercise_player_queue(make_game("queue"), fixture.path());
       exercise_queued_reopen(make_game("queued-reopen"), fixture.path());

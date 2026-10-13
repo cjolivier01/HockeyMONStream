@@ -116,6 +116,8 @@ QString configured_gpu_memory_profile(
 
 } // namespace hm::ui_internal
 
+class InputLensWidget;
+
 class HStreamWindow : public QMainWindow {
   friend struct HStreamWindowTestAccess;
 
@@ -598,6 +600,7 @@ class HStreamWindow : public QMainWindow {
   QCheckBox* run_autooptimizer_check_{nullptr};
   QComboBox* control_point_matcher_combo_{nullptr};
   QComboBox* mapping_backend_combo_{nullptr};
+  InputLensWidget* input_lens_widget_{nullptr};
   QComboBox* camera_configuration_combo_{nullptr};
   QDoubleSpinBox* camera_horizontal_fov_spin_{nullptr};
   QDoubleSpinBox* camera_vertical_fov_spin_{nullptr};

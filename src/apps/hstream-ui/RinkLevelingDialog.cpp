@@ -342,8 +342,8 @@ void RinkLevelingDialog::loadSnapshot() {
     }
     const int version = fields.value("version").toInt();
     // Versions 10 and 11 add selected-frame and manual-match provenance.
-    // Camera geometry and rotation retain their version-9 representation.
-    if (version < 2 || version > 11 || fields.value("mapping-backend") != "nona") {
+    // Versions 12 and 13 add input lens correction; rotation keeps its version-9 representation.
+    if (version < 2 || version > 13 || fields.value("mapping-backend") != "nona") {
       load_error_ = "Leveling requires saved NONA calibration metadata. Run stitching calibration first.";
       return;
     }
@@ -356,11 +356,12 @@ void RinkLevelingDialog::loadSnapshot() {
       bool horizontal_ok = false, vertical_ok = false;
       const double horizontal = fields.value("camera-horizontal-fov").toDouble(&horizontal_ok);
       const double vertical = fields.value("camera-vertical-fov").toDouble(&vertical_ok);
-      if (!horizontal_ok || !vertical_ok ||
+      const auto lens = hm::stitching::ParseStitchInputLens(fields.value("input-lens", "{}").toStdString());
+      if (!lens.ok() || *lens != expected_camera_->input_lens || !horizontal_ok || !vertical_ok ||
           fields.value("camera-configuration").toStdString() != expected_camera_->configuration ||
           horizontal != expected_camera_->horizontal_fov || vertical != expected_camera_->vertical_fov) {
         load_error_ =
-            "The camera model or FOV differs from the saved calibration. Recalibrate before leveling the rink.";
+            "The camera model, FOV or input lens differs from the saved calibration. Recalibrate before leveling the rink.";
         return;
       }
     }

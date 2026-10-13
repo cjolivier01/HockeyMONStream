@@ -2,6 +2,7 @@
 
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -31,7 +32,8 @@ class ScoreboardSelector {
       const std::filesystem::path& game_dir,
       const Polygon& polygon,
       const std::optional<CanvasGeneration>& expected_generation = std::nullopt);
-  static absl::Status Run(const std::filesystem::path& game_dir);
+  // Wait for the operator, but release the video worker promptly on pipeline stop.
+  static absl::Status Run(const std::filesystem::path& game_dir, const std::function<bool()>& is_cancelled = {});
 };
 
 } // namespace hm::stitching

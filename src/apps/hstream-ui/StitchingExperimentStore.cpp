@@ -132,7 +132,7 @@ bool same_settings(const StitchingExperimentSettings& left, const StitchingExper
       left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees &&
       left.control_point_resolution == right.control_point_resolution &&
       left.control_point_matcher == right.control_point_matcher &&
-      left.manual_control_points == right.manual_control_points;
+      left.manual_control_points == right.manual_control_points && left.camera == right.camera;
 }
 
 YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
@@ -145,6 +145,12 @@ YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
   node["control_points"] = settings.control_points;
   node["frame_count"] = settings.frame_count;
   node["reference"] = settings.stitch_frame_time;
+  if (settings.camera) {
+    YAML::Node saved;
+    hm::stitching::write_stitch_camera_selection(saved, *settings.camera);
+    require(hm::stitching::read_stitch_camera_selection(saved).ok(), "Invalid experiment camera settings");
+    node["camera"] = saved["stitching"];
+  }
   if (settings.manual_control_points) {
     const auto& fingerprint = *settings.manual_control_points;
     require(
@@ -184,13 +190,21 @@ StitchingExperimentSettings parse_settings(const YAML::Node& node) {
        "rotation",
        "control_point_resolution",
        "manual_control_points",
-       "control_point_matcher"});
+       "control_point_matcher",
+       "camera"});
   StitchingExperimentSettings settings;
   const uint64_t control_points = uint_value(node["control_points"]);
   require(control_points > 0 && control_points <= std::numeric_limits<int>::max(), "Invalid control-point budget");
   settings.control_points = static_cast<int>(control_points);
   settings.frame_count = count_value(node["frame_count"]);
   settings.stitch_frame_time = string_value(node["reference"], 12);
+  if (node["camera"]) {
+    YAML::Node saved;
+    saved["stitching"] = YAML::Clone(node["camera"]);
+    auto camera = hm::stitching::read_stitch_camera_selection(saved);
+    require(camera.ok(), "Invalid stored experiment camera");
+    settings.camera = *camera;
+  }
   if (node["manual_control_points"])
     settings.manual_control_points = string_value(node["manual_control_points"], 64);
   if (node["control_point_matcher"])
@@ -403,6 +417,12 @@ absl::StatusOr<YAML::Node> validate_workspace_config(
           calibration["frame_count"].as<int>(0) == workspace.settings.frame_count &&
           config["stitching"]["calibration_frame_count"].as<int>(0) == workspace.settings.frame_count,
       "Saved experiment count/settings no longer match their workspace");
+  if (workspace.settings.camera) {
+    const auto actual = hm::stitching::read_stitch_camera_selection(config);
+    require(
+        actual.ok() && *actual == *workspace.settings.camera,
+        "Saved experiment input lens or FOV no longer matches its workspace");
+  }
   if (workspace.settings.control_point_matcher) {
     const auto actual =
         hm::stitching::ParseControlPointMatcher(config["stitching"]["control_point_matcher"].as<std::string>(""));

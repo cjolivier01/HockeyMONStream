@@ -534,6 +534,29 @@ bool matcher_settings(const fs::path& root) {
   return ok;
 }
 
+bool lens_settings(const fs::path& root) {
+  auto store = open_store(root);
+  auto record = make_record(store, "lens", 1);
+  record.workspace.settings.camera = StitchCameraSelection{"gopro-hero-11", 121.413487813061, 90};
+  record.workspace.settings.camera->input_lens.projection = "full-frame-fisheye";
+  record.workspace.settings.camera->input_lens.optimization = "fixed";
+  auto config = YAML::LoadFile((record.workspace.game_directory / "config.yaml").string());
+  write_stitch_camera_selection(config, *record.workspace.settings.camera);
+  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  bool ok = expect(SaveStitchingExperiment(store, record).ok(), "input optics must persist");
+  const auto restored = LoadStitchingExperimentStore(store);
+  ok &= expect(
+      restored.ok() && restored->experiments.size() == 1 &&
+          restored->experiments[0].workspace.settings.camera == record.workspace.settings.camera,
+      "stored optics and FOV must survive reopening");
+  config["stitching"]["input_lens"]["optimization"] = "refine";
+  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  ok &= expect(!SaveStitchingExperiment(store, record).ok(), "a workspace cannot silently change its input optics");
+  record.workspace.settings.camera->input_lens.optimization = "refine";
+  ok &= expect(!SaveStitchingExperiment(store, record).ok(), "persisted candidate optics are immutable");
+  return ok;
+}
+
 bool manual_match_settings(const fs::path& root) {
   auto store = open_store(root);
   auto record = make_record(store, "manual", 1);
@@ -561,6 +584,7 @@ bool manual_match_settings(const fs::path& root) {
 bool run(const fs::path& root) {
   bool ok = true;
   ok &= manual_match_settings(root / "manual-settings");
+  ok &= lens_settings(root / "lens-settings");
   ok &= resolution_settings(root / "resolution-settings");
   ok &= matcher_settings(root / "matcher-settings");
   ok &= stopped_process_with_corrupt_config(root / "stopped-corrupt-config");

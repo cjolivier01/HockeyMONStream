@@ -1,9 +1,10 @@
-#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
+#include "src/apps/hstream-ui/InputLensWidget.h"
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
 #include "src/apps/hstream-ui/StitchingStillPreview.h"
 
@@ -52,6 +53,7 @@
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTableWidget>
@@ -227,6 +229,16 @@ std::optional<QTime> parse_time(const QString& value) {
   return parsed.isValid() ? std::optional<QTime>(parsed) : std::nullopt;
 }
 
+void merge_feature_map(YAML::Node target, const YAML::Node& layer) {
+  for (const auto& entry : layer) {
+    const std::string key = entry.first.as<std::string>();
+    if (entry.second.IsMap() && target[key].IsMap())
+      merge_feature_map(target[key], entry.second);
+    else
+      target[key] = YAML::Clone(entry.second);
+  }
+}
+
 // Resolve only the two canonical feature settings needed by this editor. The
 // runner continues to own the remaining configuration and native properties.
 void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
@@ -235,9 +247,19 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
     return;
   if (!stitching.IsMap())
     throw std::runtime_error("stitching must be a configuration map");
-  for (const char* key : {"control_point_matcher", "control_point_resolution"}) {
-    if (stitching[key])
-      effective["stitching"][key] = YAML::Clone(stitching[key]);
+  for (const char* key :
+       {"control_point_matcher",
+        "control_point_resolution",
+        "camera_configs",
+        "camera_config",
+        "camera_fov",
+        "input_lens"}) {
+    if (stitching[key]) {
+      if (stitching[key].IsMap() && effective["stitching"][key].IsMap())
+        merge_feature_map(effective["stitching"][key], stitching[key]);
+      else
+        effective["stitching"][key] = YAML::Clone(stitching[key]);
+    }
   }
 }
 
@@ -548,6 +570,11 @@ struct StitchingExperimentDialog::Impl {
   QComboBox* control_point_matcher{nullptr};
   YAML::Node feature_defaults;
   QString feature_settings_error;
+  InputLensWidget* input_lens{nullptr};
+  QComboBox* camera_configuration{nullptr};
+  std::vector<hm::stitching::StitchCameraConfiguration> camera_configurations;
+  QDoubleSpinBox* camera_horizontal_fov{nullptr};
+  hm::stitching::StitchCameraSelection camera_settings;
   bool feature_size_selectable{false};
   QCheckBox* shared_rotation{nullptr};
   QLineEdit* rotations{nullptr};
@@ -811,6 +838,9 @@ struct StitchingExperimentDialog::Impl {
     prefer_player_frames->setEnabled(editing_batch);
     scan_duration->setEnabled(editing_batch && prefer_player_frames->isChecked());
     control_point_matcher->setEnabled(editing_batch && feature_settings_error.isEmpty());
+    camera_configuration->setEnabled(editing_batch && feature_settings_error.isEmpty());
+    input_lens->setEnabled(editing_batch && feature_settings_error.isEmpty());
+    camera_horizontal_fov->setEnabled(editing_batch && feature_settings_error.isEmpty());
     control_point_resolution->setEnabled(editing_batch && feature_settings_error.isEmpty() && feature_size_selectable);
     for (QWidget* input : std::array<QWidget*, 3>{control_points, frame_counts, start_frames})
       input->setEnabled(editing_batch);
@@ -1892,7 +1922,7 @@ struct StitchingExperimentDialog::Impl {
         left.rink_rotation_degrees == right.rink_rotation_degrees &&
         left.control_point_resolution == right.control_point_resolution &&
         left.control_point_matcher == right.control_point_matcher &&
-        left.manual_control_points == right.manual_control_points;
+        left.manual_control_points == right.manual_control_points && left.camera == right.camera;
   }
 
   void update_feature_size(const QString& size) {
@@ -1985,11 +2015,25 @@ struct StitchingExperimentDialog::Impl {
         frame_selection_policy(candidate).first,
         candidate_image_size(candidate),
         candidate_matcher_label(candidate),
+        settings.camera ? QString::fromStdString(settings.camera->input_lens.projection) : QString("Saved setting"),
     };
     for (int column = 0; column < columns.size(); ++column) {
       auto* item = new QTableWidgetItem(columns[column]);
       item->setFlags(item->flags() & ~Qt::ItemIsEditable);
       table->setItem(row, column, item);
+    }
+    if (settings.camera) {
+      const auto& lens = settings.camera->input_lens;
+      table->item(row, 9)->setToolTip(
+          QString("Camera horizontal FOV: %1°\nCalibration: %2\nDistortion a/b/c: %3 / %4 / %5\n"
+                  "Center offset X/Y: %6% / %7%")
+              .arg(settings.camera->horizontal_fov, 0, 'g', 12)
+              .arg(QString::fromStdString(lens.optimization))
+              .arg(lens.distortion[0], 0, 'g', 12)
+              .arg(lens.distortion[1], 0, 'g', 12)
+              .arg(lens.distortion[2], 0, 'g', 12)
+              .arg(lens.center_offset[0] * 100, 0, 'g', 12)
+              .arg(lens.center_offset[1] * 100, 0, 'g', 12));
     }
     table->item(row, 6)->setToolTip(frame_selection_policy(candidate).second);
     table->item(row, 5)->setToolTip(candidate.failure);
@@ -2068,7 +2112,12 @@ struct StitchingExperimentDialog::Impl {
                     : std::optional<std::array<double, 3>>(rink_rotations->at(rotation_index)),
                 .control_point_resolution = control_point_resolution->currentData().toString().toStdString(),
                 .control_point_matcher = control_point_matcher->currentData().toString().toStdString(),
+                .camera = camera_settings,
             };
+            settings.camera->input_lens = input_lens->lens();
+            const auto exact_fov = camera_horizontal_fov->property("exactLensFov");
+            settings.camera->horizontal_fov =
+                exact_fov.isValid() ? exact_fov.toDouble() : camera_horizontal_fov->value();
             auto saved = ReusableStitchingExperimentSelectionFingerprint(game_directory.toStdString(), settings);
             if (!saved.ok()) {
               show_status(QString::fromStdString(saved.status().ToString()), true);
@@ -2147,7 +2196,7 @@ struct StitchingExperimentDialog::Impl {
                 return !item.main_calibration && (item.queued || (item.complete && item.requires_ice_mask)) &&
                     item.settings.frame_count == frame_count && item.selection_owner_sequence == 0 &&
                     item.saved_selection_fingerprint.empty() && !item.source_config_revision.isEmpty() &&
-                    item.source_config_revision == config_revision &&
+                    item.source_config_revision == config_revision && item.settings.camera == settings.camera &&
                     hm::stitch_frame_time_to_nanoseconds(item.settings.stitch_frame_time) ==
                     hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time);
               });
@@ -3208,6 +3257,18 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.control_point_matcher->addItem("AKAZE + M-LDB + Hamming", "akaze-hamming");
   s.control_point_matcher->setToolTip(
       "Finder and matcher used to produce stitching control points. Each added candidate keeps its own choice.");
+  s.camera_configuration = new QComboBox();
+  s.camera_configuration->setObjectName("stitchExperimentCameraConfiguration");
+  s.camera_configuration->setToolTip("Selecting a camera loads its FOV and input-lens defaults for new candidates.");
+  s.input_lens = new InputLensWidget();
+  s.camera_horizontal_fov = new QDoubleSpinBox();
+  s.camera_horizontal_fov->setObjectName("stitchExperimentCameraHorizontalFov");
+  s.camera_horizontal_fov->setDecimals(6);
+  s.camera_horizontal_fov->setRange(0.01, 359.99);
+  s.camera_horizontal_fov->setSuffix(QString::fromUtf8("°"));
+  connect(s.camera_horizontal_fov, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [&s]() {
+    s.camera_horizontal_fov->setProperty("exactLensFov", QVariant());
+  });
   s.control_point_resolution = new QComboBox();
   s.control_point_resolution->setObjectName("stitchExperimentControlPointResolution");
   try {
@@ -3232,6 +3293,24 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       hm::stitching::restore_generated_control_point_resolution(game);
       overlay_feature_settings(effective, game);
     }
+    const auto camera = hm::stitching::read_stitch_camera_selection(effective);
+    if (!camera.ok())
+      throw std::runtime_error(camera.status().ToString());
+    const auto configurations = hm::stitching::read_stitch_camera_configurations(effective);
+    if (!configurations.ok())
+      throw std::runtime_error(configurations.status().ToString());
+    s.camera_configurations = *configurations;
+    for (const auto& profile : s.camera_configurations)
+      s.camera_configuration->addItem(QString::fromStdString(profile.display_name), QString::fromStdString(profile.id));
+    const QString selected_camera = QString::fromStdString(camera->configuration);
+    if (s.camera_configuration->findData(selected_camera) < 0)
+      s.camera_configuration->addItem(selected_camera, selected_camera);
+    s.camera_configuration->setCurrentIndex(s.camera_configuration->findData(selected_camera));
+    s.camera_settings = *camera;
+    s.initial_settings.camera = *camera;
+    s.input_lens->setLens(camera->input_lens);
+    s.camera_horizontal_fov->setValue(camera->horizontal_fov);
+    s.camera_horizontal_fov->setProperty("exactLensFov", camera->horizontal_fov);
     const auto resolution = hm::stitching::read_control_point_resolution(effective);
     if (!resolution.ok())
       throw std::runtime_error(resolution.status().ToString());
@@ -3245,7 +3324,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     s.update_feature_size(size);
     s.initial_settings.control_point_resolution = size.toStdString();
   } catch (const std::exception& error) {
-    s.feature_settings_error = "Cannot load feature image settings: " + QString::fromUtf8(error.what());
+    s.feature_settings_error = "Cannot load camera and feature settings: " + QString::fromUtf8(error.what());
     s.control_point_resolution->addItem("Unavailable");
     s.control_point_resolution->setToolTip(s.feature_settings_error);
   }
@@ -3265,6 +3344,33 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_layout->addRow("CP limits per frame pair", s.control_points);
   matrix_layout->addRow("Control-point matcher", s.control_point_matcher);
   matrix_layout->addRow("Feature image size", s.control_point_resolution);
+  connect(s.camera_configuration, &QComboBox::currentIndexChanged, this, [&s]() {
+    const auto selected = s.camera_configuration->currentData().toString().toStdString();
+    for (const auto& profile : s.camera_configurations) {
+      if (profile.id != selected)
+        continue;
+      s.camera_settings = {profile.id, profile.horizontal_fov, profile.vertical_fov, profile.input_lens};
+      s.input_lens->setLens(profile.input_lens);
+      s.camera_horizontal_fov->setValue(profile.horizontal_fov);
+      s.camera_horizontal_fov->setProperty("exactLensFov", profile.horizontal_fov);
+      return;
+    }
+    // Preserve an explicit game profile which is not in this machine's catalog.
+    if (s.initial_settings.camera && s.initial_settings.camera->configuration == selected) {
+      s.camera_settings = *s.initial_settings.camera;
+      s.input_lens->setLens(s.camera_settings.input_lens);
+      s.camera_horizontal_fov->setValue(s.camera_settings.horizontal_fov);
+      s.camera_horizontal_fov->setProperty("exactLensFov", s.camera_settings.horizontal_fov);
+    }
+  });
+  matrix_layout->addRow("Camera configuration", s.camera_configuration);
+  matrix_layout->addRow("Camera horizontal FOV", s.camera_horizontal_fov);
+  auto* show_input_lens = new QCheckBox("Edit input lens for new candidates");
+  show_input_lens->setObjectName("stitchExperimentShowInputLens");
+  s.input_lens->setVisible(false);
+  connect(show_input_lens, &QCheckBox::toggled, s.input_lens, &QWidget::setVisible);
+  matrix_layout->addRow(show_input_lens);
+  matrix_layout->addRow(s.input_lens);
   matrix_layout->addRow("Frame counts", s.frame_counts);
   matrix_layout->addRow("First calibration frames", s.start_frames);
   matrix_layout->addRow(s.shared_rotation);
@@ -3315,8 +3421,15 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   candidate_panel->setObjectName("stitchExperimentCandidatePanel");
   auto* candidate_layout = new QVBoxLayout(candidate_panel);
   candidate_layout->setContentsMargins(0, 0, 0, 0);
-  candidate_layout->addWidget(matrix_group);
-  s.table = new QTableWidget(0, 9);
+  auto* matrix_scroll = new QScrollArea();
+  matrix_scroll->setObjectName("stitchExperimentMatrixScroll");
+  matrix_scroll->setWidgetResizable(true);
+  matrix_scroll->setFrameShape(QFrame::NoFrame);
+  matrix_scroll->setMinimumHeight(200);
+  matrix_scroll->setMaximumHeight(440);
+  matrix_scroll->setWidget(matrix_group);
+  candidate_layout->addWidget(matrix_scroll);
+  s.table = new QTableWidget(0, 10);
   s.table->setObjectName("stitchExperimentCandidates");
   s.table->setHorizontalHeaderLabels(
       {"Candidate",
@@ -3327,7 +3440,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
        "Status",
        "Frame selection",
        "Image size",
-       "Matcher"});
+       "Matcher",
+       "Input lens"});
   s.table->horizontalHeaderItem(1)->setToolTip("Maximum control points per synchronized frame pair.");
   s.table->setSelectionBehavior(QAbstractItemView::SelectRows);
   s.table->setSelectionMode(QAbstractItemView::SingleSelection);

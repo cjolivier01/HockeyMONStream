@@ -79,6 +79,7 @@ class HuginProject {
     double horizontal_fov{127.2};
     double vertical_fov{95.0};
     std::string camera_configuration{"gopro-mission-1"};
+    StitchInputLens input_lens;
     std::optional<size_t> max_canvas_dimension;
     std::optional<size_t> max_output_width;
     // Required: callers must set this from the resolved configuration. Left

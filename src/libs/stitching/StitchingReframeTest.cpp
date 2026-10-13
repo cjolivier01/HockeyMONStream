@@ -200,6 +200,12 @@ bool test_ownership_and_edits(const fs::path& root) {
   ok &= expect(
       !desired["hstream_ui"]["stitching_calibration"]["reframe"]["source_solver"]["manual_control_points"],
       "automatic reframe solver snapshots retain the legacy schema and fingerprints");
+  auto changed_lens = desired_view(before);
+  changed_lens["stitching"]["input_lens"]["projection"] = "full-frame-fisheye";
+  const auto lens_reframe = PrepareStitchingReframeIntentLocked(root, before, changed_lens, "lens-edit", changed_lens);
+  ok &= expect(
+      lens_reframe.ok() && !*lens_reframe && !HasStitchingReframeIntent(changed_lens),
+      "changing source optics requires alignment rather than reusing the old solve");
   pending(desired, "view-1");
   auto valid = ValidateStitchingReframeIntentLocked(root, desired);
   ok &= expect(valid.ok(), "captured reframe validates under its new pending owner");

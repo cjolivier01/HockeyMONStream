@@ -1634,6 +1634,19 @@ absl::Status PipelineApplication::createPipelines(
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
+    // This graph exists only until calibration completes. Ask for scoreboard
+    // corners in the replacement playback graph, whose canvas is final.
+    if (app_contexts[i]->configurator().stitching_calibration_required()) {
+      if (GstElement* cropper = app_contexts[i]->pipeline.common_elements.hmplaycropper_bin.playcropper) {
+        // The algorithm is constructed at NULL -> READY; retain this request
+        // in its startup properties instead of sending it to a missing worker.
+        gchar* properties = nullptr;
+        g_object_get(G_OBJECT(cropper), "plugin-private-config", &properties, nullptr);
+        const std::string deferred = std::string(properties ? properties : "") + ";cancel-pending-work=1";
+        g_free(properties);
+        g_object_set(G_OBJECT(cropper), "plugin-private-config", deferred.c_str(), nullptr);
+      }
+    }
     if (int8_sample_output_) {
       if (app_contexts.size() != 1)
         return absl::InvalidArgumentError("INT8 sampling requires exactly one pipeline");

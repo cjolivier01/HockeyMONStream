@@ -2,6 +2,7 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 
+#include <fcntl.h>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -157,10 +158,13 @@ std::string http_request(
   return response;
 }
 
-bool exercise_http_selector(const std::filesystem::path& directory, bool remote = false) {
+bool exercise_http_selector(const std::filesystem::path& directory, bool remote = false, int cancel_mode = 0) {
   const std::string authority_host = remote ? "scoreboard.test" : "127.0.0.1";
   cv::Mat image(32, 96, CV_8UC3, cv::Scalar(255, 255, 255));
   if (!cv::imwrite((directory / "s.png").string(), image))
+    return false;
+  int cancellation_pipe[2]{};
+  if (::pipe2(cancellation_pipe, O_NONBLOCK | O_CLOEXEC) != 0)
     return false;
   int output_pipe[2]{};
   if (::pipe(output_pipe) != 0)
@@ -173,6 +177,7 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
   }
   if (child == 0) {
     ::close(output_pipe[0]);
+    ::close(cancellation_pipe[1]);
     ::dup2(output_pipe[1], STDERR_FILENO);
     ::close(output_pipe[1]);
     ::unsetenv("HM_NO_SCOREBOARD");
@@ -185,11 +190,17 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
       ::unsetenv("HM_SCOREBOARD_ALLOW_REMOTE");
       ::unsetenv("HM_SCOREBOARD_PUBLIC_HOST");
     }
-    ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", "250", 1);
-    const auto status = hm::stitching::ScoreboardSelector::Run(directory);
-    _exit(status.ok() ? 0 : 1);
+    ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", cancel_mode ? "60000" : "250", 1);
+    bool cancelled = false;
+    const auto status = hm::stitching::ScoreboardSelector::Run(directory, [&] {
+      char value;
+      cancelled = cancelled || ::read(cancellation_pipe[0], &value, 1) == 1;
+      return cancelled;
+    });
+    _exit((cancel_mode ? absl::IsCancelled(status) : status.ok()) ? 0 : 1);
   }
   ::close(output_pipe[1]);
+  ::close(cancellation_pipe[0]);
   std::string startup;
   std::array<char, 512> buffer{};
   std::smatch match;
@@ -208,6 +219,35 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
   if (ok) {
     const unsigned port = static_cast<unsigned>(std::stoul(match[1].str()));
     const std::string token = match[2].str();
+    if (cancel_mode) {
+      int client = -1;
+      if (cancel_mode == 2) {
+        client = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(port);
+        ::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
+        ok &= client >= 0 && ::connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0 &&
+            ::send(client, "G", 1, MSG_NOSIGNAL) == 1;
+        ::usleep(100000); // Enter a partial HTTP request with a one-minute client deadline.
+      }
+      ok &= ::write(cancellation_pipe[1], "x", 1) == 1;
+      int status = 0;
+      pid_t stopped = 0;
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (!(stopped = ::waitpid(child, &status, WNOHANG)) && std::chrono::steady_clock::now() < deadline)
+        ::usleep(10000);
+      ok &= stopped == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+      if (stopped == 0) {
+        ::kill(child, SIGKILL);
+        ::waitpid(child, &status, 0);
+      }
+      if (client >= 0)
+        ::close(client);
+      ::close(cancellation_pipe[1]);
+      ::close(output_pipe[0]);
+      return ok;
+    }
     int ready_pipe[2]{};
     const bool pipe_created = ::pipe(ready_pipe) == 0;
     ok &= pipe_created;
@@ -268,6 +308,7 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
   int status = 0;
   ok &= ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
   ::close(output_pipe[0]);
+  ::close(cancellation_pipe[1]);
   if (!ok)
     std::cerr << "FAIL: native scoreboard HTTP selector did not complete: " << startup << '\n';
   return ok;
@@ -342,6 +383,17 @@ int main() {
   ok &= expect(
       absl::IsAborted(Selector::Run(directory)),
       "scoreboard selector must reject oversized PNG header dimensions before invoking the decoder");
+  ::setenv("HM_NO_SCOREBOARD", "1", 1);
+  ok &= expect(
+      absl::IsCancelled(Selector::Run(directory, [] { return true; })),
+      "pre-cancelled selection must not publish even the disabled sentinel");
+  ::unsetenv("HM_NO_SCOREBOARD");
+  ok &= expect(exercise_http_selector(directory, false, 1), "idle selection must cancel promptly on pipeline stop");
+  ok &=
+      expect(exercise_http_selector(directory, false, 2), "partial HTTP request must cancel promptly on pipeline stop");
+  ok &= expect(
+      !hm::stitching::is_scoreboard_configured(directory.string()),
+      "cancelled selectors must not save scoreboard coordinates");
   ok &= expect(exercise_http_selector(directory), "native HTTP selector must enforce its token and save a choice");
   if (std::filesystem::is_regular_file(directory / "config.yaml")) {
     const YAML::Node polygon =

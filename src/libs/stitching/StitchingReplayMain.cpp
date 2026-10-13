@@ -90,6 +90,7 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   options.camera_configuration = camera.configuration;
   options.horizontal_fov = camera.horizontal_fov;
   options.vertical_fov = camera.vertical_fov;
+  options.input_lens = camera.input_lens;
   options.max_output_width = config["stitching"]["max_output_width"].as<size_t>(3840);
   config["stitching"]["max_output_width"] = *options.max_output_width;
 
@@ -103,8 +104,11 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
       std::istringstream tokens(line);
       for (std::string token; tokens >> token;) {
         if (token[0] == 'v' && token.size() > 1 && token[1] != '=') {
-          if (std::abs(std::stod(token.substr(1)) - options.horizontal_fov) > 1e-6)
-            throw std::runtime_error("Preset camera FOV differs from the saved calibration's input FOV");
+          // These are original-image coordinates; changing the input optics
+          // changes the solve, not the saved pixel correspondences.
+          const double saved_fov = std::stod(token.substr(1));
+          if (!std::isfinite(saved_fov) || saved_fov <= 0 || saved_fov >= 360)
+            throw std::runtime_error("Saved calibration has an invalid input FOV");
           camera_checked = true;
         }
       }

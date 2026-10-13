@@ -166,3 +166,9 @@ blocked log-writer I/O, contended retention, unwritable storage, rotation and
 active-session retention. It verifies bounded producers/shutdown and emergency
 breadcrumbs when the writer is stalled. `//src/apps/hstream-ui:ui_diagnostics_test`
 checks button/window breadcrumbs and Qt warnings without logging typed input.
+
+Scoreboard corner selection is deferred during the temporary one-pass calibration graph. It opens in the
+replacement playback graph after the canvas is final. Pipeline stop cancels a pending selector before source
+retirement and EOS delivery; its socket waits also observe cancellation, including incomplete HTTP requests.
+The 13-second graceful-stop watchdog (5-second stop budget plus 8-second grace) protects shutdown, not operator
+selection time. Leaving the selector open during normal playback does not start that watchdog.

@@ -187,6 +187,8 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
   solver["camera_config"] = choices.camera.configuration;
   solver["camera_fov"]["horizontal_fov"] = choices.camera.horizontal_fov;
   solver["camera_fov"]["vertical_fov"] = choices.camera.vertical_fov;
+  if (choices.camera.input_lens != StitchInputLens{})
+    solver["input_lens"] = WriteStitchInputLens(choices.camera.input_lens);
   solver["calibration_frame_selection_fingerprint"] = choices.calibration_frame_selection_fingerprint;
   if (!choices.manual_control_point_fingerprint.empty())
     solver["manual_control_points"] = choices.manual_control_point_fingerprint;
@@ -328,8 +330,10 @@ absl::StatusOr<HuginProject::CanvasProvenance> source_provenance(const fs::path&
       contents,
       read_bounded_regular_file_no_follow(
           directory / kStitchCanvasProvenanceArtifact, 4096, "reframe canvas provenance"));
-  if (contents.rfind("version=10\n", 0) != 0 && contents.rfind("version=11\n", 0) != 0)
-    return absl::FailedPreconditionError("Reframing requires complete version-10 or version-11 alignment provenance");
+  if (contents.rfind("version=10\n", 0) != 0 && contents.rfind("version=11\n", 0) != 0 &&
+      contents.rfind("version=12\n", 0) != 0 && contents.rfind("version=13\n", 0) != 0)
+    return absl::FailedPreconditionError(
+        "Reframing requires complete version-10 through version-13 alignment provenance");
   const auto provenance = HuginProject::ReadCanvasProvenanceLocked(directory);
   if (!provenance.ok())
     return provenance.status();

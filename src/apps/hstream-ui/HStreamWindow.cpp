@@ -1,4 +1,3 @@
-#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
@@ -11,7 +10,9 @@
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "src/apps/hstream-ui/HighlightPlan.h"
 #include "src/apps/hstream-ui/HighlightsDialog.h"
+#include "src/apps/hstream-ui/InputLensWidget.h"
 #include "src/apps/hstream-ui/Int8PreparationDialog.h"
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
 #include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
@@ -5489,6 +5490,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         camera_horizontal_fov_spin_->setEnabled(!running);
       if (camera_vertical_fov_spin_)
         camera_vertical_fov_spin_->setEnabled(!running);
+      if (input_lens_widget_)
+        input_lens_widget_->setEnabled(!running);
     }
     if (projection_combo_) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
@@ -5633,6 +5636,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         run_autooptimizer_check_->setChecked(nona);
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       run_autooptimizer_check_->setEnabled(nona && !running);
+      if (input_lens_widget_)
+        input_lens_widget_->setEnabled(!running);
     }
     updateProjectionCompatibility();
     updatePresetDirtyState();
@@ -5655,8 +5660,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   set_combo_to_data(camera_configuration_combo_, QString::fromStdString(default_camera_selection_.configuration));
   set_control_help(
       camera_configuration_combo_,
-      "Source camera/lens preset used by stitching calibration. Selecting a preset loads its default source FOVs; "
-      "editing either FOV creates a game-only override.");
+      "Source camera/lens preset used by stitching calibration. Selecting a preset loads its default source FOVs and input lens; "
+      "editing these values creates a game-only override.");
 
   camera_horizontal_fov_spin_ = new QDoubleSpinBox();
   camera_horizontal_fov_spin_->setObjectName("cameraHorizontalFovSpin");
@@ -5692,6 +5697,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     camera_vertical_fov_spin_->setProperty("calibrationExactValue", QVariant());
     updatePresetDirtyState();
   });
+
+  input_lens_widget_ = new InputLensWidget();
+  input_lens_widget_->setLens(default_camera_selection_.input_lens);
+  input_lens_widget_->changed = [this]() { updatePresetDirtyState(); };
 
   projection_combo_ = new QComboBox();
   projection_combo_->setObjectName("stitchProjectionCombo");
@@ -7230,7 +7239,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* camera_vertical_fov_label = new QLabel("Camera vertical FOV");
     camera_vertical_fov_label->setObjectName("cameraVerticalFovLabel");
     camera_vertical_fov_label->setBuddy(camera_vertical_fov_spin_);
-    auto* projection_label = new QLabel("Projection");
+    auto* projection_label = new QLabel("Output projection");
     projection_label->setObjectName("stitchProjectionLabel");
     projection_label->setBuddy(projection_combo_);
     auto* projection_fov_label = new QLabel("Horizontal FOV");
@@ -7291,9 +7300,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     alignment_layout->addWidget(camera_horizontal_fov_spin_, 7, 1);
     alignment_layout->addWidget(camera_vertical_fov_label, 8, 0);
     alignment_layout->addWidget(camera_vertical_fov_spin_, 8, 1);
-    alignment_layout->addWidget(run_autooptimizer_check_, 9, 0, 1, 2);
-    alignment_layout->addWidget(clean_stitching_button_, 10, 0, 1, 2);
-    alignment_layout->setRowStretch(11, 1);
+    alignment_layout->addWidget(input_lens_widget_, 9, 0, 1, 2);
+    alignment_layout->addWidget(run_autooptimizer_check_, 10, 0, 1, 2);
+    alignment_layout->addWidget(clean_stitching_button_, 11, 0, 1, 2);
+    alignment_layout->setRowStretch(12, 1);
 
     auto* projection_layout = add_stitching_tab("stitchingProjection", "Projection");
     projection_layout->addWidget(projection_label, 0, 0);
@@ -7669,6 +7679,8 @@ hm::stitching::StitchCameraSelection HStreamWindow::stitchCameraSelection() cons
     selection.horizontal_fov = calibration_spin_value(camera_horizontal_fov_spin_);
   if (camera_vertical_fov_spin_)
     selection.vertical_fov = calibration_spin_value(camera_vertical_fov_spin_);
+  if (input_lens_widget_)
+    selection.input_lens = input_lens_widget_->lens();
   return selection;
 }
 
@@ -7679,10 +7691,10 @@ absl::StatusOr<hm::stitching::StitchCameraSelection> HStreamWindow::stitchCamera
   if (stitching && stitching.IsDefined() && !stitching.IsNull() && !stitching.IsMap())
     return absl::InvalidArgumentError("stitching must be a map");
   if (stitching && stitching.IsMap()) {
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
       const YAML::Node value = stitching[key];
       if (value && value.IsDefined())
-        effective["stitching"][key] = YAML::Clone(value);
+        effective["stitching"][key] = merge_yaml_maps(effective["stitching"][key], value);
     }
   }
   return hm::stitching::read_stitch_camera_selection(effective);
@@ -7709,6 +7721,8 @@ void HStreamWindow::applyCameraConfigurationDefaults() {
     set_calibration_spin_value(camera_horizontal_fov_spin_, configuration->horizontal_fov);
   if (camera_vertical_fov_spin_)
     set_calibration_spin_value(camera_vertical_fov_spin_, configuration->vertical_fov);
+  if (input_lens_widget_)
+    input_lens_widget_->setLens(configuration->input_lens);
 }
 
 QString HStreamWindow::stitchProjection() const {
@@ -8732,6 +8746,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     remove_yaml_path(config, {"stitching", "mapping_backend"});
     remove_yaml_path(config, {"stitching", "camera_config"});
     remove_yaml_path(config, {"stitching", "camera_fov"});
+    remove_yaml_path(config, {"stitching", "input_lens"});
     remove_yaml_path(config, {"stitching", "run_autooptimizer"});
     remove_yaml_path(config, {"stitching", "projection"});
     remove_yaml_path(config, {"stitching", "projection_framing"});
@@ -8852,7 +8867,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (mapping_backend_changed)
       reasons << QString("mapping backend %1 -> %2").arg(saved_mapping_backend, active_mapping_backend_);
     if (camera_changed)
-      reasons << "camera configuration/FOV";
+      reasons << "camera configuration/FOV/input lens";
     if (projection_changed)
       reasons << QString("projection %1 -> %2").arg(saved_projection, active_projection_);
     if (projection_parameters_changed)
@@ -16267,6 +16282,8 @@ void HStreamWindow::updateRunControls() {
     camera_horizontal_fov_spin_->setEnabled(!running && !finalizing);
   if (camera_vertical_fov_spin_)
     camera_vertical_fov_spin_->setEnabled(!running && !finalizing);
+  if (input_lens_widget_)
+    input_lens_widget_->setEnabled(!running && !finalizing);
   if (projection_combo_)
     projection_combo_->setEnabled(!running && !finalizing);
   updateProjectionParameterControls();
@@ -16810,6 +16827,8 @@ void HStreamWindow::resetCameraControls() {
       set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
     if (camera_vertical_fov_spin_)
       set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
+    if (input_lens_widget_)
+      input_lens_widget_->setLens(default_camera_selection_.input_lens);
   }
   if (!pipeline_running && projection_combo_) {
     projection_parameter_controls_projection_.clear();
@@ -17304,6 +17323,7 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   if (camera_vertical_fov_spin_) {
     const bool blocked = camera_vertical_fov_spin_->blockSignals(true);
+    input_lens_widget_->setLens(default_camera_selection_.input_lens);
     set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
     camera_vertical_fov_spin_->blockSignals(blocked);
   }
@@ -17919,6 +17939,7 @@ void HStreamWindow::loadSavedControlConfig() {
       set_calibration_spin_value(camera_vertical_fov_spin_, staged_camera_selection.vertical_fov);
       camera_vertical_fov_spin_->blockSignals(blocked);
     }
+    input_lens_widget_->setLens(staged_camera_selection.input_lens);
     projection_parameter_controls_projection_.clear();
     projection_parameter_values_ = std::move(staged_projection_parameters);
     if (projection_combo_) {
@@ -18204,6 +18225,7 @@ bool HStreamWindow::applySavedControlConfig(
            "stitching.mapping_backend",
            "stitching.camera_config",
            "stitching.camera_fov",
+           "stitching.input_lens",
            "stitching.run_autooptimizer",
            "stitching.projection",
            "stitching.projection_framing",
@@ -18434,7 +18456,7 @@ bool HStreamWindow::applySavedControlConfig(
     if (mapping_backend_changed)
       reasons << QString("mapping backend %1 -> %2").arg(previous_mapping_backend, selected_mapping_backend);
     if (camera_changed)
-      reasons << "camera configuration/FOV";
+      reasons << "camera configuration/FOV/input lens";
     if (projection_changed)
       reasons << QString("projection %1 -> %2").arg(previous_projection, selected_projection);
     if (projection_parameters_changed)
