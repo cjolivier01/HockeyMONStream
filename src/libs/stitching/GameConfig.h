@@ -16,6 +16,7 @@
 
 #include "hstream/src/libs/onnx/ExecutionProvider.h"
 #include "hstream/src/libs/stitching/ControlPointMatcher.h"
+#include "hstream/src/libs/stitching/InputLens.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 namespace hm::stitching {
@@ -25,16 +26,18 @@ struct StitchCameraConfiguration {
   std::string display_name{"GoPro Mission 1"};
   double horizontal_fov{127.2};
   double vertical_fov{95.0};
+  StitchInputLens input_lens;
 };
 
 struct StitchCameraSelection {
   std::string configuration{"gopro-mission-1"};
   double horizontal_fov{127.2};
   double vertical_fov{95.0};
+  StitchInputLens input_lens;
 
   bool operator==(const StitchCameraSelection& other) const {
     return configuration == other.configuration && horizontal_fov == other.horizontal_fov &&
-        vertical_fov == other.vertical_fov;
+        vertical_fov == other.vertical_fov && input_lens == other.input_lens;
   }
   bool operator!=(const StitchCameraSelection& other) const {
     return !(*this == other);

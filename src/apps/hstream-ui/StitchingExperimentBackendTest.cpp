@@ -459,7 +459,10 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   YAML::Node resolved = YAML::LoadFile((directory / "config.yaml").string());
   // Mimic the baseline runner materializing a user-level camera/FOV override;
   // the sibling candidate still has only the original game's explicit values.
-  const StitchCameraSelection camera{"custom-user-camera", 112.5, 88.0};
+  StitchCameraSelection camera{"custom-user-camera", 112.5, 88.0};
+  camera.input_lens.projection = "full-frame-fisheye";
+  camera.input_lens.optimization = "fixed";
+  camera.input_lens.distortion[1] = 0.0208293582808693;
   write_stitch_camera_selection(resolved, camera);
   // The CLI removes this key when 00:00:08 equals the inherited user setting.
   // Its absence must not conflict with the candidate's explicit reference time.

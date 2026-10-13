@@ -77,7 +77,7 @@ absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config
       return baseline.status();
     YAML::Node camera_config = YAML::Clone(baseline->values);
     const YAML::Node stitching = config["stitching"];
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
       if (stitching && stitching.IsMap() && stitching[key] && !stitching[key].IsNull())
         camera_config["stitching"][key] = YAML::Clone(stitching[key]);
     }
@@ -89,6 +89,8 @@ absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config
     context["camera_config"] = camera.configuration;
     context["horizontal_fov"] = camera.horizontal_fov;
     context["vertical_fov"] = camera.vertical_fov;
+    if (camera.input_lens != StitchInputLens{})
+      context["input_lens"] = WriteStitchInputLens(camera.input_lens);
     context["stitch_frame_time"] =
         stitching && stitching["stitch_frame_time"] ? stitching["stitch_frame_time"].as<std::string>() : "00:00:00";
     const YAML::Node game = config["game"];
@@ -147,7 +149,7 @@ absl::Status validate_player_frame_selection_sources(const YAML::Node& config) {
     // physical frames themselves. Keep that original provenance/fingerprint,
     // but permit a later solve to use the same pairs with another lens/FOV.
     // Scan completion and candidate handoff still compare the full context.
-    for (const char* key : {"camera_config", "horizontal_fov", "vertical_fov"}) {
+    for (const char* key : {"camera_config", "horizontal_fov", "vertical_fov", "input_lens"}) {
       expected.remove(key);
       actual.remove(key);
     }
@@ -837,6 +839,7 @@ absl::StatusOr<std::vector<StitchCameraConfiguration>> read_stitch_camera_config
         return absl::InvalidArgumentError(
             "stitching.camera_configs." + id + ".vertical_fov must be finite and between 0 and 180 degrees");
       }
+      HM_ASSIGN_OR_RETURN(camera.input_lens, ReadStitchInputLens(entry.second["input_lens"]));
       result.push_back(std::move(camera));
     }
     if (result.empty())
@@ -902,6 +905,11 @@ absl::StatusOr<StitchCameraSelection> read_stitch_camera_selection(const YAML::N
       return absl::InvalidArgumentError(
           "stitching.camera_fov.vertical_fov must be finite and between 0 and 180 degrees");
     }
+    HM_ASSIGN_OR_RETURN(
+        result.input_lens,
+        ReadStitchInputLens(
+            stitching && stitching.IsMap() ? stitching["input_lens"] : YAML::Node(),
+            selected == configurations.end() ? StitchInputLens{} : selected->input_lens));
     return result;
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching camera selection: " + std::string(exception.what()));
@@ -912,6 +920,8 @@ void write_stitch_camera_selection(YAML::Node& config, const StitchCameraSelecti
   config["stitching"]["camera_config"] = selection.configuration;
   config["stitching"]["camera_fov"]["horizontal_fov"] = selection.horizontal_fov;
   config["stitching"]["camera_fov"]["vertical_fov"] = selection.vertical_fov;
+  // Write the default too, so a game can override a user-level lens correction.
+  config["stitching"]["input_lens"] = WriteStitchInputLens(selection.input_lens);
 }
 
 void write_stitch_projection_parameters(
@@ -2275,6 +2285,10 @@ void write_camera_selection_node(YAML::Node node, const StitchCameraSelection& c
   node["camera_config"] = camera.configuration;
   node["camera_fov"]["horizontal_fov"] = camera.horizontal_fov;
   node["camera_fov"]["vertical_fov"] = camera.vertical_fov;
+  if (camera.input_lens != StitchInputLens{})
+    node["input_lens"] = WriteStitchInputLens(camera.input_lens);
+  else
+    node.remove("input_lens");
 }
 
 absl::StatusOr<StitchCameraSelection> read_camera_selection_node(const YAML::Node& node) {
@@ -2282,6 +2296,8 @@ absl::StatusOr<StitchCameraSelection> read_camera_selection_node(const YAML::Nod
   if (node && node.IsMap()) {
     if (node["camera_config"])
       wrapper["stitching"]["camera_config"] = YAML::Clone(node["camera_config"]);
+    if (node["input_lens"])
+      wrapper["stitching"]["input_lens"] = YAML::Clone(node["input_lens"]);
     if (node["camera_fov"])
       wrapper["stitching"]["camera_fov"] = YAML::Clone(node["camera_fov"]);
   }
@@ -2296,7 +2312,7 @@ absl::StatusOr<StitchCameraSelection> read_worker_camera_selection(const YAML::N
   const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
   if (stitching && !stitching.IsNull() && !stitching.IsMap())
     return absl::InvalidArgumentError("stitching must be a map");
-  for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
+  for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
     const YAML::Node value = stitching && stitching.IsMap() ? stitching[key] : YAML::Node();
     if (value && value.IsDefined())
       effective["stitching"][key] = YAML::Clone(value);

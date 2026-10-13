@@ -4103,7 +4103,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               camera_horizontal_fov->value() ==
                   HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
               camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov &&
-              projection_label->text() == "Projection" &&
+              projection_label->text() == "Output projection" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
               clean_stitching->text() == "Clean Stitching" && stitch_frame_time->isEnabled() &&
@@ -4119,10 +4119,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               general_panini_parameters_visible && albers_parameters_visible && biplane_parameters_visible &&
               triplane_parameters_visible && fixed_panini_parameters_hidden && parameters_hidden_for_native_backend &&
               general_panini_framing_defaults && general_panini_fixed_fov_limit && auto_fov_disables_fixed_value &&
-              rectilinear_fov_limit &&
-              wide_projection_fov_limit && general_panini_fov_restored && !projection_auto_fov->isEnabled() &&
-              !projection_horizontal_fov->isEnabled() && !projection_auto_canvas->isEnabled() &&
-              !projection_auto_crop->isEnabled() && all_projection_layouts_legible && all_projection_artifacts_captured,
+              rectilinear_fov_limit && wide_projection_fov_limit && general_panini_fov_restored &&
+              !projection_auto_fov->isEnabled() && !projection_horizontal_fov->isEnabled() &&
+              !projection_auto_canvas->isEnabled() && !projection_auto_crop->isEnabled() &&
+              all_projection_layouts_legible && all_projection_artifacts_captured,
           "Algorithm controls must expose compatible projections in the earliest preview tab whose frames reflect "
           "their pipeline stage")) {
     std::cerr << "algorithm state: camera=" << camera_configuration->currentData().toString().toStdString()
@@ -9463,6 +9463,39 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           camera_vertical_fov->value() == 94.5 && !save->isEnabled(),
       "Reloading a game must restore its camera selection and both private source FOV overrides");
 
+  auto* input_projection = require_child<QComboBox>(window, "inputLensProjectionCombo");
+  auto* input_optimization = require_child<QComboBox>(window, "inputLensOptimizationCombo");
+  auto* input_b = require_child<QDoubleSpinBox>(window, "inputLensBSpin");
+  auto* input_center_y = require_child<QDoubleSpinBox>(window, "inputLensCenterYSpin");
+  if (!input_projection || !input_optimization || !input_b || !input_center_y)
+    return false;
+  input_projection->setCurrentIndex(input_projection->findData("full-frame-fisheye"));
+  input_optimization->setCurrentIndex(input_optimization->findData("fixed"));
+  input_b->setValue(0.02);
+  input_center_y->setValue(14.35);
+  activate(save);
+  const auto lens_config = YAML::LoadFile(config_path.string());
+  const auto lens_camera = hm::stitching::read_stitch_camera_selection(lens_config);
+  const bool input_lens_saved = expect(
+      lens_camera.ok() && lens_camera->input_lens.projection == "full-frame-fisheye" &&
+          lens_camera->input_lens.optimization == "fixed" && lens_camera->input_lens.distortion[1] == 0.02 &&
+          lens_camera->input_lens.center_offset[1] == 14.35 / 100 &&
+          lens_config["stitching"]["projection"].as<std::string>() == "general-panini" &&
+          lens_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
+          !lens_config["hstream_ui"]["stitching_calibration"]["reframe"],
+      "Input optics must save independently of General Panini and require a new alignment");
+  activate(create);
+  const bool input_lens_reloaded = expect(
+      input_projection->currentData() == "full-frame-fisheye" && input_optimization->currentData() == "fixed" &&
+          input_b->value() == 0.02 && input_center_y->value() == 14.35 && !save->isEnabled(),
+      "Reloading the main UI must restore source optics without dirtying the preset");
+
+  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
+  if (!expect(input_projection->currentData() == "rectilinear" && input_optimization->currentData() == "auto" &&
+                  input_b->value() == 0 && input_center_y->value() == 0,
+              "Selecting a camera must replace previous game optics with the profile defaults"))
+    return false;
+
   YAML::Node inherited_rink_config = YAML::Clone(config);
   inherited_rink_config["stitching"]["rink_config"] = "vallco";
   inherited_rink_config["stitching"].remove("projection_framing");
@@ -10351,8 +10384,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(create);
   return explicit_zero_is_private_intent && explicit_zero_survives_ui_save && inherited_rink_loads_clean &&
       inherited_rink_preserved && leveled_view_loads_clean && leveled_view_preserved && camera_defaults_available &&
-      hero_defaults_applied && ace_defaults_applied && saved && camera_override_reloaded &&
-      generated_parameters_restored && generated_projection_parameters_discarded &&
+      hero_defaults_applied && ace_defaults_applied && saved && camera_override_reloaded && input_lens_saved &&
+      input_lens_reloaded && generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
       edited_generated_parameters_are_user_intent && generated_backend_aliases_restore_previous &&
       partial_previous_framing_inherits_defaults && absent_previous_framing_restores_defaults &&

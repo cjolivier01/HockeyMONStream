@@ -29,8 +29,8 @@ cc_test(
 
 cc_library(
   name = "game_config",
-  srcs = ["GameConfig.cpp"],
-  hdrs = ["GameConfig.h"],
+  srcs = ["GameConfig.cpp", "InputLens.cpp"],
+  hdrs = ["GameConfig.h", "InputLens.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
@@ -817,4 +817,10 @@ cc_library(
     include_prefix = "hstream/src/libs/stitching",
     visibility = ["//visibility:public"],
     deps = ["@deepstream//:deepstream_lib"],
+)
+
+cc_test(
+    name = "input_lens_test",
+    srcs = ["InputLensTest.cpp"],
+    deps = [":game_config", "@yaml-cpp"],
 )

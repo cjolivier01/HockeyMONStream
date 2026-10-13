@@ -540,6 +540,15 @@ bool manages_its_own_window(GstElement* sink) {
       g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), NVDS_ELEM_SINK_3D) == 0;
 }
 
+bool pipeline_waiting_for_user_input(AppCtx* context) {
+  gboolean waiting = FALSE;
+  if (context) {
+    if (GstElement* cropper = context->pipeline.common_elements.hmplaycropper_bin.playcropper)
+      g_object_get(G_OBJECT(cropper), "waiting-for-user-input", &waiting, nullptr);
+  }
+  return waiting;
+}
+
 absl::Status pause_pipeline_for_model_initialization(
     AppCtx* app_ctx,
     const volatile sig_atomic_t* interrupt_requested) {
@@ -555,13 +564,16 @@ absl::Status pause_pipeline_for_model_initialization(
   constexpr auto kModelInitializationTimeout = std::chrono::minutes(15);
   constexpr auto kCancellationTimeout = std::chrono::seconds(5);
   constexpr GstClockTime kPollInterval = 100 * GST_MSECOND;
-  const auto initialization_deadline = std::chrono::steady_clock::now() + kModelInitializationTimeout;
+  auto initialization_deadline = std::chrono::steady_clock::now() + kModelInitializationTimeout;
+  std::optional<std::chrono::steady_clock::time_point> operator_wait_started;
   std::optional<std::chrono::steady_clock::time_point> cancellation_deadline;
   while (true) {
     const GstStateChangeReturn result = gst_element_get_state(pipeline, nullptr, nullptr, kPollInterval);
     const bool interrupted = interrupt_requested && *interrupt_requested;
     if (interrupted && !cancellation_deadline.has_value()) {
-      g_printerr("Interrupt received during pipeline preroll; cancelling stitching calibration\n");
+      g_printerr("Interrupt received during pipeline preroll; cancelling pending work\n");
+      if (GstElement* cropper = app_ctx->pipeline.common_elements.hmplaycropper_bin.playcropper)
+        g_object_set(G_OBJECT(cropper), "cancel-pending-work", TRUE, nullptr);
       if (GstElement* stitcher = app_ctx->pipeline.hmstitcher_bin.elem_hmstitcher) {
         g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
       }
@@ -588,7 +600,14 @@ absl::Status pause_pipeline_for_model_initialization(
       std::fflush(stderr);
       std::_Exit(128 + SIGINT);
     }
-    if (now >= initialization_deadline) {
+    if (pipeline_waiting_for_user_input(app_ctx)) {
+      if (!operator_wait_started)
+        operator_wait_started = now;
+    } else if (operator_wait_started) {
+      initialization_deadline += now - *operator_wait_started;
+      operator_wait_started.reset();
+    }
+    if (!operator_wait_started && now >= initialization_deadline) {
       return absl::DeadlineExceededError("Timed out waiting for pipeline model initialization");
     }
   }
@@ -1620,6 +1639,19 @@ absl::Status PipelineApplication::createPipelines(
         double(rink_mask_position_ns_) / GST_SECOND,
         selection.c_str());
   }
+  // Use the same restart plan as the completion handler. Unrestricted
+  // single-context calibration at time zero keeps its graph and must still
+  // offer scoreboard selection on that graph's first Program frame.
+  std::vector<hm::pipeline_internal::StitchFrameRewindState> rewind_states;
+  for (const auto& context : app_contexts) {
+    rewind_states.push_back({
+        context && context->configurator().stitching_calibration_required(),
+        context && stitch_frame_rewound_contexts_.count(context.get()) != 0,
+        context && stitch_frame_rewind_pending_contexts_.count(context.get()) != 0,
+    });
+  }
+  const auto restart_candidates = hm::pipeline_internal::stitch_frame_rewind_candidates(
+      start_time_ns_, stitch_frame_time_ns_, rewind_states, ui_preview_realtime_);
   for (guint i = 0; i < app_contexts.size(); i++) {
     hm::diagnostics::Breadcrumb("pipeline", "create instance=" + std::to_string(i));
     set_render_playback_realtime(
@@ -1633,6 +1665,18 @@ absl::Status PipelineApplication::createPipelines(
             observe_processed_output_static)) {
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
+    }
+    // Defer corners only for graphs that will be replaced after calibration.
+    if (std::find(restart_candidates.begin(), restart_candidates.end(), i) != restart_candidates.end()) {
+      if (GstElement* cropper = app_contexts[i]->pipeline.common_elements.hmplaycropper_bin.playcropper) {
+        // The algorithm is constructed at NULL -> READY; retain this request
+        // in its startup properties instead of sending it to a missing worker.
+        gchar* properties = nullptr;
+        g_object_get(G_OBJECT(cropper), "plugin-private-config", &properties, nullptr);
+        const std::string deferred = std::string(properties ? properties : "") + ";cancel-pending-work=1";
+        g_free(properties);
+        g_object_set(G_OBJECT(cropper), "plugin-private-config", deferred.c_str(), nullptr);
+      }
     }
     if (int8_sample_output_) {
       if (app_contexts.size() != 1)
@@ -4250,6 +4294,20 @@ gboolean PipelineApplication::check_for_interrupt() {
   }
   if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
     return TRUE;
+  }
+  if (time_limit_seconds_ > 0) {
+    const auto stage = stage_app_contexts_.find(current_stage_);
+    if (stage != stage_app_contexts_.end() &&
+        std::any_of(stage->second.begin(), stage->second.end(), [](const auto& context) {
+          return pipeline_waiting_for_user_input(context.get());
+        })) {
+      // Unrestricted sinks can enter PLAYING before the operator releases the
+      // first Program frame. Preserve the no-progress budget across that wait.
+      std::lock_guard<std::mutex> lock(playback_timing_mu_);
+      if (timed_run_last_progress_wall_ != std::chrono::steady_clock::time_point{})
+        timed_run_last_progress_wall_ = std::chrono::steady_clock::now();
+      return TRUE;
+    }
   }
   std::chrono::steady_clock::time_point last_progress_wall;
   {
@@ -7332,6 +7390,14 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
     }
   }
   if (!all_playing) {
+    // A paced render sink needs its first Program frame to finish preroll.
+    // The operator can take longer than the startup budget to select corners;
+    // give the graph its ordinary bounded grace after that selection ends.
+    if (std::any_of(stage_contexts.begin(), stage_contexts.end(), pipeline_waiting_for_user_input)) {
+      stitch_frame_rewind_deadline_ =
+          std::chrono::steady_clock::now() + std::chrono::milliseconds(stitch_frame_restart_timeout_ms());
+      return G_SOURCE_CONTINUE;
+    }
     if (std::chrono::steady_clock::now() < stitch_frame_rewind_deadline_) {
       return G_SOURCE_CONTINUE;
     }

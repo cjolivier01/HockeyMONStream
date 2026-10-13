@@ -241,8 +241,7 @@ int main() {
       "a supplied baseline that omits the matcher must be a configuration error");
   YAML::Node non_scalar_matcher;
   non_scalar_matcher["stitching"]["control_point_matcher"] = YAML::Load("[bad, type]");
-  ok &= expect(
-      !resolve_control_point_matcher(non_scalar_matcher).ok(), "a non-scalar matcher must be rejected");
+  ok &= expect(!resolve_control_point_matcher(non_scalar_matcher).ok(), "a non-scalar matcher must be rejected");
 
   using hm::stitching::ControlPointResolution;
   YAML::Node resolution_private(YAML::NodeType::Map);
@@ -341,6 +340,35 @@ stitching:
       overridden_camera.ok() && overridden_camera->configuration == "gopro-mission-1" &&
           overridden_camera->horizontal_fov == 126.5 && overridden_camera->vertical_fov == 95.0,
       "a per-game source FOV may override one axis while inheriting the selected camera's other axis");
+  YAML::Node lens_profile = YAML::Clone(camera_config);
+  lens_profile["stitching"]["camera_configs"]["gopro-mission-1"]["input_lens"] = YAML::Load(
+      "{projection: full-frame-fisheye, optimization: refine, distortion: [0, 0.02, 0], center_offset: [-0.001, 0.14]}");
+  const auto inherited_lens = hm::stitching::read_stitch_camera_selection(lens_profile);
+  ok &= expect(
+      inherited_lens.ok() && inherited_lens->input_lens.projection == "full-frame-fisheye" &&
+          inherited_lens->input_lens.distortion[1] == 0.02 && inherited_lens->input_lens.center_offset[1] == 0.14,
+      "selected camera must supply input-lens defaults");
+  lens_profile["stitching"]["input_lens"]["optimization"] = "fixed";
+  const auto partial_lens = hm::stitching::read_stitch_camera_selection(lens_profile);
+  ok &= expect(
+      partial_lens.ok() && partial_lens->input_lens.optimization == "fixed" &&
+          partial_lens->input_lens.projection == "full-frame-fisheye" && partial_lens->input_lens.distortion[1] == 0.02,
+      "partial game lens overrides must retain other camera-profile defaults");
+  lens_profile["stitching"]["input_lens"] = hm::stitching::WriteStitchInputLens({});
+  const auto reset_lens = hm::stitching::read_stitch_camera_selection(lens_profile);
+  ok &= expect(
+      reset_lens.ok() && reset_lens->input_lens == hm::stitching::StitchInputLens{},
+      "explicit neutral game lens must override a corrected camera profile");
+  lens_profile["stitching"].remove("input_lens");
+  lens_profile["stitching"]["camera_config"] = "gopro-hero-11";
+  const auto switched_lens = hm::stitching::read_stitch_camera_selection(lens_profile);
+  ok &= expect(
+      switched_lens.ok() && switched_lens->input_lens == hm::stitching::StitchInputLens{},
+      "switching camera profiles must select that camera's lens defaults");
+  lens_profile["stitching"]["camera_configs"]["gopro-hero-11"]["input_lens"]["projection"] = "bad";
+  ok &= expect(
+      !hm::stitching::read_stitch_camera_configurations(lens_profile).ok(),
+      "invalid camera-profile lens defaults must fail validation");
   YAML::Node private_camera_config(YAML::NodeType::Map);
   if (overridden_camera.ok())
     hm::stitching::write_stitch_camera_selection(private_camera_config, *overridden_camera);
@@ -1264,13 +1292,15 @@ stitching:
     automatic_again["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "automatic-again";
     ok &= expect(
         hm::stitching::reserve_stitching_backend_generation_in_config(
-            automatic_again, "automatic-again", magsac_choices).ok() &&
-            hm::stitching::validate_stitching_backend_generation(
-                automatic_again, "automatic-again", magsac_choices).ok(),
+            automatic_again, "automatic-again", magsac_choices)
+                .ok() &&
+            hm::stitching::validate_stitching_backend_generation(automatic_again, "automatic-again", magsac_choices)
+                .ok(),
         "a new automatic generation must clear the previous manual claim identity");
     manual_generation["stitching"]["manual_control_points"] = YAML::Null;
-    ok &= expect(!hm::stitching::manual_control_point_fingerprint(manual_generation).ok(),
-                 "an explicit null manual reference cannot silently enable automatic matching");
+    ok &= expect(
+        !hm::stitching::manual_control_point_fingerprint(manual_generation).ok(),
+        "an explicit null manual reference cannot silently enable automatic matching");
     manual_generation["stitching"]["manual_control_points"] = "not-a-fingerprint";
     ok &= expect(
         !hm::stitching::manual_control_point_fingerprint(manual_generation).ok(),
@@ -1366,6 +1396,25 @@ stitching:
                   nulled_camera_override, "camera-override-generation", overridden_camera_choices)),
       "removing or nulling a camera FOV override during calibration must restore the baseline preset and fence "
       "publication of stale maps");
+
+  auto changed_lens_generation = YAML::Clone(camera_override_generation);
+  changed_lens_generation["stitching"]["input_lens"]["projection"] = "full-frame-fisheye";
+  ok &= expect(
+      absl::IsAborted(
+          hm::stitching::validate_stitching_backend_generation(
+              changed_lens_generation, "camera-override-generation", overridden_camera_choices)),
+      "a changed input lens must prevent publication of stale calibration maps");
+  auto lens_choices = overridden_camera_choices;
+  lens_choices.camera.input_lens.projection = "full-frame-fisheye";
+  changed_lens_generation["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+  ok &= expect(
+      hm::stitching::reserve_stitching_backend_generation_in_config(
+          changed_lens_generation, "camera-override-generation", lens_choices)
+              .ok() &&
+          hm::stitching::validate_stitching_backend_generation(
+              changed_lens_generation, "camera-override-generation", lens_choices)
+              .ok(),
+      "new calibration generations must preserve their claimed input lens");
 
   YAML::Node parameter_generation(YAML::NodeType::Map);
   parameter_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";

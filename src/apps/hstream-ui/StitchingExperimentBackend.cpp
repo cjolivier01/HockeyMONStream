@@ -345,6 +345,10 @@ absl::Status configure_candidate(
   std::string selection;
   HM_ASSIGN_OR_RETURN(selection, reusable_selection_fingerprint(config, settings));
   config["stitching"]["calibration_frame_count"] = settings.frame_count;
+  if (settings.camera) {
+    hm::stitching::write_stitch_camera_selection(config, *settings.camera);
+    config["hstream_ui"].remove("generated_stitching_backend_choices");
+  }
   if (settings.manual_control_points) {
     config["stitching"]["manual_control_points"] = *settings.manual_control_points;
     config["hstream_ui"]["stitching_calibration"]["match_snapshot"] = *settings.manual_control_points;
@@ -602,7 +606,7 @@ absl::Status copy_selected_frame_inputs(
   config["game"]["stitching"]["frame_offsets"] = YAML::Clone(source_offsets);
   config["stitching"].remove("frame_offsets");
   if (freeze_camera) {
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov"})
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"})
       copy_node(config["stitching"], source_config["stitching"], key);
   }
   copy_node(config["stitching"], source_config["stitching"], "stitch_frame_time");
@@ -813,6 +817,7 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
     // This row describes the saved solve, not the current experiment controls.
     settings.control_point_resolution.reset();
     settings.control_point_matcher.reset();
+    settings.camera.reset();
     const YAML::Node claim = calibration["backend_generation"];
     const YAML::Node stitching = config["stitching"];
     YAML::Node saved_resolution =
@@ -840,6 +845,13 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
       HM_ASSIGN_OR_RETURN(matcher, hm::stitching::ParseControlPointMatcher(saved_matcher.as<std::string>()));
       settings.control_point_matcher = hm::stitching::ControlPointMatcherName(matcher);
     }
+    YAML::Node camera_config;
+    camera_config["stitching"] = YAML::Clone(stitching);
+    if (calibration["status"].as<std::string>("") == "complete" && claim && claim.IsMap() &&
+        claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>("") &&
+        claim["camera_fov"])
+      camera_config["stitching"] = YAML::Clone(claim);
+    HM_ASSIGN_OR_RETURN(settings.camera, hm::stitching::read_stitch_camera_selection(camera_config));
     settings.control_points = calibration["control_points"].as<int>(settings.control_points);
     settings.frame_count = fingerprint.empty()
         ? calibration["frame_count"].as<int>(settings.frame_count)
@@ -883,6 +895,11 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     if (settings.control_point_matcher->empty())
       return absl::InvalidArgumentError("An explicit experiment control-point matcher must not be empty");
     HM_RETURN_IF_ERROR(hm::stitching::ParseControlPointMatcher(*settings.control_point_matcher).status());
+  }
+  if (settings.camera) {
+    YAML::Node check;
+    hm::stitching::write_stitch_camera_selection(check, *settings.camera);
+    HM_RETURN_IF_ERROR(hm::stitching::read_stitch_camera_selection(check).status());
   }
   if (settings.control_points <= 0 || settings.frame_count <= 0 || sequence <= 0)
     return absl::InvalidArgumentError("Stitching experiment counts and sequence must be positive");
@@ -1170,6 +1187,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
           "calibration_frame_selection",
           "calibration_frame_inputs_fingerprint",
           "camera_config",
+          "input_lens",
           "camera_fov",
           "control_point_execution_provider",
           "control_point_matcher",
@@ -1354,7 +1372,11 @@ absl::StatusOr<StitchingExperimentPlayerSelection> PreparePlayerSelectedStitchin
     YAML::Node selected_source = YAML::Clone(source_config);
     selected_source["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);
     HM_RETURN_IF_ERROR(copy_selected_frame_inputs(
-        config, selected_source, baseline.game_directory, candidate.game_directory, /*freeze_camera=*/true));
+        config,
+        selected_source,
+        baseline.game_directory,
+        candidate.game_directory,
+        /*freeze_camera=*/!candidate.settings.camera.has_value()));
     HM_ASSIGN_OR_RETURN(expected_context, hm::stitching::player_frame_source_context(config, anchor_ns));
     HM_RETURN_IF_ERROR(hm::stitching::ValidatePlayerFrameSourceContext(plan, expected_context));
     config["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);

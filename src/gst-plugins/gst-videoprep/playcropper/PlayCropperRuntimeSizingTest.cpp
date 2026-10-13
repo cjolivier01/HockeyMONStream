@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <thread>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -19,6 +21,12 @@ namespace {
 class TestPlayCropperPriv : public hm::playcropper::PlayCropperPriv {
  public:
   using PlayCropperPriv::PlayCropperPriv;
+
+  void HoldProcessingLock(std::promise<void>& held, std::future<void>& release) {
+    absl::WriterMutexLock lock(&mu_process_);
+    held.set_value();
+    release.wait();
+  }
 
   bool ApplyScoreboardEpoch(const NvDsFrameMeta* frame_meta) {
     return ApplyScoreboardOutputEpoch(frame_meta).ok();
@@ -193,6 +201,26 @@ bool scoreboard_config_polling_is_rate_limited() {
 } // namespace
 
 int main() {
+  {
+    TestPlayCropperPriv waiting_cropper(0, 1);
+    std::promise<void> held, release;
+    auto released = release.get_future();
+    std::thread worker([&] { waiting_cropper.HoldProcessingLock(held, released); });
+    held.get_future().wait();
+    auto cancel = std::async(std::launch::async, [&] {
+      return waiting_cropper.SetProperty({"cancel-pending-work", "1"});
+    });
+    const bool prompt = cancel.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    release.set_value();
+    worker.join();
+    NvBufSurfaceParams params{};
+    if (!prompt || !cancel.get() ||
+        !waiting_cropper.EnsureScoreboardConfigured(hm::surface::Surface(&params), nullptr).ok()) {
+      std::cerr << "Cancelling selection must bypass the video worker lock and prevent a new selector\n";
+      return 1;
+    }
+  }
+
   const hm::BBox left_tracking_box(100, 50, 300, 250);
   const hm::playcropper::FrameTransformGeometry no_crop_transform = hm::playcropper::CalculateFrameTransformGeometry(
       /*input_width=*/1000,

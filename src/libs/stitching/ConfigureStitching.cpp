@@ -2109,7 +2109,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     const bool backend_present = backend_node && !backend_node.IsNull();
     const bool projection_present = projection_node && !projection_node.IsNull();
     const bool camera_present = camera_node && !camera_node.IsNull();
-    const bool camera_fov_present = camera_fov_node && !camera_fov_node.IsNull();
+    const bool camera_fov_present = (camera_fov_node && !camera_fov_node.IsNull()) ||
+        (stitching["input_lens"] && !stitching["input_lens"].IsNull());
     const bool resolution_present =
         stitching["control_point_resolution"] && !stitching["control_point_resolution"].IsNull();
     const bool selection_present =
@@ -2143,7 +2144,7 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(**loaded));
     StitchCameraSelection camera;
     YAML::Node effective_camera_config = YAML::Clone(baseline->values);
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
       const YAML::Node value = stitching[key];
       if (value && value.IsDefined())
         effective_camera_config["stitching"][key] = YAML::Clone(value);
@@ -2948,6 +2949,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
   HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(config));
   StitchCameraSelection camera;
   HM_ASSIGN_OR_RETURN(camera, read_stitch_camera_selection(config));
+  if (camera.input_lens != StitchInputLens{} && mapping_backend != MappingBackend::kNona)
+    return absl::InvalidArgumentError("Input lens correction requires the NONA mapping backend");
   HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(mapping_backend, projection));
   if (mapping_backend == MappingBackend::kNona)
     HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
@@ -3628,6 +3631,7 @@ absl::Status create_control_points(
   options.camera_configuration = backend_choices.camera.configuration;
   options.horizontal_fov = backend_choices.camera.horizontal_fov;
   options.vertical_fov = backend_choices.camera.vertical_fov;
+  options.input_lens = backend_choices.camera.input_lens;
   options.max_canvas_dimension = max_canvas_dimension;
   if (max_output_width > 0)
     options.max_output_width = max_output_width;
@@ -5540,8 +5544,8 @@ bool is_scoreboard_configured(const std::string& game_dir) {
   }
 }
 
-absl::Status configure_scoreboard(const std::string& game_dir) {
-  HM_RETURN_IF_ERROR(ScoreboardSelector::Run(game_dir));
+absl::Status configure_scoreboard(const std::string& game_dir, const std::function<bool()>& is_cancelled) {
+  HM_RETURN_IF_ERROR(ScoreboardSelector::Run(game_dir, is_cancelled));
   if (!is_scoreboard_configured(game_dir)) {
     return absl::InternalError("Scoreboard selector completed without writing perspective_polygon");
   }

@@ -348,12 +348,32 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
              (*parsed)->control_point_resolution == hm::stitching::ControlPointResolution::k1K) &&
             (*parsed)->calibration_frame_selection_fingerprint == (selected ? fingerprint : std::string()) &&
             (*parsed)->manual_control_point_fingerprint ==
-                (fields.size() == 32 ? fields.back().substr(std::string("manual-control-points=").size())
-                                     : std::string()) &&
+                ((fields[0] == "version=11" || fields[0] == "version=13")
+                     ? fields.back().substr(std::string("manual-control-points=").size())
+                     : std::string()) &&
             (!selected || (*parsed)->calibration_frame_diagnostics == diagnostics),
         "both readers must accept supported provenance and preserve the exact plan identity/diagnostics");
   };
   bool ok = check(lines, true, true);
+  hm::stitching::StitchInputLens lens;
+  lens.projection = "full-frame-fisheye";
+  lens.optimization = "fixed";
+  lens.distortion[1] = 0.0208293582808693;
+  auto lens_fields = lines;
+  lens_fields[0] = "version=12";
+  lens_fields.push_back("input-lens=" + hm::stitching::SerializeStitchInputLens(lens));
+  ok &= check(lens_fields, true, true);
+  auto lens_parsed = hm::stitching::HuginProject::ReadCanvasProvenanceLocked(directory);
+  ok &= expect(
+      lens_parsed.ok() && lens_parsed->has_value() && (*lens_parsed)->camera->input_lens == lens,
+      "lens provenance must preserve exact source optics");
+  lens_fields[0] = "version=13";
+  lens_fields.push_back("manual-control-points=" + std::string(64, 'b'));
+  ok &= check(lens_fields, true, true);
+  for (const std::string invalid : {"", "null", "{projection: bad}"}) {
+    lens_fields[31] = "input-lens=" + invalid;
+    ok &= check(lens_fields, false, true);
+  }
   auto ordinary = lines;
   ordinary[29] = "calibration-frame-selection=none";
   ordinary[30] = "calibration-frame-diagnostics=none";

@@ -10,6 +10,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 struct StitchingExperimentSettings {
   int control_points{0};
@@ -22,6 +23,8 @@ struct StitchingExperimentSettings {
   std::optional<std::string> manual_control_points;
   // Frozen automatic matcher; legacy nullopt retains config inheritance.
   std::optional<std::string> control_point_matcher;
+  // Full source optics frozen for this candidate; old records inherit their saved config.
+  std::optional<hm::stitching::StitchCameraSelection> camera;
 };
 
 struct StitchingExperimentWorkspace {
