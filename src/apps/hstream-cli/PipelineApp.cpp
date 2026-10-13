@@ -1639,6 +1639,19 @@ absl::Status PipelineApplication::createPipelines(
         double(rink_mask_position_ns_) / GST_SECOND,
         selection.c_str());
   }
+  // Use the same restart plan as the completion handler. Unrestricted
+  // single-context calibration at time zero keeps its graph and must still
+  // offer scoreboard selection on that graph's first Program frame.
+  std::vector<hm::pipeline_internal::StitchFrameRewindState> rewind_states;
+  for (const auto& context : app_contexts) {
+    rewind_states.push_back({
+        context && context->configurator().stitching_calibration_required(),
+        context && stitch_frame_rewound_contexts_.count(context.get()) != 0,
+        context && stitch_frame_rewind_pending_contexts_.count(context.get()) != 0,
+    });
+  }
+  const auto restart_candidates = hm::pipeline_internal::stitch_frame_rewind_candidates(
+      start_time_ns_, stitch_frame_time_ns_, rewind_states, ui_preview_realtime_);
   for (guint i = 0; i < app_contexts.size(); i++) {
     hm::diagnostics::Breadcrumb("pipeline", "create instance=" + std::to_string(i));
     set_render_playback_realtime(
@@ -1653,9 +1666,8 @@ absl::Status PipelineApplication::createPipelines(
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
-    // This graph exists only until calibration completes. Ask for scoreboard
-    // corners in the replacement playback graph, whose canvas is final.
-    if (app_contexts[i]->configurator().stitching_calibration_required()) {
+    // Defer corners only for graphs that will be replaced after calibration.
+    if (std::find(restart_candidates.begin(), restart_candidates.end(), i) != restart_candidates.end()) {
       if (GstElement* cropper = app_contexts[i]->pipeline.common_elements.hmplaycropper_bin.playcropper) {
         // The algorithm is constructed at NULL -> READY; retain this request
         // in its startup properties instead of sending it to a missing worker.
@@ -4282,6 +4294,20 @@ gboolean PipelineApplication::check_for_interrupt() {
   }
   if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
     return TRUE;
+  }
+  if (time_limit_seconds_ > 0) {
+    const auto stage = stage_app_contexts_.find(current_stage_);
+    if (stage != stage_app_contexts_.end() &&
+        std::any_of(stage->second.begin(), stage->second.end(), [](const auto& context) {
+          return pipeline_waiting_for_user_input(context.get());
+        })) {
+      // Unrestricted sinks can enter PLAYING before the operator releases the
+      // first Program frame. Preserve the no-progress budget across that wait.
+      std::lock_guard<std::mutex> lock(playback_timing_mu_);
+      if (timed_run_last_progress_wall_ != std::chrono::steady_clock::time_point{})
+        timed_run_last_progress_wall_ = std::chrono::steady_clock::now();
+      return TRUE;
+    }
   }
   std::chrono::steady_clock::time_point last_progress_wall;
   {
