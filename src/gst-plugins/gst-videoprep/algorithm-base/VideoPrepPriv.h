@@ -97,6 +97,11 @@ class VideoPrepPriv : public DSCustomLibraryBase {
     return 0;
   }
 
+  // Read without the processing mutex: the worker may be awaiting an operator.
+  virtual bool WaitingForUserInput() const {
+    return false;
+  }
+
   virtual bool UsesRuntimeOutputSize() const {
     return false;
   }

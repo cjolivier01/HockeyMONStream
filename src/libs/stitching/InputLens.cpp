@@ -104,6 +104,10 @@ absl::StatusOr<std::string> ApplyStitchInputLens(const std::string& pto, const S
   size_t images = 0;
   double first_width = 0, first_height = 0;
   for (std::string line; std::getline(input, line);) {
+    // pto_gen enables Hugin's position-only preset. On project load that
+    // preset regenerates the variable list and discards our explicit v lines.
+    if (lens.optimization != "auto" && line.rfind("#hugin_optimizerMasterSwitch", 0) == 0)
+      continue;
     if (line.rfind("v ", 0) == 0 || line == "v") {
       if (lens.optimization != "auto")
         continue;
@@ -152,6 +156,7 @@ absl::StatusOr<std::string> ApplyStitchInputLens(const std::string& pto, const S
   if (images != 2)
     return absl::InvalidArgumentError("Input lens calibration requires two source images");
   if (lens.optimization != "auto") {
+    output << "#hugin_optimizerMasterSwitch 0\n";
     output << "v r0 p0 r1 p1 y1";
     if (lens.optimization == "refine")
       output << " v0 b0 d0 e0";

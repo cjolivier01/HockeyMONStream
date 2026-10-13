@@ -172,3 +172,7 @@ replacement playback graph after the canvas is final. Pipeline stop cancels a pe
 retirement and EOS delivery; its socket waits also observe cancellation, including incomplete HTTP requests.
 The 13-second graceful-stop watchdog (5-second stop budget plus 8-second grace) protects shutdown, not operator
 selection time. Leaving the selector open during normal playback does not start that watchdog.
+
+With real-time rendering, the first Program frame also completes sink preroll. The cropper exposes
+`waiting-for-user-input` without taking its processing mutex, so model-initialization and calibration-restart
+budgets exclude scoreboard selection. Interrupting preroll cancels selection before waiting for shutdown.

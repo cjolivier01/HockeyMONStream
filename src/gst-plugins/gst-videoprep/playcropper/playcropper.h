@@ -53,6 +53,9 @@ class PlayCropperPriv : public CustomAlgorithmBase {
 
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
   bool UsesRuntimeOutputSize() const override;
+  bool WaitingForUserInput() const override {
+    return scoreboard_selection_active_.load(std::memory_order_acquire);
+  }
   absl::StatusOr<videoprep::RuntimeOutputSize> PrepareRuntimeOutputSize(
       NvDsBatchMeta* batch_meta,
       NvBufSurface* in_surface) override;
@@ -106,6 +109,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   bool scoreboard_disabled_{false};
   bool scoreboard_configure_attempted_{false};
   std::atomic<bool> scoreboard_selection_cancelled_{false};
+  std::atomic<bool> scoreboard_selection_active_{false};
   std::chrono::steady_clock::time_point scoreboard_config_poll_after_{};
   std::string scoreboard_output_generation_;
   std::string scoreboard_output_authorization_id_;

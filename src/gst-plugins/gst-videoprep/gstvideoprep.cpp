@@ -163,6 +163,7 @@ enum {
   PROP_EXPOSURE,
   PROP_RUNTIME_TUNING_CONFIG_FILE,
   PROP_CANCEL_PENDING_WORK,
+  PROP_WAITING_FOR_USER_INPUT,
   PROP_FINALIZE_TELEMETRY,
   PROP_LAST_PROPERTY_SET_OK,
   PROP_SILENT,
@@ -1344,6 +1345,16 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_WAITING_FOR_USER_INPUT,
+      g_param_spec_boolean(
+          "waiting-for-user-input",
+          "Waiting for user input",
+          "Whether an interactive selection is holding a video worker",
+          FALSE,
+          GParamFlags(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_FINALIZE_TELEMETRY,
       g_param_spec_boolean(
           "finalize-telemetry",
@@ -2030,6 +2041,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
     case PROP_RUNTIME_TUNING_CONFIG_FILE:
     case PROP_FINALIZE_TELEMETRY:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+      break;
+    case PROP_WAITING_FOR_USER_INPUT:
+      g_value_set_boolean(value, videoprep->priv && videoprep->priv->WaitingForUserInput());
       break;
     case PROP_LAST_PROPERTY_SET_OK:
       g_value_set_boolean(value, videoprep->last_property_set_ok);

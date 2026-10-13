@@ -34,12 +34,17 @@ int main() {
       "p f19 w1920 h1080 v200 P\"100 -10 -10\"\n"
       "i w7680 h4320 f0 v121.413487813061 a0 b0 c0 d0 e0 r0 p0 y0 n\"left.png\"\n"
       "i w7680 h4320 f0 v=0 a=0 b=0 c=0 d=0 e=0 r0 p0 y0 n\"right.png\"\n"
-      "v v0 a0 b0 c0 d0 e0 r0 p0 r1 p1 y1\nv\nc n0 N1 x12 y13 X14 Y15 t0\n";
+      "v v0 a0 b0 c0 d0 e0 r0 p0 r1 p1 y1\nv\nc n0 N1 x12 y13 X14 Y15 t0\n"
+      "#hugin_optimizerMasterSwitch 1\n";
   auto legacy = ApplyStitchInputLens(pto, {});
   ok &= expect(legacy.ok() && *legacy == pto, "legacy defaults must preserve PTO bytes");
   auto fixed = ApplyStitchInputLens(pto, lens);
   ok &= expect(fixed.ok(), "fixed optics must apply");
   if (fixed.ok()) {
+    ok &= expect(
+        fixed->find("#hugin_optimizerMasterSwitch 0\n") != std::string::npos &&
+            fixed->find("#hugin_optimizerMasterSwitch 1") == std::string::npos,
+        "explicit optics must disable the Hugin preset that replaces custom optimizer variables");
     ok &= expect(
         fixed->find("p f19 w1920 h1080 v200 P\"100 -10 -10\"") == 0,
         "input optics must leave the output General Panini projection untouched");
@@ -53,7 +58,8 @@ int main() {
   lens.optimization = "refine";
   auto refine = ApplyStitchInputLens(pto, lens);
   ok &= expect(
-      refine.ok() && refine->find("v r0 p0 r1 p1 y1 v0 b0 d0 e0\nv") != std::string::npos,
+      refine.ok() && refine->find("#hugin_optimizerMasterSwitch 0\n") != std::string::npos &&
+          refine->find("v r0 p0 r1 p1 y1 v0 b0 d0 e0\nv") != std::string::npos,
       "refine must fit FOV, b and center while retaining a and c");
   lens.center_offset = {-0.01, 0.125};
   auto scaled = ApplyStitchInputLens("i w1920 h1080 f0\ni w1920 h1080 f0\n", lens);

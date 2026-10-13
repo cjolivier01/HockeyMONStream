@@ -667,13 +667,20 @@ int main(int argc, char** argv) {
     selected_provenance +=
         "control-point-resolution=native\ncalibration-frame-selection-policy=players\n"
         "calibration-frame-selection-fingerprint=saved-frames\n";
-    for (const int version : {10, 11}) {
+    for (const int version : {10, 11, 12, 13}) {
       QByteArray current_provenance = selected_provenance;
       current_provenance.replace("version=10", "version=" + QByteArray::number(version));
-      if (version == 11)
+      auto selected_camera = changed_camera;
+      if (version >= 12) {
+        selected_camera.input_lens.projection = "full-frame-fisheye";
+        selected_camera.input_lens.optimization = "fixed";
+        current_provenance += "input-lens=" + QByteArray::fromStdString(
+            hm::stitching::SerializeStitchInputLens(selected_camera.input_lens)) + '\n';
+      }
+      if (version == 11 || version == 13)
         current_provenance += "manual-control-points=" + QByteArray(64, 'a') + '\n';
       write(game.filePath("stitching_canvas_provenance"), current_provenance);
-      RinkLevelingDialog selected(game.path(), {0, -33, 2}, nullptr, changed_camera);
+      RinkLevelingDialog selected(game.path(), {0, -33, 2}, nullptr, selected_camera);
       auto* left = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera0"));
       auto* right = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera1"));
       ok &= expect(
@@ -687,7 +694,7 @@ int main(int argc, char** argv) {
       ok &= expect(selected.result() == QDialog::Accepted, "re-leveling promoted matches returns the revised angles");
     }
     QByteArray future_provenance = selected_provenance;
-    future_provenance.replace("version=10", "version=12");
+    future_provenance.replace("version=10", "version=14");
     write(game.filePath("stitching_canvas_provenance"), future_provenance);
     RinkLevelingDialog unsupported(game.path(), {0, -33, 2}, nullptr, changed_camera);
     ok &= expect(!unsupported.loadError().isEmpty(), "unknown future metadata must still be rejected");

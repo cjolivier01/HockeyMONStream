@@ -1030,6 +1030,15 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
     HM_RETURN_IF_ERROR(stitching::save_stitched_image(game_dir.string(), stitched_surface, producer_output_generation));
   }
 
+  struct SelectionActivity {
+    std::atomic<bool>& active;
+    explicit SelectionActivity(std::atomic<bool>& active) : active(active) {
+      active.store(true, std::memory_order_release);
+    }
+    ~SelectionActivity() {
+      active.store(false, std::memory_order_release);
+    }
+  } activity(scoreboard_selection_active_);
   const auto selection = stitching::configure_scoreboard(game_dir.string(), is_cancelled);
   if (absl::IsCancelled(selection) && is_cancelled())
     return absl::OkStatus(); // Keep draining queued output for EOS finalization.

@@ -540,6 +540,15 @@ bool manages_its_own_window(GstElement* sink) {
       g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), NVDS_ELEM_SINK_3D) == 0;
 }
 
+bool pipeline_waiting_for_user_input(AppCtx* context) {
+  gboolean waiting = FALSE;
+  if (context) {
+    if (GstElement* cropper = context->pipeline.common_elements.hmplaycropper_bin.playcropper)
+      g_object_get(G_OBJECT(cropper), "waiting-for-user-input", &waiting, nullptr);
+  }
+  return waiting;
+}
+
 absl::Status pause_pipeline_for_model_initialization(
     AppCtx* app_ctx,
     const volatile sig_atomic_t* interrupt_requested) {
@@ -555,13 +564,16 @@ absl::Status pause_pipeline_for_model_initialization(
   constexpr auto kModelInitializationTimeout = std::chrono::minutes(15);
   constexpr auto kCancellationTimeout = std::chrono::seconds(5);
   constexpr GstClockTime kPollInterval = 100 * GST_MSECOND;
-  const auto initialization_deadline = std::chrono::steady_clock::now() + kModelInitializationTimeout;
+  auto initialization_deadline = std::chrono::steady_clock::now() + kModelInitializationTimeout;
+  std::optional<std::chrono::steady_clock::time_point> operator_wait_started;
   std::optional<std::chrono::steady_clock::time_point> cancellation_deadline;
   while (true) {
     const GstStateChangeReturn result = gst_element_get_state(pipeline, nullptr, nullptr, kPollInterval);
     const bool interrupted = interrupt_requested && *interrupt_requested;
     if (interrupted && !cancellation_deadline.has_value()) {
-      g_printerr("Interrupt received during pipeline preroll; cancelling stitching calibration\n");
+      g_printerr("Interrupt received during pipeline preroll; cancelling pending work\n");
+      if (GstElement* cropper = app_ctx->pipeline.common_elements.hmplaycropper_bin.playcropper)
+        g_object_set(G_OBJECT(cropper), "cancel-pending-work", TRUE, nullptr);
       if (GstElement* stitcher = app_ctx->pipeline.hmstitcher_bin.elem_hmstitcher) {
         g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
       }
@@ -588,7 +600,14 @@ absl::Status pause_pipeline_for_model_initialization(
       std::fflush(stderr);
       std::_Exit(128 + SIGINT);
     }
-    if (now >= initialization_deadline) {
+    if (pipeline_waiting_for_user_input(app_ctx)) {
+      if (!operator_wait_started)
+        operator_wait_started = now;
+    } else if (operator_wait_started) {
+      initialization_deadline += now - *operator_wait_started;
+      operator_wait_started.reset();
+    }
+    if (!operator_wait_started && now >= initialization_deadline) {
       return absl::DeadlineExceededError("Timed out waiting for pipeline model initialization");
     }
   }
@@ -7345,6 +7364,14 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
     }
   }
   if (!all_playing) {
+    // A paced render sink needs its first Program frame to finish preroll.
+    // The operator can take longer than the startup budget to select corners;
+    // give the graph its ordinary bounded grace after that selection ends.
+    if (std::any_of(stage_contexts.begin(), stage_contexts.end(), pipeline_waiting_for_user_input)) {
+      stitch_frame_rewind_deadline_ =
+          std::chrono::steady_clock::now() + std::chrono::milliseconds(stitch_frame_restart_timeout_ms());
+      return G_SOURCE_CONTINUE;
+    }
     if (std::chrono::steady_clock::now() < stitch_frame_rewind_deadline_) {
       return G_SOURCE_CONTINUE;
     }
