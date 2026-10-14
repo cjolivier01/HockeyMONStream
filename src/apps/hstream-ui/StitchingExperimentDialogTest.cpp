@@ -591,6 +591,17 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     require(widget<QComboBox>(dialog, "stitchExperimentCameraConfiguration")->currentData() == "auto",
             "Inherit-only game optics must retain Auto in experiments");
   }
+  {
+    auto legacy = YAML::Clone(config);
+    legacy["stitching"]["camera_config"] = YAML::Node(YAML::NodeType::Null);
+    legacy["stitching"]["camera_fov"]["horizontal_fov"] = 123;
+    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(legacy)));
+    StitchingExperimentDialog dialog(
+        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+    require(widget<QComboBox>(dialog, "stitchExperimentCameraConfiguration")->currentData() == "manual" &&
+                widget<QDoubleSpinBox>(dialog, "stitchExperimentCameraHorizontalFov")->value() == 123,
+            "A null camera selector must preserve explicit legacy optics in experiments");
+  }
   StitchCameraSelection camera{"gopro-hero-11", 121.413487813061, 90};
   camera.input_lens.projection = "full-frame-fisheye";
   camera.input_lens.optimization = "fixed";

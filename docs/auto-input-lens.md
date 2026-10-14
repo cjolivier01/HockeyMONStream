@@ -11,12 +11,14 @@ mode, stabilization setting or lens prescription produces a warning and keeps
 the Auto profile's fallback (rectilinear, automatic lens fitting by default).
 Missing or unsupported metadata also explains the fallback in the input-lens
 controls and CLI log. A single camera's prescription is never silently copied
-onto an unknown second camera. Equal camera bodies alone are insufficient.
+onto an unknown second camera. Equal camera bodies alone are insufficient. Live V4L2/CSI input uses the Auto
+fallback; recordings in its game directory cannot supply unrelated live optics.
 
 Auto's imported numbers are read-only. Choose a named camera preset or **Manual
 lens settings** to edit values. Existing named profiles remain manual, and older
 explicit FOV/lens overrides without a camera name are retained as manual values.
-Explicit CLI lens/FOV overrides also retain their values. The `auto` profile in
+Explicit CLI lens/FOV overrides also retain their values. A missing or null
+camera selector does not discard older explicit optics. The `auto` profile in
 `stitching.camera_configs` supplies fallback defaults; the factory profile stays
 available for comparing Vegas against its earlier empirical Mission 1 preset.
 
@@ -33,7 +35,8 @@ Experiments freeze the displayed optics at candidate creation using
 even if the original files are unavailable. To import again after promotion,
 select another camera profile, then Auto, or explicitly pass
 `--options=stitching.camera_config=auto` on the CLI. A normal save of other controls keeps
-the freeze intact.
+the freeze intact. Releasing the snapshot remains saveable when the optics are
+unchanged, and Play saves the same policy as Save Preset.
 
 ## Supported metadata
 

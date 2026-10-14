@@ -7984,16 +7984,22 @@ absl::Status Configurator::resolve_effective_stitching_camera(bool force_video_d
     if (value.has_value() && !value->IsNull())
       optics_rank = std::max(optics_rank, explicit_value_rank(key));
   }
-  if (camera.configuration == "auto" &&
-      (optics_rank > explicit_value_rank("stitching.camera_config") || optics_rank >= 3))
+  const auto selected_camera = get_node(config_, "stitching.camera_config");
+  const int camera_rank =
+      selected_camera.has_value() && !selected_camera->IsNull() ? explicit_value_rank("stitching.camera_config") : -1;
+  if (camera.configuration == "auto" && (optics_rank > camera_rank || optics_rank >= 3))
     camera.configuration = "manual";
   // A fresh higher-layer Auto selection supersedes a saved experiment freeze.
   // An equally explicit freeze still wins for intentional snapshot replay.
-  if (camera.configuration == "auto" &&
-      explicit_value_rank("stitching.camera_config") > explicit_value_rank("stitching.auto_input_lens_frozen"))
+  if (camera.configuration == "auto" && camera_rank > explicit_value_rank("stitching.auto_input_lens_frozen"))
     config_["stitching"]["auto_input_lens_frozen"] = false;
+  bool live_sources = false;
+  for (const auto& [_, source] : get_enabled_sources(config_["pipeline"])) {
+    const int type = source["type"].as<int>();
+    live_sources |= type == NV_DS_SOURCE_CAMERA_CSI || type == NV_DS_SOURCE_CAMERA_V4L2;
+  }
   const auto auto_lens =
-      stitching::ReadAutoInputLensForGame(resolved_game_dir(), config_, camera, force_video_discovery);
+      stitching::ReadAutoInputLensForGame(resolved_game_dir(), config_, camera, force_video_discovery, live_sources);
   stitching::write_stitch_camera_selection(config_, auto_lens.camera);
   if (!auto_lens.message.empty())
     std::cerr << auto_lens.message << std::endl;

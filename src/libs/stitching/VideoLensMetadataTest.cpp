@@ -206,6 +206,17 @@ int main(int argc, char** argv) {
     expect(selected.ok(), "Auto profile reads without filesystem work");
     auto game_result = ReadAutoInputLensForGame(dir, config, *selected);
     expect(game_result.detected, "Auto discovers both originals");
+    const auto live = ReadAutoInputLensForGame(dir, config, *selected, false, true);
+    expect(!live.detected && live.camera == *selected && live.message.find("live cameras") != std::string::npos,
+           "Live sources must not import supported recordings from the same game directory");
+    YAML::Node legacy = YAML::Load("stitching: {camera_config: null, camera_fov: {horizontal_fov: 117}}");
+    auto effective_legacy = YAML::Clone(config);
+    effective_legacy["stitching"]["camera_config"] = YAML::Node(YAML::NodeType::Null);
+    effective_legacy["stitching"]["camera_configs"]["auto"]["vertical_fov"] = 75;
+    PreserveLegacyInputLensSelection(effective_legacy, legacy);
+    expect(effective_legacy["stitching"]["camera_config"].as<std::string>() == "manual" &&
+               effective_legacy["stitching"]["camera_fov"]["vertical_fov"].as<double>() == 75,
+           "A null camera selector preserves legacy manual intent and inherited optics");
     config["stitching"]["auto_input_lens_frozen"] = true;
     auto frozen = ReadAutoInputLensForGame(dir, config, game_result.camera);
     expect(!frozen.detected && frozen.camera == game_result.camera, "Experiment optics remain frozen");
@@ -251,18 +262,22 @@ int main(int argc, char** argv) {
     const auto insta_raw = ParseInsta360LensMetadata(raw);
     expect(insta_raw.ok(), insta_raw.status().ToString().c_str());
     expect(insta_raw->unavailable_reason.empty(), "Raw Insta360 prescription must be supported");
-    Bytes trailer = raw;
-    auto append_le = [&](uint64_t value, size_t n) {
-      auto b = be(value, n);
-      std::reverse(b.begin(), b.end());
-      append(trailer, b);
+    const auto make_trailer = [&](const Bytes& metadata) {
+      Bytes trailer = metadata;
+      auto append_le = [&](uint64_t value, size_t n) {
+        auto b = be(value, n);
+        std::reverse(b.begin(), b.end());
+        append(trailer, b);
+      };
+      append_le(0x101, 2);
+      append_le(metadata.size(), 4);
+      trailer.resize(trailer.size() + 32);
+      append_le(trailer.size() + 40, 4);
+      append_le(1, 4);
+      append(trailer, chars("8db42d694ccc418790edff439fe026bf"));
+      return trailer;
     };
-    append_le(0x101, 2);
-    append_le(raw.size(), 4);
-    trailer.resize(trailer.size() + 32);
-    append_le(trailer.size() + 40, 4);
-    append_le(1, 4);
-    append(trailer, chars("8db42d694ccc418790edff439fe026bf"));
+    const auto trailer = make_trailer(raw);
     for (bool boxed : {false, true}) {
       auto original = movie({}, 4000, 3000);
       append(original, boxed ? atom("inst", trailer) : trailer);
@@ -271,6 +286,16 @@ int main(int argc, char** argv) {
       const auto read = ReadVideoLensMetadata(path);
       expect(read.ok() && read->camera == insta_raw->camera, "Read both raw and boxed Insta360 trailers");
     }
+    for (int fov : {1, 3}) {
+      auto mode = raw;
+      append(mode, scalar(47, fov));
+      auto original = movie({}, 4000, 3000);
+      append(original, make_trailer(mode));
+      write(dir / ("insta-fov-" + std::to_string(fov) + ".mp4"), original);
+    }
+    const auto different_modes = ResolveAutoInputLens({dir / "insta-fov-1.mp4", dir / "insta-fov-3.mp4"}, *selected);
+    expect(different_modes.mismatch && !different_modes.detected,
+           "Different Insta360 FOV modes must warn even when their raw lens coefficients match");
     std::filesystem::remove_all(dir);
     std::cout << "Video lens metadata tests passed\n";
     return 0;

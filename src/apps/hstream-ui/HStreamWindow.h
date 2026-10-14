@@ -354,6 +354,7 @@ class HStreamWindow : public QMainWindow {
   void updateStitchFrameTimeAvailability();
   void updateWindowTitle();
   void captureSavedControlState();
+  bool autoInputLensFrozen() const;
   void updatePresetDirtyState();
   void updateCameraControlDependencies();
   void refreshGames();
@@ -867,6 +868,7 @@ class HStreamWindow : public QMainWindow {
   QString active_control_point_matcher_;
   QString active_mapping_backend_;
   hm::stitching::StitchCameraSelection active_camera_selection_;
+  bool active_auto_input_lens_frozen_{false};
   QString active_projection_;
   std::vector<double> active_projection_parameters_;
   hm::stitching::StitchProjectionFraming active_projection_framing_;
@@ -952,6 +954,7 @@ class HStreamWindow : public QMainWindow {
   QString saved_control_point_matcher_;
   QString saved_mapping_backend_;
   hm::stitching::StitchCameraSelection saved_camera_selection_;
+  bool saved_auto_input_lens_frozen_{false};
   QString saved_projection_;
   std::map<QString, std::vector<double>> projection_parameter_values_;
   std::map<QString, double> projection_fov_values_;

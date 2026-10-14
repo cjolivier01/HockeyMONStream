@@ -4854,11 +4854,7 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!user_overlay.ok())
     throw std::runtime_error(user_overlay.status().ToString());
   baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
-  const YAML::Node user_stitching = static_cast<const YAML::Node&>(*user_overlay)["stitching"];
-  if (user_stitching && user_stitching.IsMap() && !user_stitching["camera_config"] &&
-      hm::stitching::HasManualInputLensOverrides(*user_overlay) &&
-      baseline_config_["stitching"]["camera_config"].as<std::string>("") == "auto")
-    baseline_config_["stitching"]["camera_config"] = "manual";
+  hm::stitching::PreserveLegacyInputLensSelection(baseline_config_, *user_overlay);
   baseline_layer_ = YAML::Clone(loaded->values);
   user_layer_ = YAML::Clone(*user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
@@ -7703,13 +7699,10 @@ absl::StatusOr<hm::stitching::StitchCameraSelection> HStreamWindow::stitchCamera
         effective["stitching"][key] = merge_yaml_maps(effective["stitching"][key], value);
     }
   }
-  auto selected = hm::stitching::read_stitch_camera_selection(effective);
-  // Older games may have hand-entered optics without a named camera. The new
-  // Auto default must not replace those values on their first load.
-  if (selected.ok() && selected->configuration == "auto" && stitching && stitching.IsMap() &&
-      !stitching["camera_config"] && hm::stitching::HasManualInputLensOverrides(config))
-    selected->configuration = "manual";
-  return selected;
+  // Missing and null camera selectors inherit, but explicit legacy optics
+  // must survive the new Auto default.
+  hm::stitching::PreserveLegacyInputLensSelection(effective, config);
+  return hm::stitching::read_stitch_camera_selection(effective);
 }
 
 absl::StatusOr<hm::stitching::StitchProjectionFraming> HStreamWindow::stitchProjectionFramingFromGameConfig(
@@ -8794,6 +8787,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     remove_yaml_path(config, {"hstream_ui", "generated_control_point_resolution"});
     config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
     hm::stitching::write_stitch_camera_selection(config, active_camera_selection_);
+    config["stitching"]["auto_input_lens_frozen"] = active_auto_input_lens_frozen_;
     config["stitching"]["run_autooptimizer"] = active_run_autooptimizer_;
     config["stitching"]["projection"] = active_projection_.toStdString();
     const auto parsed_active_projection = hm::stitching::ParseStitchProjection(active_projection_.toStdString());
@@ -10384,6 +10378,7 @@ void HStreamWindow::startPipeline() {
   active_control_point_resolution_ = control_point_resolution_;
   active_mapping_backend_ = mappingBackend();
   active_camera_selection_ = stitchCameraSelection();
+  active_auto_input_lens_frozen_ = autoInputLensFrozen();
   active_projection_ = stitchProjection();
   storeProjectionParameterControls();
   active_projection_parameters_ = stitchProjectionParameters();
@@ -10588,6 +10583,7 @@ void HStreamWindow::startPipeline() {
   saved_control_point_resolution_ = active_control_point_resolution_;
   saved_mapping_backend_ = active_mapping_backend_;
   saved_camera_selection_ = active_camera_selection_;
+  saved_auto_input_lens_frozen_ = active_auto_input_lens_frozen_;
   saved_projection_ = active_projection_;
   saved_projection_parameters_ = projection_parameter_values_;
   saved_projection_framing_ = active_projection_framing_;
@@ -17098,6 +17094,7 @@ void HStreamWindow::captureSavedControlState() {
   saved_blend_feather_fraction_ = blendFeatherFraction();
   saved_mapping_backend_ = mappingBackend();
   saved_camera_selection_ = stitchCameraSelection();
+  saved_auto_input_lens_frozen_ = autoInputLensFrozen();
   saved_projection_ = stitchProjection();
   saved_projection_parameters_ = projection_parameter_values_;
   saved_projection_framing_ = stitchProjectionFraming();
@@ -17122,6 +17119,11 @@ void HStreamWindow::updateCameraControlDependencies() {
   updateStitchedColorPrecisionControls();
 }
 
+bool HStreamWindow::autoInputLensFrozen() const {
+  return camera_configuration_combo_ && camera_configuration_combo_->currentData().toString() == "auto" &&
+      camera_configuration_combo_->property("autoInputLensFrozen").toBool();
+}
+
 void HStreamWindow::updatePresetDirtyState() {
   updateStitchingStillPreview();
   // Refresh after both interactive edits and signal-blocked preset loads.
@@ -17132,7 +17134,7 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
-  bool dirty = retry_required || detectorSelectionChanged() ||
+  bool dirty = retry_required || saved_auto_input_lens_frozen_ != autoInputLensFrozen() || detectorSelectionChanged() ||
       (player_analytics_controls_ && player_analytics_controls_->isDirty()) ||
       (rink_mask_time_mode_ && saved_rink_mask_time_mode_ != rink_mask_time_mode_->currentData().toString()) ||
       (rink_mask_time_mode_ && rink_mask_time_mode_->currentData().toString() == "custom" &&
@@ -18440,8 +18442,7 @@ bool HStreamWindow::applySavedControlConfig(
   remove_yaml_path(config, {"hstream_ui", "generated_control_point_resolution"});
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
   hm::stitching::write_stitch_camera_selection(config, selected_camera);
-  if (!camera_configuration_combo_->property("autoInputLensFrozen").toBool())
-    config["stitching"].remove("auto_input_lens_frozen");
+  config["stitching"]["auto_input_lens_frozen"] = autoInputLensFrozen();
   config["stitching"]["run_autooptimizer"] = selected_run_autooptimizer;
   config["stitching"]["projection"] = selected_projection.toStdString();
   remove_yaml_path(config, {"stitching", "projection_parameters"});

@@ -112,6 +112,31 @@ struct HStreamWindowTestAccess {
     window->prepared_int8_model_ = window->detectorModel();
     window->updatePresetDirtyState();
   }
+  static bool prepareStitchingRun(HStreamWindow* window) {
+    const QString prior_game = window->active_run_game_id_;
+    window->active_run_game_id_ = window->game_id_edit_->text().trimmed();
+    window->active_force_reconfigure_ = false;
+    window->active_calibration_control_points_ = window->stitchingCalibrationControlPoints();
+    window->active_calibration_frame_count_ = window->stitchingCalibrationFrameCount();
+    window->active_stitch_max_output_width_ = window->stitchingMaxOutputWidth();
+    window->active_run_autooptimizer_ = window->runAutooptimizer();
+    window->active_stitch_frame_time_ = window->stitchFrameTime();
+    window->active_iteration_settings_ = window->stitchingIterationSettings();
+    window->active_control_point_matcher_ = window->controlPointMatcher();
+    window->active_control_point_resolution_ = window->control_point_resolution_;
+    window->active_mapping_backend_ = window->mappingBackend();
+    window->active_camera_selection_ = window->stitchCameraSelection();
+    window->active_auto_input_lens_frozen_ = window->autoInputLensFrozen();
+    window->active_projection_ = window->stitchProjection();
+    window->storeProjectionParameterControls();
+    window->active_projection_parameters_ = window->stitchProjectionParameters();
+    window->active_projection_framing_ = window->stitchProjectionFraming();
+    bool required = false;
+    const bool prepared = window->prepareStitchingCalibrationRun(
+        "/bin/true", window->pipelineWorkingDirectory(), QProcessEnvironment::systemEnvironment(), &required);
+    window->active_run_game_id_ = prior_game;
+    return prepared;
+  }
   static bool savePreset(HStreamWindow* window) {
     return window->savePreset();
   }
@@ -9432,6 +9457,11 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
                 "Inherit-only game optics must retain Auto in the main controls"))
       return false;
   }
+  const auto legacy_camera = HStreamWindowTestAccess::cameraSelection(
+      window, YAML::Load("stitching: {camera_config: null, camera_fov: {horizontal_fov: 123}}"));
+  if (!expect(legacy_camera.ok() && legacy_camera->configuration == "manual" && legacy_camera->horizontal_fov == 123,
+              "A null camera selector must preserve explicit legacy optics in main controls"))
+    return false;
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   QApplication::processEvents();
   const bool hero_defaults_applied = expect(
@@ -9525,6 +9555,30 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
                   !metadata_status->text().isEmpty(),
               "Reset must resolve Auto again and clear a promoted snapshot instead of writing static defaults"))
     return false;
+  if (!HStreamWindowTestAccess::savePreset(window))
+    return false;
+  // Releasing the policy is a saveable change even when reimport finds exactly
+  // the same optics. Both Save and Play must retain that release after reopening.
+  for (bool play : {false, true}) {
+    auto frozen = YAML::LoadFile(config_path.string());
+    frozen["stitching"]["auto_input_lens_frozen"] = true;
+    std::ofstream(config_path) << YAML::Dump(frozen) << '\n';
+    HStreamWindowTestAccess::reloadSavedControls(window);
+    camera_configuration->setCurrentIndex(camera_configuration->findData("manual"));
+    camera_configuration->setCurrentIndex(camera_configuration->findData("auto"));
+    if (!expect(save->isEnabled(), "Unfreezing identical Auto optics must enable Save Preset"))
+      return false;
+    const bool published = play ? HStreamWindowTestAccess::prepareStitchingRun(window)
+                                : HStreamWindowTestAccess::savePreset(window);
+    const auto released = YAML::LoadFile(config_path.string());
+    if (!expect(published && !released["stitching"]["auto_input_lens_frozen"].as<bool>(),
+                "Save and Play must both persist the released Auto policy"))
+      return false;
+    HStreamWindowTestAccess::reloadSavedControls(window);
+    if (!expect(!camera_configuration->property("autoInputLensFrozen").toBool(),
+                "Reopening must retain Auto metadata refresh after releasing a snapshot"))
+      return false;
+  }
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   if (!expect(!input_b->isReadOnly() && !camera_horizontal_fov->isReadOnly() && input_projection->isEnabled(),
               "Manual camera profiles must restore editable optics after Auto"))

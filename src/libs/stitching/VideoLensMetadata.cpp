@@ -392,7 +392,7 @@ VideoLensMetadata parse_insta(const Bytes& data) {
   if (std::abs(result.camera.input_lens.center_offset[0]) > 0.01 ||
       std::abs(result.camera.input_lens.center_offset[1]) > 0.01)
     return unavailable(result, "optical center is outside the supported radial fit margin");
-  result.mode = "raw v3";
+  result.mode = "raw v3 / " + result.mode;
   result.stabilization = "Off";
   return result;
 }

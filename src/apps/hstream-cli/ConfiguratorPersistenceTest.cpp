@@ -5487,7 +5487,7 @@ play-tracker:
   // Missing/changed video metadata must resolve before a simultaneous geometry
   // edit compares against the accepted solver. OpenCV exposes a stale comparison
   // as an erroneous attempt to reframe, without requiring GPU or NONA tools.
-  for (int lens_case = 0; lens_case < 6; ++lens_case) {
+  for (int lens_case = 0; lens_case < 7; ++lens_case) {
     const std::string name = "auto-lens-launch-" + std::to_string(lens_case);
     const fs::path directory = games / name;
     fs::create_directories(directory);
@@ -5504,6 +5504,8 @@ play-tracker:
     if (lens_case == 1)
       old_camera.configuration = "gopro-mission-1";
     hm::stitching::write_stitch_camera_selection(saved, old_camera);
+    if (lens_case == 6)
+      saved["stitching"]["camera_config"] = YAML::Node(YAML::NodeType::Null);
     saved["stitching"]["auto_input_lens_frozen"] = lens_case != 0;
     auto state = saved["hstream_ui"]["stitching_calibration"];
     state["status"] = "complete";
@@ -5531,7 +5533,7 @@ play-tracker:
     const bool refresh = lens_case < 3;
     const double expected_hfov = refresh ? 108 : lens_case == 5 ? 119 : 117.25;
     const bool persisted = camera.ok() && camera->horizontal_fov == expected_hfov &&
-        camera->configuration == (lens_case == 5 ? "manual" : "auto") &&
+        camera->configuration == (lens_case >= 5 ? "manual" : "auto") &&
         after["stitching"]["auto_input_lens_frozen"].as<bool>() == !refresh &&
         !after["hstream_ui"]["stitching_calibration"]["reframe"] &&
         result.message().find("Reframing requires") == std::string::npos;

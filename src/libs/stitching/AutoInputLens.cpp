@@ -43,11 +43,24 @@ bool HasManualInputLensOverrides(const YAML::Node& config) {
   return false;
 }
 
+void PreserveLegacyInputLensSelection(YAML::Node& effective, const YAML::Node& layer) {
+  const auto selected = child(child(layer, "stitching"), "camera_config");
+  if ((selected && !selected.IsNull()) || !HasManualInputLensOverrides(layer))
+    return;
+  const auto camera = read_stitch_camera_selection(effective);
+  if (camera.ok() && camera->configuration == "auto") {
+    auto manual = *camera;
+    manual.configuration = "manual";
+    write_stitch_camera_selection(effective, manual);
+  }
+}
+
 AutoInputLensResult ReadAutoInputLensForGame(
     const std::filesystem::path& game,
     const YAML::Node& config,
     const StitchCameraSelection& selection,
-    bool force_video_discovery) {
+    bool force_video_discovery,
+    bool live_sources) {
   AutoInputLensResult result{selection, ""};
   if (selection.configuration != "auto")
     return result;
@@ -66,6 +79,11 @@ AutoInputLensResult ReadAutoInputLensForGame(
       if (profile.id == "auto")
         fallback = {profile.id, profile.horizontal_fov, profile.vertical_fov, profile.input_lens};
     result.camera = fallback;
+    if (live_sources) {
+      result.message =
+          "Auto unavailable: live cameras have no original-video lens metadata. Using automatic lens fitting.";
+      return result;
+    }
     const auto roles = child(child(config, "hstream_ui"), "video_roles");
     auto left = paths(child(roles, "left"), game), right = paths(child(roles, "right"), game);
     if (!left.empty() && !right.empty()) {
