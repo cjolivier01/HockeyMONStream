@@ -305,6 +305,16 @@ static gboolean pipeline_requires_eos_finalization(const AppCtx* appCtx) {
 // on the bus so the normal callback still reports and classifies the failure.
 static GstBusSyncReply bus_sync_callback(GstBus* /*bus*/, GstMessage* message, gpointer data) {
   auto* app_ctx = static_cast<AppCtx*>(data);
+  if (app_ctx && GST_MESSAGE_TYPE(message) == GST_MESSAGE_ELEMENT) {
+    const GstStructure* structure = gst_message_get_structure(message);
+    gboolean active = FALSE;
+    if (structure && gst_structure_has_name(structure, "hstream-stitching-calibration-phase") &&
+        gst_structure_get_boolean(structure, "active", &active)) {
+      // Preroll can run calibration before the main loop dispatches the bus.
+      // Publish ownership now so all wait clocks see it before work starts.
+      update_uri_playlist_calibration_phase(&app_ctx->pipeline.multi_src_bin, active);
+    }
+  }
   if (app_ctx && app_ctx->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled &&
       GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR && !message_source_is_ui_preview(message)) {
     cancel_uri_playlist_frame_barrier(&app_ctx->pipeline.multi_src_bin);

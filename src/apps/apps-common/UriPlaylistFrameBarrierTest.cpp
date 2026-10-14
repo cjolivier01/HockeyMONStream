@@ -370,6 +370,66 @@ bool resumed_stall_still_reports_failure() {
   return stayed_pending && !pending.get() && fixture.parent()->uri_playlist_barrier_failed;
 }
 
+// A stitching calibration parks the decoders for minutes, and the operator can
+// hit Pause and Resume in the middle of it. Resume must not restart a clock the
+// calibration still owns, or the budget expires while the solve is still running
+// and the run dies blaming the cameras.
+bool suspension_reasons_do_not_release_each_other() {
+  ScopedStallBudget budget("1");
+  BarrierFixture fixture;
+  const bool initially_idle = uri_playlist_calibration_idle_time_us(fixture.parent()) == G_MAXINT64;
+  auto pending = std::async(
+      std::launch::async, [&] { return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND); });
+  if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(1))) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    return false;
+  }
+  update_uri_playlist_calibration_phase(fixture.parent(), TRUE);
+  // Ending an inner calibration phase must leave the outer owner active.
+  update_uri_playlist_calibration_phase(fixture.parent(), TRUE);
+  update_uri_playlist_calibration_phase(fixture.parent(), FALSE);
+  const bool outer_active = uri_playlist_calibration_idle_time_us(fixture.parent()) == 0;
+  // A complete pause/resume cycle nested inside the calibration suspension.
+  set_uri_playlist_waits_paused(fixture.parent(), TRUE);
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  set_uri_playlist_waits_paused(fixture.parent(), FALSE);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const bool stayed_pending = pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
+  if (!stayed_pending) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    std::cerr << "Resuming the pipeline resumed a clock the calibration still held suspended\n";
+    return false;
+  }
+  update_uri_playlist_calibration_phase(fixture.parent(), FALSE);
+  const bool paired = wait_at_uri_playlist_frame_barrier(fixture.source(1), 0, GST_SECOND);
+  return paired && pending.get() && initially_idle && outer_active;
+}
+
+// The budget must still be spendable once calibration lets go; suspension
+// postpones the watchdog, it does not retire it for the rest of the run.
+bool released_calibration_suspension_restores_stall_detection() {
+  ScopedStallBudget budget("1");
+  BarrierFixture fixture;
+  auto pending = std::async(
+      std::launch::async, [&] { return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND); });
+  if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(1))) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    return false;
+  }
+  update_uri_playlist_calibration_phase(fixture.parent(), TRUE);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const bool stayed_pending = pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
+  update_uri_playlist_calibration_phase(fixture.parent(), FALSE);
+  if (pending.wait_for(std::chrono::seconds(4)) != std::future_status::ready) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    std::cerr << "Releasing the calibration suspension did not restore stall detection\n";
+    return false;
+  }
+  const gint64 idle_us = uri_playlist_calibration_idle_time_us(fixture.parent());
+  return stayed_pending && !pending.get() && fixture.parent()->uri_playlist_barrier_failed &&
+      idle_us > 0 && idle_us < 5 * G_TIME_SPAN_SECOND;
+}
+
 bool cancellation_wakes_waiter_promptly() {
   BarrierFixture fixture;
   std::atomic<int> wait_result{-1};
@@ -433,7 +493,8 @@ int main(int argc, char** argv) {
   if (!delayed_peer_outlives_old_timeout() || !wedged_peer_is_reported_instead_of_hanging() ||
       !signal_noise_does_not_mask_a_wedged_peer() || !peer_progress_defers_stall_detection() ||
       !native_pause_excludes_stall_time() || !process_pause_excludes_sigstop_time() ||
-      !resumed_stall_still_reports_failure() || !cancellation_wakes_waiter_promptly() ||
+      !resumed_stall_still_reports_failure() || !suspension_reasons_do_not_release_each_other() ||
+      !released_calibration_suspension_restores_stall_detection() || !cancellation_wakes_waiter_promptly() ||
       !mismatched_sequences_fail_without_deadlock()) {
     return 1;
   }

@@ -832,6 +832,9 @@ absl::Status StitcherPriv::reload_stitcher() {
 }
 
 absl::Status StitcherPriv::reload_stitcher_with_artifact_lock() {
+  // A validated-artifact retry can wait behind another context's calibration.
+  // Hold this context's clock too, even when no outer configuration is active.
+  CalibrationWatchdogSuspension watchdog_suspension(owner_element_);
   std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
   return reload_stitcher();
 }
@@ -1193,6 +1196,31 @@ bool StitcherPriv::calibration_input_exhausted(const EosSnapshot& eos_snapshot) 
   return pipeline_eos_seen_ || !eos_source_ids_.empty();
 }
 
+namespace {
+// The barrier lives in apps-common, linked into the application; this plugin is
+// dlopened separately, so the two cannot share a symbol. Element messages are
+// the established channel between them, as with the calibration-complete
+// message below.
+void post_calibration_phase(GstElement* owner, gboolean active) {
+  if (!owner) {
+    return;
+  }
+  gst_element_post_message(
+      owner,
+      gst_message_new_element(
+          GST_OBJECT(owner),
+          gst_structure_new("hstream-stitching-calibration-phase", "active", G_TYPE_BOOLEAN, active, nullptr)));
+}
+} // namespace
+
+StitcherPriv::CalibrationWatchdogSuspension::CalibrationWatchdogSuspension(GstElement* owner) : owner_(owner) {
+  post_calibration_phase(owner_, TRUE);
+}
+
+StitcherPriv::CalibrationWatchdogSuspension::~CalibrationWatchdogSuspension() {
+  post_calibration_phase(owner_, FALSE);
+}
+
 absl::Status StitcherPriv::report_fatal_calibration_failure(const absl::Status& status) {
   (void)report_calibration_failure(status);
   if (owner_element_) {
@@ -1227,6 +1255,10 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
   if (frame_pairs.empty()) {
     return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
   }
+  // Covers the whole configuration attempt, not just the solve: waiting on the
+  // artifact lock, the interactive reviews inside configure_stitching, and the
+  // control-mask reload afterwards all run with the decoders parked.
+  CalibrationWatchdogSuspension watchdog_suspension(owner_element_);
   {
     std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
     bool is_configured;
@@ -1330,6 +1362,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
     // Runs on the existing cancellable output worker, before inspecting or
     // capturing camera surfaces. A failed explicit request cannot fall through
     // to ordinary calibration or substitute different frames.
+    CalibrationWatchdogSuspension watchdog_suspension(owner_element_);
     {
       std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
       const auto status = stitching::reframe_stitching(
@@ -2274,6 +2307,7 @@ absl::Status StitcherPriv::GenerateOutput(
         } else if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
         } else {
+          CalibrationWatchdogSuspension watchdog_suspension(owner_element_);
           if (!orientation_ran_) {
             absl::Status orientation_status =
                 stitching::configure_orientation(config_file_, calibration_invalidation_id_, [this] {
@@ -2501,6 +2535,8 @@ absl::Status StitcherPriv::GenerateOutput(
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
       if (progress.create_mask) {
+        // Rink inference and its publication lock also park upstream decoders.
+        CalibrationWatchdogSuspension watchdog_suspension(owner_element_);
         std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
         mask_configured = !calibrate_field_mask_ ||
             stitching::is_field_mask_configured_for_loaded_generation(

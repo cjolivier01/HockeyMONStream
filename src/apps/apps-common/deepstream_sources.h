@@ -249,8 +249,16 @@ struct NvDsSrcParentBin {
   gboolean uri_playlist_barrier_failed;
   /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */
   gboolean uri_playlist_delivery_aborted;
-  /** Excludes native pipeline PAUSED time from the no-progress budget. Guarded by the barrier mutex. */
-  gboolean uri_playlist_waits_paused;
+  /**
+   * Reasons currently excluding deliberately parked time from the no-progress budget, as a set of
+   * UriPlaylistWaitSuspendReason bits. Nonzero means the clock is stopped; it runs again only at zero. Guarded by the
+   * barrier mutex. This is the whole suspension state on purpose — a separate "is paused" flag alongside it would be
+   * one more field to remember to reset, and the two silently disagreeing turns the watchdog off for a whole run.
+   */
+  guint uri_playlist_wait_suspend_mask;
+  /** Nested calibration owners, updated synchronously when their element messages are posted. */
+  guint uri_playlist_calibration_depth;
+  gint64 uri_playlist_calibration_finished_us;
   gint64 uri_playlist_pause_started_us;
   gint64 uri_playlist_paused_us;
   gboolean uri_playlist_initial_offsets_configured;
@@ -263,8 +271,30 @@ struct NvDsSrcParentBin {
 
 /** Publish process pause before acknowledging a desktop SIGSTOP; clear only after SIGCONT's resume command. */
 void set_uri_playlist_process_paused(gboolean paused);
+
+/**
+ * Independent reasons a run deliberately parks its decoders. The no-progress budget exists to catch a branch that
+ * wedged, so it must not spend while nothing is supposed to be moving. Reasons are tracked separately because they
+ * overlap: a pause/resume cycle issued in the middle of a stitching calibration must not resume a clock the
+ * calibration still needs suspended.
+ */
+typedef enum {
+  /** A native PAUSED transition, or an acknowledged desktop SIGSTOP. */
+  URI_PLAYLIST_WAIT_SUSPEND_PIPELINE_PAUSE = 1 << 0,
+  /** Stitching calibration, which parks the decoders for the whole solve and any review it blocks on. */
+  URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION = 1 << 1,
+} UriPlaylistWaitSuspendReason;
+
+/** Count nested calibration phases under the barrier mutex and update their suspension reason. */
+void update_uri_playlist_calibration_phase(NvDsSrcParentBin* parent, gboolean active);
+/** Time since the last phase ended; zero while active, G_MAXINT64 if none began. Locks the barrier mutex internally. */
+gint64 uri_playlist_calibration_idle_time_us(NvDsSrcParentBin* parent);
 /** Suspend stall accounting before a native PAUSED transition; resume after PLAYING completes. */
 void set_uri_playlist_waits_paused(NvDsSrcParentBin* parent, gboolean paused);
+/** True while any reason holds the no-progress clock stopped. Read under the barrier mutex. */
+static inline gboolean uri_playlist_waits_suspended(const NvDsSrcParentBin* parent) {
+  return parent && parent->uri_playlist_wait_suspend_mask != 0 ? TRUE : FALSE;
+}
 
 /**
  * Configure coherent initial source positioning before the pipeline leaves NULL/READY. Unlike a flushing seek after
