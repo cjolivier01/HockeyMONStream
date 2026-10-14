@@ -1,5 +1,6 @@
 #include "configurator.h"
 #include "hstream/src/libs/common/PinnedFile.h"
+#include "hstream/src/libs/stitching/AutoInputLens.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -7968,7 +7969,8 @@ absl::Status Configurator::persist_stitch_frame_time_override(const std::string&
   return save_private_config(private_config_, expected_invalidation_id);
 }
 
-absl::Status Configurator::persist_effective_stitching_backend_choices(const std::string& expected_invalidation_id) {
+absl::Status Configurator::persist_effective_stitching_backend_choices(
+    const std::string& expected_invalidation_id, bool force_video_discovery) {
   const auto canonical_matcher = [](const YAML::Node& root) -> absl::StatusOr<std::string> {
     const auto node = get_node(root, "stitching.control_point_matcher");
     if (node.has_value() && !node->IsScalar()) {
@@ -8374,6 +8376,22 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   }
   stitching::StitchCameraSelection camera;
   HM_ASSIGN_OR_RETURN(camera, stitching::read_stitch_camera_selection(config_));
+  int optics_rank = -1;
+  for (const char* key :
+       {"stitching.camera_fov.horizontal_fov",
+        "stitching.camera_fov.vertical_fov",
+        "stitching.input_lens.projection",
+        "stitching.input_lens.optimization",
+        "stitching.input_lens.distortion",
+        "stitching.input_lens.center_offset"})
+    optics_rank = std::max(optics_rank, explicit_value_rank(key));
+  if (camera.configuration == "auto" &&
+      (optics_rank > explicit_value_rank("stitching.camera_config") || optics_rank >= 3))
+    camera.configuration = "manual";
+  const auto auto_lens = stitching::ReadAutoInputLensForGame(resolved_game_dir(), config_, camera, force_video_discovery);
+  camera = auto_lens.camera;
+  if (!auto_lens.message.empty())
+    std::cerr << auto_lens.message << std::endl;
 
   config_["stitching"]["control_point_matcher"] = matcher_name;
   config_["stitching"]["mapping_backend"] = backend_name;
@@ -9258,7 +9276,7 @@ absl::Status Configurator::complete_configuration(
       return absl::AbortedError("The pending view edit belongs to a different calibration owner");
   }
   if (!clean_requested && has_active_hmstitcher) {
-    HM_RETURN_IF_ERROR(persist_effective_stitching_backend_choices(effective_invalidation_id));
+    HM_RETURN_IF_ERROR(persist_effective_stitching_backend_choices(effective_invalidation_id, force));
   }
   if (has_cleanup_owner && !effective_invalidation_id.empty()) {
     bool loaded_invalidation_matches = loaded_invalidation_id == effective_invalidation_id;

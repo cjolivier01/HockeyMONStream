@@ -120,7 +120,8 @@ class Configurator {
       const std::string& expected_invalidation_id = {},
       bool remove_canvas_artifacts = false);
   absl::Status persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time);
-  absl::Status persist_effective_stitching_backend_choices(const std::string& expected_invalidation_id = {});
+  absl::Status persist_effective_stitching_backend_choices(
+      const std::string& expected_invalidation_id = {}, bool force_video_discovery = false);
   absl::StatusOr<bool> reconcile_stitch_frame_time_override(
       const std::string& normalized_stitch_frame_time,
       const std::string& expected_invalidation_id = {});

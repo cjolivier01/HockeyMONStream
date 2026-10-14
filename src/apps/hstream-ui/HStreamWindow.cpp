@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/common/TensorRtGpuIdentity.h"
+#include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
@@ -4853,6 +4854,11 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!user_overlay.ok())
     throw std::runtime_error(user_overlay.status().ToString());
   baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
+  const YAML::Node user_stitching = static_cast<const YAML::Node&>(*user_overlay)["stitching"];
+  if (user_stitching && user_stitching.IsMap() && !user_stitching["camera_config"] &&
+      (user_stitching["camera_fov"] || user_stitching["input_lens"]) &&
+      baseline_config_["stitching"]["camera_config"].as<std::string>("") == "auto")
+    baseline_config_["stitching"]["camera_config"] = "manual";
   baseline_layer_ = YAML::Clone(loaded->values);
   user_layer_ = YAML::Clone(*user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
@@ -7697,7 +7703,13 @@ absl::StatusOr<hm::stitching::StitchCameraSelection> HStreamWindow::stitchCamera
         effective["stitching"][key] = merge_yaml_maps(effective["stitching"][key], value);
     }
   }
-  return hm::stitching::read_stitch_camera_selection(effective);
+  auto selected = hm::stitching::read_stitch_camera_selection(effective);
+  // Older games may have hand-entered optics without a named camera. The new
+  // Auto default must not replace those values on their first load.
+  if (selected.ok() && selected->configuration == "auto" && stitching && stitching.IsMap() &&
+      !stitching["camera_config"] && (stitching["camera_fov"] || stitching["input_lens"]))
+    selected->configuration = "manual";
+  return selected;
 }
 
 absl::StatusOr<hm::stitching::StitchProjectionFraming> HStreamWindow::stitchProjectionFramingFromGameConfig(
@@ -7711,18 +7723,37 @@ void HStreamWindow::applyCameraConfigurationDefaults() {
   if (!camera_configuration_combo_)
     return;
   const std::string selected = camera_configuration_combo_->currentData().toString().toStdString();
+  camera_configuration_combo_->setProperty("autoInputLensFrozen", false);
   const auto configuration =
       std::find_if(camera_configurations_.begin(), camera_configurations_.end(), [&](const auto& candidate) {
         return candidate.id == selected;
       });
   if (configuration == camera_configurations_.end())
     return;
-  if (camera_horizontal_fov_spin_)
-    set_calibration_spin_value(camera_horizontal_fov_spin_, configuration->horizontal_fov);
-  if (camera_vertical_fov_spin_)
-    set_calibration_spin_value(camera_vertical_fov_spin_, configuration->vertical_fov);
-  if (input_lens_widget_)
-    input_lens_widget_->setLens(configuration->input_lens);
+  hm::stitching::StitchCameraSelection camera{
+      configuration->id, configuration->horizontal_fov, configuration->vertical_fov, configuration->input_lens};
+  YAML::Node effective = YAML::Clone(baseline_config_);
+  const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
+  auto saved = hm::stitching::load_game_config_file(game / "config.yaml");
+  if (saved.ok() && saved->has_value())
+    effective = merge_yaml_maps(effective, **saved);
+  effective["stitching"].remove("auto_input_lens_frozen");
+  const auto resolved = !saved.ok() && selected == "auto"
+      ? hm::stitching::AutoInputLensResult{camera, "Auto unavailable: " + saved.status().ToString()}
+      : hm::stitching::ReadAutoInputLensForGame(game, effective, camera);
+  camera = resolved.camera;
+  if (camera_horizontal_fov_spin_) {
+    set_calibration_spin_value(camera_horizontal_fov_spin_, camera.horizontal_fov);
+    camera_horizontal_fov_spin_->setReadOnly(selected == "auto");
+  }
+  if (camera_vertical_fov_spin_) {
+    set_calibration_spin_value(camera_vertical_fov_spin_, camera.vertical_fov);
+    camera_vertical_fov_spin_->setReadOnly(selected == "auto");
+  }
+  if (input_lens_widget_) {
+    input_lens_widget_->setLens(camera.input_lens);
+    input_lens_widget_->setMetadataStatus(QString::fromStdString(resolved.message), selected == "auto");
+  }
 }
 
 QString HStreamWindow::stitchProjection() const {
@@ -17563,7 +17594,11 @@ void HStreamWindow::loadSavedControlConfig() {
     auto configured_camera_selection = stitchCameraSelectionFromGameConfig(config);
     if (!configured_camera_selection.ok())
       throw std::invalid_argument(std::string(configured_camera_selection.status().message()));
-    staged_camera_selection = *configured_camera_selection;
+    const auto auto_lens = hm::stitching::ReadAutoInputLensForGame(
+        gameDirectory(game_id_edit_->text()).toStdString(),
+        merge_yaml_maps(baseline_config_, config),
+        *configured_camera_selection);
+    staged_camera_selection = auto_lens.camera;
     {
       auto configured_projection_framing = stitchProjectionFramingFromGameConfig(config);
       if (!configured_projection_framing.ok())
@@ -17939,7 +17974,14 @@ void HStreamWindow::loadSavedControlConfig() {
       set_calibration_spin_value(camera_vertical_fov_spin_, staged_camera_selection.vertical_fov);
       camera_vertical_fov_spin_->blockSignals(blocked);
     }
+    const YAML::Node frozen_lens = config["stitching"]["auto_input_lens_frozen"];
+    camera_configuration_combo_->setProperty(
+        "autoInputLensFrozen", frozen_lens && frozen_lens.IsScalar() && frozen_lens.as<bool>());
     input_lens_widget_->setLens(staged_camera_selection.input_lens);
+    input_lens_widget_->setMetadataStatus(
+        QString::fromStdString(auto_lens.message), staged_camera_selection.configuration == "auto");
+    camera_horizontal_fov_spin_->setReadOnly(staged_camera_selection.configuration == "auto");
+    camera_vertical_fov_spin_->setReadOnly(staged_camera_selection.configuration == "auto");
     projection_parameter_controls_projection_.clear();
     projection_parameter_values_ = std::move(staged_projection_parameters);
     if (projection_combo_) {
@@ -18038,6 +18080,11 @@ void HStreamWindow::loadSavedControlConfig() {
     loadPlayerAnalyticsConfig(config);
     saved_control_config_load_error_.clear();
     captureSavedControlState();
+    // Metadata may have changed with the selected recordings. Keep the on-disk
+    // optics as the comparison baseline so Save/Play invalidates old maps.
+    const auto persisted_camera = hm::stitching::read_stitch_camera_selection(merge_yaml_maps(baseline_config_, config));
+    saved_camera_selection_ = persisted_camera.ok() ? *persisted_camera : *configured_camera_selection;
+    updatePresetDirtyState();
     if (normalized_nona_without_autooptimizer) {
       saved_mapping_backend_ = "nona";
       saved_run_autooptimizer_ = false;
@@ -18388,6 +18435,8 @@ bool HStreamWindow::applySavedControlConfig(
   remove_yaml_path(config, {"hstream_ui", "generated_control_point_resolution"});
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
   hm::stitching::write_stitch_camera_selection(config, selected_camera);
+  if (!camera_configuration_combo_->property("autoInputLensFrozen").toBool())
+    config["stitching"].remove("auto_input_lens_frozen");
   config["stitching"]["run_autooptimizer"] = selected_run_autooptimizer;
   config["stitching"]["projection"] = selected_projection.toStdString();
   remove_yaml_path(config, {"stitching", "projection_parameters"});
@@ -18962,6 +19011,8 @@ void HStreamWindow::addVideoPath() {
   }
   config_transaction->reset();
   refreshVideoSets();
+  if (camera_configuration_combo_->currentData() == "auto")
+    applyCameraConfigurationDefaults();
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
 }
 
@@ -19040,6 +19091,8 @@ void HStreamWindow::removeSelectedVideoSet() {
   delete item;
   config_transaction->reset();
   refreshVideoSets();
+  if (camera_configuration_combo_->currentData() == "auto")
+    applyCameraConfigurationDefaults();
 }
 
 void HStreamWindow::refreshVideoSets() {

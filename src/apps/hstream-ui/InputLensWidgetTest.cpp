@@ -3,6 +3,7 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QLabel>
 
 #include <iostream>
 
@@ -33,6 +34,17 @@ int main(int argc, char** argv) {
     return 1;
   widget.setLens({});
   if (widget.lens() != hm::stitching::StitchInputLens{} || changes != 2)
+    return 1;
+  widget.setMetadataStatus("Warning: camera metadata differs", true);
+  widget.setEnabled(false);
+  widget.setEnabled(true);
+  if (!widget.findChild<QDoubleSpinBox*>("inputLensCenterYSpin")->isReadOnly() ||
+      widget.findChild<QComboBox*>("inputLensProjectionCombo")->isEnabled() ||
+      widget.findChild<QLabel*>("inputLensMetadataStatus")->text() != "Warning: camera metadata differs")
+    return 1;
+  widget.setMetadataStatus("", false);
+  if (widget.findChild<QDoubleSpinBox*>("inputLensCenterYSpin")->isReadOnly() ||
+      !widget.findChild<QComboBox*>("inputLensProjectionCombo")->isEnabled())
     return 1;
   return 0;
 }

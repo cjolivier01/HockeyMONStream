@@ -9496,6 +9496,17 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
               "Selecting a camera must replace previous game optics with the profile defaults"))
     return false;
 
+  camera_configuration->setCurrentIndex(camera_configuration->findData("auto"));
+  auto* metadata_status = require_child<QLabel>(window, "inputLensMetadataStatus");
+  if (!expect(metadata_status && !metadata_status->text().isEmpty() && input_b->isReadOnly() &&
+                  camera_horizontal_fov->isReadOnly() && !input_projection->isEnabled(),
+              "Auto must show its metadata result and protect imported optics"))
+    return false;
+  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
+  if (!expect(!input_b->isReadOnly() && !camera_horizontal_fov->isReadOnly() && input_projection->isEnabled(),
+              "Manual camera profiles must restore editable optics after Auto"))
+    return false;
+
   YAML::Node inherited_rink_config = YAML::Clone(config);
   inherited_rink_config["stitching"]["rink_config"] = "vallco";
   inherited_rink_config["stitching"].remove("projection_framing");

@@ -411,8 +411,12 @@ separate profiles for different recording modes, since Wide/Linear, aspect ratio
 the source optics. Mission 1 defaults to the saved `vegas-kings-1` input optics:
 108° horizontal / 90° vertical FOV, full-frame fisheye, fixed correction,
 distortion `[0, 0.0208293582808693, 0]`, and normalized center offsets
-`[-0.0013154349398449218, 0.14355981616751806]`. Other bundled profiles retain
-neutral automatic fitting.
+`[-0.0013154349398449218, 0.14355981616751806]`.
+The separate **GoPro Mission 1 Factory (8K Wide, HyperSmooth On)** preset derives
+its fixed input optics from the camera metadata in the original Vegas recordings.
+It applies to MISSION 1 PRO 7680×4320 at 59.94 fps, Wide, HyperSmooth On, zoom 1,
+and horizon control Off. See [factory lens provenance and conversion](gopro-mission-1-factory-lens.md).
+Hero 11 and Insta Ace Pro 2 retain neutral automatic fitting.
 For example, a calibrated profile may contain:
 
 ```yaml
@@ -432,3 +436,13 @@ stitching:
 
 These example coefficients illustrate the schema; use values calibrated for the recording mode. Input lens
 projection describes the original images; `stitching.projection: general-panini` still controls the output panorama.
+
+Auto (video metadata) is the default camera selection for new games. Opening the
+main Projection controls or this dialog fills one shared input-lens prescription
+from the selected original recordings when every camera/chapter agrees. The
+input-lens status explains missing metadata, unsupported stabilization/warping,
+or a mismatch. Auto's numbers are read-only; choose a named preset or Manual
+lens settings to edit them. Candidate creation freezes the displayed numbers,
+including an automatic-fit fallback, and promotion preserves that snapshot.
+Selecting another camera profile and then Auto requests a fresh import.
+See [automatic input lens](auto-input-lens.md) for camera-specific support.

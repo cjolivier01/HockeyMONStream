@@ -641,6 +641,19 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
               changed_profile->experiments.back().workspace.settings.camera->horizontal_fov == 108 &&
               changed_profile->experiments.back().workspace.settings.camera->input_lens == camera.input_lens,
           "Candidate history must freeze the selected camera and its lens defaults");
+  profiles->setCurrentIndex(profiles->findData("auto"));
+  require(!widget<QLabel>(reopened, "inputLensMetadataStatus")->text().isEmpty() &&
+              widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
+              !widget<QComboBox>(reopened, "inputLensProjectionCombo")->isEnabled(),
+          "Experiment Auto must explain its metadata result and protect imported values");
+  add_options(reopened);
+  const auto automatic = LoadStitchingExperimentStore(*store);
+  require(automatic.ok() && automatic->experiments.back().workspace.settings.camera &&
+              automatic->experiments.back().workspace.settings.camera->configuration == "auto",
+          "New Auto candidate keeps its camera selection");
+  const auto automatic_config = YAML::LoadFile((automatic->experiments.back().workspace.game_directory / "config.yaml").string());
+  require(automatic_config["stitching"]["auto_input_lens_frozen"].as<bool>(),
+          "Auto candidate snapshots must disable metadata reimport in the runner");
 }
 
 void exercise_player_queue(const QString& game, const QString& root) {

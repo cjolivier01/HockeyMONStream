@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
+#include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
@@ -253,7 +254,8 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
         "camera_configs",
         "camera_config",
         "camera_fov",
-        "input_lens"}) {
+        "input_lens",
+        "auto_input_lens_frozen"}) {
     if (stitching[key]) {
       if (stitching[key].IsMap() && effective["stitching"][key].IsMap())
         merge_feature_map(effective["stitching"][key], stitching[key]);
@@ -261,6 +263,9 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
         effective["stitching"][key] = YAML::Clone(stitching[key]);
     }
   }
+  if (!stitching["camera_config"] && (stitching["camera_fov"] || stitching["input_lens"]) &&
+      effective["stitching"]["camera_config"].as<std::string>("") == "auto")
+    effective["stitching"]["camera_config"] = "manual";
 }
 
 hm::stitching::ControlPointMatcher feature_matcher(const YAML::Node& config, const YAML::Node& baseline = {}) {
@@ -3293,12 +3298,19 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       hm::stitching::restore_generated_control_point_resolution(game);
       overlay_feature_settings(effective, game);
     }
-    const auto camera = hm::stitching::read_stitch_camera_selection(effective);
+    auto camera = hm::stitching::read_stitch_camera_selection(effective);
     if (!camera.ok())
       throw std::runtime_error(camera.status().ToString());
     const auto configurations = hm::stitching::read_stitch_camera_configurations(effective);
     if (!configurations.ok())
       throw std::runtime_error(configurations.status().ToString());
+    YAML::Node source_config = saved->has_value() ? YAML::Clone(**saved) : YAML::Node(YAML::NodeType::Map);
+    source_config["stitching"] = YAML::Clone(effective["stitching"]);
+    const auto auto_lens =
+        hm::stitching::ReadAutoInputLensForGame(game_directory.toStdString(), source_config, *camera);
+    camera = auto_lens.camera;
+    s.input_lens->setMetadataStatus(QString::fromStdString(auto_lens.message), camera->configuration == "auto");
+    s.camera_horizontal_fov->setReadOnly(camera->configuration == "auto");
     s.camera_configurations = *configurations;
     for (const auto& profile : s.camera_configurations)
       s.camera_configuration->addItem(QString::fromStdString(profile.display_name), QString::fromStdString(profile.id));
@@ -3350,14 +3362,29 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       if (profile.id != selected)
         continue;
       s.camera_settings = {profile.id, profile.horizontal_fov, profile.vertical_fov, profile.input_lens};
-      s.input_lens->setLens(profile.input_lens);
-      s.camera_horizontal_fov->setValue(profile.horizontal_fov);
-      s.camera_horizontal_fov->setProperty("exactLensFov", profile.horizontal_fov);
+      auto source_config =
+          hm::stitching::load_game_config_file(std::filesystem::path(s.game_directory.toStdString()) / "config.yaml");
+      YAML::Node effective = source_config.ok() && source_config->has_value() ? YAML::Clone(**source_config)
+                                                                              : YAML::Node(YAML::NodeType::Map);
+      overlay_feature_settings(effective, s.feature_defaults);
+      effective["stitching"].remove("auto_input_lens_frozen");
+      const auto resolved = !source_config.ok() && selected == "auto"
+          ? hm::stitching::
+                AutoInputLensResult{s.camera_settings, "Auto unavailable: " + source_config.status().ToString()}
+          : hm::stitching::ReadAutoInputLensForGame(s.game_directory.toStdString(), effective, s.camera_settings);
+      s.camera_settings = resolved.camera;
+      s.input_lens->setLens(s.camera_settings.input_lens);
+      s.input_lens->setMetadataStatus(QString::fromStdString(resolved.message), selected == "auto");
+      s.camera_horizontal_fov->setReadOnly(selected == "auto");
+      s.camera_horizontal_fov->setValue(s.camera_settings.horizontal_fov);
+      s.camera_horizontal_fov->setProperty("exactLensFov", s.camera_settings.horizontal_fov);
       return;
     }
     // Preserve an explicit game profile which is not in this machine's catalog.
     if (s.initial_settings.camera && s.initial_settings.camera->configuration == selected) {
       s.camera_settings = *s.initial_settings.camera;
+      s.input_lens->setMetadataStatus("", false);
+      s.camera_horizontal_fov->setReadOnly(false);
       s.input_lens->setLens(s.camera_settings.input_lens);
       s.camera_horizontal_fov->setValue(s.camera_settings.horizontal_fov);
       s.camera_horizontal_fov->setProperty("exactLensFov", s.camera_settings.horizontal_fov);

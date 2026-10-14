@@ -10,6 +10,12 @@ InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Input lens", pare
   setObjectName("stitchInputLensControls");
   setToolTip("Shared source-camera optics. Non-default correction requires the NONA mapping backend.");
   auto* layout = new QFormLayout(this);
+  metadata_status_ = new QLabel(this);
+  metadata_status_->setObjectName("inputLensMetadataStatus");
+  metadata_status_->setWordWrap(true);
+  metadata_status_->setTextFormat(Qt::PlainText);
+  metadata_status_->hide();
+  layout->addRow(metadata_status_);
   projection_ = new QComboBox(this);
   projection_->setObjectName("inputLensProjectionCombo");
   projection_->addItem("Rectilinear", "rectilinear");
@@ -80,4 +86,13 @@ void InputLensWidget::setLens(const hm::stitching::StitchInputLens& lens) {
     parameters_[i]->setValue(value * (i < 3 ? 1 : 100));
     parameters_[i]->setProperty("exactLensValue", value);
   }
+}
+
+void InputLensWidget::setMetadataStatus(const QString& message, bool automatic) {
+  metadata_status_->setText(message);
+  metadata_status_->setVisible(!message.isEmpty());
+  projection_->setEnabled(!automatic);
+  optimization_->setEnabled(!automatic);
+  for (auto* parameter : parameters_)
+    parameter->setReadOnly(automatic);
 }
