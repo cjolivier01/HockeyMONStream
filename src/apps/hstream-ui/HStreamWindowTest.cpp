@@ -4092,14 +4092,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               mapping_backend_label->text() == "Mapping backend" &&
               camera_configuration_label->text() == "Camera configuration" &&
               camera_horizontal_fov_label->text() == "Camera horizontal FOV" &&
-              camera_vertical_fov_label->text() == "Camera vertical FOV" && camera_configuration->count() == 3 &&
-              camera_configuration->itemText(0) == "GoPro Hero 11" &&
-              camera_configuration->itemData(0).toString() == "gopro-hero-11" &&
-              camera_configuration->itemText(1) == "GoPro Mission 1" &&
-              camera_configuration->itemData(1).toString() == "gopro-mission-1" &&
-              camera_configuration->itemText(2) == "Insta Ace Pro 2" &&
-              camera_configuration->itemData(2).toString() == "insta-ace-pro-2" &&
-              camera_configuration->currentData().toString() == "gopro-mission-1" &&
+              camera_vertical_fov_label->text() == "Camera vertical FOV" && camera_configuration->count() == 6 &&
+              camera_configuration->findData("auto") >= 0 && camera_configuration->findData("manual") >= 0 &&
+              camera_configuration->findData("gopro-hero-11") >= 0 &&
+              camera_configuration->findData("gopro-mission-1") >= 0 &&
+              camera_configuration->findData("gopro-mission-1-factory") >= 0 &&
+              camera_configuration->findData("insta-ace-pro-2") >= 0 &&
+              camera_configuration->currentData().toString().toStdString() ==
+                  HStreamWindowTestAccess::defaultCameraSelection(window).configuration &&
               camera_horizontal_fov->value() ==
                   HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
               camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov &&
@@ -9415,10 +9415,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   game_id->setText("ui-projection-parameters-game");
   activate(create);
   const bool camera_defaults_available = expect(
-      camera_configuration->count() == 3 && camera_configuration->currentData().toString() == "gopro-mission-1" &&
+      camera_configuration->count() == 6 && camera_configuration->currentData().toString() == "auto" &&
           camera_horizontal_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
           camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov,
-      "A new game must expose all three camera presets and select the baseline GoPro Mission 1 defaults");
+      "A new game must expose all camera presets and select Auto");
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   QApplication::processEvents();
   const bool hero_defaults_applied = expect(
@@ -14822,6 +14822,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     copied_config_node["stitching"]["run_autooptimizer"] = true;
     copied_config_node["stitching"]["projection"] = "general-panini";
     copied_config_node["stitching"].remove("projection_parameters");
+    copied_config_node["stitching"]["camera_config"] = "manual";
     copied_config_node["stitching"]["camera_fov"]["horizontal_fov"] = 126.1234;
     copied_config_node["stitching"]["camera_fov"]["vertical_fov"] = 84.9876;
     copied_config_node["stitching"]["projection_framing"] =
