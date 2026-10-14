@@ -114,6 +114,34 @@ struct HStreamWindowTestAccess {
     window->prepared_int8_model_ = window->detectorModel();
     window->updatePresetDirtyState();
   }
+  static void refreshCameraDefaults(HStreamWindow* window) {
+    window->applyCameraConfigurationDefaults();
+  }
+  static bool prepareStitchingRun(HStreamWindow* window) {
+    const QString prior_game = window->active_run_game_id_;
+    window->active_run_game_id_ = window->game_id_edit_->text().trimmed();
+    window->active_force_reconfigure_ = false;
+    window->active_calibration_control_points_ = window->stitchingCalibrationControlPoints();
+    window->active_calibration_frame_count_ = window->stitchingCalibrationFrameCount();
+    window->active_stitch_max_output_width_ = window->stitchingMaxOutputWidth();
+    window->active_run_autooptimizer_ = window->runAutooptimizer();
+    window->active_stitch_frame_time_ = window->stitchFrameTime();
+    window->active_iteration_settings_ = window->stitchingIterationSettings();
+    window->active_control_point_matcher_ = window->controlPointMatcher();
+    window->active_control_point_resolution_ = window->control_point_resolution_;
+    window->active_mapping_backend_ = window->mappingBackend();
+    window->active_camera_selection_ = window->stitchCameraSelection();
+    window->active_auto_input_lens_frozen_ = window->autoInputLensFrozen();
+    window->active_projection_ = window->stitchProjection();
+    window->storeProjectionParameterControls();
+    window->active_projection_parameters_ = window->stitchProjectionParameters();
+    window->active_projection_framing_ = window->stitchProjectionFraming();
+    bool required = false;
+    const bool prepared = window->prepareStitchingCalibrationRun(
+        "/bin/true", window->pipelineWorkingDirectory(), QProcessEnvironment::systemEnvironment(), &required);
+    window->active_run_game_id_ = prior_game;
+    return prepared;
+  }
   static bool savePreset(HStreamWindow* window) {
     return window->savePreset();
   }
@@ -136,6 +164,10 @@ struct HStreamWindowTestAccess {
   }
   static hm::stitching::StitchCameraSelection defaultCameraSelection(HStreamWindow* window) {
     return window->default_camera_selection_;
+  }
+  static absl::StatusOr<hm::stitching::StitchCameraSelection> cameraSelection(
+      HStreamWindow* window, const YAML::Node& config) {
+    return window->stitchCameraSelectionFromGameConfig(config);
   }
   static QStringList standaloneArguments(HStreamWindow* window) {
     return window->pipelineArguments(true);
@@ -4094,14 +4126,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               mapping_backend_label->text() == "Mapping backend" &&
               camera_configuration_label->text() == "Camera configuration" &&
               camera_horizontal_fov_label->text() == "Camera horizontal FOV" &&
-              camera_vertical_fov_label->text() == "Camera vertical FOV" && camera_configuration->count() == 3 &&
-              camera_configuration->itemText(0) == "GoPro Hero 11" &&
-              camera_configuration->itemData(0).toString() == "gopro-hero-11" &&
-              camera_configuration->itemText(1) == "GoPro Mission 1" &&
-              camera_configuration->itemData(1).toString() == "gopro-mission-1" &&
-              camera_configuration->itemText(2) == "Insta Ace Pro 2" &&
-              camera_configuration->itemData(2).toString() == "insta-ace-pro-2" &&
-              camera_configuration->currentData().toString() == "gopro-mission-1" &&
+              camera_vertical_fov_label->text() == "Camera vertical FOV" && camera_configuration->count() == 6 &&
+              camera_configuration->findData("auto") >= 0 && camera_configuration->findData("manual") >= 0 &&
+              camera_configuration->findData("gopro-hero-11") >= 0 &&
+              camera_configuration->findData("gopro-mission-1") >= 0 &&
+              camera_configuration->findData("gopro-mission-1-factory") >= 0 &&
+              camera_configuration->findData("insta-ace-pro-2") >= 0 &&
+              camera_configuration->currentData().toString().toStdString() ==
+                  HStreamWindowTestAccess::defaultCameraSelection(window).configuration &&
               camera_horizontal_fov->value() ==
                   HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
               camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov &&
@@ -9490,10 +9522,24 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   game_id->setText("ui-projection-parameters-game");
   activate(create);
   const bool camera_defaults_available = expect(
-      camera_configuration->count() == 3 && camera_configuration->currentData().toString() == "gopro-mission-1" &&
+      camera_configuration->count() == 6 && camera_configuration->currentData().toString() == "auto" &&
           camera_horizontal_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
           camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov,
-      "A new game must expose all three camera presets and select the baseline GoPro Mission 1 defaults");
+      "A new game must expose all camera presets and select Auto");
+  for (const char* inherited : {"null", "{}", "{projection: null}"}) {
+    YAML::Node empty;
+    empty["stitching"]["input_lens"] = YAML::Load(inherited);
+    empty["stitching"]["camera_fov"] = YAML::Load("{horizontal_fov: null}");
+    const auto selection = HStreamWindowTestAccess::cameraSelection(window, empty);
+    if (!expect(selection.ok() && selection->configuration == "auto",
+                "Inherit-only game optics must retain Auto in the main controls"))
+      return false;
+  }
+  const auto legacy_camera = HStreamWindowTestAccess::cameraSelection(
+      window, YAML::Load("stitching: {camera_config: null, camera_fov: {horizontal_fov: 123}}"));
+  if (!expect(legacy_camera.ok() && legacy_camera->configuration == "manual" && legacy_camera->horizontal_fov == 123,
+              "A null camera selector must preserve explicit legacy optics in main controls"))
+    return false;
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   QApplication::processEvents();
   const bool hero_defaults_applied = expect(
@@ -9569,6 +9615,56 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(input_projection->currentData() == "rectilinear" && input_optimization->currentData() == "auto" &&
                   input_b->value() == 0 && input_center_y->value() == 0,
               "Selecting a camera must replace previous game optics with the profile defaults"))
+    return false;
+
+  camera_configuration->setCurrentIndex(camera_configuration->findData("auto"));
+  auto* metadata_status = require_child<QLabel>(window, "inputLensMetadataStatus");
+  if (!expect(metadata_status && !metadata_status->text().isEmpty() && input_b->isReadOnly() &&
+                  camera_horizontal_fov->isReadOnly() && !input_projection->isEnabled(),
+              "Auto must show its metadata result and protect imported optics"))
+    return false;
+  YAML::Node auto_defaults = YAML::Clone(config);
+  auto_defaults["stitching"]["camera_configs"]["auto"]["horizontal_fov"] = 117.25;
+  std::ofstream(config_path) << YAML::Dump(auto_defaults) << '\n';
+  camera_configuration->setProperty("autoInputLensFrozen", true);
+  activate(reset);
+  if (!expect(camera_configuration->currentData() == "auto" && camera_horizontal_fov->value() == 117.25 &&
+                  !camera_configuration->property("autoInputLensFrozen").toBool() &&
+                  !metadata_status->text().isEmpty(),
+              "Reset must resolve Auto again and clear a promoted snapshot instead of writing static defaults"))
+    return false;
+  if (!HStreamWindowTestAccess::savePreset(window))
+    return false;
+  // Releasing the policy is a saveable change even when reimport finds exactly
+  // the same optics. Both Save and Play must retain that release after reopening.
+  for (int action : {0, 1, 2}) {
+    auto frozen = YAML::LoadFile(config_path.string());
+    frozen["stitching"]["auto_input_lens_frozen"] = true;
+    std::ofstream(config_path) << YAML::Dump(frozen) << '\n';
+    HStreamWindowTestAccess::reloadSavedControls(window);
+    if (action == 2) {
+      // Source add/remove refreshes the current profile without a combo signal.
+      HStreamWindowTestAccess::refreshCameraDefaults(window);
+    } else {
+      camera_configuration->setCurrentIndex(camera_configuration->findData("manual"));
+      camera_configuration->setCurrentIndex(camera_configuration->findData("auto"));
+    }
+    if (!expect(save->isEnabled(), "Unfreezing identical Auto optics must enable Save Preset"))
+      return false;
+    const bool published = action == 1 ? HStreamWindowTestAccess::prepareStitchingRun(window)
+                                : HStreamWindowTestAccess::savePreset(window);
+    const auto released = YAML::LoadFile(config_path.string());
+    if (!expect(published && !released["stitching"]["auto_input_lens_frozen"].as<bool>(),
+                "Save and Play must both persist the released Auto policy"))
+      return false;
+    HStreamWindowTestAccess::reloadSavedControls(window);
+    if (!expect(!camera_configuration->property("autoInputLensFrozen").toBool(),
+                "Reopening must retain Auto metadata refresh after releasing a snapshot"))
+      return false;
+  }
+  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
+  if (!expect(!input_b->isReadOnly() && !camera_horizontal_fov->isReadOnly() && input_projection->isEnabled(),
+              "Manual camera profiles must restore editable optics after Auto"))
     return false;
 
   YAML::Node inherited_rink_config = YAML::Clone(config);
@@ -14886,6 +14982,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     copied_config_node["stitching"]["run_autooptimizer"] = true;
     copied_config_node["stitching"]["projection"] = "general-panini";
     copied_config_node["stitching"].remove("projection_parameters");
+    copied_config_node["stitching"]["camera_config"] = "manual";
     copied_config_node["stitching"]["camera_fov"]["horizontal_fov"] = 126.1234;
     copied_config_node["stitching"]["camera_fov"]["vertical_fov"] = 84.9876;
     copied_config_node["stitching"]["projection_framing"] =

@@ -44,6 +44,7 @@ bool test_player_frame_selection_state(const fs::path& root) {
   YAML::Node config;
   // Generation fixtures use a fixed synthetic camera, independent of the
   // installed baseline's evolving camera presets.
+  config["stitching"]["camera_config"] = "gopro-mission-1";
   config["stitching"]["camera_configs"]["gopro-mission-1"] =
       YAML::Load("{display_name: Synthetic camera, horizontal_fov: 127.2, vertical_fov: 95}");
   PlayerFrameSelectionPlan plan;
@@ -1216,6 +1217,7 @@ stitching:
     invalidation_lock->reset();
 
   YAML::Node backend_generation(YAML::NodeType::Map);
+  backend_generation["stitching"]["camera_config"] = "gopro-mission-1";
   backend_generation["stitching"]["camera_configs"] = YAML::Clone(camera_config["stitching"]["camera_configs"]);
   backend_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   // Historical claims without a resolution field always mean native, including on Jetson.
@@ -1417,6 +1419,7 @@ stitching:
       "new calibration generations must preserve their claimed input lens");
 
   YAML::Node parameter_generation(YAML::NodeType::Map);
+  parameter_generation["stitching"]["camera_config"] = "gopro-mission-1";
   parameter_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   parameter_generation["stitching"]["camera_configs"] = YAML::Clone(camera_config["stitching"]["camera_configs"]);
   parameter_generation["stitching"]["mapping_backend"] = "nona";

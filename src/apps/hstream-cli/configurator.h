@@ -221,6 +221,7 @@ class Configurator {
       YAML::Node& pipeline,
       std::optional<uint64_t> detected_total_memory_bytes = std::nullopt);
   absl::Status map_stitch_max_output_width();
+  absl::Status resolve_effective_stitching_camera(bool force_video_discovery);
   absl::Status reconcile_selected_frame_count_override(
       const std::string& expected_invalidation_id,
       std::string* changed_invalidation_id = nullptr);

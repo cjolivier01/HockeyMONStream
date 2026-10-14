@@ -249,6 +249,20 @@ int main(int argc, char** argv) {
   bytes[sizeof(proto) + 2] = static_cast<char>(255);
   std::ofstream(path, std::ios::binary).write(bytes.data(), bytes.size());
   ok &= expect(!ReadInsta360Clock(path).ok(), "Invalid trailer record lengths must be rejected");
+  std::string cycle;
+  append_le(cycle, 1, 2); // Directory points to itself as the requested metadata record.
+  append_le(cycle, 10, 4);
+  append_le(cycle, 0, 4);
+  append_le(cycle, 0, 2);
+  append_le(cycle, 10, 4);
+  cycle.resize(cycle.size() + 32);
+  append_le(cycle, cycle.size() + 40, 4);
+  append_le(cycle, 1, 4);
+  cycle += "8db42d694ccc418790edff439fe026bf";
+  std::ofstream(path, std::ios::binary).write(cycle.data(), cycle.size());
+  const auto cyclic_record = ReadInsta360Record(path, 1, 1024);
+  ok &= expect(!cyclic_record.ok() && cyclic_record.status().message() == "Insta360 directory cycle",
+               "Reject repeated directory offsets before exhausting the record budget");
   // Exercise the actual pinned runtime, including EXIF tag names and a PNG
   // eXIf chunk. No camera footage, GPU or separately installed ExifTool needed.
   const auto perl = hm::findExecutable("perl", {"PATH"});

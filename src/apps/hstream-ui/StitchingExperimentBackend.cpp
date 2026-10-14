@@ -347,6 +347,7 @@ absl::Status configure_candidate(
   config["stitching"]["calibration_frame_count"] = settings.frame_count;
   if (settings.camera) {
     hm::stitching::write_stitch_camera_selection(config, *settings.camera);
+    config["stitching"]["auto_input_lens_frozen"] = settings.camera->configuration == "auto";
     config["hstream_ui"].remove("generated_stitching_backend_choices");
   }
   if (settings.manual_control_points) {
@@ -1187,6 +1188,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
           "calibration_frame_selection",
           "calibration_frame_inputs_fingerprint",
           "camera_config",
+          "auto_input_lens_frozen",
           "input_lens",
           "camera_fov",
           "control_point_execution_provider",

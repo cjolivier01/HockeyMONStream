@@ -435,6 +435,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/stitching:auto_input_lens",
         ":input_lens_widget",
         ":native_preview_surface",
         ":ansi_log_format",
@@ -670,6 +671,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/stitching:auto_input_lens",
         ":input_lens_widget",
         ":native_preview_surface",
         ":stitching_still_preview",

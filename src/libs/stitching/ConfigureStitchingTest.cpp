@@ -2791,6 +2791,7 @@ int main() {
   if (!baseline.ok())
     finish(tmpdir, 53);
   YAML::Node fixture_baseline = YAML::Clone(baseline->values);
+  fixture_baseline["stitching"]["camera_config"] = "gopro-mission-1";
   fixture_baseline["stitching"]["camera_configs"]["gopro-mission-1"]["horizontal_fov"] = 127.2;
   fixture_baseline["stitching"]["camera_configs"]["gopro-mission-1"]["vertical_fov"] = 95.0;
   fixture_baseline["stitching"]["camera_configs"]["gopro-mission-1"]["input_lens"] =
