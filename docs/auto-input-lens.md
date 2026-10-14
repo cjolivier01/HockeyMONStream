@@ -24,12 +24,15 @@ Saving or playing uses the existing calibration invalidation rules when the
 resolved optics change. The input geometry, scoreboard selection and crop review
 must correspond to the rebuilt stitched canvas. Opening a game only populates
 the controls; it does not write the game configuration. The CLI resolves Auto
-before persisting its calibration settings and generation claim.
+before comparing with a saved alignment or persisting its calibration settings
+and generation claim. Changed optics trigger a new solve, including launches
+that also change output geometry.
 
 Experiments freeze the displayed optics at candidate creation using
 `stitching.auto_input_lens_frozen`. Replays and promotion retain that snapshot,
 even if the original files are unavailable. To import again after promotion,
-select another camera profile, then Auto. A normal save of other controls keeps
+select another camera profile, then Auto, or explicitly pass
+`--options=stitching.camera_config=auto` on the CLI. A normal save of other controls keeps
 the freeze intact.
 
 ## Supported metadata

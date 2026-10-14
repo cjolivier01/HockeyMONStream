@@ -7969,8 +7969,38 @@ absl::Status Configurator::persist_stitch_frame_time_override(const std::string&
   return save_private_config(private_config_, expected_invalidation_id);
 }
 
-absl::Status Configurator::persist_effective_stitching_backend_choices(
-    const std::string& expected_invalidation_id, bool force_video_discovery) {
+absl::Status Configurator::resolve_effective_stitching_camera(bool force_video_discovery) {
+  stitching::StitchCameraSelection camera;
+  HM_ASSIGN_OR_RETURN(camera, stitching::read_stitch_camera_selection(config_));
+  int optics_rank = -1;
+  for (const char* key :
+       {"stitching.camera_fov.horizontal_fov",
+        "stitching.camera_fov.vertical_fov",
+        "stitching.input_lens.projection",
+        "stitching.input_lens.optimization",
+        "stitching.input_lens.distortion",
+        "stitching.input_lens.center_offset"}) {
+    const auto value = get_node(config_, key);
+    if (value.has_value() && !value->IsNull())
+      optics_rank = std::max(optics_rank, explicit_value_rank(key));
+  }
+  if (camera.configuration == "auto" &&
+      (optics_rank > explicit_value_rank("stitching.camera_config") || optics_rank >= 3))
+    camera.configuration = "manual";
+  // A fresh higher-layer Auto selection supersedes a saved experiment freeze.
+  // An equally explicit freeze still wins for intentional snapshot replay.
+  if (camera.configuration == "auto" &&
+      explicit_value_rank("stitching.camera_config") > explicit_value_rank("stitching.auto_input_lens_frozen"))
+    config_["stitching"]["auto_input_lens_frozen"] = false;
+  const auto auto_lens =
+      stitching::ReadAutoInputLensForGame(resolved_game_dir(), config_, camera, force_video_discovery);
+  stitching::write_stitch_camera_selection(config_, auto_lens.camera);
+  if (!auto_lens.message.empty())
+    std::cerr << auto_lens.message << std::endl;
+  return absl::OkStatus();
+}
+
+absl::Status Configurator::persist_effective_stitching_backend_choices(const std::string& expected_invalidation_id) {
   const auto canonical_matcher = [](const YAML::Node& root) -> absl::StatusOr<std::string> {
     const auto node = get_node(root, "stitching.control_point_matcher");
     if (node.has_value() && !node->IsScalar()) {
@@ -8376,22 +8406,6 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(
   }
   stitching::StitchCameraSelection camera;
   HM_ASSIGN_OR_RETURN(camera, stitching::read_stitch_camera_selection(config_));
-  int optics_rank = -1;
-  for (const char* key :
-       {"stitching.camera_fov.horizontal_fov",
-        "stitching.camera_fov.vertical_fov",
-        "stitching.input_lens.projection",
-        "stitching.input_lens.optimization",
-        "stitching.input_lens.distortion",
-        "stitching.input_lens.center_offset"})
-    optics_rank = std::max(optics_rank, explicit_value_rank(key));
-  if (camera.configuration == "auto" &&
-      (optics_rank > explicit_value_rank("stitching.camera_config") || optics_rank >= 3))
-    camera.configuration = "manual";
-  const auto auto_lens = stitching::ReadAutoInputLensForGame(resolved_game_dir(), config_, camera, force_video_discovery);
-  camera = auto_lens.camera;
-  if (!auto_lens.message.empty())
-    std::cerr << auto_lens.message << std::endl;
 
   config_["stitching"]["control_point_matcher"] = matcher_name;
   config_["stitching"]["mapping_backend"] = backend_name;
@@ -8471,7 +8485,11 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(
       displaced_generated_projection_parameters->IsSequence() &&
       (!private_parameter_projection.has_value() || *private_parameter_projection != projection_name);
 
-  const bool private_matches = !provider_changed && !resolution_changed && !rink_context_changed &&
+  const auto frozen = get_node(config_, "stitching.auto_input_lens_frozen");
+  const auto private_frozen = get_node(private_config_, "stitching.auto_input_lens_frozen");
+  const bool freeze_changed = frozen.has_value() &&
+      (!private_frozen.has_value() || YAML::Dump(*frozen) != YAML::Dump(*private_frozen));
+  const bool private_matches = !freeze_changed && !provider_changed && !resolution_changed && !rink_context_changed &&
       !mask_time_changed && private_matcher_value.has_value() && *private_matcher_value == matcher &&
       private_backend_value.has_value() && *private_backend_value == backend && private_projection_value.has_value() &&
       *private_projection_value == projection && private_autooptimizer_value.has_value() &&
@@ -8493,6 +8511,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(
   stitching::write_stitch_projection_parameters(private_config_, projection, projection_parameters);
   stitching::write_stitch_projection_framing(private_config_, projection_framing);
   stitching::write_stitch_camera_selection(private_config_, camera);
+  if (frozen.has_value())
+    private_config_["stitching"]["auto_input_lens_frozen"] = YAML::Clone(*frozen);
   if (private_values_present && !generated_private_values && inherit_backend_choices) {
     remove_yaml_key_path(private_config_, {"hstream_ui", "generated_stitching_backend_choices"});
   } else {
@@ -9146,6 +9166,10 @@ absl::Status Configurator::complete_configuration(
       return absl::InvalidArgumentError("Cannot cancel the pending view edit: " + std::string(error.what()));
     }
   }
+  // Resolve desired optics before comparing with the saved solver snapshot.
+  // Changed metadata needs a new solve, even when this launch also edits the view.
+  if (!clean_requested && has_active_hmstitcher)
+    HM_RETURN_IF_ERROR(resolve_effective_stitching_camera(force));
   if (!clean_requested && !force && has_active_hmstitcher &&
       (get_node_value(private_config_, "hstream_ui.stitching_calibration.status", std::string()) == "complete" ||
        stitching::HasStitchingReframeIntent(config_))) {
@@ -9219,6 +9243,7 @@ absl::Status Configurator::complete_configuration(
               "mapping_backend",
               "run_autooptimizer",
               "camera_config",
+              "auto_input_lens_frozen",
               "input_lens",
               "camera_fov"})
           latest["stitching"][key] = YAML::Clone(desired["stitching"][key]);
@@ -9276,7 +9301,7 @@ absl::Status Configurator::complete_configuration(
       return absl::AbortedError("The pending view edit belongs to a different calibration owner");
   }
   if (!clean_requested && has_active_hmstitcher) {
-    HM_RETURN_IF_ERROR(persist_effective_stitching_backend_choices(effective_invalidation_id, force));
+    HM_RETURN_IF_ERROR(persist_effective_stitching_backend_choices(effective_invalidation_id));
   }
   if (has_cleanup_owner && !effective_invalidation_id.empty()) {
     bool loaded_invalidation_matches = loaded_invalidation_id == effective_invalidation_id;

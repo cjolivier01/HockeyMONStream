@@ -135,6 +135,10 @@ struct HStreamWindowTestAccess {
   static hm::stitching::StitchCameraSelection defaultCameraSelection(HStreamWindow* window) {
     return window->default_camera_selection_;
   }
+  static absl::StatusOr<hm::stitching::StitchCameraSelection> cameraSelection(
+      HStreamWindow* window, const YAML::Node& config) {
+    return window->stitchCameraSelectionFromGameConfig(config);
+  }
   static QStringList standaloneArguments(HStreamWindow* window) {
     return window->pipelineArguments(true);
   }
@@ -9419,6 +9423,15 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           camera_horizontal_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
           camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov,
       "A new game must expose all camera presets and select Auto");
+  for (const char* inherited : {"null", "{}", "{projection: null}"}) {
+    YAML::Node empty;
+    empty["stitching"]["input_lens"] = YAML::Load(inherited);
+    empty["stitching"]["camera_fov"] = YAML::Load("{horizontal_fov: null}");
+    const auto selection = HStreamWindowTestAccess::cameraSelection(window, empty);
+    if (!expect(selection.ok() && selection->configuration == "auto",
+                "Inherit-only game optics must retain Auto in the main controls"))
+      return false;
+  }
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   QApplication::processEvents();
   const bool hero_defaults_applied = expect(

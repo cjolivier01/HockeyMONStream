@@ -26,6 +26,23 @@ std::vector<std::filesystem::path> paths(const YAML::Node& node, const std::file
   return result;
 }
 } // namespace
+bool HasManualInputLensOverrides(const YAML::Node& config) {
+  const auto stitching = child(config, "stitching");
+  const auto fov = child(stitching, "camera_fov");
+  const auto lens = child(stitching, "input_lens");
+  for (const char* key : {"horizontal_fov", "vertical_fov"}) {
+    const auto value = child(fov, key);
+    if (value && !value.IsNull())
+      return true;
+  }
+  for (const char* key : {"projection", "optimization", "distortion", "center_offset"}) {
+    const auto value = child(lens, key);
+    if (value && !value.IsNull())
+      return true;
+  }
+  return false;
+}
+
 AutoInputLensResult ReadAutoInputLensForGame(
     const std::filesystem::path& game,
     const YAML::Node& config,

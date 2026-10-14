@@ -5484,6 +5484,63 @@ play-tracker:
   }
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
 
+  // Missing/changed video metadata must resolve before a simultaneous geometry
+  // edit compares against the accepted solver. OpenCV exposes a stale comparison
+  // as an erroneous attempt to reframe, without requiring GPU or NONA tools.
+  for (int lens_case = 0; lens_case < 6; ++lens_case) {
+    const std::string name = "auto-lens-launch-" + std::to_string(lens_case);
+    const fs::path directory = games / name;
+    fs::create_directories(directory);
+    YAML::Node saved;
+    saved["pipeline"]["application"]["complete-configuration"] = 1;
+    saved["pipeline"]["hmstitcher"]["enable"] = 1;
+    saved["pipeline"]["hmstitcher"]["one-pass-mode"] = 1;
+    saved["stitching"]["control_point_matcher"] = "akaze-hamming";
+    saved["stitching"]["mapping_backend"] = "opencv-magsac";
+    saved["stitching"]["projection"] = "rectilinear";
+    saved["stitching"]["run_autooptimizer"] = false;
+    saved["stitching"]["max_output_width"] = 4096;
+    hm::stitching::StitchCameraSelection old_camera{"auto", 117.25, 90};
+    if (lens_case == 1)
+      old_camera.configuration = "gopro-mission-1";
+    hm::stitching::write_stitch_camera_selection(saved, old_camera);
+    saved["stitching"]["auto_input_lens_frozen"] = lens_case != 0;
+    auto state = saved["hstream_ui"]["stitching_calibration"];
+    state["status"] = "complete";
+    state["control_points"] = 1500;
+    state["frame_count"] = 4;
+    state["invalidation_id"] = name;
+    std::ofstream(directory / "config.yaml") << YAML::Dump(saved) << '\n';
+    hm::Configurator lens_config(name, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    ok &= expect(lens_config.configure().ok(), "Auto launch fixture must load");
+    if (lens_case == 0)
+      ok &= expect(lens_config.apply_config_item("stitching.max_output_width", "3072").ok(),
+                   "Simultaneous view edit must apply");
+    if (lens_case == 1 || lens_case == 2 || lens_case == 4 || lens_case == 5)
+      ok &= expect(lens_config.apply_config_item("stitching.camera_config", "auto").ok(),
+                   "Explicit CLI Auto must apply");
+    if (lens_case == 4)
+      ok &= expect(lens_config.apply_config_item("stitching.auto_input_lens_frozen", "true").ok(),
+                   "Explicit snapshot replay must apply");
+    if (lens_case == 5)
+      ok &= expect(lens_config.apply_config_item("stitching.camera_fov.horizontal_fov", "119").ok(),
+                   "Explicit CLI optics must retain manual intent");
+    const auto result = lens_config.complete_configuration(false, false, false, name);
+    const auto after = YAML::LoadFile((directory / "config.yaml").string());
+    const auto camera = hm::stitching::read_stitch_camera_selection(after);
+    const bool refresh = lens_case < 3;
+    const double expected_hfov = refresh ? 108 : lens_case == 5 ? 119 : 117.25;
+    const bool persisted = camera.ok() && camera->horizontal_fov == expected_hfov &&
+        camera->configuration == (lens_case == 5 ? "manual" : "auto") &&
+        after["stitching"]["auto_input_lens_frozen"].as<bool>() == !refresh &&
+        !after["hstream_ui"]["stitching_calibration"]["reframe"] &&
+        result.message().find("Reframing requires") == std::string::npos;
+    if (!persisted)
+      std::cerr << name << ": " << result << "\n" << YAML::Dump(after) << '\n';
+    ok &= expect(persisted,
+                 "Auto must resolve before reframing, honor CLI refresh, and retain explicit frozen/manual optics");
+  }
+
   const fs::path runtime_claim_dir = games / "runtime-claim";
   {
     const fs::path reframe_dir = games / "protected-reframe";

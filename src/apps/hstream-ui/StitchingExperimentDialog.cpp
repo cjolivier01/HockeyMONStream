@@ -263,7 +263,7 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
         effective["stitching"][key] = YAML::Clone(stitching[key]);
     }
   }
-  if (!stitching["camera_config"] && (stitching["camera_fov"] || stitching["input_lens"]) &&
+  if (!stitching["camera_config"] && hm::stitching::HasManualInputLensOverrides(layer) &&
       effective["stitching"]["camera_config"].as<std::string>("") == "auto")
     effective["stitching"]["camera_config"] = "manual";
 }

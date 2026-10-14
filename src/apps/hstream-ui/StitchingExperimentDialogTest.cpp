@@ -580,6 +580,17 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   auto config = YAML::Load(read(game + "/config.yaml").toStdString());
   config["stitching"]["camera_configs"]["auto"] =
       YAML::Load("{display_name: Game Auto fallback, horizontal_fov: 117.25, vertical_fov: 90}");
+  for (const char* inherited : {"null", "{}", "{projection: null}"}) {
+    auto empty = YAML::Clone(config);
+    empty["stitching"].remove("camera_config");
+    empty["stitching"]["camera_fov"] = YAML::Load("{horizontal_fov: null}");
+    empty["stitching"]["input_lens"] = YAML::Load(inherited);
+    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(empty)));
+    StitchingExperimentDialog dialog(
+        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+    require(widget<QComboBox>(dialog, "stitchExperimentCameraConfiguration")->currentData() == "auto",
+            "Inherit-only game optics must retain Auto in experiments");
+  }
   StitchCameraSelection camera{"gopro-hero-11", 121.413487813061, 90};
   camera.input_lens.projection = "full-frame-fisheye";
   camera.input_lens.optimization = "fixed";
@@ -623,6 +634,8 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     require(
         workspace.settings.camera == expected && actual.ok() && *actual == expected,
         "Candidate config and saved history must retain full precision optics and FOV");
+    require(!yaml["stitching"]["auto_input_lens_frozen"].as<bool>(),
+            "Named candidates must not freeze a future Auto selection");
   }
   StitchingExperimentDialog reopened(
       game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");

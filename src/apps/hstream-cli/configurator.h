@@ -120,8 +120,7 @@ class Configurator {
       const std::string& expected_invalidation_id = {},
       bool remove_canvas_artifacts = false);
   absl::Status persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time);
-  absl::Status persist_effective_stitching_backend_choices(
-      const std::string& expected_invalidation_id = {}, bool force_video_discovery = false);
+  absl::Status persist_effective_stitching_backend_choices(const std::string& expected_invalidation_id = {});
   absl::StatusOr<bool> reconcile_stitch_frame_time_override(
       const std::string& normalized_stitch_frame_time,
       const std::string& expected_invalidation_id = {});
@@ -216,6 +215,7 @@ class Configurator {
       YAML::Node& pipeline,
       std::optional<uint64_t> detected_total_memory_bytes = std::nullopt);
   absl::Status map_stitch_max_output_width();
+  absl::Status resolve_effective_stitching_camera(bool force_video_discovery);
   absl::Status reconcile_selected_frame_count_override(
       const std::string& expected_invalidation_id,
       std::string* changed_invalidation_id = nullptr);

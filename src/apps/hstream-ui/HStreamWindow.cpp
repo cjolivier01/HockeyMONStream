@@ -4856,7 +4856,7 @@ void HStreamWindow::loadBaselineDefaults() {
   baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
   const YAML::Node user_stitching = static_cast<const YAML::Node&>(*user_overlay)["stitching"];
   if (user_stitching && user_stitching.IsMap() && !user_stitching["camera_config"] &&
-      (user_stitching["camera_fov"] || user_stitching["input_lens"]) &&
+      hm::stitching::HasManualInputLensOverrides(*user_overlay) &&
       baseline_config_["stitching"]["camera_config"].as<std::string>("") == "auto")
     baseline_config_["stitching"]["camera_config"] = "manual";
   baseline_layer_ = YAML::Clone(loaded->values);
@@ -7707,7 +7707,7 @@ absl::StatusOr<hm::stitching::StitchCameraSelection> HStreamWindow::stitchCamera
   // Older games may have hand-entered optics without a named camera. The new
   // Auto default must not replace those values on their first load.
   if (selected.ok() && selected->configuration == "auto" && stitching && stitching.IsMap() &&
-      !stitching["camera_config"] && (stitching["camera_fov"] || stitching["input_lens"]))
+      !stitching["camera_config"] && hm::stitching::HasManualInputLensOverrides(config))
     selected->configuration = "manual";
   return selected;
 }

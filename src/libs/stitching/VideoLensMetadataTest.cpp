@@ -164,6 +164,16 @@ int main(int argc, char** argv) {
   const auto dir = std::filesystem::temp_directory_path() / ("video-lens-test-" + std::to_string(getpid()));
   std::filesystem::create_directories(dir);
   try {
+    for (const char* inherited : {"null", "{}", "{projection: null, distortion: null, center_offset: null}"}) {
+      YAML::Node empty;
+      empty["stitching"]["input_lens"] = YAML::Load(inherited);
+      empty["stitching"]["camera_fov"] = YAML::Load("{horizontal_fov: null}");
+      expect(!HasManualInputLensOverrides(empty), "Inherit-only optics must not disable Auto");
+      empty["stitching"]["camera_fov"]["horizontal_fov"] = 117;
+      expect(HasManualInputLensOverrides(empty), "An explicit FOV must preserve legacy manual intent");
+    }
+    expect(HasManualInputLensOverrides(YAML::Load("stitching: {input_lens: {distortion: [0, 0, 0]}}")),
+           "Even explicit neutral distortion preserves manual intent");
     auto parsed = ParseVideoLensMetadata(gopro());
     expect(parsed.ok(), parsed.status().ToString().c_str());
     expect(std::abs(parsed->camera.horizontal_fov - 125.12273264898) < 1e-7, "GoPro conversion HFOV");
