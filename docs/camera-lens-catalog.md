@@ -12,8 +12,9 @@ resolves these presets' FOVs and does not apply `input_lens`.
 The entries labeled **measured** are approximations of community calibrations
 from the [Gyroflow lens database](https://github.com/gyroflow/lens_profiles/tree/886fc616c9c2c788856f54c21d451b9cb7fc4f44),
 not manufacturer factory specifications. Each selects `optimization: refine`
-so stitching can adjust the starting lens. Choose the matching recording mode,
-then recalibrate; selecting a camera name does not check the recording for a
+so stitching can adjust the starting lens. Use the **NONA** mapping backend for
+these input-lens corrections. Choose the matching recording mode, then
+recalibrate; selecting a camera name does not check the recording for a
 mode match. Existing experiments retain their saved optics. Changing the lens
 of a completed game invalidates its calibration and stitched pixel coordinates,
 including scoreboard selection.
