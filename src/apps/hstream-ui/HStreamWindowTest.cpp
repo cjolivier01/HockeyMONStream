@@ -112,6 +112,9 @@ struct HStreamWindowTestAccess {
     window->prepared_int8_model_ = window->detectorModel();
     window->updatePresetDirtyState();
   }
+  static void refreshCameraDefaults(HStreamWindow* window) {
+    window->applyCameraConfigurationDefaults();
+  }
   static bool prepareStitchingRun(HStreamWindow* window) {
     const QString prior_game = window->active_run_game_id_;
     window->active_run_game_id_ = window->game_id_edit_->text().trimmed();
@@ -9559,16 +9562,21 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     return false;
   // Releasing the policy is a saveable change even when reimport finds exactly
   // the same optics. Both Save and Play must retain that release after reopening.
-  for (bool play : {false, true}) {
+  for (int action : {0, 1, 2}) {
     auto frozen = YAML::LoadFile(config_path.string());
     frozen["stitching"]["auto_input_lens_frozen"] = true;
     std::ofstream(config_path) << YAML::Dump(frozen) << '\n';
     HStreamWindowTestAccess::reloadSavedControls(window);
-    camera_configuration->setCurrentIndex(camera_configuration->findData("manual"));
-    camera_configuration->setCurrentIndex(camera_configuration->findData("auto"));
+    if (action == 2) {
+      // Source add/remove refreshes the current profile without a combo signal.
+      HStreamWindowTestAccess::refreshCameraDefaults(window);
+    } else {
+      camera_configuration->setCurrentIndex(camera_configuration->findData("manual"));
+      camera_configuration->setCurrentIndex(camera_configuration->findData("auto"));
+    }
     if (!expect(save->isEnabled(), "Unfreezing identical Auto optics must enable Save Preset"))
       return false;
-    const bool published = play ? HStreamWindowTestAccess::prepareStitchingRun(window)
+    const bool published = action == 1 ? HStreamWindowTestAccess::prepareStitchingRun(window)
                                 : HStreamWindowTestAccess::savePreset(window);
     const auto released = YAML::LoadFile(config_path.string());
     if (!expect(published && !released["stitching"]["auto_input_lens_frozen"].as<bool>(),

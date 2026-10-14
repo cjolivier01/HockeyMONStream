@@ -5687,10 +5687,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       camera_vertical_fov_spin_,
       "Vertical field of view retained with the source-camera mapping configuration and calibration provenance.");
 
-  connect(camera_configuration_combo_, &QComboBox::currentIndexChanged, this, [this]() {
-    applyCameraConfigurationDefaults();
-    updatePresetDirtyState();
-  });
+  connect(camera_configuration_combo_, &QComboBox::currentIndexChanged,
+          this, &HStreamWindow::applyCameraConfigurationDefaults);
   connect(camera_horizontal_fov_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
     camera_horizontal_fov_spin_->setProperty("calibrationExactValue", QVariant());
     updatePresetDirtyState();
@@ -7721,8 +7719,10 @@ void HStreamWindow::applyCameraConfigurationDefaults() {
       std::find_if(camera_configurations_.begin(), camera_configurations_.end(), [&](const auto& candidate) {
         return candidate.id == selected;
       });
-  if (configuration == camera_configurations_.end())
+  if (configuration == camera_configurations_.end()) {
+    updatePresetDirtyState();
     return;
+  }
   hm::stitching::StitchCameraSelection camera{
       configuration->id, configuration->horizontal_fov, configuration->vertical_fov, configuration->input_lens};
   YAML::Node effective = YAML::Clone(baseline_config_);
@@ -7747,6 +7747,9 @@ void HStreamWindow::applyCameraConfigurationDefaults() {
     input_lens_widget_->setLens(camera.input_lens);
     input_lens_widget_->setMetadataStatus(QString::fromStdString(resolved.message), selected == "auto");
   }
+  // Source refreshes may change only the freeze policy, exact precision, or
+  // lens coefficients. They must not depend on rounded FOV control signals.
+  updatePresetDirtyState();
 }
 
 QString HStreamWindow::stitchProjection() const {

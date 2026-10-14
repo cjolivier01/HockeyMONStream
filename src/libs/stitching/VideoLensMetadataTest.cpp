@@ -132,11 +132,12 @@ Bytes scalar(unsigned key, uint64_t value) {
   append(b, varint(value));
   return b;
 }
-Bytes dji(bool eis) {
+Bytes dji(bool eis, bool include_eis = true, bool empty_eis = false) {
   Bytes header = field(1, chars("dvtm_ac204.proto"));
   append(header, field(10, chars("DJI OsmoAction5 Pro")));
   Bytes clip = field(1, header);
-  append(clip, field(9, scalar(1, eis)));
+  if (include_eis)
+    append(clip, field(9, empty_eis ? Bytes{} : scalar(1, eis)));
   Bytes f = floats({3000});
   std::reverse(f.begin(), f.end());
   f.insert(f.begin(), 13);
@@ -247,7 +248,14 @@ int main(int argc, char** argv) {
       out.write(reinterpret_cast<const char*>(good.data()), good.size());
     }
     expect(ReadVideoLensMetadata(huge).ok(), "Seek past huge mdat");
-    expect(ParseDjiLensMetadata(dji(false), 3840, 2160).ok(), "DJI raw OpenCV prescription");
+    const auto dji_raw = ParseDjiLensMetadata(dji(false), 3840, 2160);
+    expect(dji_raw.ok() && dji_raw->unavailable_reason.empty(), "DJI raw OpenCV prescription");
+    const auto dji_unknown = ParseDjiLensMetadata(dji(false, false), 3840, 2160);
+    expect(dji_unknown.ok() && !dji_unknown->unavailable_reason.empty(),
+           "Missing DJI stabilization status cannot authorize raw lens import");
+    const auto dji_empty_off = ParseDjiLensMetadata(dji(false, true, true), 3840, 2160);
+    expect(dji_empty_off.ok() && dji_empty_off->unavailable_reason.empty() && dji_empty_off->camera == dji_raw->camera,
+           "A present empty DJI EIS message legitimately represents proto3 OFF");
     expect(!ParseDjiLensMetadata(dji(true), 3840, 2160)->unavailable_reason.empty(), "DJI EIS is not a raw lens");
     Bytes insta = field(2, chars("Insta360 Ace Pro 2"));
     append(insta, scalar(42, 1));

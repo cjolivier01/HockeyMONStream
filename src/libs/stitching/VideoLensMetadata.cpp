@@ -407,6 +407,10 @@ VideoLensMetadata parse_dji(const Bytes& data, size_t width, size_t height) {
   if (schema != "dvtm_ac204.proto" && schema != "dvtm_wm169.proto")
     throw Unsupported(result.model + ": unsupported DJI metadata schema " + schema);
   const auto distortion = child(clip, 3), focal = child(clip, 8), eis = child(clip, 9);
+  // Proto3 omits an OFF scalar inside a present message; an absent message
+  // does not establish the recording's stabilization state.
+  if (!clip.count(9))
+    return unavailable(result, "recording omits stabilization status");
   result.stabilization = "EIS " + std::to_string(scalar(eis, 1));
   if (scalar(eis, 1))
     return unavailable(result, "stabilization is enabled; no supported static output lens prescription");
