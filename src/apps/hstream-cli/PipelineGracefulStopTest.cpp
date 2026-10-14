@@ -213,7 +213,7 @@ bool asynchronous_resume_restores_monitoring() {
   set_uri_playlist_waits_paused(&sources, TRUE);
   g_object_set_data(G_OBJECT(app.pipeline.pipeline), "async-play", GINT_TO_POINTER(1));
   const bool resumed = resume_pipeline(&app);
-  const bool monitoring = !sources.uri_playlist_waits_paused;
+  const bool monitoring = !uri_playlist_waits_suspended(&sources);
   gst_element_set_state(app.pipeline.pipeline, GST_STATE_NULL);
   gst_object_unref(app.pipeline.pipeline);
   g_cond_clear(&sources.uri_playlist_barrier_cond);

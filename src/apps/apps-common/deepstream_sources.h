@@ -249,9 +249,12 @@ struct NvDsSrcParentBin {
   gboolean uri_playlist_barrier_failed;
   /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */
   gboolean uri_playlist_delivery_aborted;
-  /** Excludes deliberately parked time from the no-progress budget. Guarded by the barrier mutex. */
-  gboolean uri_playlist_waits_paused;
-  /** Set of UriPlaylistWaitSuspendReason bits currently holding the clock; the clock runs again only at zero. */
+  /**
+   * Reasons currently excluding deliberately parked time from the no-progress budget, as a set of
+   * UriPlaylistWaitSuspendReason bits. Nonzero means the clock is stopped; it runs again only at zero. Guarded by the
+   * barrier mutex. This is the whole suspension state on purpose — a separate "is paused" flag alongside it would be
+   * one more field to remember to reset, and the two silently disagreeing turns the watchdog off for a whole run.
+   */
   guint uri_playlist_wait_suspend_mask;
   gint64 uri_playlist_pause_started_us;
   gint64 uri_playlist_paused_us;
@@ -286,6 +289,10 @@ void set_uri_playlist_waits_suspended(
     gboolean suspended);
 /** Suspend stall accounting before a native PAUSED transition; resume after PLAYING completes. */
 void set_uri_playlist_waits_paused(NvDsSrcParentBin* parent, gboolean paused);
+/** True while any reason holds the no-progress clock stopped. Read under the barrier mutex. */
+static inline gboolean uri_playlist_waits_suspended(const NvDsSrcParentBin* parent) {
+  return parent && parent->uri_playlist_wait_suspend_mask != 0 ? TRUE : FALSE;
+}
 
 /**
  * Configure coherent initial source positioning before the pipeline leaves NULL/READY. Unlike a flushing seek after

@@ -453,8 +453,8 @@ gint64 uri_playlist_process_time_us() {
 // Call with the barrier mutex held. Measuring native pauses on the process
 // clock also excludes an overlapping SIGSTOP without counting it twice.
 gint64 uri_playlist_wait_time_locked(const NvDsSrcParentBin* parent) {
-  const gint64 now =
-      parent->uri_playlist_waits_paused ? parent->uri_playlist_pause_started_us : uri_playlist_process_time_us();
+  const gint64 now = uri_playlist_waits_suspended(parent) ? parent->uri_playlist_pause_started_us
+                                                          : uri_playlist_process_time_us();
   return now - parent->uri_playlist_paused_us;
 }
 } // namespace
@@ -481,20 +481,20 @@ void set_uri_playlist_waits_suspended(
     return;
   }
   g_mutex_lock(&parent->uri_playlist_barrier_mutex);
-  const guint mask = suspended ? (parent->uri_playlist_wait_suspend_mask | static_cast<guint>(reason))
-                               : (parent->uri_playlist_wait_suspend_mask & ~static_cast<guint>(reason));
-  parent->uri_playlist_wait_suspend_mask = mask;
+  const gboolean was_suspended = uri_playlist_waits_suspended(parent);
+  parent->uri_playlist_wait_suspend_mask = suspended
+      ? (parent->uri_playlist_wait_suspend_mask | static_cast<guint>(reason))
+      : (parent->uri_playlist_wait_suspend_mask & ~static_cast<guint>(reason));
   // Only the first reason stops the clock and only the last one restarts it;
   // overlapping reasons must not double-count or cut each other short.
-  const gboolean paused = mask != 0;
-  if (paused != parent->uri_playlist_waits_paused) {
+  const gboolean now_suspended = uri_playlist_waits_suspended(parent);
+  if (now_suspended != was_suspended) {
     const gint64 now = uri_playlist_process_time_us();
-    if (paused) {
+    if (now_suspended) {
       parent->uri_playlist_pause_started_us = now;
     } else {
       parent->uri_playlist_paused_us += now - parent->uri_playlist_pause_started_us;
     }
-    parent->uri_playlist_waits_paused = paused;
     g_cond_broadcast(&parent->uri_playlist_barrier_cond);
   }
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
@@ -4369,7 +4369,10 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   bin->uri_playlist_terminal = FALSE;
   bin->uri_playlist_barrier_failed = FALSE;
   bin->uri_playlist_delivery_aborted = FALSE;
-  bin->uri_playlist_waits_paused = FALSE;
+  // A run that was torn down mid-suspension never got to release it, and this
+  // parent bin is reused across pipeline rebuilds. Starting the new barrier with
+  // a reason still held would leave the clock stopped for the whole next run.
+  bin->uri_playlist_wait_suspend_mask = 0;
   bin->uri_playlist_pause_started_us = 0;
   bin->uri_playlist_paused_us = 0;
   bin->uri_playlist_initial_offsets_configured = FALSE;

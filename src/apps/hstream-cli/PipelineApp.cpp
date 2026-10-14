@@ -2515,6 +2515,7 @@ absl::Status PipelineApplication::createMainLoop(
       }
       hm::diagnostics::Breadcrumb("pipeline", "destroy");
       destroy_pipeline(context.get());
+      calibration_watchdog_suspensions_.erase(context.get());
     }
     const auto stage_windows = stage_windows_.find(stage);
     if (stage_windows != stage_windows_.end()) {
@@ -8094,6 +8095,11 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     std::lock_guard<std::mutex> lock(playback_timing_mu_);
     observed_playback_by_instance_.erase(app_ctx_ptr->index);
   }
+  // A calibration torn down with the pipeline never posted its closing phase
+  // message, and the replacement barrier starts unsuspended. Carrying the old
+  // depth forward would make the next calibration's release a no-op and leave
+  // the stall watchdog off for the whole next run.
+  calibration_watchdog_suspensions_.erase(app_ctx_ptr);
   if (topology_changed) {
     *topology_changed = true;
   }
