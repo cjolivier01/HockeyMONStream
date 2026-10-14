@@ -115,6 +115,27 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotIn("HSTREAM_UI_PARENT_PID", actual["env"])
         self.assertFalse((self.root / "INJECTED").exists())
 
+    def test_export_freezes_explicit_telemetry_checkbox(self):
+        for capture in (False, True):
+            with self.subTest(capture=capture):
+                config = self.game / "config.yaml"
+                config.write_text(json.dumps({"hstream_ui": {"job": {
+                    "arguments": self.arguments, "capture_telemetry": capture,
+                }}}))
+                result = self.generate("--force")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config.write_text("{}")
+                run = subprocess.run(
+                    [str(self.game / "hstream-job.sh")], env=self.env,
+                    capture_output=True, check=False,
+                )
+                self.assertEqual(run.returncode, 7)
+                actual = json.loads(self.output.read_text())
+                self.assertIn(
+                    "--options=hstream_ui.job.capture_telemetry=" + str(capture).lower(),
+                    actual["argv"],
+                )
+
     def test_symlinked_game_keeps_its_logical_id(self):
         alias = self.root / "linked-game"
         alias.symlink_to(self.game, target_is_directory=True)

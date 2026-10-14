@@ -212,6 +212,50 @@ int main() {
                 .as<std::string>()
                 .empty(),
         "Encoding jobs must honor an explicit unchecked DriveGPT checkbox");
+    for (const char* aliases :
+         {"{telemetry-db-dir: /first, telemetry-csv-dir: /last}",
+          "{telemetry_csv_dir: /first, telemetry_db_dir: /last}",
+          "{telemetry-csv-dir: /custom}"}) {
+      for (bool capture : {false, true}) {
+        fixture["hstream_ui"]["job"]["capture_telemetry"] = capture;
+        fixture["pipeline"]["ds-playtracker"]["private-properties"] = YAML::Load(aliases);
+        hm::ConfiguratorTestAccess::set_config(&job, fixture);
+        const auto status = hm::ConfiguratorTestAccess::configure_encode_job(&job);
+        const auto resolved = job.config()["pipeline"]["ds-playtracker"]["private-properties"];
+        const std::string expected =
+            !capture ? "" : (std::string(aliases).find("/last") != std::string::npos ? "/last" : "/custom");
+        ok &= expect(
+            status.ok() && resolved["telemetry-db-dir"].as<std::string>() == expected &&
+                !resolved["telemetry-csv-dir"].IsDefined() && !resolved["telemetry_csv_dir"].IsDefined() &&
+                !resolved["telemetry_db_dir"].IsDefined(),
+            "Encoding jobs must resolve legacy telemetry aliases in runtime order and honor capture opt-out");
+      }
+    }
+    for (const char* spelling : {"plugin-private-config", "plugin_private_config"}) {
+      for (bool capture : {false, true}) {
+        auto typed_fixture = YAML::Clone(fixture);
+        typed_fixture["hstream_ui"]["job"]["capture_telemetry"] = capture;
+        for (const char* element : {"hmstitcher", "ds-playtracker", "hmplaycropper"})
+          typed_fixture["pipeline"][element]["properties"][spelling] = "show=1";
+        typed_fixture["pipeline"]["ds-playtracker"]["properties"][spelling] =
+            "show=1;draw=1;telemetry_db_dir=/first;telemetry-csv-dir=/typed";
+        hm::ConfiguratorTestAccess::set_config(&job, typed_fixture);
+        const auto status = hm::ConfiguratorTestAccess::configure_encode_job(&job);
+        ok &= expect(status.ok(), "Encoding jobs must accept typed private configuration overrides");
+        for (const char* element : {"hmstitcher", "hmplaycropper"})
+          ok &= expect(
+              job.config()["pipeline"][element]["properties"][spelling].as<std::string>() == "show=1;show=0",
+              "Typed private configuration cannot re-enable job previews");
+        const std::string directory = capture ? "/typed" : "";
+        ok &= expect(
+            job.config()["pipeline"]["ds-playtracker"]["properties"][spelling].as<std::string>() ==
+                    "show=1;draw=1;telemetry_db_dir=/first;telemetry-csv-dir=/typed;show=0;telemetry-db-dir=" +
+                        directory + ";telemetry-game-id=job-test" &&
+                job.config()["pipeline"]["ds-playtracker"]["private-properties"]["telemetry-db-dir"]
+                        .as<std::string>() == directory,
+            "Typed overrides retain unrelated settings and obey the final telemetry selection");
+      }
+    }
     fixture["pipeline"]["sink6"]["enable"] = 0;
     hm::ConfiguratorTestAccess::set_config(&job, fixture);
     ok &= expect(

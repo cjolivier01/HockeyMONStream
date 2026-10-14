@@ -64,8 +64,9 @@ the extension becomes `.mp4`. MP4s and DriveGPT databases stay in working storag
 (normally `~/hstream_output/<game-id>`), without the UI's game-directory publication.
 MP4 completion requires graceful EOS; abrupt process termination can leave an unfinished file.
 
-DriveGPT capture defaults on. Export saves the current checkbox choice, including an
-explicit off choice. Old recipes without that field use the configured DriveGPT default.
+DriveGPT capture defaults on. Export freezes the current checkbox choice in the script,
+including an explicit off choice, so later UI saves do not change it. Old recipes without
+that field use the configured DriveGPT default.
 Standalone `hstream-job --game-dir DIR` also defaults to 4K when the recipe has no file
 encoder; `--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE` overrides its archive selection.
 A legacy calibration-only recipe must be re-exported from the UI.

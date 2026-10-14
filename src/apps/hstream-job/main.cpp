@@ -373,6 +373,11 @@ int main(int argc, char** argv) {
       throw std::runtime_error("hstream_ui.job.arguments must be a sequence");
     const auto job_args = encode_job_arguments(saved_args, requested_sinks);
     args.insert(args.end(), job_args.begin(), job_args.end());
+    if (job && job.IsMap() && job["capture_telemetry"].IsDefined()) {
+      args.push_back(
+          std::string("--options=hstream_ui.job.capture_telemetry=") +
+          (job["capture_telemetry"].as<bool>() ? "true" : "false"));
+    }
     if (!saved_args.IsSequence()) {
       args.push_back("--options=pipeline.hmaudio.enable=1");
     }
