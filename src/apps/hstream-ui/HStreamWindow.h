@@ -413,7 +413,7 @@ class HStreamWindow : public QMainWindow {
   QString pipelineRunnerPath() const;
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
-  QStringList pipelineArguments(bool standalone = false) const;
+  QStringList pipelineArguments(bool standalone = false, bool job_export = false) const;
   QString highBitDepthMode() const;
   QString detectorPrecision() const;
   // Seam blend mode for the next run.
@@ -495,7 +495,7 @@ class HStreamWindow : public QMainWindow {
       bool artifacts_invalidated,
       bool require_matching_pending,
       bool* applied = nullptr);
-  QStringList enabledSinkNames() const;
+  QStringList enabledSinkNames(bool job_export = false) const;
   bool isCalibrationRun() const;
   // Re-reads the game directory for published archives. Highlights has nothing
   // to cut from until one exists, so the button follows this.

@@ -110,6 +110,10 @@ class Configurator {
 
   absl::Status apply_config_item(const std::string& key, const std::string& value);
 
+  void set_encode_job(bool enabled) {
+    encode_job_ = enabled;
+  }
+
   // Translate canonical baseline/user/game/CLI settings into the native
   // pipeline properties that currently implement those features.
   absl::Status apply_supported_baseline_mappings();
@@ -198,6 +202,8 @@ class Configurator {
       const std::string& config_path);
 
  private:
+  absl::Status configure_encode_job(YAML::Node& pipeline);
+  bool encode_job_{false};
   absl::Status save_private_config_with_backend_claim(
       const YAML::Node& private_config,
       const std::string& expected_invalidation_id,

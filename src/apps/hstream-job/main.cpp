@@ -1,9 +1,11 @@
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -13,6 +15,58 @@
 namespace fs = std::filesystem;
 
 namespace {
+// Older UI recipes also contain preview/network sinks. Jobs always need a file
+// encoder; an empty archive selection means the default 4K Program copy.
+std::vector<std::string> encode_job_arguments(const YAML::Node& saved_args, const std::string& requested_sinks) {
+  std::vector<std::string> result, encoders;
+  auto select = [&encoders](const std::string& list) {
+    std::istringstream stream(list);
+    std::string sink;
+    while (std::getline(stream, sink, ',')) {
+      if (sink == "ENCODE_FILE" || sink == "ENCODE_STITCHED_FILE" || sink == "ENCODE_PROGRAM_4K_FILE") {
+        if (std::find(encoders.begin(), encoders.end(), sink) == encoders.end())
+          encoders.push_back(sink);
+      }
+    }
+  };
+  for (size_t i = 0; saved_args.IsSequence() && i < saved_args.size(); ++i) {
+    const std::string arg = saved_args[i].as<std::string>();
+    if (arg == "--stitching-calibration-only")
+      throw std::runtime_error("saved job is calibration-only; export it again from hstream-ui for encoding");
+    if (arg == "--enable-sinks" || arg == "-k") {
+      if (++i == saved_args.size())
+        throw std::runtime_error("saved --enable-sinks is missing its value");
+      select(saved_args[i].as<std::string>());
+    } else if (arg.rfind("--enable-sinks=", 0) == 0) {
+      select(arg.substr(std::string("--enable-sinks=").size()));
+    } else if (arg == "--show" || arg == "--render-realtime" || arg == "--encode-job") {
+      continue;
+    } else if (arg == "--show-scaled" || arg == "--show-stitching" || arg == "--show-playtracker") {
+      if (++i == saved_args.size())
+        throw std::runtime_error("saved preview option is missing its value");
+    } else if (arg.rfind("--show-", 0) != 0 && arg.rfind("--ui-preview", 0) != 0) {
+      result.push_back(arg);
+    }
+  }
+  if (!requested_sinks.empty()) {
+    encoders.clear();
+    select(requested_sinks);
+    if (encoders.empty())
+      throw std::runtime_error("--enable-sinks must select at least one file encoder");
+  }
+  if (encoders.empty())
+    encoders.push_back("ENCODE_PROGRAM_4K_FILE");
+  std::string sinks = "--enable-sinks=";
+  for (const auto& encoder : encoders) {
+    if (sinks.back() != '=')
+      sinks += ',';
+    sinks += encoder;
+  }
+  result.push_back(sinks);
+  result.push_back("--encode-job");
+  return result;
+}
+
 std::string quote(const std::string& value) {
   std::string result = "'";
   for (char c : value)
@@ -222,6 +276,7 @@ void write_script(const fs::path& output, const std::string& contents, bool over
 int main(int argc, char** argv) {
   try {
     fs::path game, output, runner, config, working;
+    std::string requested_sinks;
     std::vector<std::string> directives;
     bool overwrite = false;
     for (int i = 1; i < argc; ++i) {
@@ -230,11 +285,13 @@ int main(int argc, char** argv) {
         std::cout << "Usage: hstream-job --game-dir DIR [--output FILE] [--force]\n"
                      "  [--sbatch '--partition=gpu'] [--sbatch '--time=02:00:00']\n"
                      "  [--runner FILE] [--config FILE] [--working-directory DIR]\n"
+                     "  [--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE]\n"
                      "Save an executable job (default: DIR/hstream-job.sh). Never launches the job.\n"
                      "SBATCH defaults: one node, one task, one GPU. Additional directives override defaults.\n"
                      "Reads config.yaml and hstream_ui.job.arguments saved by the UI. Without a saved\n"
-                     "job, uses the configured pipeline sinks. Scripts reference existing configs and assets.\n"
-                     "Archives/databases remain in CLI working storage; no UI MP4 remux or game-directory copy.\n";
+                     "job or selected file encoder, defaults to the 4K Program MP4. Rendering is disabled.\n"
+                     "DriveGPT capture defaults on; the UI's explicit checkbox choice is preserved.\n"
+                     "MP4s/databases remain in CLI working storage; no game-directory copy.\n";
         return 0;
       }
       if (arg == "--force") {
@@ -254,6 +311,8 @@ int main(int argc, char** argv) {
         config = value;
       else if (arg == "--working-directory")
         working = value;
+      else if (arg == "--enable-sinks")
+        requested_sinks = value;
       else if (arg == "--sbatch") {
         if (value.rfind("--", 0) != 0 || value.find_first_of("\r\n") != std::string::npos)
           throw std::runtime_error("each --sbatch value must be one directive beginning with --");
@@ -312,11 +371,9 @@ int main(int argc, char** argv) {
     const YAML::Node saved_args = job && job.IsMap() ? job["arguments"] : YAML::Node();
     if (saved_args.IsDefined() && !saved_args.IsNull() && !saved_args.IsSequence())
       throw std::runtime_error("hstream_ui.job.arguments must be a sequence");
-    if (saved_args && saved_args.IsSequence()) {
-      for (const auto& value : saved_args)
-        args.push_back(value.as<std::string>());
-    } else {
-      // Let the CLI interpret the canonical game configuration and its sink enable flags.
+    const auto job_args = encode_job_arguments(saved_args, requested_sinks);
+    args.insert(args.end(), job_args.begin(), job_args.end());
+    if (!saved_args.IsSequence()) {
       args.push_back("--options=pipeline.hmaudio.enable=1");
     }
     if (output.empty())
@@ -328,9 +385,8 @@ int main(int argc, char** argv) {
     script +=
         "\n# Run directly, or submit this file with sbatch.\n"
         "# Configs, videos and assets must be accessible on the execution host.\n"
-        "# Rendering requires a display; disable Render video for a headless job.\n"
-        "# Archive MKVs and DriveGPT databases stay in CLI working storage.\n"
-        "# Play-only MP4 remux and game-directory publication are not performed.\n"
+        "# Headless encoding: selected archives are written directly as MP4.\n"
+        "# MP4s and DriveGPT databases stay in CLI working storage.\n"
         "set -euo pipefail\n";
     script += "cd -- " + quote(working.string()) + "\n";
     script +=
@@ -348,10 +404,10 @@ int main(int argc, char** argv) {
     const std::string output_location =
         configured_output.empty() ? "the configured output root (normally ~/hstream_output)" : configured_output;
     script += "printf '%s\\n' " +
-        quote("hstream-job: Archive MKVs and DriveGPT databases remain in CLI working storage under " +
+        quote("hstream-job: Encoded MP4s and DriveGPT databases remain in CLI working storage under " +
               output_location +
               "; custom output paths still apply. See CLI logs for resolved files. "
-              "Play-only MP4 remux and copying into the game directory are not performed.") +
+              "Copying into the game directory is not performed.") +
         "\n";
     script += "exec " + quote(runner.string());
     for (const auto& arg : args)

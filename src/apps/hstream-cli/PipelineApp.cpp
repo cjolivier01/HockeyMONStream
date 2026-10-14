@@ -1301,6 +1301,8 @@ absl::Status PipelineApplication::configureInstances(
       // values still win over loaded subconfigs.
       HM_RETURN_IF_ERROR(apply_pipeline_options());
 
+      app_ctx->configurator().set_encode_job(encode_job_);
+
       if (current_stage_ < 0)
         hm::pipeline_internal::suppress_player_analytics(app_ctx->configurator().config()["pipeline"]);
 
@@ -2948,6 +2950,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   GOptionEntry entries[] = {
       {"version", 'v', 0, G_OPTION_ARG_NONE, &print_version_, "Print DeepStreamSDK version", nullptr},
       {"show", 0, 0, G_OPTION_ARG_NONE, &show_, "Enable render sink output", nullptr},
+      {"encode-job",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &encode_job_,
+       "Require headless MP4 file output and default DriveGPT capture for an exported job",
+       nullptr},
       {"show-stitching",
        0,
        0,

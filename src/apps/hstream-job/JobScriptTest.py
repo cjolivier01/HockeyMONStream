@@ -89,7 +89,7 @@ class JobScriptTest(unittest.TestCase):
             check=False,
         )
         self.assertIn(
-            "Play-only MP4 remux and copying into the game directory are not performed",
+            "Encoded MP4s and DriveGPT databases remain in CLI working storage",
             run.stdout,
         )
         self.assertIn(self.env["HM_OUTPUT_WORK_DIR"], run.stdout)
@@ -104,7 +104,8 @@ class JobScriptTest(unittest.TestCase):
                 str(self.config),
                 "--enable-sources=URI-MULTIPLE",
             ]
-            + self.arguments,
+            + self.arguments[1:]
+            + ["--enable-sinks=ENCODE_FILE", "--encode-job"],
         )
         self.assertEqual(actual["cwd"], str(self.root))
         self.assertEqual(actual["env"]["HM_GAME_DIR"], str(self.game.parent))
@@ -283,13 +284,57 @@ class JobScriptTest(unittest.TestCase):
                 self.assertIn("Missing ONNX Runtime library", missing.stderr)
                 self.assertFalse(self.output.exists())
 
+    def test_headless_encoding_defaults_and_selections(self):
+        for sinks, expected in (
+            ("RENDER", "ENCODE_PROGRAM_4K_FILE"),
+            ("FAKE", "ENCODE_PROGRAM_4K_FILE"),
+            ("RTMP,RENDER", "ENCODE_PROGRAM_4K_FILE"),
+            ("RENDER,ENCODE_FILE", "ENCODE_FILE"),
+            ("ENCODE_STITCHED_FILE,RENDER,ENCODE_PROGRAM_4K_FILE",
+             "ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE"),
+        ):
+            with self.subTest(sinks=sinks):
+                (self.game / "config.yaml").write_text(json.dumps({
+                    "hstream_ui": {"job": {"arguments": [
+                        "--enable-sinks", sinks, "--show", "--render-realtime",
+                        "--show-scaled=0.5", "--show-stitching", "0.5",
+                        "--options=rink.camera.zoom_in_aggressiveness=0.7",
+                    ]}}
+                }))
+                result = self.generate("--force")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                subprocess.run([str(self.game / "hstream-job.sh")], env=self.env, check=False)
+                args = json.loads(self.output.read_text())["argv"]
+                self.assertIn("--enable-sinks=" + expected, args)
+                self.assertEqual(args.count("--encode-job"), 1)
+                self.assertFalse(any(a.startswith("--show") for a in args))
+                self.assertNotIn("--render-realtime", args)
+                self.assertIn("--options=rink.camera.zoom_in_aggressiveness=0.7", args)
+
+    def test_explicit_selection_and_rejected_nonencoding_job(self):
+        result = self.generate("--enable-sinks", "ENCODE_STITCHED_FILE")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        script = self.game / "hstream-job.sh"
+        self.assertIn("--enable-sinks=ENCODE_STITCHED_FILE", script.read_text())
+        original = script.read_bytes()
+        result = self.generate("--force", "--enable-sinks", "FAKE")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(script.read_bytes(), original)
+        (self.game / "config.yaml").write_text(json.dumps({
+            "hstream_ui": {"job": {"arguments": ["--stitching-calibration-only"]}}
+        }))
+        result = self.generate("--force")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(script.read_bytes(), original)
+
     def test_plain_config_and_custom_output(self):
         (self.game / "config.yaml").write_text("pipeline: {}\n")
         custom = self.root / "custom.sh"
         result = self.generate("--output", str(custom))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(custom.exists())
-        self.assertNotIn("--enable-sinks", custom.read_text())
+        self.assertIn("--enable-sinks=ENCODE_PROGRAM_4K_FILE", custom.read_text())
+        self.assertIn("--encode-job", custom.read_text())
         (self.game / "config.yaml").write_text("[invalid")
         self.assertNotEqual(self.generate().returncode, 0)
 

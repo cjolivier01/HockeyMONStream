@@ -36,6 +36,8 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QFileDialog>
+#include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
@@ -7342,6 +7344,79 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
   qunsetenv("HSTREAM_UI_TEST_BYPASS_SETSID");
   return asynchronous_failure_clean;
+}
+
+bool test_job_export() {
+  HStreamWindow window;
+  window.show();
+  if (!HStreamWindowTestAccess::useMatchingDevelopmentRuntime(&window))
+    return false;
+  auto* game_id = require_child<QLineEdit>(&window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(&window, "createGameButton");
+  auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
+  auto* telemetry = require_child<QCheckBox>(&window, "drivegptCsvCheck");
+  auto* archive = require_child<QCheckBox>(&window, "outputToggle_archive-file");
+  auto* stitched = require_child<QCheckBox>(&window, "outputToggle_archive-stitched");
+  auto* program_4k = require_child<QCheckBox>(&window, "outputToggle_archive-program-4k");
+  auto* action = require_child<QAction>(&window, "saveJobScriptAction");
+  if (!game_id || !create || !render || !telemetry || !archive || !stitched || !program_4k || !action)
+    return false;
+  game_id->setText("ui-job-export");
+  activate(create);
+  render->setChecked(true);
+  telemetry->setChecked(true);
+  QTemporaryDir outputs;
+  for (int selection = 0; selection < 4; ++selection) {
+    archive->setChecked(selection == 1 || selection == 3);
+    stitched->setChecked(selection == 2 || selection == 3);
+    program_4k->setChecked(selection == 3);
+    telemetry->setChecked(selection != 3);
+    const QString path = outputs.filePath(QString("job-%1.sh").arg(selection));
+    QTimer dialogs;
+    QObject::connect(&dialogs, &QTimer::timeout, [&] {
+      QWidget* modal = QApplication::activeModalWidget();
+      if (auto* file = qobject_cast<QFileDialog*>(modal)) {
+        if (file->property("exportTestHandled").toBool())
+          return;
+        file->setProperty("exportTestHandled", true);
+        QTimer::singleShot(200, file, [file, path] {
+          auto* filename = file->findChild<QLineEdit*>("fileNameEdit");
+          if (!filename)
+            return;
+          filename->setFocus();
+          filename->selectAll();
+          QTest::keyClicks(filename, path);
+          QMetaObject::invokeMethod(file, "accept");
+        });
+      } else if (auto* input = qobject_cast<QInputDialog*>(modal)) {
+        input->accept();
+      } else if (auto* message = qobject_cast<QMessageBox*>(modal)) {
+        message->accept();
+      }
+    });
+    dialogs.start(20);
+    action->trigger();
+    QElapsedTimer timer;
+    timer.start();
+    while (!window.logText().contains("job script saved: " + path) && timer.elapsed() < 10000)
+      QTest::qWait(20);
+    QFile script(path);
+    if (!expect(script.open(QIODevice::ReadOnly), "The UI must export a script through hstream-job"))
+      return false;
+    const QString text = QString::fromUtf8(script.readAll());
+    const QString expected = selection == 0 ? "ENCODE_PROGRAM_4K_FILE"
+        : selection == 1                    ? "ENCODE_FILE"
+        : selection == 2                    ? "ENCODE_STITCHED_FILE"
+                                            : "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_STITCHED_FILE";
+    const YAML::Node config = YAML::LoadFile(QDir(window.gameDirectoryText()).filePath("config.yaml").toStdString());
+    if (!expect(
+            text.contains("--enable-sinks=" + expected) && text.contains("--encode-job") &&
+                !text.contains("'--show'") && !text.contains("--enable-sinks=RENDER") &&
+                config["hstream_ui"]["job"]["capture_telemetry"].as<bool>() == (selection != 3) && render->isChecked(),
+            "Export must honor archive/telemetry choices, default to 4K, and leave UI rendering selected"))
+      return false;
+  }
+  return true;
 }
 
 bool test_output_controls(HStreamWindow* window) {
@@ -17015,6 +17090,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_JOB_EXPORT_ONLY"))
+    return test_job_export() ? 0 : 1;
   if (!test_process_pause_protocol()) {
     std::cerr << "test_process_pause_protocol failed\n";
     return 1;

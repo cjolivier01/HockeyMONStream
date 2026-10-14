@@ -7425,6 +7425,53 @@ absl::Status Configurator::configure_source_bit_depth(
   return absl::OkStatus();
 }
 
+absl::Status Configurator::configure_encode_job(YAML::Node& pipeline) {
+  bool have_encoder = false;
+  for (auto entry : pipeline) {
+    const std::string name = entry.first.as<std::string>();
+    if (!absl::StartsWith(name, "sink"))
+      continue;
+    auto sink = entry.second;
+    const int type = get_node_value<int>(sink, "type", 0);
+    const bool encoder = type == NV_DS_SINK_ENCODE_FILE || type == NV_DS_SINK_ENCODE_STITCHED_FILE ||
+        type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE;
+    if (!encoder)
+      sink["enable"] = 0;
+    else
+      have_encoder |= is_enabled(sink);
+  }
+  if (!have_encoder)
+    return absl::InvalidArgumentError("An encoding job requires at least one enabled file encoder");
+  if (game_id_.empty() || !get_node_value(config_, "pipeline.application.complete-configuration", false))
+    return absl::InvalidArgumentError("An encoding job requires a game and complete configuration");
+  for (const char* name : {"hmstitcher", "ds-playtracker", "hmplaycropper"}) {
+    auto element = pipeline[name];
+    if (!element.IsMap())
+      continue;
+    element["show"] = 0;
+    if (element["private-properties"].IsMap() && element["private-properties"]["show"].IsDefined())
+      element["private-properties"]["show"] = 0;
+  }
+  bool capture = true;
+  HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.drivegpt_database.enabled", true));
+  HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.job.capture_telemetry", capture));
+  auto properties = pipeline["ds-playtracker"]["private-properties"];
+  if (capture) {
+    if (!get_node_value(pipeline, "ds-playtracker.enable", false))
+      return absl::InvalidArgumentError("DriveGPT capture requires the Program camera tracker in an encoding job");
+    if (get_node_value<std::string>(properties, "telemetry-db-dir", "").empty()) {
+      auto root = user_config::output_root(config_);
+      if (!root.ok())
+        return root.status();
+      properties["telemetry-db-dir"] = (*root / game_id_).string();
+    }
+    properties["telemetry-game-id"] = game_id_;
+  } else {
+    properties["telemetry-db-dir"] = "";
+  }
+  return absl::OkStatus();
+}
+
 absl::Status Configurator::configure_encode_file_outputs(
     YAML::Node& pipeline,
     const std::vector<std::string>& source_video_paths) const {
@@ -7510,6 +7557,8 @@ absl::Status Configurator::configure_encode_file_outputs(
     }
 
     fs::path output_path(output_file);
+    if (encode_job_)
+      output_path.replace_extension(".mp4");
     const bool output_was_rebased = !output_path.has_parent_path();
     if (output_was_rebased) {
       output_path = *output_work_dir / output_path;
@@ -9076,6 +9125,12 @@ absl::Status Configurator::complete_configuration(
   if (!clean_requested) {
     apply_gpu_override(pipeline);
     HM_RETURN_IF_ERROR(apply_supported_baseline_mappings());
+    if (encode_job_) {
+      if (stitching_calibration_only)
+        return absl::InvalidArgumentError("Encoding jobs cannot use calibration-only mode");
+      HM_RETURN_IF_ERROR(configure_encode_job(pipeline));
+      show_render_sink = false;
+    }
     HM_RETURN_IF_ERROR(apply_gpu_memory_profile(pipeline));
   }
 
