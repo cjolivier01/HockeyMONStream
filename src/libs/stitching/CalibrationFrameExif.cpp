@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <system_error>
 
@@ -351,8 +352,13 @@ absl::StatusOr<std::optional<Insta360Record>> ReadInsta360Record(
     return absl::DataLossError("Invalid Insta360 trailer size");
   const auto start = trailer_end - std::streamoff(trailer_size);
   auto end = trailer_end - std::streamoff(72);
+  std::set<std::streamoff> visited;
+  size_t directory_bytes = 0;
+  constexpr size_t kMaxDirectoryBytes = 4 * 1024 * 1024;
   // Records end with a 2-byte type and 4-byte length. Seek over gyro/preview data.
   for (size_t records = 0; end - start >= 6 && records < 4096; ++records) {
+    if (!visited.insert(end).second)
+      return absl::DataLossError("Insta360 directory cycle");
     unsigned char header[6];
     input.seekg(end - std::streamoff(6));
     if (!input.read(reinterpret_cast<char*>(header), 6))
@@ -363,6 +369,9 @@ absl::StatusOr<std::optional<Insta360Record>> ReadInsta360Record(
     end -= std::streamoff(6 + length);
     if (little_endian(header, 2) == 0 && length % 10 == 0 && length <= 40960) {
       // Ace Pro directory entries may point across padding between records.
+      if (length > kMaxDirectoryBytes - directory_bytes)
+        return absl::DataLossError("Insta360 directory read limit exceeded");
+      directory_bytes += length;
       std::vector<unsigned char> directory(length);
       input.seekg(end);
       if (!input.read(reinterpret_cast<char*>(directory.data()), length))

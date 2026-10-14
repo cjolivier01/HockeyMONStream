@@ -68,7 +68,9 @@ Metadata reads seek over media payloads; they never decode video, map GPU frames
 or invoke Python/ExifTool. GoPro uses bounded MP4 headers; DJI seeks directly to
 the first metadata sample through its sample table; Insta360 seeks to its small
 metadata record while skipping gyro and thumbnail payloads. MP4 processing is
-limited to 4,096 atoms, 4 MiB per read and 32 MiB total. A shared import checks at
+limited to 4,096 atoms, 4 MiB per read and 32 MiB total. The Insta360 reader also
+limits directory entries to 4 MiB per file and rejects repeated record offsets.
+Explicit left/right playlists skip directory discovery. An import checks at
 most 256 chapters. A bounded process-local cache keys results by device/inode,
 file size, mtime and ctime, so later loads reuse results and changed files are
 re-read. Files on a slow or disconnected filesystem can still delay metadata

@@ -88,10 +88,17 @@ bool wait_until(const std::function<bool()>& ready, int timeout_ms) {
 }
 
 void add_options(StitchingExperimentDialog& dialog) {
+  if (!widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton")->isEnabled()) {
+    std::cerr << widget<QLabel>(dialog, "stitchExperimentStatus")->text().toStdString() << '\n'
+              << widget<QComboBox>(dialog, "stitchExperimentControlPointResolution")->toolTip().toStdString() << '\n';
+    throw std::runtime_error("Cannot queue options while the editor is disabled");
+  }
   widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton")->click();
-  require(
-      wait_until([&] { return widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->isEnabled(); }, 30000),
-      "Queued workspace persistence did not finish");
+  if (!wait_until([&] { return widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->isEnabled(); }, 30000)) {
+    std::cerr << widget<QLabel>(dialog, "stitchExperimentStatus")->text().toStdString() << '\n'
+              << widget<QPlainTextEdit>(dialog, "stitchExperimentLog")->toPlainText().toStdString() << '\n';
+    throw std::runtime_error("Queued workspace persistence did not finish");
+  }
 }
 
 void discard_experiments(StitchingExperimentDialog& dialog) {
@@ -571,6 +578,8 @@ void exercise_matcher_queue(const QString& game, const QString& root) {
 void exercise_input_lens_queue(const QString& game, const QString& root) {
   using namespace hm::stitching;
   auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  config["stitching"]["camera_configs"]["auto"] =
+      YAML::Load("{display_name: Game Auto fallback, horizontal_fov: 117.25, vertical_fov: 90}");
   StitchCameraSelection camera{"gopro-hero-11", 121.413487813061, 90};
   camera.input_lens.projection = "full-frame-fisheye";
   camera.input_lens.optimization = "fixed";
@@ -649,8 +658,9 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   add_options(reopened);
   const auto automatic = LoadStitchingExperimentStore(*store);
   require(automatic.ok() && automatic->experiments.back().workspace.settings.camera &&
-              automatic->experiments.back().workspace.settings.camera->configuration == "auto",
-          "New Auto candidate keeps its camera selection");
+              automatic->experiments.back().workspace.settings.camera->configuration == "auto" &&
+              automatic->experiments.back().workspace.settings.camera->horizontal_fov == 117.25,
+          "New Auto candidate keeps its camera selection and game-specific fallback");
   const auto automatic_config = YAML::LoadFile((automatic->experiments.back().workspace.game_directory / "config.yaml").string());
   require(automatic_config["stitching"]["auto_input_lens_frozen"].as<bool>(),
           "Auto candidate snapshots must disable metadata reimport in the runner");

@@ -9502,6 +9502,16 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
                   camera_horizontal_fov->isReadOnly() && !input_projection->isEnabled(),
               "Auto must show its metadata result and protect imported optics"))
     return false;
+  YAML::Node auto_defaults = YAML::Clone(config);
+  auto_defaults["stitching"]["camera_configs"]["auto"]["horizontal_fov"] = 117.25;
+  std::ofstream(config_path) << YAML::Dump(auto_defaults) << '\n';
+  camera_configuration->setProperty("autoInputLensFrozen", true);
+  activate(reset);
+  if (!expect(camera_configuration->currentData() == "auto" && camera_horizontal_fov->value() == 117.25 &&
+                  !camera_configuration->property("autoInputLensFrozen").toBool() &&
+                  !metadata_status->text().isEmpty(),
+              "Reset must resolve Auto again and clear a promoted snapshot instead of writing static defaults"))
+    return false;
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   if (!expect(!input_b->isReadOnly() && !camera_horizontal_fov->isReadOnly() && input_projection->isEnabled(),
               "Manual camera profiles must restore editable optics after Auto"))

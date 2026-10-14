@@ -452,7 +452,7 @@ class Mp4 {
     require(bool(file.read(reinterpret_cast<char*>(b.data()), n)), "Truncated MP4 metadata");
     return b;
   }
-  std::vector<Atom> atoms(uint64_t pos, uint64_t length) {
+  std::vector<Atom> atoms(uint64_t pos, uint64_t length, const std::string& stop_after = {}) {
     require(pos <= size && length <= size - pos, "MP4 container outside file");
     const auto end = pos + length;
     std::vector<Atom> result;
@@ -471,6 +471,8 @@ class Mp4 {
       require(n >= h && n <= end - pos, "MP4 atom outside container");
       result.push_back({std::string(b.begin() + 4, b.end()), pos + h, n - h});
       pos += n;
+      if (result.back().type == stop_after)
+        break;
     }
     return result;
   }
@@ -501,7 +503,9 @@ VideoLensMetadata read_file(const std::filesystem::path& path) {
   Mp4 mp4(path);
   size_t width = 0, height = 0;
   std::map<std::string, Mp4::Atom> dji_track;
-  for (const auto& top : mp4.atoms(0, mp4.size)) {
+  // Camera metadata and video sample descriptions are contained in moov.
+  // Do not interpret a legacy unboxed Insta360 trailer as more MP4 atoms.
+  for (const auto& top : mp4.atoms(0, mp4.size, "moov")) {
     if (top.type != "moov")
       continue;
     for (const auto& a : mp4.atoms(top.pos, top.size)) {

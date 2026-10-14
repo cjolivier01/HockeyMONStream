@@ -97,14 +97,14 @@ Bytes atom(const char* key, const Bytes& b) {
   append(v, b);
   return v;
 }
-Bytes movie(const Bytes& gpmf, size_t width = 7680) {
+Bytes movie(const Bytes& gpmf, size_t width = 7680, size_t height = 4320) {
   Bytes stsd(100);
   const auto codec = chars("hvc1");
   std::copy(codec.begin(), codec.end(), stsd.begin() + 12);
-  auto w = be(width, 2), h = be(4320, 2);
+  auto w = be(width, 2), h = be(height, 2);
   std::copy(w.begin(), w.end(), stsd.begin() + 40);
   std::copy(h.begin(), h.end(), stsd.begin() + 42);
-  Bytes moov = atom("udta", atom("GPMF", gpmf));
+  Bytes moov = gpmf.empty() ? Bytes{} : atom("udta", atom("GPMF", gpmf));
   append(moov, atom("trak", atom("mdia", atom("minf", atom("stbl", atom("stsd", stsd))))));
   return atom("moov", moov);
 }
@@ -241,6 +241,26 @@ int main(int argc, char** argv) {
     const auto insta_raw = ParseInsta360LensMetadata(raw);
     expect(insta_raw.ok(), insta_raw.status().ToString().c_str());
     expect(insta_raw->unavailable_reason.empty(), "Raw Insta360 prescription must be supported");
+    Bytes trailer = raw;
+    auto append_le = [&](uint64_t value, size_t n) {
+      auto b = be(value, n);
+      std::reverse(b.begin(), b.end());
+      append(trailer, b);
+    };
+    append_le(0x101, 2);
+    append_le(raw.size(), 4);
+    trailer.resize(trailer.size() + 32);
+    append_le(trailer.size() + 40, 4);
+    append_le(1, 4);
+    append(trailer, chars("8db42d694ccc418790edff439fe026bf"));
+    for (bool boxed : {false, true}) {
+      auto original = movie({}, 4000, 3000);
+      append(original, boxed ? atom("inst", trailer) : trailer);
+      const auto path = dir / (boxed ? "insta-boxed.mp4" : "insta-trailer.mp4");
+      write(path, original);
+      const auto read = ReadVideoLensMetadata(path);
+      expect(read.ok() && read->camera == insta_raw->camera, "Read both raw and boxed Insta360 trailers");
+    }
     std::filesystem::remove_all(dir);
     std::cout << "Video lens metadata tests passed\n";
     return 0;

@@ -3366,7 +3366,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
           hm::stitching::load_game_config_file(std::filesystem::path(s.game_directory.toStdString()) / "config.yaml");
       YAML::Node effective = source_config.ok() && source_config->has_value() ? YAML::Clone(**source_config)
                                                                               : YAML::Node(YAML::NodeType::Map);
-      overlay_feature_settings(effective, s.feature_defaults);
+      YAML::Node features = YAML::Clone(s.feature_defaults);
+      overlay_feature_settings(features, effective);
+      effective["stitching"] = YAML::Clone(features["stitching"]);
       effective["stitching"].remove("auto_input_lens_frozen");
       const auto resolved = !source_config.ok() && selected == "auto"
           ? hm::stitching::

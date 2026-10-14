@@ -49,11 +49,15 @@ AutoInputLensResult ReadAutoInputLensForGame(
       if (profile.id == "auto")
         fallback = {profile.id, profile.horizontal_fov, profile.vertical_fov, profile.input_lens};
     result.camera = fallback;
+    const auto roles = child(child(config, "hstream_ui"), "video_roles");
+    auto left = paths(child(roles, "left"), game), right = paths(child(roles, "right"), game);
+    if (!left.empty() && !right.empty()) {
+      left.insert(left.end(), right.begin(), right.end());
+      return ResolveAutoInputLens(left, fallback);
+    }
     auto discovered = get_available_videos(game.string());
     if (!discovered.ok())
       throw std::runtime_error(discovered.status().ToString());
-    const auto roles = child(child(config, "hstream_ui"), "video_roles");
-    auto left = paths(child(roles, "left"), game), right = paths(child(roles, "right"), game);
     const bool explicit_roles = !left.empty() || !right.empty();
     const bool cam_dirs = std::any_of(discovered->begin(), discovered->end(), [](const auto& v) {
       std::string key = v.first;

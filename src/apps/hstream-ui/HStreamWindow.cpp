@@ -16854,12 +16854,17 @@ void HStreamWindow::resetCameraControls() {
   }
   if (!pipeline_running && camera_configuration_combo_) {
     set_combo_to_data(camera_configuration_combo_, QString::fromStdString(default_camera_selection_.configuration));
-    if (camera_horizontal_fov_spin_)
-      set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
-    if (camera_vertical_fov_spin_)
-      set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
-    if (input_lens_widget_)
-      input_lens_widget_->setLens(default_camera_selection_.input_lens);
+    if (default_camera_selection_.configuration == "auto") {
+      // Reset also refreshes an already-selected Auto or promoted snapshot.
+      applyCameraConfigurationDefaults();
+    } else {
+      if (camera_horizontal_fov_spin_)
+        set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
+      if (camera_vertical_fov_spin_)
+        set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
+      if (input_lens_widget_)
+        input_lens_widget_->setLens(default_camera_selection_.input_lens);
+    }
   }
   if (!pipeline_running && projection_combo_) {
     projection_parameter_controls_projection_.clear();
