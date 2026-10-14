@@ -473,14 +473,10 @@ void set_uri_playlist_process_paused(gboolean paused) {
   g_mutex_unlock(&uri_playlist_process_clock_mutex);
 }
 
-void set_uri_playlist_waits_suspended(
+static void set_uri_playlist_waits_suspended_locked(
     NvDsSrcParentBin* parent,
     UriPlaylistWaitSuspendReason reason,
     gboolean suspended) {
-  if (!parent || !parent->uri_playlist_barrier_initialized) {
-    return;
-  }
-  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
   const gboolean was_suspended = uri_playlist_waits_suspended(parent);
   parent->uri_playlist_wait_suspend_mask = suspended
       ? (parent->uri_playlist_wait_suspend_mask | static_cast<guint>(reason))
@@ -497,11 +493,39 @@ void set_uri_playlist_waits_suspended(
     }
     g_cond_broadcast(&parent->uri_playlist_barrier_cond);
   }
-  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
 }
 
 void set_uri_playlist_waits_paused(NvDsSrcParentBin* parent, gboolean paused) {
-  set_uri_playlist_waits_suspended(parent, URI_PLAYLIST_WAIT_SUSPEND_PIPELINE_PAUSE, paused);
+  if (!parent || !parent->uri_playlist_barrier_initialized)
+    return;
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  set_uri_playlist_waits_suspended_locked(parent, URI_PLAYLIST_WAIT_SUSPEND_PIPELINE_PAUSE, paused);
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+}
+
+void update_uri_playlist_calibration_phase(NvDsSrcParentBin* parent, gboolean active) {
+  if (!parent || !parent->uri_playlist_barrier_initialized)
+    return;
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  if (active)
+    ++parent->uri_playlist_calibration_depth;
+  else if (parent->uri_playlist_calibration_depth > 0 && --parent->uri_playlist_calibration_depth == 0)
+    parent->uri_playlist_calibration_finished_us = g_get_monotonic_time();
+  set_uri_playlist_waits_suspended_locked(
+      parent, URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION, parent->uri_playlist_calibration_depth > 0);
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+}
+
+gint64 uri_playlist_calibration_idle_time_us(NvDsSrcParentBin* parent) {
+  if (!parent || !parent->uri_playlist_barrier_initialized)
+    return G_MAXINT64;
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  const gint64 idle_us = parent->uri_playlist_calibration_depth > 0 ? 0
+      : parent->uri_playlist_calibration_finished_us > 0
+      ? g_get_monotonic_time() - parent->uri_playlist_calibration_finished_us
+      : G_MAXINT64;
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  return idle_us;
 }
 
 // Fold every field a live URI-playlist branch advances into a single value, so
@@ -4373,6 +4397,8 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   // parent bin is reused across pipeline rebuilds. Starting the new barrier with
   // a reason still held would leave the clock stopped for the whole next run.
   bin->uri_playlist_wait_suspend_mask = 0;
+  bin->uri_playlist_calibration_depth = 0;
+  bin->uri_playlist_calibration_finished_us = 0;
   bin->uri_playlist_pause_started_us = 0;
   bin->uri_playlist_paused_us = 0;
   bin->uri_playlist_initial_offsets_configured = FALSE;

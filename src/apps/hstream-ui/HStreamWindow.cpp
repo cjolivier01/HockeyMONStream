@@ -9579,9 +9579,9 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
               .arg(width_guidance);
   } else if (stall_watchdog) {
     explanation =
-        "A timeout ended this run, not a stitching problem. The source bin watches for a camera branch that stops "
-        "advancing, and that watchdog expired. Calibration itself does not run under a timeout, so this normally "
-        "means a decoder genuinely wedged.";
+        "A timeout ended this run because neither camera stream made progress within the watchdog budget. "
+        "Calibration work and operator review suspend this watchdog. This message alone cannot identify "
+        "which part of the pipeline stopped advancing.";
     action =
         "Press Play to retry. If it keeps happening at the same point, start HStream with "
         "HM_URI_PLAYLIST_BARRIER_STALL_SECONDS set to a larger number of seconds, or to 0 to disable the watchdog, "

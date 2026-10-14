@@ -556,6 +556,16 @@ absl::Status pause_pipeline_for_model_initialization(
   if (!pipeline) {
     return absl::InvalidArgumentError("Missing pipeline while initializing models");
   }
+  const guint test_timeout_ms = test_delay_ms("HM_TEST_MODEL_INITIALIZATION_TIMEOUT_MS");
+  if (test_timeout_ms > 0) {
+    // The headless lifecycle test needs real preroll: ordinary fake sinks have
+    // async disabled and would otherwise skip the initialization wait entirely.
+    for (guint i = 0; i < app_ctx->config.num_sink_sub_bins; ++i) {
+      GstElement* sink = app_ctx->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink;
+      if (sink && app_ctx->config.sink_bin_sub_bin_config[i].type == NV_DS_SINK_FAKE)
+        g_object_set(G_OBJECT(sink), "async", TRUE, nullptr);
+    }
+  }
   set_uri_playlist_waits_paused(&app_ctx->pipeline.multi_src_bin, TRUE);
   if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
     set_uri_playlist_waits_paused(&app_ctx->pipeline.multi_src_bin, FALSE);
@@ -564,8 +574,10 @@ absl::Status pause_pipeline_for_model_initialization(
   constexpr auto kModelInitializationTimeout = std::chrono::minutes(15);
   constexpr auto kCancellationTimeout = std::chrono::seconds(5);
   constexpr GstClockTime kPollInterval = 100 * GST_MSECOND;
-  auto initialization_deadline = std::chrono::steady_clock::now() + kModelInitializationTimeout;
-  std::optional<std::chrono::steady_clock::time_point> operator_wait_started;
+  const auto initialization_budget = test_timeout_ms ? std::chrono::milliseconds(test_timeout_ms)
+      : std::chrono::duration_cast<std::chrono::milliseconds>(kModelInitializationTimeout);
+  auto initialization_deadline = std::chrono::steady_clock::now() + initialization_budget;
+  std::optional<std::chrono::steady_clock::time_point> initialization_wait_suspended_at;
   std::optional<std::chrono::steady_clock::time_point> cancellation_deadline;
   while (true) {
     const GstStateChangeReturn result = gst_element_get_state(pipeline, nullptr, nullptr, kPollInterval);
@@ -600,14 +612,15 @@ absl::Status pause_pipeline_for_model_initialization(
       std::fflush(stderr);
       std::_Exit(128 + SIGINT);
     }
-    if (pipeline_waiting_for_user_input(app_ctx)) {
-      if (!operator_wait_started)
-        operator_wait_started = now;
-    } else if (operator_wait_started) {
-      initialization_deadline += now - *operator_wait_started;
-      operator_wait_started.reset();
+    if (pipeline_waiting_for_user_input(app_ctx) ||
+        uri_playlist_calibration_idle_time_us(&app_ctx->pipeline.multi_src_bin) == 0) {
+      if (!initialization_wait_suspended_at)
+        initialization_wait_suspended_at = now;
+    } else if (initialization_wait_suspended_at) {
+      initialization_deadline += now - *initialization_wait_suspended_at;
+      initialization_wait_suspended_at.reset();
     }
-    if (!operator_wait_started && now >= initialization_deadline) {
+    if (!initialization_wait_suspended_at && now >= initialization_deadline) {
       return absl::DeadlineExceededError("Timed out waiting for pipeline model initialization");
     }
   }
@@ -2515,7 +2528,6 @@ absl::Status PipelineApplication::createMainLoop(
       }
       hm::diagnostics::Breadcrumb("pipeline", "destroy");
       destroy_pipeline(context.get());
-      calibration_watchdog_suspensions_.erase(context.get());
     }
     const auto stage_windows = stage_windows_.find(stage);
     if (stage_windows != stage_windows_.end()) {
@@ -3700,9 +3712,6 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         // The previous pipeline has stopped and its cleanup stack has run.
         // Release its archive locks before the replacement config claims the
         // same output paths. The stage loop must not hold another shared copy.
-        // Drop its watchdog depth too: the replacement may land on the same
-        // address, and would inherit a count it never opened.
-        calibration_watchdog_suspensions_.erase(previous.get());
         previous = std::move(next);
         const absl::Status reload_status = previous->load_config();
         if (!reload_status.ok())
@@ -7010,17 +7019,29 @@ gboolean PipelineApplication::stitch_frame_completion_timeout_static(gpointer ar
 }
 
 gboolean PipelineApplication::stitch_frame_completion_timeout(long stage, uint64_t main_loop_generation) {
-  stitch_frame_completion_timeout_source_id_ = 0;
   if (!hm::pipeline_internal::stitch_frame_rewind_request_is_current(
           stage, main_loop_generation, current_stage_, main_loop_generation_, main_loop_ != nullptr) ||
       !stitch_frame_calibration_active_.load(std::memory_order_acquire) ||
       !stitch_frame_rewind_pending_contexts_.empty()) {
+    stitch_frame_completion_timeout_source_id_ = 0;
     return G_SOURCE_REMOVE;
   }
   const auto active_stage = stage_app_contexts_.find(stage);
   if (active_stage == stage_app_contexts_.end()) {
+    stitch_frame_completion_timeout_source_id_ = 0;
     return G_SOURCE_REMOVE;
   }
+  // EOS can arrive from another branch while a calibration worker is still
+  // computing or awaiting operator input. Only bound missing completion once
+  // that work has finished; the calibration itself has no deadline. Measure
+  // its end synchronously so an overdue timer cannot race a queued phase-end
+  // or completion message on the main loop.
+  for (const auto& context : active_stage->second) {
+    if (context && uri_playlist_calibration_idle_time_us(&context->pipeline.multi_src_bin) <
+            1000LL * stitch_frame_completion_timeout_ms())
+      return G_SOURCE_CONTINUE;
+  }
+  stitch_frame_completion_timeout_source_id_ = 0;
   g_printerr("Timed out waiting for stitching calibration completion after EOS\n");
   for (const auto& context : active_stage->second) {
     if (context && context->configurator().stitching_calibration_required() &&
@@ -7046,28 +7067,7 @@ void PipelineApplication::cancel_stitch_frame_completion_timeout() {
 
 gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage* message) {
   const GstStructure* structure = message ? gst_message_get_structure(message) : nullptr;
-  if (!structure) {
-    return FALSE;
-  }
-  if (gst_structure_has_name(structure, "hstream-stitching-calibration-phase")) {
-    gboolean active = FALSE;
-    if (!app_ctx || !gst_structure_get_boolean(structure, "active", &active)) {
-      return TRUE;
-    }
-    // A stage can run several contexts, each with its own stitcher and its own
-    // source bin, so the depth is tracked per context. Counting rather than
-    // latching keeps a reframe nested inside a configuration from resuming the
-    // watchdog while the outer phase still owns the decoders.
-    int& depth = calibration_watchdog_suspensions_[app_ctx];
-    depth = std::max(0, depth + (active ? 1 : -1));
-    set_uri_playlist_waits_suspended(
-        &app_ctx->pipeline.multi_src_bin, URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION, depth > 0 ? TRUE : FALSE);
-    if (depth == 0) {
-      calibration_watchdog_suspensions_.erase(app_ctx);
-    }
-    return TRUE;
-  }
-  if (!gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {
+  if (!structure || !gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {
     return FALSE;
   }
   const auto active_stage = stage_app_contexts_.find(current_stage_);
@@ -8095,11 +8095,6 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     std::lock_guard<std::mutex> lock(playback_timing_mu_);
     observed_playback_by_instance_.erase(app_ctx_ptr->index);
   }
-  // A calibration torn down with the pipeline never posted its closing phase
-  // message, and the replacement barrier starts unsuspended. Carrying the old
-  // depth forward would make the next calibration's release a no-op and leave
-  // the stall watchdog off for the whole next run.
-  calibration_watchdog_suspensions_.erase(app_ctx_ptr);
   if (topology_changed) {
     *topology_changed = true;
   }

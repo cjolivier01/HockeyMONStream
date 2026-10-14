@@ -365,8 +365,6 @@ class PipelineApplication {
   bool stitch_frame_time_loaded_from_config_{false};
   std::set<const AppCtx*> stitch_frame_rewound_contexts_;
   std::set<const AppCtx*> stitch_frame_rewind_pending_contexts_;
-  /** Nested/concurrent calibration phases per context; the stall watchdog resumes only when a context hits zero. */
-  std::map<const AppCtx*, int> calibration_watchdog_suspensions_;
   std::atomic<bool> stitch_frame_calibration_active_{false};
   std::atomic<bool> stitching_configure_only_active_{false};
   guint stitch_frame_rewind_source_id_{0};

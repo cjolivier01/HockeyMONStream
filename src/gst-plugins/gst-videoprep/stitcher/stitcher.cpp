@@ -832,6 +832,9 @@ absl::Status StitcherPriv::reload_stitcher() {
 }
 
 absl::Status StitcherPriv::reload_stitcher_with_artifact_lock() {
+  // A validated-artifact retry can wait behind another context's calibration.
+  // Hold this context's clock too, even when no outer configuration is active.
+  CalibrationWatchdogSuspension watchdog_suspension(owner_element_);
   std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
   return reload_stitcher();
 }
@@ -2532,6 +2535,8 @@ absl::Status StitcherPriv::GenerateOutput(
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
       if (progress.create_mask) {
+        // Rink inference and its publication lock also park upstream decoders.
+        CalibrationWatchdogSuspension watchdog_suspension(owner_element_);
         std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
         mask_configured = !calibrate_field_mask_ ||
             stitching::is_field_mask_configured_for_loaded_generation(

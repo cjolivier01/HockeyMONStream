@@ -309,23 +309,6 @@ std::string hex_encode(const std::string& value) {
   return encoded;
 }
 
-std::chrono::milliseconds rink_leveling_selection_timeout() {
-  constexpr auto fallback = std::chrono::minutes(30);
-  const char* configured = std::getenv("HM_RINK_LEVELING_SELECTION_TIMEOUT_MS");
-  if (configured == nullptr || *configured == '\0')
-    return fallback;
-  try {
-    const long long milliseconds = std::stoll(configured);
-    if (milliseconds >= 100 &&
-        milliseconds <= std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::hours(2)).count()) {
-      return std::chrono::milliseconds(milliseconds);
-    }
-  } catch (const std::exception&) {
-  }
-  std::cerr << "Warning: ignoring invalid HM_RINK_LEVELING_SELECTION_TIMEOUT_MS=" << configured << std::endl;
-  return fallback;
-}
-
 absl::StatusOr<std::optional<std::array<double, 3>>> parse_rink_leveling_response(const std::string& contents) {
   std::istringstream input(contents);
   input.imbue(std::locale::classic());
@@ -365,8 +348,8 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
   fs::remove(response_path, error);
   error.clear();
   std::cout << "HSTREAM_RINK_LEVELING status=ready directory-hex=" << hex_encode(staging.string()) << std::endl;
-  const auto deadline = std::chrono::steady_clock::now() + rink_leveling_selection_timeout();
-  while (std::chrono::steady_clock::now() < deadline) {
+  // Operator review has no deadline; Stop and process shutdown cancel it.
+  for (;;) {
     if (is_cancelled && is_cancelled())
       return absl::CancelledError("Rink leveling selection cancelled with stitching calibration");
     auto selected = read_rink_leveling_response_file_impl(response_path);
@@ -390,7 +373,6 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
               << " roll=" << rotation[2] << std::endl;
     return std::optional<std::array<double, 3>>(rotation);
   }
-  return absl::DeadlineExceededError("Timed out waiting for optional rink leveling; choose Skip leveling to continue");
 }
 
 absl::StatusOr<std::string> read_selection_response_file(const fs::path& path) {
@@ -480,8 +462,8 @@ absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
   if (error)
     return absl::InternalError("Unable to reset crop response: " + error.message());
   std::cout << "HSTREAM_PROJECTION_CROP status=ready directory-hex=" << hex_encode(staging.string()) << std::endl;
-  const auto deadline = std::chrono::steady_clock::now() + rink_leveling_selection_timeout();
-  while (std::chrono::steady_clock::now() < deadline) {
+  // Keep the same cancellation contract as leveling without timing the operator.
+  for (;;) {
     if (is_cancelled && is_cancelled())
       return absl::CancelledError("Crop selection cancelled with stitching calibration");
     auto contents = read_selection_response_file(response_path);
@@ -515,7 +497,6 @@ absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
     std::cout << std::endl;
     return selected;
   }
-  return absl::DeadlineExceededError("Timed out waiting for crop selection");
 }
 
 absl::Status recover_rink_transactions_locked(const fs::path& root);

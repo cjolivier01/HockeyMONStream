@@ -107,10 +107,18 @@ Calibration gets no deadline at all. A native-resolution solve followed by
 interactive rink leveling and crop review runs for minutes with every decoder
 deliberately parked, which no budget could usefully distinguish from a wedge.
 The stitcher posts an `hstream-stitching-calibration-phase` element message
-around each configuration attempt and the application holds the budget
-suspended for its duration; the reasons are a bitmask, so a pause/resume cycle
-issued in the middle of a calibration does not resume a clock the calibration
-still needs suspended.
+around each configuration attempt, reframe, rink-mask calculation, and artifact
+reload, including their locks. The synchronous bus handler counts nested phases in the
+source bin and holds the budget suspended until the last phase ends, even
+before the main loop starts. The reasons are a bitmask, so a pause/resume
+cycle during calibration cannot release its suspension. Recreating the source
+bin resets both phase ownership and the clock. Model-initialization preroll
+also excludes calibration work from its deadline.
+
+The leveling and crop dialogs wait until the operator responds or cancels;
+they have no review deadline. An EOS completion watchdog also waits while any
+calibration phase remains active, then still detects a missing completion
+notification after the work has finished.
 
 `HM_URI_PLAYLIST_BARRIER_STALL_SECONDS` overrides the budget, which defaults to
 300 s; `0` disables the check and restores the old wait-forever behavior, which

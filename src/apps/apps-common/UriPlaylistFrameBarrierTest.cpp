@@ -377,13 +377,18 @@ bool resumed_stall_still_reports_failure() {
 bool suspension_reasons_do_not_release_each_other() {
   ScopedStallBudget budget("1");
   BarrierFixture fixture;
+  const bool initially_idle = uri_playlist_calibration_idle_time_us(fixture.parent()) == G_MAXINT64;
   auto pending = std::async(
       std::launch::async, [&] { return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND); });
   if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(1))) {
     cancel_uri_playlist_frame_barrier(fixture.parent());
     return false;
   }
-  set_uri_playlist_waits_suspended(fixture.parent(), URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION, TRUE);
+  update_uri_playlist_calibration_phase(fixture.parent(), TRUE);
+  // Ending an inner calibration phase must leave the outer owner active.
+  update_uri_playlist_calibration_phase(fixture.parent(), TRUE);
+  update_uri_playlist_calibration_phase(fixture.parent(), FALSE);
+  const bool outer_active = uri_playlist_calibration_idle_time_us(fixture.parent()) == 0;
   // A complete pause/resume cycle nested inside the calibration suspension.
   set_uri_playlist_waits_paused(fixture.parent(), TRUE);
   std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -395,9 +400,9 @@ bool suspension_reasons_do_not_release_each_other() {
     std::cerr << "Resuming the pipeline resumed a clock the calibration still held suspended\n";
     return false;
   }
-  set_uri_playlist_waits_suspended(fixture.parent(), URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION, FALSE);
+  update_uri_playlist_calibration_phase(fixture.parent(), FALSE);
   const bool paired = wait_at_uri_playlist_frame_barrier(fixture.source(1), 0, GST_SECOND);
-  return paired && pending.get();
+  return paired && pending.get() && initially_idle && outer_active;
 }
 
 // The budget must still be spendable once calibration lets go; suspension
@@ -411,16 +416,18 @@ bool released_calibration_suspension_restores_stall_detection() {
     cancel_uri_playlist_frame_barrier(fixture.parent());
     return false;
   }
-  set_uri_playlist_waits_suspended(fixture.parent(), URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION, TRUE);
+  update_uri_playlist_calibration_phase(fixture.parent(), TRUE);
   std::this_thread::sleep_for(std::chrono::seconds(2));
   const bool stayed_pending = pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
-  set_uri_playlist_waits_suspended(fixture.parent(), URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION, FALSE);
+  update_uri_playlist_calibration_phase(fixture.parent(), FALSE);
   if (pending.wait_for(std::chrono::seconds(4)) != std::future_status::ready) {
     cancel_uri_playlist_frame_barrier(fixture.parent());
     std::cerr << "Releasing the calibration suspension did not restore stall detection\n";
     return false;
   }
-  return stayed_pending && !pending.get() && fixture.parent()->uri_playlist_barrier_failed;
+  const gint64 idle_us = uri_playlist_calibration_idle_time_us(fixture.parent());
+  return stayed_pending && !pending.get() && fixture.parent()->uri_playlist_barrier_failed &&
+      idle_us > 0 && idle_us < 5 * G_TIME_SPAN_SECOND;
 }
 
 bool cancellation_wakes_waiter_promptly() {

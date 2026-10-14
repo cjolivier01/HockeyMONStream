@@ -824,6 +824,99 @@ int main(int argc, char** argv) {
           {}),
       "short ordinary-peer video must be generated");
 
+  if (std::getenv("HM_TEST_CALIBRATION_WATCHDOG_ONLY")) {
+    ok &= expect(
+        write_game_config(game / "config.yaml", 128, "watchdog", false, 1, "akaze-hamming"),
+        "watchdog fixture must be written");
+    YAML::Node config = YAML::LoadFile((game / "config.yaml").string());
+    // These are synthetic rectilinear crops, not footage from the named lens
+    // profile used by the older lifecycle fixtures.
+    config["stitching"]["camera_config"] = "manual";
+    config["stitching"]["camera_automation"]["fov"] = false;
+    config["stitching"]["camera_automation"]["lens"] = false;
+    config["stitching"]["input_lens"] = YAML::Load(
+        "{projection: rectilinear, optimization: auto, distortion: [0, 0, 0], center_offset: [0, 0]}");
+    config["stitching"]["mapping_backend"] = "opencv-magsac";
+    config["stitching"]["projection"] = "rectilinear";
+    std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+    ::setenv("HM_URI_PLAYLIST_BARRIER_STALL_SECONDS", "2", 1);
+    PipelineProcess calibration;
+    ok &= expect(
+        calibration.Start(
+            argv[1], pipeline_config, game_root, plugin_directory, "watchdog", 128, false,
+            /*stitch_frame_time=*/"00:00:00",
+            /*time_limit_seconds=*/1,
+            /*stitch_rotate_degrees=*/{},
+            /*supply_runtime_invalidation=*/true,
+            /*rink_inference_delay_ms=*/8000,
+            /*supply_control_points_environment=*/true,
+            // Concurrent contexts skip serialized PAUSED preroll, so only the
+            // calibration phase messages can suspend the playlist watchdog.
+            /*same_stage_instances=*/2,
+            /*completion_timeout_ms=*/2000,
+            /*suppress_calibration_completion=*/false,
+            /*pipeline_recreate_seconds=*/0,
+            /*enabled_source_type=*/"URI-MULTIPLE",
+            /*same_stage_peer_config=*/{},
+            /*suppress_restart_playing=*/false,
+            /*restart_timeout_ms=*/0,
+            /*inject_calibration_error=*/false,
+            /*inject_replacement_eos=*/false,
+            /*inject_calibration_eos=*/true),
+        "slow calibration must start with both watchdog budgets shorter than rink inference");
+    ::unsetenv("HM_URI_PLAYLIST_BARRIER_STALL_SECONDS");
+    int exit_code = -1;
+    ok &= expect(calibration.WaitForExit(&exit_code, kCalibrationTimeout), "slow calibration must finish");
+    ok &= expect(exit_code == 0, "slow calibration must survive both watchdog budgets");
+    ok &= expect(
+        calibration.output().find("HSTREAM_CALIBRATION stage=rink-mask status=started") != std::string::npos &&
+            calibration.output().find("HSTREAM_CALIBRATION stage=playback-restart status=complete") !=
+                std::string::npos,
+        "slow rink calibration must complete and restart playback");
+    ok &= expect(
+        calibration.output().find("no-progress watchdog expired") == std::string::npos &&
+            calibration.output().find("Timed out waiting for stitching calibration completion") == std::string::npos,
+        "neither watchdog may expire while calibration owns the decoders");
+    if (!ok) {
+      calibration.DumpOutput("calibration watchdog");
+      std::cerr << "fixture retained at " << root << '\n';
+      return 1;
+    }
+    ok &= expect(
+        write_rink_mask_invalidation(game / "config.yaml", "preroll-watchdog"),
+        "preroll watchdog must invalidate the rink mask");
+    ::setenv("HM_TEST_MODEL_INITIALIZATION_TIMEOUT_MS", "2000", 1);
+    PipelineProcess preroll;
+    ok &= expect(
+        preroll.Start(
+            argv[1], pipeline_config, game_root, plugin_directory, "preroll-watchdog", 128, false,
+            /*stitch_frame_time=*/"00:00:00",
+            /*time_limit_seconds=*/1,
+            /*stitch_rotate_degrees=*/{},
+            /*supply_runtime_invalidation=*/true,
+            /*rink_inference_delay_ms=*/8000),
+        "slow calibration must start during native PAUSED preroll");
+    ::unsetenv("HM_TEST_MODEL_INITIALIZATION_TIMEOUT_MS");
+    exit_code = -1;
+    ok &= expect(preroll.WaitForExit(&exit_code, kCalibrationTimeout), "preroll calibration must finish");
+    ok &= expect(exit_code == 0, "calibration must not spend the model-initialization budget");
+    ok &= expect(
+        preroll.output().find("HSTREAM_CALIBRATION stage=rink-mask status=started") != std::string::npos &&
+            preroll.output().find("HSTREAM_CALIBRATION stage=playback-restart status=complete") != std::string::npos,
+        "calibration must finish before the preroll pipeline restarts playback");
+    ok &= expect(
+        preroll.output().find("HSTREAM_CALIBRATION stage=rink-mask status=started") <
+            preroll.output().find("Runtime commands:"),
+        "the slow mask must start during preroll, before the main loop dispatches bus messages");
+    if (!ok) {
+      preroll.DumpOutput("preroll watchdog");
+      std::cerr << "fixture retained at " << root << '\n';
+      return 1;
+    }
+    fs::remove_all(root);
+    return 0;
+  }
+
   if (std::getenv("HM_TEST_RINK_MASK_TIME_ONLY")) {
     ok &= expect(
         write_game_config(game / "config.yaml", 128, "timed-mask", false, 1, "akaze-hamming"),

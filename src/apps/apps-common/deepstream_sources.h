@@ -256,6 +256,9 @@ struct NvDsSrcParentBin {
    * one more field to remember to reset, and the two silently disagreeing turns the watchdog off for a whole run.
    */
   guint uri_playlist_wait_suspend_mask;
+  /** Nested calibration owners, updated synchronously when their element messages are posted. */
+  guint uri_playlist_calibration_depth;
+  gint64 uri_playlist_calibration_finished_us;
   gint64 uri_playlist_pause_started_us;
   gint64 uri_playlist_paused_us;
   gboolean uri_playlist_initial_offsets_configured;
@@ -282,11 +285,10 @@ typedef enum {
   URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION = 1 << 1,
 } UriPlaylistWaitSuspendReason;
 
-/** Hold or release one suspension reason. Idempotent per reason. */
-void set_uri_playlist_waits_suspended(
-    NvDsSrcParentBin* parent,
-    UriPlaylistWaitSuspendReason reason,
-    gboolean suspended);
+/** Count nested calibration phases under the barrier mutex and update their suspension reason. */
+void update_uri_playlist_calibration_phase(NvDsSrcParentBin* parent, gboolean active);
+/** Time since the last phase ended; zero while active, G_MAXINT64 if none began. Locks the barrier mutex internally. */
+gint64 uri_playlist_calibration_idle_time_us(NvDsSrcParentBin* parent);
 /** Suspend stall accounting before a native PAUSED transition; resume after PLAYING completes. */
 void set_uri_playlist_waits_paused(NvDsSrcParentBin* parent, gboolean paused);
 /** True while any reason holds the no-progress clock stopped. Read under the barrier mutex. */

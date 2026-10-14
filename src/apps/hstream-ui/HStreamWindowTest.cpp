@@ -2047,7 +2047,7 @@ bool test_stall_watchdog_calibration_failure_analysis(HStreamWindow* window) {
           reported_cause(analysis).contains("no-progress watchdog expired") &&
               !reported_cause(analysis).contains("App run failed") &&
               analysis.contains("A timeout ended this run") &&
-              analysis.contains("Calibration itself does not run under a timeout") &&
+              analysis.contains("Calibration work and operator review suspend this watchdog") &&
               analysis.contains("HM_URI_PLAYLIST_BARRIER_STALL_SECONDS"),
           "A watchdog expiry must be reported as a timeout, not as a generic run failure; reported cause was \"" +
               reported_cause(analysis).toStdString() + "\""))
