@@ -5610,6 +5610,7 @@ play-tracker:
     if (lens_case == 1)
       old_camera.configuration = "gopro-mission-1";
     hm::stitching::write_stitch_camera_selection(saved, old_camera);
+    saved["stitching"].remove("camera_automation"); // Pre-independent-policy recordings.
     if (lens_case == 6)
       saved["stitching"]["camera_config"] = YAML::Node(YAML::NodeType::Null);
     saved["stitching"]["auto_input_lens_frozen"] = lens_case != 0;

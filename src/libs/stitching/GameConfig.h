@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -27,6 +28,9 @@ struct StitchCameraConfiguration {
   double horizontal_fov{127.2};
   double vertical_fov{95.0};
   StitchInputLens input_lens;
+  // Explicit recording-mode constraints for automatic fallback selection.
+  // Profiles without a complete match remain manual choices.
+  std::map<std::string, std::vector<std::string>> metadata_match;
 };
 
 struct StitchCameraSelection {
@@ -34,6 +38,20 @@ struct StitchCameraSelection {
   double horizontal_fov{127.2};
   double vertical_fov{95.0};
   StitchInputLens input_lens;
+  // Missing policies retain the old selector behavior: Auto imports both,
+  // named/manual profiles import neither. Geometry equality deliberately does
+  // not include policy: changing provenance alone does not rebuild maps.
+  std::optional<bool> auto_fov;
+  std::optional<bool> auto_lens;
+  bool automatic_fov() const {
+    return auto_fov.value_or(configuration == "auto");
+  }
+  bool automatic_lens() const {
+    return auto_lens.value_or(configuration == "auto");
+  }
+  bool same_automation(const StitchCameraSelection& other) const {
+    return automatic_fov() == other.automatic_fov() && automatic_lens() == other.automatic_lens();
+  }
 
   bool operator==(const StitchCameraSelection& other) const {
     return configuration == other.configuration && horizontal_fov == other.horizontal_fov &&

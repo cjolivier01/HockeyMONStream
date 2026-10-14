@@ -928,6 +928,12 @@ function Install-HStream {
         "--distribution", $DistroName, "--user", "root", "--",
         "/usr/bin/test", "-x", "/usr/bin/hstream-ui"
     ) | Out-Null
+    foreach ($cameraConfig in @("baseline.yaml", "camera-lenses/catalog.json", "camera-lenses/LICENSE-CC0")) {
+        Invoke-Checked -FilePath $WslExecutable -ArgumentList @(
+            "--distribution", $DistroName, "--user", "root", "--",
+            "/usr/bin/test", "-s", "/opt/hstream/configs/$cameraConfig"
+        ) | Out-Null
+    }
     Set-HStreamVideoImportDirectory
     Invoke-Checked -FilePath $WslExecutable -ArgumentList @("--terminate", $DistroName) | Out-Null
     Write-Stage "HStream $VersionTag is installed. Use the Start menu shortcut to launch it."

@@ -4127,7 +4127,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitched_controls_splitter->orientation() == Qt::Horizontal &&
               control_point_matcher_label->text() == "Control-point matcher" &&
               mapping_backend_label->text() == "Mapping backend" &&
-              camera_configuration_label->text() == "Camera configuration" &&
+              camera_configuration_label->text() == "Camera / recording-mode defaults" &&
               camera_horizontal_fov_label->text() == "Camera horizontal FOV" &&
               camera_vertical_fov_label->text() == "Camera vertical FOV" &&
               camera_configuration->count() == HStreamWindowTestAccess::cameraConfigurationCount(window) &&
@@ -4141,7 +4141,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               camera_horizontal_fov->value() ==
                   HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
               camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov &&
-              projection_label->text() == "Output projection" &&
+              projection_label->text() == "Panorama projection" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
               clean_stitching->text() == "Clean Stitching" && stitch_frame_time->isEnabled() &&
@@ -9672,6 +9672,37 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
               "Manual camera profiles must restore editable optics after Auto"))
     return false;
 
+  auto* camera_auto = require_child<QCheckBox>(window, "cameraAutoFovCheck");
+  auto* lens_auto = require_child<QCheckBox>(window, "inputLensAutoCheck");
+  if (!camera_auto || !lens_auto)
+    return false;
+  for (bool fov_automatic : {true, false}) {
+    camera_auto->setChecked(fov_automatic);
+    lens_auto->setChecked(!fov_automatic);
+    const bool panorama_auto = auto_fov->isChecked();
+    if (!expect(
+            camera_horizontal_fov->isReadOnly() == fov_automatic && input_b->isReadOnly() == !fov_automatic &&
+                save->isEnabled(),
+            "FOV and correction automation must independently control editability and dirty state"))
+      return false;
+    activate(save);
+    activate(create);
+    const auto independent = HStreamWindowTestAccess::cameraSelection(window, YAML::LoadFile(config_path.string()));
+    if (!expect(
+            independent.ok() && independent->automatic_fov() == fov_automatic &&
+                independent->automatic_lens() == !fov_automatic && camera_auto->isChecked() == fov_automatic &&
+                lens_auto->isChecked() == !fov_automatic && auto_fov->isChecked() == panorama_auto &&
+                !save->isEnabled(),
+            "Independent camera sources must survive save/reopen without changing panorama fitting")) {
+      std::cerr << "expected Auto FOV=" << fov_automatic
+                << ", saved=" << (independent.ok() ? independent->automatic_fov() : -1) << "/"
+                << (independent.ok() ? independent->automatic_lens() : -1) << ", controls=" << camera_auto->isChecked()
+                << "/" << lens_auto->isChecked() << ", panorama=" << auto_fov->isChecked() << "/" << panorama_auto
+                << ", dirty=" << save->isEnabled() << '\n';
+      return false;
+    }
+  }
+
   YAML::Node inherited_rink_config = YAML::Clone(config);
   inherited_rink_config["stitching"]["rink_config"] = "vallco";
   inherited_rink_config["stitching"].remove("projection_framing");
@@ -14988,6 +15019,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     copied_config_node["stitching"]["projection"] = "general-panini";
     copied_config_node["stitching"].remove("projection_parameters");
     copied_config_node["stitching"]["camera_config"] = "manual";
+    copied_config_node["stitching"].remove("camera_automation");
     copied_config_node["stitching"]["camera_fov"]["horizontal_fov"] = 126.1234;
     copied_config_node["stitching"]["camera_fov"]["vertical_fov"] = 84.9876;
     copied_config_node["stitching"]["projection_framing"] =

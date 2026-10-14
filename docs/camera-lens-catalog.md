@@ -1,8 +1,8 @@
 # Camera lens catalog
 
 Leave **Auto (video metadata)** selected when the original recording contains a
-supported lens prescription. The named catalog is an optional fallback for
-missing or unsupported metadata and for comparisons in Stitching Experiments.
+supported lens prescription. The catalog supplies verified mode fallbacks for missing or unsupported metadata
+and optional manual comparisons in Stitching Experiments.
 Both camera menus read `stitching.camera_configs` from the shared baseline; no
 network request or video decoding is needed to load the catalog.
 The complete input-lens correction is implemented by native HStream. HockeyMON
@@ -13,9 +13,9 @@ The entries labeled **measured** are approximations of community calibrations
 from the [Gyroflow lens database](https://github.com/gyroflow/lens_profiles/tree/886fc616c9c2c788856f54c21d451b9cb7fc4f44),
 not manufacturer factory specifications. Each selects `optimization: refine`
 so stitching can adjust the starting lens. Use the **NONA** mapping backend for
-these input-lens corrections. Choose the matching recording mode, then
-recalibrate; selecting a camera name does not check the recording for a
-mode match. Existing experiments retain their saved optics. Changing the lens
+these input-lens corrections. Auto checks explicit `metadata_match` constraints before choosing a fallback.
+Manually selecting a named profile remains an operator choice; choose the matching
+recording mode and recalibrate. Existing experiments retain their saved optics. Changing the lens
 of a completed game invalidates its calibration and stitched pixel coordinates,
 including scoreboard selection.
 
@@ -23,13 +23,28 @@ including scoreboard selection.
 
 | Camera | Resolution and frame rate | Digital lens / stabilization |
 | --- | --- | --- |
-| GoPro HERO11 Black | 3840×2160, 59.94 fps | Wide, HyperSmooth Off |
-| GoPro HERO11 Black | 3840×2160, 59.94 fps | Wide, standard HS EIS |
-| GoPro HERO11 Black | 5312×4648 (8:7), 29.97 fps | Wide, HyperSmooth Off |
-| GoPro HERO11 Black | 5312×4648 (8:7), 29.97 fps | Wide, standard HS EIS |
+| GoPro HERO11 Black | 3840×2160, 23.976 / 25 / 29.97 / 50 / 59.94 / 100 / 119.88 fps | Wide, HyperSmooth Off |
+| GoPro HERO11 Black | 3840×2160, 23.976 / 25 / 29.97 / 50 / 59.94 / 100 / 119.88 fps | Wide, standard HS EIS |
+| GoPro HERO11 Black | 5312×4648 (8:7), 23.976 / 25 / 29.97 fps | Wide, HyperSmooth Off |
+| GoPro HERO11 Black | 5312×4648 (8:7), 23.976 / 25 / 29.97 fps | Wide, standard HS EIS |
 | Original DJI Osmo Action | 3840×2160, 29.97003 fps | Wide, RockSteady Off, dewarp Off |
 | Insta360 ONE RS | 5312×2988, 25 fps | UltraWide 110, EIS Off; source does not identify the lens module |
 | iPhone 13 Pro | 1920×1080, 30.005781 fps | Built-in 13mm ultrawide, stabilization Off; recording app unspecified |
+
+The four HERO11 records cover 20 explicit mode combinations without duplicating
+coefficient sets. `equivalent_identifiers` names each pinned upstream recipe;
+the converter verifies that every recipe produces the same effective matrix and
+distortion. Metadata constraints include exact model, dimensions, frame rate
+(three decimal places), Wide, stabilization, horizon Off, zoom 1, GPRO projection
+and identity warp. Missing settings cannot match, and an explicit lens accessory
+requires an explicitly qualified profile. The Mission 1 reference also matches
+its recorded firmware. Frame-rate alternatives are not a general license to
+resize a profile or substitute an unlisted mode. Firmware is unspecified by the
+community HERO11 sources; their matches remain refinement seeds.
+
+The original DJI profile, ONE RS and iPhone records remain manual choices:
+this importer cannot establish all required recording-mode constraints for them.
+A named profile can still provide baseline defaults independently of Auto FOV.
 
 The ONE RS and iPhone entries are experimental starting points because those
 source details are missing. Their menu names expose that uncertainty. Firmware
@@ -92,6 +107,13 @@ flag means Gyroflow-maintained; it does not mean manufacturer-provided data.
 The offline standard-library Python converter emits the marked catalog block
 inside `configs/baseline.yaml`. Playback only reads those ordinary presets; the
 converter and original profile database are not runtime dependencies.
+
+Debian packages install the baseline, catalog manifest, original profiles and
+CC0 license under `/opt/hstream/configs/`. Packaging checks that the staged
+camera data matches the checkout. The Windows installer installs this same
+Debian payload inside WSL and checks that the baseline, manifest and license
+are present before reporting success. Playback does not download the catalog
+or run its Python converter on either platform.
 
 ```bash
 python3 scripts/convert_camera_lens_catalog.py --check

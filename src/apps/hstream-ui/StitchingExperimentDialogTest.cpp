@@ -688,6 +688,22 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   const auto automatic_config = YAML::LoadFile((automatic->experiments.back().workspace.game_directory / "config.yaml").string());
   require(automatic_config["stitching"]["auto_input_lens_frozen"].as<bool>(),
           "Auto candidate snapshots must disable metadata reimport in the runner");
+  profiles->setCurrentIndex(profiles->findData("gopro-hero-11"));
+  widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->setChecked(true);
+  require(
+      widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
+          !widget<QDoubleSpinBox>(reopened, "inputLensBSpin")->isReadOnly(),
+      "Experiment FOV and correction automation must be independent");
+  add_options(reopened);
+  const auto mixed = LoadStitchingExperimentStore(*store);
+  require(mixed.ok(), "Mixed-source candidate must save");
+  const auto& mixed_workspace = mixed->experiments.back().workspace;
+  const auto mixed_yaml = YAML::LoadFile((mixed_workspace.game_directory / "config.yaml").string());
+  const auto mixed_camera = read_stitch_camera_selection(mixed_yaml);
+  require(
+      mixed_camera.ok() && mixed_camera->configuration == "gopro-hero-11" && mixed_camera->automatic_fov() &&
+          !mixed_camera->automatic_lens() && mixed_yaml["stitching"]["auto_input_lens_frozen"].as<bool>(),
+      "Named profiles with one automatic source must freeze both resolved values for replay");
 }
 
 void exercise_player_queue(const QString& game, const QString& root) {

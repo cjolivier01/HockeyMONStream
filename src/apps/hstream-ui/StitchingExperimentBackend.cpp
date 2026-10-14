@@ -347,7 +347,8 @@ absl::Status configure_candidate(
   config["stitching"]["calibration_frame_count"] = settings.frame_count;
   if (settings.camera) {
     hm::stitching::write_stitch_camera_selection(config, *settings.camera);
-    config["stitching"]["auto_input_lens_frozen"] = settings.camera->configuration == "auto";
+    config["stitching"]["auto_input_lens_frozen"] =
+        (settings.camera->automatic_fov() || settings.camera->automatic_lens());
     config["hstream_ui"].remove("generated_stitching_backend_choices");
   }
   if (settings.manual_control_points) {
@@ -607,7 +608,7 @@ absl::Status copy_selected_frame_inputs(
   config["game"]["stitching"]["frame_offsets"] = YAML::Clone(source_offsets);
   config["stitching"].remove("frame_offsets");
   if (freeze_camera) {
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"})
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation"})
       copy_node(config["stitching"], source_config["stitching"], key);
   }
   copy_node(config["stitching"], source_config["stitching"], "stitch_frame_time");
@@ -852,6 +853,9 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
         claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>("") &&
         claim["camera_fov"])
       camera_config["stitching"] = YAML::Clone(claim);
+    // Generation claims identify geometry; source policies remain recording configuration.
+    if (stitching["camera_automation"])
+      camera_config["stitching"]["camera_automation"] = YAML::Clone(stitching["camera_automation"]);
     HM_ASSIGN_OR_RETURN(settings.camera, hm::stitching::read_stitch_camera_selection(camera_config));
     settings.control_points = calibration["control_points"].as<int>(settings.control_points);
     settings.frame_count = fingerprint.empty()
@@ -1189,6 +1193,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
           "calibration_frame_inputs_fingerprint",
           "camera_config",
           "auto_input_lens_frozen",
+          "camera_automation",
           "input_lens",
           "camera_fov",
           "control_point_execution_provider",

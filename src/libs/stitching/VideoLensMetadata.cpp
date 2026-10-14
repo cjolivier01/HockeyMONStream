@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -260,6 +261,8 @@ std::string tag_text(const Tags& t, const std::string& key) {
 }
 VideoLensMetadata unavailable(VideoLensMetadata result, const std::string& reason) {
   result.unavailable_reason = result.model + ": " + reason;
+  if (!result.horizontal_fov && !result.vertical_fov)
+    result.fov_unavailable_reason = result.unavailable_reason;
   return result;
 }
 
@@ -291,8 +294,6 @@ VideoLensMetadata parse_gopro(const Bytes& data) {
     }
     p += 8 + padded;
   }
-  if (lens.empty())
-    throw Unsupported("GoPro file has no FOVL lens prescription");
   VideoLensMetadata result;
   result.model = tag_text(global, "MINF");
   result.stabilization = tag_text(global, "EISA");
@@ -303,6 +304,34 @@ VideoLensMetadata parse_gopro(const Bytes& data) {
       "Missing GoPro video dimensions");
   result.width = integer(res->second.bytes.data(), 4);
   result.height = integer(res->second.bytes.data() + 4, 4);
+  result.recording_mode = {
+      {"vendor", "gopro"},
+      {"model", result.model},
+      {"width", std::to_string(result.width)},
+      {"height", std::to_string(result.height)},
+      {"digital_lens", result.mode},
+      {"stabilization", result.stabilization},
+      {"horizon", tag_text(global, "HCTL")},
+      {"projection", tag_text(global, "PRJT")},
+      {"firmware", tag_text(global, "FMWR")}};
+  if (global.count("LPID"))
+    result.recording_mode["lens_id"] = tag_text(global, "LPID");
+  const auto fps = global.find("VFPS");
+  if (fps != global.end() && fps->second.type == 'L' && fps->second.bytes.size() == 8) {
+    const auto n = integer(fps->second.bytes.data(), 4), d = integer(fps->second.bytes.data() + 4, 4);
+    if (n && d) {
+      std::ostringstream rate;
+      rate << std::fixed << std::setprecision(3) << double(n) / d;
+      result.recording_mode["frame_rate"] = rate.str();
+    }
+  }
+  if (global.count("ZOOM")) {
+    std::ostringstream zoom;
+    zoom << std::setprecision(9) << number(global, "ZOOM");
+    result.recording_mode["zoom"] = zoom.str();
+  }
+  if (lens.empty())
+    return unavailable(result, "no FOVL prescription or axis FOV");
   if (tag_text(global, "PRJT") != "GPRO")
     return unavailable(result, "unsupported GoPro lens projection");
   if (result.mode != "W")
@@ -314,10 +343,24 @@ VideoLensMetadata parse_gopro(const Bytes& data) {
   for (const char* key : {"MAPX", "MAPY"})
     if (floats(lens, key) != std::vector<double>{1})
       return unavailable(result, "digital lens warp is not radial");
+  result.recording_mode["warp"] = "identity";
   const double ratio = double(result.width) / result.height;
   require(
       std::abs(number(lens, "ARUW") - ratio) < 1e-5 && std::abs(number(lens, "ARWA") - ratio) < 1e-5,
       "GoPro aspect ratio does not match recorded image");
+  auto read_fov = [&](const char* key, double maximum) -> std::optional<double> {
+    if (!lens.count(key))
+      return std::nullopt;
+    const double value = number(lens, key);
+    require(value > 0 && value < maximum, "Invalid GoPro axis field of view");
+    return value;
+  };
+  result.horizontal_fov = read_fov("XFOV", 360);
+  result.vertical_fov = read_fov("YFOV", 180.000001);
+  result.fov_unavailable_reason = "recording omits horizontal or vertical field of view";
+  for (const char* required : {"POLY", "PYCF", "ZMPL"})
+    if (!lens.count(required))
+      return unavailable(result, "recording omits the radial lens prescription");
   auto poly = floats(lens, "POLY");
   require(poly.size() == 8, "Unsupported GoPro polynomial order");
   const auto coefficients = lens.find("PYCF");
@@ -336,11 +379,17 @@ VideoLensMetadata parse_gopro(const Bytes& data) {
   };
   for (const auto& axis : std::vector<std::pair<std::string, double>>{
            {"XFOV", result.width / 2.0}, {"YFOV", result.height / 2.0}, {"ZFOV", d}})
-    require(
-        std::abs(number(lens, axis.first) - angle(axis.second) * 360 / kPi) < 0.25,
-        "GoPro lens prescription disagrees with recorded field of view");
-  result.camera = fit(result.width, result.height, angle);
-  result.camera.vertical_fov = number(lens, "YFOV");
+    if (lens.count(axis.first))
+      require(
+          std::abs(number(lens, axis.first) - angle(axis.second) * 360 / kPi) < 0.25,
+          "GoPro lens prescription disagrees with recorded field of view");
+  try {
+    result.camera = fit(result.width, result.height, angle);
+  } catch (const Unsupported& error) {
+    return unavailable(result, error.what());
+  }
+  if (result.vertical_fov)
+    result.camera.vertical_fov = *result.vertical_fov;
   return result;
 }
 
@@ -386,7 +435,14 @@ VideoLensMetadata parse_insta(const Bytes& data) {
     return v[2] * r * (1 + r2 * (v[12] + r2 * (v[13] + r2 * v[14])));
   };
   const double extent = std::hypot(std::max(v[4], result.width - v[4]), std::max(v[5], result.height - v[5]));
-  result.camera = fit(result.width, result.height, inverse(radius, extent), extent);
+  const auto angle = inverse(radius, extent);
+  result.horizontal_fov = (angle(v[4]) + angle(result.width - v[4])) * 180 / kPi;
+  result.vertical_fov = (angle(v[5]) + angle(result.height - v[5])) * 180 / kPi;
+  try {
+    result.camera = fit(result.width, result.height, angle, extent);
+  } catch (const Unsupported& error) {
+    return unavailable(result, error.what());
+  }
   result.camera.input_lens.center_offset = {
       (v[4] - result.width / 2.0) / result.width, (v[5] - result.height / 2.0) / result.height};
   if (std::abs(result.camera.input_lens.center_offset[0]) > 0.01 ||
@@ -429,7 +485,14 @@ VideoLensMetadata parse_dji(const Bytes& data, size_t width, size_t height) {
     double t2 = t * t;
     return fx * t * (1 + t2 * (k[0] + t2 * (k[1] + t2 * (k[2] + t2 * k[3]))));
   };
-  result.camera = fit(width, height, inverse(radius, std::hypot(double(width), double(height)) / 2));
+  const auto angle = inverse(radius, std::hypot(double(width), double(height)) / 2);
+  result.horizontal_fov = angle(width / 2.0) * 360 / kPi;
+  result.vertical_fov = angle(height / 2.0) * 360 / kPi;
+  try {
+    result.camera = fit(width, height, angle);
+  } catch (const Unsupported& error) {
+    return unavailable(result, error.what());
+  }
   result.stabilization = "Off";
   result.mode = "OpenCV fisheye";
   return result;
@@ -501,8 +564,6 @@ VideoLensMetadata read_file(const std::filesystem::path& path) {
   if (insta->has_value()) {
     require(insta->value().full_size <= kMaxMetadata, "Insta360 metadata too large");
     vendor = parse_insta(insta->value().data);
-    if (!vendor->unavailable_reason.empty())
-      return *vendor;
   }
   Mp4 mp4(path);
   size_t width = 0, height = 0;
@@ -617,54 +678,244 @@ absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::p
   return result;
 }
 
+namespace {
+bool close(double a, double b) {
+  return std::abs(a - b) <= 1e-6;
+}
+
+// Convert physical horizontal coverage to the selected Hugin model. The radial
+// coefficients and HFOV parameter share a normalization; copying XFOV directly
+// next to arbitrary a/b/c changes the represented coverage.
+double hugin_fov(double coverage, size_t width, size_t height, const StitchInputLens& lens, bool to_physical = false) {
+  require(
+      width >= 16 && height >= 16 && coverage > 0 && coverage < (to_physical ? 360 : 180),
+      "Cannot combine this FOV with the selected lens model");
+  const double radius = std::min(width, height) / 2.0;
+  const auto& c = lens.distortion;
+  auto radial = [&](double t) { return t * (1 - c[0] - c[1] - c[2] + t * (c[2] + t * (c[1] + t * c[0]))); };
+  const double ox = lens.center_offset[0] * width, oy = lens.center_offset[1] * height;
+  const double edge = std::hypot(width / 2.0 + std::abs(ox), height / 2.0 + std::abs(oy)) / radius;
+  // Find an invertible radial branch through all image corners, not an arbitrary
+  // later root of a folding polynomial.
+  double upper = 0, previous = -1;
+  for (size_t i = 0; i <= 10000; ++i) {
+    upper = i * 0.001;
+    const double r = radial(upper);
+    require(std::isfinite(r) && r > previous, "Selected lens folds before the image edge");
+    previous = r;
+    if (r >= edge)
+      break;
+  }
+  require(previous >= edge, "Selected lens does not cover the image");
+  auto derivative = [&](double t) { return 1 - c[0] - c[1] - c[2] + t * (2 * c[2] + t * (3 * c[1] + t * 4 * c[0])); };
+  require(derivative(0) > 0 && derivative(upper) > 0, "Selected lens radial derivative is not positive");
+  const double a = 12 * c[0], b = 6 * c[1], d = 2 * c[2];
+  auto check_extremum = [&](double t) {
+    if (t > 0 && t < upper)
+      require(derivative(t) > 0, "Selected lens has a folding radial branch");
+  };
+  if (a == 0) {
+    if (b != 0)
+      check_extremum(-d / b);
+  } else if (b * b - 4 * a * d >= 0) {
+    const double root = std::sqrt(b * b - 4 * a * d);
+    check_extremum((-b - root) / (2 * a));
+    check_extremum((-b + root) / (2 * a));
+  }
+  auto inverse_radius = [&](double r) {
+    double lo = 0, hi = upper;
+    for (int i = 0; i < 56; ++i) {
+      const double mid = (lo + hi) / 2;
+      if (radial(mid) < r)
+        lo = mid;
+      else
+        hi = mid;
+    }
+    return (lo + hi) / 2;
+  };
+  const double lx = -double(width) / 2.0 - ox, rx = width / 2.0 - ox;
+  const double lr = std::hypot(lx, oy), rr = std::hypot(rx, oy);
+  const double lt = inverse_radius(lr / radius), rt = inverse_radius(rr / radius);
+  auto angle = [&](double fov) {
+    auto ray = [&](double x, double r, double t) {
+      if (r == 0)
+        return std::array<double, 3>{0, 0, 1};
+      const double theta = lens.projection == "rectilinear" ? std::atan(t * 2 * radius / width * std::tan(fov / 2))
+                                                            : t * fov * radius / width;
+      return std::array<double, 3>{std::sin(theta) * x / r, -std::sin(theta) * oy / r, std::cos(theta)};
+    };
+    const auto l = ray(lx, lr, lt), r = ray(rx, rr, rt);
+    return std::acos(std::clamp(l[0] * r[0] + l[1] * r[1] + l[2] * r[2], -1.0, 1.0));
+  };
+  if (to_physical)
+    return angle(coverage * kPi / 180) * 180 / kPi;
+  const double target = coverage * kPi / 180;
+  double lo = 0, hi = 0, last = -1;
+  const double limit = lens.projection == "rectilinear" ? kPi - 1e-6 : 2 * kPi - 1e-6;
+  for (int i = 1; i <= 2048; ++i) {
+    hi = limit * i / 2048;
+    const double value = angle(hi);
+    require(std::isfinite(value) && value > last, "FOV is outside the selected lens coverage");
+    last = value;
+    if (value >= target)
+      break;
+  }
+  require(last >= target, "FOV is outside the selected lens coverage");
+  for (int i = 0; i < 56; ++i) {
+    const double mid = (lo + hi) / 2;
+    if (angle(mid) < target)
+      lo = mid;
+    else
+      hi = mid;
+  }
+  return (lo + hi) / 2 * 180 / kPi;
+}
+const StitchCameraConfiguration* matching_profile(
+    const VideoLensMetadata& video,
+    const std::vector<StitchCameraConfiguration>& profiles) {
+  const StitchCameraConfiguration* match = nullptr;
+  for (const auto& profile : profiles) {
+    if (profile.metadata_match.empty())
+      continue;
+    bool compatible = true;
+    for (const auto& [key, value] : profile.metadata_match) {
+      const auto found = video.recording_mode.find(key);
+      compatible &=
+          found != video.recording_mode.end() && std::find(value.begin(), value.end(), found->second) != value.end();
+    }
+    // An explicit lens accessory must be qualified by the profile too.
+    if (video.recording_mode.count("lens_id") && !profile.metadata_match.count("lens_id"))
+      compatible = false;
+    if (!compatible)
+      continue;
+    if (match)
+      return nullptr; // Ambiguous defaults are not an automatic choice.
+    match = &profile;
+  }
+  return match;
+}
+} // namespace
 AutoInputLensResult ResolveAutoInputLens(
     const std::vector<std::filesystem::path>& videos,
-    const StitchCameraSelection& fallback) {
-  AutoInputLensResult result{fallback, "Auto: no source videos selected; using automatic lens fitting."};
+    const StitchCameraSelection& fallback,
+    const std::vector<StitchCameraConfiguration>& profiles) {
+  AutoInputLensResult result{fallback, ""};
+  result.fov_message = fallback.automatic_fov() ? "Baseline default" : "Manual / selected profile";
+  result.lens_message =
+      fallback.automatic_lens() ? "Baseline default / automatic fitting" : "Manual / selected profile";
+  auto finish = [&](const std::string& warning = "") {
+    result.message = (warning.empty() ? "" : warning + "\n") + "Camera FOV: " + result.fov_message +
+        ". Lens correction: " + result.lens_message + ".";
+    if (!warning.empty()) {
+      result.fov_message += ". " + warning;
+      result.lens_message += ". " + warning;
+    }
+    return result;
+  };
+  if (!fallback.automatic_fov() && !fallback.automatic_lens())
+    return finish();
   if (videos.empty())
-    return result;
-  if (videos.size() > 256) {
-    result.message = "Auto: too many chapters to inspect; using automatic lens fitting.";
-    return result;
-  }
+    return finish("No source videos selected");
+  if (videos.size() > 256)
+    return finish("Too many chapters to inspect");
   std::optional<VideoLensMetadata> first;
   std::string unavailable;
+  bool all_fov_h = true, all_fov_v = true, all_lens = true, same_lens = true;
   for (const auto& path : videos) {
     auto value = ReadVideoLensMetadata(path);
     if (!value.ok()) {
       if (unavailable.empty())
         unavailable = path.filename().string() + ": " + std::string(value.status().message());
+      all_fov_h = all_fov_v = all_lens = false;
       continue;
     }
-    if (!value->unavailable_reason.empty() && unavailable.empty())
-      unavailable = path.filename().string() + ": " + value->unavailable_reason;
+    all_fov_h &= value->horizontal_fov.has_value();
+    all_fov_v &= value->vertical_fov.has_value();
+    all_lens &= value->unavailable_reason.empty();
     if (!first)
       first = *value;
     else {
-      auto close = [](double a, double b) { return std::abs(a - b) <= 1e-6; };
-      bool same = first->width == value->width && first->height == value->height && first->model == value->model &&
-          first->mode == value->mode && first->stabilization == value->stabilization &&
-          first->unavailable_reason == value->unavailable_reason &&
-          close(first->camera.horizontal_fov, value->camera.horizontal_fov) &&
-          close(first->camera.vertical_fov, value->camera.vertical_fov);
-      for (size_t i = 0; i < 3; ++i)
-        same &= close(first->camera.input_lens.distortion[i], value->camera.input_lens.distortion[i]);
-      for (size_t i = 0; i < 2; ++i)
-        same &= close(first->camera.input_lens.center_offset[i], value->camera.input_lens.center_offset[i]);
-      result.mismatch |= !same;
+      result.mismatch |= first->width != value->width || first->height != value->height ||
+          first->model != value->model || first->mode != value->mode || first->stabilization != value->stabilization ||
+          first->recording_mode != value->recording_mode;
+      if (first->horizontal_fov && value->horizontal_fov)
+        result.mismatch |= !close(*first->horizontal_fov, *value->horizontal_fov);
+      if (first->vertical_fov && value->vertical_fov)
+        result.mismatch |= !close(*first->vertical_fov, *value->vertical_fov);
+      if (first->unavailable_reason.empty() && value->unavailable_reason.empty())
+        same_lens &= close(first->camera.horizontal_fov, value->camera.horizontal_fov) &&
+            close(first->camera.vertical_fov, value->camera.vertical_fov) &&
+            first->camera.input_lens == value->camera.input_lens;
     }
   }
+  result.mismatch |= !same_lens;
   if (result.mismatch)
-    result.message =
-        "Warning: camera/chapter lens metadata differs. One shared calibration is required; using automatic fitting. Match recording modes or choose a manual profile.";
-  else if (!unavailable.empty())
-    result.message = "Auto unavailable: " + unavailable + ". Using automatic lens fitting.";
-  else if (first) {
-    result.camera = first->camera;
-    result.detected = true;
-    result.message = "Auto: " + first->model + " / " + first->mode + " / " + first->stabilization +
-        ". Shared lens values loaded from all source chapters.";
+    return finish(
+        "Warning: camera/chapter metadata differs; using shared baseline defaults. Match recording modes or select manual values");
+  if (!unavailable.empty())
+    return finish(unavailable);
+  if (!first)
+    return finish("No supported recording metadata");
+  const auto* profile = matching_profile(*first, profiles);
+  const std::string profile_source = profile ? "Mode profile: " + profile->display_name : "";
+  if (fallback.automatic_lens()) {
+    if (all_lens) {
+      result.camera.input_lens = first->camera.input_lens;
+      result.lens_message = "MP4 metadata";
+      result.detected = true;
+    } else if (profile) {
+      result.camera.input_lens = profile->input_lens;
+      result.lens_message = profile_source;
+    } else if (!first->unavailable_reason.empty()) {
+      result.lens_message += " (" + first->unavailable_reason + "; no verified mode match)";
+    }
   }
-  return result;
+  if (fallback.automatic_fov()) {
+    // Paired metadata/profile parameters must stay paired when available. An
+    // independent physical angle is converted to the actually selected model.
+    if (profile) {
+      try {
+        result.camera.horizontal_fov = result.camera.input_lens == profile->input_lens
+            ? profile->horizontal_fov
+            : hugin_fov(
+                  hugin_fov(profile->horizontal_fov, first->width, first->height, profile->input_lens, true),
+                  first->width,
+                  first->height,
+                  result.camera.input_lens);
+        result.camera.vertical_fov = profile->vertical_fov;
+        result.fov_message = profile_source;
+      } catch (const std::exception& error) {
+        result.fov_message += " (mode FOV cannot be combined: " + std::string(error.what()) + ")";
+      }
+    }
+    if (all_fov_h) {
+      try {
+        result.camera.horizontal_fov = all_lens && fallback.automatic_lens()
+            ? first->camera.horizontal_fov
+            : hugin_fov(*first->horizontal_fov, first->width, first->height, result.camera.input_lens);
+        std::ostringstream message;
+        message << std::fixed << std::setprecision(2) << "MP4 horizontal coverage " << *first->horizontal_fov << "°";
+        if (std::abs(*first->horizontal_fov - result.camera.horizontal_fov) > 0.005)
+          message << " (calibration FOV " << result.camera.horizontal_fov << "° with this correction)";
+        result.fov_message = message.str();
+        result.detected = true;
+      } catch (const std::exception& error) {
+        result.fov_message += " (MP4 FOV cannot be combined: " + std::string(error.what()) + ")";
+      }
+    } else if (all_lens && fallback.automatic_lens()) {
+      result.camera.horizontal_fov = first->camera.horizontal_fov;
+      result.fov_message = "MP4 lens model (axis FOV not recorded separately)";
+    }
+    if (all_fov_v) {
+      result.camera.vertical_fov = *first->vertical_fov;
+      std::ostringstream message;
+      message << std::fixed << std::setprecision(2) << "; MP4 vertical coverage " << *first->vertical_fov << "°";
+      result.fov_message += message.str();
+      result.detected = true;
+    } else {
+      result.fov_message += "; vertical FOV from " + (profile ? profile_source : "baseline default");
+    }
+  }
+  return finish();
 }
 } // namespace hm::stitching

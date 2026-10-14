@@ -64,6 +64,15 @@ def model_pixel(camera, conversion, x, y):
 
 
 class LensConversionTest(unittest.TestCase):
+    def test_metadata_modes_have_identical_geometry_and_qualified_rates(self):
+        records = catalog.read_catalog(ROOT / "configs/camera-lenses/catalog.json")
+        modes = [r for r in records if r.get("metadata_match")]
+        self.assertEqual(sum(len(r["metadata_match"]["frame_rate"]) for r in modes), 20)
+        for record in modes:
+            self.assertEqual(record["metadata_match"]["horizon"], "Off")
+            self.assertEqual(record["metadata_match"]["zoom"], "1")
+            self.assertTrue(record["equivalent_identifiers"])
+
     def test_ideal_fisheye_and_source_center_semantics(self):
         camera = catalog.effective_camera(source_profile(), {})
         self.assertEqual((camera["cx"], camera["cy"]), (960, 540))

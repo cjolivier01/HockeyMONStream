@@ -449,7 +449,7 @@ class HStreamWindow : public QMainWindow {
       const YAML::Node& config) const;
   absl::StatusOr<hm::stitching::StitchProjectionFraming> stitchProjectionFramingFromGameConfig(
       const YAML::Node& config) const;
-  void applyCameraConfigurationDefaults();
+  void applyCameraConfigurationDefaults(bool reset_defaults = true);
   QString stitchProjection() const;
   std::vector<double> stitchProjectionParameters() const;
   hm::stitching::StitchProjectionFraming stitchProjectionFraming() const;
@@ -603,6 +603,8 @@ class HStreamWindow : public QMainWindow {
   QComboBox* mapping_backend_combo_{nullptr};
   InputLensWidget* input_lens_widget_{nullptr};
   QComboBox* camera_configuration_combo_{nullptr};
+  QCheckBox* camera_auto_fov_check_{nullptr};
+  QLabel* camera_fov_source_label_{nullptr};
   QDoubleSpinBox* camera_horizontal_fov_spin_{nullptr};
   QDoubleSpinBox* camera_vertical_fov_spin_{nullptr};
   QComboBox* projection_combo_{nullptr};

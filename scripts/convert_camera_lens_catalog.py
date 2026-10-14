@@ -405,6 +405,49 @@ def read_catalog(manifest_path):
         )
         source = json.loads(raw)
         camera = effective_camera(source, recipe)
+        equivalent_rates = set()
+        for identifier in recipe.get("equivalent_identifiers", []):
+            alternate = dict(recipe)
+            alternate.pop("compatible_identifier", None)
+            if identifier != source.get("identifier"):
+                alternate["compatible_identifier"] = identifier
+            equivalent = effective_camera(source, alternate)
+            equivalent_rates.add(f"{equivalent['fps']:.3f}")
+            for key in ("width", "height", "fx", "fy", "cx", "cy", "coefficients"):
+                require(
+                    equivalent[key] == camera[key],
+                    "Mode equivalence changes lens geometry",
+                )
+        if recipe.get("metadata_match"):
+            match = recipe["metadata_match"]
+            require(
+                source.get("camera_brand") == "GoPro",
+                "Unqualified metadata match vendor",
+            )
+            stabilization = (
+                "HS EIS" if camera["identifier"].endswith("-hseis") else ["N/A", "Off"]
+            )
+            require(
+                camera["identifier"].endswith(("-hseis", "-no-eis")),
+                "Unqualified stabilization mode",
+            )
+            expected = {
+                "vendor": "gopro",
+                "model": source["camera_model"],
+                "width": str(camera["width"]),
+                "height": str(camera["height"]),
+                "frame_rate": sorted(equivalent_rates),
+                "digital_lens": "W",
+                "stabilization": stabilization,
+                "horizon": "Off",
+                "zoom": "1",
+                "projection": "GPRO",
+                "warp": "identity",
+            }
+            require(
+                equivalent_rates and match == expected,
+                "Metadata match is not backed by equivalent source modes",
+            )
         result = convert(camera, recipe["projection"])
         source_path = recipe["source_path"]
         require(
@@ -445,6 +488,10 @@ def render(records):
                 f"      # Source: {record['source_file']}; {camera['identifier'] or camera['source_name']}",
             ]
         )
+        if record.get("metadata_match"):
+            lines.append("      metadata_match:")
+            for key, value in record["metadata_match"].items():
+                lines.append(f"        {key}: {json.dumps(value)}")
         for line in record["notes"].splitlines():
             lines.append(f"      # {line}")
         lines.extend(

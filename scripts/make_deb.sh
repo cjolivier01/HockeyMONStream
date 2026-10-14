@@ -520,6 +520,16 @@ package_elfs+=("${STAGING}${INSTALL_PREFIX}/lib/libnvdsinfer_custom_impl_Yolo.so
 # ---------- configs ----------
 echo "[make_deb] Staging configs..."
 cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
+# Camera defaults are read from baseline.yaml at runtime. Keep the catalog's
+# source profiles and license with it in every Debian payload (including WSL).
+for camera_config in baseline.yaml camera-lenses/catalog.json camera-lenses/LICENSE-CC0; do
+  if [[ ! -s "${STAGING}${INSTALL_PREFIX}/configs/${camera_config}" ]]; then
+    echo "ERROR: camera calibration data missing from package: ${camera_config}" >&2
+    exit 1
+  fi
+done
+cmp "${TOPDIR}/configs/baseline.yaml" "${STAGING}${INSTALL_PREFIX}/configs/baseline.yaml"
+diff -qr "${TOPDIR}/configs/camera-lenses" "${STAGING}${INSTALL_PREFIX}/configs/camera-lenses"
 # Remove the systemd unit files — those belong to a separate package/install step
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 # Source checkouts keep native models in a per-user cache. Installed configs
