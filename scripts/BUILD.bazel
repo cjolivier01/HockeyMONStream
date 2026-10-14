@@ -173,6 +173,7 @@ py_test(
 py_test(
     name = "convert_camera_lens_catalog_test",
     size = "small",
+    imports = ["."],
     srcs = [
         "convert_camera_lens_catalog.py",
         "convert_camera_lens_catalog_test.py",
