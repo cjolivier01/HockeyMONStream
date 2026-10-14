@@ -1,15 +1,25 @@
 #include "src/apps/hstream-ui/InputLensWidget.h"
 
 #include <QtCore/QSignalBlocker>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QLabel>
 
-InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Input lens", parent) {
+InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens correction", parent) {
   setObjectName("stitchInputLensControls");
   setToolTip("Shared source-camera optics. Non-default correction requires the NONA mapping backend.");
   auto* layout = new QFormLayout(this);
+  automatic_ = new QCheckBox("Auto lens correction", this);
+  automatic_->setObjectName("inputLensAutoCheck");
+  automatic_->setToolTip(
+      "Use compatible MP4 calibration, then a verified recording-mode profile, then baseline defaults. Independent of Auto camera FOV.");
+  layout->addRow(automatic_);
+  connect(automatic_, &QCheckBox::toggled, this, [this]() {
+    if (automationChanged)
+      automationChanged();
+  });
   metadata_status_ = new QLabel(this);
   metadata_status_->setObjectName("inputLensMetadataStatus");
   metadata_status_->setWordWrap(true);
@@ -89,10 +99,16 @@ void InputLensWidget::setLens(const hm::stitching::StitchInputLens& lens) {
 }
 
 void InputLensWidget::setMetadataStatus(const QString& message, bool automatic) {
+  const QSignalBlocker blocker(automatic_);
+  automatic_->setChecked(automatic);
   metadata_status_->setText(message);
   metadata_status_->setVisible(!message.isEmpty());
   projection_->setEnabled(!automatic);
   optimization_->setEnabled(!automatic);
   for (auto* parameter : parameters_)
     parameter->setReadOnly(automatic);
+}
+
+bool InputLensWidget::automatic() const {
+  return automatic_->isChecked();
 }

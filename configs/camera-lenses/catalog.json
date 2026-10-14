@@ -1,0 +1,182 @@
+{
+  "upstream_repository": "https://github.com/gyroflow/lens_profiles",
+  "upstream_revision": "886fc616c9c2c788856f54c21d451b9cb7fc4f44",
+  "profiles": [
+    {
+      "id": "gopro-hero11-wide-4k60-off-measured",
+      "display_name": "GoPro HERO11 Black (4K Wide, HS Off, measured)",
+      "source_file": "hero11-wide-16by9.json",
+      "source_path": "GoPro/GoPro_HERO11 Black_Wide_16by9.json",
+      "source_sha256": "2e2e6fee5b7de76784011d2582e41b8a1e6a57abad4eee6d9194c40c2bf631be",
+      "projection": "full-frame-fisheye",
+      "notes": "3840x2160 at 59.94 fps. Wide, HyperSmooth Off; no digital zoom or lens mod. Firmware not specified by source. Equivalent frame rates are explicitly listed by the pinned source and recorded in metadata_match.",
+      "compatible_identifier": "gopro-hero11black-wide-3840x2160@59940-no-eis",
+      "equivalent_identifiers": [
+        "gopro-hero11black-wide-3840x2160@100000-no-eis",
+        "gopro-hero11black-wide-3840x2160@23976-no-eis",
+        "gopro-hero11black-wide-3840x2160@25000-no-eis",
+        "gopro-hero11black-wide-3840x2160@29970-no-eis",
+        "gopro-hero11black-wide-3840x2160@50000-no-eis",
+        "gopro-hero11black-wide-3840x2160@59940-no-eis",
+        "gopro-hero11black-wide-3840x2160@119880-no-eis"
+      ],
+      "metadata_match": {
+        "vendor": "gopro",
+        "model": "HERO11 Black",
+        "width": "3840",
+        "height": "2160",
+        "frame_rate": [
+          "100.000",
+          "119.880",
+          "23.976",
+          "25.000",
+          "29.970",
+          "50.000",
+          "59.940"
+        ],
+        "digital_lens": "W",
+        "stabilization": [
+          "N/A",
+          "Off"
+        ],
+        "horizon": "Off",
+        "zoom": "1",
+        "projection": "GPRO",
+        "warp": "identity"
+      }
+    },
+    {
+      "id": "gopro-hero11-wide-4k60-hs-measured",
+      "display_name": "GoPro HERO11 Black (4K Wide, HS On, measured)",
+      "source_file": "hero11-wide-16by9.json",
+      "source_path": "GoPro/GoPro_HERO11 Black_Wide_16by9.json",
+      "source_sha256": "2e2e6fee5b7de76784011d2582e41b8a1e6a57abad4eee6d9194c40c2bf631be",
+      "projection": "full-frame-fisheye",
+      "notes": "3840x2160 at 59.94 fps. Wide, standard HS EIS; explicit upstream crop 0.928. Not AutoBoost, horizon lock, digital zoom or lens mods. Firmware not specified. Equivalent frame rates are explicitly listed by the pinned source and recorded in metadata_match.",
+      "compatible_identifier": "gopro-hero11black-wide-3840x2160@59940-hseis",
+      "equivalent_identifiers": [
+        "gopro-hero11black-wide-3840x2160@100000-hseis",
+        "gopro-hero11black-wide-3840x2160@119880-hseis",
+        "gopro-hero11black-wide-3840x2160@23976-hseis",
+        "gopro-hero11black-wide-3840x2160@25000-hseis",
+        "gopro-hero11black-wide-3840x2160@29970-hseis",
+        "gopro-hero11black-wide-3840x2160@50000-hseis",
+        "gopro-hero11black-wide-3840x2160@59940-hseis"
+      ],
+      "metadata_match": {
+        "vendor": "gopro",
+        "model": "HERO11 Black",
+        "width": "3840",
+        "height": "2160",
+        "frame_rate": [
+          "100.000",
+          "119.880",
+          "23.976",
+          "25.000",
+          "29.970",
+          "50.000",
+          "59.940"
+        ],
+        "digital_lens": "W",
+        "stabilization": "HS EIS",
+        "horizon": "Off",
+        "zoom": "1",
+        "projection": "GPRO",
+        "warp": "identity"
+      }
+    },
+    {
+      "id": "gopro-hero11-wide-53k30-off-measured",
+      "display_name": "GoPro HERO11 Black (5.3K 8:7 Wide, HS Off, measured)",
+      "source_file": "hero11-wide-8by7.json",
+      "source_path": "GoPro/GoPro_HERO11 Black_Wide_8by7.json",
+      "source_sha256": "cc8ca46c79c55d7033f9bdd9e2946a4807c08b715ea27fcc40253f7ca33355e3",
+      "projection": "full-frame-fisheye",
+      "notes": "5312x4648 at 29.97 fps. Wide, HyperSmooth Off; no digital zoom or lens mod. Firmware not specified by source. Equivalent frame rates are explicitly listed by the pinned source and recorded in metadata_match.",
+      "equivalent_identifiers": [
+        "gopro-hero11black-wide-5312x4648@25000-no-eis",
+        "gopro-hero11black-wide-5312x4648@23976-no-eis",
+        "gopro-hero11black-wide-5312x4648@29970-no-eis"
+      ],
+      "metadata_match": {
+        "vendor": "gopro",
+        "model": "HERO11 Black",
+        "width": "5312",
+        "height": "4648",
+        "frame_rate": [
+          "23.976",
+          "25.000",
+          "29.970"
+        ],
+        "digital_lens": "W",
+        "stabilization": [
+          "N/A",
+          "Off"
+        ],
+        "horizon": "Off",
+        "zoom": "1",
+        "projection": "GPRO",
+        "warp": "identity"
+      }
+    },
+    {
+      "id": "gopro-hero11-wide-53k30-hs-measured",
+      "display_name": "GoPro HERO11 Black (5.3K 8:7 Wide, HS On, measured)",
+      "source_file": "hero11-wide-8by7.json",
+      "source_path": "GoPro/GoPro_HERO11 Black_Wide_8by7.json",
+      "source_sha256": "cc8ca46c79c55d7033f9bdd9e2946a4807c08b715ea27fcc40253f7ca33355e3",
+      "projection": "full-frame-fisheye",
+      "notes": "5312x4648 at 29.97 fps. Wide, standard HS EIS; explicit upstream crop 0.918. Not AutoBoost, horizon lock, digital zoom or lens mods. Firmware not specified. Equivalent frame rates are explicitly listed by the pinned source and recorded in metadata_match.",
+      "compatible_identifier": "gopro-hero11black-wide-5312x4648@29970-hseis",
+      "equivalent_identifiers": [
+        "gopro-hero11black-wide-5312x4648@29970-hseis",
+        "gopro-hero11black-wide-5312x4648@25000-hseis",
+        "gopro-hero11black-wide-5312x4648@23976-hseis"
+      ],
+      "metadata_match": {
+        "vendor": "gopro",
+        "model": "HERO11 Black",
+        "width": "5312",
+        "height": "4648",
+        "frame_rate": [
+          "23.976",
+          "25.000",
+          "29.970"
+        ],
+        "digital_lens": "W",
+        "stabilization": "HS EIS",
+        "horizon": "Off",
+        "zoom": "1",
+        "projection": "GPRO",
+        "warp": "identity"
+      }
+    },
+    {
+      "id": "dji-osmo-action-wide-4k30-off-measured",
+      "display_name": "DJI Osmo Action 1 (4K 29.97 Wide, EIS/dewarp Off, measured)",
+      "source_file": "osmo-action-wide-4k.json",
+      "source_path": "DJI/DJI_Osmo Action 1_Default_Wide angle, No Rocksteady or dewarp_4k_16by9_3840x2160-29.97fps.json",
+      "source_sha256": "ddbc6b2d4dd4d1e419ca30928b7fd1ac4254a510fbeeb37a2f0fd45c0401f00d",
+      "projection": "full-frame-fisheye",
+      "notes": "3840x2160 at 29.97003 fps. Original Osmo Action only; Wide, RockSteady Off, dewarp Off. Firmware not specified. Not Action 3/4/5."
+    },
+    {
+      "id": "insta-one-rs-ultrawide-53k25-off-measured",
+      "display_name": "Insta360 ONE RS (5.3K25 UltraWide 110, EIS Off, module unknown, measured)",
+      "source_file": "insta-one-rs-ultrawide-53k.json",
+      "source_path": "Insta360/Insta360_OneRS_Ultrawide 110_NO-EIS_5k_16by9_5312x2988-25.00fps (2).json",
+      "source_sha256": "cc99f7c1543fa820d8743f16031149bb9fbf570fb91496472a331c8dd0e110f6",
+      "projection": "full-frame-fisheye",
+      "notes": "5312x2988 at 25 fps. ONE RS, UltraWide 110, NO-EIS, no SuperView. Source does not identify interchangeable lens module or firmware; experimental starting point. Not Ace Pro 2."
+    },
+    {
+      "id": "iphone13pro-ultrawide-1080p30-off-measured",
+      "display_name": "iPhone 13 Pro (1080p30 13mm, stabilization Off, app unknown, measured)",
+      "source_file": "iphone13pro-ultrawide-1080p.json",
+      "source_path": "Mobile phones/Apple/Apple_iPhone 13 Pro_13mm_no stabilisation_1080p_16by9_1920x1080-30.01fps.json",
+      "source_sha256": "05e8ce821d734e0f49a7c716844c03c56f3079ce1d24f93780c1e5c7244be0be",
+      "projection": "rectilinear",
+      "notes": "1920x1080 at 30.005781 fps. Built-in 13mm ultrawide, no stabilization. Recording app and firmware unspecified: experimental starting point; verify crop and zoom."
+    }
+  ]
+}

@@ -18,6 +18,11 @@ struct VideoLensMetadata {
   // Camera/settings remain available for mismatch warnings even when its warp
   // cannot be represented by the shared Hugin model.
   std::string unavailable_reason;
+  // Coverage in the recorded pixels, independent of Hugin representability.
+  std::optional<double> horizontal_fov;
+  std::optional<double> vertical_fov;
+  std::string fov_unavailable_reason;
+  std::map<std::string, std::string> recording_mode;
 };
 
 // Bounded MP4 header/trailer and first DJI metadata sample reads only.
@@ -38,6 +43,8 @@ struct AutoInputLensResult {
   std::string message;
   bool detected{false};
   bool mismatch{false};
+  std::string fov_message;
+  std::string lens_message;
 };
 
 // Inspects every selected chapter. Only agrees to a shared prescription when
@@ -45,6 +52,7 @@ struct AutoInputLensResult {
 // leaves automatic fitting in use, with a visible reason for the operator.
 AutoInputLensResult ResolveAutoInputLens(
     const std::vector<std::filesystem::path>& videos,
-    const StitchCameraSelection& fallback);
+    const StitchCameraSelection& fallback,
+    const std::vector<StitchCameraConfiguration>& profiles = {});
 
 } // namespace hm::stitching

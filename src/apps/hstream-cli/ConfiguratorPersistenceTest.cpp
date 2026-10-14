@@ -5610,6 +5610,7 @@ play-tracker:
     if (lens_case == 1)
       old_camera.configuration = "gopro-mission-1";
     hm::stitching::write_stitch_camera_selection(saved, old_camera);
+    saved["stitching"].remove("camera_automation"); // Pre-independent-policy recordings.
     if (lens_case == 6)
       saved["stitching"]["camera_config"] = YAML::Node(YAML::NodeType::Null);
     saved["stitching"]["auto_input_lens_frozen"] = lens_case != 0;
@@ -5648,6 +5649,37 @@ play-tracker:
     ok &= expect(persisted,
                  "Auto must resolve before reframing, honor CLI refresh, and retain explicit frozen/manual optics");
   }
+
+  // A higher-layer choice for one component must not release the other
+  // component's inherited legacy manual intent.
+  for (int policy_case = 0; policy_case < 3; ++policy_case) {
+    const std::string name = "independent-camera-policy-" + std::to_string(policy_case);
+    const auto directory = games / name;
+    fs::create_directories(directory);
+    auto legacy_user = YAML::Clone(user_overlay);
+    legacy_user["stitching"]["camera_fov"]["horizontal_fov"] = 117;
+    std::ofstream(user_config_path) << YAML::Dump(legacy_user) << '\n';
+    YAML::Node saved;
+    saved["pipeline"]["application"]["complete-configuration"] = 1;
+    saved["pipeline"]["hmstitcher"]["enable"] = 1;
+    saved["pipeline"]["hmstitcher"]["one-pass-mode"] = 1;
+    saved["stitching"]["mapping_backend"] = "opencv-magsac";
+    saved["stitching"]["projection"] = "rectilinear";
+    saved["stitching"]["run_autooptimizer"] = false;
+    if (policy_case == 2)
+      saved["stitching"]["camera_config"] = "auto";
+    else
+      saved["stitching"]["camera_automation"][policy_case == 0 ? "fov" : "lens"] = true;
+    std::ofstream(directory / "config.yaml") << YAML::Dump(saved) << '\n';
+    hm::Configurator policy_config(name, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    ok &= expect(policy_config.configure().ok(), "Layered optics policies must load");
+    (void)policy_config.complete_configuration(false, false, false, name);
+    const auto camera = hm::stitching::read_stitch_camera_selection(policy_config.config());
+    ok &= expect(
+        camera.ok() && camera->automatic_fov() == (policy_case != 1) && camera->automatic_lens() == (policy_case != 0),
+        "Partial policies preserve the other legacy manual component; an explicit Auto selector releases both");
+  }
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
 
   const fs::path runtime_claim_dir = games / "runtime-claim";
   {

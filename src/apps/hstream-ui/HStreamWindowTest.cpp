@@ -165,6 +165,9 @@ struct HStreamWindowTestAccess {
   static hm::stitching::StitchCameraSelection defaultCameraSelection(HStreamWindow* window) {
     return window->default_camera_selection_;
   }
+  static int cameraConfigurationCount(HStreamWindow* window) {
+    return static_cast<int>(window->camera_configurations_.size());
+  }
   static absl::StatusOr<hm::stitching::StitchCameraSelection> cameraSelection(
       HStreamWindow* window, const YAML::Node& config) {
     return window->stitchCameraSelectionFromGameConfig(config);
@@ -4124,9 +4127,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitched_controls_splitter->orientation() == Qt::Horizontal &&
               control_point_matcher_label->text() == "Control-point matcher" &&
               mapping_backend_label->text() == "Mapping backend" &&
-              camera_configuration_label->text() == "Camera configuration" &&
+              camera_configuration_label->text() == "Camera / recording-mode defaults" &&
               camera_horizontal_fov_label->text() == "Camera horizontal FOV" &&
-              camera_vertical_fov_label->text() == "Camera vertical FOV" && camera_configuration->count() == 6 &&
+              camera_vertical_fov_label->text() == "Camera vertical FOV" &&
+              camera_configuration->count() == HStreamWindowTestAccess::cameraConfigurationCount(window) &&
               camera_configuration->findData("auto") >= 0 && camera_configuration->findData("manual") >= 0 &&
               camera_configuration->findData("gopro-hero-11") >= 0 &&
               camera_configuration->findData("gopro-mission-1") >= 0 &&
@@ -4137,7 +4141,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               camera_horizontal_fov->value() ==
                   HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
               camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov &&
-              projection_label->text() == "Output projection" &&
+              projection_label->text() == "Panorama projection" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
               clean_stitching->text() == "Clean Stitching" && stitch_frame_time->isEnabled() &&
@@ -9522,7 +9526,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   game_id->setText("ui-projection-parameters-game");
   activate(create);
   const bool camera_defaults_available = expect(
-      camera_configuration->count() == 6 && camera_configuration->currentData().toString() == "auto" &&
+      camera_configuration->count() == HStreamWindowTestAccess::cameraConfigurationCount(window) &&
+          camera_configuration->currentData().toString() == "auto" &&
           camera_horizontal_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
           camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov,
       "A new game must expose all camera presets and select Auto");
@@ -9666,6 +9671,37 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(!input_b->isReadOnly() && !camera_horizontal_fov->isReadOnly() && input_projection->isEnabled(),
               "Manual camera profiles must restore editable optics after Auto"))
     return false;
+
+  auto* camera_auto = require_child<QCheckBox>(window, "cameraAutoFovCheck");
+  auto* lens_auto = require_child<QCheckBox>(window, "inputLensAutoCheck");
+  if (!camera_auto || !lens_auto)
+    return false;
+  for (bool fov_automatic : {true, false}) {
+    camera_auto->setChecked(fov_automatic);
+    lens_auto->setChecked(!fov_automatic);
+    const bool panorama_auto = auto_fov->isChecked();
+    if (!expect(
+            camera_horizontal_fov->isReadOnly() == fov_automatic && input_b->isReadOnly() == !fov_automatic &&
+                save->isEnabled(),
+            "FOV and correction automation must independently control editability and dirty state"))
+      return false;
+    activate(save);
+    activate(create);
+    const auto independent = HStreamWindowTestAccess::cameraSelection(window, YAML::LoadFile(config_path.string()));
+    if (!expect(
+            independent.ok() && independent->automatic_fov() == fov_automatic &&
+                independent->automatic_lens() == !fov_automatic && camera_auto->isChecked() == fov_automatic &&
+                lens_auto->isChecked() == !fov_automatic && auto_fov->isChecked() == panorama_auto &&
+                !save->isEnabled(),
+            "Independent camera sources must survive save/reopen without changing panorama fitting")) {
+      std::cerr << "expected Auto FOV=" << fov_automatic
+                << ", saved=" << (independent.ok() ? independent->automatic_fov() : -1) << "/"
+                << (independent.ok() ? independent->automatic_lens() : -1) << ", controls=" << camera_auto->isChecked()
+                << "/" << lens_auto->isChecked() << ", panorama=" << auto_fov->isChecked() << "/" << panorama_auto
+                << ", dirty=" << save->isEnabled() << '\n';
+      return false;
+    }
+  }
 
   YAML::Node inherited_rink_config = YAML::Clone(config);
   inherited_rink_config["stitching"]["rink_config"] = "vallco";
@@ -14983,6 +15019,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     copied_config_node["stitching"]["projection"] = "general-panini";
     copied_config_node["stitching"].remove("projection_parameters");
     copied_config_node["stitching"]["camera_config"] = "manual";
+    copied_config_node["stitching"].remove("camera_automation");
     copied_config_node["stitching"]["camera_fov"]["horizontal_fov"] = 126.1234;
     copied_config_node["stitching"]["camera_fov"]["vertical_fov"] = 84.9876;
     copied_config_node["stitching"]["projection_framing"] =
@@ -15303,6 +15340,34 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     }
     // The temporary structural file is removed after this block.
     std::ofstream(copied_config) << "{}\n";
+  }
+  for (const char* profile : {"auto", "gopro-hero-11"}) {
+    for (bool auto_fov : {false, true}) {
+      YAML::Node optics_defaults;
+      optics_defaults["stitching"]["camera_config"] = profile;
+      optics_defaults["stitching"]["camera_automation"]["fov"] = auto_fov;
+      optics_defaults["stitching"]["camera_automation"]["lens"] = !auto_fov;
+      optics_defaults["stitching"]["camera_fov"]["horizontal_fov"] = 119;
+      std::ofstream(QDir(user_config_directory).filePath("hstream.yaml").toStdString()) << optics_defaults << '\n';
+      HStreamWindow optics_window;
+      auto* id = require_child<QLineEdit>(&optics_window, "gameIdEdit");
+      id->setText("ui-user-stitch-default");
+      activate(require_child<QPushButton>(&optics_window, "createGameButton"));
+      auto* camera = require_child<QComboBox>(&optics_window, "stitchCameraConfigurationCombo");
+      auto* fov = require_child<QCheckBox>(&optics_window, "cameraAutoFovCheck");
+      auto* lens = require_child<QCheckBox>(&optics_window, "inputLensAutoCheck");
+      fov->setChecked(!auto_fov);
+      lens->setChecked(auto_fov);
+      camera->setProperty("autoInputLensFrozen", true);
+      activate(require_child<QPushButton>(&optics_window, "resetCameraButton"));
+      ok &= expect(
+          camera->currentData().toString() == profile && fov->isChecked() == auto_fov &&
+              lens->isChecked() == !auto_fov && !camera->property("autoInputLensFrozen").toBool() &&
+              require_child<QDoubleSpinBox>(&optics_window, "cameraHorizontalFovSpin")->isReadOnly() == auto_fov &&
+              require_child<QDoubleSpinBox>(&optics_window, "inputLensBSpin")->isReadOnly() == !auto_fov &&
+              (auto_fov || require_child<QDoubleSpinBox>(&optics_window, "cameraHorizontalFovSpin")->value() == 119),
+          "Reset restores independent user optics defaults and releases snapshots even when the selector is unchanged");
+    }
   }
   baseline["stitching"].remove("mapping_backend");
   baseline["stitching"].remove("run_autooptimizer");

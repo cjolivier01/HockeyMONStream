@@ -77,7 +77,7 @@ absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config
       return baseline.status();
     YAML::Node camera_config = YAML::Clone(baseline->values);
     const YAML::Node stitching = config["stitching"];
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation"}) {
       if (stitching && stitching.IsMap() && stitching[key] && !stitching[key].IsNull())
         camera_config["stitching"][key] = YAML::Clone(stitching[key]);
     }
@@ -840,6 +840,56 @@ absl::StatusOr<std::vector<StitchCameraConfiguration>> read_stitch_camera_config
             "stitching.camera_configs." + id + ".vertical_fov must be finite and between 0 and 180 degrees");
       }
       HM_ASSIGN_OR_RETURN(camera.input_lens, ReadStitchInputLens(entry.second["input_lens"]));
+      const auto match = entry.second["metadata_match"];
+      if (match && !match.IsNull()) {
+        if (!match.IsMap())
+          return absl::InvalidArgumentError("camera metadata_match must be a map");
+        static const std::set<std::string> supported = {
+            "vendor",
+            "model",
+            "width",
+            "height",
+            "frame_rate",
+            "digital_lens",
+            "stabilization",
+            "horizon",
+            "zoom",
+            "projection",
+            "firmware",
+            "lens_id",
+            "warp"};
+        for (const auto& field : match) {
+          if (!field.first.IsScalar() || (!field.second.IsScalar() && !field.second.IsSequence()) ||
+              !supported.count(field.first.as<std::string>()))
+            return absl::InvalidArgumentError("Invalid camera metadata_match constraint");
+          std::vector<std::string> values;
+          if (field.second.IsScalar())
+            values.push_back(field.second.as<std::string>());
+          else
+            for (const auto& value : field.second) {
+              if (!value.IsScalar())
+                return absl::InvalidArgumentError("Camera metadata alternatives must be scalars");
+              values.push_back(value.as<std::string>());
+            }
+          if (values.empty() || std::any_of(values.begin(), values.end(), [](const auto& v) { return v.empty(); }))
+            return absl::InvalidArgumentError("Camera metadata alternatives cannot be empty");
+          camera.metadata_match.emplace(field.first.as<std::string>(), std::move(values));
+        }
+        for (const char* required :
+             {"vendor",
+              "model",
+              "width",
+              "height",
+              "frame_rate",
+              "digital_lens",
+              "stabilization",
+              "horizon",
+              "zoom",
+              "projection",
+              "warp"})
+          if (!camera.metadata_match.count(required))
+            return absl::InvalidArgumentError(std::string("Incomplete camera metadata_match: ") + required);
+      }
       result.push_back(std::move(camera));
     }
     if (result.empty())
@@ -910,6 +960,21 @@ absl::StatusOr<StitchCameraSelection> read_stitch_camera_selection(const YAML::N
         ReadStitchInputLens(
             stitching && stitching.IsMap() ? stitching["input_lens"] : YAML::Node(),
             selected == configurations.end() ? StitchInputLens{} : selected->input_lens));
+    const auto automation = stitching && stitching.IsMap() ? stitching["camera_automation"] : YAML::Node();
+    if (automation && !automation.IsNull()) {
+      if (!automation.IsMap())
+        return absl::InvalidArgumentError("stitching.camera_automation must be a map");
+      for (const auto& entry : automation) {
+        if (!entry.first.IsScalar() ||
+            (entry.first.as<std::string>() != "fov" && entry.first.as<std::string>() != "lens"))
+          return absl::InvalidArgumentError("Unknown camera_automation key");
+        if (entry.second.IsNull())
+          continue;
+        if (!entry.second.IsScalar())
+          return absl::InvalidArgumentError("camera_automation values must be booleans or null");
+        (entry.first.as<std::string>() == "fov" ? result.auto_fov : result.auto_lens) = entry.second.as<bool>();
+      }
+    }
     return result;
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching camera selection: " + std::string(exception.what()));
@@ -922,6 +987,10 @@ void write_stitch_camera_selection(YAML::Node& config, const StitchCameraSelecti
   config["stitching"]["camera_fov"]["vertical_fov"] = selection.vertical_fov;
   // Write the default too, so a game can override a user-level lens correction.
   config["stitching"]["input_lens"] = WriteStitchInputLens(selection.input_lens);
+  config["stitching"]["camera_automation"]["fov"] =
+      selection.auto_fov ? YAML::Node(*selection.auto_fov) : YAML::Node(YAML::NodeType::Null);
+  config["stitching"]["camera_automation"]["lens"] =
+      selection.auto_lens ? YAML::Node(*selection.auto_lens) : YAML::Node(YAML::NodeType::Null);
 }
 
 void write_stitch_projection_parameters(
@@ -2312,7 +2381,7 @@ absl::StatusOr<StitchCameraSelection> read_worker_camera_selection(const YAML::N
   const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
   if (stitching && !stitching.IsNull() && !stitching.IsMap())
     return absl::InvalidArgumentError("stitching must be a map");
-  for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
+  for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation"}) {
     const YAML::Node value = stitching && stitching.IsMap() ? stitching[key] : YAML::Node();
     if (value && value.IsDefined())
       effective["stitching"][key] = YAML::Clone(value);

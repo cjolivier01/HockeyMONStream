@@ -9,7 +9,10 @@
 namespace hm::stitching {
 namespace {
 YAML::Node child(const YAML::Node& node, const char* key) {
-  return node && node.IsMap() ? node[key] : YAML::Node();
+  if (!node || !node.IsMap())
+    return YAML::Node();
+  const auto value = node[key];
+  return value ? value : YAML::Node();
 }
 std::vector<std::filesystem::path> paths(const YAML::Node& node, const std::filesystem::path& game) {
   std::vector<std::filesystem::path> result;
@@ -44,15 +47,39 @@ bool HasManualInputLensOverrides(const YAML::Node& config) {
 }
 
 void PreserveLegacyInputLensSelection(YAML::Node& effective, const YAML::Node& layer) {
-  const auto selected = child(child(layer, "stitching"), "camera_config");
-  if ((selected && !selected.IsNull()) || !HasManualInputLensOverrides(layer))
+  const auto stitching = child(layer, "stitching");
+  const auto selected = child(stitching, "camera_config");
+  const auto automation = child(stitching, "camera_automation");
+  if (selected && selected.IsScalar()) {
+    // A higher-layer selector replaces inherited policies, just as it does in
+    // the CLI. Explicit independent choices in this layer still take priority.
+    for (const char* key : {"fov", "lens"})
+      if (!child(automation, key).IsScalar())
+        effective["stitching"]["camera_automation"][key] = YAML::Node(YAML::NodeType::Null);
+    return;
+  }
+  if (!HasManualInputLensOverrides(layer))
     return;
   const auto camera = read_stitch_camera_selection(effective);
-  if (camera.ok() && camera->configuration == "auto") {
-    auto manual = *camera;
-    manual.configuration = "manual";
-    write_stitch_camera_selection(effective, manual);
+  if (!camera.ok())
+    return;
+  auto manual = *camera;
+  const bool independent = camera->auto_fov.has_value() || camera->auto_lens.has_value();
+  if (!independent && camera->configuration == "auto") {
+    manual.configuration = "manual"; // Existing configs retain their historical meaning.
+  } else {
+    const auto fov = child(stitching, "camera_fov"), lens = child(stitching, "input_lens");
+    if (!child(automation, "fov").IsScalar() &&
+        (child(fov, "horizontal_fov").IsScalar() || child(fov, "vertical_fov").IsScalar()))
+      manual.auto_fov = false;
+    if (!child(automation, "lens").IsScalar())
+      for (const char* key : {"projection", "optimization", "distortion", "center_offset"}) {
+        const auto value = child(lens, key);
+        if (value && !value.IsNull())
+          manual.auto_lens = false;
+      }
   }
+  write_stitch_camera_selection(effective, manual);
 }
 
 AutoInputLensResult ReadAutoInputLensForGame(
@@ -62,13 +89,17 @@ AutoInputLensResult ReadAutoInputLensForGame(
     bool force_video_discovery,
     bool live_sources) {
   AutoInputLensResult result{selection, ""};
-  if (selection.configuration != "auto")
+  result.fov_message = "Manual / selected profile";
+  result.lens_message = "Manual / selected profile";
+  if (!selection.automatic_fov() && !selection.automatic_lens())
     return result;
   try {
     const auto stitching = child(config, "stitching");
     const auto frozen = child(stitching, "auto_input_lens_frozen");
     if (frozen && frozen.IsScalar() && frozen.as<bool>()) {
-      result.message = "Auto: using the saved experiment lens snapshot.";
+      result.message = "Auto: using the saved experiment optics snapshot.";
+      result.fov_message = "Saved experiment snapshot";
+      result.lens_message = "Saved experiment snapshot";
       return result;
     }
     auto fallback = selection;
@@ -76,19 +107,32 @@ AutoInputLensResult ReadAutoInputLensForGame(
     if (!profiles.ok())
       throw std::runtime_error(profiles.status().ToString());
     for (const auto& profile : *profiles)
-      if (profile.id == "auto")
-        fallback = {profile.id, profile.horizontal_fov, profile.vertical_fov, profile.input_lens};
+      if (profile.id == selection.configuration) {
+        if (selection.automatic_fov()) {
+          fallback.horizontal_fov = profile.horizontal_fov;
+          fallback.vertical_fov = profile.vertical_fov;
+        }
+        if (selection.automatic_lens())
+          fallback.input_lens = profile.input_lens;
+      }
     result.camera = fallback;
+    result.fov_message = selection.automatic_fov() ? "Baseline default" : "Manual / selected profile";
+    result.lens_message =
+        selection.automatic_lens() ? "Baseline default / automatic fitting" : "Manual / selected profile";
     if (live_sources) {
       result.message =
-          "Auto unavailable: live cameras have no original-video lens metadata. Using automatic lens fitting.";
+          "Auto unavailable: live cameras have no original-video lens metadata. Using baseline defaults for automatic components.";
+      if (selection.automatic_fov())
+        result.fov_message = result.message;
+      if (selection.automatic_lens())
+        result.lens_message = result.message;
       return result;
     }
     const auto roles = child(child(config, "hstream_ui"), "video_roles");
     auto left = paths(child(roles, "left"), game), right = paths(child(roles, "right"), game);
     if (!left.empty() && !right.empty()) {
       left.insert(left.end(), right.begin(), right.end());
-      return ResolveAutoInputLens(left, fallback);
+      return ResolveAutoInputLens(left, fallback, *profiles);
     }
     auto discovered = get_available_videos(game.string());
     if (!discovered.ok())
@@ -127,9 +171,13 @@ AutoInputLensResult ReadAutoInputLensForGame(
         throw std::runtime_error("Auto lens import requires two selected source cameras");
     }
     left.insert(left.end(), right.begin(), right.end());
-    return ResolveAutoInputLens(left, fallback);
+    return ResolveAutoInputLens(left, fallback, *profiles);
   } catch (const std::exception& error) {
-    result.message = "Auto unavailable: " + std::string(error.what()) + ". Using automatic lens fitting.";
+    result.message = "Auto unavailable: " + std::string(error.what()) + ". Using baseline defaults.";
+    if (selection.automatic_fov())
+      result.fov_message = result.message;
+    if (selection.automatic_lens())
+      result.lens_message = result.message;
     return result;
   }
 }

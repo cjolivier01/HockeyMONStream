@@ -132,7 +132,8 @@ bool same_settings(const StitchingExperimentSettings& left, const StitchingExper
       left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees &&
       left.control_point_resolution == right.control_point_resolution &&
       left.control_point_matcher == right.control_point_matcher &&
-      left.manual_control_points == right.manual_control_points && left.camera == right.camera;
+      left.manual_control_points == right.manual_control_points && left.camera == right.camera &&
+      (!left.camera || left.camera->same_automation(*right.camera));
 }
 
 YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {

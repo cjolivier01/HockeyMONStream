@@ -1,42 +1,62 @@
 # Automatic input lens
 
-New games select **Auto (video metadata)** in the main Stitched → Projection
-controls and Stitching Experiments. HStream reads the selected original camera
-files when loading a game, selecting Auto or changing its imported videos.
-Compatible metadata fills the shared FOV, projection, distortion and optical
-center fields. It does not change the panorama's output projection.
+New games select **Auto (detect recording mode)** in Stitched → Projection
+and Stitching Experiments. The **Input cameras — shared calibration** section
+separates two independent controls:
 
-Both cameras and every selected chapter must agree. A different resolution,
-mode, stabilization setting or lens prescription produces a warning and keeps
-the Auto profile's fallback (rectilinear, automatic lens fitting by default).
-Missing or unsupported metadata also explains the fallback in the input-lens
-controls and CLI log. A single camera's prescription is never silently copied
-onto an unknown second camera. Equal camera bodies alone are insufficient. Live V4L2/CSI input uses the Auto
-fallback; recordings in its game directory cannot supply unrelated live optics.
+- **Auto camera FOV** uses valid MP4 axis coverage, then a verified matching
+  recording-mode profile, then the selected profile's baseline defaults.
+- **Auto lens correction** uses a supported MP4 lens prescription, then a
+  verified matching mode profile, then the selected profile's baseline lens
+  defaults (automatic fitting for the Auto profile).
 
-Auto's imported numbers are read-only. Choose a named camera preset or **Manual
-lens settings** to edit values. Existing named profiles remain manual, and older
-explicit FOV/lens overrides without a camera name are retained as manual values.
-Explicit CLI lens/FOV overrides also retain their values. A missing or null
-camera selector does not discard older explicit optics. The `auto` profile in
-`stitching.camera_configs` supplies fallback defaults; the factory profile stays
-available for comparing Vegas against its earlier empirical Mission 1 preset.
+Either can be turned off to retain/edit that component manually. Selecting a
+named profile loads its defaults and starts with both Auto controls off;
+selecting Auto turns both on. Source descriptions report MP4, mode profile,
+baseline, manual values or a saved experiment snapshot independently. Missing
+lens coefficients no longer discard valid recorded FOV. Unsupported dynamic
+warps or ambiguous metadata still cannot establish trustworthy static coverage.
 
-Saving or playing uses the existing calibration invalidation rules when the
-resolved optics change. The input geometry, scoreboard selection and crop review
-must correspond to the rebuilt stitched canvas. Opening a game only populates
-the controls; it does not write the game configuration. The CLI resolves Auto
-before comparing with a saved alignment or persisting its calibration settings
-and generation claim. Changed optics trigger a new solve, including launches
-that also change output geometry.
+**Fit panorama to camera coverage** controls the combined stitched view. It is
+separate from both input-camera controls; one camera's FOV never sets the width
+of the whole panorama. Camera horizontal FOV is the Hugin calibration parameter.
+The source description shows physical MP4 coverage separately when distortion
+makes the values differ. A supported metadata model retains its jointly fitted
+FOV/coefficients. When physical MP4 FOV is combined with another correction, the
+resolver converts it to that correction's normalization, checking radial
+invertibility through the image corners. A failed conversion explains its
+fallback rather than applying incompatible numbers.
 
-Experiments freeze the displayed optics at candidate creation using
-`stitching.auto_input_lens_frozen`. Replays and promotion retain that snapshot,
-even if the original files are unavailable. To import again after promotion,
-select another camera profile, then Auto, or explicitly pass
-`--options=stitching.camera_config=auto` on the CLI. A normal save of other controls keeps
-the freeze intact. Releasing the snapshot remains saveable when the optics are
-unchanged, and Play saves the same policy as Save Preset.
+Both cameras and every selected chapter must agree on recording mode and
+available geometry. A mismatch warns and leaves the automatic components on
+baseline defaults; manual components are retained. Missing files never allow
+one camera's prescription to be copied onto an unknown second camera. Live
+V4L2/CSI input uses baseline defaults. Reads are bounded, cached metadata I/O;
+there is no video decoding or steady-state playback work.
+
+The independent policies are `stitching.camera_automation.fov` and `.lens`.
+Booleans explicitly select automatic/manual sources. Missing/null policies
+retain the selector's legacy behavior (Auto imports both; other profiles
+import neither). Existing legacy numerical overrides without a selector retain
+manual intent. Higher-layer CLI numerical overrides disable only their own
+automatic component when independent policies are in use; an explicit higher-
+layer selector or automation policy can request a fresh import. Native geometry
+keys `camera_fov` and `input_lens` retain their existing meanings.
+
+Saving or playing uses the existing calibration invalidation rules when resolved
+optics change. Opening a game only fills controls; it does not write the game.
+Changing source policy alone remains saveable without invalidating identical
+geometry. Experiments store both policies and freeze their resolved optics with
+`stitching.auto_input_lens_frozen`, including mixed automatic/manual selections
+under named profiles. Replay and promotion retain those values without original
+media. Toggling an Auto control or selecting a profile releases the snapshot;
+ordinary saves preserve it. CLI resolution precedes calibration generation
+claims. Recalibrated geometry requires reviewing the crop and scoreboard region.
+
+See the [camera lens catalog](camera-lens-catalog.md) for match rules, provenance
+and coverage gaps. Automatic matching requires every declared constraint to be
+present and equal; ambiguous matches and unknown recording modes use baseline
+fallbacks. Profiles with incomplete provenance remain manual choices.
 
 ## Supported metadata
 

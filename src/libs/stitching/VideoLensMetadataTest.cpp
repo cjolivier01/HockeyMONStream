@@ -48,11 +48,21 @@ Bytes tag(const char* key, char type, const Bytes& b, unsigned width = 0) {
 Bytes chars(const std::string& s) {
   return Bytes(s.begin(), s.end());
 }
-Bytes gopro(float zoom = 0.476107776165009f, const char* eis = "HS EIS", bool warp = false) {
+Bytes gopro(
+    float zoom = 0.476107776165009f,
+    const char* eis = "HS EIS",
+    bool warp = false,
+    bool prescription = true,
+    bool fov = true) {
   Bytes global, lens;
   append(global, tag("MINF", 'c', chars("MISSION 1 PRO")));
   append(global, tag("PRJT", 'F', chars("GPRO"), 4));
   append(global, tag("EISA", 'c', chars(eis)));
+  append(global, tag("HCTL", 'c', chars("Off")));
+  append(global, tag("ZOOM", 'f', floats({1})));
+  Bytes fps = be(60000);
+  append(fps, be(1001));
+  append(global, tag("VFPS", 'L', fps));
   Bytes res = be(7680);
   append(res, be(4320));
   append(global, tag("VRES", 'L', res));
@@ -63,30 +73,34 @@ Bytes gopro(float zoom = 0.476107776165009f, const char* eis = "HS EIS", bool wa
   append(lens, tag("MAPY", 'f', floats({1})));
   append(lens, tag("ARUW", 'f', floats({1.77777779102325f})));
   append(lens, tag("ARWA", 'f', floats({1.77777779102325f})));
-  append(lens, tag("XFOV", 'f', floats({120.000427246094f})));
-  append(lens, tag("YFOV", 'f', floats({70.3657608032227f})));
-  append(lens, tag("ZFOV", 'f', floats({135.511917114258f})));
-  append(lens, tag("ZMPL", 'f', floats({zoom})));
-  append(
-      lens,
-      tag("POLY",
-          'f',
-          floats(
-              {0,
-               2.67053532600403f,
-               0.22922171652317f,
-               -2.08499050140381f,
-               1.64104437828064f,
-               -7.24889386797406e-13f,
-               4.47891317133589e-13f,
-               0}),
-          32));
-  Bytes names(64);
-  for (size_t i = 0; i < 8; ++i) {
-    names[8 * i] = 'r';
-    names[8 * i + 1] = '0' + i;
+  if (fov) {
+    append(lens, tag("XFOV", 'f', floats({120.000427246094f})));
+    append(lens, tag("YFOV", 'f', floats({70.3657608032227f})));
+    append(lens, tag("ZFOV", 'f', floats({135.511917114258f})));
   }
-  append(lens, tag("PYCF", 'c', names, 8));
+  append(lens, tag("ZMPL", 'f', floats({zoom})));
+  if (prescription) {
+    append(
+        lens,
+        tag("POLY",
+            'f',
+            floats(
+                {0,
+                 2.67053532600403f,
+                 0.22922171652317f,
+                 -2.08499050140381f,
+                 1.64104437828064f,
+                 -7.24889386797406e-13f,
+                 4.47891317133589e-13f,
+                 0}),
+            32));
+    Bytes names(64);
+    for (size_t i = 0; i < 8; ++i) {
+      names[8 * i] = 'r';
+      names[8 * i + 1] = '0' + i;
+    }
+    append(lens, tag("PYCF", 'c', names, 8));
+  }
   Bytes result = tag("DEVC", 0, global);
   append(result, tag("DEVC", 0, lens));
   return result;
@@ -173,8 +187,9 @@ int main(int argc, char** argv) {
       empty["stitching"]["camera_fov"]["horizontal_fov"] = 117;
       expect(HasManualInputLensOverrides(empty), "An explicit FOV must preserve legacy manual intent");
     }
-    expect(HasManualInputLensOverrides(YAML::Load("stitching: {input_lens: {distortion: [0, 0, 0]}}")),
-           "Even explicit neutral distortion preserves manual intent");
+    expect(
+        HasManualInputLensOverrides(YAML::Load("stitching: {input_lens: {distortion: [0, 0, 0]}}")),
+        "Even explicit neutral distortion preserves manual intent");
     auto parsed = ParseVideoLensMetadata(gopro());
     expect(parsed.ok(), parsed.status().ToString().c_str());
     expect(std::abs(parsed->camera.horizontal_fov - 125.12273264898) < 1e-7, "GoPro conversion HFOV");
@@ -194,12 +209,14 @@ int main(int argc, char** argv) {
     expect(ParseVideoLensMetadata(padded).ok(), "GoPro chapters may end in zero padding, including a partial header");
     padded.back() = 1;
     expect(!ParseVideoLensMetadata(padded).ok(), "Nonzero partial trailing headers must reject");
-    for (size_t length = 0; length < fixture.size(); ++length)
-      expect(!ParseVideoLensMetadata(Bytes(fixture.begin(), fixture.begin() + length)).ok(), "Truncation must reject");
+    for (size_t length = 0; length < fixture.size(); ++length) {
+      const auto partial = ParseVideoLensMetadata(Bytes(fixture.begin(), fixture.begin() + length));
+      expect(!partial.ok() || !partial->unavailable_reason.empty(), "Truncation cannot yield a complete lens");
+    }
     auto good = movie(fixture);
     write(dir / "left.mp4", good);
     write(dir / "right.mp4", good);
-    auto result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, {});
+    auto result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, {"auto"});
     expect(result.detected && !result.mismatch, "Agreeing sources should import");
     YAML::Node config = YAML::Load(
         "stitching: {camera_config: auto, camera_configs: {auto: {display_name: Auto, horizontal_fov: 108, vertical_fov: 90}}}");
@@ -208,16 +225,26 @@ int main(int argc, char** argv) {
     auto game_result = ReadAutoInputLensForGame(dir, config, *selected);
     expect(game_result.detected, "Auto discovers both originals");
     const auto live = ReadAutoInputLensForGame(dir, config, *selected, false, true);
-    expect(!live.detected && live.camera == *selected && live.message.find("live cameras") != std::string::npos,
-           "Live sources must not import supported recordings from the same game directory");
+    expect(
+        !live.detected && live.camera == *selected && live.message.find("live cameras") != std::string::npos,
+        "Live sources must not import supported recordings from the same game directory");
     YAML::Node legacy = YAML::Load("stitching: {camera_config: null, camera_fov: {horizontal_fov: 117}}");
     auto effective_legacy = YAML::Clone(config);
     effective_legacy["stitching"]["camera_config"] = YAML::Node(YAML::NodeType::Null);
     effective_legacy["stitching"]["camera_configs"]["auto"]["vertical_fov"] = 75;
     PreserveLegacyInputLensSelection(effective_legacy, legacy);
-    expect(effective_legacy["stitching"]["camera_config"].as<std::string>() == "manual" &&
-               effective_legacy["stitching"]["camera_fov"]["vertical_fov"].as<double>() == 75,
-           "A null camera selector preserves legacy manual intent and inherited optics");
+    expect(
+        effective_legacy["stitching"]["camera_config"].as<std::string>() == "manual" &&
+            effective_legacy["stitching"]["camera_fov"]["vertical_fov"].as<double>() == 75,
+        "A null camera selector preserves legacy manual intent and inherited optics");
+    auto policy_override = YAML::Clone(config);
+    policy_override["stitching"]["camera_automation"] = YAML::Load("{fov: false, lens: false}");
+    const auto auto_layer = YAML::Load("stitching: {camera_config: auto, camera_automation: {lens: false}}");
+    PreserveLegacyInputLensSelection(policy_override, auto_layer);
+    const auto higher_camera = read_stitch_camera_selection(policy_override);
+    expect(
+        higher_camera.ok() && higher_camera->automatic_fov() && !higher_camera->automatic_lens(),
+        "A higher-layer camera selector resets inherited policies while retaining explicit independent choices");
     config["stitching"]["auto_input_lens_frozen"] = true;
     auto frozen = ReadAutoInputLensForGame(dir, config, game_result.camera);
     expect(!frozen.detected && frozen.camera == game_result.camera, "Experiment optics remain frozen");
@@ -232,10 +259,91 @@ int main(int argc, char** argv) {
     expect(
         !ReadVideoLensMetadata(dir / "resized.mp4").ok(), "Remuxed dimensions cannot reuse the original prescription");
     write(dir / "right.mp4", movie(gopro(0.476107776f, "Off")));
-    result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, {});
+    result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, {"auto"});
     expect(result.mismatch && !result.detected, "File replacement invalidates cache; different stabilization warns");
-    result = ResolveAutoInputLens({dir / "left.mp4", dir / "missing.mp4"}, {});
+    result = ResolveAutoInputLens({dir / "left.mp4", dir / "missing.mp4"}, {"auto"});
     expect(!result.detected, "Missing camera never copies the other lens");
+    // FOV and correction are independent, including a valid FOV-only file.
+    const auto fov_only = movie(gopro(0.476107776f, "HS EIS", false, false));
+    write(dir / "left.mp4", fov_only);
+    write(dir / "right.mp4", fov_only);
+    result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, *selected);
+    expect(
+        result.detected && std::abs(result.camera.horizontal_fov - 120.000427246094) < 1e-6 &&
+            result.camera.input_lens == selected->input_lens,
+        "Valid MP4 FOV survives missing lens coefficients; correction falls back independently");
+    StitchCameraConfiguration profile{
+        "mode", "Verified mode", 125.12273264898, 70.3657608032, parsed->camera.input_lens};
+    for (const auto& [key, value] : parsed->recording_mode)
+      profile.metadata_match[key] = {value};
+    result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, *selected, {profile});
+    expect(
+        result.lens_message.find("Mode profile") != std::string::npos &&
+            result.camera.input_lens == profile.input_lens && result.camera.horizontal_fov > 125,
+        "Compatible mode correction combines with physical MP4 FOV using Hugin conversion");
+    auto incompatible = profile;
+    incompatible.metadata_match["horizon"] = {"Locked"};
+    result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, *selected, {incompatible});
+    expect(result.camera.input_lens == selected->input_lens, "A different mode cannot supply automatic correction");
+    result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, *selected, {profile, profile});
+    expect(result.camera.input_lens == selected->input_lens, "Ambiguous mode profiles fall back");
+    const auto lens_only = movie(gopro(0.476107776f, "HS EIS", false, true, false));
+    write(dir / "left.mp4", lens_only);
+    write(dir / "right.mp4", lens_only);
+    for (bool automatic_lens : {false, true}) {
+      auto choice = *selected;
+      choice.auto_fov = true;
+      choice.auto_lens = automatic_lens;
+      result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, choice);
+      expect(
+          result.detected && std::abs(result.camera.vertical_fov - 70.38137648094) < 1e-5 &&
+              std::abs(result.camera.horizontal_fov - (automatic_lens ? 125.122732649 : 120.01437255148)) < 1e-5,
+          "A complete lens model supplies both FOV axes without separate tags, independently of lens automation");
+    }
+    write(dir / "left.mp4", good);
+    write(dir / "right.mp4", good);
+    auto independent = *selected;
+    independent.auto_fov = true;
+    independent.auto_lens = false;
+    config["hstream_ui"]["video_roles"]["right"][0] = "right.mp4";
+    result = ReadAutoInputLensForGame(dir, config, independent, true);
+    expect(
+        result.camera.input_lens == independent.input_lens &&
+            std::abs(result.camera.horizontal_fov - 120.000427246094) < 1e-6,
+        "Automatic FOV does not enable automatic lens correction");
+    // Reference values obtained with pano_trafo 2025.0.1: the angular distance
+    // between the two horizontal pixel boundaries must remain XFOV, including
+    // the nonzero vertical optical-center displacement.
+    independent.input_lens.distortion = {0, 0.02, 0};
+    independent.input_lens.center_offset = {-0.01, 0.14};
+    for (const auto& [projection, expected] : std::vector<std::pair<std::string, double>>{
+             {"rectilinear", 123.7986576803}, {"full-frame-fisheye", 125.8372124449}}) {
+      independent.input_lens.projection = projection;
+      result = ReadAutoInputLensForGame(dir, config, independent, true);
+      expect(
+          std::abs(result.camera.horizontal_fov - expected) < 1e-5,
+          "Independent physical FOV conversion agrees with Hugin including center offsets");
+    }
+    independent.auto_fov = false;
+    independent.auto_lens = true;
+    independent.horizontal_fov = 111;
+    config["hstream_ui"]["video_roles"]["right"][0] = "right.mp4";
+    result = ReadAutoInputLensForGame(dir, config, independent, true);
+    expect(
+        result.camera.horizontal_fov == 111 && result.camera.input_lens == parsed->camera.input_lens,
+        "Automatic lens correction retains manual FOV");
+    YAML::Node roundtrip;
+    write_stitch_camera_selection(roundtrip, independent);
+    const auto restored = read_stitch_camera_selection(roundtrip);
+    expect(
+        restored.ok() && !restored->automatic_fov() && restored->automatic_lens(),
+        "Independent source policies round trip");
+    roundtrip["stitching"]["auto_input_lens_frozen"] = true;
+    independent.configuration = "manual";
+    result = ReadAutoInputLensForGame(dir, roundtrip, independent, true);
+    expect(
+        result.camera == independent && !result.detected,
+        "Mixed automatic/manual experiments freeze under every selector");
     // An extended-size, sparse 5 GiB mdat must be skipped with a seek.
     const auto huge = dir / "huge.mp4";
     {
@@ -251,11 +359,13 @@ int main(int argc, char** argv) {
     const auto dji_raw = ParseDjiLensMetadata(dji(false), 3840, 2160);
     expect(dji_raw.ok() && dji_raw->unavailable_reason.empty(), "DJI raw OpenCV prescription");
     const auto dji_unknown = ParseDjiLensMetadata(dji(false, false), 3840, 2160);
-    expect(dji_unknown.ok() && !dji_unknown->unavailable_reason.empty(),
-           "Missing DJI stabilization status cannot authorize raw lens import");
+    expect(
+        dji_unknown.ok() && !dji_unknown->unavailable_reason.empty(),
+        "Missing DJI stabilization status cannot authorize raw lens import");
     const auto dji_empty_off = ParseDjiLensMetadata(dji(false, true, true), 3840, 2160);
-    expect(dji_empty_off.ok() && dji_empty_off->unavailable_reason.empty() && dji_empty_off->camera == dji_raw->camera,
-           "A present empty DJI EIS message legitimately represents proto3 OFF");
+    expect(
+        dji_empty_off.ok() && dji_empty_off->unavailable_reason.empty() && dji_empty_off->camera == dji_raw->camera,
+        "A present empty DJI EIS message legitimately represents proto3 OFF");
     expect(!ParseDjiLensMetadata(dji(true), 3840, 2160)->unavailable_reason.empty(), "DJI EIS is not a raw lens");
     Bytes insta = field(2, chars("Insta360 Ace Pro 2"));
     append(insta, scalar(42, 1));
@@ -302,8 +412,9 @@ int main(int argc, char** argv) {
       write(dir / ("insta-fov-" + std::to_string(fov) + ".mp4"), original);
     }
     const auto different_modes = ResolveAutoInputLens({dir / "insta-fov-1.mp4", dir / "insta-fov-3.mp4"}, *selected);
-    expect(different_modes.mismatch && !different_modes.detected,
-           "Different Insta360 FOV modes must warn even when their raw lens coefficients match");
+    expect(
+        different_modes.mismatch && !different_modes.detected,
+        "Different Insta360 FOV modes must warn even when their raw lens coefficients match");
     std::filesystem::remove_all(dir);
     std::cout << "Video lens metadata tests passed\n";
     return 0;

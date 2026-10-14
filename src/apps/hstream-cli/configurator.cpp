@@ -8075,26 +8075,38 @@ absl::Status Configurator::persist_stitch_frame_time_override(const std::string&
 absl::Status Configurator::resolve_effective_stitching_camera(bool force_video_discovery) {
   stitching::StitchCameraSelection camera;
   HM_ASSIGN_OR_RETURN(camera, stitching::read_stitch_camera_selection(config_));
-  int optics_rank = -1;
-  for (const char* key :
-       {"stitching.camera_fov.horizontal_fov",
-        "stitching.camera_fov.vertical_fov",
-        "stitching.input_lens.projection",
-        "stitching.input_lens.optimization",
-        "stitching.input_lens.distortion",
-        "stitching.input_lens.center_offset"}) {
+  auto rank = [&](const char* key) {
     const auto value = get_node(config_, key);
-    if (value.has_value() && !value->IsNull())
-      optics_rank = std::max(optics_rank, explicit_value_rank(key));
+    return value.has_value() && !value->IsNull() ? explicit_value_rank(key) : -1;
+  };
+  const int fov_rank = std::max(rank("stitching.camera_fov.horizontal_fov"), rank("stitching.camera_fov.vertical_fov"));
+  const int lens_rank = std::max(
+      {rank("stitching.input_lens.projection"),
+       rank("stitching.input_lens.optimization"),
+       rank("stitching.input_lens.distortion"),
+       rank("stitching.input_lens.center_offset")});
+  const int camera_rank = rank("stitching.camera_config");
+  const int auto_fov_rank = rank("stitching.camera_automation.fov"),
+            auto_lens_rank = rank("stitching.camera_automation.lens");
+  if (auto_fov_rank >= 0 && camera_rank > auto_fov_rank)
+    camera.auto_fov = camera.configuration == "auto";
+  if (auto_lens_rank >= 0 && camera_rank > auto_lens_rank)
+    camera.auto_lens = camera.configuration == "auto";
+  if (auto_fov_rank < 0 && auto_lens_rank < 0 && camera.configuration == "auto" &&
+      (std::max(fov_rank, lens_rank) > camera_rank || std::max(fov_rank, lens_rank) >= 3)) {
+    camera.configuration = "manual"; // Preserve older explicit optics.
+    camera.auto_fov = false;
+    camera.auto_lens = false;
+  } else {
+    if (fov_rank > auto_fov_rank && (fov_rank > camera_rank || fov_rank >= 3))
+      camera.auto_fov = false;
+    if (lens_rank > auto_lens_rank && (lens_rank > camera_rank || lens_rank >= 3))
+      camera.auto_lens = false;
   }
-  const auto selected_camera = get_node(config_, "stitching.camera_config");
-  const int camera_rank =
-      selected_camera.has_value() && !selected_camera->IsNull() ? explicit_value_rank("stitching.camera_config") : -1;
-  if (camera.configuration == "auto" && (optics_rank > camera_rank || optics_rank >= 3))
-    camera.configuration = "manual";
-  // A fresh higher-layer Auto selection supersedes a saved experiment freeze.
-  // An equally explicit freeze still wins for intentional snapshot replay.
-  if (camera.configuration == "auto" && camera_rank > explicit_value_rank("stitching.auto_input_lens_frozen"))
+  // Re-selecting an automatic source explicitly releases an older snapshot.
+  const int auto_rank = std::max(
+      {camera_rank, camera.automatic_fov() ? auto_fov_rank : -1, camera.automatic_lens() ? auto_lens_rank : -1});
+  if ((camera.automatic_fov() || camera.automatic_lens()) && auto_rank > rank("stitching.auto_input_lens_frozen"))
     config_["stitching"]["auto_input_lens_frozen"] = false;
   bool live_sources = false;
   for (const auto& [_, source] : get_enabled_sources(config_["pipeline"])) {
@@ -8567,7 +8579,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   YAML::Node private_camera_config = YAML::Clone(lower_layer_config_);
   const YAML::Node private_stitching = private_config_["stitching"];
   if (private_stitching && private_stitching.IsMap()) {
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation"}) {
       const YAML::Node value = private_stitching[key];
       if (value && value.IsDefined())
         private_camera_config["stitching"][key] = YAML::Clone(value);
@@ -8603,7 +8615,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       private_backend_value.has_value() && *private_backend_value == backend && private_projection_value.has_value() &&
       *private_projection_value == projection && private_autooptimizer_value.has_value() &&
       *private_autooptimizer_value == run_autooptimizer && private_projection_parameters == projection_parameters &&
-      private_projection_framing == projection_framing && private_camera == camera;
+      private_projection_framing == projection_framing && private_camera == camera &&
+      private_camera.same_automation(camera);
   if (private_matches) {
     if (loaded_generated_stitching_backend_choices_ || !expected_invalidation_id.empty()) {
       HM_RETURN_IF_ERROR(
@@ -9031,6 +9044,7 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
       config,
       user_overlay,
       /*warn_if_key_not_in_dest=*/false);
+  stitching::PreserveLegacyInputLensSelection(config, user_overlay);
   lower_layer_config_ = YAML::Clone(config);
   std::optional<YAML::Node> private_config;
   HM_ASSIGN_OR_RETURN(private_config, load_private_config());
@@ -9049,6 +9063,7 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
         config,
         YAML::Clone(private_config_),
         /*warn_if_key_not_in_dest=*/!config);
+    stitching::PreserveLegacyInputLensSelection(config, private_config_);
   } else {
     private_config_ = YAML::Node(YAML::NodeType::Map);
     persisted_private_config_ = YAML::Node(YAML::NodeType::Map);
@@ -9359,6 +9374,7 @@ absl::Status Configurator::complete_configuration(
               "run_autooptimizer",
               "camera_config",
               "auto_input_lens_frozen",
+              "camera_automation",
               "input_lens",
               "camera_fov"})
           latest["stitching"][key] = YAML::Clone(desired["stitching"][key]);

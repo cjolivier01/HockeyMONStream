@@ -68,6 +68,7 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QFormLayout>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
@@ -5665,6 +5666,16 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       "Source camera/lens preset used by stitching calibration. Selecting a preset loads its default source FOVs and input lens; "
       "editing these values creates a game-only override.");
 
+  camera_auto_fov_check_ = new QCheckBox("Auto camera FOV");
+  camera_auto_fov_check_->setObjectName("cameraAutoFovCheck");
+  camera_auto_fov_check_->setChecked(default_camera_selection_.automatic_fov());
+  camera_auto_fov_check_->setToolTip(
+      "Read each camera's field of view from its MP4, then use matching mode or baseline defaults. This does not set the stitched panorama width.");
+  camera_fov_source_label_ = new QLabel();
+  camera_fov_source_label_->setObjectName("cameraFovSourceLabel");
+  camera_fov_source_label_->setWordWrap(true);
+  camera_fov_source_label_->setTextFormat(Qt::PlainText);
+  connect(camera_auto_fov_check_, &QCheckBox::toggled, this, [this]() { applyCameraConfigurationDefaults(false); });
   camera_horizontal_fov_spin_ = new QDoubleSpinBox();
   camera_horizontal_fov_spin_->setObjectName("cameraHorizontalFovSpin");
   camera_horizontal_fov_spin_->setDecimals(2);
@@ -5674,7 +5685,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
   set_control_help(
       camera_horizontal_fov_spin_,
-      "Horizontal field of view of each source camera. Hugin receives this value as its input-image HFOV.");
+      "Calibration FOV for each camera, used together with the lens correction below. With distortion, this can differ from physical coverage shown in the source description.");
 
   camera_vertical_fov_spin_ = new QDoubleSpinBox();
   camera_vertical_fov_spin_->setObjectName("cameraVerticalFovSpin");
@@ -5687,8 +5698,9 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       camera_vertical_fov_spin_,
       "Vertical field of view retained with the source-camera mapping configuration and calibration provenance.");
 
-  connect(camera_configuration_combo_, &QComboBox::currentIndexChanged,
-          this, &HStreamWindow::applyCameraConfigurationDefaults);
+  connect(camera_configuration_combo_, &QComboBox::currentIndexChanged, this, [this]() {
+    applyCameraConfigurationDefaults();
+  });
   connect(camera_horizontal_fov_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
     camera_horizontal_fov_spin_->setProperty("calibrationExactValue", QVariant());
     updatePresetDirtyState();
@@ -5700,7 +5712,14 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   input_lens_widget_ = new InputLensWidget();
   input_lens_widget_->setLens(default_camera_selection_.input_lens);
-  input_lens_widget_->changed = [this]() { updatePresetDirtyState(); };
+  input_lens_widget_->setMetadataStatus("", default_camera_selection_.automatic_lens());
+  input_lens_widget_->automationChanged = [this]() { applyCameraConfigurationDefaults(false); };
+  input_lens_widget_->changed = [this]() {
+    if (camera_auto_fov_check_->isChecked())
+      applyCameraConfigurationDefaults(false);
+    else
+      updatePresetDirtyState();
+  };
 
   projection_combo_ = new QComboBox();
   projection_combo_->setObjectName("stitchProjectionCombo");
@@ -5750,7 +5769,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         });
   }
 
-  projection_auto_fov_check_ = new QCheckBox("Auto FOV");
+  projection_auto_fov_check_ = new QCheckBox("Fit panorama to camera coverage");
   projection_auto_fov_check_->setObjectName("projectionAutoFovCheck");
   projection_auto_fov_check_->setChecked(default_projection_framing_.auto_fov);
   set_control_help(
@@ -7230,7 +7249,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* mapping_label = new QLabel("Mapping backend");
     mapping_label->setObjectName("mappingBackendLabel");
     mapping_label->setBuddy(mapping_backend_combo_);
-    auto* camera_configuration_label = new QLabel("Camera configuration");
+    auto* camera_configuration_label = new QLabel("Camera / recording-mode defaults");
     camera_configuration_label->setObjectName("stitchCameraConfigurationLabel");
     camera_configuration_label->setBuddy(camera_configuration_combo_);
     auto* camera_horizontal_fov_label = new QLabel("Camera horizontal FOV");
@@ -7239,10 +7258,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* camera_vertical_fov_label = new QLabel("Camera vertical FOV");
     camera_vertical_fov_label->setObjectName("cameraVerticalFovLabel");
     camera_vertical_fov_label->setBuddy(camera_vertical_fov_spin_);
-    auto* projection_label = new QLabel("Output projection");
+    auto* projection_label = new QLabel("Panorama projection");
     projection_label->setObjectName("stitchProjectionLabel");
     projection_label->setBuddy(projection_combo_);
-    auto* projection_fov_label = new QLabel("Horizontal FOV");
+    auto* projection_fov_label = new QLabel("Panorama horizontal FOV");
     projection_fov_label->setObjectName("projectionHorizontalFovLabel");
     projection_fov_label->setBuddy(projection_fov_spin_);
     set_control_help(
@@ -7299,13 +7318,16 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     alignment_layout->setRowStretch(8, 1);
 
     auto* projection_layout = add_stitching_tab("stitchingProjection", "Projection");
-    projection_layout->addWidget(camera_configuration_label, 0, 0);
-    projection_layout->addWidget(camera_configuration_combo_, 0, 1);
-    projection_layout->addWidget(camera_horizontal_fov_label, 1, 0);
-    projection_layout->addWidget(camera_horizontal_fov_spin_, 1, 1);
-    projection_layout->addWidget(camera_vertical_fov_label, 2, 0);
-    projection_layout->addWidget(camera_vertical_fov_spin_, 2, 1);
-    projection_layout->addWidget(input_lens_widget_, 3, 0, 1, 2);
+    auto* camera_group = new QGroupBox("Input cameras — shared calibration");
+    camera_group->setObjectName("stitchCameraOpticsGroup");
+    auto* camera_layout = new QFormLayout(camera_group);
+    camera_layout->addRow(camera_configuration_label, camera_configuration_combo_);
+    camera_layout->addRow(camera_auto_fov_check_);
+    camera_layout->addRow(camera_fov_source_label_);
+    camera_layout->addRow(camera_horizontal_fov_label, camera_horizontal_fov_spin_);
+    camera_layout->addRow(camera_vertical_fov_label, camera_vertical_fov_spin_);
+    camera_layout->addRow(input_lens_widget_);
+    projection_layout->addWidget(camera_group, 0, 0, 4, 2);
     projection_layout->addWidget(projection_label, 4, 0);
     projection_layout->addWidget(projection_combo_, 4, 1);
     for (size_t index = 0; index < projection_parameter_spins_.size(); ++index) {
@@ -7682,6 +7704,10 @@ hm::stitching::StitchCameraSelection HStreamWindow::stitchCameraSelection() cons
     selection.vertical_fov = calibration_spin_value(camera_vertical_fov_spin_);
   if (input_lens_widget_)
     selection.input_lens = input_lens_widget_->lens();
+  if (camera_auto_fov_check_)
+    selection.auto_fov = camera_auto_fov_check_->isChecked();
+  if (input_lens_widget_)
+    selection.auto_lens = input_lens_widget_->automatic();
   return selection;
 }
 
@@ -7692,7 +7718,7 @@ absl::StatusOr<hm::stitching::StitchCameraSelection> HStreamWindow::stitchCamera
   if (stitching && stitching.IsDefined() && !stitching.IsNull() && !stitching.IsMap())
     return absl::InvalidArgumentError("stitching must be a map");
   if (stitching && stitching.IsMap()) {
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation"}) {
       const YAML::Node value = stitching[key];
       if (value && value.IsDefined())
         effective["stitching"][key] = merge_yaml_maps(effective["stitching"][key], value);
@@ -7711,7 +7737,7 @@ absl::StatusOr<hm::stitching::StitchProjectionFraming> HStreamWindow::stitchProj
   return hm::stitching::read_stitch_projection_framing(merge_yaml_maps(baseline_config_, private_values));
 }
 
-void HStreamWindow::applyCameraConfigurationDefaults() {
+void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
   if (!camera_configuration_combo_)
     return;
   const std::string selected = camera_configuration_combo_->currentData().toString().toStdString();
@@ -7724,30 +7750,40 @@ void HStreamWindow::applyCameraConfigurationDefaults() {
     updatePresetDirtyState();
     return;
   }
-  hm::stitching::StitchCameraSelection camera{
-      configuration->id, configuration->horizontal_fov, configuration->vertical_fov, configuration->input_lens};
+  hm::stitching::StitchCameraSelection camera = reset_defaults
+      ? hm::stitching::StitchCameraSelection{configuration->id, configuration->horizontal_fov,
+                                           configuration->vertical_fov, configuration->input_lens}
+      : stitchCameraSelection();
   YAML::Node effective = YAML::Clone(baseline_config_);
   const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
   auto saved = hm::stitching::load_game_config_file(game / "config.yaml");
   if (saved.ok() && saved->has_value())
     effective = merge_yaml_maps(effective, **saved);
   effective["stitching"].remove("auto_input_lens_frozen");
-  const auto resolved = !saved.ok() && selected == "auto"
+  const auto resolved = !saved.ok() && (camera.automatic_fov() || camera.automatic_lens())
       ? hm::stitching::AutoInputLensResult{camera, "Auto unavailable: " + saved.status().ToString()}
       : hm::stitching::ReadAutoInputLensForGame(game, effective, camera);
   camera = resolved.camera;
   if (camera_horizontal_fov_spin_) {
     set_calibration_spin_value(camera_horizontal_fov_spin_, camera.horizontal_fov);
-    camera_horizontal_fov_spin_->setReadOnly(selected == "auto");
+    camera_horizontal_fov_spin_->setReadOnly(camera.automatic_fov());
   }
   if (camera_vertical_fov_spin_) {
     set_calibration_spin_value(camera_vertical_fov_spin_, camera.vertical_fov);
-    camera_vertical_fov_spin_->setReadOnly(selected == "auto");
+    camera_vertical_fov_spin_->setReadOnly(camera.automatic_fov());
   }
   if (input_lens_widget_) {
     input_lens_widget_->setLens(camera.input_lens);
-    input_lens_widget_->setMetadataStatus(QString::fromStdString(resolved.message), selected == "auto");
+    input_lens_widget_->setMetadataStatus(
+        QString::fromStdString(resolved.lens_message.empty() ? resolved.message : resolved.lens_message),
+        camera.automatic_lens());
   }
+  {
+    const QSignalBlocker blocker(camera_auto_fov_check_);
+    camera_auto_fov_check_->setChecked(camera.automatic_fov());
+  }
+  camera_fov_source_label_->setText(
+      QString::fromStdString(resolved.fov_message.empty() ? resolved.message : resolved.fov_message));
   // Source refreshes may change only the freeze policy, exact precision, or
   // lens coefficients. They must not depend on rounded FOV control signals.
   updatePresetDirtyState();
@@ -16311,6 +16347,8 @@ void HStreamWindow::updateRunControls() {
     camera_configuration_combo_->setEnabled(!running && !finalizing);
   if (camera_horizontal_fov_spin_)
     camera_horizontal_fov_spin_->setEnabled(!running && !finalizing);
+  if (camera_auto_fov_check_)
+    camera_auto_fov_check_->setEnabled(!running && !finalizing);
   if (camera_vertical_fov_spin_)
     camera_vertical_fov_spin_->setEnabled(!running && !finalizing);
   if (input_lens_widget_)
@@ -16535,6 +16573,7 @@ bool HStreamWindow::savePreset() {
       saved_iteration_settings_.sync_method != stitchingIterationSettings().sync_method ||
       saved_run_autooptimizer_ != runAutooptimizer() || saved_control_point_resolution_ != control_point_resolution_ ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
+      !saved_camera_selection_.same_automation(stitchCameraSelection()) ||
       saved_camera_selection_ != stitchCameraSelection() || saved_projection_ != stitchProjection() ||
       saved_projection_parameters_ != projection_parameter_values_ ||
       saved_projection_framing_ != stitchProjectionFraming();
@@ -16853,18 +16892,16 @@ void HStreamWindow::resetCameraControls() {
     set_combo_to_data(mapping_backend_combo_, default_mapping_backend_);
   }
   if (!pipeline_running && camera_configuration_combo_) {
+    const QSignalBlocker profile_blocker(camera_configuration_combo_), policy_blocker(camera_auto_fov_check_);
     set_combo_to_data(camera_configuration_combo_, QString::fromStdString(default_camera_selection_.configuration));
-    if (default_camera_selection_.configuration == "auto") {
-      // Reset also refreshes an already-selected Auto or promoted snapshot.
-      applyCameraConfigurationDefaults();
-    } else {
-      if (camera_horizontal_fov_spin_)
-        set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
-      if (camera_vertical_fov_spin_)
-        set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
-      if (input_lens_widget_)
-        input_lens_widget_->setLens(default_camera_selection_.input_lens);
-    }
+    set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
+    set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
+    input_lens_widget_->setLens(default_camera_selection_.input_lens);
+    input_lens_widget_->setMetadataStatus("", default_camera_selection_.automatic_lens());
+    camera_auto_fov_check_->setChecked(default_camera_selection_.automatic_fov());
+    // Restore both independent user policies, including when the selector is
+    // unchanged, then refresh automatic values and release any frozen snapshot.
+    applyCameraConfigurationDefaults(false);
   }
   if (!pipeline_running && projection_combo_) {
     projection_parameter_controls_projection_.clear();
@@ -17124,7 +17161,8 @@ void HStreamWindow::updateCameraControlDependencies() {
 }
 
 bool HStreamWindow::autoInputLensFrozen() const {
-  return camera_configuration_combo_ && camera_configuration_combo_->currentData().toString() == "auto" &&
+  const auto camera = stitchCameraSelection();
+  return camera_configuration_combo_ && (camera.automatic_fov() || camera.automatic_lens()) &&
       camera_configuration_combo_->property("autoInputLensFrozen").toBool();
 }
 
@@ -17154,6 +17192,7 @@ void HStreamWindow::updatePresetDirtyState() {
       saved_control_point_resolution_ != control_point_resolution_ || saved_blend_mode_ != blendMode() ||
       saved_blend_feather_fraction_ != blendFeatherFraction() ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
+      !saved_camera_selection_.same_automation(stitchCameraSelection()) ||
       saved_camera_selection_ != stitchCameraSelection() || saved_projection_ != stitchProjection() ||
       saved_projection_parameters_ != projection_parameter_values_ || projection_framing_dirty;
   if (!dirty) {
@@ -17366,6 +17405,10 @@ void HStreamWindow::loadSavedControlConfig() {
   if (camera_vertical_fov_spin_) {
     const bool blocked = camera_vertical_fov_spin_->blockSignals(true);
     input_lens_widget_->setLens(default_camera_selection_.input_lens);
+    input_lens_widget_->setMetadataStatus("Baseline default", default_camera_selection_.automatic_lens());
+    const QSignalBlocker auto_blocker(camera_auto_fov_check_);
+    camera_auto_fov_check_->setChecked(default_camera_selection_.automatic_fov());
+    camera_fov_source_label_->setText("Baseline default");
     set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
     camera_vertical_fov_spin_->blockSignals(blocked);
   }
@@ -17990,9 +18033,14 @@ void HStreamWindow::loadSavedControlConfig() {
         "autoInputLensFrozen", frozen_lens && frozen_lens.IsScalar() && frozen_lens.as<bool>());
     input_lens_widget_->setLens(staged_camera_selection.input_lens);
     input_lens_widget_->setMetadataStatus(
-        QString::fromStdString(auto_lens.message), staged_camera_selection.configuration == "auto");
-    camera_horizontal_fov_spin_->setReadOnly(staged_camera_selection.configuration == "auto");
-    camera_vertical_fov_spin_->setReadOnly(staged_camera_selection.configuration == "auto");
+        QString::fromStdString(auto_lens.lens_message), staged_camera_selection.automatic_lens());
+    {
+      const QSignalBlocker blocker(camera_auto_fov_check_);
+      camera_auto_fov_check_->setChecked(staged_camera_selection.automatic_fov());
+    }
+    camera_fov_source_label_->setText(QString::fromStdString(auto_lens.fov_message));
+    camera_horizontal_fov_spin_->setReadOnly(staged_camera_selection.automatic_fov());
+    camera_vertical_fov_spin_->setReadOnly(staged_camera_selection.automatic_fov());
     projection_parameter_controls_projection_.clear();
     projection_parameter_values_ = std::move(staged_projection_parameters);
     if (projection_combo_) {
@@ -19022,8 +19070,8 @@ void HStreamWindow::addVideoPath() {
   }
   config_transaction->reset();
   refreshVideoSets();
-  if (camera_configuration_combo_->currentData() == "auto")
-    applyCameraConfigurationDefaults();
+  if (stitchCameraSelection().automatic_fov() || stitchCameraSelection().automatic_lens())
+    applyCameraConfigurationDefaults(false);
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
 }
 
@@ -19102,8 +19150,8 @@ void HStreamWindow::removeSelectedVideoSet() {
   delete item;
   config_transaction->reset();
   refreshVideoSets();
-  if (camera_configuration_combo_->currentData() == "auto")
-    applyCameraConfigurationDefaults();
+  if (stitchCameraSelection().automatic_fov() || stitchCameraSelection().automatic_lens())
+    applyCameraConfigurationDefaults(false);
 }
 
 void HStreamWindow::refreshVideoSets() {
