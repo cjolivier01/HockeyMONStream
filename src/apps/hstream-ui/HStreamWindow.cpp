@@ -16892,18 +16892,16 @@ void HStreamWindow::resetCameraControls() {
     set_combo_to_data(mapping_backend_combo_, default_mapping_backend_);
   }
   if (!pipeline_running && camera_configuration_combo_) {
+    const QSignalBlocker profile_blocker(camera_configuration_combo_), policy_blocker(camera_auto_fov_check_);
     set_combo_to_data(camera_configuration_combo_, QString::fromStdString(default_camera_selection_.configuration));
-    if (default_camera_selection_.configuration == "auto") {
-      // Reset also refreshes an already-selected Auto or promoted snapshot.
-      applyCameraConfigurationDefaults();
-    } else {
-      if (camera_horizontal_fov_spin_)
-        set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
-      if (camera_vertical_fov_spin_)
-        set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
-      if (input_lens_widget_)
-        input_lens_widget_->setLens(default_camera_selection_.input_lens);
-    }
+    set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
+    set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
+    input_lens_widget_->setLens(default_camera_selection_.input_lens);
+    input_lens_widget_->setMetadataStatus("", default_camera_selection_.automatic_lens());
+    camera_auto_fov_check_->setChecked(default_camera_selection_.automatic_fov());
+    // Restore both independent user policies, including when the selector is
+    // unchanged, then refresh automatic values and release any frozen snapshot.
+    applyCameraConfigurationDefaults(false);
   }
   if (!pipeline_running && projection_combo_) {
     projection_parameter_controls_projection_.clear();

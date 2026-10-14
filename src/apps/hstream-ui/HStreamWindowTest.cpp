@@ -15341,6 +15341,34 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     // The temporary structural file is removed after this block.
     std::ofstream(copied_config) << "{}\n";
   }
+  for (const char* profile : {"auto", "gopro-hero-11"}) {
+    for (bool auto_fov : {false, true}) {
+      YAML::Node optics_defaults;
+      optics_defaults["stitching"]["camera_config"] = profile;
+      optics_defaults["stitching"]["camera_automation"]["fov"] = auto_fov;
+      optics_defaults["stitching"]["camera_automation"]["lens"] = !auto_fov;
+      optics_defaults["stitching"]["camera_fov"]["horizontal_fov"] = 119;
+      std::ofstream(QDir(user_config_directory).filePath("hstream.yaml").toStdString()) << optics_defaults << '\n';
+      HStreamWindow optics_window;
+      auto* id = require_child<QLineEdit>(&optics_window, "gameIdEdit");
+      id->setText("ui-user-stitch-default");
+      activate(require_child<QPushButton>(&optics_window, "createGameButton"));
+      auto* camera = require_child<QComboBox>(&optics_window, "stitchCameraConfigurationCombo");
+      auto* fov = require_child<QCheckBox>(&optics_window, "cameraAutoFovCheck");
+      auto* lens = require_child<QCheckBox>(&optics_window, "inputLensAutoCheck");
+      fov->setChecked(!auto_fov);
+      lens->setChecked(auto_fov);
+      camera->setProperty("autoInputLensFrozen", true);
+      activate(require_child<QPushButton>(&optics_window, "resetCameraButton"));
+      ok &= expect(
+          camera->currentData().toString() == profile && fov->isChecked() == auto_fov &&
+              lens->isChecked() == !auto_fov && !camera->property("autoInputLensFrozen").toBool() &&
+              require_child<QDoubleSpinBox>(&optics_window, "cameraHorizontalFovSpin")->isReadOnly() == auto_fov &&
+              require_child<QDoubleSpinBox>(&optics_window, "inputLensBSpin")->isReadOnly() == !auto_fov &&
+              (auto_fov || require_child<QDoubleSpinBox>(&optics_window, "cameraHorizontalFovSpin")->value() == 119),
+          "Reset restores independent user optics defaults and releases snapshots even when the selector is unchanged");
+    }
+  }
   baseline["stitching"].remove("mapping_backend");
   baseline["stitching"].remove("run_autooptimizer");
   {
