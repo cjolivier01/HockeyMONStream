@@ -9044,6 +9044,7 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
       config,
       user_overlay,
       /*warn_if_key_not_in_dest=*/false);
+  stitching::PreserveLegacyInputLensSelection(config, user_overlay);
   lower_layer_config_ = YAML::Clone(config);
   std::optional<YAML::Node> private_config;
   HM_ASSIGN_OR_RETURN(private_config, load_private_config());
@@ -9062,6 +9063,7 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
         config,
         YAML::Clone(private_config_),
         /*warn_if_key_not_in_dest=*/!config);
+    stitching::PreserveLegacyInputLensSelection(config, private_config_);
   } else {
     private_config_ = YAML::Node(YAML::NodeType::Map);
     persisted_private_config_ = YAML::Node(YAML::NodeType::Map);

@@ -1932,7 +1932,8 @@ struct StitchingExperimentDialog::Impl {
         left.rink_rotation_degrees == right.rink_rotation_degrees &&
         left.control_point_resolution == right.control_point_resolution &&
         left.control_point_matcher == right.control_point_matcher &&
-        left.manual_control_points == right.manual_control_points && left.camera == right.camera;
+        left.manual_control_points == right.manual_control_points && left.camera == right.camera &&
+        (!left.camera || left.camera->same_automation(*right.camera));
   }
 
   void update_feature_size(const QString& size) {

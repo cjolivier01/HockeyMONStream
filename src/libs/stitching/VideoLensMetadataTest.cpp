@@ -287,6 +287,19 @@ int main(int argc, char** argv) {
     expect(result.camera.input_lens == selected->input_lens, "A different mode cannot supply automatic correction");
     result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, *selected, {profile, profile});
     expect(result.camera.input_lens == selected->input_lens, "Ambiguous mode profiles fall back");
+    const auto lens_only = movie(gopro(0.476107776f, "HS EIS", false, true, false));
+    write(dir / "left.mp4", lens_only);
+    write(dir / "right.mp4", lens_only);
+    for (bool automatic_lens : {false, true}) {
+      auto choice = *selected;
+      choice.auto_fov = true;
+      choice.auto_lens = automatic_lens;
+      result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, choice);
+      expect(
+          result.detected && std::abs(result.camera.vertical_fov - 70.38137648094) < 1e-5 &&
+              std::abs(result.camera.horizontal_fov - (automatic_lens ? 125.122732649 : 120.01437255148)) < 1e-5,
+          "A complete lens model supplies both FOV axes without separate tags, independently of lens automation");
+    }
     write(dir / "left.mp4", good);
     write(dir / "right.mp4", good);
     auto independent = *selected;

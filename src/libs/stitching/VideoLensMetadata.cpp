@@ -383,6 +383,19 @@ VideoLensMetadata parse_gopro(const Bytes& data) {
       require(
           std::abs(number(lens, axis.first) - angle(axis.second) * 360 / kPi) < 0.25,
           "GoPro lens prescription disagrees with recorded field of view");
+  // Some recordings carry the radial prescription without separate axis tags.
+  // Its coverage is still usable independently of importing the correction.
+  // fit() below validates the original mapping before it can reject only the
+  // accuracy of its Hugin approximation.
+  if (!result.horizontal_fov)
+    result.horizontal_fov = angle(result.width / 2.0) * 360 / kPi;
+  if (!result.vertical_fov)
+    result.vertical_fov = angle(result.height / 2.0) * 360 / kPi;
+  require(
+      *result.horizontal_fov > 0 && *result.horizontal_fov < 360 && *result.vertical_fov > 0 &&
+          *result.vertical_fov <= 180,
+      "Invalid derived GoPro axis field of view");
+  result.fov_unavailable_reason.clear();
   try {
     result.camera = fit(result.width, result.height, angle);
   } catch (const Unsupported& error) {

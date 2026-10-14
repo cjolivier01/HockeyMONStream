@@ -688,6 +688,24 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   const auto automatic_config = YAML::LoadFile((automatic->experiments.back().workspace.game_directory / "config.yaml").string());
   require(automatic_config["stitching"]["auto_input_lens_frozen"].as<bool>(),
           "Auto candidate snapshots must disable metadata reimport in the runner");
+  const int auto_rows = restored_table->rowCount();
+  widget<QCheckBox>(reopened, "inputLensAutoCheck")->setChecked(false);
+  add_options(reopened);
+  add_options(reopened);
+  require(
+      restored_table->rowCount() == auto_rows + 1,
+      "A policy-only lens change creates a distinct candidate, while identical additions deduplicate");
+  widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->setChecked(false);
+  add_options(reopened);
+  require(
+      restored_table->rowCount() == auto_rows + 2,
+      "A policy-only FOV change creates a distinct candidate without changing geometry");
+  const auto manual_policy = LoadStitchingExperimentStore(*store);
+  require(
+      manual_policy.ok() && manual_policy->experiments.back().workspace.settings.camera &&
+          !manual_policy->experiments.back().workspace.settings.camera->automatic_fov() &&
+          !manual_policy->experiments.back().workspace.settings.camera->automatic_lens(),
+      "Candidate history must retain the selected independent policies");
   profiles->setCurrentIndex(profiles->findData("gopro-hero-11"));
   widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->setChecked(true);
   require(
