@@ -267,6 +267,7 @@ class PipelineApplication {
   std::vector<std::set<NvDsSinkType>> enabled_sink_types_;
   gboolean print_version_;
   gboolean show_;
+  gboolean encode_job_{FALSE};
   gdouble show_stitching_scale_{-1};
   gdouble show_playtracker_scale_{-1};
   gdouble show_scaled_scale_{-1};

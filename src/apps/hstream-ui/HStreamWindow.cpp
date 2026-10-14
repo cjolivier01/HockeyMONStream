@@ -7481,10 +7481,11 @@ bool HStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
   return true;
 }
 
-QStringList HStreamWindow::enabledSinkNames() const {
+QStringList HStreamWindow::enabledSinkNames(bool job_export) const {
   QStringList sinks;
   for (const auto& [id, toggle] : output_toggles_) {
-    if (!toggle || !toggle->isChecked() || (isCalibrationRun() && id != "archive-stitched")) {
+    if (!toggle || !toggle->isChecked() || (job_export && !id.startsWith("archive-")) ||
+        (!job_export && isCalibrationRun() && id != "archive-stitched")) {
       continue;
     }
     if (id.contains("youtube") || id.contains("rtmp")) {
@@ -7493,17 +7494,17 @@ QStringList HStreamWindow::enabledSinkNames() const {
       sinks.push_back("RTSP");
     } else if (id == "archive-stitched") {
       sinks.push_back("ENCODE_STITCHED_FILE");
-    } else if (id == "archive-program-4k" && !isCalibrationRun()) {
+    } else if (id == "archive-program-4k" && (job_export || !isCalibrationRun())) {
       sinks.push_back("ENCODE_PROGRAM_4K_FILE");
     } else if (id == "archive-file") {
       sinks.push_back("ENCODE_FILE");
     }
   }
-  if (render_video_toggle_ && render_video_toggle_->isChecked() && !sinks.contains("RENDER")) {
+  if (!job_export && render_video_toggle_ && render_video_toggle_->isChecked() && !sinks.contains("RENDER")) {
     sinks.push_front("RENDER");
   }
   if (sinks.isEmpty()) {
-    sinks.push_back("FAKE");
+    sinks.push_back(job_export ? "ENCODE_PROGRAM_4K_FILE" : "FAKE");
   }
   sinks.removeDuplicates();
   return sinks;
@@ -9755,11 +9756,12 @@ void HStreamWindow::closeStitchingCalibrationDialog() {
   active_calibration_stage_.clear();
 }
 
-QStringList HStreamWindow::pipelineArguments(bool standalone) const {
+QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) const {
   const QString game_id = !standalone && !active_run_game_id_.isEmpty()
       ? active_run_game_id_
       : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
-  const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
+  const bool calibration_only = !job_export && isCalibrationRun();
+  const bool render_video = !job_export && (!render_video_toggle_ || render_video_toggle_->isChecked());
   const bool test_embedded_preview = !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() &&
       qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
   const bool embed_render_window = !standalone &&
@@ -9773,7 +9775,7 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
     args << "--force-reconfigure";
   if (!standalone && !active_calibration_invalidation_id_.isEmpty())
     args << QString("--clean-expected-invalidation-id=%1").arg(active_calibration_invalidation_id_);
-  if (isCalibrationRun()) {
+  if (calibration_only) {
     args << "--stitching-calibration-only";
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     QStringList sinks;
@@ -9792,7 +9794,7 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
     }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
-    QStringList sinks = enabledSinkNames();
+    QStringList sinks = enabledSinkNames(job_export);
     if (embed_render_window) {
       // Embedded GPU preview mode substitutes a cheap fakesink for the
       // conventional RENDER video sink. Keep the logical sink enabled because
@@ -9806,7 +9808,7 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
       args << "--show";
     }
   }
-  if (isCalibrationRun() || (!standalone && calibration_pending_)) {
+  if (calibration_only || (!standalone && calibration_pending_)) {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
     args << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1")
                 .arg(
@@ -9831,7 +9833,6 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
       preview_windows << QString("%1:%2").arg(channel).arg(static_cast<qulonglong>(window_id));
       return true;
     };
-    const bool calibration_only = isCalibrationRun();
     const bool have_required_windows = add_window("stitched", stitched_render_target_) &&
         (calibration_only || add_window("program", preview_render_target_));
     for (int camera_index = 0; camera_index < static_cast<int>(camera_preview_render_targets_.size()); ++camera_index) {
@@ -9871,7 +9872,7 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
   args << QString("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=%1")
               .arg(cameraControlValue("Lift_Shadow_Black_Point"));
   args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
-  if (!isCalibrationRun()) {
+  if (!calibration_only) {
     if (player_analytics_controls_)
       args << (standalone || active_run_game_id_.isEmpty() ? player_analytics_controls_->arguments()
                                                          : active_player_analytics_arguments_);
@@ -16375,9 +16376,9 @@ void HStreamWindow::saveJobScript() {
       "Save job options",
       QString(
           "This script runs the selected hstream-cli directly with its matching runtime environment. "
-          "Archive MKVs and DriveGPT "
-          "databases remain in working "
-          "storage; Play\'s MP4 remux and copying into the game directory are not performed.\n"
+          "Rendering is disabled. Selected file encodings are written directly as MP4; "
+          "if none are selected, the job encodes the 4K Program copy.\n"
+          "MP4s and DriveGPT databases remain in working storage and are not copied into the game directory.\n"
           "Working output root: %1 (custom per-output paths still apply).\n\n"
           "Optional SBATCH directives, one per line (for example --partition=gpu).\n"
           "The script already requests one node, one task and one GPU. Blank is fine for direct execution.")
@@ -18287,7 +18288,7 @@ bool HStreamWindow::applySavedControlConfig(
   }
   config["hstream_ui"]["camera_controls"] = controls;
   YAML::Node job_arguments(YAML::NodeType::Sequence);
-  const QStringList standalone_arguments = pipelineArguments(true);
+  const QStringList standalone_arguments = pipelineArguments(true, true);
   for (int index = 0; index < standalone_arguments.size(); ++index) {
     const QString& argument = standalone_arguments[index];
     if (argument == "-g" || argument == "-c") {
@@ -18301,6 +18302,7 @@ bool HStreamWindow::applySavedControlConfig(
     job_arguments.push_back(argument.toStdString());
   }
   config["hstream_ui"]["job"]["arguments"] = job_arguments;
+  config["hstream_ui"]["job"]["capture_telemetry"] = drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked();
 
   const bool control_points_changed =
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;

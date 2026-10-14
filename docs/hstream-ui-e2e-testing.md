@@ -50,6 +50,41 @@ saves composed X11 screenshots for inspection:
 scripts/test_hstream_ui_x11_interactions.sh
 ```
 
+## Exported encoding jobs
+
+**Save job script** invokes `hstream-job`. Jobs disable display and network sinks and
+encode the checked Program, Stitched, and/or 4K Program outputs. With no file output
+checked, they encode the 4K Program copy. Export uses the normal Program pipeline even
+when the UI is in calibration mode. The Render video checkbox still controls local Play.
+
+The generated script invokes `hstream-cli --encode-job`, which requires an enabled file
+encoder after configuration resolution, disables render sinks and previews, and writes
+selected archives directly as MP4. Custom output directories and basenames are retained;
+the extension becomes `.mp4`. MP4s and DriveGPT databases stay in working storage
+(normally `~/hstream_output/<game-id>`), without the UI's game-directory publication.
+MP4 completion requires graceful EOS; abrupt process termination can leave an unfinished file.
+
+DriveGPT capture defaults on. Export freezes the current checkbox choice in the script,
+including an explicit off choice, so later UI saves do not change it. Old recipes without
+that field use the configured DriveGPT default.
+Standalone `hstream-job --game-dir DIR` also defaults to 4K when the recipe has no file
+encoder; `--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE` overrides its archive selection.
+A legacy calibration-only recipe must be re-exported from the UI.
+Encoding jobs require a YAML pipeline config; legacy DeepStream `.txt` configs are rejected.
+
+Quick export checks:
+
+```bash
+bazelisk test --config=opt --cpu=k8 //src/apps/hstream-job:job_script_test
+QT_QPA_PLATFORM=offscreen HSTREAM_UI_TEST_JOB_EXPORT_ONLY=1 \
+  bazel-bin/src/apps/hstream-ui/hstream_ui_test
+```
+
+The UI check exports four scripts through the real tool, covering default 4K, Program,
+Stitched, all three outputs, rendering left selected, and an explicit telemetry opt-out.
+The script test executes generated jobs against a recording runner and checks sink
+selection, argument quoting, exit status and failure without overwriting an existing job.
+
 ## Run it
 
 ```bash

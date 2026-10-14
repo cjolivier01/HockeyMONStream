@@ -32,6 +32,14 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 namespace hm {
 
 struct ConfiguratorTestAccess {
+  static absl::Status configure_encode_job(Configurator* configurator) {
+    YAML::Node pipeline = configurator->config_["pipeline"];
+    return configurator->configure_encode_job(pipeline);
+  }
+  static absl::Status configure_encode_file_outputs(Configurator* configurator) {
+    YAML::Node pipeline = configurator->config_["pipeline"];
+    return configurator->configure_encode_file_outputs(pipeline, {});
+  }
   static absl::Status reconcile_selected_frame_count_override(
       Configurator* configurator,
       const std::string& expected_invalidation_id = {}) {
@@ -157,6 +165,104 @@ absl::StatusOr<YAML::Node> player_selection_fixture(
 int main() {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = true;
+  {
+    const auto directory = fs::temp_directory_path() / ("hstream-encode-job-" + std::to_string(getpid()));
+    fs::create_directories(directory);
+    hm::Configurator job("job-test", "configs", -1);
+    job.set_encode_job(true);
+    YAML::Node fixture = YAML::Load(
+        "pipeline:\n"
+        "  application: {complete-configuration: 1}\n"
+        "  sink1: {type: 2, enable: 1}\n"
+        "  sink6: {type: 9, sink-id: 6, enable: 1, container: 2}\n"
+        "  hmplaycropper: {enable: 1, show: 1, private-properties: {show: 1}}\n"
+        "  ds-playtracker: {enable: 1, show: 1}\n");
+    fixture["paths"]["output-root"] = directory.string();
+    fixture["pipeline"]["sink6"]["output-file"] = (directory / "custom.mkv").string();
+    fixture["pipeline"]["ds-playtracker"]["private-properties"]["telemetry-db-dir"] = directory.string();
+    hm::ConfiguratorTestAccess::set_config(&job, fixture);
+    const auto job_status = hm::ConfiguratorTestAccess::configure_encode_job(&job);
+    const char* previous_root = std::getenv("HM_OUTPUT_WORK_DIR");
+    const std::optional<std::string> saved_root =
+        previous_root ? std::make_optional<std::string>(previous_root) : std::nullopt;
+    ::setenv("HM_OUTPUT_WORK_DIR", directory.c_str(), 1);
+    const auto output_status = hm::ConfiguratorTestAccess::configure_encode_file_outputs(&job);
+    if (saved_root)
+      ::setenv("HM_OUTPUT_WORK_DIR", saved_root->c_str(), 1);
+    else
+      ::unsetenv("HM_OUTPUT_WORK_DIR");
+    if (!job_status.ok() || !output_status.ok())
+      std::cerr << "Encoding job configuration: " << job_status << "; outputs: " << output_status << '\n';
+    ok &= expect(
+        job_status.ok() && output_status.ok() &&
+            !job.config()["pipeline"]["sink1"]["enable"].as<int>() &&
+            !job.config()["pipeline"]["ds-playtracker"]["show"].as<int>() &&
+            !job.config()["pipeline"]["hmplaycropper"]["show"].as<int>() &&
+            !job.config()["pipeline"]["hmplaycropper"]["private-properties"]["show"].as<int>() &&
+            job.config()["pipeline"]["ds-playtracker"]["private-properties"]["telemetry-game-id"].as<std::string>() ==
+                "job-test" &&
+            job.config()["pipeline"]["sink6"]["output-file"].as<std::string>() == (directory / "custom.mp4").string() &&
+            job.config()["pipeline"]["sink6"]["container"].as<int>() == NV_DS_CONTAINER_MP4,
+        "Encoding jobs must disable rendering, capture telemetry, and convert custom archive paths to MP4");
+    fixture["hstream_ui"]["job"]["capture_telemetry"] = false;
+    hm::ConfiguratorTestAccess::set_config(&job, fixture);
+    ok &= expect(
+        hm::ConfiguratorTestAccess::configure_encode_job(&job).ok() &&
+            job.config()["pipeline"]["ds-playtracker"]["private-properties"]["telemetry-db-dir"]
+                .as<std::string>()
+                .empty(),
+        "Encoding jobs must honor an explicit unchecked DriveGPT checkbox");
+    for (const char* aliases :
+         {"{telemetry-db-dir: /first, telemetry-csv-dir: /last}",
+          "{telemetry_csv_dir: /first, telemetry_db_dir: /last}",
+          "{telemetry-csv-dir: /custom}"}) {
+      for (bool capture : {false, true}) {
+        fixture["hstream_ui"]["job"]["capture_telemetry"] = capture;
+        fixture["pipeline"]["ds-playtracker"]["private-properties"] = YAML::Load(aliases);
+        hm::ConfiguratorTestAccess::set_config(&job, fixture);
+        const auto status = hm::ConfiguratorTestAccess::configure_encode_job(&job);
+        const auto resolved = job.config()["pipeline"]["ds-playtracker"]["private-properties"];
+        const std::string expected =
+            !capture ? "" : (std::string(aliases).find("/last") != std::string::npos ? "/last" : "/custom");
+        ok &= expect(
+            status.ok() && resolved["telemetry-db-dir"].as<std::string>() == expected &&
+                !resolved["telemetry-csv-dir"].IsDefined() && !resolved["telemetry_csv_dir"].IsDefined() &&
+                !resolved["telemetry_db_dir"].IsDefined(),
+            "Encoding jobs must resolve legacy telemetry aliases in runtime order and honor capture opt-out");
+      }
+    }
+    for (const char* spelling : {"plugin-private-config", "plugin_private_config"}) {
+      for (bool capture : {false, true}) {
+        auto typed_fixture = YAML::Clone(fixture);
+        typed_fixture["hstream_ui"]["job"]["capture_telemetry"] = capture;
+        for (const char* element : {"hmstitcher", "ds-playtracker", "hmplaycropper"})
+          typed_fixture["pipeline"][element]["properties"][spelling] = "show=1";
+        typed_fixture["pipeline"]["ds-playtracker"]["properties"][spelling] =
+            "show=1;draw=1;telemetry_db_dir=/first;telemetry-csv-dir=/typed";
+        hm::ConfiguratorTestAccess::set_config(&job, typed_fixture);
+        const auto status = hm::ConfiguratorTestAccess::configure_encode_job(&job);
+        ok &= expect(status.ok(), "Encoding jobs must accept typed private configuration overrides");
+        for (const char* element : {"hmstitcher", "hmplaycropper"})
+          ok &= expect(
+              job.config()["pipeline"][element]["properties"][spelling].as<std::string>() == "show=1;show=0",
+              "Typed private configuration cannot re-enable job previews");
+        const std::string directory = capture ? "/typed" : "";
+        ok &= expect(
+            job.config()["pipeline"]["ds-playtracker"]["properties"][spelling].as<std::string>() ==
+                    "show=1;draw=1;telemetry_db_dir=/first;telemetry-csv-dir=/typed;show=0;telemetry-db-dir=" +
+                        directory + ";telemetry-game-id=job-test" &&
+                job.config()["pipeline"]["ds-playtracker"]["private-properties"]["telemetry-db-dir"]
+                        .as<std::string>() == directory,
+            "Typed overrides retain unrelated settings and obey the final telemetry selection");
+      }
+    }
+    fixture["pipeline"]["sink6"]["enable"] = 0;
+    hm::ConfiguratorTestAccess::set_config(&job, fixture);
+    ok &= expect(
+        !hm::ConfiguratorTestAccess::configure_encode_job(&job).ok(),
+        "A final configuration with no file encoder must fail before running");
+    fs::remove_all(directory);
+  }
   const auto memory_profile_fixture = [] {
     return YAML::Load(
         "pipeline:\n"
