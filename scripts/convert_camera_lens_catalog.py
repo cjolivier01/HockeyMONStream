@@ -383,10 +383,16 @@ def read_catalog(manifest_path):
     for recipe in manifest["profiles"]:
         identifier = recipe["id"]
         require(
-            re.fullmatch(r"[a-z0-9][a-z0-9-]*", identifier) and identifier not in seen,
+            re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", identifier)
+            and identifier not in seen,
             "Invalid or duplicate profile id",
         )
         seen.add(identifier)
+        require(
+            isinstance(recipe["display_name"], str) and recipe["display_name"].strip(),
+            "Profile display name must be nonempty",
+        )
+        require(isinstance(recipe["notes"], str), "Profile notes must be text")
         filename = recipe["source_file"]
         require(
             isinstance(filename, str) and Path(filename).name == filename,

@@ -200,6 +200,12 @@ class LensConversionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA256"):
                 catalog.read_catalog(path)
             recipe["source_sha256"] = hashlib.sha256(raw).hexdigest()
+            for invalid in ("synthetic-", "synthetic--camera", "Synthetic"):
+                recipe["id"] = invalid
+                path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ValueError, "Invalid.*id"):
+                    catalog.read_catalog(path)
+            recipe["id"] = "synthetic"
             manifest["profiles"].append(copy.deepcopy(recipe))
             path.write_text(json.dumps(manifest))
             with self.assertRaisesRegex(ValueError, "duplicate"):
