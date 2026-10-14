@@ -226,6 +226,14 @@ bool is_cuda_out_of_memory_diagnostic(const QString& diagnostic) {
       (normalized.startsWith("cuda error at ") && normalized.contains(": out of memory"));
 }
 
+// The source-bin no-progress watchdog reports through GST_ELEMENT_ERROR, which
+// carries no absl status prefix, so calibration_status_detail() cannot see it
+// and the line would be discarded as uninteresting. It is the most specific
+// cause there is when it fires, so match it by its own wording.
+bool is_stall_watchdog_diagnostic(const QString& diagnostic) {
+  return diagnostic.contains("no-progress watchdog expired", Qt::CaseInsensitive);
+}
+
 QString calibration_status_detail(const QString& message) {
   static const QRegularExpression status(
       R"(\b(?:CANCELLED|UNKNOWN|INVALID_ARGUMENT|DEADLINE_EXCEEDED|NOT_FOUND|ALREADY_EXISTS|PERMISSION_DENIED|)"
@@ -9441,18 +9449,24 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
       normalized.contains("failed to activate bufferpool") || normalized.contains("error(-1) in buffer allocation");
   const bool hmstitcher_input_pool_failure =
       normalized.contains("hmstitcher_conv0") && normalized.contains("failed to activate bufferpool");
+  const bool stall_watchdog = is_stall_watchdog_diagnostic(diagnostic);
   calibration_cuda_out_of_memory_ = calibration_cuda_out_of_memory_ || cuda_out_of_memory;
   calibration_hmstitcher_input_pool_failure_ =
       calibration_hmstitcher_input_pool_failure_ || hmstitcher_input_pool_failure;
   calibration_stitch_blender_oom_ =
       calibration_stitch_blender_oom_ || (cuda_out_of_memory && normalized.contains("cudablend"));
+  // Keep the first expiry: the budget runs out once, then teardown can emit
+  // further stall errors from the other barrier waiters as the pipeline unwinds.
+  if (stall_watchdog && calibration_stall_watchdog_message_.isEmpty())
+    calibration_stall_watchdog_message_ = diagnostic;
   const bool rejected_hypothesis = diagnostic.startsWith("Rejected calibrated MAGSAC hypothesis");
   const bool rejected_candidate = diagnostic.startsWith("Skipping pooled stitching calibration") ||
       diagnostic.startsWith("Skipping stitching calibration frame pair");
   const bool useful = cuda_out_of_memory || gpu_buffer_allocation_failure || rejected_hypothesis ||
-      rejected_candidate || diagnostic.startsWith("Trying ") || diagnostic.startsWith("OpenCV mapping backend ") ||
-      !calibration_status_detail(diagnostic).isEmpty() || diagnostic.contains("HSTREAM_CALIBRATION") ||
-      diagnostic.contains("enblend", Qt::CaseInsensitive) || diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
+      rejected_candidate || stall_watchdog || diagnostic.startsWith("Trying ") ||
+      diagnostic.startsWith("OpenCV mapping backend ") || !calibration_status_detail(diagnostic).isEmpty() ||
+      diagnostic.contains("HSTREAM_CALIBRATION") || diagnostic.contains("enblend", Qt::CaseInsensitive) ||
+      diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
   if (!useful)
     return;
   if (rejected_hypothesis)
@@ -9489,12 +9503,18 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
       (normalized_message.contains("hmstitcher_conv0") && normalized_message.contains("failed to activate bufferpool"));
   const bool stitch_blender_oom = calibration_stitch_blender_oom_ ||
       (is_cuda_out_of_memory_diagnostic(root_cause) && normalized_message.contains("cudablend"));
+  const bool stall_watchdog = !calibration_stall_watchdog_message_.isEmpty() || is_stall_watchdog_diagnostic(root_cause);
   if (cuda_out_of_memory) {
     root_cause = stitch_blender_oom ? "CUDA out of memory while allocating the live stitching blender's GPU buffers."
         : hmstitcher_input_pool_failure
         ? "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while activating hmstitcher's pre-stitch "
           "input-conversion buffer pool."
         : "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while allocating a calibration GPU buffer.";
+  } else if (stall_watchdog && !calibration_stall_watchdog_message_.isEmpty()) {
+    // The terminal status is the generic "Pipeline failed during stitching
+    // calibration"; the watchdog line is the one that says what actually ended
+    // the run, so promote it over the fallback search below.
+    root_cause = calibration_stall_watchdog_message_;
   } else if (!is_specific_calibration_status_detail(calibration_status_detail(root_cause))) {
     QString fallback;
     for (auto diagnostic = calibration_diagnostic_lines_.crbegin(); diagnostic != calibration_diagnostic_lines_.crend();
@@ -9557,6 +9577,16 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
               "Close other GPU-intensive applications and press Play to retry. %1 If the failure occurred before "
               "canvas generation, also set 10-bit / FP16 mode to Force off or use lower-resolution source video.")
               .arg(width_guidance);
+  } else if (stall_watchdog) {
+    explanation =
+        "A timeout ended this run, not a stitching problem. The source bin watches for a camera branch that stops "
+        "advancing, and that watchdog expired. Calibration itself does not run under a timeout, so this normally "
+        "means a decoder genuinely wedged.";
+    action =
+        "Press Play to retry. If it keeps happening at the same point, start HStream with "
+        "HM_URI_PLAYLIST_BARRIER_STALL_SECONDS set to a larger number of seconds, or to 0 to disable the watchdog, "
+        "and report the run: a stall during calibration is a bug in the watchdog's suspension, not a setting you "
+        "should have to change.";
   } else if (missing_hugin_executable) {
     explanation = "Calibration found control points, but the Hugin/NONA command-line toolchain is incomplete.";
     action =
@@ -10430,6 +10460,7 @@ void HStreamWindow::startPipeline() {
   calibration_cuda_out_of_memory_ = false;
   calibration_hmstitcher_input_pool_failure_ = false;
   calibration_stitch_blender_oom_ = false;
+  calibration_stall_watchdog_message_.clear();
   calibration_rejected_hypotheses_ = 0;
   calibration_rejected_candidates_ = 0;
   active_force_reconfigure_ = active_run_is_calibration_ && calibration_restart_requested_;
@@ -11183,6 +11214,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
                : calibration_hmstitcher_input_pool_failure_
                ? QString("GPU out of memory in the pre-stitch input-conversion buffer pool")
                : QString("GPU out of memory during stitching calibration"))
+        : !calibration_stall_watchdog_message_.isEmpty()
+        ? QString("Timed out: the camera no-progress watchdog expired")
         : QString("Pipeline exited with code %1 (%2)")
               .arg(exit_code)
               .arg(exit_status == QProcess::NormalExit ? "normal exit" : "crashed");
@@ -11466,7 +11499,11 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
       trimmed.startsWith("Skipping stitching calibration frame pair") ||
       trimmed.startsWith("Trying pooled stitching calibration") ||
       trimmed.startsWith("Trying stitching calibration frame pair");
-  if (calibration_pending_ || trimmed.startsWith("HSTREAM_CALIBRATION") || calibration_preamble)
+  // The stall watchdog is recorded whether or not a calibration is pending: it
+  // can also end an ordinary playback run, and the timeout is the only useful
+  // thing to say about that exit code either way.
+  if (calibration_pending_ || trimmed.startsWith("HSTREAM_CALIBRATION") || calibration_preamble ||
+      is_stall_watchdog_diagnostic(trimmed))
     recordStitchingCalibrationDiagnostic(trimmed);
   if (handleProcessPauseOutput(trimmed) || handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
       handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||

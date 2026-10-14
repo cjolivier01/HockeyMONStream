@@ -87,18 +87,30 @@ Each of those waits tracks whether anything in the playlist is still moving,
 not how long it has been waiting, because a camera that is merely slow must
 still complete its pair. Once no source has advanced a frame, sequence,
 timestamp, or chapter for the whole budget, the wait posts a
-`camera stopped producing frames` error and ends the playlist, so the run fails
-with a diagnosis instead of freezing. The error carries `stalled_seconds`
-alongside `waited_seconds`: the first is how long nothing moved, the second how
-long that waiter had been blocked, and a large gap between them means the
-playlist was making progress for most of the wait.
+`no-progress watchdog expired` error and ends the playlist, so the run fails
+with a diagnosis instead of freezing. The error names the budget rather than
+blaming a camera, because from the barrier's side a wedged branch and decoders
+that something deliberately parked for too long look identical. It carries
+`stalled_seconds` alongside `waited_seconds`: the first is how long nothing
+moved, the second how long that waiter had been blocked, and a large gap
+between them means the playlist was making progress for most of the wait.
 
-These durations count active playback time. Native pauses and the bounded
-model-initialization preroll suspend the clock. The desktop prepares a pause
-through stdin and waits for `HSTREAM_PROCESS_PAUSE status=prepared` before
-sending SIGSTOP; after SIGCONT it waits for the matching `status=resumed`
-acknowledgment. Missing resume acknowledgments stop the run rather than leave
-stall detection suspended. Overlapping native and process pauses count once.
+These durations count active playback time. Native pauses, the bounded
+model-initialization preroll, and stitching calibration suspend the clock. The
+desktop prepares a pause through stdin and waits for
+`HSTREAM_PROCESS_PAUSE status=prepared` before sending SIGSTOP; after SIGCONT it
+waits for the matching `status=resumed` acknowledgment. Missing resume
+acknowledgments stop the run rather than leave stall detection suspended.
+Overlapping native and process pauses count once.
+
+Calibration gets no deadline at all. A native-resolution solve followed by
+interactive rink leveling and crop review runs for minutes with every decoder
+deliberately parked, which no budget could usefully distinguish from a wedge.
+The stitcher posts an `hstream-stitching-calibration-phase` element message
+around each configuration attempt and the application holds the budget
+suspended for its duration; the reasons are a bitmask, so a pause/resume cycle
+issued in the middle of a calibration does not resume a clock the calibration
+still needs suspended.
 
 `HM_URI_PLAYLIST_BARRIER_STALL_SECONDS` overrides the budget, which defaults to
 300 s; `0` disables the check and restores the old wait-forever behavior, which

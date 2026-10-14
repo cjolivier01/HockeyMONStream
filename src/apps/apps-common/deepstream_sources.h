@@ -249,8 +249,10 @@ struct NvDsSrcParentBin {
   gboolean uri_playlist_barrier_failed;
   /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */
   gboolean uri_playlist_delivery_aborted;
-  /** Excludes native pipeline PAUSED time from the no-progress budget. Guarded by the barrier mutex. */
+  /** Excludes deliberately parked time from the no-progress budget. Guarded by the barrier mutex. */
   gboolean uri_playlist_waits_paused;
+  /** Set of UriPlaylistWaitSuspendReason bits currently holding the clock; the clock runs again only at zero. */
+  guint uri_playlist_wait_suspend_mask;
   gint64 uri_playlist_pause_started_us;
   gint64 uri_playlist_paused_us;
   gboolean uri_playlist_initial_offsets_configured;
@@ -263,6 +265,25 @@ struct NvDsSrcParentBin {
 
 /** Publish process pause before acknowledging a desktop SIGSTOP; clear only after SIGCONT's resume command. */
 void set_uri_playlist_process_paused(gboolean paused);
+
+/**
+ * Independent reasons a run deliberately parks its decoders. The no-progress budget exists to catch a branch that
+ * wedged, so it must not spend while nothing is supposed to be moving. Reasons are tracked separately because they
+ * overlap: a pause/resume cycle issued in the middle of a stitching calibration must not resume a clock the
+ * calibration still needs suspended.
+ */
+typedef enum {
+  /** A native PAUSED transition, or an acknowledged desktop SIGSTOP. */
+  URI_PLAYLIST_WAIT_SUSPEND_PIPELINE_PAUSE = 1 << 0,
+  /** Stitching calibration, which parks the decoders for the whole solve and any review it blocks on. */
+  URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION = 1 << 1,
+} UriPlaylistWaitSuspendReason;
+
+/** Hold or release one suspension reason. Idempotent per reason. */
+void set_uri_playlist_waits_suspended(
+    NvDsSrcParentBin* parent,
+    UriPlaylistWaitSuspendReason reason,
+    gboolean suspended);
 /** Suspend stall accounting before a native PAUSED transition; resume after PLAYING completes. */
 void set_uri_playlist_waits_paused(NvDsSrcParentBin* parent, gboolean paused);
 

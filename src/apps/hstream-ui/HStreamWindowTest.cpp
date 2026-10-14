@@ -262,6 +262,7 @@ struct HStreamWindowTestAccess {
     window->calibration_cuda_out_of_memory_ = false;
     window->calibration_hmstitcher_input_pool_failure_ = false;
     window->calibration_stitch_blender_oom_ = false;
+    window->calibration_stall_watchdog_message_.clear();
   }
 
   static void prepareRinkLevelingProtocol(
@@ -2011,6 +2012,70 @@ bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
   HStreamWindowTestAccess::setActiveStitchMaxOutputWidth(window, 0);
   return generic_valid && width_16384_valid && width_8192_valid && width_6000_valid && width_4096_valid &&
       width_2048_valid && odd_width_valid;
+}
+
+// A watchdog expiry arrives as a bare GStreamer error with no absl status
+// prefix, so the dialog used to discard it and report only "App run failed".
+// It must name the timeout instead, and must not survive into the next run.
+bool test_stall_watchdog_calibration_failure_analysis(HStreamWindow* window) {
+  const auto analyze = [window](const QStringList& diagnostics) {
+    HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+    for (const QString& diagnostic : diagnostics)
+      HStreamWindowTestAccess::recordCalibrationDiagnostic(window, diagnostic);
+    return HStreamWindowTestAccess::calibrationFailureAnalysis(window, "Pipeline failed during stitching calibration");
+  };
+  // The dialog ends with a verbatim tail of the recent diagnostic lines, so the
+  // assertions below read the "Reported cause" paragraph rather than the whole
+  // text: the question is which line the dialog blames, not which lines it echoes.
+  const auto reported_cause = [](const QString& analysis) {
+    const QString heading("Reported cause\n");
+    const int start = analysis.indexOf(heading);
+    if (start < 0)
+      return QString();
+    const int body = start + heading.size();
+    const int end = analysis.indexOf("\n\n", body);
+    return end < 0 ? analysis.mid(body) : analysis.mid(body, end - body);
+  };
+  const QString analysis = analyze({
+      "HSTREAM_CALIBRATION stage=calibration status=failed message=Pipeline failed during stitching calibration",
+      "ERROR from src_elem: Timed out waiting for the paired camera video, so source audio can be aligned: the 300s "
+      "no-progress watchdog expired after neither camera advanced for 300s. Set "
+      "HM_URI_PLAYLIST_BARRIER_STALL_SECONDS to raise this budget, or to 0 to disable the watchdog.",
+      "INTERNAL: App run failed",
+  });
+  if (!expect(
+          reported_cause(analysis).contains("no-progress watchdog expired") &&
+              !reported_cause(analysis).contains("App run failed") &&
+              analysis.contains("A timeout ended this run") &&
+              analysis.contains("Calibration itself does not run under a timeout") &&
+              analysis.contains("HM_URI_PLAYLIST_BARRIER_STALL_SECONDS"),
+          "A watchdog expiry must be reported as a timeout, not as a generic run failure; reported cause was \"" +
+              reported_cause(analysis).toStdString() + "\""))
+    return false;
+
+  // Teardown emits further stall errors from the other barrier waiters; the
+  // dialog must keep the first expiry rather than the last thing it saw.
+  for (int index = 0; index < 30; ++index)
+    HStreamWindowTestAccess::recordCalibrationDiagnostic(
+        window, QString("INTERNAL: noisy teardown diagnostic %1").arg(index));
+  const QString after_teardown =
+      HStreamWindowTestAccess::calibrationFailureAnalysis(window, "Pipeline failed during stitching calibration");
+  if (!expect(
+          after_teardown.contains("A timeout ended this run") &&
+              reported_cause(after_teardown).contains("no-progress watchdog expired") &&
+              !reported_cause(after_teardown).contains("noisy teardown diagnostic"),
+          "Teardown noise must not displace the watchdog expiry in the failure dialog; reported cause was \"" +
+              reported_cause(after_teardown).toStdString() + "\""))
+    return false;
+
+  const QString unrelated = analyze({
+      "FAILED_PRECONDITION: No stitching calibration frame pair produced usable matches",
+  });
+  const bool cleared = expect(
+      !unrelated.contains("A timeout ended this run") && !unrelated.contains("no-progress watchdog"),
+      "A new run must not inherit the previous run's watchdog expiry");
+  HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+  return cleared;
 }
 
 bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
@@ -17355,6 +17420,11 @@ int main(int argc, char** argv) {
 
   if (!test_cuda_oom_calibration_failure_analysis(&window)) {
     std::cerr << "test_cuda_oom_calibration_failure_analysis failed\n";
+    return 1;
+  }
+
+  if (!test_stall_watchdog_calibration_failure_analysis(&window)) {
+    std::cerr << "test_stall_watchdog_calibration_failure_analysis failed\n";
     return 1;
   }
 

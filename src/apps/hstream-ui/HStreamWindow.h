@@ -771,6 +771,8 @@ class HStreamWindow : public QMainWindow {
   bool calibration_cuda_out_of_memory_{false};
   bool calibration_hmstitcher_input_pool_failure_{false};
   bool calibration_stitch_blender_oom_{false};
+  /** First no-progress watchdog expiry seen this run; it outranks the generic terminal status in the failure dialog. */
+  QString calibration_stall_watchdog_message_;
   int calibration_rejected_hypotheses_{0};
   int calibration_rejected_candidates_{0};
   bool calibration_waiting_for_playback_restart_{false};

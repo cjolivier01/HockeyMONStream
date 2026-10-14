@@ -3699,6 +3699,9 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         // The previous pipeline has stopped and its cleanup stack has run.
         // Release its archive locks before the replacement config claims the
         // same output paths. The stage loop must not hold another shared copy.
+        // Drop its watchdog depth too: the replacement may land on the same
+        // address, and would inherit a count it never opened.
+        calibration_watchdog_suspensions_.erase(previous.get());
         previous = std::move(next);
         const absl::Status reload_status = previous->load_config();
         if (!reload_status.ok())
@@ -7042,7 +7045,28 @@ void PipelineApplication::cancel_stitch_frame_completion_timeout() {
 
 gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage* message) {
   const GstStructure* structure = message ? gst_message_get_structure(message) : nullptr;
-  if (!structure || !gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {
+  if (!structure) {
+    return FALSE;
+  }
+  if (gst_structure_has_name(structure, "hstream-stitching-calibration-phase")) {
+    gboolean active = FALSE;
+    if (!app_ctx || !gst_structure_get_boolean(structure, "active", &active)) {
+      return TRUE;
+    }
+    // A stage can run several contexts, each with its own stitcher and its own
+    // source bin, so the depth is tracked per context. Counting rather than
+    // latching keeps a reframe nested inside a configuration from resuming the
+    // watchdog while the outer phase still owns the decoders.
+    int& depth = calibration_watchdog_suspensions_[app_ctx];
+    depth = std::max(0, depth + (active ? 1 : -1));
+    set_uri_playlist_waits_suspended(
+        &app_ctx->pipeline.multi_src_bin, URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION, depth > 0 ? TRUE : FALSE);
+    if (depth == 0) {
+      calibration_watchdog_suspensions_.erase(app_ctx);
+    }
+    return TRUE;
+  }
+  if (!gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {
     return FALSE;
   }
   const auto active_stage = stage_app_contexts_.find(current_stage_);

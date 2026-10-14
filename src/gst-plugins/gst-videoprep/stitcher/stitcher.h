@@ -162,6 +162,23 @@ class StitcherPriv : public STITCH_PRIV_BASE {
     hm::stitching::CalibrationFrameSource left_source;
     hm::stitching::CalibrationFrameSource right_source;
   };
+  /**
+   * Holds the source bin's no-progress watchdog suspended for as long as a calibration owns the decoders.
+   * Calibration routinely outlasts any budget that watchdog could usefully carry: a native-resolution solve
+   * followed by interactive rink leveling and crop review runs for minutes with every decoder deliberately
+   * parked, and from the barrier's side that is indistinguishable from a wedged branch. Suspend it rather
+   * than give calibration a deadline. Scoped so every exit path releases, including the cancellation return.
+   */
+  class CalibrationWatchdogSuspension {
+   public:
+    explicit CalibrationWatchdogSuspension(GstElement* owner);
+    ~CalibrationWatchdogSuspension();
+    CalibrationWatchdogSuspension(const CalibrationWatchdogSuspension&) = delete;
+    CalibrationWatchdogSuspension& operator=(const CalibrationWatchdogSuspension&) = delete;
+
+   private:
+    GstElement* owner_{nullptr};
+  };
   absl::Status ensure_stitcher();
   absl::Status ensure_stitcher_with_artifact_lock();
   absl::Status reload_stitcher();
