@@ -3528,6 +3528,12 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       cfg_files_ = nullptr;
     });
   }
+  if (encode_job_) {
+    for (size_t i = 0; cfg_files_[i]; ++i) {
+      if (!g_str_has_suffix(cfg_files_[i], ".yaml") && !g_str_has_suffix(cfg_files_[i], ".yml"))
+        return absl::InvalidArgumentError("Encoding jobs require YAML pipeline configs (.yaml or .yml)");
+    }
+  }
 
   if (pipline_options) {
     pipeline_options_.clear();

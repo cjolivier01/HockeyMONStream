@@ -341,6 +341,12 @@ class JobScriptTest(unittest.TestCase):
         result = self.generate("--force", "--enable-sinks", "FAKE")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(script.read_bytes(), original)
+        legacy_config = self.root / "legacy.txt"
+        legacy_config.write_text("[application]\nenable-perf-measurement=0\n")
+        result = self.generate("--force", "--config", str(legacy_config))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("require YAML pipeline configs", result.stderr)
+        self.assertEqual(script.read_bytes(), original)
         (self.game / "config.yaml").write_text(json.dumps({
             "hstream_ui": {"job": {"arguments": ["--stitching-calibration-only"]}}
         }))

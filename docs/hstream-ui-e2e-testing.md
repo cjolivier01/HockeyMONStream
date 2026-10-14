@@ -70,6 +70,7 @@ that field use the configured DriveGPT default.
 Standalone `hstream-job --game-dir DIR` also defaults to 4K when the recipe has no file
 encoder; `--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE` overrides its archive selection.
 A legacy calibration-only recipe must be re-exported from the UI.
+Encoding jobs require a YAML pipeline config; legacy DeepStream `.txt` configs are rejected.
 
 Quick export checks:
 

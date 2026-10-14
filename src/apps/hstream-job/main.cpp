@@ -359,6 +359,8 @@ int main(int argc, char** argv) {
     config = fs::absolute(config);
     if (!fs::is_regular_file(config))
       throw std::runtime_error("pipeline config not found; specify --config: " + config.string());
+    if (config.extension() != ".yaml" && config.extension() != ".yml")
+      throw std::runtime_error("encoding jobs require YAML pipeline configs (.yaml or .yml)");
     if (!fs::is_regular_file(runner))
       throw std::runtime_error("hstream-cli not found; build it or specify --runner: " + runner.string());
     runner = fs::canonical(runner);

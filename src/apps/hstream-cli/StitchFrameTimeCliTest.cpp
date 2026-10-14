@@ -90,6 +90,13 @@ int main(int argc, char** argv) {
   const fs::path unusable_trailing_config = root / "unusable-trailing.yaml";
   const fs::path rotation_zero_config = root / "rotation-zero.yaml";
   const fs::path rotation_ten_config = root / "rotation-ten.yaml";
+  const fs::path legacy_config = root / "legacy.txt";
+  std::ofstream(legacy_config) << "[application]\nenable-perf-measurement=0\n";
+  if (!exits_with_argument_error(argv[1], {"--encode-job", "--cfg-file=" + legacy_config.string()})) {
+    std::cerr << "FAIL: an encoding job must reject legacy text configs before pipeline setup\n";
+    fs::remove_all(root);
+    return 1;
+  }
   fs::create_directories(game_dir);
   fs::create_directories(conflict_game_dir);
   fs::create_directories(configured_game_dir);
