@@ -17,3 +17,10 @@ exports_files([
     "player-models/action.json",
     "player-models/reid.json",
 ])
+
+# Offline conversion inputs; playback reads the generated baseline presets.
+filegroup(
+    name = "camera_lens_catalog",
+    srcs = glob(["camera-lenses/**"]),
+    visibility = ["//visibility:public"],
+)

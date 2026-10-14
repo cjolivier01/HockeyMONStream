@@ -21,6 +21,9 @@ Explicit CLI lens/FOV overrides also retain their values. A missing or null
 camera selector does not discard older explicit optics. The `auto` profile in
 `stitching.camera_configs` supplies fallback defaults; the factory profile stays
 available for comparing Vegas against its earlier empirical Mission 1 preset.
+The [camera lens catalog](camera-lens-catalog.md) also provides mode-specific
+community measurements as optional refinement starting points. It does not
+automatically substitute a database profile when metadata is unavailable.
 
 Saving or playing uses the existing calibration invalidation rules when the
 resolved optics change. The input geometry, scoreboard selection and crop review

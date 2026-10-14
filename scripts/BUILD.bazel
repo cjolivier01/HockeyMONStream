@@ -169,3 +169,17 @@ py_test(
     srcs = ["find_obsolete_mp4s.py", "find_obsolete_mp4s_test.py"],
     main = "find_obsolete_mp4s_test.py",
 )
+
+py_test(
+    name = "convert_camera_lens_catalog_test",
+    size = "small",
+    srcs = [
+        "convert_camera_lens_catalog.py",
+        "convert_camera_lens_catalog_test.py",
+    ],
+    data = [
+        "//configs:baseline.yaml",
+        "//configs:camera_lens_catalog",
+    ],
+    main = "convert_camera_lens_catalog_test.py",
+)

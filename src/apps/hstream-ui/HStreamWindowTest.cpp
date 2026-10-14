@@ -165,6 +165,9 @@ struct HStreamWindowTestAccess {
   static hm::stitching::StitchCameraSelection defaultCameraSelection(HStreamWindow* window) {
     return window->default_camera_selection_;
   }
+  static int cameraConfigurationCount(HStreamWindow* window) {
+    return static_cast<int>(window->camera_configurations_.size());
+  }
   static absl::StatusOr<hm::stitching::StitchCameraSelection> cameraSelection(
       HStreamWindow* window, const YAML::Node& config) {
     return window->stitchCameraSelectionFromGameConfig(config);
@@ -4126,7 +4129,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               mapping_backend_label->text() == "Mapping backend" &&
               camera_configuration_label->text() == "Camera configuration" &&
               camera_horizontal_fov_label->text() == "Camera horizontal FOV" &&
-              camera_vertical_fov_label->text() == "Camera vertical FOV" && camera_configuration->count() == 6 &&
+              camera_vertical_fov_label->text() == "Camera vertical FOV" &&
+              camera_configuration->count() == HStreamWindowTestAccess::cameraConfigurationCount(window) &&
               camera_configuration->findData("auto") >= 0 && camera_configuration->findData("manual") >= 0 &&
               camera_configuration->findData("gopro-hero-11") >= 0 &&
               camera_configuration->findData("gopro-mission-1") >= 0 &&
@@ -9522,7 +9526,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   game_id->setText("ui-projection-parameters-game");
   activate(create);
   const bool camera_defaults_available = expect(
-      camera_configuration->count() == 6 && camera_configuration->currentData().toString() == "auto" &&
+      camera_configuration->count() == HStreamWindowTestAccess::cameraConfigurationCount(window) &&
+          camera_configuration->currentData().toString() == "auto" &&
           camera_horizontal_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
           camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov,
       "A new game must expose all camera presets and select Auto");

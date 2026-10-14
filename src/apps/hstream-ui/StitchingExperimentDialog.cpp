@@ -3262,6 +3262,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       "Finder and matcher used to produce stitching control points. Each added candidate keeps its own choice.");
   s.camera_configuration = new QComboBox();
   s.camera_configuration->setObjectName("stitchExperimentCameraConfiguration");
+  s.camera_configuration->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+  s.camera_configuration->setMinimumContentsLength(18);
   s.camera_configuration->setToolTip("Selecting a camera loads its FOV and input-lens defaults for new candidates.");
   s.input_lens = new InputLensWidget();
   s.camera_horizontal_fov = new QDoubleSpinBox();
