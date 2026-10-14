@@ -9,7 +9,10 @@
 namespace hm::stitching {
 namespace {
 YAML::Node child(const YAML::Node& node, const char* key) {
-  return node && node.IsMap() ? node[key] : YAML::Node();
+  if (!node || !node.IsMap())
+    return YAML::Node();
+  const auto value = node[key];
+  return value ? value : YAML::Node();
 }
 std::vector<std::filesystem::path> paths(const YAML::Node& node, const std::filesystem::path& game) {
   std::vector<std::filesystem::path> result;
