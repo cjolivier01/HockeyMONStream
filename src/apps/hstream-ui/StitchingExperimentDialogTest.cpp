@@ -55,6 +55,7 @@
 #endif
 
 #include <cmath>
+#include <cstddef>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -1574,7 +1575,8 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
   require(store.ok(), "Cannot open actual-snapshot store");
   const auto copied = LoadStitchingExperimentStore(*store);
   require(
-      published_between_lookup_and_copy && copied.ok() && copied->experiments.size() == initial_count &&
+      published_between_lookup_and_copy && copied.ok() &&
+          copied->experiments.size() == static_cast<std::size_t>(initial_count) &&
           table->rowCount() == initial_count,
       "Snapshot race fixture must publish after Add lookup and before workspace creation");
   for (int row = 0; row < initial_count; ++row) {
@@ -1605,7 +1607,7 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
       "Actual-snapshot batch did not finish");
   const auto completed = LoadStitchingExperimentStore(*store);
   require(
-      completed.ok() && completed->experiments.size() == initial_count + 1,
+      completed.ok() && completed->experiments.size() == static_cast<std::size_t>(initial_count + 1),
       "Actual-snapshot completed history is missing");
   for (int row = 0; row <= initial_count; ++row)
     require(
