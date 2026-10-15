@@ -1531,7 +1531,8 @@ int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--render-video-sink-only")
     return run_headless_render_video_sink();
   const bool decoder_matrix_only = argc == 2 && std::string(argv[1]) == "--decoder-matrix-only";
-  if (!decoder_matrix_only) {
+  const bool startup_seek_only = argc == 2 && std::string(argv[1]) == "--startup-seek-only";
+  if (!decoder_matrix_only && !startup_seek_only) {
     if (const int rc = run_realtime_render_tests())
       return rc;
   }
@@ -1590,32 +1591,34 @@ int main(int argc, char** argv) {
   // across both aligned and staggered chapter boundaries. Small synthetic
   // inputs qualify ownership/counts; the full-canvas memory regression is in
   // scripts/test_uri_playlist_memory.py.
-  for (const bool main10_codec : {false, true}) {
-    for (const guint extra_surfaces : {0U, 1U, 2U}) {
-      for (const bool low_latency : {false, true}) {
-        std::cout << "Decoder matrix: main10=" << main10_codec << " extra=" << extra_surfaces
-                  << " low-latency=" << low_latency << std::endl;
-        const int matrix_rc = run_lossless_two_camera_mux(
-            main10_codec ? main10 : left_uris,
-            main10_codec ? shifted_main10 : shifted_right_uris,
-            true,
-            0,
-            0,
-            ExpectedPipelineFailure::kNone,
-            0,
-            -1,
-            0,
-            0,
-            0,
-            0,
-            false,
-            45,
-            extra_surfaces,
-            low_latency,
-            true);
-        if (matrix_rc != 0) {
-          fs::remove_all(tmpdir);
-          return matrix_rc;
+  if (!startup_seek_only) {
+    for (const bool main10_codec : {false, true}) {
+      for (const guint extra_surfaces : {0U, 1U, 2U}) {
+        for (const bool low_latency : {false, true}) {
+          std::cout << "Decoder matrix: main10=" << main10_codec << " extra=" << extra_surfaces
+                    << " low-latency=" << low_latency << std::endl;
+          const int matrix_rc = run_lossless_two_camera_mux(
+              main10_codec ? main10 : left_uris,
+              main10_codec ? shifted_main10 : shifted_right_uris,
+              true,
+              0,
+              0,
+              ExpectedPipelineFailure::kNone,
+              0,
+              -1,
+              0,
+              0,
+              0,
+              0,
+              false,
+              45,
+              extra_surfaces,
+              low_latency,
+              true);
+          if (matrix_rc != 0) {
+            fs::remove_all(tmpdir);
+            return matrix_rc;
+          }
         }
       }
     }
@@ -1646,6 +1649,11 @@ int main(int argc, char** argv) {
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;
+  }
+
+  if (startup_seek_only) {
+    fs::remove_all(tmpdir);
+    return 0;
   }
 
   // Drive selected audio ahead while the other camera ends in the middle of this camera's next physical chapter.
