@@ -1,4 +1,5 @@
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 /* clang-format off */
 #include "src/libs/common/Status.h"
@@ -1548,6 +1549,29 @@ absl::Status PipelineApplication::configureInstances(
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
       }
+    }
+    // Configurator reserves files before temporary calibration graphs suppress
+    // their encoders. Only the final effective graph owns publishable outputs;
+    // its unused preparation reservations remain ordinary run scratch.
+    try {
+      for (guint index = 0; index < app_ctx->config.num_sink_sub_bins; ++index) {
+        const auto& sink = app_ctx->config.sink_bin_sub_bin_config[index];
+        if (!sink.enable ||
+            (sink.type != NV_DS_SINK_ENCODE_FILE && sink.type != NV_DS_SINK_ENCODE_STITCHED_FILE &&
+             sink.type != NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) ||
+            hm::publication::EnvironmentManifest().empty())
+          continue;
+        if (!sink.encoder_config.output_file_path || !*sink.encoder_config.output_file_path)
+          return absl::InvalidArgumentError("Managed encoder has no output path");
+        hm::publication::RegisterOutput(
+            sink.encoder_config.output_file_path,
+            sink.type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE     ? "program-4k"
+                : sink.type == NV_DS_SINK_ENCODE_STITCHED_FILE ? "stitched"
+                                                               : "program",
+            sink.encoder_config.codec == NV_DS_ENCODER_H265);
+      }
+    } catch (const std::exception& error) {
+      return absl::InternalError(error.what());
     }
     const bool launched_by_ui = std::getenv("HSTREAM_UI_PARENT_PID") != nullptr;
     if (hm::playback_progress_sampling_enabled(app_ctx->config.enable_perf_measurement, launched_by_ui)) {
@@ -7645,6 +7669,7 @@ gboolean PipelineApplication::event_thread_func() {
           resume_pipeline(app_ctx[i].get());
       break;
     case 'q':
+      player_scan_interrupted_ = TRUE;
       quit_ = TRUE;
       if (main_loop_)
         g_main_loop_quit(main_loop_);
@@ -7764,6 +7789,7 @@ gpointer PipelineApplication::nvds_x_event_thread() {
             break;
           }
           if (e.xkey.keycode == q) {
+            player_scan_interrupted_ = TRUE;
             quit_ = TRUE;
             if (main_loop_)
               g_main_loop_quit(main_loop_);
@@ -7779,6 +7805,7 @@ gpointer PipelineApplication::nvds_x_event_thread() {
               break;
           wm_delete = XInternAtom(display_, "WM_DELETE_WINDOW", 1);
           if (wm_delete != None && wm_delete == (Atom)e.xclient.data.l[0]) {
+            player_scan_interrupted_ = TRUE;
             quit_ = TRUE;
             if (main_loop_)
               g_main_loop_quit(main_loop_);
@@ -8086,10 +8113,38 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   ui_preview_channels_.clear();
   preview_overlay_producers_.clear();
   preview_overlay_probe_flags_.store(0, std::memory_order_release);
+  // Keep this exact generation alive through NULL so a telemetry writer that
+  // initialized during preroll can be identified after its final close.
+  GstElement* retired_tracker = calibration_restart && !hm::publication::EnvironmentManifest().empty()
+      ? app_ctx_ptr->pipeline.dsplaytracker_bin.elem_dsplaytracker
+      : nullptr;
+  bool calibration_stopped = true;
+  if (retired_tracker) {
+    gst_object_ref(retired_tracker);
+    app_ctx_ptr->eos_received = TRUE;
+    calibration_stopped = stop_pipeline_gracefully(app_ctx_ptr, 5 * GST_SECOND);
+  }
   if (calibration_restart || runtime_seek_restart) {
     destroy_pipeline_for_recreate(app_ctx_ptr);
   } else {
     destroy_pipeline(app_ctx_ptr);
+  }
+  if (retired_tracker) {
+    gchar* telemetry_path = nullptr;
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(retired_tracker), "telemetry-output-path"))
+      g_object_get(retired_tracker, "telemetry-output-path", &telemetry_path, nullptr);
+    const std::string path = telemetry_path ? telemetry_path : "";
+    g_free(telemetry_path);
+    gst_object_unref(retired_tracker);
+    if (!calibration_stopped)
+      return FALSE;
+    try {
+      if (!path.empty())
+        hm::publication::RetireOutput(path);
+    } catch (const std::exception& error) {
+      g_printerr("Cannot retire calibration telemetry: %s\n", error.what());
+      return FALSE;
+    }
   }
   {
     std::lock_guard<std::mutex> lock(playback_timing_mu_);
@@ -8778,6 +8833,11 @@ int main(int argc, char* argv[]) {
   PipelineApplication app;
   absl::Status status = app.run(argc, argv);
   disable_perf_measurement();
+  try {
+    hm::publication::CompletePipeline(status.ok() && !app.was_interrupted(), app.publication_start_ms());
+  } catch (const std::exception& error) {
+    status = absl::InternalError(error.what());
+  }
   if (!status.ok()) {
     hm::diagnostics::Log("pipeline-error", status.ToString());
     std::cerr << status << std::endl;

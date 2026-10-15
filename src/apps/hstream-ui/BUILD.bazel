@@ -210,7 +210,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = ["@qt//:qt_core", "//src/libs/recording"],
+    deps = ["@qt//:qt_core", "//src/libs/recording", "//src/libs/publication"],
 )
 
 cc_library(
@@ -671,6 +671,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/publication",
         "//src/libs/stitching:auto_input_lens",
         ":input_lens_widget",
         ":native_preview_surface",
@@ -1044,4 +1045,14 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":input_lens_widget", "//src/libs/stitching:game_config", "@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "managed_publication_test",
+    srcs = ["ManagedPublicationTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+    deps = [":hstream_window", "//src/libs/publication", "@qt//:qt_test", "@qt//:qt_widgets"],
 )

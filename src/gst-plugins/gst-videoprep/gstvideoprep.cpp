@@ -165,6 +165,7 @@ enum {
   PROP_CANCEL_PENDING_WORK,
   PROP_WAITING_FOR_USER_INPUT,
   PROP_FINALIZE_TELEMETRY,
+  PROP_TELEMETRY_OUTPUT_PATH,
   PROP_LAST_PROPERTY_SET_OK,
   PROP_SILENT,
 };
@@ -1365,6 +1366,16 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_TELEMETRY_OUTPUT_PATH,
+      g_param_spec_string(
+          "telemetry-output-path",
+          "Telemetry output path",
+          "Exact database owned by this playtracker generation, retained through shutdown",
+          NULL,
+          GParamFlags(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_LAST_PROPERTY_SET_OK,
       g_param_spec_boolean(
           "last-property-set-ok",
@@ -2044,6 +2055,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_WAITING_FOR_USER_INPUT:
       g_value_set_boolean(value, videoprep->priv && videoprep->priv->WaitingForUserInput());
+      break;
+    case PROP_TELEMETRY_OUTPUT_PATH:
+      g_value_set_string(value, static_cast<const gchar*>(g_object_get_data(object, "hstream-telemetry-output-path")));
       break;
     case PROP_LAST_PROPERTY_SET_OK:
       g_value_set_boolean(value, videoprep->last_property_set_ok);

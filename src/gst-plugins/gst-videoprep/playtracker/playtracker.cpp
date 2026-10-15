@@ -24,6 +24,7 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/TempFile.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "nvbufsurface.h"
 #include "nvdsmeta.h"
 
@@ -155,6 +156,12 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     return status;
   }
   if (!telemetry_csv_dir_.empty()) {
+    // Caps renegotiation can replace this implementation before its first
+    // frame. The element retains the exact prior writer across that replacement.
+    const auto* previous_path = m_element
+        ? static_cast<const gchar*>(g_object_get_data(G_OBJECT(m_element), "hstream-telemetry-output-path"))
+        : nullptr;
+    const std::string previous_telemetry = previous_path ? previous_path : telemetry_csv_.output_manifest();
     telemetry_rink_mask_.release();
     telemetry_canvas_ = {};
     telemetry_geometry_.reset();
@@ -176,6 +183,20 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
         telemetry_game_id_);
     if (!telemetry_status.ok()) {
       return telemetry_status;
+    }
+    try {
+      if (!previous_telemetry.empty() && previous_telemetry != telemetry_csv_.output_manifest())
+        hm::publication::RetireOutput(previous_telemetry, /*require_empty_telemetry=*/true);
+      hm::publication::RegisterOutput(telemetry_csv_.output_manifest(), "telemetry");
+      if (m_element) {
+        g_object_set_data_full(
+            G_OBJECT(m_element),
+            "hstream-telemetry-output-path",
+            g_strdup(telemetry_csv_.output_manifest().c_str()),
+            g_free);
+      }
+    } catch (const std::exception& error) {
+      return absl::InternalError(error.what());
     }
     std::cout << "Playtracker telemetry database: " << telemetry_csv_.output_manifest() << std::endl;
     std::cout << "HSTREAM_TELEMETRY manifest=" << telemetry_csv_.output_manifest() << std::endl;

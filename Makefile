@@ -43,7 +43,7 @@ WINDOWS_SIGNING_TIMESTAMP_URL ?= http://timestamp.digicert.com
 all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
-	hstream-job hstream-cli run-hstream-cli hstream-ui run-hstream-ui \
+	hstream-job hstream-finalize hstream-cli run-hstream-cli hstream-ui run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
 	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release \
 	deepstream-deb deepstream-deb-ubuntu24 deepstream-deb-ubuntu26
@@ -86,6 +86,9 @@ qualify-native-onnx:
 
 hstream-cli:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-cli:hstream-cli
+
+hstream-finalize:
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-finalize:hstream-finalize
 
 hstream-job:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-job:hstream-job
@@ -214,6 +217,7 @@ print_targets:
 		'Apps' \
 		'----' \
 		'hstream-job   Build the standalone job script exporter.' \
+		'hstream-finalize Build the headless publisher and cleanup supervisor.' \
 		'hstream-cli   Build //src/apps/hstream-cli:hstream-cli.' \
 		'run-hstream-cli  Run hstream-cli with the canonical hockey config (RENDER sink).' \
 		'hstream-ui    Build //src/apps/hstream-ui:hstream-ui.' \

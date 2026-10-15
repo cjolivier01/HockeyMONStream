@@ -63,14 +63,15 @@ hstream-ui before the save dialogs or any settings are written. Switch to Progra
 to change the disabled Program archive checkboxes. The Render video checkbox still
 controls local Play.
 
-The generated script invokes `hstream-cli --encode-job`, which requires an enabled file
-encoder after configuration resolution, disables render sinks and previews, and writes
-selected archives directly as MP4. Custom output directories and basenames are retained;
-the extension becomes `.mp4`. Stitched jobs retain their independent output path and
-bitrate; the legacy calibration aliases from Program output settings apply only to local
-calibration runs. MP4s and DriveGPT databases stay in working storage
-(normally `~/hstream_output/<game-id>`), without the UI's game-directory publication.
-MP4 completion requires graceful EOS; abrupt process termination can leave an unfinished file.
+The generated script invokes `hstream-finalize`, which supervises `hstream-cli --encode-job`,
+requires its completed run manifest, publishes faststart MP4s and telemetry in the game
+directory, and removes owned working files only after all required outputs are saved.
+Each export has a fixed run ID: repeating its script resumes finalization/cleanup without
+encoding again; export a new script for another run. Custom working output paths remain
+supported. Stitched jobs retain their independent output path and bitrate. Direct
+`hstream-cli --encode-job` without the managed wrapper still writes MP4 in working storage
+without publication or faststart. See [the lifecycle](../LIFECYCLE.md) for staging, receipts,
+failure recovery and cleanup.
 
 DriveGPT capture defaults on for Program jobs. Export freezes the current checkbox choice in the script,
 including an explicit off choice, so later UI saves do not change it. Old recipes without

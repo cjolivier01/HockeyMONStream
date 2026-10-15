@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -89,10 +90,10 @@ class JobScriptTest(unittest.TestCase):
             check=False,
         )
         self.assertIn(
-            "Encoded MP4s and DriveGPT databases remain in CLI working storage",
+            "Publishing completed outputs to",
             run.stdout,
         )
-        self.assertIn(self.env["HM_OUTPUT_WORK_DIR"], run.stdout)
+        self.assertIn(str(self.game), run.stdout)
         self.assertEqual(run.returncode, 7)
         actual = json.loads(self.output.read_text())
         self.assertEqual(
@@ -136,6 +137,107 @@ class JobScriptTest(unittest.TestCase):
                     actual["argv"],
                 )
 
+    def test_execution_resolves_layered_output_root(self):
+        home = self.root / "root-resolution-home"
+        (home / ".hstream").mkdir(parents=True)
+        baseline = self.root / "root-resolution-config"
+        baseline.mkdir()
+        self.env["HOME"] = str(home)
+        self.env["HM_CONFIG_ROOT"] = str(baseline)
+        self.env.pop("HM_OUTPUT_WORK_DIR", None)
+        baseline_root = self.root / "baseline work"
+        user_root = self.root / "user work"
+        game_root = self.root / "game work"
+        cli_root = self.root / "CLI 'quoted' work"
+        env_root = self.root / "environment work"
+        for name, user_paths, game_paths, options, environment, expected in (
+            ("baseline", None, None, [], None, baseline_root),
+            ("user", {"output-root": str(user_root)}, None, [], None, user_root),
+            ("game", {"output-root": str(user_root)}, {"output-root": str(game_root)}, [], None, game_root),
+            ("other-path", {"output-root": str(user_root)}, {"game-root": "unrelated"}, [], None, user_root),
+            ("clear-paths", {"output-root": str(user_root)}, None, [], None, home / "hstream_output"),
+            ("relative", None, {"output-root": "relative-work"}, [], None, home / "relative-work"),
+            ("tilde", None, {"output-root": "~/tilde-work"}, [], None, home / "tilde-work"),
+            ("CLI", {"output-root": str(user_root)}, {"output-root": str(game_root)},
+             ["--options=paths.output-root=" + str(cli_root)], None, cli_root),
+            ("group-order", None, {"output-root": str(game_root)},
+             ["--options", "paths.output-root=ignored,paths.output-root=also-ignored",
+              "-p", "unrelated=1,paths.output-root=" + str(cli_root)], None, cli_root),
+            ("first-in-group", None, None,
+             ["-ppaths.output-root=" + str(cli_root) + ",paths.output-root=ignored"], None, cli_root),
+            ("environment", {"output-root": str(user_root)}, {"output-root": str(game_root)},
+             ["--options=paths.output-root=" + str(cli_root)], env_root, env_root),
+        ):
+            with self.subTest(layer=name):
+                # Export against different file contents, then change them:
+                # the script must resolve live config, while preserving its
+                # saved option arguments.
+                (baseline / "baseline.yaml").write_text("{}")
+                (home / ".hstream/hstream.yaml").write_text("{}")
+                (self.game / "config.yaml").write_text(json.dumps({
+                    "hstream_ui": {"job": {"arguments": options}}
+                }))
+                self.env.pop("HM_OUTPUT_WORK_DIR", None)
+                self.assertEqual(self.generate("--force").returncode, 0)
+                (baseline / "baseline.yaml").write_text(json.dumps({
+                    "paths": {"output-root": str(baseline_root)}
+                }))
+                (home / ".hstream/hstream.yaml").write_text(json.dumps(
+                    {"paths": user_paths} if user_paths is not None else {}
+                ))
+                (self.game / "config.yaml").write_text(json.dumps(
+                    {"paths": game_paths} if game_paths is not None or name == "clear-paths" else {}
+                ))
+                if environment:
+                    self.env["HM_OUTPUT_WORK_DIR"] = str(environment)
+                run = subprocess.run([str(self.game / "hstream-job.sh")], env=self.env,
+                                     text=True, capture_output=True, check=False)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                actual = json.loads(self.output.read_text())
+                manifest = Path(actual["env"]["HSTREAM_JOB_MANIFEST"])
+                self.assertEqual(manifest.parents[3], expected)
+                self.assertEqual(actual["argv"][5:5 + len(options)], options)
+
+    def test_explicit_finalizer_work_root_remains_authoritative(self):
+        finalizer = Path(TOOL).parent.parent / "hstream-finalize/hstream-finalize"
+        explicit = self.root / "explicit helper work"
+        run = subprocess.run([
+            str(finalizer), "--game-dir", str(self.game), "--run-id", "explicit-root-test",
+            "--work-root", str(explicit), "--options", "paths.output-root=ignored",
+            "--", str(self.runner),
+        ], env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(Path(actual["env"]["HSTREAM_JOB_MANIFEST"]).parents[3], explicit)
+
+    def test_failed_retry_keeps_admitted_root_after_configuration_changes(self):
+        self.env.pop("HM_OUTPUT_WORK_DIR", None)
+        self.env["HOME"] = str(self.root / "retry-home")
+        Path(self.env["HOME"]).mkdir()
+        original = self.root / "original work"
+        changed = self.root / "changed work"
+        config = json.loads((self.game / "config.yaml").read_text())
+        config["paths"] = {"output-root": str(original)}
+        (self.game / "config.yaml").write_text(json.dumps(config))
+        generated = self.generate()
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        script = self.game / "hstream-job.sh"
+        run = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 7, (run.stdout, run.stderr))
+        actual = json.loads(self.output.read_text())
+        manifest = Path(actual["env"]["HSTREAM_JOB_MANIFEST"])
+        self.assertEqual(manifest.parents[3], original)
+        self.output.unlink()
+        config["paths"]["output-root"] = str(changed)
+        for contents in (json.dumps(config), "invalid: ["):
+            (self.game / "config.yaml").write_text(contents)
+            retried = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
+            self.assertEqual(retried.returncode, 1, (retried.stdout, retried.stderr))
+            self.assertIn("Encoding did not complete", retried.stderr)
+            self.assertIn(str(manifest.parent), retried.stderr)
+            self.assertFalse(self.output.exists(), "failed encoding cannot be restarted")
+            self.assertFalse(changed.exists(), "retry cannot create a second workspace")
+
     def test_symlinked_game_keeps_its_logical_id(self):
         alias = self.root / "linked-game"
         alias.symlink_to(self.game, target_is_directory=True)
@@ -146,6 +248,32 @@ class JobScriptTest(unittest.TestCase):
         self.assertEqual(actual["argv"][:2], ["-g", "linked-game"])
         self.assertEqual(actual["env"]["HM_GAME_DIR"], str(self.root))
 
+    def test_cancellation_reaches_runner_and_preserves_failure(self):
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport json, os, time\n"
+            "with open(os.environ['JOB_TEST_OUTPUT'], 'w') as f: json.dump({'pid':os.getpid()}, f)\n"
+            "time.sleep(60)\n"
+        )
+        self.assertEqual(self.generate().returncode, 0)
+        process = subprocess.Popen([str(self.game / "hstream-job.sh")], env=self.env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 5
+            while not self.output.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.output.exists(), "runner started")
+            runner_pid = json.loads(self.output.read_text())["pid"]
+            process.terminate()
+            stdout, stderr = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 143, (stdout, stderr))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(runner_pid, 0)
+            self.assertTrue(list(Path(self.env["HM_OUTPUT_WORK_DIR"]).glob("*/runs/*/run.yaml")))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
     def test_overwrite_and_invalid_directives(self):
         self.assertEqual(self.generate().returncode, 0)
         script = self.game / "hstream-job.sh"
@@ -153,6 +281,7 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotEqual(self.generate().returncode, 0)
         self.assertEqual(script.read_bytes(), original)
         self.assertEqual(self.generate("--force").returncode, 0)
+        original = script.read_bytes()
         self.assertNotEqual(
             self.generate(
                 "--force", "--sbatch", "--partition=gpu\ntouch INJECTED"
@@ -188,6 +317,10 @@ class JobScriptTest(unittest.TestCase):
             )
             runner.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.runner, runner)
+            finalizer = (bin_dir / "hstream-finalize" if installed
+                         else bin_dir.parent / "hstream-finalize/hstream-finalize")
+            finalizer.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(Path(TOOL).parent.parent / "hstream-finalize/hstream-finalize", finalizer)
             wrapper_called = layout / "wrapper-called"
             wrapper = layout / "run.sh"
             wrapper.write_text(f"#!/bin/sh\ntouch {wrapper_called}\nexit 99\n")
@@ -268,6 +401,9 @@ class JobScriptTest(unittest.TestCase):
             )
             self.assertNotIn("HSTREAM_JOB_RUNTIME_ROOT", actual["env"])
             self.assertNotIn("HSTREAM_JOB_BAZEL_BIN", actual["env"])
+            run_dir = Path(actual["env"]["HSTREAM_JOB_MANIFEST"]).parent
+            self.assertEqual(Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"]), run_dir / "runtime")
+            self.assertFalse((layout / ".cache").exists())
             if installed:
                 self.assertIn(
                     str(layout / "lib/gst-plugins"),
@@ -293,6 +429,13 @@ class JobScriptTest(unittest.TestCase):
                 # core-only cache which fails later during model loading.
                 (runtime_source / "libonnxruntime_providers_cuda.so").unlink()
                 self.output.unlink()
+                # A failed run is immutable. Export a fresh run to exercise
+                # runtime preparation rather than retrying the previous failure.
+                generated = subprocess.run(
+                    [str(tool), "--game-dir", str(game), "--force"],
+                    cwd="/", env=env, text=True, capture_output=True,
+                )
+                self.assertEqual(generated.returncode, 0, generated.stderr)
                 missing = subprocess.run(
                     [str(game / "hstream-job.sh")],
                     cwd="/",
@@ -302,8 +445,37 @@ class JobScriptTest(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(missing.returncode, 78)
-                self.assertIn("Missing ONNX Runtime library", missing.stderr)
+                logs = Path(env["HM_OUTPUT_WORK_DIR"]).glob("*/runs/*/pipeline.log")
+                self.assertTrue(any("Missing ONNX Runtime library" in log.read_text() for log in logs))
                 self.assertFalse(self.output.exists())
+
+    def test_rejected_concurrent_launch_creates_no_runtime_scratch(self):
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport json, os, time\n"
+            "with open(os.environ['JOB_TEST_OUTPUT'], 'w') as f: json.dump(dict(os.environ), f)\n"
+            "time.sleep(60)\n"
+        )
+        self.assertEqual(self.generate().returncode, 0)
+        script = self.game / "hstream-job.sh"
+        process = subprocess.Popen([str(script)], env=self.env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 5
+            while not self.output.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.output.exists(), "runner started")
+            actual = json.loads(self.output.read_text())
+            runtime = Path(actual["HSTREAM_RUNTIME_CACHE_DIR"])
+            self.assertEqual(runtime, Path(actual["HSTREAM_JOB_MANIFEST"]).parent / "runtime")
+            before = {str(path) for path in self.root.rglob("*")}
+            rejected = subprocess.run([str(script)], env=self.env, text=True,
+                                      capture_output=True, timeout=5)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertEqual({str(path) for path in self.root.rglob("*")}, before)
+            self.assertFalse((self.root / ".cache").exists())
+        finally:
+            process.terminate()
+            process.communicate(timeout=5)
 
     def test_headless_encoding_defaults_and_selections(self):
         for sinks, expected in (

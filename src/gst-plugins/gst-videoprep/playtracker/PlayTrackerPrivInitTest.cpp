@@ -2,6 +2,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 
 #include "absl/status/status.h"
@@ -780,6 +781,41 @@ int main() {
     std::cerr << "could not replay immediately after a mask revision: " << geometry_session.status() << '\n';
     return 44;
   }
+
+  // The GObject survives replacement of the caps-specific implementation.
+  // Empty initial preroll telemetry is retired, but recorded frames cannot be
+  // discarded merely because caps changed.
+  const auto managed_game = tmpdir / "managed-game";
+  fs::create_directories(managed_game);
+  const auto manifest = hm::publication::CreateRun(managed_game, tmpdir / "managed-work", "caps-replacement-test");
+  hm::publication::BeginRun(manifest, true);
+  setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
+  GstElement* managed_element = gst_element_factory_make("identity", "managed-caps-owner");
+  if (!managed_element)
+    return 49;
+  params.m_element = GST_BASE_TRANSFORM(managed_element);
+  for (int generation = 0; generation < 3; ++generation) {
+    TestPlayTrackerPriv caps_priv(/*gpu_id=*/0, /*batch_size=*/1);
+    if (!caps_priv.SetProperty(hm::Property("telemetry-db-dir", manifest.parent_path().string())) ||
+        !caps_priv.PreCapsInit(&params).ok())
+      return 50;
+    const auto initialized = caps_priv.PostCapsInit(&params);
+    if (initialized.ok() != (generation < 2)) {
+      std::cerr << "Caps replacement must retire only an empty prior telemetry generation: " << initialized << '\n';
+      return 51;
+    }
+    if (generation == 1 && !generate_export_sample(caps_priv, 1))
+      return 52;
+  }
+  const auto managed_run = YAML::LoadFile(manifest.string());
+  if (managed_run["outputs"].size() != 2 || !managed_run["outputs"][0]["retired"].as<bool>(false) ||
+      managed_run["outputs"][1]["retired"].as<bool>(false)) {
+    std::cerr << "Caps replacement lost the previous recording's ownership\n";
+    return 53;
+  }
+  unsetenv("HSTREAM_JOB_MANIFEST");
+  params.m_element = nullptr;
+  gst_object_unref(managed_element);
 
   if (params.m_inCaps) {
     gst_caps_unref(params.m_inCaps);

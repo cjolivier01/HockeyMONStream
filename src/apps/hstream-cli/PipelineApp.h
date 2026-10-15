@@ -93,6 +93,12 @@ class PipelineApplication {
    * @return absl::Status indicating success or error.
    */
   absl::Status run(int argc, char* argv[]);
+  bool was_interrupted() const {
+    return player_scan_interrupted_ || cintr_;
+  }
+  int64_t publication_start_ms() const {
+    return start_time_ns_ / GST_MSECOND;
+  }
 
   // Helper functions for pipeline initialization and execution.
   absl::Status initializeInstances(CleanupStack& cleanup_stack);

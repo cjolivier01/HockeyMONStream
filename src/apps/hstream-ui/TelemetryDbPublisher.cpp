@@ -10,6 +10,7 @@
 #include <QtCore/QTemporaryFile>
 #include <cerrno>
 #include <stdexcept>
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 
 namespace {
@@ -83,23 +84,7 @@ TelemetryCsvPublicationResult publish_telemetry_database(
       throw std::runtime_error(stage.errorString().toStdString());
     const QString staged_path = stage.fileName();
     stage.close();
-    {
-      hm::recording::Database output(staged_path.toStdString(), true);
-      sqlite3_backup* backup = sqlite3_backup_init(output.get(), "main", input.get(), "main");
-      if (!backup)
-        throw std::runtime_error(sqlite3_errmsg(output.get()));
-      int code;
-      do {
-        code = sqlite3_backup_step(backup, 256);
-      } while (code == SQLITE_OK);
-      const int finished = sqlite3_backup_finish(backup);
-      if (code != SQLITE_DONE || finished != SQLITE_OK)
-        throw std::runtime_error("Database snapshot copy failed");
-      output.Validate();
-      hm::recording::Statement check(output.get(), "PRAGMA quick_check");
-      if (!check.Next() || check.Text(0) != "ok")
-        throw std::runtime_error("Copied database failed integrity check");
-    }
+    hm::publication::CopyTelemetrySnapshot(source.toStdString(), staged_path.toStdString(), game_id);
     const int file = open(QFile::encodeName(staged_path).constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (file < 0)
       throw std::runtime_error("Cannot synchronize database copy");

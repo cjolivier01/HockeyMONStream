@@ -1,5 +1,7 @@
 #include "configurator.h"
 #include "hstream/src/libs/common/PinnedFile.h"
+#include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/recording/Database.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 
 #include <dirent.h>
@@ -4126,12 +4128,14 @@ absl::StatusOr<std::optional<fs::path>> configurator_internal::preserve_existing
 
 absl::StatusOr<fs::path> configurator_internal::reserve_unique_archive_work_file(
     const fs::path& configured_path,
-    const std::string& run_id) {
+    const std::string& run_id,
+    bool managed) {
   static const std::regex safe_run_id(R"(^[A-Za-z0-9_-]{1,128}$)");
   if (!std::regex_match(run_id, safe_run_id))
     return absl::InvalidArgumentError("HSTREAM_ARCHIVE_RUN_ID contains unsafe characters");
   const fs::path run_path = configured_path.parent_path() /
-      (configured_path.stem().string() + ".hstream-run-" + run_id + configured_path.extension().string());
+      (configured_path.stem().string() + (managed ? ".hstream-managed-" : ".hstream-run-") + run_id +
+       configured_path.extension().string());
   const int reservation_fd = ::open(run_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
   if (reservation_fd < 0) {
     const int saved_errno = errno;
@@ -6276,6 +6280,8 @@ constexpr size_t kPlaytrackerRuntimeRetentionCount = 8;
 constexpr auto kPlaytrackerRuntimeGracePeriod = std::chrono::hours(24);
 
 fs::path playtracker_runtime_directory(const fs::path& game_dir) {
+  if (const auto managed_work = hm::publication::EnvironmentWorkingDirectory(); !managed_work.empty())
+    return managed_work / "playtracker-runtime";
   if (!game_dir.empty())
     return game_dir / "hstream-runtime";
   if (const char* runtime_root = std::getenv("XDG_RUNTIME_DIR"); runtime_root && *runtime_root) {
@@ -7511,11 +7517,17 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
       auto root = user_config::output_root(config_);
       if (!root.ok())
         return root.status();
-      telemetry_directory = (*root / game_id_).string();
+      const auto managed_work = hm::publication::EnvironmentWorkingDirectory();
+      telemetry_directory = managed_work.empty() ? (*root / game_id_).string() : managed_work.string();
     }
     properties["telemetry-game-id"] = game_id_;
   } else {
     telemetry_directory.clear();
+  }
+  try {
+    hm::publication::RequireTelemetry(capture);
+  } catch (const std::exception& error) {
+    return absl::InternalError(error.what());
   }
   properties["telemetry-db-dir"] = telemetry_directory;
   // Typed private strings are applied last by the bin builders. Keep their
@@ -7610,7 +7622,9 @@ absl::Status Configurator::configure_encode_file_outputs(
       auto configured_output_root = user_config::output_root(config_);
       if (!configured_output_root.ok())
         return configured_output_root.status();
-      output_work_dir = *configured_output_root / game_id_;
+      output_work_dir = hm::publication::EnvironmentWorkingDirectory();
+      if (output_work_dir->empty())
+        output_work_dir = *configured_output_root / game_id_;
     }
 
     const int sink_id = get_node_value<int>(sink_node, "sink-id", -1);
@@ -7621,7 +7635,7 @@ absl::Status Configurator::configure_encode_file_outputs(
     }
 
     fs::path output_path(output_file);
-    if (encode_job_)
+    if (encode_job_ && hm::publication::EnvironmentManifest().empty())
       output_path.replace_extension(".mp4");
     const bool output_was_rebased = !output_path.has_parent_path();
     if (output_was_rebased) {
@@ -7754,8 +7768,18 @@ absl::Status Configurator::configure_encode_file_outputs(
       if (existing_run_path != archive_run_paths_.end()) {
         output_path = existing_run_path->second;
       } else {
-        const std::string owned_run_id = "v3-" + std::to_string(::getpid()) + "-" + archive_run_id;
-        auto unique_output = configurator_internal::reserve_unique_archive_work_file(output_path, owned_run_id);
+        const bool managed = !hm::publication::EnvironmentManifest().empty();
+        std::string owned_run_id;
+        try {
+          // A managed manifest owns these paths across failed publication and
+          // later jobs. Keep them outside legacy stale-run recovery, and give
+          // each replacement calibration Configurator a fresh reservation.
+          owned_run_id = managed ? hm::recording::NewGuid() : "v3-" + std::to_string(::getpid()) + "-" + archive_run_id;
+        } catch (const std::exception& error) {
+          return absl::InternalError(error.what());
+        }
+        auto unique_output =
+            configurator_internal::reserve_unique_archive_work_file(output_path, owned_run_id, managed);
         if (!unique_output.ok())
           return unique_output.status();
         output_path = *unique_output;
@@ -7767,6 +7791,17 @@ absl::Status Configurator::configure_encode_file_outputs(
         }
         archive_work_lock_fds_.emplace(configured_output_path, *work_lock);
         archive_run_paths_.emplace(configured_output_path, output_path);
+        if (managed) {
+          try {
+            // Even unused calibration reservations can be outside the private
+            // workspace. Register their exact inodes before the sink writes.
+            hm::publication::RegisterScratch(output_path);
+            hm::publication::RegisterScratch(
+                configurator_internal::archive_work_owner_lock_path(output_path), {}, *work_lock);
+          } catch (const std::exception& error) {
+            return absl::InternalError(error.what());
+          }
+        }
       }
     }
 

@@ -279,6 +279,12 @@ class HStreamWindow : public QMainWindow {
       bool hevc_video,
       bool stitched_archive,
       const QString& output_id = "archive-file");
+  void ensureArchiveFinalizationDialog();
+  void startManagedArchiveFinalization();
+  void showManagedArchiveFinalizationFailure(
+      const QString& detail,
+      const std::deque<PendingArchiveFinalization>& outputs,
+      const QString& recovery_manifest);
   void startNextArchiveFinalization();
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
@@ -817,6 +823,7 @@ class HStreamWindow : public QMainWindow {
   bool active_stitched_archive_video_is_hevc_{false};
   QString archive_job_log_output_kind_;
   std::deque<PendingArchiveFinalization> pending_archive_finalizations_;
+  QString managed_archive_manifest_;
   QProcess* archive_finalize_process_{nullptr};
   QThread* telemetry_publication_worker_{nullptr};
   QDialog* archive_finalize_dialog_{nullptr};

@@ -29,6 +29,13 @@ cc_test(
 )
 
 cc_library(
+    name = "pinned_file",
+    hdrs = ["PinnedFile.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "utils",
     srcs = [
         "ApplicationPayload.cpp",
@@ -40,7 +47,6 @@ cc_library(
     hdrs = [
         "ApplicationPayload.h",
         "ConfigYaml.h",
-        "PinnedFile.h",
         "PlotContext.h",
         "RenderSet.h",
         "TempFile.h",
@@ -54,6 +60,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":pinned_file",
         ":process",
         ":utils_base",
         ":status",
@@ -129,6 +136,22 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "output_root_config",
+    srcs = ["OutputRootConfig.cpp"],
+    hdrs = ["OutputRootConfig.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":baseline_config",
+        ":user_config",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
