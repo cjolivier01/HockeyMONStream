@@ -35,8 +35,8 @@
 #include "deepstream_common.h"
 #include "deepstream_sinks.h"
 
-#include "hstream/src/apps/apps-common/EncoderDimensions.h"
 #include "hstream/src/apps/apps-common/ArchiveWatermark.h"
+#include "hstream/src/apps/apps-common/EncoderDimensions.h"
 #include "hstream/src/apps/apps-common/HStreamBatchDemux.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
@@ -104,14 +104,12 @@ std::pair<guint, guint> fit_render_size_to_aspect(
     return {box_width, box_height};
   }
 
-  const guint height_from_width =
-      rounded_ratio_to_even(static_cast<guint64>(box_width) * input_height, input_width);
+  const guint height_from_width = rounded_ratio_to_even(static_cast<guint64>(box_width) * input_height, input_width);
   if (height_from_width <= box_height) {
     return {box_width, height_from_width};
   }
 
-  const guint width_from_height =
-      rounded_ratio_to_even(static_cast<guint64>(box_height) * input_width, input_height);
+  const guint width_from_height = rounded_ratio_to_even(static_cast<guint64>(box_height) * input_width, input_height);
   return {width_from_height, box_height};
 }
 
@@ -136,8 +134,7 @@ GstCaps* make_render_video_caps(const char* format, const NvDsSinkRenderConfig* 
     gst_structure_set(structure, "format", G_TYPE_STRING, format, NULL);
   }
   if (config && config->width > 0 && config->height > 0) {
-    gst_structure_set(
-        structure, "width", G_TYPE_INT, config->width, "height", G_TYPE_INT, config->height, NULL);
+    gst_structure_set(structure, "width", G_TYPE_INT, config->width, "height", G_TYPE_INT, config->height, NULL);
   }
   return caps;
 }
@@ -215,12 +212,7 @@ GstPadProbeReturn update_render_aspect_caps_from_caps(GstPad*, GstPadProbeInfo* 
       state->system_memory_cap_filter, &fitted_config, state->system_caps_format, state->system_caps_nvmm);
   if (state->resize_sink_window && state->sink) {
     g_object_set(
-        G_OBJECT(state->sink),
-        "window-width",
-        fitted_config.width,
-        "window-height",
-        fitted_config.height,
-        NULL);
+        G_OBJECT(state->sink), "window-width", fitted_config.width, "window-height", fitted_config.height, NULL);
   }
   GST_INFO_OBJECT(
       state->cap_filter ? state->cap_filter : state->sink,
@@ -287,7 +279,10 @@ void install_render_aspect_caps_probe(
       0,
   };
   gst_pad_add_probe(
-      sink_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, update_render_aspect_caps_from_caps, state,
+      sink_pad,
+      GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+      update_render_aspect_caps_from_caps,
+      state,
       destroy_render_aspect_caps_state);
   gst_object_unref(sink_pad);
 }
@@ -731,13 +726,23 @@ void on_webrtc_ws_closed(SoupWebsocketConnection* connection, gpointer user_data
 
 void on_webrtc_ws_connected(
     SoupServer* server,
+#if SOUP_MAJOR_VERSION >= 3
+    SoupServerMessage* message,
+    const char* path,
+    SoupWebsocketConnection* connection,
+#else
     SoupWebsocketConnection* connection,
     const char* path,
     SoupClientContext* client,
+#endif
     gpointer user_data) {
   (void)server;
   (void)path;
+#if SOUP_MAJOR_VERSION >= 3
+  (void)message;
+#else
   (void)client;
+#endif
   WebRtcSignalServer* signal_server = static_cast<WebRtcSignalServer*>(user_data);
 
   g_mutex_lock(&signal_server->lock);
@@ -754,22 +759,40 @@ void on_webrtc_ws_connected(
 
 void on_webrtc_http_request(
     SoupServer* server,
+#if SOUP_MAJOR_VERSION >= 3
+    SoupServerMessage* msg,
+#else
     SoupMessage* msg,
+#endif
     const char* path,
     GHashTable* query,
+#if SOUP_MAJOR_VERSION < 3
     SoupClientContext* client,
+#endif
     gpointer user_data) {
   (void)server;
   (void)query;
+#if SOUP_MAJOR_VERSION < 3
   (void)client;
+#endif
   (void)user_data;
   if (g_strcmp0(path, "/") && g_strcmp0(path, "/index.html")) {
+#if SOUP_MAJOR_VERSION >= 3
+    soup_server_message_set_status(msg, SOUP_STATUS_NOT_FOUND, nullptr);
+#else
     soup_message_set_status(msg, SOUP_STATUS_NOT_FOUND);
+#endif
     return;
   }
+#if SOUP_MAJOR_VERSION >= 3
+  soup_server_message_set_response(
+      msg, "text/html; charset=utf-8", SOUP_MEMORY_STATIC, kWebRtcClientHtml, strlen(kWebRtcClientHtml));
+  soup_server_message_set_status(msg, SOUP_STATUS_OK, nullptr);
+#else
   soup_message_set_response(
       msg, "text/html; charset=utf-8", SOUP_MEMORY_STATIC, kWebRtcClientHtml, strlen(kWebRtcClientHtml));
   soup_message_set_status(msg, SOUP_STATUS_OK);
+#endif
 }
 
 gboolean start_webrtc_signaling(GstElement* webrtc, const NvDsSinkEncoderConfig* config) {
@@ -778,7 +801,7 @@ gboolean start_webrtc_signaling(GstElement* webrtc, const NvDsSinkEncoderConfig*
   g_mutex_init(&signal_server->lock);
   signal_server->webrtc = GST_ELEMENT(gst_object_ref(webrtc));
   signal_server->port = config->webrtc_port ? config->webrtc_port : kDefaultWebRtcPort;
-  signal_server->server = soup_server_new(SOUP_SERVER_SERVER_HEADER, "hstream-webrtc", NULL);
+  signal_server->server = soup_server_new("server-header", "hstream-webrtc", NULL);
   if (!signal_server->server) {
     g_printerr("Failed to create WebRTC signaling server\n");
     g_mutex_clear(&signal_server->lock);
@@ -1385,23 +1408,9 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     }
     g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
     g_object_set(
-        G_OBJECT(bin->transform),
-        "gpu-id",
-        config->gpu_id,
-        "nvbuf-memory-type",
-        config->nvbuf_memory_type,
-        NULL);
+        G_OBJECT(bin->transform), "gpu-id", config->gpu_id, "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
     install_render_aspect_caps_probe(
-        bin->transform,
-        bin->sink,
-        bin->cap_filter,
-        nullptr,
-        config,
-        nullptr,
-        true,
-        nullptr,
-        false,
-        true);
+        bin->transform, bin->sink, bin->cap_filter, nullptr, config, nullptr, true, nullptr, false, true);
   }
 #endif
 

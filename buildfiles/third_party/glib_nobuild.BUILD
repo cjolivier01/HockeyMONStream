@@ -420,6 +420,8 @@ void g_type_value_table_peek() {}
 void g_unicode_break_type_get_type() {}
 void g_unicode_script_get_type() {}
 void g_unicode_type_get_type() {}
+// Link-only export required by libsoup 3; runtime resolves the real GObject SONAME.
+void g_uri_get_type() {}
 void g_value_array_append() {}
 void g_value_array_copy() {}
 void g_value_array_free() {}

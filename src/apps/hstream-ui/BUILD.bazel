@@ -1056,3 +1056,55 @@ cc_test(
     tags = ["local"],
     deps = [":hstream_window", "//src/libs/publication", "@qt//:qt_test", "@qt//:qt_widgets"],
 )
+
+# Headless workflows share the native dialog libraries, without desktop windows.
+cc_library(
+    name = "web_job_spec",
+    srcs = ["WebJobSpec.cpp"],
+    hdrs = ["WebJobSpec.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_core"],
+)
+
+cc_binary(
+    name = "hstream-web-job",
+    srcs = ["WebJobMain.cpp", "CameraControlSpecs.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":web_job_spec",
+        ":highlight_plan",
+        ":highlight_reel_pipeline",
+        ":highlights_encode_settings",
+        ":highlight_tracking",
+        ":stitching_experiment_backend",
+        "//src/libs/playtracker_replay",
+        "//src/libs/recording",
+        "//src/libs/stitching:calibration_matches",
+        "//src/libs/stitching:game_config",
+        "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
+        "@local_cuda//:cuda",
+        "@qt//:qt_core",
+        "@qt//:qt_gui",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "web_job_spec_test",
+    srcs = ["WebJobSpecTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":web_job_spec", "@qt//:qt_core"],
+)
+
+sh_test(
+    name = "web_job_test",
+    srcs = ["WebJobTest.py"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+)

@@ -116,6 +116,71 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotIn("HSTREAM_UI_PARENT_PID", actual["env"])
         self.assertFalse((self.root / "INJECTED").exists())
 
+    def test_managed_calibration_prompts_are_explicit_and_keep_finalization(self):
+        for enabled in (False, True):
+            for flows in ({}, {"HSTREAM_RINK_LEVELING_FLOW": "1", "HSTREAM_PROJECTION_CROP_FLOW": "0"}):
+                with self.subTest(enabled=enabled, flows=flows):
+                    env = dict(self.env)
+                    for key in ("HSTREAM_RINK_LEVELING_FLOW", "HSTREAM_PROJECTION_CROP_FLOW"):
+                        env.pop(key, None)
+                    env.update(flows)
+                    env.update(HSTREAM_CALIBRATION_PENDING="1", HSTREAM_CALIBRATION_START_STAGE="features", HSTREAM_CALIBRATION_INVALIDATION_ID="stale")
+                    result = self.generate("--force", *(["--calibration-prompts"] if enabled else []))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    run = subprocess.run([str(self.game / "hstream-job.sh")], env=env, capture_output=True, text=True)
+                    self.assertEqual(run.returncode, 7, run.stderr)
+                    self.assertIn("Publishing completed outputs", run.stdout)
+                    actual = json.loads(self.output.read_text())["env"]
+                    for key in ("HSTREAM_RINK_LEVELING_FLOW", "HSTREAM_PROJECTION_CROP_FLOW"):
+                        self.assertEqual(actual.get(key), flows.get(key) if enabled else None)
+                    for key in ("HSTREAM_CALIBRATION_PENDING", "HSTREAM_CALIBRATION_START_STAGE", "HSTREAM_CALIBRATION_INVALIDATION_ID"):
+                        self.assertNotIn(key, actual)
+
+    def test_interactive_preserves_protocol_sinks_and_runtime_without_finalizer(self):
+        self.arguments[0] = "--enable-sinks=WEBRTC"
+        (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport json,os,sys\n"
+            "with open(os.environ['JOB_TEST_OUTPUT'],'w') as f:\n"
+            " json.dump({'argv':sys.argv[1:], 'stdin':sys.stdin.readline(), 'env':dict(os.environ)},f)\n"
+        )
+        self.env.update(HSTREAM_RUNTIME_CACHE_DIR=str(self.root / "private runtime"), HSTREAM_RINK_LEVELING_FLOW="1", HSTREAM_CALIBRATION_PENDING="1", HSTREAM_CALIBRATION_INVALIDATION_ID="server-generation")
+        result = self.generate("--interactive", "--finalizer", str(self.root / "nonexistent-finalizer"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        script = self.game / "hstream-job.sh"
+        run = subprocess.run([str(script), "--options=pipeline.sink4.webrtc-port=20001", "literal $(touch INJECTED)"], input="inspector-session\n", env=self.env, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertIn("--enable-sinks=WEBRTC", actual["argv"])
+        self.assertNotIn("--encode-job", actual["argv"])
+        self.assertEqual(actual["argv"][-2:], ["--options=pipeline.sink4.webrtc-port=20001", "literal $(touch INJECTED)"])
+        self.assertEqual(actual["stdin"], "inspector-session\n")
+        self.assertEqual(actual["env"]["HSTREAM_RINK_LEVELING_FLOW"], "1")
+        self.assertEqual(actual["env"]["HSTREAM_CALIBRATION_PENDING"], "1")
+        self.assertEqual(actual["env"]["HSTREAM_CALIBRATION_INVALIDATION_ID"], "server-generation")
+        self.assertIn(str(self.root / "private runtime"), actual["env"]["GST_REGISTRY"])
+        self.assertFalse((self.root / "INJECTED").exists())
+
+    def test_interactive_requires_supervisor_runtime_directory(self):
+        result = self.generate("--interactive")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment = dict(self.env)
+        environment.pop("HSTREAM_RUNTIME_CACHE_DIR", None)
+        run = subprocess.run([str(self.game / "hstream-job.sh")], env=environment, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 78, run.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_runtime_only_forwards_exact_native_subcommand_arguments(self):
+        self.env["HSTREAM_RUNTIME_CACHE_DIR"] = str(self.root / "private runtime")
+        result = self.generate("--runtime-only")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = ["--tensorrt-runtime-info", "--game-id", str(self.game)]
+        run = subprocess.run([str(self.game / "hstream-job.sh"), *arguments], env=self.env, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["argv"], arguments)
+        self.assertNotIn("--encode-job", actual["argv"])
+
     def test_export_freezes_explicit_telemetry_checkbox(self):
         for capture in (False, True):
             with self.subTest(capture=capture):

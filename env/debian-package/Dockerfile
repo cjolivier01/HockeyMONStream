@@ -75,7 +75,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
       libopencv-dev \
       libpano13-dev \
       libpng-dev \
-      libsoup2.4-dev \
+      libsoup-3.0-dev \
       libssl-dev \
       libswresample-dev \
       libsystemd-dev \

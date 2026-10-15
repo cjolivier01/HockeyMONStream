@@ -142,6 +142,7 @@ HSTREAM_FINALIZE="${TOPDIR}/bazel-bin/src/apps/hstream-finalize/hstream-finalize
 HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
 HSTREAM_PLAYER_MODEL_BUILDER="${TOPDIR}/bazel-bin/src/apps/player-model-builder/player-model-builder"
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
+HSTREAM_WEB_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-web-job"
 HSTREAM_HUGIN_TOOLS_DIR="${HSTREAM_HUGIN_TOOLS_DIR:-}"
 HSTREAM_GST_PLUGINS=(
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so"
@@ -172,6 +173,10 @@ if [[ ! -f "${HSTREAM_PLAYER_MODEL_BUILDER}" ]]; then
 fi
 if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_UI}" ]]; then
   echo "ERROR: ${HSTREAM_UI} not found. Run 'make hstream-ui' first, or pass --build." >&2
+  exit 1
+fi
+if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_WEB_JOB}" ]]; then
+  echo "ERROR: ${HSTREAM_WEB_JOB} not found. Run 'make hstream-web-job' first." >&2
   exit 1
 fi
 if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
@@ -375,6 +380,9 @@ if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   cp "${HSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-ui")
+  cp "${HSTREAM_WEB_JOB}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-web-job"
+  patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-web-job"
+  package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-web-job")
 fi
 
 # Keep the pinned ExifTool and its Perl modules together, as in Bazel runfiles.
@@ -420,7 +428,7 @@ declare -A seen_libs
 # Collect from the binaries and the exact HStream-owned plugin set.
 all_elfs=("${HSTREAM_CLI}" "${HSTREAM_ASSETS}" "${HSTREAM_PLAYER_MODEL_BUILDER}" "${HSTREAM_GST_PLUGINS[@]}")
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
-  all_elfs+=("${HSTREAM_UI}")
+  all_elfs+=("${HSTREAM_UI}" "${HSTREAM_WEB_JOB}")
 fi
 
 for elf in "${all_elfs[@]}"; do
@@ -1058,6 +1066,9 @@ POSTINST
 chmod 0755 "${STAGING}/DEBIAN/postinst"
 
 # ---------- package-owned command wrappers ----------
+for int8_helper in prepare_recording_int8.py quantize_detector_onnx.py benchmark_model_precision.py; do
+  install -m 0755 "${TOPDIR}/scripts/${int8_helper}" "${STAGING}${INSTALL_PREFIX}/scripts/${int8_helper}"
+done
 install -m 0755 \
   "${TOPDIR}/scripts/hstream_instat_generate_team_only_reports.py" \
   "${STAGING}${INSTALL_PREFIX}/scripts/hstream_instat_generate_team_only_reports.py"
@@ -1072,6 +1083,7 @@ ln -s \
   "${STAGING}/usr/bin/hstream-instat-generate-team-only-reports"
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   ln -s "${INSTALL_PREFIX}/hstream-ui.sh" "${STAGING}/usr/bin/hstream-ui"
+  ln -s "${INSTALL_PREFIX}/bin/hstream-web-job" "${STAGING}/usr/bin/hstream-web-job"
   install -m 0644 \
     "${TOPDIR}/src/apps/hstream-ui/hstream-ui.desktop" \
     "${STAGING}/usr/share/applications/hstream-ui.desktop"
@@ -1406,6 +1418,9 @@ CONTROL
 unexpected_python_file="$(find "${STAGING}${INSTALL_PREFIX}" -type f \
   \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) \
   ! -path "${STAGING}${INSTALL_PREFIX}/scripts/hstream_instat_generate_team_only_reports.py" \
+  ! -path "${STAGING}${INSTALL_PREFIX}/scripts/prepare_recording_int8.py" \
+  ! -path "${STAGING}${INSTALL_PREFIX}/scripts/quantize_detector_onnx.py" \
+  ! -path "${STAGING}${INSTALL_PREFIX}/scripts/benchmark_model_precision.py" \
   -print -quit)"
 if [[ -n "${unexpected_python_file}" ]]; then
   echo "ERROR: an unexpected Python runtime file entered the HStream package: ${unexpected_python_file}" >&2
