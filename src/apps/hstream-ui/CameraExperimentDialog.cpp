@@ -221,7 +221,13 @@ class CameraPathPlot : public QWidget {
     p.setRenderHint(QPainter::Antialiasing);
     p.fillRect(rect(), QColor("#101b2d"));
     p.setPen(QColor("#c7d2e1"));
-    p.drawText(14, 22, "Program camera horizontal position");
+    // Naming the axis range is what makes a band readable: a crop drawn a third
+    // of the way up the plot means nothing without knowing the canvas it spans.
+    p.drawText(
+        14,
+        22,
+        trial ? QString("Program camera horizontal position  ·  0–%1 px").arg(canvas_width)
+              : QString("Program camera horizontal position"));
     // Two caption lines are reserved: with every layer enabled the readout is
     // long enough to wrap, and silently clipping a value defeats the point.
     const QRectF plot(14, 32, width() - 28, height() - 84);
@@ -428,6 +434,11 @@ class CameraPathPlot : public QWidget {
     const double span = std::max(1U, canvas_width);
     const replay::Frame& f = trial->at(std::min(frame, trial->size() - 1));
     QStringList parts;
+    // Every series holds one frame per sample, so the playhead index addresses
+    // all of them alike; see ReplaySession::RunTrial.
+    if (layers[kPlotRecorded] && original && !original->empty())
+      if (const auto center = box_center(original->at(std::min(frame, original->size() - 1)).follower))
+        parts << QString("recorded %1 px").arg(*center, 0, 'f', 0);
     if (layers[kPlotProgram])
       if (const auto center = box_center(f.follower))
         parts << QString("center %1 px").arg(*center, 0, 'f', 0);
