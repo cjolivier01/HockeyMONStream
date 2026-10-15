@@ -211,7 +211,7 @@ struct Column {
 class CameraPathPlot : public QWidget {
  public:
   explicit CameraPathPlot(QWidget* parent) : QWidget(parent) {
-    setMinimumHeight(176);
+    setMinimumHeight(190);
     for (int i = 0; i < kPlotLayerCount; ++i)
       layers[i] = kPlotLayers[i].initial;
   }
@@ -228,7 +228,9 @@ class CameraPathPlot : public QWidget {
     p.fillRect(rect(), QColor("#101b2d"));
     p.setPen(QColor("#c7d2e1"));
     p.drawText(14, 22, "Program camera horizontal position");
-    const QRectF plot(14, 32, width() - 28, height() - 66);
+    // Two caption lines are reserved: with every layer enabled the readout is
+    // long enough to wrap, and silently clipping a value defeats the point.
+    const QRectF plot(14, 32, width() - 28, height() - 84);
     p.setPen(QPen(QColor("#26364d"), 1));
     for (int i = 0; i <= 4; ++i)
       p.drawLine(
@@ -428,8 +430,8 @@ class CameraPathPlot : public QWidget {
       caption.setPointSizeF(caption.pointSizeF() * 0.85);
     p.setFont(caption);
     p.drawText(
-        QRectF(14, plot.bottom() + 6, width() - 28, 20),
-        Qt::AlignLeft | Qt::AlignVCenter,
+        QRectF(14, plot.bottom() + 6, width() - 28, 38),
+        Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
         readout().join("   ·   "));
   }
 
