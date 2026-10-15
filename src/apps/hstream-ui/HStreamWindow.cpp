@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/common/TensorRtGpuIdentity.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
@@ -10412,6 +10413,7 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
+  managed_archive_manifest_.clear();
   active_run_game_id_ = game_id_edit_->text().trimmed();
   active_run_is_calibration_ = isCalibrationRun();
   active_run_telemetry_requested_ =
@@ -10532,6 +10534,20 @@ void HStreamWindow::startPipeline() {
                                        .arg(QCoreApplication::applicationPid())
                                        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
     env.insert("HSTREAM_ARCHIVE_RUN_ID", archive_run_id);
+    try {
+      const auto manifest = hm::publication::CreateRun(
+          gameDirectory(active_run_game_id_).toStdString(),
+          output_work_dir.toStdString(),
+          archive_run_id.toStdString());
+      hm::publication::BeginRun(manifest, active_run_telemetry_requested_);
+      managed_archive_manifest_ = QString::fromStdString(manifest.string());
+      env.insert("HSTREAM_JOB_MANIFEST", managed_archive_manifest_);
+      env.insert("HSTREAM_RUNTIME_CACHE_DIR", QString::fromStdString((manifest.parent_path() / "runtime").string()));
+    } catch (const std::exception& error) {
+      show_startup_error(QString::fromUtf8(error.what()));
+      return;
+    }
+
     if (archive_enabled) {
       active_archive_output_path_ =
           archive_output_path(output_work_dir, active_run_game_id_, active_run_is_calibration_);
@@ -10662,7 +10678,11 @@ void HStreamWindow::startPipeline() {
   if (calibration_pending_)
     showStitchingCalibrationDialog();
 
-  const QStringList args = pipelineArguments();
+  QStringList args = pipelineArguments();
+  if (!managed_archive_manifest_.isEmpty() && active_run_telemetry_requested_) {
+    args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-db-dir=%1")
+                .arg(QFileInfo(managed_archive_manifest_).absolutePath());
+  }
   // A published archive restarts its timestamps at zero and carries no record of
   // where in the game it began. Remember the run's offset so publication can
   // write it into the archive's sidecar for Highlights.
@@ -13107,16 +13127,7 @@ bool HStreamWindow::releaseArchiveFinalizeTarget(bool remove_guard) {
   return true;
 }
 
-void HStreamWindow::startArchiveFinalization(
-    const QString& source_path,
-    const QString& game_id,
-    bool hevc_video,
-    bool stitched_archive,
-    const QString& output_id) {
-  if (!archive_finalize_process_ || archive_finalize_process_->state() != QProcess::NotRunning ||
-      telemetry_publication_worker_)
-    return;
-
+void HStreamWindow::ensureArchiveFinalizationDialog() {
   if (!archive_finalize_dialog_) {
     auto* dialog = new StitchingCalibrationDialog(this);
     archive_finalize_dialog_ = dialog;
@@ -13177,6 +13188,19 @@ void HStreamWindow::startArchiveFinalization(
     root->addLayout(buttons);
     connect(archive_finalize_ok_button_, &QPushButton::clicked, dialog, &QDialog::accept);
   }
+}
+
+void HStreamWindow::startArchiveFinalization(
+    const QString& source_path,
+    const QString& game_id,
+    bool hevc_video,
+    bool stitched_archive,
+    const QString& output_id) {
+  if (!archive_finalize_process_ || archive_finalize_process_->state() != QProcess::NotRunning ||
+      telemetry_publication_worker_)
+    return;
+
+  ensureArchiveFinalizationDialog();
 
   archive_finalize_failed_ = false;
   releaseArchiveFinalizeSource(false);
@@ -13335,27 +13359,10 @@ void HStreamWindow::startArchiveFinalization(
 #ifdef Q_OS_UNIX
   archive_input = QString("/proc/self/fd/%1").arg(archive_finalize_source_fd_);
 #endif
-  QStringList arguments = {
-      "-hide_banner",
-      "-n",
-      "-progress",
-      "pipe:1",
-      "-nostats",
-      "-i",
-      archive_input,
-      "-map",
-      "0:v:0",
-      "-map",
-      "0:a?",
-      "-map_metadata",
-      "0",
-      "-c",
-      "copy",
-      "-movflags",
-      "+faststart"};
-  if (hevc_video)
-    arguments << "-tag:v" << "hvc1";
-  arguments << archive_finalize_partial_path_;
+  QStringList arguments;
+  for (const auto& argument : hm::publication::RemuxArguments(
+           archive_input.toStdString(), archive_finalize_partial_path_.toStdString(), hevc_video))
+    arguments << QString::fromStdString(argument);
   output_states_[archive_finalize_output_id_]->setText("FINALIZING");
   appendLog(
       QString("finalizing archive without re-encoding: %1 -> %2").arg(source_path, archive_finalize_target_path_));
@@ -13374,7 +13381,102 @@ void HStreamWindow::startArchiveFinalization(
   updateRunControls();
 }
 
+void HStreamWindow::startManagedArchiveFinalization() {
+  ensureArchiveFinalizationDialog();
+  const QString manifest = std::exchange(managed_archive_manifest_, {});
+  pending_archive_finalizations_.clear();
+  finishArchiveJobLog();
+  active_run_telemetry_requested_ = false;
+  active_telemetry_manifest_path_.clear();
+  archive_finalize_failed_ = false;
+  archive_finalize_stage_ = ArchiveFinalizeStage::kPublishTelemetry;
+  archive_finalize_headline_->setText("Finalizing completed outputs…");
+  archive_finalize_detail_->setText("Publishing video and telemetry, then removing this run's working files.");
+  archive_finalize_progress_->setRange(0, 0);
+  archive_finalize_progress_->setFormat("Finalizing");
+  archive_finalize_ok_button_->hide();
+  static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(false);
+  archive_finalize_dialog_->show();
+  struct Result {
+    std::vector<hm::publication::PublishedOutput> paths;
+    QString error;
+  };
+  auto result = std::make_shared<Result>();
+  auto* worker = QThread::create([this, manifest, result] {
+    try {
+      result->paths = hm::publication::Finalize(manifest.toStdString(), [this](const std::string& text) {
+        const QString message = QString::fromStdString(text);
+        QMetaObject::invokeMethod(
+            this,
+            [this, message] {
+              appendLog(message);
+              archive_finalize_detail_->setText(message);
+            },
+            Qt::QueuedConnection);
+      });
+    } catch (const std::exception& error) {
+      result->error = QString::fromUtf8(error.what());
+    }
+  });
+  telemetry_publication_worker_ = worker;
+  connect(worker, &QThread::finished, this, [this, worker, result, manifest] {
+    if (telemetry_publication_worker_ != worker)
+      return;
+    telemetry_publication_worker_ = nullptr;
+    archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
+    if (!result->error.isEmpty()) {
+      showArchiveFinalizationFailure(
+          result->error + "\n\nWorking data retained. Resume with hstream-finalize --manifest " + manifest);
+    } else {
+      QStringList published;
+      for (const auto& path : result->paths) {
+        const QString file = QString::fromStdString(path.path.string());
+        published << file;
+        if (path.path.extension() != ".mp4")
+          continue;
+        const QString kind = path.kind == "program-4k" ? "archive-program-4k"
+            : path.kind == "stitched"                  ? "archive-stitched"
+                                                       : "archive-file";
+        output_states_[kind]->setText("SAVED");
+        QLabel* label = kind == "archive-program-4k" ? program_4k_output_path_label_
+            : kind == "archive-stitched"             ? stitched_archive_output_path_label_
+                                                     : archive_output_path_label_;
+        if (label)
+          label->setText("Completed archive: " + file);
+      }
+      archive_finalize_headline_->setText("Completed outputs are ready");
+      archive_finalize_detail_->setText(published.join("\n"));
+      archive_finalize_progress_->setRange(0, 100);
+      archive_finalize_progress_->setValue(100);
+      archive_finalize_progress_->setFormat("COMPLETED");
+      archive_finalize_ok_button_->show();
+      static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
+      appendLog("All outputs published; run working files removed.");
+    }
+    updateRunControls();
+    maybeStartDeferredRestart();
+  });
+  connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+  worker->start();
+  updateRunControls();
+}
+
 void HStreamWindow::startNextArchiveFinalization() {
+  if (!managed_archive_manifest_.isEmpty() && !telemetry_publication_worker_) {
+    try {
+      if (hm::publication::PipelineCompleted(managed_archive_manifest_.toStdString())) {
+        startManagedArchiveFinalization();
+        return;
+      }
+      // Older runners do not implement the manifest protocol. Preserve their
+      // existing publication path, and retire only an unused empty workspace.
+      hm::publication::DiscardUnusedRun(managed_archive_manifest_.toStdString());
+    } catch (const std::exception& error) {
+      appendLog(QString("Managed archive status: %1").arg(error.what()));
+    }
+    managed_archive_manifest_.clear();
+  }
+
   if ((archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
       telemetry_publication_worker_ || pending_archive_finalizations_.empty()) {
     return;

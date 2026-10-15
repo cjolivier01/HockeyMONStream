@@ -1,0 +1,15 @@
+cc_library(
+    name = "publication",
+    srcs = ["Publication.cpp"],
+    hdrs = ["Publication.h"],
+    include_prefix = "hstream/src/libs/publication",
+    visibility = ["//visibility:public"],
+    deps = ["//src/libs/recording", "//src/libs/common:pinned_file", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "publication_test",
+    srcs = ["PublicationTest.cpp"],
+    tags = ["local"],
+    deps = [":publication", "//src/libs/recording", "@yaml-cpp"],
+)

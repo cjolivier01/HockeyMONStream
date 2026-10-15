@@ -24,6 +24,7 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/TempFile.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "nvbufsurface.h"
 #include "nvdsmeta.h"
 
@@ -176,6 +177,11 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
         telemetry_game_id_);
     if (!telemetry_status.ok()) {
       return telemetry_status;
+    }
+    try {
+      hm::publication::RegisterOutput(telemetry_csv_.output_manifest(), "telemetry");
+    } catch (const std::exception& error) {
+      return absl::InternalError(error.what());
     }
     std::cout << "Playtracker telemetry database: " << telemetry_csv_.output_manifest() << std::endl;
     std::cout << "HSTREAM_TELEMETRY manifest=" << telemetry_csv_.output_manifest() << std::endl;

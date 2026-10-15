@@ -2,9 +2,9 @@ cc_binary(
     name = "hstream-job",
     srcs = ["main.cpp"],
     copts = ["-std=c++17"],
-    data = ["//configs:ds_hockey_app_config.yaml"],
+    data = ["//configs:ds_hockey_app_config.yaml", "//src/apps/hstream-finalize:hstream-finalize"],
     visibility = ["//visibility:public"],
-    deps = ["@yaml-cpp"],
+    deps = ["@yaml-cpp", "//src/libs/recording"],
 )
 
 sh_test(

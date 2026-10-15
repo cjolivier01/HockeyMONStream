@@ -1,4 +1,5 @@
 #include <yaml-cpp/yaml.h>
+#include "hstream/src/libs/recording/Database.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -172,8 +173,9 @@ if [ -n "${HSTREAM_JOB_BAZEL_BIN}" ]; then
   launch_key="launch-${BASHPID:-$$}"
   bazel_gst_root="${HSTREAM_JOB_BAZEL_BIN}/src/gst-plugins"
   if [ -d "${bazel_gst_root}" ]; then
-    runtime_plugin_dir="${runtime_cache}/gst-plugin-path/${runtime_arch}/${output_configuration}/${launch_key}"
-    mkdir -p "${runtime_plugin_dir}"
+    mkdir -p "${runtime_cache}/gst-plugin-path/${runtime_arch}/${output_configuration}"
+    runtime_plugin_dir="$(mktemp -d "${runtime_cache}/gst-plugin-path/${runtime_arch}/${output_configuration}/launch-XXXXXX")"
+    export HSTREAM_JOB_PLUGIN_STAGE="${runtime_plugin_dir}"
     while IFS= read -r plugin_so; do
       plugin_so="$(readlink -f "${plugin_so}")"
       ln -sfn "${plugin_so}" "${runtime_plugin_dir}/$(basename "${plugin_so}")"
@@ -219,8 +221,9 @@ if [ -n "${HSTREAM_JOB_BAZEL_BIN}" ]; then
         -print | sort
     )
 
-    runtime_lib_dir="${runtime_cache}/runtime-lib-path/${runtime_arch}/${output_configuration}/${launch_key}"
-    mkdir -p "${runtime_lib_dir}"
+    mkdir -p "${runtime_cache}/runtime-lib-path/${runtime_arch}/${output_configuration}"
+    runtime_lib_dir="$(mktemp -d "${runtime_cache}/runtime-lib-path/${runtime_arch}/${output_configuration}/launch-XXXXXX")"
+    export HSTREAM_JOB_LIBRARY_STAGE="${runtime_lib_dir}"
     onnxruntime_so="$({
       find -L "${solib_root}" -maxdepth 3 -type f -name 'libonnxruntime.so.1' -print -quit
     } 2>/dev/null || true)"
@@ -282,7 +285,7 @@ void write_script(const fs::path& output, const std::string& contents, bool over
 
 int main(int argc, char** argv) {
   try {
-    fs::path game, output, runner, config, working;
+    fs::path game, output, runner, config, working, finalizer;
     std::string requested_sinks;
     std::vector<std::string> directives;
     bool overwrite = false;
@@ -291,14 +294,14 @@ int main(int argc, char** argv) {
       if (arg == "--help" || arg == "-h") {
         std::cout << "Usage: hstream-job --game-dir DIR [--output FILE] [--force]\n"
                      "  [--sbatch '--partition=gpu'] [--sbatch '--time=02:00:00']\n"
-                     "  [--runner FILE] [--config FILE] [--working-directory DIR]\n"
+                     "  [--runner FILE] [--finalizer FILE] [--config FILE] [--working-directory DIR]\n"
                      "  [--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE]\n"
                      "Save an executable job (default: DIR/hstream-job.sh). Never launches the job.\n"
                      "SBATCH defaults: one node, one task, one GPU. Additional directives override defaults.\n"
                      "Reads config.yaml and hstream_ui.job.arguments saved by the UI. Without a saved\n"
                      "job or selected file encoder, defaults to the 4K Program MP4. Rendering is disabled.\n"
                      "DriveGPT capture defaults on; the UI's explicit checkbox choice is preserved.\n"
-                     "MP4s/databases remain in CLI working storage; no game-directory copy.\n";
+                     "Successful jobs publish faststart MP4s/databases to the game and clean their working files.\n";
         return 0;
       }
       if (arg == "--force") {
@@ -314,6 +317,8 @@ int main(int argc, char** argv) {
         output = value;
       else if (arg == "--runner")
         runner = value;
+      else if (arg == "--finalizer")
+        finalizer = value;
       else if (arg == "--config")
         config = value;
       else if (arg == "--working-directory")
@@ -340,6 +345,11 @@ int main(int argc, char** argv) {
       throw std::runtime_error("game config.yaml must be a mapping");
     const fs::path bin = executable().parent_path();
     const bool installed = fs::exists(bin / "hstream-cli");
+    if (finalizer.empty())
+      finalizer = installed ? bin / "hstream-finalize" : bin.parent_path() / "hstream-finalize/hstream-finalize";
+    if (!fs::is_regular_file(finalizer))
+      throw std::runtime_error("hstream-finalize not found; build it or specify --finalizer");
+    finalizer = fs::canonical(finalizer);
     if (runner.empty())
       runner = installed ? bin / "hstream-cli" : bin.parent_path() / "hstream-cli/hstream-cli";
     if (working.empty()) {
@@ -401,14 +411,15 @@ int main(int argc, char** argv) {
     script +=
         "\n# Run directly, or submit this file with sbatch.\n"
         "# Configs, videos and assets must be accessible on the execution host.\n"
-        "# Headless encoding: selected archives are written directly as MP4.\n"
-        "# MP4s and DriveGPT databases stay in CLI working storage.\n"
-        "set -euo pipefail\n";
+        "# Publishes completed archives and telemetry, then cleans this run.\n"
+        "# Repeating this script resumes the same run; export again for a new generation.\n"
+        "set -euo pipefail\numask 077\n";
     script += "cd -- " + quote(working.string()) + "\n";
     script +=
         "unset HSTREAM_UI_PARENT_PID HSTREAM_RINK_LEVELING_FLOW HSTREAM_PROJECTION_CROP_FLOW\n"
         "unset HSTREAM_CALIBRATION_PENDING HSTREAM_CALIBRATION_START_STAGE HSTREAM_CALIBRATION_INVALIDATION_ID\n"
-        "unset HSTREAM_ARCHIVE_RUN_ID HSTREAM_UI_PREVIEW_OVERLAYS\n";
+        "unset HSTREAM_ARCHIVE_RUN_ID HSTREAM_UI_PREVIEW_OVERLAYS HSTREAM_JOB_MANIFEST\n"
+        "unset HSTREAM_JOB_PLUGIN_STAGE HSTREAM_JOB_LIBRARY_STAGE\n";
     script += "export HM_GAME_DIR=" + quote(game.parent_path().string()) + "\n";
     for (const char* key : {"HM_CONFIG_ROOT", "HM_OUTPUT_WORK_DIR", "HM_RENDER_SINK", "USE_NEW_NVSTREAMMUX"}) {
       const std::string value = environment(key);
@@ -416,16 +427,12 @@ int main(int argc, char** argv) {
         script += "export " + std::string(key) + "=" + quote(value) + "\n";
     }
     script += runtime_environment_script(runtime_root, bazel_bin, installed);
-    const std::string configured_output = environment("HM_OUTPUT_WORK_DIR");
-    const std::string output_location =
-        configured_output.empty() ? "the configured output root (normally ~/hstream_output)" : configured_output;
-    script += "printf '%s\\n' " +
-        quote("hstream-job: Encoded MP4s and DriveGPT databases remain in CLI working storage under " +
-              output_location +
-              "; custom output paths still apply. See CLI logs for resolved files. "
-              "Copying into the game directory is not performed.") +
+    script += "printf '%s\n' " +
+        quote("hstream-job: Publishing completed outputs to " + game.string() +
+              "; temporary files are removed only after all outputs are safely saved.") +
         "\n";
-    script += "exec " + quote(runner.string());
+    script += "exec " + quote(finalizer.string()) + " --game-dir " + quote(game.string()) + " --run-id " +
+        quote(hm::recording::NewGuid()) + " -- " + quote(runner.string());
     for (const auto& arg : args)
       script += " \\\n  " + quote(arg);
     script += "\n";

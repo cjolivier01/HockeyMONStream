@@ -1,4 +1,5 @@
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 /* clang-format off */
 #include "src/libs/common/Status.h"
@@ -7645,6 +7646,7 @@ gboolean PipelineApplication::event_thread_func() {
           resume_pipeline(app_ctx[i].get());
       break;
     case 'q':
+      player_scan_interrupted_ = TRUE;
       quit_ = TRUE;
       if (main_loop_)
         g_main_loop_quit(main_loop_);
@@ -7764,6 +7766,7 @@ gpointer PipelineApplication::nvds_x_event_thread() {
             break;
           }
           if (e.xkey.keycode == q) {
+            player_scan_interrupted_ = TRUE;
             quit_ = TRUE;
             if (main_loop_)
               g_main_loop_quit(main_loop_);
@@ -7779,6 +7782,7 @@ gpointer PipelineApplication::nvds_x_event_thread() {
               break;
           wm_delete = XInternAtom(display_, "WM_DELETE_WINDOW", 1);
           if (wm_delete != None && wm_delete == (Atom)e.xclient.data.l[0]) {
+            player_scan_interrupted_ = TRUE;
             quit_ = TRUE;
             if (main_loop_)
               g_main_loop_quit(main_loop_);
@@ -8778,6 +8782,11 @@ int main(int argc, char* argv[]) {
   PipelineApplication app;
   absl::Status status = app.run(argc, argv);
   disable_perf_measurement();
+  try {
+    hm::publication::CompletePipeline(status.ok() && !app.was_interrupted(), app.publication_start_ms());
+  } catch (const std::exception& error) {
+    status = absl::InternalError(error.what());
+  }
   if (!status.ok()) {
     hm::diagnostics::Log("pipeline-error", status.ToString());
     std::cerr << status << std::endl;

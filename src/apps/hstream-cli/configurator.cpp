@@ -1,5 +1,6 @@
 #include "configurator.h"
 #include "hstream/src/libs/common/PinnedFile.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 
 #include <dirent.h>
@@ -7511,11 +7512,17 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
       auto root = user_config::output_root(config_);
       if (!root.ok())
         return root.status();
-      telemetry_directory = (*root / game_id_).string();
+      const auto managed_work = hm::publication::EnvironmentWorkingDirectory();
+      telemetry_directory = managed_work.empty() ? (*root / game_id_).string() : managed_work.string();
     }
     properties["telemetry-game-id"] = game_id_;
   } else {
     telemetry_directory.clear();
+  }
+  try {
+    hm::publication::RequireTelemetry(capture);
+  } catch (const std::exception& error) {
+    return absl::InternalError(error.what());
   }
   properties["telemetry-db-dir"] = telemetry_directory;
   // Typed private strings are applied last by the bin builders. Keep their
@@ -7610,7 +7617,9 @@ absl::Status Configurator::configure_encode_file_outputs(
       auto configured_output_root = user_config::output_root(config_);
       if (!configured_output_root.ok())
         return configured_output_root.status();
-      output_work_dir = *configured_output_root / game_id_;
+      output_work_dir = hm::publication::EnvironmentWorkingDirectory();
+      if (output_work_dir->empty())
+        output_work_dir = *configured_output_root / game_id_;
     }
 
     const int sink_id = get_node_value<int>(sink_node, "sink-id", -1);
@@ -7621,7 +7630,7 @@ absl::Status Configurator::configure_encode_file_outputs(
     }
 
     fs::path output_path(output_file);
-    if (encode_job_)
+    if (encode_job_ && hm::publication::EnvironmentManifest().empty())
       output_path.replace_extension(".mp4");
     const bool output_was_rebased = !output_path.has_parent_path();
     if (output_was_rebased) {
@@ -7772,6 +7781,14 @@ absl::Status Configurator::configure_encode_file_outputs(
 
     set_container_from_output_extension(sink_node, output_path);
     sink_node["output-file"] = output_path.string();
+    try {
+      hm::publication::RegisterOutput(
+          output_path,
+          archive_output.program_4k ? "program-4k" : (archive_output.stitched ? "stitched" : "program"),
+          codec == 2);
+    } catch (const std::exception& error) {
+      return absl::InternalError(error.what());
+    }
     const std::string normalized_output_path = output_path.lexically_normal().string();
     struct stat previous_output{};
     const gboolean output_existed =

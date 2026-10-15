@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -89,10 +90,10 @@ class JobScriptTest(unittest.TestCase):
             check=False,
         )
         self.assertIn(
-            "Encoded MP4s and DriveGPT databases remain in CLI working storage",
+            "Publishing completed outputs to",
             run.stdout,
         )
-        self.assertIn(self.env["HM_OUTPUT_WORK_DIR"], run.stdout)
+        self.assertIn(str(self.game), run.stdout)
         self.assertEqual(run.returncode, 7)
         actual = json.loads(self.output.read_text())
         self.assertEqual(
@@ -146,6 +147,32 @@ class JobScriptTest(unittest.TestCase):
         self.assertEqual(actual["argv"][:2], ["-g", "linked-game"])
         self.assertEqual(actual["env"]["HM_GAME_DIR"], str(self.root))
 
+    def test_cancellation_reaches_runner_and_preserves_failure(self):
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport json, os, time\n"
+            "with open(os.environ['JOB_TEST_OUTPUT'], 'w') as f: json.dump({'pid':os.getpid()}, f)\n"
+            "time.sleep(60)\n"
+        )
+        self.assertEqual(self.generate().returncode, 0)
+        process = subprocess.Popen([str(self.game / "hstream-job.sh")], env=self.env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 5
+            while not self.output.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.output.exists(), "runner started")
+            runner_pid = json.loads(self.output.read_text())["pid"]
+            process.terminate()
+            stdout, stderr = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 143, (stdout, stderr))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(runner_pid, 0)
+            self.assertTrue(list(Path(self.env["HM_OUTPUT_WORK_DIR"]).glob("*/runs/*/run.yaml")))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
     def test_overwrite_and_invalid_directives(self):
         self.assertEqual(self.generate().returncode, 0)
         script = self.game / "hstream-job.sh"
@@ -153,6 +180,7 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotEqual(self.generate().returncode, 0)
         self.assertEqual(script.read_bytes(), original)
         self.assertEqual(self.generate("--force").returncode, 0)
+        original = script.read_bytes()
         self.assertNotEqual(
             self.generate(
                 "--force", "--sbatch", "--partition=gpu\ntouch INJECTED"
@@ -188,6 +216,10 @@ class JobScriptTest(unittest.TestCase):
             )
             runner.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.runner, runner)
+            finalizer = (bin_dir / "hstream-finalize" if installed
+                         else bin_dir.parent / "hstream-finalize/hstream-finalize")
+            finalizer.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(Path(TOOL).parent.parent / "hstream-finalize/hstream-finalize", finalizer)
             wrapper_called = layout / "wrapper-called"
             wrapper = layout / "run.sh"
             wrapper.write_text(f"#!/bin/sh\ntouch {wrapper_called}\nexit 99\n")

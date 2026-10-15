@@ -29,6 +29,13 @@ cc_test(
 )
 
 cc_library(
+    name = "pinned_file",
+    hdrs = ["PinnedFile.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "utils",
     srcs = [
         "ApplicationPayload.cpp",
@@ -40,7 +47,6 @@ cc_library(
     hdrs = [
         "ApplicationPayload.h",
         "ConfigYaml.h",
-        "PinnedFile.h",
         "PlotContext.h",
         "RenderSet.h",
         "TempFile.h",
@@ -54,6 +60,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":pinned_file",
         ":process",
         ":utils_base",
         ":status",
