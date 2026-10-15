@@ -122,7 +122,10 @@ bool smoke() {
   if (widget<QCheckBox>(first, "experimentDrawRinkMask")->isEnabled())
     return false;
   // Every plot drawing is switchable before anything is prepared, starts in its
-  // documented state, explains itself, and belongs to one dialog.
+  // documented state, explains itself, and belongs to one dialog. Repaint in
+  // both states too: an unprepared plot has no frames to draw, which is the
+  // case every empty-run guard in paintEvent has to survive.
+  auto* camera_plot = widget<QWidget>(first, "experimentCameraPlot");
   for (const auto& [name, on_by_default] : std::vector<std::pair<const char*, bool>>{
            {"experimentPlotLayer_Recorded", true},
            {"experimentPlotLayer_Program", true},
@@ -141,7 +144,15 @@ bool smoke() {
       std::cerr << "Camera plot layer leaked to another dialog: " << name << '\n';
       return false;
     }
+    if (camera_plot->grab().isNull()) {
+      std::cerr << "Camera plot did not paint with layer flipped: " << name << '\n';
+      return false;
+    }
     toggle->setChecked(on_by_default);
+    if (camera_plot->grab().isNull()) {
+      std::cerr << "Camera plot did not paint with layer restored: " << name << '\n';
+      return false;
+    }
   }
   auto* controls_panel = widget<QWidget>(first, "experimentControlsPanel");
   auto* plot_panel = widget<QWidget>(first, "experimentCameraPlotPanel");

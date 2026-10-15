@@ -48,6 +48,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -58,6 +59,7 @@
 #include <map>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace {
 namespace replay = hm::playtracker_replay;
@@ -199,6 +201,13 @@ std::optional<std::pair<double, double>> box_extent(const std::optional<hm::BBox
   return std::pair<double, double>(box->left, box->right);
 }
 
+// One pixel column of the plot, holding the range its frames covered. An
+// absent range is a column where the quantity was not available at all.
+struct Column {
+  double x{0};
+  std::optional<std::pair<double, double>> range;
+};
+
 class CameraPathPlot : public QWidget {
  public:
   explicit CameraPathPlot(QWidget* parent) : QWidget(parent) {
@@ -231,23 +240,52 @@ class CameraPathPlot : public QWidget {
       return count < 2 ? plot.center().x() : plot.left() + plot.width() * index / (count - 1);
     };
     const auto row = [&](double position) { return plot.bottom() - plot.height() * position / span; };
-    // One polyline per contiguous run, so an absent box breaks the drawing
-    // instead of bridging across the gap it left.
+    // A two-minute clip holds thousands of frames and the plot is about a
+    // thousand pixels wide, so each pixel column is reduced to the range its
+    // frames cover. Nothing visible is lost and the drawing cost is bound by
+    // the widget instead of the clip.
+    const auto reduce = [&](const std::vector<replay::Frame>& frames, const auto& extent) {
+      std::vector<Column> result;
+      for (std::size_t i = 0; i < frames.size(); ++i) {
+        const double x = column(i, frames.size());
+        if (result.empty() || static_cast<int>(result.back().x) != static_cast<int>(x))
+          result.push_back({x, std::nullopt});
+        const auto range = extent(frames[i]);
+        if (!range)
+          continue;
+        auto& covered = result.back().range;
+        covered = covered ? std::pair<double, double>(
+                                std::min(covered->first, range->first), std::max(covered->second, range->second))
+                          : *range;
+      }
+      return result;
+    };
+    // One subpath per contiguous run, so an absent box breaks the drawing
+    // instead of bridging across the gap it left. Where a column covers a
+    // range the line spans it, which keeps a fast swing from being thinned
+    // down to whichever frame happened to be sampled.
     const auto trace = [&](const std::vector<replay::Frame>& frames, const auto& value, const QPen& pen) {
       QPainterPath path;
       bool started = false;
-      for (std::size_t i = 0; i < frames.size(); ++i) {
-        const std::optional<double> position = value(frames[i]);
-        if (!position) {
+      const auto as_range = [&](const replay::Frame& f) -> std::optional<std::pair<double, double>> {
+        const std::optional<double> position = value(f);
+        if (!position)
+          return std::nullopt;
+        return std::pair<double, double>(*position, *position);
+      };
+      for (const Column& c : reduce(frames, as_range)) {
+        if (!c.range) {
           started = false;
           continue;
         }
-        const QPointF point(column(i, frames.size()), row(*position));
+        const QPointF point(c.x, row(c.range->first));
         if (started)
           path.lineTo(point);
         else
           path.moveTo(point);
         started = true;
+        if (c.range->second != c.range->first)
+          path.lineTo(QPointF(c.x, row(c.range->second)));
       }
       p.setBrush(Qt::NoBrush);
       p.setPen(pen);
@@ -272,15 +310,13 @@ class CameraPathPlot : public QWidget {
             low.clear();
             high.clear();
           };
-          for (std::size_t i = 0; i < frames.size(); ++i) {
-            const auto range = extent(frames[i]);
-            if (!range) {
+          for (const Column& c : reduce(frames, extent)) {
+            if (!c.range) {
               flush();
               continue;
             }
-            const double x = column(i, frames.size());
-            low << QPointF(x, row(range->first));
-            high << QPointF(x, row(range->second));
+            low << QPointF(c.x, row(c.range->first));
+            high << QPointF(c.x, row(c.range->second));
           }
           flush();
         };
@@ -361,13 +397,21 @@ class CameraPathPlot : public QWidget {
           },
           QPen(QColor("#ff5f56"), 1, Qt::DotLine));
       // A strip along the top stays visible when the Program line is hidden.
+      // Catching a breakaway is a yes or no per frame, so the marked columns
+      // are the ones holding at least one such frame.
       p.setPen(Qt::NoPen);
       p.setBrush(QColor(255, 95, 86, 150));
-      for (std::size_t i = 0; i < trial->size(); ++i) {
-        if (!trial->at(i).tracking.breakaway_edge)
+      const std::vector<Column> catching =
+          reduce(*trial, [](const replay::Frame& f) -> std::optional<std::pair<double, double>> {
+            if (!f.tracking.breakaway_edge)
+              return std::nullopt;
+            return std::pair<double, double>(0, 0);
+          });
+      for (std::size_t i = 0; i < catching.size(); ++i) {
+        if (!catching[i].range)
           continue;
-        const double x = column(i, trial->size());
-        const double next = i + 1 < trial->size() ? column(i + 1, trial->size()) : x + 1;
+        const double x = catching[i].x;
+        const double next = i + 1 < catching.size() ? catching[i + 1].x : x + 1;
         p.drawRect(QRectF(x, plot.top() + 1, std::max(1.0, next - x), 3));
       }
       p.setBrush(Qt::NoBrush);
