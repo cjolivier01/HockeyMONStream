@@ -324,6 +324,20 @@ cc_binary(
 )
 
 cc_library(
+    name = "camera_plot_series",
+    hdrs = ["CameraPlotSeries.h"],
+    copts = COMMON_COPTS,
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "camera_plot_series_test",
+    srcs = ["CameraPlotSeriesTest.cpp"],
+    copts = COMMON_COPTS,
+    deps = [":camera_plot_series"],
+)
+
+cc_library(
     name = "camera_experiment_dialog",
     srcs = ["CameraExperimentDialog.cpp"],
     hdrs = ["CameraExperimentDialog.h", "CameraControlSpecs.h"],
@@ -340,6 +354,7 @@ cc_library(
         "//src/libs/recording",
         ":camera_experiment_source",
         ":camera_experiment_preview",
+        ":camera_plot_series",
         "//src/libs/playtracker_replay",
         "@qt//:qt_widgets",
         "@yaml-cpp",

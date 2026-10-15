@@ -9,6 +9,7 @@
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentPreviewWorker.h"
 #include "src/apps/hstream-ui/CameraExperimentSource.h"
+#include "src/apps/hstream-ui/CameraPlotSeries.h"
 
 #include <QtCore/QDebug>
 #include <QtCore/QDir>
@@ -201,13 +202,6 @@ std::optional<std::pair<double, double>> box_extent(const std::optional<hm::BBox
   return std::pair<double, double>(box->left, box->right);
 }
 
-// One pixel column of the plot, holding the range its frames covered. An
-// absent range is a column where the quantity was not available at all.
-struct Column {
-  double x{0};
-  std::optional<std::pair<double, double>> range;
-};
-
 class CameraPathPlot : public QWidget {
  public:
   explicit CameraPathPlot(QWidget* parent) : QWidget(parent) {
@@ -239,28 +233,13 @@ class CameraPathPlot : public QWidget {
 
     const double span = std::max(1U, canvas_width);
     const auto column = [&](std::size_t index, std::size_t count) {
-      return count < 2 ? plot.center().x() : plot.left() + plot.width() * index / (count - 1);
+      return hm::ui::PlotColumnX(index, count, plot.left(), plot.width());
     };
     const auto row = [&](double position) { return plot.bottom() - plot.height() * position / span; };
-    // A two-minute clip holds thousands of frames and the plot is about a
-    // thousand pixels wide, so each pixel column is reduced to the range its
-    // frames cover. Nothing visible is lost and the drawing cost is bound by
-    // the widget instead of the clip.
+    // Drawing cost follows the widget rather than the clip; see ReducePlotColumns.
     const auto reduce = [&](const std::vector<replay::Frame>& frames, const auto& extent) {
-      std::vector<Column> result;
-      for (std::size_t i = 0; i < frames.size(); ++i) {
-        const double x = column(i, frames.size());
-        if (result.empty() || static_cast<int>(result.back().x) != static_cast<int>(x))
-          result.push_back({x, std::nullopt});
-        const auto range = extent(frames[i]);
-        if (!range)
-          continue;
-        auto& covered = result.back().range;
-        covered = covered ? std::pair<double, double>(
-                                std::min(covered->first, range->first), std::max(covered->second, range->second))
-                          : *range;
-      }
-      return result;
+      return hm::ui::ReducePlotColumns(
+          frames.size(), plot.left(), plot.width(), [&](std::size_t i) { return extent(frames[i]); });
     };
     // One subpath per contiguous run, so an absent box breaks the drawing
     // instead of bridging across the gap it left. Where a column covers a
@@ -275,7 +254,7 @@ class CameraPathPlot : public QWidget {
           return std::nullopt;
         return std::pair<double, double>(*position, *position);
       };
-      for (const Column& c : reduce(frames, as_range)) {
+      for (const hm::ui::PlotColumn& c : reduce(frames, as_range)) {
         if (!c.range) {
           started = false;
           continue;
@@ -312,7 +291,7 @@ class CameraPathPlot : public QWidget {
             low.clear();
             high.clear();
           };
-          for (const Column& c : reduce(frames, extent)) {
+          for (const hm::ui::PlotColumn& c : reduce(frames, extent)) {
             if (!c.range) {
               flush();
               continue;
@@ -403,7 +382,7 @@ class CameraPathPlot : public QWidget {
       // are the ones holding at least one such frame.
       p.setPen(Qt::NoPen);
       p.setBrush(QColor(255, 95, 86, 150));
-      const std::vector<Column> catching =
+      const std::vector<hm::ui::PlotColumn> catching =
           reduce(*trial, [](const replay::Frame& f) -> std::optional<std::pair<double, double>> {
             if (!f.tracking.breakaway_edge)
               return std::nullopt;
