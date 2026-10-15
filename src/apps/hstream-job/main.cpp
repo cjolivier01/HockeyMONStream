@@ -19,6 +19,7 @@ namespace {
 // encoder; an empty archive selection means the default 4K Program copy.
 std::vector<std::string> encode_job_arguments(const YAML::Node& saved_args, const std::string& requested_sinks) {
   std::vector<std::string> result, encoders;
+  bool calibration_only = false;
   auto select = [&encoders](const std::string& list) {
     std::istringstream stream(list);
     std::string sink;
@@ -31,9 +32,9 @@ std::vector<std::string> encode_job_arguments(const YAML::Node& saved_args, cons
   };
   for (size_t i = 0; saved_args.IsSequence() && i < saved_args.size(); ++i) {
     const std::string arg = saved_args[i].as<std::string>();
-    if (arg == "--stitching-calibration-only")
-      throw std::runtime_error("saved job is calibration-only; export it again from hstream-ui for encoding");
-    if (arg == "--enable-sinks" || arg == "-k") {
+    if (arg == "--stitching-calibration-only") {
+      calibration_only = true;
+    } else if (arg == "--enable-sinks" || arg == "-k") {
       if (++i == saved_args.size())
         throw std::runtime_error("saved --enable-sinks is missing its value");
       select(saved_args[i].as<std::string>());
@@ -56,6 +57,12 @@ std::vector<std::string> encode_job_arguments(const YAML::Node& saved_args, cons
   }
   if (encoders.empty())
     encoders.push_back("ENCODE_PROGRAM_4K_FILE");
+  const bool stitched_only = encoders.size() == 1 && encoders.front() == "ENCODE_STITCHED_FILE";
+  if (calibration_only && !stitched_only)
+    throw std::runtime_error(
+        "Stitching Calibration jobs require only Archive Stitched; use Program mode for Program archives");
+  if (stitched_only)
+    result.push_back("--stitching-calibration-only");
   std::string sinks = "--enable-sinks=";
   for (const auto& encoder : encoders) {
     if (sinks.back() != '=')
@@ -375,7 +382,9 @@ int main(int argc, char** argv) {
       throw std::runtime_error("hstream_ui.job.arguments must be a sequence");
     const auto job_args = encode_job_arguments(saved_args, requested_sinks);
     args.insert(args.end(), job_args.begin(), job_args.end());
-    if (job && job.IsMap() && job["capture_telemetry"].IsDefined()) {
+    if (std::find(job_args.begin(), job_args.end(), "--stitching-calibration-only") != job_args.end()) {
+      args.push_back("--options=hstream_ui.job.capture_telemetry=false");
+    } else if (job && job.IsMap() && job["capture_telemetry"].IsDefined()) {
       args.push_back(
           std::string("--options=hstream_ui.job.capture_telemetry=") +
           (job["capture_telemetry"].as<bool>() ? "true" : "false"));

@@ -311,6 +311,7 @@ class JobScriptTest(unittest.TestCase):
             ("FAKE", "ENCODE_PROGRAM_4K_FILE"),
             ("RTMP,RENDER", "ENCODE_PROGRAM_4K_FILE"),
             ("RENDER,ENCODE_FILE", "ENCODE_FILE"),
+            ("RENDER,ENCODE_STITCHED_FILE", "ENCODE_STITCHED_FILE"),
             ("ENCODE_STITCHED_FILE,RENDER,ENCODE_PROGRAM_4K_FILE",
              "ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE"),
         ):
@@ -330,13 +331,54 @@ class JobScriptTest(unittest.TestCase):
                 self.assertEqual(args.count("--encode-job"), 1)
                 self.assertFalse(any(a.startswith("--show") for a in args))
                 self.assertNotIn("--render-realtime", args)
+                self.assertEqual(
+                    "--stitching-calibration-only" in args,
+                    expected == "ENCODE_STITCHED_FILE",
+                )
                 self.assertIn("--options=rink.camera.zoom_in_aggressiveness=0.7", args)
+
+    def test_stitched_only_recipe_and_telemetry(self):
+        for explicit_mode in (False, True):
+            for capture in (False, True):
+                with self.subTest(explicit_mode=explicit_mode, capture=capture):
+                    arguments = ["--enable-sinks=ENCODE_STITCHED_FILE"]
+                    if explicit_mode:
+                        arguments.append("--stitching-calibration-only")
+                    (self.game / "config.yaml").write_text(json.dumps({
+                        "hstream_ui": {"job": {
+                            "arguments": arguments, "capture_telemetry": capture,
+                        }}
+                    }))
+                    result = self.generate("--force")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    subprocess.run([str(self.game / "hstream-job.sh")], env=self.env, check=False)
+                    args = json.loads(self.output.read_text())["argv"]
+                    self.assertEqual(args.count("--stitching-calibration-only"), 1)
+                    self.assertIn("--options=hstream_ui.job.capture_telemetry=false", args)
+                    self.assertNotIn("--options=hstream_ui.job.capture_telemetry=true", args)
+
+    def test_calibration_rejects_program_archives(self):
+        self.assertEqual(self.generate().returncode, 0)
+        script = self.game / "hstream-job.sh"
+        original = script.read_bytes()
+        for sinks in ("ENCODE_FILE", "ENCODE_PROGRAM_4K_FILE", "ENCODE_FILE,ENCODE_STITCHED_FILE"):
+            with self.subTest(sinks=sinks):
+                (self.game / "config.yaml").write_text(json.dumps({
+                    "hstream_ui": {"job": {"arguments": [
+                        "--stitching-calibration-only", "--enable-sinks=" + sinks,
+                    ]}}
+                }))
+                result = self.generate("--force")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("require only Archive Stitched", result.stderr)
+                self.assertEqual(script.read_bytes(), original)
 
     def test_explicit_selection_and_rejected_nonencoding_job(self):
         result = self.generate("--enable-sinks", "ENCODE_STITCHED_FILE")
         self.assertEqual(result.returncode, 0, result.stderr)
         script = self.game / "hstream-job.sh"
         self.assertIn("--enable-sinks=ENCODE_STITCHED_FILE", script.read_text())
+        self.assertIn("--stitching-calibration-only", script.read_text())
         original = script.read_bytes()
         result = self.generate("--force", "--enable-sinks", "FAKE")
         self.assertNotEqual(result.returncode, 0)

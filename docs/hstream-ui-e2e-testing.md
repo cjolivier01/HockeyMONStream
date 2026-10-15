@@ -54,8 +54,14 @@ scripts/test_hstream_ui_x11_interactions.sh
 
 **Save job script** invokes `hstream-job`. Jobs disable display and network sinks and
 encode the checked Program, Stitched, and/or 4K Program outputs. With no file output
-checked, they encode the 4K Program copy. Export uses the normal Program pipeline even
-when the UI is in calibration mode. The Render video checkbox still controls local Play.
+checked, they encode the 4K Program copy. Stitched-only exports use the stitching-only
+pipeline, skipping detection, rink filtering, player analytics, play tracking, Program
+cropping and DriveGPT capture, even when Program mode is selected. Any Program archive
+uses the full Program pipeline. In Stitching Calibration mode, only Archive Stitched is
+valid: Program selections (including the no-selection 4K default) show an error in
+hstream-ui before the save dialogs or any settings are written. Switch to Program mode
+to change the disabled Program archive checkboxes. The Render video checkbox still
+controls local Play.
 
 The generated script invokes `hstream-cli --encode-job`, which requires an enabled file
 encoder after configuration resolution, disables render sinks and previews, and writes
@@ -64,12 +70,13 @@ the extension becomes `.mp4`. MP4s and DriveGPT databases stay in working storag
 (normally `~/hstream_output/<game-id>`), without the UI's game-directory publication.
 MP4 completion requires graceful EOS; abrupt process termination can leave an unfinished file.
 
-DriveGPT capture defaults on. Export freezes the current checkbox choice in the script,
+DriveGPT capture defaults on for Program jobs. Export freezes the current checkbox choice in the script,
 including an explicit off choice, so later UI saves do not change it. Old recipes without
 that field use the configured DriveGPT default.
 Standalone `hstream-job --game-dir DIR` also defaults to 4K when the recipe has no file
 encoder; `--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE` overrides its archive selection.
-A legacy calibration-only recipe must be re-exported from the UI.
+Stitched-only selections use the same short pipeline for standalone exports; calibration-only
+recipes that request Program archives are rejected.
 Encoding jobs require a YAML pipeline config; legacy DeepStream `.txt` configs are rejected.
 
 Quick export checks:
@@ -80,8 +87,10 @@ QT_QPA_PLATFORM=offscreen HSTREAM_UI_TEST_JOB_EXPORT_ONLY=1 \
   bazel-bin/src/apps/hstream-ui/hstream_ui_test
 ```
 
-The UI check exports four scripts through the real tool, covering default 4K, Program,
-Stitched, all three outputs, rendering left selected, and an explicit telemetry opt-out.
+The UI check covers all eight archive checkbox combinations in both run modes, exporting
+valid scripts through the real tool and checking that invalid combinations show a popup
+without writing settings or a script. It also checks pipeline selection, rendering left
+selected, and telemetry capture.
 The script test executes generated jobs against a recording runner and checks sink
 selection, argument quoting, exit status and failure without overwriting an existing job.
 

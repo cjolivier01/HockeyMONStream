@@ -7459,24 +7459,47 @@ bool test_job_export() {
   auto* archive = require_child<QCheckBox>(&window, "outputToggle_archive-file");
   auto* stitched = require_child<QCheckBox>(&window, "outputToggle_archive-stitched");
   auto* program_4k = require_child<QCheckBox>(&window, "outputToggle_archive-program-4k");
+  auto* mode = require_child<QComboBox>(&window, "runModeCombo");
   auto* action = require_child<QAction>(&window, "saveJobScriptAction");
-  if (!game_id || !create || !render || !telemetry || !archive || !stitched || !program_4k || !action)
+  if (!game_id || !create || !render || !telemetry || !archive || !stitched || !program_4k || !mode || !action)
     return false;
   game_id->setText("ui-job-export");
   activate(create);
   render->setChecked(true);
   telemetry->setChecked(true);
   QTemporaryDir outputs;
-  for (int selection = 0; selection < 4; ++selection) {
-    archive->setChecked(selection == 1 || selection == 3);
-    stitched->setChecked(selection == 2 || selection == 3);
-    program_4k->setChecked(selection == 3);
-    telemetry->setChecked(selection != 3);
+  for (int selection = 0; selection < 16; ++selection) {
+    const bool calibration = (selection & 8) != 0;
+    const bool archive_selected = (selection & 1) != 0;
+    const bool stitched_selected = (selection & 2) != 0;
+    const bool program_4k_selected = (selection & 4) != 0;
+    const bool stitched_only = stitched_selected && !archive_selected && !program_4k_selected;
+    const bool invalid = calibration && !stitched_only;
+    mode->setCurrentIndex(mode->findData(calibration ? "stitch-calibration" : "program"));
+    archive->setChecked(archive_selected);
+    stitched->setChecked(stitched_selected);
+    program_4k->setChecked(program_4k_selected);
+    telemetry->setChecked((selection & 7) != 7);
+    QFile preset(QDir(window.gameDirectoryText()).filePath("config.yaml"));
+    QByteArray original_preset;
+    if (invalid) {
+      if (!expect(preset.open(QIODevice::ReadOnly), "Earlier valid exports must have saved the game config"))
+        return false;
+      original_preset = preset.readAll();
+      preset.close();
+    }
     const QString path = outputs.filePath(QString("job-%1.sh").arg(selection));
+    bool file_dialog_shown = false;
+    QString error_message;
     QTimer dialogs;
     QObject::connect(&dialogs, &QTimer::timeout, [&] {
       QWidget* modal = QApplication::activeModalWidget();
       if (auto* file = qobject_cast<QFileDialog*>(modal)) {
+        file_dialog_shown = true;
+        if (invalid) {
+          file->reject();
+          return;
+        }
         if (file->property("exportTestHandled").toBool())
           return;
         file->setProperty("exportTestHandled", true);
@@ -7492,11 +7515,23 @@ bool test_job_export() {
       } else if (auto* input = qobject_cast<QInputDialog*>(modal)) {
         input->accept();
       } else if (auto* message = qobject_cast<QMessageBox*>(modal)) {
+        if (message->icon() == QMessageBox::Warning || message->icon() == QMessageBox::Critical)
+          error_message = message->text();
         message->accept();
       }
     });
     dialogs.start(20);
     action->trigger();
+    if (invalid) {
+      if (!expect(preset.open(QIODevice::ReadOnly), "Invalid export must preserve the game config"))
+        return false;
+      if (!expect(
+              error_message.contains("Stitching Calibration can only save Archive Stitched") && !file_dialog_shown &&
+                  !QFileInfo::exists(path) && preset.readAll() == original_preset,
+              "Invalid calibration/archive combinations must show a UI error before export dialogs or config writes"))
+        return false;
+      continue;
+    }
     QElapsedTimer timer;
     timer.start();
     while (!window.logText().contains("job script saved: " + path) && timer.elapsed() < 10000)
@@ -7505,16 +7540,30 @@ bool test_job_export() {
     if (!expect(script.open(QIODevice::ReadOnly), "The UI must export a script through hstream-job"))
       return false;
     const QString text = QString::fromUtf8(script.readAll());
-    const QString expected = selection == 0 ? "ENCODE_PROGRAM_4K_FILE"
-        : selection == 1                    ? "ENCODE_FILE"
-        : selection == 2                    ? "ENCODE_STITCHED_FILE"
-                                            : "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_STITCHED_FILE";
+    QStringList expected;
+    if (archive_selected)
+      expected << "ENCODE_FILE";
+    if (program_4k_selected || (!archive_selected && !stitched_selected))
+      expected << "ENCODE_PROGRAM_4K_FILE";
+    if (stitched_selected)
+      expected << "ENCODE_STITCHED_FILE";
     const YAML::Node config = YAML::LoadFile(QDir(window.gameDirectoryText()).filePath("config.yaml").toStdString());
     if (!expect(
-            text.contains("--enable-sinks=" + expected) && text.contains("--encode-job") &&
-                !text.contains("'--show'") && !text.contains("--enable-sinks=RENDER") &&
-                config["hstream_ui"]["job"]["capture_telemetry"].as<bool>() == (selection != 3) && render->isChecked(),
-            "Export must honor archive/telemetry choices, default to 4K, and leave UI rendering selected"))
+            error_message.isEmpty() && text.contains("'--enable-sinks=" + expected.join(',') + "'") &&
+                text.count("--enable-sinks=") == 1 && text.contains("--encode-job") &&
+                text.contains("--stitching-calibration-only") == stitched_only && !text.contains("'--show'") &&
+                !text.contains("--enable-sinks=RENDER") &&
+                config["hstream_ui"]["job"]["capture_telemetry"].as<bool>() ==
+                    (telemetry->isChecked() && !stitched_only) &&
+                render->isChecked() && telemetry->isChecked() == ((selection & 7) != 7) &&
+                (mode->currentData().toString() == "stitch-calibration") == calibration,
+            "Export must select exactly the requested archives and matching pipeline without changing local controls"))
+      return false;
+    if (stitched_only &&
+        !expect(
+            !text.contains("--options=rink.tracking.") && !text.contains("--options=pipeline.player-analytics.") &&
+                text.contains("--options=hstream_ui.job.capture_telemetry=false"),
+            "Stitched-only scripts must omit Program options and disable DriveGPT capture"))
       return false;
   }
   return true;

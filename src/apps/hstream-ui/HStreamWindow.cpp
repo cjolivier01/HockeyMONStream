@@ -9854,7 +9854,8 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
   const QString game_id = !standalone && !active_run_game_id_.isEmpty()
       ? active_run_game_id_
       : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
-  const bool calibration_only = !job_export && isCalibrationRun();
+  const bool calibration_only =
+      isCalibrationRun() || (job_export && enabledSinkNames(true) == QStringList{"ENCODE_STITCHED_FILE"});
   const bool render_video = !job_export && (!render_video_toggle_ || render_video_toggle_->isChecked());
   const bool test_embedded_preview = !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() &&
       qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
@@ -9872,13 +9873,11 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
   if (calibration_only) {
     args << "--stitching-calibration-only";
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
-    QStringList sinks;
-    if (render_video || embed_render_window)
-      sinks << "RENDER";
-    if (output_toggles_.at("archive-stitched")->isChecked())
-      sinks << "ENCODE_STITCHED_FILE";
-    if (sinks.isEmpty())
-      sinks << "FAKE";
+    QStringList sinks = enabledSinkNames(job_export);
+    if (embed_render_window && !sinks.contains("RENDER")) {
+      sinks.removeAll("FAKE");
+      sinks.push_front("RENDER");
+    }
     args << QString("--enable-sinks=%1").arg(sinks.join(','));
     if (render_video || embed_render_window) {
       args << "--show";
@@ -16457,13 +16456,25 @@ void HStreamWindow::maybeStartDeferredRestart() {
 }
 
 void HStreamWindow::saveJobScript() {
-  if (!ensureSavedControlConfigLoaded() || !validatePlayerAnalyticsForRun())
+  if (!ensureSavedControlConfigLoaded())
     return;
   if ((pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) ||
       live_rotation_authorization_pending_) {
     QMessageBox::information(this, "Save job script", "Stop playback before saving a job script.");
     return;
   }
+  const bool stitched_only = enabledSinkNames(true) == QStringList{"ENCODE_STITCHED_FILE"};
+  if (isCalibrationRun() && !stitched_only) {
+    QMessageBox::warning(
+        this,
+        "Save job script",
+        "Stitching Calibration can only save Archive Stitched. Select only Archive Stitched, or switch to "
+        "Program to save Program archives.\n\n"
+        "With no archives checked, the job defaults to 4K Program, which requires Program mode.");
+    return;
+  }
+  if (!stitched_only && !validatePlayerAnalyticsForRun())
+    return;
   if (!ensureGameDirectory())
     return;
   const QString path = QFileDialog::getSaveFileName(
@@ -16483,6 +16494,7 @@ void HStreamWindow::saveJobScript() {
           "This script runs the selected hstream-cli directly with its matching runtime environment. "
           "Rendering is disabled. Selected file encodings are written directly as MP4; "
           "if none are selected, the job encodes the 4K Program copy.\n"
+          "Stitched-only jobs skip detection, play tracking and DriveGPT capture.\n"
           "MP4s and DriveGPT databases remain in working storage and are not copied into the game directory.\n"
           "Working output root: %1 (custom per-output paths still apply).\n\n"
           "Optional SBATCH directives, one per line (for example --partition=gpu).\n"
@@ -18444,7 +18456,8 @@ bool HStreamWindow::applySavedControlConfig(
     job_arguments.push_back(argument.toStdString());
   }
   config["hstream_ui"]["job"]["arguments"] = job_arguments;
-  config["hstream_ui"]["job"]["capture_telemetry"] = drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked();
+  config["hstream_ui"]["job"]["capture_telemetry"] = !standalone_arguments.contains("--stitching-calibration-only") &&
+      drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked();
 
   const bool control_points_changed =
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;

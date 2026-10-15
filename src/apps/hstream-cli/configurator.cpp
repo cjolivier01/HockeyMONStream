@@ -7426,7 +7426,7 @@ absl::Status Configurator::configure_source_bit_depth(
   return absl::OkStatus();
 }
 
-absl::Status Configurator::configure_encode_job(YAML::Node& pipeline) {
+absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitching_calibration_only) {
   bool have_encoder = false;
   for (auto entry : pipeline) {
     const std::string name = entry.first.as<std::string>();
@@ -7438,8 +7438,11 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline) {
         type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE;
     if (!encoder)
       sink["enable"] = 0;
-    else
+    else {
+      if (stitching_calibration_only && is_enabled(sink) && type != NV_DS_SINK_ENCODE_STITCHED_FILE)
+        return absl::InvalidArgumentError("Stitching Calibration encoding jobs can only save Archive Stitched");
       have_encoder |= is_enabled(sink);
+    }
   }
   if (!have_encoder)
     return absl::InvalidArgumentError("An encoding job requires at least one enabled file encoder");
@@ -7456,6 +7459,8 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline) {
   bool capture = true;
   HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.drivegpt_database.enabled", true));
   HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.job.capture_telemetry", capture));
+  if (stitching_calibration_only)
+    capture = false;
   auto properties = pipeline["ds-playtracker"]["private-properties"];
   const auto normalized_key = [](std::string key) {
     std::replace(key.begin(), key.end(), '_', '-');
@@ -9239,9 +9244,7 @@ absl::Status Configurator::complete_configuration(
     apply_gpu_override(pipeline);
     HM_RETURN_IF_ERROR(apply_supported_baseline_mappings());
     if (encode_job_) {
-      if (stitching_calibration_only)
-        return absl::InvalidArgumentError("Encoding jobs cannot use calibration-only mode");
-      HM_RETURN_IF_ERROR(configure_encode_job(pipeline));
+      HM_RETURN_IF_ERROR(configure_encode_job(pipeline, stitching_calibration_only));
       show_render_sink = false;
     }
     HM_RETURN_IF_ERROR(apply_gpu_memory_profile(pipeline));
