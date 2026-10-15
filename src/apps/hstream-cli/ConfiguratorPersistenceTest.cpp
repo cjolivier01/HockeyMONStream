@@ -1,4 +1,5 @@
 #include "src/apps/hstream-cli/StitcherOnePassConfig.h"
+#include "src/apps/hstream-cli/StitchingCalibrationMode.h"
 #include "src/apps/hstream-cli/configurator.h"
 
 #include <algorithm>
@@ -32,9 +33,9 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 namespace hm {
 
 struct ConfiguratorTestAccess {
-  static absl::Status configure_encode_job(Configurator* configurator) {
+  static absl::Status configure_encode_job(Configurator* configurator, bool stitching_calibration_only = false) {
     YAML::Node pipeline = configurator->config_["pipeline"];
-    return configurator->configure_encode_job(pipeline);
+    return configurator->configure_encode_job(pipeline, stitching_calibration_only);
   }
   static absl::Status configure_encode_file_outputs(Configurator* configurator) {
     YAML::Node pipeline = configurator->config_["pipeline"];
@@ -187,10 +188,6 @@ int main() {
         previous_root ? std::make_optional<std::string>(previous_root) : std::nullopt;
     ::setenv("HM_OUTPUT_WORK_DIR", directory.c_str(), 1);
     const auto output_status = hm::ConfiguratorTestAccess::configure_encode_file_outputs(&job);
-    if (saved_root)
-      ::setenv("HM_OUTPUT_WORK_DIR", saved_root->c_str(), 1);
-    else
-      ::unsetenv("HM_OUTPUT_WORK_DIR");
     if (!job_status.ok() || !output_status.ok())
       std::cerr << "Encoding job configuration: " << job_status << "; outputs: " << output_status << '\n';
     ok &= expect(
@@ -256,11 +253,47 @@ int main() {
             "Typed overrides retain unrelated settings and obey the final telemetry selection");
       }
     }
+    auto stitched_fixture = YAML::Clone(fixture);
+    stitched_fixture["hstream_ui"]["job"]["capture_telemetry"] = true;
+    stitched_fixture["pipeline"]["sink6"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
+    for (const char* stage : {"primary-gie", "tracker", "ds-fieldmask", "ds-playtracker", "hmplaycropper"})
+      stitched_fixture["pipeline"][stage]["enable"] = 1;
+    hm::pipeline_internal::configure_stitching_calibration_pipeline(stitched_fixture["pipeline"]);
+    hm::ConfiguratorTestAccess::set_config(&job, stitched_fixture);
+    const auto stitched_job_status = hm::ConfiguratorTestAccess::configure_encode_job(&job, true);
+    const auto stitched_output_status = hm::ConfiguratorTestAccess::configure_encode_file_outputs(&job);
+    if (!stitched_job_status.ok() || !stitched_output_status.ok())
+      std::cerr << "Stitched job configuration: " << stitched_job_status << "; outputs: " << stitched_output_status
+                << '\n';
+    ok &= expect(
+        stitched_job_status.ok() && stitched_output_status.ok() &&
+            job.config()["pipeline"]["sink6"]["enable"].as<int>() == 1 &&
+            job.config()["pipeline"]["sink6"]["container"].as<int>() == NV_DS_CONTAINER_MP4 &&
+            job.config()["pipeline"]["ds-playtracker"]["private-properties"]["telemetry-db-dir"]
+                .as<std::string>()
+                .empty(),
+        "Stitched-only jobs must encode MP4 without requiring DriveGPT or a Program tracker");
+    for (const char* stage : {"primary-gie", "tracker", "ds-fieldmask", "ds-playtracker", "hmplaycropper"})
+      ok &= expect(
+          job.config()["pipeline"][stage]["enable"].as<int>() == 0,
+          "Stitched-only jobs must keep Program processing disabled");
+    for (const auto type : {NV_DS_SINK_ENCODE_FILE, NV_DS_SINK_ENCODE_PROGRAM_4K_FILE}) {
+      stitched_fixture["pipeline"]["sink2"]["enable"] = 1;
+      stitched_fixture["pipeline"]["sink2"]["type"] = static_cast<int>(type);
+      hm::ConfiguratorTestAccess::set_config(&job, stitched_fixture);
+      ok &= expect(
+          !hm::ConfiguratorTestAccess::configure_encode_job(&job, true).ok(),
+          "Stitching-only jobs must reject either Program archive even when Stitched is also enabled");
+    }
     fixture["pipeline"]["sink6"]["enable"] = 0;
     hm::ConfiguratorTestAccess::set_config(&job, fixture);
     ok &= expect(
         !hm::ConfiguratorTestAccess::configure_encode_job(&job).ok(),
         "A final configuration with no file encoder must fail before running");
+    if (saved_root)
+      ::setenv("HM_OUTPUT_WORK_DIR", saved_root->c_str(), 1);
+    else
+      ::unsetenv("HM_OUTPUT_WORK_DIR");
     fs::remove_all(directory);
   }
   const auto memory_profile_fixture = [] {
@@ -1192,6 +1225,44 @@ play-tracker:
         "Legacy Program archive path and bitrate overrides must continue to control calibration archives");
   } else {
     ok = false;
+  }
+
+  for (bool canonical : {false, true}) {
+    for (bool explicit_stitched : {false, true}) {
+      auto job = prepare_tone_routing("stitched-job-output-independence", "0");
+      if (!job) {
+        ok = false;
+        continue;
+      }
+      job->set_encode_job(true);
+      YAML::Node pipeline = job->config()["pipeline"];
+      pipeline["sink0"]["enable"] = 1;
+      pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
+      pipeline["sink0"]["output-file"] = "stitched.mkv";
+      pipeline["sink1"]["enable"] = 0;
+      pipeline["sink1"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_FILE);
+      if (explicit_stitched) {
+        pipeline["sink0"]["bitrate"] = 31000000;
+        hm::ConfiguratorTestAccess::set_explicit_rank(job.get(), "pipeline.sink0.output-file", 1);
+        hm::ConfiguratorTestAccess::set_explicit_rank(job.get(), "pipeline.sink0.bitrate", 1);
+      } else {
+        pipeline["sink0"].remove("bitrate");
+      }
+      const bool overrides_applied =
+          job->apply_config_item(
+                 canonical ? "video_out.output_video_path" : "pipeline.sink1.output-file", "program.mkv")
+              .ok() &&
+          job->apply_config_item(canonical ? "video_out.bit_rate" : "pipeline.sink1.bitrate", "17000000").ok() &&
+          job->apply_supported_baseline_mappings().ok();
+      const auto status = overrides_applied
+          ? hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(job.get())
+          : absl::InternalError("Program output overrides did not apply");
+      ok &= expect(
+          status.ok() && pipeline["sink0"]["output-file"].as<std::string>() == "stitched.mkv" &&
+              (explicit_stitched ? pipeline["sink0"]["bitrate"].as<int>() == 31000000
+                                 : !pipeline["sink0"]["bitrate"].IsDefined()),
+          "Stitched jobs must retain their own path and bitrate even with higher-ranked Program output overrides");
+    }
   }
 
   const auto test_calibration_layer_precedence = [&](const std::string& game,

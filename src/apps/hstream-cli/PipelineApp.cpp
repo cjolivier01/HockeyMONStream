@@ -2968,7 +2968,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        0,
        G_OPTION_ARG_NONE,
        &encode_job_,
-       "Require headless MP4 file output and default DriveGPT capture for an exported job",
+       "Require headless MP4 file output; Program jobs default to DriveGPT capture",
        nullptr},
       {"show-stitching",
        0,

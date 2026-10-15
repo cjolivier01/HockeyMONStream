@@ -202,7 +202,7 @@ class Configurator {
       const std::string& config_path);
 
  private:
-  absl::Status configure_encode_job(YAML::Node& pipeline);
+  absl::Status configure_encode_job(YAML::Node& pipeline, bool stitching_calibration_only);
   bool encode_job_{false};
   absl::Status save_private_config_with_backend_claim(
       const YAML::Node& private_config,

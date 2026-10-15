@@ -134,6 +134,7 @@ cc_test(
     srcs = [
         "ConfiguratorPersistenceTest.cpp",
         "StitcherOnePassConfig.h",
+        "StitchingCalibrationMode.h",
         "configurator.cpp",
         "configurator.h",
         "deepstream_app.h",
