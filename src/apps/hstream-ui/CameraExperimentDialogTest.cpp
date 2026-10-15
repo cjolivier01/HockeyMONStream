@@ -25,6 +25,8 @@
 #include <functional>
 #include <future>
 #include <iostream>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -119,21 +121,56 @@ bool smoke() {
   }
   if (widget<QCheckBox>(first, "experimentDrawRinkMask")->isEnabled())
     return false;
+  // Every plot drawing is switchable before anything is prepared, starts in its
+  // documented state, explains itself, and belongs to one dialog. Repaint in
+  // both states too: an unprepared plot has no frames to draw, which is the
+  // case every empty-run guard in paintEvent has to survive.
+  auto* camera_plot = widget<QWidget>(first, "experimentCameraPlot");
+  for (const auto& [name, on_by_default] : std::vector<std::pair<const char*, bool>>{
+           {"experimentPlotLayer_Recorded", true},
+           {"experimentPlotLayer_Program", true},
+           {"experimentPlotLayer_Crop", true},
+           {"experimentPlotLayer_Fast", false},
+           {"experimentPlotLayer_Players", false},
+           {"experimentPlotLayer_Cluster", false},
+           {"experimentPlotLayer_Breakaway", true}}) {
+    auto* toggle = widget<QCheckBox>(first, name);
+    if (!toggle->isEnabled() || toggle->isChecked() != on_by_default || toggle->toolTip().isEmpty()) {
+      std::cerr << "Camera plot layer is unusable or starts in the wrong state: " << name << '\n';
+      return false;
+    }
+    toggle->setChecked(!on_by_default);
+    if (widget<QCheckBox>(second, name)->isChecked() != on_by_default) {
+      std::cerr << "Camera plot layer leaked to another dialog: " << name << '\n';
+      return false;
+    }
+    if (camera_plot->grab().isNull()) {
+      std::cerr << "Camera plot did not paint with layer flipped: " << name << '\n';
+      return false;
+    }
+    toggle->setChecked(on_by_default);
+    if (camera_plot->grab().isNull()) {
+      std::cerr << "Camera plot did not paint with layer restored: " << name << '\n';
+      return false;
+    }
+  }
   auto* controls_panel = widget<QWidget>(first, "experimentControlsPanel");
+  auto* plot_panel = widget<QWidget>(first, "experimentCameraPlotPanel");
   auto* video = widget<QWidget>(first, "experimentVideoTarget");
   const WId original_target = video->winId();
   if (!preview_focus->text().isEmpty() || preview_focus->accessibleName() != "Maximize preview")
     return false;
   preview_focus->click();
   QCoreApplication::processEvents();
-  if (controls_panel->isVisible() || preview_focus->accessibleName() != "Restore preview" ||
+  if (controls_panel->isVisible() || plot_panel->isVisible() || preview_focus->accessibleName() != "Restore preview" ||
       video->winId() != original_target || !preview_stop->isEnabled()) {
     std::cerr << "Camera preview did not focus while retaining its GPU target\n";
     return false;
   }
   preview_stop->click();
   QCoreApplication::processEvents();
-  if (!controls_panel->isVisible() || preview_focus->accessibleName() != "Maximize preview") {
+  if (!controls_panel->isVisible() || !plot_panel->isVisible() ||
+      preview_focus->accessibleName() != "Maximize preview") {
     std::cerr << "Stopping camera preview did not restore its layout\n";
     return false;
   }
@@ -444,6 +481,35 @@ bool e2e(const QStringList& args) {
     toggle->setChecked(false);
     if (!wait_until([&] { return screenshot->isEnabled(); }))
       return false;
+  }
+  // The plot paints on the CPU, so its layers can be checked directly: flipping
+  // one must change what the plot draws on the same paused frame.
+  auto* plot = widget<QWidget>(dialog, "experimentCameraPlot");
+  for (const char* name : {"experimentPlotLayer_Recorded",
+                           "experimentPlotLayer_Program",
+                           "experimentPlotLayer_Crop",
+                           "experimentPlotLayer_Fast",
+                           "experimentPlotLayer_Players",
+                           "experimentPlotLayer_Cluster",
+                           "experimentPlotLayer_Breakaway"}) {
+    auto* toggle = widget<QCheckBox>(dialog, name);
+    const QImage before = plot->grab().toImage();
+    toggle->toggle();
+    QCoreApplication::processEvents();
+    const QImage after = plot->grab().toImage();
+    toggle->toggle();
+    int different = 0;
+    for (int y = 0; y < before.height(); ++y)
+      for (int x = 0; x < before.width(); ++x)
+        different += before.pixel(x, y) != after.pixel(x, y);
+    std::cout << name << " changed " << different << " plot pixels\n";
+    // Program center and crop width exist on every prepared frame. The rest
+    // depend on what the clip contains, so their counts are only reported.
+    const std::string layer(name);
+    if (different == 0 && (layer == "experimentPlotLayer_Program" || layer == "experimentPlotLayer_Crop")) {
+      std::cerr << "Camera plot layer drew nothing: " << name << '\n';
+      return false;
+    }
   }
   const QString before_step = widget<QLabel>(dialog, "experimentFrameStatus")->text();
   widget<QPushButton>(dialog, "experimentNext")->click();

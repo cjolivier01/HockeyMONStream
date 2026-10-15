@@ -154,7 +154,7 @@ int main(int argc, char** argv) {
       require(!HStreamWindowTestAccess::busy(window), "background publication completed");
       require(HStreamWindowTestAccess::failed(window) == fail, "UI reports publication outcome");
       require(HStreamWindowTestAccess::state(window, "archive-file") == untouched, "unselected route is unchanged");
-      for (const QString route : {QString("archive-program-4k"), QString("archive-stitched")})
+      for (const QString& route : {QString("archive-program-4k"), QString("archive-stitched")})
         require(
             HStreamWindowTestAccess::state(window, route) == (fail ? "ERROR" : "SAVED"),
             "every selected route reports outcome");
