@@ -1,7 +1,10 @@
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 
+#include <sched.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 #include <cstdlib>
@@ -70,7 +73,10 @@ int main(int argc, char** argv) {
         fixture.string() + "'";
     require(std::system(make_fixture.c_str()) == 0, "create real encoded test fixture");
     const std::vector<std::string> command = {fs::canonical(argv[0]).string(), "--produce", fixture.string()};
-    const auto exercise = [&](const std::string& name, const fs::path& work_root, const char* interruption) {
+    const auto exercise = [&](const std::string& name,
+                              const fs::path& work_root,
+                              const char* interruption,
+                              bool destination_stage = false) {
       const auto game = base / name / "game";
       fs::create_directories(game);
       const std::string id = "run-test-" + name;
@@ -105,7 +111,45 @@ int main(int argc, char** argv) {
       }
       const auto receipt = YAML::LoadFile(pub::ReceiptPath(game, id).string());
       require(receipt["state"].as<std::string>() == "complete", "receipt records completed cleanup");
+      if (destination_stage)
+        require(
+            fs::path(receipt["stage"].as<std::string>()).parent_path() == game,
+            "different mounts stage directly in the game directory");
     };
+    if (argc == 2 && std::string(argv[1]) == "--bind-mount") {
+      // Always isolate mounts, even if this test mode is invoked directly.
+      require(::unshare(CLONE_NEWNS) == 0, "isolate test mounts");
+      require(::mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE, nullptr) == 0, "make test mounts private");
+      const auto game = base / "bind/game";
+      const auto source = base / "underlying-game";
+      fs::create_directories(game);
+      fs::create_directories(source);
+      require(::mount(source.c_str(), game.c_str(), nullptr, MS_BIND, nullptr) == 0, "bind game directory");
+      struct stat game_stat{}, base_stat{};
+      require(
+          ::stat(game.c_str(), &game_stat) == 0 && ::stat(base.c_str(), &base_stat) == 0 &&
+              game_stat.st_dev == base_stat.st_dev,
+          "regression uses different mounts of the same device");
+      exercise("bind", base / "work-bind", "after-link", true);
+      require(::umount(game.c_str()) == 0, "unmount test game");
+      fs::remove_all(base);
+      return 0;
+    }
+    if (std::system("unshare -Ur -m true >/dev/null 2>&1") == 0) {
+      const auto executable = fs::canonical(argv[0]).string();
+      const pid_t child = ::fork();
+      require(child >= 0, "fork bind mount regression");
+      if (child == 0) {
+        ::execlp("unshare", "unshare", "-Ur", "-m", executable.c_str(), "--bind-mount", nullptr);
+        ::_exit(127);
+      }
+      int status = 0;
+      require(
+          ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "publication and cleanup across same-device bind mounts");
+    } else {
+      std::cout << "Bind-mount regression skipped: unprivileged mount namespaces unavailable\n";
+    }
     exercise("success", base / "work-success", nullptr);
     {
       const auto game = base / "calibration/game";
@@ -140,6 +184,16 @@ int main(int argc, char** argv) {
         refused = true;
       }
       require(refused && count(game, ".mp4") == 0, "retry requires recorded runner success");
+      const auto changed_root = game.parent_path() / "changed-work";
+      refused = false;
+      try {
+        pub::RunJob(game, changed_root, id, command);
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      require(
+          refused && !fs::exists(changed_root) && count(game, ".mp4") == 0,
+          "changing output root cannot restart a failed or unconfirmed run");
       const auto manifest = root / "game/runs" / id / "run.yaml";
       refused = false;
       try {
@@ -148,6 +202,71 @@ int main(int argc, char** argv) {
         refused = true;
       }
       require(refused && fs::exists(manifest.parent_path() / "program.mkv"), "direct resume preserves failed run");
+      refused = false;
+      try {
+        pub::Finalize(pub::ReceiptPath(game, id));
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      require(refused && count(game, ".mp4") == 0, "admission locator cannot authorize unconfirmed runner success");
+    }
+    for (const std::string resume : {"job", "manifest", "receipt"}) {
+      const auto game = base / ("prepublication-" + resume) / "game";
+      const auto root = game.parent_path() / "work";
+      const auto changed_root = game.parent_path() / "changed-work";
+      const std::string id = "run-prepublication";
+      fs::create_directories(game);
+      setenv("HSTREAM_TEST_PUBLICATION_STOP", "after-runner-success", 1);
+      bool stopped = false;
+      try {
+        pub::RunJob(game, root, id, command);
+      } catch (const std::exception&) {
+        stopped = true;
+      }
+      unsetenv("HSTREAM_TEST_PUBLICATION_STOP");
+      require(stopped, "interrupt after durable successful runner exit");
+      const auto receipt = pub::ReceiptPath(game, id);
+      const auto manifest = root / "game/runs" / id / "run.yaml";
+      require(
+          YAML::LoadFile(receipt.string())["state"].as<std::string>() == "admitted",
+          "prepublication receipt only binds the original workspace");
+      if (resume == "job")
+        require(pub::RunJob(game, changed_root, id, {"/bin/false"}) == 0, "changed root resumes without reencoding");
+      else
+        pub::Finalize(resume == "manifest" ? manifest : receipt);
+      require(!fs::exists(manifest.parent_path()) && !fs::exists(changed_root), "only original workspace is cleaned");
+      require(count(game, ".mp4") == 3 && count(game, ".db") == 1, "prepublication retry publishes once");
+      require(pub::RunJob(game, changed_root, id, {"/bin/false"}) == 0, "completed binding remains idempotent");
+    }
+    {
+      const auto game = base / "admitted-game/game";
+      const auto root = game.parent_path() / "work";
+      const auto changed_root = game.parent_path() / "changed-work";
+      const std::string id = "run-admitted-work";
+      fs::create_directories(game);
+      const auto manifest = pub::CreateRun(game, root, id);
+      require(pub::CreateRun(game, changed_root, id) == manifest, "desktop admission preserves original workspace");
+      const auto original_work = game.parent_path() / "saved-work";
+      fs::rename(manifest.parent_path(), original_work);
+      for (const bool replaced : {false, true}) {
+        if (replaced)
+          fs::create_directory(manifest.parent_path());
+        bool refused = false;
+        try {
+          pub::RunJob(game, changed_root, id, command);
+        } catch (const std::exception&) {
+          refused = true;
+        }
+        require(refused && !fs::exists(changed_root), "missing or replaced admitted work cannot be recreated");
+      }
+      fs::remove(manifest.parent_path());
+      fs::rename(original_work, manifest.parent_path());
+      pub::BeginRun(manifest, true);
+      setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
+      produce(fixture, false);
+      unsetenv("HSTREAM_JOB_MANIFEST");
+      pub::Finalize(pub::ReceiptPath(game, id));
+      require(!fs::exists(manifest.parent_path()), "desktop publication resolves its admission locator");
     }
     for (const char* point : {"after-prepare", "after-link", "after-publish", "during-cleanup", "after-cleanup"})
       exercise(point, base / (std::string("work-") + point), point);

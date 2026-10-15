@@ -57,6 +57,19 @@ struct stat info(const fs::path& path) {
   check(::lstat(path.c_str(), &st) == 0, "Cannot inspect " + path.string());
   return st;
 }
+bool same_mount(const fs::path& left, const fs::path& right) {
+  // Separate bind mounts can have equal st_dev while linkat returns EXDEV.
+  // Without mount identity, stage at the destination conservatively.
+#ifdef STATX_MNT_ID
+  struct statx left_stat{}, right_stat{};
+  if (::statx(AT_FDCWD, left.c_str(), AT_SYMLINK_NOFOLLOW, STATX_MNT_ID, &left_stat) == 0 &&
+      ::statx(AT_FDCWD, right.c_str(), AT_SYMLINK_NOFOLLOW, STATX_MNT_ID, &right_stat) == 0 &&
+      (left_stat.stx_mask & STATX_MNT_ID) && (right_stat.stx_mask & STATX_MNT_ID)) {
+    return left_stat.stx_mnt_id == right_stat.stx_mnt_id;
+  }
+#endif
+  return false;
+}
 YAML::Node identity(const fs::path& path) {
   const auto st = info(path);
   if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode))
@@ -157,6 +170,34 @@ void checkpoint(YAML::Node& run) {
   // The receipt is the recovery authority once publication starts, including
   // after run.yaml and its directory have been retired.
   save(ReceiptPath(run["game_dir"].as<std::string>(), run["id"].as<std::string>()), run);
+}
+void verify_binding(const YAML::Node& binding, const YAML::Node& run) {
+  for (const char* key : {"id", "game_dir", "game_id", "work"}) {
+    if (binding[key].as<std::string>() != run[key].as<std::string>())
+      fail("Run manifest does not match its admission binding");
+  }
+  for (const char* key : {"device", "inode"}) {
+    if (binding["work_identity"][key].as<uint64_t>() != run["work_identity"][key].as<uint64_t>())
+      fail("Run working identity does not match its admission binding");
+  }
+}
+YAML::Node load_admitted_run(const YAML::Node& binding) {
+  const fs::path work = binding["work"].as<std::string>();
+  if (!matches(work, binding["work_identity"]))
+    fail("Admitted working directory is missing or replaced: " + work.string());
+  auto run = load(work / "run.yaml");
+  verify_binding(binding, run);
+  return run;
+}
+void bind_admission(const YAML::Node& run) {
+  // Keep only immutable location/identity here. Pipeline state and the observed
+  // runner exit remain in run.yaml until publication replaces this locator.
+  YAML::Node binding;
+  binding["schema"] = 1;
+  binding["state"] = "admitted";
+  for (const char* key : {"id", "game_dir", "game_id", "work", "work_identity"})
+    binding[key] = YAML::Clone(run[key]);
+  checkpoint(binding);
 }
 void snapshot_tree(const fs::path& root, YAML::Node entries, const std::set<std::string>& excluded = {}) {
   for (const auto& entry : fs::directory_iterator(root)) {
@@ -377,6 +418,19 @@ static fs::path create_run(const fs::path& game, const fs::path& output_root, co
   const std::string game_id = logical_game.filename();
   hm::recording::TelemetryDatabaseStem(game_id);
   const fs::path destination = fs::canonical(logical_game);
+  const auto receipt = ReceiptPath(destination, id);
+  if (entry_exists(receipt)) {
+    const auto binding = load(receipt);
+    if (binding["id"].as<std::string>() != id || binding["game_dir"].as<std::string>() != destination.string() ||
+        binding["game_id"].as<std::string>() != game_id)
+      fail("Run identity does not match requested game");
+    if (binding["state"].as<std::string>() != "admitted")
+      fail("Run already has a publication receipt; resume it instead");
+    const auto run = load_admitted_run(binding);
+    return fs::path(run["work"].as<std::string>()) / "run.yaml";
+  }
+  if (output_root.empty())
+    fail("A new run requires a working output root");
   const fs::path parent = fs::absolute(output_root) / game_id / "runs";
   fs::create_directories(parent);
   const fs::path work = fs::canonical(parent) / id;
@@ -388,6 +442,7 @@ static fs::path create_run(const fs::path& game, const fs::path& output_root, co
     if (run["id"].as<std::string>() != id || run["game_dir"].as<std::string>() != destination.string() ||
         run["game_id"].as<std::string>() != game_id || !matches(work, run["work_identity"]))
       fail("Run identity does not match requested game");
+    bind_admission(run);
     return manifest;
   }
   for (const auto& entry : fs::directory_iterator(work)) {
@@ -404,12 +459,11 @@ static fs::path create_run(const fs::path& game, const fs::path& output_root, co
   run["state"] = "created";
   run["outputs"] = YAML::Node(YAML::NodeType::Sequence);
   save(manifest, run);
+  bind_admission(run);
   return manifest;
 }
 fs::path CreateRun(const fs::path& game, const fs::path& output_root, const std::string& id) {
   GameLock admission(fs::canonical(game));
-  if (entry_exists(ReceiptPath(fs::canonical(game), id)))
-    fail("Run already has a publication receipt; resume it instead");
   return create_run(game, output_root, id);
 }
 void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc) {
@@ -594,13 +648,18 @@ void CopyTelemetrySnapshot(const fs::path& source, const fs::path& destination, 
 std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const Progress& progress) {
   auto run = load(manifest_or_receipt);
   const fs::path game = run["game_dir"].as<std::string>();
-  const fs::path work = run["work"].as<std::string>();
   const auto receipt = ReceiptPath(game, run["id"].as<std::string>());
   GameLock game_lock(game);
-  if (entry_exists(receipt))
-    run = load(receipt);
+  if (entry_exists(receipt)) {
+    const auto saved = load(receipt);
+    verify_binding(saved, run);
+    run = saved;
+  }
+  const fs::path work = run["work"].as<std::string>();
   const auto initial_state = run["state"].as<std::string>();
   const bool require_work_lock = initial_state != "published" && initial_state != "complete";
+  if (require_work_lock && !matches(work, run["work_identity"]))
+    fail("Working directory is missing or replaced: " + work.string());
   const auto lock_path = work / ".run.lock";
   const bool open_work_lock = entry_exists(work) && (require_work_lock || entry_exists(lock_path));
   Fd work_lock(
@@ -609,6 +668,8 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
           : -1);
   if (open_work_lock)
     check(work_lock.value >= 0 && ::flock(work_lock.value, LOCK_EX | LOCK_NB) == 0, "Run is still active");
+  if (initial_state == "admitted")
+    run = load_admitted_run(run);
   std::vector<std::unique_ptr<Fd>> owner_locks;
   for (auto output : run["outputs"]) {
     if (!output["owner_lock_identity"])
@@ -681,7 +742,7 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
     fail("Working directory was replaced");
   if (state == "encoded") {
     run["generation"] = next_generation(game);
-    const bool same_filesystem = info(game).st_dev == info(work).st_dev;
+    const bool same_filesystem = same_mount(game, work);
     run["stage"] =
         (same_filesystem ? work / "publication" : game / (".hstream-finalize-" + run["id"].as<std::string>())).string();
     run["state"] = "publishing";
@@ -887,7 +948,7 @@ int RunJob(
   // concurrent retry cannot recreate a completed run in the retirement gap.
   GameLock admission(fs::canonical(game));
   const auto receipt = ReceiptPath(fs::canonical(game), id);
-  if (entry_exists(receipt)) {
+  if (entry_exists(receipt) && load(receipt)["state"].as<std::string>() != "admitted") {
     admission.fd.close();
     Finalize(receipt, progress);
     return 0;
@@ -920,6 +981,7 @@ int RunJob(
     save_run(run);
     if (outcome != 0)
       return outcome;
+    fault("after-runner-success");
   }
   if (run["state"].as<std::string>() != "encoded")
     fail("Encoding did not complete; working data retained at " + work.string());

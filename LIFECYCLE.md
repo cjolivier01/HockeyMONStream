@@ -21,6 +21,8 @@ encoding alone is not successful publication.
 The output root resolves from `HM_OUTPUT_WORK_DIR`, then `paths.output-root` in
 configuration, then `~/hstream_output`. The per-user configuration file is
 `~/.hstream/hstream.yaml`.
+Exported jobs resolve the baseline, user, game and saved CLI option layers on
+first admission; `HM_OUTPUT_WORK_DIR` overrides those configured roots.
 
 Managed runs have a private directory:
 
@@ -28,9 +30,9 @@ Managed runs have a private directory:
 <output-root>/<game-id>/runs/<run-id>/
     run.yaml
     pipeline.log                 # headless runner output
-    tracking_output-with-audio.hstream-run-....mkv
-    program_4k_output-with-audio.hstream-run-....mkv
-    stitched_output-with-audio.hstream-run-....mkv
+    tracking_output-with-audio.hstream-managed-....mkv
+    program_4k_output-with-audio.hstream-managed-....mkv
+    stitched_output-with-audio.hstream-managed-....mkv
     <game-id>_telemetry-N.db
     runtime/                     # CLI runtime staging/cache for this run
     playtracker-runtime/         # effective per-run tracker configuration
@@ -45,6 +47,8 @@ paths containing a directory are retained, including relative paths resolved
 from the CLI's working directory. The manifest records the actual files so
 cleanup never needs a filename glob. Custom telemetry paths are also recorded.
 The CLI prints each resolved video path in `HSTREAM_OUTPUT type=archive ...`.
+Managed archive reservations use a separate name from legacy working archives,
+so a later run cannot rename an interrupted managed output during stale recovery.
 
 ## Exported jobs and retries
 
@@ -67,6 +71,12 @@ manifest alone cannot authorize a retry after a crash or unsuccessful exit.
 Managed encoding uses the configured working container, normally
 MKV; final publication produces MP4.
 
+Before encoding, `hstream-job-<run-id>.yaml` in the game directory records the
+admitted working directory and its identity. Retries follow that binding even if
+the configured output root changes; missing or replaced working data is an error.
+The same file becomes the publication receipt, so no extra permanent file is
+needed.
+
 Repeating the same exported script resumes publication/cleanup for the same run.
 A completely successful run is verified and is not encoded or published again.
 Export another script to request a new run and output generation. Failed or
@@ -77,13 +87,14 @@ Publication can also be resumed directly:
 
 ```bash
 hstream-finalize --manifest /path/to/run/run.yaml
-# Once publication has started, its durable receipt can also be used:
+# The durable admission record/receipt can also be used:
 hstream-finalize --manifest /path/to/game/hstream-job-RUN-ID.yaml
 ```
 
-A receipt records publication progress, destination file identities, and cleanup
-state. It survives removal of the working directory. A job exits zero only after
-all required outputs are published, synchronized, and its owned scratch is
+A receipt initially records the working-directory binding, then publication
+progress, destination file identities, and cleanup state. It survives removal of
+the working directory. A job exits zero only after all required outputs are
+published, synchronized, and its owned scratch is
 removed. A cleanup failure returns failure and can be retried without encoding.
 
 ## Finalization and faststart
@@ -127,11 +138,11 @@ unfinished, so archive discovery does not offer them prematurely. The receipt's
 
 ## Why staging sometimes uses the game directory
 
-When working storage and the game directory are on the same filesystem, the
+When working storage and the game directory are on the same filesystem mount, the
 finalizer stages under the working run's `publication/` directory. It publishes
 using hard links, with no additional full-file copy.
 
-When they are on different filesystems, it uses one private hidden directory:
+When they are on different mounts, it uses one private hidden directory:
 
 ```text
 <game-dir>/.hstream-finalize-<run-id>/
@@ -142,6 +153,9 @@ allows atomic publication with a hard link and avoids first producing an MP4 on
 working storage and then copying the whole file across filesystems. The hidden
 directory belongs to one run and is removed on success. An interrupted run
 retains it for retry.
+Separate bind mounts also require destination staging even when they expose the
+same filesystem: Linux does not allow hard links across their mount boundary.
+If the kernel cannot report mount identity, destination staging is the fallback.
 
 Cleanup briefly creates private `.hstream-cleanup-<id>` directories beside the
 files being removed. It atomically moves a name there and checks its identity

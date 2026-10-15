@@ -173,7 +173,7 @@ int main() {
     const auto manifest = hm::publication::CreateRun(directory / "game", directory / "work", "preparation-test");
     hm::publication::BeginRun(manifest);
     std::map<std::string, std::optional<std::string>> previous_environment;
-    for (const char* name : {"HOME", "HSTREAM_JOB_MANIFEST", "HSTREAM_ARCHIVE_RUN_ID"}) {
+    for (const char* name : {"HOME", "HSTREAM_JOB_MANIFEST", "HSTREAM_ARCHIVE_RUN_ID", "HSTREAM_FFMPEG"}) {
       const char* previous = std::getenv(name);
       previous_environment[name] = previous ? std::make_optional<std::string>(previous) : std::nullopt;
     }
@@ -202,6 +202,65 @@ int main() {
           YAML::LoadFile(manifest.string())["outputs"].size() == 0,
           "Preparatory output reservations are not registered before effective graph selection");
     }
+
+    const auto custom = directory / "custom" / "program.mkv";
+    const auto configure_custom_output = [&](bool record) -> fs::path {
+      hm::Configurator configured("game", "configs", -1);
+      YAML::Node fixture = YAML::Load(
+          "pipeline:\n"
+          "  application: {complete-configuration: 1}\n"
+          "  sink6: {type: 9, sink-id: 6, enable: 1, container: 2}\n");
+      fixture["paths"]["output-root"] = (directory / "work").string();
+      fixture["pipeline"]["sink6"]["output-file"] = custom.string();
+      hm::ConfiguratorTestAccess::set_config(&configured, fixture);
+      const auto status = hm::ConfiguratorTestAccess::configure_encode_file_outputs(&configured);
+      if (!status.ok())
+        throw std::runtime_error(status.ToString());
+      const fs::path output = configured.config()["pipeline"]["sink6"]["output-file"].as<std::string>();
+      if (record) {
+        std::ofstream(output) << "completed managed custom archive";
+        hm::publication::RegisterOutput(output, "program");
+      }
+      return output;
+    };
+    const auto unused_custom = configure_custom_output(false);
+    const auto completed_custom = configure_custom_output(true);
+    hm::publication::CompletePipeline(true, 0);
+    ::setenv("HSTREAM_FFMPEG", "/bin/false", 1);
+    bool publication_failed = false;
+    try {
+      hm::publication::Finalize(manifest);
+    } catch (const std::exception& error) {
+      publication_failed = std::string(error.what()).find("ffmpeg did not finish") != std::string::npos;
+    }
+    ok &= expect(publication_failed, "Custom archive publication can be retried after remux failure");
+
+    const auto later_manifest = hm::publication::CreateRun(directory / "game", directory / "work", "later-custom-run");
+    hm::publication::BeginRun(later_manifest);
+    ::setenv("HSTREAM_JOB_MANIFEST", later_manifest.c_str(), 1);
+    ::setenv("HSTREAM_ARCHIVE_RUN_ID", "later-custom-run", 1);
+    const auto later_custom = configure_custom_output(false);
+    const auto legacy_recovery = hm::configurator_internal::recover_stale_archive_work_files(custom);
+    ok &= expect(
+        legacy_recovery.ok() && legacy_recovery->empty() && fs::exists(completed_custom) && fs::exists(unused_custom) &&
+            fs::exists(completed_custom.string() + ".hstream-owner-lock") && later_custom != completed_custom,
+        "Later custom-path jobs and legacy recovery must preserve manifest-owned sources and reservations");
+
+    // This regression exercises ownership and cleanup. The publication library's
+    // media test separately verifies real ffmpeg stream-copy and faststart.
+    const auto remux = directory / "copy-remux.sh";
+    std::ofstream(remux) << "#!/bin/sh\ninput=\nprevious=\nfor argument do\n"
+                            "  if [ \"$previous\" = -i ]; then input=$argument; fi\n"
+                            "  previous=$argument\ndone\nexec /bin/cp -- \"$input\" \"$previous\"\n";
+    fs::permissions(remux, fs::perms::owner_all);
+    ::setenv("HSTREAM_FFMPEG", remux.c_str(), 1);
+    const auto published = hm::publication::Finalize(manifest);
+    ok &= expect(
+        published.size() == 2 && fs::is_regular_file(published.front().path) && !fs::exists(manifest.parent_path()) &&
+            !fs::exists(unused_custom) && !fs::exists(unused_custom.string() + ".hstream-owner-lock") &&
+            !fs::exists(completed_custom) && !fs::exists(completed_custom.string() + ".hstream-owner-lock") &&
+            fs::exists(later_custom) && fs::exists(later_custom.string() + ".hstream-owner-lock"),
+        "Publication retry removes its unused external calibration reservations without touching a later run");
     for (const auto& [name, previous] : previous_environment) {
       if (previous)
         ::setenv(name.c_str(), previous->c_str(), 1);

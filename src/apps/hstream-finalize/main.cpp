@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "hstream/src/libs/common/UserConfig.h"
+#include "hstream/src/libs/common/OutputRootConfig.h"
 #include "hstream/src/libs/publication/Publication.h"
 
 int main(int argc, char** argv) {
@@ -12,11 +12,14 @@ int main(int argc, char** argv) {
     fs::path manifest, game, root;
     std::string id;
     std::vector<std::string> command;
+    std::vector<std::string> option_groups;
     for (int i = 1; i < argc; ++i) {
       const std::string argument = argv[i];
       if (argument == "--help") {
         std::cout << "Usage: hstream-finalize --manifest RUN_OR_RECEIPT.yaml\n"
-                     "   or: hstream-finalize --game-dir DIR --run-id ID [--work-root DIR] -- RUNNER ARGS...\n"
+                     "   or: hstream-finalize --game-dir DIR --run-id ID [--work-root DIR]\n"
+                     "        [--options KEY=VALUE,...] -- RUNNER ARGS...\n"
+                     "Options mirror the runner's configuration overrides for working-root resolution only.\n"
                      "Publishes completed outputs and removes owned scratch files. Repeating a run ID resumes\n"
                      "publication/cleanup without encoding again. Failed encoding retains its working data.\n";
         return 0;
@@ -36,6 +39,8 @@ int main(int argc, char** argv) {
         id = argv[i];
       else if (argument == "--work-root")
         root = argv[i];
+      else if (argument == "--options")
+        option_groups.emplace_back(argv[i]);
       else
         throw std::runtime_error("Unknown option: " + argument);
     }
@@ -48,11 +53,10 @@ int main(int argc, char** argv) {
     }
     if (game.empty() || id.empty() || command.empty())
       throw std::runtime_error("Game, run ID and runner are required");
-    if (root.empty()) {
-      auto config = hm::user_config::load_or_create();
-      if (!config.ok())
-        throw std::runtime_error(config.status().ToString());
-      auto configured = hm::user_config::output_root(*config);
+    // An admitted run keeps its original workspace even if live configuration
+    // has changed or can no longer be parsed. RunJob validates the saved binding.
+    if (root.empty() && !fs::exists(hm::publication::ReceiptPath(fs::canonical(game), id))) {
+      auto configured = hm::user_config::output_root_for_game(game, option_groups);
       if (!configured.ok())
         throw std::runtime_error(configured.status().ToString());
       root = *configured;

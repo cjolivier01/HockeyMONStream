@@ -137,6 +137,107 @@ class JobScriptTest(unittest.TestCase):
                     actual["argv"],
                 )
 
+    def test_execution_resolves_layered_output_root(self):
+        home = self.root / "root-resolution-home"
+        (home / ".hstream").mkdir(parents=True)
+        baseline = self.root / "root-resolution-config"
+        baseline.mkdir()
+        self.env["HOME"] = str(home)
+        self.env["HM_CONFIG_ROOT"] = str(baseline)
+        self.env.pop("HM_OUTPUT_WORK_DIR", None)
+        baseline_root = self.root / "baseline work"
+        user_root = self.root / "user work"
+        game_root = self.root / "game work"
+        cli_root = self.root / "CLI 'quoted' work"
+        env_root = self.root / "environment work"
+        for name, user_paths, game_paths, options, environment, expected in (
+            ("baseline", None, None, [], None, baseline_root),
+            ("user", {"output-root": str(user_root)}, None, [], None, user_root),
+            ("game", {"output-root": str(user_root)}, {"output-root": str(game_root)}, [], None, game_root),
+            ("other-path", {"output-root": str(user_root)}, {"game-root": "unrelated"}, [], None, user_root),
+            ("clear-paths", {"output-root": str(user_root)}, None, [], None, home / "hstream_output"),
+            ("relative", None, {"output-root": "relative-work"}, [], None, home / "relative-work"),
+            ("tilde", None, {"output-root": "~/tilde-work"}, [], None, home / "tilde-work"),
+            ("CLI", {"output-root": str(user_root)}, {"output-root": str(game_root)},
+             ["--options=paths.output-root=" + str(cli_root)], None, cli_root),
+            ("group-order", None, {"output-root": str(game_root)},
+             ["--options", "paths.output-root=ignored,paths.output-root=also-ignored",
+              "-p", "unrelated=1,paths.output-root=" + str(cli_root)], None, cli_root),
+            ("first-in-group", None, None,
+             ["-ppaths.output-root=" + str(cli_root) + ",paths.output-root=ignored"], None, cli_root),
+            ("environment", {"output-root": str(user_root)}, {"output-root": str(game_root)},
+             ["--options=paths.output-root=" + str(cli_root)], env_root, env_root),
+        ):
+            with self.subTest(layer=name):
+                # Export against different file contents, then change them:
+                # the script must resolve live config, while preserving its
+                # saved option arguments.
+                (baseline / "baseline.yaml").write_text("{}")
+                (home / ".hstream/hstream.yaml").write_text("{}")
+                (self.game / "config.yaml").write_text(json.dumps({
+                    "hstream_ui": {"job": {"arguments": options}}
+                }))
+                self.env.pop("HM_OUTPUT_WORK_DIR", None)
+                self.assertEqual(self.generate("--force").returncode, 0)
+                (baseline / "baseline.yaml").write_text(json.dumps({
+                    "paths": {"output-root": str(baseline_root)}
+                }))
+                (home / ".hstream/hstream.yaml").write_text(json.dumps(
+                    {"paths": user_paths} if user_paths is not None else {}
+                ))
+                (self.game / "config.yaml").write_text(json.dumps(
+                    {"paths": game_paths} if game_paths is not None or name == "clear-paths" else {}
+                ))
+                if environment:
+                    self.env["HM_OUTPUT_WORK_DIR"] = str(environment)
+                run = subprocess.run([str(self.game / "hstream-job.sh")], env=self.env,
+                                     text=True, capture_output=True, check=False)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                actual = json.loads(self.output.read_text())
+                manifest = Path(actual["env"]["HSTREAM_JOB_MANIFEST"])
+                self.assertEqual(manifest.parents[3], expected)
+                self.assertEqual(actual["argv"][5:5 + len(options)], options)
+
+    def test_explicit_finalizer_work_root_remains_authoritative(self):
+        finalizer = Path(TOOL).parent.parent / "hstream-finalize/hstream-finalize"
+        explicit = self.root / "explicit helper work"
+        run = subprocess.run([
+            str(finalizer), "--game-dir", str(self.game), "--run-id", "explicit-root-test",
+            "--work-root", str(explicit), "--options", "paths.output-root=ignored",
+            "--", str(self.runner),
+        ], env=self.env, text=True, capture_output=True, check=False)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(Path(actual["env"]["HSTREAM_JOB_MANIFEST"]).parents[3], explicit)
+
+    def test_failed_retry_keeps_admitted_root_after_configuration_changes(self):
+        self.env.pop("HM_OUTPUT_WORK_DIR", None)
+        self.env["HOME"] = str(self.root / "retry-home")
+        Path(self.env["HOME"]).mkdir()
+        original = self.root / "original work"
+        changed = self.root / "changed work"
+        config = json.loads((self.game / "config.yaml").read_text())
+        config["paths"] = {"output-root": str(original)}
+        (self.game / "config.yaml").write_text(json.dumps(config))
+        generated = self.generate()
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        script = self.game / "hstream-job.sh"
+        run = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 7, (run.stdout, run.stderr))
+        actual = json.loads(self.output.read_text())
+        manifest = Path(actual["env"]["HSTREAM_JOB_MANIFEST"])
+        self.assertEqual(manifest.parents[3], original)
+        self.output.unlink()
+        config["paths"]["output-root"] = str(changed)
+        for contents in (json.dumps(config), "invalid: ["):
+            (self.game / "config.yaml").write_text(contents)
+            retried = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
+            self.assertEqual(retried.returncode, 1, (retried.stdout, retried.stderr))
+            self.assertIn("Encoding did not complete", retried.stderr)
+            self.assertIn(str(manifest.parent), retried.stderr)
+            self.assertFalse(self.output.exists(), "failed encoding cannot be restarted")
+            self.assertFalse(changed.exists(), "retry cannot create a second workspace")
+
     def test_symlinked_game_keeps_its_logical_id(self):
         alias = self.root / "linked-game"
         alias.symlink_to(self.game, target_is_directory=True)

@@ -425,8 +425,22 @@ int main(int argc, char** argv) {
               "; temporary files are removed only after all outputs are safely saved.") +
         "\n";
     script += "exec " + quote(finalizer.string()) + " --game-dir " + quote(game.string()) + " --run-id " +
-        quote(hm::recording::NewGuid()) + " -- /bin/bash -c " + quote(child_setup) + " hstream-runtime " +
-        quote(runner.string());
+        quote(hm::recording::NewGuid());
+    // The supervisor resolves the same live config layers before it can admit
+    // the runner. Forward option groups separately from the shell wrapper.
+    for (size_t i = 0; i < args.size(); ++i) {
+      const auto& argument = args[i];
+      if (argument == "--options" || argument == "-p") {
+        if (++i == args.size())
+          throw std::runtime_error("saved --options is missing its value");
+        script += " --options " + quote(args[i]);
+      } else if (argument.rfind("--options=", 0) == 0) {
+        script += " --options " + quote(argument.substr(std::string("--options=").size()));
+      } else if (argument.rfind("-p", 0) == 0 && argument.size() > 2) {
+        script += " --options " + quote(argument.substr(2));
+      }
+    }
+    script += " -- /bin/bash -c " + quote(child_setup) + " hstream-runtime " + quote(runner.string());
     for (const auto& arg : args)
       script += " \\\n  " + quote(arg);
     script += "\n";

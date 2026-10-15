@@ -14,8 +14,10 @@ struct PublishedOutput {
   std::string kind;
 };
 
-// The supervisor creates one private directory per run. These functions throw
-// on an I/O or validation failure; callers must not announce success afterwards.
+// The supervisor creates one private directory per run and durably binds it in
+// the game receipt before starting a producer. Retries retain that location if
+// the configured output root changes. These functions throw on I/O or validation
+// failure; callers must not announce success afterwards.
 fs::path CreateRun(const fs::path& game, const fs::path& output_root, const std::string& id);
 fs::path ReceiptPath(const fs::path& game, const std::string& id);
 void BeginRun(const fs::path& manifest, bool telemetry_required = false);

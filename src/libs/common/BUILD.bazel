@@ -144,6 +144,22 @@ cc_library(
 )
 
 cc_library(
+    name = "output_root_config",
+    srcs = ["OutputRootConfig.cpp"],
+    hdrs = ["OutputRootConfig.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":baseline_config",
+        ":user_config",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "playtracker_config_roles",
     srcs = ["PlayTrackerConfigRoles.cpp"],
     hdrs = ["PlayTrackerConfigRoles.h"],
