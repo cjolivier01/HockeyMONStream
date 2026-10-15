@@ -299,10 +299,18 @@ class OverlayBuilder {
   size_t bytes_{0};
 };
 
+// A degenerate union box means the policy had nothing to frame this step.
+std::optional<hm::BBox> framed(const hm::BBox& box) {
+  if (!(box.right > box.left) || !(box.bottom > box.top))
+    return std::nullopt;
+  return box;
+}
+
 Frame step(Tracker* tracker, const Sample& sample, const Frame& previous, OverlayBuilder* drawing = nullptr) {
   Frame result = sample.original;
   result.fast = previous.fast;
   result.follower = previous.follower;
+  result.tracking = previous.tracking;
   hm::play_tracker::PlayTrackerResults output;
   if (sample.stepped) {
     output = DsPlayTrackerStepCpu(tracker, sample.ids, sample.boxes);
@@ -311,6 +319,12 @@ Frame step(Tracker* tracker, const Sample& sample, const Frame& previous, Overla
     if (!output.tracking_boxes.empty()) {
       result.fast = output.tracking_boxes.front();
       result.follower = output.tracking_boxes.back();
+    }
+    result.tracking = {};
+    result.tracking.cluster = framed(output.final_cluster_box);
+    if (output.play_detection) {
+      result.tracking.breakaway_edge = output.play_detection->breakaway_edge_center;
+      result.tracking.breakaway_target = output.play_detection->breakaway_target_bbox;
     }
   }
   if (drawing)
@@ -689,6 +703,7 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
       }
       previous_reference = step(&*reference, sample, previous_reference, baseline ? original_drawing.get() : nullptr);
       sample.original.overlays = previous_reference.overlays;
+      sample.original.tracking = previous_reference.tracking;
       parity(sample.original, previous_reference, 0.02);
       if (baseline) {
         retained_tracks += sample.ids.size();
@@ -1019,6 +1034,7 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::Prepare(
       }
       previous_reference = step(&*reference, sample, previous_reference, baseline ? original_drawing.get() : nullptr);
       sample.original.overlays = previous_reference.overlays;
+      sample.original.tracking = previous_reference.tracking;
       parity(sample.original, previous_reference, exact ? 0.02 : options.legacy_tolerance_pixels);
       if (started) {
         retained_tracks += sample.ids.size();

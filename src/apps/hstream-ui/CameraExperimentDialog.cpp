@@ -18,6 +18,7 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QProcess>
+#include <QtCore/QStringList>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
 #include <QtGui/QCloseEvent>
@@ -26,6 +27,7 @@
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
+#include <QtGui/QPolygon>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -46,6 +48,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -135,15 +138,79 @@ class ExperimentVideoTarget : public hm::ui::NativePreviewSurface {
   }
 };
 
+// Drawings the horizontal-position plot can carry. Each is an independent
+// checkbox above the plot, so a crowded passage can be narrowed to the one
+// quantity under investigation.
+enum PlotLayer {
+  kPlotRecorded,
+  kPlotProgram,
+  kPlotCrop,
+  kPlotFast,
+  kPlotPlayers,
+  kPlotCluster,
+  kPlotBreakaway,
+  kPlotLayerCount,
+};
+
+struct PlotLayerSpec {
+  const char* id;
+  const char* label;
+  const char* legend; // The checkbox, on the dialog's light background.
+  bool initial;
+  const char* tip;
+};
+
+constexpr PlotLayerSpec kPlotLayers[kPlotLayerCount] = {
+    {"Recorded",
+     "Recorded",
+     "#64748b",
+     true,
+     "Horizontal center of the Program camera as it was recorded."},
+    {"Program", "Program center", "#0f766e", true, "Horizontal center of the selected trial's Program camera."},
+    {"Crop",
+     "Crop width",
+     "#0b6b5e",
+     true,
+     "Left and right edges of the Program crop. A narrow band is zoomed in; a wide one is zoomed out."},
+    {"Fast", "Fast box", "#a16207", false, "Center and edges of the fast box that the Program camera chases."},
+    {"Players",
+     "Players",
+     "#1d4ed8",
+     false,
+     "Horizontal center of every tracked player. Players the trial excluded from camera logic are dimmed."},
+    {"Cluster", "Cluster", "#6d28d9", false, "Horizontal extent of the player cluster the policy framed."},
+    {"Breakaway",
+     "Breakaway",
+     "#b42318",
+     true,
+     "Marks the frames where the policy is catching a breakaway, with the leading edge it is chasing and the "
+     "frame it is trying to reach."},
+};
+
+std::optional<double> box_center(const std::optional<hm::BBox>& box) {
+  if (!box)
+    return std::nullopt;
+  return (box->left + box->right) / 2.0;
+}
+
+std::optional<std::pair<double, double>> box_extent(const std::optional<hm::BBox>& box) {
+  if (!box)
+    return std::nullopt;
+  return std::pair<double, double>(box->left, box->right);
+}
+
 class CameraPathPlot : public QWidget {
  public:
   explicit CameraPathPlot(QWidget* parent) : QWidget(parent) {
-    setMinimumHeight(150);
+    setMinimumHeight(176);
+    for (int i = 0; i < kPlotLayerCount; ++i)
+      layers[i] = kPlotLayers[i].initial;
   }
   std::shared_ptr<const std::vector<replay::Frame>> original;
   std::shared_ptr<const std::vector<replay::Frame>> trial;
   unsigned canvas_width{1};
   std::size_t frame{0};
+  std::array<bool, kPlotLayerCount> layers{};
 
  protected:
   void paintEvent(QPaintEvent*) override {
@@ -152,46 +219,220 @@ class CameraPathPlot : public QWidget {
     p.fillRect(rect(), QColor("#101b2d"));
     p.setPen(QColor("#c7d2e1"));
     p.drawText(14, 22, "Program camera horizontal position");
-    p.setPen(QColor("#94a3b8"));
-    p.drawText(width() - 220, 22, "Recorded");
-    p.setPen(QColor("#41dbc0"));
-    p.drawText(width() - 122, 22, "Selected trial");
-    const QRectF plot(14, 38, width() - 28, height() - 58);
+    const QRectF plot(14, 32, width() - 28, height() - 66);
     p.setPen(QPen(QColor("#26364d"), 1));
     for (int i = 0; i <= 4; ++i)
       p.drawLine(
           QPointF(plot.left(), plot.top() + plot.height() * i / 4),
           QPointF(plot.right(), plot.top() + plot.height() * i / 4));
-    auto curve = [&](const std::shared_ptr<const std::vector<replay::Frame>>& frames, const QColor& color) {
-      if (!frames || frames->size() < 2)
-        return;
+
+    const double span = std::max(1U, canvas_width);
+    const auto column = [&](std::size_t index, std::size_t count) {
+      return count < 2 ? plot.center().x() : plot.left() + plot.width() * index / (count - 1);
+    };
+    const auto row = [&](double position) { return plot.bottom() - plot.height() * position / span; };
+    // One polyline per contiguous run, so an absent box breaks the drawing
+    // instead of bridging across the gap it left.
+    const auto trace = [&](const std::vector<replay::Frame>& frames, const auto& value, const QPen& pen) {
       QPainterPath path;
       bool started = false;
-      for (std::size_t i = 0; i < frames->size(); ++i) {
-        const auto& box = frames->at(i).follower;
-        if (!box) {
+      for (std::size_t i = 0; i < frames.size(); ++i) {
+        const std::optional<double> position = value(frames[i]);
+        if (!position) {
           started = false;
           continue;
         }
-        const QPointF point(
-            plot.left() + plot.width() * i / (frames->size() - 1),
-            plot.bottom() - plot.height() * (box->left + box->width() / 2) / std::max(1U, canvas_width));
+        const QPointF point(column(i, frames.size()), row(*position));
         if (started)
           path.lineTo(point);
         else
           path.moveTo(point);
         started = true;
       }
-      p.setPen(QPen(color, 2));
+      p.setBrush(Qt::NoBrush);
+      p.setPen(pen);
       p.drawPath(path);
     };
-    curve(original, QColor("#94a3b8"));
-    curve(trial, QColor("#41dbc0"));
+    const auto band =
+        [&](const std::vector<replay::Frame>& frames, const auto& extent, const QColor& fill, const QPen& edge) {
+          QPolygonF low, high;
+          const auto flush = [&]() {
+            if (low.size() > 1) {
+              QPolygonF area = high;
+              for (int i = low.size() - 1; i >= 0; --i)
+                area << low[i];
+              p.setPen(Qt::NoPen);
+              p.setBrush(fill);
+              p.drawPolygon(area);
+              p.setBrush(Qt::NoBrush);
+              p.setPen(edge);
+              p.drawPolyline(low);
+              p.drawPolyline(high);
+            }
+            low.clear();
+            high.clear();
+          };
+          for (std::size_t i = 0; i < frames.size(); ++i) {
+            const auto range = extent(frames[i]);
+            if (!range) {
+              flush();
+              continue;
+            }
+            const double x = column(i, frames.size());
+            low << QPointF(x, row(range->first));
+            high << QPointF(x, row(range->second));
+          }
+          flush();
+        };
+
+    p.setClipRect(plot);
+    if (trial) {
+      if (layers[kPlotCluster])
+        band(
+            *trial,
+            [](const replay::Frame& f) { return box_extent(f.tracking.cluster); },
+            QColor(167, 139, 250, 45),
+            QPen(QColor(167, 139, 250, 150), 1));
+      if (layers[kPlotBreakaway])
+        band(
+            *trial,
+            [](const replay::Frame& f) { return box_extent(f.tracking.breakaway_target); },
+            QColor(255, 95, 86, 30),
+            QPen(QColor(255, 95, 86, 170), 1, Qt::DashLine));
+      if (layers[kPlotFast])
+        band(
+            *trial,
+            [](const replay::Frame& f) { return box_extent(f.fast); },
+            QColor(246, 190, 98, 28),
+            QPen(QColor(246, 190, 98, 120), 1));
+      if (layers[kPlotCrop])
+        band(
+            *trial,
+            [](const replay::Frame& f) { return box_extent(f.follower); },
+            QColor(47, 179, 160, 55),
+            QPen(QColor(47, 179, 160, 200), 1));
+      if (layers[kPlotPlayers]) {
+        QPolygonF tracked, excluded;
+        int drawn_column = std::numeric_limits<int>::min();
+        for (std::size_t i = 0; i < trial->size(); ++i) {
+          const auto& overlays = trial->at(i).overlays;
+          if (!overlays || overlays->coordinate_width <= 0)
+            continue;
+          const double x = column(i, trial->size());
+          // One sample per pixel column keeps a long passage legible and bounds
+          // the point count by the plot's width rather than the clip's length.
+          if (static_cast<int>(x) == drawn_column)
+            continue;
+          drawn_column = static_cast<int>(x);
+          const double scale = span / overlays->coordinate_width;
+          for (const auto& player : overlays->player_rects)
+            (player.ignored ? excluded : tracked)
+                << QPointF(x, row((player.rect.left + player.rect.width / 2.0) * scale));
+        }
+        p.setPen(QPen(QColor("#41617f"), 2));
+        p.drawPoints(excluded);
+        p.setPen(QPen(QColor("#5fa8e8"), 2));
+        p.drawPoints(tracked);
+      }
+    }
+    if (original && layers[kPlotRecorded])
+      trace(
+          *original, [](const replay::Frame& f) { return box_center(f.follower); }, QPen(QColor("#94a3b8"), 2));
+    if (trial && layers[kPlotFast])
+      trace(
+          *trial, [](const replay::Frame& f) { return box_center(f.fast); }, QPen(QColor("#f6be62"), 2));
+    if (trial && layers[kPlotProgram])
+      trace(
+          *trial, [](const replay::Frame& f) { return box_center(f.follower); }, QPen(QColor("#41dbc0"), 2));
+    if (trial && layers[kPlotBreakaway]) {
+      if (layers[kPlotProgram])
+        trace(
+            *trial,
+            [](const replay::Frame& f) -> std::optional<double> {
+              return f.tracking.breakaway_edge ? box_center(f.follower) : std::nullopt;
+            },
+            QPen(QColor("#ff5f56"), 2));
+      trace(
+          *trial,
+          [](const replay::Frame& f) -> std::optional<double> {
+            if (!f.tracking.breakaway_edge)
+              return std::nullopt;
+            return f.tracking.breakaway_edge->x;
+          },
+          QPen(QColor("#ff5f56"), 1, Qt::DotLine));
+      // A strip along the top stays visible when the Program line is hidden.
+      p.setPen(Qt::NoPen);
+      p.setBrush(QColor(255, 95, 86, 150));
+      for (std::size_t i = 0; i < trial->size(); ++i) {
+        if (!trial->at(i).tracking.breakaway_edge)
+          continue;
+        const double x = column(i, trial->size());
+        const double next = i + 1 < trial->size() ? column(i + 1, trial->size()) : x + 1;
+        p.drawRect(QRectF(x, plot.top() + 1, std::max(1.0, next - x), 3));
+      }
+      p.setBrush(Qt::NoBrush);
+    }
     if (trial && trial->size() > 1) {
-      const double x = plot.left() + plot.width() * std::min(frame, trial->size() - 1) / (trial->size() - 1);
-      p.setPen(QPen(QColor("#f6be62"), 1, Qt::DashLine));
+      const double x = column(std::min(frame, trial->size() - 1), trial->size());
+      p.setPen(QPen(QColor("#e2e8f0"), 1, Qt::DashLine));
       p.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
     }
+    p.setClipping(false);
+    p.setPen(QColor("#8ea3bd"));
+    QFont caption = p.font();
+    if (caption.pointSizeF() > 0)
+      caption.setPointSizeF(caption.pointSizeF() * 0.85);
+    p.setFont(caption);
+    p.drawText(
+        QRectF(14, plot.bottom() + 6, width() - 28, 20),
+        Qt::AlignLeft | Qt::AlignVCenter,
+        readout().join("   ·   "));
+  }
+
+ private:
+  // Reports the enabled drawings at the playhead, so a value can be read off
+  // exactly instead of estimated against the gridlines.
+  QStringList readout() const {
+    if (!trial || trial->empty())
+      return {"Prepare a recording to plot its camera and play tracking."};
+    const double span = std::max(1U, canvas_width);
+    const replay::Frame& f = trial->at(std::min(frame, trial->size() - 1));
+    QStringList parts;
+    if (layers[kPlotProgram])
+      if (const auto center = box_center(f.follower))
+        parts << QString("center %1 px").arg(*center, 0, 'f', 0);
+    if (layers[kPlotCrop] && f.follower)
+      parts << QString("crop %1 px · %2% of canvas")
+                   .arg(f.follower->right - f.follower->left, 0, 'f', 0)
+                   .arg(100.0 * (f.follower->right - f.follower->left) / span, 0, 'f', 0);
+    if (layers[kPlotFast]) {
+      if (const auto center = box_center(f.fast))
+        parts << QString("fast center %1 px").arg(*center, 0, 'f', 0);
+      if (f.fast)
+        parts << QString("fast width %1 px").arg(f.fast->right - f.fast->left, 0, 'f', 0);
+    }
+    if (layers[kPlotPlayers] && f.overlays) {
+      std::size_t excluded = 0;
+      for (const auto& player : f.overlays->player_rects)
+        excluded += player.ignored ? 1 : 0;
+      parts << QString("%1 players · %2 excluded")
+                   .arg(static_cast<qulonglong>(f.overlays->player_rects.size()))
+                   .arg(static_cast<qulonglong>(excluded));
+    }
+    if (layers[kPlotCluster] && f.tracking.cluster)
+      parts << QString("cluster %1–%2 px")
+                   .arg(f.tracking.cluster->left, 0, 'f', 0)
+                   .arg(f.tracking.cluster->right, 0, 'f', 0);
+    if (layers[kPlotBreakaway]) {
+      parts << (f.tracking.breakaway_edge
+                    ? QString("catching breakaway at %1 px").arg(f.tracking.breakaway_edge->x, 0, 'f', 0)
+                    : QString("no breakaway"));
+      if (f.tracking.breakaway_target)
+        parts << QString("breakaway target %1–%2 px")
+                     .arg(f.tracking.breakaway_target->left, 0, 'f', 0)
+                     .arg(f.tracking.breakaway_target->right, 0, 'f', 0);
+    }
+    return parts;
   }
 };
 
@@ -304,6 +545,7 @@ struct CameraExperimentDialog::Impl {
   ExperimentVideoTarget* video{nullptr};
   QSplitter* splitter{nullptr};
   QWidget* right_panel{nullptr};
+  QWidget* plot_panel{nullptr};
   CameraPathPlot* plot{nullptr};
   std::vector<QWidget*> preview_focus_hidden;
   QList<int> normal_splitter_sizes;
@@ -370,7 +612,7 @@ struct CameraExperimentDialog::Impl {
           widget->hide();
         }
       }
-      for (QWidget* widget : {right_panel, static_cast<QWidget*>(plot)}) {
+      for (QWidget* widget : {right_panel, plot_panel}) {
         if (widget->isVisible()) {
           preview_focus_hidden.push_back(widget);
           widget->hide();
@@ -1083,9 +1325,32 @@ CameraExperimentDialog::CameraExperimentDialog(
   transport->addWidget(new QLabel("View"));
   transport->addWidget(s.comparison);
   left_layout->addLayout(transport);
-  s.plot = new CameraPathPlot(left);
+  auto* plot_panel = s.plot_panel = new QWidget(left);
+  plot_panel->setObjectName("experimentCameraPlotPanel");
+  auto* plot_layout = new QVBoxLayout(plot_panel);
+  plot_layout->setContentsMargins(0, 0, 0, 0);
+  plot_layout->setSpacing(2);
+  auto* plot_header = new QHBoxLayout();
+  plot_header->setContentsMargins(14, 0, 14, 0);
+  s.plot = new CameraPathPlot(plot_panel);
   s.plot->setObjectName("experimentCameraPlot");
-  left_layout->addWidget(s.plot);
+  for (int layer = 0; layer < kPlotLayerCount; ++layer) {
+    const PlotLayerSpec& spec = kPlotLayers[layer];
+    auto* toggle = new QCheckBox(QString::fromLatin1(spec.label));
+    toggle->setObjectName(QString("experimentPlotLayer_") + QString::fromLatin1(spec.id));
+    toggle->setToolTip(QString::fromLatin1(spec.tip));
+    toggle->setStyleSheet(QString("color:%1;").arg(QString::fromLatin1(spec.legend)));
+    toggle->setChecked(spec.initial);
+    connect(toggle, &QCheckBox::toggled, this, [this, layer](bool enabled) {
+      impl_->plot->layers[layer] = enabled;
+      impl_->plot->update();
+    });
+    plot_header->addWidget(toggle);
+  }
+  plot_header->addStretch();
+  plot_layout->addLayout(plot_header);
+  plot_layout->addWidget(s.plot);
+  left_layout->addWidget(plot_panel);
   splitter->addWidget(left);
 
   auto* right = new QWidget();
