@@ -130,3 +130,20 @@ time; it does not enable either flow by itself. Managed jobs still clear stale
 pending calibration, start-stage and invalidation identity variables. Without
 this flag managed exports clear both flow variables, preserving unattended
 behavior. The managed finalizer and publication protocol remain active.
+
+### Validation on 2026-10-15
+
+After rebasing onto `cfca9029`, the x86 optimized CLI build passed, along with
+`job_script_test`, `web_job_spec_test`, `web_job_test`, `publication_test`,
+`cleanup_test`, and `remux_stdin_test`. The libsoup repository unit suite passed
+six tests. Bazel ran in `--batch` mode because the restricted environment could
+not start its server socket. Local validation supplied matching extracted
+libsoup3 headers and a local checkout of the exact pinned jetson-utils revision
+with the committed compatibility patch applied; production builds obtain that
+same revision and patch through WORKSPACE.
+
+ARM64 and Jetson build attempts could not fetch `rules_cuda` because outbound
+DNS was unavailable. The validation host is x86; these attempts do not establish
+ARM64 or Jetson compatibility. No GPU processing was launched outside Slurm.
+A complete stitched render, live browser media, and deployment on the intended
+Slurm target remain required acceptance checks.
