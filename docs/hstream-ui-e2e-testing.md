@@ -66,7 +66,9 @@ controls local Play.
 The generated script invokes `hstream-cli --encode-job`, which requires an enabled file
 encoder after configuration resolution, disables render sinks and previews, and writes
 selected archives directly as MP4. Custom output directories and basenames are retained;
-the extension becomes `.mp4`. MP4s and DriveGPT databases stay in working storage
+the extension becomes `.mp4`. Stitched jobs retain their independent output path and
+bitrate; the legacy calibration aliases from Program output settings apply only to local
+calibration runs. MP4s and DriveGPT databases stay in working storage
 (normally `~/hstream_output/<game-id>`), without the UI's game-directory publication.
 MP4 completion requires graceful EOS; abrupt process termination can leave an unfinished file.
 

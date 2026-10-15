@@ -1227,6 +1227,44 @@ play-tracker:
     ok = false;
   }
 
+  for (bool canonical : {false, true}) {
+    for (bool explicit_stitched : {false, true}) {
+      auto job = prepare_tone_routing("stitched-job-output-independence", "0");
+      if (!job) {
+        ok = false;
+        continue;
+      }
+      job->set_encode_job(true);
+      YAML::Node pipeline = job->config()["pipeline"];
+      pipeline["sink0"]["enable"] = 1;
+      pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
+      pipeline["sink0"]["output-file"] = "stitched.mkv";
+      pipeline["sink1"]["enable"] = 0;
+      pipeline["sink1"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_FILE);
+      if (explicit_stitched) {
+        pipeline["sink0"]["bitrate"] = 31000000;
+        hm::ConfiguratorTestAccess::set_explicit_rank(job.get(), "pipeline.sink0.output-file", 1);
+        hm::ConfiguratorTestAccess::set_explicit_rank(job.get(), "pipeline.sink0.bitrate", 1);
+      } else {
+        pipeline["sink0"].remove("bitrate");
+      }
+      const bool overrides_applied =
+          job->apply_config_item(
+                 canonical ? "video_out.output_video_path" : "pipeline.sink1.output-file", "program.mkv")
+              .ok() &&
+          job->apply_config_item(canonical ? "video_out.bit_rate" : "pipeline.sink1.bitrate", "17000000").ok() &&
+          job->apply_supported_baseline_mappings().ok();
+      const auto status = overrides_applied
+          ? hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(job.get())
+          : absl::InternalError("Program output overrides did not apply");
+      ok &= expect(
+          status.ok() && pipeline["sink0"]["output-file"].as<std::string>() == "stitched.mkv" &&
+              (explicit_stitched ? pipeline["sink0"]["bitrate"].as<int>() == 31000000
+                                 : !pipeline["sink0"]["bitrate"].IsDefined()),
+          "Stitched jobs must retain their own path and bitrate even with higher-ranked Program output overrides");
+    }
+  }
+
   const auto test_calibration_layer_precedence = [&](const std::string& game,
                                                      int stitched_rank,
                                                      int canonical_rank,

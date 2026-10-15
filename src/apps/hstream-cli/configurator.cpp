@@ -7101,6 +7101,10 @@ void Configurator::configure_audio(
 }
 
 absl::Status Configurator::configure_stitching_calibration_archive_name(YAML::Node& pipeline) {
+  // Jobs select archives independently. Reusing the calibration graph must not
+  // redirect Stitched output to a Program archive's path or bitrate.
+  if (encode_job_)
+    return absl::OkStatus();
   enum class ArchiveOverrideSource {
     kLegacyProgram,
     kCanonical,
