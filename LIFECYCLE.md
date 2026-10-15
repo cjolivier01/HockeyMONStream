@@ -55,8 +55,11 @@ hstream-job --game-dir /path/to/games/game-42
 /path/to/games/game-42/hstream-job.sh
 ```
 
-The generated script configures the runtime environment and executes
-`hstream-finalize` with a fixed run ID, game directory, and the exact CLI command.
+The generated script executes `hstream-finalize` with a fixed run ID, game
+directory, and the exact CLI command. After admitting a new encoding run, the
+supervisor starts the script's runtime setup inside the private `runtime/`
+directory, then executes the CLI. Busy and completed retries create no runtime
+staging.
 The finalizer supervises `hstream-cli --encode-job`, forwards cancellation, and
 requires both a successful exit and the CLI's completed manifest before
 publication. The supervisor saves the observed successful exit; an `encoded`
@@ -173,6 +176,8 @@ to another machine or remounting its filesystems can fail identity verification.
 Calibration preparation reservations are scratch rather than required outputs.
 When calibration restarts the processing graph, the old telemetry database is
 explicitly retired and only the final recording is required for publication.
+Initial caps negotiation may also replace an empty telemetry database; that
+replacement is refused if the previous database contains recorded samples.
 
 ## Desktop and legacy/direct runs
 
@@ -181,10 +186,11 @@ without a user Stop or incomplete calibration. Clicking **Stop** retains the
 working archive and does not publish a completed recording. The UI uses the same
 finalizer library in a background worker and prevents closing during publication.
 
-Older runners that do not implement the manifest protocol retain the existing
-UI publication path. That compatibility path finalizes videos individually and
-retains working telemetry/logs and the reserved managed workspace; it does not provide the managed job's cleanup
-contract.
+Older runners that leave the manifest untouched retain the existing UI
+publication path. A failed or malformed managed manifest cannot use this
+fallback. The compatibility path finalizes videos individually and retains
+working telemetry/logs and the reserved managed workspace; it does not provide
+the managed job's cleanup contract.
 
 A direct `hstream-cli` invocation without a managed run still writes under
 `<output-root>/<game-id>/` and leaves its files there. `run.sh` does not add a

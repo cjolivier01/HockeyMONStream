@@ -442,7 +442,7 @@ void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc) {
   run["outputs"].push_back(output);
   save_run(run);
 }
-void RetireOutput(const fs::path& path) {
+void RetireOutput(const fs::path& path, bool require_empty_telemetry) {
   const auto manifest = EnvironmentManifest();
   if (manifest.empty() || path.empty())
     return;
@@ -456,6 +456,15 @@ void RetireOutput(const fs::path& path) {
       continue;
     if (!matches(absolute, output["identity"]))
       fail("Retired working output was replaced");
+    if (require_empty_telemetry) {
+      if (output["kind"].as<std::string>() != "telemetry")
+        fail("Only empty telemetry can be retired during caps negotiation");
+      hm::recording::Database database(absolute.string());
+      database.Validate();
+      hm::recording::Statement samples(database.get(), "SELECT coalesce(sum(sample_count),0) FROM runs");
+      if (!samples.Next() || samples.Int(0) != 0)
+        fail("Cannot retire telemetry containing recorded samples during caps negotiation");
+    }
     output["identity"] = identity(absolute);
     output["retired"] = true;
     save_run(run);

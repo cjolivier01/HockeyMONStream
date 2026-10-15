@@ -23,8 +23,9 @@ bool PipelineCompleted(const fs::path& manifest);
 fs::path EnvironmentManifest();
 fs::path EnvironmentWorkingDirectory();
 void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc = false);
-// Only explicit calibration replacement may retire a previously registered output.
-void RetireOutput(const fs::path& path);
+// Explicit calibration replacement may retire a registered output. Caps-only
+// replacement must additionally prove that the old telemetry contains no samples.
+void RetireOutput(const fs::path& path, bool require_empty_telemetry = false);
 // Record an exact owned file/tree, including scratch outside the private run.
 void RegisterScratch(const fs::path& path, const fs::path& manifest = {}, int expected_fd = -1);
 void RequireTelemetry(bool required);

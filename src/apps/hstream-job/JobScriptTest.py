@@ -300,6 +300,9 @@ class JobScriptTest(unittest.TestCase):
             )
             self.assertNotIn("HSTREAM_JOB_RUNTIME_ROOT", actual["env"])
             self.assertNotIn("HSTREAM_JOB_BAZEL_BIN", actual["env"])
+            run_dir = Path(actual["env"]["HSTREAM_JOB_MANIFEST"]).parent
+            self.assertEqual(Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"]), run_dir / "runtime")
+            self.assertFalse((layout / ".cache").exists())
             if installed:
                 self.assertIn(
                     str(layout / "lib/gst-plugins"),
@@ -325,6 +328,13 @@ class JobScriptTest(unittest.TestCase):
                 # core-only cache which fails later during model loading.
                 (runtime_source / "libonnxruntime_providers_cuda.so").unlink()
                 self.output.unlink()
+                # A failed run is immutable. Export a fresh run to exercise
+                # runtime preparation rather than retrying the previous failure.
+                generated = subprocess.run(
+                    [str(tool), "--game-dir", str(game), "--force"],
+                    cwd="/", env=env, text=True, capture_output=True,
+                )
+                self.assertEqual(generated.returncode, 0, generated.stderr)
                 missing = subprocess.run(
                     [str(game / "hstream-job.sh")],
                     cwd="/",
@@ -334,8 +344,37 @@ class JobScriptTest(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(missing.returncode, 78)
-                self.assertIn("Missing ONNX Runtime library", missing.stderr)
+                logs = Path(env["HM_OUTPUT_WORK_DIR"]).glob("*/runs/*/pipeline.log")
+                self.assertTrue(any("Missing ONNX Runtime library" in log.read_text() for log in logs))
                 self.assertFalse(self.output.exists())
+
+    def test_rejected_concurrent_launch_creates_no_runtime_scratch(self):
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport json, os, time\n"
+            "with open(os.environ['JOB_TEST_OUTPUT'], 'w') as f: json.dump(dict(os.environ), f)\n"
+            "time.sleep(60)\n"
+        )
+        self.assertEqual(self.generate().returncode, 0)
+        script = self.game / "hstream-job.sh"
+        process = subprocess.Popen([str(script)], env=self.env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 5
+            while not self.output.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.output.exists(), "runner started")
+            actual = json.loads(self.output.read_text())
+            runtime = Path(actual["HSTREAM_RUNTIME_CACHE_DIR"])
+            self.assertEqual(runtime, Path(actual["HSTREAM_JOB_MANIFEST"]).parent / "runtime")
+            before = {str(path) for path in self.root.rglob("*")}
+            rejected = subprocess.run([str(script)], env=self.env, text=True,
+                                      capture_output=True, timeout=5)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertEqual({str(path) for path in self.root.rglob("*")}, before)
+            self.assertFalse((self.root / ".cache").exists())
+        finally:
+            process.terminate()
+            process.communicate(timeout=5)
 
     def test_headless_encoding_defaults_and_selections(self):
         for sinks, expected in (

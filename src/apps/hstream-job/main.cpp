@@ -124,21 +124,12 @@ prepend_runtime_path() {
   esac
 }
 
-runtime_cache=""
-for candidate in \
-  "${HSTREAM_RUNTIME_CACHE_DIR:-}" \
-  "${HSTREAM_JOB_RUNTIME_ROOT}/.cache" \
-  "${TEST_TMPDIR:+${TEST_TMPDIR}/hstream-runtime-cache}" \
-  "${XDG_CACHE_HOME:+${XDG_CACHE_HOME}/hstream}" \
-  "${HOME:+${HOME}/.cache/hstream}"; do
-  if [ -n "${candidate}" ] && mkdir -p "${candidate}" 2>/dev/null && [ -w "${candidate}" ]; then
-    runtime_cache="$(cd "${candidate}" && pwd -P)"
-    break
-  fi
-done
-if [ -z "${runtime_cache}" ]; then
-  runtime_cache="$(mktemp -d "${TMPDIR:-/tmp}/hstream-runtime.XXXXXX")"
+if [ -z "${HSTREAM_RUNTIME_CACHE_DIR:-}" ] || \
+    ! mkdir -p "${HSTREAM_RUNTIME_CACHE_DIR}" || [ ! -w "${HSTREAM_RUNTIME_CACHE_DIR}" ]; then
+  echo "Managed runtime directory is unavailable" >&2
+  exit 78
 fi
+runtime_cache="$(cd "${HSTREAM_RUNTIME_CACHE_DIR}" && pwd -P)"
 export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
 export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
 
@@ -170,7 +161,6 @@ prepend_runtime_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
   }
   script += R"JOB(
 if [ -n "${HSTREAM_JOB_BAZEL_BIN}" ]; then
-  launch_key="launch-${BASHPID:-$$}"
   bazel_gst_root="${HSTREAM_JOB_BAZEL_BIN}/src/gst-plugins"
   if [ -d "${bazel_gst_root}" ]; then
     mkdir -p "${runtime_cache}/gst-plugin-path/${runtime_arch}/${output_configuration}"
@@ -426,13 +416,17 @@ int main(int argc, char** argv) {
       if (!value.empty())
         script += "export " + std::string(key) + "=" + quote(value) + "\n";
     }
-    script += runtime_environment_script(runtime_root, bazel_bin, installed);
+    // Stage only after the supervisor admits this run and assigns its private
+    // runtime directory. Busy or completed retries must not create scratch.
+    const std::string child_setup =
+        "set -euo pipefail\n" + runtime_environment_script(runtime_root, bazel_bin, installed) + "\nexec \"$@\"\n";
     script += "printf '%s\n' " +
         quote("hstream-job: Publishing completed outputs to " + game.string() +
               "; temporary files are removed only after all outputs are safely saved.") +
         "\n";
     script += "exec " + quote(finalizer.string()) + " --game-dir " + quote(game.string()) + " --run-id " +
-        quote(hm::recording::NewGuid()) + " -- " + quote(runner.string());
+        quote(hm::recording::NewGuid()) + " -- /bin/bash -c " + quote(child_setup) + " hstream-runtime " +
+        quote(runner.string());
     for (const auto& arg : args)
       script += " \\\n  " + quote(arg);
     script += "\n";

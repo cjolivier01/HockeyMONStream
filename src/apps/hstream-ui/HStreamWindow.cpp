@@ -8392,7 +8392,12 @@ bool HStreamWindow::runStitchingClean(
   appendLog(QString("stitching calibration clean command %1 %2").arg(runner, clean_args.join(' ')));
   QProcess clean;
   clean.setProcessChannelMode(QProcess::MergedChannels);
-  clean.setProcessEnvironment(env);
+  QProcessEnvironment clean_env = env;
+  // This helper only invalidates calibration artifacts. Its successful exit
+  // must not complete or fail the archive run that has yet to start.
+  clean_env.remove("HSTREAM_JOB_MANIFEST");
+  clean_env.remove("HSTREAM_ARCHIVE_RUN_ID");
+  clean.setProcessEnvironment(clean_env);
   clean.setWorkingDirectory(working_dir);
   clean.start(runner, clean_args);
   if (!clean.waitForStarted(5000)) {
@@ -13562,12 +13567,24 @@ void HStreamWindow::startNextArchiveFinalization() {
         startManagedArchiveFinalization();
         return;
       }
+      const auto run = YAML::LoadFile(managed_archive_manifest_.toStdString());
+      if (run["state"].as<std::string>() != "running" || !run["outputs"].IsSequence() ||
+          run["outputs"].size() != 0) {
+        throw std::runtime_error("Managed pipeline did not complete successfully; working outputs retained");
+      }
       // Older runners do not implement the manifest protocol. Preserve their
       // existing publication path. Without a completed manifest there is no
       // authority to remove this workspace.
       appendLog("Legacy archive runner: managed workspace retained at " + managed_archive_manifest_);
     } catch (const std::exception& error) {
-      appendLog(QString("Managed archive status: %1").arg(error.what()));
+      ensureArchiveFinalizationDialog();
+      const QString manifest = std::exchange(managed_archive_manifest_, {});
+      const auto outputs = std::exchange(pending_archive_finalizations_, std::deque<PendingArchiveFinalization>{});
+      finishArchiveJobLog(false);
+      active_run_telemetry_requested_ = false;
+      active_telemetry_manifest_path_.clear();
+      showManagedArchiveFinalizationFailure(QString::fromUtf8(error.what()), outputs, manifest);
+      return;
     }
     managed_archive_manifest_.clear();
   }

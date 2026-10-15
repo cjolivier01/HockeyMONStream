@@ -3,6 +3,7 @@
 
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QProcess>
+#include <QtCore/QProcessEnvironment>
 #include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
@@ -14,6 +15,14 @@
 
 namespace fs = std::filesystem;
 struct HStreamWindowTestAccess {
+  static bool clean(HStreamWindow& window, const fs::path& runner, const QProcessEnvironment& env) {
+    return window.runStitchingClean(
+        QString::fromStdString(runner.string()),
+        QString::fromStdString(runner.parent_path().string()),
+        env,
+        false,
+        {});
+  }
   static void publish(
       HStreamWindow& window,
       const fs::path& manifest,
@@ -84,6 +93,37 @@ int main(int argc, char** argv) {
              QString::fromStdString(fixture.string())}) == 0,
         "create fixture");
     HStreamWindow window;
+    const auto clean_helper = path / "clean-helper.sh";
+    std::ofstream(clean_helper)
+        << "#!/bin/sh\n"
+           "test -z \"${HSTREAM_JOB_MANIFEST+x}\" || exit 21\n"
+           "test -z \"${HSTREAM_ARCHIVE_RUN_ID+x}\" || exit 22\n"
+           "test \"$HSTREAM_RUNTIME_CACHE_DIR\" = \"$EXPECTED_RUNTIME_CACHE\" || exit 23\n";
+    fs::permissions(clean_helper, fs::perms::owner_all);
+    auto clean_env = QProcessEnvironment::systemEnvironment();
+    clean_env.insert("HSTREAM_JOB_MANIFEST", "/reserved/archive/run.yaml");
+    clean_env.insert("HSTREAM_ARCHIVE_RUN_ID", "reserved-archive-run");
+    clean_env.insert("HSTREAM_RUNTIME_CACHE_DIR", "/reserved/archive/runtime");
+    clean_env.insert("EXPECTED_RUNTIME_CACHE", "/reserved/archive/runtime");
+    require(HStreamWindowTestAccess::clean(window, clean_helper, clean_env), "clean helper cannot close the archive run");
+    require(clean_env.contains("HSTREAM_JOB_MANIFEST"), "archive launch environment retains its manifest");
+    for (const bool failed : {false, true}) {
+      const std::string id = failed ? "ui-explicitly-failed" : "ui-incomplete-managed";
+      const auto manifest = hm::publication::CreateRun(game, path / "work", id);
+      hm::publication::BeginRun(manifest);
+      setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
+      const auto source = manifest.parent_path() / "program.mkv";
+      fs::copy_file(fixture, source);
+      hm::publication::RegisterOutput(source, "program");
+      if (failed)
+        hm::publication::CompletePipeline(false, 0);
+      unsetenv("HSTREAM_JOB_MANIFEST");
+      HStreamWindowTestAccess::publish(window, manifest, {{source, "program"}});
+      require(HStreamWindowTestAccess::failed(window), "known managed failure cannot use legacy publication");
+      require(HStreamWindowTestAccess::state(window, "archive-file") == "ERROR", "managed failure marks output error");
+      require(fs::exists(source), "managed failure retains working video");
+      require(!fs::exists(hm::publication::ReceiptPath(game, id)), "managed failure has not started publication");
+    }
     for (const std::string scenario : {"success", "remux-failure", "cleanup-failure"}) {
       const bool fail = scenario != "success";
       const std::string id = "ui-managed-" + scenario;

@@ -154,6 +154,7 @@ void ResumeCleanup(YAML::Node& run, const CleanupCheckpoint& checkpoint) {
   struct stat private_stat{};
   if (!inspect(parent.value, private_name, private_stat)) {
     if (phase == "removed") {
+      sync(parent.value);
       run.remove("cleanup_pending");
       checkpoint();
       return;
@@ -192,6 +193,7 @@ void ResumeCleanup(YAML::Node& run, const CleanupCheckpoint& checkpoint) {
     // Closing first avoids NFS retaining an open directory during retirement.
     directory.close();
     check(::unlinkat(parent.value, private_name.c_str(), AT_REMOVEDIR) == 0, "Cannot retire cleanup quarantine");
+    fault("after-directory-unlink");
     sync(parent.value);
     fault("after-directory-remove");
     run.remove("cleanup_pending");

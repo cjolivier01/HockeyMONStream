@@ -46,7 +46,8 @@ int main() {
       file << run;
       require(bool(file), "save recovery fixture");
     };
-    for (const char* point : {"after-directory-create", "after-quarantine", "after-delete", "after-directory-remove"}) {
+    for (const char* point :
+         {"after-directory-create", "after-quarantine", "after-delete", "after-directory-unlink", "after-directory-remove"}) {
       for (const bool directory : {false, true}) {
         const auto parent = base / (std::string(point) + (directory ? "-directory" : "-file"));
         fs::create_directories(parent);

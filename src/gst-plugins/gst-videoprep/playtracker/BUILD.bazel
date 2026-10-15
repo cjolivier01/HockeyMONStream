@@ -71,6 +71,7 @@ cc_test(
         "PlayTrackerPrivInitTest.cpp",
     ],
     deps = [
+        "//src/libs/publication",
         "//src/libs/playtracker_replay",
         "//src/libs/recording",
         ":playtracker",
