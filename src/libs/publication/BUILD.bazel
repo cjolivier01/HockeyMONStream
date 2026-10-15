@@ -1,7 +1,7 @@
 cc_library(
     name = "publication",
-    srcs = ["Publication.cpp"],
-    hdrs = ["Publication.h"],
+    srcs = ["Cleanup.cpp", "Publication.cpp"],
+    hdrs = ["Cleanup.h", "Publication.h"],
     include_prefix = "hstream/src/libs/publication",
     visibility = ["//visibility:public"],
     deps = ["//src/libs/recording", "//src/libs/common:pinned_file", "@yaml-cpp"],
@@ -12,4 +12,18 @@ cc_test(
     srcs = ["PublicationTest.cpp"],
     tags = ["local"],
     deps = [":publication", "//src/libs/recording", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "remux_stdin_test",
+    srcs = ["RemuxStdinTest.cpp"],
+    tags = ["local"],
+    deps = [":publication"],
+)
+
+cc_test(
+    name = "cleanup_test",
+    srcs = ["CleanupTest.cpp"],
+    tags = ["local"],
+    deps = [":publication", "@yaml-cpp"],
 )

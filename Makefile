@@ -217,6 +217,7 @@ print_targets:
 		'Apps' \
 		'----' \
 		'hstream-job   Build the standalone job script exporter.' \
+		'hstream-finalize Build the headless publisher and cleanup supervisor.' \
 		'hstream-cli   Build //src/apps/hstream-cli:hstream-cli.' \
 		'run-hstream-cli  Run hstream-cli with the canonical hockey config (RENDER sink).' \
 		'hstream-ui    Build //src/apps/hstream-ui:hstream-ui.' \

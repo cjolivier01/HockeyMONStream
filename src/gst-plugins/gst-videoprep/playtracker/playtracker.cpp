@@ -180,6 +180,11 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     }
     try {
       hm::publication::RegisterOutput(telemetry_csv_.output_manifest(), "telemetry");
+      g_object_set_data_full(
+          G_OBJECT(m_element),
+          "hstream-telemetry-output-path",
+          g_strdup(telemetry_csv_.output_manifest().c_str()),
+          g_free);
     } catch (const std::exception& error) {
       return absl::InternalError(error.what());
     }

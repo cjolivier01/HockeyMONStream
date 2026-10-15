@@ -6277,6 +6277,8 @@ constexpr size_t kPlaytrackerRuntimeRetentionCount = 8;
 constexpr auto kPlaytrackerRuntimeGracePeriod = std::chrono::hours(24);
 
 fs::path playtracker_runtime_directory(const fs::path& game_dir) {
+  if (const auto managed_work = hm::publication::EnvironmentWorkingDirectory(); !managed_work.empty())
+    return managed_work / "playtracker-runtime";
   if (!game_dir.empty())
     return game_dir / "hstream-runtime";
   if (const char* runtime_root = std::getenv("XDG_RUNTIME_DIR"); runtime_root && *runtime_root) {
@@ -7781,14 +7783,6 @@ absl::Status Configurator::configure_encode_file_outputs(
 
     set_container_from_output_extension(sink_node, output_path);
     sink_node["output-file"] = output_path.string();
-    try {
-      hm::publication::RegisterOutput(
-          output_path,
-          archive_output.program_4k ? "program-4k" : (archive_output.stitched ? "stitched" : "program"),
-          codec == 2);
-    } catch (const std::exception& error) {
-      return absl::InternalError(error.what());
-    }
     const std::string normalized_output_path = output_path.lexically_normal().string();
     struct stat previous_output{};
     const gboolean output_existed =

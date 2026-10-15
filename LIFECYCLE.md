@@ -33,6 +33,7 @@ Managed runs have a private directory:
     stitched_output-with-audio.hstream-run-....mkv
     <game-id>_telemetry-N.db
     runtime/                     # CLI runtime staging/cache for this run
+    playtracker-runtime/         # effective per-run tracker configuration
 ```
 
 Only enabled file sinks produce videos. The normal Program sink is `ENCODE_FILE`;
@@ -58,7 +59,9 @@ The generated script configures the runtime environment and executes
 `hstream-finalize` with a fixed run ID, game directory, and the exact CLI command.
 The finalizer supervises `hstream-cli --encode-job`, forwards cancellation, and
 requires both a successful exit and the CLI's completed manifest before
-publication. Managed encoding uses the configured working container, normally
+publication. The supervisor saves the observed successful exit; an `encoded`
+manifest alone cannot authorize a retry after a crash or unsuccessful exit.
+Managed encoding uses the configured working container, normally
 MKV; final publication produces MP4.
 
 Repeating the same exported script resumes publication/cleanup for the same run.
@@ -85,7 +88,7 @@ removed. A cleanup failure returns failure and can be retried without encoding.
 Finalization uses ffmpeg with stream copy, equivalent to:
 
 ```bash
-ffmpeg -hide_banner -n -progress pipe:1 -nostats \
+ffmpeg -hide_banner -nostdin -n -progress pipe:1 -nostats \
   -i "$working_video" \
   -map 0:v:0 -map '0:a?' -map_metadata 0 \
   -c copy -movflags +faststart \
@@ -137,6 +140,12 @@ working storage and then copying the whole file across filesystems. The hidden
 directory belongs to one run and is removed on success. An interrupted run
 retains it for retry.
 
+Cleanup briefly creates private `.hstream-cleanup-<id>` directories beside the
+files being removed. It atomically moves a name there and checks its identity
+before deleting it, so a replacement at the original path cannot be deleted by
+mistake. These moves do not copy media. The receipt records interrupted moves;
+all cleanup directories disappear on success.
+
 ## Cleanup and failure behavior
 
 No working source is deleted until every required video, database, and sidecar
@@ -146,15 +155,24 @@ private run directory. Working telemetry database copies and working logs are
 removed along with the videos. The small final receipt remains in the game
 directory as the run result and recovery record.
 
-Cleanup checks file identities. Replaced files or unknown entries prevent
+Cleanup checks file identities, including run metadata and externally configured
+archive logs. Replaced files or unknown entries prevent
 successful cleanup rather than being swept away. It never recursively purges the
 shared game working directory. Shared model caches, game calibration, source
 recordings, other runs, and persistent publication locks are not scratch.
+Process diagnostics retain their separate bounded history as described in
+[crash diagnostics](docs/crash-diagnostics.md).
 
 Failures retain recoverable data. An interrupted publication may already have
 some final filenames; retries verify those files and continue the same
 transaction rather than allocating a second generation. A receipt marked
 `published` still has cleanup to finish; only `complete` means the job succeeded.
+Retries currently require the same filesystem mount identities; moving a receipt
+to another machine or remounting its filesystems can fail identity verification.
+
+Calibration preparation reservations are scratch rather than required outputs.
+When calibration restarts the processing graph, the old telemetry database is
+explicitly retired and only the final recording is required for publication.
 
 ## Desktop and legacy/direct runs
 
@@ -165,7 +183,7 @@ finalizer library in a background worker and prevents closing during publication
 
 Older runners that do not implement the manifest protocol retain the existing
 UI publication path. That compatibility path finalizes videos individually and
-retains working telemetry/logs; it does not provide the managed job's cleanup
+retains working telemetry/logs and the reserved managed workspace; it does not provide the managed job's cleanup
 contract.
 
 A direct `hstream-cli` invocation without a managed run still writes under

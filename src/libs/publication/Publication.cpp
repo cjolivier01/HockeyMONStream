@@ -1,4 +1,5 @@
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/publication/Cleanup.h"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -132,15 +133,6 @@ void private_directory(const fs::path& path) {
     fail("Run directory must be private and owned by the current user: " + path.string());
   sync_directory(path.parent_path());
 }
-void remove_owned(const fs::path& path, const YAML::Node& expected, bool contents = false) {
-  if (!entry_exists(path))
-    return;
-  if (!matches(path, expected, contents))
-    fail("Refusing to remove replaced file: " + path.string());
-  const bool directory = expected["directory"].as<bool>();
-  check((directory ? ::rmdir(path.c_str()) : ::unlink(path.c_str())) == 0, "Cannot clean " + path.string());
-  sync_directory(path.parent_path());
-}
 struct ManifestLock {
   Fd fd;
   explicit ManifestLock(const fs::path& manifest)
@@ -149,6 +141,13 @@ struct ManifestLock {
             O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
             0600)) {
     check(fd.value >= 0 && ::flock(fd.value, LOCK_EX) == 0, "Cannot lock run manifest");
+  }
+};
+struct GameLock {
+  Fd fd;
+  explicit GameLock(const fs::path& game)
+      : fd(::open((game / ".hm-output-publication.lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600)) {
+    check(fd.value >= 0 && ::flock(fd.value, LOCK_EX | LOCK_NB) == 0, "Game publication is busy");
   }
 };
 void save_run(YAML::Node& run) {
@@ -290,51 +289,57 @@ void verify_destinations(const YAML::Node& run) {
 }
 void cleanup(YAML::Node& run, const Progress& progress, Fd& work_lock, std::vector<std::unique_ptr<Fd>>& owner_locks) {
   verify_destinations(run);
+  ResumeCleanup(run, [&] { checkpoint(run); });
+  const auto remove = [&](const fs::path& path, const YAML::Node& expected, bool contents = false) {
+    CleanupOwned(path, expected, contents, run, [&] { checkpoint(run); });
+  };
   const fs::path work = run["work"].as<std::string>();
   message(progress, "Removing completed run's working files");
   for (auto artifact : run["artifacts"]) {
     if (artifact["source"].IsDefined())
-      remove_owned(artifact["source"].as<std::string>(), artifact["source_identity"], true);
+      remove(artifact["source"].as<std::string>(), artifact["source_identity"], true);
     if (artifact["prepared"].IsDefined())
-      remove_owned(artifact["prepared"].as<std::string>(), artifact["prepared_identity"], true);
+      remove(artifact["prepared"].as<std::string>(), artifact["prepared_identity"], true);
   }
   // Close unlinked owner handles before removing their names: NFS otherwise
   // retains .nfs tombstones and prevents removing the run directory.
   owner_locks.clear();
   fault("during-cleanup");
+  // Explicitly registered identities take precedence over the later workspace
+  // inventory, which must not adopt a replacement of an earlier generation.
+  for (auto output : run["outputs"]) {
+    if (output["retired"].as<bool>(false))
+      remove(output["path"].as<std::string>(), output["identity"], true);
+  }
+  if (run["owned_scratch"]) {
+    for (auto item : run["owned_scratch"])
+      remove(item["path"].as<std::string>(), item["identity"]);
+  }
   if (run["scratch"]) {
     for (auto item : run["scratch"])
-      remove_owned(item["path"].as<std::string>(), item["identity"]);
+      remove(item["path"].as<std::string>(), item["identity"]);
   }
   for (auto output : run["outputs"]) {
     if (output["owner_lock_identity"])
-      remove_owned(output["path"].as<std::string>() + ".hstream-owner-lock", output["owner_lock_identity"]);
+      remove(output["path"].as<std::string>() + ".hstream-owner-lock", output["owner_lock_identity"]);
   }
   if (run["launch_scratch"]) {
     for (auto item : run["launch_scratch"])
-      remove_owned(item["path"].as<std::string>(), item["identity"]);
+      remove(item["path"].as<std::string>(), item["identity"]);
   }
   const fs::path stage = run["stage"].as<std::string>();
-  remove_owned(stage, run["stage_identity"]);
+  remove(stage, run["stage_identity"]);
   for (auto artifact : run["artifacts"]) {
     verify_destinations(run);
-    remove_owned(artifact["destination"].as<std::string>() + ".hstream-pin", artifact["prepared_identity"], true);
+    remove(artifact["destination"].as<std::string>() + ".hstream-pin", artifact["prepared_identity"], true);
   }
   if (entry_exists(work)) {
     if (!matches(work, run["work_identity"]))
       fail("Working directory was replaced");
-    // These are the run protocol's fixed metadata names, inside the checked
-    // private directory. Unknown entries keep rmdir from succeeding.
     work_lock.close();
-    for (const char* name : {"run.yaml.next", ".manifest.lock", ".run.lock", "run.yaml"}) {
-      const fs::path path = work / name;
-      if (!entry_exists(path))
-        continue;
-      if (!S_ISREG(info(path).st_mode))
-        fail("Unexpected run metadata file: " + path.string());
-      check(::unlink(path.c_str()) == 0, "Cannot remove run metadata");
-    }
-    remove_owned(work, run["work_identity"]);
+    for (auto item : run["metadata"])
+      remove(item["path"].as<std::string>(), item["identity"], true);
+    remove(work, run["work_identity"]);
   }
   fault("after-cleanup");
   run["state"] = "complete";
@@ -362,29 +367,11 @@ void BeginRun(const fs::path& manifest, bool telemetry_required) {
 bool PipelineCompleted(const fs::path& manifest) {
   return load(manifest)["state"].as<std::string>() == "encoded";
 }
-void DiscardUnusedRun(const fs::path& manifest) {
-  const auto run = load(manifest);
-  if (run["outputs"].size() != 0)
-    return;
-  const fs::path work = manifest.parent_path();
-  if (!matches(work, run["work_identity"]))
-    fail("Working directory was replaced");
-  for (const auto& entry : fs::directory_iterator(work)) {
-    const auto name = entry.path().filename().string();
-    if (name != "run.yaml" && name != ".manifest.lock")
-      return;
-    if (!S_ISREG(info(entry.path()).st_mode))
-      return;
-  }
-  for (const auto& entry : fs::directory_iterator(work))
-    check(::unlink(entry.path().c_str()) == 0, "Cannot remove unused run metadata");
-  remove_owned(work, run["work_identity"]);
-}
 fs::path EnvironmentWorkingDirectory() {
   const auto path = EnvironmentManifest();
   return path.empty() ? fs::path() : path.parent_path();
 }
-fs::path CreateRun(const fs::path& game, const fs::path& output_root, const std::string& id) {
+static fs::path create_run(const fs::path& game, const fs::path& output_root, const std::string& id) {
   validate_id(id);
   const fs::path logical_game = fs::absolute(game).lexically_normal();
   const std::string game_id = logical_game.filename();
@@ -419,6 +406,12 @@ fs::path CreateRun(const fs::path& game, const fs::path& output_root, const std:
   save(manifest, run);
   return manifest;
 }
+fs::path CreateRun(const fs::path& game, const fs::path& output_root, const std::string& id) {
+  GameLock admission(fs::canonical(game));
+  if (entry_exists(ReceiptPath(fs::canonical(game), id)))
+    fail("Run already has a publication receipt; resume it instead");
+  return create_run(game, output_root, id);
+}
 void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc) {
   const auto manifest = EnvironmentManifest();
   if (manifest.empty())
@@ -449,6 +442,54 @@ void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc) {
   run["outputs"].push_back(output);
   save_run(run);
 }
+void RetireOutput(const fs::path& path) {
+  const auto manifest = EnvironmentManifest();
+  if (manifest.empty() || path.empty())
+    return;
+  ManifestLock lock(manifest);
+  auto run = load(manifest);
+  if (run["state"].as<std::string>() != "running")
+    fail("Cannot retire an output of a closed run");
+  const auto absolute = fs::absolute(path).lexically_normal();
+  for (auto output : run["outputs"]) {
+    if (output["path"].as<std::string>() != absolute.string() || output["retired"].as<bool>(false))
+      continue;
+    if (!matches(absolute, output["identity"]))
+      fail("Retired working output was replaced");
+    output["identity"] = identity(absolute);
+    output["retired"] = true;
+    save_run(run);
+    return;
+  }
+  fail("Cannot retire an unregistered output: " + absolute.string());
+}
+void RegisterScratch(const fs::path& path, const fs::path& explicit_manifest, int expected_fd) {
+  const auto manifest = explicit_manifest.empty() ? EnvironmentManifest() : explicit_manifest;
+  if (manifest.empty())
+    return;
+  ManifestLock lock(manifest);
+  auto run = load(manifest);
+  const auto state = run["state"].as<std::string>();
+  if (state != "running" && state != "encoded")
+    fail("Cannot register scratch after publication starts");
+  const auto absolute = fs::absolute(path).lexically_normal();
+  if (!run["owned_scratch"])
+    run["owned_scratch"] = YAML::Node(YAML::NodeType::Sequence);
+  YAML::Node item;
+  item["path"] = absolute.string();
+  item["identity"] = identity(absolute);
+  if (expected_fd >= 0) {
+    struct stat expected{};
+    check(::fstat(expected_fd, &expected) == 0, "Cannot inspect owned scratch descriptor");
+    if (item["identity"]["device"].as<uint64_t>() != uint64_t(expected.st_dev) ||
+        item["identity"]["inode"].as<uint64_t>() != uint64_t(expected.st_ino))
+      fail("Scratch file was replaced during registration");
+  }
+  if (item["identity"]["directory"].as<bool>())
+    snapshot_tree(absolute, run["owned_scratch"]);
+  run["owned_scratch"].push_back(item);
+  save_run(run);
+}
 void RequireTelemetry(bool required) {
   const auto manifest = EnvironmentManifest();
   if (manifest.empty())
@@ -469,6 +510,8 @@ void CompletePipeline(bool success, int64_t start_time_ms) {
   if (success) {
     bool video = false, telemetry = false;
     for (auto output : run["outputs"]) {
+      if (output["retired"].as<bool>(false))
+        continue;
       const fs::path path = output["path"].as<std::string>();
       if (!matches(path, output["identity"]))
         fail("Working output changed before pipeline completion");
@@ -488,6 +531,7 @@ void CompletePipeline(bool success, int64_t start_time_ms) {
 std::vector<std::string> RemuxArguments(const std::string& input, const std::string& output, bool hevc) {
   std::vector<std::string> result = {
       "-hide_banner",
+      "-nostdin",
       "-n",
       "-progress",
       "pipe:1",
@@ -543,14 +587,19 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
   const fs::path game = run["game_dir"].as<std::string>();
   const fs::path work = run["work"].as<std::string>();
   const auto receipt = ReceiptPath(game, run["id"].as<std::string>());
-  Fd game_lock(::open((game / ".hm-output-publication.lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600));
-  check(game_lock.value >= 0 && ::flock(game_lock.value, LOCK_EX | LOCK_NB) == 0, "Game publication is busy");
-  Fd work_lock(
-      entry_exists(work) ? ::open((work / ".run.lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600) : -1);
-  if (entry_exists(work))
-    check(work_lock.value >= 0 && ::flock(work_lock.value, LOCK_EX | LOCK_NB) == 0, "Run is still active");
+  GameLock game_lock(game);
   if (entry_exists(receipt))
     run = load(receipt);
+  const auto initial_state = run["state"].as<std::string>();
+  const bool require_work_lock = initial_state != "published" && initial_state != "complete";
+  const auto lock_path = work / ".run.lock";
+  const bool open_work_lock = entry_exists(work) && (require_work_lock || entry_exists(lock_path));
+  Fd work_lock(
+      open_work_lock
+          ? ::open(lock_path.c_str(), (require_work_lock ? O_CREAT : 0) | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600)
+          : -1);
+  if (open_work_lock)
+    check(work_lock.value >= 0 && ::flock(work_lock.value, LOCK_EX | LOCK_NB) == 0, "Run is still active");
   std::vector<std::unique_ptr<Fd>> owner_locks;
   for (auto output : run["outputs"]) {
     if (!output["owner_lock_identity"])
@@ -576,20 +625,39 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
     private_directory(path);
     if (!run["launch_scratch"])
       run["launch_scratch"] = YAML::Node(YAML::NodeType::Sequence);
-    snapshot_tree(path, run["launch_scratch"]);
+    YAML::Node discovered(YAML::NodeType::Sequence);
+    snapshot_tree(path, discovered);
     YAML::Node item;
     item["path"] = path.string();
     item["identity"] = identity(path);
-    run["launch_scratch"].push_back(item);
-    extra_scratch = true;
+    discovered.push_back(item);
+    for (auto entry : discovered) {
+      bool known = false;
+      for (auto previous : run["launch_scratch"]) {
+        if (previous["path"].as<std::string>() != entry["path"].as<std::string>())
+          continue;
+        if (!matches(entry["path"].as<std::string>(), previous["identity"]))
+          fail("Launcher scratch was replaced");
+        known = true;
+        break;
+      }
+      if (!known) {
+        run["launch_scratch"].push_back(entry);
+        extra_scratch = true;
+      }
+    }
   }
   std::vector<PublishedOutput> result;
   auto state = run["state"].as<std::string>();
+  if (run["supervised"].as<bool>(false) && !run["runner_succeeded"].as<bool>(false))
+    fail("Runner success was not recorded; working data retained");
   if ((state == "complete" || state == "published") && extra_scratch) {
     verify_destinations(run);
     run["state"] = state = "published";
     checkpoint(run);
   }
+  if (state == "publishing" && extra_scratch)
+    checkpoint(run);
   if (state == "complete" || state == "published") {
     verify_destinations(run);
     if (state == "published")
@@ -610,9 +678,23 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
     run["state"] = "publishing";
     run["artifacts"] = YAML::Node(YAML::NodeType::Sequence);
     run["scratch"] = YAML::Node(YAML::NodeType::Sequence);
+    run["metadata"] = YAML::Node(YAML::NodeType::Sequence);
+    for (const char* name : {"run.yaml.next", ".manifest.lock", ".run.lock", "run.yaml"}) {
+      const auto path = work / name;
+      if (!entry_exists(path))
+        continue;
+      if (!S_ISREG(info(path).st_mode))
+        fail("Unexpected run metadata file: " + path.string());
+      YAML::Node item;
+      item["path"] = path.string();
+      item["identity"] = identity(path);
+      run["metadata"].push_back(item);
+    }
     snapshot_tree(work, run["scratch"], {"run.yaml", "run.yaml.next", ".manifest.lock", ".run.lock"});
     std::set<std::string> kinds;
     for (auto output : run["outputs"]) {
+      if (output["retired"].as<bool>(false))
+        continue;
       const std::string kind = output["kind"].as<std::string>();
       if (!kinds.insert(kind).second)
         fail("Multiple outputs of one kind require separate jobs");
@@ -669,12 +751,24 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
       }
       const auto kind = artifact["kind"].as<std::string>();
       if (kind == "sidecar") {
-        // YAML flow quoting is JSON-compatible for these strings; emit the
-        // small existing sidecar schema explicitly to keep Qt out of jobs.
+        // Game directory names may contain control characters. YAML's \xNN
+        // escapes are not valid JSON, so quote the sidecar strings explicitly.
         const auto quote = [](const std::string& value) {
-          YAML::Emitter out;
-          out << YAML::DoubleQuoted << value;
-          return std::string(out.c_str());
+          static constexpr char hex[] = "0123456789abcdef";
+          std::string result = "\"";
+          for (unsigned char c : value) {
+            if (c == '"' || c == '\\') {
+              result += '\\';
+              result += c;
+            } else if (c < 0x20) {
+              result += "\\u00";
+              result += hex[c >> 4];
+              result += hex[c & 15];
+            } else {
+              result += c;
+            }
+          }
+          return result + '"';
         };
         const std::string video_kind = artifact["video_kind"].as<std::string>();
         const std::string data = "{\"schema\":1,\"game_id\":" + quote(run["game_id"].as<std::string>()) +
@@ -779,35 +873,50 @@ int RunJob(
     item["identity"] = identity(path);
     launch_scratch.push_back(item);
   }
+  // Publication owns the same stable game lock until its private directory is
+  // retired. Select the receipt and acquire the run lock under that lock, so a
+  // concurrent retry cannot recreate a completed run in the retirement gap.
+  GameLock admission(fs::canonical(game));
   const auto receipt = ReceiptPath(fs::canonical(game), id);
   if (entry_exists(receipt)) {
+    admission.fd.close();
     Finalize(receipt, progress);
     return 0;
   }
-  const auto manifest = CreateRun(game, output_root, id);
+  const auto manifest = create_run(game, output_root, id);
   const auto work = manifest.parent_path();
   Fd lock(::open((work / ".run.lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600));
   check(lock.value >= 0 && ::flock(lock.value, LOCK_EX | LOCK_NB) == 0, "Job is already running");
   auto run = load(manifest);
   if (run["state"].as<std::string>() == "created") {
     run["state"] = "running";
+    run["supervised"] = true;
     run["launch_scratch"] = launch_scratch;
     for (const auto& argument : command)
       run["command"].push_back(argument);
     save_run(run);
+    admission.fd.close();
     ::setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
     ::setenv("HSTREAM_ARCHIVE_RUN_ID", id.c_str(), 1);
     ::setenv("HSTREAM_RUNTIME_CACHE_DIR", (work / "runtime").c_str(), 1);
     message(progress, "Encoding job; log: " + (work / "pipeline.log").string());
     const int code = execute(command, work / "pipeline.log");
-    if (code != 0 || interrupted)
-      return interrupted ? 128 + interrupted : code;
     run = load(manifest);
+    fault("after-runner-exit");
+    const int outcome = interrupted ? 128 + interrupted : code;
+    run["runner_exit"] = outcome;
+    run["runner_succeeded"] = outcome == 0;
+    if (outcome != 0)
+      run["state"] = "failed";
+    save_run(run);
+    if (outcome != 0)
+      return outcome;
   }
   if (run["state"].as<std::string>() != "encoded")
     fail("Encoding did not complete; working data retained at " + work.string());
   check(::flock(lock.value, LOCK_UN) == 0, "Cannot release run lock for publication");
   lock.close();
+  admission.fd.close();
   Finalize(manifest, progress);
   return 0;
 }

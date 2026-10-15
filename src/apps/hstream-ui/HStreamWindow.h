@@ -281,6 +281,10 @@ class HStreamWindow : public QMainWindow {
       const QString& output_id = "archive-file");
   void ensureArchiveFinalizationDialog();
   void startManagedArchiveFinalization();
+  void showManagedArchiveFinalizationFailure(
+      const QString& detail,
+      const std::deque<PendingArchiveFinalization>& outputs,
+      const QString& recovery_manifest);
   void startNextArchiveFinalization();
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);

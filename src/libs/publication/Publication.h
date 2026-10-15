@@ -20,10 +20,13 @@ fs::path CreateRun(const fs::path& game, const fs::path& output_root, const std:
 fs::path ReceiptPath(const fs::path& game, const std::string& id);
 void BeginRun(const fs::path& manifest, bool telemetry_required = false);
 bool PipelineCompleted(const fs::path& manifest);
-void DiscardUnusedRun(const fs::path& manifest);
 fs::path EnvironmentManifest();
 fs::path EnvironmentWorkingDirectory();
 void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc = false);
+// Only explicit calibration replacement may retire a previously registered output.
+void RetireOutput(const fs::path& path);
+// Record an exact owned file/tree, including scratch outside the private run.
+void RegisterScratch(const fs::path& path, const fs::path& manifest = {}, int expected_fd = -1);
 void RequireTelemetry(bool required);
 void CompletePipeline(bool success, int64_t start_time_ms);
 

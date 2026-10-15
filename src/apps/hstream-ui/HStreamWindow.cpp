@@ -1092,14 +1092,22 @@ QString runtime_launch_key() {
   return QString("launch-%1").arg(QCoreApplication::applicationPid());
 }
 
-QString writable_runtime_cache_root(const QString& working_dir) {
+QString writable_runtime_cache_root(const QString& working_dir, const QProcessEnvironment& env) {
   QStringList candidates;
-  auto add_environment_candidate = [&candidates](const char* name, const QString& suffix = {}) {
-    const QString value = qEnvironmentVariable(name);
+  auto add_environment_candidate = [&candidates, &env](const char* name, const QString& suffix = {}) {
+    const QString value = env.value(name);
     if (!value.isEmpty())
       candidates.push_back(suffix.isEmpty() ? value : QDir(value).filePath(suffix));
   };
   add_environment_candidate("HSTREAM_RUNTIME_CACHE_DIR");
+  // Managed launches must stage inside their owned run, even when the shared
+  // process environment points to another writable cache.
+  if (!env.value("HSTREAM_JOB_MANIFEST").isEmpty()) {
+    if (candidates.isEmpty() || !QDir().mkpath(candidates.front()))
+      return {};
+    QTemporaryDir probe(QDir(candidates.front()).filePath(".write-probe-XXXXXX"));
+    return probe.isValid() ? QDir(candidates.front()).absolutePath() : QString();
+  }
   candidates.push_back(QDir(working_dir).filePath(".cache"));
   add_environment_candidate("TEST_TMPDIR", "hstream-runtime-cache");
   add_environment_candidate("XDG_CACHE_HOME", "hstream");
@@ -1254,7 +1262,7 @@ QString configure_pipeline_runtime_environment(
     if (!missing.isEmpty())
       return QString("matching Bazel runtime artifact is missing: %1").arg(missing);
   }
-  const QString cache_root = writable_runtime_cache_root(working_dir);
+  const QString cache_root = writable_runtime_cache_root(working_dir, env);
   if (cache_root.isEmpty())
     return "could not find a writable hstream runtime cache directory";
   // Keep the child CLI on this exact private root, including when the UI had
@@ -10491,17 +10499,6 @@ void HStreamWindow::startPipeline() {
   const QString working_dir = pipelineWorkingDirectory();
   if (!baseline_config_root_.isEmpty())
     env.insert("HM_CONFIG_ROOT", baseline_config_root_);
-  const QString runtime_error = configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
-  if (!runtime_error.isEmpty()) {
-    calibration_pending_ = false;
-    active_run_game_id_.clear();
-    active_run_is_calibration_ = false;
-    preview_status_->setText("Pipeline failed to start");
-    appendLog(runtime_error);
-    show_startup_error(runtime_error);
-    updateRunControls();
-    return;
-  }
   setPlaybackStartupStage("stitching", "Validating saved stitching state and Left/Right video assignments");
   active_archive_output_path_.clear();
   active_archive_recovery_path_.clear();
@@ -10607,6 +10604,18 @@ void HStreamWindow::startPipeline() {
       appendLog(QString("stitched archive output: %1 (the playable file is finalized when playback stops)")
                     .arg(active_stitched_archive_output_path_));
     }
+  }
+  const QString runtime_error = configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
+  if (!runtime_error.isEmpty()) {
+    calibration_pending_ = false;
+    active_run_game_id_.clear();
+    active_run_is_calibration_ = false;
+    preview_status_->setText("Pipeline failed to start");
+    appendLog(runtime_error);
+    show_startup_error(runtime_error);
+    finishArchiveJobLog();
+    updateRunControls();
+    return;
   }
   const auto abandon_archive_start = [this](const QString& reason) {
     if (!active_archive_output_path_.isEmpty()) {
@@ -13384,7 +13393,36 @@ void HStreamWindow::startArchiveFinalization(
 void HStreamWindow::startManagedArchiveFinalization() {
   ensureArchiveFinalizationDialog();
   const QString manifest = std::exchange(managed_archive_manifest_, {});
-  pending_archive_finalizations_.clear();
+  const auto outputs = std::exchange(pending_archive_finalizations_, std::deque<PendingArchiveFinalization>{});
+  QString receipt;
+  try {
+    const auto run = YAML::LoadFile(manifest.toStdString());
+    receipt = QString::fromStdString(
+        hm::publication::ReceiptPath(run["game_dir"].as<std::string>(), run["id"].as<std::string>()).string());
+    if (!archive_job_log_path_.isEmpty()) {
+      struct stat log_stat{};
+      if (!archive_job_log_.isOpen() || ::fstat(archive_job_log_.handle(), &log_stat) != 0 ||
+          static_cast<quint64>(log_stat.st_dev) != archive_job_log_device_ ||
+          static_cast<quint64>(log_stat.st_ino) != archive_job_log_inode_ ||
+          !path_has_file_identity(archive_job_log_path_, log_stat)) {
+        throw std::runtime_error("Archive job log identity changed before publication");
+      }
+      QString error;
+      if (!sync_open_file(archive_job_log_, &error))
+        throw std::runtime_error(error.toStdString());
+      hm::publication::RegisterScratch(
+          archive_job_log_path_.toStdString(), manifest.toStdString(), archive_job_log_.handle());
+      if (!archive_job_log_guard_path_.isEmpty() && path_has_file_identity(archive_job_log_guard_path_, log_stat))
+        hm::publication::RegisterScratch(
+            archive_job_log_guard_path_.toStdString(), manifest.toStdString(), archive_job_log_.handle());
+    }
+  } catch (const std::exception& error) {
+    finishArchiveJobLog(false);
+    active_run_telemetry_requested_ = false;
+    active_telemetry_manifest_path_.clear();
+    showManagedArchiveFinalizationFailure(QString::fromUtf8(error.what()), outputs, manifest);
+    return;
+  }
   finishArchiveJobLog();
   active_run_telemetry_requested_ = false;
   active_telemetry_manifest_path_.clear();
@@ -13395,6 +13433,13 @@ void HStreamWindow::startManagedArchiveFinalization() {
   archive_finalize_progress_->setRange(0, 0);
   archive_finalize_progress_->setFormat("Finalizing");
   archive_finalize_ok_button_->hide();
+  archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_BrowserReload).pixmap(32, 32));
+  for (QWidget* widget :
+       {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
+    widget->setProperty("finalizationState", "running");
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+  }
   static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(false);
   archive_finalize_dialog_->show();
   struct Result {
@@ -13419,14 +13464,13 @@ void HStreamWindow::startManagedArchiveFinalization() {
     }
   });
   telemetry_publication_worker_ = worker;
-  connect(worker, &QThread::finished, this, [this, worker, result, manifest] {
+  connect(worker, &QThread::finished, this, [this, worker, result, manifest, receipt, outputs] {
     if (telemetry_publication_worker_ != worker)
       return;
     telemetry_publication_worker_ = nullptr;
     archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
     if (!result->error.isEmpty()) {
-      showArchiveFinalizationFailure(
-          result->error + "\n\nWorking data retained. Resume with hstream-finalize --manifest " + manifest);
+      showManagedArchiveFinalizationFailure(result->error, outputs, QFileInfo::exists(receipt) ? receipt : manifest);
     } else {
       QStringList published;
       for (const auto& path : result->paths) {
@@ -13449,9 +13493,17 @@ void HStreamWindow::startManagedArchiveFinalization() {
       archive_finalize_progress_->setRange(0, 100);
       archive_finalize_progress_->setValue(100);
       archive_finalize_progress_->setFormat("COMPLETED");
+      archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_DialogApplyButton).pixmap(32, 32));
+      for (QWidget* widget :
+           {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
+        widget->setProperty("finalizationState", "complete");
+        widget->style()->unpolish(widget);
+        widget->style()->polish(widget);
+      }
       archive_finalize_ok_button_->show();
       static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
       appendLog("All outputs published; run working files removed.");
+      refreshArchiveAvailability();
     }
     updateRunControls();
     maybeStartDeferredRestart();
@@ -13459,6 +13511,48 @@ void HStreamWindow::startManagedArchiveFinalization() {
   connect(worker, &QThread::finished, worker, &QObject::deleteLater);
   worker->start();
   updateRunControls();
+}
+
+void HStreamWindow::showManagedArchiveFinalizationFailure(
+    const QString& detail,
+    const std::deque<PendingArchiveFinalization>& outputs,
+    const QString& recovery_manifest) {
+  archive_finalize_failed_ = true;
+  archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
+  QStringList sources;
+  for (const auto& output : outputs) {
+    output_states_.at(output.output_id)->setText("ERROR");
+    QLabel* label = output.output_id == "archive-program-4k" ? program_4k_output_path_label_
+        : output.output_id == "archive-stitched"             ? stitched_archive_output_path_label_
+                                                             : archive_output_path_label_;
+    const QString retained = QFileInfo::exists(output.source_path) ? "Working archive retained: " + output.source_path
+                                                                   : "Publication recovery: " + recovery_manifest;
+    if (label)
+      label->setText(retained);
+    sources << retained;
+  }
+  QString quoted = recovery_manifest;
+  quoted.replace("'", "'\\''");
+  const QString message =
+      detail + "\n\n" + sources.join("\n") + "\n\nResume with:\nhstream-finalize --manifest '" + quoted + "'";
+  archive_finalize_headline_->setText("Output finalization failed");
+  archive_finalize_detail_->setText(message);
+  archive_finalize_progress_->setRange(0, 100);
+  archive_finalize_progress_->setValue(100);
+  archive_finalize_progress_->setFormat("ERROR");
+  archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
+  for (QWidget* widget :
+       {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
+    widget->setProperty("finalizationState", "failed");
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+  }
+  archive_finalize_ok_button_->show();
+  static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
+  archive_finalize_dialog_->show();
+  appendLog("Output finalization failed: " + message);
+  updateRunControls();
+  maybeStartDeferredRestart();
 }
 
 void HStreamWindow::startNextArchiveFinalization() {
@@ -13469,8 +13563,9 @@ void HStreamWindow::startNextArchiveFinalization() {
         return;
       }
       // Older runners do not implement the manifest protocol. Preserve their
-      // existing publication path, and retire only an unused empty workspace.
-      hm::publication::DiscardUnusedRun(managed_archive_manifest_.toStdString());
+      // existing publication path. Without a completed manifest there is no
+      // authority to remove this workspace.
+      appendLog("Legacy archive runner: managed workspace retained at " + managed_archive_manifest_);
     } catch (const std::exception& error) {
       appendLog(QString("Managed archive status: %1").arg(error.what()));
     }

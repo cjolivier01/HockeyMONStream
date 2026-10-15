@@ -24,6 +24,7 @@
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/UserConfig.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
@@ -166,6 +167,49 @@ absl::StatusOr<YAML::Node> player_selection_fixture(
 int main() {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = true;
+  {
+    const auto directory = fs::temp_directory_path() / ("hstream-preparation-output-" + std::to_string(getpid()));
+    fs::create_directories(directory / "game");
+    const auto manifest = hm::publication::CreateRun(directory / "game", directory / "work", "preparation-test");
+    hm::publication::BeginRun(manifest);
+    std::map<std::string, std::optional<std::string>> previous_environment;
+    for (const char* name : {"HOME", "HSTREAM_JOB_MANIFEST", "HSTREAM_ARCHIVE_RUN_ID"}) {
+      const char* previous = std::getenv(name);
+      previous_environment[name] = previous ? std::make_optional<std::string>(previous) : std::nullopt;
+    }
+    const auto preparation_home = directory / "home";
+    fs::create_directories(preparation_home);
+    ::setenv("HOME", preparation_home.c_str(), 1);
+    ::setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
+    ::setenv("HSTREAM_ARCHIVE_RUN_ID", "preparation-test", 1);
+    // Timed mask preparation replaces HmApp/Configurator before playback. Its
+    // empty reservation can be retired and recreated without entering the set
+    // of outputs that successful pipeline completion must publish.
+    for (int generation = 0; generation < 2; ++generation) {
+      hm::Configurator preparation("game", "configs", -1);
+      YAML::Node fixture = YAML::Load(
+          "pipeline:\n"
+          "  application: {complete-configuration: 1}\n"
+          "  sink6: {type: 9, sink-id: 6, enable: 1, container: 2}\n");
+      fixture["paths"]["output-root"] = (directory / "work").string();
+      fixture["pipeline"]["sink6"]["output-file"] = (manifest.parent_path() / "program.mkv").string();
+      hm::ConfiguratorTestAccess::set_config(&preparation, fixture);
+      const auto status = hm::ConfiguratorTestAccess::configure_encode_file_outputs(&preparation);
+      if (!status.ok())
+        std::cerr << "Preparation output configuration: " << status << '\n';
+      ok &= expect(status.ok(), "Replacement preparation can reserve the same archive pathname");
+      ok &= expect(
+          YAML::LoadFile(manifest.string())["outputs"].size() == 0,
+          "Preparatory output reservations are not registered before effective graph selection");
+    }
+    for (const auto& [name, previous] : previous_environment) {
+      if (previous)
+        ::setenv(name.c_str(), previous->c_str(), 1);
+      else
+        ::unsetenv(name.c_str());
+    }
+    fs::remove_all(directory);
+  }
   {
     const auto directory = fs::temp_directory_path() / ("hstream-encode-job-" + std::to_string(getpid()));
     fs::create_directories(directory);
@@ -2408,6 +2452,33 @@ play-tracker:
                 9.5 &&
             incomplete_effective["play-tracker"]["live-boxes"][0]["time-to-dest-speed-limit-frames"].as<int>() == 20,
         "complete-configuration=false must still underlay every missing tracker field from bundled baseline");
+
+    {
+      const auto manifest =
+          hm::publication::CreateRun(incomplete_game_dir, root / "managed-tracker-work", "managed-tracker-test");
+      hm::publication::BeginRun(manifest);
+      const char* previous = std::getenv("HSTREAM_JOB_MANIFEST");
+      const auto previous_manifest = previous ? std::make_optional<std::string>(previous) : std::nullopt;
+      ::setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
+      hm::Configurator managed_tracker(
+          "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+      const bool loaded =
+          managed_tracker.configure().ok() && managed_tracker.underlay_config("pipeline", incomplete_pipeline.string());
+      const auto status = loaded ? managed_tracker.complete_configuration(
+                                       false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path())
+                                 : absl::InternalError("managed tracker fixture did not load");
+      const fs::path effective_path = status.ok()
+          ? fs::path(managed_tracker.config()["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
+          : fs::path();
+      ok &= expect(
+          status.ok() && fs::is_regular_file(effective_path) &&
+              effective_path.parent_path() == manifest.parent_path() / "playtracker-runtime",
+          "Managed tracker runtime configuration belongs to the private run workspace");
+      if (previous_manifest)
+        ::setenv("HSTREAM_JOB_MANIFEST", previous_manifest->c_str(), 1);
+      else
+        ::unsetenv("HSTREAM_JOB_MANIFEST");
+    }
 
     hm::Configurator raw_configurator("", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
     const bool raw_loaded =

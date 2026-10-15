@@ -15,9 +15,15 @@ void require(bool value, const std::string& message) {
   if (!value)
     throw std::runtime_error(message);
 }
-void produce(const fs::path& fixture, bool broken_database) {
+void produce(const fs::path& fixture, bool broken_database, bool calibration = false) {
   const fs::path work = pub::EnvironmentWorkingDirectory();
   pub::RequireTelemetry(true);
+  if (calibration) {
+    const auto old = work / "calibration_telemetry.db";
+    std::ofstream(old) << "incomplete preparatory database";
+    pub::RegisterOutput(old, "telemetry");
+    pub::RetireOutput(old);
+  }
   for (const char* kind : {"program", "program-4k", "stitched"}) {
     const auto path = work / (std::string(kind) + ".mkv");
     std::ofstream(path.string() + ".hstream-owner-lock").close();
@@ -47,8 +53,11 @@ size_t count(const fs::path& game, const std::string& extension) {
 int main(int argc, char** argv) {
   try {
     if (argc >= 3 && std::string(argv[1]) == "--produce") {
-      produce(argv[2], argc > 3);
-      return 0;
+      produce(
+          argv[2],
+          argc > 3 && std::string(argv[3]) == "--broken-db",
+          argc > 3 && std::string(argv[3]) == "--calibration");
+      return argc > 3 && std::string(argv[3]) == "--fail-after-completion" ? 42 : 0;
     }
     const fs::path base = fs::path(std::getenv("TEST_TMPDIR") ? std::getenv("TEST_TMPDIR") : "/tmp") /
         ("publication-test-" + std::to_string(getpid()));
@@ -98,6 +107,48 @@ int main(int argc, char** argv) {
       require(receipt["state"].as<std::string>() == "complete", "receipt records completed cleanup");
     };
     exercise("success", base / "work-success", nullptr);
+    {
+      const auto game = base / "calibration/game";
+      fs::create_directories(game);
+      auto runner = command;
+      runner.push_back("--calibration");
+      require(
+          pub::RunJob(game, base / "calibration/work", "run-calibration", runner) == 0,
+          "retired calibration DB is scratch, not a required completed recording");
+      require(count(game, ".db") == 1, "only final telemetry generation is published");
+    }
+    for (const bool failed_exit : {false, true}) {
+      const auto game = base / (failed_exit ? "failed-exit/game" : "lost-supervisor/game");
+      const auto root = game.parent_path() / "work";
+      const std::string id = "run-supervisor-outcome";
+      fs::create_directories(game);
+      auto runner = command;
+      if (failed_exit)
+        runner.push_back("--fail-after-completion");
+      else
+        setenv("HSTREAM_TEST_PUBLICATION_STOP", "after-runner-exit", 1);
+      try {
+        require(pub::RunJob(game, root, id, runner) == 42, "failed runner exit preserved");
+      } catch (const std::exception&) {
+        require(!failed_exit, "only lost supervisor throws on first execution");
+      }
+      unsetenv("HSTREAM_TEST_PUBLICATION_STOP");
+      bool refused = false;
+      try {
+        pub::RunJob(game, root, id, command);
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      require(refused && count(game, ".mp4") == 0, "retry requires recorded runner success");
+      const auto manifest = root / "game/runs" / id / "run.yaml";
+      refused = false;
+      try {
+        pub::Finalize(manifest);
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      require(refused && fs::exists(manifest.parent_path() / "program.mkv"), "direct resume preserves failed run");
+    }
     for (const char* point : {"after-prepare", "after-link", "after-publish", "during-cleanup", "after-cleanup"})
       exercise(point, base / (std::string("work-") + point), point);
     if (fs::is_directory("/dev/shm")) {
@@ -126,6 +177,58 @@ int main(int argc, char** argv) {
     require(refused && fs::exists(work / "not-ours"), "unknown working entries block cleanup");
     fs::remove(work / "not-ours");
     require(pub::RunJob(game, work_root, id, command) == 0, "retry cleanup after obstruction is removed");
+
+    {
+      const auto metadata_game = base / "metadata/game";
+      const auto metadata_root = base / "metadata/work";
+      const auto metadata_work = metadata_root / "game/runs/run-metadata";
+      fs::create_directories(metadata_game);
+      setenv("HSTREAM_TEST_PUBLICATION_STOP", "after-publish", 1);
+      try {
+        pub::RunJob(metadata_game, metadata_root, "run-metadata", command);
+      } catch (const std::exception&) {
+      }
+      unsetenv("HSTREAM_TEST_PUBLICATION_STOP");
+      fs::rename(metadata_work / "run.yaml", base / "original-run.yaml");
+      std::ofstream(metadata_work / "run.yaml") << "FOREIGN";
+      refused = false;
+      try {
+        pub::Finalize(pub::ReceiptPath(metadata_game, "run-metadata"));
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      require(refused && fs::file_size(metadata_work / "run.yaml") == 7, "foreign protocol metadata survives");
+      fs::remove(metadata_work / "run.yaml");
+      fs::rename(base / "original-run.yaml", metadata_work / "run.yaml");
+      pub::Finalize(pub::ReceiptPath(metadata_game, "run-metadata"));
+      require(!fs::exists(metadata_work), "metadata cleanup resumes after original restored");
+    }
+    {
+      const auto retry_game = base / "retry-launch/game";
+      const auto retry_root = base / "retry-launch/work";
+      fs::create_directories(retry_game);
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        const auto stage = base / ("launch-" + std::to_string(attempt));
+        fs::create_directory(stage);
+        fs::permissions(stage, fs::perms::owner_all);
+        std::ofstream(stage / "staged-library") << "owned launch data";
+        setenv("HSTREAM_JOB_PLUGIN_STAGE", stage.c_str(), 1);
+        if (attempt < 2)
+          setenv("HSTREAM_FFMPEG", "/bin/false", 1);
+        else
+          unsetenv("HSTREAM_FFMPEG");
+        bool failure = false;
+        try {
+          pub::RunJob(retry_game, retry_root, "run-retry-launch", command);
+        } catch (const std::exception&) {
+          failure = true;
+        }
+        require(failure == (attempt < 2), "publication retry outcome");
+      }
+      unsetenv("HSTREAM_JOB_PLUGIN_STAGE");
+      for (int attempt = 0; attempt < 3; ++attempt)
+        require(!fs::exists(base / ("launch-" + std::to_string(attempt))), "all attempts' launch scratch removed");
+    }
 
     const auto competing_game = base / "competing/game";
     const auto competing_work = base / "competing/work";
