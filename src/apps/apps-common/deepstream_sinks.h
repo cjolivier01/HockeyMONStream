@@ -180,6 +180,8 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
 gboolean create_fakesink_bin(const NvDsSinkRenderConfig* config, NvDsSinkBinSubBin* bin);
 
 void destroy_sink_bin(void);
+// Call on the signaling context before pipeline EOS/state teardown.
+void prepare_webrtc_sinks_for_stop(GstElement* pipeline);
 gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array, NvDsSinkBin* bin, guint index);
 
 void set_rtsp_udp_port_num(guint rtsp_port_num, guint udp_port_num);

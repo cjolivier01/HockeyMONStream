@@ -2624,6 +2624,8 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
   // Release it before source retirement/EOS takes streaming and state locks.
   if (GstElement* cropper = appCtx->pipeline.common_elements.hmplaycropper_bin.playcropper)
     g_object_set(G_OBJECT(cropper), "cancel-pending-work", TRUE, nullptr);
+  // Retire network transports before EOS can wait on an absent browser.
+  prepare_webrtc_sinks_for_stop(pipeline);
   stop_uri_playlist_sources_gracefully(&appCtx->pipeline.multi_src_bin);
   if (appCtx->return_value != 0) {
     mark_playtracker_telemetry_failed(appCtx);
