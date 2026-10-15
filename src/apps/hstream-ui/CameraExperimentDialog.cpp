@@ -278,7 +278,7 @@ class CameraPathPlot : public QWidget {
           const auto flush = [&]() {
             if (low.size() > 1) {
               QPolygonF area = high;
-              for (int i = low.size() - 1; i >= 0; --i)
+              for (qsizetype i = low.size() - 1; i >= 0; --i)
                 area << low[i];
               p.setPen(Qt::NoPen);
               p.setBrush(fill);
@@ -287,6 +287,11 @@ class CameraPathPlot : public QWidget {
               p.setPen(edge);
               p.drawPolyline(low);
               p.drawPolyline(high);
+            } else if (low.size() == 1) {
+              // A run only one column wide has no area, but it still happened.
+              p.setBrush(Qt::NoBrush);
+              p.setPen(edge);
+              p.drawLine(low[0], high[0]);
             }
             low.clear();
             high.clear();
