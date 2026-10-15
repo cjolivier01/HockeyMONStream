@@ -330,6 +330,11 @@ void verify_destinations(const YAML::Node& run) {
 }
 void cleanup(YAML::Node& run, const Progress& progress, Fd& work_lock, std::vector<std::unique_ptr<Fd>>& owner_locks) {
   verify_destinations(run);
+  // The game lock excludes new admissions throughout cleanup. Drop these
+  // handles before recovering an interrupted deletion of a lock file: NFS
+  // otherwise keeps an open, unlinked lock as a tombstone in its quarantine.
+  work_lock.close();
+  owner_locks.clear();
   ResumeCleanup(run, [&] { checkpoint(run); });
   const auto remove = [&](const fs::path& path, const YAML::Node& expected, bool contents = false) {
     CleanupOwned(path, expected, contents, run, [&] { checkpoint(run); });
@@ -342,9 +347,6 @@ void cleanup(YAML::Node& run, const Progress& progress, Fd& work_lock, std::vect
     if (artifact["prepared"].IsDefined())
       remove(artifact["prepared"].as<std::string>(), artifact["prepared_identity"], true);
   }
-  // Close unlinked owner handles before removing their names: NFS otherwise
-  // retains .nfs tombstones and prevents removing the run directory.
-  owner_locks.clear();
   fault("during-cleanup");
   // Explicitly registered identities take precedence over the later workspace
   // inventory, which must not adopt a replacement of an earlier generation.
@@ -377,7 +379,6 @@ void cleanup(YAML::Node& run, const Progress& progress, Fd& work_lock, std::vect
   if (entry_exists(work)) {
     if (!matches(work, run["work_identity"]))
       fail("Working directory was replaced");
-    work_lock.close();
     for (auto item : run["metadata"])
       remove(item["path"].as<std::string>(), item["identity"], true);
     remove(work, run["work_identity"]);
