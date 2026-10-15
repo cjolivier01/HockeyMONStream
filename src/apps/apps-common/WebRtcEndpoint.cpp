@@ -119,6 +119,12 @@ void remove_peer(GstElement* endpoint, Endpoint* state) {
         old, G_SIGNAL_MATCH_FUNC, 0, 0, nullptr, reinterpret_cast<gpointer>(connection_changed), nullptr);
     gst_element_set_state(old, GST_STATE_NULL);
   }
+  // A detached fakesink can hold the input stream lock in PAUSED preroll.
+  // Release every downstream wait before taking that lock to relink the input.
+  for (auto& track : state->tracks) {
+    if (track.drain)
+      gst_element_set_state(track.drain, GST_STATE_NULL);
+  }
   for (auto& track : state->tracks) {
     GstPad* src = gst_element_get_static_pad(track.valve, "src");
     GstPad* input = gst_element_get_static_pad(track.valve, "sink");
@@ -137,7 +143,6 @@ void remove_peer(GstElement* endpoint, Endpoint* state) {
     gst_object_unref(input);
     gst_object_unref(src);
     if (track.drain) {
-      gst_element_set_state(track.drain, GST_STATE_NULL);
       gst_bin_remove(GST_BIN(endpoint), track.drain);
       track.drain = nullptr;
     }

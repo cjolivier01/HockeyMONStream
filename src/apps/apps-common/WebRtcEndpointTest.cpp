@@ -4,6 +4,7 @@
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -33,6 +34,60 @@ void expect_eos(GstElement* pipeline) {
   gst_message_unref(message);
   gst_object_unref(bus);
 }
+void paused_drain_replacement() {
+  GstElement* pipeline = gst_pipeline_new(nullptr);
+  GstElement* source = gst_element_factory_make("appsrc", nullptr);
+  GstElement* endpoint = hstream::webrtc_endpoint_create("paused-endpoint", nullptr);
+  GstCaps* caps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000");
+  GstPad* input = hstream::webrtc_endpoint_add_track(endpoint, caps);
+  expect(input);
+  g_object_set(source, "caps", caps, "format", GST_FORMAT_TIME, nullptr);
+  gst_caps_unref(caps);
+  gst_bin_add_many(GST_BIN(pipeline), source, endpoint, nullptr);
+  expect(gst_element_link_pads(source, "src", endpoint, "sink_0"));
+  expect(gst_element_set_state(pipeline, GST_STATE_PAUSED) != GST_STATE_CHANGE_FAILURE);
+  for (int replacement = 0; replacement < 2; ++replacement) {
+    GstPad* valve_input = gst_ghost_pad_get_target(GST_GHOST_PAD(input));
+    GstElement* valve = gst_pad_get_parent_element(valve_input);
+    GstPad* valve_output = gst_element_get_static_pad(valve, "src");
+    GstPad* drain_input = gst_pad_get_peer(valve_output);
+    GstElement* drain = gst_pad_get_parent_element(drain_input);
+    std::atomic<bool> prerolled{false};
+    g_object_set(drain, "signal-handoffs", TRUE, nullptr);
+    g_signal_connect(
+        drain,
+        "preroll-handoff",
+        G_CALLBACK(+[](GstElement*, GstBuffer*, GstPad*, gpointer data) {
+          static_cast<std::atomic<bool>*>(data)->store(true);
+        }),
+        &prerolled);
+    GstBuffer* buffer = gst_buffer_new_allocate(nullptr, 16, nullptr);
+    GST_BUFFER_PTS(buffer) = 0;
+    expect(gst_app_src_push_buffer(GST_APP_SRC(source), buffer) == GST_FLOW_OK);
+    for (int attempt = 0; attempt < 200 && !prerolled.load(); ++attempt)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    expect(prerolled.load());
+    // The streaming thread now holds the valve input lock waiting for PLAYING.
+    // Replacing the drain must first unblock preroll, without needing Resume
+    // on the same main context that is performing this replacement.
+    GstElement* peer = hstream::webrtc_endpoint_reset_peer(endpoint);
+    expect(peer);
+    hstream::webrtc_endpoint_detach_peer(endpoint);
+    gst_object_unref(peer);
+    gst_object_unref(drain);
+    gst_object_unref(drain_input);
+    gst_object_unref(valve_output);
+    gst_object_unref(valve);
+    gst_object_unref(valve_input);
+  }
+  expect(gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE);
+  gst_app_src_end_of_stream(GST_APP_SRC(source));
+  expect_eos(pipeline);
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  gst_object_unref(input);
+  gst_object_unref(pipeline);
+}
+
 void run(bool replace, bool detach) {
   GstElement* pipeline = gst_pipeline_new(nullptr);
   GstElement* source = gst_element_factory_make("appsrc", nullptr);
@@ -139,6 +194,7 @@ void run(bool replace, bool detach) {
 } // namespace
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
+  paused_drain_replacement();
   run(false, false);
   run(true, true);
   run(true, false);
