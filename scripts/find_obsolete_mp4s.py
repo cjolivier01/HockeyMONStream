@@ -146,6 +146,21 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
     return sorted(obsolete)
 
 
+def symlink_target(source: Path, link_dir: Path) -> Path:
+    """Prefer a relative target so the links survive a renamed or remounted tree."""
+    try:
+        relative = Path(os.path.relpath(source, link_dir))
+    except ValueError:  # No common root to walk up to.
+        return source
+    try:
+        # A relative target only works if link_dir's own parents are symlink-free.
+        if (link_dir / relative).resolve() != source.resolve():
+            return source
+    except (OSError, RuntimeError):
+        return source
+    return relative
+
+
 def symlink_plex_programs(root: Path, destination: Path) -> set[Path]:
     """Publish immediate games and return targets to preserve from cleanup."""
     published: set[Path] = set()
@@ -191,7 +206,8 @@ def symlink_plex_programs(root: Path, destination: Path) -> set[Path]:
         # Publish first so a failed link creation leaves the old library intact.
         with tempfile.TemporaryDirectory(prefix=".plex-link-", dir=destination) as staging:
             temporary = Path(staging) / link.name
-            temporary.symlink_to(source)
+            # A relative target is read from the link's final home, not the staging one.
+            temporary.symlink_to(symlink_target(source, destination))
             temporary.replace(link)
         published.add(source)
         for old in old_links:

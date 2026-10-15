@@ -47,6 +47,16 @@ class PlexLinksTest(unittest.TestCase):
         symlink_plex_programs(self.root, self.plex)
         self.assertEqual((self.plex / 'sharks.mp4').resolve(), newer)
 
+    def test_relative_target_replaces_an_absolute_link(self):
+        chosen = self.video('game/program_4k_output-1.mp4')
+        link = self.plex / 'game.mp4'
+        link.symlink_to(chosen)
+        symlink_plex_programs(self.root, self.plex)
+        target = link.readlink()
+        self.assertFalse(target.is_absolute())
+        self.assertEqual(target.parts[-3:], ('Videos', 'game', 'program_4k_output-1.mp4'))
+        self.assertEqual(link.resolve(), chosen.resolve())
+
     def test_remove_every_matching_link_including_dangling_and_relative(self):
         chosen = self.video('game/game-program-4k_output-with-audio-3.mp4')
         (self.plex / 'arbitrary-name.avi').symlink_to(chosen)
