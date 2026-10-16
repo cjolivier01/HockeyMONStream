@@ -9625,6 +9625,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
   auto* run_autooptimizer = require_child<QCheckBox>(window, "runAutooptimizerCheck");
   auto* compression = require_child<QDoubleSpinBox>(window, "generalPaniniCompressionSpin");
+  auto* camera_auto = require_child<QCheckBox>(window, "cameraAutoFovCheck");
+  auto* lens_auto = require_child<QCheckBox>(window, "inputLensAutoCheck");
   auto* top_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniTopSqueezeSpin");
   auto* bottom_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniBottomSqueezeSpin");
   auto* auto_fov = require_child<QCheckBox>(window, "projectionAutoFovCheck");
@@ -9632,8 +9634,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* auto_canvas = require_child<QCheckBox>(window, "projectionAutoCanvasCheck");
   auto* auto_crop = require_child<QCheckBox>(window, "projectionAutoCropCheck");
   if (!game_id || !create || !reset || !save || !control_point_matcher || !mapping_backend || !camera_configuration ||
-      !camera_horizontal_fov || !camera_vertical_fov || !projection || !run_autooptimizer || !compression ||
-      !top_squeeze || !bottom_squeeze || !auto_fov || !horizontal_fov || !auto_canvas || !auto_crop) {
+      !camera_horizontal_fov || !camera_vertical_fov || !camera_auto || !lens_auto || !projection ||
+      !run_autooptimizer || !compression || !top_squeeze || !bottom_squeeze || !auto_fov || !horizontal_fov ||
+      !auto_canvas || !auto_crop) {
     return false;
   }
   const QString original_game_id = game_id->text();
@@ -9641,7 +9644,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(create);
   const bool camera_defaults_available = expect(
       camera_configuration->count() == HStreamWindowTestAccess::cameraConfigurationCount(window) &&
-          camera_configuration->currentData().toString() == "auto" &&
+          camera_configuration->currentData().toString() == "auto" && camera_auto->isChecked() &&
+          lens_auto->isChecked() &&
           camera_horizontal_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
           camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov,
       "A new game must expose all camera presets and select Auto");
@@ -9662,14 +9666,17 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   QApplication::processEvents();
   const bool hero_defaults_applied = expect(
-      camera_horizontal_fov->value() == 108.0 && camera_vertical_fov->value() == 90.0,
-      "Selecting GoPro Hero 11 must load its horizontal and vertical source FOV defaults");
+      camera_horizontal_fov->value() == 108.0 && camera_vertical_fov->value() == 90.0 && camera_auto->isChecked() &&
+          lens_auto->isChecked() && camera_horizontal_fov->isReadOnly(),
+      "Selecting GoPro Hero 11 must keep both Auto policies on with its fallback source FOV defaults");
   camera_configuration->setCurrentIndex(camera_configuration->findData("insta-ace-pro-2"));
   QApplication::processEvents();
   const bool ace_defaults_applied = expect(
       camera_horizontal_fov->value() == 108.0 && camera_vertical_fov->value() == 90.0,
       "Selecting Insta Ace Pro 2 must load its horizontal and vertical source FOV defaults");
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-mission-1"));
+  camera_auto->setChecked(false);
+  lens_auto->setChecked(false);
   camera_horizontal_fov->setValue(126.5);
   camera_vertical_fov->setValue(94.5);
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
@@ -9781,14 +9788,17 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
                 "Reopening must retain Auto metadata refresh after releasing a snapshot"))
       return false;
   }
-  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
-  if (!expect(!input_b->isReadOnly() && !camera_horizontal_fov->isReadOnly() && input_projection->isEnabled(),
-              "Manual camera profiles must restore editable optics after Auto"))
+  camera_configuration->setCurrentIndex(camera_configuration->findData("manual"));
+  if (!expect(
+          !camera_auto->isChecked() && !lens_auto->isChecked() && !input_b->isReadOnly() &&
+              !camera_horizontal_fov->isReadOnly() && input_projection->isEnabled(),
+          "The Manual profile must turn off both Auto policies and restore editable optics"))
     return false;
-
-  auto* camera_auto = require_child<QCheckBox>(window, "cameraAutoFovCheck");
-  auto* lens_auto = require_child<QCheckBox>(window, "inputLensAutoCheck");
-  if (!camera_auto || !lens_auto)
+  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
+  if (!expect(
+          camera_auto->isChecked() && lens_auto->isChecked() && input_b->isReadOnly() &&
+              camera_horizontal_fov->isReadOnly() && !input_projection->isEnabled(),
+          "Selecting a named profile after Manual must re-enable both Auto policies"))
     return false;
   for (bool fov_automatic : {true, false}) {
     camera_auto->setChecked(fov_automatic);

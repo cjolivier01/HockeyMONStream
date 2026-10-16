@@ -384,6 +384,8 @@ Panini can therefore be used with full-frame fisheye input. The camera horizonta
 FOV belongs to the input lens, not the output panorama.
 
 New games enable **Auto camera FOV** and **Auto lens correction** by default.
+Selecting a camera preset enables both controls in either window; **Manual**
+turns both off. Either control can also be switched off independently.
 Stitching Experiments inherits both choices from the main UI's saved configuration,
 including explicit manual or mixed automatic/manual settings. Save main UI edits
 before opening experiments. The dialog shows the same Input lens controls below

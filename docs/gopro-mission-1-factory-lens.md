@@ -77,8 +77,10 @@ uses automatic fitting with a visible explanation; different camera settings
 produce a warning. See [automatic input lens](auto-input-lens.md) for support
 limits, manual overrides and experiment snapshots.
 
-To compare in Stitching Experiments, select the factory camera profile and add a
-new candidate. Existing candidates retain their original optics. Changing a main
+To compare in Stitching Experiments, select the factory camera profile and inspect
+the reported FOV and lens sources before adding a candidate. Both Auto controls
+start enabled, so the factory preset is the fallback when metadata cannot supply
+those values. Existing candidates retain their original optics. Changing a main
 game's input lens requires recalibration and a new scoreboard selection because
 stitched pixel coordinates change.
 

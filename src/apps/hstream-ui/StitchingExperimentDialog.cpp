@@ -3277,7 +3277,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.camera_configuration->setObjectName("stitchExperimentCameraConfiguration");
   s.camera_configuration->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
   s.camera_configuration->setMinimumContentsLength(18);
-  s.camera_configuration->setToolTip("Selecting a camera loads its FOV and input-lens defaults for new candidates.");
+  s.camera_configuration->setToolTip(
+      "Selecting a camera preset enables Auto FOV and lens correction, with the preset as the fallback. "
+      "Choose Manual or turn either Auto control off to edit that component for new candidates.");
   s.input_lens = new InputLensWidget();
   s.camera_auto_fov = new QCheckBox("Auto camera FOV");
   s.camera_auto_fov->setObjectName("stitchExperimentCameraAutoFov");
@@ -3397,9 +3399,11 @@ StitchingExperimentDialog::StitchingExperimentDialog(
           std::find_if(s.camera_configurations.begin(), s.camera_configurations.end(), [&](const auto& p) {
             return p.id == selected;
           });
-      if (profile != s.camera_configurations.end())
+      if (profile != s.camera_configurations.end()) {
         s.camera_settings = {profile->id, profile->horizontal_fov, profile->vertical_fov, profile->input_lens};
-      else if (s.initial_settings.camera && s.initial_settings.camera->configuration == selected)
+        s.camera_settings.auto_fov = selected != "manual";
+        s.camera_settings.auto_lens = selected != "manual";
+      } else if (s.initial_settings.camera && s.initial_settings.camera->configuration == selected)
         s.camera_settings = *s.initial_settings.camera;
       else
         return;
