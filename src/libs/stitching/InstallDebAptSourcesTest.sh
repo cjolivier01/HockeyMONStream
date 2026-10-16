@@ -191,4 +191,80 @@ grep -qF 'https://example.invalid/packages' "${test_root}${CUDA_LEGACY_COMPAT_SO
   fail "completed transition lost an unrelated legacy conffile entry"
 [[ -s "${test_root}${CUDA_COMPAT_SOURCE}" ]] || fail "canonical source was not recoverable after interruption"
 
+# A repository failure APT attributes to a third party is reported and
+# tolerated; one that names a required repository, or no repository at all,
+# still fails the installation.
+apt_update_output=""
+apt_update_status=0
+# shellcheck disable=SC2329 # Invoked indirectly by the sourced production function.
+apt-get() {
+  [[ "${1:-}" == update ]] || fail "unexpected apt-get invocation: $*"
+  printf '%s' "${apt_update_output}"
+  return "${apt_update_status}"
+}
+
+update_errors="${test_root}/update.err"
+shopt -s nullglob
+logs_before=(/tmp/hstream-apt-update.*.log)
+shopt -u nullglob
+run_update() {
+  apt_update_output="$(printf '%s\n' "$@")"
+  apt_update_status=100
+  set +e
+  run_apt_update "${CUDA_REPOSITORY_PREFIX}" >/dev/null 2>"${update_errors}"
+  update_status=$?
+  set -e
+}
+
+xilinx_fetch='E: Failed to fetch https://packages.xilinx.com/artifactory/debian-packages/dists/noble/InRelease  401   [IP: 54.188.199.73 443]'
+xilinx_signed="E: The repository 'https://packages.xilinx.com/artifactory/debian-packages noble InRelease' is no longer signed."
+index_summary='E: Some index files failed to download. They have been ignored, or old ones used instead.'
+radeon_warning='W: https://repo.radeon.com/rocm/apt/6.2/dists/noble/InRelease: Key is stored in legacy trusted.gpg keyring'
+
+apt_update_output='Reading package lists...'$'\n'
+apt_update_status=0
+run_apt_update "${CUDA_REPOSITORY_PREFIX}" >/dev/null 2>&1 || fail "a successful update was reported as a failure"
+
+run_update 'Hit:1 http://us.archive.ubuntu.com/ubuntu noble InRelease' \
+  "${xilinx_fetch}" "${xilinx_signed}" "${radeon_warning}" "${index_summary}"
+[[ "${update_status}" -eq 0 ]] || fail "an unrelated repository failure aborted the installation"
+grep -qF 'https://packages.xilinx.com/artifactory/debian-packages' "${update_errors}" || \
+  fail "the unreachable repository was not reported"
+if grep -qF '/dists/noble/InRelease' "${update_errors}"; then
+  fail "the report named an index file instead of the repository"
+fi
+[[ "$(grep -c 'packages.xilinx.com' "${update_errors}")" -eq 1 ]] || \
+  fail "one repository was reported more than once"
+
+# Flat CUDA repositories are matched through the scheme and trailing slash
+# spellings APT may print for them.
+run_update 'E: Failed to fetch http://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/InRelease  503' \
+  "${index_summary}"
+[[ "${update_status}" -ne 0 ]] || fail "a required CUDA repository failure was tolerated"
+run_update "E: The repository 'https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2604/x86_64/ InRelease' is not signed." \
+  "${xilinx_fetch}"
+[[ "${update_status}" -ne 0 ]] || fail "a required CUDA repository failure was masked by a third-party failure"
+# Reducing an index URL to its repository must not shorten a required URI
+# below its own prefix.
+run_update 'E: Failed to fetch https://developer.download.nvidia.com/compute/cuda/repos/dists/noble/InRelease  404  Not Found'
+[[ "${update_status}" -ne 0 ]] || fail "a required repository was tolerated after its base was truncated"
+
+# Failures APT cannot attribute to a repository remain fatal, and are reported
+# as themselves rather than as a missing required repository.
+run_update 'E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242'
+[[ "${update_status}" -ne 0 ]] || fail "a lock failure was treated as a stale repository"
+grep -qF 'Could not get lock' "${update_errors}" || fail "the unattributed failure was not reported"
+if grep -qF 'repository this installation requires' "${update_errors}"; then
+  fail "a lock failure was reported as a required repository failure"
+fi
+run_update "${index_summary}"
+[[ "${update_status}" -ne 0 ]] || fail "an unexplained failure was tolerated"
+
+shopt -s nullglob
+logs_after=(/tmp/hstream-apt-update.*.log)
+shopt -u nullglob
+[[ "${#logs_after[@]}" -eq "${#logs_before[@]}" ]] || \
+  fail "apt-get update logs were left behind: ${logs_after[*]}"
+unset -f apt-get
+
 echo "APT CUDA source reconciliation tests passed"
