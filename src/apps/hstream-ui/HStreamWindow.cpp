@@ -5680,8 +5680,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   set_combo_to_data(camera_configuration_combo_, QString::fromStdString(default_camera_selection_.configuration));
   set_control_help(
       camera_configuration_combo_,
-      "Source camera/lens preset used by stitching calibration. Selecting a preset loads its default source FOVs and input lens; "
-      "editing these values creates a game-only override.");
+      "Source camera/lens preset used by stitching calibration. Selecting a camera preset enables Auto FOV and lens correction, "
+      "with this preset as the fallback. Choose Manual or turn either Auto control off to edit that component.");
 
   camera_auto_fov_check_ = new QCheckBox("Auto camera FOV");
   camera_auto_fov_check_->setObjectName("cameraAutoFovCheck");
@@ -7771,6 +7771,10 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
       ? hm::stitching::StitchCameraSelection{configuration->id, configuration->horizontal_fov,
                                            configuration->vertical_fov, configuration->input_lens}
       : stitchCameraSelection();
+  if (reset_defaults) {
+    camera.auto_fov = selected != "manual";
+    camera.auto_lens = selected != "manual";
+  }
   YAML::Node effective = YAML::Clone(baseline_config_);
   const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
   auto saved = hm::stitching::load_game_config_file(game / "config.yaml");
