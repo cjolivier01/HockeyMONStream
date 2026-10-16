@@ -9,6 +9,9 @@ reduced opacity. Standard dialog icons, native navigation/spin arrows, and table
 
 ## Candidate matrix
 
+The batch actions sit below the scrollable matrix, above the candidate queue.
+Add, remove, discard, start and cancel stay visible while scrolling the options.
+
 Enter comma-separated values for:
 
 - control-point limits per synchronized frame pair (10–5000);
@@ -380,8 +383,11 @@ Stitched Controls → Projection → Output projection shapes the panorama. Gene
 Panini can therefore be used with full-frame fisheye input. The camera horizontal
 FOV belongs to the input lens, not the output panorama.
 
-Stitching Experiments shows the same Input lens controls below its camera
-selection and horizontal FOV field. Each added candidate freezes
+New games enable **Auto camera FOV** and **Auto lens correction** by default.
+Stitching Experiments inherits both choices from the main UI's saved configuration,
+including explicit manual or mixed automatic/manual settings. Save main UI edits
+before opening experiments. The dialog shows the same Input lens controls below
+its camera selection and horizontal FOV field. Each added candidate freezes
 these settings, shows them in the Input lens column tooltip, and restores them
 when history is reopened. Add another candidate after changing the values to
 compare corrections. Promotion carries its input optics into the game. A lens

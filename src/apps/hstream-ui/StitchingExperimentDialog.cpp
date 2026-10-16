@@ -3501,11 +3501,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_actions->addWidget(s.add_to_batch);
   matrix_actions->addWidget(s.remove_from_batch);
   matrix_actions->addWidget(s.clear_batch);
-  matrix_layout->addRow(matrix_actions);
   auto* batch_actions = new QHBoxLayout();
   batch_actions->addWidget(s.start_batch);
   batch_actions->addWidget(s.cancel);
-  matrix_layout->addRow(batch_actions);
 
   auto* splitter = s.splitter = new QSplitter(Qt::Horizontal);
   splitter->setObjectName("stitchExperimentSplitter");
@@ -3522,6 +3520,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_scroll->setMaximumHeight(440);
   matrix_scroll->setWidget(matrix_group);
   candidate_layout->addWidget(matrix_scroll);
+  candidate_layout->addLayout(matrix_actions);
+  candidate_layout->addLayout(batch_actions);
   s.table = new QTableWidget(0, 10);
   s.table->setObjectName("stitchExperimentCandidates");
   s.table->setHorizontalHeaderLabels(
