@@ -66,6 +66,10 @@ controls local Play.
 The generated script invokes `hstream-finalize`, which supervises `hstream-cli --encode-job`,
 requires its completed run manifest, publishes faststart MP4s and telemetry in the game
 directory, and removes owned working files only after all required outputs are saved.
+Both commands come from the execution host's `PATH`, including for scripts exported
+from a development UI. The UI does not export its local CLI, config, working directory
+or baseline override. The selected CLI finds its own bundled config and runtime;
+the script retains game settings and the selected working output location.
 Each export has a fixed run ID: repeating its script resumes finalization/cleanup without
 encoding again; export a new script for another run. Custom working output paths remain
 supported. Stitched jobs retain their independent output path and bitrate. Direct

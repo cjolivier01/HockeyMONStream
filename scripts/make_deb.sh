@@ -657,8 +657,8 @@ append_path() {
   esac
 }
 
-# Per-user registry so the read-only install dir stays clean.
-GST_REGISTRY_DIR="${HOME}/.cache/gstreamer-1.0"
+# Managed jobs own their cache; ordinary launches use the per-user registry.
+GST_REGISTRY_DIR="${HSTREAM_RUNTIME_CACHE_DIR:-${HOME}/.cache}/gstreamer-1.0"
 mkdir -p "${GST_REGISTRY_DIR}"
 export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.$(uname -m).bin"
 
@@ -677,6 +677,14 @@ prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
 prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
+
+# Managed jobs already select their sources, encoders and config overrides.
+# The native CLI discovers its bundled default config and runtime itself.
+for arg in "$@"; do
+  if [ "${arg}" = "--encode-job" ]; then
+    exec "${INSTALL_DIR}/bin/hstream-cli" "$@"
+  fi
+done
 one_pass_only=1
 have_sink_arg=0
 show_arg=0

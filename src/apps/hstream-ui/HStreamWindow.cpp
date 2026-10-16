@@ -16709,11 +16709,11 @@ void HStreamWindow::saveJobScript() {
       this,
       "Save job options",
       QString(
-          "This script runs the selected hstream-cli directly with its matching runtime environment. "
-          "Rendering is disabled. Selected file encodings are written directly as MP4; "
+          "This script runs hstream-cli from PATH on the execution host. "
+          "Rendering is disabled. The job encodes the selected file outputs; "
           "if none are selected, the job encodes the 4K Program copy.\n"
           "Stitched-only jobs skip detection, play tracking and DriveGPT capture.\n"
-          "MP4s and DriveGPT databases remain in working storage and are not copied into the game directory.\n"
+          "Completed MP4s and DriveGPT databases are saved in the game directory, then working files are removed.\n"
           "Working output root: %1 (custom per-output paths still apply).\n\n"
           "Optional SBATCH directives, one per line (for example --partition=gpu).\n"
           "The script already requests one node, one task and one GPU. Blank is fine for direct execution.")
@@ -16727,13 +16727,7 @@ void HStreamWindow::saveJobScript() {
       QFileInfo(gameDirectory(game_id_edit_->text().trimmed())).absoluteFilePath(),
       "--output",
       path,
-      "--force",
-      "--runner",
-      pipelineRunnerPath(),
-      "--config",
-      QFileInfo(pipelineConfigPath("ds_hockey_app_config.yaml")).absoluteFilePath(),
-      "--working-directory",
-      pipelineWorkingDirectory()};
+      "--force"};
   for (const QString& line : directives.split('\n')) {
     const QString directive = line.trimmed();
     if (directive.isEmpty())
@@ -16753,8 +16747,6 @@ void HStreamWindow::saveJobScript() {
       : QDir(QCoreApplication::applicationDirPath()).filePath("hstream-job");
   auto* process = new QProcess(this);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-  if (!baseline_config_root_.isEmpty())
-    env.insert("HM_CONFIG_ROOT", baseline_config_root_);
   env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
   process->setProcessEnvironment(env);
   connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {

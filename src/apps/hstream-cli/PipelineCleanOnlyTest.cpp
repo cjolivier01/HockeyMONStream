@@ -20,13 +20,17 @@ int main(int argc, char** argv) {
     return 1;
   }
   const fs::path root(pattern);
+  const fs::path executable = fs::absolute(argv[1]);
   auto run_clean = [&](const char* game_id,
                        const std::vector<const char*>& clean_flags,
                        const char* runtime_invalidation_id,
                        const fs::path* leading_config = nullptr,
-                       bool append_calibration_config = true) {
+                       bool append_calibration_config = true,
+                       bool unrelated_working_directory = false) {
     const pid_t child = ::fork();
     if (child == 0) {
+      if (unrelated_working_directory && ::chdir(root.c_str()) != 0)
+        _exit(126);
       ::setenv("HOME", (root / "home").c_str(), 1);
       ::setenv("HM_GAME_DIR", (root / "games").c_str(), 1);
       ::setenv("HM_CONFIG_ROOT", (root / "config-root").c_str(), 1);
@@ -37,7 +41,7 @@ int main(int argc, char** argv) {
       else
         ::unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
       std::vector<char*> child_argv = {
-          argv[1],
+          const_cast<char*>(executable.c_str()),
           const_cast<char*>("-g"),
           const_cast<char*>(game_id),
       };
@@ -52,7 +56,7 @@ int main(int argc, char** argv) {
       for (const char* flag : clean_flags)
         child_argv.push_back(const_cast<char*>(flag));
       child_argv.push_back(nullptr);
-      ::execv(argv[1], child_argv.data());
+      ::execv(executable.c_str(), child_argv.data());
       _exit(127);
     }
     int status = 0;
@@ -67,6 +71,16 @@ int main(int argc, char** argv) {
   std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
   const bool full_clean_ok =
       run_clean("clean-only-test", {"--clean"}, nullptr) && !fs::exists(full_game / "seam_file.png");
+
+  std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
+  const bool default_config_from_executable = run_clean(
+                                                  "clean-only-test",
+                                                  {"--clean"},
+                                                  nullptr,
+                                                  nullptr,
+                                                  /*append_calibration_config=*/false,
+                                                  /*unrelated_working_directory=*/true) &&
+      !fs::exists(full_game / "seam_file.png");
 
   const fs::path partial_game = root / "games" / "partial-clean-only-test";
   fs::create_directories(partial_game);
@@ -163,10 +177,10 @@ int main(int argc, char** argv) {
 
   const bool no_asset_download = !fs::exists(root / "home" / ".cache" / "hstream" / "models");
   fs::remove_all(root);
-  if (!full_clean_ok || !partial_clean_ok || !synchronization_preserved || !combined_clean_ok ||
-      !mismatched_runtime_token_rejected || !incomplete_context_skipped || !incomplete_subconfig_skipped ||
-      !configure_only_clean_ok || !one_pass_clean_ok || !malformed_camera_ignored || !missing_tracker_ignored ||
-      !no_asset_download) {
+  if (!full_clean_ok || !default_config_from_executable || !partial_clean_ok || !synchronization_preserved ||
+      !combined_clean_ok || !mismatched_runtime_token_rejected || !incomplete_context_skipped ||
+      !incomplete_subconfig_skipped || !configure_only_clean_ok || !one_pass_clean_ok || !malformed_camera_ignored ||
+      !missing_tracker_ignored || !no_asset_download) {
     std::cerr << "FAIL: clean-only modes must respect dependency boundaries without downloading pretrained models\n";
     return 1;
   }
