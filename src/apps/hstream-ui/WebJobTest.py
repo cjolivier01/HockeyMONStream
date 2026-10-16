@@ -147,6 +147,14 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hstream-web-contract-") as temporary:
         root = Path(temporary)
         calibration_contract(args.binary, root)
+        missing_matches = root / "missing-matches"
+        missing_matches.mkdir()
+        calibration_fixture(missing_matches / "game")
+        path = request(missing_matches, "matches-read", {})
+        run(args.binary, path, 1)
+        receipt = json.loads((missing_matches / "operation-result.json").read_text())
+        assert "no editable control-point snapshot" in receipt["error"]
+        assert not receipt["artifacts"]
         invalid = root / "invalid"
         invalid.mkdir()
         path = request(invalid, "highlight-preview", {"plan": {"schema": 999}})

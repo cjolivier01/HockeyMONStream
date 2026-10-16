@@ -157,7 +157,8 @@ Before starting a fresh calibration-only CLI, the worker writes a pending
 `rink_mask_status: pending`, `stale_from: features`, and
 `artifacts_invalidated: false`. Fresh runs remove inherited `reframe` and
 `backend_generation`. The worker sets `HSTREAM_CALIBRATION_PENDING=1`,
-`HSTREAM_CALIBRATION_START_STAGE=features`, and
+`HSTREAM_CALIBRATION_START_STAGE=features`,
+`HSTREAM_STITCH_CALIBRATION_INSPECTION=1` (retains editable control-point snapshots), and
 `HSTREAM_CALIBRATION_INVALIDATION_ID` to that owner, passing the matching
 `--clean-expected-invalidation-id`. Use `--stitching-calibration-only`, a FAKE
 sink, and a bounded duration such as `-t=1`; this does not launch Program

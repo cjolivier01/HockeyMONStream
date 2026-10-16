@@ -190,8 +190,11 @@ hm::stitching::CalibrationMatchSet matches(const Request& request, bool edit) {
   auto payload = request.payload;
   if (!edit && payload.value("fingerprint").toString().isEmpty()) {
     const auto config = YAML::LoadFile((request.game / "config.yaml").string());
-    payload.insert(
-        "fingerprint", text(config["hstream_ui"]["stitching_calibration"]["match_snapshot"].as<std::string>("")));
+    const auto snapshot = config["hstream_ui"]["stitching_calibration"]["match_snapshot"].as<std::string>("");
+    require(
+        !snapshot.empty(),
+        "This calibration has no editable control-point snapshot. Run stitching preparation again with match inspection enabled.");
+    payload.insert("fingerprint", text(snapshot));
   }
   auto saved = take(hm::stitching::LoadCalibrationMatches(request.game, fingerprint(payload).toStdString()));
   for (const auto& frame : saved.frames)
