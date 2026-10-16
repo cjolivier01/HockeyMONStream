@@ -199,21 +199,41 @@ apt_update_status=0
 # shellcheck disable=SC2329 # Invoked indirectly by the sourced production function.
 apt-get() {
   [[ "${1:-}" == update ]] || fail "unexpected apt-get invocation: $*"
-  printf '%s' "${apt_update_output}"
+  # APT writes its diagnostics to stderr and its progress to stdout.  Split
+  # them the same way, so that dropping the production redirection that merges
+  # them into the classified log fails these cases instead of passing.
+  local line
+  while IFS= read -r line; do
+    case "${line}" in
+      'E: '* | 'W: '*) printf '%s\n' "${line}" >&2 ;;
+      *) printf '%s\n' "${line}" ;;
+    esac
+  done <<<"${apt_update_output}"
   return "${apt_update_status}"
 }
 
+# Give the installer a private temporary directory so the leak check below is
+# exact: counting /tmp would race with any other run on the same machine.
+export TMPDIR="${test_root}/tmp"
+mkdir -p "${TMPDIR}"
 update_errors="${test_root}/update.err"
-shopt -s nullglob
-logs_before=(/tmp/hstream-apt-update.*.log)
-shopt -u nullglob
-run_update() {
+run_update_as() {
+  # An empty first argument is the first call site, which requires nothing.
+  local required="$1"
+  shift
   apt_update_output="$(printf '%s\n' "$@")"
   apt_update_status=100
   set +e
-  run_apt_update "${CUDA_REPOSITORY_PREFIX}" >/dev/null 2>"${update_errors}"
+  if [[ -n "${required}" ]]; then
+    run_apt_update "${required}" >/dev/null 2>"${update_errors}"
+  else
+    run_apt_update >/dev/null 2>"${update_errors}"
+  fi
   update_status=$?
   set -e
+}
+run_update() {
+  run_update_as "${CUDA_REPOSITORY_PREFIX}" "$@"
 }
 
 xilinx_fetch='E: Failed to fetch https://packages.xilinx.com/artifactory/debian-packages/dists/noble/InRelease  401   [IP: 54.188.199.73 443]'
@@ -249,22 +269,65 @@ run_update "E: The repository 'https://developer.download.nvidia.com/compute/cud
 run_update 'E: Failed to fetch https://developer.download.nvidia.com/compute/cuda/repos/dists/noble/InRelease  404  Not Found'
 [[ "${update_status}" -ne 0 ]] || fail "a required repository was tolerated after its base was truncated"
 
+# The first call site declares no required repository, because the keyring
+# install below it is what repairs an NVIDIA source whose key is missing.
+run_update_as "" "${xilinx_fetch}" "${index_summary}"
+[[ "${update_status}" -eq 0 ]] || fail "an unrelated failure aborted an update that requires nothing"
+
+# APT attributes a local fault to whichever download hit it.  The URI does not
+# make a full disk the repository's problem, and the installation would hit it
+# too.
+run_update 'E: Failed to fetch https://packages.xilinx.com/artifactory/debian-packages/dists/noble/main/binary-amd64/Packages.xz  Error writing to file - write (28: No space left on device)' \
+  "${index_summary}"
+[[ "${update_status}" -ne 0 ]] || fail "a full disk behind a repository URI was tolerated"
+
+# APT reports some fetch failures as warnings.  One against a required
+# repository is still fatal; an ordinary warning about the same repository is
+# not a failure at all.
+run_update "${xilinx_fetch}" \
+  "W: Failed to fetch https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/InRelease  Temporary failure resolving 'developer.download.nvidia.com'"
+[[ "${update_status}" -ne 0 ]] || fail "a required repository failure reported as a warning was ignored"
+run_update "${xilinx_fetch}" \
+  'W: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/InRelease: Key is stored in legacy trusted.gpg keyring' \
+  "${index_summary}"
+[[ "${update_status}" -eq 0 ]] || fail "an ordinary warning about a required repository failed the installation"
+
+# A capture that did not complete cannot be classified: the log it leaves
+# behind may be missing the very line that should have failed the install.
+# shellcheck disable=SC2329 # Invoked indirectly by the sourced production function.
+tee() {
+  command tee "$@"
+  return 1
+}
+run_update "${xilinx_fetch}" "${index_summary}"
+unset -f tee
+[[ "${update_status}" -ne 0 ]] || fail "a truncated capture was classified as tolerable"
+
+# A local mirror is a repository like any other, and APT names it with a
+# transport that carries no authority.
+run_update 'E: Failed to fetch file:/srv/local-mirror/dists/noble/InRelease  File not found'
+[[ "${update_status}" -eq 0 ]] || fail "an unrelated file: repository failure aborted the installation"
+grep -qF 'file:/srv/local-mirror' "${update_errors}" || fail "the file: repository was not reported"
+
 # Failures APT cannot attribute to a repository remain fatal, and are reported
 # as themselves rather than as a missing required repository.
 run_update 'E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242'
 [[ "${update_status}" -ne 0 ]] || fail "a lock failure was treated as a stale repository"
 grep -qF 'Could not get lock' "${update_errors}" || fail "the unattributed failure was not reported"
+grep -qF 'status 100' "${update_errors}" || fail "the reported status was not APT's own"
 if grep -qF 'repository this installation requires' "${update_errors}"; then
   fail "a lock failure was reported as a required repository failure"
 fi
+run_update "${xilinx_fetch}" 'E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242'
+[[ "${update_status}" -ne 0 ]] || fail "an unattributed failure was masked by a tolerated one"
 run_update "${index_summary}"
 [[ "${update_status}" -ne 0 ]] || fail "an unexplained failure was tolerated"
 
 shopt -s nullglob
-logs_after=(/tmp/hstream-apt-update.*.log)
+leftover_logs=("${TMPDIR}"/*)
 shopt -u nullglob
-[[ "${#logs_after[@]}" -eq "${#logs_before[@]}" ]] || \
-  fail "apt-get update logs were left behind: ${logs_after[*]}"
+[[ "${#leftover_logs[@]}" -eq 0 ]] || \
+  fail "apt-get update logs were left behind: ${leftover_logs[*]}"
 unset -f apt-get
 
 echo "APT CUDA source reconciliation tests passed"

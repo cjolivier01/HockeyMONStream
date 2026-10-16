@@ -336,28 +336,59 @@ publish_cuda_compat_source() {
 # is neither caused by this installation nor repairable from it; aborting would
 # make every deployment to such a host fail for an unrelated reason.  Tolerate
 # and report failures APT attributes to a repository.  Failures that name no
-# repository -- lock contention, a full disk, an unparsable sources file --
-# stay fatal, as does a failure of any repository named in "$@", which the
-# caller depends on for the packages it is about to install.
+# repository -- lock contention, an unparsable sources file -- stay fatal, as
+# does one that names a repository but describes a local fault, and as does a
+# failure of any repository named in "$@", which the caller depends on for the
+# packages it is about to install.
 run_apt_update() {
   local -a required=("$@")
-  local log status line uri repository canonical prefix
+  local log status tee_status diagnostics grep_status=0
+  local line warning uri repository canonical prefix
   local -a stale=() required_failures=() unattributed=()
   local -A seen=()
 
-  log="$(mktemp /tmp/hstream-apt-update.XXXXXX.log)"
+  log="$(mktemp "${TMPDIR:-/tmp}/hstream-apt-update.XXXXXX.log")"
   # The diagnostics below are matched by spelling, so pin the message locale.
   local -x LC_ALL=C
   if apt-get update 2>&1 | tee "${log}"; then
     rm -f "${log}"
     return 0
   fi
-  status="${PIPESTATUS[0]}"
+  # One statement: any command in between, an assignment included, replaces
+  # PIPESTATUS with its own single-element status.
+  local -a pipe_status=("${PIPESTATUS[@]}")
+  status="${pipe_status[0]}"
+  tee_status="${pipe_status[1]:-0}"
+
+  # The verdict is only as good as the capture.  A log cut short -- /var
+  # filling as APT reports the first of several failures -- would hide a fatal
+  # line behind a tolerable one, so a capture that did not complete is fatal.
+  diagnostics="$(grep -E '^[EW]: ' "${log}")" || grep_status=$?
+  rm -f "${log}"
+  if [[ "${tee_status}" -ne 0 || "${grep_status}" -gt 1 ]]; then
+    echo "ERROR: apt-get update failed with status ${status}; its output could not be recorded." >&2
+    return 1
+  fi
 
   while IFS= read -r line; do
+    if [[ -z "${line}" ]]; then
+      continue
+    fi
     # The closing summary only restates the per-repository errors above it.
     if [[ "${line}" == 'E: Some index files failed to download.'* ]]; then
       continue
+    fi
+    # APT reports some fetch failures as warnings, which do not fail the
+    # update.  An unrelated repository is tolerated either way, so a warning
+    # matters only when it names one this installation requires -- and an
+    # ordinary warning, a legacy keyring or a changed label, is not a failure
+    # at all and must not be mistaken for one.
+    warning=0
+    if [[ "${line}" == 'W: '* ]]; then
+      case "${line}" in
+        'W: Failed to fetch '* | 'W: The repository '*) warning=1 ;;
+        *) continue ;;
+      esac
     fi
     # Both spellings carry the repository: "Failed to fetch" names an index
     # file, and "The repository '<uri> <suite> ...'" names the base.  Require a
@@ -365,7 +396,22 @@ run_apt_update() {
     # an attributed failure and silently downgraded to a warning.
     uri="$(grep -oE "(file:/|[a-z][a-z0-9+.-]*://)[^[:space:]'\"]+" <<<"${line}" | head -n 1 || true)"
     if [[ -z "${uri}" ]]; then
-      unattributed+=("${line}")
+      if [[ "${warning}" -eq 0 ]]; then
+        unattributed+=("${line}")
+      fi
+      continue
+    fi
+    # A fetch failure can name a URI and still describe a local fault: a full
+    # disk, a read-only /var.  APT attributes those to whatever it happened to
+    # be downloading, but no repository is to blame and the installation below
+    # would hit the same fault, so match the cause instead of the URI.
+    if [[ "${line}" == *'No space left on device'* ||
+          "${line}" == *'Read-only file system'* ||
+          "${line}" == *'Input/output error'* ||
+          "${line}" == *'Error writing to file'* ]]; then
+      if [[ "${warning}" -eq 0 ]]; then
+        unattributed+=("${line}")
+      fi
       continue
     fi
     repository="${uri%%/dists/*}"
@@ -387,13 +433,16 @@ run_apt_update() {
         fi
       done
     fi
+    # Past this point the line is an unrelated repository's: a warning about
+    # one is just a warning, and only a real failure makes its lists stale.
+    if [[ "${warning}" -eq 1 ]]; then
+      continue
+    fi
     if [[ -z "${seen[${repository}]:-}" ]]; then
       seen["${repository}"]=1
       stale+=("${repository}")
     fi
-  done < <(grep '^E: ' "${log}" || true)
-
-  rm -f "${log}"
+  done <<<"${diagnostics}"
 
   if [[ "${#required_failures[@]}" -gt 0 ]]; then
     echo "ERROR: apt-get update failed for a repository this installation requires:" >&2
