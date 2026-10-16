@@ -342,16 +342,19 @@ publish_cuda_compat_source() {
 # packages it is about to install.
 run_apt_update() {
   local -a required=("$@")
-  local log status tee_status diagnostics grep_status=0
+  local status tee_status diagnostics grep_status=0
   local line warning uri repository canonical prefix
   local -a stale=() required_failures=() unattributed=()
   local -A seen=()
 
-  log="$(mktemp "${TMPDIR:-/tmp}/hstream-apt-update.XXXXXX.log")"
+  # The capture lives in the variable the EXIT trap clears, so that a signal
+  # during the update does not leave it behind.
+  apt_update_log="$(mktemp "${TMPDIR:-/tmp}/hstream-apt-update.XXXXXX.log")"
   # The diagnostics below are matched by spelling, so pin the message locale.
   local -x LC_ALL=C
-  if apt-get update 2>&1 | tee "${log}"; then
-    rm -f "${log}"
+  if apt-get update 2>&1 | tee "${apt_update_log}"; then
+    rm -f "${apt_update_log}"
+    apt_update_log=""
     return 0
   fi
   # One statement: any command in between, an assignment included, replaces
@@ -363,8 +366,9 @@ run_apt_update() {
   # The verdict is only as good as the capture.  A log cut short -- /var
   # filling as APT reports the first of several failures -- would hide a fatal
   # line behind a tolerable one, so a capture that did not complete is fatal.
-  diagnostics="$(grep -E '^[EW]: ' "${log}")" || grep_status=$?
-  rm -f "${log}"
+  diagnostics="$(grep -E '^[EW]: ' "${apt_update_log}")" || grep_status=$?
+  rm -f "${apt_update_log}"
+  apt_update_log=""
   if [[ "${tee_status}" -ne 0 || "${grep_status}" -gt 1 ]]; then
     echo "ERROR: apt-get update failed with status ${status}; its output could not be recorded." >&2
     return 1
@@ -606,6 +610,7 @@ for deb in "${HSTREAM_DEB}" "${DEEPSTREAM_DEB}"; do
 done
 
 export DEBIAN_FRONTEND=noninteractive
+apt_update_log=""
 keyring_deb=""
 compat_keyring_deb=""
 native_dir=""
@@ -620,6 +625,7 @@ cleanup() {
   if [[ "${status}" -ne 0 && "${compat_source_transition_committed}" -eq 0 ]]; then
     restore_compat_source_transition
   fi
+  if [[ -n "${apt_update_log}" ]]; then rm -f "${apt_update_log}"; fi
   if [[ -n "${keyring_deb}" ]]; then rm -f "${keyring_deb}"; fi
   if [[ -n "${compat_keyring_deb}" ]]; then rm -f "${compat_keyring_deb}"; fi
   if [[ -n "${native_dir}" ]]; then rm -rf "${native_dir}"; fi
@@ -644,8 +650,11 @@ if [[ "${UBUNTU_RELEASE}" == "26.04" ]]; then
 fi
 
 # The CUDA repositories are not required yet: an existing NVIDIA source whose
-# key is missing is exactly what installing cuda-keyring below repairs, and an
-# unusable distribution archive fails the install on the next line.
+# key is missing is exactly what installing cuda-keyring below repairs.  A
+# distribution archive that could not be refreshed is reported and the install
+# continues on whatever lists APT already had, which is the point of tolerating
+# it: the next line fails if those lists cannot supply the bootstrap packages,
+# and succeeds if they can.
 run_apt_update
 apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 

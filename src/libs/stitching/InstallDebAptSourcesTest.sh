@@ -270,9 +270,13 @@ run_update 'E: Failed to fetch https://developer.download.nvidia.com/compute/cud
 [[ "${update_status}" -ne 0 ]] || fail "a required repository was tolerated after its base was truncated"
 
 # The first call site declares no required repository, because the keyring
-# install below it is what repairs an NVIDIA source whose key is missing.
-run_update_as "" "${xilinx_fetch}" "${index_summary}"
-[[ "${update_status}" -eq 0 ]] || fail "an unrelated failure aborted an update that requires nothing"
+# install below it is what repairs an NVIDIA source whose key is missing.  Use
+# a CUDA failure, so that hardcoding the required prefix fails this case
+# instead of passing it.
+run_update_as "" \
+  "E: The repository 'https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ InRelease' is not signed." \
+  "${index_summary}"
+[[ "${update_status}" -eq 0 ]] || fail "an update that requires nothing aborted on the repository it repairs next"
 
 # APT attributes a local fault to whichever download hit it.  The URI does not
 # make a full disk the repository's problem, and the installation would hit it
