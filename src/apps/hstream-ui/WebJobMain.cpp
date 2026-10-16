@@ -3,6 +3,7 @@
 #include "hstream/src/libs/recording/Database.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "src/apps/hstream-ui/CalibrationImage.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/HighlightPlan.h"
 #include "src/apps/hstream-ui/HighlightReelPipeline.h"
@@ -671,7 +672,8 @@ QJsonObject replay(const Request& request) {
 }
 
 void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts) {
-  if (request.operation.rfind("matches-", 0) != 0 && request.operation.rfind("experiment-", 0) != 0)
+  if (request.operation != "calibration-complete" && request.operation.rfind("matches-", 0) != 0 &&
+      request.operation.rfind("experiment-", 0) != 0)
     return;
   std::size_t count = 0;
   for (const auto& directory : {request.game, request.root / "experiments"}) {
@@ -701,6 +703,29 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
 }
 
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "calibration-complete") {
+    const auto owner = RequiredString(request.payload, "invalidation_id").toStdString();
+    require(!owner.empty(), "Calibration completion requires an invalidation owner");
+    require(
+        !request.payload.contains("require_ice_mask") || request.payload.value("require_ice_mask").isBool(),
+        "Expected boolean require_ice_mask");
+    StitchingExperimentWorkspace saved;
+    saved.root = request.root;
+    saved.game_directory = request.game;
+    saved.invalidation_id = owner;
+    check(CompleteStitchingExperimentWorkspace(saved, request.payload.value("require_ice_mask").toBool(false)));
+    // A single bounded proxy of an existing calibration artifact, never a
+    // readback from the steady-state GPU video pipeline.
+    const auto source = Contained(request.root, text(Relative(request, request.game / "panorama.tif")));
+    const auto preview = readCalibrationTiff(text(source.string()), 1920);
+    require(!preview.isNull(), "Calibration did not produce a readable stitched panorama");
+    const auto destination = Contained(
+        request.root,
+        text((request.game / "setup-preview.png").lexically_relative(request.root).generic_string()),
+        false);
+    require(preview.save(text(destination.string()), "PNG"), "Could not publish stitched setup preview");
+    return {{"state", "complete"}, {"invalidation_id", text(owner)}, {"preview", text(Relative(request, destination))}};
+  }
   if (request.operation.rfind("highlight-", 0) == 0)
     return highlights(request, artifacts);
   if (request.operation.rfind("experiment-", 0) == 0)

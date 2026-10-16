@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import sqlite3
+import struct
 import subprocess
 import tempfile
 import time
@@ -86,6 +87,57 @@ def assert_artifacts(root, receipt):
         assert int(artifact["mtime_ns"]) == info.st_mtime_ns
 
 
+def calibration_fixture(game, owner="owner"):
+    """Small uncompressed RGB TIFFs: exercise native completion without GPU work."""
+    game.mkdir(exist_ok=True)
+    tags = [(256, 4, 1, 8), (257, 4, 1, 8), (258, 3, 3, 134),
+            (259, 3, 1, 1), (262, 3, 1, 2), (273, 4, 1, 140),
+            (277, 3, 1, 3), (278, 4, 1, 8), (279, 4, 1, 192),
+            (284, 3, 1, 1)]
+    tiff = b"II" + struct.pack("<HIH", 42, 8, len(tags))
+    tiff += b"".join(struct.pack("<HHII", *tag) for tag in tags)
+    tiff += struct.pack("<IHHH", 0, 8, 8, 8) + bytes([32, 96, 160]) * 64
+    for name in ("mapping_0000.tif", "mapping_0000_x.tif", "mapping_0000_y.tif",
+                 "mapping_0001.tif", "mapping_0001_x.tif", "mapping_0001_y.tif", "panorama.tif"):
+        (game / name).write_bytes(tiff)
+    for name in ("hm_project.pto", "autooptimiser_out.pto", "seam_file.png"):
+        (game / name).write_text("fixture")
+    (game / "config.yaml").write_text(
+        "hstream_ui:\n  stitching_calibration:\n    status: pending\n"
+        f"    invalidation_id: {owner}\n")
+
+
+def calibration_contract(binary, root):
+    for case in ("valid", "missing-owner", "wrong-owner", "missing-generation", "missing-preview"):
+        directory = root / case
+        directory.mkdir()
+        calibration_fixture(directory / "game")
+        payload = {"invalidation_id": "owner", "require_ice_mask": False}
+        if case == "missing-owner":
+            payload.pop("invalidation_id")
+        elif case == "wrong-owner":
+            payload["invalidation_id"] = "stale-owner"
+        elif case == "missing-generation":
+            (directory / "game" / "mapping_0001.tif").unlink()
+        elif case == "missing-preview":
+            (directory / "game" / "panorama.tif").unlink()
+        path = request(directory, "calibration-complete", payload)
+        run(binary, path, 0 if case == "valid" else 1)
+        receipt = json.loads((directory / "operation-result.json").read_text())
+        if case != "valid":
+            assert receipt["state"] == "failed" and not receipt["artifacts"]
+            continue
+        assert_artifacts(directory, receipt)
+        preview = directory / receipt["result"]["preview"]
+        assert preview.read_bytes().startswith(b"\x89PNG")
+        assert any(item["path"] == "game/setup-preview.png" and item["kind"] == "image"
+                   for item in receipt["artifacts"])
+        assert "status: complete" in (directory / "game" / "config.yaml").read_text()
+        identity = preview.stat().st_mtime_ns
+        run(binary, path)
+        assert preview.stat().st_mtime_ns == identity
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
@@ -94,6 +146,7 @@ def main():
     args.binary = args.binary.resolve()
     with tempfile.TemporaryDirectory(prefix="hstream-web-contract-") as temporary:
         root = Path(temporary)
+        calibration_contract(args.binary, root)
         invalid = root / "invalid"
         invalid.mkdir()
         path = request(invalid, "highlight-preview", {"plan": {"schema": 999}})

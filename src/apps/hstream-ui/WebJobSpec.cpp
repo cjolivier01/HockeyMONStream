@@ -93,6 +93,7 @@ Request LoadRequest(const fs::path& filename) {
   require(std::regex_match(request.run_id, std::regex("[A-Za-z0-9_-]{8,64}")), "Invalid run identity");
   request.operation = RequiredString(document, "operation", 64).toStdString();
   const QStringList operations{
+      "calibration-complete",
       "highlight-render",
       "highlight-preview",
       "matches-read",

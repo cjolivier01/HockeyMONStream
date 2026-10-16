@@ -53,6 +53,7 @@ supervisor still owns the final descendant-stop and storage checks.
 | Operation | Payload and behavior |
 | --- | --- |
 | `highlight-preview`, `highlight-render` | Native schema-2 `plan`, optional `archive_path`, `archive_offset_ms`, and `selected_indices`. The existing GPU reel pipeline encodes cards, clips, overlays and audio to `highlights.mp4`. Preview is bounded to 30 seconds; export to 24 hours. Cards alone need no archive. Asset and recorded-binding paths must be run-relative. |
+| `calibration-complete` | Trusted setup postprocessor after a successful bounded calibration-only CLI run. Requires nonempty `invalidation_id` matching the persisted owner and optional boolean `require_ice_mask`. Validates the native generation, completes its calibration state, and publishes `game/setup-preview.png` from the existing panorama using the shared bounded (1920-pixel maximum) reader. Missing panorama or generation fails the operation. Returns `state`, `invalidation_id`, and `preview`; the receipt retains calibration artifacts for adoption. |
 | `matches-read` | Optional `fingerprint`; omission reads the current native match snapshot. Optional trusted `workspace` selects an experiment instead of the main game. Returns original camera images, dimensions and endpoints. |
 | `matches-publish` | Existing `fingerprint` and `frames` containing `index` and `matches` (`left`, `right`, optional `score`). Validates original-image endpoints and publishes an immutable manual snapshot. This does not activate new maps; use the candidate edit/solve/promote sequence. |
 | `experiment-create` | `settings` with `control_points`, `frame_count`, `stitch_frame_time`, optional matcher/resolution/rotation, plus optional `sequence`. Creates a native isolated pending candidate. |
@@ -147,3 +148,24 @@ DNS was unavailable. The validation host is x86; these attempts do not establish
 ARM64 or Jetson compatibility. No GPU processing was launched outside Slurm.
 A complete stitched render, live browser media, and deployment on the intended
 Slurm target remain required acceptance checks.
+
+### Setup-first completion
+
+Before starting a fresh calibration-only CLI, the worker writes a pending
+`hstream_ui.stitching_calibration` owner with `invalidation_id`, positive
+`control_points` (native default 1500), `frame_count` (1–64), `status: pending`,
+`rink_mask_status: pending`, `stale_from: features`, and
+`artifacts_invalidated: false`. Fresh runs remove inherited `reframe` and
+`backend_generation`. The worker sets `HSTREAM_CALIBRATION_PENDING=1`,
+`HSTREAM_CALIBRATION_START_STAGE=features`, and
+`HSTREAM_CALIBRATION_INVALIDATION_ID` to that owner, passing the matching
+`--clean-expected-invalidation-id`. Use `--stitching-calibration-only`, a FAKE
+sink, and a bounded duration such as `-t=1`; this does not launch Program
+inference. The forced recipe must follow user overrides.
+
+After clean CLI exit and descendant cleanup, `calibration-complete` performs
+the native completion validation. Only its successful, fresh identity receipt
+allows the web worker to publish and adopt calibration. The preview is a
+single bounded decode of the saved panorama; no video frame is read back from
+the GPU. The outer worker must retain its Slurm reservation, timeout, disk
+quota, and cancellation enforcement through this postprocessing step.
