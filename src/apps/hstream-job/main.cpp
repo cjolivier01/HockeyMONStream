@@ -185,6 +185,8 @@ int main(int argc, char** argv) {
     // Only explicit overrides may bind the script to a config or directory.
     if (!working.empty())
       working = fs::absolute(working);
+    if (!config.empty())
+      config = fs::absolute(config);
     if (!config.empty() && config.extension() != ".yaml" && config.extension() != ".yml")
       throw std::runtime_error("encoding jobs require YAML pipeline configs (.yaml or .yml)");
     std::vector<std::string> args = {"-g", game.filename().string()};

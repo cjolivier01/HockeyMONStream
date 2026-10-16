@@ -3,6 +3,7 @@
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import unittest
 from pathlib import Path
 
 TOOL = str(Path(sys.argv.pop(1)).resolve())
+PACKAGER = Path(sys.argv.pop(1)).resolve()
 
 
 class JobScriptTest(unittest.TestCase):
@@ -348,6 +350,50 @@ class JobScriptTest(unittest.TestCase):
                 manifest = Path(actual["env"]["HSTREAM_JOB_MANIFEST"])
                 self.assertEqual(Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"]),
                                  manifest.parent / "runtime")
+
+    def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
+        install = self.root / "install 'quoted'"
+        (install / "bin").mkdir(parents=True)
+        shutil.copy2(self.runner, install / "bin/hstream-cli")
+        # Exercise the actual Debian launcher without building a package or
+        # replacing system binaries. Only relocate its install prefix.
+        wrapper = PACKAGER.read_text().split("<<'RUNSH'\n", 1)[1].split("\nRUNSH\n", 1)[0]
+        wrapper = wrapper.replace("INSTALL_DIR=/opt/hstream",
+                                  "INSTALL_DIR=" + shlex.quote(str(install)))
+        launcher = self.runtime_bin / "hstream-cli"
+        launcher.write_text(wrapper)
+        launcher.chmod(0o700)
+        for config in (None, str(self.config), self.config.name):
+            for home in (None, str(self.root / "unwritable-home")):
+                with self.subTest(config=config, home=home):
+                    command = [TOOL, "--game-dir", str(self.game), "--force",
+                               "--working-directory", str(self.root)]
+                    if config:
+                        command += ["--config", config]
+                    env = dict(self.env)
+                    if home is None:
+                        env.pop("HOME", None)
+                    else:
+                        Path(home).write_text("not a cache directory")
+                        env["HOME"] = home
+                    exported = subprocess.run(command, cwd=self.root, env=env,
+                                              text=True, capture_output=True)
+                    self.assertEqual(exported.returncode, 0, exported.stderr)
+                    run = subprocess.run([str(self.game / "hstream-job.sh")],
+                                         cwd="/", env=env, text=True, capture_output=True)
+                    self.assertEqual(run.returncode, 7, run.stderr)
+                    actual = json.loads(self.output.read_text())
+                    expected = ["-g", self.game.name]
+                    if config:
+                        expected += ["-c", str(self.config)]
+                    expected += (["--enable-sources=URI-MULTIPLE"] + self.arguments[1:]
+                                 + ["--enable-sinks=ENCODE_FILE", "--encode-job"])
+                    self.assertEqual(actual["argv"], expected)
+                    self.assertEqual(actual["cwd"], str(self.root))
+                    runtime = Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"])
+                    registry = Path(actual["env"]["GST_REGISTRY"])
+                    self.assertEqual(registry.parent, runtime / "gstreamer-1.0")
+                    self.assertTrue(registry.parent.is_dir())
 
     def test_rejected_concurrent_launch_creates_no_runtime_scratch(self):
         self.runner.write_text(

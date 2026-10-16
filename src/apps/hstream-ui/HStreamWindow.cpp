@@ -16709,11 +16709,11 @@ void HStreamWindow::saveJobScript() {
       this,
       "Save job options",
       QString(
-          "This script runs the selected hstream-cli directly with its matching runtime environment. "
-          "Rendering is disabled. Selected file encodings are written directly as MP4; "
+          "This script runs hstream-cli from PATH on the execution host. "
+          "Rendering is disabled. The job encodes the selected file outputs; "
           "if none are selected, the job encodes the 4K Program copy.\n"
           "Stitched-only jobs skip detection, play tracking and DriveGPT capture.\n"
-          "MP4s and DriveGPT databases remain in working storage and are not copied into the game directory.\n"
+          "Completed MP4s and DriveGPT databases are saved in the game directory, then working files are removed.\n"
           "Working output root: %1 (custom per-output paths still apply).\n\n"
           "Optional SBATCH directives, one per line (for example --partition=gpu).\n"
           "The script already requests one node, one task and one GPU. Blank is fine for direct execution.")

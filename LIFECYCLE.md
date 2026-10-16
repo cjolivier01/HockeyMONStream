@@ -65,6 +65,9 @@ but no exporter binary, build, config or working-directory paths. The selected
 CLI discovers its own configs and runtime libraries. After admitting a new
 encoding run, the supervisor assigns its private `runtime/` directory before
 starting the CLI. Busy and completed retries create no runtime staging.
+The installed launcher passes managed-job arguments through unchanged and uses
+that private directory for its GStreamer registry, including when HOME is unset
+or unwritable.
 Explicit `--runner`, `--finalizer`, `--config` and `--working-directory`
 overrides remain available for custom runtimes; their values must work on the
 execution host. `HM_CONFIG_ROOT` is read there rather than captured at export.
