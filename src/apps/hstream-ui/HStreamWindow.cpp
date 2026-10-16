@@ -16727,13 +16727,7 @@ void HStreamWindow::saveJobScript() {
       QFileInfo(gameDirectory(game_id_edit_->text().trimmed())).absoluteFilePath(),
       "--output",
       path,
-      "--force",
-      "--runner",
-      pipelineRunnerPath(),
-      "--config",
-      QFileInfo(pipelineConfigPath("ds_hockey_app_config.yaml")).absoluteFilePath(),
-      "--working-directory",
-      pipelineWorkingDirectory()};
+      "--force"};
   for (const QString& line : directives.split('\n')) {
     const QString directive = line.trimmed();
     if (directive.isEmpty())
@@ -16753,8 +16747,6 @@ void HStreamWindow::saveJobScript() {
       : QDir(QCoreApplication::applicationDirPath()).filePath("hstream-job");
   auto* process = new QProcess(this);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-  if (!baseline_config_root_.isEmpty())
-    env.insert("HM_CONFIG_ROOT", baseline_config_root_);
   env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
   process->setProcessEnvironment(env);
   connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {

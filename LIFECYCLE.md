@@ -59,11 +59,17 @@ hstream-job --game-dir /path/to/games/game-42
 /path/to/games/game-42/hstream-job.sh
 ```
 
-The generated script executes `hstream-finalize` with a fixed run ID, game
-directory, and the exact CLI command. After admitting a new encoding run, the
-supervisor starts the script's runtime setup inside the private `runtime/`
-directory, then executes the CLI. Busy and completed retries create no runtime
-staging.
+The generated script resolves `hstream-finalize` and `hstream-cli` from `PATH`
+on the execution host. It saves the run ID, game directory and CLI arguments,
+but no exporter binary, build, config or working-directory paths. The selected
+CLI discovers its own configs and runtime libraries. After admitting a new
+encoding run, the supervisor assigns its private `runtime/` directory before
+starting the CLI. Busy and completed retries create no runtime staging.
+Explicit `--runner`, `--finalizer`, `--config` and `--working-directory`
+overrides remain available for custom runtimes; their values must work on the
+execution host. `HM_CONFIG_ROOT` is read there rather than captured at export.
+Older scripts containing Bazel paths must be exported again after deployment;
+installing a package does not rewrite saved scripts or Slurm's submitted copies.
 The finalizer supervises `hstream-cli --encode-job`, forwards cancellation, and
 requires both a successful exit and the CLI's completed manifest before
 publication. The supervisor saves the observed successful exit; an `encoded`

@@ -87,161 +87,6 @@ std::string environment(const char* key) {
   return value ? value : "";
 }
 
-fs::path executable() {
-  return fs::read_symlink("/proc/self/exe");
-}
-
-fs::path bazel_bin_for_runner(const fs::path& runner) {
-  if (runner.filename() != "hstream-cli")
-    return {};
-  const fs::path hstream_cli = runner.parent_path();
-  const fs::path apps = hstream_cli.parent_path();
-  const fs::path src = apps.parent_path();
-  if (hstream_cli.filename() != "hstream-cli" || apps.filename() != "apps" || src.filename() != "src")
-    return {};
-  const fs::path bazel_bin = src.parent_path();
-  return bazel_bin.filename() == "bin" ? bazel_bin : fs::path();
-}
-
-std::string runtime_environment_script(const fs::path& runtime_root, const fs::path& bazel_bin, bool installed) {
-  std::string script = "HSTREAM_JOB_RUNTIME_ROOT=" + quote(runtime_root.string()) + "\n";
-  script += "HSTREAM_JOB_BAZEL_BIN=" + quote(bazel_bin.string()) + "\n";
-  script += R"JOB(
-prepend_runtime_path() {
-  local name="$1"
-  local directory="$2"
-  local current="${!name-}"
-  if [ -z "${directory}" ] || [ ! -d "${directory}" ]; then
-    return
-  fi
-  if [ -z "${current}" ]; then
-    export "${name}=${directory}"
-    return
-  fi
-  case ":${current}:" in
-    *":${directory}:"*) ;;
-    *) export "${name}=${directory}:${current}" ;;
-  esac
-}
-
-if [ -z "${HSTREAM_RUNTIME_CACHE_DIR:-}" ] || \
-    ! mkdir -p "${HSTREAM_RUNTIME_CACHE_DIR}" || [ ! -w "${HSTREAM_RUNTIME_CACHE_DIR}" ]; then
-  echo "Managed runtime directory is unavailable" >&2
-  exit 78
-fi
-runtime_cache="$(cd "${HSTREAM_RUNTIME_CACHE_DIR}" && pwd -P)"
-export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
-export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
-
-runtime_arch="$(uname -m)"
-output_configuration="installed"
-if [ -n "${HSTREAM_JOB_BAZEL_BIN}" ]; then
-  canonical_bazel_bin="$(readlink -f "${HSTREAM_JOB_BAZEL_BIN}")"
-  output_configuration="$(basename "$(dirname "${canonical_bazel_bin}")")"
-  output_configuration="$(printf '%s' "${output_configuration}" | tr -c 'A-Za-z0-9_.-' '_')"
-fi
-registry_dir="${runtime_cache}/gstreamer-1.0"
-mkdir -p "${registry_dir}"
-export GST_REGISTRY="${registry_dir}/registry.hstream.native-onnx-v1.${runtime_arch}.${output_configuration}.bin"
-
-prepend_runtime_path GST_PLUGIN_PATH "${HSTREAM_JOB_RUNTIME_ROOT}/lib/gst-plugins"
-prepend_runtime_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
-prepend_runtime_path LD_LIBRARY_PATH "${HSTREAM_JOB_RUNTIME_ROOT}/lib"
-prepend_runtime_path LD_LIBRARY_PATH "${HSTREAM_JOB_RUNTIME_ROOT}/lib/gst-plugins"
-prepend_runtime_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
-prepend_runtime_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
-)JOB";
-  if (installed) {
-    script += R"JOB(prepend_runtime_path PATH "${HSTREAM_JOB_RUNTIME_ROOT}/bin"
-prepend_runtime_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
-prepend_runtime_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
-prepend_runtime_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
-prepend_runtime_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
-)JOB";
-  }
-  script += R"JOB(
-if [ -n "${HSTREAM_JOB_BAZEL_BIN}" ]; then
-  bazel_gst_root="${HSTREAM_JOB_BAZEL_BIN}/src/gst-plugins"
-  if [ -d "${bazel_gst_root}" ]; then
-    mkdir -p "${runtime_cache}/gst-plugin-path/${runtime_arch}/${output_configuration}"
-    runtime_plugin_dir="$(mktemp -d "${runtime_cache}/gst-plugin-path/${runtime_arch}/${output_configuration}/launch-XXXXXX")"
-    export HSTREAM_JOB_PLUGIN_STAGE="${runtime_plugin_dir}"
-    while IFS= read -r plugin_so; do
-      plugin_so="$(readlink -f "${plugin_so}")"
-      ln -sfn "${plugin_so}" "${runtime_plugin_dir}/$(basename "${plugin_so}")"
-      prepend_runtime_path LD_LIBRARY_PATH "$(dirname "${plugin_so}")"
-    done < <(
-      find "${bazel_gst_root}" \
-        -mindepth 2 \
-        -maxdepth 3 \
-        -type f \
-        \( -name 'libnvdsgst_*.so' -o -name 'libgst*.so' \) \
-        ! -path '*/testutils/*' \
-        ! -path '*.runfiles/*' \
-        -print | sort
-    )
-    while IFS= read -r library_dir; do
-      prepend_runtime_path LD_LIBRARY_PATH "$(readlink -f "${library_dir}")"
-    done < <(
-      find "${bazel_gst_root}" \
-        -mindepth 2 \
-        -maxdepth 4 \
-        -type f \
-        -name '*.so' \
-        ! -path '*.runfiles/*' \
-        -printf '%h\n' | sort -u
-    )
-    prepend_runtime_path GST_PLUGIN_PATH "${runtime_plugin_dir}"
-  fi
-
-  case "${runtime_arch}" in
-    x86_64 | amd64) solib_name="_solib_k8" ;;
-    aarch64 | arm64) solib_name="_solib_aarch64" ;;
-    *) solib_name="_solib_unknown" ;;
-  esac
-  solib_root="${HSTREAM_JOB_BAZEL_BIN}/${solib_name}"
-  if [ -d "${solib_root}" ]; then
-    while IFS= read -r solib_dir; do
-      prepend_runtime_path LD_LIBRARY_PATH "$(readlink -f "${solib_dir}")"
-    done < <(
-      find "${solib_root}" \
-        -maxdepth 1 \
-        -type d \
-        ! -path '*Sstubs*' \
-        -print | sort
-    )
-
-    mkdir -p "${runtime_cache}/runtime-lib-path/${runtime_arch}/${output_configuration}"
-    runtime_lib_dir="$(mktemp -d "${runtime_cache}/runtime-lib-path/${runtime_arch}/${output_configuration}/launch-XXXXXX")"
-    export HSTREAM_JOB_LIBRARY_STAGE="${runtime_lib_dir}"
-    onnxruntime_so="$({
-      find -L "${solib_root}" -maxdepth 3 -type f -name 'libonnxruntime.so.1' -print -quit
-    } 2>/dev/null || true)"
-    if [ -n "${onnxruntime_so}" ]; then
-      ln -sfn "$(readlink -f "${onnxruntime_so}")" "${runtime_lib_dir}/libonnxruntime.so.1"
-      onnxruntime_source="$(dirname "$(readlink -f "${onnxruntime_so}")")"
-      # ORT opens providers beside the loaded core library, including this cache.
-      for onnxruntime_name in libonnxruntime_providers_shared.so libonnxruntime_providers_cuda.so; do
-        if [ ! -f "${onnxruntime_source}/${onnxruntime_name}" ]; then
-          echo "Missing ONNX Runtime library: ${onnxruntime_source}/${onnxruntime_name}" >&2
-          exit 78
-        fi
-        ln -sfn "$(readlink -f "${onnxruntime_source}/${onnxruntime_name}")" "${runtime_lib_dir}/${onnxruntime_name}"
-      done
-    fi
-    yolo_so="${HSTREAM_JOB_BAZEL_BIN}/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
-    if [ -e "${yolo_so}" ]; then
-      ln -sfn "$(readlink -f "${yolo_so}")" "${runtime_lib_dir}/libnvdsinfer_custom_impl_Yolo.so"
-    fi
-    prepend_runtime_path LD_LIBRARY_PATH "${runtime_lib_dir}"
-  fi
-fi
-
-unset HSTREAM_JOB_RUNTIME_ROOT HSTREAM_JOB_BAZEL_BIN
-)JOB";
-  return script;
-}
-
 void write_script(const fs::path& output, const std::string& contents, bool overwrite) {
   if (!overwrite && fs::exists(output))
     throw std::runtime_error("output already exists; use --force to replace it: " + output.string());
@@ -275,7 +120,8 @@ void write_script(const fs::path& output, const std::string& contents, bool over
 
 int main(int argc, char** argv) {
   try {
-    fs::path game, output, runner, config, working, finalizer;
+    fs::path game, output, config, working;
+    std::string runner = "hstream-cli", finalizer = "hstream-finalize";
     std::string requested_sinks;
     std::vector<std::string> directives;
     bool overwrite = false;
@@ -284,9 +130,11 @@ int main(int argc, char** argv) {
       if (arg == "--help" || arg == "-h") {
         std::cout << "Usage: hstream-job --game-dir DIR [--output FILE] [--force]\n"
                      "  [--sbatch '--partition=gpu'] [--sbatch '--time=02:00:00']\n"
-                     "  [--runner FILE] [--finalizer FILE] [--config FILE] [--working-directory DIR]\n"
+                     "  [--runner COMMAND] [--finalizer COMMAND] [--config FILE] [--working-directory DIR]\n"
                      "  [--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE]\n"
                      "Save an executable job (default: DIR/hstream-job.sh). Never launches the job.\n"
+                     "Commands default to hstream-cli and hstream-finalize on the execution host PATH.\n"
+                     "Config and runtime discovery belong to that host; no build paths are saved.\n"
                      "SBATCH defaults: one node, one task, one GPU. Additional directives override defaults.\n"
                      "Reads config.yaml and hstream_ui.job.arguments saved by the UI. Without a saved\n"
                      "job or selected file encoder, defaults to the 4K Program MP4. Rendering is disabled.\n"
@@ -333,48 +181,18 @@ int main(int argc, char** argv) {
     const YAML::Node saved = YAML::LoadFile((game / "config.yaml").string());
     if (!saved.IsMap())
       throw std::runtime_error("game config.yaml must be a mapping");
-    const fs::path bin = executable().parent_path();
-    const bool installed = fs::exists(bin / "hstream-cli");
-    if (finalizer.empty())
-      finalizer = installed ? bin / "hstream-finalize" : bin.parent_path() / "hstream-finalize/hstream-finalize";
-    if (!fs::is_regular_file(finalizer))
-      throw std::runtime_error("hstream-finalize not found; build it or specify --finalizer");
-    finalizer = fs::canonical(finalizer);
-    if (runner.empty())
-      runner = installed ? bin / "hstream-cli" : bin.parent_path() / "hstream-cli/hstream-cli";
-    if (working.empty()) {
-      if (installed)
-        working = bin.parent_path();
-      else if (!environment("BUILD_WORKSPACE_DIRECTORY").empty())
-        working = environment("BUILD_WORKSPACE_DIRECTORY");
-      else {
-        // Bazel runfiles expose source configs without relying on the caller's cwd.
-        const fs::path runfiles = executable().string() + ".runfiles";
-        for (const char* repo : {"kstream", "_main"}) {
-          if (fs::exists(runfiles / repo / "configs/ds_hockey_app_config.yaml")) {
-            working = fs::canonical(runfiles / repo / "configs/ds_hockey_app_config.yaml").parent_path().parent_path();
-            break;
-          }
-        }
-        if (working.empty())
-          working = fs::current_path();
-      }
-    }
-    working = fs::absolute(working);
-    if (config.empty())
-      config = working / "configs/ds_hockey_app_config.yaml";
-    config = fs::absolute(config);
-    if (!fs::is_regular_file(config))
-      throw std::runtime_error("pipeline config not found; specify --config: " + config.string());
-    if (config.extension() != ".yaml" && config.extension() != ".yml")
+    // Export can happen on a different host, without the execution runtime.
+    // Only explicit overrides may bind the script to a config or directory.
+    if (!working.empty())
+      working = fs::absolute(working);
+    if (!config.empty() && config.extension() != ".yaml" && config.extension() != ".yml")
       throw std::runtime_error("encoding jobs require YAML pipeline configs (.yaml or .yml)");
-    if (!fs::is_regular_file(runner))
-      throw std::runtime_error("hstream-cli not found; build it or specify --runner: " + runner.string());
-    runner = fs::canonical(runner);
-    const fs::path runtime_root = installed ? bin.parent_path() : working;
-    const fs::path bazel_bin = bazel_bin_for_runner(runner);
-    std::vector<std::string> args = {
-        "-g", game.filename().string(), "-c", config.string(), "--enable-sources=URI-MULTIPLE"};
+    std::vector<std::string> args = {"-g", game.filename().string()};
+    if (!config.empty()) {
+      args.push_back("-c");
+      args.push_back(config.string());
+    }
+    args.push_back("--enable-sources=URI-MULTIPLE");
     const YAML::Node ui = saved["hstream_ui"];
     const YAML::Node job = ui ? ui["job"] : YAML::Node();
     const YAML::Node saved_args = job && job.IsMap() ? job["arguments"] : YAML::Node();
@@ -400,34 +218,32 @@ int main(int argc, char** argv) {
       script += "#SBATCH " + directive + "\n";
     script +=
         "\n# Run directly, or submit this file with sbatch.\n"
-        "# Configs, videos and assets must be accessible on the execution host.\n"
+        "# hstream-finalize and hstream-cli must be on PATH on the execution host.\n"
+        "# Game files and assets must be accessible there.\n"
         "# Publishes completed archives and telemetry, then cleans this run.\n"
         "# Repeating this script resumes the same run; export again for a new generation.\n"
         "set -euo pipefail\numask 077\n";
-    script += "cd -- " + quote(working.string()) + "\n";
+    if (!working.empty())
+      script += "cd -- " + quote(working.string()) + "\n";
     script +=
         "unset HSTREAM_UI_PARENT_PID HSTREAM_RINK_LEVELING_FLOW HSTREAM_PROJECTION_CROP_FLOW\n"
         "unset HSTREAM_CALIBRATION_PENDING HSTREAM_CALIBRATION_START_STAGE HSTREAM_CALIBRATION_INVALIDATION_ID\n"
         "unset HSTREAM_ARCHIVE_RUN_ID HSTREAM_UI_PREVIEW_OVERLAYS HSTREAM_JOB_MANIFEST\n"
         "unset HSTREAM_JOB_PLUGIN_STAGE HSTREAM_JOB_LIBRARY_STAGE\n";
     script += "export HM_GAME_DIR=" + quote(game.parent_path().string()) + "\n";
-    for (const char* key : {"HM_CONFIG_ROOT", "HM_OUTPUT_WORK_DIR", "HM_RENDER_SINK", "USE_NEW_NVSTREAMMUX"}) {
+    for (const char* key : {"HM_OUTPUT_WORK_DIR", "HM_RENDER_SINK", "USE_NEW_NVSTREAMMUX"}) {
       const std::string value = environment(key);
       if (!value.empty())
         script += "export " + std::string(key) + "=" + quote(value) + "\n";
     }
-    // Stage only after the supervisor admits this run and assigns its private
-    // runtime directory. Busy or completed retries must not create scratch.
-    const std::string child_setup =
-        "set -euo pipefail\n" + runtime_environment_script(runtime_root, bazel_bin, installed) + "\nexec \"$@\"\n";
     script += "printf '%s\n' " +
         quote("hstream-job: Publishing completed outputs to " + game.string() +
               "; temporary files are removed only after all outputs are safely saved.") +
         "\n";
-    script += "exec " + quote(finalizer.string()) + " --game-dir " + quote(game.string()) + " --run-id " +
+    script += "exec " + quote(finalizer) + " --game-dir " + quote(game.string()) + " --run-id " +
         quote(hm::recording::NewGuid());
     // The supervisor resolves the same live config layers before it can admit
-    // the runner. Forward option groups separately from the shell wrapper.
+    // the runner. Forward option groups separately from the runner arguments.
     for (size_t i = 0; i < args.size(); ++i) {
       const auto& argument = args[i];
       if (argument == "--options" || argument == "-p") {
@@ -440,7 +256,7 @@ int main(int argc, char** argv) {
         script += " --options " + quote(argument.substr(2));
       }
     }
-    script += " -- /bin/bash -c " + quote(child_setup) + " hstream-runtime " + quote(runner.string());
+    script += " -- " + quote(runner);
     for (const auto& arg : args)
       script += " \\\n  " + quote(arg);
     script += "\n";

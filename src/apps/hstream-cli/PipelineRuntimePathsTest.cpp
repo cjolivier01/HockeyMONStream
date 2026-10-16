@@ -62,6 +62,21 @@ int main() {
       expect(
             selected_without_symlink_forest.output_configuration == "k8-opt",
             "The immutable output configuration must survive an absent execroot symlink forest");
+  const fs::path installed_root = temporary_root / "installed";
+  const fs::path installed_executable = installed_root / "bin/hstream-cli";
+  fs::create_directories(installed_executable.parent_path());
+  fs::create_directories(installed_root / "configs");
+  std::ofstream(installed_executable) << "installed executable\n";
+  const fs::path command = temporary_root / "path-bin/hstream-cli";
+  fs::create_directories(command.parent_path());
+  fs::create_symlink(installed_executable, command);
+  const auto installed = hm::pipeline_internal::select_runtime_paths(command, workspace);
+  ok &= expect(
+            installed.root == installed_root,
+            "An installed CLI on PATH must use its own runtime/config root even from a source workspace") &&
+      expect(
+            !installed.bazel_output && installed.output_configuration == "installed",
+            "An installed CLI must not inherit the caller's Bazel runtime");
   fs::remove_all(temporary_root);
   return ok ? 0 : 1;
 }
