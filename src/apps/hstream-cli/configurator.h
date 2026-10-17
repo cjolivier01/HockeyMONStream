@@ -246,6 +246,7 @@ class Configurator {
       size_t max_output_width);
   void clear_materialized_scoreboard_perspective();
   absl::Status apply_scoreboard_perspective(YAML::Node& pipeline);
+  absl::Status import_stitching_orientation(const std::filesystem::path& game_dir);
   absl::Status gather_stitching_videos(
       const std::filesystem::path& game_dir,
       bool force,
