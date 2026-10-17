@@ -4,6 +4,9 @@ choice and continues setup; cancelling stops setup. The choice is remembered, in
 editor is offered again when the projected camera geometry changes, such as a new alignment, projection,
 projection parameters, or leveling angles. Changing only crop bounds or output resolution does not require
 another confirmation. Games with an existing calibration and no recorded choice are prompted before playback.
+Startup first checks that the saved calibration matches the current camera, lens and projection settings.
+If those settings changed, crop review waits for the new calibration. **Cancel playback** returns to Stopped;
+it does not report a playback failure.
 
 Use **Stitched → Projection → Adjust crop…** to control how much of the projected rink is retained. Stop
 playback before editing. This control is available with the Nona mapping backend.
@@ -65,3 +68,12 @@ Run the preview path regression, or a read-only crop/leveling smoke against a co
 bazelisk test --config=opt --cpu=k8 //src/apps/hstream-ui:calibration_preview_test
 QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/calibration_preview_test "$HOME/Videos/gse-16a"
 ```
+
+To check the main window's startup decision against a saved game without launching playback or saving settings:
+
+```sh
+QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/hstream_ui_test --crop-preflight "$HOME/Videos/gse-16a"
+```
+
+This check passes when the crop was already reviewed or review is deferred until calibration, and reports a failure
+if startup still opens a crop dialog.

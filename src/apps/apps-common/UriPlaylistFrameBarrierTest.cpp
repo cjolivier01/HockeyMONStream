@@ -430,6 +430,82 @@ bool released_calibration_suspension_restores_stall_detection() {
       idle_us > 0 && idle_us < 5 * G_TIME_SPAN_SECOND;
 }
 
+// Scoreboard selection can hold the first Program output after PLAYING. Its
+// nested owners must survive calibration completion and a native pause/resume;
+// ending selection must likewise leave any remaining suspension intact.
+bool operator_selection_preserves_overlapping_suspensions() {
+  ScopedStallBudget budget("1");
+  BarrierFixture fixture;
+  auto pending = std::async(
+      std::launch::async, [&] { return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND); });
+  if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(1))) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    return false;
+  }
+  update_uri_playlist_operator_selection_phase(fixture.parent(), TRUE);
+  update_uri_playlist_operator_selection_phase(fixture.parent(), TRUE);
+  update_uri_playlist_calibration_phase(fixture.parent(), TRUE);
+  set_uri_playlist_waits_paused(fixture.parent(), TRUE);
+  update_uri_playlist_operator_selection_phase(fixture.parent(), FALSE);
+  update_uri_playlist_calibration_phase(fixture.parent(), FALSE);
+  set_uri_playlist_waits_paused(fixture.parent(), FALSE);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const bool selection_held = pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
+
+  update_uri_playlist_calibration_phase(fixture.parent(), TRUE);
+  set_uri_playlist_waits_paused(fixture.parent(), TRUE);
+  update_uri_playlist_operator_selection_phase(fixture.parent(), FALSE);
+  // A duplicate end must not underflow ownership and disable the next run's clock.
+  update_uri_playlist_operator_selection_phase(fixture.parent(), FALSE);
+  const bool other_reasons_held = fixture.parent()->uri_playlist_operator_selection_depth == 0 &&
+      fixture.parent()->uri_playlist_wait_suspend_mask ==
+          (URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION | URI_PLAYLIST_WAIT_SUSPEND_PIPELINE_PAUSE);
+  update_uri_playlist_calibration_phase(fixture.parent(), FALSE);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const bool pause_held = pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
+  set_uri_playlist_waits_paused(fixture.parent(), FALSE);
+  const bool paired = wait_at_uri_playlist_frame_barrier(fixture.source(1), 0, GST_SECOND);
+  return paired && pending.get() && selection_held && other_reasons_held && pause_held &&
+      !uri_playlist_waits_suspended(fixture.parent());
+}
+
+bool released_operator_selection_restores_stall_detection() {
+  ScopedStallBudget budget("1");
+  BarrierFixture fixture;
+  auto pending = std::async(
+      std::launch::async, [&] { return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND); });
+  if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(1))) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    return false;
+  }
+  update_uri_playlist_operator_selection_phase(fixture.parent(), TRUE);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const bool stayed_pending = pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
+  update_uri_playlist_operator_selection_phase(fixture.parent(), FALSE);
+  if (pending.wait_for(std::chrono::seconds(4)) != std::future_status::ready) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    std::cerr << "Ending operator selection did not restore stall detection\n";
+    return false;
+  }
+  return stayed_pending && !pending.get() && fixture.parent()->uri_playlist_barrier_failed && fixture.hasStreamError();
+}
+
+bool operator_selection_does_not_block_cancellation() {
+  BarrierFixture fixture;
+  update_uri_playlist_operator_selection_phase(fixture.parent(), TRUE);
+  auto pending = std::async(
+      std::launch::async, [&] { return wait_at_uri_playlist_frame_barrier(fixture.source(0), 0, GST_SECOND); });
+  if (!fixture.waitUntilReady(0, 0, std::chrono::seconds(1))) {
+    cancel_uri_playlist_frame_barrier(fixture.parent());
+    return false;
+  }
+  cancel_uri_playlist_frame_barrier(fixture.parent());
+  const bool woke = pending.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+  update_uri_playlist_operator_selection_phase(fixture.parent(), FALSE);
+  return woke && !pending.get() && !fixture.parent()->uri_playlist_barrier_failed &&
+      !uri_playlist_waits_suspended(fixture.parent()) && !fixture.hasStreamError();
+}
+
 bool cancellation_wakes_waiter_promptly() {
   BarrierFixture fixture;
   std::atomic<int> wait_result{-1};
@@ -494,7 +570,9 @@ int main(int argc, char** argv) {
       !signal_noise_does_not_mask_a_wedged_peer() || !peer_progress_defers_stall_detection() ||
       !native_pause_excludes_stall_time() || !process_pause_excludes_sigstop_time() ||
       !resumed_stall_still_reports_failure() || !suspension_reasons_do_not_release_each_other() ||
-      !released_calibration_suspension_restores_stall_detection() || !cancellation_wakes_waiter_promptly() ||
+      !released_calibration_suspension_restores_stall_detection() ||
+      !operator_selection_preserves_overlapping_suspensions() || !released_operator_selection_restores_stall_detection() ||
+      !operator_selection_does_not_block_cancellation() || !cancellation_wakes_waiter_promptly() ||
       !mismatched_sequences_fail_without_deadlock()) {
     return 1;
   }

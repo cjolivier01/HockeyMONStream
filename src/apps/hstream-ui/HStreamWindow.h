@@ -469,7 +469,7 @@ class HStreamWindow : public QMainWindow {
   void openPromotedStitchingLeveling(const QString& game_directory);
   void selectRinkLeveling();
   void selectProjectionCrop();
-  bool ensureProjectionCropReviewed();
+  bool ensureProjectionCropReviewed(bool* cancelled = nullptr);
   bool hasPendingCropSelection() const;
   bool rinkLevelingInputsUnchanged() const;
   bool writeRinkLevelingSelection(YAML::Node& config);

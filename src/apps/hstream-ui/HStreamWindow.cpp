@@ -8079,7 +8079,9 @@ void HStreamWindow::selectProjectionCrop() {
   appendLog("Crop selected. Save Preset applies it to this game and regenerates stitching.");
 }
 
-bool HStreamWindow::ensureProjectionCropReviewed() {
+bool HStreamWindow::ensureProjectionCropReviewed(bool* cancelled) {
+  if (cancelled)
+    *cancelled = false;
   if (!stitchingIterationSettings().show_crop_dialog)
     return true;
   const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
@@ -8109,6 +8111,19 @@ bool HStreamWindow::ensureProjectionCropReviewed() {
       if (!lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) || !status.IsScalar() ||
           status.as<std::string>() != "complete")
         return true;
+      // Loaded controls can already include changed camera-profile defaults,
+      // even though the saved config still labels the old calibration complete.
+      // Let startup calibrate those inputs before asking to review their crop.
+      const QString preview_error = ProjectionCropDialog::savedCalibrationPreviewError(
+          directory,
+          stitchProjectionFraming(),
+          stitchProjection(),
+          stitchProjectionParameters(),
+          stitchCameraSelection());
+      if (!preview_error.isEmpty()) {
+        appendLog("Crop review deferred until calibration: " + preview_error);
+        return true;
+      }
       const auto project =
           hm::stitching::HuginProject::ReadProject(QDir(directory).filePath("autooptimiser_out.pto").toStdString());
       if (!project.ok())
@@ -8134,8 +8149,12 @@ bool HStreamWindow::ensureProjectionCropReviewed() {
       this,
       false,
       /*apply_on_accept=*/true);
-  if (dialog.exec() != QDialog::Accepted || game_id_edit_->text().trimmed() != game_id)
+  if (dialog.exec() != QDialog::Accepted || game_id_edit_->text().trimmed() != game_id) {
+    if (cancelled)
+      *cancelled = true;
+    appendLog("Playback start cancelled during crop review");
     return false;
+  }
   loaded_projection_framing_.crop = dialog.framing().crop;
   projection_auto_crop_check_->setChecked(dialog.framing().auto_crop);
   pending_crop_geometry_ = geometry;
@@ -10425,8 +10444,15 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
-  if (!ensureProjectionCropReviewed()) {
-    show_startup_error("Crop selection was cancelled or could not be saved");
+  bool crop_review_cancelled = false;
+  if (!ensureProjectionCropReviewed(&crop_review_cancelled)) {
+    if (crop_review_cancelled) {
+      pipeline_state_->setText("STOPPED");
+      resetPlaybackProgress(false);
+      setPlaybackProgressState(PlaybackProgressState::kStopped, "Playback start cancelled during crop review");
+    } else {
+      show_startup_error("Crop selection could not be saved");
+    }
     updateRunControls();
     return;
   }

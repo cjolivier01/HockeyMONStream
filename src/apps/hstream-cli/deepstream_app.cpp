@@ -313,6 +313,11 @@ static GstBusSyncReply bus_sync_callback(GstBus* /*bus*/, GstMessage* message, g
       // Preroll can run calibration before the main loop dispatches the bus.
       // Publish ownership now so all wait clocks see it before work starts.
       update_uri_playlist_calibration_phase(&app_ctx->pipeline.multi_src_bin, active);
+    } else if (structure && gst_structure_has_name(structure, "hstream-operator-selection-phase") &&
+               gst_structure_get_boolean(structure, "active", &active)) {
+      // The first Program frame may wait for scoreboard corners after PLAYING,
+      // when neither preroll nor calibration owns the source stall clock.
+      update_uri_playlist_operator_selection_phase(&app_ctx->pipeline.multi_src_bin, active);
     }
   }
   if (app_ctx && app_ctx->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled &&

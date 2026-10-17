@@ -1032,13 +1032,27 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
 
   struct SelectionActivity {
     std::atomic<bool>& active;
-    explicit SelectionActivity(std::atomic<bool>& active) : active(active) {
+    GstElement* owner;
+    SelectionActivity(std::atomic<bool>& active, GstElement* owner) : active(active), owner(owner) {
       active.store(true, std::memory_order_release);
+      post_phase(TRUE);
     }
     ~SelectionActivity() {
+      post_phase(FALSE);
       active.store(false, std::memory_order_release);
     }
-  } activity(scoreboard_selection_active_);
+    void post_phase(gboolean selecting) {
+      if (!owner)
+        return;
+      // The synchronous bus handler suspends source waits before selection
+      // blocks, even when the main loop has not started dispatching messages.
+      gst_element_post_message(
+          owner,
+          gst_message_new_element(
+              GST_OBJECT(owner),
+              gst_structure_new("hstream-operator-selection-phase", "active", G_TYPE_BOOLEAN, selecting, nullptr)));
+    }
+  } activity(scoreboard_selection_active_, GST_ELEMENT(m_element));
   const auto selection = stitching::configure_scoreboard(game_dir.string(), is_cancelled);
   if (absl::IsCancelled(selection) && is_cancelled())
     return absl::OkStatus(); // Keep draining queued output for EOS finalization.
