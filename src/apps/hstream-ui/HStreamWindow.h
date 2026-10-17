@@ -364,9 +364,11 @@ class HStreamWindow : public QMainWindow {
   void updatePresetDirtyState();
   void updateCameraControlDependencies();
   void refreshGames();
+  void browseGameRoot();
   void selectGame(const QString& game_id);
   void createOrLoadGame();
   void addVideoPath();
+  bool addVideoFile(const QString& path);
   void browseVideoPath();
   void removeSelectedVideoSet();
   void refreshVideoSets();
@@ -469,7 +471,7 @@ class HStreamWindow : public QMainWindow {
   void openPromotedStitchingLeveling(const QString& game_directory);
   void selectRinkLeveling();
   void selectProjectionCrop();
-  bool ensureProjectionCropReviewed();
+  bool ensureProjectionCropReviewed(bool* cancelled = nullptr);
   bool hasPendingCropSelection() const;
   bool rinkLevelingInputsUnchanged() const;
   bool writeRinkLevelingSelection(YAML::Node& config);
@@ -593,6 +595,8 @@ class HStreamWindow : public QMainWindow {
   QWidget* game_controls_{nullptr};
   QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
+  QString selected_game_root_;
+  QLineEdit* game_root_edit_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
   QComboBox* blend_mode_combo_{nullptr};
   QDoubleSpinBox* blend_feather_spin_{nullptr};
@@ -649,6 +653,7 @@ class HStreamWindow : public QMainWindow {
   hm::ui_internal::StitchingIterationSettings active_iteration_settings_;
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};
+  QStringList selected_video_paths_;
   QListWidget* video_set_list_{nullptr};
   QRadioButton* role_auto_{nullptr};
   QRadioButton* role_left_{nullptr};

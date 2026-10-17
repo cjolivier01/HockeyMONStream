@@ -16,6 +16,18 @@
 
 namespace hm::playtracker_replay {
 
+// Camera policy state behind one frame, summarized for inspection. The drawing
+// snapshot carries the same information as unlabelled display primitives; these
+// named values let a plot address one quantity at a time. Recorded canvas
+// coordinates throughout, like fast and follower.
+struct PlayTracking {
+  // Union of the retained player clusters the policy framed this frame.
+  std::optional<hm::BBox> cluster;
+  // Present only while the detector is catching a breakaway.
+  std::optional<hm::Point> breakaway_edge;
+  std::optional<hm::BBox> breakaway_target;
+};
+
 struct Frame {
   uint64_t sample_id{0};
   uint64_t pts_ns{0};
@@ -23,6 +35,7 @@ struct Frame {
   std::optional<hm::BBox> follower;
   float edge_rotation_left{0};
   float edge_rotation_right{0};
+  PlayTracking tracking;
   std::shared_ptr<const hm::preview_overlay::OverlaySnapshot> overlays;
 };
 

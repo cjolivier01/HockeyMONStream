@@ -1,5 +1,25 @@
 # HStream UI end-to-end acceptance test
 
+The Game panel shows the current **Game root** (the folder containing game
+directories). **Change root…** chooses another folder and reloads its games;
+it is disabled during playback and archive finalization. The UI remembers the
+selection in `~/.config/hstream-ui/settings.ini`, or
+`$XDG_CONFIG_HOME/hstream-ui/settings.ini` when set. At startup, `HM_GAME_DIR`
+takes precedence over this preference, followed by `paths.game-root` in the
+shared `~/.hstream/hstream.yaml` configuration and finally `~/Videos`.
+An explicit choice in the UI applies immediately to that window and its runner.
+
+In Video Sets, **Browse** selects one or more files for the chosen camera role.
+**Add** imports that selection (or a typed path); with no selection it opens the
+same multi-file browser. Successful imports clear the selection. Both buttons
+reopen the last selected video folder, which is also remembered across UI runs.
+Cancel leaves the selection and remembered folder unchanged. Failed imports
+remain selected for retry; successfully imported files are retained.
+
+Focused checks: `QT_QPA_PLATFORM=offscreen HSTREAM_UI_TEST_PATHS_ONLY=1
+bazel-bin/src/apps/hstream-ui/hstream_ui_test` covers root switching and
+persistence, environment precedence, and multi-file selection/import/reopening.
+
 The UI acceptance test exercises the same Qt button handlers as an operator:
 
 1. load the selected game;
@@ -66,6 +86,10 @@ controls local Play.
 The generated script invokes `hstream-finalize`, which supervises `hstream-cli --encode-job`,
 requires its completed run manifest, publishes faststart MP4s and telemetry in the game
 directory, and removes owned working files only after all required outputs are saved.
+Both commands come from the execution host's `PATH`, including for scripts exported
+from a development UI. The UI does not export its local CLI, config, working directory
+or baseline override. The selected CLI finds its own bundled config and runtime;
+the script retains game settings and the selected working output location.
 Each export has a fixed run ID: repeating its script resumes finalization/cleanup without
 encoding again; export a new script for another run. Custom working output paths remain
 supported. Stitched jobs retain their independent output path and bitrate. Direct

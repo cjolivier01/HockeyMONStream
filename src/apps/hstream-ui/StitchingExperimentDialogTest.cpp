@@ -55,6 +55,7 @@
 #endif
 
 #include <cmath>
+#include <cstddef>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -607,6 +608,23 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   camera.input_lens.optimization = "fixed";
   camera.input_lens.distortion[1] = 0.0208293582808693;
   camera.input_lens.center_offset = {-10.102540338009 / 7680, 620.178405843678 / 4320};
+  for (bool auto_fov : {false, true}) {
+    for (bool auto_lens : {false, true}) {
+      auto inherited = camera;
+      inherited.auto_fov = auto_fov;
+      inherited.auto_lens = auto_lens;
+      write_stitch_camera_selection(config, inherited);
+      write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+      StitchingExperimentDialog dialog(
+          game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+      require(
+          widget<QCheckBox>(dialog, "stitchExperimentCameraAutoFov")->isChecked() == auto_fov &&
+              widget<QCheckBox>(dialog, "inputLensAutoCheck")->isChecked() == auto_lens &&
+              widget<QDoubleSpinBox>(dialog, "stitchExperimentCameraHorizontalFov")->isReadOnly() == auto_fov &&
+              widget<QDoubleSpinBox>(dialog, "inputLensBSpin")->isReadOnly() == auto_lens,
+          "Experiments must inherit both saved main-camera policies, including explicit manual and mixed choices");
+    }
+  }
   write_stitch_camera_selection(config, camera);
   write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   {
@@ -661,6 +679,12 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   require(restored_table->rowCount() == 3, "Reopened lens additions must follow the ordinary retry policy");
   auto* profiles = widget<QComboBox>(reopened, "stitchExperimentCameraConfiguration");
   profiles->setCurrentIndex(profiles->findData("gopro-mission-1"));
+  require(
+      widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->isChecked() &&
+          widget<QCheckBox>(reopened, "inputLensAutoCheck")->isChecked() &&
+          widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
+          widget<QDoubleSpinBox>(reopened, "inputLensBSpin")->isReadOnly(),
+      "Selecting a named profile must enable both Auto policies for new candidates");
   require(widget<QComboBox>(reopened, "inputLensProjectionCombo")->currentData() == "full-frame-fisheye" &&
               widget<QComboBox>(reopened, "inputLensOptimizationCombo")->currentData() == "fixed" &&
               std::abs(widget<QDoubleSpinBox>(reopened, "inputLensCenterYSpin")->value() -
@@ -669,11 +693,14 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   add_options(reopened);
   require(restored_table->rowCount() == 4, "Changed camera profile must create a separate candidate");
   const auto changed_profile = LoadStitchingExperimentStore(*store);
-  require(changed_profile.ok() && changed_profile->experiments.back().workspace.settings.camera &&
-              changed_profile->experiments.back().workspace.settings.camera->configuration == "gopro-mission-1" &&
-              changed_profile->experiments.back().workspace.settings.camera->horizontal_fov == 108 &&
-              changed_profile->experiments.back().workspace.settings.camera->input_lens == camera.input_lens,
-          "Candidate history must freeze the selected camera and its lens defaults");
+  require(
+      changed_profile.ok() && changed_profile->experiments.back().workspace.settings.camera &&
+          changed_profile->experiments.back().workspace.settings.camera->configuration == "gopro-mission-1" &&
+          changed_profile->experiments.back().workspace.settings.camera->automatic_fov() &&
+          changed_profile->experiments.back().workspace.settings.camera->automatic_lens() &&
+          changed_profile->experiments.back().workspace.settings.camera->horizontal_fov == 108 &&
+          changed_profile->experiments.back().workspace.settings.camera->input_lens == camera.input_lens,
+      "Candidate history must freeze the selected camera and its lens defaults");
   profiles->setCurrentIndex(profiles->findData("auto"));
   require(!widget<QLabel>(reopened, "inputLensMetadataStatus")->text().isEmpty() &&
               widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
@@ -708,6 +735,7 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
       "Candidate history must retain the selected independent policies");
   profiles->setCurrentIndex(profiles->findData("gopro-hero-11"));
   widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->setChecked(true);
+  widget<QCheckBox>(reopened, "inputLensAutoCheck")->setChecked(false);
   require(
       widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
           !widget<QDoubleSpinBox>(reopened, "inputLensBSpin")->isReadOnly(),
@@ -722,6 +750,13 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
       mixed_camera.ok() && mixed_camera->configuration == "gopro-hero-11" && mixed_camera->automatic_fov() &&
           !mixed_camera->automatic_lens() && mixed_yaml["stitching"]["auto_input_lens_frozen"].as<bool>(),
       "Named profiles with one automatic source must freeze both resolved values for replay");
+  profiles->setCurrentIndex(profiles->findData("manual"));
+  require(
+      !widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->isChecked() &&
+          !widget<QCheckBox>(reopened, "inputLensAutoCheck")->isChecked() &&
+          !widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
+          !widget<QDoubleSpinBox>(reopened, "inputLensBSpin")->isReadOnly(),
+      "Selecting Manual must turn off both policies and allow editing candidate optics");
 }
 
 void exercise_player_queue(const QString& game, const QString& root) {
@@ -1574,7 +1609,8 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
   require(store.ok(), "Cannot open actual-snapshot store");
   const auto copied = LoadStitchingExperimentStore(*store);
   require(
-      published_between_lookup_and_copy && copied.ok() && copied->experiments.size() == initial_count &&
+      published_between_lookup_and_copy && copied.ok() &&
+          copied->experiments.size() == static_cast<std::size_t>(initial_count) &&
           table->rowCount() == initial_count,
       "Snapshot race fixture must publish after Add lookup and before workspace creation");
   for (int row = 0; row < initial_count; ++row) {
@@ -1605,7 +1641,7 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
       "Actual-snapshot batch did not finish");
   const auto completed = LoadStitchingExperimentStore(*store);
   require(
-      completed.ok() && completed->experiments.size() == initial_count + 1,
+      completed.ok() && completed->experiments.size() == static_cast<std::size_t>(initial_count + 1),
       "Actual-snapshot completed history is missing");
   for (int row = 0; row <= initial_count; ++row)
     require(

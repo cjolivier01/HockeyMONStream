@@ -14,8 +14,10 @@ from the [Gyroflow lens database](https://github.com/gyroflow/lens_profiles/tree
 not manufacturer factory specifications. Each selects `optimization: refine`
 so stitching can adjust the starting lens. Use the **NONA** mapping backend for
 these input-lens corrections. Auto checks explicit `metadata_match` constraints before choosing a fallback.
-Manually selecting a named profile remains an operator choice; choose the matching
-recording mode and recalibrate. Existing experiments retain their saved optics. Changing the lens
+Selecting a named profile enables Auto FOV and Auto lens correction with that profile
+as the fallback. Turn off either Auto control to retain or edit that component
+without further metadata import; choose the matching recording mode and recalibrate.
+Existing experiments retain their saved optics. Changing the lens
 of a completed game invalidates its calibration and stitched pixel coordinates,
 including scoreboard selection.
 

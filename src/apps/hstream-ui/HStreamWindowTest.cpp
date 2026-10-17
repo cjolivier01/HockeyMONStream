@@ -2078,6 +2078,214 @@ bool test_stall_watchdog_calibration_failure_analysis(HStreamWindow* window) {
   return cleared;
 }
 
+// Exercise the real modal handlers, with bounded failure instead of leaving a
+// file chooser open when a regression changes its mode or selection behavior.
+bool with_path_dialog(QPushButton* button, const std::function<bool(QFileDialog*)>& handle) {
+  bool seen = false;
+  bool ok = false;
+  QTimer poll;
+  QObject::connect(&poll, &QTimer::timeout, [&] {
+    auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+    if (!dialog || seen)
+      return;
+    seen = true;
+    QTimer::singleShot(100, dialog, [&, dialog] { ok = handle(dialog); });
+  });
+  QTimer deadline;
+  deadline.setSingleShot(true);
+  QObject::connect(&deadline, &QTimer::timeout, [&] {
+    ok = false;
+    if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+      dialog->reject();
+  });
+  poll.start(10);
+  deadline.start(5000);
+  activate(button);
+  return expect(seen && ok, "Path chooser must open and complete the requested interaction");
+}
+
+bool accept_path_dialog(QFileDialog* dialog, const QString& directory, const QStringList& names) {
+  dialog->setDirectory(directory);
+  auto* filename = dialog->findChild<QLineEdit*>("fileNameEdit");
+  if (!filename) {
+    dialog->reject();
+    return false;
+  }
+  QStringList quoted;
+  for (const QString& name : names)
+    quoted.push_back('"' + name + '"');
+  filename->setText(quoted.join(' '));
+  QMetaObject::invokeMethod(dialog, "accept");
+  return true;
+}
+
+bool test_path_preferences() {
+  QTemporaryDir fixtures;
+  if (!fixtures.isValid())
+    return false;
+  const QByteArray previous_root = qgetenv("HM_GAME_DIR");
+  absl::Cleanup restore = [&] { qputenv("HM_GAME_DIR", previous_root); };
+  const QString first = fixtures.filePath("first");
+  const QString second = fixtures.filePath("second");
+  const QString empty = fixtures.filePath("empty");
+  const QString sources = fixtures.filePath("video sources");
+  for (const QString& directory : {first + "/shared", second + "/shared", empty, sources})
+    if (!QDir().mkpath(directory))
+      return false;
+  for (const auto& [root, points] : {std::make_pair(first, 350), std::make_pair(second, 450)}) {
+    QFile config(root + "/shared/config.yaml");
+    if (!config.open(QIODevice::WriteOnly))
+      return false;
+    config.write(QString("hstream_ui:\n  stitching_calibration:\n    control_points: %1\n").arg(points).toUtf8());
+  }
+  const QStringList videos{"first clip.mp4", "second clip.mp4"};
+  for (const QString& video : videos)
+    if (!write_fake_video(QDir(sources).filePath(video)))
+      return false;
+  qputenv("HM_GAME_DIR", first.toLocal8Bit());
+  auto choose_root = [](HStreamWindow* window, const QString& root) {
+    return with_path_dialog(window->findChild<QPushButton*>("browseGameRootButton"), [&](QFileDialog* dialog) {
+      return accept_path_dialog(dialog, QFileInfo(root).absolutePath(), {QFileInfo(root).fileName()});
+    });
+  };
+  auto check_runner_root = [](HStreamWindow* window, const QString& root) {
+    for (auto* checkbox : window->findChildren<QCheckBox*>()) {
+      if (checkbox->objectName().startsWith("outputToggle_"))
+        checkbox->setChecked(false);
+    }
+    window->findChild<QCheckBox*>("showCropDialogCheck")->setChecked(false);
+    window->findChild<QCheckBox*>("showLevelingDialogCheck")->setChecked(false);
+    auto* mode = window->findChild<QComboBox*>("runModeCombo");
+    mode->setCurrentIndex(mode->findData("stitch-calibration"));
+    activate(window->findChild<QPushButton*>("startPipelineButton"));
+    const bool started = QTest::qWaitFor([&] { return window->pipelineStateText() == "PLAYING"; }, 5000);
+    const bool correct = HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HM_GAME_DIR") == root;
+    auto* root_button = window->findChild<QPushButton*>("browseGameRootButton");
+    const bool locked = !root_button->isEnabled();
+    activate(window->findChild<QPushButton*>("stopPipelineButton"));
+    const bool stopped = QTest::qWaitFor([&] { return window->pipelineStateText() == "STOPPED"; }, 5000);
+    return expect(
+        started && correct && locked && stopped && root_button->isEnabled(),
+        "Playback must use the selected root and lock root changes until Stop");
+  };
+  {
+    HStreamWindow window;
+    window.show();
+    if (!expect(window.gameDirectoryText() == first + "/shared", "Environment root must be used at startup") ||
+        !choose_root(&window, second) ||
+        !expect(
+            window.gameDirectoryText() == second + "/shared" &&
+                window.findChild<QSpinBox*>("controlPointsSpin")->value() == 450,
+            "Switching roots must reload settings even for the same game ID"))
+      return false;
+    auto* root_button = window.findChild<QPushButton*>("browseGameRootButton");
+    if (!with_path_dialog(
+            root_button,
+            [&](QFileDialog* dialog) {
+              const bool correct = dialog->directory().absolutePath() == second;
+              dialog->reject();
+              return correct;
+            }) ||
+        !expect(window.gameDirectoryText() == second + "/shared", "Cancel must keep the game root"))
+      return false;
+    auto* add = window.findChild<QPushButton*>("addVideoButton");
+    activate(window.findChild<QRadioButton*>("videoRole_left"));
+    if (!with_path_dialog(
+            add,
+            [&](QFileDialog* dialog) {
+              if (dialog->fileMode() != QFileDialog::ExistingFiles) {
+                dialog->reject();
+                return false;
+              }
+              return accept_path_dialog(dialog, sources, videos);
+            }) ||
+        !expect(
+            window.videoSetCount() == 2 && window.findChild<QLineEdit*>("videoPathEdit")->text().isEmpty(),
+            "Add must import both selected videos and clear successful selections"))
+      return false;
+    const YAML::Node saved = YAML::LoadFile((second + "/shared/config.yaml").toStdString());
+    if (!expect(
+            saved["hstream_ui"]["video_roles"]["left"].size() == 2,
+            "All selected files must retain the selected camera role"))
+      return false;
+    if (!with_path_dialog(
+            add,
+            [&](QFileDialog* dialog) {
+              const bool correct = dialog->directory().absolutePath() == sources;
+              dialog->reject();
+              return correct;
+            }) ||
+        !expect(window.videoSetCount() == 2, "Cancel must not import additional files"))
+      return false;
+    auto* browse = window.findChild<QPushButton*>("browseVideoButton");
+    if (!with_path_dialog(browse, [&](QFileDialog* dialog) { return accept_path_dialog(dialog, sources, videos); }))
+      return false;
+    const QString missing = QDir(sources).filePath(videos.last());
+    if (!QFile::remove(missing))
+      return false;
+    activate(add);
+    auto* video_path = window.findChild<QLineEdit*>("videoPathEdit");
+    if (!expect(video_path->text() == missing, "Only failed files should remain selected for retry") ||
+        !write_fake_video(missing))
+      return false;
+    const QString typed = QDir(sources).filePath("typed clip.mp4");
+    if (!write_fake_video(typed))
+      return false;
+    activate(window.findChild<QRadioButton*>("videoRole_right"));
+    video_path->setText(typed);
+    activate(add);
+    if (!expect(window.videoSetCount() == 3 && video_path->text().isEmpty(),
+                "Typing a path must replace the pending browser selection"))
+      return false;
+    const QString old_marker = first + "/shared/matches.png";
+    const QString selected_marker = second + "/shared/matches.png";
+    if (!write_fake_video(old_marker) || !write_fake_video(selected_marker))
+      return false;
+    qputenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS", "1");
+    activate(window.findChild<QPushButton*>("cleanStitchingButton"));
+    qunsetenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS");
+    if (!expect(
+            QFile::exists(old_marker) && !QFile::exists(selected_marker),
+            "Stitching cleanup must touch only the selected root, not the inherited root") ||
+        !check_runner_root(&window, second))
+      return false;
+  }
+  {
+    HStreamWindow overridden;
+    if (!expect(overridden.gameDirectoryText() == first + "/shared", "Environment must override the saved UI root"))
+      return false;
+  }
+  qunsetenv("HM_GAME_DIR");
+  {
+    HStreamWindow restored;
+    restored.show();
+    if (!expect(restored.gameDirectoryText() == second + "/shared", "A new window must restore the saved root") ||
+        !check_runner_root(&restored, second))
+      return false;
+    auto* browse = restored.findChild<QPushButton*>("browseVideoButton");
+    if (!with_path_dialog(
+            browse,
+            [&](QFileDialog* dialog) {
+              const bool correct = dialog->directory().absolutePath() == sources;
+              dialog->reject();
+              return correct;
+            }) ||
+        !choose_root(&restored, empty) ||
+        !expect(
+            restored.gameIdText().isEmpty() && restored.videoSetCount() == 0 && restored.gameDirectoryText() == empty &&
+                restored.windowTitle() == "HStream UI",
+            "An empty root must clear the old game, video list and window title"))
+      return false;
+    restored.findChild<QLineEdit*>("gameIdEdit")->setText("new-game");
+    activate(restored.findChild<QPushButton*>("createGameButton"));
+    if (!expect(
+            QDir(empty + "/new-game").exists() && !QDir(second + "/new-game").exists(),
+            "New games must be created under the selected root"))
+      return false;
+  }
+  return true;
+}
+
 bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -9625,6 +9833,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
   auto* run_autooptimizer = require_child<QCheckBox>(window, "runAutooptimizerCheck");
   auto* compression = require_child<QDoubleSpinBox>(window, "generalPaniniCompressionSpin");
+  auto* camera_auto = require_child<QCheckBox>(window, "cameraAutoFovCheck");
+  auto* lens_auto = require_child<QCheckBox>(window, "inputLensAutoCheck");
   auto* top_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniTopSqueezeSpin");
   auto* bottom_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniBottomSqueezeSpin");
   auto* auto_fov = require_child<QCheckBox>(window, "projectionAutoFovCheck");
@@ -9632,8 +9842,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* auto_canvas = require_child<QCheckBox>(window, "projectionAutoCanvasCheck");
   auto* auto_crop = require_child<QCheckBox>(window, "projectionAutoCropCheck");
   if (!game_id || !create || !reset || !save || !control_point_matcher || !mapping_backend || !camera_configuration ||
-      !camera_horizontal_fov || !camera_vertical_fov || !projection || !run_autooptimizer || !compression ||
-      !top_squeeze || !bottom_squeeze || !auto_fov || !horizontal_fov || !auto_canvas || !auto_crop) {
+      !camera_horizontal_fov || !camera_vertical_fov || !camera_auto || !lens_auto || !projection ||
+      !run_autooptimizer || !compression || !top_squeeze || !bottom_squeeze || !auto_fov || !horizontal_fov ||
+      !auto_canvas || !auto_crop) {
     return false;
   }
   const QString original_game_id = game_id->text();
@@ -9641,7 +9852,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(create);
   const bool camera_defaults_available = expect(
       camera_configuration->count() == HStreamWindowTestAccess::cameraConfigurationCount(window) &&
-          camera_configuration->currentData().toString() == "auto" &&
+          camera_configuration->currentData().toString() == "auto" && camera_auto->isChecked() &&
+          lens_auto->isChecked() &&
           camera_horizontal_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).horizontal_fov &&
           camera_vertical_fov->value() == HStreamWindowTestAccess::defaultCameraSelection(window).vertical_fov,
       "A new game must expose all camera presets and select Auto");
@@ -9662,14 +9874,17 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   QApplication::processEvents();
   const bool hero_defaults_applied = expect(
-      camera_horizontal_fov->value() == 108.0 && camera_vertical_fov->value() == 90.0,
-      "Selecting GoPro Hero 11 must load its horizontal and vertical source FOV defaults");
+      camera_horizontal_fov->value() == 108.0 && camera_vertical_fov->value() == 90.0 && camera_auto->isChecked() &&
+          lens_auto->isChecked() && camera_horizontal_fov->isReadOnly(),
+      "Selecting GoPro Hero 11 must keep both Auto policies on with its fallback source FOV defaults");
   camera_configuration->setCurrentIndex(camera_configuration->findData("insta-ace-pro-2"));
   QApplication::processEvents();
   const bool ace_defaults_applied = expect(
       camera_horizontal_fov->value() == 108.0 && camera_vertical_fov->value() == 90.0,
       "Selecting Insta Ace Pro 2 must load its horizontal and vertical source FOV defaults");
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-mission-1"));
+  camera_auto->setChecked(false);
+  lens_auto->setChecked(false);
   camera_horizontal_fov->setValue(126.5);
   camera_vertical_fov->setValue(94.5);
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
@@ -9781,14 +9996,17 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
                 "Reopening must retain Auto metadata refresh after releasing a snapshot"))
       return false;
   }
-  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
-  if (!expect(!input_b->isReadOnly() && !camera_horizontal_fov->isReadOnly() && input_projection->isEnabled(),
-              "Manual camera profiles must restore editable optics after Auto"))
+  camera_configuration->setCurrentIndex(camera_configuration->findData("manual"));
+  if (!expect(
+          !camera_auto->isChecked() && !lens_auto->isChecked() && !input_b->isReadOnly() &&
+              !camera_horizontal_fov->isReadOnly() && input_projection->isEnabled(),
+          "The Manual profile must turn off both Auto policies and restore editable optics"))
     return false;
-
-  auto* camera_auto = require_child<QCheckBox>(window, "cameraAutoFovCheck");
-  auto* lens_auto = require_child<QCheckBox>(window, "inputLensAutoCheck");
-  if (!camera_auto || !lens_auto)
+  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
+  if (!expect(
+          camera_auto->isChecked() && lens_auto->isChecked() && input_b->isReadOnly() &&
+              camera_horizontal_fov->isReadOnly() && !input_projection->isEnabled(),
+          "Selecting a named profile after Manual must re-enable both Auto policies"))
     return false;
   for (bool fov_automatic : {true, false}) {
     camera_auto->setChecked(fov_automatic);
@@ -10129,6 +10347,64 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(
           startup_crop_opened && startup_cancelled,
           "Unreviewed calibration must prompt with no cropping even after an inactive projection was edited")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
+  // A complete status and unchanged controls do not prove that the published
+  // calibration uses the current profile's optics. Startup must reach the
+  // runner so it can recalibrate before offering an unrenderable crop review.
+  for (const QByteArray& stale_provenance : {
+           QByteArray(crop_provenance).replace("version=10", "version=12") +
+               "input-lens={projection: full-frame-fisheye, optimization: fixed}\n",
+           QByteArray(crop_provenance).replace("projection=cylindrical", "projection=general-panini"),
+           QByteArray(crop_provenance).replace("camera-horizontal-fov=126.5", "camera-horizontal-fov=108")}) {
+    if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), stale_provenance))
+      return false;
+    bool deferred_review = false;
+    const bool stale_dialog_opened = with_projection_crop_dialog(
+        [&]() { deferred_review = HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
+        [](ProjectionCropDialog*) {});
+    if (!expect(
+            deferred_review && !stale_dialog_opened,
+            "Stale calibration must defer crop review until startup calibrates the current inputs")) {
+      qputenv("PATH", crop_original_path);
+      return false;
+    }
+  }
+  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance))
+    return false;
+  // Version 7 predates explicit rotation/crop fields, but the runner can reuse
+  // its default zero-rotation/full-crop view. It still needs startup review.
+  const QByteArray legacy_provenance =
+      crop_provenance.left(crop_provenance.indexOf("projection-rotation-0=")).replace("version=10", "version=7");
+  auto legacy_config = YAML::Clone(crop_preview_config);
+  legacy_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
+  legacy_config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0, 1, 0, 1]");
+  std::ofstream(config_path) << YAML::Dump(legacy_config) << '\n';
+  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), legacy_provenance))
+    return false;
+  activate(create);
+  bool legacy_ready = true;
+  const bool legacy_dialog_opened = with_projection_crop_dialog(
+      [&]() { legacy_ready = HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
+      [](ProjectionCropDialog*) {});
+  if (!expect(
+          legacy_dialog_opened && !legacy_ready,
+          "Reusable legacy calibration must still prompt for startup crop review")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
+  std::ofstream(config_path) << YAML::Dump(crop_preview_config) << '\n';
+  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance))
+    return false;
+  activate(create);
+  auto* play = require_child<QPushButton>(window, "startPipelineButton");
+  auto* progress = require_child<QProgressBar>(window, "playbackProgress");
+  const bool cancelled_play = play && progress && with_projection_crop_dialog(
+      [&]() { activate(play); }, [](ProjectionCropDialog*) {});
+  if (!expect(
+          cancelled_play && progress->property("playbackState").toString() == "stopped" && progress->maximum() > 0,
+          "Cancelling crop review from Play must stop startup without displaying a playback error")) {
     qputenv("PATH", crop_original_path);
     return false;
   }
@@ -17324,6 +17600,35 @@ bool test_process_pause_protocol() {
 
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
+  // Read-only smoke for a saved game whose crop review should be deferred or
+  // already satisfied. Load the real window's effective profile defaults.
+  if (argc == 3 && QByteArray(argv[1]) == "--crop-preflight") {
+    const QFileInfo game(QString::fromLocal8Bit(argv[2]));
+    const QString config_path = QDir(game.absoluteFilePath()).filePath("config.yaml");
+    QFile config(config_path);
+    if (!game.isDir() || !config.open(QIODevice::ReadOnly))
+      return 1;
+    const QByteArray original_config = config.readAll();
+    config.close();
+    const QByteArray original_revision = RinkLevelingDialog::sourceRevision(game.absoluteFilePath());
+    qputenv("HM_GAME_DIR", game.absolutePath().toLocal8Bit());
+    QApplication app(argc, argv);
+    HStreamWindow window;
+    window.findChild<QLineEdit*>("gameIdEdit")->setText(game.fileName());
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    window.show();
+    bool ready = false;
+    const bool opened = with_projection_crop_dialog(
+        [&]() { ready = HStreamWindowTestAccess::ensureProjectionCropReviewed(&window); },
+        [](ProjectionCropDialog*) {});
+    std::cout << window.logText().toStdString() << '\n';
+    return expect(
+               ready && !opened && config.open(QIODevice::ReadOnly) && config.readAll() == original_config &&
+                   RinkLevelingDialog::sourceRevision(game.absoluteFilePath()) == original_revision,
+               "Saved game must pass crop preflight without a dialog or changes to its calibration")
+        ? 0
+        : 1;
+  }
   if (!test_path_scoped_auto_rollback() || !test_matching_development_runtime_selection() ||
       !test_stitching_canvas_constraint_decisions() || !test_diagnostic_capture_attempt_paths()) {
     return 1;
@@ -17351,9 +17656,11 @@ int main(int argc, char** argv) {
 
   QTemporaryDir game_root;
   QTemporaryDir source_root;
-  if (!game_root.isValid() || !source_root.isValid()) {
+  QTemporaryDir preferences;
+  if (!game_root.isValid() || !source_root.isValid() || !preferences.isValid()) {
     return 1;
   }
+  qputenv("XDG_CONFIG_HOME", preferences.path().toLocal8Bit());
   qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
   qunsetenv("USE_NEW_NVSTREAMMUX");
   const QString fake_runner = source_root.path() + "/hstream-ui-fake-runner.sh";
@@ -17366,6 +17673,15 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (!test_path_preferences())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PATHS_ONLY"))
+    return 0;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_GAME_SETUP_ONLY")) {
+    HStreamWindow window;
+    return test_game_setup(&window, source_root.path()) ? 0 : 1;
+  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_JOB_EXPORT_ONLY"))
     return test_job_export() ? 0 : 1;
   if (!test_process_pause_protocol()) {

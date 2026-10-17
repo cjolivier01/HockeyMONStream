@@ -10,9 +10,11 @@ separates two independent controls:
   verified matching mode profile, then the selected profile's baseline lens
   defaults (automatic fitting for the Auto profile).
 
-Either can be turned off to retain/edit that component manually. Selecting a
-named profile loads its defaults and starts with both Auto controls off;
-selecting Auto turns both on. Source descriptions report MP4, mode profile,
+Either can be turned off to retain/edit that component manually. Selecting Auto
+or a named camera profile enables both Auto controls; the selected profile supplies
+fallback values when metadata is unavailable. Selecting Manual turns both off.
+Opening a saved configuration preserves its existing independent choices.
+Source descriptions report MP4, mode profile,
 baseline, manual values or a saved experiment snapshot independently. Missing
 lens coefficients no longer discard valid recorded FOV. Unsupported dynamic
 warps or ambiguous metadata still cannot establish trustworthy static coverage.

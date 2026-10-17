@@ -5,6 +5,9 @@
 set -euo pipefail
 
 CUDA_COMPAT_REPOSITORY='https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/'
+# Prefix shared by the release-native and the Ubuntu 24.04 compatibility CUDA
+# repositories, which supply the CUDA/TensorRT dependencies of both artifacts.
+CUDA_REPOSITORY_PREFIX='https://developer.download.nvidia.com/compute/cuda/repos/'
 CUDA_COMPAT_KEYRING='/usr/share/keyrings/hstream-cuda-ubuntu2404-compat.gpg'
 CUDA_COMPAT_SOURCE='/etc/apt/sources.list.d/hstream-cuda-ubuntu2404-x86_64.list'
 CUDA_LEGACY_COMPAT_SOURCE='/etc/apt/sources.list.d/cuda-ubuntu2404-x86_64.list'
@@ -326,6 +329,145 @@ publish_cuda_compat_source() {
   sync -f "$(dirname "${target}")"
 }
 
+# APT fails the whole update when any single configured repository fails, and
+# long-lived hosts accumulate third-party repositories whose subscriptions
+# lapse or whose suites are withdrawn (packages.xilinx.com now answers 401 for
+# noble).  APT keeps the previously fetched lists for those, so the condition
+# is neither caused by this installation nor repairable from it; aborting would
+# make every deployment to such a host fail for an unrelated reason.  Tolerate
+# and report failures APT attributes to a repository.  Failures that name no
+# repository -- lock contention, an unparsable sources file -- stay fatal, as
+# does one that names a repository but describes a local fault, and as does a
+# failure of any repository named in "$@", which the caller depends on for the
+# packages it is about to install.
+run_apt_update() {
+  local -a required=("$@")
+  local status tee_status diagnostics grep_status=0
+  local line warning uri repository canonical prefix
+  local -a stale=() required_failures=() unattributed=()
+  local -A seen=()
+
+  # The capture lives in the variable the EXIT trap clears, so that a signal
+  # during the update does not leave it behind.
+  apt_update_log="$(mktemp "${TMPDIR:-/tmp}/hstream-apt-update.XXXXXX.log")"
+  # The diagnostics below are matched by spelling, so pin the message locale.
+  local -x LC_ALL=C
+  if apt-get update 2>&1 | tee "${apt_update_log}"; then
+    rm -f "${apt_update_log}"
+    apt_update_log=""
+    return 0
+  fi
+  # One statement: any command in between, an assignment included, replaces
+  # PIPESTATUS with its own single-element status.
+  local -a pipe_status=("${PIPESTATUS[@]}")
+  status="${pipe_status[0]}"
+  tee_status="${pipe_status[1]:-0}"
+
+  # The verdict is only as good as the capture.  A log cut short -- /var
+  # filling as APT reports the first of several failures -- would hide a fatal
+  # line behind a tolerable one, so a capture that did not complete is fatal.
+  diagnostics="$(grep -E '^[EW]: ' "${apt_update_log}")" || grep_status=$?
+  rm -f "${apt_update_log}"
+  apt_update_log=""
+  if [[ "${tee_status}" -ne 0 || "${grep_status}" -gt 1 ]]; then
+    echo "ERROR: apt-get update failed with status ${status}; its output could not be recorded." >&2
+    return 1
+  fi
+
+  while IFS= read -r line; do
+    if [[ -z "${line}" ]]; then
+      continue
+    fi
+    # The closing summary only restates the per-repository errors above it.
+    if [[ "${line}" == 'E: Some index files failed to download.'* ]]; then
+      continue
+    fi
+    # APT reports some fetch failures as warnings, which do not fail the
+    # update.  An unrelated repository is tolerated either way, so a warning
+    # matters only when it names one this installation requires -- and an
+    # ordinary warning, a legacy keyring or a changed label, is not a failure
+    # at all and must not be mistaken for one.
+    warning=0
+    if [[ "${line}" == 'W: '* ]]; then
+      case "${line}" in
+        'W: Failed to fetch '* | 'W: The repository '*) warning=1 ;;
+        *) continue ;;
+      esac
+    fi
+    # Both spellings carry the repository: "Failed to fetch" names an index
+    # file, and "The repository '<uri> <suite> ...'" names the base.  Require a
+    # transport so that a message merely containing a colon is not mistaken for
+    # an attributed failure and silently downgraded to a warning.
+    uri="$(grep -oE "(file:/|[a-z][a-z0-9+.-]*://)[^[:space:]'\"]+" <<<"${line}" | head -n 1 || true)"
+    if [[ -z "${uri}" ]]; then
+      if [[ "${warning}" -eq 0 ]]; then
+        unattributed+=("${line}")
+      fi
+      continue
+    fi
+    # A fetch failure can name a URI and still describe a local fault: a full
+    # disk, a read-only /var.  APT attributes those to whatever it happened to
+    # be downloading, but no repository is to blame and the installation below
+    # would hit the same fault, so match the cause instead of the URI.
+    if [[ "${line}" == *'No space left on device'* ||
+          "${line}" == *'Read-only file system'* ||
+          "${line}" == *'Input/output error'* ||
+          "${line}" == *'Error writing to file'* ]]; then
+      if [[ "${warning}" -eq 0 ]]; then
+        unattributed+=("${line}")
+      fi
+      continue
+    fi
+    repository="${uri%%/dists/*}"
+    repository="${repository%/InRelease}"
+    repository="${repository%/Release.gpg}"
+    repository="${repository%/Release}"
+    repository="${repository%/}"
+    # Match the required repositories against the untruncated URI: every index
+    # below a repository starts with that repository's base, while shortening
+    # to the base can drop a required URI below its own prefix.  The truncated
+    # spelling is what the warning should name, not what it should match.
+    canonical="${uri,,}"
+    canonical="${canonical/#http:/https:}"
+    if [[ "${#required[@]}" -gt 0 ]]; then
+      for prefix in "${required[@]}"; do
+        if [[ "${canonical}" == "${prefix}"* ]]; then
+          required_failures+=("${line}")
+          continue 2
+        fi
+      done
+    fi
+    # Past this point the line is an unrelated repository's: a warning about
+    # one is just a warning, and only a real failure makes its lists stale.
+    if [[ "${warning}" -eq 1 ]]; then
+      continue
+    fi
+    if [[ -z "${seen[${repository}]:-}" ]]; then
+      seen["${repository}"]=1
+      stale+=("${repository}")
+    fi
+  done <<<"${diagnostics}"
+
+  if [[ "${#required_failures[@]}" -gt 0 ]]; then
+    echo "ERROR: apt-get update failed for a repository this installation requires:" >&2
+    printf '  %s\n' "${required_failures[@]}" >&2
+    return 1
+  fi
+  if [[ "${#unattributed[@]}" -gt 0 ]]; then
+    echo "ERROR: apt-get update failed with status ${status}:" >&2
+    printf '  %s\n' "${unattributed[@]}" >&2
+    return 1
+  fi
+  if [[ "${#stale[@]}" -eq 0 ]]; then
+    echo "ERROR: apt-get update failed with status ${status}." >&2
+    return 1
+  fi
+  echo "WARNING: apt-get update could not refresh these repositories; APT kept their previous package lists:" >&2
+  printf '  %s\n' "${stale[@]}" >&2
+  echo "WARNING: installation continues. Repair or remove them on this host if a package below cannot be resolved." >&2
+  return 0
+}
+
 # Allow the behavior test to source the production implementation without
 # entering the privileged installer workflow.
 if [[ "${HSTREAM_INSTALLER_SOURCE_ONLY:-0}" == "1" ]]; then
@@ -468,6 +610,7 @@ for deb in "${HSTREAM_DEB}" "${DEEPSTREAM_DEB}"; do
 done
 
 export DEBIAN_FRONTEND=noninteractive
+apt_update_log=""
 keyring_deb=""
 compat_keyring_deb=""
 native_dir=""
@@ -482,6 +625,7 @@ cleanup() {
   if [[ "${status}" -ne 0 && "${compat_source_transition_committed}" -eq 0 ]]; then
     restore_compat_source_transition
   fi
+  if [[ -n "${apt_update_log}" ]]; then rm -f "${apt_update_log}"; fi
   if [[ -n "${keyring_deb}" ]]; then rm -f "${keyring_deb}"; fi
   if [[ -n "${compat_keyring_deb}" ]]; then rm -f "${compat_keyring_deb}"; fi
   if [[ -n "${native_dir}" ]]; then rm -rf "${native_dir}"; fi
@@ -505,7 +649,13 @@ if [[ "${UBUNTU_RELEASE}" == "26.04" ]]; then
   disable_cuda_compat_sources "" "${CUDA_LEGACY_COMPAT_SOURCE}"
 fi
 
-apt-get update
+# The CUDA repositories are not required yet: an existing NVIDIA source whose
+# key is missing is exactly what installing cuda-keyring below repairs.  A
+# distribution archive that could not be refreshed is reported and the install
+# continues on whatever lists APT already had, which is the point of tolerating
+# it: the next line fails if those lists cannot supply the bootstrap packages,
+# and succeeds if they can.
+run_apt_update
 apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 
 # Keep this in sync with scripts/remove_deb_dependencies.py, which relaxes the
@@ -701,7 +851,7 @@ fi
 
 dpkg -i "${keyring_deb}"
 
-apt-get update
+run_apt_update "${CUDA_REPOSITORY_PREFIX}"
 trt_runtime_version="$(apt-cache madison libnvinfer10 \
   | awk '$3 ~ /^10[.]/ && $3 ~ /[+]cuda13[.]2$/ && !found { print $3; found = 1 }')"
 if [[ -z "${trt_runtime_version}" ]]; then

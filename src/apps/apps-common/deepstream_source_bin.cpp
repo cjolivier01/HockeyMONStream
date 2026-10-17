@@ -516,6 +516,19 @@ void update_uri_playlist_calibration_phase(NvDsSrcParentBin* parent, gboolean ac
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
 }
 
+void update_uri_playlist_operator_selection_phase(NvDsSrcParentBin* parent, gboolean active) {
+  if (!parent || !parent->uri_playlist_barrier_initialized)
+    return;
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  if (active)
+    ++parent->uri_playlist_operator_selection_depth;
+  else if (parent->uri_playlist_operator_selection_depth > 0)
+    --parent->uri_playlist_operator_selection_depth;
+  set_uri_playlist_waits_suspended_locked(
+      parent, URI_PLAYLIST_WAIT_SUSPEND_OPERATOR_SELECTION, parent->uri_playlist_operator_selection_depth > 0);
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+}
+
 gint64 uri_playlist_calibration_idle_time_us(NvDsSrcParentBin* parent) {
   if (!parent || !parent->uri_playlist_barrier_initialized)
     return G_MAXINT64;
@@ -4398,6 +4411,7 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   // a reason still held would leave the clock stopped for the whole next run.
   bin->uri_playlist_wait_suspend_mask = 0;
   bin->uri_playlist_calibration_depth = 0;
+  bin->uri_playlist_operator_selection_depth = 0;
   bin->uri_playlist_calibration_finished_us = 0;
   bin->uri_playlist_pause_started_us = 0;
   bin->uri_playlist_paused_us = 0;

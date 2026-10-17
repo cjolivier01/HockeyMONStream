@@ -3,6 +3,7 @@
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import unittest
 from pathlib import Path
 
 TOOL = str(Path(sys.argv.pop(1)).resolve())
+PACKAGER = Path(sys.argv.pop(1)).resolve()
 
 
 class JobScriptTest(unittest.TestCase):
@@ -52,8 +54,14 @@ class JobScriptTest(unittest.TestCase):
             "--working-directory",
             str(self.root),
         ]
+        self.runtime_bin = self.root / "runtime-bin"
+        self.runtime_bin.mkdir()
+        (self.runtime_bin / "hstream-finalize").symlink_to(
+            Path(TOOL).parent.parent / "hstream-finalize/hstream-finalize"
+        )
         self.env = dict(
             os.environ,
+            PATH=str(self.runtime_bin) + os.pathsep + os.environ["PATH"],
             JOB_TEST_OUTPUT=str(self.output),
             HSTREAM_UI_PARENT_PID="999999",
             HM_OUTPUT_WORK_DIR=str(self.root / "work 'quoted'"),
@@ -158,7 +166,13 @@ class JobScriptTest(unittest.TestCase):
         self.assertEqual(actual["env"]["HSTREAM_RINK_LEVELING_FLOW"], "1")
         self.assertEqual(actual["env"]["HSTREAM_CALIBRATION_PENDING"], "1")
         self.assertEqual(actual["env"]["HSTREAM_CALIBRATION_INVALIDATION_ID"], "server-generation")
-        self.assertIn(str(self.root / "private runtime"), actual["env"]["GST_REGISTRY"])
+        # The runner owns plugin and registry discovery; the script only hands
+        # it the supervisor's private cache, resolved to a real directory.
+        self.assertEqual(
+            actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"],
+            os.path.realpath(self.root / "private runtime"),
+        )
+        self.assertNotIn("nonexistent-finalizer", script.read_text())
         self.assertFalse((self.root / "INJECTED").exists())
 
     def test_interactive_requires_supervisor_runtime_directory(self):
@@ -355,164 +369,102 @@ class JobScriptTest(unittest.TestCase):
         )
         self.assertEqual(script.read_bytes(), original)
 
-    def test_source_and_installed_layouts_export_direct_exact_runner(self):
+    def test_export_uses_execution_host_path_without_export_host_files(self):
         for installed in (True, False):
-            layout = self.root / ("installed" if installed else "workspace")
-            game = (
-                self.root
-                / ("installed-games" if installed else "source-games")
-                / "help"
-            )
-            game.mkdir(parents=True)
-            (game / "config.yaml").write_text(
-                json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}})
-            )
-            bin_dir = (
-                layout / "bin"
-                if installed
-                else layout / "bazel-out/k8-fastbuild/bin/src/apps/hstream-job"
-            )
-            bin_dir.mkdir(parents=True)
-            tool = bin_dir / "hstream-job"
-            shutil.copy2(TOOL, tool)
-            runner = (
-                bin_dir / "hstream-cli"
-                if installed
-                else bin_dir.parent / "hstream-cli/hstream-cli"
-            )
-            runner.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(self.runner, runner)
-            finalizer = (bin_dir / "hstream-finalize" if installed
-                         else bin_dir.parent / "hstream-finalize/hstream-finalize")
-            finalizer.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(Path(TOOL).parent.parent / "hstream-finalize/hstream-finalize", finalizer)
-            wrapper_called = layout / "wrapper-called"
-            wrapper = layout / "run.sh"
-            wrapper.write_text(f"#!/bin/sh\ntouch {wrapper_called}\nexit 99\n")
-            wrapper.chmod(0o700)
-            if installed:
-                (layout / "lib/gst-plugins").mkdir(parents=True)
-            else:
-                # A mutable workspace symlink pointing elsewhere must not
-                # redirect the job away from its exact sibling output tree.
-                unrelated = layout / "bazel-out/k8-opt/bin"
-                unrelated.mkdir(parents=True)
-                (layout / "bazel-bin").symlink_to(unrelated, target_is_directory=True)
-                selected_plugins = (
-                    layout / "bazel-out/k8-fastbuild/bin/src/gst-plugins/fake"
+            with self.subTest(installed=installed):
+                layout = self.root / ("installed" if installed else "workspace")
+                bin_dir = (layout / "bin" if installed else
+                           layout / "bazel-out/k8-fastbuild/bin/src/apps/hstream-job")
+                bin_dir.mkdir(parents=True)
+                tool = bin_dir / "hstream-job"
+                shutil.copy2(TOOL, tool)
+                # Export must not need any sibling binaries or source configs.
+                # Neither the export-time PATH nor its baseline belongs in the job.
+                export_bin = layout / "export-bin"
+                export_bin.mkdir()
+                for name in ("hstream-cli", "hstream-finalize"):
+                    stub = export_bin / name
+                    stub.write_text("#!/bin/sh\nexit 99\n")
+                    stub.chmod(0o700)
+                export_env = dict(self.env, PATH=str(export_bin),
+                                  HM_CONFIG_ROOT=str(layout / "configs"))
+                result = subprocess.run(
+                    [str(tool), "--game-dir", str(self.game), "--force"],
+                    cwd=layout, env=export_env, text=True, capture_output=True,
                 )
-                selected_plugins.mkdir(parents=True)
-                (selected_plugins / "libgstselected.so").write_bytes(b"selected")
-                unrelated_plugins = unrelated / "src/gst-plugins/fake"
-                unrelated_plugins.mkdir(parents=True)
-                (unrelated_plugins / "libgstunrelated.so").write_bytes(b"unrelated")
-                # ARM wheels expose a versioned core in capi with no SONAME
-                # symlink there; Bazel's SONAME link points into that directory.
-                runtime_source = layout / "pinned-runtime/capi"
-                runtime_source.mkdir(parents=True)
-                (runtime_source / "libonnxruntime.so.1.30.0").write_bytes(b"core")
-                for provider in (
-                    "libonnxruntime_providers_shared.so",
-                    "libonnxruntime_providers_cuda.so",
-                ):
-                    (runtime_source / provider).write_bytes(provider.encode())
-                solib = (
-                    layout / "bazel-out/k8-fastbuild/bin/_solib_k8/hstream_onnxruntime"
-                )
-                solib.mkdir(parents=True)
-                (solib / "libonnxruntime.so.1").symlink_to(
-                    runtime_source / "libonnxruntime.so.1.30.0"
-                )
-            config = layout / "configs/ds_hockey_app_config.yaml"
-            config.parent.mkdir(parents=True)
-            config.write_text("pipeline: {}\n")
-            if not installed:
-                runfile = Path(
-                    str(tool) + ".runfiles/kstream/configs/ds_hockey_app_config.yaml"
-                )
-                runfile.parent.mkdir(parents=True)
-                runfile.symlink_to(config)
-            env = dict(self.env)
-            env.pop("BUILD_WORKSPACE_DIRECTORY", None)
-            env["HOME"] = str(self.root / "home")
-            Path(env["HOME"]).mkdir(exist_ok=True)
-            result = subprocess.run(
-                [str(tool), "--game-dir", str(game), "--force"],
-                cwd="/",
-                env=env,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            script_text = (game / "hstream-job.sh").read_text()
-            self.assertNotIn("run.sh", script_text)
-            self.assertIn(str(runner.resolve()), script_text)
-            run = subprocess.run(
-                [str(game / "hstream-job.sh")], cwd="/", env=env, check=False
-            )
-            self.assertEqual(run.returncode, 7)
-            self.assertFalse(wrapper_called.exists())
-            actual = json.loads(self.output.read_text())
-            self.assertEqual(actual["cwd"], str(layout))
-            self.assertEqual(actual["argv"][:2], ["-g", "help"])
-            self.assertEqual(actual["argv"].count("-c"), 1)
-            self.assertEqual(
-                actual["argv"][actual["argv"].index("-c") + 1], str(config)
-            )
-            self.assertEqual(actual["env"]["USE_NEW_NVSTREAMMUX"], "yes")
-            self.assertIn(
-                "gstreamer-1.0/registry.hstream", actual["env"]["GST_REGISTRY"]
-            )
-            self.assertNotIn("HSTREAM_JOB_RUNTIME_ROOT", actual["env"])
-            self.assertNotIn("HSTREAM_JOB_BAZEL_BIN", actual["env"])
-            run_dir = Path(actual["env"]["HSTREAM_JOB_MANIFEST"]).parent
-            self.assertEqual(Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"]), run_dir / "runtime")
-            self.assertFalse((layout / ".cache").exists())
-            if installed:
-                self.assertIn(
-                    str(layout / "lib/gst-plugins"),
-                    actual["env"].get("GST_PLUGIN_PATH", ""),
-                )
-            else:
-                self.assertIn(
-                    str(selected_plugins), actual["env"].get("LD_LIBRARY_PATH", "")
-                )
-                self.assertNotIn(
-                    str(unrelated), actual["env"].get("LD_LIBRARY_PATH", "")
-                )
-                staged = Path(actual["env"]["LD_LIBRARY_PATH"].split(":")[0])
-                self.assertEqual((staged / "libonnxruntime.so.1").read_bytes(), b"core")
-                for provider in (
-                    "libonnxruntime_providers_shared.so",
-                    "libonnxruntime_providers_cuda.so",
-                ):
-                    self.assertEqual(
-                        (staged / provider).resolve(), runtime_source / provider
-                    )
-                # A missing provider must stop before the runner, not leave a
-                # core-only cache which fails later during model loading.
-                (runtime_source / "libonnxruntime_providers_cuda.so").unlink()
-                self.output.unlink()
-                # A failed run is immutable. Export a fresh run to exercise
-                # runtime preparation rather than retrying the previous failure.
-                generated = subprocess.run(
-                    [str(tool), "--game-dir", str(game), "--force"],
-                    cwd="/", env=env, text=True, capture_output=True,
-                )
-                self.assertEqual(generated.returncode, 0, generated.stderr)
-                missing = subprocess.run(
-                    [str(game / "hstream-job.sh")],
-                    cwd="/",
-                    env=env,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                self.assertEqual(missing.returncode, 78)
-                logs = Path(env["HM_OUTPUT_WORK_DIR"]).glob("*/runs/*/pipeline.log")
-                self.assertTrue(any("Missing ONNX Runtime library" in log.read_text() for log in logs))
-                self.assertFalse(self.output.exists())
+                self.assertEqual(result.returncode, 0, result.stderr)
+                script = self.game / "hstream-job.sh"
+                script_text = script.read_text()
+                self.assertNotIn(str(layout), script_text)
+                self.assertNotIn("HM_CONFIG_ROOT", script_text)
+                self.assertNotIn("bazel", script_text.lower())
+                self.assertNotIn("cd --", script_text)
+                self.assertIn("exec 'hstream-finalize'", script_text)
+                self.assertIn(" -- 'hstream-cli'", script_text)
+                shutil.rmtree(layout)
+                runner = self.runtime_bin / "hstream-cli"
+                shutil.copy2(self.runner, runner)
+                runtime_config = self.root / "execution-configs"
+                runtime_config.mkdir(exist_ok=True)
+                (runtime_config / "baseline.yaml").write_text("{}")
+                runtime_env = dict(self.env, HM_CONFIG_ROOT=str(runtime_config))
+                run = subprocess.run([str(script)], cwd="/", env=runtime_env,
+                                     text=True, capture_output=True)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                actual = json.loads(self.output.read_text())
+                self.assertEqual(actual["cwd"], "/")
+                self.assertNotIn("-c", actual["argv"])
+                self.assertEqual(actual["argv"][:3],
+                                 ["-g", self.game.name, "--enable-sources=URI-MULTIPLE"])
+                self.assertEqual(actual["env"]["HM_CONFIG_ROOT"], str(runtime_config))
+                self.assertEqual(actual["env"]["PATH"], runtime_env["PATH"])
+                manifest = Path(actual["env"]["HSTREAM_JOB_MANIFEST"])
+                self.assertEqual(Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"]),
+                                 manifest.parent / "runtime")
+
+    def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
+        install = self.root / "install 'quoted'"
+        (install / "bin").mkdir(parents=True)
+        shutil.copy2(self.runner, install / "bin/hstream-cli")
+        # Exercise the actual Debian launcher without building a package or
+        # replacing system binaries. Only relocate its install prefix.
+        wrapper = PACKAGER.read_text().split("<<'RUNSH'\n", 1)[1].split("\nRUNSH\n", 1)[0]
+        wrapper = wrapper.replace("INSTALL_DIR=/opt/hstream",
+                                  "INSTALL_DIR=" + shlex.quote(str(install)))
+        launcher = self.runtime_bin / "hstream-cli"
+        launcher.write_text(wrapper)
+        launcher.chmod(0o700)
+        for config in (None, str(self.config), self.config.name):
+            for home in (None, str(self.root / "unwritable-home")):
+                with self.subTest(config=config, home=home):
+                    command = [TOOL, "--game-dir", str(self.game), "--force",
+                               "--working-directory", str(self.root)]
+                    if config:
+                        command += ["--config", config]
+                    env = dict(self.env)
+                    if home is None:
+                        env.pop("HOME", None)
+                    else:
+                        Path(home).write_text("not a cache directory")
+                        env["HOME"] = home
+                    exported = subprocess.run(command, cwd=self.root, env=env,
+                                              text=True, capture_output=True)
+                    self.assertEqual(exported.returncode, 0, exported.stderr)
+                    run = subprocess.run([str(self.game / "hstream-job.sh")],
+                                         cwd="/", env=env, text=True, capture_output=True)
+                    self.assertEqual(run.returncode, 7, run.stderr)
+                    actual = json.loads(self.output.read_text())
+                    expected = ["-g", self.game.name]
+                    if config:
+                        expected += ["-c", str(self.config)]
+                    expected += (["--enable-sources=URI-MULTIPLE"] + self.arguments[1:]
+                                 + ["--enable-sinks=ENCODE_FILE", "--encode-job"])
+                    self.assertEqual(actual["argv"], expected)
+                    self.assertEqual(actual["cwd"], str(self.root))
+                    runtime = Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"])
+                    registry = Path(actual["env"]["GST_REGISTRY"])
+                    self.assertEqual(registry.parent, runtime / "gstreamer-1.0")
+                    self.assertTrue(registry.parent.is_dir())
 
     def test_rejected_concurrent_launch_creates_no_runtime_scratch(self):
         self.runner.write_text(

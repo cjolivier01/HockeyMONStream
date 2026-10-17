@@ -3559,7 +3559,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   }
   if (!cfg_files_ || g_strv_length(cfg_files_) == 0) {
     cfg_files_ = g_new0(gchar*, 2);
-    cfg_files_[0] = g_strdup(default_config_file_name_);
+    const auto runtime = hm::pipeline_internal::select_runtime_paths(
+        running_executable_path(nullptr).value_or(fs::path()), fs::current_path());
+    const fs::path default_config = runtime.root / default_config_file_name_;
+    cfg_files_[0] = g_strdup(default_config.c_str());
     global_cleanup_stack.push([this] {
       g_strfreev(cfg_files_);
       cfg_files_ = nullptr;

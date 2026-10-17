@@ -158,12 +158,17 @@ int main(int argc, char** argv) {
       "i w100 h100 f0 v90 y-30 p0 r0 n\"left.png\"\n"
       "i w100 h100 f0 v90 y30 p0 r0 n\"right.png\"\n";
   ok &= write(game.filePath("autooptimiser_out.pto"), pto) && write(game.filePath("config.yaml"), "{}\n");
-  ok &= write(
-      game.filePath("stitching_canvas_provenance"),
-      "version=8\nmapping-backend=nona\nprojection=general-panini\nprojection-parameters=100,0,0\n"
-      "projection-auto-fov=0\nprojection-auto-canvas=1\nprojection-horizontal-fov=180\n"
+  const QByteArray legacy_provenance =
+      "version=7\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=800\nsource-canvas-height=400\n"
+      "canvas-width=800\ncanvas-height=400\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n"
+      "mapping-backend=nona\nprojection=general-panini\nprojection-parameters=100,0,0\n"
+      "projection-auto-fov=0\nprojection-horizontal-fov=180\nprojection-auto-canvas=1\nprojection-auto-crop=0\n"
+      "camera-configuration=gopro-mission-1\ncamera-horizontal-fov=127.2\ncamera-vertical-fov=95\n"
+      "control-point-matcher=akaze-hamming\nakaze-calibration-fingerprint=absent\n";
+  const QByteArray provenance = QByteArray(legacy_provenance).replace("version=7", "version=8") +
       "projection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n"
-      "camera-configuration=gopro-mission-1\ncamera-horizontal-fov=127.2\ncamera-vertical-fov=95\n");
+      "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0\nprojection-crop-3=1\n";
+  ok &= write(game.filePath("stitching_canvas_provenance"), provenance);
   QImage source(100, 100, QImage::Format_RGB32);
   source.fill(Qt::gray);
   ok &= source.save(game.filePath("left.png")) && source.save(game.filePath("right.png"));
@@ -189,6 +194,21 @@ int main(int argc, char** argv) {
   const QByteArray old_nona_args = qgetenv("CROP_NONA_ARGS");
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
   qputenv("CROP_NONA_ARGS", bin.filePath("crop-nona-arguments").toUtf8());
+  {
+    ok &= write(game.filePath("stitching_canvas_provenance"), legacy_provenance);
+    ok &= expect(
+        ProjectionCropDialog::savedCalibrationPreviewError(game.path(), framing, "general-panini", {100, 0, 0}, camera)
+            .isEmpty(),
+        "Reusable version-7 metadata must retain the backend's default zero rotation");
+    ProjectionCropDialog dialog(game.path(), framing, "general-panini", {100, 0, 0}, camera);
+    dialog.show();
+    auto* canvas = static_cast<ProjectionCropCanvas*>(dialog.findChild<QWidget*>("projectionCropCanvas"));
+    ok &= expect(
+        waitUntil([&]() { return !canvas->imageRect().isEmpty(); }),
+        "Reusable legacy calibration must produce a crop preview");
+    dialog.close();
+    ok &= write(game.filePath("stitching_canvas_provenance"), provenance);
+  }
   {
     // Old image artifacts do not make a pending calibration ready.
     ok &= write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: pending}}\n");

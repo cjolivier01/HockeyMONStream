@@ -58,10 +58,15 @@ bool test_snapshot_paths() {
           "Cannot create camera image fixtures"))
     return false;
   const QByteArray metadata =
-      "version=9\ncontrol-point-resolution=native\nmapping-backend=nona\nprojection=cylindrical\nprojection-parameters=none\n"
-      "projection-auto-fov=0\nprojection-auto-canvas=1\nprojection-horizontal-fov=180\n"
+      "version=9\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=800\nsource-canvas-height=400\n"
+      "canvas-width=800\ncanvas-height=400\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n"
+      "mapping-backend=nona\nprojection=cylindrical\nprojection-parameters=none\n"
+      "projection-auto-fov=0\nprojection-horizontal-fov=180\nprojection-auto-canvas=1\nprojection-auto-crop=0\n"
+      "camera-configuration=gopro-hero-11\ncamera-horizontal-fov=108\ncamera-vertical-fov=90\n"
+      "control-point-matcher=akaze-hamming\nakaze-calibration-fingerprint=absent\n"
       "projection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n"
-      "camera-configuration=gopro-hero-11\ncamera-horizontal-fov=108\ncamera-vertical-fov=90\n";
+      "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0\nprojection-crop-3=1\n"
+      "control-point-resolution=native\n";
   if (!expect(
           write(game.filePath("config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: complete\n") &&
               write(game.filePath("stitching_canvas_provenance"), metadata) &&
