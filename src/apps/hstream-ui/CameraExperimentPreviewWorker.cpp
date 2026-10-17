@@ -6,6 +6,7 @@
 #include <future>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 struct CameraExperimentPreviewWorker::Impl {
   struct Command {
@@ -18,6 +19,7 @@ struct CameraExperimentPreviewWorker::Impl {
   Status status;
   std::uint64_t generation{0};
   bool stopping{false};
+  bool redraw_requested{false};
   std::thread thread;
 
   Impl() : thread([this] { run(); }) {}
@@ -37,13 +39,16 @@ struct CameraExperimentPreviewWorker::Impl {
     for (;;) {
       Command command;
       bool has_command = false;
+      bool redraw = false;
       std::uint64_t epoch;
       {
         std::unique_lock<std::mutex> lock(mutex);
-        wake.wait_for(lock, std::chrono::milliseconds(30), [&] { return stopping || !commands.empty(); });
+        wake.wait_for(
+            lock, std::chrono::milliseconds(30), [&] { return stopping || !commands.empty() || redraw_requested; });
         if (stopping)
           break;
         epoch = generation;
+        redraw = std::exchange(redraw_requested, false);
         if (!commands.empty()) {
           command = std::move(commands.front());
           commands.pop_front();
@@ -63,6 +68,8 @@ struct CameraExperimentPreviewWorker::Impl {
             open = true;
           }
         }
+        if (redraw && open)
+          preview.RequestRedraw();
         if (result.error.empty() && open)
           result = preview.Poll();
       } catch (const std::exception& error) {
@@ -112,9 +119,18 @@ CameraExperimentPreviewWorker::Status CameraExperimentPreviewWorker::Poll() cons
   return impl_->status;
 }
 
+void CameraExperimentPreviewWorker::RequestRedraw() {
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->redraw_requested = true;
+  }
+  impl_->wake.notify_one();
+}
+
 void CameraExperimentPreviewWorker::Close() {
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->redraw_requested = false;
     if (!impl_->status.open && !impl_->status.busy && !impl_->status.seeking) {
       impl_->status = {};
       return;

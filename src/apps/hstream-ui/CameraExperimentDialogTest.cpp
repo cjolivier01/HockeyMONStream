@@ -7,6 +7,7 @@
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtGui/QImage>
+#include <QtGui/QMouseEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -271,7 +272,14 @@ bool responsive_worker() {
   });
   if (!wait_until([&] { return !worker.Poll().busy; }, 2000) || worker.Poll().error != "visible failure")
     return false;
-  if (wait_until([&] { return worker.Poll().error != "visible failure"; }, 150))
+  for (int i = 0; i < 100; ++i)
+    worker.RequestRedraw();
+  if (wait_until(
+          [&] {
+            const auto state = worker.Poll();
+            return state.error != "visible failure" || state.busy || state.open;
+          },
+          150))
     return false;
   return true;
 }
@@ -345,6 +353,9 @@ bool e2e(const QStringList& args) {
   responsiveness.start(10);
   CameraExperimentDialog dialog(
       QFileInfo(args[2]).absolutePath(), nullptr, {}, args.size() > 10 ? std::llround(args[10].toDouble() * 1000) : 0);
+  // The GPU test shares the desktop; only its synthetic clicks should seek.
+  dialog.setWindowFlag(Qt::WindowTransparentForInput);
+  dialog.setAttribute(Qt::WA_ShowWithoutActivating);
   dialog.show();
   widget<QLineEdit>(dialog, "experimentManifest")->setText(args[2]);
   widget<QLineEdit>(dialog, "experimentMedia")->setText(args[3]);
@@ -425,7 +436,99 @@ bool e2e(const QStringList& args) {
     return false;
   widget<QTabWidget>(dialog, "experimentControlTabs")->setCurrentIndex(1);
   auto* timeline = widget<QSlider>(dialog, "experimentTimeline");
+  auto* target = widget<QWidget>(dialog, "experimentVideoTarget");
+  auto* plot = widget<QWidget>(dialog, "experimentCameraPlot");
+  // Inspect the GPU front buffer: QWidget::grab omits native video, and X11
+  // screen grabs can be black when this display is locked or composited.
+  const auto visible_preview = [&](const char* action) {
+    QElapsedTimer settle;
+    settle.start();
+    if (wait_until(
+            [&] {
+              if (settle.elapsed() < 200 || !screenshot->isEnabled())
+                return false;
+              if (!capture("paused-preview.png"))
+                return false;
+              const QImage screenshot_image(QDir(artifacts).filePath("paused-preview.png"));
+              const double scale = double(screenshot_image.width()) / dialog.width();
+              const QPoint origin = target->mapTo(&dialog, QPoint(0, 0));
+              const QImage image = screenshot_image.copy(QRect(
+                  qRound(origin.x() * scale), qRound(origin.y() * scale),
+                  qRound(target->width() * scale), qRound(target->height() * scale)));
+              int bright = 0, samples = 0;
+              for (int y = 0; y < image.height(); y += 8)
+                for (int x = 0; x < image.width(); x += 8) {
+                  bright += qGray(image.pixel(x, y)) > 32;
+                  ++samples;
+                }
+              return samples > 0 && bright > samples / 10;
+            },
+            5000))
+      return true;
+    std::cerr << "Native preview lost its image after " << action << '\n';
+    capture("failed-dialog.png");
+    return false;
+  };
+  if (!visible_preview("Pause"))
+    return false;
+  const int paused_frame = timeline->value();
+  const QSize normal_size = dialog.size();
+  for (const QSize size : {normal_size + QSize(100, 80), normal_size}) {
+    dialog.resize(size);
+    if (!visible_preview("paused resize") || timeline->value() != paused_frame)
+      return false;
+  }
+  auto* focus = widget<QToolButton>(dialog, "maximizeCameraExperimentPreviewButton");
+  for (int i = 0; i < 2; ++i) {
+    focus->click();
+    if (!visible_preview("paused preview maximize/restore") || timeline->value() != paused_frame)
+      return false;
+  }
+  auto* maximize = widget<QToolButton>(dialog, "maximizeCameraExperimentWindowButton");
+  for (int i = 0; i < 2; ++i) {
+    maximize->click();
+    if (!visible_preview("paused window maximize/restore") || timeline->value() != paused_frame)
+      return false;
+  }
+  const auto click_plot_frame = [&](int frame) {
+    const QPointF position(14.0 + (plot->width() - 28.0) * frame / timeline->maximum(), plot->height() / 2.0);
+    QMouseEvent press(
+        QEvent::MouseButtonPress,
+        position,
+        plot->mapToGlobal(position),
+        Qt::LeftButton,
+        Qt::LeftButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(plot, &press);
+    QMouseEvent release(
+        QEvent::MouseButtonRelease,
+        position,
+        plot->mapToGlobal(position),
+        Qt::LeftButton,
+        Qt::NoButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(plot, &release);
+    if (!wait_until([&] { return screenshot->isEnabled() || status->styleSheet().contains("#b42318"); }) ||
+        !screenshot->isEnabled() || timeline->value() != frame || play->text() == "Pause") {
+      std::cerr << "Visual timeline did not seek and pause at frame " << frame << ": " << status->text().toStdString()
+                << '\n';
+      return false;
+    }
+    return visible_preview("visual timeline seek");
+  };
+  if (plot->accessibleName() != "Visual timeline")
+    return false;
   const int comparison_frame = timeline->maximum() / 2;
+  for (const int frame : {0, timeline->maximum(), comparison_frame})
+    if (!click_plot_frame(frame))
+      return false;
+  play->click();
+  if (!wait_until([&] { return screenshot->isEnabled() && timeline->value() > comparison_frame; }, 60000)) {
+    std::cerr << "Play did not resume from the visual timeline selection\n";
+    return false;
+  }
+  if (!click_plot_frame(comparison_frame)) // Clicking during playback also pauses on the requested frame.
+    return false;
   auto seek_frame = [&](int frame) {
     timeline->setValue(frame);
     QMetaObject::invokeMethod(timeline, "sliderReleased", Qt::DirectConnection);
@@ -440,7 +543,6 @@ bool e2e(const QStringList& args) {
     return false;
   // Change one layer at a time on the same paused frame. Compare only GPU
   // preview pixels, so checkbox painting cannot satisfy the drawing check.
-  const auto* target = widget<QWidget>(dialog, "experimentVideoTarget");
   const QRect logical_rect(target->mapTo(&dialog, QPoint(0, 0)), target->size());
   const QImage clean_capture(QDir(artifacts).filePath("experiment-trial-a.png"));
   const double sx = double(clean_capture.width()) / dialog.width();
@@ -484,7 +586,6 @@ bool e2e(const QStringList& args) {
   }
   // The plot paints on the CPU, so its layers can be checked directly: flipping
   // one must change what the plot draws on the same paused frame.
-  auto* plot = widget<QWidget>(dialog, "experimentCameraPlot");
   for (const char* name : {"experimentPlotLayer_Recorded",
                            "experimentPlotLayer_Program",
                            "experimentPlotLayer_Crop",
@@ -559,6 +660,9 @@ bool e2e(const QStringList& args) {
     std::cerr << "Prepared candidate cannot be saved\n";
     return false;
   }
+  widget<QPushButton>(dialog, "experimentStopPreview")->click();
+  if (!wait_until([&] { return play->isEnabled(); }) || !click_plot_frame(comparison_frame))
+    return false;
   auto* in = widget<QDoubleSpinBox>(dialog, "experimentIn");
   in->setValue(in->value() + 1);
   if (!in->isEnabled()) {
@@ -584,7 +688,7 @@ bool e2e(const QStringList& args) {
     return false;
   }
   std::cout
-      << "PASS: historical preparation, parameter trial, actual GPU playback, paused frame step, original comparison, range loop, end pause, screenshots, stale trial save invalidation\n";
+      << "PASS: historical preparation, parameter trial, actual GPU playback, visible paused resize/maximize, visual timeline seek/resume, paused frame step, original comparison, range loop, end pause, screenshots, stale trial save invalidation\n";
   std::cout << "Longest UI heartbeat gap: " << longest_gap << " ms\n";
   if (longest_gap > 1000) {
     std::cerr << "Experiment blocked the UI event loop for more than one second\n";

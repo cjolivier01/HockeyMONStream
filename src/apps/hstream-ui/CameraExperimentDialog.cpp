@@ -129,8 +129,19 @@ class ExperimentVideoTarget : public hm::ui::NativePreviewSurface {
     return nullptr;
   }
   std::function<void()> toggleFocus;
+  std::function<void()> requestRedraw;
 
  protected:
+  void resizeEvent(QResizeEvent* event) override {
+    NativePreviewSurface::resizeEvent(event);
+    if (requestRedraw)
+      requestRedraw();
+  }
+  void showEvent(QShowEvent* event) override {
+    NativePreviewSurface::showEvent(event);
+    if (requestRedraw)
+      requestRedraw();
+  }
   void mouseDoubleClickEvent(QMouseEvent* event) override {
     if (event->button() == Qt::LeftButton && toggleFocus) {
       toggleFocus();
@@ -206,6 +217,9 @@ class CameraPathPlot : public QWidget {
  public:
   explicit CameraPathPlot(QWidget* parent) : QWidget(parent) {
     setMinimumHeight(190);
+    setCursor(Qt::PointingHandCursor);
+    setAccessibleName("Visual timeline");
+    setToolTip("Click to show a frame. Press Play preview to continue from there.");
     for (int i = 0; i < kPlotLayerCount; ++i)
       layers[i] = kPlotLayers[i].initial;
   }
@@ -214,8 +228,23 @@ class CameraPathPlot : public QWidget {
   unsigned canvas_width{1};
   std::size_t frame{0};
   std::array<bool, kPlotLayerCount> layers{};
+  std::function<void(std::size_t)> selectFrame;
 
  protected:
+  QRectF plotRect() const {
+    return QRectF(14, 32, width() - 28, height() - 84);
+  }
+  void mousePressEvent(QMouseEvent* event) override {
+    const QRectF plot = plotRect();
+    if (event->button() == Qt::LeftButton && trial && !trial->empty() && selectFrame && plot.width() > 0 &&
+        plot.contains(event->position())) {
+      const double fraction = std::clamp((event->position().x() - plot.left()) / plot.width(), 0.0, 1.0);
+      selectFrame(static_cast<std::size_t>(std::llround(fraction * (trial->size() - 1))));
+      event->accept();
+      return;
+    }
+    QWidget::mousePressEvent(event);
+  }
   void paintEvent(QPaintEvent*) override {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
@@ -226,11 +255,11 @@ class CameraPathPlot : public QWidget {
     p.drawText(
         14,
         22,
-        trial ? QString("Program camera horizontal position  ·  0–%1 px").arg(canvas_width)
-              : QString("Program camera horizontal position"));
+        trial ? QString("Visual timeline  ·  Horizontal position: 0–%1 px").arg(canvas_width)
+              : QString("Visual timeline"));
     // Two caption lines are reserved: with every layer enabled the readout is
     // long enough to wrap, and silently clipping a value defeats the point.
-    const QRectF plot(14, 32, width() - 28, height() - 84);
+    const QRectF plot = plotRect();
     p.setPen(QPen(QColor("#26364d"), 1));
     for (int i = 0; i <= 4; ++i)
       p.drawLine(
@@ -694,6 +723,7 @@ struct CameraExperimentDialog::Impl {
     follower->setEnabled(editable);
     trial_name->setEnabled(editable);
     comparison->setEnabled(!active && prepared);
+    plot->setEnabled(!calculating && !closing_result && prepared);
     timeline->setEnabled(!active && prepared && !playing);
     previous->setEnabled(!active && prepared && !playing);
     next->setEnabled(!active && prepared && !playing);
@@ -1596,6 +1626,15 @@ CameraExperimentDialog::CameraExperimentDialog(
   });
   connect(s.stop_preview, &QPushButton::clicked, this, [this]() { impl_->close_preview(); });
   s.video->toggleFocus = [&s]() { s.set_preview_focus(!s.preview_focused); };
+  s.video->requestRedraw = [&s]() { s.preview.RequestRedraw(); };
+  s.plot->selectFrame = [&s](std::size_t index) {
+    if (!s.session || s.source_dirty || s.calculating || s.closing_result)
+      return;
+    if (s.preview_open)
+      s.seek(index);
+    else
+      s.open_preview(false, index);
+  };
   connect(s.focus_button, &QToolButton::clicked, this, s.video->toggleFocus);
   connect(s.save, &QPushButton::clicked, this, [this]() {
     auto& state = *impl_;
@@ -1635,6 +1674,7 @@ CameraExperimentDialog::CameraExperimentDialog(
 }
 
 CameraExperimentDialog::~CameraExperimentDialog() {
+  impl_->video->requestRedraw = {};
   if (impl_->cancellation)
     impl_->cancellation->store(true);
   if (impl_->work.valid())

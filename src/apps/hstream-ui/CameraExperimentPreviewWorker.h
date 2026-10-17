@@ -17,6 +17,8 @@ class CameraExperimentPreviewWorker {
   CameraExperimentPreviewWorker();
   ~CameraExperimentPreviewWorker();
   void Submit(Action action);
+  // Coalesced independently of commands; repainting must not toggle loading UI.
+  void RequestRedraw();
   Status Poll() const;
   void Close();
   bool Capture(const std::string& path, std::string* error);
