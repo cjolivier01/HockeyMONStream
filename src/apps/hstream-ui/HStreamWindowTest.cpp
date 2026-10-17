@@ -14589,7 +14589,8 @@ bool test_control_point_filtering(const QString& source_game_directory) {
     auto* epipolar = require_child<QCheckBox>(&window, "epipolarRansacCheck");
     auto* homography = require_child<QCheckBox>(&window, "homographyConsistencyCheck");
     auto* advanced = require_child<QToolButton>(&window, "geometricFilteringToggle");
-    if (!game || !create || !save || !epipolar || !homography || !advanced)
+    auto* reset = require_child<QPushButton>(&window, "resetCameraButton");
+    if (!game || !create || !save || !epipolar || !homography || !advanced || !reset)
       return false;
     game->setText("ui-geometric-filtering");
     activate(create);
@@ -14608,6 +14609,19 @@ bool test_control_point_filtering(const QString& source_game_directory) {
                 config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
                 config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "features",
             "Changing only a geometric filter must save and invalidate matching"))
+      return false;
+    if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+      return false;
+    reset->click();
+    const bool kept_during_run =
+        epipolar->isChecked() == next.epipolar_ransac && homography->isChecked() == next.homography_consistency;
+    HStreamWindowTestAccess::killStubPipelineProcess(&window);
+    if (!expect(kept_during_run, "Reset Controls must preserve next-run geometric filters during playback"))
+      return false;
+    reset->click();
+    if (!expect(
+            epipolar->isChecked() && homography->isChecked(),
+            "Reset Controls must restore geometric filtering defaults when playback is stopped"))
       return false;
     previous = next;
   }

@@ -17239,9 +17239,10 @@ bool HStreamWindow::savePreset() {
 
 void HStreamWindow::resetCameraControls() {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-  if (!pipeline_running)
+  if (!pipeline_running) {
     control_point_resolution_ = default_control_point_resolution_;
-  setControlPointFiltering(default_control_point_filtering_);
+    setControlPointFiltering(default_control_point_filtering_);
+  }
   // Both are constructor arguments, so a reset can only change the next run. Guarded like every
   // other next-run control here, so a reset during a live pipeline does not quietly discard the
   // operator's choice for the run after it.
