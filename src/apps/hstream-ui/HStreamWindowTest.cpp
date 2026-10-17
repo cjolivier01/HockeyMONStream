@@ -2148,6 +2148,26 @@ bool test_path_preferences() {
       return accept_path_dialog(dialog, QFileInfo(root).absolutePath(), {QFileInfo(root).fileName()});
     });
   };
+  auto check_runner_root = [](HStreamWindow* window, const QString& root) {
+    for (auto* checkbox : window->findChildren<QCheckBox*>()) {
+      if (checkbox->objectName().startsWith("outputToggle_"))
+        checkbox->setChecked(false);
+    }
+    window->findChild<QCheckBox*>("showCropDialogCheck")->setChecked(false);
+    window->findChild<QCheckBox*>("showLevelingDialogCheck")->setChecked(false);
+    auto* mode = window->findChild<QComboBox*>("runModeCombo");
+    mode->setCurrentIndex(mode->findData("stitch-calibration"));
+    activate(window->findChild<QPushButton*>("startPipelineButton"));
+    const bool started = QTest::qWaitFor([&] { return window->pipelineStateText() == "PLAYING"; }, 5000);
+    const bool correct = HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HM_GAME_DIR") == root;
+    auto* root_button = window->findChild<QPushButton*>("browseGameRootButton");
+    const bool locked = !root_button->isEnabled();
+    activate(window->findChild<QPushButton*>("stopPipelineButton"));
+    const bool stopped = QTest::qWaitFor([&] { return window->pipelineStateText() == "STOPPED"; }, 5000);
+    return expect(
+        started && correct && locked && stopped && root_button->isEnabled(),
+        "Playback must use the selected root and lock root changes until Stop");
+  };
   {
     HStreamWindow window;
     window.show();
@@ -2211,18 +2231,23 @@ bool test_path_preferences() {
     const QString typed = QDir(sources).filePath("typed clip.mp4");
     if (!write_fake_video(typed))
       return false;
+    activate(window.findChild<QRadioButton*>("videoRole_right"));
     video_path->setText(typed);
     activate(add);
     if (!expect(window.videoSetCount() == 3 && video_path->text().isEmpty(),
                 "Typing a path must replace the pending browser selection"))
       return false;
-    if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+    const QString old_marker = first + "/shared/matches.png";
+    const QString selected_marker = second + "/shared/matches.png";
+    if (!write_fake_video(old_marker) || !write_fake_video(selected_marker))
       return false;
-    HStreamWindowTestAccess::refreshRunControls(&window);
-    const bool root_disabled = !root_button->isEnabled();
-    HStreamWindowTestAccess::killStubPipelineProcess(&window);
-    HStreamWindowTestAccess::refreshRunControls(&window);
-    if (!expect(root_disabled && root_button->isEnabled(), "Root changes must be disabled while a run is active"))
+    qputenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS", "1");
+    activate(window.findChild<QPushButton*>("cleanStitchingButton"));
+    qunsetenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS");
+    if (!expect(
+            QFile::exists(old_marker) && !QFile::exists(selected_marker),
+            "Stitching cleanup must touch only the selected root, not the inherited root") ||
+        !check_runner_root(&window, second))
       return false;
   }
   {
@@ -2234,7 +2259,8 @@ bool test_path_preferences() {
   {
     HStreamWindow restored;
     restored.show();
-    if (!expect(restored.gameDirectoryText() == second + "/shared", "A new window must restore the saved root"))
+    if (!expect(restored.gameDirectoryText() == second + "/shared", "A new window must restore the saved root") ||
+        !check_runner_root(&restored, second))
       return false;
     auto* browse = restored.findChild<QPushButton*>("browseVideoButton");
     if (!with_path_dialog(
@@ -2246,8 +2272,9 @@ bool test_path_preferences() {
             }) ||
         !choose_root(&restored, empty) ||
         !expect(
-            restored.gameIdText().isEmpty() && restored.videoSetCount() == 0 && restored.gameDirectoryText() == empty,
-            "An empty root must clear the old game and video list"))
+            restored.gameIdText().isEmpty() && restored.videoSetCount() == 0 && restored.gameDirectoryText() == empty &&
+                restored.windowTitle() == "HStream UI",
+            "An empty root must clear the old game, video list and window title"))
       return false;
     restored.findChild<QLineEdit*>("gameIdEdit")->setText("new-game");
     activate(restored.findChild<QPushButton*>("createGameButton"));

@@ -8448,6 +8448,7 @@ bool HStreamWindow::runStitchingClean(
   QProcess clean;
   clean.setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment clean_env = env;
+  clean_env.insert("HM_GAME_DIR", QDir(gameRoot()).absolutePath());
   // This helper only invalidates calibration artifacts. Its successful exit
   // must not complete or fail the archive run that has yet to start.
   clean_env.remove("HSTREAM_JOB_MANIFEST");
@@ -10564,6 +10565,7 @@ void HStreamWindow::startPipeline() {
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
+  env.insert("HM_GAME_DIR", QDir(gameRoot()).absolutePath());
   if (!baseline_config_root_.isEmpty())
     env.insert("HM_CONFIG_ROOT", baseline_config_root_);
   setPlaybackStartupStage("stitching", "Validating saved stitching state and Left/Right video assignments");
@@ -19305,6 +19307,7 @@ void HStreamWindow::browseGameRoot() {
   }
   refreshGames();
   selectGame(game_id_edit_->text());
+  updateWindowTitle();
   updateArchiveOutputPathLabel();
   refreshArchiveAvailability();
   updateRunControls();
