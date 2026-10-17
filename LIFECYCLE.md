@@ -71,8 +71,10 @@ or unwritable. It recognizes an encoding job by its `--encode-job` argument and
 an interactive or runtime-only session by the `HSTREAM_JOB_MANAGED_RUNTIME` its
 script exports, so the installed package must be at least as new as the
 exporter that wrote the script. An older launcher ignores the marker and
-applies its ordinary rewriting, which adds a config, sources and a sink to a
-session that selected its own.
+applies its ordinary rewriting: a second `-c`, which the CLI buckets into the
+same stage and runs as a second pipeline, the install prefix in place of the
+script's own working directory, and sources, audio options and a sink for a
+session that selected none.
 Explicit `--runner`, `--finalizer`, `--config` and `--working-directory`
 overrides remain available for custom runtimes; their values must work on the
 execution host. `HM_CONFIG_ROOT` is read there rather than captured at export.

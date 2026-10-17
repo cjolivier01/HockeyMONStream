@@ -278,14 +278,19 @@ int main(int argc, char** argv) {
     if (interactive) {
       // These sessions have no finalizer to admit them, so the supervisor owns
       // the private runtime directory. Refuse to share another run's cache.
-      script += R"JOB(if [ -z "${HSTREAM_RUNTIME_CACHE_DIR:-}" ] || \
-    ! mkdir -p "${HSTREAM_RUNTIME_CACHE_DIR}" || [ ! -w "${HSTREAM_RUNTIME_CACHE_DIR}" ]; then
+      script += R"JOB(if [ -z "${HSTREAM_RUNTIME_CACHE_DIR:-}" ] || ! mkdir -p -- "${HSTREAM_RUNTIME_CACHE_DIR}"; then
   echo "Managed runtime directory is unavailable" >&2
   exit 78
 fi
 # A plain assignment, so an unsearchable directory aborts here. `export` would
 # report its own success and hand the runner an empty shared-cache fallback.
 runtime_cache="$(CDPATH= cd -- "${HSTREAM_RUNTIME_CACHE_DIR}" && pwd -P)"
+# Check what the runner will actually use: command substitution strips trailing
+# newlines, so a padded value resolves to a sibling that was never created.
+if [ ! -w "${runtime_cache}" ]; then
+  echo "Managed runtime directory is unavailable" >&2
+  exit 78
+fi
 export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
 # The installed launcher rewrites ordinary arguments; managed runs own theirs.
 export HSTREAM_JOB_MANAGED_RUNTIME=1

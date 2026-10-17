@@ -692,6 +692,9 @@ prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
 # marks them instead; without it this launcher would inject a config, sources
 # and a sink into a session that asked for exactly its own arguments.
 if [ "${HSTREAM_JOB_MANAGED_RUNTIME:-}" = 1 ]; then
+  # Scope the marker to the launch it describes. A descendant reaching this
+  # launcher by absolute path is an ordinary run and still wants rewriting.
+  unset HSTREAM_JOB_MANAGED_RUNTIME
   exec "${INSTALL_DIR}/bin/hstream-cli" "$@"
 fi
 for arg in "$@"; do

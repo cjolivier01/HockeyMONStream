@@ -492,6 +492,26 @@ class JobScriptTest(unittest.TestCase):
                 # which is the only part of it a managed run still needs.
                 self.assertIn(str(install / "bin"), actual["env"]["PATH"].split(os.pathsep))
 
+    def test_packaged_launcher_still_completes_unmarked_invocations(self):
+        # The managed bypass must stay narrow: an ordinary operator command
+        # keeps the launcher's config, sources, sink and install cwd.
+        install = self.install_packaged_launcher()
+        home = self.root / "launcher-home"
+        home.mkdir()
+        environment = dict(self.env, HOME=str(home))
+        environment.pop("HSTREAM_JOB_MANAGED_RUNTIME", None)
+        environment.pop("DISPLAY", None)
+        run = subprocess.run([str(install.parent / "runtime-bin/hstream-cli"), "-g", "mygame"],
+                             cwd="/", env=environment, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["argv"][:2], ["-c", str(install / "configs/ds_hockey_app_config.yaml")])
+        self.assertIn("--enable-sources=URI-MULTIPLE", actual["argv"])
+        self.assertIn("--options=pipeline.hmaudio.enable=1", actual["argv"])
+        self.assertIn("--enable-sinks=ENCODE_FILE", actual["argv"])
+        self.assertEqual(actual["argv"][-2:], ["-g", "mygame"])
+        self.assertEqual(actual["cwd"], str(install))
+
     def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
         self.install_packaged_launcher()
         for config in (None, str(self.config), self.config.name):
