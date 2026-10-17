@@ -340,6 +340,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":archive_watermark",
+        ":webrtc_endpoint",
         "//src/libs/tracker_reid:tracker_reid",
         ":player_analytics_bin",
         ":encoder_dimensions",
@@ -502,4 +503,28 @@ cc_binary(
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ],
+)
+
+cc_library(
+    name = "webrtc_endpoint",
+    srcs = ["WebRtcEndpoint.cpp"],
+    hdrs = ["WebRtcEndpoint.h"],
+    copts = ["-DGST_USE_UNSTABLE_API"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "webrtc_endpoint_test",
+    srcs = ["WebRtcEndpointTest.cpp"],
+    copts = ["-DGST_USE_UNSTABLE_API"],
+    deps = [":webrtc_endpoint"],
+)
+
+cc_binary(
+    name = "webrtc_preview_test_server",
+    testonly = True,
+    srcs = ["WebRtcPreviewTestServer.cpp"],
+    deps = [":deepstream_apps_common", ":webrtc_endpoint", "@gstreamer"],
 )

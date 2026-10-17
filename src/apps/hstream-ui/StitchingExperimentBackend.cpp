@@ -131,7 +131,11 @@ absl::StatusOr<fs::path> linked_workspace_source(
   const auto allowed = [calibration_asset](const fs::path& path) {
     return calibration_asset ? std::regex_match(path.filename().string(), kCalibrationAsset) : is_video(path);
   };
-  if (!allowed(relative) || !allowed(resolved))
+  // A validated clone can point at an opaque storage object (for example an
+  // authorized upload UUID). Its local playlist name defines the media type;
+  // native decoding verifies the contents. Calibration assets still require
+  // the matching canonical filename because sidecar names carry semantics.
+  if (!allowed(relative) || (calibration_asset && !allowed(resolved)))
     return absl::InvalidArgumentError("Workspace input resolves to an unsupported file");
   return relative;
 }
@@ -1045,6 +1049,34 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
     const StitchingExperimentSettings& settings,
     int sequence) {
   return create_workspace(source_game_directory, experiment_root, settings, sequence, false);
+}
+
+absl::StatusOr<StitchingExperimentWorkspace> CreateStagedStitchingExperimentWorkspace(
+    const fs::path& source_game_directory,
+    const fs::path& experiment_root,
+    const StitchingExperimentSettings& settings,
+    int sequence,
+    const std::vector<fs::path>& authorized_media) {
+  try {
+    if (authorized_media.size() > 10000)
+      return absl::InvalidArgumentError("Too many authorized experiment inputs");
+    std::set<fs::path> allowed;
+    for (const auto& path : authorized_media) {
+      if (!path.is_absolute() || !fs::is_regular_file(path))
+        return absl::InvalidArgumentError("Authorized experiment inputs must be absolute regular media files");
+      allowed.insert(fs::canonical(path));
+    }
+    for (fs::recursive_directory_iterator entry(source_game_directory), end; entry != end; ++entry) {
+      if (!entry->is_symlink())
+        continue;
+      const auto target = fs::canonical(entry->path());
+      if (!fs::is_regular_file(target) || !allowed.count(target))
+        return absl::PermissionDeniedError("Staged experiment alias is not an authorized media input");
+    }
+    return create_workspace(source_game_directory, experiment_root, settings, sequence, true);
+  } catch (const fs::filesystem_error& error) {
+    return absl::InvalidArgumentError("Cannot validate staged experiment inputs: " + std::string(error.what()));
+  }
 }
 
 static absl::Status validate_clone_source(const StitchingExperimentWorkspace& source, const YAML::Node& config) {

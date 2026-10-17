@@ -4859,16 +4859,38 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
     }
     const gboolean inject_failure = source_id == 0 && g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_FAIL_ONCE") &&
         g_atomic_int_compare_and_exchange(&uri_playlist_initial_seek_failure_injected, FALSE, TRUE);
-    gboolean accelerated = !inject_failure && source->src_elem &&
-        gst_element_seek(
-            source->src_elem,
-            1.0,
-            GST_FORMAT_TIME,
-            static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
-            GST_SEEK_TYPE_SET,
-            static_cast<gint64>(source->uri_playlist_initial_seek_ns),
-            GST_SEEK_TYPE_NONE,
-            GST_CLOCK_TIME_NONE);
+    const auto seek_selected_video = [&]() {
+      // An element seek holds the URI bin's state lock while flush-stop posts
+      // reset-time/latency messages to ancestors. An async parent transition
+      // can hold its state lock and wait for this URI bin, deadlocking both.
+      // Send the same upstream seek through the selected decoded video pad.
+      // Refresh the peer for the second seek after decoder restart/relink.
+      g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+      GstPad* sinkpad = source->tee ? gst_element_get_static_pad(source->tee, "sink") : nullptr;
+      GstPad* peer = sinkpad ? gst_pad_get_peer(sinkpad) : nullptr;
+      if (peer && peer != source->uri_playlist_initial_seek_video_pad) {
+        gst_object_unref(peer);
+        peer = nullptr;
+      }
+      if (sinkpad)
+        gst_object_unref(sinkpad);
+      g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+      if (!peer)
+        return FALSE;
+      const gboolean result = gst_pad_send_event(
+          peer,
+          gst_event_new_seek(
+              1.0,
+              GST_FORMAT_TIME,
+              static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+              GST_SEEK_TYPE_SET,
+              static_cast<gint64>(source->uri_playlist_initial_seek_ns),
+              GST_SEEK_TYPE_NONE,
+              GST_CLOCK_TIME_NONE));
+      gst_object_unref(peer);
+      return result;
+    };
+    gboolean accelerated = !inject_failure && source->src_elem && seek_selected_video();
     if (accelerated && hardware_decoder) {
       // nvv4l2decoder can retain a partially initialized 8K HEVC output surface after a flushing seek performed once
       // preroll has reached the decoded pad. The first seek positions the demuxer; retire the selected hardware
@@ -4882,15 +4904,7 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
         gst_object_unref(hardware_decoder);
         return fail_uri_playlist_decoder_recovery(bin, source, source_id, "decoder state restart failed");
       }
-      const gboolean reseeked = gst_element_seek(
-          source->src_elem,
-          1.0,
-          GST_FORMAT_TIME,
-          static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
-          GST_SEEK_TYPE_SET,
-          static_cast<gint64>(source->uri_playlist_initial_seek_ns),
-          GST_SEEK_TYPE_NONE,
-          GST_CLOCK_TIME_NONE);
+      const gboolean reseeked = seek_selected_video();
       gst_object_unref(hardware_decoder);
       hardware_decoder = nullptr;
       if (!reseeked) {

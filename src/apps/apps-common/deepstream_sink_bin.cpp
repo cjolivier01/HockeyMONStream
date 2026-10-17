@@ -19,7 +19,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -35,9 +37,10 @@
 #include "deepstream_common.h"
 #include "deepstream_sinks.h"
 
-#include "hstream/src/apps/apps-common/EncoderDimensions.h"
 #include "hstream/src/apps/apps-common/ArchiveWatermark.h"
+#include "hstream/src/apps/apps-common/EncoderDimensions.h"
 #include "hstream/src/apps/apps-common/HStreamBatchDemux.h"
+#include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
 
@@ -104,14 +107,12 @@ std::pair<guint, guint> fit_render_size_to_aspect(
     return {box_width, box_height};
   }
 
-  const guint height_from_width =
-      rounded_ratio_to_even(static_cast<guint64>(box_width) * input_height, input_width);
+  const guint height_from_width = rounded_ratio_to_even(static_cast<guint64>(box_width) * input_height, input_width);
   if (height_from_width <= box_height) {
     return {box_width, height_from_width};
   }
 
-  const guint width_from_height =
-      rounded_ratio_to_even(static_cast<guint64>(box_height) * input_width, input_height);
+  const guint width_from_height = rounded_ratio_to_even(static_cast<guint64>(box_height) * input_width, input_height);
   return {width_from_height, box_height};
 }
 
@@ -136,8 +137,7 @@ GstCaps* make_render_video_caps(const char* format, const NvDsSinkRenderConfig* 
     gst_structure_set(structure, "format", G_TYPE_STRING, format, NULL);
   }
   if (config && config->width > 0 && config->height > 0) {
-    gst_structure_set(
-        structure, "width", G_TYPE_INT, config->width, "height", G_TYPE_INT, config->height, NULL);
+    gst_structure_set(structure, "width", G_TYPE_INT, config->width, "height", G_TYPE_INT, config->height, NULL);
   }
   return caps;
 }
@@ -215,12 +215,7 @@ GstPadProbeReturn update_render_aspect_caps_from_caps(GstPad*, GstPadProbeInfo* 
       state->system_memory_cap_filter, &fitted_config, state->system_caps_format, state->system_caps_nvmm);
   if (state->resize_sink_window && state->sink) {
     g_object_set(
-        G_OBJECT(state->sink),
-        "window-width",
-        fitted_config.width,
-        "window-height",
-        fitted_config.height,
-        NULL);
+        G_OBJECT(state->sink), "window-width", fitted_config.width, "window-height", fitted_config.height, NULL);
   }
   GST_INFO_OBJECT(
       state->cap_filter ? state->cap_filter : state->sink,
@@ -287,7 +282,10 @@ void install_render_aspect_caps_probe(
       0,
   };
   gst_pad_add_probe(
-      sink_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, update_render_aspect_caps_from_caps, state,
+      sink_pad,
+      GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+      update_render_aspect_caps_from_caps,
+      state,
       destroy_render_aspect_caps_state);
   gst_object_unref(sink_pad);
 }
@@ -465,8 +463,7 @@ const char kWebRtcClientHtml[] = R"html(<!doctype html>
     const inboundStream = new MediaStream();
     video.srcObject = inboundStream;
 
-    pc.addTransceiver('video', {direction: 'recvonly'});
-    pc.addTransceiver('audio', {direction: 'recvonly'});
+    const pendingCandidates = [];
     pc.ontrack = (event) => {
       inboundStream.addTrack(event.track);
       status.textContent = 'Connected';
@@ -484,19 +481,19 @@ const char kWebRtcClientHtml[] = R"html(<!doctype html>
     };
     ws.onopen = async () => {
       status.textContent = 'Negotiating...';
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      ws.send(JSON.stringify({type: 'offer', sdp: pc.localDescription.sdp}));
     };
     ws.onmessage = async (event) => {
       const message = JSON.parse(event.data);
-      if (message.type === 'answer') {
-        await pc.setRemoteDescription({type: 'answer', sdp: message.sdp});
+      if (message.type === 'offer') {
+        await pc.setRemoteDescription({type: 'offer', sdp: message.sdp});
+        while (pendingCandidates.length) await pc.addIceCandidate(pendingCandidates.shift());
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({type: 'answer', sdp: pc.localDescription.sdp}));
       } else if (message.type === 'candidate' && message.candidate) {
-        await pc.addIceCandidate({
-          candidate: message.candidate,
-          sdpMLineIndex: message.sdpMLineIndex
-        });
+        const candidate = {candidate: message.candidate, sdpMLineIndex: message.sdpMLineIndex};
+        if (pc.remoteDescription) await pc.addIceCandidate(candidate);
+        else pendingCandidates.push(candidate);
       } else if (message.type === 'error') {
         status.textContent = message.message;
       }
@@ -512,16 +509,68 @@ const char kWebRtcClientHtml[] = R"html(<!doctype html>
 </html>
 )html";
 
-struct WebRtcSignalServer {
+struct WebRtcSignalServer : std::enable_shared_from_this<WebRtcSignalServer> {
+  std::recursive_mutex mutex;
+  GstElement* endpoint{nullptr};
   GstElement* webrtc{nullptr};
   SoupServer* server{nullptr};
   SoupWebsocketConnection* connection{nullptr};
-  GMutex lock;
+  GMainContext* context{g_main_context_ref_thread_default()};
+  guint64 generation{0};
+  GSource* offer_source{nullptr};
+  bool offer_sent{false};
+  bool answer_received{false};
+  bool remote_ready{false};
+  std::vector<std::pair<guint, std::string>> pending_candidates;
+  bool stopped{false};
   guint port{kDefaultWebRtcPort};
+  ~WebRtcSignalServer() {
+    if (webrtc)
+      gst_object_unref(webrtc);
+    if (endpoint)
+      gst_object_unref(endpoint);
+    g_main_context_unref(context);
+  }
 };
 
-std::vector<WebRtcSignalServer*> webrtc_signal_servers;
+std::vector<std::shared_ptr<WebRtcSignalServer>> webrtc_signal_servers;
 GMutex webrtc_signal_servers_lock;
+
+struct WebRtcPeerCallback {
+  std::shared_ptr<WebRtcSignalServer> server;
+  guint64 generation;
+  GstElement* webrtc;
+  explicit WebRtcPeerCallback(WebRtcSignalServer* state)
+      : server(state->shared_from_this()),
+        generation(state->generation),
+        webrtc(GST_ELEMENT(gst_object_ref(state->webrtc))) {}
+  ~WebRtcPeerCallback() {
+    gst_object_unref(webrtc);
+  }
+};
+
+// GstPromise and ICE callbacks run on streaming threads. All Soup operations and
+// peer mutations run on the signaling context, with the originating peer fenced.
+void dispatch_webrtc_peer(WebRtcPeerCallback* peer, std::function<void(WebRtcSignalServer*)> callback) {
+  auto state = peer->server;
+  const guint64 generation = peer->generation;
+  auto* task = new std::function<void()>([state, generation, callback = std::move(callback)] {
+    std::lock_guard<std::recursive_mutex> lock(state->mutex);
+    if (!state->stopped && state->connection && state->generation == generation)
+      callback(state.get());
+  });
+  GSource* source = g_idle_source_new();
+  g_source_set_callback(
+      source,
+      [](gpointer data) -> gboolean {
+        (*static_cast<std::function<void()>*>(data))();
+        return G_SOURCE_REMOVE;
+      },
+      task,
+      [](gpointer data) { delete static_cast<std::function<void()>*>(data); });
+  g_source_attach(source, state->context);
+  g_source_unref(source);
+}
 
 const gchar* json_string_member(JsonObject* object, const gchar* member) {
   if (!json_object_has_member(object, member)) {
@@ -546,18 +595,10 @@ gint json_int_member(JsonObject* object, const gchar* member, gint default_value
 }
 
 void send_websocket_text(WebRtcSignalServer* signal_server, const gchar* text) {
-  SoupWebsocketConnection* connection = nullptr;
-  g_mutex_lock(&signal_server->lock);
-  if (signal_server->connection) {
-    connection = SOUP_WEBSOCKET_CONNECTION(g_object_ref(signal_server->connection));
+  if (signal_server->connection &&
+      soup_websocket_connection_get_state(signal_server->connection) == SOUP_WEBSOCKET_STATE_OPEN) {
+    soup_websocket_connection_send_text(signal_server->connection, text);
   }
-  g_mutex_unlock(&signal_server->lock);
-
-  if (!connection) {
-    return;
-  }
-  soup_websocket_connection_send_text(connection, text);
-  g_object_unref(connection);
 }
 
 void send_json_message(JsonBuilder* builder, WebRtcSignalServer* signal_server) {
@@ -583,11 +624,11 @@ void send_error_message(WebRtcSignalServer* signal_server, const gchar* message)
   g_object_unref(builder);
 }
 
-void send_answer_message(WebRtcSignalServer* signal_server, const gchar* sdp) {
+void send_offer_message(WebRtcSignalServer* signal_server, const gchar* sdp) {
   JsonBuilder* builder = json_builder_new();
   json_builder_begin_object(builder);
   json_builder_set_member_name(builder, "type");
-  json_builder_add_string_value(builder, "answer");
+  json_builder_add_string_value(builder, "offer");
   json_builder_set_member_name(builder, "sdp");
   json_builder_add_string_value(builder, sdp);
   json_builder_end_object(builder);
@@ -609,57 +650,113 @@ void send_candidate_message(WebRtcSignalServer* signal_server, guint mline_index
   g_object_unref(builder);
 }
 
-void on_webrtc_ice_candidate(GstElement* webrtc, guint mline_index, gchar* candidate, gpointer user_data) {
-  (void)webrtc;
-  send_candidate_message(static_cast<WebRtcSignalServer*>(user_data), mline_index, candidate);
+void on_webrtc_ice_candidate(GstElement*, guint mline_index, gchar* candidate, gpointer user_data) {
+  auto* peer = static_cast<WebRtcPeerCallback*>(user_data);
+  const std::string value = candidate ? candidate : "";
+  dispatch_webrtc_peer(peer, [mline_index, value](WebRtcSignalServer* state) {
+    send_candidate_message(state, mline_index, value.c_str());
+  });
 }
 
-void on_webrtc_answer_created(GstPromise* promise, gpointer user_data) {
-  WebRtcSignalServer* signal_server = static_cast<WebRtcSignalServer*>(user_data);
-  const GstStructure* reply = gst_promise_get_reply(promise);
-  GstWebRTCSessionDescription* answer = nullptr;
-  if (reply) {
-    gst_structure_get(reply, "answer", GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &answer, NULL);
-  }
+void on_webrtc_offer_created(GstPromise* promise, gpointer user_data) {
+  auto* peer = static_cast<WebRtcPeerCallback*>(user_data);
+  const GstStructure* reply =
+      gst_promise_wait(promise) == GST_PROMISE_RESULT_REPLIED ? gst_promise_get_reply(promise) : nullptr;
+  GstWebRTCSessionDescription* offer = nullptr;
+  if (reply)
+    gst_structure_get(reply, "offer", GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &offer, NULL);
+  std::shared_ptr<GstWebRTCSessionDescription> owned(offer, [](GstWebRTCSessionDescription* value) {
+    if (value)
+      gst_webrtc_session_description_free(value);
+  });
+  dispatch_webrtc_peer(peer, [owned](WebRtcSignalServer* state) {
+    if (!owned) {
+      send_error_message(state, "Failed to create WebRTC offer");
+      return;
+    }
+    g_signal_emit_by_name(state->webrtc, "set-local-description", owned.get(), NULL);
+    gchar* sdp = gst_sdp_message_as_text(owned->sdp);
+    if (sdp) {
+      state->offer_sent = true;
+      send_offer_message(state, sdp);
+      g_free(sdp);
+    }
+  });
   gst_promise_unref(promise);
-
-  if (!answer) {
-    send_error_message(signal_server, "Failed to create WebRTC answer");
-    return;
-  }
-
-  g_signal_emit_by_name(signal_server->webrtc, "set-local-description", answer, NULL);
-  gchar* sdp = gst_sdp_message_as_text(answer->sdp);
-  if (sdp) {
-    send_answer_message(signal_server, sdp);
-    g_free(sdp);
-  }
-  gst_webrtc_session_description_free(answer);
 }
 
 void on_webrtc_remote_description_set(GstPromise* promise, gpointer user_data) {
-  WebRtcSignalServer* signal_server = static_cast<WebRtcSignalServer*>(user_data);
+  auto* peer = static_cast<WebRtcPeerCallback*>(user_data);
+  const GstStructure* reply =
+      gst_promise_wait(promise) == GST_PROMISE_RESULT_REPLIED ? gst_promise_get_reply(promise) : nullptr;
+  const bool failed =
+      gst_promise_wait(promise) != GST_PROMISE_RESULT_REPLIED || (reply && gst_structure_has_field(reply, "error"));
+  dispatch_webrtc_peer(peer, [failed](WebRtcSignalServer* state) {
+    if (failed) {
+      send_error_message(state, "Failed to apply browser SDP answer");
+      return;
+    }
+    state->remote_ready = true;
+    for (const auto& candidate : state->pending_candidates) {
+      g_signal_emit_by_name(state->webrtc, "add-ice-candidate", candidate.first, candidate.second.c_str());
+    }
+    state->pending_candidates.clear();
+  });
   gst_promise_unref(promise);
-  GstPromise* answer_promise = gst_promise_new_with_change_func(on_webrtc_answer_created, signal_server, NULL);
-  g_signal_emit_by_name(signal_server->webrtc, "create-answer", NULL, answer_promise);
 }
 
-void handle_webrtc_offer(WebRtcSignalServer* signal_server, const gchar* sdp_text) {
+void handle_webrtc_answer(WebRtcSignalServer* state, const gchar* sdp_text) {
+  if (!state->offer_sent || state->answer_received) {
+    send_error_message(state, "Unexpected WebRTC answer");
+    return;
+  }
   GstSDPMessage* sdp = nullptr;
   if (gst_sdp_message_new(&sdp) != GST_SDP_OK) {
-    send_error_message(signal_server, "Failed to allocate SDP message");
+    send_error_message(state, "Failed to allocate SDP message");
     return;
   }
   if (gst_sdp_message_parse_buffer(reinterpret_cast<const guint8*>(sdp_text), strlen(sdp_text), sdp) != GST_SDP_OK) {
     gst_sdp_message_free(sdp);
-    send_error_message(signal_server, "Failed to parse browser SDP offer");
+    send_error_message(state, "Failed to parse browser SDP answer");
     return;
   }
+  state->answer_received = true;
+  GstWebRTCSessionDescription* answer = gst_webrtc_session_description_new(GST_WEBRTC_SDP_TYPE_ANSWER, sdp);
+  GstPromise* promise = gst_promise_new_with_change_func(
+      on_webrtc_remote_description_set, new WebRtcPeerCallback(state), [](gpointer data) {
+        delete static_cast<WebRtcPeerCallback*>(data);
+      });
+  g_signal_emit_by_name(state->webrtc, "set-remote-description", answer, promise);
+  gst_webrtc_session_description_free(answer);
+}
 
-  GstWebRTCSessionDescription* offer = gst_webrtc_session_description_new(GST_WEBRTC_SDP_TYPE_OFFER, sdp);
-  GstPromise* promise = gst_promise_new_with_change_func(on_webrtc_remote_description_set, signal_server, NULL);
-  g_signal_emit_by_name(signal_server->webrtc, "set-remote-description", offer, promise);
-  gst_webrtc_session_description_free(offer);
+void schedule_webrtc_offer(WebRtcSignalServer* state) {
+  // Calibration may not have produced encoded media yet. Wait for actual caps
+  // instead of advertising guessed H.264 profile/level or browser payload IDs.
+  state->offer_source = g_timeout_source_new(200);
+  g_source_set_callback(
+      state->offer_source,
+      [](gpointer data) -> gboolean {
+        auto* peer = static_cast<WebRtcPeerCallback*>(data);
+        auto state = peer->server;
+        std::lock_guard<std::recursive_mutex> lock(state->mutex);
+        if (state->stopped || !state->connection || state->generation != peer->generation)
+          return G_SOURCE_REMOVE;
+        if (!hstream::webrtc_endpoint_prepare_offer(state->endpoint))
+          return G_SOURCE_CONTINUE;
+        GstPromise* promise = gst_promise_new_with_change_func(
+            on_webrtc_offer_created, new WebRtcPeerCallback(state.get()), [](gpointer value) {
+              delete static_cast<WebRtcPeerCallback*>(value);
+            });
+        GSource* source = state->offer_source;
+        state->offer_source = nullptr;
+        g_source_unref(source);
+        g_signal_emit_by_name(state->webrtc, "create-offer", NULL, promise);
+        return G_SOURCE_REMOVE;
+      },
+      new WebRtcPeerCallback(state),
+      [](gpointer data) { delete static_cast<WebRtcPeerCallback*>(data); });
+  g_source_attach(state->offer_source, state->context);
 }
 
 void handle_webrtc_candidate(WebRtcSignalServer* signal_server, JsonObject* object) {
@@ -668,6 +765,13 @@ void handle_webrtc_candidate(WebRtcSignalServer* signal_server, JsonObject* obje
     return;
   }
   const gint mline_index = json_int_member(object, "sdpMLineIndex", 0);
+  if (mline_index < 0 || strlen(candidate) > 4096)
+    return;
+  if (!signal_server->remote_ready) {
+    if (signal_server->pending_candidates.size() < 256)
+      signal_server->pending_candidates.emplace_back(mline_index, candidate);
+    return;
+  }
   g_signal_emit_by_name(signal_server->webrtc, "add-ice-candidate", mline_index, candidate);
 }
 
@@ -676,8 +780,11 @@ void on_webrtc_ws_message(
     SoupWebsocketDataType type,
     GBytes* message,
     gpointer user_data) {
-  (void)connection;
-  WebRtcSignalServer* signal_server = static_cast<WebRtcSignalServer*>(user_data);
+  auto owned = *static_cast<std::shared_ptr<WebRtcSignalServer>*>(user_data);
+  auto* signal_server = owned.get();
+  std::lock_guard<std::recursive_mutex> lock(signal_server->mutex);
+  if (signal_server->stopped || signal_server->connection != connection || !signal_server->webrtc)
+    return;
   if (type != SOUP_WEBSOCKET_DATA_TEXT) {
     return;
   }
@@ -706,106 +813,195 @@ void on_webrtc_ws_message(
   const gchar* message_type = json_string_member(object, "type");
   if (!message_type) {
     send_error_message(signal_server, "Signaling message is missing type");
-  } else if (!g_strcmp0(message_type, "offer")) {
+  } else if (!g_strcmp0(message_type, "answer")) {
     const gchar* sdp = json_string_member(object, "sdp");
     if (sdp) {
-      handle_webrtc_offer(signal_server, sdp);
+      handle_webrtc_answer(signal_server, sdp);
     } else {
-      send_error_message(signal_server, "Offer is missing SDP");
+      send_error_message(signal_server, "Answer is missing SDP");
     }
   } else if (!g_strcmp0(message_type, "candidate")) {
     handle_webrtc_candidate(signal_server, object);
+  } else {
+    send_error_message(signal_server, "Expected an SDP answer or ICE candidate; refresh the preview client");
   }
   g_object_unref(parser);
 }
 
-void on_webrtc_ws_closed(SoupWebsocketConnection* connection, gpointer user_data) {
-  WebRtcSignalServer* signal_server = static_cast<WebRtcSignalServer*>(user_data);
-  g_mutex_lock(&signal_server->lock);
-  if (signal_server->connection == connection) {
-    g_object_unref(signal_server->connection);
-    signal_server->connection = nullptr;
+void detach_webrtc_peer(WebRtcSignalServer* state) {
+  ++state->generation;
+  state->offer_sent = false;
+  state->answer_received = false;
+  state->remote_ready = false;
+  state->pending_candidates.clear();
+  if (state->offer_source) {
+    g_source_destroy(state->offer_source);
+    g_source_unref(state->offer_source);
+    state->offer_source = nullptr;
   }
-  g_mutex_unlock(&signal_server->lock);
+  if (state->webrtc) {
+    g_signal_handlers_disconnect_matched(
+        state->webrtc,
+        G_SIGNAL_MATCH_FUNC,
+        0,
+        0,
+        nullptr,
+        reinterpret_cast<gpointer>(on_webrtc_ice_candidate),
+        nullptr);
+    hstream::webrtc_endpoint_detach_peer(state->endpoint);
+    gst_object_unref(state->webrtc);
+    state->webrtc = nullptr;
+  }
+}
+
+void on_webrtc_ws_closed(SoupWebsocketConnection* connection, gpointer user_data) {
+  auto owned = *static_cast<std::shared_ptr<WebRtcSignalServer>*>(user_data);
+  auto* state = owned.get();
+  std::lock_guard<std::recursive_mutex> lock(state->mutex);
+  if (state->connection != connection)
+    return;
+  g_signal_handlers_disconnect_matched(
+      connection, G_SIGNAL_MATCH_FUNC, 0, 0, nullptr, reinterpret_cast<gpointer>(on_webrtc_ws_message), nullptr);
+  g_signal_handlers_disconnect_matched(
+      connection, G_SIGNAL_MATCH_FUNC, 0, 0, nullptr, reinterpret_cast<gpointer>(on_webrtc_ws_closed), nullptr);
+  state->connection = nullptr;
+  g_object_unref(connection);
+  detach_webrtc_peer(state);
 }
 
 void on_webrtc_ws_connected(
     SoupServer* server,
+#if SOUP_MAJOR_VERSION >= 3
+    SoupServerMessage* message,
+    const char* path,
+    SoupWebsocketConnection* connection,
+#else
     SoupWebsocketConnection* connection,
     const char* path,
     SoupClientContext* client,
+#endif
     gpointer user_data) {
   (void)server;
   (void)path;
+#if SOUP_MAJOR_VERSION >= 3
+  (void)message;
+#else
   (void)client;
-  WebRtcSignalServer* signal_server = static_cast<WebRtcSignalServer*>(user_data);
+#endif
+  auto owned = *static_cast<std::shared_ptr<WebRtcSignalServer>*>(user_data);
+  auto* signal_server = owned.get();
+  std::lock_guard<std::recursive_mutex> lock(signal_server->mutex);
+  if (signal_server->stopped)
+    return;
 
-  g_mutex_lock(&signal_server->lock);
   if (signal_server->connection) {
-    soup_websocket_connection_close(signal_server->connection, SOUP_WEBSOCKET_CLOSE_NORMAL, "replaced");
-    g_object_unref(signal_server->connection);
+    auto* old = signal_server->connection;
+    signal_server->connection = nullptr;
+    g_signal_handlers_disconnect_matched(
+        old, G_SIGNAL_MATCH_FUNC, 0, 0, nullptr, reinterpret_cast<gpointer>(on_webrtc_ws_message), nullptr);
+    g_signal_handlers_disconnect_matched(
+        old, G_SIGNAL_MATCH_FUNC, 0, 0, nullptr, reinterpret_cast<gpointer>(on_webrtc_ws_closed), nullptr);
+    soup_websocket_connection_close(old, SOUP_WEBSOCKET_CLOSE_NORMAL, "replaced");
+    g_object_unref(old);
+  }
+  detach_webrtc_peer(signal_server);
+  signal_server->webrtc = hstream::webrtc_endpoint_reset_peer(signal_server->endpoint);
+  if (!signal_server->webrtc) {
+    soup_websocket_connection_close(connection, SOUP_WEBSOCKET_CLOSE_SERVER_ERROR, "preview initialization failed");
+    return;
   }
   signal_server->connection = SOUP_WEBSOCKET_CONNECTION(g_object_ref(connection));
-  g_mutex_unlock(&signal_server->lock);
-
-  g_signal_connect(connection, "message", G_CALLBACK(on_webrtc_ws_message), signal_server);
-  g_signal_connect(connection, "closed", G_CALLBACK(on_webrtc_ws_closed), signal_server);
+  g_signal_connect_data(
+      signal_server->webrtc,
+      "on-ice-candidate",
+      G_CALLBACK(on_webrtc_ice_candidate),
+      new WebRtcPeerCallback(signal_server),
+      [](gpointer data, GClosure*) { delete static_cast<WebRtcPeerCallback*>(data); },
+      static_cast<GConnectFlags>(0));
+  for (const auto& entry :
+       {std::make_pair("message", G_CALLBACK(on_webrtc_ws_message)),
+        std::make_pair("closed", G_CALLBACK(on_webrtc_ws_closed))}) {
+    g_signal_connect_data(
+        connection,
+        entry.first,
+        entry.second,
+        new std::shared_ptr<WebRtcSignalServer>(owned),
+        [](gpointer data, GClosure*) { delete static_cast<std::shared_ptr<WebRtcSignalServer>*>(data); },
+        static_cast<GConnectFlags>(0));
+  }
+  schedule_webrtc_offer(signal_server);
 }
 
 void on_webrtc_http_request(
     SoupServer* server,
+#if SOUP_MAJOR_VERSION >= 3
+    SoupServerMessage* msg,
+#else
     SoupMessage* msg,
+#endif
     const char* path,
     GHashTable* query,
+#if SOUP_MAJOR_VERSION < 3
     SoupClientContext* client,
+#endif
     gpointer user_data) {
   (void)server;
   (void)query;
+#if SOUP_MAJOR_VERSION < 3
   (void)client;
+#endif
   (void)user_data;
   if (g_strcmp0(path, "/") && g_strcmp0(path, "/index.html")) {
+#if SOUP_MAJOR_VERSION >= 3
+    soup_server_message_set_status(msg, SOUP_STATUS_NOT_FOUND, nullptr);
+#else
     soup_message_set_status(msg, SOUP_STATUS_NOT_FOUND);
+#endif
     return;
   }
+#if SOUP_MAJOR_VERSION >= 3
+  soup_server_message_set_response(
+      msg, "text/html; charset=utf-8", SOUP_MEMORY_STATIC, kWebRtcClientHtml, strlen(kWebRtcClientHtml));
+  soup_server_message_set_status(msg, SOUP_STATUS_OK, nullptr);
+#else
   soup_message_set_response(
       msg, "text/html; charset=utf-8", SOUP_MEMORY_STATIC, kWebRtcClientHtml, strlen(kWebRtcClientHtml));
   soup_message_set_status(msg, SOUP_STATUS_OK);
+#endif
 }
 
 gboolean start_webrtc_signaling(GstElement* webrtc, const NvDsSinkEncoderConfig* config) {
   GError* error = nullptr;
-  WebRtcSignalServer* signal_server = new WebRtcSignalServer();
-  g_mutex_init(&signal_server->lock);
-  signal_server->webrtc = GST_ELEMENT(gst_object_ref(webrtc));
+  auto owned = std::make_shared<WebRtcSignalServer>();
+  auto* signal_server = owned.get();
+  signal_server->endpoint = GST_ELEMENT(gst_object_ref(webrtc));
   signal_server->port = config->webrtc_port ? config->webrtc_port : kDefaultWebRtcPort;
-  signal_server->server = soup_server_new(SOUP_SERVER_SERVER_HEADER, "hstream-webrtc", NULL);
+  signal_server->server = soup_server_new("server-header", "hstream-webrtc", NULL);
   if (!signal_server->server) {
     g_printerr("Failed to create WebRTC signaling server\n");
-    g_mutex_clear(&signal_server->lock);
-    gst_object_unref(signal_server->webrtc);
-    delete signal_server;
     return FALSE;
   }
 
   soup_server_add_handler(signal_server->server, "/", on_webrtc_http_request, signal_server, NULL);
   soup_server_add_handler(signal_server->server, "/index.html", on_webrtc_http_request, signal_server, NULL);
   soup_server_add_websocket_handler(
-      signal_server->server, "/ws", NULL, NULL, on_webrtc_ws_connected, signal_server, NULL);
+      signal_server->server,
+      "/ws",
+      NULL,
+      NULL,
+      on_webrtc_ws_connected,
+      new std::shared_ptr<WebRtcSignalServer>(owned),
+      [](gpointer data) { delete static_cast<std::shared_ptr<WebRtcSignalServer>*>(data); });
   if (!soup_server_listen_all(
           signal_server->server, signal_server->port, static_cast<SoupServerListenOptions>(0), &error)) {
     g_printerr("Failed to listen for WebRTC signaling on port %u: %s\n", signal_server->port, error->message);
     g_error_free(error);
     g_object_unref(signal_server->server);
-    g_mutex_clear(&signal_server->lock);
-    gst_object_unref(signal_server->webrtc);
-    delete signal_server;
     return FALSE;
   }
 
-  g_signal_connect(webrtc, "on-ice-candidate", G_CALLBACK(on_webrtc_ice_candidate), signal_server);
-
   g_mutex_lock(&webrtc_signal_servers_lock);
-  webrtc_signal_servers.push_back(signal_server);
+  webrtc_signal_servers.push_back(std::move(owned));
   g_mutex_unlock(&webrtc_signal_servers_lock);
 
   g_print("\n *** HStream: WebRTC preview signaling on http://0.0.0.0:%u/ ***\n\n", signal_server->port);
@@ -829,72 +1025,46 @@ bool rtsp_audio_enabled_for_sink_id(guint sink_id) {
   return rtsp_audio_sink_ids.count(sink_id) > 0;
 }
 
-GstPad* find_webrtc_transceiver_sink_pad(GstElement* webrtc, GstWebRTCRTPTransceiver* transceiver) {
-  GstIterator* iterator = gst_element_iterate_sink_pads(webrtc);
-  if (!iterator) {
-    return nullptr;
-  }
-
-  GstPad* result = nullptr;
-  GValue item = G_VALUE_INIT;
-  bool done = false;
-  while (!done) {
-    switch (gst_iterator_next(iterator, &item)) {
-      case GST_ITERATOR_OK: {
-        GstPad* pad = GST_PAD(g_value_get_object(&item));
-        GstWebRTCRTPTransceiver* pad_transceiver = nullptr;
-        g_object_get(G_OBJECT(pad), "transceiver", &pad_transceiver, NULL);
-        if (!gst_pad_is_linked(pad) && (!transceiver || pad_transceiver == transceiver)) {
-          result = GST_PAD(gst_object_ref(pad));
-          done = true;
-        }
-        if (pad_transceiver) {
-          g_object_unref(pad_transceiver);
-        }
-        g_value_reset(&item);
-        break;
-      }
-      case GST_ITERATOR_RESYNC:
-        gst_iterator_resync(iterator);
-        break;
-      case GST_ITERATOR_ERROR:
-      case GST_ITERATOR_DONE:
-        done = true;
-        break;
+void destroy_webrtc_signal_servers(GstElement* pipeline = nullptr) {
+  std::vector<std::shared_ptr<WebRtcSignalServer>> servers;
+  g_mutex_lock(&webrtc_signal_servers_lock);
+  for (auto it = webrtc_signal_servers.begin(); it != webrtc_signal_servers.end();) {
+    if (!pipeline || gst_object_has_as_ancestor(GST_OBJECT((*it)->endpoint), GST_OBJECT(pipeline))) {
+      servers.push_back(*it);
+      it = webrtc_signal_servers.erase(it);
+    } else {
+      ++it;
     }
   }
-  g_value_unset(&item);
-  gst_iterator_free(iterator);
-  return result;
-}
-
-void destroy_webrtc_signal_servers() {
-  std::vector<WebRtcSignalServer*> servers;
-  g_mutex_lock(&webrtc_signal_servers_lock);
-  servers.swap(webrtc_signal_servers);
   g_mutex_unlock(&webrtc_signal_servers_lock);
 
-  for (WebRtcSignalServer* signal_server : servers) {
-    g_mutex_lock(&signal_server->lock);
-    if (signal_server->connection) {
-      soup_websocket_connection_close(signal_server->connection, SOUP_WEBSOCKET_CLOSE_NORMAL, "pipeline stopping");
-      g_object_unref(signal_server->connection);
-      signal_server->connection = nullptr;
+  for (const auto& state : servers) {
+    std::lock_guard<std::recursive_mutex> lock(state->mutex);
+    state->stopped = true;
+    if (state->connection) {
+      auto* connection = state->connection;
+      state->connection = nullptr;
+      g_signal_handlers_disconnect_matched(
+          connection, G_SIGNAL_MATCH_FUNC, 0, 0, nullptr, reinterpret_cast<gpointer>(on_webrtc_ws_message), nullptr);
+      g_signal_handlers_disconnect_matched(
+          connection, G_SIGNAL_MATCH_FUNC, 0, 0, nullptr, reinterpret_cast<gpointer>(on_webrtc_ws_closed), nullptr);
+      soup_websocket_connection_close(connection, SOUP_WEBSOCKET_CLOSE_NORMAL, "pipeline stopping");
+      g_object_unref(connection);
     }
-    g_mutex_unlock(&signal_server->lock);
-    if (signal_server->server) {
-      soup_server_disconnect(signal_server->server);
-      g_object_unref(signal_server->server);
+    detach_webrtc_peer(state.get());
+    if (state->server) {
+      soup_server_disconnect(state->server);
+      g_object_unref(state->server);
+      state->server = nullptr;
     }
-    if (signal_server->webrtc) {
-      gst_object_unref(signal_server->webrtc);
-    }
-    g_mutex_clear(&signal_server->lock);
-    delete signal_server;
   }
 }
 
 } // namespace
+
+void prepare_webrtc_sinks_for_stop(GstElement* pipeline) {
+  destroy_webrtc_signal_servers(pipeline);
+}
 
 gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncoderConfig* config) {
   return start_webrtc_signaling(webrtc, config);
@@ -906,9 +1076,7 @@ gboolean link_webrtc_rtp_src_to_sink(
     GstCaps* rtp_caps,
     const char* track_name) {
   static std::atomic<int> webrtc_in_counter = 0;
-  GstWebRTCRTPTransceiver* transceiver = nullptr;
   GstPad* webrtc_sink_pad = nullptr;
-  GstPadTemplate* webrtc_sink_pad_template = nullptr;
   gchar* webrtc_sink_pad_name = nullptr;
   gboolean ret = FALSE;
 
@@ -917,23 +1085,7 @@ gboolean link_webrtc_rtp_src_to_sink(
     goto done;
   }
 
-  g_signal_emit_by_name(
-      webrtc, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY, rtp_caps, &transceiver);
-  if (!transceiver) {
-    g_printerr("Failed to add WebRTC %s transceiver\n", track_name ? track_name : "RTP");
-    goto done;
-  }
-
-  webrtc_sink_pad = find_webrtc_transceiver_sink_pad(webrtc, transceiver);
-  if (!webrtc_sink_pad) {
-    webrtc_sink_pad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(webrtc), "sink_%u");
-  }
-  if (!webrtc_sink_pad && webrtc_sink_pad_template) {
-    webrtc_sink_pad = gst_element_request_pad(webrtc, webrtc_sink_pad_template, NULL, rtp_caps);
-  }
-  if (!webrtc_sink_pad) {
-    webrtc_sink_pad = gst_element_request_pad_simple(webrtc, "sink_%u");
-  }
+  webrtc_sink_pad = hstream::webrtc_endpoint_add_track(webrtc, rtp_caps);
   if (!webrtc_sink_pad) {
     g_printerr("Failed to request WebRTC %s RTP sink pad\n", track_name ? track_name : "RTP");
     goto done;
@@ -957,9 +1109,6 @@ done:
   }
   if (webrtc_sink_pad) {
     gst_object_unref(webrtc_sink_pad);
-  }
-  if (transceiver) {
-    gst_object_unref(transceiver);
   }
   return ret;
 }
@@ -1385,23 +1534,9 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     }
     g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
     g_object_set(
-        G_OBJECT(bin->transform),
-        "gpu-id",
-        config->gpu_id,
-        "nvbuf-memory-type",
-        config->nvbuf_memory_type,
-        NULL);
+        G_OBJECT(bin->transform), "gpu-id", config->gpu_id, "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
     install_render_aspect_caps_probe(
-        bin->transform,
-        bin->sink,
-        bin->cap_filter,
-        nullptr,
-        config,
-        nullptr,
-        true,
-        nullptr,
-        false,
-        true);
+        bin->transform, bin->sink, bin->cap_filter, nullptr, config, nullptr, true, nullptr, false, true);
   }
 #endif
 
@@ -2257,10 +2392,8 @@ done:
 static gboolean create_webrtc_sink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSubBin* bin) {
   GstCaps* raw_caps = NULL;
   GstCaps* rtp_caps = NULL;
-  GstWebRTCRTPTransceiver* transceiver = NULL;
   GstPad* rtp_src_pad = NULL;
   GstPad* webrtc_sink_pad = NULL;
-  GstPadTemplate* webrtc_sink_pad_template = NULL;
   gboolean ret = FALSE;
   gchar elem_name[64];
   gchar encode_name[64];
@@ -2371,29 +2504,15 @@ static gboolean create_webrtc_sink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
       "packetization-mode",
       G_TYPE_STRING,
       "1",
-      "profile-level-id",
-      G_TYPE_STRING,
-      "42e01f",
       NULL);
   g_object_set(G_OBJECT(bin->enc_caps_filter), "caps", rtp_caps, NULL);
 
   g_snprintf(elem_name, sizeof(elem_name), "webrtc_sink_sub_bin_webrtc%d", uid);
-  bin->sink = gst_element_factory_make("webrtcbin", elem_name);
+  bin->sink = hstream::webrtc_endpoint_create(elem_name, config->webrtc_stun_server);
   if (!bin->sink) {
     NVGSTDS_ERR_MSG_V("Failed to create '%s'", elem_name);
     goto done;
   }
-  g_object_set(G_OBJECT(bin->sink), "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, NULL);
-  if (config->webrtc_stun_server && *config->webrtc_stun_server) {
-    g_object_set(G_OBJECT(bin->sink), "stun-server", config->webrtc_stun_server, NULL);
-  }
-  g_signal_emit_by_name(
-      bin->sink, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY, rtp_caps, &transceiver);
-  if (!transceiver) {
-    NVGSTDS_ERR_MSG_V("Failed to add WebRTC video transceiver");
-    goto done;
-  }
-
   resize_output = config->width && config->height;
   caps_string =
       config->enc_type == NV_DS_ENCODER_TYPE_SW ? "video/x-raw, format=I420" : "video/x-raw(memory:NVMM), format=I420";
@@ -2455,16 +2574,7 @@ static gboolean create_webrtc_sink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
   NVGSTDS_LINK_ELEMENT(bin->rtppay_or_flvmux, bin->enc_caps_filter);
 
   rtp_src_pad = gst_element_get_static_pad(bin->enc_caps_filter, "src");
-  webrtc_sink_pad = find_webrtc_transceiver_sink_pad(bin->sink, transceiver);
-  if (!webrtc_sink_pad) {
-    webrtc_sink_pad_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(bin->sink), "sink_%u");
-  }
-  if (!webrtc_sink_pad && webrtc_sink_pad_template) {
-    webrtc_sink_pad = gst_element_request_pad(bin->sink, webrtc_sink_pad_template, NULL, rtp_caps);
-  }
-  if (!webrtc_sink_pad) {
-    webrtc_sink_pad = gst_element_request_pad_simple(bin->sink, "sink_%u");
-  }
+  webrtc_sink_pad = hstream::webrtc_endpoint_add_track(bin->sink, rtp_caps);
   if (rtp_src_pad && webrtc_sink_pad) {
     link_result = gst_pad_link(rtp_src_pad, webrtc_sink_pad);
   }
@@ -2507,9 +2617,6 @@ done:
   }
   if (webrtc_sink_pad) {
     gst_object_unref(webrtc_sink_pad);
-  }
-  if (transceiver) {
-    gst_object_unref(transceiver);
   }
   if (raw_caps) {
     gst_caps_unref(raw_caps);

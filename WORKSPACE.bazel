@@ -5,6 +5,7 @@ workspace(name = _workspace_name)
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
 load("//bazel:conditional_local_repository.bzl", "conditional_local_repository")
+load("//bazel:libsoup_repository.bzl", "libsoup_repository")
 load("//bazel:onnxruntime_gpu_repository.bzl", "onnxruntime_gpu_arm64_repository")
 load("//bazel:player_tensorrt_sdk_repository.bzl", "player_tensorrt_sdk_repository")
 
@@ -212,6 +213,8 @@ git_repository(
 git_repository(
     name = "jetson-utils",
     commit = "c34f73a80ee39093f749b01293cd9bed9ef0eaca",
+    patch_args = ["-p1"],
+    patches = ["//third_party/patches:jetson_utils_libsoup3.patch"],
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
 
@@ -344,14 +347,7 @@ conditional_local_repository(
     ],
 )
 
-conditional_local_repository(
-    name = "libsoup",
-    build_file = "@//buildfiles:third_party/libsoup.BUILD",
-    paths = [
-        "/opt/jetson-sysroot/usr",
-        "/usr",
-    ],
-)
+libsoup_repository(name = "libsoup")
 
 # SimpleBLE (and subprojects SimpleDBus, SimpleBluez)
 # We vendor it as a git_repository and provide our own Bazel BUILD file.

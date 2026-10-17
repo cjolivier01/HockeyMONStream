@@ -7,7 +7,7 @@ APT_PACKAGES=(
   curl
   fonts-dejavu-core
   libva-dev
-  libsoup2.4-dev
+  libsoup-3.0-dev
   libjson-glib-dev
   libmosquitto-dev
   libjsoncpp-dev

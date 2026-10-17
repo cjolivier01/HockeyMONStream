@@ -2,7 +2,7 @@
 sudo apt-get remove -y \
   curl \
   libva-dev \
-  libsoup2.4-dev \
+  libsoup-3.0-dev \
   libjson-glib-dev \
   libjsoncpp-dev \
   libglfw3-dev \

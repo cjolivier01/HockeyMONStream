@@ -124,11 +124,11 @@ int main(int argc, char** argv) {
     std::string runner = "hstream-cli", finalizer = "hstream-finalize";
     std::string requested_sinks;
     std::vector<std::string> directives;
-    bool overwrite = false;
+    bool overwrite = false, interactive = false, runtime_only = false, calibration_prompts = false;
     for (int i = 1; i < argc; ++i) {
       const std::string arg(argv[i]);
       if (arg == "--help" || arg == "-h") {
-        std::cout << "Usage: hstream-job --game-dir DIR [--output FILE] [--force]\n"
+        std::cout << "Usage: hstream-job --game-dir DIR [--output FILE] [--force] [--interactive]\n"
                      "  [--sbatch '--partition=gpu'] [--sbatch '--time=02:00:00']\n"
                      "  [--runner COMMAND] [--finalizer COMMAND] [--config FILE] [--working-directory DIR]\n"
                      "  [--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE]\n"
@@ -139,11 +139,31 @@ int main(int argc, char** argv) {
                      "Reads config.yaml and hstream_ui.job.arguments saved by the UI. Without a saved\n"
                      "job or selected file encoder, defaults to the 4K Program MP4. Rendering is disabled.\n"
                      "DriveGPT capture defaults on; the UI's explicit checkbox choice is preserved.\n"
-                     "Successful jobs publish faststart MP4s/databases to the game and clean their working files.\n";
+                     "Successful jobs publish faststart MP4s/databases to the game and clean their working files.\n"
+                     "--interactive preserves the saved sinks and stdin, executes the same resolved runner,\n"
+                     "and runs without archive publication. Its supervisor must set a private\n"
+                     "HSTREAM_RUNTIME_CACHE_DIR and clean it after every descendant has stopped.\n"
+                     "Extra script arguments are appended as literal runner arguments in interactive mode.\n";
+        std::cout << "--calibration-prompts preserves explicitly configured rink-leveling and crop flows\n"
+                     "for managed jobs; the supervisor must service calibration prompts.\n";
+        std::cout << "--runtime-only forwards only the script's arguments, for native sampling and\n"
+                     "runtime-info subcommands that cannot inherit a saved playback recipe.\n";
         return 0;
       }
       if (arg == "--force") {
         overwrite = true;
+        continue;
+      }
+      if (arg == "--calibration-prompts") {
+        calibration_prompts = true;
+        continue;
+      }
+      if (arg == "--interactive") {
+        interactive = true;
+        continue;
+      }
+      if (arg == "--runtime-only") {
+        interactive = runtime_only = true;
         continue;
       }
       if (i + 1 == argc)
@@ -200,7 +220,19 @@ int main(int argc, char** argv) {
     const YAML::Node saved_args = job && job.IsMap() ? job["arguments"] : YAML::Node();
     if (saved_args.IsDefined() && !saved_args.IsNull() && !saved_args.IsSequence())
       throw std::runtime_error("hstream_ui.job.arguments must be a sequence");
-    const auto job_args = encode_job_arguments(saved_args, requested_sinks);
+    std::vector<std::string> job_args;
+    if (interactive) {
+      if (!requested_sinks.empty())
+        throw std::runtime_error("interactive sinks must be saved in hstream_ui.job.arguments");
+      if (saved_args.IsSequence()) {
+        for (const auto& argument : saved_args)
+          job_args.push_back(argument.as<std::string>());
+      } else {
+        job_args.push_back("--enable-sinks=WEBRTC");
+      }
+    } else {
+      job_args = encode_job_arguments(saved_args, requested_sinks);
+    }
     args.insert(args.end(), job_args.begin(), job_args.end());
     if (std::find(job_args.begin(), job_args.end(), "--stitching-calibration-only") != job_args.end()) {
       args.push_back("--options=hstream_ui.job.capture_telemetry=false");
@@ -218,25 +250,60 @@ int main(int argc, char** argv) {
     std::string script = "#!/usr/bin/env bash\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --gres=gpu:1\n";
     for (const auto& directive : directives)
       script += "#SBATCH " + directive + "\n";
-    script +=
-        "\n# Run directly, or submit this file with sbatch.\n"
-        "# hstream-finalize and hstream-cli must be on PATH on the execution host.\n"
-        "# Game files and assets must be accessible there.\n"
-        "# Publishes completed archives and telemetry, then cleans this run.\n"
-        "# Repeating this script resumes the same run; export again for a new generation.\n"
-        "set -euo pipefail\numask 077\n";
+    script += "\n# Run directly, or submit this file with sbatch.\n";
+    script += interactive ? "# hstream-cli must be on PATH on the execution host.\n"
+                          : "# hstream-finalize and hstream-cli must be on PATH on the execution host.\n";
+    script += "# Game files and assets must be accessible there.\n";
+    script += interactive ? "# Interactive session; the outer supervisor owns cleanup and cancellation.\n"
+                          : "# Publishes completed archives and telemetry, then cleans this run.\n"
+                            "# Repeating this script resumes the same run; export again for a new generation.\n";
+    script += "set -euo pipefail\numask 077\n";
     if (!working.empty())
       script += "cd -- " + quote(working.string()) + "\n";
+    script += "unset HSTREAM_UI_PARENT_PID\n";
+    if (!interactive && !calibration_prompts)
+      script += "unset HSTREAM_RINK_LEVELING_FLOW HSTREAM_PROJECTION_CROP_FLOW\n";
+    if (!interactive)
+      script +=
+          "unset HSTREAM_CALIBRATION_PENDING HSTREAM_CALIBRATION_START_STAGE HSTREAM_CALIBRATION_INVALIDATION_ID\n";
     script +=
-        "unset HSTREAM_UI_PARENT_PID HSTREAM_RINK_LEVELING_FLOW HSTREAM_PROJECTION_CROP_FLOW\n"
-        "unset HSTREAM_CALIBRATION_PENDING HSTREAM_CALIBRATION_START_STAGE HSTREAM_CALIBRATION_INVALIDATION_ID\n"
         "unset HSTREAM_ARCHIVE_RUN_ID HSTREAM_UI_PREVIEW_OVERLAYS HSTREAM_JOB_MANIFEST\n"
-        "unset HSTREAM_JOB_PLUGIN_STAGE HSTREAM_JOB_LIBRARY_STAGE\n";
+        "unset HSTREAM_JOB_PLUGIN_STAGE HSTREAM_JOB_LIBRARY_STAGE HSTREAM_JOB_MANAGED_RUNTIME\n";
     script += "export HM_GAME_DIR=" + quote(game.parent_path().string()) + "\n";
     for (const char* key : {"HM_OUTPUT_WORK_DIR", "HM_RENDER_SINK", "USE_NEW_NVSTREAMMUX"}) {
       const std::string value = environment(key);
       if (!value.empty())
         script += "export " + std::string(key) + "=" + quote(value) + "\n";
+    }
+    if (interactive) {
+      // These sessions have no finalizer to admit them, so the supervisor owns
+      // the private runtime directory. Refuse to share another run's cache.
+      script += R"JOB(if [ -z "${HSTREAM_RUNTIME_CACHE_DIR:-}" ] || ! mkdir -p -- "${HSTREAM_RUNTIME_CACHE_DIR}"; then
+  echo "Managed runtime directory is unavailable" >&2
+  exit 78
+fi
+# A plain assignment, so an unsearchable directory aborts here. `export` would
+# report its own success and hand the runner an empty shared-cache fallback.
+runtime_cache="$(CDPATH= cd -- "${HSTREAM_RUNTIME_CACHE_DIR}" && pwd -P)"
+# Check what the runner will actually use: command substitution strips trailing
+# newlines, so a padded value resolves to a sibling that was never created.
+if [ ! -w "${runtime_cache}" ]; then
+  echo "Managed runtime directory is unavailable" >&2
+  exit 78
+fi
+export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
+# The installed launcher rewrites ordinary arguments; managed runs own theirs.
+export HSTREAM_JOB_MANAGED_RUNTIME=1
+)JOB";
+      script += "exec " + quote(runner);
+      if (!runtime_only) {
+        for (const auto& argument : args)
+          script += " \\\n  " + quote(argument);
+      }
+      script += " \\\n  \"$@\"\n";
+      write_script(output, script, overwrite);
+      std::cout << output.string() << "\n";
+      return 0;
     }
     script += "printf '%s\n' " +
         quote("hstream-job: Publishing completed outputs to " + game.string() +

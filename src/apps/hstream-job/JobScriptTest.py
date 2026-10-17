@@ -124,6 +124,98 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotIn("HSTREAM_UI_PARENT_PID", actual["env"])
         self.assertFalse((self.root / "INJECTED").exists())
 
+    def test_managed_calibration_prompts_are_explicit_and_keep_finalization(self):
+        for enabled in (False, True):
+            for flows in ({}, {"HSTREAM_RINK_LEVELING_FLOW": "1", "HSTREAM_PROJECTION_CROP_FLOW": "0"}):
+                with self.subTest(enabled=enabled, flows=flows):
+                    env = dict(self.env)
+                    for key in ("HSTREAM_RINK_LEVELING_FLOW", "HSTREAM_PROJECTION_CROP_FLOW"):
+                        env.pop(key, None)
+                    env.update(flows)
+                    env.update(HSTREAM_CALIBRATION_PENDING="1", HSTREAM_CALIBRATION_START_STAGE="features", HSTREAM_CALIBRATION_INVALIDATION_ID="stale")
+                    result = self.generate("--force", *(["--calibration-prompts"] if enabled else []))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    run = subprocess.run([str(self.game / "hstream-job.sh")], env=env, capture_output=True, text=True)
+                    self.assertEqual(run.returncode, 7, run.stderr)
+                    self.assertIn("Publishing completed outputs", run.stdout)
+                    actual = json.loads(self.output.read_text())["env"]
+                    for key in ("HSTREAM_RINK_LEVELING_FLOW", "HSTREAM_PROJECTION_CROP_FLOW"):
+                        self.assertEqual(actual.get(key), flows.get(key) if enabled else None)
+                    for key in ("HSTREAM_CALIBRATION_PENDING", "HSTREAM_CALIBRATION_START_STAGE", "HSTREAM_CALIBRATION_INVALIDATION_ID"):
+                        self.assertNotIn(key, actual)
+
+    def test_interactive_preserves_protocol_sinks_and_runtime_without_finalizer(self):
+        self.arguments[0] = "--enable-sinks=WEBRTC"
+        (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport json,os,sys\n"
+            "with open(os.environ['JOB_TEST_OUTPUT'],'w') as f:\n"
+            " json.dump({'argv':sys.argv[1:], 'stdin':sys.stdin.readline(), 'env':dict(os.environ)},f)\n"
+        )
+        self.env.update(HSTREAM_RUNTIME_CACHE_DIR=str(self.root / "private runtime"), HSTREAM_RINK_LEVELING_FLOW="1", HSTREAM_CALIBRATION_PENDING="1", HSTREAM_CALIBRATION_INVALIDATION_ID="server-generation")
+        result = self.generate("--interactive", "--finalizer", str(self.root / "nonexistent-finalizer"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        script = self.game / "hstream-job.sh"
+        run = subprocess.run([str(script), "--options=pipeline.sink4.webrtc-port=20001", "literal $(touch INJECTED)"], input="inspector-session\n", env=self.env, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertIn("--enable-sinks=WEBRTC", actual["argv"])
+        self.assertNotIn("--encode-job", actual["argv"])
+        self.assertEqual(actual["argv"][-2:], ["--options=pipeline.sink4.webrtc-port=20001", "literal $(touch INJECTED)"])
+        self.assertEqual(actual["stdin"], "inspector-session\n")
+        self.assertEqual(actual["env"]["HSTREAM_RINK_LEVELING_FLOW"], "1")
+        self.assertEqual(actual["env"]["HSTREAM_CALIBRATION_PENDING"], "1")
+        self.assertEqual(actual["env"]["HSTREAM_CALIBRATION_INVALIDATION_ID"], "server-generation")
+        # The runner owns plugin and registry discovery; the script only hands
+        # it the supervisor's private cache, resolved to a real directory.
+        self.assertEqual(
+            actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"],
+            os.path.realpath(self.root / "private runtime"),
+        )
+        self.assertNotIn("nonexistent-finalizer", script.read_text())
+        self.assertFalse((self.root / "INJECTED").exists())
+
+    def test_interactive_requires_supervisor_runtime_directory(self):
+        result = self.generate("--interactive")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        blocked = self.root / "blocked"
+        blocked.mkdir()
+        unwritable, unsearchable = blocked / "read-only", blocked / "no-exec"
+        unwritable.mkdir(mode=0o500)
+        # Writable but not searchable: mkdir -p and -w both pass, cd does not.
+        unsearchable.mkdir(mode=0o600)
+        self.addCleanup(lambda: [path.chmod(0o700) for path in (unwritable, unsearchable)])
+        # 78 is the documented "supervisor did not supply one" status; the
+        # unsearchable directory only fails later, at the resolving cd.
+        cases = [("unset", None, 78), ("empty", "", 78), ("not a directory", str(self.config), 78)]
+        if os.geteuid() != 0:  # Root ignores the permission bits these rely on.
+            cases += [("unwritable", str(unwritable), 78), ("unsearchable", str(unsearchable), 1)]
+        for name, value, status in cases:
+            with self.subTest(case=name):
+                environment = dict(self.env)
+                if value is None:
+                    environment.pop("HSTREAM_RUNTIME_CACHE_DIR", None)
+                else:
+                    environment["HSTREAM_RUNTIME_CACHE_DIR"] = value
+                run = subprocess.run(
+                    [str(self.game / "hstream-job.sh")], env=environment, capture_output=True, text=True
+                )
+                self.assertEqual(run.returncode, status, run.stdout)
+                if status == 78:
+                    self.assertIn("Managed runtime directory is unavailable", run.stderr)
+                self.assertFalse(self.output.exists(), "the runner must not start")
+
+    def test_runtime_only_forwards_exact_native_subcommand_arguments(self):
+        self.env["HSTREAM_RUNTIME_CACHE_DIR"] = str(self.root / "private runtime")
+        result = self.generate("--runtime-only")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = ["--tensorrt-runtime-info", "--game-id", str(self.game)]
+        run = subprocess.run([str(self.game / "hstream-job.sh"), *arguments], env=self.env, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["argv"], arguments)
+        self.assertNotIn("--encode-job", actual["argv"])
+
     def test_export_freezes_explicit_telemetry_checkbox(self):
         for capture in (False, True):
             with self.subTest(capture=capture):
@@ -351,7 +443,8 @@ class JobScriptTest(unittest.TestCase):
                 self.assertEqual(Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"]),
                                  manifest.parent / "runtime")
 
-    def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
+    def install_packaged_launcher(self):
+        """Put the real Debian launcher on PATH as hstream-cli, relocated."""
         install = self.root / "install 'quoted'"
         (install / "bin").mkdir(parents=True)
         shutil.copy2(self.runner, install / "bin/hstream-cli")
@@ -363,6 +456,64 @@ class JobScriptTest(unittest.TestCase):
         launcher = self.runtime_bin / "hstream-cli"
         launcher.write_text(wrapper)
         launcher.chmod(0o700)
+        return install
+
+    def test_packaged_launcher_forwards_managed_interactive_arguments(self):
+        # These modes carry no --encode-job, so without the managed marker the
+        # launcher would inject its own config, sources and sink.
+        install = self.install_packaged_launcher()
+        self.env["HSTREAM_RUNTIME_CACHE_DIR"] = str(self.root / "private runtime")
+        self.arguments[0] = "--enable-sinks=WEBRTC"
+        (self.game / "config.yaml").write_text(
+            json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}})
+        )
+        for mode, extra, expected in (
+            ("--interactive", [],
+             ["-g", self.game.name, "--enable-sources=URI-MULTIPLE"] + self.arguments),
+            ("--runtime-only", ["--tensorrt-runtime-info"], ["--tensorrt-runtime-info"]),
+        ):
+            with self.subTest(mode=mode):
+                # No --runner: resolve the command from the execution host PATH.
+                exported = subprocess.run(
+                    [TOOL, "--game-dir", str(self.game), "--force", mode],
+                    cwd=self.root, env=self.env, text=True, capture_output=True,
+                )
+                self.assertEqual(exported.returncode, 0, exported.stderr)
+                script = self.game / "hstream-job.sh"
+                self.assertIn("exec 'hstream-cli'", script.read_text())
+                run = subprocess.run([str(script), *extra], cwd="/", env=self.env,
+                                     text=True, capture_output=True)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                actual = json.loads(self.output.read_text())
+                self.assertEqual(actual["argv"], expected)
+                self.assertNotIn("--encode-job", actual["argv"])
+                self.assertEqual(actual["cwd"], "/")
+                # The marker must be read after the launcher's runtime setup,
+                # which is the only part of it a managed run still needs.
+                self.assertIn(str(install / "bin"), actual["env"]["PATH"].split(os.pathsep))
+
+    def test_packaged_launcher_still_completes_unmarked_invocations(self):
+        # The managed bypass must stay narrow: an ordinary operator command
+        # keeps the launcher's config, sources, sink and install cwd.
+        install = self.install_packaged_launcher()
+        home = self.root / "launcher-home"
+        home.mkdir()
+        environment = dict(self.env, HOME=str(home))
+        environment.pop("HSTREAM_JOB_MANAGED_RUNTIME", None)
+        environment.pop("DISPLAY", None)
+        run = subprocess.run([str(install.parent / "runtime-bin/hstream-cli"), "-g", "mygame"],
+                             cwd="/", env=environment, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["argv"][:2], ["-c", str(install / "configs/ds_hockey_app_config.yaml")])
+        self.assertIn("--enable-sources=URI-MULTIPLE", actual["argv"])
+        self.assertIn("--options=pipeline.hmaudio.enable=1", actual["argv"])
+        self.assertIn("--enable-sinks=ENCODE_FILE", actual["argv"])
+        self.assertEqual(actual["argv"][-2:], ["-g", "mygame"])
+        self.assertEqual(actual["cwd"], str(install))
+
+    def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
+        self.install_packaged_launcher()
         for config in (None, str(self.config), self.config.name):
             for home in (None, str(self.root / "unwritable-home")):
                 with self.subTest(config=config, home=home):
