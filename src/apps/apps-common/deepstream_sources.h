@@ -258,6 +258,8 @@ struct NvDsSrcParentBin {
   guint uri_playlist_wait_suspend_mask;
   /** Nested calibration owners, updated synchronously when their element messages are posted. */
   guint uri_playlist_calibration_depth;
+  /** Nested operator selections, independent of calibration and native pause ownership. */
+  guint uri_playlist_operator_selection_depth;
   gint64 uri_playlist_calibration_finished_us;
   gint64 uri_playlist_pause_started_us;
   gint64 uri_playlist_paused_us;
@@ -283,10 +285,14 @@ typedef enum {
   URI_PLAYLIST_WAIT_SUSPEND_PIPELINE_PAUSE = 1 << 0,
   /** Stitching calibration, which parks the decoders for the whole solve and any review it blocks on. */
   URI_PLAYLIST_WAIT_SUSPEND_CALIBRATION = 1 << 1,
+  /** An operator selection, such as scoreboard corners, that blocks downstream output. */
+  URI_PLAYLIST_WAIT_SUSPEND_OPERATOR_SELECTION = 1 << 2,
 } UriPlaylistWaitSuspendReason;
 
 /** Count nested calibration phases under the barrier mutex and update their suspension reason. */
 void update_uri_playlist_calibration_phase(NvDsSrcParentBin* parent, gboolean active);
+/** Count nested operator selections under the barrier mutex and update their suspension reason. */
+void update_uri_playlist_operator_selection_phase(NvDsSrcParentBin* parent, gboolean active);
 /** Time since the last phase ended; zero while active, G_MAXINT64 if none began. Locks the barrier mutex internally. */
 gint64 uri_playlist_calibration_idle_time_us(NvDsSrcParentBin* parent);
 /** Suspend stall accounting before a native PAUSED transition; resume after PLAYING completes. */

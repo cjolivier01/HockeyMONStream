@@ -10142,6 +10142,64 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     qputenv("PATH", crop_original_path);
     return false;
   }
+  // A complete status and unchanged controls do not prove that the published
+  // calibration uses the current profile's optics. Startup must reach the
+  // runner so it can recalibrate before offering an unrenderable crop review.
+  for (const QByteArray& stale_provenance : {
+           QByteArray(crop_provenance).replace("version=10", "version=12") +
+               "input-lens={projection: full-frame-fisheye, optimization: fixed}\n",
+           QByteArray(crop_provenance).replace("projection=cylindrical", "projection=general-panini"),
+           QByteArray(crop_provenance).replace("camera-horizontal-fov=126.5", "camera-horizontal-fov=108")}) {
+    if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), stale_provenance))
+      return false;
+    bool deferred_review = false;
+    const bool stale_dialog_opened = with_projection_crop_dialog(
+        [&]() { deferred_review = HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
+        [](ProjectionCropDialog*) {});
+    if (!expect(
+            deferred_review && !stale_dialog_opened,
+            "Stale calibration must defer crop review until startup calibrates the current inputs")) {
+      qputenv("PATH", crop_original_path);
+      return false;
+    }
+  }
+  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance))
+    return false;
+  // Version 7 predates explicit rotation/crop fields, but the runner can reuse
+  // its default zero-rotation/full-crop view. It still needs startup review.
+  const QByteArray legacy_provenance =
+      crop_provenance.left(crop_provenance.indexOf("projection-rotation-0=")).replace("version=10", "version=7");
+  auto legacy_config = YAML::Clone(crop_preview_config);
+  legacy_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
+  legacy_config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0, 1, 0, 1]");
+  std::ofstream(config_path) << YAML::Dump(legacy_config) << '\n';
+  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), legacy_provenance))
+    return false;
+  activate(create);
+  bool legacy_ready = true;
+  const bool legacy_dialog_opened = with_projection_crop_dialog(
+      [&]() { legacy_ready = HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
+      [](ProjectionCropDialog*) {});
+  if (!expect(
+          legacy_dialog_opened && !legacy_ready,
+          "Reusable legacy calibration must still prompt for startup crop review")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
+  std::ofstream(config_path) << YAML::Dump(crop_preview_config) << '\n';
+  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance))
+    return false;
+  activate(create);
+  auto* play = require_child<QPushButton>(window, "startPipelineButton");
+  auto* progress = require_child<QProgressBar>(window, "playbackProgress");
+  const bool cancelled_play = play && progress && with_projection_crop_dialog(
+      [&]() { activate(play); }, [](ProjectionCropDialog*) {});
+  if (!expect(
+          cancelled_play && progress->property("playbackState").toString() == "stopped" && progress->maximum() > 0,
+          "Cancelling crop review from Play must stop startup without displaying a playback error")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
   projection->setCurrentIndex(projection->findData("general-panini"));
   compression->setValue(inactive_compression);
   projection->setCurrentIndex(projection->findData("cylindrical"));
@@ -17334,6 +17392,35 @@ bool test_process_pause_protocol() {
 
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
+  // Read-only smoke for a saved game whose crop review should be deferred or
+  // already satisfied. Load the real window's effective profile defaults.
+  if (argc == 3 && QByteArray(argv[1]) == "--crop-preflight") {
+    const QFileInfo game(QString::fromLocal8Bit(argv[2]));
+    const QString config_path = QDir(game.absoluteFilePath()).filePath("config.yaml");
+    QFile config(config_path);
+    if (!game.isDir() || !config.open(QIODevice::ReadOnly))
+      return 1;
+    const QByteArray original_config = config.readAll();
+    config.close();
+    const QByteArray original_revision = RinkLevelingDialog::sourceRevision(game.absoluteFilePath());
+    qputenv("HM_GAME_DIR", game.absolutePath().toLocal8Bit());
+    QApplication app(argc, argv);
+    HStreamWindow window;
+    window.findChild<QLineEdit*>("gameIdEdit")->setText(game.fileName());
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    window.show();
+    bool ready = false;
+    const bool opened = with_projection_crop_dialog(
+        [&]() { ready = HStreamWindowTestAccess::ensureProjectionCropReviewed(&window); },
+        [](ProjectionCropDialog*) {});
+    std::cout << window.logText().toStdString() << '\n';
+    return expect(
+               ready && !opened && config.open(QIODevice::ReadOnly) && config.readAll() == original_config &&
+                   RinkLevelingDialog::sourceRevision(game.absoluteFilePath()) == original_revision,
+               "Saved game must pass crop preflight without a dialog or changes to its calibration")
+        ? 0
+        : 1;
+  }
   if (!test_path_scoped_auto_rollback() || !test_matching_development_runtime_selection() ||
       !test_stitching_canvas_constraint_decisions() || !test_diagnostic_capture_attempt_paths()) {
     return 1;

@@ -64,6 +64,14 @@ class ProjectionCropDialog : public QDialog {
       bool in_progress_calibration = false,
       bool apply_on_accept = false);
   ~ProjectionCropDialog() override;
+  // Advisory preflight using the same metadata validation as the preview. The
+  // caller holds the artifact lock or supplies a private calibration snapshot.
+  static QString savedCalibrationPreviewError(
+      const QString& game_directory,
+      const hm::stitching::StitchProjectionFraming& framing,
+      const QString& projection,
+      const std::vector<double>& projection_parameters,
+      const hm::stitching::StitchCameraSelection& camera);
   hm::stitching::StitchProjectionFraming framing() const;
   void closeAfterBackendCompletion();
   bool closedAfterBackendCompletion() const {

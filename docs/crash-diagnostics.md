@@ -96,7 +96,7 @@ moved, the second how long that waiter had been blocked, and a large gap
 between them means the playlist was making progress for most of the wait.
 
 These durations count active playback time. Native pauses, the bounded
-model-initialization preroll, and stitching calibration suspend the clock. The
+model-initialization preroll, stitching calibration, and operator selections suspend the clock. The
 desktop prepares a pause through stdin and waits for
 `HSTREAM_PROCESS_PAUSE status=prepared` before sending SIGSTOP; after SIGCONT it
 waits for the matching `status=resumed` acknowledgment. Missing resume
@@ -199,3 +199,9 @@ With real-time rendering, the first Program frame also completes sink preroll. T
 budgets exclude scoreboard selection. The timed-run no-progress watchdog also excludes that wait, including
 unrestricted sinks that enter PLAYING before receiving their first Program frame. Interrupting preroll cancels
 selection before waiting for shutdown.
+
+The cropper also posts synchronous `hstream-operator-selection-phase` messages around scoreboard selection.
+The source bin counts nested selections separately from calibration and pause ownership, suspending its audio,
+frame-pair, and committed-delivery stall budgets even with unrestricted FAKE or RENDER sinks. Accepting,
+cancelling, or failing selection releases that ownership; other active reasons keep their suspension, and the
+last release restores stall detection. Recreating the source bin clears selection ownership with the other reasons.
