@@ -1,9 +1,11 @@
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -11,6 +13,8 @@
 #include <opencv2/imgproc.hpp>
 
 namespace {
+
+#include "src/libs/stitching/FeatureMatcherOutlierFixture.inc"
 
 bool expect(bool condition, const char* message) {
   if (!condition)
@@ -74,10 +78,101 @@ bool test_spatial_selection() {
   return ok;
 }
 
+bool test_akaze_geometric_outliers() {
+  using hm::stitching::FeatureMatcher;
+  std::vector<cv::Point2f> left, right;
+  for (const auto& point : kAkazeOutlierCandidates) {
+    left.emplace_back(point[0], point[1]);
+    right.emplace_back(point[2], point[3]);
+  }
+  bool ok = true;
+  for (bool reversed : {false, true}) {
+    const auto result = FeatureMatcher::FindGeometricInliers(left, right);
+    ok &= expect(result.ok() && result->size() >= 180, "Real rink matches must retain the well-supported alignment");
+    if (result.ok()) {
+      for (size_t bad : {10, 180, 222}) {
+        const size_t index = reversed ? left.size() - 1 - bad : bad;
+        ok &= expect(
+            std::find(result->begin(), result->end(), index) == result->end(),
+            "Unrelated rink features must not survive by lying on an epipolar line, regardless of candidate order");
+      }
+    }
+    std::reverse(left.begin(), left.end());
+    std::reverse(right.begin(), right.end());
+  }
+  const auto unfiltered = FeatureMatcher::FindGeometricInliers(left, right, {false, false});
+  const auto epipolar_only = FeatureMatcher::FindGeometricInliers(left, right, {true, false});
+  const auto homography_only = FeatureMatcher::FindGeometricInliers(left, right, {false, true});
+  ok &= expect(unfiltered.ok() && unfiltered->size() == left.size(), "Both filters off must preserve all matches");
+  ok &= expect(
+      epipolar_only.ok() && std::find(epipolar_only->begin(), epipolar_only->end(), 10) != epipolar_only->end(),
+      "The original false match demonstrates the limitation of epipolar-only filtering");
+  ok &= expect(
+      homography_only.ok() && homography_only->size() >= 180 &&
+          std::find(homography_only->begin(), homography_only->end(), 10) == homography_only->end(),
+      "Homography rejection must operate independently when epipolar RANSAC is disabled");
+  // Feed real candidates through the neural output path, including different camera scales.
+  // Ranking the outlier first proves rejection happens before spatial capping.
+  for (auto matcher :
+       {hm::stitching::ControlPointMatcher::kSuperPointLightGlue,
+        hm::stitching::ControlPointMatcher::kDeDoDeLightGlue,
+        hm::stitching::ControlPointMatcher::kLoFTR}) {
+    hm::stitching::FeaturePairInput input;
+    input.source_sizes[0] = {7680, 4320};
+    input.source_sizes[1] = {3840, 2160};
+    input.resized_sizes[0] = input.resized_sizes[1] = input.tensor_size = cv::Size(1920, 1080);
+    hm::stitching::FeatureMatchResult matches;
+    const float offset = matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue ? 0.5f : 0.0f;
+    for (size_t i = 0; i < left.size(); ++i) {
+      const auto restore = [offset](cv::Point2f point, float scale) {
+        return cv::Point2f((point.x + offset) * scale - offset, (point.y + offset) * scale - offset);
+      };
+      matches.accepted.push_back(
+          {restore(left[i], 4), restore(right[i], 2), i == 10 ? 1.0f : 0.5f, static_cast<int>(i), static_cast<int>(i)});
+    }
+    matches.accepted_match_count = matches.accepted.size();
+    matches.selected = matches.accepted;
+    const auto filtered = FeatureMatcher::FilterMatches(matches, input, 50, {}, matcher);
+    ok &= expect(
+        filtered.ok() && filtered->selected.size() == 50 && filtered->accepted.size() >= 180 &&
+            filtered->accepted_match_count == filtered->accepted.size() &&
+            std::none_of(
+                filtered->accepted.begin(),
+                filtered->accepted.end(),
+                [](const auto& match) { return match.left_index == 10; }),
+        "Neural matches must be filtered at detector scale before the spatial cap");
+  }
+  right.pop_back();
+  ok &= expect(!FeatureMatcher::FindGeometricInliers(left, right).ok(), "Unpaired coordinates must fail");
+  left.pop_back();
+  left[0].x = std::numeric_limits<float>::quiet_NaN();
+  ok &= expect(!FeatureMatcher::FindGeometricInliers(left, right).ok(), "Nonfinite coordinates must fail");
+
+  // Genuine stereo parallax at several depths has no dominant homography.
+  // Keep these epipolar inliers instead of requiring every scene to be planar.
+  left.clear();
+  right.clear();
+  for (int row = 0; row < 12; ++row) {
+    for (int column = 0; column < 16; ++column) {
+      const float x = 400 + column * 40;
+      const float y = 100 + row * 40;
+      const float disparity = 20 + ((column * 7 + row * 11) % 17) * 6;
+      left.emplace_back(x, y);
+      right.emplace_back(x - disparity, y);
+    }
+  }
+  const auto parallax = FeatureMatcher::FindGeometricInliers(left, right);
+  ok &= expect(
+      parallax.ok() && parallax->size() == left.size(),
+      "Strong nonplanar parallax must retain valid epipolar matches without a forced homography");
+  return ok;
+}
+
 } // namespace
 
 int main() {
   bool ok = test_spatial_selection();
+  ok &= test_akaze_geometric_outliers();
   ok &= expect(
       hm::stitching::ParseControlPointMatcher("superpoint-lightglue").ok(),
       "HockeyMOM baseline matcher spelling must be accepted");

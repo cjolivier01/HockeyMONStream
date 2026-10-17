@@ -606,9 +606,11 @@ bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::str
 bool restore_generated_worker_choices(YAML::Node& config) {
   const bool provider = stitching::restore_generated_control_point_execution_provider(config);
   const bool resolution = stitching::restore_generated_control_point_resolution(config);
+  const bool filtering = stitching::restore_generated_control_point_filtering(config);
   const bool rink = stitching::restore_generated_stitch_rink_context(config);
   const bool mask_time = stitching::restore_generated_rink_mask_frame_time(config);
-  return stitching::restore_generated_stitching_backend_choices(config) || provider || resolution || rink || mask_time;
+  return stitching::restore_generated_stitching_backend_choices(config) || provider || resolution || filtering ||
+      rink || mask_time;
 }
 
 bool is_cam_video_key(const std::string& key) {
@@ -8582,6 +8584,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
 
   stitching::ControlPointResolution resolution;
   HM_ASSIGN_OR_RETURN(resolution, stitching::read_control_point_resolution(config_));
+  stitching::ControlPointFiltering filtering;
+  HM_ASSIGN_OR_RETURN(filtering, stitching::read_control_point_filtering(config_));
   hm::onnx::ExecutionProvider provider;
   HM_ASSIGN_OR_RETURN(provider, stitching::read_control_point_execution_provider(config_));
   std::string calibration_frame_selection_fingerprint;
@@ -8599,11 +8603,14 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       resolution,
       provider,
       calibration_frame_selection_fingerprint,
-      manual_points};
+      manual_points,
+      filtering};
 
   bool provider_changed = false;
   HM_ASSIGN_OR_RETURN(
       provider_changed, stitching::materialize_control_point_execution_provider(private_config_, config_));
+  bool filtering_changed = false;
+  HM_ASSIGN_OR_RETURN(filtering_changed, stitching::materialize_control_point_filtering(private_config_, config_));
   bool resolution_changed = false;
   HM_ASSIGN_OR_RETURN(resolution_changed, stitching::materialize_control_point_resolution(private_config_, config_));
   bool rink_context_changed = false;
@@ -8654,13 +8661,13 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   const auto private_frozen = get_node(private_config_, "stitching.auto_input_lens_frozen");
   const bool freeze_changed = frozen.has_value() &&
       (!private_frozen.has_value() || YAML::Dump(*frozen) != YAML::Dump(*private_frozen));
-  const bool private_matches = !freeze_changed && !provider_changed && !resolution_changed && !rink_context_changed &&
-      !mask_time_changed && private_matcher_value.has_value() && *private_matcher_value == matcher &&
-      private_backend_value.has_value() && *private_backend_value == backend && private_projection_value.has_value() &&
-      *private_projection_value == projection && private_autooptimizer_value.has_value() &&
-      *private_autooptimizer_value == run_autooptimizer && private_projection_parameters == projection_parameters &&
-      private_projection_framing == projection_framing && private_camera == camera &&
-      private_camera.same_automation(camera);
+  const bool private_matches = !freeze_changed && !provider_changed && !filtering_changed && !resolution_changed &&
+      !rink_context_changed && !mask_time_changed && private_matcher_value.has_value() &&
+      *private_matcher_value == matcher && private_backend_value.has_value() && *private_backend_value == backend &&
+      private_projection_value.has_value() && *private_projection_value == projection &&
+      private_autooptimizer_value.has_value() && *private_autooptimizer_value == run_autooptimizer &&
+      private_projection_parameters == projection_parameters && private_projection_framing == projection_framing &&
+      private_camera == camera && private_camera.same_automation(camera);
   if (private_matches) {
     if (loaded_generated_stitching_backend_choices_ || !expected_invalidation_id.empty()) {
       HM_RETURN_IF_ERROR(
@@ -9411,6 +9418,7 @@ absl::Status Configurator::complete_configuration(
               "max_output_width",
               "control_point_matcher",
               "control_point_resolution",
+              "control_point_filtering",
               "control_point_execution_provider",
               "mapping_backend",
               "run_autooptimizer",
@@ -9530,6 +9538,8 @@ absl::Status Configurator::complete_configuration(
         }
         stitching::ControlPointResolution expected_resolution;
         HM_ASSIGN_OR_RETURN(expected_resolution, stitching::read_control_point_resolution(config_));
+        stitching::ControlPointFiltering expected_filtering;
+        HM_ASSIGN_OR_RETURN(expected_filtering, stitching::read_control_point_filtering(config_));
         hm::onnx::ExecutionProvider expected_provider;
         HM_ASSIGN_OR_RETURN(expected_provider, stitching::read_control_point_execution_provider(config_));
         std::string expected_selection_fingerprint;
@@ -9547,7 +9557,8 @@ absl::Status Configurator::complete_configuration(
             expected_resolution,
             expected_provider,
             expected_selection_fingerprint,
-            expected_manual_points};
+            expected_manual_points,
+            expected_filtering};
         HM_RETURN_IF_ERROR(
             stitching::validate_stitching_backend_generation(
                 current, effective_invalidation_id, expected_backend_choices));

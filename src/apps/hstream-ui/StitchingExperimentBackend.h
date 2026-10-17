@@ -25,6 +25,7 @@ struct StitchingExperimentSettings {
   std::optional<std::string> control_point_matcher;
   // Full source optics frozen for this candidate; old records inherit their saved config.
   std::optional<hm::stitching::StitchCameraSelection> camera;
+  std::optional<hm::stitching::ControlPointFiltering> control_point_filtering;
 };
 
 struct StitchingExperimentWorkspace {

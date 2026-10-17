@@ -727,9 +727,11 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool lens_aware =
-      (lines.size() == 32 && lines[0] == "version=12") || (lines.size() == 33 && lines[0] == "version=13");
-  const bool manual_aware =
+  const bool filtering_aware =
+      (lines.size() == 33 && lines[0] == "version=14") || (lines.size() == 34 && lines[0] == "version=15");
+  const bool lens_aware = filtering_aware || (lines.size() == 32 && lines[0] == "version=12") ||
+      (lines.size() == 33 && lines[0] == "version=13");
+  const bool manual_aware = (lines.size() == 34 && lines[0] == "version=15") ||
       (lines.size() == 32 && lines[0] == "version=11") || (lines.size() == 33 && lines[0] == "version=13");
   const size_t manual_index = lens_aware ? 32 : 31;
   const bool selection_aware = (lines.size() == 31 && lines[0] == "version=10") || manual_aware || lens_aware;
@@ -740,6 +742,10 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
       (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware && !camera_aware))
     return absl::FailedPreconditionError("Invalid canvas provenance format");
   CanvasProvenance provenance;
+  if (filtering_aware && lines.back() != "control-point-filtering=0,0" &&
+      lines.back() != "control-point-filtering=0,1" && lines.back() != "control-point-filtering=1,0" &&
+      lines.back() != "control-point-filtering=1,1")
+    return absl::FailedPreconditionError("Invalid canvas provenance geometric filtering");
   if (lens_aware) {
     const std::string prefix = "input-lens=";
     if (lines[31].rfind(prefix, 0) != 0 || !ParseStitchInputLens(lines[31].substr(prefix.size())).ok())

@@ -2052,6 +2052,7 @@ enum class SeamValidationMode {
 };
 
 struct ConfiguredStitchAlgorithms {
+  ControlPointFiltering control_point_filtering;
   ControlPointResolution control_point_resolution;
   ControlPointMatcher control_point_matcher;
   MappingBackend mapping_backend;
@@ -2097,7 +2098,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     const bool selection_present =
         stitching["calibration_frame_selection"] && !stitching["calibration_frame_selection"].IsNull();
     if (!matcher_present && !backend_present && !projection_present && !camera_present && !camera_fov_present &&
-        !resolution_present && !selection_present && !stitching["manual_control_points"])
+        !resolution_present && !selection_present && !stitching["manual_control_points"] &&
+        !stitching["control_point_filtering"])
       return std::nullopt;
     if ((matcher_present && !matcher_node.IsScalar()) || (backend_present && !backend_node.IsScalar()) ||
         (projection_present && !projection_node.IsScalar()) || (camera_present && !camera_node.IsScalar())) {
@@ -2135,11 +2137,14 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
       HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
     ControlPointResolution resolution;
     HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(**loaded));
+    ControlPointFiltering filtering;
+    HM_ASSIGN_OR_RETURN(filtering, read_control_point_filtering(**loaded));
     std::string frame_selection;
     HM_ASSIGN_OR_RETURN(frame_selection, player_frame_selection_fingerprint(**loaded));
     std::string manual_points;
     HM_ASSIGN_OR_RETURN(manual_points, manual_control_point_fingerprint(**loaded));
     return ConfiguredStitchAlgorithms{
+        .control_point_filtering = filtering,
         .control_point_resolution = resolution,
         .control_point_matcher = matcher,
         .mapping_backend = backend,
@@ -2178,6 +2183,10 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
     return CanvasProvenanceCompatibility{false, "the manual control points changed"};
   if (provenance->calibration_frame_selection_fingerprint != configured->calibration_frame_selection_fingerprint)
     return CanvasProvenanceCompatibility{false, "the selected calibration frame plan changed"};
+  if (configured->manual_control_point_fingerprint.empty() &&
+      provenance->control_point_filtering.value_or(LegacyControlPointFiltering(*provenance->control_point_matcher)) !=
+          configured->control_point_filtering)
+    return CanvasProvenanceCompatibility{false, "the control-point geometric filtering changed"};
   if (*provenance->control_point_matcher != configured->control_point_matcher)
     return CanvasProvenanceCompatibility{false, "the selected control-point matcher changed"};
   if (configured->control_point_matcher == ControlPointMatcher::kSuperPointLightGlue &&
@@ -2937,6 +2946,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
     HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
   ControlPointResolution resolution;
   HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(config));
+  ControlPointFiltering filtering;
+  HM_ASSIGN_OR_RETURN(filtering, read_control_point_filtering(config));
   hm::onnx::ExecutionProvider provider;
   HM_ASSIGN_OR_RETURN(provider, read_control_point_execution_provider(config));
   std::string frame_selection;
@@ -2954,7 +2965,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
       resolution,
       provider,
       std::move(frame_selection),
-      std::move(manual_points)};
+      std::move(manual_points),
+      filtering};
 }
 
 bool is_missing_hugin_executable(const absl::Status& status) {
@@ -3427,16 +3439,17 @@ absl::Status create_control_points(
   if (manual_matches)
     HM_RETURN_IF_ERROR(ValidateCalibrationMatchCalibration(*manual_matches, akaze_calibration));
   if (!manual_matches) {
-  HM_ASSIGN_OR_RETURN(
-      matcher,
-      FeatureMatcher::Create(
-          model_path.string(),
-          control_point_matcher,
-          akaze_calibration,
-          backend_choices.control_point_resolution,
-          backend_choices.control_point_execution_provider,
-          {},
-          cpu_fallback));
+    HM_ASSIGN_OR_RETURN(
+        matcher,
+        FeatureMatcher::Create(
+            model_path.string(),
+            control_point_matcher,
+            akaze_calibration,
+            backend_choices.control_point_resolution,
+            backend_choices.control_point_execution_provider,
+            {},
+            cpu_fallback,
+            backend_choices.control_point_filtering));
   }
   const size_t minimum_matches =
       control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona
@@ -3618,6 +3631,7 @@ absl::Status create_control_points(
     options.max_output_width = max_output_width;
   options.control_point_matcher = control_point_matcher;
   options.control_point_resolution = backend_choices.control_point_resolution;
+  options.control_point_filtering = backend_choices.control_point_filtering;
   options.calibration_frame_selection_fingerprint = captured_frame_selection_fingerprint;
   options.manual_control_point_fingerprint = backend_choices.manual_control_point_fingerprint;
   StitchProjection projection;

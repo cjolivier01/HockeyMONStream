@@ -925,6 +925,46 @@ play-tracker:
 
   // Resolution follows baseline -> user -> game -> CLI and generated worker values
   // must not turn a temporary override into persistent game intent.
+  YAML::Node filtering_user = YAML::Clone(user_overlay);
+  hm::stitching::write_control_point_filtering(filtering_user, {false, true});
+  std::ofstream(user_config_path) << YAML::Dump(filtering_user) << '\n';
+  for (bool game_override : {false, true}) {
+    const std::string game = game_override ? "filtering-game" : "filtering-user";
+    fs::create_directories(games / game);
+    if (game_override)
+      std::ofstream(games / game / "config.yaml") << "stitching: {control_point_filtering: {epipolar_ransac: true}}\n";
+    hm::Configurator configured(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const auto loaded = configured.configure();
+    const hm::stitching::ControlPointFiltering expected{game_override, true};
+    ok &= expect(
+        loaded.ok() && hm::stitching::read_control_point_filtering(configured.config()).value() == expected,
+        "Filtering must merge baseline, user and partial game overrides");
+    if (!loaded.ok())
+      continue;
+    ok &= expect(
+        configured.apply_config_item("stitching.control_point_filtering.homography_consistency", "false").ok() &&
+            configured.persist_effective_stitching_backend_choices().ok() &&
+            configured.persist_effective_stitching_backend_choices().ok(),
+        "CLI filter override must survive repeated worker materialization");
+    const auto persisted = YAML::LoadFile((games / game / "config.yaml").string());
+    ok &= expect(
+        hm::stitching::read_control_point_filtering(persisted).value() ==
+            hm::stitching::ControlPointFiltering{game_override, false},
+        "The worker must receive both effective filter values");
+    hm::Configurator reloaded(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const auto reload_status = reloaded.configure();
+    const auto reloaded_filtering = hm::stitching::read_control_point_filtering(reloaded.config());
+    if (!reload_status.ok() || !reloaded_filtering.ok() || *reloaded_filtering != expected)
+      std::cerr << "Filter reload " << game << ": status=" << reload_status
+                << "; saved=" << YAML::Dump(persisted["stitching"]["control_point_filtering"])
+                << "; marker=" << YAML::Dump(persisted["hstream_ui"]["generated_control_point_filtering"])
+                << "; loaded=" << YAML::Dump(reloaded.config()["stitching"]["control_point_filtering"]) << '\n';
+    ok &= expect(
+        reload_status.ok() && reloaded_filtering.ok() && *reloaded_filtering == expected,
+        "Reload must restore partial private intent instead of keeping a temporary CLI filter override");
+  }
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+
   YAML::Node resolution_user = YAML::Clone(user_overlay);
   resolution_user["stitching"]["control_point_resolution"] = "2k";
   std::ofstream(user_config_path) << YAML::Dump(resolution_user) << '\n';

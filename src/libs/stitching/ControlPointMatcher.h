@@ -10,12 +10,29 @@ namespace hm::stitching {
 // its specialized six-match floor; geometric validation can still reject a set.
 inline constexpr int kMinimumCalibrationControlPoints = 10;
 
+// Independent checks applied to automatic matches before spatial capping.
+struct ControlPointFiltering {
+  bool epipolar_ransac{true};
+  bool homography_consistency{true};
+  bool operator==(const ControlPointFiltering& other) const {
+    return epipolar_ransac == other.epipolar_ransac && homography_consistency == other.homography_consistency;
+  }
+  bool operator!=(const ControlPointFiltering& other) const {
+    return !(*this == other);
+  }
+};
+
 enum class ControlPointMatcher {
   kSuperPointLightGlue,
   kDeDoDeLightGlue,
   kLoFTR,
   kAkazeHamming,
 };
+
+// Provenance predating configurable filters had epipolar filtering only for AKAZE.
+inline ControlPointFiltering LegacyControlPointFiltering(ControlPointMatcher matcher) {
+  return {matcher == ControlPointMatcher::kAkazeHamming, false};
+}
 
 // SuperPoint has a dynamic graph; the other backends retain their established sizes.
 enum class ControlPointResolution { kNative, k2K, k1K };

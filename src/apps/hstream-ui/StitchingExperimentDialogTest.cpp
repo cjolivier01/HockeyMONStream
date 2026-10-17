@@ -416,6 +416,40 @@ void exercise_frame_navigation(const QString& root) {
   require(left->pixmap().isNull() && left->message().contains("limits"), "Inspector must reject symlink images");
 }
 
+void exercise_filtering_queue(const QString& game, const QString& root) {
+  {
+    StitchingExperimentDialog dialog(
+        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+    auto* epipolar = widget<QCheckBox>(dialog, "stitchExperimentEpipolarRansac");
+    auto* homography = widget<QCheckBox>(dialog, "stitchExperimentHomographyConsistency");
+    require(epipolar->isChecked() && homography->isChecked(), "Experiment filters must default on");
+    for (bool e : {false, true}) {
+      for (bool h : {false, true}) {
+        epipolar->setChecked(e);
+        homography->setChecked(h);
+        add_options(dialog);
+        add_options(dialog);
+      }
+    }
+    require(
+        widget<QTableWidget>(dialog, "stitchExperimentCandidates")->rowCount() == 4,
+        "Geometric filter combinations must create distinct deduplicated candidates");
+  }
+  const auto opened = OpenStitchingExperimentStore(game.toStdString());
+  require(opened.ok(), "Cannot open filtering store");
+  const auto saved = LoadStitchingExperimentStore(*opened);
+  require(saved.ok() && saved->experiments.size() == 4, "Filter combinations must survive closing the dialog");
+  for (size_t i = 0; i < 4; ++i) {
+    const auto& workspace = saved->experiments[i].workspace;
+    const hm::stitching::ControlPointFiltering expected{i >= 2, i % 2 != 0};
+    const auto config = YAML::LoadFile((workspace.game_directory / "config.yaml").string());
+    const auto actual = hm::stitching::read_control_point_filtering(config);
+    require(
+        workspace.settings.control_point_filtering == expected && actual.ok() && *actual == expected,
+        "Stored candidates and their worker configs must retain exact filtering choices");
+  }
+}
+
 void exercise_resolution_queue(const QString& game, const QString& root) {
   auto config = YAML::Load(read(game + "/config.yaml").toStdString());
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
@@ -2954,6 +2988,7 @@ int main(int argc, char** argv) {
       }
       exercise_frame_navigation(fixture.path());
       exercise_resolution_queue(make_game("resolutions"), fixture.path());
+      exercise_filtering_queue(make_game("filtering"), fixture.path());
       exercise_matcher_queue(make_game("matchers"), fixture.path());
       exercise_input_lens_queue(make_game("input-lens"), fixture.path());
       exercise_generated_matcher(make_game("generated-matcher"), fixture.path());

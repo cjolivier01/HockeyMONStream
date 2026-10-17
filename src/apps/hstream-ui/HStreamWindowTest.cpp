@@ -128,6 +128,7 @@ struct HStreamWindowTestAccess {
     window->active_stitch_frame_time_ = window->stitchFrameTime();
     window->active_iteration_settings_ = window->stitchingIterationSettings();
     window->active_control_point_matcher_ = window->controlPointMatcher();
+    window->active_control_point_filtering_ = window->control_point_filtering_;
     window->active_control_point_resolution_ = window->control_point_resolution_;
     window->active_mapping_backend_ = window->mappingBackend();
     window->active_camera_selection_ = window->stitchCameraSelection();
@@ -10263,8 +10264,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   };
   QImage crop_image(800, 400, QImage::Format_RGB32);
   crop_image.fill(Qt::gray);
+  const QByteArray crop_default_lens = QByteArray::fromStdString(hm::stitching::SerializeStitchInputLens({}));
   const QByteArray crop_provenance =
-      "version=10\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=800\nsource-canvas-height=400\n"
+      "version=14\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=800\nsource-canvas-height=400\n"
       "canvas-width=800\ncanvas-height=240\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n"
       "mapping-backend=nona\nprojection=cylindrical\nprojection-parameters=none\n"
       "projection-auto-fov=" +
@@ -10283,7 +10285,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0.3\nprojection-crop-3=0.9\n"
       "control-point-resolution=" +
       QByteArray(hm::stitching::ControlPointResolutionName(*crop_resolution)) +
-      "\ncalibration-frame-selection=none\ncalibration-frame-diagnostics=none\n";
+      "\ncalibration-frame-selection=none\ncalibration-frame-diagnostics=none\ninput-lens=" + crop_default_lens +
+      "\ncontrol-point-filtering=1,1\n";
   if (!expect(
           crop_tools.isValid() && crop_image.save(crop_game.filePath("left.png")) &&
               crop_image.save(crop_game.filePath("right.png")) &&
@@ -10353,11 +10356,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   // A complete status and unchanged controls do not prove that the published
   // calibration uses the current profile's optics. Startup must reach the
   // runner so it can recalibrate before offering an unrenderable crop review.
-  for (const QByteArray& stale_provenance : {
-           QByteArray(crop_provenance).replace("version=10", "version=12") +
-               "input-lens={projection: full-frame-fisheye, optimization: fixed}\n",
-           QByteArray(crop_provenance).replace("projection=cylindrical", "projection=general-panini"),
-           QByteArray(crop_provenance).replace("camera-horizontal-fov=126.5", "camera-horizontal-fov=108")}) {
+  for (const QByteArray& stale_provenance :
+       {QByteArray(crop_provenance).replace(crop_default_lens, "{projection: full-frame-fisheye, optimization: fixed}"),
+        QByteArray(crop_provenance).replace("projection=cylindrical", "projection=general-panini"),
+        QByteArray(crop_provenance).replace("camera-horizontal-fov=126.5", "camera-horizontal-fov=108")}) {
     if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), stale_provenance))
       return false;
     bool deferred_review = false;
@@ -10376,8 +10378,12 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   // Version 7 predates explicit rotation/crop fields, but the runner can reuse
   // its default zero-rotation/full-crop view. It still needs startup review.
   const QByteArray legacy_provenance =
-      crop_provenance.left(crop_provenance.indexOf("projection-rotation-0=")).replace("version=10", "version=7");
+      crop_provenance.left(crop_provenance.indexOf("projection-rotation-0=")).replace("version=14", "version=7");
   auto legacy_config = YAML::Clone(crop_preview_config);
+  hm::stitching::write_control_point_filtering(
+      legacy_config,
+      hm::stitching::LegacyControlPointFiltering(
+          *hm::stitching::ParseControlPointMatcher(crop_choices.control_point_matcher)));
   legacy_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
   legacy_config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0, 1, 0, 1]");
   std::ofstream(config_path) << YAML::Dump(legacy_config) << '\n';
@@ -14554,6 +14560,74 @@ bool test_rink_mask_time(const QString& source_game_directory) {
   return true;
 }
 
+bool test_control_point_filtering(const QString& source_game_directory) {
+  const fs::path source(source_game_directory.toStdString());
+  const fs::path fixture = source.parent_path() / "ui-geometric-filtering";
+  std::error_code error;
+  fs::copy(source, fixture, fs::copy_options::recursive, error);
+  if (error)
+    return expect(false, "Could not copy geometric filtering fixture: " + error.message());
+  const auto path = fixture / "config.yaml";
+  YAML::Node config = fs::is_regular_file(path) ? YAML::LoadFile(path.string()) : YAML::Node(YAML::NodeType::Map);
+  config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  config["stitching"].remove("control_point_filtering");
+  config["hstream_ui"].remove("generated_control_point_filtering");
+  config["hstream_ui"].remove("generated_stitching_backend_choices");
+  hm::stitching::ControlPointFiltering previous;
+  for (const auto next :
+       {hm::stitching::ControlPointFiltering{false, true},
+        hm::stitching::ControlPointFiltering{false, false},
+        hm::stitching::ControlPointFiltering{true, false},
+        hm::stitching::ControlPointFiltering{true, true}}) {
+    config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    config["hstream_ui"]["stitching_calibration"].remove("stale_from");
+    std::ofstream(path) << YAML::Dump(config);
+    HStreamWindow window;
+    auto* game = require_child<QLineEdit>(&window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&window, "createGameButton");
+    auto* save = require_child<QPushButton>(&window, "savePresetButton");
+    auto* epipolar = require_child<QCheckBox>(&window, "epipolarRansacCheck");
+    auto* homography = require_child<QCheckBox>(&window, "homographyConsistencyCheck");
+    auto* advanced = require_child<QToolButton>(&window, "geometricFilteringToggle");
+    auto* reset = require_child<QPushButton>(&window, "resetCameraButton");
+    if (!game || !create || !save || !epipolar || !homography || !advanced || !reset)
+      return false;
+    game->setText("ui-geometric-filtering");
+    activate(create);
+    if (!expect(
+            epipolar->isChecked() == previous.epipolar_ransac &&
+                homography->isChecked() == previous.homography_consistency && !advanced->isChecked(),
+            "Both filters default on, reload independently, and stay behind Advanced"))
+      return false;
+    epipolar->setChecked(next.epipolar_ransac);
+    homography->setChecked(next.homography_consistency);
+    activate(save);
+    config = YAML::LoadFile(path.string());
+    const auto filtering = hm::stitching::read_control_point_filtering(config);
+    if (!expect(
+            filtering.ok() && *filtering == next &&
+                config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
+                config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "features",
+            "Changing only a geometric filter must save and invalidate matching"))
+      return false;
+    if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+      return false;
+    reset->click();
+    const bool kept_during_run =
+        epipolar->isChecked() == next.epipolar_ransac && homography->isChecked() == next.homography_consistency;
+    HStreamWindowTestAccess::killStubPipelineProcess(&window);
+    if (!expect(kept_during_run, "Reset Controls must preserve next-run geometric filters during playback"))
+      return false;
+    reset->click();
+    if (!expect(
+            epipolar->isChecked() && homography->isChecked(),
+            "Reset Controls must restore geometric filtering defaults when playback is stopped"))
+      return false;
+    previous = next;
+  }
+  return true;
+}
+
 bool test_control_point_resolution(const QString& source_game_directory) {
   const fs::path source(source_game_directory.toStdString());
   const fs::path fixture = source.parent_path() / "ui-feature-resolution";
@@ -17721,7 +17795,9 @@ int main(int argc, char** argv) {
   }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RESOLUTION_ONLY")) {
     HStreamWindow window;
-    return test_game_setup(&window, source_root.path()) && test_control_point_resolution(window.gameDirectoryText())
+    return test_game_setup(&window, source_root.path()) &&
+            (test_control_point_resolution(window.gameDirectoryText()) &&
+             test_control_point_filtering(window.gameDirectoryText()))
         ? 0
         : 1;
   }
@@ -17802,7 +17878,9 @@ int main(int argc, char** argv) {
     std::cerr << "test_game_setup failed\n";
     return 1;
   }
-  if (!test_rink_mask_time(window.gameDirectoryText()) || !test_control_point_resolution(window.gameDirectoryText()) ||
+  if (!test_rink_mask_time(window.gameDirectoryText()) ||
+      !(test_control_point_resolution(window.gameDirectoryText()) &&
+        test_control_point_filtering(window.gameDirectoryText())) ||
       !test_preset_reload_with_missing_tracker() || !test_stitching_iteration_controls(window.gameDirectoryText()))
     return 1;
   if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {

@@ -815,6 +815,24 @@ bool experiment_resolutions(const fs::path& root) {
             !selected["hstream_ui"]["generated_stitching_backend_choices"].IsDefined(),
         "promotion must retain the candidate matcher without an older generated UI choice");
   }
+  for (const auto filtering :
+       {hm::stitching::ControlPointFiltering{false, true}, hm::stitching::ControlPointFiltering{true, false}}) {
+    settings.control_point_filtering = filtering;
+    const auto workspace = CreateStitchingExperimentWorkspace(game, root / "filtering-session", settings, ++sequence);
+    if (!expect(workspace.ok(), "Explicit geometric filtering candidate must be created"))
+      return false;
+    const auto promoted =
+        BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+    if (!expect(promoted.ok(), "Filtering candidate must be promotable"))
+      return false;
+    YAML::Node selected = YAML::Load(*promoted);
+    ok &= expect(
+        workspace->settings.control_point_filtering == filtering &&
+            hm::stitching::read_control_point_filtering(selected).value() == filtering &&
+            !hm::stitching::restore_generated_control_point_filtering(selected),
+        "Promotion must preserve both filter choices without an obsolete generated marker");
+  }
+  settings.control_point_filtering.reset();
   settings.control_point_matcher = "invalid-matcher";
   ok &= expect(
       !CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence).ok(),

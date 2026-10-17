@@ -227,9 +227,19 @@ bool write_canvas_provenance(
     return false;
   if (parameter_aware && !algorithm_aware)
     return false;
+  std::string view;
+  if (algorithm_aware) {
+    for (size_t i = 0; i < 3; ++i)
+      view += "projection-rotation-" + std::to_string(i) + "=" +
+          std::to_string(projection_framing.rotation_degrees[i]) + "\n";
+    for (size_t i = 0; i < 4; ++i)
+      view += "projection-crop-" + std::to_string(i) + "=" + std::to_string(projection_framing.crop[i]) + "\n";
+    view += "control-point-resolution=native\ncalibration-frame-selection=none\ncalibration-frame-diagnostics=none\n";
+    view += "input-lens=" + hm::stitching::SerializeStitchInputLens({}) + "\ncontrol-point-filtering=1,1\n";
+  }
   return write_text_file(
       dir / "stitching_canvas_provenance",
-      std::string(algorithm_aware ? "version=7\n" : "version=2\n") + "max-output-width=" +
+      std::string(algorithm_aware ? "version=14\n" : "version=2\n") + "max-output-width=" +
           std::to_string(max_output_width) + "\nmax-canvas-dimension=" + std::to_string(max_canvas_dimension) +
           "\nsource-canvas-width=" + std::to_string(source_width) +
           "\nsource-canvas-height=" + std::to_string(source_height) + "\ncanvas-width=" + std::to_string(width) +
@@ -244,7 +254,8 @@ bool write_canvas_provenance(
                    "\nprojection-auto-crop=" + (projection_framing.auto_crop ? "1" : "0") +
                    "\ncamera-configuration=gopro-mission-1\ncamera-horizontal-fov=127.2\ncamera-vertical-fov=95"
                    "\ncontrol-point-matcher=" +
-                   control_point_matcher + "\nakaze-calibration-fingerprint=" + akaze_calibration_fingerprint + "\n"
+                   control_point_matcher + "\nakaze-calibration-fingerprint=" + akaze_calibration_fingerprint + "\n" +
+                   view
                            : ""));
 }
 
@@ -253,13 +264,11 @@ bool write_player_frame_canvas_provenance(const fs::path& directory, const std::
     return false;
   std::ifstream input(directory / "stitching_canvas_provenance");
   std::string provenance((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-  provenance.replace(0, std::string("version=7").size(), "version=10");
-  provenance +=
-      "projection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n"
-      "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0\nprojection-crop-3=1\n"
-      "control-point-resolution=native\ncalibration-frame-selection=";
-  provenance += fingerprint.empty() ? "none" : fingerprint;
-  provenance += "\ncalibration-frame-diagnostics=none\n";
+  const auto selection = provenance.find("calibration-frame-selection=none");
+  provenance.replace(
+      selection,
+      std::string("calibration-frame-selection=none").size(),
+      "calibration-frame-selection=" + (fingerprint.empty() ? "none" : fingerprint));
   return write_text_file(directory / "stitching_canvas_provenance", provenance);
 }
 
@@ -521,8 +530,8 @@ bool expect_manual_match_provenance(const fs::path& tmpdir) {
     if (scenario != 0) {
       std::ifstream input(directory / "stitching_canvas_provenance");
       std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-      text.replace(0, std::string("version=10").size(), "version=11");
-      text += "manual-control-points=" + std::string(64, 'a') + "\n";
+      text.replace(0, std::string("version=14").size(), "version=15");
+      text.insert(text.find("control-point-filtering="), "manual-control-points=" + std::string(64, 'a') + "\n");
       if (!write_text_file(directory / "stitching_canvas_provenance", text))
         return false;
     }

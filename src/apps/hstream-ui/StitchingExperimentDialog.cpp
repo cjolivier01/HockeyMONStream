@@ -251,6 +251,7 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
   for (const char* key :
        {"control_point_matcher",
         "control_point_resolution",
+        "control_point_filtering",
         "camera_configs",
         "camera_config",
         "camera_fov",
@@ -571,6 +572,8 @@ struct StitchingExperimentDialog::Impl {
   QLineEdit* frame_counts{nullptr};
   QLineEdit* start_frames{nullptr};
   QComboBox* control_point_resolution{nullptr};
+  QCheckBox* epipolar_ransac{nullptr};
+  QCheckBox* homography_consistency{nullptr};
   QComboBox* control_point_matcher{nullptr};
   YAML::Node feature_defaults;
   QString feature_settings_error;
@@ -852,6 +855,8 @@ struct StitchingExperimentDialog::Impl {
     camera_vertical_fov->setEnabled(editing_batch && feature_settings_error.isEmpty());
     camera_auto_fov->setEnabled(editing_batch && feature_settings_error.isEmpty());
     control_point_resolution->setEnabled(editing_batch && feature_settings_error.isEmpty() && feature_size_selectable);
+    epipolar_ransac->setEnabled(editing_batch && feature_settings_error.isEmpty());
+    homography_consistency->setEnabled(editing_batch && feature_settings_error.isEmpty());
     for (QWidget* input : std::array<QWidget*, 3>{control_points, frame_counts, start_frames})
       input->setEnabled(editing_batch);
     progress->setVisible(batch_started);
@@ -1931,6 +1936,7 @@ struct StitchingExperimentDialog::Impl {
         hm::stitch_frame_time_to_nanoseconds(right.stitch_frame_time) &&
         left.rink_rotation_degrees == right.rink_rotation_degrees &&
         left.control_point_resolution == right.control_point_resolution &&
+        left.control_point_filtering == right.control_point_filtering &&
         left.control_point_matcher == right.control_point_matcher &&
         left.manual_control_points == right.manual_control_points && left.camera == right.camera &&
         (!left.camera || left.camera->same_automation(*right.camera));
@@ -1979,7 +1985,17 @@ struct StitchingExperimentDialog::Impl {
   QString candidate_matcher_label(const Candidate& candidate) const {
     try {
       const QString name = hm::stitching::ControlPointMatcherName(candidate_matcher(candidate));
-      return control_point_matcher->itemText(control_point_matcher->findData(name));
+      QString label = control_point_matcher->itemText(control_point_matcher->findData(name));
+      if (candidate.settings.control_point_filtering && !candidate.settings.manual_control_points) {
+        const auto filtering = *candidate.settings.control_point_filtering;
+        if (!filtering.epipolar_ransac && !filtering.homography_consistency)
+          label += " (filters off)";
+        else if (!filtering.epipolar_ransac)
+          label += " (RANSAC off)";
+        else if (!filtering.homography_consistency)
+          label += " (homography off)";
+      }
+      return label;
     } catch (const std::exception&) {
       return "Unavailable";
     }
@@ -2124,6 +2140,9 @@ struct StitchingExperimentDialog::Impl {
                 .control_point_resolution = control_point_resolution->currentData().toString().toStdString(),
                 .control_point_matcher = control_point_matcher->currentData().toString().toStdString(),
                 .camera = camera_settings,
+                .control_point_filtering =
+                    hm::stitching::ControlPointFiltering{
+                        epipolar_ransac->isChecked(), homography_consistency->isChecked()},
             };
             settings.camera->input_lens = input_lens->lens();
             const auto exact_fov = camera_horizontal_fov->property("exactLensFov");
@@ -3307,6 +3326,15 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   });
   s.control_point_resolution = new QComboBox();
   s.control_point_resolution->setObjectName("stitchExperimentControlPointResolution");
+  s.epipolar_ransac = new QCheckBox("Epipolar RANSAC");
+  s.epipolar_ransac->setObjectName("stitchExperimentEpipolarRansac");
+  s.epipolar_ransac->setToolTip("Reject automatic matches that contradict the fitted epipolar geometry.");
+  s.homography_consistency = new QCheckBox("Homography consistency check");
+  s.homography_consistency->setObjectName("stitchExperimentHomographyConsistency");
+  s.homography_consistency->setToolTip(
+      "Reject large projection disagreements only when at least 80% of candidates support a homography.");
+  s.epipolar_ransac->setChecked(true);
+  s.homography_consistency->setChecked(true);
   try {
     const auto baseline = environment.contains("HM_CONFIG_ROOT")
         ? hm::baseline_config::load_from_root(environment.value("HM_CONFIG_ROOT").toStdString())
@@ -3327,6 +3355,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       YAML::Node game = YAML::Clone(**saved);
       hm::stitching::restore_generated_stitching_backend_choices(game);
       hm::stitching::restore_generated_control_point_resolution(game);
+      hm::stitching::restore_generated_control_point_filtering(game);
       overlay_feature_settings(effective, game);
     }
     auto camera = hm::stitching::read_stitch_camera_selection(effective);
@@ -3371,6 +3400,12 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     s.initial_settings.control_point_matcher = matcher_name.toStdString();
     s.update_feature_size(size);
     s.initial_settings.control_point_resolution = size.toStdString();
+    const auto filtering = hm::stitching::read_control_point_filtering(effective);
+    if (!filtering.ok())
+      throw std::runtime_error(filtering.status().ToString());
+    s.initial_settings.control_point_filtering = *filtering;
+    s.epipolar_ransac->setChecked(filtering->epipolar_ransac);
+    s.homography_consistency->setChecked(filtering->homography_consistency);
   } catch (const std::exception& error) {
     s.feature_settings_error = "Cannot load camera and feature settings: " + QString::fromUtf8(error.what());
     s.control_point_resolution->addItem("Unavailable");
@@ -3392,6 +3427,25 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_layout->addRow("CP limits per frame pair", s.control_points);
   matrix_layout->addRow("Control-point matcher", s.control_point_matcher);
   matrix_layout->addRow("Feature image size", s.control_point_resolution);
+  auto* filtering_toggle = new QToolButton();
+  filtering_toggle->setObjectName("stitchExperimentGeometricFilteringToggle");
+  filtering_toggle->setText("Advanced geometric filtering");
+  filtering_toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  filtering_toggle->setArrowType(Qt::RightArrow);
+  filtering_toggle->setCheckable(true);
+  auto* filtering_controls = new QWidget();
+  auto* filtering_layout = new QVBoxLayout(filtering_controls);
+  filtering_layout->setContentsMargins(12, 0, 0, 0);
+  filtering_layout->addWidget(s.epipolar_ransac);
+  filtering_layout->addWidget(s.homography_consistency);
+  filtering_controls->hide();
+  connect(
+      filtering_toggle, &QToolButton::toggled, filtering_controls, [filtering_toggle, filtering_controls](bool open) {
+        filtering_toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+        filtering_controls->setVisible(open);
+      });
+  matrix_layout->addRow(filtering_toggle);
+  matrix_layout->addRow(filtering_controls);
   s.refresh_camera = [&s](bool reset_defaults) {
     const auto selected = s.camera_configuration->currentData().toString().toStdString();
     if (reset_defaults) {
