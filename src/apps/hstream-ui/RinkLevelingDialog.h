@@ -78,6 +78,7 @@ class RinkLevelingDialog : public QDialog {
   void fail(const QString& message);
   void acceptAngles();
   void cancelCalibration();
+  void updateNavigationButtons();
 
   QString game_directory_;
   QTemporaryDir temporary_;
@@ -111,6 +112,7 @@ class RinkLevelingDialog : public QDialog {
   QByteArray process_stderr_;
   QByteArray process_progress_partial_;
   QPointer<QMessageBox> rectangle_confirmation_;
+  QPointer<QMessageBox> cancel_confirmation_;
   bool busy_{false};
   bool estimated_{false};
   bool previewed_{false};
