@@ -6704,6 +6704,37 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   return absl::OkStatus();
 }
 
+absl::Status Configurator::import_stitching_orientation(const fs::path& game_dir) {
+  const fs::path config_path = game_dir / "config.yaml";
+  auto saved = stitching::load_game_config_file(config_path);
+  if (!saved.ok())
+    return saved.status();
+  if (!saved->has_value())
+    return absl::NotFoundError("Missing camera orientation config: " + config_path.string());
+  HM_RETURN_IF_ERROR(stitching::validate_stitching_generation_owner(**saved, active_stitching_invalidation_id_));
+
+  std::vector<std::string> left;
+  std::vector<std::string> right;
+  try {
+    const YAML::Node& persisted = **saved;
+    left = persisted["game"]["videos"]["left"].as<std::vector<std::string>>();
+    right = persisted["game"]["videos"]["right"].as<std::vector<std::string>>();
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid camera orientation in " + config_path.string() + ": " + error.what());
+  }
+  if (left.empty() || right.empty())
+    return absl::InvalidArgumentError("Both camera orientations need at least one chapter in " + config_path.string());
+
+  // Orientation publishes only these assignments. Re-overlaying the entire game
+  // here would undo CLI overrides and already-materialized runtime paths, notably
+  // ds-playtracker.config-file, whose saved relative path cannot reach the plugin.
+  config_["game"]["videos"]["left"] = left;
+  config_["game"]["videos"]["right"] = right;
+  private_config_["game"]["videos"]["left"] = left;
+  private_config_["game"]["videos"]["right"] = right;
+  return absl::OkStatus();
+}
+
 absl::Status Configurator::gather_stitching_videos(
     const fs::path& game_dir,
     bool force,
@@ -6804,9 +6835,7 @@ absl::Status Configurator::gather_stitching_videos(
 
   if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
     HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir, active_stitching_invalidation_id_));
-    overlay_config("", (game_dir / "config.yaml").string());
-    private_config_["game"]["videos"]["left"] = config_["game"]["videos"]["left"];
-    private_config_["game"]["videos"]["right"] = config_["game"]["videos"]["right"];
+    HM_RETURN_IF_ERROR(import_stitching_orientation(game_dir));
     left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
     right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
   }

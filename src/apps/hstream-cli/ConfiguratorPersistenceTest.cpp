@@ -74,6 +74,10 @@ struct ConfiguratorTestAccess {
     configurator->explicit_value_ranks_.clear();
   }
 
+  static absl::Status import_stitching_orientation(Configurator* configurator, const std::filesystem::path& game_dir) {
+    return configurator->import_stitching_orientation(game_dir);
+  }
+
   static void set_memory_profile_layers(
       Configurator* configurator,
       const YAML::Node& baseline,
@@ -2551,6 +2555,77 @@ play-tracker:
                 9.5 &&
             incomplete_effective["play-tracker"]["live-boxes"][0]["time-to-dest-speed-limit-frames"].as<int>() == 20,
         "complete-configuration=false must still underlay every missing tracker field from bundled baseline");
+
+    {
+      const fs::path orientation_game = games / "orientation-runtime-config";
+      fs::create_directories(orientation_game);
+      fs::copy_file(tracker_base_path, orientation_game / "tracker.yaml");
+      YAML::Node saved = YAML::Load(R"(pipeline:
+  ds-playtracker:
+    config-file: tracker.yaml
+  hmplaycropper:
+    show-scoreboard: 1
+game:
+  stitching:
+    frame_offsets: {left: 7, right: 0}
+)");
+      std::ofstream(orientation_game / "config.yaml") << saved << '\n';
+      hm::Configurator orientation_config(
+          "orientation-runtime-config", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+      const bool loaded = orientation_config.configure().ok() &&
+          orientation_config.underlay_config("pipeline", incomplete_pipeline.string()) &&
+          orientation_config.apply_config_item("pipeline.hmplaycropper.show-scoreboard", "0").ok();
+      const auto materialized = loaded ? orientation_config.complete_configuration(
+                                            false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path())
+                                      : absl::InternalError("orientation fixture did not load");
+      const auto tracker_path = materialized.ok()
+          ? fs::path(orientation_config.config()["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
+          : fs::path();
+      ok &= expect(
+          materialized.ok() && tracker_path.is_absolute() && fs::is_regular_file(tracker_path),
+          "Orientation fixture must start with a materialized tracker configuration");
+      YAML::Node expected_runtime = YAML::Clone(orientation_config.config());
+      YAML::Node expected_private = YAML::Clone(orientation_config.game_private_config());
+      const auto documents_before = YAML::Dump(orientation_config.recording_configuration()["input-documents"]);
+      // Simulate Orientation's saved result, including unrelated saved settings
+      // that must not replace the materialized path or the command-line override.
+      for (const char* side : {"left", "right"}) {
+        const std::vector<std::string> chapters = {
+            std::string(side) + "/chapter1.mp4", std::string(side) + "/chapter2.mp4"};
+        saved["game"]["videos"][side] = chapters;
+        expected_runtime["game"]["videos"][side] = chapters;
+        expected_private["game"]["videos"][side] = chapters;
+      }
+      saved["game"]["stitching"]["frame_offsets"]["left"] = 99;
+      std::ofstream(orientation_game / "config.yaml") << saved << '\n';
+      const auto imported =
+          hm::ConfiguratorTestAccess::import_stitching_orientation(&orientation_config, orientation_game);
+      ok &= expect(
+          imported.ok() && YAML::Dump(orientation_config.config()) == YAML::Dump(expected_runtime) &&
+              YAML::Dump(orientation_config.game_private_config()) == YAML::Dump(expected_private) &&
+              YAML::Dump(orientation_config.recording_configuration()["input-documents"]) == documents_before &&
+              orientation_config.config()["pipeline"]["hmplaycropper"]["show-scoreboard"].as<int>() == 0 &&
+              orientation_config.config()["pipeline"]["ds-playtracker"]["config-file"].as<std::string>() ==
+                  tracker_path.string(),
+          "Orientation must import only camera playlists, preserving runtime paths, CLI overrides, offsets and "
+          "provenance");
+
+      for (const auto& invalid_right : {YAML::Load("[]"), YAML::Load("not-a-playlist")}) {
+        saved["game"]["videos"]["left"] = std::vector<std::string>{"must-not-be-imported.mp4"};
+        saved["game"]["videos"]["right"] = invalid_right;
+        std::ofstream(orientation_game / "config.yaml") << saved << '\n';
+        const auto rejected =
+            hm::ConfiguratorTestAccess::import_stitching_orientation(&orientation_config, orientation_game);
+        ok &= expect(
+            !rejected.ok() && YAML::Dump(orientation_config.config()) == YAML::Dump(expected_runtime) &&
+                YAML::Dump(orientation_config.game_private_config()) == YAML::Dump(expected_private),
+            "Invalid saved orientation must fail without partially replacing camera playlists");
+      }
+      fs::remove(orientation_game / "config.yaml");
+      ok &= expect(
+          absl::IsNotFound(hm::ConfiguratorTestAccess::import_stitching_orientation(&orientation_config, orientation_game)),
+          "A missing saved orientation must fail instead of using stale playlists");
+    }
 
     {
       const auto manifest =

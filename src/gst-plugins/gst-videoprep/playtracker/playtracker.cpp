@@ -144,7 +144,8 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     play_tracker_config_source_contents_ = ReadTelemetryConfigArtifact(play_tracker_config_source_file_);
   }
   if (play_tracker_config_source_contents_.empty()) {
-    return absl::InvalidArgumentError("could not read non-empty vpplaytracker base configuration snapshot");
+    return absl::InvalidArgumentError(absl::StrCat(
+        "could not read non-empty vpplaytracker base configuration snapshot: ", play_tracker_config_source_file_));
   }
 
   {
