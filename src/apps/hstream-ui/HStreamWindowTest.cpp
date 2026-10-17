@@ -2078,6 +2078,187 @@ bool test_stall_watchdog_calibration_failure_analysis(HStreamWindow* window) {
   return cleared;
 }
 
+// Exercise the real modal handlers, with bounded failure instead of leaving a
+// file chooser open when a regression changes its mode or selection behavior.
+bool with_path_dialog(QPushButton* button, const std::function<bool(QFileDialog*)>& handle) {
+  bool seen = false;
+  bool ok = false;
+  QTimer poll;
+  QObject::connect(&poll, &QTimer::timeout, [&] {
+    auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+    if (!dialog || seen)
+      return;
+    seen = true;
+    QTimer::singleShot(100, dialog, [&, dialog] { ok = handle(dialog); });
+  });
+  QTimer deadline;
+  deadline.setSingleShot(true);
+  QObject::connect(&deadline, &QTimer::timeout, [&] {
+    ok = false;
+    if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+      dialog->reject();
+  });
+  poll.start(10);
+  deadline.start(5000);
+  activate(button);
+  return expect(seen && ok, "Path chooser must open and complete the requested interaction");
+}
+
+bool accept_path_dialog(QFileDialog* dialog, const QString& directory, const QStringList& names) {
+  dialog->setDirectory(directory);
+  auto* filename = dialog->findChild<QLineEdit*>("fileNameEdit");
+  if (!filename) {
+    dialog->reject();
+    return false;
+  }
+  QStringList quoted;
+  for (const QString& name : names)
+    quoted.push_back('"' + name + '"');
+  filename->setText(quoted.join(' '));
+  QMetaObject::invokeMethod(dialog, "accept");
+  return true;
+}
+
+bool test_path_preferences() {
+  QTemporaryDir fixtures;
+  if (!fixtures.isValid())
+    return false;
+  const QByteArray previous_root = qgetenv("HM_GAME_DIR");
+  absl::Cleanup restore = [&] { qputenv("HM_GAME_DIR", previous_root); };
+  const QString first = fixtures.filePath("first");
+  const QString second = fixtures.filePath("second");
+  const QString empty = fixtures.filePath("empty");
+  const QString sources = fixtures.filePath("video sources");
+  for (const QString& directory : {first + "/shared", second + "/shared", empty, sources})
+    if (!QDir().mkpath(directory))
+      return false;
+  for (const auto& [root, points] : {std::make_pair(first, 350), std::make_pair(second, 450)}) {
+    QFile config(root + "/shared/config.yaml");
+    if (!config.open(QIODevice::WriteOnly))
+      return false;
+    config.write(QString("hstream_ui:\n  stitching_calibration:\n    control_points: %1\n").arg(points).toUtf8());
+  }
+  const QStringList videos{"first clip.mp4", "second clip.mp4"};
+  for (const QString& video : videos)
+    if (!write_fake_video(QDir(sources).filePath(video)))
+      return false;
+  qputenv("HM_GAME_DIR", first.toLocal8Bit());
+  auto choose_root = [](HStreamWindow* window, const QString& root) {
+    return with_path_dialog(window->findChild<QPushButton*>("browseGameRootButton"), [&](QFileDialog* dialog) {
+      return accept_path_dialog(dialog, QFileInfo(root).absolutePath(), {QFileInfo(root).fileName()});
+    });
+  };
+  {
+    HStreamWindow window;
+    window.show();
+    if (!expect(window.gameDirectoryText() == first + "/shared", "Environment root must be used at startup") ||
+        !choose_root(&window, second) ||
+        !expect(
+            window.gameDirectoryText() == second + "/shared" &&
+                window.findChild<QSpinBox*>("controlPointsSpin")->value() == 450,
+            "Switching roots must reload settings even for the same game ID"))
+      return false;
+    auto* root_button = window.findChild<QPushButton*>("browseGameRootButton");
+    if (!with_path_dialog(
+            root_button,
+            [&](QFileDialog* dialog) {
+              const bool correct = dialog->directory().absolutePath() == second;
+              dialog->reject();
+              return correct;
+            }) ||
+        !expect(window.gameDirectoryText() == second + "/shared", "Cancel must keep the game root"))
+      return false;
+    auto* add = window.findChild<QPushButton*>("addVideoButton");
+    activate(window.findChild<QRadioButton*>("videoRole_left"));
+    if (!with_path_dialog(
+            add,
+            [&](QFileDialog* dialog) {
+              if (dialog->fileMode() != QFileDialog::ExistingFiles) {
+                dialog->reject();
+                return false;
+              }
+              return accept_path_dialog(dialog, sources, videos);
+            }) ||
+        !expect(
+            window.videoSetCount() == 2 && window.findChild<QLineEdit*>("videoPathEdit")->text().isEmpty(),
+            "Add must import both selected videos and clear successful selections"))
+      return false;
+    const YAML::Node saved = YAML::LoadFile((second + "/shared/config.yaml").toStdString());
+    if (!expect(
+            saved["hstream_ui"]["video_roles"]["left"].size() == 2,
+            "All selected files must retain the selected camera role"))
+      return false;
+    if (!with_path_dialog(
+            add,
+            [&](QFileDialog* dialog) {
+              const bool correct = dialog->directory().absolutePath() == sources;
+              dialog->reject();
+              return correct;
+            }) ||
+        !expect(window.videoSetCount() == 2, "Cancel must not import additional files"))
+      return false;
+    auto* browse = window.findChild<QPushButton*>("browseVideoButton");
+    if (!with_path_dialog(browse, [&](QFileDialog* dialog) { return accept_path_dialog(dialog, sources, videos); }))
+      return false;
+    const QString missing = QDir(sources).filePath(videos.last());
+    if (!QFile::remove(missing))
+      return false;
+    activate(add);
+    auto* video_path = window.findChild<QLineEdit*>("videoPathEdit");
+    if (!expect(video_path->text() == missing, "Only failed files should remain selected for retry") ||
+        !write_fake_video(missing))
+      return false;
+    const QString typed = QDir(sources).filePath("typed clip.mp4");
+    if (!write_fake_video(typed))
+      return false;
+    video_path->setText(typed);
+    activate(add);
+    if (!expect(window.videoSetCount() == 3 && video_path->text().isEmpty(),
+                "Typing a path must replace the pending browser selection"))
+      return false;
+    if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+      return false;
+    HStreamWindowTestAccess::refreshRunControls(&window);
+    const bool root_disabled = !root_button->isEnabled();
+    HStreamWindowTestAccess::killStubPipelineProcess(&window);
+    HStreamWindowTestAccess::refreshRunControls(&window);
+    if (!expect(root_disabled && root_button->isEnabled(), "Root changes must be disabled while a run is active"))
+      return false;
+  }
+  {
+    HStreamWindow overridden;
+    if (!expect(overridden.gameDirectoryText() == first + "/shared", "Environment must override the saved UI root"))
+      return false;
+  }
+  qunsetenv("HM_GAME_DIR");
+  {
+    HStreamWindow restored;
+    restored.show();
+    if (!expect(restored.gameDirectoryText() == second + "/shared", "A new window must restore the saved root"))
+      return false;
+    auto* browse = restored.findChild<QPushButton*>("browseVideoButton");
+    if (!with_path_dialog(
+            browse,
+            [&](QFileDialog* dialog) {
+              const bool correct = dialog->directory().absolutePath() == sources;
+              dialog->reject();
+              return correct;
+            }) ||
+        !choose_root(&restored, empty) ||
+        !expect(
+            restored.gameIdText().isEmpty() && restored.videoSetCount() == 0 && restored.gameDirectoryText() == empty,
+            "An empty root must clear the old game and video list"))
+      return false;
+    restored.findChild<QLineEdit*>("gameIdEdit")->setText("new-game");
+    activate(restored.findChild<QPushButton*>("createGameButton"));
+    if (!expect(
+            QDir(empty + "/new-game").exists() && !QDir(second + "/new-game").exists(),
+            "New games must be created under the selected root"))
+      return false;
+  }
+  return true;
+}
+
 bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -17448,9 +17629,11 @@ int main(int argc, char** argv) {
 
   QTemporaryDir game_root;
   QTemporaryDir source_root;
-  if (!game_root.isValid() || !source_root.isValid()) {
+  QTemporaryDir preferences;
+  if (!game_root.isValid() || !source_root.isValid() || !preferences.isValid()) {
     return 1;
   }
+  qputenv("XDG_CONFIG_HOME", preferences.path().toLocal8Bit());
   qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
   qunsetenv("USE_NEW_NVSTREAMMUX");
   const QString fake_runner = source_root.path() + "/hstream-ui-fake-runner.sh";
@@ -17463,6 +17646,15 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (!test_path_preferences())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PATHS_ONLY"))
+    return 0;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_GAME_SETUP_ONLY")) {
+    HStreamWindow window;
+    return test_game_setup(&window, source_root.path()) ? 0 : 1;
+  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_JOB_EXPORT_ONLY"))
     return test_job_export() ? 0 : 1;
   if (!test_process_pause_protocol()) {

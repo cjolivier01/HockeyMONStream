@@ -1,5 +1,25 @@
 # HStream UI end-to-end acceptance test
 
+The Game panel shows the current **Game root** (the folder containing game
+directories). **Change root…** chooses another folder and reloads its games;
+it is disabled during playback and archive finalization. The UI remembers the
+selection in `~/.config/hstream-ui/settings.ini`, or
+`$XDG_CONFIG_HOME/hstream-ui/settings.ini` when set. At startup, `HM_GAME_DIR`
+takes precedence over this preference, followed by `paths.game-root` in the
+shared `~/.hstream/hstream.yaml` configuration and finally `~/Videos`.
+An explicit choice in the UI applies immediately to that window and its runner.
+
+In Video Sets, **Browse** selects one or more files for the chosen camera role.
+**Add** imports that selection (or a typed path); with no selection it opens the
+same multi-file browser. Successful imports clear the selection. Both buttons
+reopen the last selected video folder, which is also remembered across UI runs.
+Cancel leaves the selection and remembered folder unchanged. Failed imports
+remain selected for retry; successfully imported files are retained.
+
+Focused checks: `QT_QPA_PLATFORM=offscreen HSTREAM_UI_TEST_PATHS_ONLY=1
+bazel-bin/src/apps/hstream-ui/hstream_ui_test` covers root switching and
+persistence, environment precedence, and multi-file selection/import/reopening.
+
 The UI acceptance test exercises the same Qt button handlers as an operator:
 
 1. load the selected game;
