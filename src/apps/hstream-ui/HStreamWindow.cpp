@@ -38,6 +38,7 @@
 #include <QtCore/QSaveFile>
 #include <QtCore/QScopedValueRollback>
 #include <QtCore/QSet>
+#include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
@@ -145,6 +146,22 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+QString ui_settings_path() {
+  return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation))
+      .filePath("hstream-ui/settings.ini");
+}
+
+QString ui_path_preference(const QString& key) {
+  return QSettings(ui_settings_path(), QSettings::IniFormat).value(key).toString();
+}
+
+bool save_ui_path_preference(const QString& key, const QString& path) {
+  QSettings settings(ui_settings_path(), QSettings::IniFormat);
+  settings.setValue(key, path);
+  settings.sync();
+  return settings.status() == QSettings::NoError;
+}
 
 // Combo data for a stitching.blend_mode the live path cannot run (HockeyMON's "multiblend").
 // Carried as a real entry so the operator can see what the config holds, and so choosing one of
@@ -4792,6 +4809,7 @@ QString hm::ui_internal::development_runtime_root_for_application(const QString&
 }
 
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
+  selected_game_root_ = gameRoot();
   loadBaselineDefaults();
   hm::ui_internal::configure_application_identity();
   const QString application_path = QCoreApplication::applicationFilePath();
@@ -5442,6 +5460,7 @@ void HStreamWindow::buildUi() {
   };
   button_action(file_menu, "savePresetButton");
   button_action(file_menu, "createGameButton");
+  button_action(file_menu, "browseGameRootButton");
   button_action(file_menu, "browseVideoButton");
   button_action(file_menu, "addVideoButton");
   file_menu->addSeparator();
@@ -6244,6 +6263,13 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   auto* layout = new QGridLayout(group);
   layout->setColumnStretch(1, 1);
 
+  game_root_edit_ = new QLineEdit(gameRoot());
+  game_root_edit_->setObjectName("gameRootEdit");
+  game_root_edit_->setReadOnly(true);
+  auto* browse_root = new QPushButton(style()->standardIcon(QStyle::SP_DirOpenIcon), "Change root…");
+  browse_root->setObjectName("browseGameRootButton");
+  connect(browse_root, &QPushButton::clicked, this, [this]() { browseGameRoot(); });
+
   game_selector_ = new QComboBox();
   game_selector_->setObjectName("gameSelector");
   connect(game_selector_, &QComboBox::currentTextChanged, this, [this](const QString& game_id) {
@@ -6303,6 +6329,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   video_path_edit_ = new QLineEdit();
   video_path_edit_->setObjectName("videoPathEdit");
   video_path_edit_->setPlaceholderText("/path/to/video.mp4");
+  connect(video_path_edit_, &QLineEdit::textChanged, this, [this]() { selected_video_paths_.clear(); });
 
   auto* browse = new QPushButton(style()->standardIcon(QStyle::SP_DirOpenIcon), "Browse");
   browse->setObjectName("browseVideoButton");
@@ -6358,7 +6385,10 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   video_layout->addWidget(video_set_list_, 3, 0, 1, 2);
   video_layout->addWidget(remove, 3, 2);
 
-  layout->addWidget(video_group, 3, 0, 1, 3);
+  layout->addWidget(new QLabel("Game root"), 3, 0);
+  layout->addWidget(game_root_edit_, 3, 1);
+  layout->addWidget(browse_root, 3, 2);
+  layout->addWidget(video_group, 4, 0, 1, 3);
   root->addWidget(group);
 }
 
@@ -6731,11 +6761,13 @@ void HStreamWindow::configureControlHelp() {
   help("gameIdEdit", "Enter the game directory name to create or load under the configured game root.");
   help("createGameButton", "Create the entered game directory if needed, then load its videos and saved controls.");
   help("refreshGamesButton", "Rescan the configured game root and refresh the existing-game list.");
-  help("videoPathEdit", "Enter a video file or directory to import into the selected game.");
-  help("browseVideoButton", "Choose a video file or directory with the native file browser.");
+  help("gameRootEdit", "The folder containing your game directories.");
+  help("browseGameRootButton", "Choose the folder containing your games and remember it for future UI sessions.");
+  help("videoPathEdit", "Enter a video file to import, or use Browse to select multiple videos.");
+  help("browseVideoButton", "Choose one or more videos, starting in the last selected video folder.");
   help(
       "addVideoButton",
-      "Import the entered video using the selected Auto, Left, Center, or Right role and update the game configuration.");
+      "Import the selected videos using the Auto, Left, Center, or Right role. With no selection, open the video browser.");
   help("removeVideoButton", "Remove the selected imported video assignment from this game.");
   help(
       "videoRole_auto",
@@ -8416,6 +8448,7 @@ bool HStreamWindow::runStitchingClean(
   QProcess clean;
   clean.setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment clean_env = env;
+  clean_env.insert("HM_GAME_DIR", QDir(gameRoot()).absolutePath());
   // This helper only invalidates calibration artifacts. Its successful exit
   // must not complete or fail the archive run that has yet to start.
   clean_env.remove("HSTREAM_JOB_MANIFEST");
@@ -10532,6 +10565,7 @@ void HStreamWindow::startPipeline() {
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
+  env.insert("HM_GAME_DIR", QDir(gameRoot()).absolutePath());
   if (!baseline_config_root_.isEmpty())
     env.insert("HM_CONFIG_ROOT", baseline_config_root_);
   setPlaybackStartupStage("stitching", "Validating saved stitching state and Left/Right video assignments");
@@ -17651,7 +17685,7 @@ void HStreamWindow::loadSavedControlConfig() {
   setStitchingIterationSettings(default_iteration_settings_);
   inherited_player_size_controls_.clear();
   unavailable_playtracker_config_error_.clear();
-  if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
+  if (!game_id_edit_) {
     saved_control_config_load_error_.clear();
     captureSavedControlState();
     return;
@@ -17790,6 +17824,12 @@ void HStreamWindow::loadSavedControlConfig() {
   suppressed_crop_rotation_controls_.clear();
   updateCropRotationControls();
   synchronizeStitchedColorControls();
+
+  if (game_id_edit_->text().isEmpty()) {
+    saved_control_config_load_error_.clear();
+    captureSavedControlState();
+    return;
+  }
 
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   auto loaded_config = hm::stitching::load_game_config_file(config_path);
@@ -19242,6 +19282,38 @@ bool HStreamWindow::applySavedControlConfig(
   return true;
 }
 
+void HStreamWindow::browseGameRoot() {
+  if (!game_controls_->isEnabled())
+    return;
+  const QString directory = QFileDialog::getExistingDirectory(this, "Choose Game Root", gameRoot());
+  if (directory.isEmpty())
+    return;
+  const QString root = QDir(directory).absolutePath();
+  if (!save_ui_path_preference("paths/game-root", root))
+    appendLog(QString("could not save game root preference to %1").arg(ui_settings_path()));
+  if (root == gameRoot())
+    return;
+
+  const QString previous_game = game_id_edit_->text();
+  selected_game_root_ = root;
+  game_root_edit_->setText(root);
+  video_path_edit_->clear();
+  // Reload even when the new root contains the same game ID: its inputs,
+  // calibration and controls belong to a different game directory.
+  {
+    const QSignalBlocker blocker(game_id_edit_);
+    game_id_edit_->setText(
+        !previous_game.isEmpty() && QFileInfo(QDir(root).filePath(previous_game)).isDir() ? previous_game : QString());
+  }
+  refreshGames();
+  selectGame(game_id_edit_->text());
+  updateWindowTitle();
+  updateArchiveOutputPathLabel();
+  refreshArchiveAvailability();
+  updateRunControls();
+  appendLog(QString("game root selected %1").arg(root));
+}
+
 void HStreamWindow::refreshGames() {
   if (!game_selector_) {
     return;
@@ -19302,25 +19374,39 @@ void HStreamWindow::createOrLoadGame() {
 }
 
 void HStreamWindow::addVideoPath() {
-  if (!video_path_edit_) {
+  if (!video_path_edit_ || !video_controls_->isEnabled())
     return;
+  if (video_path_edit_->text().isEmpty())
+    browseVideoPath();
+  QStringList paths = selected_video_paths_;
+  if (paths.isEmpty() && !video_path_edit_->text().isEmpty())
+    paths.push_back(video_path_edit_->text());
+  QStringList failed;
+  for (const QString& path : paths) {
+    if (!addVideoFile(path))
+      failed.push_back(path);
   }
+  video_path_edit_->setText(failed.join("; "));
+  selected_video_paths_ = failed;
+}
+
+bool HStreamWindow::addVideoFile(const QString& path) {
   const QString role = selectedVideoRole();
   if (!ensureGameDirectory()) {
-    return;
+    return false;
   }
   const fs::path game_dir_path(gameDirectory(game_id_edit_->text()).toStdString());
   auto config_transaction = hm::stitching::GameConfigTransactionLock::Acquire(game_dir_path);
   if (!config_transaction.ok()) {
     appendLog(
         QString("could not lock video import transaction: %1").arg(config_transaction.status().ToString().c_str()));
-    return;
+    return false;
   }
 
   QString imported_relative_path;
   bool imported_path_created = false;
-  if (!importVideoPath(video_path_edit_->text(), &imported_relative_path, &imported_path_created)) {
-    return;
+  if (!importVideoPath(path, &imported_relative_path, &imported_path_created)) {
+    return false;
   }
 
   if (const char* delay = std::getenv("HM_TEST_VIDEO_ADD_PRE_CONFIG_SAVE_DELAY_MS")) {
@@ -19337,7 +19423,7 @@ void HStreamWindow::addVideoPath() {
     }
     config_transaction->reset();
     refreshVideoSets();
-    return;
+    return false;
   }
   if (role == "auto") {
     const CopiedImportCleanupResult cleanup =
@@ -19348,7 +19434,7 @@ void HStreamWindow::addVideoPath() {
       }
       config_transaction->reset();
       refreshVideoSets();
-      return;
+      return false;
     }
     if (cleanup == CopiedImportCleanupResult::kCommittedWithCleanupFailure) {
       appendLog("video set added, but one or more unreferenced copied imports could not be cleaned");
@@ -19359,17 +19445,23 @@ void HStreamWindow::addVideoPath() {
   if (stitchCameraSelection().automatic_fov() || stitchCameraSelection().automatic_lens())
     applyCameraConfigurationDefaults(false);
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
+  return true;
 }
 
 void HStreamWindow::browseVideoPath() {
-  const QString start_dir = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
-  const QString path = QFileDialog::getOpenFileName(
+  QString start_dir = ui_path_preference("paths/video-directory");
+  if (start_dir.isEmpty() || !QDir(start_dir).exists())
+    start_dir = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+  const QStringList paths = QFileDialog::getOpenFileNames(
       this,
-      "Add Video",
+      "Add Videos",
       start_dir.isEmpty() ? QDir::homePath() : start_dir,
       "Videos (*.mp4 *.MP4 *.mkv *.MKV *.mov *.MOV *.avi *.AVI)");
-  if (!path.isEmpty() && video_path_edit_) {
-    video_path_edit_->setText(path);
+  if (!paths.isEmpty() && video_path_edit_) {
+    video_path_edit_->setText(paths.join("; "));
+    selected_video_paths_ = paths;
+    if (!save_ui_path_preference("paths/video-directory", QFileInfo(paths.last()).absolutePath()))
+      appendLog(QString("could not save video folder preference to %1").arg(ui_settings_path()));
   }
 }
 
@@ -19590,10 +19682,15 @@ QString HStreamWindow::selectedVideoRole() const {
 }
 
 QString HStreamWindow::gameRoot() const {
+  if (!selected_game_root_.isEmpty())
+    return selected_game_root_;
   const QByteArray env = qgetenv("HM_GAME_DIR");
   if (!env.isEmpty()) {
     return QString::fromLocal8Bit(env);
   }
+  const QString saved = ui_path_preference("paths/game-root");
+  if (!saved.isEmpty())
+    return saved;
   auto user_overlay = hm::user_config::load_or_create();
   if (user_overlay.ok()) {
     auto configured = hm::user_config::game_root(*user_overlay);
