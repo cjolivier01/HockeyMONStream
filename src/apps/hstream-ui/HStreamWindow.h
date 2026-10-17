@@ -45,6 +45,7 @@ class QProcessEnvironment;
 class QCloseEvent;
 class QDialog;
 class QEvent;
+class QGroupBox;
 class QIcon;
 class QProgressBar;
 class QSplitter;
@@ -619,6 +620,9 @@ class HStreamWindow : public QMainWindow {
   InputLensWidget* input_lens_widget_{nullptr};
   QComboBox* camera_configuration_combo_{nullptr};
   QCheckBox* camera_auto_fov_check_{nullptr};
+  QGroupBox* camera_metadata_group_{nullptr};
+  QLabel* camera_metadata_label_{nullptr};
+  QGroupBox* camera_fov_group_{nullptr};
   QLabel* camera_fov_source_label_{nullptr};
   QDoubleSpinBox* camera_horizontal_fov_spin_{nullptr};
   QDoubleSpinBox* camera_vertical_fov_spin_{nullptr};

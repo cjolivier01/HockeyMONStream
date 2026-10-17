@@ -581,6 +581,9 @@ struct StitchingExperimentDialog::Impl {
   QComboBox* camera_configuration{nullptr};
   std::vector<hm::stitching::StitchCameraConfiguration> camera_configurations;
   QCheckBox* camera_auto_fov{nullptr};
+  QGroupBox* camera_metadata_group{nullptr};
+  QLabel* camera_metadata_status{nullptr};
+  QGroupBox* camera_fov_group{nullptr};
   QLabel* camera_fov_status{nullptr};
   QDoubleSpinBox* camera_vertical_fov{nullptr};
   std::function<void(bool)> refresh_camera;
@@ -3300,6 +3303,16 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       "Selecting a camera preset enables Auto FOV and lens correction, with the preset as the fallback. "
       "Choose Manual or turn either Auto control off to edit that component for new candidates.");
   s.input_lens = new InputLensWidget();
+  s.camera_metadata_group = new QGroupBox("MP4 recording metadata");
+  s.camera_metadata_group->setObjectName("stitchExperimentCameraMetadataGroup");
+  auto* metadata_layout = new QVBoxLayout(s.camera_metadata_group);
+  s.camera_metadata_status = new QLabel("Not checked yet.");
+  s.camera_metadata_status->setObjectName("stitchExperimentCameraMetadataStatus");
+  s.camera_metadata_status->setWordWrap(true);
+  s.camera_metadata_status->setTextFormat(Qt::PlainText);
+  metadata_layout->addWidget(s.camera_metadata_status);
+  s.camera_fov_group = new QGroupBox("Camera field of view");
+  s.camera_fov_group->setObjectName("stitchExperimentCameraFovGroup");
   s.camera_auto_fov = new QCheckBox("Auto camera FOV");
   s.camera_auto_fov->setObjectName("stitchExperimentCameraAutoFov");
   s.camera_auto_fov->setToolTip(
@@ -3369,9 +3382,16 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     const auto auto_lens =
         hm::stitching::ReadAutoInputLensForGame(game_directory.toStdString(), source_config, *camera);
     camera = auto_lens.camera;
-    s.input_lens->setMetadataStatus(QString::fromStdString(auto_lens.lens_message), camera->automatic_lens());
+    s.input_lens->setMetadataStatus(
+        QString::fromStdString(auto_lens.lens_message), camera->automatic_lens(), auto_lens.lens_from_mp4);
     s.camera_auto_fov->setChecked(camera->automatic_fov());
     s.camera_fov_status->setText(QString::fromStdString(auto_lens.fov_message));
+    s.camera_metadata_status->setText(QString::fromStdString(auto_lens.recording_message));
+    SetInputOpticsMetadataHighlight(s.camera_metadata_group, auto_lens.recording_metadata_found);
+    const bool both_fov = auto_lens.horizontal_fov_from_mp4 && auto_lens.vertical_fov_from_mp4;
+    SetInputOpticsMetadataHighlight(s.camera_fov_group, both_fov);
+    SetInputOpticsMetadataHighlight(s.camera_horizontal_fov, auto_lens.horizontal_fov_from_mp4 && !both_fov);
+    SetInputOpticsMetadataHighlight(s.camera_vertical_fov, auto_lens.vertical_fov_from_mp4 && !both_fov);
     s.camera_horizontal_fov->setReadOnly(camera->automatic_fov());
     s.camera_vertical_fov->setReadOnly(camera->automatic_fov());
     s.camera_vertical_fov->setValue(camera->vertical_fov);
@@ -3491,13 +3511,21 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     s.input_lens->setLens(s.camera_settings.input_lens);
     s.input_lens->setMetadataStatus(
         QString::fromStdString(resolved.lens_message.empty() ? resolved.message : resolved.lens_message),
-        s.camera_settings.automatic_lens());
+        s.camera_settings.automatic_lens(),
+        resolved.lens_from_mp4);
     {
       const QSignalBlocker blocker(s.camera_auto_fov);
       s.camera_auto_fov->setChecked(s.camera_settings.automatic_fov());
     }
     s.camera_fov_status->setText(
         QString::fromStdString(resolved.fov_message.empty() ? resolved.message : resolved.fov_message));
+    s.camera_metadata_status->setText(
+        QString::fromStdString(resolved.recording_message.empty() ? resolved.message : resolved.recording_message));
+    SetInputOpticsMetadataHighlight(s.camera_metadata_group, resolved.recording_metadata_found);
+    const bool both_fov = resolved.horizontal_fov_from_mp4 && resolved.vertical_fov_from_mp4;
+    SetInputOpticsMetadataHighlight(s.camera_fov_group, both_fov);
+    SetInputOpticsMetadataHighlight(s.camera_horizontal_fov, resolved.horizontal_fov_from_mp4 && !both_fov);
+    SetInputOpticsMetadataHighlight(s.camera_vertical_fov, resolved.vertical_fov_from_mp4 && !both_fov);
     s.camera_horizontal_fov->setReadOnly(s.camera_settings.automatic_fov());
     s.camera_vertical_fov->setReadOnly(s.camera_settings.automatic_fov());
     s.camera_horizontal_fov->setValue(s.camera_settings.horizontal_fov);
@@ -3516,10 +3544,13 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   camera_group->setObjectName("stitchExperimentCameraGroup");
   auto* camera_form = new QFormLayout(camera_group);
   camera_form->addRow("Camera / recording-mode defaults", s.camera_configuration);
-  camera_form->addRow(s.camera_auto_fov);
-  camera_form->addRow(s.camera_fov_status);
-  camera_form->addRow("Camera horizontal FOV", s.camera_horizontal_fov);
-  camera_form->addRow("Camera vertical FOV", s.camera_vertical_fov);
+  camera_form->addRow(s.camera_metadata_group);
+  auto* fov_form = new QFormLayout(s.camera_fov_group);
+  fov_form->addRow(s.camera_auto_fov);
+  fov_form->addRow(s.camera_fov_status);
+  fov_form->addRow("Camera horizontal FOV", s.camera_horizontal_fov);
+  fov_form->addRow("Camera vertical FOV", s.camera_vertical_fov);
+  camera_form->addRow(s.camera_fov_group);
   camera_form->addRow(s.input_lens);
   matrix_layout->addRow(camera_group);
   matrix_layout->addRow("Frame counts", s.frame_counts);

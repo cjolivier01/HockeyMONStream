@@ -5725,6 +5725,16 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       "Source camera/lens preset used by stitching calibration. Selecting a camera preset enables Auto FOV and lens correction, "
       "with this preset as the fallback. Choose Manual or turn either Auto control off to edit that component.");
 
+  camera_metadata_group_ = new QGroupBox("MP4 recording metadata");
+  camera_metadata_group_->setObjectName("cameraMetadataGroup");
+  auto* metadata_layout = new QVBoxLayout(camera_metadata_group_);
+  camera_metadata_label_ = new QLabel("Not checked yet.");
+  camera_metadata_label_->setObjectName("cameraMetadataLabel");
+  camera_metadata_label_->setWordWrap(true);
+  camera_metadata_label_->setTextFormat(Qt::PlainText);
+  metadata_layout->addWidget(camera_metadata_label_);
+  camera_fov_group_ = new QGroupBox("Camera field of view");
+  camera_fov_group_->setObjectName("cameraFovGroup");
   camera_auto_fov_check_ = new QCheckBox("Auto camera FOV");
   camera_auto_fov_check_->setObjectName("cameraAutoFovCheck");
   camera_auto_fov_check_->setChecked(default_camera_selection_.automatic_fov());
@@ -7413,10 +7423,13 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     camera_group->setObjectName("stitchCameraOpticsGroup");
     auto* camera_layout = new QFormLayout(camera_group);
     camera_layout->addRow(camera_configuration_label, camera_configuration_combo_);
-    camera_layout->addRow(camera_auto_fov_check_);
-    camera_layout->addRow(camera_fov_source_label_);
-    camera_layout->addRow(camera_horizontal_fov_label, camera_horizontal_fov_spin_);
-    camera_layout->addRow(camera_vertical_fov_label, camera_vertical_fov_spin_);
+    camera_layout->addRow(camera_metadata_group_);
+    auto* fov_layout = new QFormLayout(camera_fov_group_);
+    fov_layout->addRow(camera_auto_fov_check_);
+    fov_layout->addRow(camera_fov_source_label_);
+    fov_layout->addRow(camera_horizontal_fov_label, camera_horizontal_fov_spin_);
+    fov_layout->addRow(camera_vertical_fov_label, camera_vertical_fov_spin_);
+    camera_layout->addRow(camera_fov_group_);
     camera_layout->addRow(input_lens_widget_);
     projection_layout->addWidget(camera_group, 0, 0, 4, 2);
     projection_layout->addWidget(projection_label, 4, 0);
@@ -7897,7 +7910,8 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
     input_lens_widget_->setLens(camera.input_lens);
     input_lens_widget_->setMetadataStatus(
         QString::fromStdString(resolved.lens_message.empty() ? resolved.message : resolved.lens_message),
-        camera.automatic_lens());
+        camera.automatic_lens(),
+        resolved.lens_from_mp4);
   }
   {
     const QSignalBlocker blocker(camera_auto_fov_check_);
@@ -7905,6 +7919,13 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
   }
   camera_fov_source_label_->setText(
       QString::fromStdString(resolved.fov_message.empty() ? resolved.message : resolved.fov_message));
+  camera_metadata_label_->setText(
+      QString::fromStdString(resolved.recording_message.empty() ? resolved.message : resolved.recording_message));
+  SetInputOpticsMetadataHighlight(camera_metadata_group_, resolved.recording_metadata_found);
+  const bool both_fov = resolved.horizontal_fov_from_mp4 && resolved.vertical_fov_from_mp4;
+  SetInputOpticsMetadataHighlight(camera_fov_group_, both_fov);
+  SetInputOpticsMetadataHighlight(camera_horizontal_fov_spin_, resolved.horizontal_fov_from_mp4 && !both_fov);
+  SetInputOpticsMetadataHighlight(camera_vertical_fov_spin_, resolved.vertical_fov_from_mp4 && !both_fov);
   // Source refreshes may change only the freeze policy, exact precision, or
   // lens coefficients. They must not depend on rounded FOV control signals.
   updatePresetDirtyState();
@@ -17816,10 +17837,14 @@ void HStreamWindow::loadSavedControlConfig() {
   if (camera_vertical_fov_spin_) {
     const bool blocked = camera_vertical_fov_spin_->blockSignals(true);
     input_lens_widget_->setLens(default_camera_selection_.input_lens);
-    input_lens_widget_->setMetadataStatus("Baseline default", default_camera_selection_.automatic_lens());
+    input_lens_widget_->setMetadataStatus("Defaults (not read from MP4)", default_camera_selection_.automatic_lens());
     const QSignalBlocker auto_blocker(camera_auto_fov_check_);
     camera_auto_fov_check_->setChecked(default_camera_selection_.automatic_fov());
-    camera_fov_source_label_->setText("Baseline default");
+    camera_fov_source_label_->setText("Defaults (not read from MP4)");
+    camera_metadata_label_->setText("Not checked yet.");
+    for (QWidget* widget : std::array<QWidget*, 4>{
+             camera_metadata_group_, camera_fov_group_, camera_horizontal_fov_spin_, camera_vertical_fov_spin_})
+      SetInputOpticsMetadataHighlight(widget, false);
     set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
     camera_vertical_fov_spin_->blockSignals(blocked);
   }
@@ -18452,12 +18477,20 @@ void HStreamWindow::loadSavedControlConfig() {
         "autoInputLensFrozen", frozen_lens && frozen_lens.IsScalar() && frozen_lens.as<bool>());
     input_lens_widget_->setLens(staged_camera_selection.input_lens);
     input_lens_widget_->setMetadataStatus(
-        QString::fromStdString(auto_lens.lens_message), staged_camera_selection.automatic_lens());
+        QString::fromStdString(auto_lens.lens_message),
+        staged_camera_selection.automatic_lens(),
+        auto_lens.lens_from_mp4);
     {
       const QSignalBlocker blocker(camera_auto_fov_check_);
       camera_auto_fov_check_->setChecked(staged_camera_selection.automatic_fov());
     }
     camera_fov_source_label_->setText(QString::fromStdString(auto_lens.fov_message));
+    camera_metadata_label_->setText(QString::fromStdString(auto_lens.recording_message));
+    SetInputOpticsMetadataHighlight(camera_metadata_group_, auto_lens.recording_metadata_found);
+    const bool both_fov = auto_lens.horizontal_fov_from_mp4 && auto_lens.vertical_fov_from_mp4;
+    SetInputOpticsMetadataHighlight(camera_fov_group_, both_fov);
+    SetInputOpticsMetadataHighlight(camera_horizontal_fov_spin_, auto_lens.horizontal_fov_from_mp4 && !both_fov);
+    SetInputOpticsMetadataHighlight(camera_vertical_fov_spin_, auto_lens.vertical_fov_from_mp4 && !both_fov);
     camera_horizontal_fov_spin_->setReadOnly(staged_camera_selection.automatic_fov());
     camera_vertical_fov_spin_->setReadOnly(staged_camera_selection.automatic_fov());
     projection_parameter_controls_projection_.clear();

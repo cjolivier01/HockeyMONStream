@@ -19,6 +19,21 @@ baseline, manual values or a saved experiment snapshot independently. Missing
 lens coefficients no longer discard valid recorded FOV. Unsupported dynamic
 warps or ambiguous metadata still cannot establish trustworthy static coverage.
 
+Both windows show a **MP4 recording metadata** panel with the camera model,
+dimensions, frame rate, mode and stabilization when available. A teal background
+and a **Read from MP4** note identify successfully read metadata. Recognizing the
+camera does not imply its optics can be imported: the FOV and lens-value panels
+are highlighted independently, and a partially imported FOV highlights only the
+imported axis. The FOV note shows recorded coverage and any converted calibration
+FOV; the lens controls show the converted projection, distortion and center
+offsets actually used. Profile/default/manual/snapshot values stay untinted and
+name their source, with an explanation when metadata is unusable. Incomplete or
+inconsistent camera/chapter reads are reported explicitly. Saved snapshots and
+fully manual settings say that the current MP4 files have not been checked.
+
+**Calibration behavior** sits outside the highlighted lens values. It controls
+whether stitching may refit them; it is an application policy, not an MP4 field.
+
 **Fit panorama to camera coverage** controls the combined stitched view. It is
 separate from both input-camera controls; one camera's FOV never sets the width
 of the whole panorama. Camera horizontal FOV is the Hugin calibration parameter.

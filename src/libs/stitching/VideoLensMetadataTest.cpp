@@ -218,6 +218,13 @@ int main(int argc, char** argv) {
     write(dir / "right.mp4", good);
     auto result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, {"auto"});
     expect(result.detected && !result.mismatch, "Agreeing sources should import");
+    expect(
+        result.recording_metadata_found && result.horizontal_fov_from_mp4 && result.vertical_fov_from_mp4 &&
+            result.lens_from_mp4 && result.recording_message.find("MISSION 1 PRO") != std::string::npos &&
+            result.recording_message.find("7680×4320") != std::string::npos &&
+            result.fov_message.find("120.00°") != std::string::npos &&
+            result.fov_message.find("125.12°") != std::string::npos,
+        "MP4 provenance must identify the recording and distinguish physical coverage from converted calibration values");
     YAML::Node config = YAML::Load(
         "stitching: {camera_config: auto, camera_configs: {auto: {display_name: Auto, horizontal_fov: 108, vertical_fov: 90}}}");
     auto selected = read_stitch_camera_selection(config);
@@ -248,6 +255,10 @@ int main(int argc, char** argv) {
     config["stitching"]["auto_input_lens_frozen"] = true;
     auto frozen = ReadAutoInputLensForGame(dir, config, game_result.camera);
     expect(!frozen.detected && frozen.camera == game_result.camera, "Experiment optics remain frozen");
+    expect(
+        !frozen.recording_metadata_found && !frozen.horizontal_fov_from_mp4 && !frozen.vertical_fov_from_mp4 &&
+            !frozen.lens_from_mp4 && frozen.recording_message.find("Not checked") != std::string::npos,
+        "A saved snapshot must not claim to have inspected the current MP4s");
     config["stitching"].remove("auto_input_lens_frozen");
     auto manual = game_result.camera;
     manual.configuration = "gopro-mission-1";
@@ -261,8 +272,16 @@ int main(int argc, char** argv) {
     write(dir / "right.mp4", movie(gopro(0.476107776f, "Off")));
     result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, {"auto"});
     expect(result.mismatch && !result.detected, "File replacement invalidates cache; different stabilization warns");
+    expect(
+        !result.recording_metadata_found && !result.horizontal_fov_from_mp4 && !result.vertical_fov_from_mp4 &&
+            !result.lens_from_mp4 && result.recording_message.find("differs") != std::string::npos,
+        "Mismatched recordings cannot appear as successfully imported shared optics");
     result = ResolveAutoInputLens({dir / "left.mp4", dir / "missing.mp4"}, {"auto"});
     expect(!result.detected, "Missing camera never copies the other lens");
+    expect(
+        !result.recording_metadata_found && !result.lens_from_mp4 &&
+            result.recording_message.find("1 of 2") != std::string::npos,
+        "Partial metadata reads must state how many files were read without claiming shared success");
     // FOV and correction are independent, including a valid FOV-only file.
     const auto fov_only = movie(gopro(0.476107776f, "HS EIS", false, false));
     write(dir / "left.mp4", fov_only);
@@ -272,6 +291,10 @@ int main(int argc, char** argv) {
         result.detected && std::abs(result.camera.horizontal_fov - 120.000427246094) < 1e-6 &&
             result.camera.input_lens == selected->input_lens,
         "Valid MP4 FOV survives missing lens coefficients; correction falls back independently");
+    expect(
+        result.recording_metadata_found && result.horizontal_fov_from_mp4 && result.vertical_fov_from_mp4 &&
+            !result.lens_from_mp4 && result.lens_message.find("Fallback") != std::string::npos,
+        "Recognized cameras with only FOV metadata must not highlight fallback lens values");
     StitchCameraConfiguration profile{
         "mode", "Verified mode", 125.12273264898, 70.3657608032, parsed->camera.input_lens};
     for (const auto& [key, value] : parsed->recording_mode)
@@ -281,6 +304,9 @@ int main(int argc, char** argv) {
         result.lens_message.find("Mode profile") != std::string::npos &&
             result.camera.input_lens == profile.input_lens && result.camera.horizontal_fov > 125,
         "Compatible mode correction combines with physical MP4 FOV using Hugin conversion");
+    expect(
+        !result.lens_from_mp4 && result.horizontal_fov_from_mp4 && result.vertical_fov_from_mp4,
+        "Verified profile correction is distinct from imported MP4 FOV");
     auto incompatible = profile;
     incompatible.metadata_match["horizon"] = {"Locked"};
     result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, *selected, {incompatible});
@@ -396,6 +422,21 @@ int main(int argc, char** argv) {
       return trailer;
     };
     const auto trailer = make_trailer(raw);
+    auto stabilized = raw;
+    append(stabilized, scalar(42, 1));
+    auto stabilized_movie = movie({}, 4000, 3000);
+    append(stabilized_movie, make_trailer(stabilized));
+    write(dir / "insta-stabilized-left.mp4", stabilized_movie);
+    write(dir / "insta-stabilized-right.mp4", stabilized_movie);
+    const auto recognized =
+        ResolveAutoInputLens({dir / "insta-stabilized-left.mp4", dir / "insta-stabilized-right.mp4"}, *selected);
+    expect(
+        recognized.recording_metadata_found && !recognized.horizontal_fov_from_mp4 &&
+            !recognized.vertical_fov_from_mp4 && !recognized.lens_from_mp4 &&
+            recognized.recording_message.find("Insta360 raw") != std::string::npos &&
+            recognized.fov_message.find("FlowState") != std::string::npos &&
+            recognized.lens_message.find("FlowState") != std::string::npos,
+        "Recognizing a camera must remain distinct from being able to use its stabilized optics");
     for (bool boxed : {false, true}) {
       auto original = movie({}, 4000, 3000);
       append(original, boxed ? atom("inst", trailer) : trailer);
