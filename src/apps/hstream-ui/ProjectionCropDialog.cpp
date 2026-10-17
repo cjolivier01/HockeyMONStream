@@ -304,8 +304,8 @@ ProjectionCropDialog::ProjectionCropDialog(
   if (in_progress_calibration_) {
     reject_button->setText("Cancel calibration");
     reject_button->setToolTip(
-        "Stop the whole stitching calibration run, not just the crop choice. Nothing is published and the game is "
-        "left without a complete calibration.");
+        "Stop the whole stitching calibration run, not just the crop choice. No alignment, maps, seam or rink mask "
+        "are published, and the game is left without a complete calibration.");
   } else if (apply_on_accept) {
     reject_button->setText("Cancel playback");
   }
@@ -801,6 +801,7 @@ void ProjectionCropDialog::acceptCrop() {
     }
   }
   stopTool();
+  dismissCancelConfirmation();
   accept();
 }
 
@@ -812,13 +813,30 @@ void ProjectionCropDialog::reject() {
     confirmCancelCalibration();
     return;
   }
-  if (cancel_confirmation_) {
-    cancel_confirmation_->disconnect(this);
-    cancel_confirmation_->close();
-    cancel_confirmation_ = nullptr;
-  }
+  dismissCancelConfirmation();
   stopTool();
   QDialog::reject();
+}
+
+// The prompt is a separate window, so hiding the dialog would leave it on
+// screen. Every path that closes the dialog has to retire it first.
+void ProjectionCropDialog::dismissCancelConfirmation() {
+  if (!cancel_confirmation_)
+    return;
+  cancel_confirmation_->disconnect(this);
+  cancel_confirmation_->close();
+  cancel_confirmation_ = nullptr;
+}
+
+void ProjectionCropDialog::raiseSelector() {
+  show();
+  raise();
+  activateWindow();
+  // A live prompt blocks input to the dialog, so it is what must come forward.
+  if (cancel_confirmation_ && cancel_confirmation_->isVisible()) {
+    cancel_confirmation_->raise();
+    cancel_confirmation_->activateWindow();
+  }
 }
 
 void ProjectionCropDialog::confirmCancelCalibration() {
@@ -837,8 +855,8 @@ void ProjectionCropDialog::confirmCancelCalibration() {
   confirmation->setAttribute(Qt::WA_DeleteOnClose);
   confirmation->setInformativeText(
       "This cancels all of the calibration, not just the crop choice. No alignment, maps, seam or rink mask are "
-      "published, the game is left without a complete calibration, and calibration has to run again from the "
-      "start.\n\nTo continue calibration, choose Full canvas or Use crop instead.");
+      "published, and the game is left without a complete calibration until stitching calibration runs again.\n\n"
+      "To continue calibration, choose Use crop instead. It keeps the whole canvas unless you change the mode.");
   auto* stop_calibration = confirmation->addButton("Cancel calibration", QMessageBox::DestructiveRole);
   auto* keep_calibrating = confirmation->addButton("Continue calibration", QMessageBox::RejectRole);
   stop_calibration->setIcon(action_icon(ActionIcon::Cancel));

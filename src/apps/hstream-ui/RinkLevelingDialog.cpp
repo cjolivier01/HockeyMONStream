@@ -185,7 +185,8 @@ RinkLevelingDialog::RinkLevelingDialog(
   angles->addStretch();
   previous_button_ = new QPushButton(action_icon(ActionIcon::Previous), "Prev");
   previous_button_->setObjectName("previousRinkLevelingButton");
-  previous_button_->setToolTip("Go back one tab. From Left camera this wraps around to Preview.");
+  previous_button_->setToolTip(
+      "Go back one tab. From Left camera this wraps around to Preview once the marks are complete.");
   next_button_ = new QPushButton(action_icon(ActionIcon::Next), "Next");
   next_button_->setObjectName("nextRinkLevelingButton");
   for (auto* button : {previous_button_, next_button_})
@@ -238,8 +239,8 @@ RinkLevelingDialog::RinkLevelingDialog(
     cancel_calibration->setIcon(action_icon(ActionIcon::Cancel));
     cancel_calibration->setObjectName("cancelRinkCalibrationButton");
     cancel_calibration->setToolTip(
-        "Stop the whole stitching calibration run, not just leveling. Nothing is published and the game is left "
-        "without a complete calibration.");
+        "Stop the whole stitching calibration run, not just leveling. No alignment, maps, seam or rink mask are "
+        "published, and the game is left without a complete calibration.");
     connect(cancel_calibration, &QPushButton::clicked, this, [this]() { cancelCalibration(); });
   }
   accept_button_ = buttons->addButton("Use angles", QDialogButtonBox::AcceptRole);
@@ -463,15 +464,18 @@ void RinkLevelingDialog::updateNavigationButtons() {
   next_button_->setEnabled(accepts ? accept_button_->isEnabled() : !busy_ && load_error_.isEmpty());
 }
 
-// Incomplete marks cannot render, so send the operator back to the image that
-// needs them instead of leaving a render action on screen that always fails.
+// Incomplete marks cannot render, so send the operator to the image that needs
+// them instead of leaving the failure on a tab where nothing can be fixed.
+// Only the explicit preview requests reach this; the debounced estimate cannot,
+// because selectionChanged() stops its timer as soon as marks go incomplete.
 void RinkLevelingDialog::returnToIncompleteMarks() {
-  if (tabs_->currentIndex() != 2)
-    return;
-  const auto incomplete = [this](size_t camera) {
-    const auto count = canvases_[camera]->points().size();
+  const auto incomplete = [this](int camera) {
+    const auto count = canvases_[size_t(camera)]->points().size();
     return corner_method_ ? count != 2 : count < 2 || count % 2 != 0;
   };
+  const int current = tabs_->currentIndex();
+  if (current < 2 && incomplete(current))
+    return;
   tabs_->setCurrentIndex(incomplete(0) ? 0 : 1);
 }
 
@@ -859,9 +863,11 @@ void RinkLevelingDialog::preview() {
                 previewed_ = true;
                 preview_hint_->hide();
                 preview_canvas_->show();
+                // Settle the acceptance gate before the tab switch, so the
+                // currentChanged handler never relabels against a stale one.
+                accept_button_->setEnabled(true);
                 tabs_->setCurrentIndex(2);
                 preview_canvas_->fitImage();
-                accept_button_->setEnabled(true);
                 updateNavigationButtons();
                 status_->setText(
                     "Inspect the walls and both rink ends. Use angles when satisfied, or Prev to adjust the marks.");
@@ -916,6 +922,7 @@ void RinkLevelingDialog::acceptAngles() {
       updateNavigationButtons();
       return;
     }
+    dismissPrompts();
     accept();
     return;
   }
@@ -931,21 +938,39 @@ void RinkLevelingDialog::acceptAngles() {
     updateNavigationButtons();
     return;
   }
+  dismissPrompts();
   accept();
+}
+
+// Prompts are separate windows, so hiding the dialog would leave them on
+// screen. Every path that closes the dialog has to retire them first.
+void RinkLevelingDialog::dismissPrompts() {
+  for (QPointer<QMessageBox>* confirmation : {&rectangle_confirmation_, &cancel_confirmation_}) {
+    if (!*confirmation)
+      continue;
+    (*confirmation)->disconnect(this);
+    (*confirmation)->close();
+    *confirmation = nullptr;
+  }
+}
+
+void RinkLevelingDialog::raiseSelector() {
+  show();
+  raise();
+  activateWindow();
+  // A live prompt blocks input to the dialog, so it is what must come forward.
+  for (const QPointer<QMessageBox>& confirmation : {rectangle_confirmation_, cancel_confirmation_}) {
+    if (confirmation && confirmation->isVisible()) {
+      confirmation->raise();
+      confirmation->activateWindow();
+    }
+  }
 }
 
 void RinkLevelingDialog::reject() {
   estimate_timer_.stop();
   preview_requested_ = false;
-  auto dismiss = [this](QPointer<QMessageBox>& confirmation) {
-    if (!confirmation)
-      return;
-    confirmation->disconnect(this);
-    confirmation->close();
-    confirmation = nullptr;
-  };
-  dismiss(rectangle_confirmation_);
-  dismiss(cancel_confirmation_);
+  dismissPrompts();
   if (process_) {
     process_->disconnect(this);
     process_->kill();
@@ -974,8 +999,7 @@ void RinkLevelingDialog::cancelCalibration() {
   confirmation->setAttribute(Qt::WA_DeleteOnClose);
   confirmation->setInformativeText(
       "This cancels all of the calibration, not just rink leveling. No alignment, maps, seam or rink mask are "
-      "published, the game is left without a complete calibration, and calibration has to run again from the "
-      "start.\n\n"
+      "published, the game is left without a complete calibration until stitching calibration runs again.\n\n"
       "To keep this calibration and continue without leveling, choose Skip leveling instead.");
   auto* stop_calibration = confirmation->addButton("Cancel calibration", QMessageBox::DestructiveRole);
   auto* keep_calibrating = confirmation->addButton("Continue calibration", QMessageBox::RejectRole);

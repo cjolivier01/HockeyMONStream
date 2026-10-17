@@ -1117,6 +1117,8 @@ bool with_projection_crop_dialog(Open open, Handle handle) {
     seen = true;
     poll.stop();
     handle(dialog);
+    // Only for editors outside an in-progress calibration: there close() is
+    // whole-run cancellation, so it prompts and the dialog stays open.
     if (dialog->isVisible())
       dialog->close();
   });

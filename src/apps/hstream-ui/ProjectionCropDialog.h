@@ -76,6 +76,8 @@ class ProjectionCropDialog : public QDialog {
       const hm::stitching::StitchCameraSelection& camera);
   hm::stitching::StitchProjectionFraming framing() const;
   void closeAfterBackendCompletion();
+  // Brings the selector forward, or its prompt when one is blocking input.
+  void raiseSelector();
   bool closedAfterBackendCompletion() const {
     return backend_completed_;
   }
@@ -103,6 +105,7 @@ class ProjectionCropDialog : public QDialog {
   void previewFailed(const QString& message);
   void acceptCrop();
   void confirmCancelCalibration();
+  void dismissCancelConfirmation();
   void stopTool();
   QString game_directory_;
   bool in_progress_calibration_{false};

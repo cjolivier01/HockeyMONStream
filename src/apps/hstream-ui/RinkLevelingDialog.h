@@ -56,6 +56,8 @@ class RinkLevelingDialog : public QDialog {
     return closed_after_backend_completion_;
   }
   void closeAfterBackendCompletion();
+  // Brings the selector forward, or its prompt when one is blocking input.
+  void raiseSelector();
 
  protected:
   void reject() override;
@@ -80,6 +82,7 @@ class RinkLevelingDialog : public QDialog {
   void cancelCalibration();
   void updateNavigationButtons();
   void returnToIncompleteMarks();
+  void dismissPrompts();
 
   QString game_directory_;
   QTemporaryDir temporary_;

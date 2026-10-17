@@ -804,6 +804,13 @@ int main(int argc, char** argv) {
         waitUntil([&]() { return tabs->currentIndex() == 0; }) && next->text() == "Next" &&
             dialog.findChild<QLabel*>("rinkLevelingStatus")->text().contains("rectangle corners"),
         "An incomplete rectangle sends the Preview tab back to the camera image that needs marks");
+    static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"))
+        ->setPoints({{20, 30}, {80, 70}});
+    tabs->setCurrentIndex(1);
+    next->click();
+    ok &= expect(
+        tabs->currentIndex() == 0, "Next from a complete camera image also lands on the one that still needs marks");
+    static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"))->clearPoints();
     advanceToPreview(dialog);
     ok &= expect(
         waitUntil([&]() { return next->isEnabled() && next->text() == "Use angles"; }),
@@ -812,6 +819,26 @@ int main(int argc, char** argv) {
     ok &= expect(
         dialog.result() == QDialog::Accepted && dialog.rotationDegrees() == rotation,
         "Preview-tab Use angles accepts the displayed angles");
+  }
+  {
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
+    dialog.show();
+    QTest::keyClick(&dialog, Qt::Key_Escape);
+    ok &= expect(
+        dialog.result() == QDialog::Rejected && !dialog.isVisible() && !dialog.calibrationCancellationRequested() &&
+            !dialog.findChild<QMessageBox*>("rinkLevelingCancelCalibrationConfirmation"),
+        "Escape is Skip leveling, never a whole-run cancellation");
   }
   {
     QTemporaryDir staging;
