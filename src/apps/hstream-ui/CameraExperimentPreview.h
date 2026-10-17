@@ -43,6 +43,8 @@ class CameraExperimentPreview {
       std::size_t index = 0);
   bool Seek(std::size_t index, bool play, std::string* error);
   void Pause();
+  // Restore the retained GPU frame after the native window is resized/remapped.
+  void RequestRedraw();
   void SetLoop(bool loop);
   void SetOverlays(bool players, bool play, bool rink);
   // Applied on the next Seek/SetTrajectory, which establishes a new clock segment.

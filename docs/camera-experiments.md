@@ -64,8 +64,9 @@ the old camera view and cannot reveal pixels outside that crop.
 7. Use **View** to compare the recorded original, recomputed baseline, and named
    trials. **Repeat range**, the timeline, and the frame buttons revisit the same
    passage. A frame step completes when the GPU renderer presents its matching
-   video frame. The camera plot compares the original and selected Program
-   camera's horizontal position.
+   video frame. Click the **Visual timeline** to seek directly to a frame and
+   inspect it paused, then press **Play preview** to continue from there. The
+   timeline compares the original and selected Program camera's horizontal position.
 8. **Save trial** writes a YAML descriptor with the starting checkpoint, selected
    inputs, overrides, camera trajectory, and media/time binding. Original-camera
    bindings include the prepared config, chapter identities, synchronization
@@ -94,6 +95,8 @@ tracking but do not contain a historical rink mask. Scaled panoramas and camera
 rotation use the production cropper's coordinate transform for every layer.
 Changing drawings on a paused frame reuses one retained GPU output buffer; it does
 not seek, rerun inference, or reconstruct the source graph.
+Pausing keeps the image visible. Resizing or maximizing a paused preview redraws
+that same retained GPU frame without advancing playback.
 
 Preparation and preview startup, seeks, loops, and teardown run in the background.
 **Play at normal speed** is checked by default, preserving timestamp-paced playback.

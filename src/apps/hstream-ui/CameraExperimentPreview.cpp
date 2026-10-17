@@ -87,6 +87,7 @@ struct CameraExperimentPreview::Impl {
   bool seeking{false};
   bool primed{false};
   bool initial_seek_pending{false};
+  bool redraw_requested{false};
   std::optional<std::pair<std::size_t, bool>> pending_seek;
   bool loop{true};
   std::atomic<bool> realtime{true};
@@ -652,6 +653,10 @@ void CameraExperimentPreview::Pause() {
   }
 }
 
+void CameraExperimentPreview::RequestRedraw() {
+  impl_->redraw_requested = true;
+}
+
 void CameraExperimentPreview::SetOverlays(bool players, bool play, bool rink) {
   auto& s = *impl_;
   s.draw_players = players;
@@ -797,6 +802,14 @@ CameraExperimentPreview::Status CameraExperimentPreview::Poll() {
       std::lock_guard<std::mutex> lock(s.mutex);
       s.error = std::move(error);
     }
+  }
+  // A layout change may clear the native surface after its last presentation.
+  // Wait through an in-flight seek, then redraw on this worker without reading
+  // video back or advancing the selected frame. Keep the request until paused
+  // in case a layout change races the final presentation during playback.
+  if (s.redraw_requested && !s.rebuilding.valid() && !s.playing && !s.seeking && s.presented && s.sink) {
+    s.redraw_requested = false;
+    hm::gpu_preview::redraw_last_sample(s.sink);
   }
   std::lock_guard<std::mutex> lock(s.mutex);
   return {s.playing, s.seeking, s.presented, s.error};
