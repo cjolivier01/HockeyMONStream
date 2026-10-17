@@ -84,7 +84,8 @@ class FeatureMatcher {
       ControlPointResolution resolution = DefaultControlPointResolution(),
       hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda,
       const std::string& profile_prefix = {},
-      const hm::onnx::CpuFallbackOptions& cpu_fallback = {});
+      const hm::onnx::CpuFallbackOptions& cpu_fallback = {},
+      ControlPointFiltering filtering = {});
   // The release qualification oracle predates the selectable production
   // backends and uses a frozen RGB RaCo-ALIKED k2048 graph. Keep its contract
   // explicit so it cannot be mistaken for the production SuperPoint graph.
@@ -127,6 +128,24 @@ class FeatureMatcher {
       cv::Size left_source_size,
       size_t max_control_points);
 
+  // Detector-pixel coordinates, before spatial capping. Epipolar inliers are
+  // also checked against a dominant two-dimensional mapping when one exists;
+  // a fundamental matrix alone can accept unrelated points on the same line.
+  static absl::StatusOr<std::vector<size_t>> FindGeometricInliers(
+      const std::vector<cv::Point2f>& left,
+      const std::vector<cv::Point2f>& right,
+      ControlPointFiltering filtering = {},
+      const std::string& matcher_name = "Feature matcher");
+
+  // Neural postprocessing returns source coordinates. Convert to the exact
+  // detector coordinate system for filtering, then cap the retained matches.
+  static absl::StatusOr<FeatureMatchResult> FilterMatches(
+      FeatureMatchResult matches,
+      const FeaturePairInput& input,
+      size_t max_control_points,
+      ControlPointFiltering filtering,
+      ControlPointMatcher matcher);
+
   absl::StatusOr<FeatureMatchResult> Infer(
       const cv::Mat& left_bgr,
       const cv::Mat& right_bgr,
@@ -159,6 +178,7 @@ class FeatureMatcher {
       const std::function<void()>& inference_complete,
       const std::function<bool()>& is_cancelled) const;
 
+  ControlPointFiltering filtering_;
   ControlPointResolution resolution_{DefaultControlPointResolution()};
   // Always assigned by the constructor; not a default matcher.
   ControlPointMatcher matcher_{ControlPointMatcher::kSuperPointLightGlue};

@@ -39,7 +39,10 @@ Posts are the default method every time the dialog opens. To level from four ice
 the other end in **Right camera**. Click the same side board first in both images. The intersections of the two
 blue lines with straight boards at ice level are suitable references. Arbitrary points along the rounded rink
 corners do not define a rectangle and cannot provide a reliable level estimate. All four points are required;
-the dialog rejects nearly aligned rays, inconsistent corner order, and excessive deviation from a rectangle.
+the dialog rejects nearly aligned rays and inconsistent corner order. A rectangle angle mismatch is advisory;
+**Use points anyway** lets you inspect the estimate in Preview. Runaway calibrated lens-center offsets are rejected
+before point selection, with a camera-calibration error. During a new solve, rejection tries the remaining frame
+pairs before reporting failure; moving the selected corners cannot repair collapsed camera geometry.
 Switching methods preserves each method's marks for the current dialog session and resets the displayed angles
 before estimating from the restored marks. Both methods estimate pitch and roll while preserving yaw.
 

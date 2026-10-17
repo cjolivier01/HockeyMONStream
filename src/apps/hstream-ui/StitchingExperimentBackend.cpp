@@ -363,6 +363,10 @@ absl::Status configure_candidate(
     // The accepted experiment choice must not be restored to an older UI value.
     config["hstream_ui"].remove("generated_stitching_backend_choices");
   }
+  if (settings.control_point_filtering) {
+    hm::stitching::write_control_point_filtering(config, *settings.control_point_filtering);
+    config["hstream_ui"].remove("generated_control_point_filtering");
+  }
   if (settings.control_point_resolution) {
     config["stitching"]["control_point_resolution"] = *settings.control_point_resolution;
     config["hstream_ui"].remove("generated_control_point_resolution");
@@ -818,10 +822,19 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
     settings.manual_control_points = manual.empty() ? std::nullopt : std::make_optional(manual);
     // This row describes the saved solve, not the current experiment controls.
     settings.control_point_resolution.reset();
+    settings.control_point_filtering.reset();
     settings.control_point_matcher.reset();
     settings.camera.reset();
     const YAML::Node claim = calibration["backend_generation"];
     const YAML::Node stitching = config["stitching"];
+    YAML::Node saved_filter_config = YAML::Clone(config);
+    if (calibration["status"].as<std::string>("") == "complete" && claim && claim.IsMap() &&
+        claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>("") &&
+        claim["control_point_filtering"])
+      saved_filter_config["stitching"]["control_point_filtering"] = YAML::Clone(claim["control_point_filtering"]);
+    if (saved_filter_config["stitching"]["control_point_filtering"])
+      HM_ASSIGN_OR_RETURN(
+          settings.control_point_filtering, hm::stitching::read_control_point_filtering(saved_filter_config));
     YAML::Node saved_resolution =
         stitching && stitching.IsMap() ? stitching["control_point_resolution"] : YAML::Node(YAML::NodeType::Undefined);
     if (calibration["status"].as<std::string>("") == "complete" && claim && claim.IsMap() &&
@@ -983,6 +996,8 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
               settings.control_point_matcher ? *settings.control_point_matcher : source_matcher.as<std::string>()));
       frozen_settings.control_point_matcher = hm::stitching::ControlPointMatcherName(matcher);
     }
+    if (!settings.control_point_filtering && source_stitching && source_stitching["control_point_filtering"])
+      HM_ASSIGN_OR_RETURN(frozen_settings.control_point_filtering, hm::stitching::read_control_point_filtering(config));
     const YAML::Node source_resolution = source_stitching && source_stitching.IsMap()
         ? source_stitching["control_point_resolution"]
         : YAML::Node(YAML::NodeType::Undefined);
@@ -1199,6 +1214,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
           "control_point_execution_provider",
           "control_point_matcher",
           "control_point_resolution",
+          "control_point_filtering",
           "manual_control_points",
           "mapping_backend",
           "max_output_width",
@@ -1219,6 +1235,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     calibration.remove("artifacts_invalidated");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_resolution");
+    copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_filtering");
     // Choosing this candidate accepts its existing crop as seen in the preview.
     // Its alignment may differ from the inherited game's crop-review marker.
     // Bind the review to the promoted geometry so first Play reuses these maps.

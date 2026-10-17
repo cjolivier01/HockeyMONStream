@@ -159,6 +159,23 @@ int main(int argc, char** argv) {
   const QByteArray config =
       "stitching:\n  rink_config: vallco\n  projection_framing:\n    rotation_degrees: [0, -33, 2]\n";
   ok &= write(game.filePath("config.yaml"), config);
+  {
+    const QByteArray collapsed_pto = QByteArray(pto).replace("v90 y-30", "v90 e19950752.8660212 y-30");
+    ok &= write(game.filePath("autooptimiser_out.pto"), collapsed_pto);
+    RinkLevelingDialog dialog(game.path(), {0, 0, 0});
+    ok &= expect(
+        dialog.loadError().contains("camera calibration") && dialog.loadError().contains("lens center") &&
+            !dialog.findChild<QPushButton*>("acceptRinkLevelingButton")->isEnabled(),
+        "A collapsed saved calibration must report its lens center before asking the user to select corners");
+    ok &= write(game.filePath("autooptimiser_out.pto"), pto);
+    QTemporaryDir staging;
+    ok &= writeInProgressSnapshot(staging, source, collapsed_pto);
+    RinkLevelingDialog pending(
+        staging.path(), {0, 0, 0}, nullptr, std::nullopt, true, hm::stitching::StitchProjection::kEquirectangular);
+    ok &= expect(
+        pending.loadError().contains("lens center"),
+        "An in-progress calibration must also reject collapsed optics before point selection");
+  }
   // Plane intersections are exactly vertical, with well-separated azimuths.
   QByteArray transformed;
   constexpr double pi = 3.14159265358979323846;
@@ -667,7 +684,7 @@ int main(int argc, char** argv) {
     selected_provenance +=
         "control-point-resolution=native\ncalibration-frame-selection-policy=players\n"
         "calibration-frame-selection-fingerprint=saved-frames\n";
-    for (const int version : {10, 11, 12, 13}) {
+    for (const int version : {10, 11, 12, 13, 14, 15}) {
       QByteArray current_provenance = selected_provenance;
       current_provenance.replace("version=10", "version=" + QByteArray::number(version));
       auto selected_camera = changed_camera;
@@ -677,8 +694,10 @@ int main(int argc, char** argv) {
         current_provenance += "input-lens=" + QByteArray::fromStdString(
             hm::stitching::SerializeStitchInputLens(selected_camera.input_lens)) + '\n';
       }
-      if (version == 11 || version == 13)
+      if (version == 11 || version == 13 || version == 15)
         current_provenance += "manual-control-points=" + QByteArray(64, 'a') + '\n';
+      if (version >= 14)
+        current_provenance += "control-point-filtering=1,1\n";
       write(game.filePath("stitching_canvas_provenance"), current_provenance);
       RinkLevelingDialog selected(game.path(), {0, -33, 2}, nullptr, selected_camera);
       auto* left = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera0"));
@@ -694,7 +713,7 @@ int main(int argc, char** argv) {
       ok &= expect(selected.result() == QDialog::Accepted, "re-leveling promoted matches returns the revised angles");
     }
     QByteArray future_provenance = selected_provenance;
-    future_provenance.replace("version=10", "version=14");
+    future_provenance.replace("version=10", "version=16");
     write(game.filePath("stitching_canvas_provenance"), future_provenance);
     RinkLevelingDialog unsupported(game.path(), {0, -33, 2}, nullptr, changed_camera);
     ok &= expect(!unsupported.loadError().isEmpty(), "unknown future metadata must still be rejected");

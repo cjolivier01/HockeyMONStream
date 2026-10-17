@@ -425,7 +425,7 @@ cc_test(
 
 cc_test(
   name = "feature_matcher_test",
-  srcs = ["FeatureMatcherTest.cpp"],
+  srcs = ["FeatureMatcherTest.cpp", "FeatureMatcherOutlierFixture.inc"],
   deps = [":feature_matcher"],
 )
 

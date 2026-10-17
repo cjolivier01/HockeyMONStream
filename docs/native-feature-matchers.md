@@ -89,12 +89,8 @@ results on real footage.
   to within 8% of image height. That row-agreement test assumes near-rectified
   cameras, so a rig whose overlap falls outside the inner halves, or whose
   horizons differ by more than 8% of frame height, can yield no usable matches
-  regardless of scene texture. Filtering needs at least 8 survivors, and 6
-  after fundamental-matrix rejection. The corresponding failures read
-  `AKAZE produced no usable M-LDB descriptors`,
-  `AKAZE produced fewer than eight mutual overlap matches for epipolar
-  filtering`, and `AKAZE fundamental-matrix filtering retained fewer than six
-  matches`; all three point at rig geometry or overlap, not at the limit above.
+  regardless of scene texture. After descriptor matching, the shared geometric
+  filters below run before restoring source coordinates and spatial capping.
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
   with the 2K canvas described below by default on every platform. In explicit native mode, images are
   converted to grayscale floats in `[0,1]` and padded on the right/bottom with
@@ -117,6 +113,59 @@ results on real footage.
   `SpatialHub/efficient-loftr-onnx` revision
   `2c4515cbfd4866663db0ca1b3e02c55163dc5a75`. The UI spells out that this is
   the EfficientLoFTR variant rather than the original Kornia LoFTR graph.
+
+### Geometric filtering
+
+The matcher menu selects detection and descriptor matching. **Alignment →
+Advanced geometric filtering** has two independent switches, both on by default:
+
+```yaml
+stitching:
+  control_point_filtering:
+    epipolar_ransac: true
+    homography_consistency: true
+```
+
+These checks apply to AKAZE, SuperPoint + LightGlue, DeDoDe + LightGlue and
+LoFTR automatic matches. Manually edited match sets remain authoritative and
+bypass automatic filtering. The legacy ALIKED parity oracle retains its
+unfiltered reference behavior.
+
+**Epipolar RANSAC** fits a fundamental matrix with OpenCV `FM_RANSAC`, a
+1-detector-pixel threshold, 0.99 confidence and at most 2000 iterations. It
+needs at least eight candidates and logs a `WARNING` with the rejected count.
+A fundamental matrix constrains a point to a line, so an unrelated feature
+can still pass this check.
+
+**Homography consistency** fits a homography using `USAC_MAGSAC` at an
+8-detector-pixel threshold. It only acts with at least 16 candidates and
+support from at least 80% of the original candidates. It removes a match
+only when its forward or inverse projection misses by more than 32 detector
+pixels, or cannot project finitely. This tolerates moderate distortion and
+parallax. Without a dominant homography, this extra check leaves matches
+alone. It also works independently when epipolar RANSAC is off.
+
+Every homography rejection emits a `WARNING` with its zero-based candidate
+index, left/right detector coordinates, forward/reverse projection misses
+and threshold. A second warning summarizes rejected and remaining counts.
+Warnings appear in stderr and the desktop runtime log. The six-match floor
+for geometric filtering applies before each mapping backend's calibration
+minimum. If both filters are off, automatic matches retain only the matcher's
+existing descriptor/confidence and coordinate validity checks.
+
+Filtering operates in each matcher's actual detector coordinates, before
+spatial capping. Neural matches retain original source coordinates for Hugin
+and inspection. Neither filter replaces Hugin's joint camera/lens fit or its
+final lens plausibility checks.
+
+The same controls appear in Stitching Experiments. Queue entries freeze both
+choices, deduplicate by them, and retain them when reopened or promoted.
+Changing either switch in the main UI invalidates calibration from features;
+it retains selected frame inputs. Both values participate in worker generation
+ownership, reframe binding and canvas provenance (versions 14/15). Older
+provenance represents epipolar-only AKAZE or unfiltered neural matches, so a
+solve with different requested filters requires recalibration. Baseline, user,
+game and CLI overrides use normal configuration precedence.
 
 **Max control points** (`stitching.max_control_points`) limits retained matched
 correspondences per synchronized frame pair, not raw detections. SuperPoint still extracts at most
@@ -346,3 +395,45 @@ AKAZE/M-LDB/Hamming behavior. It relies on HStream's downstream control-point
 selection and robust homography fitting rather than copying video-stitcher's
 overlap-ROI and black-border calibration heuristics. A CUDA implementation can
 replace it after a compatibly licensed kernel is available.
+
+## Why a false match could collapse camera calibration
+
+The `col-steamboat` corner-selection failure was reproduced from the saved
+fourth frame pair, with 50 selected control points. One automatic match paired
+a doorway at `(4291.47, 1355.70)` in the left image with spectator seating at
+`(2753.73, 1323.37)` in the right. The original 252 AKAZE candidates produced
+204 fundamental-matrix inliers, including this false match with a line error
+of approximately `1.2e-13` detector pixels. A fundamental matrix constrains a
+point to a line, not a unique corresponding image location. Spatial capping
+then retained the isolated false match along with 49 good matches.
+
+Hugin 2025.0.1's `SmartOptimise::smartOptimize` in
+`src/hugin_base/algorithms/optimizer/PTOptimizer.cpp` first fitted an excessive
+distortion coefficient (`b=1.69262`). Its first plausibility check found high
+distortion but acceptable lens-center shifts (`d=-175`, `e=-514`), so lens
+shifts remained enabled. A subsequent recovery disabled `b` and fitted
+`e=19,950,752.866` on a 4320-pixel-high image. That last recovery has no further
+shift/FOV plausibility check. The collapsed mapping reported an RMS of
+`0.012196` after 2677 iterations, although opposite image corners mapped only
+about 0.02 degrees apart. Rink leveling then blamed the selected corner spacing.
+
+Removing only the false match, with the same input project and optimizer
+command, gave `e=36.767`, FOV `94.053` degrees and reported RMS `0.951664` in
+15 iterations. Changing the fundamental estimator alone rejected the original
+outlier but admitted two other unrelated matches, so that was insufficient.
+`FeatureMatcherOutlierFixture.inc` retains all 252 candidate coordinates to
+exercise the additional two-dimensional check without storing video images.
+
+All Hugin solves are also checked for lens centers within their source-image
+bounds before alignment is accepted. Rejected solves can use the existing
+frame-pair fallback. The leveling dialog checks saved and in-progress projects
+too, so a bad calibration is diagnosed before asking for rink points. These
+checks do not depend on a locally patched Hugin installation; a low reported
+optimization error alone does not establish physically usable camera geometry.
+
+Validation used the recorded 252-candidate fixture, nonplanar stereo and existing
+AKAZE/fisheye tests, Hugin project and rink-leveling tests, and an isolated
+`col-steamboat` CLI replay with four frame pairs and 50 control points per pair.
+The replay bounded the output canvas to 1920 pixels wide and ran one second
+with a FAKE sink. The first pooled solve succeeded, with vertical lens-center
+offset `46.691` pixels; no per-pair fallback was needed.

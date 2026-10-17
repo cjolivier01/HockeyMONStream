@@ -62,6 +62,7 @@ class HuginProject {
     std::optional<StitchProjectionFraming> projection_framing;
     std::optional<ControlPointMatcher> control_point_matcher;
     std::optional<ControlPointResolution> control_point_resolution;
+    std::optional<ControlPointFiltering> control_point_filtering;
     std::optional<std::string> akaze_calibration_fingerprint;
     std::optional<StitchCameraSelection> camera;
     std::string calibration_frame_selection_fingerprint;
@@ -88,6 +89,7 @@ class HuginProject {
     // configs/baseline.yaml.
     ControlPointMatcher control_point_matcher{ControlPointMatcher::kSuperPointLightGlue};
     ControlPointResolution control_point_resolution{ControlPointResolution::kNative};
+    ControlPointFiltering control_point_filtering;
     std::string calibration_frame_selection_fingerprint;
     std::string calibration_frame_diagnostics;
     std::string manual_control_point_fingerprint;
@@ -134,6 +136,11 @@ class HuginProject {
   };
 
   // Pure helpers exposed for focused contract tests.
+  // Hugin d/e are pixel offsets from the image center. Reject runaway solves
+  // before accepting alignment or asking the operator to mark calibrated rays.
+  // Missing offsets mean zero; linked offsets use the referenced image's pixels.
+  static absl::Status ValidateLensCenters(const std::string& pto);
+
   static absl::StatusOr<std::string> InsertControlPoints(
       const std::string& pto,
       const std::vector<FeatureMatch>& matches,

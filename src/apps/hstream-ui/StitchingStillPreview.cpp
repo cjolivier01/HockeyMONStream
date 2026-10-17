@@ -90,6 +90,10 @@ bool settings_match(const YAML::Node& config, const QByteArray& expected_setting
   choices.projection_framing = *framing;
   choices.camera = *camera;
   choices.control_point_resolution = *resolution;
+  const auto filtering = hm::stitching::read_control_point_filtering(effective);
+  if (!filtering.ok())
+    return false;
+  choices.control_point_filtering = *filtering;
   choices.control_point_execution_provider = *provider;
   choices.calibration_frame_selection_fingerprint = *selection;
   choices.manual_control_point_fingerprint = *manual;

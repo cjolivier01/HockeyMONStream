@@ -307,7 +307,9 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
   std::vector<std::string> lines;
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
-  if (!expect(lines.size() == 31 && lines[0] == "version=10", "new Hugin output must write v10 provenance"))
+  if (!expect(
+          lines.size() == 33 && lines[0] == "version=14" && lines.back() == "control-point-filtering=1,1",
+          "new Hugin output must record both default geometric filters"))
     return false;
   // Keep this parser fixture compatible with the generated mapping dimensions
   // independently of the machine's optional live canvas cap.
@@ -348,13 +350,34 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
              (*parsed)->control_point_resolution == hm::stitching::ControlPointResolution::k1K) &&
             (*parsed)->calibration_frame_selection_fingerprint == (selected ? fingerprint : std::string()) &&
             (*parsed)->manual_control_point_fingerprint ==
-                ((fields[0] == "version=11" || fields[0] == "version=13")
-                     ? fields.back().substr(std::string("manual-control-points=").size())
+                ((fields[0] == "version=11" || fields[0] == "version=13" || fields[0] == "version=15")
+                     ? fields[fields[0] == "version=15" ? fields.size() - 2 : fields.size() - 1].substr(
+                           std::string("manual-control-points=").size())
                      : std::string()) &&
             (!selected || (*parsed)->calibration_frame_diagnostics == diagnostics),
         "both readers must accept supported provenance and preserve the exact plan identity/diagnostics");
   };
   bool ok = check(lines, true, true);
+  for (const std::string value : {"0,0", "0,1", "1,0", "1,1", "true,false", "2,1", "1,1extra"}) {
+    auto filtering_fields = lines;
+    filtering_fields.back() = "control-point-filtering=" + value;
+    const bool valid = value.size() == 3 && value[0] != '2';
+    ok &= check(filtering_fields, valid, true);
+    if (valid) {
+      const auto parsed = hm::stitching::HuginProject::ReadCanvasProvenanceLocked(directory);
+      ok &= expect(
+          parsed.ok() && parsed->has_value() && (*parsed)->control_point_filtering &&
+              (*parsed)->control_point_filtering->epipolar_ransac == (value[0] == '1') &&
+              (*parsed)->control_point_filtering->homography_consistency == (value[2] == '1'),
+          "filter provenance must preserve both independent switches");
+      filtering_fields[0] = "version=15";
+      filtering_fields.insert(filtering_fields.end() - 1, "manual-control-points=" + std::string(64, 'b'));
+      ok &= check(filtering_fields, true, true);
+    }
+  }
+  // Continue exercising all older provenance formats.
+  lines.resize(31);
+  lines[0] = "version=10";
   hm::stitching::StitchInputLens lens;
   lens.projection = "full-frame-fisheye";
   lens.optimization = "fixed";
@@ -792,6 +815,40 @@ int main(int argc, char** argv) {
     return write_native_enblend_fixture() ? 0 : 1;
   ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   bool ok = true;
+  const auto lens_project = [](const std::string& left, const std::string& right) {
+    return "p f2 w3600 h1800 v360\ni w7680 h4320 f0 v140.814531700907 " + left +
+        " n\"left e19950752.png\"\ni w7680 h4320 f0 v=0 " + right + " n\"right.png\"\n";
+  };
+  for (const auto& centers : {
+           std::pair{"", ""},
+           std::pair{"d-10.102540338009 e620.178405843678", "d=0 e=0"},
+           std::pair{"d=1 e=1", "d3840 e-2160"},
+       }) {
+    ok &= expect(
+        hm::stitching::HuginProject::ValidateLensCenters(lens_project(centers.first, centers.second)).ok(),
+        "valid, omitted, and linked lens centers must accept real offsets and ignore quoted filenames");
+  }
+  for (const auto& centers : {
+           std::pair{"d-5994.05661772679 e19950752.8660212", "d=0 e=0"},
+           std::pair{"e19950752.8660212", "e=0"},
+           std::pair{"d3840.01", ""},
+           std::pair{"e-2160.01", ""},
+           std::pair{"", "e2161"},
+           std::pair{"e=1", "e=0"},
+           std::pair{"e=0", ""},
+           std::pair{"e=9", ""},
+           std::pair{"e=-1", ""},
+           std::pair{"e=1junk", ""},
+           std::pair{"e1e999", ""},
+           std::pair{"enan", ""},
+           std::pair{"e1junk", ""},
+           std::pair{"e0 e10", ""},
+       }) {
+    ok &= expect(
+        absl::IsFailedPrecondition(
+            hm::stitching::HuginProject::ValidateLensCenters(lens_project(centers.first, centers.second))),
+        "runaway, nonfinite, malformed, duplicate, and cyclic lens centers must reject the calibration");
+  }
   const std::string alignment_source =
       "p f2 w100 h50 v180\n"
       "i w64 h48 f0 v100 r0 p0 y10 n\"left.png\"\n"
@@ -2436,14 +2493,20 @@ int main(int argc, char** argv) {
   }();
   ok &= expect(previous_project == after_degenerate, "degenerate remaps must preserve the prior Hugin generation");
   const fs::path collapsed_optimizer = root / "collapsed-autooptimiser";
-  for (const std::string fov : {"0.198047105780453", "nan", "180", "=9"}) {
+  for (const std::string fields :
+       {"v0.198047105780453",
+        "vnan",
+        "v180",
+        "v=9",
+        "v108 d-5994.05661772679 e19950752.8660212",
+        "v108 e19950752.8660212"}) {
     ok &= expect(
         write_tool(
             collapsed_optimizer,
             "'" + autooptimiser.string() +
                 "' \"$@\"\n"
-                "sed -i 's/ v108 / v" +
-                fov + " /' autooptimiser_out.pto\n"),
+                "sed -i 's/ v108 / " +
+                fields + " /' autooptimiser_out.pto\n"),
         "degenerate optimizer fixture must exist");
     ::setenv("HM_AUTOOPTIMISER", collapsed_optimizer.c_str(), 1);
     auto collapsed_options = options;
@@ -2458,7 +2521,7 @@ int main(int argc, char** argv) {
         absl::IsFailedPrecondition(collapsed) &&
             collapsed.message().find("Degenerate Hugin camera") != std::string::npos && !alignment_accepted &&
             !canvas_started && read_text_file(root / "game" / "autooptimiser_out.pto") == previous_project,
-        "collapsed or invalid camera FOV must permit candidate fallback before rendering and preserve published artifacts");
+        "collapsed camera FOV or lens center must permit fallback before rendering and preserve published artifacts");
   }
   ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
   ok &= expect(

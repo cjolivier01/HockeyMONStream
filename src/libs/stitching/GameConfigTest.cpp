@@ -215,7 +215,40 @@ int main() {
   std::ofstream(root / "config.yaml") << "unrelated:\n  keep: true\n";
   ok &= test_player_frame_selection_state(root / "player-selection");
 
+  using hm::stitching::ControlPointFiltering;
   using hm::stitching::ControlPointMatcher;
+  using hm::stitching::read_control_point_filtering;
+  const auto default_filters = read_control_point_filtering(YAML::Node());
+  ok &=
+      expect(default_filters.ok() && *default_filters == ControlPointFiltering{}, "Both geometric filters default on");
+  for (const auto filters :
+       {ControlPointFiltering{false, false},
+        ControlPointFiltering{false, true},
+        ControlPointFiltering{true, false},
+        ControlPointFiltering{true, true}}) {
+    YAML::Node config;
+    hm::stitching::write_control_point_filtering(config, filters);
+    const auto parsed = read_control_point_filtering(config);
+    ok &= expect(parsed.ok() && *parsed == filters, "Filter settings must round trip independently");
+  }
+  for (const std::string invalid :
+       {"[]", "false", "{epipolar_ransac: nope}", "{homography_consistency: []}", "{typo: true}"})
+    ok &= expect(
+        !read_control_point_filtering(YAML::Load("stitching: {control_point_filtering: " + invalid + "}")).ok(),
+        "Malformed geometric filter settings must fail explicitly");
+  YAML::Node filtering_private = YAML::Load("stitching: {control_point_filtering: {epipolar_ransac: false}}");
+  const std::string before_filtering = YAML::Dump(filtering_private);
+  YAML::Node filtering_effective;
+  hm::stitching::write_control_point_filtering(filtering_effective, {false, false});
+  const auto materialized = hm::stitching::materialize_control_point_filtering(filtering_private, filtering_effective);
+  ok &= expect(
+      materialized.ok() && *materialized &&
+          read_control_point_filtering(filtering_private).value() == ControlPointFiltering{false, false},
+      "Worker config must materialize inherited filtering settings");
+  hm::stitching::restore_generated_control_point_filtering(filtering_private);
+  ok &= expect(
+      YAML::Dump(filtering_private["stitching"]) == YAML::Dump(YAML::Load(before_filtering)["stitching"]),
+      "Restoring filter choices must retain partial private overrides");
   using hm::stitching::resolve_control_point_matcher;
   // The shipped baseline owns the matcher default; there is no compiled-in
   // fallback, so dropping or renaming the key must fail loudly here.
@@ -1314,6 +1347,22 @@ stitching:
             hm::stitching::validate_stitching_backend_generation(
                 provider_mismatch, "backend-generation-a", magsac_choices)),
         "a worker must not publish after its execution provider changed concurrently");
+    for (const char* key : {"epipolar_ransac", "homography_consistency"}) {
+      YAML::Node filtering_mismatch = YAML::Clone(**after_conflict);
+      filtering_mismatch["stitching"]["control_point_filtering"][key] = false;
+      ok &= expect(
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  filtering_mismatch, "backend-generation-a", magsac_choices)),
+          "A worker must not publish after either geometric filter changed concurrently");
+      auto changed_choices = magsac_choices;
+      changed_choices.control_point_filtering = read_control_point_filtering(filtering_mismatch).value();
+      ok &= expect(
+          absl::IsAborted(
+              hm::stitching::reserve_stitching_backend_generation_in_config(
+                  filtering_mismatch, "backend-generation-a", changed_choices)),
+          "New geometric filter choices cannot take over an existing generation");
+    }
     YAML::Node resolution_mismatch = YAML::Clone(**after_conflict);
     resolution_mismatch["stitching"]["control_point_resolution"] = "1k";
     ok &= expect(

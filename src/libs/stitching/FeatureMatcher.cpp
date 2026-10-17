@@ -361,7 +361,8 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
     ControlPointResolution resolution,
     hm::onnx::ExecutionProvider provider,
     const std::string& profile_prefix,
-    const hm::onnx::CpuFallbackOptions& cpu_fallback) {
+    const hm::onnx::CpuFallbackOptions& cpu_fallback,
+    ControlPointFiltering filtering) {
   if (matcher == ControlPointMatcher::kAkazeHamming) {
     if (akaze_calibration.left.has_value() != akaze_calibration.right.has_value()) {
       return absl::InvalidArgumentError("AKAZE lens calibration must contain both cameras or neither camera");
@@ -374,8 +375,10 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
       if (!status.ok())
         return status;
     }
-    return std::unique_ptr<FeatureMatcher>(
+    auto result = std::unique_ptr<FeatureMatcher>(
         new FeatureMatcher(matcher, {}, 0, kKeypointsPerImage, false, std::move(akaze_calibration)));
+    result->filtering_ = filtering;
+    return result;
   }
   if (model_path.empty()) {
     return absl::InvalidArgumentError(
@@ -447,6 +450,7 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
   auto result = std::unique_ptr<FeatureMatcher>(
       new FeatureMatcher(matcher, std::move(*session), input_channels, keypoints_per_image));
   result->resolution_ = resolution;
+  result->filtering_ = filtering;
   std::clog << "Control-point matcher " << ControlPointMatcherName(matcher)
             << " execution provider=" << hm::onnx::ExecutionProviderName(result->session_->execution_provider())
             << '\n';
@@ -465,8 +469,10 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::CreateLegacyAlik
       });
   if (!session.ok())
     return session.status();
-  return std::unique_ptr<FeatureMatcher>(new FeatureMatcher(
+  auto result = std::unique_ptr<FeatureMatcher>(new FeatureMatcher(
       ControlPointMatcher::kSuperPointLightGlue, std::move(*session), 3, kLegacyAlikedKeypointsPerImage, true));
+  result->filtering_ = {false, false};
+  return result;
 }
 
 absl::StatusOr<FeaturePairInput> FeatureMatcher::Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
@@ -903,6 +909,11 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
   if (!scores.ok())
     return scores.status();
 
+  const auto filter = [&](absl::StatusOr<FeatureMatchResult> matches) -> absl::StatusOr<FeatureMatchResult> {
+    if (!matches.ok())
+      return matches.status();
+    return FilterMatches(std::move(*matches), *input, max_control_points, filtering_, matcher_);
+  };
   if (matcher_ == ControlPointMatcher::kLoFTR) {
     auto left_keypoints = outputs->at(0).float_data();
     auto right_keypoints = outputs->at(1).float_data();
@@ -910,7 +921,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
       return left_keypoints.status();
     if (!right_keypoints.ok())
       return right_keypoints.status();
-    return PostprocessLoFTR(
+    return filter(PostprocessLoFTR(
         *input,
         *left_keypoints,
         *first_count,
@@ -918,7 +929,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
         *second_count,
         *scores,
         *score_count,
-        max_control_points);
+        max_control_points));
   }
 
   auto matches = outputs->at(1).int64_data();
@@ -928,15 +939,15 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
     auto keypoints = outputs->at(0).float_data();
     if (!keypoints.ok())
       return keypoints.status();
-    return PostprocessDeDoDe(
-        *input, *keypoints, *first_count, *matches, *second_count, *scores, *score_count, max_control_points);
+    return filter(PostprocessDeDoDe(
+        *input, *keypoints, *first_count, *matches, *second_count, *scores, *score_count, max_control_points));
   }
 
   if (sparse_keypoints_are_float_) {
     auto keypoints = outputs->at(0).float_data();
     if (!keypoints.ok())
       return keypoints.status();
-    return PostprocessSparse(
+    return filter(PostprocessSparse(
         *input,
         *keypoints,
         *first_count,
@@ -945,7 +956,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
         *scores,
         *score_count,
         max_control_points,
-        sparse_keypoints_per_image_);
+        sparse_keypoints_per_image_));
   }
   auto keypoints = outputs->at(0).int64_data();
   if (!keypoints.ok())
@@ -953,7 +964,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
   std::vector<float> keypoint_values(*first_count);
   for (size_t index = 0; index < *first_count; ++index)
     keypoint_values[index] = static_cast<float>((*keypoints)[index]);
-  return PostprocessSparse(
+  return filter(PostprocessSparse(
       *input,
       keypoint_values.data(),
       keypoint_values.size(),
@@ -962,7 +973,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
       *scores,
       *score_count,
       max_control_points,
-      sparse_keypoints_per_image_);
+      sparse_keypoints_per_image_));
 }
 
 absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
@@ -1032,10 +1043,6 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
         match.train,
     });
   }
-  if (candidates.size() < 8) {
-    return absl::NotFoundError("AKAZE produced fewer than eight mutual overlap matches for epipolar filtering");
-  }
-
   std::vector<cv::Point2f> left_points;
   std::vector<cv::Point2f> right_points;
   left_points.reserve(candidates.size());
@@ -1044,17 +1051,12 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
     left_points.push_back(candidate.left);
     right_points.push_back(candidate.right);
   }
-  cv::Mat inlier_mask;
-  const cv::Mat fundamental =
-      cv::findFundamentalMat(left_points, right_points, cv::FM_RANSAC, 1.0, 0.99, 2000, inlier_mask);
-  if (fundamental.empty() || inlier_mask.total() != candidates.size()) {
-    return absl::NotFoundError("AKAZE could not estimate a fundamental matrix for overlap matches");
-  }
+  const auto inliers = FindGeometricInliers(left_points, right_points, filtering_, "AKAZE");
+  if (!inliers.ok())
+    return inliers.status();
   std::vector<FeatureMatch> accepted;
-  accepted.reserve(candidates.size());
-  for (size_t index = 0; index < candidates.size(); ++index) {
-    if (inlier_mask.ptr<unsigned char>()[index] == 0)
-      continue;
+  accepted.reserve(inliers->size());
+  for (size_t index : *inliers) {
     const CandidateMatch& candidate = candidates[index];
     accepted.push_back({
         akaze_rectified_source_point(*left, candidate.left),
@@ -1064,9 +1066,6 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
         candidate.right_index,
     });
   }
-  if (accepted.size() < 6) {
-    return absl::NotFoundError("AKAZE fundamental-matrix filtering retained fewer than six matches");
-  }
   std::stable_sort(
       accepted.begin(), accepted.end(), [](const FeatureMatch& left_match, const FeatureMatch& right_match) {
         return std::make_tuple(-left_match.score, left_match.left_index, left_match.right_index) <
@@ -1075,6 +1074,116 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
   if (inference_complete)
     inference_complete();
   return finish_matches(std::move(accepted), left_bgr.size(), max_control_points);
+}
+
+absl::StatusOr<FeatureMatchResult> FeatureMatcher::FilterMatches(
+    FeatureMatchResult matches,
+    const FeaturePairInput& input,
+    size_t max_control_points,
+    ControlPointFiltering filtering,
+    ControlPointMatcher matcher) {
+  if (!filtering.epipolar_ransac && !filtering.homography_consistency)
+    return matches;
+  const auto metadata = validate_preprocessing_metadata(input);
+  if (!metadata.ok())
+    return metadata;
+  const auto detector_point = [&](cv::Point2f point, size_t side) {
+    const auto source = input.source_sizes[side];
+    const auto detector = input.resized_sizes[side];
+    const float offset = matcher == ControlPointMatcher::kSuperPointLightGlue ? 0.5f : 0.0f;
+    return cv::Point2f(
+        (point.x + offset) * detector.width / source.width - offset,
+        (point.y + offset) * detector.height / source.height - offset);
+  };
+  std::vector<cv::Point2f> left, right;
+  for (const auto& match : matches.accepted) {
+    left.push_back(detector_point(match.left, 0));
+    right.push_back(detector_point(match.right, 1));
+  }
+  const auto inliers = FindGeometricInliers(left, right, filtering, ControlPointMatcherName(matcher));
+  if (!inliers.ok())
+    return inliers.status();
+  std::vector<FeatureMatch> accepted;
+  for (size_t index : *inliers)
+    accepted.push_back(matches.accepted[index]);
+  return finish_matches(std::move(accepted), input.source_sizes[0], max_control_points);
+}
+
+absl::StatusOr<std::vector<size_t>> FeatureMatcher::FindGeometricInliers(
+    const std::vector<cv::Point2f>& left,
+    const std::vector<cv::Point2f>& right,
+    ControlPointFiltering filtering,
+    const std::string& matcher_name) {
+  if (left.size() != right.size())
+    return absl::InvalidArgumentError(matcher_name + " geometric filtering requires paired coordinates");
+  if (filtering.epipolar_ransac && left.size() < 8)
+    return absl::NotFoundError(matcher_name + " produced fewer than eight matches for epipolar filtering");
+  for (size_t i = 0; i < left.size(); ++i) {
+    if (!std::isfinite(left[i].x) || !std::isfinite(left[i].y) || !std::isfinite(right[i].x) ||
+        !std::isfinite(right[i].y))
+      return absl::InvalidArgumentError(matcher_name + " geometric filtering requires finite coordinates");
+  }
+  cv::Mat inlier_mask(static_cast<int>(left.size()), 1, CV_8U, cv::Scalar(1));
+  if (filtering.epipolar_ransac) {
+    const cv::Mat fundamental = cv::findFundamentalMat(left, right, cv::FM_RANSAC, 1.0, 0.99, 2000, inlier_mask);
+    if (fundamental.empty() || inlier_mask.total() != left.size())
+      return absl::NotFoundError(matcher_name + " could not estimate a fundamental matrix for matches");
+    const size_t rejected = left.size() - cv::countNonZero(inlier_mask);
+    if (rejected != 0)
+      std::cerr << "WARNING: " << matcher_name << " epipolar RANSAC filtered " << rejected << " of " << left.size()
+                << " candidate matches (threshold=1 detector pixel)\n";
+  }
+
+  cv::Mat mapping, inverse;
+  if (filtering.homography_consistency && left.size() >= 16) {
+    // Distant rink landmarks often agree on a projective mapping. A false
+    // match can nevertheless sit exactly on a fitted epipolar line. Require
+    // strong support before using this extra constraint: raw lens distortion
+    // and parallax need not admit one homography. Fit at 8 detector pixels,
+    // but reject only gross (>32px) contradictions in either direction.
+    cv::Mat mapping_inliers;
+    mapping = cv::findHomography(left, right, cv::USAC_MAGSAC, 8.0, mapping_inliers, 2000, 0.99);
+    if (mapping.empty() || mapping_inliers.total() != left.size() ||
+        cv::countNonZero(mapping_inliers) < 0.8 * left.size() || !cv::checkRange(mapping) ||
+        cv::invert(mapping, inverse) == 0 || !cv::checkRange(inverse)) {
+      mapping.release();
+    }
+  }
+  constexpr double kMaxProjectionError = 32.0;
+  const auto projection_error = [](const cv::Mat& transform, const cv::Point2f& from, const cv::Point2f& to) {
+    const cv::Matx33d matrix(transform);
+    const cv::Vec3d projected = matrix * cv::Vec3d(from.x, from.y, 1);
+    if (std::abs(projected[2]) < 1e-12)
+      return std::numeric_limits<double>::infinity();
+    const double error = std::hypot(projected[0] / projected[2] - to.x, projected[1] / projected[2] - to.y);
+    return std::isfinite(error) ? error : std::numeric_limits<double>::infinity();
+  };
+  std::vector<size_t> result;
+  size_t rejected = 0;
+  for (size_t i = 0; i < left.size(); ++i) {
+    if (!inlier_mask.ptr<unsigned char>()[i])
+      continue;
+    if (!mapping.empty()) {
+      const double forward_error = projection_error(mapping, left[i], right[i]);
+      const double reverse_error = projection_error(inverse, right[i], left[i]);
+      if (forward_error > kMaxProjectionError || reverse_error > kMaxProjectionError) {
+        ++rejected;
+        std::cerr << "WARNING: " << matcher_name << " homography consistency check filtered candidate index " << i
+                  << " (zero-based): left=" << left[i] << " right=" << right[i]
+                  << "; projection misses forward=" << forward_error << " reverse=" << reverse_error
+                  << " (limit=" << kMaxProjectionError << "; coordinates and distances in detector pixels)\n";
+        continue;
+      }
+    }
+    result.push_back(i);
+  }
+  if (rejected != 0)
+    std::cerr << "WARNING: " << matcher_name << " homography consistency check filtered " << rejected << " of "
+              << result.size() + rejected << " input matches from " << left.size() << " candidates in this frame pair; "
+              << result.size() << " matches remain before spatial capping\n";
+  if ((filtering.epipolar_ransac || filtering.homography_consistency) && result.size() < 6)
+    return absl::NotFoundError(matcher_name + " geometric filtering retained fewer than six matches");
+  return result;
 }
 
 } // namespace hm::stitching

@@ -314,6 +314,12 @@ void RinkLevelingDialog::loadSnapshot() {
           "The saved project does not reference the expected left and right camera images. Recalibrate first.";
       return;
     }
+    const auto lens_status = hm::stitching::HuginProject::ValidateLensCenters(*localized);
+    if (!lens_status.ok()) {
+      load_error_ = "The camera calibration has an invalid lens center. Recalibrate before selecting rink points.\n" +
+          QString::fromStdString(std::string(lens_status.message()));
+      return;
+    }
     if (!writeFile(temporary_.filePath(name), QByteArray::fromStdString(*localized))) {
       load_error_ = "Could not prepare the temporary calibration preview project.";
       return;
@@ -342,8 +348,9 @@ void RinkLevelingDialog::loadSnapshot() {
     }
     const int version = fields.value("version").toInt();
     // Versions 10 and 11 add selected-frame and manual-match provenance.
-    // Versions 12 and 13 add input lens correction; rotation keeps its version-9 representation.
-    if (version < 2 || version > 13 || fields.value("mapping-backend") != "nona") {
+    // Versions 12 and 13 add input lens correction; 14 and 15 add match filtering.
+    // Rotation keeps its version-9 representation.
+    if (version < 2 || version > 15 || fields.value("mapping-backend") != "nona") {
       load_error_ = "Leveling requires saved NONA calibration metadata. Run stitching calibration first.";
       return;
     }

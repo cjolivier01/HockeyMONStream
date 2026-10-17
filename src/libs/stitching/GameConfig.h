@@ -133,6 +133,11 @@ absl::StatusOr<ControlPointMatcher> resolve_control_point_matcher(
     const YAML::Node& config,
     const YAML::Node& baseline = YAML::Node());
 
+absl::StatusOr<ControlPointFiltering> read_control_point_filtering(const YAML::Node& config);
+void write_control_point_filtering(YAML::Node& config, ControlPointFiltering filtering);
+bool restore_generated_control_point_filtering(YAML::Node& config);
+absl::StatusOr<bool> materialize_control_point_filtering(YAML::Node& config, const YAML::Node& effective);
+
 absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML::Node& config);
 bool restore_generated_control_point_resolution(YAML::Node& config);
 absl::StatusOr<bool> materialize_control_point_resolution(YAML::Node& config, const YAML::Node& effective);
@@ -153,6 +158,7 @@ struct StitchingBackendChoices {
   hm::onnx::ExecutionProvider control_point_execution_provider{hm::onnx::ExecutionProvider::kCuda};
   std::string calibration_frame_selection_fingerprint;
   std::string manual_control_point_fingerprint;
+  ControlPointFiltering control_point_filtering;
 };
 
 // Generated exact-pair plans are optional. Loading existing maps only validates

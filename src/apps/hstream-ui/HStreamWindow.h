@@ -451,6 +451,8 @@ class HStreamWindow : public QMainWindow {
   QString controlPointMatcher() const;
   void updateControlPointResolution();
   QString controlPointResolutionFromGameConfig(const YAML::Node& config) const;
+  hm::stitching::ControlPointFiltering controlPointFilteringFromGameConfig(const YAML::Node& config) const;
+  void setControlPointFiltering(hm::stitching::ControlPointFiltering filtering);
   QString mappingBackend() const;
   hm::stitching::StitchCameraSelection stitchCameraSelection() const;
   absl::StatusOr<hm::stitching::StitchCameraSelection> stitchCameraSelectionFromGameConfig(
@@ -603,6 +605,9 @@ class HStreamWindow : public QMainWindow {
   QWidget* blend_feather_row_{nullptr};
   QString default_blend_mode_{"laplacian"};
   double default_blend_feather_fraction_{0.05};
+  QCheckBox* epipolar_ransac_check_{nullptr};
+  QCheckBox* homography_consistency_check_{nullptr};
+  hm::stitching::ControlPointFiltering control_point_filtering_;
   QComboBox* control_point_resolution_combo_{nullptr};
   QString control_point_resolution_{"native"};
   QSpinBox* control_points_spin_{nullptr};
@@ -880,6 +885,7 @@ class HStreamWindow : public QMainWindow {
   int active_stitch_max_output_width_{0};
   bool active_run_autooptimizer_{false};
   QString active_stitch_frame_time_;
+  hm::stitching::ControlPointFiltering active_control_point_filtering_;
   QString active_control_point_resolution_{"native"};
   QString active_control_point_matcher_;
   QString active_mapping_backend_;
@@ -941,6 +947,7 @@ class HStreamWindow : public QMainWindow {
   QString default_stitch_frame_time_{"00:00:00"};
   int default_stitch_max_output_width_{0};
   bool default_run_autooptimizer_{true};
+  hm::stitching::ControlPointFiltering default_control_point_filtering_;
   QString default_control_point_resolution_{"native"};
   // Seeded from the resolved baseline; configs/baseline.yaml owns the default.
   QString default_control_point_matcher_;
@@ -964,6 +971,7 @@ class HStreamWindow : public QMainWindow {
   QString development_pipeline_runner_;
   QString development_bazel_bin_;
   QString saved_stitch_frame_time_;
+  hm::stitching::ControlPointFiltering saved_control_point_filtering_;
   QString saved_control_point_resolution_{"native"};
   QString saved_blend_mode_{"laplacian"};
   double saved_blend_feather_fraction_{0.05};
