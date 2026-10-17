@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QtCore/QByteArray>
+#include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QRectF>
 #include <QtCore/QTemporaryDir>
@@ -16,6 +17,7 @@ class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
+class QMessageBox;
 class QPushButton;
 
 // The image is a bounded offline preview. Crop coordinates are fractions of
@@ -100,10 +102,13 @@ class ProjectionCropDialog : public QDialog {
       std::function<void(const QString&)> failed = {});
   void previewFailed(const QString& message);
   void acceptCrop();
+  void confirmCancelCalibration();
   void stopTool();
   QString game_directory_;
   bool in_progress_calibration_{false};
   bool backend_completed_{false};
+  bool cancel_confirmed_{false};
+  QPointer<QMessageBox> cancel_confirmation_;
   std::string geometry_;
   hm::stitching::StitchProjectionFraming initial_;
   QString projection_;

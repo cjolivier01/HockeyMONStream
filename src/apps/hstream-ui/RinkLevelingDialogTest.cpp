@@ -698,8 +698,8 @@ int main(int argc, char** argv) {
       if (version >= 12) {
         selected_camera.input_lens.projection = "full-frame-fisheye";
         selected_camera.input_lens.optimization = "fixed";
-        current_provenance += "input-lens=" + QByteArray::fromStdString(
-            hm::stitching::SerializeStitchInputLens(selected_camera.input_lens)) + '\n';
+        current_provenance += "input-lens=" +
+            QByteArray::fromStdString(hm::stitching::SerializeStitchInputLens(selected_camera.input_lens)) + '\n';
       }
       if (version == 11 || version == 13 || version == 15)
         current_provenance += "manual-control-points=" + QByteArray(64, 'a') + '\n';
@@ -715,7 +715,8 @@ int main(int argc, char** argv) {
       advanceToPreview(selected);
       auto* accept = selected.findChild<QPushButton*>("acceptRinkLevelingButton");
       ok &= expect(
-          waitUntil([&]() { return accept->isEnabled(); }), "automatic and manual calibrations can preview new leveling");
+          waitUntil([&]() { return accept->isEnabled(); }),
+          "automatic and manual calibrations can preview new leveling");
       accept->click();
       ok &= expect(selected.result() == QDialog::Accepted, "re-leveling promoted matches returns the revised angles");
     }
@@ -775,10 +776,42 @@ int main(int argc, char** argv) {
             preview_arguments.contains("--rotate=-11,") &&
             preview_arguments.contains(".autooptimiser_out.aligned.pto\n") && preview_arguments.contains("LC_ALL=C\n"),
         "in-progress preview shares final projection framing, executable overrides, and C locale before downscaling");
-    preview->click();
+    accept->click();
     ok &= expect(
         dialog.result() == QDialog::Accepted && dialog.rotationDegrees()[0] == -11,
-        "Preview-tab Use angles returns the edited yaw with the estimated pitch and roll");
+        "in-progress Use angles returns the edited yaw with the estimated pitch and roll");
+  }
+  {
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
+    dialog.show();
+    auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
+    auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
+    // Entering Preview without a complete rectangle must return to the image
+    // that needs marks rather than leaving a render action that always fails.
+    tabs->setCurrentIndex(2);
+    ok &= expect(
+        waitUntil([&]() { return tabs->currentIndex() == 0; }) && next->text() == "Next" &&
+            dialog.findChild<QLabel*>("rinkLevelingStatus")->text().contains("rectangle corners"),
+        "An incomplete rectangle sends the Preview tab back to the camera image that needs marks");
+    advanceToPreview(dialog);
+    ok &= expect(
+        waitUntil([&]() { return next->isEnabled() && next->text() == "Use angles"; }),
+        "A rendered in-progress preview turns Next into the acceptance action");
+    next->click();
+    ok &= expect(
+        dialog.result() == QDialog::Accepted && dialog.rotationDegrees() == rotation,
+        "Preview-tab Use angles accepts the displayed angles");
   }
   {
     QTemporaryDir staging;
@@ -829,9 +862,18 @@ int main(int argc, char** argv) {
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "in-progress manual-angle preview completes");
     write(staging.filePath("autooptimiser_out.pto"), pto + "# changed pending generation\n");
     accept->click();
+    auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
     ok &= expect(
-        dialog.result() != QDialog::Accepted && !accept->isEnabled(),
+        dialog.result() != QDialog::Accepted && !accept->isEnabled() && !next->isEnabled(),
         "Use angles rejects an in-progress calibration generation that changed after preview");
+    dialog.findChild<QDoubleSpinBox*>("rinkLevelingPitch")->setValue(-30);
+    ok &= expect(
+        next->isEnabled() && next->text() == "Render preview",
+        "A rejected acceptance still allows rendering the Preview tab again");
+    dialog.findChild<QPushButton*>("previousRinkLevelingButton")->click();
+    ok &= expect(
+        next->isEnabled() && next->text() == "Next",
+        "A rejected acceptance does not leave navigation disabled on the camera tabs");
   }
   {
     QTemporaryDir staging;
@@ -870,6 +912,7 @@ int main(int argc, char** argv) {
       return 1;
     ok &= expect(
         confirmation()->informativeText().contains("not just rink leveling") &&
+            confirmation()->informativeText().contains("without a complete calibration") &&
             confirmation()->informativeText().contains("Skip leveling"),
         "The confirmation names the whole-run scope and the Skip leveling alternative");
     ok &= expect(click(confirmation(), "Continue calibration"), "The confirmation can be declined");
@@ -882,7 +925,7 @@ int main(int argc, char** argv) {
       return 1;
     ok &= expect(click(confirmation(), "Cancel calibration"), "The confirmation offers the destructive choice");
     ok &= expect(
-        dialog.result() == QDialog::Rejected && dialog.calibrationCancellationRequested(),
+        dialog.result() == QDialog::Rejected && !dialog.isVisible() && dialog.calibrationCancellationRequested(),
         "Confirmed Cancel calibration is distinct from Skip leveling");
   }
   {

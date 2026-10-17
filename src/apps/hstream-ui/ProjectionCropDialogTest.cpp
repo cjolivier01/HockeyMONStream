@@ -13,6 +13,7 @@
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 
 #include <cmath>
@@ -238,10 +239,69 @@ int main(int argc, char** argv) {
             dialog.findChild<QComboBox*>("projectionCropMode")->currentData() == "full" &&
             !dialog.framing().auto_crop && !dialog.geometry().empty(),
         "In-progress crop preview must use staged images without published config and default to no cropping");
+    auto confirmation = [&]() -> QMessageBox* {
+      for (auto* message : dialog.findChildren<QMessageBox*>("projectionCropCancelCalibrationConfirmation")) {
+        if (message->isVisible())
+          return message;
+      }
+      return nullptr;
+    };
+    auto click = [&](QMessageBox* message, const QString& text) {
+      for (auto* button : message->buttons()) {
+        if (button->text() == text) {
+          button->click();
+          return true;
+        }
+      }
+      return false;
+    };
+    // Escape, the close box and Cancel calibration all stop the whole run here.
+    QTest::keyClick(&dialog, Qt::Key_Escape);
+    if (!expect(
+            waitUntil([&]() { return confirmation() != nullptr; }),
+            "Escape confirms before discarding the whole calibration run"))
+      return 1;
+    ok &= expect(
+        confirmation()->informativeText().contains("not just the crop choice") &&
+            confirmation()->informativeText().contains("without a complete calibration"),
+        "The crop confirmation names the whole-run scope");
+    ok &= expect(click(confirmation(), "Continue calibration"), "The crop confirmation can be declined");
+    ok &= expect(
+        waitUntil([&]() { return confirmation() == nullptr; }) && dialog.isVisible(),
+        "Declining keeps the in-progress crop selector open");
+    dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
+    if (!expect(waitUntil([&]() { return confirmation() != nullptr; }), "Cancel calibration confirms as well"))
+      return 1;
     dialog.closeAfterBackendCompletion();
     ok &= expect(
-        dialog.closedAfterBackendCompletion() && dialog.result() == QDialog::Rejected,
-        "Backend completion must dismiss an in-progress crop selector");
+        waitUntil([&]() { return confirmation() == nullptr; }) && dialog.closedAfterBackendCompletion() &&
+            !dialog.isVisible() && dialog.result() == QDialog::Rejected,
+        "Backend completion must dismiss an in-progress crop selector and its confirmation");
+  }
+  {
+    QTemporaryDir staging;
+    for (const QString name : {"autooptimiser_out.pto", "left.png", "right.png"})
+      ok &= QFile::copy(game.filePath(name), staging.filePath(name));
+    ok &= write(staging.filePath(".autooptimiser_out.aligned.pto"), pto);
+    hm::stitching::StitchProjectionFraming full;
+    ProjectionCropDialog dialog(staging.path(), full, "general-panini", {100, 0, 0}, camera, {}, nullptr, true);
+    dialog.show();
+    dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
+    QMessageBox* confirmation = nullptr;
+    if (!expect(
+            waitUntil([&]() {
+              confirmation = dialog.findChild<QMessageBox*>("projectionCropCancelCalibrationConfirmation");
+              return confirmation && confirmation->isVisible();
+            }),
+            "Cancel calibration opens the crop confirmation"))
+      return 1;
+    for (auto* button : confirmation->buttons()) {
+      if (button->text() == "Cancel calibration")
+        button->click();
+    }
+    ok &= expect(
+        dialog.result() == QDialog::Rejected && !dialog.isVisible() && !dialog.closedAfterBackendCompletion(),
+        "A confirmed crop cancellation rejects the dialog as a whole-run cancellation");
   }
   for (bool edit_before_preview : {false, true}) {
     auto automatic = framing;

@@ -1,5 +1,5 @@
-#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -112,7 +112,9 @@ RinkLevelingDialog::RinkLevelingDialog(
     for (const auto& name : {"Undo point", "Clear", "Fit image"}) {
       auto* button = new QPushButton(name);
       button->setIcon(action_icon(
-          QString(name) == "Undo point" ? ActionIcon::Undo : QString(name) == "Clear" ? ActionIcon::Delete : ActionIcon::Fit));
+          QString(name) == "Undo point"  ? ActionIcon::Undo
+              : QString(name) == "Clear" ? ActionIcon::Delete
+                                         : ActionIcon::Fit));
       button->setObjectName(QString("rinkLevelingCamera%1%2").arg(camera).arg(QString(name).remove(' ')));
       actions->addWidget(button);
       connect(button, &QPushButton::clicked, this, [this, camera, name]() {
@@ -214,8 +216,8 @@ RinkLevelingDialog::RinkLevelingDialog(
           "and roll. ") +
       (in_progress_calibration_
            ? "Use angles continues calibration with the result. Skip leveling continues calibration with the "
-             "configured angles. Cancel calibration stops the whole stitching calibration run, leaving the game's "
-             "existing calibration in place."
+             "configured angles. Cancel calibration stops the whole stitching calibration run and leaves the game "
+             "without a complete calibration."
            : "Use angles returns the result to the controls. Save Preset applies it to this game. Cancel keeps "
              "existing settings."));
   note->setWordWrap(true);
@@ -236,8 +238,8 @@ RinkLevelingDialog::RinkLevelingDialog(
     cancel_calibration->setIcon(action_icon(ActionIcon::Cancel));
     cancel_calibration->setObjectName("cancelRinkCalibrationButton");
     cancel_calibration->setToolTip(
-        "Stop the whole stitching calibration run, not just leveling. Nothing is published and the game keeps its "
-        "existing calibration.");
+        "Stop the whole stitching calibration run, not just leveling. Nothing is published and the game is left "
+        "without a complete calibration.");
     connect(cancel_calibration, &QPushButton::clicked, this, [this]() { cancelCalibration(); });
   }
   accept_button_ = buttons->addButton("Use angles", QDialogButtonBox::AcceptRole);
@@ -438,11 +440,12 @@ void RinkLevelingDialog::setBusy(bool busy) {
   post_method_check_->setEnabled(enabled);
   blend_preview_check_->setEnabled(enabled);
   previous_button_->setEnabled(enabled);
-  next_button_->setEnabled(enabled);
   accept_button_->setEnabled(enabled && previewed_);
   updateNavigationButtons();
 }
 
+// Owns the next button's whole appearance and enabled state, because on the
+// Preview tab it carries that tab's action instead of navigation.
 void RinkLevelingDialog::updateNavigationButtons() {
   if (!next_button_ || !accept_button_)
     return;
@@ -455,9 +458,21 @@ void RinkLevelingDialog::updateNavigationButtons() {
       accepts          ? accept_button_->toolTip()
           : on_preview ? "Render the preview again with the current angles."
                        : "Continue to the next camera image, or to Preview from Right camera.");
-  // While it acts as the acceptance action it must follow the same gating.
-  if (accepts)
-    next_button_->setEnabled(accept_button_->isEnabled());
+  // While it accepts it must follow the same gating as the acceptance button,
+  // which stale calibration can disable on its own.
+  next_button_->setEnabled(accepts ? accept_button_->isEnabled() : !busy_ && load_error_.isEmpty());
+}
+
+// Incomplete marks cannot render, so send the operator back to the image that
+// needs them instead of leaving a render action on screen that always fails.
+void RinkLevelingDialog::returnToIncompleteMarks() {
+  if (tabs_->currentIndex() != 2)
+    return;
+  const auto incomplete = [this](size_t camera) {
+    const auto count = canvases_[camera]->points().size();
+    return corner_method_ ? count != 2 : count < 2 || count % 2 != 0;
+  };
+  tabs_->setCurrentIndex(incomplete(0) ? 0 : 1);
 }
 
 void RinkLevelingDialog::fail(const QString& message) {
@@ -522,6 +537,7 @@ void RinkLevelingDialog::requestPreview() {
     return;
   if (corner_method_ && (canvases_[0]->points().size() != 2 || canvases_[1]->points().size() != 2)) {
     fail("Select two rectangle corners in each camera image before continuing to Preview.");
+    returnToIncompleteMarks();
     return;
   }
   preview_requested_ = true;
@@ -694,6 +710,7 @@ void RinkLevelingDialog::estimate() {
       fail(
           corner_method_ ? "Select two rectangle corners in each camera image."
                          : "Mark complete top/bottom pairs in both camera images.");
+      returnToIncompleteMarks();
       return;
     }
     for (qsizetype index = 0; index < points.size(); index += 2)
@@ -732,8 +749,9 @@ void RinkLevelingDialog::estimate() {
           }
           rotation = result->rotation_degrees;
           rectangle_mismatch = result->orthogonality_error_degrees;
-          message = QString("Used four corners; rectangle angle mismatch %1°. Use Next to inspect Preview.")
-                        .arg(result->orthogonality_error_degrees, 0, 'f', 2);
+          message =
+              QString("Used four corners; rectangle angle mismatch %1°. Continue to Preview to inspect the result.")
+                  .arg(result->orthogonality_error_degrees, 0, 'f', 2);
         } else {
           const auto result = hm::stitching::EstimateRinkLeveling(*rays, published_rotation_, angle_spins_[0]->value());
           if (!result.ok()) {
@@ -741,7 +759,7 @@ void RinkLevelingDialog::estimate() {
             return;
           }
           rotation = result->rotation_degrees;
-          message = QString("Used %1 of %2 posts; RMS angular residual %3°. Use Next to inspect Preview.")
+          message = QString("Used %1 of %2 posts; RMS angular residual %3°. Continue to Preview to inspect the result.")
                         .arg(result->inlier_indices.size())
                         .arg(count)
                         .arg(result->rms_residual_degrees, 0, 'f', 2);
@@ -919,13 +937,15 @@ void RinkLevelingDialog::acceptAngles() {
 void RinkLevelingDialog::reject() {
   estimate_timer_.stop();
   preview_requested_ = false;
-  for (QPointer<QMessageBox>* confirmation : {&rectangle_confirmation_, &cancel_confirmation_}) {
-    if (!*confirmation)
-      continue;
-    (*confirmation)->disconnect(this);
-    (*confirmation)->close();
-    *confirmation = nullptr;
-  }
+  auto dismiss = [this](QPointer<QMessageBox>& confirmation) {
+    if (!confirmation)
+      return;
+    confirmation->disconnect(this);
+    confirmation->close();
+    confirmation = nullptr;
+  };
+  dismiss(rectangle_confirmation_);
+  dismiss(cancel_confirmation_);
   if (process_) {
     process_->disconnect(this);
     process_->kill();
@@ -954,7 +974,8 @@ void RinkLevelingDialog::cancelCalibration() {
   confirmation->setAttribute(Qt::WA_DeleteOnClose);
   confirmation->setInformativeText(
       "This cancels all of the calibration, not just rink leveling. No alignment, maps, seam or rink mask are "
-      "published, the game keeps its existing calibration, and calibration has to run again from the start.\n\n"
+      "published, the game is left without a complete calibration, and calibration has to run again from the "
+      "start.\n\n"
       "To keep this calibration and continue without leveling, choose Skip leveling instead.");
   auto* stop_calibration = confirmation->addButton("Cancel calibration", QMessageBox::DestructiveRole);
   auto* keep_calibrating = confirmation->addButton("Continue calibration", QMessageBox::RejectRole);

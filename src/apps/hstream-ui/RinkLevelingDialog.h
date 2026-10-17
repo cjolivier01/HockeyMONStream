@@ -79,6 +79,7 @@ class RinkLevelingDialog : public QDialog {
   void acceptAngles();
   void cancelCalibration();
   void updateNavigationButtons();
+  void returnToIncompleteMarks();
 
   QString game_directory_;
   QTemporaryDir temporary_;
