@@ -807,32 +807,63 @@ const StitchCameraConfiguration* matching_profile(
   }
   return match;
 }
+std::string recording_description(const VideoLensMetadata& video) {
+  std::ostringstream description;
+  description << (video.model.empty() ? "Camera model not recorded" : video.model);
+  if (video.width && video.height)
+    description << "; " << video.width << "×" << video.height;
+  const auto fps = video.recording_mode.find("frame_rate");
+  if (fps != video.recording_mode.end() && !fps->second.empty())
+    description << "; " << fps->second << " fps";
+  if (!video.mode.empty())
+    description << "; mode: " << (video.mode == "W" ? "Wide" : video.mode);
+  if (!video.stabilization.empty())
+    description << "; stabilization: " << video.stabilization;
+  return description.str();
+}
 } // namespace
 AutoInputLensResult ResolveAutoInputLens(
     const std::vector<std::filesystem::path>& videos,
     const StitchCameraSelection& fallback,
     const std::vector<StitchCameraConfiguration>& profiles) {
   AutoInputLensResult result{fallback, ""};
-  result.fov_message = fallback.automatic_fov() ? "Baseline default" : "Manual / selected profile";
-  result.lens_message =
-      fallback.automatic_lens() ? "Baseline default / automatic fitting" : "Manual / selected profile";
+  std::string profile_name = fallback.configuration;
+  for (const auto& profile : profiles)
+    if (profile.id == fallback.configuration)
+      profile_name = profile.display_name;
+  const std::string baseline_source = "Fallback defaults: " + profile_name + " (not from MP4)";
+  const std::string manual_source = "Manual / selected profile (MP4 import off)";
+  std::string horizontal_source = fallback.automatic_fov() ? baseline_source : manual_source;
+  std::string vertical_source = horizontal_source;
+  std::string fov_note;
+  result.lens_message = fallback.automatic_lens() ? baseline_source : manual_source;
+  result.recording_message = "Not checked: automatic camera settings are off.";
   auto finish = [&](const std::string& warning = "") {
+    result.fov_message = "Horizontal: " + horizontal_source + "\nVertical: " + vertical_source;
+    if (!fov_note.empty())
+      result.fov_message += "\n" + fov_note;
     result.message = (warning.empty() ? "" : warning + "\n") + "Camera FOV: " + result.fov_message +
         ". Lens correction: " + result.lens_message + ".";
     if (!warning.empty()) {
-      result.fov_message += ". " + warning;
-      result.lens_message += ". " + warning;
+      result.fov_message += "\n" + warning;
+      result.lens_message += "\n" + warning;
     }
     return result;
   };
   if (!fallback.automatic_fov() && !fallback.automatic_lens())
     return finish();
+  result.recording_message = "Not checked: no source videos selected.";
   if (videos.empty())
     return finish("No source videos selected");
-  if (videos.size() > 256)
+  if (videos.size() > 256) {
+    result.recording_message = "Not checked: too many chapters to inspect.";
     return finish("Too many chapters to inspect");
+  }
   std::optional<VideoLensMetadata> first;
   std::string unavailable;
+  size_t metadata_count = 0;
+  std::vector<std::string> descriptions;
+  std::string fov_unavailable, lens_unavailable;
   bool all_fov_h = true, all_fov_v = true, all_lens = true, same_lens = true;
   for (const auto& path : videos) {
     auto value = ReadVideoLensMetadata(path);
@@ -842,6 +873,15 @@ AutoInputLensResult ResolveAutoInputLens(
       all_fov_h = all_fov_v = all_lens = false;
       continue;
     }
+    ++metadata_count;
+    const auto description = recording_description(*value);
+    if (descriptions.size() < 3 &&
+        std::find(descriptions.begin(), descriptions.end(), description) == descriptions.end())
+      descriptions.push_back(description);
+    if (fov_unavailable.empty() && !value->fov_unavailable_reason.empty())
+      fov_unavailable = value->fov_unavailable_reason;
+    if (lens_unavailable.empty() && !value->unavailable_reason.empty())
+      lens_unavailable = value->unavailable_reason;
     all_fov_h &= value->horizontal_fov.has_value();
     all_fov_v &= value->vertical_fov.has_value();
     all_lens &= value->unavailable_reason.empty();
@@ -862,6 +902,21 @@ AutoInputLensResult ResolveAutoInputLens(
     }
   }
   result.mismatch |= !same_lens;
+  if (metadata_count == videos.size() && !result.mismatch) {
+    result.recording_metadata_found = true;
+    result.recording_message = "Read from MP4 in all " + std::to_string(videos.size()) + " selected files.";
+  } else if (metadata_count) {
+    result.recording_message = result.mismatch
+        ? "MP4 metadata differs between cameras/chapters; automatic optics were not imported."
+        : "Incomplete: MP4 metadata read in " + std::to_string(metadata_count) + " of " +
+            std::to_string(videos.size()) + " selected files; automatic optics were not imported.";
+  } else {
+    result.recording_message = "No supported MP4 recording metadata could be read.";
+  }
+  for (const auto& description : descriptions)
+    result.recording_message += "\n" + description;
+  if (!unavailable.empty())
+    result.recording_message += "\n" + unavailable;
   if (result.mismatch)
     return finish(
         "Warning: camera/chapter metadata differs; using shared baseline defaults. Match recording modes or select manual values");
@@ -870,17 +925,19 @@ AutoInputLensResult ResolveAutoInputLens(
   if (!first)
     return finish("No supported recording metadata");
   const auto* profile = matching_profile(*first, profiles);
-  const std::string profile_source = profile ? "Mode profile: " + profile->display_name : "";
+  const std::string profile_source = profile ? "Mode profile: " + profile->display_name + " (not MP4 lens values)" : "";
   if (fallback.automatic_lens()) {
     if (all_lens) {
       result.camera.input_lens = first->camera.input_lens;
-      result.lens_message = "MP4 metadata";
+      result.lens_message =
+          "Read from MP4: projection, distortion and center offsets below were converted from its lens model.";
+      result.lens_from_mp4 = true;
       result.detected = true;
     } else if (profile) {
       result.camera.input_lens = profile->input_lens;
       result.lens_message = profile_source;
-    } else if (!first->unavailable_reason.empty()) {
-      result.lens_message += " (" + first->unavailable_reason + "; no verified mode match)";
+    } else if (!lens_unavailable.empty()) {
+      result.lens_message += "\n" + lens_unavailable + "; no verified mode match.";
     }
   }
   if (fallback.automatic_fov()) {
@@ -896,9 +953,9 @@ AutoInputLensResult ResolveAutoInputLens(
                   first->height,
                   result.camera.input_lens);
         result.camera.vertical_fov = profile->vertical_fov;
-        result.fov_message = profile_source;
+        horizontal_source = vertical_source = profile_source;
       } catch (const std::exception& error) {
-        result.fov_message += " (mode FOV cannot be combined: " + std::string(error.what()) + ")";
+        horizontal_source += " (mode FOV cannot be combined: " + std::string(error.what()) + ")";
       }
     }
     if (all_fov_h) {
@@ -907,27 +964,30 @@ AutoInputLensResult ResolveAutoInputLens(
             ? first->camera.horizontal_fov
             : hugin_fov(*first->horizontal_fov, first->width, first->height, result.camera.input_lens);
         std::ostringstream message;
-        message << std::fixed << std::setprecision(2) << "MP4 horizontal coverage " << *first->horizontal_fov << "°";
+        message << std::fixed << std::setprecision(2) << "Read from MP4: coverage " << *first->horizontal_fov << "°";
         if (std::abs(*first->horizontal_fov - result.camera.horizontal_fov) > 0.005)
           message << " (calibration FOV " << result.camera.horizontal_fov << "° with this correction)";
-        result.fov_message = message.str();
+        horizontal_source = message.str();
+        result.horizontal_fov_from_mp4 = true;
         result.detected = true;
       } catch (const std::exception& error) {
-        result.fov_message += " (MP4 FOV cannot be combined: " + std::string(error.what()) + ")";
+        horizontal_source += " (MP4 FOV cannot be combined: " + std::string(error.what()) + ")";
       }
     } else if (all_lens && fallback.automatic_lens()) {
       result.camera.horizontal_fov = first->camera.horizontal_fov;
-      result.fov_message = "MP4 lens model (axis FOV not recorded separately)";
+      horizontal_source = "Derived from MP4 lens model (axis FOV not recorded separately)";
+      result.horizontal_fov_from_mp4 = true;
     }
     if (all_fov_v) {
       result.camera.vertical_fov = *first->vertical_fov;
       std::ostringstream message;
-      message << std::fixed << std::setprecision(2) << "; MP4 vertical coverage " << *first->vertical_fov << "°";
-      result.fov_message += message.str();
+      message << std::fixed << std::setprecision(2) << "Read from MP4: coverage " << *first->vertical_fov << "°";
+      vertical_source = message.str();
+      result.vertical_fov_from_mp4 = true;
       result.detected = true;
-    } else {
-      result.fov_message += "; vertical FOV from " + (profile ? profile_source : "baseline default");
     }
+    if (!all_fov_h || !all_fov_v)
+      fov_note = fov_unavailable;
   }
   return finish();
 }

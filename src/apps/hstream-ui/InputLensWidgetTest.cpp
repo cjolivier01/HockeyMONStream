@@ -35,12 +35,24 @@ int main(int argc, char** argv) {
   widget.setLens({});
   if (widget.lens() != hm::stitching::StitchInputLens{} || changes != 2)
     return 1;
+  auto* values = widget.findChild<QGroupBox*>("inputLensValuesGroup");
+  auto* projection = widget.findChild<QComboBox*>("inputLensProjectionCombo");
+  auto* calibration = widget.findChild<QComboBox*>("inputLensOptimizationCombo");
+  const auto original_color = values->palette().color(QPalette::Window);
+  widget.setMetadataStatus("Read from MP4", true, true);
+  if (!values->property("mp4Metadata").toBool() || values->palette().color(QPalette::Window) == original_color ||
+      !values->isAncestorOf(projection) || values->isAncestorOf(calibration) || changes != 2) {
+    std::cerr << "MP4 provenance must tint lens values without claiming calibration policy or changing inputs\n";
+    return 1;
+  }
   widget.setMetadataStatus("Warning: camera metadata differs", true);
   widget.setEnabled(false);
   widget.setEnabled(true);
   if (!widget.findChild<QDoubleSpinBox*>("inputLensCenterYSpin")->isReadOnly() ||
       widget.findChild<QComboBox*>("inputLensProjectionCombo")->isEnabled() ||
-      widget.findChild<QLabel*>("inputLensMetadataStatus")->text() != "Warning: camera metadata differs")
+      widget.findChild<QLabel*>("inputLensMetadataStatus")->text() !=
+          "Values source: Warning: camera metadata differs" ||
+      values->property("mp4Metadata").toBool() || values->palette().color(QPalette::Window) != original_color)
     return 1;
   widget.setMetadataStatus("", false);
   if (widget.findChild<QDoubleSpinBox*>("inputLensCenterYSpin")->isReadOnly() ||

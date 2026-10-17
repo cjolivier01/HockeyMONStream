@@ -45,6 +45,13 @@ struct AutoInputLensResult {
   bool mismatch{false};
   std::string fov_message;
   std::string lens_message;
+  // Presentation provenance, never persisted as calibration inputs. Recognition
+  // of a recording is independent of importing either component of its optics.
+  std::string recording_message;
+  bool recording_metadata_found{false};
+  bool horizontal_fov_from_mp4{false};
+  bool vertical_fov_from_mp4{false};
+  bool lens_from_mp4{false};
 };
 
 // Inspects every selected chapter. Only agrees to a shared prescription when

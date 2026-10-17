@@ -89,8 +89,9 @@ AutoInputLensResult ReadAutoInputLensForGame(
     bool force_video_discovery,
     bool live_sources) {
   AutoInputLensResult result{selection, ""};
-  result.fov_message = "Manual / selected profile";
-  result.lens_message = "Manual / selected profile";
+  result.fov_message = "Manual / selected profile (MP4 import off)";
+  result.lens_message = "Manual / selected profile (MP4 import off)";
+  result.recording_message = "Not checked: automatic camera settings are off.";
   if (!selection.automatic_fov() && !selection.automatic_lens())
     return result;
   try {
@@ -100,14 +101,17 @@ AutoInputLensResult ReadAutoInputLensForGame(
       result.message = "Auto: using the saved experiment optics snapshot.";
       result.fov_message = "Saved experiment snapshot";
       result.lens_message = "Saved experiment snapshot";
+      result.recording_message = "Not checked: using saved experiment values, without rereading the MP4 files.";
       return result;
     }
     auto fallback = selection;
+    std::string profile_name = selection.configuration;
     const auto profiles = read_stitch_camera_configurations(config);
     if (!profiles.ok())
       throw std::runtime_error(profiles.status().ToString());
     for (const auto& profile : *profiles)
       if (profile.id == selection.configuration) {
+        profile_name = profile.display_name;
         if (selection.automatic_fov()) {
           fallback.horizontal_fov = profile.horizontal_fov;
           fallback.vertical_fov = profile.vertical_fov;
@@ -116,12 +120,15 @@ AutoInputLensResult ReadAutoInputLensForGame(
           fallback.input_lens = profile.input_lens;
       }
     result.camera = fallback;
-    result.fov_message = selection.automatic_fov() ? "Baseline default" : "Manual / selected profile";
-    result.lens_message =
-        selection.automatic_lens() ? "Baseline default / automatic fitting" : "Manual / selected profile";
+    const std::string baseline_source = "Fallback defaults: " + profile_name + " (not from MP4)";
+    if (selection.automatic_fov())
+      result.fov_message = baseline_source;
+    if (selection.automatic_lens())
+      result.lens_message = baseline_source;
     if (live_sources) {
       result.message =
           "Auto unavailable: live cameras have no original-video lens metadata. Using baseline defaults for automatic components.";
+      result.recording_message = "Unavailable: live cameras have no original MP4 recording metadata.";
       if (selection.automatic_fov())
         result.fov_message = result.message;
       if (selection.automatic_lens())
@@ -174,6 +181,7 @@ AutoInputLensResult ReadAutoInputLensForGame(
     return ResolveAutoInputLens(left, fallback, *profiles);
   } catch (const std::exception& error) {
     result.message = "Auto unavailable: " + std::string(error.what()) + ". Using baseline defaults.";
+    result.recording_message = "Not read: " + std::string(error.what());
     if (selection.automatic_fov())
       result.fov_message = result.message;
     if (selection.automatic_lens())

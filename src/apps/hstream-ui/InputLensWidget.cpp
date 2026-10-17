@@ -1,11 +1,38 @@
 #include "src/apps/hstream-ui/InputLensWidget.h"
 
 #include <QtCore/QSignalBlocker>
+#include <QtGui/QPalette>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QLabel>
+
+void SetInputOpticsMetadataHighlight(QWidget* widget, bool from_mp4) {
+  widget->setProperty("mp4Metadata", from_mp4);
+  if (!from_mp4) {
+    widget->setPalette(QPalette());
+    widget->setAutoFillBackground(false);
+    return;
+  }
+  QPalette palette = widget->parentWidget() ? widget->parentWidget()->palette() : QPalette();
+  const QColor accent(25, 165, 135);
+  for (const auto role : {QPalette::Window, QPalette::Base, QPalette::Button}) {
+    const QColor base = palette.color(role);
+    palette.setColor(
+        role,
+        QColor(
+            (base.red() * 4 + accent.red()) / 5,
+            (base.green() * 4 + accent.green()) / 5,
+            (base.blue() * 4 + accent.blue()) / 5));
+  }
+  // Imported combo boxes are disabled for editing, but their values must stay
+  // as legible as the read-only numerical fields beside them.
+  for (const auto role : {QPalette::Text, QPalette::WindowText, QPalette::ButtonText})
+    palette.setColor(QPalette::Disabled, role, palette.color(QPalette::Active, role));
+  widget->setPalette(palette);
+  widget->setAutoFillBackground(true);
+}
 
 InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens correction", parent) {
   setObjectName("stitchInputLensControls");
@@ -20,12 +47,16 @@ InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens corre
     if (automationChanged)
       automationChanged();
   });
-  metadata_status_ = new QLabel(this);
+  values_group_ = new QGroupBox("Projection, distortion and center offsets", this);
+  values_group_->setObjectName("inputLensValuesGroup");
+  auto* values_layout = new QFormLayout(values_group_);
+  layout->addRow(values_group_);
+  metadata_status_ = new QLabel(values_group_);
   metadata_status_->setObjectName("inputLensMetadataStatus");
   metadata_status_->setWordWrap(true);
   metadata_status_->setTextFormat(Qt::PlainText);
   metadata_status_->hide();
-  layout->addRow(metadata_status_);
+  values_layout->addRow(metadata_status_);
   projection_ = new QComboBox(this);
   projection_->setObjectName("inputLensProjectionCombo");
   projection_->addItem("Rectilinear", "rectilinear");
@@ -38,10 +69,10 @@ InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens corre
   optimization_->addItem("Refine FOV, b and center", "refine");
   optimization_->addItem("Keep lens correction fixed", "fixed");
   optimization_->setToolTip(
+      "This is stitching's fitting policy, not a setting recorded in the MP4. "
       "Automatic may refit all lens parameters. Refine fits camera horizontal FOV, b and center while retaining a and c. "
-      "Fixed retains the camera horizontal FOV and all values below. Every mode still aligns the camera poses.");
-  layout->addRow("Source projection", projection_);
-  layout->addRow("Calibration", optimization_);
+      "Fixed retains the camera horizontal FOV and all lens values. Every mode still aligns the camera poses.");
+  values_layout->addRow("Source projection", projection_);
   const char* names[] = {
       "inputLensASpin", "inputLensBSpin", "inputLensCSpin", "inputLensCenterXSpin", "inputLensCenterYSpin"};
   const char* labels[] = {"Distortion a", "Distortion b", "Distortion c", "Center X offset", "Center Y offset"};
@@ -57,13 +88,18 @@ InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens corre
         i < 3
             ? "Hugin radial lens coefficient, shared by the two source cameras. Used as a seed unless lens correction is fixed."
             : "Hugin optical-center shift as a percentage of the full source width (X) or height (Y). Scales with source resolution.");
-    layout->addRow(labels[i], spin);
+    values_layout->addRow(labels[i], spin);
     connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, spin]() {
       spin->setProperty("exactLensValue", QVariant());
       if (changed)
         changed();
     });
   }
+  layout->addRow("Calibration behavior", optimization_);
+  auto* calibration_help =
+      new QLabel("Controls whether stitching may refit these values. This behavior is not read from the MP4.", this);
+  calibration_help->setWordWrap(true);
+  layout->addRow(calibration_help);
   for (auto* combo : {projection_, optimization_})
     connect(combo, &QComboBox::currentIndexChanged, this, [this]() {
       if (changed)
@@ -98,11 +134,17 @@ void InputLensWidget::setLens(const hm::stitching::StitchInputLens& lens) {
   }
 }
 
-void InputLensWidget::setMetadataStatus(const QString& message, bool automatic) {
+void InputLensWidget::setMetadataStatus(const QString& message, bool automatic, bool from_mp4) {
   const QSignalBlocker blocker(automatic_);
   automatic_->setChecked(automatic);
-  metadata_status_->setText(message);
+  metadata_status_->setText("Values source: " + message);
   metadata_status_->setVisible(!message.isEmpty());
+  SetInputOpticsMetadataHighlight(values_group_, automatic && from_mp4);
+  QPalette readable;
+  for (const auto role : {QPalette::Text, QPalette::WindowText, QPalette::ButtonText})
+    readable.setColor(QPalette::Disabled, role, palette().color(QPalette::Active, role));
+  projection_->setPalette(readable);
+  optimization_->setPalette(readable);
   projection_->setEnabled(!automatic);
   optimization_->setEnabled(!automatic);
   for (auto* parameter : parameters_)
