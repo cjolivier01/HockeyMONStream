@@ -38,7 +38,7 @@ The resolved run configuration records `runtime.resolved_gpu_memory_profile` and
 
 ## Individual memory controls
 
-`pipeline.hmstitcher.private-properties.compact-workspace=true` enables hm-cupano scratch reuse (default false). Full-canvas blending can return borrowed scratch; hmstitcher consumes it on the same CUDA stream through conversion and any rink-mask preparation. Owned fallback output is cached, including minimized blending. Borrowed views never survive a frame or stitcher reload.
+`pipeline.hmstitcher.private-properties.compact-workspace=true` enables hm-cupano scratch reuse (default false). High-bit hmstitcher requests borrowed full-canvas blend output in both standard and compact modes. It consumes that output on the same CUDA stream through conversion and any rink-mask preparation, avoiding an extra FP16 panorama allocation, clear and copy. Standard mode retains its independent blend intermediates. Hard seams and minimized blending still return owned output, which is cached and replaced when dimensions change. Borrowed views never survive a frame or stitcher reload. No additional surfaces or concurrent frames are introduced.
 
 `pipeline.hmstitcher.pre-converter-output-buffers=1` reduces the input converter pool. Missing/zero preserves the converter default. The videoprep GObject property `output-pool-extra-buffers` controls growth beyond `num-output-buffers`; its default remains four. Set it to zero for a fixed pool. Exhausted output-pool waits preserve backpressure and respond to shutdown/seek; a low count can still stall a graph whose downstream components retain all buffers, so validate the actual sink graph.
 

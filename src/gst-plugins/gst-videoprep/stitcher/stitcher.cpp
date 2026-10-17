@@ -2397,16 +2397,11 @@ absl::Status StitcherPriv::GenerateOutput(
       if (!fused_rgb10_remap_)
         HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
       high_bit_canvas = std::move(high_bit_canvas_);
-      if (!compact_workspace_) {
-        if (!high_bit_canvas || high_bit_canvas->width() != canvas->width() ||
-            high_bit_canvas->height() != canvas->height()) {
-          high_bit_canvas = std::make_unique<hm::CudaMat<half4>>(1, canvas->width(), canvas->height(), 1);
-        }
-        if (!high_bit_canvas->is_valid())
-          return absl::ResourceExhaustedError("Could not allocate the FP16 stitched canvas");
-        HM_RETURN_IF_ERROR(
-            to_status(cudaMemsetAsync(high_bit_canvas->data_raw(), 0, high_bit_canvas->size(), cuda_stream_)));
-      }
+      if (high_bit_canvas &&
+          (high_bit_canvas->width() != canvas->width() || high_bit_canvas->height() != canvas->height()))
+        high_bit_canvas.reset();
+      // Consume the blender's full-canvas workspace on this stream. Hard seams
+      // and minimized blending still return owned output, which is cached below.
       if (fused_rgb10_remap_) {
         if (!isRgb10A2ColorFormat(incoming_surface_left->colorFormat) ||
             !isRgb10A2ColorFormat(incoming_surface_right->colorFormat) ||
@@ -2427,11 +2422,17 @@ absl::Status StitcherPriv::GenerateOutput(
         auto packed_right = packed_view(incoming_surface_right);
         HM_CUDA_ASSIGN_OR_RETURN(
             high_bit_canvas,
-            stitcher_rgb10_fp16_->process(packed_left, packed_right, cuda_stream_, std::move(high_bit_canvas)));
+            stitcher_rgb10_fp16_->process(
+                packed_left, packed_right, cuda_stream_, std::move(high_bit_canvas), /*borrow_workspace_output=*/true));
       } else {
         HM_CUDA_ASSIGN_OR_RETURN(
             high_bit_canvas,
-            stitcher_rgb10_fp16_->process(*high_bit_left_, *high_bit_right_, cuda_stream_, std::move(high_bit_canvas)));
+            stitcher_rgb10_fp16_->process(
+                *high_bit_left_,
+                *high_bit_right_,
+                cuda_stream_,
+                std::move(high_bit_canvas),
+                /*borrow_workspace_output=*/true));
       }
 
       current_high_bit_canvas = high_bit_canvas.get();
