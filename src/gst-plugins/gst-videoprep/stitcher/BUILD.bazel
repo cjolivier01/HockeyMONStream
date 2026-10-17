@@ -78,6 +78,8 @@ cc_test(
 
 cc_test(
     name = "one_pass_stitcher_test",
+    # Lazy kernel loading can synchronize before the fault fixture's gated stream reaches its allocation.
+    env = {"CUDA_MODULE_LOADING": "EAGER"},
     srcs = [
         "OnePassStitcherTest.cpp",
     ],
@@ -106,5 +108,6 @@ cc_test(
         "-ldl",
         "-lm",
         "-lnvdsbufferpool",
+        "-Wl,--wrap=cudaMallocAsync",
     ],
 )

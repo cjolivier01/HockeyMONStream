@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
 
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CudaStreamCompletionFence.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/cudaHighBitStitch.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
@@ -2107,6 +2108,10 @@ absl::Status StitcherPriv::GenerateOutput(
 
   HM_RETURN_IF_ERROR(to_status(cudaSetDevice(m_gpuId)));
 
+#ifndef __aarch64__
+  videoprep::CudaStreamCompletionFence completion_fence(cuda_stream_);
+#endif
+
   // We will have this many output frames
   const size_t batch_size = frame_source_surfaces.size();
   HM_RETURN_IF_ERROR(prepare_stitch_output_surface(out_surface, batch_size));
@@ -2288,6 +2293,8 @@ absl::Status StitcherPriv::GenerateOutput(
     hm::surface::EglSurfaceMapper outgoing_elg_surface_mapper(out_surface, out_surface_index, /*read_only=*/false);
     HM_RETURN_IF_ERROR(to_status(outgoing_elg_surface_mapper.status()));
     hm::surface::Surface outgoing_surface = outgoing_elg_surface_mapper.get_surface();
+    // Complete queued reads/writes before these EGL mappings leave scope, including errors.
+    videoprep::CudaStreamCompletionFence completion_fence(cuda_stream_);
 #else
     hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
     hm::surface::Surface incoming_surface_right(frame_info_right.surface_params);
@@ -2393,6 +2400,9 @@ absl::Status StitcherPriv::GenerateOutput(
     // Keep borrowed compute output alive through one-pass rink-mask preparation below.
     std::unique_ptr<hm::CudaMat<half4>> high_bit_canvas;
     hm::CudaMat<half4>* current_high_bit_canvas = nullptr;
+    // A blend allocation can fail after remapping was queued. Borrowed output
+    // has no freeing destructor to fence those reads before input pool reuse.
+    completion_fence.MarkSubmitted();
     if (stitcher_rgb10_fp16_) {
       if (!fused_rgb10_remap_)
         HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
@@ -2690,6 +2700,9 @@ absl::Status StitcherPriv::GenerateOutput(
     reuse_frame_meta->batch_id = static_cast<guint>(out_surface_index);
     reuse_frame_meta->surface_index = 0;
     reuse_frame_meta->source_id = min_source_id;
+#ifdef __aarch64__
+    HM_RETURN_IF_ERROR(to_status(completion_fence.Synchronize()));
+#endif
   }
 
   if (out_surface->numFilled) {
@@ -2699,7 +2712,9 @@ absl::Status StitcherPriv::GenerateOutput(
     // batch_meta->frame_meta_pool->max_elements_in_pool /= 2;
     batch_meta->max_frames_in_batch = batch_meta->num_frames_in_batch;
     // assert(batch_meta->max_frames_in_batch); // make sure we didnt do too many times and make it 0
-    HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
+#ifndef __aarch64__
+    HM_RETURN_IF_ERROR(to_status(completion_fence.Synchronize()));
+#endif
   }
   if (log_batches_enabled()) {
     g_print(

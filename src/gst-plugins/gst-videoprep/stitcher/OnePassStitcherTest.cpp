@@ -10,9 +10,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -20,9 +24,142 @@
 #include <opencv2/imgcodecs.hpp>
 #include <unistd.h>
 
+namespace {
+std::atomic<bool> fail_next_allocation{false};
+std::promise<void>* allocation_failure_seen = nullptr;
+} // namespace
+
+extern "C" cudaError_t __real_cudaMallocAsync(void**, size_t, cudaStream_t);
+extern "C" cudaError_t __wrap_cudaMallocAsync(void** pointer, size_t bytes, cudaStream_t stream) {
+  if (fail_next_allocation.exchange(false)) {
+    allocation_failure_seen->set_value();
+    return cudaErrorMemoryAllocation;
+  }
+  return __real_cudaMallocAsync(pointer, bytes, stream);
+}
+
+#ifndef __aarch64__
+namespace hm::stitcher {
+struct StitcherOutputFailureTestPeer {
+  static bool Prepare(StitcherPriv& stitcher, cudaStream_t stream, int width, int height) {
+    pano::ControlMasks masks;
+    masks.img1_col.create(height, width, CV_16U);
+    masks.img1_row.create(height, width, CV_16U);
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        masks.img1_col.at<uint16_t>(y, x) = x;
+        masks.img1_row.at<uint16_t>(y, x) = y;
+      }
+    }
+    masks.img2_col = masks.img1_col.clone();
+    masks.img2_row = masks.img1_row.clone();
+    masks.positions = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+    masks.whole_seam_mask_image = cv::Mat(height, width, CV_8U, cv::Scalar(0));
+    masks.whole_seam_mask_image.colRange(0, width / 2).setTo(1);
+    stitcher.cuda_stream_ = stream;
+    stitcher.process_pass_ = 1; // Use the prepared context without disk calibration.
+    stitcher.stitcher_rgb10_fp16_ = std::make_unique<StitcherPriv::STITCHER_RGB10_FP16>(
+        1, 3, masks, /*quiet=*/true, /*minimize_blend=*/false, 0, /*compact_workspace=*/false);
+    return stitcher.stitcher_rgb10_fp16_->status().ok();
+  }
+};
+} // namespace hm::stitcher
+#endif
+
 namespace fs = std::filesystem;
 
 namespace {
+
+bool expect_failed_blend_waits_for_borrowed_inputs() {
+#ifdef __aarch64__
+  // This CUDA-pointer fixture cannot exercise Jetson's EGL mapping path.
+  std::cout << "Skipping borrowed-input failure injection: requires a CUDA-device surface platform\n";
+  return true;
+#else
+  constexpr int width = 64, height = 32;
+  cudaStream_t stream = nullptr;
+  if (cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) != cudaSuccess)
+    return false;
+  bool ok = true;
+  {
+    hm::CudaMat<Rgb10A2> left(1, width, height), right(1, width, height);
+    hm::CudaMat<uchar4> output(1, width, height);
+    hm::stitcher::StitcherPriv stitcher(0, 2);
+    if (!left.is_valid() || !right.is_valid() || !output.is_valid() ||
+        !hm::stitcher::StitcherOutputFailureTestPeer::Prepare(stitcher, stream, width, height))
+      return false;
+    cudaMemset(left.data(), 0, left.size());
+    cudaMemset(right.data(), 0, right.size());
+    NvBufSurfaceParams inputs[2]{};
+    for (int i = 0; i < 2; ++i) {
+      inputs[i].width = width;
+      inputs[i].height = height;
+      inputs[i].pitch = width * sizeof(Rgb10A2);
+      inputs[i].colorFormat = NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709;
+      inputs[i].dataPtr = i == 0 ? left.data() : right.data();
+    }
+    NvBufSurfaceParams output_params{};
+    output_params.width = width;
+    output_params.height = height;
+    output_params.pitch = output.pitch();
+    output_params.dataPtr = output.data();
+    output_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+    NvBufSurface input_surface{}, output_surface{};
+    input_surface.batchSize = input_surface.numFilled = 2;
+    input_surface.surfaceList = inputs;
+    output_surface.batchSize = 1;
+    output_surface.surfaceList = &output_params;
+    NvDsBatchMeta* batch_meta = nvds_create_batch_meta(2);
+    for (guint i = 0; i < 2; ++i) {
+      NvDsFrameMeta* frame = nvds_acquire_frame_meta_from_pool(batch_meta);
+      frame->batch_id = frame->source_id = frame->pad_index = i;
+      frame->frame_num = 0;
+      frame->num_surfaces_per_frame = 1;
+      nvds_add_frame_meta_to_batch(batch_meta, frame);
+    }
+    struct Gate {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool released = false;
+    } gate;
+    // Hold the stream before the remaps. The failed call must not return while
+    // those queued reads could still access input buffers recycled by its caller.
+    if (cudaLaunchHostFunc(
+            stream,
+            [](void* data) {
+              auto& gate = *static_cast<Gate*>(data);
+              std::unique_lock<std::mutex> lock(gate.mutex);
+              gate.cv.wait(lock, [&] { return gate.released; });
+            },
+            &gate) != cudaSuccess)
+      return false;
+    std::promise<void> allocation_failed;
+    auto failure = allocation_failed.get_future();
+    allocation_failure_seen = &allocation_failed;
+    fail_next_allocation = true;
+    auto result = std::async(
+        std::launch::async, [&] { return stitcher.GenerateOutput(batch_meta, &input_surface, &output_surface); });
+    const bool injected = failure.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    const bool returned_early = result.wait_for(std::chrono::milliseconds(50)) == std::future_status::ready;
+    {
+      std::lock_guard<std::mutex> lock(gate.mutex);
+      gate.released = true;
+    }
+    gate.cv.notify_one();
+    const absl::Status status = result.get();
+    fail_next_allocation = false;
+    allocation_failure_seen = nullptr;
+    ok = injected && !returned_early && !status.ok() && cudaStreamQuery(stream) == cudaSuccess;
+    if (!ok)
+      std::cerr << "Failed blend returned before borrowed-input completion: injected=" << injected
+                << " early=" << returned_early << " status=" << status << '\n';
+    cudaStreamSynchronize(stream);
+    nvds_destroy_batch_meta(batch_meta);
+  }
+  cudaStreamDestroy(stream);
+  return ok;
+#endif
+}
 
 struct FrameDesc {
   guint frame_num;
@@ -846,6 +983,8 @@ bool expect_generate_status(
 
 int main() {
   gst_init(nullptr, nullptr);
+  if (!expect_failed_blend_waits_for_borrowed_inputs())
+    return 1;
 
   fs::path tmpdir = fs::temp_directory_path() / "hmstitcher_onepass_test";
   fs::remove_all(tmpdir);

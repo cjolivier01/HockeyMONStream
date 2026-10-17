@@ -163,7 +163,11 @@ vary across repeated runs of the identical binary too, so later Program archive
 identity is not established. This distinction is retained in the qualification
 rather than treating encoded Program hashes as a deterministic stitching test.
 The 2/3/N-camera output ownership tests pass Compute Sanitizer memcheck with zero
-errors, in addition to all 167 tests and the x86/Jetson builds.
+errors, in addition to all 167 tests and the x86/Jetson builds. An injected
+first-frame allocation failure after queued remaps verifies that `GenerateOutput`
+waits for the stream before returning borrowed buffers to its caller. This
+CUDA-device-surface fixture runs on x86; native Jetson EGL failure injection
+remains unqualified.
 
 ## Reproducing measurements
 

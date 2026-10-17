@@ -141,6 +141,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
       NvBufSurface* in_surface) override;
 
  private:
+  friend struct StitcherOutputFailureTestPeer;
   using STITCHER_FP32 = hm::pano::cuda::CudaStitchPano<uchar4, float4>;
   using STITCHER_FP16 = hm::pano::cuda::CudaStitchPano<uchar4, half3>;
   using STITCHER_RGB10_FP16 = hm::pano::cuda::CudaStitchPano<half4, half4>;
