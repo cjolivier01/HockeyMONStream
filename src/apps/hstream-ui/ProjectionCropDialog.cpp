@@ -18,6 +18,7 @@
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QVBoxLayout>
 
@@ -288,17 +289,26 @@ ProjectionCropDialog::ProjectionCropDialog(
   status_->setWordWrap(true);
   layout->addWidget(status_);
   auto* note = new QLabel(
-      (in_progress_calibration_ || apply_on_accept)
+      in_progress_calibration_
+          ? "Use crop saves this choice for the game and continues setup. Full canvas keeps the entire projection. "
+            "Cancel calibration stops the whole stitching calibration run and leaves the game without a complete "
+            "calibration."
+          : apply_on_accept
           ? "Use crop saves this choice for the game and continues setup. Full canvas keeps the entire projection."
           : "Use crop returns this selection to the controls. Save Preset applies it to this game.");
   note->setWordWrap(true);
   layout->addWidget(note);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
-  buttons->button(QDialogButtonBox::Cancel)->setIcon(action_icon(ActionIcon::Cancel));
-  if (in_progress_calibration_)
-    buttons->button(QDialogButtonBox::Cancel)->setText("Cancel calibration");
-  else if (apply_on_accept)
-    buttons->button(QDialogButtonBox::Cancel)->setText("Cancel playback");
+  QPushButton* reject_button = buttons->button(QDialogButtonBox::Cancel);
+  reject_button->setIcon(action_icon(ActionIcon::Cancel));
+  if (in_progress_calibration_) {
+    reject_button->setText("Cancel calibration");
+    reject_button->setToolTip(
+        "Stop the whole stitching calibration run, not just the crop choice. No alignment, maps, seam or rink mask "
+        "are published, and the game is left without a complete calibration.");
+  } else if (apply_on_accept) {
+    reject_button->setText("Cancel playback");
+  }
   accept_ = buttons->addButton("Use crop", QDialogButtonBox::AcceptRole);
   accept_->setIcon(action_icon(ActionIcon::Apply));
   accept_->setObjectName("acceptProjectionCropButton");
@@ -791,12 +801,77 @@ void ProjectionCropDialog::acceptCrop() {
     }
   }
   stopTool();
+  dismissCancelConfirmation();
   accept();
 }
 
 void ProjectionCropDialog::reject() {
+  // Every reject path here — the button, Escape and the window close box —
+  // stops the whole calibration run, so confirm before discarding it. Backend
+  // completion and an already confirmed cancellation close immediately.
+  if (in_progress_calibration_ && !backend_completed_ && !cancel_confirmed_) {
+    confirmCancelCalibration();
+    return;
+  }
+  dismissCancelConfirmation();
   stopTool();
   QDialog::reject();
+}
+
+// The prompt is a separate window, so hiding the dialog would leave it on
+// screen. Every path that closes the dialog has to retire it first.
+void ProjectionCropDialog::dismissCancelConfirmation() {
+  if (!cancel_confirmation_)
+    return;
+  cancel_confirmation_->disconnect(this);
+  cancel_confirmation_->close();
+  cancel_confirmation_ = nullptr;
+}
+
+void ProjectionCropDialog::raiseSelector() {
+  show();
+  raise();
+  activateWindow();
+  // A live prompt blocks input to the dialog, so it is what must come forward.
+  if (cancel_confirmation_ && cancel_confirmation_->isVisible()) {
+    cancel_confirmation_->raise();
+    cancel_confirmation_->activateWindow();
+  }
+}
+
+void ProjectionCropDialog::confirmCancelCalibration() {
+  if (cancel_confirmation_) {
+    cancel_confirmation_->raise();
+    cancel_confirmation_->activateWindow();
+    return;
+  }
+  auto* confirmation = new QMessageBox(
+      QMessageBox::Warning,
+      "Cancel stitching calibration",
+      "Stop the whole stitching calibration run?",
+      QMessageBox::NoButton,
+      this);
+  confirmation->setObjectName("projectionCropCancelCalibrationConfirmation");
+  confirmation->setAttribute(Qt::WA_DeleteOnClose);
+  confirmation->setInformativeText(
+      "This cancels all of the calibration, not just the crop choice. No alignment, maps, seam or rink mask are "
+      "published, and the game is left without a complete calibration until stitching calibration runs again.\n\n"
+      "To continue calibration, choose Use crop instead. It keeps the whole canvas unless you change the mode.");
+  auto* stop_calibration = confirmation->addButton("Cancel calibration", QMessageBox::DestructiveRole);
+  auto* keep_calibrating = confirmation->addButton("Continue calibration", QMessageBox::RejectRole);
+  stop_calibration->setIcon(action_icon(ActionIcon::Cancel));
+  keep_calibrating->setIcon(action_icon(ActionIcon::Next));
+  confirmation->setDefaultButton(keep_calibrating);
+  confirmation->setEscapeButton(keep_calibrating);
+  cancel_confirmation_ = confirmation;
+  connect(confirmation, &QDialog::finished, this, [this, confirmation, stop_calibration]() {
+    cancel_confirmation_ = nullptr;
+    if (confirmation->clickedButton() != stop_calibration)
+      return;
+    cancel_confirmed_ = true;
+    reject();
+  });
+  confirmation->open();
 }
 
 void ProjectionCropDialog::closeAfterBackendCompletion() {

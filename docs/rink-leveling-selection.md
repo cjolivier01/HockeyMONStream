@@ -22,22 +22,32 @@ backends because their planar transforms do not consume Hugin's shared camera-sp
 
 To measure the angle during calibration:
 
-1. In each source image, click the top and bottom of upright wall or glass
-   posts. Select at least three posts total, including both cameras, with good horizontal separation. Four or more
-   long posts work better than short or clustered marks. Ceiling beams and rink corners are unsuitable references.
+1. Mark the rectangle corners described below, or check **Mark vertical posts** and instead click the top and
+   bottom of upright wall or glass posts in each source image. Posts need at least three in total, including both
+   cameras, with good horizontal separation. Four or more long posts work better than short or clustered marks.
+   Ceiling beams and rink corners are unsuitable references for the post method.
 2. The estimate updates automatically shortly after every selection or dragged-point adjustment. The dialog rejects
    poorly conditioned selections and reports how many posts agreed and their angular residual. Scroll to zoom and
    drag the background to pan.
-3. Use **Next** and **Prev** to cycle through **Left camera → Right camera → Preview** (wrapping at either end).
-   Entering Preview finishes any pending estimate and renders the current angles. Inspect both rink ends and the
-   walls. After adjusting pitch or roll, leave and return to Preview to render again. An unchanged preview is reused.
-4. Click **Use angles** to continue calibration with the displayed rotation, **Skip leveling** to continue with the
-   previously configured rotation, or **Cancel calibration** to stop the whole calibration run.
+3. Use **Next** and **Prev** to move through **Left camera → Right camera → Preview**. **Prev** wraps from Left
+   camera back to Preview. Either direction refuses to open Preview while the marks are incomplete and sends you
+   to the camera image that still needs them. Entering Preview finishes any pending estimate and renders the
+   current angles. Inspect both rink ends and the walls. An unchanged preview is reused.
+4. On the Preview tab the navigation button is the acceptance action instead of **Next**: it reads **Use angles**
+   once the rendered preview matches the displayed angles, and **Render preview** while the preview is stale, so
+   adjusting pitch or roll and rendering again never requires leaving the tab. While it reads **Use angles** it is
+   enabled in exactly the same cases as the **Use angles** button in the button box.
+5. Click **Use angles** to continue calibration with the displayed rotation, **Skip leveling** to continue the same
+   calibration with the previously configured rotation, or **Cancel calibration** to stop the whole calibration
+   run. **Cancel calibration** asks for confirmation first, because it discards the entire run and not just the
+   optional leveling step: no alignment, maps, seam or rink mask are published, and because the run marked the
+   game's calibration pending before it started, the game is left without a complete calibration until stitching
+   calibration runs again. Escape and the window close button are **Skip leveling** here, never cancellation —
+   unlike the crop editor that opens next, where they are the cancellation path and prompt for confirmation.
 
-Posts are the default method every time the dialog opens. To level from four ice-plane points instead, check
-**Select rink corners**. Select two corners at one end of a rectangle in **Left camera**, then the two corners at
-the other end in **Right camera**. Click the same side board first in both images. The intersections of the two
-blue lines with straight boards at ice level are suitable references. Arbitrary points along the rounded rink
+Rink corners are the default method every time the dialog opens: select two corners at one end of a rectangle in
+**Left camera**, then the two corners at the other end in **Right camera**. Click the same side board first in
+both images. The intersections of the two blue lines with straight boards at ice level are suitable references. Arbitrary points along the rounded rink
 corners do not define a rectangle and cannot provide a reliable level estimate. All four points are required;
 the dialog rejects nearly aligned rays and inconsistent corner order. A rectangle angle mismatch is advisory;
 **Use points anyway** lets you inspect the estimate in Preview. Runaway calibrated lens-center offsets are rejected
@@ -113,9 +123,11 @@ bazelisk test --config=opt --cpu=k8 \
 ```
 
 Geometry tests include synthetic known rotations, noisy and outlier marks, insufficient spread, repeated fits,
-rectangle corners with invalid order or geometry, and installed Hugin round trips. Dialog tests cover wrapping
-Next/Prev navigation, pending-estimate rendering, preview reuse/invalidation, method switching and mark restoration,
-preview/accept/cancel, cancellation during rendering, stale
+rectangle corners with invalid order or geometry, and installed Hugin round trips. Dialog tests cover Next/Prev
+navigation and the Preview tab's Render preview/Use angles button, pending-estimate rendering, preview
+reuse/invalidation, method switching and mark restoration, preview/accept/cancel, returning to the camera images
+when Preview is opened without complete marks, the whole-run cancellation confirmation and its dismissal when the
+backend finishes first, cancellation during rendering, stale
 source rejection, and invalid dimensions. Main-window tests cover rink changes, explicit overrides equal to defaults,
 and returning to inheritance. A real-image integration and screenshot check can be run without changing the game:
 

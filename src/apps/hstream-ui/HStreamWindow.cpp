@@ -15343,9 +15343,7 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
     return;
   }
   if (rink_leveling_dialog_) {
-    rink_leveling_dialog_->show();
-    rink_leveling_dialog_->raise();
-    rink_leveling_dialog_->activateWindow();
+    rink_leveling_dialog_->raiseSelector();
     appendLog("ignored duplicate rink leveling ready event while the selector is already open");
     return;
   }
@@ -15485,9 +15483,7 @@ void HStreamWindow::handleProjectionCropOutput(const QString& line) {
     return;
   }
   if (projection_crop_dialog_) {
-    projection_crop_dialog_->show();
-    projection_crop_dialog_->raise();
-    projection_crop_dialog_->activateWindow();
+    projection_crop_dialog_->raiseSelector();
     appendLog("ignored duplicate crop selection ready event while the selector is already open");
     return;
   }
