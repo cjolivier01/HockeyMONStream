@@ -10146,7 +10146,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   // calibration uses the current profile's optics. Startup must reach the
   // runner so it can recalibrate before offering an unrenderable crop review.
   for (const QByteArray& stale_provenance : {
-           crop_provenance + "input-lens={projection: full-frame-fisheye, optimization: fixed}\n",
+           QByteArray(crop_provenance).replace("version=10", "version=12") +
+               "input-lens={projection: full-frame-fisheye, optimization: fixed}\n",
            QByteArray(crop_provenance).replace("projection=cylindrical", "projection=general-panini"),
            QByteArray(crop_provenance).replace("camera-horizontal-fov=126.5", "camera-horizontal-fov=108")}) {
     if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), stale_provenance))
@@ -10164,6 +10165,31 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   }
   if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance))
     return false;
+  // Version 7 predates explicit rotation/crop fields, but the runner can reuse
+  // its default zero-rotation/full-crop view. It still needs startup review.
+  const QByteArray legacy_provenance =
+      crop_provenance.left(crop_provenance.indexOf("projection-rotation-0=")).replace("version=10", "version=7");
+  auto legacy_config = YAML::Clone(crop_preview_config);
+  legacy_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
+  legacy_config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0, 1, 0, 1]");
+  std::ofstream(config_path) << YAML::Dump(legacy_config) << '\n';
+  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), legacy_provenance))
+    return false;
+  activate(create);
+  bool legacy_ready = true;
+  const bool legacy_dialog_opened = with_projection_crop_dialog(
+      [&]() { legacy_ready = HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
+      [](ProjectionCropDialog*) {});
+  if (!expect(
+          legacy_dialog_opened && !legacy_ready,
+          "Reusable legacy calibration must still prompt for startup crop review")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
+  std::ofstream(config_path) << YAML::Dump(crop_preview_config) << '\n';
+  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance))
+    return false;
+  activate(create);
   auto* play = require_child<QPushButton>(window, "startPipelineButton");
   auto* progress = require_child<QProgressBar>(window, "playbackProgress");
   const bool cancelled_play = play && progress && with_projection_crop_dialog(

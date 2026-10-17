@@ -7,6 +7,7 @@ another confirmation. Games with an existing calibration and no recorded choice 
 Startup first checks that the saved calibration matches the current camera, lens and projection settings.
 If those settings changed, crop review waits for the new calibration. **Cancel playback** returns to Stopped;
 it does not report a playback failure.
+The UI uses the runner's version-aware metadata parser, so reusable legacy calibrations still receive crop review.
 
 Use **Stitched → Projection → Adjust crop…** to control how much of the projected rink is retained. Stop
 playback before editing. This control is available with the Nona mapping backend.

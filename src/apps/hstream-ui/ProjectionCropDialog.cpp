@@ -4,7 +4,6 @@
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
-#include <QtCore/QMap>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStandardPaths>
@@ -28,6 +27,7 @@
 #include <stdexcept>
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkLeveling.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
@@ -413,59 +413,23 @@ QString ProjectionCropDialog::savedCalibrationPreviewError(
     const QString& projection,
     const std::vector<double>& projection_parameters,
     const hm::stitching::StitchCameraSelection& camera) {
-  QMap<QString, QString> fields;
-  for (const auto& line : readFile(QDir(game_directory).filePath("stitching_canvas_provenance")).split('\n')) {
-    const int separator = line.indexOf('=');
-    if (separator < 0)
-      continue;
-    const QString key = QString::fromUtf8(line.left(separator));
-    if (fields.contains(key)) {
-      return "Calibration metadata contains duplicate fields.";
-    }
-    fields[key] = QString::fromUtf8(line.mid(separator + 1));
-  }
-  try {
-    YAML::Node wrapper, saved = wrapper["stitching"]["projection_framing"];
-    for (const auto& key : {"auto-fov", "auto-canvas", "horizontal-fov"}) {
-      QString yaml_key(key);
-      yaml_key.replace('-', '_');
-      const QString value = fields.value("projection-" + QString(key));
-      if (value.isEmpty())
-        throw std::invalid_argument("Missing framing metadata");
-      if (QString(key) == "horizontal-fov") {
-        saved[yaml_key.toStdString()] = YAML::Load(value.toStdString());
-      } else {
-        if (value != "0" && value != "1")
-          throw std::invalid_argument("Invalid framing metadata");
-        saved[yaml_key.toStdString()] = value == "1";
-      }
-    }
-    for (int index = 0; index < 3; ++index) {
-      bool ok = false;
-      const double angle = fields.value(QString("projection-rotation-%1").arg(index)).toDouble(&ok);
-      if (!ok)
-        throw std::invalid_argument("Missing rotation metadata");
-      saved["rotation_degrees"].push_back(angle);
-    }
-    const auto parsed = hm::stitching::read_stitch_projection_framing(wrapper);
-    bool h_ok = false, v_ok = false;
-    const double horizontal = fields.value("camera-horizontal-fov").toDouble(&h_ok);
-    const double vertical = fields.value("camera-vertical-fov").toDouble(&v_ok);
-    const QString parameters = projection_parameters.empty()
-        ? "none"
-        : QString::fromStdString(hm::stitching::FormatStitchProjectionParameters(projection_parameters));
-    const auto lens = hm::stitching::ParseStitchInputLens(fields.value("input-lens", "{}").toStdString());
-    if (!lens.ok() || *lens != camera.input_lens)
-      return "The input lens settings differ from the saved calibration. Calibrate before previewing the crop.";
-    if (!parsed.ok() || withoutCrop(*parsed) != withoutCrop(framing) ||
-        fields.value("mapping-backend") != "nona" || fields.value("projection") != projection ||
-        fields.value("projection-parameters") != parameters ||
-        fields.value("camera-configuration").toStdString() != camera.configuration || !h_ok || !v_ok ||
-        horizontal != camera.horizontal_fov || vertical != camera.vertical_fov) {
-      return "Calibrate the current projection and camera settings before previewing the crop.";
-    }
-  } catch (const std::exception&) {
+  // Match the runner's version-aware interpretation, including zero rotation
+  // and full crop for reusable version-7 calibrations.
+  const auto parsed = hm::stitching::HuginProject::ReadCanvasProvenanceLocked(game_directory.toStdString());
+  if (!parsed.ok() || !parsed->has_value())
     return "Saved calibration metadata is incomplete. Recalibrate to enable the preview.";
+  const auto& saved = **parsed;
+  if (!saved.camera || !saved.projection_framing || !saved.projection || !saved.projection_parameters ||
+      !saved.mapping_backend)
+    return "Saved calibration metadata is incomplete. Recalibrate to enable the preview.";
+  if (saved.camera->input_lens != camera.input_lens)
+    return "The input lens settings differ from the saved calibration. Calibrate before previewing the crop.";
+  if (withoutCrop(*saved.projection_framing) != withoutCrop(framing) ||
+      *saved.mapping_backend != hm::stitching::MappingBackend::kNona ||
+      hm::stitching::StitchProjectionName(*saved.projection) != projection ||
+      *saved.projection_parameters != projection_parameters || saved.camera->configuration != camera.configuration ||
+      saved.camera->horizontal_fov != camera.horizontal_fov || saved.camera->vertical_fov != camera.vertical_fov) {
+    return "Calibrate the current projection and camera settings before previewing the crop.";
   }
   return {};
 }
