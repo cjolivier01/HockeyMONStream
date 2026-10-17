@@ -66,8 +66,9 @@ These counters come from separate profiled Program/FAKE runs. Runs containing
 unrelated GPU computations were excluded. Program/FAKE process peaks varied
 between 10,350 and 10,596 MiB before and 10,350 and 10,476 MiB afterward.
 
-This does not achieve 100% full-program occupancy. The reconstruction register
-budget permits full theoretical occupancy on SM 12.0, but the observed program
+This does not achieve 100% full-program occupancy. CUDA's occupancy API confirms
+twelve resident 128-thread reconstruction blocks on SM 12.0 (100% theoretical
+occupancy), but the observed Program/FAKE path
 still averages 78.62% resident compute warps. SM activity was already near 96%.
 More memory or a larger batch does not by itself remove these kernel limits.
 Further work should measure kernel fusion and overlap between independent
@@ -76,16 +77,29 @@ above. Optional FP16/INT8 detection and alpha blending can reduce work, but have
 accuracy or image-quality tradeoffs and are separate choices.
 
 With `--options=runtime.gpu_memory_profile=low`, the updated Program/FAKE run
-completed at 69.26 FPS and peaked at 5,480 MiB. Native preview with 4K Program
+completed at 69.26 FPS and peaked at 5,480 MiB. This qualification run built its
+batch-one detector engine during startup; its memory peak includes that work.
+The baseline/candidate comparisons above used warmed engines. Native preview with 4K Program
 and stitched archives completed at 76.49 FPS and 8,689 MiB; this omits the 8K
 Program encoder and is not a comparison with the three-archive row above.
 Low-memory qualification used the same 32-GiB GPU with the profile forced on,
 not a physically smaller GPU. The existing automatic profile and explicit
 overrides remain in effect; this optimization does not grow their working sets.
 
+With native preview and all three archives enabled, a separate profile measured
+61.03% SM activity and 47.91% resident compute warps. Its window uses
+`convertHalf4ToBgr10A2Kernel` with the same startup/shutdown exclusions; archives
+retain the 10-bit stitched output. These numbers describe a different sink/format
+configuration from Program/FAKE and must not be compared as a before/after change.
+An unprofiled repeat measured 84.5% average encoder utilization (77–89% over
+seconds 8–35.5). NVENC engines are separate from the SMs. Archive scheduling and
+encoder throughput are additional profiling targets when those sinks are active.
+
 All qualified runs have consecutive decoded sequences, over 30 seconds of
 telemetry and completed EOS records. The archive checks found HEVC video and AAC
-audio at 7680x4320, 3840x2160 and 8192x2372 (the stitched encoder limit).
+audio at 7680x4320, 3840x2160 and 8192x2372 (the stitched encoder limit). The first
+three decoded frames of the stitched and 4K Program archives match the baseline
+byte for byte.
 Preview qualification uses `--ui-preview-windows=program:<XID>` and
 `--ui-preview-active=program`, the desktop app's GPU-native path. The legacy
 standalone renderer stalled with a CUDA copy error on this setup and was excluded.
