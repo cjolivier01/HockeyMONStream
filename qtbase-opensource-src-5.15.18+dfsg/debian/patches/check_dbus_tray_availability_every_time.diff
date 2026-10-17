@@ -1,0 +1,28 @@
+Description: check D-Bus tray availability every time
+ It could appear in runtime, this allows applications to watch for it
+ themselves and re-create QSystemTrayIcon as needed.
+Origin: upstream, https://code.qt.io/cgit/qt/qtbase.git/commit/?id=3c93dedc063bf453
+Last-Update: 2024-07-24
+
+--- a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
++++ b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
+@@ -104,15 +104,10 @@ enum { defaultSystemFontSize = 9 };
+ static bool shouldUseDBusTray() {
+     // There's no other tray implementation to fallback to on non-X11
+     // and QDBusTrayIcon can register the icon on the fly after creation
+-    static bool result = QGuiApplication::platformName() != QLatin1String("xcb");
+-    static bool resultKnown = result;
+-    if (!resultKnown) {
+-        QDBusMenuConnection conn;
+-        if (conn.isWatcherRegistered())
+-            result = true;
+-        resultKnown = true;
+-        qCDebug(qLcTray) << "D-Bus tray available:" << result;
+-    }
++    if (QGuiApplication::platformName() != QLatin1String("xcb"))
++        return true;
++    const bool result = QDBusMenuConnection().isWatcherRegistered();
++    qCDebug(qLcTray) << "D-Bus tray available:" << result;
+     return result;
+ }
+ #endif

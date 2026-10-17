@@ -1,0 +1,37 @@
+Description: X11: set fallback logical DPI to 96
+ Returning physical DPI from logicalDpi() is problematic,
+ as explained in commit 77e04acb.
+ .
+ The most predictable implementation is to never return
+ physical DPI from QPlaformScreen::logicalDpi(). Other
+ platform plugins already do this, and this change
+ brings xcb in line with the rest of Qt.
+ .
+ We have the QPlatformScreen::physicalSize() API which
+ covers returning physical DPI (indirectly); Options
+ for selecting which one to use can be implemented on
+ top of these (see QT_USE_PHYSICAL_DPI).
+Origin: upstream, https://code.qt.io/cgit/qt/qtbase.git/commit?id=7238123521708ec9
+Last-Update: 2025-12-31
+
+--- a/src/plugins/platforms/xcb/qxcbscreen.cpp
++++ b/src/plugins/platforms/xcb/qxcbscreen.cpp
+@@ -731,12 +731,12 @@ QDpi QXcbScreen::logicalDpi() const
+     if (forcedDpi > 0)
+         return QDpi(forcedDpi, forcedDpi);
+ 
+-    // Fall back to physical virtual desktop DPI, but prevent
+-    // using DPI values lower than 96. This ensuers that connecting
+-    // to e.g. a TV works somewhat predictabilly.
+-    QDpi virtualDesktopPhysicalDPi = m_virtualDesktop->dpi();
+-    return QDpi(std::max(virtualDesktopPhysicalDPi.first, 96.0),
+-                std::max(virtualDesktopPhysicalDPi.second, 96.0));
++    // Fall back to 96 DPI in case no logical DPI is set. We don't want to
++    // return physical DPI here, since that is a different type of DPI: Logical
++    // DPI typically accounts for user preference and viewing distance, and is
++    // quantized into DPI classes (96, 144, 192, etc); physical DPI is an exact
++    // physical measure.
++    return QDpi(96, 96);
+ }
+ 
+ QPlatformCursor *QXcbScreen::cursor() const

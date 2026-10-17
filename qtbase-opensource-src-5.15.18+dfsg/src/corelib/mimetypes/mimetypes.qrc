@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/qt-project.org/qmime/tika/packages">
+        <file alias="tika-mimetypes.xml" compression-algorithm="best">3rdparty/tika-mimetypes.xml</file>
+    </qresource>
+</RCC>

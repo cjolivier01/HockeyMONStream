@@ -317,8 +317,8 @@ int main(int argc, char** argv) {
     next->click();
     next->click();
     ok &= expect(
-        left->points().isEmpty() && right->points().isEmpty() && tabs->currentIndex() == 1 && !accept->isEnabled(),
-        "Corner mode has separate marks and cannot preview an incomplete rectangle");
+        left->points().isEmpty() && right->points().isEmpty() && tabs->currentIndex() == 0 && !accept->isEnabled(),
+        "Corner mode has separate marks and sends an empty rectangle back to Left camera");
     QByteArray corner_rays;
     for (const auto& point :
          std::vector<std::array<double, 3>>{{8, -12, -5}, {8, 12, -5}, {28, -12, -5}, {28, 12, -5}}) {
@@ -328,6 +328,7 @@ int main(int argc, char** argv) {
     }
     const auto corner_tool = "cat >/dev/null\nsleep 0.1\ncat <<'RAYS'\n" + corner_rays + "RAYS\n";
     ok &= script(bin.filePath("pano_trafo"), corner_tool);
+    tabs->setCurrentIndex(1);
     left->setPoints({{10, 20}, {70, 80}, {50, 50}});
     right->setPoints({{20, 30}, {80, 70}});
     auto* yaw = dialog.findChild<QDoubleSpinBox*>("rinkLevelingYaw");
@@ -751,6 +752,11 @@ int main(int argc, char** argv) {
         previewFraming(rotation));
     auto* skip = dialog.findChild<QPushButton*>("skipRinkLevelingButton");
     auto* cancel_calibration = dialog.findChild<QPushButton*>("cancelRinkCalibrationButton");
+    ok &= expect(
+        cancel_calibration && cancel_calibration->toolTip().contains("not just leveling") &&
+            cancel_calibration->toolTip().contains("without a complete calibration") && skip &&
+            skip->toolTip().contains("Only leveling is skipped"),
+        "The two reject buttons describe their different scopes");
     auto* preview = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(
@@ -839,6 +845,25 @@ int main(int argc, char** argv) {
         dialog.result() == QDialog::Rejected && !dialog.isVisible() && !dialog.calibrationCancellationRequested() &&
             !dialog.findChild<QMessageBox*>("rinkLevelingCancelCalibrationConfirmation"),
         "Escape is Skip leveling, never a whole-run cancellation");
+  }
+  {
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.show();
+    auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
+    auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
+    auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
+    dialog.findChild<QCheckBox*>("markRinkPostsCheck")->setChecked(true);
+    static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"))
+        ->setPoints({{10, 10}, {12, 70}});
+    static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"))
+        ->setPoints({{10, 10}, {12, 70}});
+    // One complete post per camera passes the per-image check but not the
+    // shared three-post minimum, so Preview must hand the marks back.
+    tabs->setCurrentIndex(2);
+    ok &= expect(
+        waitUntil([&]() { return tabs->currentIndex() < 2; }) && next->text() == "Next" &&
+            status->text().contains("at least three complete posts"),
+        "Too few posts also return the Preview tab to a camera image");
   }
   {
     QTemporaryDir staging;
@@ -942,6 +967,12 @@ int main(int argc, char** argv) {
             confirmation()->informativeText().contains("without a complete calibration") &&
             confirmation()->informativeText().contains("Skip leveling"),
         "The confirmation names the whole-run scope and the Skip leveling alternative");
+    // A duplicate ready event must bring the blocking prompt forward, not the
+    // dialog it blocks.
+    dialog.raiseSelector();
+    ok &= expect(
+        confirmation() && confirmation()->isVisible() && dialog.isVisible(),
+        "Raising the selector keeps its blocking prompt on screen");
     ok &= expect(click(confirmation(), "Continue calibration"), "The confirmation can be declined");
     ok &= expect(
         waitUntil([&]() { return confirmation() == nullptr; }) && dialog.isVisible() &&

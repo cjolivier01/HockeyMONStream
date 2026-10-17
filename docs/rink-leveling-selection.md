@@ -16,7 +16,7 @@ the edited view commits. Cancel/retry retains the original alignment and request
 crop questions for accepted settings. Legacy projects require AUTO canvas; unverifiable or missing source artifacts
 fail without falling back to a new solve. See [alignment preservation](preserve-stitching-alignment-design.md).
 
-During a NONA stitching calibration, HStream now opens the post selector immediately after panorama alignment. This
+During a NONA stitching calibration, HStream now opens the leveling selector immediately after panorama alignment. This
 step is optional: **Skip leveling** continues with the configured angles. It is not shown for the OpenCV mapping
 backends because their planar transforms do not consume Hugin's shared camera-space rotation.
 
@@ -30,9 +30,11 @@ To measure the angle during calibration:
    poorly conditioned selections and reports how many posts agreed and their angular residual. Scroll to zoom and
    drag the background to pan.
 3. Use **Next** and **Prev** to move through **Left camera → Right camera → Preview**. **Prev** wraps from Left
-   camera back to Preview. Either direction refuses to open Preview while the marks are incomplete and sends you
-   to the camera image that still needs them. Entering Preview finishes any pending estimate and renders the
-   current angles. Inspect both rink ends and the walls. An unchanged preview is reused.
+   camera back to Preview. Either direction refuses to open Preview while the marks cannot be solved — an
+   incomplete rectangle, or fewer than three complete posts — and sends you to the camera image that has
+   contributed least. The post method with no marks at all is the exception: it renders the configured angles.
+   Entering Preview finishes any pending estimate and renders the current angles. Inspect both rink ends and the
+   walls. An unchanged preview is reused.
 4. On the Preview tab the navigation button is the acceptance action instead of **Next**: it reads **Use angles**
    once the rendered preview matches the displayed angles, and **Render preview** while the preview is stale, so
    adjusting pitch or roll and rendering again never requires leaving the tab. While it reads **Use angles** it is
@@ -47,7 +49,8 @@ To measure the angle during calibration:
 
 Rink corners are the default method every time the dialog opens: select two corners at one end of a rectangle in
 **Left camera**, then the two corners at the other end in **Right camera**. Click the same side board first in
-both images. The intersections of the two blue lines with straight boards at ice level are suitable references. Arbitrary points along the rounded rink
+both images. The intersections of the two blue lines with straight boards at ice level are suitable references.
+Arbitrary points along the rounded rink
 corners do not define a rectangle and cannot provide a reliable level estimate. All four points are required;
 the dialog rejects nearly aligned rays and inconsistent corner order. A rectangle angle mismatch is advisory;
 **Use points anyway** lets you inspect the estimate in Preview. Runaway calibrated lens-center offsets are rejected

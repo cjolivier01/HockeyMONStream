@@ -1,0 +1,79 @@
+Description: Revert "D-Bus system tray: properly check whether StatusNotifierHost available"
+ The original commit was made based on a KDE workaround for
+ libdbusmenu-qt crash, but Qt is not using libdbusmenu-qt, Qt is not
+ watching for StatusNotifierHost registration and Qt is not capable
+ to switch backends on the fly leading to tray support being
+ not detected on Plasma Wayland sessions and falling back to the poor
+ legacy protocol on X11.
+Origin: upstream, https://code.qt.io/cgit/qt/qtbase.git/commit/?id=447f3ade9a284d52
+Last-Update: 2024-07-24
+
+--- a/src/platformsupport/themes/genericunix/dbusmenu/qdbusmenuconnection.cpp
++++ b/src/platformsupport/themes/genericunix/dbusmenu/qdbusmenuconnection.cpp
+@@ -72,14 +72,14 @@ QDBusMenuConnection::QDBusMenuConnection
+     , m_connection(serviceName.isNull() ? QDBusConnection::sessionBus()
+                                         : QDBusConnection::connectToBus(QDBusConnection::SessionBus, serviceName))
+     , m_dbusWatcher(new QDBusServiceWatcher(StatusNotifierWatcherService, m_connection, QDBusServiceWatcher::WatchForRegistration, this))
+-    , m_statusNotifierHostRegistered(false)
++    , m_watcherRegistered(false)
+ {
+ #ifndef QT_NO_SYSTEMTRAYICON
+-    QDBusInterface systrayHost(StatusNotifierWatcherService, StatusNotifierWatcherPath, StatusNotifierWatcherService, m_connection);
+-    if (systrayHost.isValid() && systrayHost.property("IsStatusNotifierHostRegistered").toBool())
+-        m_statusNotifierHostRegistered = true;
++    // Start monitoring if any known tray-related services are registered.
++    if (m_connection.interface()->isServiceRegistered(StatusNotifierWatcherService))
++        m_watcherRegistered = true;
+     else
+-        qCDebug(qLcMenu) << "StatusNotifierHost is not registered";
++        qCDebug(qLcMenu) << "failed to find service" << StatusNotifierWatcherService;
+ #endif
+ }
+ 
+--- a/src/platformsupport/themes/genericunix/dbusmenu/qdbusmenuconnection_p.h
++++ b/src/platformsupport/themes/genericunix/dbusmenu/qdbusmenuconnection_p.h
+@@ -72,7 +72,7 @@ public:
+     QDBusMenuConnection(QObject *parent = nullptr, const QString &serviceName = QString());
+     QDBusConnection connection() const { return m_connection; }
+     QDBusServiceWatcher *dbusWatcher() const { return m_dbusWatcher; }
+-    bool isStatusNotifierHostRegistered() const { return m_statusNotifierHostRegistered; }
++    bool isWatcherRegistered() const { return m_watcherRegistered; }
+ #ifndef QT_NO_SYSTEMTRAYICON
+     bool registerTrayIconMenu(QDBusTrayIcon *item);
+     void unregisterTrayIconMenu(QDBusTrayIcon *item);
+@@ -92,7 +92,7 @@ private Q_SLOTS:
+ private:
+     QDBusConnection m_connection;
+     QDBusServiceWatcher *m_dbusWatcher;
+-    bool m_statusNotifierHostRegistered;
++    bool m_watcherRegistered;
+ };
+ 
+ QT_END_NAMESPACE
+--- a/src/platformsupport/themes/genericunix/dbustray/qdbustrayicon.cpp
++++ b/src/platformsupport/themes/genericunix/dbustray/qdbustrayicon.cpp
+@@ -352,8 +352,11 @@ void QDBusTrayIcon::notificationClosed(u
+ bool QDBusTrayIcon::isSystemTrayAvailable() const
+ {
+     QDBusMenuConnection * conn = const_cast<QDBusTrayIcon *>(this)->dBusConnection();
+-    qCDebug(qLcTray) << conn->isStatusNotifierHostRegistered();
+-    return conn->isStatusNotifierHostRegistered();
++
++    // If the KDE watcher service is registered, we must be on a desktop
++    // where a StatusNotifier-conforming system tray exists.
++    qCDebug(qLcTray) << conn->isWatcherRegistered();
++    return conn->isWatcherRegistered();
+ }
+ 
+ QT_END_NAMESPACE
+--- a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
++++ b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
+@@ -106,7 +106,7 @@ static bool isDBusTrayAvailable() {
+     static bool dbusTrayAvailableKnown = false;
+     if (!dbusTrayAvailableKnown) {
+         QDBusMenuConnection conn;
+-        if (conn.isStatusNotifierHostRegistered())
++        if (conn.isWatcherRegistered())
+             dbusTrayAvailable = true;
+         dbusTrayAvailableKnown = true;
+         qCDebug(qLcTray) << "D-Bus tray available:" << dbusTrayAvailable;

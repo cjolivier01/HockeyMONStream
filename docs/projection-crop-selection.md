@@ -3,8 +3,9 @@ maps and scoreboard selection. **Full canvas — no cropping** is selected by de
 choice and continues setup. During that setup — and only then — **Cancel calibration**, Escape and the window
 close button all stop the whole stitching calibration run, so they ask for confirmation first and name what that
 discards: no alignment, maps, seam or rink mask are published, and the game is left without a complete
-calibration. The **Adjust crop** editor and the pre-playback review below close without a prompt, because they
-only discard the dialog's own edits. The choice is remembered, including no cropping. The
+calibration. The **Adjust crop** editor closes without a prompt because it only discards the dialog's own edits,
+and the pre-playback review's **Cancel playback** closes without one because it only declines to start playback.
+The choice is remembered, including no cropping. The
 editor is offered again when the projected camera geometry changes, such as a new alignment, projection,
 projection parameters, or leveling angles. Changing only crop bounds or output resolution does not require
 another confirmation. Games with an existing calibration and no recorded choice are prompted before playback.

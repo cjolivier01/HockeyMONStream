@@ -78,6 +78,10 @@ class ProjectionCropDialog : public QDialog {
   void closeAfterBackendCompletion();
   // Brings the selector forward, or its prompt when one is blocking input.
   void raiseSelector();
+  // True while rejecting this dialog cancels the whole calibration run.
+  bool cancelsCalibration() const {
+    return in_progress_calibration_;
+  }
   bool closedAfterBackendCompletion() const {
     return backend_completed_;
   }

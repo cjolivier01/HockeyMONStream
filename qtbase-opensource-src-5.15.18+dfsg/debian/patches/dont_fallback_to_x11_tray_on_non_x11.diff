@@ -1,0 +1,64 @@
+Description: don't fallback to X11 tray backend on non-X11
+ This allows to have system tray support on the fly on Wayland at least
+ where only QDBusTrayIcon is possible and no need to fallback to
+ QSystemTrayIconSys
+Origin: upstream, https://code.qt.io/cgit/qt/qtbase.git/commit/?id=f6cd286e6609cfbf
+Last-Update: 2024-07-24
+
+--- a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
++++ b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
+@@ -101,17 +101,19 @@ static const char defaultFixedFontNameC[
+ enum { defaultSystemFontSize = 9 };
+ 
+ #if !defined(QT_NO_DBUS) && !defined(QT_NO_SYSTEMTRAYICON)
+-static bool isDBusTrayAvailable() {
+-    static bool dbusTrayAvailable = false;
+-    static bool dbusTrayAvailableKnown = false;
+-    if (!dbusTrayAvailableKnown) {
++static bool shouldUseDBusTray() {
++    // There's no other tray implementation to fallback to on non-X11
++    // and QDBusTrayIcon can register the icon on the fly after creation
++    static bool result = QGuiApplication::platformName() != QLatin1String("xcb");
++    static bool resultKnown = result;
++    if (!resultKnown) {
+         QDBusMenuConnection conn;
+         if (conn.isWatcherRegistered())
+-            dbusTrayAvailable = true;
+-        dbusTrayAvailableKnown = true;
+-        qCDebug(qLcTray) << "D-Bus tray available:" << dbusTrayAvailable;
++            result = true;
++        resultKnown = true;
++        qCDebug(qLcTray) << "D-Bus tray available:" << result;
+     }
+-    return dbusTrayAvailable;
++    return result;
+ }
+ #endif
+ 
+@@ -204,7 +206,7 @@ QPlatformMenuBar *QGenericUnixTheme::cre
+ #if !defined(QT_NO_DBUS) && !defined(QT_NO_SYSTEMTRAYICON)
+ QPlatformSystemTrayIcon *QGenericUnixTheme::createPlatformSystemTrayIcon() const
+ {
+-    if (isDBusTrayAvailable())
++    if (shouldUseDBusTray())
+         return new QDBusTrayIcon();
+     return nullptr;
+ }
+@@ -683,7 +685,7 @@ QPlatformMenuBar *QKdeTheme::createPlatf
+ #if !defined(QT_NO_DBUS) && !defined(QT_NO_SYSTEMTRAYICON)
+ QPlatformSystemTrayIcon *QKdeTheme::createPlatformSystemTrayIcon() const
+ {
+-    if (isDBusTrayAvailable())
++    if (shouldUseDBusTray())
+         return new QDBusTrayIcon();
+     return nullptr;
+ }
+@@ -803,7 +805,7 @@ QPlatformMenuBar *QGnomeTheme::createPla
+ #if !defined(QT_NO_DBUS) && !defined(QT_NO_SYSTEMTRAYICON)
+ QPlatformSystemTrayIcon *QGnomeTheme::createPlatformSystemTrayIcon() const
+ {
+-    if (isDBusTrayAvailable())
++    if (shouldUseDBusTray())
+         return new QDBusTrayIcon();
+     return nullptr;
+ }

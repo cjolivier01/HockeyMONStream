@@ -1,0 +1,33 @@
+Description: QReadWriteLock: fix data race on the d_ptr members
+ The loadRelaxed() at the beginning of tryLockForRead/tryLockForWrite
+ isn't enough to bring us the non-atomic write of the recursive bool.
+ Same issue with the std::mutex itself.
+Origin: upstream, https://code.qt.io/cgit/qt/qtbase.git/commit?id=80d01c4ccb697b9d
+Last-Update: 2025-12-14
+
+--- a/src/corelib/thread/qreadwritelock.cpp
++++ b/src/corelib/thread/qreadwritelock.cpp
+@@ -258,7 +258,10 @@ bool QReadWriteLock::tryLockForRead(int
+             d = val;
+         }
+         Q_ASSERT(!isUncontendedLocked(d));
+-        // d is an actual pointer;
++        // d is an actual pointer; acquire its contents
++        d = d_ptr.loadAcquire();
++        if (!d || isUncontendedLocked(d))
++            continue;
+ 
+         if (d->recursive)
+             return d->recursiveLockForRead(timeout);
+@@ -365,7 +368,10 @@ bool QReadWriteLock::tryLockForWrite(int
+             d = val;
+         }
+         Q_ASSERT(!isUncontendedLocked(d));
+-        // d is an actual pointer;
++        // d is an actual pointer; acquire its contents
++        d = d_ptr.loadAcquire();
++        if (!d || isUncontendedLocked(d))
++            continue;
+ 
+         if (d->recursive)
+             return d->recursiveLockForWrite(timeout);

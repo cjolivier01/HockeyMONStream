@@ -30,6 +30,7 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkLeveling.h"
+#include "src/apps/hstream-ui/CalibrationCancelPrompt.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
 namespace {
@@ -544,8 +545,8 @@ void ProjectionCropDialog::loadPreview() {
       previewFailed("The saved calibration changed. Reopen the crop editor.");
       return;
     }
-    const QString preview_error = savedCalibrationPreviewError(
-        temporary_.path(), initial_, projection_, projection_parameters_, camera_);
+    const QString preview_error =
+        savedCalibrationPreviewError(temporary_.path(), initial_, projection_, projection_parameters_, camera_);
     if (!preview_error.isEmpty()) {
       previewFailed(preview_error);
       return;
@@ -845,33 +846,17 @@ void ProjectionCropDialog::confirmCancelCalibration() {
     cancel_confirmation_->activateWindow();
     return;
   }
-  auto* confirmation = new QMessageBox(
-      QMessageBox::Warning,
-      "Cancel stitching calibration",
-      "Stop the whole stitching calibration run?",
-      QMessageBox::NoButton,
-      this);
-  confirmation->setObjectName("projectionCropCancelCalibrationConfirmation");
-  confirmation->setAttribute(Qt::WA_DeleteOnClose);
-  confirmation->setInformativeText(
-      "This cancels all of the calibration, not just the crop choice. No alignment, maps, seam or rink mask are "
-      "published, and the game is left without a complete calibration until stitching calibration runs again.\n\n"
-      "To continue calibration, choose Use crop instead. It keeps the whole canvas unless you change the mode.");
-  auto* stop_calibration = confirmation->addButton("Cancel calibration", QMessageBox::DestructiveRole);
-  auto* keep_calibrating = confirmation->addButton("Continue calibration", QMessageBox::RejectRole);
-  stop_calibration->setIcon(action_icon(ActionIcon::Cancel));
-  keep_calibrating->setIcon(action_icon(ActionIcon::Next));
-  confirmation->setDefaultButton(keep_calibrating);
-  confirmation->setEscapeButton(keep_calibrating);
-  cancel_confirmation_ = confirmation;
-  connect(confirmation, &QDialog::finished, this, [this, confirmation, stop_calibration]() {
-    cancel_confirmation_ = nullptr;
-    if (confirmation->clickedButton() != stop_calibration)
-      return;
-    cancel_confirmed_ = true;
-    reject();
-  });
-  confirmation->open();
+  open_calibration_cancel_prompt(
+      this,
+      cancel_confirmation_,
+      "projectionCropCancelCalibrationConfirmation",
+      "the crop choice",
+      "To continue calibration, choose Use crop instead. It applies whatever the mode shows, and it opens on "
+      "Full canvas.",
+      [this]() {
+        cancel_confirmed_ = true;
+        reject();
+      });
 }
 
 void ProjectionCropDialog::closeAfterBackendCompletion() {

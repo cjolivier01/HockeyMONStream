@@ -1109,7 +1109,10 @@ bool with_projection_crop_dialog(Open open, Handle handle) {
       return;
     ProjectionCropDialog* dialog = nullptr;
     for (QWidget* top : QApplication::topLevelWidgets()) {
-      if (auto* candidate = dynamic_cast<ProjectionCropDialog*>(top); candidate && candidate->isVisible())
+      // Skip in-progress selectors: close() is whole-run cancellation there,
+      // so it prompts and leaves the dialog in its own exec() forever.
+      if (auto* candidate = dynamic_cast<ProjectionCropDialog*>(top);
+          candidate && candidate->isVisible() && !candidate->cancelsCalibration())
         dialog = candidate;
     }
     if (!dialog)
@@ -3282,6 +3285,27 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
   HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
   const bool backend_close_ok = selector_was_tracked && !fs::exists(staging_dir / ".rink-leveling-response");
 
+  bool saw_cancel_prompt = false;
+  QTimer::singleShot(0, window, [window, &saw_cancel_prompt]() {
+    auto* dialog = window->findChild<QDialog*>("rinkLevelingDialog");
+    auto* cancel = dialog ? dialog->findChild<QPushButton*>("cancelRinkCalibrationButton") : nullptr;
+    if (!cancel)
+      return;
+    cancel->click();
+    auto* prompt = dialog->findChild<QMessageBox*>("rinkLevelingCancelCalibrationConfirmation");
+    if (!prompt)
+      return;
+    for (auto* button : prompt->buttons()) {
+      if (button->text() == "Cancel calibration") {
+        saw_cancel_prompt = true;
+        button->click();
+      }
+    }
+  });
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  const bool cancel_ok = saw_cancel_prompt && !fs::exists(staging_dir / ".rink-leveling-response") &&
+      window->logText().contains("requested cancellation of the stitching calibration");
+
   HStreamWindowTestAccess::stageTestLeveling(window, "pending-in-progress-selection");
   HStreamWindowTestAccess::handleRinkLevelingOutput(
       window, "HSTREAM_RINK_LEVELING status=selected yaw=11 pitch=-22.5 roll=3.25");
@@ -3335,6 +3359,9 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
              "A ready event must return the dialog's absolute yaw, pitch, and roll for Use angles") &&
       expect(selected_ok, "The selected event must feed active and loaded framing used by calibration completion") &&
       expect(skipped_event_ok, "Skip protocol events must be reported without changing angles") &&
+      expect(
+          cancel_ok,
+          "A confirmed Cancel calibration must stop the run instead of returning a leveling response") &&
       expect(backend_close_ok,
              "Backend completion must close the tracked selector without publishing a stale Skip response");
 }

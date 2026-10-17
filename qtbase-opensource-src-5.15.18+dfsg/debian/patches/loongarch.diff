@@ -1,0 +1,80 @@
+Description: add support for LoongArch
+Origin: upstream, https://code.qt.io/cgit/qt/qtbase.git/commit/?id=bdc16f086f1664b5
+Last-Update: 2024-03-09
+
+--- a/src/corelib/global/archdetect.cpp
++++ b/src/corelib/global/archdetect.cpp
+@@ -59,6 +59,10 @@
+ #  define ARCH_PROCESSOR "x86_64"
+ #elif defined(Q_PROCESSOR_IA64)
+ #  define ARCH_PROCESSOR "ia64"
++#elif defined(Q_PROCESSOR_LOONGARCH_32)
++#  define ARCH_PROCESSOR "loongarch32"
++#elif defined(Q_PROCESSOR_LOONGARCH_64)
++#  define ARCH_PROCESSOR "loongarch64"
+ #elif defined(Q_PROCESSOR_MIPS_64)
+ #  define ARCH_PROCESSOR "mips64"
+ #elif defined(Q_PROCESSOR_MIPS)
+--- a/src/corelib/global/qglobal.cpp
++++ b/src/corelib/global/qglobal.cpp
+@@ -1816,6 +1816,37 @@ bool qSharedBuild() noexcept
+ */
+ 
+ /*!
++    \macro Q_PROCESSOR_LOONGARCH
++    \relates <QtGlobal>
++
++    Defined if the application is compiled for LoongArch processors.
++
++    \sa QSysInfo::buildCpuArchitecture()
++*/
++
++/*!
++    \macro Q_PROCESSOR_LOONGARCH_32
++    \relates <QtGlobal>
++
++    Defined if the application is compiled for 32-bit LoongArch processors.
++    The \l Q_PROCESSOR_LOONGARCH macro is also defined when
++    Q_PROCESSOR_LOONGARCH_32 is defined.
++
++    \sa QSysInfo::buildCpuArchitecture()
++*/
++
++/*!
++    \macro Q_PROCESSOR_LOONGARCH_64
++    \relates <QtGlobal>
++
++    Defined if the application is compiled for 64-bit LoongArch processors.
++    The \l Q_PROCESSOR_LOONGARCH macro is also defined when
++    Q_PROCESSOR_LOONGARCH_64 is defined.
++
++    \sa QSysInfo::buildCpuArchitecture()
++*/
++
++/*!
+     \macro Q_PROCESSOR_MIPS
+     \relates <QtGlobal>
+ 
+--- a/src/corelib/global/qprocessordetection.h
++++ b/src/corelib/global/qprocessordetection.h
+@@ -224,6 +224,20 @@
+ // Q_BYTE_ORDER not defined, use endianness auto-detection
+ 
+ /*
++    LoongArch family, known variants: 32- and 64-bit
++
++    LoongArch is little-endian.
++*/
++#elif defined(__loongarch__)
++#  define Q_PROCESSOR_LOONGARCH
++#  if __loongarch_grlen == 64
++#    define Q_PROCESSOR_LOONGARCH_64
++#  else
++#    define Q_PROCESSOR_LOONGARCH_32
++#  endif
++#  define Q_BYTE_ORDER Q_LITTLE_ENDIAN
++
++/*
+     MIPS family, known revisions: I, II, III, IV, 32, 64
+ 
+     MIPS is bi-endian, use endianness auto-detection implemented below.

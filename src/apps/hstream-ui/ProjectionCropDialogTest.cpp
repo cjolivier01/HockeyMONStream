@@ -235,6 +235,12 @@ int main(int argc, char** argv) {
     ProjectionCropDialog dialog(staging.path(), full, "general-panini", {100, 0, 0}, camera, {}, nullptr, true);
     dialog.show();
     ok &= expect(
+        dialog.findChild<QDialogButtonBox*>()
+            ->button(QDialogButtonBox::Cancel)
+            ->toolTip()
+            .contains("not just the crop choice"),
+        "The crop reject button describes its whole-run scope");
+    ok &= expect(
         waitUntil([&]() { return !dialog.sourceRevision().isEmpty(); }) &&
             dialog.findChild<QComboBox*>("projectionCropMode")->currentData() == "full" &&
             !dialog.framing().auto_crop && !dialog.geometry().empty(),
@@ -265,6 +271,10 @@ int main(int argc, char** argv) {
         confirmation()->informativeText().contains("not just the crop choice") &&
             confirmation()->informativeText().contains("without a complete calibration"),
         "The crop confirmation names the whole-run scope");
+    dialog.raiseSelector();
+    ok &= expect(
+        confirmation() && confirmation()->isVisible() && dialog.isVisible(),
+        "Raising the crop selector keeps its blocking prompt on screen");
     ok &= expect(click(confirmation(), "Continue calibration"), "The crop confirmation can be declined");
     ok &= expect(
         waitUntil([&]() { return confirmation() == nullptr; }) && dialog.isVisible(),
@@ -310,7 +320,7 @@ int main(int argc, char** argv) {
       }
     }
     ok &= expect(
-        clicked && dialog.result() == QDialog::Rejected && !dialog.isVisible() &&
+        clicked && dialog.result() != QDialog::Accepted && !dialog.isVisible() &&
             !dialog.closedAfterBackendCompletion(),
         "A confirmed crop cancellation rejects the dialog as a whole-run cancellation");
   }

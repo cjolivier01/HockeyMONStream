@@ -96,6 +96,18 @@ cc_library(
 )
 
 cc_library(
+    name = "calibration_cancel_prompt",
+    srcs = ["CalibrationCancelPrompt.cpp"],
+    hdrs = ["CalibrationCancelPrompt.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":action_icons",
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_library(
     name = "native_preview_surface",
     srcs = ["NativePreviewSurface.cpp"],
     hdrs = ["NativePreviewSurface.h"],
@@ -222,6 +234,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":action_icons",
+        ":calibration_cancel_prompt",
         ":scoreboard_selection_dialog",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
@@ -240,6 +253,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":action_icons",
+        ":calibration_cancel_prompt",
         ":rink_leveling_dialog",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",

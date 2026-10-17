@@ -25,6 +25,7 @@
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "src/apps/hstream-ui/CalibrationCancelPrompt.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 namespace {
@@ -185,8 +186,7 @@ RinkLevelingDialog::RinkLevelingDialog(
   angles->addStretch();
   previous_button_ = new QPushButton(action_icon(ActionIcon::Previous), "Prev");
   previous_button_->setObjectName("previousRinkLevelingButton");
-  previous_button_->setToolTip(
-      "Go back one tab. From Left camera this wraps around to Preview once the marks are complete.");
+  previous_button_->setToolTip("Go back one tab. From Left camera this wraps around to Preview.");
   next_button_ = new QPushButton(action_icon(ActionIcon::Next), "Next");
   next_button_->setObjectName("nextRinkLevelingButton");
   for (auto* button : {previous_button_, next_button_})
@@ -469,14 +469,17 @@ void RinkLevelingDialog::updateNavigationButtons() {
 // Only the explicit preview requests reach this; the debounced estimate cannot,
 // because selectionChanged() stops its timer as soon as marks go incomplete.
 void RinkLevelingDialog::returnToIncompleteMarks() {
-  const auto incomplete = [this](int camera) {
-    const auto count = canvases_[size_t(camera)]->points().size();
+  const auto marks = [this](int camera) { return canvases_[size_t(camera)]->points().size(); };
+  const auto incomplete = [&](int camera) {
+    const auto count = marks(camera);
     return corner_method_ ? count != 2 : count < 2 || count % 2 != 0;
   };
-  const int current = tabs_->currentIndex();
-  if (current < 2 && incomplete(current))
-    return;
-  tabs_->setCurrentIndex(incomplete(0) ? 0 : 1);
+  // Posts can also fail on a total below the shared minimum, which no single
+  // image owns; those go to whichever image has contributed least. Corners
+  // start in Left camera, so an empty pair goes there.
+  const int target = incomplete(0) || (!incomplete(1) && marks(0) <= marks(1)) ? 0 : 1;
+  if (tabs_->currentIndex() != target)
+    tabs_->setCurrentIndex(target);
 }
 
 void RinkLevelingDialog::fail(const QString& message) {
@@ -722,6 +725,11 @@ void RinkLevelingDialog::estimate() {
           {camera,
            {double(points[index].x()), double(points[index].y())},
            {double(points[index + 1].x()), double(points[index + 1].y())}});
+  }
+  if (!corner_method_ && lines.size() < 3) {
+    fail("Mark at least three complete posts, spread across both camera images.");
+    returnToIncompleteMarks();
+    return;
   }
   const auto method =
       corner_method_ ? hm::stitching::RinkLevelingMethod::kRinkCorners : hm::stitching::RinkLevelingMethod::kPosts;
@@ -989,33 +997,16 @@ void RinkLevelingDialog::cancelCalibration() {
   }
   // Discarding a whole calibration run is easy to confuse with skipping this
   // optional step, so name both outcomes before stopping the run.
-  auto* confirmation = new QMessageBox(
-      QMessageBox::Warning,
-      "Cancel stitching calibration",
-      "Stop the whole stitching calibration run?",
-      QMessageBox::NoButton,
-      this);
-  confirmation->setObjectName("rinkLevelingCancelCalibrationConfirmation");
-  confirmation->setAttribute(Qt::WA_DeleteOnClose);
-  confirmation->setInformativeText(
-      "This cancels all of the calibration, not just rink leveling. No alignment, maps, seam or rink mask are "
-      "published, the game is left without a complete calibration until stitching calibration runs again.\n\n"
-      "To keep this calibration and continue without leveling, choose Skip leveling instead.");
-  auto* stop_calibration = confirmation->addButton("Cancel calibration", QMessageBox::DestructiveRole);
-  auto* keep_calibrating = confirmation->addButton("Continue calibration", QMessageBox::RejectRole);
-  stop_calibration->setIcon(action_icon(ActionIcon::Cancel));
-  keep_calibrating->setIcon(action_icon(ActionIcon::Next));
-  confirmation->setDefaultButton(keep_calibrating);
-  confirmation->setEscapeButton(keep_calibrating);
-  cancel_confirmation_ = confirmation;
-  connect(confirmation, &QDialog::finished, this, [this, confirmation, stop_calibration]() {
-    cancel_confirmation_ = nullptr;
-    if (confirmation->clickedButton() != stop_calibration)
-      return;
-    calibration_cancellation_requested_ = true;
-    reject();
-  });
-  confirmation->open();
+  open_calibration_cancel_prompt(
+      this,
+      cancel_confirmation_,
+      "rinkLevelingCancelCalibrationConfirmation",
+      "rink leveling",
+      "To keep this calibration and continue without leveling, choose Skip leveling instead.",
+      [this]() {
+        calibration_cancellation_requested_ = true;
+        reject();
+      });
 }
 
 void RinkLevelingDialog::closeAfterBackendCompletion() {
