@@ -268,7 +268,7 @@ int main(int argc, char** argv) {
           "unset HSTREAM_CALIBRATION_PENDING HSTREAM_CALIBRATION_START_STAGE HSTREAM_CALIBRATION_INVALIDATION_ID\n";
     script +=
         "unset HSTREAM_ARCHIVE_RUN_ID HSTREAM_UI_PREVIEW_OVERLAYS HSTREAM_JOB_MANIFEST\n"
-        "unset HSTREAM_JOB_PLUGIN_STAGE HSTREAM_JOB_LIBRARY_STAGE\n";
+        "unset HSTREAM_JOB_PLUGIN_STAGE HSTREAM_JOB_LIBRARY_STAGE HSTREAM_JOB_MANAGED_RUNTIME\n";
     script += "export HM_GAME_DIR=" + quote(game.parent_path().string()) + "\n";
     for (const char* key : {"HM_OUTPUT_WORK_DIR", "HM_RENDER_SINK", "USE_NEW_NVSTREAMMUX"}) {
       const std::string value = environment(key);
@@ -283,7 +283,12 @@ int main(int argc, char** argv) {
   echo "Managed runtime directory is unavailable" >&2
   exit 78
 fi
-export HSTREAM_RUNTIME_CACHE_DIR="$(cd "${HSTREAM_RUNTIME_CACHE_DIR}" && pwd -P)"
+# A plain assignment, so an unsearchable directory aborts here. `export` would
+# report its own success and hand the runner an empty shared-cache fallback.
+runtime_cache="$(CDPATH= cd -- "${HSTREAM_RUNTIME_CACHE_DIR}" && pwd -P)"
+export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
+# The installed launcher rewrites ordinary arguments; managed runs own theirs.
+export HSTREAM_JOB_MANAGED_RUNTIME=1
 )JOB";
       script += "exec " + quote(runner);
       if (!runtime_only) {

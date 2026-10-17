@@ -178,11 +178,28 @@ class JobScriptTest(unittest.TestCase):
     def test_interactive_requires_supervisor_runtime_directory(self):
         result = self.generate("--interactive")
         self.assertEqual(result.returncode, 0, result.stderr)
-        environment = dict(self.env)
-        environment.pop("HSTREAM_RUNTIME_CACHE_DIR", None)
-        run = subprocess.run([str(self.game / "hstream-job.sh")], env=environment, capture_output=True, text=True)
-        self.assertEqual(run.returncode, 78, run.stderr)
-        self.assertFalse(self.output.exists())
+        blocked = self.root / "blocked"
+        blocked.mkdir()
+        unwritable, unsearchable = blocked / "read-only", blocked / "no-exec"
+        unwritable.mkdir(mode=0o500)
+        # Writable but not searchable: mkdir -p and -w both pass, cd does not.
+        unsearchable.mkdir(mode=0o600)
+        self.addCleanup(lambda: [path.chmod(0o700) for path in (unwritable, unsearchable)])
+        cases = [("unset", None), ("empty", ""), ("not a directory", str(self.config))]
+        if os.geteuid() != 0:  # Root ignores the permission bits these rely on.
+            cases += [("unwritable", str(unwritable)), ("unsearchable", str(unsearchable))]
+        for name, value in cases:
+            with self.subTest(case=name):
+                environment = dict(self.env)
+                if value is None:
+                    environment.pop("HSTREAM_RUNTIME_CACHE_DIR", None)
+                else:
+                    environment["HSTREAM_RUNTIME_CACHE_DIR"] = value
+                run = subprocess.run(
+                    [str(self.game / "hstream-job.sh")], env=environment, capture_output=True, text=True
+                )
+                self.assertNotEqual(run.returncode, 0, run.stdout)
+                self.assertFalse(self.output.exists(), "the runner must not start")
 
     def test_runtime_only_forwards_exact_native_subcommand_arguments(self):
         self.env["HSTREAM_RUNTIME_CACHE_DIR"] = str(self.root / "private runtime")
@@ -422,7 +439,8 @@ class JobScriptTest(unittest.TestCase):
                 self.assertEqual(Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"]),
                                  manifest.parent / "runtime")
 
-    def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
+    def install_packaged_launcher(self):
+        """Put the real Debian launcher on PATH as hstream-cli, relocated."""
         install = self.root / "install 'quoted'"
         (install / "bin").mkdir(parents=True)
         shutil.copy2(self.runner, install / "bin/hstream-cli")
@@ -434,6 +452,41 @@ class JobScriptTest(unittest.TestCase):
         launcher = self.runtime_bin / "hstream-cli"
         launcher.write_text(wrapper)
         launcher.chmod(0o700)
+        return install
+
+    def test_packaged_launcher_forwards_managed_interactive_arguments(self):
+        # These modes carry no --encode-job, so without the managed marker the
+        # launcher would inject its own config, sources and sink.
+        self.install_packaged_launcher()
+        self.env["HSTREAM_RUNTIME_CACHE_DIR"] = str(self.root / "private runtime")
+        self.arguments[0] = "--enable-sinks=WEBRTC"
+        (self.game / "config.yaml").write_text(
+            json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}})
+        )
+        for mode, extra, expected in (
+            ("--interactive", [],
+             ["-g", self.game.name, "--enable-sources=URI-MULTIPLE"] + self.arguments),
+            ("--runtime-only", ["--tensorrt-runtime-info"], ["--tensorrt-runtime-info"]),
+        ):
+            with self.subTest(mode=mode):
+                # No --runner: resolve the command from the execution host PATH.
+                exported = subprocess.run(
+                    [TOOL, "--game-dir", str(self.game), "--force", mode],
+                    cwd=self.root, env=self.env, text=True, capture_output=True,
+                )
+                self.assertEqual(exported.returncode, 0, exported.stderr)
+                script = self.game / "hstream-job.sh"
+                self.assertIn("exec 'hstream-cli'", script.read_text())
+                run = subprocess.run([str(script), *extra], cwd="/", env=self.env,
+                                     text=True, capture_output=True)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                actual = json.loads(self.output.read_text())
+                self.assertEqual(actual["argv"], expected)
+                self.assertNotIn("--encode-job", actual["argv"])
+                self.assertEqual(actual["cwd"], "/")
+
+    def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
+        self.install_packaged_launcher()
         for config in (None, str(self.config), self.config.name):
             for home in (None, str(self.root / "unwritable-home")):
                 with self.subTest(config=config, home=home):
