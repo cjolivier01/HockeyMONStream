@@ -185,10 +185,12 @@ class JobScriptTest(unittest.TestCase):
         # Writable but not searchable: mkdir -p and -w both pass, cd does not.
         unsearchable.mkdir(mode=0o600)
         self.addCleanup(lambda: [path.chmod(0o700) for path in (unwritable, unsearchable)])
-        cases = [("unset", None), ("empty", ""), ("not a directory", str(self.config))]
+        # 78 is the documented "supervisor did not supply one" status; the
+        # unsearchable directory only fails later, at the resolving cd.
+        cases = [("unset", None, 78), ("empty", "", 78), ("not a directory", str(self.config), 78)]
         if os.geteuid() != 0:  # Root ignores the permission bits these rely on.
-            cases += [("unwritable", str(unwritable)), ("unsearchable", str(unsearchable))]
-        for name, value in cases:
+            cases += [("unwritable", str(unwritable), 78), ("unsearchable", str(unsearchable), 1)]
+        for name, value, status in cases:
             with self.subTest(case=name):
                 environment = dict(self.env)
                 if value is None:
@@ -198,7 +200,9 @@ class JobScriptTest(unittest.TestCase):
                 run = subprocess.run(
                     [str(self.game / "hstream-job.sh")], env=environment, capture_output=True, text=True
                 )
-                self.assertNotEqual(run.returncode, 0, run.stdout)
+                self.assertEqual(run.returncode, status, run.stdout)
+                if status == 78:
+                    self.assertIn("Managed runtime directory is unavailable", run.stderr)
                 self.assertFalse(self.output.exists(), "the runner must not start")
 
     def test_runtime_only_forwards_exact_native_subcommand_arguments(self):
@@ -457,7 +461,7 @@ class JobScriptTest(unittest.TestCase):
     def test_packaged_launcher_forwards_managed_interactive_arguments(self):
         # These modes carry no --encode-job, so without the managed marker the
         # launcher would inject its own config, sources and sink.
-        self.install_packaged_launcher()
+        install = self.install_packaged_launcher()
         self.env["HSTREAM_RUNTIME_CACHE_DIR"] = str(self.root / "private runtime")
         self.arguments[0] = "--enable-sinks=WEBRTC"
         (self.game / "config.yaml").write_text(
@@ -484,6 +488,9 @@ class JobScriptTest(unittest.TestCase):
                 self.assertEqual(actual["argv"], expected)
                 self.assertNotIn("--encode-job", actual["argv"])
                 self.assertEqual(actual["cwd"], "/")
+                # The marker must be read after the launcher's runtime setup,
+                # which is the only part of it a managed run still needs.
+                self.assertIn(str(install / "bin"), actual["env"]["PATH"].split(os.pathsep))
 
     def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
         self.install_packaged_launcher()

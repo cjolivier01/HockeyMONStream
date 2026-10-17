@@ -691,7 +691,7 @@ prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
 # Interactive and runtime-only exports carry no --encode-job, so hstream-job
 # marks them instead; without it this launcher would inject a config, sources
 # and a sink into a session that asked for exactly its own arguments.
-if [ -n "${HSTREAM_JOB_MANAGED_RUNTIME:-}" ]; then
+if [ "${HSTREAM_JOB_MANAGED_RUNTIME:-}" = 1 ]; then
   exec "${INSTALL_DIR}/bin/hstream-cli" "$@"
 fi
 for arg in "$@"; do
