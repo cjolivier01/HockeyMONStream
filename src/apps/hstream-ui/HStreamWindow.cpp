@@ -5936,6 +5936,18 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   rink_map_button_->setToolTip(
       "Use detected landmarks or manual marks to map the rink. Sparse evidence can be saved as a partial map.");
   connect(rink_map_button_, &QPushButton::clicked, this, [this] { selectRinkMap(); });
+  rink_map_preview_check_ = new QCheckBox("Show rink mini-map during playback");
+  rink_map_preview_check_->setObjectName("showRinkMiniMapCheck");
+  rink_map_preview_check_->setChecked(
+      QSettings(ui_settings_path(), QSettings::IniFormat).value("preview/rink-map", true).toBool());
+  rink_map_preview_check_->setToolTip(
+      "Applies on the next playback. Requires a saved, reviewed rink map and tracked players. "
+      "Shows neutral player dots and recognized jersey numbers in the Program and Stitched previews. "
+      "Teams are unknown. This display is not added to exported video.");
+  connect(rink_map_preview_check_, &QCheckBox::toggled, this, [](bool enabled) {
+    QSettings settings(ui_settings_path(), QSettings::IniFormat);
+    settings.setValue("preview/rink-map", enabled);
+  });
   rink_default_button_ = new QPushButton(action_icon(ActionIcon::Reset), "Reset to rink defaults");
   rink_default_button_->setObjectName("resetRinkLevelingButton");
   connect(rink_leveling_button_, &QPushButton::clicked, this, [this]() { selectRinkLeveling(); });
@@ -7482,7 +7494,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     rink_layout->addWidget(rink_mask_time_edit_, 7, 1);
     rink_layout->addWidget(rink_mask_time_source_, 8, 0, 1, 2);
     rink_layout->addWidget(rink_map_button_, 9, 0, 1, 2);
-    rink_layout->setRowStretch(10, 1);
+    rink_layout->addWidget(rink_map_preview_check_, 10, 0, 1, 2);
+    rink_layout->setRowStretch(11, 1);
     updateProjectionParameterControls();
     updateProjectionFramingControls();
     synchronizeStitchedColorControls();
@@ -8038,6 +8051,8 @@ void HStreamWindow::updateRinkLevelingControls() {
     rink_leveling_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
   if (rink_map_button_)
     rink_map_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
+  if (rink_map_preview_check_)
+    rink_map_preview_check_->setEnabled(enabled);
   updateCropRotationControls();
 }
 
@@ -11018,6 +11033,12 @@ void HStreamWindow::startPipeline() {
   if (render_video && !active_run_is_calibration_ && show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked())
     preview_overlays << "rink";
   env.insert("HSTREAM_UI_PREVIEW_OVERLAYS", preview_overlays.join(','));
+  env.insert(
+      "HSTREAM_UI_PREVIEW_RINK_MAP",
+      render_video && !active_run_is_calibration_ && mappingBackend() == "nona" && rink_map_preview_check_ &&
+              rink_map_preview_check_->isChecked()
+          ? "1"
+          : "0");
   confirmed_show_player_tracking_ = preview_overlays.contains("players");
   confirmed_show_play_tracking_ = preview_overlays.contains("play");
   confirmed_show_rink_mask_ = preview_overlays.contains("rink");

@@ -1,12 +1,33 @@
 INCLUDE_PREFIX = "hstream/src/libs/stitching"
 
 cc_library(
+  name = "playback_rink_map",
+  srcs = ["PlaybackRinkMap.cpp"],
+  hdrs = ["PlaybackRinkMap.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-lcrypto"],
+  deps = [
+    ":rink_map", ":rink_leveling", ":stitching", ":hugin_project",
+    ":canvas_constraint_check", ":game_config", ":transaction_state",
+    "//src/libs/assets:asset_manager", "//src/libs/common:process",
+    "@com_google_absl//absl/strings", "@opencv_linux//:opencv", "@yaml-cpp",
+  ],
+)
+
+cc_library(
   name = "rink_map",
   srcs = ["RinkMap.cpp"],
   hdrs = ["RinkMap.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = ["@opencv_linux//:opencv", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+  name = "playback_rink_map_test",
+  srcs = ["PlaybackRinkMapTest.cpp"],
+  deps = [":playback_rink_map", ":stitching"],
 )
 
 cc_test(

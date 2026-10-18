@@ -250,6 +250,7 @@ cc_library(
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
         "//src/libs/stitching:rink_landmarks",
+        "//src/libs/stitching:playback_rink_map",
         "//src/libs/stitching:rink_leveling",
         "//src/libs/stitching:rink_map",
         "//src/libs/stitching:transaction_state",

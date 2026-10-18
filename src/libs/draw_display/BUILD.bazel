@@ -3,6 +3,22 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 INCLUDE_PREFIX = "hstream/src/libs/draw_display"
 
 cc_library(
+    name = "rink_mini_map",
+    srcs = ["RinkMiniMap.cpp"],
+    hdrs = ["RinkMiniMap.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":analytics_overlay",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/player_analytics:frame_meta",
+        "//src/libs/stitching:playback_rink_map",
+        "//src/libs/stitching:stitching",
+        "@deepstream//:deepstream_lib",
+    ],
+)
+
+cc_library(
     name = "draw_display",
     srcs = [
         "DrawDisplayMeta.cpp",
@@ -21,6 +37,12 @@ cc_library(
         "@com_google_absl//absl/status",
         "//toolchains/jetson:cuda_runtime",
     ],
+)
+
+cc_test(
+    name = "rink_mini_map_test",
+    srcs = ["RinkMiniMapTest.cpp"],
+    deps = [":rink_mini_map", "//src/libs/stitching:stitching"],
 )
 
 cc_library(

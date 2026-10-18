@@ -475,6 +475,7 @@ void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
 
 #include "hstream/src/libs/draw_display/AnalyticsOverlayGl.h"
 #include "hstream/src/libs/draw_display/PlayerOverlays.h"
+#include "hstream/src/libs/draw_display/RinkMiniMap.h"
 
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
@@ -531,6 +532,7 @@ struct RendererState {
   unsigned player_analytics_layers{0};
   float player_joint_confidence{0.3F};
   hm::draw_display::analytics::CommandList player_commands;
+  std::unique_ptr<hm::draw_display::RinkMiniMap> rink_mini_map;
   hm::draw_display::analytics::CommandList watermark_commands{64, 64};
   std::unique_ptr<hm::draw_display::analytics::GlCompositor> player_compositor;
   uint64_t player_overlay_suppressions{0};
@@ -959,6 +961,8 @@ void add_rect_paths(
     overlays->paths.push_back(OverlayPath{points, border, border_width, true, false});
 }
 
+std::optional<std::uint32_t> exact_positive_dimension(float dimension);
+
 PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* buffer) {
   RendererState* state = self->state;
   PreviewOverlays overlays;
@@ -1155,6 +1159,13 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
         overlays.coordinate_width,
         overlays.coordinate_height,
         &state->player_commands);
+  if (state->rink_mini_map && (state->channel == "program" || state->channel == "stitched")) {
+    const auto width = exact_positive_dimension(overlays.stitched_surface_width);
+    const auto height = exact_positive_dimension(overlays.stitched_surface_height);
+    if (width && height)
+      state->rink_mini_map->Append(
+          frame_meta, *width, *height, overlays.coordinate_width, overlays.coordinate_height, &state->player_commands);
+  }
   return overlays;
 }
 
@@ -2577,6 +2588,19 @@ bool redraw_last_sample(GstElement* sink) {
 #else
   (void)sink;
   return false;
+#endif
+}
+
+void configure_rink_mini_map(GstElement* sink, std::shared_ptr<const hm::stitching::PlaybackRinkMap> map) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  std::lock_guard<std::mutex> lock(self->state->mutex);
+  self->state->rink_mini_map = map ? std::make_unique<hm::draw_display::RinkMiniMap>(std::move(map)) : nullptr;
+#else
+  (void)sink;
+  (void)map;
 #endif
 }
 

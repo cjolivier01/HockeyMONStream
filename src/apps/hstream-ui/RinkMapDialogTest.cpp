@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/RinkMapDialog.h"
+#include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 
+#include <unistd.h>
 #include <clocale>
 #include <cmath>
 #include <fstream>
@@ -77,7 +79,7 @@ int main(int argc, char** argv) {
     std::cout << dialog.findChild<QLabel*>("rinkMapStatus")->text().toStdString() << '\n';
     const QString prefix = QString::fromLocal8Bit(argv[3]);
     dialog.grab().save(prefix + "-partial.png");
-    if (argc == 5) {
+    if (argc >= 5) {
       std::ifstream marks(argv[4]);
       int camera;
       std::string feature;
@@ -92,6 +94,18 @@ int main(int argc, char** argv) {
       dialog.findChild<QTabWidget*>("rinkMapCameraTabs")->setCurrentIndex(1);
       QTest::qWait(30);
       dialog.grab().save(prefix + "-right.png");
+      if (argc == 6 && QString(argv[5]) == "--save-reviewed-map") {
+        auto* save = dialog.findChild<QPushButton*>("saveRinkMapButton");
+        if (!expect(
+                save->isEnabled() && save->text() == "Save reviewed map",
+                "Only a reviewed map can be prepared for playback"))
+          return 1;
+        save->click();
+        if (!expect(
+                dialog.findChild<QLabel*>("rinkMapStatus")->text().startsWith("Saved reviewed rink map"),
+                "Playback map preparation must save successfully"))
+          return 1;
+      }
     }
     return 0;
   }
@@ -196,6 +210,12 @@ int main(int argc, char** argv) {
   }
   document = updated->document;
   ok &= expect(SaveRinkMap(*snapshot, document).ok(), "Save a complete map");
+  if (access("/usr/bin/pano_trafo", X_OK) == 0) {
+    auto playback = rink::LoadPlaybackRinkMap(game.path().toStdString());
+    ok &= expect(
+        playback.ok(),
+        playback.ok() ? "Native playback consumes the editor map" : playback.status().ToString().c_str());
+  }
   ok &= expect(!SaveRinkMap(competitor, document).ok(), "A competing editor must not overwrite a newer map");
   ok &= write(game.filePath("config.yaml"), config + "unrelated_preference: true\n");
   ok &= expect(SaveRinkMap(*snapshot, document).ok(), "Unrelated preferences must not invalidate rink evidence");
@@ -246,6 +266,7 @@ int main(int argc, char** argv) {
         "Reopening a cleared map cannot resurrect removed marks or goal estimates");
   }
   ok &= write(game.filePath("config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: pending\n");
+  ok &= expect(!rink::LoadPlaybackRinkMap(game.path().toStdString()).ok(), "Playback rejects pending calibration");
   ok &= expect(!SaveRinkMap(*snapshot, document).ok(), "Pending recalibration blocks saving old evidence");
   ok &= write(game.filePath("config.yaml"), config);
   ok &= write(game.filePath("autooptimiser_out.pto"), pto + "# changed\n");

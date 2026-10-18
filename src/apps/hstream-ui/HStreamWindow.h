@@ -645,6 +645,7 @@ class HStreamWindow : public QMainWindow {
   std::array<QDoubleSpinBox*, 2> rink_angle_spins_{};
   QPushButton* rink_leveling_button_{nullptr};
   QPushButton* rink_map_button_{nullptr};
+  QCheckBox* rink_map_preview_check_{nullptr};
   QPushButton* rink_default_button_{nullptr};
   QLabel* rink_rotation_source_{nullptr};
   std::vector<hm::stitching::StitchRinkConfiguration> rink_configurations_;

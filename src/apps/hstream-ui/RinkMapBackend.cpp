@@ -20,6 +20,7 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "hstream/src/libs/stitching/RinkLeveling.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
@@ -51,18 +52,10 @@ absl::Status CalibrationComplete(const QString& directory) {
 }
 
 absl::StatusOr<QByteArray> CalibrationRevision(const QString& directory) {
-  QCryptographicHash hash(QCryptographicHash::Sha256);
-  // Unrelated game preferences do not invalidate this offline geometry.
-  for (const char* name : {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png"}) {
-    auto text = rink::read_bounded_regular_file_no_follow(
-        std::filesystem::path(directory.toStdString()) / name, 128 * 1024 * 1024, "rink-map calibration");
-    if (!text.ok())
-      return text.status();
-    hash.addData(name);
-    hash.addData(QByteArray::number(text->size()));
-    hash.addData(QByteArrayView(text->data(), text->size()));
-  }
-  return hash.result().toHex();
+  auto revision = rink::RinkMapCalibrationRevision(directory.toStdString());
+  if (!revision.ok())
+    return revision.status();
+  return QByteArray::fromStdString(*revision);
 }
 
 absl::StatusOr<std::optional<std::string>> ReadSavedMap(const QString& directory) {

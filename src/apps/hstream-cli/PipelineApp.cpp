@@ -6,7 +6,6 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
-#include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "PipelineAssetOptions.h"
 #include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
@@ -17,7 +16,9 @@
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
 #include "configurator.h"
+#include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
+#include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include "hstream/src/apps/apps-common/deepstream_config.h"
@@ -1139,6 +1140,7 @@ PipelineApplication::PipelineApplication()
       selecting_(FALSE) {
   preview_overlay_state_ =
       hm::pipeline_internal::PreviewOverlayRuntimeState(preview_overlay_selection_from_environment());
+  rink_map_preview_requested_ = g_strcmp0(g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP"), "1") == 0;
   memset(fps_, 0, sizeof(fps_));
   memset(fps_avg_, 0, sizeof(fps_avg_));
   g_mutex_init(&fps_lock_);
@@ -1807,9 +1809,26 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
     const std::string rink_mask_file = (hm::Configurator::get_game_dir(game_id) / "rink_mask_0.png").string();
 
+    std::shared_ptr<const hm::stitching::PlaybackRinkMap> rink_map;
+    if (!sources_only) {
+      rink_map_preview_active_ = false;
+      if (rink_map_preview_requested_) {
+        auto prepared = hm::stitching::LoadPlaybackRinkMap(
+            hm::Configurator::get_game_dir(game_id), [this] { return g_atomic_int_get(&cintr_) != 0; });
+        if (prepared.ok()) {
+          rink_map = std::move(*prepared);
+          rink_map_preview_active_ = true;
+          g_print("HSTREAM_RINK_MAP status=ready teams=unknown\n");
+        } else {
+          g_printerr("HSTREAM_RINK_MAP status=unavailable message=%s\n", prepared.status().ToString().c_str());
+        }
+      }
+    }
+
     auto configure_overlays = [&](GstElement* sink, const hm::player_analytics::Config& analytics) {
       g_object_set(G_OBJECT(sink), "rink-mask-file", rink_mask_file.c_str(), nullptr);
       hm::gpu_preview::configure_player_analytics(sink, analytics.drawing_layers(), analytics.pose.confidence_threshold);
+      hm::gpu_preview::configure_rink_mini_map(sink, rink_map);
     };
 
     struct PreviewProbeState {
@@ -6444,7 +6463,9 @@ bool PipelineApplication::apply_preview_overlay_state(
     producers.push_back(state);
   }
 
-  const guint producer_flags = preview_overlay_producer_flags(selection, active_ui_preview_channel_);
+  auto producer_selection = selection;
+  producer_selection.players = producer_selection.players || rink_map_preview_active_;
+  const guint producer_flags = preview_overlay_producer_flags(producer_selection, active_ui_preview_channel_);
   bool applied = true;
   for (const SinkState& state : sinks) {
     g_object_set(

@@ -1,6 +1,9 @@
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/player_analytics/FrameMeta.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/PlaybackRinkMap.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include <gstnvdsmeta.h>
 
@@ -144,6 +147,37 @@ int main(int argc, char** argv) {
         marked_baked.analytics_command_count == 0 && marked_baked.path_count == 0,
         "Program preview repeated baked ignored overlays");
     gst_buffer_unref(ignored_baked);
+    auto map = std::make_shared<hm::stitching::PlaybackRinkMap>();
+    map->hugin_generation = "fixture\n";
+    map->fit.state = hm::stitching::RinkMapState::kReady;
+    map->fit.plane_to_ray = cv::Matx33d(0, -1, 19, -1, 0, -3, 0, 0, -7);
+    map->columns = map->rows = 2;
+    map->rays.assign(4, *hm::stitching::RinkPointToRay(map->fit, {0, 0}));
+    const auto generation = *hm::stitching::stitched_output_generation_id(map->hugin_generation, 0, 320, 240);
+    for (auto* buffer : {fresh, missing}) {
+      auto* frame = static_cast<NvDsFrameMeta*>(gst_buffer_get_nvds_batch_meta(buffer)->frame_meta_list->data);
+      Check(hm::stitching::add_stitched_output_generation_meta(frame, generation), "rink generation attachment");
+    }
+    gpu::configure_rink_mini_map(sink, map);
+    gpu::set_source_geometry(sink, 320, 240);
+    g_object_set(sink, "show-player-tracking", FALSE, nullptr);
+    for (const char* channel : {"program", "stitched"}) {
+      g_object_set(sink, "channel", channel, nullptr);
+      const auto rink = gpu::inspect_preview_overlays_for_test(sink, fresh);
+      Check(
+          rink.analytics_command_count > 80 && rink.path_count == 0,
+          "Mini-map must draw independently of player box and analytics toggles");
+      const auto stale = gpu::inspect_preview_overlays_for_test(sink, baked);
+      Check(stale.analytics_command_count == 0, "Frame without calibration identity leaked mini-map");
+    }
+    g_object_set(sink, "channel", "program", nullptr);
+    Check(
+        gpu::inspect_preview_overlays_for_test(sink, missing).analytics_command_count == 0,
+        "Mini-map without Program geometry must fail closed");
+    gpu::configure_rink_mini_map(sink, nullptr);
+    Check(
+        gpu::inspect_preview_overlays_for_test(sink, fresh).analytics_command_count == 0,
+        "Disabling mini-map must clear its commands");
     gst_buffer_unref(missing);
     gst_buffer_unref(fresh);
     gst_buffer_unref(baked);

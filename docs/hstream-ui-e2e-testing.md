@@ -201,3 +201,13 @@ and verifies a black background after resize/remap. It also checks that ordinary
 Qt updates preserve renderer pixels and resize does not deliver posted events.
 A resized process-paused preview remains black until playback resumes; the
 runner cannot redraw while SIGSTOP-paused.
+
+### Reviewed rink mini-map
+
+With a saved fitted `rink-map.yaml` in an isolated game, set
+`HSTREAM_UI_E2E_RINK_MAP=1` and run `scripts/test_hstream_ui_e2e.sh --x11-preview`.
+This enables the next-playback mini-map, disables player boxes, and requires
+`HSTREAM_RINK_MAP status=ready` from the real runner. Inspect the Program and
+Stitched preview captures for the rink and neutral player circles. The fixture
+must match the copied game's calibration; partial/stale maps fail preparation.
+The ordinary archive geometry check still runs, since the map is preview-only.

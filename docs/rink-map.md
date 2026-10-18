@@ -61,6 +61,36 @@ angular residual measures agreement with the input marks, not metre accuracy;
 four marks can have zero residual. Extrapolated ends depend on the dimensions,
 mark selection, and the quality of the source calibration.
 
+## Playback mini-map
+
+After saving a reviewed, fitted map, leave **Show rink mini-map during playback**
+checked under **Stitched → Rink**, then start playback. The Program and Stitched
+desktop GPU previews show an overhead rink with neutral player circles. The
+setting applies on the next playback and works independently of player boxes.
+It currently uses the x86 desktop GPU preview renderer.
+
+Each circle projects a tracked player's box bottom-centre onto the ice plane.
+Positions are estimates: occlusion, loose boxes, calibration error and assumed
+rink dimensions affect accuracy. Players outside the estimated boards are
+omitted. A partial or stale map cannot place players; complete/review it before
+playback. Recalibration requires reviewing and saving again.
+
+A circle shows the jersey number when enabled jersey recognition supplies a
+fresh result for that track. Leading zeros are retained; missing or expired
+numbers leave a plain circle. There is currently no home/away classification,
+so all players use the same neutral colour. Track colours and jersey numbers do
+not identify teams.
+
+Startup validates the saved calibration, refits its source-camera evidence,
+and prepares a bounded output-pixel-to-ray grid through Hugin. Playback maps
+only compact player metadata; it handles panorama crops, preview resizing and
+post-stitch rotation without reading video back to the CPU. Every frame must
+match the prepared calibration and output dimensions. Missing metadata hides
+the map for that frame rather than retaining old player positions.
+
+The mini-map is a desktop preview overlay. It does not appear in encoded
+archives or change the camera policy, ice mask or leveling.
+
 ## Storage and scope
 
 `rink-map.yaml` stores the versioned evidence, dimensions, original source
@@ -70,8 +100,8 @@ matrix. Calibration changes or a competing editor's save block stale writes.
 Unrelated game preferences do not invalidate the evidence.
 To clear a saved map, remove all observations and save the empty partial map.
 
-This is an offline map editor. It does not change the ice mask, leveling angles,
-camera tracking or Program output. Existing leveling selections are not retained
+The editor runs offline and supplies the optional playback mini-map. It does
+not change the ice mask, leveling angles, camera tracking or encoded Program output. Existing leveling selections are not retained
 by the leveling flow; mark the physical rink features in this editor. Detection
 uses the saved calibration pair, so occluded features may need manual help.
 
@@ -105,6 +135,8 @@ The editor reads bounded PNG proxies once and runs only when requested.
 bazelisk test --config=opt --cpu=k8 \
   //src/libs/stitching:rink_map_test \
   //src/libs/stitching:rink_landmarks_test \
+  //src/libs/stitching:playback_rink_map_test \
+  //src/libs/draw_display:rink_mini_map_test \
   //src/apps/hstream-ui:rink_map_dialog_test --test_output=errors
 ```
 
@@ -116,3 +148,10 @@ inference and saves screenshots outside the checkout. An optional text file of
 QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/rink_map_dialog_test \
   --inspect-game "$HOME/Videos/<game>" /tmp/rink-map
 ```
+
+For an isolated copied game only, append a marks file and `--save-reviewed-map`
+to save a fitted fixture. `playback_rink_map_test --load-game <copied-game>`
+checks native playback preparation. The real UI E2E driver accepts
+`HSTREAM_UI_E2E_RINK_MAP=1` to require successful preparation with player boxes
+disabled; use `--x11-preview` to capture both GPU previews. See
+[UI E2E testing](hstream-ui-e2e-testing.md).

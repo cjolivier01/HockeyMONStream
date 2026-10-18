@@ -16355,6 +16355,14 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     activate(show_play_tracking);
   if (preview_overlays.contains("rink") && !show_rink_mask->isChecked())
     activate(show_rink_mask);
+  const bool require_rink_map = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP");
+  if (require_rink_map) {
+    auto* rink_map = require_child<QCheckBox>(window, "showRinkMiniMapCheck");
+    if (!rink_map || !rink_map->isEnabled())
+      return false;
+    rink_map->setChecked(true);
+    show_player_tracking->setChecked(false);
+  }
   const QStringList requested_outputs =
       qEnvironmentVariable("HSTREAM_UI_E2E_OUTPUTS", "archive-file").split(',', Qt::SkipEmptyParts);
   for (const QString& output : {QString("archive-file"), QString("archive-stitched"), QString("archive-program-4k")}) {
@@ -16663,6 +16671,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   }
 
   if (!expect(observed_native_asset_setup, "Real UI run should delegate native asset verification to hstream-cli") ||
+      !expect(
+          !require_rink_map || final_log.contains("HSTREAM_RINK_MAP status=ready teams=unknown"),
+          "Real UI playback should prepare the reviewed rink map") ||
       !expect(observed_command, "Real UI run should launch hstream-cli") ||
       !expect(
           !require_scoreboard || submitted_scoreboard,

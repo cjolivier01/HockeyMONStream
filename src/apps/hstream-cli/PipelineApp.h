@@ -307,6 +307,8 @@ class PipelineApplication {
   bool ui_preview_channel_explicitly_disabled_{false};
   guint64 active_ui_preview_generation_{1};
   hm::pipeline_internal::PreviewOverlayRuntimeState preview_overlay_state_;
+  bool rink_map_preview_requested_{false};
+  bool rink_map_preview_active_{false};
   std::vector<GstElement*> preview_overlay_producers_;
   std::atomic<unsigned> preview_overlay_probe_flags_{0};
   gdouble stitch_rotate_degrees_{0.0};
