@@ -253,6 +253,7 @@ cc_library(
         "//src/libs/stitching:rink_leveling",
         "//src/libs/stitching:rink_map",
         "//src/libs/stitching:transaction_state",
+        "@com_google_absl//absl/strings",
         "@opencv_linux//:opencv",
         "@qt//:qt_widgets",
         "@yaml-cpp",

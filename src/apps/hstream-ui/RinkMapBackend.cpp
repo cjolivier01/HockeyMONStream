@@ -15,6 +15,7 @@
 #include <QtCore/QProcess>
 #include <QtGui/QImageReader>
 
+#include "absl/strings/numbers.h"
 #include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -123,10 +124,11 @@ absl::StatusOr<std::vector<cv::Point2d>> ReadPairs(const QByteArray& output, siz
     std::string x, y;
     if (!(stream >> x >> y))
       return absl::DataLossError("Rink coordinate transform returned too few points");
-    char* end_x = nullptr;
-    char* end_y = nullptr;
-    const double px = std::strtod(x.c_str(), &end_x), py = std::strtod(y.c_str(), &end_y);
-    if (*end_x || *end_y || (!allow_outside && (!std::isfinite(px) || !std::isfinite(py))))
+    // Hugin writes C-locale numbers, regardless of the desktop's numeric locale.
+    // Reverse projections can return nan/inf for points outside a camera.
+    double px = 0, py = 0;
+    if (!absl::SimpleAtod(x, &px) || !absl::SimpleAtod(y, &py) ||
+        (!allow_outside && (!std::isfinite(px) || !std::isfinite(py))))
       return absl::DataLossError("A rink point could not be transformed");
     result.emplace_back(px, py);
   }

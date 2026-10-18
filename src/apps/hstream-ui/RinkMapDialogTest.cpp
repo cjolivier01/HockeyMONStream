@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/RinkMapDialog.h"
 
+#include <clocale>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -160,6 +161,39 @@ int main(int argc, char** argv) {
   ok &= expect(
       updated->fit.state == rink::RinkMapState::kReady && !updated->projected_layout[0].empty(),
       "Neutral-zone anchors project the entire rink");
+  // QApplication adopts the desktop's C locale. Coordinate parsing must still
+  // accept pano_trafo's dot decimals, including its out-of-view nan/inf values.
+  {
+    const std::string saved_locale = std::setlocale(LC_NUMERIC, nullptr);
+    bool comma_locale = false;
+    for (const char* locale : {"en_DK.utf8", "de_DE.UTF-8", "fr_FR.UTF-8"}) {
+      if (std::setlocale(LC_NUMERIC, locale) && std::string(std::localeconv()->decimal_point) == ",") {
+        comma_locale = true;
+        break;
+      }
+    }
+    if (comma_locale) {
+      auto localized = UpdateRinkMap(*snapshot, document, false, {});
+      ok &= expect(
+          localized.ok() && localized->fit.state == rink::RinkMapState::kReady,
+          "Dot-decimal transforms work with a comma-decimal desktop locale");
+    } else {
+      std::cout << "SKIP: no comma-decimal locale installed\n";
+    }
+    ok &= write(
+        bin.filePath("pano_trafo"),
+        "#!/bin/sh\nif [ \"$1\" = \"-r\" ]; then\n"
+        "awk 'NR==1 {print \"nan -nan\"; next} NR==2 {print \"inf -inf\"; next} {print $2, $3}'\n"
+        "else\nawk '{print $2, $3}'\nfi\n");
+    auto outside = UpdateRinkMap(*snapshot, document, false, {});
+    ok &= expect(
+        outside.ok() && outside->fit.state == rink::RinkMapState::kReady && !outside->projected_layout[0].empty() &&
+            std::isnan(outside->projected_layout[0][0][0].x) && std::isnan(outside->projected_layout[0][0][0].y) &&
+            std::isinf(outside->projected_layout[0][0][1].x) && std::isinf(outside->projected_layout[0][0][1].y),
+        "Out-of-view projections retain nonfinite coordinates without rejecting the map");
+    std::setlocale(LC_NUMERIC, saved_locale.c_str());
+    ok &= write(bin.filePath("pano_trafo"), "#!/bin/sh\nawk '{print $2, $3}'\n");
+  }
   document = updated->document;
   ok &= expect(SaveRinkMap(*snapshot, document).ok(), "Save a complete map");
   ok &= expect(!SaveRinkMap(competitor, document).ok(), "A competing editor must not overwrite a newer map");
