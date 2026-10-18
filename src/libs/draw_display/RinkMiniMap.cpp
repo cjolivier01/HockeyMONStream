@@ -63,8 +63,12 @@ bool RinkMiniMap::Append(
   const float rink_height = rink_width * rink.width / rink.length;
   const float margin = 12 * scale, header = 24 * scale, footer = 20 * scale;
   // Keep the lower-right corner free for the existing preview watermark.
-  const float left = 2 * margin;
-  const float top = options_.upper_left ? margin : display_height - rink_height - header - footer - 2 * margin;
+  const float left = options_.position == RinkMiniMapOptions::Position::kUpperRight
+      ? display_width - rink_width - 2 * margin
+      : 2 * margin;
+  const float top = options_.position == RinkMiniMapOptions::Position::kLowerLeft
+      ? display_height - rink_height - header - footer - 2 * margin
+      : margin;
   const float bottom = top + rink_height + header + footer + margin;
   if (!commands->AddFill(left - margin, top, left + rink_width + margin, bottom, {0.96F, 0.98F, 1, 0.90F}))
     return false;

@@ -308,6 +308,10 @@ static GstBusSyncReply bus_sync_callback(GstBus* /*bus*/, GstMessage* message, g
   if (app_ctx && GST_MESSAGE_TYPE(message) == GST_MESSAGE_ELEMENT) {
     const GstStructure* structure = gst_message_get_structure(message);
     gboolean active = FALSE;
+    if (structure && gst_structure_has_name(structure, "hstream-scoreboard-selected")) {
+      std::lock_guard<std::mutex> lock(app_ctx->scoreboard_selection_mu);
+      app_ctx->pending_scoreboard_selection = std::shared_ptr<GstMessage>(gst_message_ref(message), gst_message_unref);
+    }
     if (structure && gst_structure_has_name(structure, "hstream-stitching-calibration-phase") &&
         gst_structure_get_boolean(structure, "active", &active)) {
       // Preroll can run calibration before the main loop dispatches the bus.

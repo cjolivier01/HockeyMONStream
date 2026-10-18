@@ -5,8 +5,9 @@
 namespace hm::draw_display {
 struct RinkMiniMapOptions {
   enum class Size { kCompact, kStandard, kLarge };
+  enum class Position { kUpperRight, kUpperLeft, kLowerLeft };
   Size size{Size::kStandard};
-  bool upper_left{false};
+  Position position{Position::kUpperRight};
 };
 
 inline RinkMiniMapOptions RinkMiniMapPreferences(std::string_view size, std::string_view position) {
@@ -14,6 +15,8 @@ inline RinkMiniMapOptions RinkMiniMapPreferences(std::string_view size, std::str
       size == "compact"     ? RinkMiniMapOptions::Size::kCompact
           : size == "large" ? RinkMiniMapOptions::Size::kLarge
                             : RinkMiniMapOptions::Size::kStandard,
-      position == "upper-left"};
+      position == "upper-left"       ? RinkMiniMapOptions::Position::kUpperLeft
+          : position == "lower-left" ? RinkMiniMapOptions::Position::kLowerLeft
+                                     : RinkMiniMapOptions::Position::kUpperRight};
 }
 } // namespace hm::draw_display

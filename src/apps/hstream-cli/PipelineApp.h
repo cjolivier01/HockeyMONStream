@@ -194,6 +194,7 @@ class PipelineApplication {
   gboolean event_thread_func();
   static gboolean handle_element_message_static(AppCtx* app_ctx, GstMessage* message);
   gboolean handle_element_message(AppCtx* app_ctx, GstMessage* message);
+  void remember_scoreboard_selection(AppCtx* app_ctx, GstObject* source, const std::string& epoch);
   static void handle_bus_message_static(AppCtx* app_ctx, GstMessage* message);
   void handle_bus_message(AppCtx* app_ctx, GstMessage* message);
   void finish_runtime_seek(

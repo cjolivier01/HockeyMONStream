@@ -3,6 +3,7 @@
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
@@ -5928,11 +5929,12 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     rink_map_size_combo_->addItem(option.first, option.second);
   rink_map_position_combo_ = new QComboBox();
   rink_map_position_combo_->setObjectName("rinkMiniMapPositionCombo");
+  rink_map_position_combo_->addItem("Upper right", "upper-right");
   rink_map_position_combo_->addItem("Lower left", "lower-left");
   rink_map_position_combo_->addItem("Upper left", "upper-left");
   for (const auto& option : {std::pair{rink_map_size_combo_, "size"}, {rink_map_position_combo_, "position"}}) {
     const QString key = QString("preview/rink-map-%1").arg(option.second);
-    const QString fallback = option.first == rink_map_size_combo_ ? "standard" : "lower-left";
+    const QString fallback = option.first == rink_map_size_combo_ ? "standard" : "upper-right";
     const auto value = QSettings(ui_settings_path(), QSettings::IniFormat).value(key, fallback).toString();
     set_combo_to_data(option.first, option.first->findData(value) >= 0 ? value : fallback);
     option.first->setToolTip("Applies on the next playback. Changes only the desktop mini-map display.");
@@ -6535,8 +6537,29 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_status_->setObjectName("previewStatusLabel");
   auto* program_footer = new QHBoxLayout();
   program_footer->addWidget(preview_status_, 1);
+  scoreboard_select_button_ = new QPushButton(action_icon(ActionIcon::Crop), "Select scoreboard…");
+  scoreboard_select_button_->setObjectName("selectScoreboardButton");
+  scoreboard_select_button_->setToolTip(
+      "Select or reselect the scoreboard corners during Program playback. Resume playback first if paused.");
+  scoreboard_position_combo_ = new QComboBox();
+  scoreboard_position_combo_->setObjectName("scoreboardPositionCombo");
+  scoreboard_position_combo_->addItem("Upper left", "upper-left");
+  scoreboard_position_combo_->addItem("Upper center", "upper-center");
+  scoreboard_position_combo_->addItem("Upper right", "upper-right");
+  scoreboard_position_combo_->setToolTip(
+      "Scoreboard placement in Program output, including recordings and streams. Saved for this game; applies live during playback.");
+  program_footer->addWidget(scoreboard_select_button_);
+  program_footer->addWidget(new QLabel("Position:"));
+  program_footer->addWidget(scoreboard_position_combo_);
+  scoreboard_controls_status_ = new QLabel();
+  scoreboard_controls_status_->setObjectName("scoreboardControlsStatus");
+  scoreboard_controls_status_->setWordWrap(true);
+  connect(scoreboard_select_button_, &QPushButton::clicked, this, &HStreamWindow::requestScoreboardSelection);
+  connect(scoreboard_position_combo_, &QComboBox::currentIndexChanged, this, &HStreamWindow::changeScoreboardPosition);
+  loadScoreboardControls(baseline_config_);
   program_preview_layout->addWidget(preview_host, 1);
   program_preview_layout->addLayout(program_footer);
+  program_preview_layout->addWidget(scoreboard_controls_status_);
   auto* program_controls_column = new QWidget(program_splitter);
   program_controls_column->setObjectName("programControlsPane");
   auto* program_controls_column_layout = new QVBoxLayout(program_controls_column);
@@ -7967,6 +7990,7 @@ std::vector<double> HStreamWindow::stitchProjectionParameters() const {
 }
 
 void HStreamWindow::loadRinkLevelingControls(const YAML::Node& config) {
+  loadScoreboardControls(config);
   if (!rink_configuration_combo_)
     return;
   const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
@@ -10664,6 +10688,9 @@ void HStreamWindow::startPipeline() {
     return;
   }
   pipeline_state_->setText("STARTING");
+  pending_scoreboard_property_.clear();
+  scoreboard_runtime_ready_ = false;
+  scoreboard_reselect_waiting_ = false;
   resetPlaybackProgress(true);
   setPlaybackStartupStage("ui", "Preparing the game directory and saved configuration");
   const auto show_startup_error = [this](const QString& detail) {
@@ -11822,7 +11849,8 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   handleTelemetryOutputStatus(trimmed);
   handleArchiveOutputStatus(trimmed);
   appendLog(trimmed, stderr_output);
-  handleRuntimeControlResponse(trimmed);
+  if (!handleScoreboardControlOutput(trimmed))
+    handleRuntimeControlResponse(trimmed);
   handleScoreboardSelectorOutput(trimmed);
   handleRinkLevelingOutput(trimmed);
   handleProjectionCropOutput(trimmed);
@@ -12056,6 +12084,10 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
     playback_progress_x10_ = qRound(std::clamp(fraction_value, 0.0, 1.0) * 1000.0);
   }
   setPlaybackProgressState(PlaybackProgressState::kRunning);
+  if (playback_stage_ == "0" && processed_ns > 0 && !scoreboard_runtime_ready_) {
+    scoreboard_runtime_ready_ = true;
+    updateScoreboardControls();
+  }
   updatePlaybackProgressPresentation();
   updatePlaybackSeekControls();
   return true;
@@ -12220,6 +12252,7 @@ void HStreamWindow::updatePlaybackSeekPositionPresentation() {
 }
 
 void HStreamWindow::updatePlaybackSeekControls() {
+  updateScoreboardControls();
   if (!playback_seek_controls_ || !playback_seek_slider_) {
     return;
   }
@@ -15305,6 +15338,160 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   showArchiveFinalizationFailure(failure_detail);
 }
 
+void HStreamWindow::loadScoreboardControls(const YAML::Node& config) {
+  if (!scoreboard_position_combo_)
+    return;
+  QString position = "upper-left";
+  for (const auto& layer : {baseline_layer_, user_layer_, config}) {
+    for (const char* path : hm::scoreboard::kPositionPaths) {
+      YAML::Node value;
+      if (lookup_yaml_path(layer, path, &value)) {
+        if (value.IsNull())
+          position = "upper-left";
+        else if (value.IsScalar())
+          position = QString::fromStdString(value.Scalar());
+      }
+    }
+  }
+  if (scoreboard_position_combo_->findData(position) < 0)
+    position = "upper-left";
+  const QSignalBlocker blocker(scoreboard_position_combo_);
+  set_combo_to_data(scoreboard_position_combo_, position);
+  saved_scoreboard_position_ = position;
+  scoreboard_controls_status_->clear();
+  updateScoreboardControls();
+}
+
+void HStreamWindow::updateScoreboardControls() {
+  if (!scoreboard_select_button_)
+    return;
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (!running || pending_scoreboard_run_ != pipeline_run_generation_) {
+    pending_scoreboard_property_.clear();
+    if (!running) {
+      scoreboard_reselect_waiting_ = false;
+      scoreboard_runtime_ready_ = false;
+    }
+  }
+  const bool selecting = scoreboard_reselect_waiting_ || scoreboard_selection_dialog_;
+  const bool available = !isArchiveFinalizing() && !isCalibrationRun() && !calibration_pending_ &&
+      pending_scoreboard_property_.isEmpty() && pending_playback_seek_generation_ == 0 &&
+      playback_seek_recovery_generation_ == 0 && pending_process_pause_generation_ == 0 &&
+      pending_process_resume_generation_ == 0 && (!running || (!pipeline_paused_ && !pipeline_stop_requested_));
+  const bool live = running && scoreboard_runtime_ready_ && active_run_game_id_ == game_id_edit_->text().trimmed();
+  scoreboard_select_button_->setEnabled(scoreboard_selection_dialog_ || (available && live && !selecting));
+  scoreboard_position_combo_->setEnabled(
+      available && !selecting && (!running || live) && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
+  if (scoreboard_controls_status_->text().isEmpty())
+    scoreboard_controls_status_->setText(
+        live ? "Scoreboard placement also applies to recordings and streams."
+             : "Start Program playback to select or reselect the scoreboard.");
+}
+
+bool HStreamWindow::sendScoreboardCommand(const QString& property, const QString& value) {
+  if (!pipeline_process_ || pipeline_process_->state() != QProcess::Running || !scoreboard_runtime_ready_ ||
+      pipeline_paused_ || !pending_scoreboard_property_.isEmpty())
+    return false;
+  const QByteArray command = QString("@set-property playcropper0 %1=%2\n").arg(property, value).toUtf8();
+  if (pipeline_process_->write(command) != command.size())
+    return false;
+  pending_scoreboard_property_ = property;
+  pending_scoreboard_value_ = value;
+  pending_scoreboard_run_ = pipeline_run_generation_;
+  const quint64 request = ++scoreboard_request_id_;
+  scoreboard_controls_status_->setText(
+      property == "scoreboard-reselect" ? "Opening scoreboard selection…" : "Applying scoreboard position…");
+  updateScoreboardControls();
+  QTimer::singleShot(runtimeControlAckTimeoutMs(), this, [this, request] {
+    if (request != scoreboard_request_id_ || pending_scoreboard_property_.isEmpty())
+      return;
+    pending_scoreboard_property_.clear();
+    scoreboard_reselect_waiting_ = false;
+    scoreboard_controls_status_->setText(
+        "No acknowledgement from playback. Saved position applies on the next playback.");
+    updateScoreboardControls();
+  });
+  return true;
+}
+
+void HStreamWindow::requestScoreboardSelection() {
+  if (scoreboard_selection_dialog_) {
+    scoreboard_selection_dialog_->show();
+    scoreboard_selection_dialog_->raise();
+    scoreboard_selection_dialog_->activateWindow();
+    return;
+  }
+  if (!scoreboard_select_button_->isEnabled())
+    return;
+  scoreboard_reselect_waiting_ = true;
+  if (!sendScoreboardCommand("scoreboard-reselect", "1")) {
+    scoreboard_reselect_waiting_ = false;
+    scoreboard_controls_status_->setText(
+        "Could not request scoreboard selection. Resume Program playback and try again.");
+    updateScoreboardControls();
+  }
+}
+
+void HStreamWindow::changeScoreboardPosition() {
+  if (!scoreboard_position_combo_ || !scoreboard_position_combo_->isEnabled())
+    return;
+  const QString position = scoreboard_position_combo_->currentData().toString();
+  const fs::path directory(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
+  absl::Status status;
+  {
+    auto lock = hm::stitching::GameConfigTransactionLock::TryAcquire(directory);
+    if (!lock.ok()) {
+      status = lock.status();
+    } else {
+      try {
+        const fs::path path = directory / "config.yaml";
+        YAML::Node config = fs::exists(path) ? YAML::LoadFile(path.string()) : YAML::Node(YAML::NodeType::Map);
+        config["rink"]["scoreboard"]["position"] = position.toStdString();
+        for (const char* key : {"scoreboard-position", "scoreboard_position"}) {
+          remove_yaml_path(config, {"pipeline", "hmplaycropper", key});
+          for (const char* bag : {"properties", "private-properties"})
+            remove_yaml_path(config, {"pipeline", "hmplaycropper", bag, key});
+        }
+        status = publish_yaml_config(path, config);
+      } catch (const std::exception& error) {
+        status = absl::InternalError(error.what());
+      }
+    }
+  }
+  if (!status.ok()) {
+    const QSignalBlocker blocker(scoreboard_position_combo_);
+    set_combo_to_data(scoreboard_position_combo_, saved_scoreboard_position_);
+    scoreboard_controls_status_->setText(
+        "Could not save scoreboard position: " + QString::fromStdString(status.ToString()));
+    return;
+  }
+  saved_scoreboard_position_ = position;
+  if (!sendScoreboardCommand("scoreboard-position", position))
+    scoreboard_controls_status_->setText("Scoreboard position saved for the next playback.");
+}
+
+bool HStreamWindow::handleScoreboardControlOutput(const QString& line) {
+  if (pending_scoreboard_property_.isEmpty() || pending_scoreboard_run_ != pipeline_run_generation_ ||
+      active_run_game_id_ != game_id_edit_->text().trimmed())
+    return false;
+  const bool success = line ==
+      QString("runtime property playcropper0 %1=%2").arg(pending_scoreboard_property_, pending_scoreboard_value_);
+  const bool failed = line.startsWith("runtime command failed:") && line.contains("playcropper0") &&
+      (line.contains(pending_scoreboard_property_) || line.contains("element not found"));
+  if (!success && !failed)
+    return false;
+  const bool selection = pending_scoreboard_property_ == "scoreboard-reselect";
+  pending_scoreboard_property_.clear();
+  if (failed)
+    scoreboard_reselect_waiting_ = false;
+  scoreboard_controls_status_->setText(
+      failed          ? "Playback rejected the change. Saved position applies on the next playback."
+          : selection ? "Choose the scoreboard corners in the selection window."
+                      : "Scoreboard position applied to Program output and saved for this game.");
+  updateScoreboardControls();
+  return true;
+}
+
 void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
   static const QRegularExpression selector_url(
       R"((https?://[^\s]+/\?token=[0-9a-fA-F]{64}))", QRegularExpression::CaseInsensitiveOption);
@@ -15320,6 +15507,7 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
       return;
     }
     scoreboard_selector_url_ = url_text;
+    scoreboard_reselect_waiting_ = true;
     if (preview_status_) {
       preview_status_->setText("Waiting for scoreboard selection");
     }
@@ -15374,6 +15562,7 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     connect(dialog, &QObject::destroyed, this, [this, dialog]() {
       if (scoreboard_selection_dialog_ == dialog)
         scoreboard_selection_dialog_ = nullptr;
+      updateScoreboardControls();
     });
     if (!dialog->loadError().isEmpty())
       appendLog(dialog->loadError());
@@ -15381,11 +15570,17 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     dialog->raise();
     dialog->activateWindow();
     appendLog(QString("scoreboard selector opened in Qt: %1").arg(url_text));
+    updateScoreboardControls();
     return;
   }
 
   if (!scoreboard_selector_url_.isEmpty() &&
-      (line.contains("Loaded scoreboard perspective polygon") || line.contains("Scoreboard overlay disabled"))) {
+      (line.contains("Loaded scoreboard perspective polygon") || line.contains("Scoreboard overlay disabled") ||
+       line.startsWith("Scoreboard selection cancelled;"))) {
+    scoreboard_reselect_waiting_ = false;
+    scoreboard_controls_status_->setText(
+        line.startsWith("Scoreboard selection cancelled;") ? "Selection cancelled. Previous scoreboard selection kept."
+                                                           : "Scoreboard selection saved.");
     if (preview_status_) {
       const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
       preview_status_->setText(
@@ -15397,6 +15592,7 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     appendLog("scoreboard selection complete; pipeline continuing");
     if (scoreboard_selection_dialog_)
       scoreboard_selection_dialog_->closeAfterBackendCompletion();
+    updateScoreboardControls();
   }
 }
 
@@ -16781,6 +16977,7 @@ void HStreamWindow::updateStitchingStillPreview() {
 }
 
 void HStreamWindow::updateRunControls() {
+  updateScoreboardControls();
   updateStitchingStillPreview();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = isArchiveFinalizing();

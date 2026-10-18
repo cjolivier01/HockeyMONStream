@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
+#include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 
 #include <dirent.h>
@@ -6658,6 +6659,33 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-width", "rink.scoreboard.projected_width"));
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-height", "rink.scoreboard.projected_height"));
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-scale", "rink.scoreboard.scoreboard_scale"));
+  // Resolve before removing native aliases so game and CLI choices outrank
+  // inherited settings, including private property bags applied by the bin.
+  std::string position = "upper-left";
+  int position_rank = -1;
+  for (const char* path : hm::scoreboard::kPositionPaths) {
+    const auto value = get_node(config_, path);
+    if (!value || !value->IsDefined())
+      continue;
+    const int rank = std::max(0, explicit_value_rank(path));
+    if (rank < position_rank)
+      continue;
+    if (!value->IsNull() && (!value->IsScalar() || !hm::scoreboard::ParsePosition(value->Scalar())))
+      return absl::InvalidArgumentError("Scoreboard position must be upper-left, upper-center or upper-right");
+    position = value->IsNull() ? "upper-left" : value->Scalar();
+    position_rank = rank;
+  }
+  auto cropper = pipeline["hmplaycropper"];
+  cropper.remove("scoreboard_position");
+  for (const char* bag : {"properties", "private-properties"}) {
+    auto values = cropper[bag];
+    if (values.IsMap()) {
+      values.remove("scoreboard-position");
+      values.remove("scoreboard_position");
+    }
+  }
+  cropper["scoreboard-position"] = position;
+  explicit_value_ranks_["pipeline.hmplaycropper.scoreboard-position"] = std::max(0, position_rank);
 
   const std::string source_path = "rink.scoreboard.perspective_polygon";
   const std::string destination_path = "pipeline.hmplaycropper.scoreboard-perspective-polygon";

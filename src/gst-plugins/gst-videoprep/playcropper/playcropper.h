@@ -71,7 +71,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
       cudaStream_t stream);
   absl::Status EnsureScoreboardPerspectiveConfigured(
       surface::Surface stitched_surface,
-      const NvDsFrameMeta* frame_meta);
+      const NvDsFrameMeta* frame_meta,
+      bool reselect = false);
   absl::Status LoadScoreboardPerspectiveFromConfig();
   bool SetScoreboardPerspectiveValue(std::string_view value);
   absl::Status ApplyScoreboardOutputEpoch(const NvDsFrameMeta* frame_meta);
@@ -99,6 +100,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::atomic_bool lift_shadow_black_point_{false};
   std::atomic<float> exposure_{0.0f};
   bool show_scoreboard_{false};
+  std::atomic<hm::scoreboard::Position> scoreboard_position_{hm::scoreboard::Position::kUpperLeft};
+  std::atomic<bool> scoreboard_reselect_requested_{false};
   float scoreboard_width_ratio_{1.0 / 8};
   float scoreboard_height_ratio_{1.0 / 8};
   std::string scoreboard_projected_width_;

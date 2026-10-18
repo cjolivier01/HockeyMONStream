@@ -163,11 +163,12 @@ absl::StatusOr<RinkMapFit> FitRinkMap(const RinkMapDocument& document) {
     return absl::InvalidArgumentError("Too many rink observations");
   const double scale = document.layout.length / 2;
   std::vector<std::array<double, 9>> rows;
+  std::vector<std::array<double, 9>> ideal_rows;
   std::vector<const RinkMapObservation*> used;
   std::vector<cv::Vec3d> normals;
   RinkMapFit result;
   result.message =
-      "Partial map: add well-spaced anchors across and along the rink. A centre line or parallel blue lines alone cannot locate the goals.";
+      "Partial map: add marks across and along the rink. Centre, blue and goal lines alone cannot locate players. You can save these marks and continue later.";
   bool has_points = false, has_cross_lines = false, has_board_lines = false;
   size_t assigned = 0;
   for (const auto& observation : document.observations) {
@@ -205,16 +206,29 @@ absl::StatusOr<RinkMapFit> FitRinkMap(const RinkMapDocument& document) {
       line[2] /= scale;
       line /= cv::norm(line);
       AddRows(rows, line, *normal, true, weight);
+      AddRows(ideal_rows, line, line, true, 1);
       normals.push_back(*normal);
     } else {
       const auto point = *RinkFeaturePoint(document.layout, observation.feature);
       AddRows(rows, observation.rays.front(), {point.x / scale, point.y / scale, 1}, false, weight);
+      const cv::Vec3d ideal(point.x / scale, point.y / scale, 1);
+      AddRows(ideal_rows, ideal / cv::norm(ideal), ideal, false, 1);
       normals.emplace_back();
     }
     used.push_back(&observation);
   }
   result.constraints = used.size();
   if (rows.size() < 9)
+    return result;
+  // Check the selected physical features independently of measured rays.
+  // Noise in repeated/collinear points or parallel lines must not manufacture
+  // the missing cross-rink constraint and turn a partial map into a rejection.
+  cv::Mat ideal_design(static_cast<int>(ideal_rows.size()), 9, CV_64F);
+  for (size_t i = 0; i < ideal_rows.size(); ++i)
+    std::copy(ideal_rows[i].begin(), ideal_rows[i].end(), ideal_design.ptr<double>(static_cast<int>(i)));
+  cv::Mat ideal_values;
+  cv::SVD::compute(ideal_design, ideal_values);
+  if (ideal_values.total() < 9 || ideal_values.at<double>(7) < ideal_values.at<double>(0) * 1e-8)
     return result;
   cv::Mat design(static_cast<int>(rows.size()), 9, CV_64F);
   for (size_t i = 0; i < rows.size(); ++i)
@@ -253,7 +267,7 @@ absl::StatusOr<RinkMapFit> FitRinkMap(const RinkMapDocument& document) {
   const double height = std::abs(normal.dot(origin)) / std::max(1e-20, cv::norm(normal) * (nx + ny) / 2);
   result.state = RinkMapState::kInconsistent;
   result.message =
-      "The marks disagree with a flat rink. Check landmark identities, rink dimensions and stitching calibration.";
+      "Cannot fit a reliable rink map from these marks yet. You can save them as a partial map. Check the selected landmarks, rink dimensions and camera calibration; player locations remain unavailable.";
   if (nx < 1e-10 || ny < 1e-10 || nx / ny < 0.8 || nx / ny > 1.25 || std::abs(x.dot(y)) / (nx * ny) > 0.15 ||
       height < 0.3 || height > 50)
     return result;

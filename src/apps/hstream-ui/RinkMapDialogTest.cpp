@@ -14,6 +14,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QWheelEvent>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
@@ -282,6 +283,50 @@ int main(int argc, char** argv) {
     ok &= expect(
         dialog.findChild<QLabel*>("rinkMapGuidanceLabel")->text().contains("Parallel"),
         "Parallel-only evidence gives a concrete next step");
+    auto* drag_view = dialog.findChild<QGraphicsView*>("rinkMapCamera0");
+    auto find_anchor = [&]() -> QGraphicsItem* {
+      for (auto* item : drag_view->scene()->items())
+        if (item->data(0) == "rinkMapAnchor" && item->data(1).toInt() == 0 && item->data(2).toInt() == 0)
+          return item;
+      return nullptr;
+    };
+    auto* handle = find_anchor();
+    QGraphicsPathItem* line_path = nullptr;
+    for (auto* item : drag_view->scene()->items())
+      if (item->data(0) == "rinkMapObservationPath" && item->data(1).toInt() == 0)
+        line_path = dynamic_cast<QGraphicsPathItem*>(item);
+    if (!expect(handle && line_path, "Manual line has a draggable endpoint and visible path"))
+      return 1;
+    const QPointF original = handle->pos();
+    const QPoint start = drag_view->mapFromScene(original);
+    const QPoint finish = start + QPoint(24, 18);
+    QTest::mousePress(drag_view->viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    QMouseEvent motion(
+        QEvent::MouseMove,
+        finish,
+        drag_view->viewport()->mapToGlobal(finish),
+        Qt::NoButton,
+        Qt::LeftButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(drag_view->viewport(), &motion);
+    const auto endpoint = line_path->path().elementAt(0);
+    ok &= expect(
+        QLineF(original, handle->pos()).length() > 10 &&
+            QLineF(handle->pos(), QPointF(endpoint.x, endpoint.y)).length() < .01,
+        "Point and attached line move before release");
+    ok &= expect(
+        !dialog.isWindowModified() && !undo->isEnabled() && table->rowCount() == 1,
+        "Drag preview leaves document and history untouched");
+    QTest::mouseRelease(drag_view->viewport(), Qt::LeftButton, Qt::NoModifier, finish);
+    ok &= expect(
+        waitUntil([&] { return undo->isEnabled(); }) && idle(dialog) && dialog.isWindowModified() &&
+            table->rowCount() == 1,
+        "Release commits one edit without adding a mark");
+    undo->click();
+    ok &= expect(
+        idle(dialog) && find_anchor() && QLineF(find_anchor()->pos(), original).length() < .01 &&
+            !dialog.isWindowModified() && !undo->isEnabled(),
+        "One undo restores the original line");
     const auto anchor = sourcePoint({0, -12.954});
     ok &= expect(mark(dialog, 0, "center-near", {anchor.x, anchor.y}), "Add a manual anchor");
     ok &= expect(
@@ -444,6 +489,30 @@ int main(int argc, char** argv) {
     ok &= expect(
         save->isEnabled() && save->text() == "Save reviewed map",
         "Reopen recomputes a saved map from its source marks");
+    // A physically implausible fit is still evidence worth retaining.
+    auto* rejected_width = dialog.findChild<QDoubleSpinBox*>("rinkMapDimension1");
+    rejected_width->setValue(40);
+    ok &= expect(
+        waitUntil([&] { return save->isEnabled() && save->text() == "Save partial map"; }),
+        "Rejected fit keeps partial Save available");
+    ok &= expect(
+        dialog.findChild<QLabel*>("rinkMapStatus")->text().contains("Cannot fit a reliable rink map"),
+        "Rejected fit explains uncertainty without blaming a flat rink");
+    save->click();
+    ok &= expect(
+        !dialog.isWindowModified() && !rink::LoadPlaybackRinkMap(game.path().toStdString()).ok(),
+        "Saving rejected evidence succeeds without enabling player locations");
+    {
+      RinkMapDialog reopened(game.path());
+      reopened.show();
+      ok &= expect(
+          idle(reopened) && reopened.findChild<QTableWidget*>("rinkMapObservationsTable")->rowCount() == 4 &&
+              reopened.findChild<QPushButton*>("saveRinkMapButton")->isEnabled() &&
+              reopened.findChild<QPushButton*>("saveRinkMapButton")->text() == "Save partial map",
+          "Rejected evidence reopens intact and remains partial");
+    }
+    dialog.findChild<QPushButton*>("rinkMapUndoButton")->click();
+    ok &= expect(idle(dialog) && save->text() == "Save reviewed map", "Undo restores the valid dimensions");
     auto* width = dialog.findChild<QDoubleSpinBox*>("rinkMapDimension1");
     width->setValue(1);
     ok &= expect(!save->isEnabled(), "Changed dimensions disable save immediately, before debounce");

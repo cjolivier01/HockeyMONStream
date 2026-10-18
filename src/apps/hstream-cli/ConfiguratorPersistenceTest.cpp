@@ -1720,6 +1720,7 @@ play-tracker:
   canonical_overrides["rink"]["scoreboard"]["projected_width"] = "%11";
   canonical_overrides["rink"]["scoreboard"]["projected_height"] = "%22";
   canonical_overrides["rink"]["scoreboard"]["scoreboard_scale"] = 1.25;
+  canonical_overrides["rink"]["scoreboard"]["position"] = "upper-center";
   for (const auto& point : std::vector<std::pair<int, int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}}) {
     YAML::Node coordinates(YAML::NodeType::Sequence);
     coordinates.push_back(point.first);
@@ -1774,6 +1775,7 @@ play-tracker:
           mapped_canonical["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%11" &&
           mapped_canonical["hmplaycropper"]["scoreboard-projected-height"].as<std::string>() == "%22" &&
           mapped_canonical["hmplaycropper"]["scoreboard-scale"].as<double>() == 1.25 &&
+          mapped_canonical["hmplaycropper"]["scoreboard-position"].as<std::string>() == "upper-center" &&
           mapped_canonical["hmplaycropper"]["scoreboard-perspective-polygon"].as<std::string>() == "1,2,3,4,5,6,7,8" &&
           mapped_canonical["sink0"]["bitrate"].as<int>() == 123456 &&
           mapped_canonical["sink0"]["output-file"].as<std::string>() == "/tmp/canonical.mkv" &&

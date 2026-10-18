@@ -347,6 +347,21 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
 }
 
 bool PlayCropperPriv::SetProperty(const Property& prop) {
+  // These requests may arrive while the video worker is waiting in the selector.
+  if (prop.key == "scoreboard-position") {
+    const auto position = hm::scoreboard::ParsePosition(prop.value);
+    if (!position)
+      return false;
+    scoreboard_position_.store(*position, std::memory_order_relaxed);
+    return true;
+  }
+  if (prop.key == "scoreboard-reselect") {
+    if (prop.value != "1")
+      return false;
+    if (!scoreboard_selection_active_.load(std::memory_order_acquire))
+      scoreboard_reselect_requested_.store(true, std::memory_order_release);
+    return true;
+  }
   // The selector runs with mu_process_ held. Cancellation must not wait for it.
   if (prop.key == "cancel-pending-work") {
     scoreboard_selection_cancelled_.store(true, std::memory_order_release);
@@ -781,6 +796,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
     }
 
     // Scoreboard
+    if (scoreboard_reselect_requested_.exchange(false, std::memory_order_acq_rel))
+      HM_RETURN_IF_ERROR(EnsureScoreboardPerspectiveConfigured(incoming_surface, frame_meta, true));
     if (show_scoreboard_) {
       completion_fence.MarkSubmitted();
       HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, frame_meta, cuda_stream_));
@@ -969,12 +986,13 @@ absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
 
 absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
     surface::Surface stitched_surface,
-    const NvDsFrameMeta* frame_meta) {
+    const NvDsFrameMeta* frame_meta,
+    bool reselect) {
   const auto is_cancelled = [this] {
     return scoreboard_selection_cancelled_.load(std::memory_order_acquire) ||
         shutdown_requested_.load(std::memory_order_acquire);
   };
-  if (is_cancelled() || scoreboard_disabled_ || !scoreboard_perspective_polygion_.empty()) {
+  if (is_cancelled() || (!reselect && (scoreboard_disabled_ || !scoreboard_perspective_polygion_.empty()))) {
     return absl::OkStatus();
   }
   // Re-reading the game config is how a polygon published after startup could
@@ -984,26 +1002,28 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
   // game YAML, all on the videoprep output worker. What is bounded here is
   // blocking I/O, not work proportional to frames, so bound it against elapsed
   // time.
-  constexpr std::chrono::seconds kScoreboardConfigPollInterval{1};
-  if (std::chrono::steady_clock::now() < scoreboard_config_poll_after_) {
-    return absl::OkStatus();
-  }
+  if (!reselect) {
+    constexpr std::chrono::seconds kScoreboardConfigPollInterval{1};
+    if (std::chrono::steady_clock::now() < scoreboard_config_poll_after_) {
+      return absl::OkStatus();
+    }
 
-  absl::Status reload_status = LoadScoreboardPerspectiveFromConfig();
-  // Arm after the re-read so the interval measures the gap from one re-read
-  // finishing to the next starting, not from one start to the next: a
-  // contended lock can hold this call for longer than the interval.
-  scoreboard_config_poll_after_ = std::chrono::steady_clock::now() + kScoreboardConfigPollInterval;
-  if (reload_status.ok()) {
-    return absl::OkStatus();
+    absl::Status reload_status = LoadScoreboardPerspectiveFromConfig();
+    // Arm after the re-read so the interval measures the gap from one re-read
+    // finishing to the next starting, not from one start to the next: a
+    // contended lock can hold this call for longer than the interval.
+    scoreboard_config_poll_after_ = std::chrono::steady_clock::now() + kScoreboardConfigPollInterval;
+    if (reload_status.ok()) {
+      return absl::OkStatus();
+    }
+    if (reload_status.code() != absl::StatusCode::kNotFound) {
+      return reload_status;
+    }
+    if (scoreboard_configure_attempted_) {
+      return absl::OkStatus();
+    }
+    scoreboard_configure_attempted_ = true;
   }
-  if (reload_status.code() != absl::StatusCode::kNotFound) {
-    return reload_status;
-  }
-  if (scoreboard_configure_attempted_) {
-    return absl::OkStatus();
-  }
-  scoreboard_configure_attempted_ = true;
 
   if (config_file_.empty()) {
     return absl::NotFoundError("No playcropper config-file is available for scoreboard configuration");
@@ -1054,10 +1074,41 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
     }
   } activity(scoreboard_selection_active_, GST_ELEMENT(m_element));
   const auto selection = stitching::configure_scoreboard(game_dir.string(), is_cancelled);
+  if (reselect && absl::IsCancelled(selection) && !is_cancelled()) {
+    std::cout << "Scoreboard selection cancelled; keeping previous selection" << std::endl;
+    return absl::OkStatus();
+  }
   if (absl::IsCancelled(selection) && is_cancelled())
     return absl::OkStatus(); // Keep draining queued output for EOS finalization.
   HM_RETURN_IF_ERROR(selection);
-  return LoadScoreboardPerspectiveFromConfig();
+  HM_RETURN_IF_ERROR(LoadScoreboardPerspectiveFromConfig());
+  if (reselect && m_element) {
+    const auto* epoch = stitching::find_stitched_output_generation_meta(frame_meta);
+    std::string polygon;
+    for (size_t i = 0; i < 4; ++i) {
+      const auto point = scoreboard_disabled_ ? cv::Point2f{} : scoreboard_perspective_polygion_[i];
+      if (i)
+        polygon += ',';
+      polygon += std::to_string(point.x) + ',' + std::to_string(point.y);
+    }
+    gst_element_post_message(
+        GST_ELEMENT(m_element),
+        gst_message_new_element(
+            GST_OBJECT(m_element),
+            gst_structure_new(
+                "hstream-scoreboard-selected",
+                "polygon",
+                G_TYPE_STRING,
+                polygon.c_str(),
+                "output-generation",
+                G_TYPE_STRING,
+                epoch ? epoch->generation().c_str() : "",
+                "authorization-id",
+                G_TYPE_STRING,
+                epoch ? epoch->authorization_id().c_str() : "",
+                nullptr)));
+  }
+  return absl::OkStatus();
 }
 
 absl::Status PlayCropperPriv::RenderDisplayMeta(
@@ -1185,7 +1236,8 @@ absl::Status PlayCropperPriv::RenderScoreboard(
   }
   if (scoreboard_) {
     const bool rewarp = frame_count_ % scoreboard_warp_interval_ == 0;
-    HM_RETURN_IF_ERROR(scoreboard_->forward_prod(in_surface, out_surface, rewarp, cuda_stream_));
+    HM_RETURN_IF_ERROR(scoreboard_->forward_prod(
+        in_surface, out_surface, rewarp, cuda_stream_, scoreboard_position_.load(std::memory_order_relaxed)));
   }
   return absl::OkStatus();
 }

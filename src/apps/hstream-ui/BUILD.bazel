@@ -284,6 +284,7 @@ cc_library(
         "//src/libs/stitching:hugin_project",
         "//src/libs/stitching:rink_leveling",
         "//src/libs/stitching:stitching_algorithms",
+        "//src/libs/scoreboard:placement",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],

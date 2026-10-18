@@ -33,7 +33,8 @@ Detection scores describe the masks, not the accuracy of a goal position.
 Choose a point or line above the image to add manual evidence. A point takes one
 click; a line takes two well-separated clicks along the paint or the **straight
 section** of the boards at ice level. Scroll to zoom and drag the image to pan.
-Green anchors can be dragged. Scrolling over selectors or dimension fields
+Green anchors and their attached lines follow the pointer while dragging; release
+commits one undoable edit. Observation rows alternate white and light grey. Scrolling over selectors or dimension fields
 never changes their values, even when focused. Editing a detected line's endpoints
 converts it to a manual line. Uncheck incorrect evidence or remove it from the list.
 
@@ -67,7 +68,9 @@ goals: for example, the near/far board intersections of the centre line and one
 blue line. Alternatively, centre/blue lines plus both straight board lines can
 constrain it. Duplicate detections do not supply missing geometry. Nearly
 degenerate fits, implausible plane axes, and contradictory marks are rejected.
-Disable a rejected observation to save the usable partial evidence.
+Rejected fits can also be saved as partial evidence, retaining every mark for
+later correction. Parallel goal lines alone remain partial even with measurement
+noise. Partial and rejected fits never enable player positions.
 
 A fitted map draws a cyan rink outline and estimated goal centres in both
 source views, with thinner projected rink markings in their feature colours.
@@ -84,8 +87,8 @@ desktop GPU previews show an overhead rink with player circles in the same
 track colours as their detection boxes, including when boxes are hidden. The
 setting applies on the next playback and works independently of player boxes.
 It currently requires the embedded X11 GPU preview on x86. **Mini-map size** offers
-Compact, Standard and Large; **Mini-map position** offers Lower left and Upper
-left. These preferences apply on the next playback and keep the complete panel
+Compact, Standard and Large; **Mini-map position** defaults to Upper right and
+also offers Upper left and Lower left. Existing saved placement is retained. These preferences apply on the next playback and keep the complete panel
 inside the image. Standard preserves the original size.
 
 The status beneath these controls reports successful preparation or the reason
@@ -185,3 +188,18 @@ checks native playback preparation. The real UI E2E driver accepts
 `HSTREAM_UI_E2E_RINK_MAP=1` to require successful preparation with player boxes
 disabled; use `--x11-preview` to capture both GPU previews. See
 [UI E2E testing](hstream-ui-e2e-testing.md).
+
+## Program scoreboard controls
+
+The Program preview footer has **Select scoreboard…** and a position selector.
+Start or resume Program playback to select or reselect the four corners. Cancel
+keeps the previous selection and playback continues. **No scoreboard** explicitly
+disables the overlay.
+
+Choose Upper left (default), Upper center or Upper right. Placement saves per game
+and applies live after the runner acknowledges it. It affects Program recordings
+and streams as well as the preview. The canonical setting is
+`rink.scoreboard.position`; native configurations accept
+`pipeline.hmplaycropper.scoreboard-position`. Game settings override user settings,
+and native values win within one layer. Older configurations retain Upper left.
+The mini-map remains a desktop preview preference.

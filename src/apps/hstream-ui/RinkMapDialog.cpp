@@ -24,6 +24,7 @@
 #include <QtWidgets/QGraphicsItemGroup>
 #include <QtWidgets/QGraphicsPixmapItem>
 #include <QtWidgets/QGraphicsScene>
+#include <QtWidgets/QGraphicsSceneMouseEvent>
 #include <QtWidgets/QGraphicsTextItem>
 #include <QtWidgets/QGraphicsView>
 #include <QtWidgets/QGroupBox>
@@ -110,28 +111,41 @@ QString featureName(const rink::RinkMapObservation& observation) {
 }
 class Anchor : public QGraphicsEllipseItem {
  public:
-  explicit Anchor(std::function<void(QPointF)> moved, QGraphicsItem* parent)
-      : QGraphicsEllipseItem(-5, -5, 10, 10, parent), moved_(std::move(moved)) {
+  Anchor(std::function<void(QPointF)> moved, std::function<void(QPointF)> preview, QGraphicsItem* parent)
+      : QGraphicsEllipseItem(-5, -5, 10, 10, parent), moved_(std::move(moved)), preview_(std::move(preview)) {
     setFlags(ItemIsMovable | ItemIgnoresTransformations);
     setBrush(QColor(68, 224, 166));
     setPen(QPen(Qt::black, 1));
     setCursor(Qt::SizeAllCursor);
+    setZValue(20);
   }
 
  protected:
   void mousePressEvent(QGraphicsSceneMouseEvent* event) override {
     original_ = pos();
-    QGraphicsEllipseItem::mousePressEvent(event);
+    press_ = event->scenePos();
+    event->accept();
+  }
+  void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override {
+    QPointF point = original_ + event->scenePos() - press_;
+    const QRectF bounds = scene()->sceneRect().adjusted(0, 0, -1, -1);
+    point.setX(std::clamp(point.x(), bounds.left(), bounds.right()));
+    point.setY(std::clamp(point.y(), bounds.top(), bounds.bottom()));
+    setPos(point);
+    preview_(point);
+    event->accept();
   }
   void mouseReleaseEvent(QGraphicsSceneMouseEvent* event) override {
-    QGraphicsEllipseItem::mouseReleaseEvent(event);
+    event->accept();
     if (pos() != original_)
       moved_(pos());
   }
 
  private:
   std::function<void(QPointF)> moved_;
+  std::function<void(QPointF)> preview_;
   QPointF original_;
+  QPointF press_;
 };
 } // namespace
 
@@ -176,7 +190,11 @@ class RinkMapCanvas : public QGraphicsView {
     overlays_ = new QGraphicsItemGroup();
     overlays_->setHandlesChildEvents(false);
     scene()->addItem(overlays_);
-    auto path = [&](const std::vector<cv::Point2d>& points, QColor color, const QString& tooltip, qreal width) {
+    auto path = [&](const std::vector<cv::Point2d>& points,
+                    QColor color,
+                    const QString& tooltip,
+                    qreal width,
+                    bool split_long_segments = true) {
       QPainterPath drawing;
       bool first = true;
       QPointF previous;
@@ -188,7 +206,7 @@ class RinkMapCanvas : public QGraphicsView {
           continue;
         }
         const QPointF point(p.x, p.y);
-        if (first || QLineF(previous, point).length() > original_.width() / 3.0)
+        if (first || (split_long_segments && QLineF(previous, point).length() > original_.width() / 3.0))
           drawing.moveTo(point);
         else
           drawing.lineTo(point);
@@ -197,6 +215,7 @@ class RinkMapCanvas : public QGraphicsView {
       }
       // A solid black underlay fills the dash gaps. Cosmetic flat-cap strokes
       // retain visible, alternating colour/black segments at every zoom level.
+      std::vector<QGraphicsPathItem*> paths;
       for (bool foreground : {false, true}) {
         auto* item = new QGraphicsPathItem(drawing, overlays_);
         QPen pen(foreground ? color : QColor(Qt::black), width);
@@ -207,7 +226,9 @@ class RinkMapCanvas : public QGraphicsView {
         item->setPen(pen);
         item->setToolTip(tooltip);
         item->setAcceptedMouseButtons(Qt::NoButton);
+        paths.push_back(item);
       }
+      return paths;
     };
     for (size_t i = 0; i < state.projected_layout[camera].size(); ++i)
       path(state.projected_layout[camera][i], layoutColor(i), "Estimated rink geometry", 2);
@@ -235,7 +256,12 @@ class RinkMapCanvas : public QGraphicsView {
       if (observation.camera != camera || observation.pixels.empty())
         continue;
       const QColor color = observationColor(observation);
-      path(observation.pixels, color, featureName(observation), 3);
+      const auto observation_paths = path(observation.pixels, color, featureName(observation), 3, false);
+      for (auto* item : observation_paths) {
+        item->setData(0, "rinkMapObservationPath");
+        item->setData(1, int(index));
+      }
+      auto preview_pixels = std::make_shared<std::vector<cv::Point2d>>(observation.pixels);
       const auto position = observation.pixels.front();
       auto* text = new QGraphicsTextItem(QString::number(index + 1) + " " + featureName(observation), overlays_);
       text->setDefaultTextColor(color);
@@ -252,7 +278,31 @@ class RinkMapCanvas : public QGraphicsView {
                     moved(index, sample, position);
                 });
               },
+              [preview_pixels,
+               sample,
+               observation_paths,
+               text,
+               automatic = observation.automatic,
+               line = observation.line](QPointF point) {
+                (*preview_pixels)[sample] = {point.x(), point.y()};
+                QPainterPath drawing;
+                const auto& first = preview_pixels->front();
+                drawing.moveTo(first.x, first.y);
+                if (automatic && line) {
+                  const auto& last = preview_pixels->back();
+                  drawing.lineTo(last.x, last.y);
+                } else {
+                  for (size_t i = 1; i < preview_pixels->size(); ++i)
+                    drawing.lineTo((*preview_pixels)[i].x, (*preview_pixels)[i].y);
+                }
+                for (auto* item : observation_paths)
+                  item->setPath(drawing);
+                text->setPos(first.x, first.y);
+              },
               overlays_);
+          anchor->setData(0, "rinkMapAnchor");
+          anchor->setData(1, int(index));
+          anchor->setData(2, int(sample));
           anchor->setPos(observation.pixels[sample].x, observation.pixels[sample].y);
           anchor->setEnabled(editing);
         }
@@ -458,6 +508,8 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   side->addLayout(board_actions);
   table_ = new QTableWidget(0, 3);
   table_->setObjectName("rinkMapObservationsTable");
+  table_->setAlternatingRowColors(true);
+  table_->setStyleSheet("QTableWidget { background: white; alternate-background-color: #f0f0f0; color: #161616; }");
   table_->setHorizontalHeaderLabels({"Use", "Identity", "Source"});
   table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
   table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -809,8 +861,7 @@ void RinkMapDialog::setBusy(bool busy) {
   for (auto* dimension : dimensions_)
     dimension->setEnabled(editable);
   save_->setEnabled(
-      editable && resolved_ && (snapshot_->saved_map.has_value() || !state_.document.observations.empty()) &&
-      state_.fit.state != rink::RinkMapState::kInconsistent);
+      editable && resolved_ && (snapshot_->saved_map.has_value() || !state_.document.observations.empty()));
   refreshEditControls();
 }
 
@@ -923,6 +974,7 @@ void RinkMapDialog::rebuildTable() {
     enabled->setCheckState(observation.enabled ? Qt::Checked : Qt::Unchecked);
     table_->setItem(int(i), 0, enabled);
     auto* identity = new QComboBox();
+    identity->setStyleSheet(QString("QComboBox { background: %1; color: #161616; }").arg(i % 2 ? "#f0f0f0" : "white"));
     identity->addItem(QString::fromStdString(observation.label) + " (unassigned)", "");
     for (const auto& feature : rink::RinkMapFeatures())
       if (feature.line == observation.line)

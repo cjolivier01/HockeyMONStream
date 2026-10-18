@@ -218,7 +218,8 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     const surface::Surface source_surface,
     const surface::Surface dest_surface,
     bool rewarp,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    Position position) {
   absl::MutexLock lk(&mu_);
   if (!warped_image_) {
     rewarp = true;
@@ -305,7 +306,7 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
       dest_surface.width(),
       dest_surface.height(),
       dest_surface.pitch(),
-      /*x=*/0,
+      /*x=*/HorizontalOffset(position, dest_surface.width(), destWidth_),
       /*y=*/0,
       stream);
   if (cuErr != cudaSuccess) {

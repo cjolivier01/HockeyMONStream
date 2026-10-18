@@ -91,6 +91,117 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool scoreboardControlChecks(HStreamWindow* window) {
+    const QString config_path = window->gameDirectoryText() + "/config.yaml";
+    QFile file(config_path);
+    const bool existed = file.exists();
+    if (existed && !file.open(QIODevice::ReadOnly))
+      return false;
+    const QByteArray original = existed ? file.readAll() : QByteArray("{}\n");
+    file.close();
+    const YAML::Node old_user = YAML::Clone(window->user_layer_);
+    auto* old_process = window->pipeline_process_;
+    const auto old_run = window->pipeline_run_generation_;
+    const auto old_game = window->active_run_game_id_;
+    const bool old_stop = window->pipeline_stop_requested_;
+    const bool old_paused = window->pipeline_paused_;
+    const bool old_calibration_pending = window->calibration_pending_;
+    const bool old_calibration = window->active_run_is_calibration_;
+    window->calibration_pending_ = false;
+    window->active_run_is_calibration_ = false;
+    const int old_mode = window->run_mode_selector_->currentIndex();
+    window->run_mode_selector_->setCurrentIndex(window->run_mode_selector_->findData("program"));
+    window->user_layer_["pipeline"]["hmplaycropper"]["scoreboard-position"] = "upper-right";
+    YAML::Node config = YAML::Load(original.toStdString());
+    config["rink"]["scoreboard"]["position"] = "upper-center";
+    window->loadScoreboardControls(config);
+    auto* combo = window->scoreboard_position_combo_;
+    bool ok = combo->currentData() == "upper-center" && !window->scoreboard_select_button_->isEnabled();
+    config["pipeline"]["hmplaycropper"]["private-properties"]["scoreboard-position"] = "upper-right";
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+      return false;
+    file.write(QByteArray::fromStdString(YAML::Dump(config)));
+    file.close();
+    window->loadScoreboardControls(config);
+    ok &= combo->currentData() == "upper-right";
+    combo->setCurrentIndex(combo->findData("upper-center"));
+    const auto saved = YAML::LoadFile(config_path.toStdString());
+    ok &= saved["rink"]["scoreboard"]["position"].as<std::string>() == "upper-center" &&
+        !saved["pipeline"]["hmplaycropper"]["private-properties"]["scoreboard-position"].IsDefined();
+    if (!ok)
+      std::cerr << "Scoreboard persistence checks failed\n";
+    window->loadScoreboardControls(saved);
+    ok &= combo->currentData() == "upper-center";
+    ok &= startStubPipelineProcess(window);
+    window->active_run_game_id_ = window->game_id_edit_->text().trimmed();
+    window->pipeline_run_generation_ = 917;
+    window->pipeline_stop_requested_ = false;
+    window->pipeline_paused_ = false;
+    window->scoreboard_runtime_ready_ = true;
+    window->updateScoreboardControls();
+    ok &= window->scoreboard_select_button_->isEnabled();
+    combo->setCurrentIndex(combo->findData("upper-left"));
+    ok &= !combo->isEnabled() && window->pending_scoreboard_property_ == "scoreboard-position";
+    ok &= !window->handleScoreboardControlOutput("runtime property playcropper0 scoreboard-position=upper-right");
+    ok &= window->handleScoreboardControlOutput("runtime property playcropper0 scoreboard-position=upper-left") &&
+        combo->isEnabled() && window->scoreboard_controls_status_->text().contains("applied");
+    if (!ok)
+      std::cerr << "Scoreboard live placement failed: " << window->scoreboard_controls_status_->text().toStdString()
+                << "\n";
+    for (auto* transition :
+         {&window->pending_playback_seek_generation_,
+          &window->playback_seek_recovery_generation_,
+          &window->pending_process_pause_generation_,
+          &window->pending_process_resume_generation_}) {
+      const auto before = *transition;
+      *transition = 456;
+      window->updatePlaybackSeekControls();
+      ok &= !combo->isEnabled() && !window->scoreboard_select_button_->isEnabled();
+      *transition = before;
+      window->updatePlaybackSeekControls();
+    }
+    window->requestScoreboardSelection();
+    ok &= window->pending_scoreboard_property_ == "scoreboard-reselect" && !combo->isEnabled();
+    ok &= window->handleScoreboardControlOutput("runtime command failed: rejected playcropper0 scoreboard-reselect") &&
+        window->scoreboard_select_button_->isEnabled();
+    window->requestScoreboardSelection();
+    ++window->pipeline_run_generation_;
+    ok &= !window->handleScoreboardControlOutput("runtime property playcropper0 scoreboard-reselect=1");
+    window->pipeline_paused_ = true;
+    window->updateScoreboardControls();
+    ok &= !window->scoreboard_select_button_->isEnabled();
+    killStubPipelineProcess(window);
+    window->pipeline_process_ = old_process;
+    window->pipeline_run_generation_ = old_run;
+    window->active_run_game_id_ = old_game;
+    window->pipeline_stop_requested_ = old_stop;
+    window->calibration_pending_ = old_calibration_pending;
+    window->active_run_is_calibration_ = old_calibration;
+    window->pipeline_paused_ = old_paused;
+    window->run_mode_selector_->setCurrentIndex(old_mode);
+    window->user_layer_ = old_user;
+    window->pending_scoreboard_property_.clear();
+    window->scoreboard_runtime_ready_ = false;
+    window->scoreboard_reselect_waiting_ = false;
+    ok &= file.open(QIODevice::WriteOnly | QIODevice::Truncate);
+    if (file.isOpen()) {
+      ok &= file.write(original) == original.size();
+      file.close();
+    }
+    if (!existed)
+      file.remove();
+    window->loadScoreboardControls(YAML::Load(original.toStdString()));
+    return ok;
+  }
+
+  static void scoreboardDiagnostic(HStreamWindow* w) {
+    std::cerr << "Scoreboard ready=" << w->scoreboard_runtime_ready_ << " stage=" << w->playback_stage_.toStdString()
+              << " calibration=" << w->calibration_pending_
+              << " status=" << w->scoreboard_controls_status_->text().toStdString()
+              << " run-game=" << w->active_run_game_id_.toStdString() << " selected=" << w->gameIdText().toStdString()
+              << '\n';
+  }
+
   static bool rinkMapStatusChecks(HStreamWindow* window) {
     const auto old_run = window->pipeline_run_generation_;
     const auto old_requested_run = window->rink_map_requested_generation_;
@@ -16105,6 +16216,50 @@ bool prepare_real_e2e_game(const QString& game_id) {
   return true;
 }
 
+bool exercise_scoreboard_controls(HStreamWindow* window, const QString& artifact_dir) {
+  auto wait = [](const std::function<bool()>& ready) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!ready() && timer.elapsed() < 15000)
+      QTest::qWait(20);
+    return ready();
+  };
+  auto* select = window->findChild<QPushButton*>("selectScoreboardButton");
+  auto* position = window->findChild<QComboBox*>("scoreboardPositionCombo");
+  auto* status = window->findChild<QLabel*>("scoreboardControlsStatus");
+  if (!select || !position || !status || !wait([&] { return select->isEnabled(); })) {
+    HStreamWindowTestAccess::scoreboardDiagnostic(window);
+    return false;
+  }
+  const auto read_polygon = [&] {
+    return YAML::Dump(
+        YAML::LoadFile(
+            (window->gameDirectoryText() + "/config.yaml").toStdString())["rink"]["scoreboard"]["perspective_polygon"]);
+  };
+  const auto original = read_polygon();
+  for (const char* action : {"scoreboardCancelButton", "scoreboardSaveButton"}) {
+    select->click();
+    if (!wait([&] { return window->findChild<QDialog*>("scoreboardSelectionDialog") != nullptr; }))
+      return false;
+    auto* dialog = window->findChild<QDialog*>("scoreboardSelectionDialog");
+    dialog->grab().save(QDir(artifact_dir).filePath("scoreboard-selection.png"));
+    auto* button = dialog->findChild<QPushButton*>(action);
+    if (!button || !button->isEnabled())
+      return false;
+    button->click();
+    if (!wait([&] { return !window->findChild<QDialog*>("scoreboardSelectionDialog") && position->isEnabled(); }) ||
+        read_polygon() != original)
+      return false;
+  }
+  for (const char* placement : {"upper-center", "upper-right", "upper-left"}) {
+    position->setCurrentIndex(position->findData(placement));
+    if (!wait([&] { return position->isEnabled() && status->text().contains("applied"); }))
+      return false;
+    QTest::qWait(150);
+  }
+  return window->completeLogText().contains("Scoreboard selection cancelled; keeping previous selection");
+}
+
 bool submit_no_scoreboard(HStreamWindow* window, QString* error) {
   QDialog* dialog = window ? window->findChild<QDialog*>("scoreboardSelectionDialog") : nullptr;
   QPushButton* button = dialog ? dialog->findChild<QPushButton*>("scoreboardNoScoreboardButton") : nullptr;
@@ -16477,6 +16632,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   timer.start();
   bool observed_first_frame = false;
   bool submitted_scoreboard = false;
+  bool checked_scoreboard_controls = false;
+  const bool require_scoreboard_controls = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_SCOREBOARD_CONTROLS");
   qint64 first_frame_at_ms = -1;
   QString interaction_error;
   NativePreviewCapture program_preview;
@@ -16591,7 +16748,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       stop_and_preserve_failure();
       return false;
     }
-    if (!submitted_scoreboard && !window->scoreboardSelectorUrl().isEmpty()) {
+    if (!require_scoreboard_controls && !submitted_scoreboard && !window->scoreboardSelectorUrl().isEmpty()) {
       submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
       if (!submitted_scoreboard) {
         std::cerr << "Could not submit the scoreboard selector: " << interaction_error.toStdString() << '\n';
@@ -16609,6 +16766,14 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
           first_frame_at_ms = timer.elapsed();
         }
         break;
+      }
+    }
+    if (observed_first_frame && require_scoreboard_controls && !checked_scoreboard_controls) {
+      checked_scoreboard_controls = exercise_scoreboard_controls(window, artifact_dir);
+      if (!checked_scoreboard_controls) {
+        std::cerr << "Real scoreboard reselection/placement failed\n";
+        stop_and_preserve_failure();
+        return false;
       }
     }
     if (observed_first_frame) {
@@ -17987,6 +18152,10 @@ int main(int argc, char** argv) {
     std::cerr << "test_game_setup failed\n";
     return 1;
   }
+  if (!expect(
+          HStreamWindowTestAccess::scoreboardControlChecks(&window),
+          "Scoreboard controls preserve game precedence, save aliases, and fence runtime acknowledgements"))
+    return 1;
   if (!test_rink_mask_time(window.gameDirectoryText()) ||
       !(test_control_point_resolution(window.gameDirectoryText()) &&
         test_control_point_filtering(window.gameDirectoryText())) ||

@@ -357,12 +357,20 @@ int main() {
   }
   YAML::Node fixture_config(YAML::NodeType::Map);
   fixture_config["rink"]["stitched_output_generation"] = fixture_output_generation;
+  fixture_config["pipeline"]["hmplaycropper"]["scoreboard-perspective-polygon"] = "1,2,3,4,5,6,7,8";
+  fixture_config["pipeline"]["hmplaycropper"]["private-properties"]["scoreboard_perspective_polygon"] =
+      "1,2,3,4,5,6,7,8";
   std::ofstream(directory / "config.yaml") << fixture_config << '\n';
   auto status = Selector::Save(directory, disabled);
   ok &= expect(status.ok(), "disabled sentinel must save");
   if (status.ok()) {
-    const YAML::Node polygon =
-        YAML::LoadFile((directory / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"];
+    const auto saved = YAML::LoadFile((directory / "config.yaml").string());
+    const auto cropper = saved["pipeline"]["hmplaycropper"];
+    ok &= expect(
+        !cropper["scoreboard-perspective-polygon"].IsDefined() &&
+            !cropper["private-properties"]["scoreboard_perspective_polygon"].IsDefined(),
+        "Successful selection clears saved native aliases");
+    const YAML::Node polygon = saved["rink"]["scoreboard"]["perspective_polygon"];
     ok &= expect(polygon.IsSequence() && polygon.size() == 4, "saved sentinel must contain four points");
     ok &= expect(polygon[3][0].as<int>() == 0 && polygon[3][1].as<int>() == 0, "saved sentinel must stay zero");
   }

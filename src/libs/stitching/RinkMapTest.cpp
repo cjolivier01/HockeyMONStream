@@ -55,6 +55,23 @@ int main() {
   ok &= expect(
       fitted.ok() && fitted->state == rink::RinkMapState::kPartial,
       "Noisy repeated parallel lines must stay saveable as partial evidence");
+  auto goal_lines = noisy;
+  for (const char* id : {"goal-left-line", "goal-right-line"})
+    goal_lines.observations.push_back(line(goal_lines.layout, id));
+  fitted = rink::FitRinkMap(goal_lines);
+  ok &= expect(
+      fitted.ok() && fitted->state == rink::RinkMapState::kPartial,
+      "Manual goal lines with detected parallel lines remain partial");
+  for (const char* id : {"goal-left", "goal-right"}) {
+    auto observation = point(goal_lines.layout, id);
+    observation.rays[0] += cv::Vec3d(.005, -.004, .002);
+    observation.rays[0] /= cv::norm(observation.rays[0]);
+    goal_lines.observations.push_back(observation);
+  }
+  fitted = rink::FitRinkMap(goal_lines);
+  ok &= expect(
+      fitted.ok() && fitted->state == rink::RinkMapState::kPartial,
+      "Noisy goal centres on one axis cannot supply missing cross-rink evidence");
   document.observations.push_back(line(document.layout, "near-boards"));
   document.observations.push_back(line(document.layout, "far-boards"));
   fitted = rink::FitRinkMap(document);
@@ -92,6 +109,12 @@ int main() {
   ok &= expect(
       fitted.ok() && fitted->state == rink::RinkMapState::kInconsistent,
       "An exact four-point fit with nonphysical rink axes must not publish goal estimates");
+  auto saved_skewed = rink::SerializeRinkMap(skewed);
+  auto restored_skewed = saved_skewed.ok() ? rink::ParseRinkMap(*saved_skewed) : saved_skewed.status();
+  ok &= expect(
+      restored_skewed.ok() && restored_skewed->observations.size() == skewed.observations.size() &&
+          rink::FitRinkMap(*restored_skewed)->state == rink::RinkMapState::kInconsistent,
+      "Rejected fits retain all evidence when saved as a partial map");
   auto contradictory = document;
   auto wrong = point(document.layout, "goal-right");
   wrong.rays = {ray({-20, 7})};
