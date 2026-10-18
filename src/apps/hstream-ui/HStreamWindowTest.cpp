@@ -1014,8 +1014,8 @@ bool expect_composed_focus_control(
     const std::string& description) {
   if (!window || !button || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
     return true;
-  int current_light_pixels = -1;
-  int stale_light_pixels = -1;
+  int current_glyph_pixels = -1;
+  int stale_glyph_pixels = -1;
   const QPoint current_center = button->mapTo(window, button->rect().center());
   for (int attempt = 0; attempt < 50; ++attempt) {
     QApplication::processEvents();
@@ -1024,23 +1024,27 @@ bool expect_composed_focus_control(
     if (!composed.isNull()) {
       const QImage image = composed.toImage().convertToFormat(QImage::Format_RGB32);
       const qreal scale = composed.devicePixelRatio();
-      auto light_pixels = [&image, scale](const QPoint& center) {
+      auto glyph_pixels = [&image, scale](const QPoint& center) {
         const QPoint scaled(qRound(center.x() * scale), qRound(center.y() * scale));
         const int radius = std::max(1, qRound(12 * scale));
         int count = 0;
         for (int y = std::max(0, scaled.y() - radius); y < std::min(image.height(), scaled.y() + radius); ++y) {
           for (int x = std::max(0, scaled.x() - radius); x < std::min(image.width(), scaled.x() + radius); ++x) {
             const QColor pixel = image.pixelColor(x, y);
-            if (pixel.red() + pixel.green() + pixel.blue() >= 600)
+            // Expand/Restore use the shared blue action icons. Include their
+            // shaded/antialiased pixels, excluding the darker fill, hover tint
+            // and translucent border over that tint.
+            if (pixel.green() >= 100 && pixel.blue() > pixel.red() + 25 && pixel.blue() > pixel.green() + 12 &&
+                2 * (pixel.green() - pixel.red()) > pixel.blue() - pixel.green())
               ++count;
           }
         }
         return count;
       };
-      current_light_pixels = light_pixels(current_center);
-      stale_light_pixels =
-          stale_center.has_value() && *stale_center != current_center ? light_pixels(*stale_center) : 0;
-      if (current_light_pixels >= 8 && stale_light_pixels <= 2)
+      current_glyph_pixels = glyph_pixels(current_center);
+      stale_glyph_pixels =
+          stale_center.has_value() && *stale_center != current_center ? glyph_pixels(*stale_center) : 0;
+      if (current_glyph_pixels >= 8 && stale_glyph_pixels <= 2)
         return true;
     }
     if (attempt + 1 < 50)
@@ -1048,8 +1052,8 @@ bool expect_composed_focus_control(
   }
   return expect(
       false,
-      description + ": composed maximize glyph pixels current=" + std::to_string(current_light_pixels) +
-          " stale=" + std::to_string(stale_light_pixels));
+      description + ": composed maximize glyph pixels current=" + std::to_string(current_glyph_pixels) +
+          " stale=" + std::to_string(stale_glyph_pixels));
 }
 
 bool capture_widget_artifact(QWidget* widget, const QString& name) {
