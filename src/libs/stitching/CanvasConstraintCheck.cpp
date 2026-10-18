@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/MappingCanvasPlacement.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
@@ -396,7 +397,7 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   return TiffPlacement{.x_px = x_px, .y_px = y_px, .width = width, .height = height};
 }
 
-absl::StatusOr<CanvasSize> mapping_canvas_size(const fs::path& game_dir) {
+absl::StatusOr<MappingCanvasPlacement> mapping_canvas_placement(const fs::path& game_dir) {
   auto first = read_tiff_placement(game_dir / "mapping_0000.tif");
   if (!first.ok())
     return first.status();
@@ -414,7 +415,14 @@ absl::StatusOr<CanvasSize> mapping_canvas_size(const fs::path& game_dir) {
       width * height > kHardMaximumArtifactPixels) {
     return absl::ResourceExhaustedError("Mapping TIFF canvas exceeds safety limits");
   }
-  return CanvasSize{.width = static_cast<size_t>(width), .height = static_cast<size_t>(height)};
+  return MappingCanvasPlacement{min_x, min_y, static_cast<size_t>(width), static_cast<size_t>(height)};
+}
+
+absl::StatusOr<CanvasSize> mapping_canvas_size(const fs::path& game_dir) {
+  auto placement = mapping_canvas_placement(game_dir);
+  if (!placement.ok())
+    return placement.status();
+  return CanvasSize{placement->width, placement->height};
 }
 
 absl::StatusOr<CanvasSize> read_remap_tiff_header(const fs::path& path) {
@@ -2448,6 +2456,10 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_metadata_l
     const fs::path& game_dir,
     size_t max_output_width) {
   return check_canvas_constraint_locked_impl(game_dir, max_output_width, /*validate_seam_payload=*/false);
+}
+
+absl::StatusOr<MappingCanvasPlacement> read_mapping_canvas_placement_locked(const fs::path& game_dir) {
+  return mapping_canvas_placement(game_dir);
 }
 
 } // namespace hm::stitching

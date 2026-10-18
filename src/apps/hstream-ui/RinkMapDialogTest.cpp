@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/RinkMapDialog.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 
+#include <tiffio.h>
 #include <unistd.h>
 #include <clocale>
 #include <cmath>
@@ -33,6 +34,28 @@ bool expect(bool condition, const char* message) {
 bool write(const QString& path, const QByteArray& text) {
   QFile file(path);
   return file.open(QIODevice::WriteOnly) && file.write(text) == text.size();
+}
+bool placement(const QString& path, float left) {
+  TIFF* file = TIFFOpen(path.toStdString().c_str(), "w");
+  if (!file)
+    return false;
+  TIFFSetField(file, TIFFTAG_IMAGEWIDTH, 900);
+  TIFFSetField(file, TIFFTAG_IMAGELENGTH, 1200);
+  TIFFSetField(file, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(file, TIFFTAG_BITSPERSAMPLE, 8);
+  TIFFSetField(file, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(file, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(file, TIFFTAG_COMPRESSION, COMPRESSION_LZW);
+  TIFFSetField(file, TIFFTAG_XRESOLUTION, 1.0);
+  TIFFSetField(file, TIFFTAG_YRESOLUTION, 1.0);
+  TIFFSetField(file, TIFFTAG_XPOSITION, left);
+  TIFFSetField(file, TIFFTAG_YPOSITION, 300.0);
+  std::vector<unsigned char> row(900);
+  bool ok = true;
+  for (uint32_t y = 0; y < 1200 && ok; ++y)
+    ok = TIFFWriteScanline(file, row.data(), y, 0) >= 0;
+  TIFFClose(file);
+  return ok;
 }
 bool waitUntil(const std::function<bool()>& ready, int timeout = 30000) {
   QElapsedTimer timer;
@@ -127,11 +150,13 @@ int main(int argc, char** argv) {
         "mapping_0001_y.tif",
         "seam_file.png"})
     ok &= write(game.filePath(name), "fixture");
+  ok &= placement(game.filePath("mapping_0000.tif"), 900);
+  ok &= placement(game.filePath("mapping_0001.tif"), 1800);
   const QByteArray config = "hstream_ui:\n  stitching_calibration:\n    status: complete\n";
   ok &= write(game.filePath("config.yaml"), config);
   ok &= write(
       game.filePath("stitching_canvas_provenance"),
-      "version=3\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=3600\nsource-canvas-height=1800\ncanvas-width=3600\ncanvas-height=1800\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\nmapping-backend=nona\nprojection=equirectangular\n");
+      "version=3\nmax-output-width=1800\nmax-canvas-dimension=0\nsource-canvas-width=7200\nsource-canvas-height=3600\ncanvas-width=1800\ncanvas-height=1200\nmax-output-width-applied=1\nmax-canvas-dimension-applied=0\nmapping-backend=nona\nprojection=equirectangular\n");
   ok &= write(bin.filePath("pano_trafo"), "#!/bin/sh\nawk '{print $2, $3}'\n");
   QFile::setPermissions(bin.filePath("pano_trafo"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
   qputenv("PATH", bin.path().toLocal8Bit() + ":" + qgetenv("PATH"));
@@ -215,6 +240,10 @@ int main(int argc, char** argv) {
     ok &= expect(
         playback.ok(),
         playback.ok() ? "Native playback consumes the editor map" : playback.status().ToString().c_str());
+    if (playback.ok())
+      ok &= expect(
+          cv::norm((*playback)->rays.front() - cv::Vec3d(0, 0.5, std::sqrt(3.0) / 2)) < 1e-6,
+          "Capped playback uses the published TIFF origin and extent, not source dimensions or PTO crop origin");
   }
   ok &= expect(!SaveRinkMap(competitor, document).ok(), "A competing editor must not overwrite a newer map");
   ok &= write(game.filePath("config.yaml"), config + "unrelated_preference: true\n");

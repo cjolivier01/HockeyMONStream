@@ -1,5 +1,7 @@
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <unistd.h>
 #include <cmath>
@@ -23,6 +25,26 @@ cv::Point2d normalized(cv::Point2d point) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "--projection-game") {
+    auto lock = rink::try_lock_canvas_constraint_artifacts(argv[2]);
+    if (!lock.ok() || !*lock)
+      return 1;
+    if (!rink::validate_stitch_generation_artifact_bounds_locked(argv[2]).ok())
+      return 1;
+    auto placement = rink::read_mapping_canvas_placement_locked(argv[2]);
+    auto project = rink::read_bounded_regular_file_no_follow(
+        std::filesystem::path(argv[2]) / "autooptimiser_out.pto", 4 * 1024 * 1024, "projection fixture");
+    if (!placement.ok() || !project.ok())
+      return 1;
+    auto rays = rink::RinkProjectionRays(*project, *placement, 257, 129);
+    if (!rays.ok()) {
+      std::cerr << rays.status() << '\n';
+      return 1;
+    }
+    std::cout << "Projection ready: origin=" << placement->left << ',' << placement->top
+              << " canvas=" << placement->width << 'x' << placement->height << " rays=" << rays->size() << '\n';
+    return 0;
+  }
   if (argc == 3 && std::string(argv[1]) == "--load-game") {
     auto map = rink::LoadPlaybackRinkMap(argv[2]);
     if (!map.ok()) {
@@ -73,7 +95,7 @@ int main(int argc, char** argv) {
   map.fit.state = rink::RinkMapState::kReady;
   if (access("/usr/bin/pano_trafo", X_OK) == 0) {
     const std::string pto = "p f2 w3600 h1800 v360 S900,2700,300,1500 n\"TIFF_m\"\n";
-    auto rays = rink::RinkProjectionRays(pto, 1800, 1200, map.columns, map.rows);
+    auto rays = rink::RinkProjectionRays(pto, {900, 300, 1800, 1200}, map.columns, map.rows);
     ok &= expect(rays.ok(), rays.ok() ? "Hugin projection" : rays.status().ToString().c_str());
     if (rays.ok()) {
       double maximum = 0;
@@ -82,13 +104,26 @@ int main(int argc, char** argv) {
       ok &=
           expect(maximum < 1e-6, "Real Hugin projection agrees with independent equirectangular rays and crop offsets");
     }
-    ok &= expect(!rink::RinkProjectionRays(pto, 1800, 900, 3, 3).ok(), "PTO crop/provenance disagreement is rejected");
+    // A scaled PTO and TIFF union whose origin is inside the S crop must keep
+    // the same angular grid. This covers output caps and cropped camera coverage.
+    auto cropped = rink::RinkProjectionRays(
+        "p f2 w1800 h900 v360 S0,1350,0,750 n\"TIFF_m\"\n", {450, 150, 900, 600}, map.columns, map.rows);
+    ok &= expect(cropped.ok(), "Capped panorama with a TIFF origin inside its crop is supported");
+    if (cropped.ok() && rays.ok()) {
+      double maximum = 0;
+      for (size_t i = 0; i < rays->size(); ++i)
+        maximum = std::max(maximum, cv::norm(rays->at(i) - cropped->at(i)));
+      ok &= expect(maximum < 1e-6, "Mapping placement and scaled projection preserve world rays");
+    }
+    ok &= expect(
+        !rink::RinkProjectionRays(pto, {900, 300, 1800, 1500}, 3, 3).ok(),
+        "PTO crop/provenance disagreement is rejected");
     const std::string quoted = "p f2 w3600 h1800 v360 n\"TIFF_m S1,2,3,4 w1 h2\" S900,2700,300,1500\n";
     ok &= expect(
-        rink::RinkProjectionRays(quoted, 1800, 1200, 3, 3).ok(),
+        rink::RinkProjectionRays(quoted, {900, 300, 1800, 1200}, 3, 3).ok(),
         "Quoted output names must not override panorama fields");
     ok &= expect(
-        !rink::RinkProjectionRays("p f2 w3600 h1800 v360 Sbad\n", 3600, 1800, 3, 3).ok(),
+        !rink::RinkProjectionRays("p f2 w3600 h1800 v360 Sbad\n", {0, 0, 3600, 1800}, 3, 3).ok(),
         "Malformed crop must not silently become an uncropped panorama");
   } else {
     std::cout << "SKIP: installed Hugin projection comparison\n";

@@ -159,8 +159,7 @@ absl::StatusOr<std::string> RinkMapCalibrationRevision(const std::filesystem::pa
 
 absl::StatusOr<std::vector<cv::Vec3d>> RinkProjectionRays(
     const std::string& pto,
-    size_t crop_width,
-    size_t crop_height,
+    const MappingCanvasPlacement& canvas,
     size_t columns,
     size_t rows,
     const std::function<bool()>& cancelled) {
@@ -221,18 +220,21 @@ absl::StatusOr<std::vector<cv::Vec3d>> RinkProjectionRays(
       return absl::InvalidArgumentError("Invalid panorama crop");
   }
   if (!width || !height || width > 1000000 || height > 1000000 || right > width || bottom > height || left >= right ||
-      top >= bottom || right - left != crop_width || bottom - top != crop_height)
+      top >= bottom || !canvas.width || !canvas.height || !std::isfinite(canvas.left) || !std::isfinite(canvas.top) ||
+      canvas.left < double(left) - 1 || canvas.top < double(top) - 1 ||
+      canvas.left + canvas.width > double(right) + 1 || canvas.top + canvas.height > double(bottom) + 1)
     return absl::FailedPreconditionError("Panorama crop does not match its saved canvas");
   // Synthetic sphere camera uses the same PT axes as PrepareRinkLevelingProject.
-  // pano_trafo coordinates are on the uncropped panorama; apply S crop here.
+  // TIFF placements may cover only part of the PTO crop. Use their actual
+  // normalized origin/span, including NONA's possible one-pixel rounding.
   const std::string project = panorama + "\nm i0\ni w3600 h1800 f4 v360 y0 p0 r0 n\"sphere.png\"\n";
   std::ostringstream input;
   input.imbue(std::locale::classic());
   input << std::setprecision(17);
   for (size_t y = 0; y < rows; ++y)
     for (size_t x = 0; x < columns; ++x)
-      input << "0 " << left - 0.5 + double(x) * crop_width / (columns - 1) << ' '
-            << top - 0.5 + double(y) * crop_height / (rows - 1) << '\n';
+      input << "0 " << canvas.left - 0.5 + double(x) * canvas.width / (columns - 1) << ' '
+            << canvas.top - 0.5 + double(y) * canvas.height / (rows - 1) << '\n';
   return transformRays(project, input.str(), columns * rows, true, true, cancelled);
 }
 
@@ -242,7 +244,7 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
   auto result = std::make_shared<PlaybackRinkMap>();
   RinkMapDocument document;
   std::string pto;
-  size_t crop_width = 0, crop_height = 0;
+  MappingCanvasPlacement canvas;
   {
     auto lock = try_lock_canvas_constraint_artifacts(directory);
     if (!lock.ok())
@@ -281,8 +283,15 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
     auto provenance = HuginProject::ReadCanvasProvenanceLocked(directory);
     if (!provenance.ok() || !provenance->has_value() || (**provenance).mapping_backend != MappingBackend::kNona)
       return absl::FailedPreconditionError("The rink mini-map requires a NONA calibration");
-    crop_width = (**provenance).source_canvas_width;
-    crop_height = (**provenance).source_canvas_height;
+    auto bounds = validate_stitch_generation_artifact_bounds_locked(directory);
+    if (!bounds.ok())
+      return bounds;
+    auto placement = read_mapping_canvas_placement_locked(directory);
+    if (!placement.ok())
+      return placement.status();
+    canvas = *placement;
+    if (canvas.width != (**provenance).canvas_width || canvas.height != (**provenance).canvas_height)
+      return absl::FailedPreconditionError("Mapping TIFFs do not match their published canvas");
     auto project =
         read_bounded_regular_file_no_follow(directory / "autooptimiser_out.pto", 4 * 1024 * 1024, "rink project");
     if (!project.ok())
@@ -326,7 +335,7 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
         "The saved rink map is partial or inconsistent; add and review anchors before playback");
   result->layout = document.layout;
   result->fit = *fit;
-  auto rays = RinkProjectionRays(pto, crop_width, crop_height, result->columns, result->rows, cancelled);
+  auto rays = RinkProjectionRays(pto, canvas, result->columns, result->rows, cancelled);
   if (!rays.ok())
     return rays.status();
   result->rays = std::move(*rays);

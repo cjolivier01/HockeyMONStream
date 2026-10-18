@@ -206,7 +206,7 @@ sh_test(
 cc_library(
   name = "canvas_constraint_check",
   srcs = ["CanvasConstraintCheck.cpp"],
-  hdrs = ["CanvasConstraintCheck.h"],
+  hdrs = ["CanvasConstraintCheck.h", "MappingCanvasPlacement.h"],
   include_prefix = INCLUDE_PREFIX,
   linkopts = [
     "-lcrypto",

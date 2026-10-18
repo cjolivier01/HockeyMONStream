@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "hstream/src/libs/stitching/MappingCanvasPlacement.h"
 #include "hstream/src/libs/stitching/RinkMap.h"
 
 namespace hm::stitching {
@@ -42,8 +43,7 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
 // Exposed for projection/crop regression checks; source image files are unused.
 absl::StatusOr<std::vector<cv::Vec3d>> RinkProjectionRays(
     const std::string& pto,
-    size_t crop_width,
-    size_t crop_height,
+    const MappingCanvasPlacement& canvas,
     size_t columns,
     size_t rows,
     const std::function<bool()>& cancelled = {});

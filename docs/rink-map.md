@@ -82,7 +82,8 @@ so all players use the same neutral colour. Track colours and jersey numbers do
 not identify teams.
 
 Startup validates the saved calibration, refits its source-camera evidence,
-and prepares a bounded output-pixel-to-ray grid through Hugin. Playback maps
+and prepares a bounded output-pixel-to-ray grid through Hugin, using the
+published mapping TIFF origins and extents (including capped canvases). Playback maps
 only compact player metadata; it handles panorama crops, preview resizing and
 post-stitch rotation without reading video back to the CPU. Every frame must
 match the prepared calibration and output dimensions. Missing metadata hides
