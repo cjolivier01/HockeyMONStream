@@ -5917,10 +5917,32 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       "Applies on the next playback. Requires a saved, reviewed rink map and tracked players. "
       "Shows player dots in their detection-box colours and recognized jersey numbers in the Program and Stitched previews. "
       "Teams are unknown. This display is not added to exported video.");
-  connect(rink_map_preview_check_, &QCheckBox::toggled, this, [](bool enabled) {
+  connect(rink_map_preview_check_, &QCheckBox::toggled, this, [this](bool enabled) {
     QSettings settings(ui_settings_path(), QSettings::IniFormat);
     settings.setValue("preview/rink-map", enabled);
+    updateRinkMapControls();
   });
+  rink_map_size_combo_ = new QComboBox();
+  rink_map_size_combo_->setObjectName("rinkMiniMapSizeCombo");
+  for (const auto& option : {std::pair{"Compact", "compact"}, {"Standard", "standard"}, {"Large", "large"}})
+    rink_map_size_combo_->addItem(option.first, option.second);
+  rink_map_position_combo_ = new QComboBox();
+  rink_map_position_combo_->setObjectName("rinkMiniMapPositionCombo");
+  rink_map_position_combo_->addItem("Lower left", "lower-left");
+  rink_map_position_combo_->addItem("Upper left", "upper-left");
+  for (const auto& option : {std::pair{rink_map_size_combo_, "size"}, {rink_map_position_combo_, "position"}}) {
+    const QString key = QString("preview/rink-map-%1").arg(option.second);
+    const QString fallback = option.first == rink_map_size_combo_ ? "standard" : "lower-left";
+    const auto value = QSettings(ui_settings_path(), QSettings::IniFormat).value(key, fallback).toString();
+    set_combo_to_data(option.first, option.first->findData(value) >= 0 ? value : fallback);
+    option.first->setToolTip("Applies on the next playback. Changes only the desktop mini-map display.");
+    connect(option.first, &QComboBox::currentIndexChanged, this, [combo = option.first, key] {
+      QSettings(ui_settings_path(), QSettings::IniFormat).setValue(key, combo->currentData());
+    });
+  }
+  rink_map_preview_status_ = new QLabel();
+  rink_map_preview_status_->setObjectName("rinkMiniMapStatusLabel");
+  rink_map_preview_status_->setWordWrap(true);
   rink_default_button_ = new QPushButton(action_icon(ActionIcon::Reset), "Reset to rink defaults");
   rink_default_button_->setObjectName("resetRinkLevelingButton");
   connect(rink_leveling_button_, &QPushButton::clicked, this, [this]() { selectRinkLeveling(); });
@@ -6306,6 +6328,8 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   game_id_edit_->setObjectName("gameIdEdit");
   game_id_edit_->setPlaceholderText("game-id");
   connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() {
+    rink_map_run_message_.clear();
+    rink_map_status_generation_ = 0;
     updateWindowTitle();
     updateArchiveOutputPathLabel();
     updatePresetDirtyState();
@@ -7468,6 +7492,11 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     rink_layout->addWidget(rink_mask_time_source_, 8, 0, 1, 2);
     rink_layout->addWidget(rink_map_button_, 9, 0, 1, 2);
     rink_layout->addWidget(rink_map_preview_check_, 10, 0, 1, 2);
+    rink_layout->addWidget(new QLabel("Mini-map size"), 11, 0);
+    rink_layout->addWidget(rink_map_size_combo_, 11, 1);
+    rink_layout->addWidget(new QLabel("Mini-map position"), 12, 0);
+    rink_layout->addWidget(rink_map_position_combo_, 12, 1);
+    rink_layout->addWidget(rink_map_preview_status_, 13, 0, 1, 2);
     rink_layout->setRowStretch(11, 1);
     updateProjectionParameterControls();
     updateProjectionFramingControls();
@@ -8026,7 +8055,60 @@ void HStreamWindow::updateRinkLevelingControls() {
     rink_map_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
   if (rink_map_preview_check_)
     rink_map_preview_check_->setEnabled(enabled);
+  updateRinkMapControls();
   updateCropRotationControls();
+}
+
+void HStreamWindow::updateRinkMapControls() {
+  if (!rink_map_preview_status_)
+    return;
+  const bool checked = rink_map_preview_check_->isChecked();
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  for (auto* combo : {rink_map_size_combo_, rink_map_position_combo_})
+    combo->setEnabled(rink_map_preview_check_->isEnabled() && checked);
+  QString message;
+#if !defined(__x86_64__)
+  message = "The rink mini-map requires the x86 desktop GPU preview.";
+#else
+  if (!checked)
+    message = "Mini-map is off.";
+  else if (mappingBackend() != "nona")
+    message = "Mini-map requires a NONA stitching calibration.";
+  else if (render_video_toggle_ && !render_video_toggle_->isChecked())
+    message = "Enable Render video to show the mini-map.";
+  else if (isCalibrationRun())
+    message = "Mini-map is available during Program playback after calibration.";
+  else if (
+      !rink_map_run_message_.isEmpty() && rink_map_status_generation_ == pipeline_run_generation_ && game_id_edit_ &&
+      rink_map_status_game_ == game_id_edit_->text().trimmed())
+    message = (running ? "" : "Last playback: ") + rink_map_run_message_;
+  else if (running)
+    message = "Preparing the reviewed rink map for playback…";
+  else
+    message = "Save a reviewed rink map, then start playback. Partial maps cannot locate players.";
+#endif
+  rink_map_preview_status_->setText(message);
+}
+
+bool HStreamWindow::handleRinkMapStatus(const QString& line) {
+  static const QRegularExpression ready(R"(^HSTREAM_RINK_MAP status=ready teams=unknown run=([0-9]+)$)");
+  static const QRegularExpression unavailable(R"(^HSTREAM_RINK_MAP status=unavailable run=([0-9]+) message=(.*)$)");
+  const auto success = ready.match(line), failure = unavailable.match(line);
+  if (!success.hasMatch() && !failure.hasMatch())
+    return false;
+  const auto match = success.hasMatch() ? success : failure;
+  if (match.captured(1).toULongLong() != pipeline_run_generation_ || pipeline_run_generation_ == 0 || !game_id_edit_ ||
+      active_run_game_id_ != game_id_edit_->text().trimmed())
+    return true;
+  rink_map_status_generation_ = pipeline_run_generation_;
+  rink_map_status_game_ = active_run_game_id_;
+  QString reason = failure.captured(2);
+  reason.remove(QRegularExpression("^[A-Z_]+: ?"));
+  rink_map_run_message_ = success.hasMatch() ? "Map prepared. Dots use track colours; teams are unknown."
+                                             : "Mini-map unavailable: " + reason;
+  updateRinkMapControls();
+  appendLog(line, failure.hasMatch());
+  return true;
 }
 
 bool HStreamWindow::cropRotationSuppressed() const {
@@ -11012,6 +11094,11 @@ void HStreamWindow::startPipeline() {
               rink_map_preview_check_->isChecked()
           ? "1"
           : "0");
+  env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_SIZE", rink_map_size_combo_->currentData().toString());
+  env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_POSITION", rink_map_position_combo_->currentData().toString());
+  env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_RUN", QString::number(pipeline_run_generation_ + 1));
+  rink_map_run_message_.clear();
+  rink_map_status_generation_ = 0;
   confirmed_show_player_tracking_ = preview_overlays.contains("players");
   confirmed_show_play_tracking_ = preview_overlays.contains("play");
   confirmed_show_rink_mask_ = preview_overlays.contains("rink");
@@ -11727,7 +11814,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   if (handleProcessPauseOutput(trimmed) || handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
       handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||
       handlePreviewOverlayDiagnostic(trimmed) || handlePreviewOverlayResponse(trimmed) ||
-      (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed))) {
+      handleRinkMapStatus(trimmed) || (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed))) {
     return;
   }
   handleTelemetryOutputStatus(trimmed);

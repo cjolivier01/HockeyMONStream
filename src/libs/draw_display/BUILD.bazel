@@ -5,7 +5,7 @@ INCLUDE_PREFIX = "hstream/src/libs/draw_display"
 cc_library(
     name = "rink_mini_map",
     srcs = ["RinkMiniMap.cpp"],
-    hdrs = ["RinkMiniMap.h"],
+    hdrs = ["RinkMiniMap.h", "RinkMiniMapOptions.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [

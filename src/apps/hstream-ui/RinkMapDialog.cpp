@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include <QtCore/QDir>
@@ -11,6 +13,7 @@
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
+#include <QtGui/QShortcut>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
@@ -26,6 +29,7 @@
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTabWidget>
@@ -38,6 +42,21 @@
 
 namespace {
 namespace rink = hm::stitching;
+bool sameInputs(const rink::RinkMapDocument& a, const rink::RinkMapDocument& b) {
+  const auto dimensions = [](const rink::RinkLayout& d) {
+    return std::make_tuple(d.length, d.width, d.blue_line_distance, d.goal_inset, d.corner_radius);
+  };
+  if (dimensions(a.layout) != dimensions(b.layout) || a.observations.size() != b.observations.size())
+    return false;
+  for (size_t i = 0; i < a.observations.size(); ++i) {
+    const auto& x = a.observations[i];
+    const auto& y = b.observations[i];
+    if (std::tie(x.feature, x.label, x.camera, x.line, x.automatic, x.enabled, x.confidence, x.pixels) !=
+        std::tie(y.feature, y.label, y.camera, y.line, y.automatic, y.enabled, y.confidence, y.pixels))
+      return false;
+  }
+  return true;
+}
 QColor landmarkColor(std::string_view label) {
   // Keep a stable identity colour across model contours and reviewed marks.
   static const std::pair<std::string_view, QColor> colors[]{
@@ -139,6 +158,19 @@ class RinkMapCanvas : public QGraphicsView {
   }
   std::function<void(QPointF)> clicked;
   std::function<void(size_t, size_t, QPointF)> moved;
+  void pendingPoint(std::optional<QPointF> point) {
+    delete pending_;
+    pending_ = nullptr;
+    if (point) {
+      pending_ = scene()->addEllipse(-6, -6, 12, 12, QPen(Qt::black, 2), QColor(255, 210, 70));
+      pending_->setFlag(QGraphicsItem::ItemIgnoresTransformations);
+      pending_->setPos(*point);
+      pending_->setZValue(10);
+      pending_->setAcceptedMouseButtons(Qt::NoButton);
+      pending_->setToolTip("First line point — click a second point, or press Escape to cancel");
+      pending_->setData(0, "rinkPendingLinePoint");
+    }
+  }
   void overlays(const RinkMapWorkResult& state, int camera, int selected, bool editing) {
     delete overlays_;
     overlays_ = new QGraphicsItemGroup();
@@ -236,7 +268,8 @@ class RinkMapCanvas : public QGraphicsView {
   }
   void wheelEvent(QWheelEvent* event) override {
     fitted_ = false;
-    const double multiplier = std::pow(1.0015, event->angleDelta().y());
+    const double delta = event->pixelDelta().isNull() ? event->angleDelta().y() : event->pixelDelta().y() * 3;
+    const double multiplier = std::pow(1.0015, std::clamp(delta, -1200.0, 1200.0));
     if (transform().m11() * multiplier > 0.005 && transform().m11() * multiplier < 10)
       scale(multiplier, multiplier);
     event->accept();
@@ -259,6 +292,7 @@ class RinkMapCanvas : public QGraphicsView {
  private:
   QSize original_;
   QGraphicsItemGroup* overlays_{nullptr};
+  QGraphicsEllipseItem* pending_{nullptr};
   QPointF press_;
   bool fitted_{true};
   bool anchor_pressed_{false};
@@ -320,7 +354,7 @@ struct RinkMapDialog::Job {
 
 RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : QDialog(parent, Qt::Window) {
   setObjectName("rinkMapDialog");
-  setWindowTitle("Rink map and goal centres");
+  setWindowTitle("Rink map and goal centres[*]");
   resize(1380, 920);
   configure_preview_dialog_window(this);
   qApp->installEventFilter(this);
@@ -334,6 +368,21 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   toolbar->addWidget(stop_);
   auto* fit = new QPushButton("Fit images");
   toolbar->addWidget(fit);
+  undo_ = new QPushButton(action_icon(ActionIcon::Undo), "Undo");
+  undo_->setObjectName("rinkMapUndoButton");
+  redo_ = new QPushButton(action_icon(ActionIcon::Next), "Redo");
+  redo_->setObjectName("rinkMapRedoButton");
+  toolbar->addWidget(undo_);
+  toolbar->addWidget(redo_);
+  connect(undo_, &QPushButton::clicked, this, [this] { travelHistory(false); });
+  connect(redo_, &QPushButton::clicked, this, [this] { travelHistory(true); });
+  const auto shortcut = [this](QKeySequence key, QPushButton* button) {
+    auto* action = new QShortcut(key, this);
+    connect(action, &QShortcut::activated, button, &QPushButton::click);
+  };
+  shortcut(QKeySequence::Undo, undo_);
+  shortcut(QKeySequence::Redo, redo_);
+  detect_->setToolTip("Replaces earlier model detections; manual marks are kept. Undo restores the previous result.");
   toolbar->addStretch();
   toolbar->addWidget(new PreviewDialogWindowSizeButton(this));
   root->addLayout(toolbar);
@@ -366,6 +415,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
     cameras_[camera]->moved = [this](size_t index, size_t sample, QPointF point) {
       if (busy_ || index >= state_.document.observations.size())
         return;
+      recordEdit();
       auto& observation = state_.document.observations[index];
       const QSize size = snapshot_->original_sizes[observation.camera];
       point.setX(std::clamp(point.x(), 0.0, double(size.width() - 1)));
@@ -390,6 +440,22 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   side->setContentsMargins(0, 0, 0, 0);
   auto* heading = new QLabel("Observed landmarks");
   side->addWidget(heading);
+  guidance_ = new QLabel();
+  guidance_->setObjectName("rinkMapGuidanceLabel");
+  guidance_->setWordWrap(true);
+  side->addWidget(guidance_);
+  auto* board_actions = new QHBoxLayout();
+  for (int i = 0; i < 2; ++i) {
+    auto* button = new QPushButton(action_icon(ActionIcon::Add), i ? "Mark far boards" : "Mark near boards");
+    board_shortcuts_[i] = button;
+    button->setObjectName(i ? "rinkMapMarkFarBoardsButton" : "rinkMapMarkNearBoardsButton");
+    button->setToolTip("Click two separated points on the straight boards at ice level, away from rounded corners.");
+    board_actions->addWidget(button);
+    connect(button, &QPushButton::clicked, this, [this, i] {
+      feature_->setCurrentIndex(feature_->findData(i ? "far-boards" : "near-boards"));
+    });
+  }
+  side->addLayout(board_actions);
   table_ = new QTableWidget(0, 3);
   table_->setObjectName("rinkMapObservationsTable");
   table_->setHorizontalHeaderLabels({"Use", "Identity", "Source"});
@@ -417,6 +483,9 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
     form->addRow(labels[i], dimensions_[i]);
     connect(dimensions_[i], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this] {
       if (!rebuilding_) {
+        if (!pending_dimension_edit_)
+          pending_dimension_edit_ = captureEdit();
+        state_.document.layout = dimensionValues();
         resolved_ = false;
         state_.fit = {};
         state_.projected_layout = {};
@@ -439,6 +508,9 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   status_->setWordWrap(true);
   status_->setMinimumHeight(42);
   root->addWidget(status_);
+  edited_ = new QLabel();
+  edited_->setObjectName("rinkMapEditedLabel");
+  root->addWidget(edited_);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
   save_ = buttons->addButton("Save partial map", QDialogButtonBox::ActionRole);
   save_->setObjectName("saveRinkMapButton");
@@ -460,7 +532,8 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
     for (auto* camera : cameras_)
       camera->fit();
   });
-  connect(feature_, &QComboBox::currentIndexChanged, this, [this] { first_line_point_.reset(); });
+  connect(feature_, &QComboBox::currentIndexChanged, this, [this] { cancelLine(); });
+  connect(tabs_, &QTabWidget::currentChanged, this, [this] { cancelLine(); });
   connect(focus_, &QToolButton::clicked, this, [this] {
     const bool focused = !sidebar_->isHidden();
     sidebar_->setVisible(!focused);
@@ -469,18 +542,24 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   connect(remove_, &QPushButton::clicked, this, [this] {
     const int row = table_->currentRow();
     if (row >= 0 && row < int(state_.document.observations.size())) {
+      recordEdit();
       state_.document.observations.erase(state_.document.observations.begin() + row);
       update();
     }
   });
   connect(table_, &QTableWidget::itemSelectionChanged, this, [this] {
-    if (!rebuilding_)
+    if (!rebuilding_) {
+      const int row = table_->currentRow();
+      if (row >= 0 && row < int(state_.document.observations.size()))
+        tabs_->setCurrentIndex(state_.document.observations[row].camera);
       refresh();
+    }
   });
   connect(table_, &QTableWidget::itemChanged, this, [this](QTableWidgetItem* item) {
     if (rebuilding_ || busy_ || item->column() != 0 || item->row() < 0 ||
         size_t(item->row()) >= state_.document.observations.size())
       return;
+    recordEdit();
     state_.document.observations[item->row()].enabled = item->checkState() == Qt::Checked;
     update();
   });
@@ -515,6 +594,8 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
       rebuilding_ = false;
     }
   }
+  state_.document.layout = dimensionValues();
+  clean_document_ = state_.document;
   setBusy(false);
   update();
   if (!load_notice.isEmpty()) {
@@ -542,6 +623,169 @@ bool RinkMapDialog::eventFilter(QObject* watched, QEvent* event) {
   return route_value_control_wheel(this, watched, event) || QDialog::eventFilter(watched, event);
 }
 
+rink::RinkLayout RinkMapDialog::dimensionValues() const {
+  return {
+      dimensions_[0]->value(),
+      dimensions_[1]->value(),
+      dimensions_[2]->value(),
+      dimensions_[3]->value(),
+      dimensions_[4]->value()};
+}
+
+RinkMapDialog::EditState RinkMapDialog::captureEdit() const {
+  auto document = state_.document;
+  for (auto& observation : document.observations)
+    observation.rays.clear(); // Recomputed from original pixels after restoration.
+  return {std::move(document), history_detections_};
+}
+
+bool RinkMapDialog::hasUnsavedEdits() const {
+  return clean_document_ && !sameInputs(*clean_document_, state_.document);
+}
+
+void RinkMapDialog::flushDimensionEdit() {
+  if (!pending_dimension_edit_)
+    return;
+  if (!sameInputs(pending_dimension_edit_->document, state_.document)) {
+    undo_history_.push_back(std::move(*pending_dimension_edit_));
+    if (undo_history_.size() > 32)
+      undo_history_.pop_front();
+    redo_history_.clear();
+  }
+  pending_dimension_edit_.reset();
+}
+
+void RinkMapDialog::recordEdit() {
+  flushDimensionEdit();
+  undo_history_.push_back(captureEdit());
+  if (undo_history_.size() > 32)
+    undo_history_.pop_front();
+  redo_history_.clear();
+}
+
+void RinkMapDialog::travelHistory(bool redo) {
+  if (busy_ || !snapshot_)
+    return;
+  flushDimensionEdit();
+  auto& from = redo ? redo_history_ : undo_history_;
+  auto& to = redo ? undo_history_ : redo_history_;
+  if (from.empty())
+    return;
+  to.push_back(captureEdit());
+  auto restored = std::move(from.back());
+  from.pop_back();
+  state_.document = std::move(restored.document);
+  history_detections_ = std::move(restored.detections);
+  state_.detections = *history_detections_;
+  const auto& layout = state_.document.layout;
+  const double values[]{
+      layout.length, layout.width, layout.blue_line_distance, layout.goal_inset, layout.corner_radius};
+  rebuilding_ = true;
+  for (size_t i = 0; i < dimensions_.size(); ++i)
+    dimensions_[i]->setValue(values[i]);
+  rebuilding_ = false;
+  update();
+}
+
+void RinkMapDialog::refreshEditControls() {
+  undo_->setEnabled(!busy_ && (!undo_history_.empty() || pending_dimension_edit_.has_value()));
+  redo_->setEnabled(!busy_ && redo_history_.size() && !pending_dimension_edit_);
+  const bool dirty = hasUnsavedEdits();
+  setWindowModified(dirty);
+  edited_->setText(dirty ? "Unsaved changes — save this map before playback." : "No unsaved changes.");
+}
+
+void RinkMapDialog::refreshGuidance() {
+  std::set<std::string> identities;
+  size_t enabled = 0, unassigned = 0;
+  bool cross = false, points = false;
+  for (const auto& observation : state_.document.observations) {
+    if (!observation.enabled)
+      continue;
+    ++enabled;
+    if (observation.feature.empty()) {
+      ++unassigned;
+      continue;
+    }
+    identities.insert(observation.feature);
+    points |= !observation.line;
+    cross |= observation.line && observation.feature != "near-boards" && observation.feature != "far-boards";
+  }
+  const bool near = identities.count("near-boards"), far = identities.count("far-boards");
+  QString help;
+  if (state_.fit.state == rink::RinkMapState::kReady)
+    help = "Review the projected rink in both cameras. Goal estimates depend on these marks and rink dimensions.";
+  else if (state_.fit.state == rink::RinkMapState::kInconsistent)
+    help =
+        "Check the selected identities and endpoints. Disable a suspect mark to inspect its effect, or Undo the last edit.";
+  else if (cross && !points && !(near && far))
+    help =
+        "Parallel centre/blue lines cannot locate the goals. Add both straight board lines at ice level, or mark the near/far intersections of centre and one blue line.";
+  else
+    help =
+        "Try four separated anchors: centre line / near boards, centre / far boards, and the same two intersections on one blue line. Only mark features you can see.";
+  guidance_->setText(QString("%1 enabled marks · %2 distinct identities · %3 unassigned\n%4")
+                         .arg(enabled)
+                         .arg(identities.size())
+                         .arg(unassigned)
+                         .arg(help));
+}
+
+void RinkMapDialog::cancelLine() {
+  first_line_point_.reset();
+  for (auto* camera : cameras_)
+    if (camera)
+      camera->pendingPoint(std::nullopt);
+}
+
+void RinkMapDialog::reject() {
+  if (close_prompt_active_)
+    return;
+  if (first_line_point_) {
+    cancelLine();
+    setStatus("Unfinished line cancelled. Previous marks are unchanged.");
+    return;
+  }
+  for (auto* dimension : dimensions_)
+    dimension->interpretText();
+  if (busy_) {
+    close_after_worker_ = true;
+    if (job_)
+      job_->cancelled = true;
+    setStatus("Stopping rink analysis before closing…");
+    return;
+  }
+  const bool needs_update = refresh_timer_.isActive();
+  refresh_timer_.stop();
+  flushDimensionEdit();
+  if (hasUnsavedEdits()) {
+    close_prompt_active_ = true;
+    QMessageBox prompt(
+        QMessageBox::Question,
+        "Discard rink map changes?",
+        "Your rink map edits have not been saved. Discard these changes and close the editor?",
+        QMessageBox::NoButton,
+        this);
+    prompt.setObjectName("rinkMapDiscardPrompt");
+    auto* discard = prompt.addButton("Discard changes", QMessageBox::DestructiveRole);
+    discard->setObjectName("rinkMapDiscardChanges");
+    discard->setIcon(action_icon(ActionIcon::Delete));
+    auto* keep = prompt.addButton("Keep editing", QMessageBox::RejectRole);
+    keep->setObjectName("rinkMapKeepEditing");
+    keep->setIcon(action_icon(ActionIcon::Cancel));
+    prompt.setDefaultButton(keep);
+    prompt.setEscapeButton(keep);
+    prompt.exec();
+    close_prompt_active_ = false;
+    if (prompt.clickedButton() != discard) {
+      if (needs_update)
+        update();
+      return;
+    }
+  }
+  QDialog::reject();
+}
+
 void RinkMapDialog::setStatus(const QString& message, bool error) {
   status_->setText(message);
   status_->setStyleSheet(error ? "color: #d56565" : "");
@@ -560,24 +804,23 @@ void RinkMapDialog::setBusy(bool busy) {
   feature_->setEnabled(editable);
   table_->setEnabled(editable);
   remove_->setEnabled(editable);
+  for (auto* button : board_shortcuts_)
+    button->setEnabled(editable);
   for (auto* dimension : dimensions_)
     dimension->setEnabled(editable);
   save_->setEnabled(
       editable && resolved_ && (snapshot_->saved_map.has_value() || !state_.document.observations.empty()) &&
       state_.fit.state != rink::RinkMapState::kInconsistent);
+  refreshEditControls();
 }
 
 void RinkMapDialog::update(bool detect) {
   if (busy_ || !snapshot_)
     return;
+  flushDimensionEdit();
   refresh_timer_.stop();
-  first_line_point_.reset();
-  state_.document.layout = {
-      dimensions_[0]->value(),
-      dimensions_[1]->value(),
-      dimensions_[2]->value(),
-      dimensions_[3]->value(),
-      dimensions_[4]->value()};
+  cancelLine();
+  state_.document.layout = dimensionValues();
   auto valid = rink::ValidateRinkLayout(state_.document.layout);
   if (!detect || !valid.ok()) {
     resolved_ = false;
@@ -608,10 +851,11 @@ void RinkMapDialog::update(bool detect) {
   const auto job = job_;
   const auto snapshot = *snapshot_;
   const auto document = state_.document;
+  const auto before_detection = detect ? std::optional<EditState>(captureEdit()) : std::nullopt;
   worker_ = QThread::create([job, snapshot, document, detect] {
     job->result = UpdateRinkMap(snapshot, document, detect, [job] { return job->cancelled.load(); });
   });
-  connect(worker_, &QThread::finished, this, [this, job, detect] {
+  connect(worker_, &QThread::finished, this, [this, job, detect, before_detection] {
     auto* completed = worker_;
     worker_ = nullptr;
     completed->deleteLater();
@@ -623,8 +867,15 @@ void RinkMapDialog::update(bool detect) {
           true);
     } else {
       auto result = std::move(**job->result);
-      if (!detect)
+      if (!detect) {
         result.detections = std::move(state_.detections);
+      } else {
+        undo_history_.push_back(*before_detection);
+        if (undo_history_.size() > 32)
+          undo_history_.pop_front();
+        redo_history_.clear();
+        history_detections_ = std::make_shared<Detections>(result.detections);
+      }
       state_ = std::move(result);
       resolved_ = true;
       setStatus(
@@ -642,6 +893,10 @@ void RinkMapDialog::update(bool detect) {
     setBusy(false);
     rebuildTable();
     refresh();
+    if (close_after_worker_) {
+      close_after_worker_ = false;
+      QTimer::singleShot(0, this, [this] { reject(); });
+    }
   });
   worker_->start();
 }
@@ -653,6 +908,8 @@ void RinkMapDialog::refresh() {
   schematic_->ready = state_.fit.state == rink::RinkMapState::kReady;
   schematic_->update();
   save_->setText(state_.fit.state == rink::RinkMapState::kReady ? "Save reviewed map" : "Save partial map");
+  refreshEditControls();
+  refreshGuidance();
 }
 
 void RinkMapDialog::rebuildTable() {
@@ -675,6 +932,7 @@ void RinkMapDialog::rebuildTable() {
     connect(identity, &QComboBox::currentIndexChanged, this, [this, i, identity] {
       if (rebuilding_ || busy_ || i >= state_.document.observations.size())
         return;
+      recordEdit();
       state_.document.observations[i].feature = identity->currentData().toString().toStdString();
       update();
     });
@@ -692,6 +950,10 @@ void RinkMapDialog::rebuildTable() {
 void RinkMapDialog::addPoint(int camera, QPointF point) {
   if (busy_ || !snapshot_)
     return;
+  if (state_.document.observations.size() >= 128) {
+    setStatus("The map already has 128 marks. Remove an unused mark before adding another.", true);
+    return;
+  }
   const auto id = feature_->currentData().toString().toStdString();
   const auto found =
       std::find_if(rink::RinkMapFeatures().begin(), rink::RinkMapFeatures().end(), [&](const auto& feature) {
@@ -702,6 +964,7 @@ void RinkMapDialog::addPoint(int camera, QPointF point) {
   if (found->line && (!first_line_point_ || first_line_camera_ != camera)) {
     first_line_point_ = point;
     first_line_camera_ = camera;
+    cameras_[camera]->pendingPoint(point);
     setStatus("First line mark selected. Click a second point farther along the same marking.");
     return;
   }
@@ -713,8 +976,11 @@ void RinkMapDialog::addPoint(int camera, QPointF point) {
   if (found->line)
     observation.pixels.emplace_back(first_line_point_->x(), first_line_point_->y());
   observation.pixels.emplace_back(point.x(), point.y());
-  first_line_point_.reset();
+  recordEdit();
+  cancelLine();
   state_.document.observations.push_back(std::move(observation));
+  rebuildTable();
+  table_->selectRow(int(state_.document.observations.size()) - 1);
   update();
 }
 
@@ -726,6 +992,8 @@ void RinkMapDialog::save() {
     setStatus(QString::fromStdString(status.ToString()), true);
     return;
   }
+  clean_document_ = state_.document;
+  refreshEditControls();
   if (state_.document.observations.empty()) {
     setStatus("Saved an empty rink map. Previous observations and goal estimates are cleared.");
     return;

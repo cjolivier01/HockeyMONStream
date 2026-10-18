@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 
+#include "hstream/src/libs/draw_display/RinkMiniMapOptions.h"
+
 namespace hm::stitching {
 struct PlaybackRinkMap;
 }
@@ -111,7 +113,10 @@ void set_callback_exception_injection_for_test(
 void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptionInjection injection);
 // Next-run resolved preferences; layers are already gated by compute enables.
 void configure_player_analytics(GstElement* sink, unsigned layers, float joint_confidence);
-void configure_rink_mini_map(GstElement* sink, std::shared_ptr<const hm::stitching::PlaybackRinkMap> map);
+void configure_rink_mini_map(
+    GstElement* sink,
+    std::shared_ptr<const hm::stitching::PlaybackRinkMap> map,
+    hm::draw_display::RinkMiniMapOptions options = {});
 struct RinkMaskImage;
 // Explicit historical mask, validated/decoded once by the replay owner. Its
 // canvas must match each frame's recorded coordinate space, including scaled archives.

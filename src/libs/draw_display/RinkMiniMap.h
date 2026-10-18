@@ -8,6 +8,7 @@
 #include <nvdsmeta.h>
 
 #include "hstream/src/libs/draw_display/AnalyticsOverlay.h"
+#include "hstream/src/libs/draw_display/RinkMiniMapOptions.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 
 namespace hm::draw_display {
@@ -16,7 +17,7 @@ namespace hm::draw_display {
 // is immutable; each renderer owns its generation cache. No file/video I/O.
 class RinkMiniMap {
  public:
-  explicit RinkMiniMap(std::shared_ptr<const stitching::PlaybackRinkMap> map);
+  explicit RinkMiniMap(std::shared_ptr<const stitching::PlaybackRinkMap> map, RinkMiniMapOptions options = {});
   bool Append(
       const NvDsFrameMeta* frame,
       unsigned stitched_width,
@@ -27,6 +28,7 @@ class RinkMiniMap {
 
  private:
   std::shared_ptr<const stitching::PlaybackRinkMap> map_;
+  RinkMiniMapOptions options_;
   std::vector<std::vector<cv::Point2d>> layout_lines_;
   std::array<cv::Point2d, 33> centre_circle_;
   std::string output_generation_;

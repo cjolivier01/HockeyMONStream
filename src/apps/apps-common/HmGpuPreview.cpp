@@ -2591,16 +2591,20 @@ bool redraw_last_sample(GstElement* sink) {
 #endif
 }
 
-void configure_rink_mini_map(GstElement* sink, std::shared_ptr<const hm::stitching::PlaybackRinkMap> map) {
+void configure_rink_mini_map(
+    GstElement* sink,
+    std::shared_ptr<const hm::stitching::PlaybackRinkMap> map,
+    hm::draw_display::RinkMiniMapOptions options) {
 #if defined(__x86_64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
   std::lock_guard<std::mutex> lock(self->state->mutex);
-  self->state->rink_mini_map = map ? std::make_unique<hm::draw_display::RinkMiniMap>(std::move(map)) : nullptr;
+  self->state->rink_mini_map = map ? std::make_unique<hm::draw_display::RinkMiniMap>(std::move(map), options) : nullptr;
 #else
   (void)sink;
   (void)map;
+  (void)options;
 #endif
 }
 

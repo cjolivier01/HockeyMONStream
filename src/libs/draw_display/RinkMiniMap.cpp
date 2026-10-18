@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <string_view>
 
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
@@ -9,7 +10,8 @@
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 namespace hm::draw_display {
-RinkMiniMap::RinkMiniMap(std::shared_ptr<const stitching::PlaybackRinkMap> map) : map_(std::move(map)) {
+RinkMiniMap::RinkMiniMap(std::shared_ptr<const stitching::PlaybackRinkMap> map, RinkMiniMapOptions options)
+    : map_(std::move(map)), options_(options) {
   if (!map_)
     return;
   layout_lines_ = stitching::RinkLayoutDrawing(map_->layout);
@@ -48,15 +50,23 @@ bool RinkMiniMap::Append(
   constexpr Color ink{0.10F, 0.15F, 0.22F, 1}, white{0.96F, 0.98F, 1, 1};
   constexpr Color red{0.86F, 0.16F, 0.23F, 1}, blue{0.12F, 0.39F, 0.86F, 1};
   const auto& rink = map_->layout;
-  const float rink_width = std::min(display_width * 0.29F, float(display_height * 0.25 * rink.length / rink.width));
+  const float factor = options_.size == RinkMiniMapOptions::Size::kCompact ? .75F
+      : options_.size == RinkMiniMapOptions::Size::kLarge                  ? 1.5F
+                                                                           : 1.0F;
+  // Fit the complete panel and outer margins, including on short panoramas.
+  const float rink_width = std::min(
+      {display_width * .29F * factor,
+       float(display_height * .25 * factor * rink.length / rink.width),
+       display_width * 400 / 448,
+       float(display_height * 400 / (400 * rink.width / rink.length + 80))});
   const float scale = rink_width / 400.0F;
   const float rink_height = rink_width * rink.width / rink.length;
   const float margin = 12 * scale, header = 24 * scale, footer = 20 * scale;
   // Keep the lower-right corner free for the existing preview watermark.
   const float left = 2 * margin;
-  const float top = display_height - rink_height - header - footer - 2 * margin;
-  if (!commands->AddFill(
-          left - margin, top, left + rink_width + margin, display_height - margin, {0.96F, 0.98F, 1, 0.90F}))
+  const float top = options_.upper_left ? margin : display_height - rink_height - header - footer - 2 * margin;
+  const float bottom = top + rink_height + header + footer + margin;
+  if (!commands->AddFill(left - margin, top, left + rink_width + margin, bottom, {0.96F, 0.98F, 1, 0.90F}))
     return false;
   const auto point = [&](cv::Point2d p) {
     return cv::Point2f(
@@ -130,8 +140,18 @@ bool RinkMiniMap::Append(
     }
     ++visible;
   }
-  commands->AddText(
-      left, top + header + rink_height + 4 * scale, 13 * scale, visible ? "TEAMS UNKNOWN" : "NO PLAYERS LOCATED", ink);
+  char summary[64];
+  if (snapshot->player_rects.empty())
+    std::snprintf(summary, sizeof(summary), "NO TRACKS - TEAMS UNKNOWN");
+  else
+    std::snprintf(
+        summary,
+        sizeof(summary),
+        "%zu/%zu%s LOCATED - TEAMS UNKNOWN",
+        visible,
+        inspected,
+        snapshot->player_rects.size() > inspected ? "+" : "");
+  commands->AddText(left, top + header + rink_height + 4 * scale, 13 * scale, summary, ink);
   return true;
 }
 } // namespace hm::draw_display

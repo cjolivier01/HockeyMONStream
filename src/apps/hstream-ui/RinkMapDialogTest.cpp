@@ -19,9 +19,12 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QGraphicsItem>
+#include <QtWidgets/QGraphicsScene>
 #include <QtWidgets/QGraphicsView>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QTabWidget>
@@ -99,8 +102,23 @@ int main(int argc, char** argv) {
     auto* detect = dialog.findChild<QPushButton*>("detectRinkLandmarksButton");
     if (!expect(detect->isEnabled(), qPrintable(dialog.findChild<QLabel*>("rinkMapStatus")->text())))
       return 1;
+    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    const int initial_rows = table->rowCount();
     detect->click();
     if (!idle(dialog, 240000))
+      return 1;
+    if (!expect(
+            dialog.findChild<QPushButton*>("rinkMapUndoButton")->isEnabled(),
+            "Successful native detection must create an undo step"))
+      return 1;
+    const int detected_rows = table->rowCount();
+    dialog.findChild<QPushButton*>("rinkMapUndoButton")->click();
+    if (!expect(
+            idle(dialog) && table->rowCount() == initial_rows && !dialog.isWindowModified(),
+            "Undo a real detection restores the initial inputs"))
+      return 1;
+    dialog.findChild<QPushButton*>("rinkMapRedoButton")->click();
+    if (!expect(idle(dialog) && table->rowCount() == detected_rows, "Redo restores the detected observations"))
       return 1;
     std::cout << dialog.findChild<QLabel*>("rinkMapStatus")->text().toStdString() << '\n';
     const QString prefix = QString::fromLocal8Bit(argv[3]);
@@ -251,6 +269,91 @@ int main(int argc, char** argv) {
       }
     }
   }
+  {
+    RinkMapDialog dialog(game.path());
+    dialog.show();
+    ok &= expect(idle(dialog), "History fixture opens");
+    auto* undo = dialog.findChild<QPushButton*>("rinkMapUndoButton");
+    auto* redo = dialog.findChild<QPushButton*>("rinkMapRedoButton");
+    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    auto* save = dialog.findChild<QPushButton*>("saveRinkMapButton");
+    auto* width = dialog.findChild<QDoubleSpinBox*>("rinkMapDimension1");
+    ok &= expect(!undo->isEnabled() && !redo->isEnabled() && !dialog.isWindowModified(), "Opening a map is clean");
+    ok &= expect(
+        dialog.findChild<QLabel*>("rinkMapGuidanceLabel")->text().contains("Parallel"),
+        "Parallel-only evidence gives a concrete next step");
+    const auto anchor = sourcePoint({0, -12.954});
+    ok &= expect(mark(dialog, 0, "center-near", {anchor.x, anchor.y}), "Add a manual anchor");
+    ok &= expect(
+        table->rowCount() == 2 && table->currentRow() == 1 && dialog.isWindowModified(),
+        "New mark is selected and unsaved");
+    undo->click();
+    ok &= expect(idle(dialog) && table->rowCount() == 1 && !dialog.isWindowModified(), "Undo restores clean inputs");
+    const QByteArray model = qgetenv("HM_RINK_LANDMARKS_ONNX_MODEL");
+    qputenv("HM_RINK_LANDMARKS_ONNX_MODEL", game.filePath("missing.onnx").toLocal8Bit());
+    dialog.findChild<QPushButton*>("detectRinkLandmarksButton")->click();
+    ok &= expect(idle(dialog) && table->rowCount() == 1 && redo->isEnabled(), "Failed detection preserves redo");
+    if (model.isNull())
+      qunsetenv("HM_RINK_LANDMARKS_ONNX_MODEL");
+    else
+      qputenv("HM_RINK_LANDMARKS_ONNX_MODEL", model);
+    redo->click();
+    ok &= expect(idle(dialog) && table->rowCount() == 2 && dialog.isWindowModified(), "Redo restores manual evidence");
+    const double original_width = width->value();
+    width->setValue(1);
+    width->setValue(.5);
+    undo->click();
+    ok &= expect(
+        idle(dialog) && width->value() == original_width && table->rowCount() == 2,
+        "Rapid invalid dimension edits form one undo operation");
+    redo->click();
+    QTest::qWait(10);
+    ok &= expect(width->value() == .5 && !save->isEnabled(), "Redo restores invalid inputs without stale fit");
+    undo->click();
+    ok &= expect(idle(dialog) && width->value() == original_width, "Invalid dimension redo can be undone");
+    save->click();
+    ok &= expect(!dialog.isWindowModified(), "Successful save establishes a clean baseline");
+    table->item(1, 0)->setCheckState(Qt::Unchecked);
+    ok &= expect(idle(dialog) && dialog.isWindowModified() && !redo->isEnabled(), "New edit clears redo branch");
+    undo->click();
+    ok &= expect(
+        idle(dialog) && table->item(1, 0)->checkState() == Qt::Checked && !dialog.isWindowModified(),
+        "Undo restores the saved use flag");
+    auto* feature = dialog.findChild<QComboBox*>("rinkMapFeatureCombo");
+    auto* camera = dialog.findChild<QGraphicsView*>("rinkMapCamera0");
+    dialog.findChild<QPushButton*>("rinkMapMarkNearBoardsButton")->click();
+    ok &= expect(feature->currentData() == "near-boards", "Guidance shortcut selects the board line tool");
+    QTest::mouseClick(camera->viewport(), Qt::LeftButton, Qt::NoModifier, camera->mapFromScene(QPointF(1500, 850)));
+    const auto pending = [&] {
+      for (auto* item : camera->scene()->items())
+        if (item->data(0) == "rinkPendingLinePoint")
+          return true;
+      return false;
+    };
+    ok &= expect(pending() && table->rowCount() == 2, "First line point is visible without creating an observation");
+    QTest::keyClick(&dialog, Qt::Key_Escape);
+    ok &=
+        expect(dialog.isVisible() && !pending() && !dialog.isWindowModified(), "Escape cancels unfinished line first");
+    width->setValue(original_width - .1);
+    QTimer::singleShot(0, &dialog, [&] {
+      auto* prompt = dialog.findChild<QMessageBox*>("rinkMapDiscardPrompt");
+      if (prompt)
+        prompt->findChild<QPushButton*>("rinkMapKeepEditing")->click();
+    });
+    dialog.reject();
+    ok &=
+        expect(dialog.isVisible() && idle(dialog) && dialog.isWindowModified(), "Keep editing protects unsaved inputs");
+    QTimer::singleShot(0, &dialog, [&] {
+      auto* prompt = dialog.findChild<QMessageBox*>("rinkMapDiscardPrompt");
+      if (prompt)
+        prompt->findChild<QPushButton*>("rinkMapDiscardChanges")->click();
+    });
+    dialog.close();
+    ok &= expect(!dialog.isVisible(), "Window close discards only after explicit selection");
+  }
+  snapshot = LoadRinkMapSnapshot(game.path());
+  if (!expect(snapshot.ok(), "Reload the saved history fixture"))
+    return 1;
   document.observations.clear();
   for (const char* id : {"center-near", "center-far", "blue-left-near", "blue-left-far"}) {
     rink::RinkMapObservation observation;

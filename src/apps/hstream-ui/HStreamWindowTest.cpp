@@ -91,6 +91,58 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool rinkMapStatusChecks(HStreamWindow* window) {
+    const auto old_run = window->pipeline_run_generation_;
+    const auto old_active_game = window->active_run_game_id_;
+    const auto old_game = window->game_id_edit_->text();
+    const int old_backend = window->mapping_backend_combo_->currentIndex();
+    const int old_mode = window->run_mode_selector_->currentIndex();
+    const bool old_render = window->render_video_toggle_->isChecked();
+    const bool old_check = window->rink_map_preview_check_->isChecked();
+    window->game_id_edit_->setText("rink-map-status-test");
+    window->active_run_game_id_ = window->game_id_edit_->text();
+    window->pipeline_run_generation_ = 941;
+    window->mapping_backend_combo_->setCurrentIndex(window->mapping_backend_combo_->findData("nona"));
+    window->run_mode_selector_->setCurrentIndex(window->run_mode_selector_->findData("program"));
+    window->render_video_toggle_->setChecked(true);
+    window->rink_map_preview_check_->setChecked(true);
+    window->updateRinkMapControls();
+    auto* status = window->rink_map_preview_status_;
+    bool ok = status->text().contains("Save a reviewed");
+    window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=940", false);
+    ok &= status->text().contains("Save a reviewed");
+    window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=941", false);
+    ok &= status->text().contains("Map prepared");
+    window->handlePipelineOutputLine(
+        "HSTREAM_RINK_MAP status=unavailable run=941 message=FAILED_PRECONDITION: Calibration changed; review and save again",
+        true);
+    ok &= status->text().contains("Calibration changed") && !status->text().contains("FAILED_PRECONDITION");
+    ++window->pipeline_run_generation_;
+    window->updateRinkMapControls();
+    ok &= status->text().contains("Save a reviewed");
+    window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=941", false);
+    ok &= status->text().contains("Save a reviewed");
+    window->game_id_edit_->setText("another-rink-map-test");
+    window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=942", false);
+    ok &= !status->text().contains("Map prepared");
+    window->render_video_toggle_->setChecked(false);
+    window->updateRinkMapControls();
+    ok &= status->text().contains("Render video");
+    window->mapping_backend_combo_->setCurrentIndex(window->mapping_backend_combo_->findData("opencv-affine-ransac"));
+    window->updateRinkMapControls();
+    ok &= status->text().contains("NONA");
+    window->rink_map_preview_check_->setChecked(false);
+    ok &= status->text().contains("off") && !window->rink_map_size_combo_->isEnabled();
+    window->game_id_edit_->setText(old_game);
+    window->mapping_backend_combo_->setCurrentIndex(old_backend);
+    window->run_mode_selector_->setCurrentIndex(old_mode);
+    window->render_video_toggle_->setChecked(old_render);
+    window->rink_map_preview_check_->setChecked(old_check);
+    window->pipeline_run_generation_ = old_run;
+    window->active_run_game_id_ = old_active_game;
+    window->updateRinkLevelingControls();
+    return ok;
+  }
   static QString activeArchivePath(HStreamWindow* window, const QString& output) {
     return output == "archive-program-4k" ? window->active_program_4k_output_path_
         : output == "archive-stitched"    ? window->active_stitched_archive_output_path_
@@ -16362,6 +16414,17 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return false;
     rink_map->setChecked(true);
     show_player_tracking->setChecked(false);
+    for (const auto& option :
+         {std::pair{"rinkMiniMapSizeCombo", "HSTREAM_UI_E2E_RINK_MAP_SIZE"},
+          {"rinkMiniMapPositionCombo", "HSTREAM_UI_E2E_RINK_MAP_POSITION"}}) {
+      if (qEnvironmentVariableIsSet(option.second)) {
+        auto* combo = require_child<QComboBox>(window, option.first);
+        const int index = combo ? combo->findData(qEnvironmentVariable(option.second)) : -1;
+        if (index < 0)
+          return false;
+        combo->setCurrentIndex(index);
+      }
+    }
   }
   const QStringList requested_outputs =
       qEnvironmentVariable("HSTREAM_UI_E2E_OUTPUTS", "archive-file").split(',', Qt::SkipEmptyParts);
@@ -16664,6 +16727,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   report += QString("stitched_preview_channel: %1\n").arg(stitched_channel_observed ? "OBSERVED" : "MISSING");
   report += QString("camera1_preview_channel: %1\n").arg(camera1_channel_observed ? "OBSERVED" : "MISSING");
   report += QString("visual_match: %1\n").arg(visual_match ? "PASS" : "FAIL");
+  if (require_rink_map)
+    report += QString("rink_map_status: %1\n").arg(window->findChild<QLabel*>("rinkMiniMapStatusLabel")->text());
   write_e2e_text(QDir(artifact_dir).filePath("report.txt"), report);
   std::cout << report.toStdString();
   if (!visual_verifier_output.isEmpty()) {
@@ -16674,6 +16739,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       !expect(
           !require_rink_map || final_log.contains("HSTREAM_RINK_MAP status=ready teams=unknown"),
           "Real UI playback should prepare the reviewed rink map") ||
+      !expect(
+          !require_rink_map || window->findChild<QLabel*>("rinkMiniMapStatusLabel")->text().contains("Map prepared"),
+          "Real UI playback should display rink-map preparation status") ||
       !expect(observed_command, "Real UI run should launch hstream-cli") ||
       !expect(
           !require_scoreboard || submitted_scoreboard,
@@ -17864,6 +17932,10 @@ int main(int argc, char** argv) {
     std::cerr << "test_wheel_routing_log_follow_and_calibration_analysis failed\n";
     return 1;
   }
+  if (!expect(
+          HStreamWindowTestAccess::rinkMapStatusChecks(&window),
+          "Rink-map status must explain availability and reject stale runs"))
+    return 1;
 
   if (!test_window_title_tracks_selected_game(&window)) {
     std::cerr << "test_window_title_tracks_selected_game failed\n";

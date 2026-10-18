@@ -146,6 +146,26 @@ int main() {
     check(
         !overlay.Append(fresh.frame, 800, 600, 800, 600, &commands) && commands.empty(),
         "Mismatched live canvas dimensions are rejected");
+    for (const auto display : {cv::Size(800, 600), cv::Size(600, 1200), cv::Size(2800, 360), cv::Size(160, 90)}) {
+      for (bool upper : {false, true}) {
+        float previous_width = 0;
+        for (const char* size : {"compact", "standard", "large"}) {
+          hm::draw_display::RinkMiniMap sized(
+              map, hm::draw_display::RinkMiniMapPreferences(size, upper ? "upper-left" : "lower-left"));
+          commands.Clear();
+          check(sized.Append(fresh.frame, 1600, 1200, display.width, display.height, &commands), "Sized map draws");
+          const auto& panel = commands.data()[0];
+          check(
+              panel.kind == a::detail::Kind::kFill && panel.x0 >= 0 && panel.y0 >= 0 && panel.x1 <= display.width &&
+                  panel.y1 <= display.height,
+              "Complete mini-map panel fits the image");
+          check(upper ? panel.y0 < display.height / 2 : panel.y1 > display.height / 2, "Selected map corner is used");
+          check(panel.x1 - panel.x0 > previous_width, "Map size presets increase the visible panel");
+          previous_width = panel.x1 - panel.x0;
+          check(commands.rejected() == 0, "Sized map fits the command budget");
+        }
+      }
+    }
     std::cout << "RinkMiniMap tests passed\n";
     return 0;
   } catch (const std::exception& error) {

@@ -1813,14 +1813,18 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     if (!sources_only) {
       rink_map_preview_active_ = false;
       if (rink_map_preview_requested_) {
+        const char* run = g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_RUN");
         auto prepared = hm::stitching::LoadPlaybackRinkMap(
             hm::Configurator::get_game_dir(game_id), [this] { return g_atomic_int_get(&cintr_) != 0; });
         if (prepared.ok()) {
           rink_map = std::move(*prepared);
           rink_map_preview_active_ = true;
-          g_print("HSTREAM_RINK_MAP status=ready teams=unknown\n");
+          g_print("HSTREAM_RINK_MAP status=ready teams=unknown run=%s\n", run ? run : "0");
         } else {
-          g_printerr("HSTREAM_RINK_MAP status=unavailable message=%s\n", prepared.status().ToString().c_str());
+          g_printerr(
+              "HSTREAM_RINK_MAP status=unavailable run=%s message=%s\n",
+              run ? run : "0",
+              prepared.status().ToString().c_str());
         }
       }
     }
@@ -1828,7 +1832,10 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     auto configure_overlays = [&](GstElement* sink, const hm::player_analytics::Config& analytics) {
       g_object_set(G_OBJECT(sink), "rink-mask-file", rink_mask_file.c_str(), nullptr);
       hm::gpu_preview::configure_player_analytics(sink, analytics.drawing_layers(), analytics.pose.confidence_threshold);
-      hm::gpu_preview::configure_rink_mini_map(sink, rink_map);
+      const char* size = g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_SIZE");
+      const char* position = g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_POSITION");
+      hm::gpu_preview::configure_rink_mini_map(
+          sink, rink_map, hm::draw_display::RinkMiniMapPreferences(size ? size : "", position ? position : ""));
     };
 
     struct PreviewProbeState {

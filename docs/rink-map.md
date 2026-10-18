@@ -34,8 +34,22 @@ Choose a point or line above the image to add manual evidence. A point takes one
 click; a line takes two well-separated clicks along the paint or the **straight
 section** of the boards at ice level. Scroll to zoom and drag the image to pan.
 Green anchors can be dragged. Scrolling over selectors or dimension fields
-never changes their values, even when focused. Editing a detected line's endpoints converts it
-to a manual line. Uncheck incorrect evidence or remove it from the list.
+never changes their values, even when focused. Editing a detected line's endpoints
+converts it to a manual line. Uncheck incorrect evidence or remove it from the list.
+
+Undo and Redo restore the last 32 edits, including successful landmark searches.
+Rapid dimension edits form one step. Failed or stopped detection preserves the
+previous marks and redo history. Finding landmarks again replaces earlier model
+marks, including their assigned identities; manual marks are kept, and Undo can
+restore the previous result. Unsaved edits are marked in the window and must be
+explicitly discarded before closing.
+
+The first click of a line leaves a yellow marker. Escape cancels that unfinished
+line; changing the feature or camera also clears it. New marks are selected in
+the list, and selecting a row reveals its camera. The evidence summary counts
+distinct enabled identities and suggests the next useful marks. **Mark near
+boards** and **Mark far boards** select those line tools directly. Guidance is
+advisory; only the geometry fit determines whether a map is complete.
 
 The dimensions are assumptions in metres. Defaults describe a 200 × 85 ft rink
 with 25 ft from centre to either blue line, an 11 ft goal-line inset and 28 ft
@@ -69,7 +83,15 @@ checked under **Stitched → Rink**, then start playback. The Program and Stitch
 desktop GPU previews show an overhead rink with player circles in the same
 track colours as their detection boxes, including when boxes are hidden. The
 setting applies on the next playback and works independently of player boxes.
-It currently uses the x86 desktop GPU preview renderer.
+It currently uses the x86 desktop GPU preview renderer. **Mini-map size** offers
+Compact, Standard and Large; **Mini-map position** offers Lower left and Upper
+left. These preferences apply on the next playback and keep the complete panel
+inside the image. Standard preserves the original size.
+
+The status beneath these controls reports successful preparation or the reason
+the map could not load, including missing or stale calibration. It also explains
+when the selected backend, run mode or rendering choice cannot show the map.
+A prepared map still requires matching current-frame metadata to appear.
 
 Each circle projects a tracked player's box bottom-centre onto the ice plane.
 Positions are estimates: occlusion, loose boxes, calibration error and assumed
@@ -82,7 +104,10 @@ fresh result for that track. Leading zeros are retained; missing or expired
 numbers leave a plain circle. There is currently no home/away classification,
 so track colours and jersey numbers do not identify teams. Ignored players use
 the same grey as their detection boxes. Jersey digits switch between light and
-dark text to remain readable on the track colour.
+dark text to remain readable on the track colour. The footer reports located
+tracks out of inspected tracks; these counts are not a count of players on ice.
+A `+` after the denominator means the snapshot exceeded the 256-track inspection
+limit. An empty snapshot says **NO TRACKS**.
 
 Startup validates the saved calibration, refits its source-camera evidence,
 and prepares a bounded output-pixel-to-ray grid through Hugin, using the

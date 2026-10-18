@@ -646,6 +646,14 @@ class HStreamWindow : public QMainWindow {
   QPushButton* rink_leveling_button_{nullptr};
   QPushButton* rink_map_button_{nullptr};
   QCheckBox* rink_map_preview_check_{nullptr};
+  QComboBox* rink_map_size_combo_{nullptr};
+  QComboBox* rink_map_position_combo_{nullptr};
+  QLabel* rink_map_preview_status_{nullptr};
+  QString rink_map_run_message_;
+  QString rink_map_status_game_;
+  quint64 rink_map_status_generation_{0};
+  void updateRinkMapControls();
+  bool handleRinkMapStatus(const QString& line);
   QPushButton* rink_default_button_{nullptr};
   QLabel* rink_rotation_source_{nullptr};
   std::vector<hm::stitching::StitchRinkConfiguration> rink_configurations_;
