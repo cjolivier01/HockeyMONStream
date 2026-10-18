@@ -208,7 +208,9 @@ int main() {
     std::thread worker([&] { waiting_cropper.HoldProcessingLock(held, released); });
     held.get_future().wait();
     auto cancel = std::async(std::launch::async, [&] {
-      return waiting_cropper.SetProperty({"cancel-pending-work", "1"});
+      return waiting_cropper.SetProperty({"scoreboard-position", "upper-center"}) &&
+          waiting_cropper.SetProperty({"scoreboard-reselect", "1"}) &&
+          waiting_cropper.SetProperty({"cancel-pending-work", "1"});
     });
     const bool prompt = cancel.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
     release.set_value();
@@ -278,6 +280,18 @@ int main() {
       !cropper.SetProperty({"scoreboard-perspective-polygon", "0,0,0,0,0,0,0,0"})) {
     std::cerr << "Scoreboard runtime geometry must require four finite points and accept the disabled sentinel"
               << std::endl;
+    return 1;
+  }
+  using Position = hm::scoreboard::Position;
+  if (!cropper.SetProperty({"scoreboard-position", "upper-left"}) ||
+      !cropper.SetProperty({"scoreboard-position", "upper-center"}) ||
+      !cropper.SetProperty({"scoreboard-position", "upper-right"}) ||
+      cropper.SetProperty({"scoreboard-position", "lower-left"}) || cropper.SetProperty({"scoreboard-reselect", "0"}) ||
+      hm::scoreboard::HorizontalOffset(Position::kUpperLeft, 1920, 320) != 0 ||
+      hm::scoreboard::HorizontalOffset(Position::kUpperCenter, 1920, 320) != 800 ||
+      hm::scoreboard::HorizontalOffset(Position::kUpperRight, 1920, 320) != 1600 ||
+      hm::scoreboard::HorizontalOffset(Position::kUpperRight, 1920, 2400) != 0) {
+    std::cerr << "Scoreboard placement accepts only the three upper positions and stays inside the output\n";
     return 1;
   }
   if (!cropper.SetProperty({"shadow-lift", "75"}) || cropper.SetProperty({"shadow-lift", "-1"}) ||

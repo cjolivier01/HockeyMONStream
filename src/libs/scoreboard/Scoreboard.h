@@ -1,7 +1,8 @@
 #pragma once
 
-#include "hstream/src/libs/common/Surface.h"
 #include "cupano/pano/cudaMat.h"
+#include "hstream/src/libs/common/Surface.h"
+#include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -51,7 +52,12 @@ class Scoreboard {
    */
   cv::Mat forward_cv(const cv::Mat& inputImage);
   cv::Mat forward_cuda(const cv::Mat& inputImage);
-  absl::Status forward_prod(const surface::Surface source_surface, const surface::Surface dest_surface, bool rewarp, cudaStream_t stream);
+  absl::Status forward_prod(
+      const surface::Surface source_surface,
+      const surface::Surface dest_surface,
+      bool rewarp,
+      cudaStream_t stream,
+      Position position = Position::kUpperLeft);
 
   /**
    * @brief Gets the final output width.

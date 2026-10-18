@@ -586,6 +586,22 @@ absl::Status ScoreboardSelector::Save(
       points.push_back(pair);
     }
     config["rink"]["scoreboard"]["perspective_polygon"] = points;
+    // An accepted operator selection replaces saved native aliases too.
+    // Otherwise they win over the canonical polygon on the next launch.
+    auto pipeline = config["pipeline"];
+    if (pipeline.IsMap()) {
+      auto cropper = pipeline["hmplaycropper"];
+      if (cropper.IsMap()) {
+        for (const char* key : {"scoreboard-perspective-polygon", "scoreboard_perspective_polygon"}) {
+          cropper.remove(key);
+          for (const char* bag : {"properties", "private-properties"}) {
+            auto properties = cropper[bag];
+            if (properties.IsMap())
+              properties.remove(key);
+          }
+        }
+      }
+    }
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to update scoreboard config: " + std::string(exception.what()));
   }

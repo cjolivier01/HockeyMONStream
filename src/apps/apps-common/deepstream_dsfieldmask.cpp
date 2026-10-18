@@ -1137,7 +1137,8 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
 
   setup_rgb_nvvm_caps_filter(nullptr, bin->cap_filter);
 
-  bin->playcropper = gst_element_factory_make("playcropper", NULL);
+  // Keep the runtime command target stable across calibration restarts and seeks.
+  bin->playcropper = gst_element_factory_make("playcropper", "playcropper0");
   if (!bin->playcropper) {
     NVGSTDS_ERR_MSG_V("Failed to create 'playcropper'");
     goto done;
@@ -1218,6 +1219,8 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
     }
   }
   ppc << ";show-scoreboard=" << config->show_scoreboard;
+  if (config->scoreboard_position[0])
+    ppc << ";scoreboard-position=" << config->scoreboard_position;
   if (config->scoreboard_projected_width[0]) {
     ppc << ";scoreboard-projected-width=" << config->scoreboard_projected_width;
   }

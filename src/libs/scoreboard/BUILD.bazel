@@ -11,6 +11,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":scoreboard_cuda",
+        ":placement",
         "//src/libs/common:utils",
         "@com_google_absl//absl/synchronization",
         "@hm-cupano//src/pano:cuda_matrix",
@@ -54,4 +55,11 @@ cc_test(
         "@jetson-utils//cuda:cuda_lib",
         "//toolchains/jetson:cuda_runtime",
     ],
+)
+
+cc_library(
+    name = "placement",
+    hdrs = ["ScoreboardPlacement.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
 )

@@ -342,6 +342,31 @@ int main(int argc, char** argv) {
   const bool scoreboard_polygon_mutable_while_playing = scoreboard_polygon_spec &&
       (scoreboard_polygon_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0 &&
       (scoreboard_polygon_spec->flags & G_PARAM_READABLE) != 0;
+  gchar* initial_position = nullptr;
+  g_object_get(G_OBJECT(element), "scoreboard-position", &initial_position, nullptr);
+  const bool default_position_ok = initial_position && std::string(initial_position) == "upper-left";
+  g_free(initial_position);
+  GParamSpec* scoreboard_position_spec =
+      g_object_class_find_property(G_OBJECT_GET_CLASS(element), "scoreboard-position");
+  GParamSpec* scoreboard_reselect_spec =
+      g_object_class_find_property(G_OBJECT_GET_CLASS(element), "scoreboard-reselect");
+  g_object_set(G_OBJECT(element), "scoreboard-position", "upper-center", nullptr);
+  g_object_set(G_OBJECT(element), "scoreboard-position", "lower-left", nullptr);
+  gchar* scoreboard_position = nullptr;
+  gboolean scoreboard_position_ok = TRUE;
+  g_object_get(
+      G_OBJECT(element),
+      "scoreboard-position",
+      &scoreboard_position,
+      "last-property-set-ok",
+      &scoreboard_position_ok,
+      nullptr);
+  const bool scoreboard_controls_ok = default_position_ok && scoreboard_position_spec && scoreboard_reselect_spec &&
+      (scoreboard_position_spec->flags & GST_PARAM_MUTABLE_PLAYING) &&
+      (scoreboard_reselect_spec->flags & GST_PARAM_MUTABLE_PLAYING) &&
+      !(scoreboard_reselect_spec->flags & G_PARAM_READABLE) && !scoreboard_position_ok && scoreboard_position &&
+      std::string(scoreboard_position) == "upper-center";
+  g_free(scoreboard_position);
   const bool invalid_black_point_rejected =
       !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"shadow-lift-black-point", "2"}});
   gboolean black_point_after_invalid = FALSE;
@@ -372,10 +397,10 @@ int main(int argc, char** argv) {
   g_free(epoch_after_invalid);
   gst_object_unref(element);
 
-  if (!ok || !high_bit_depth_is_restart_only || !sink_accepts_rgb10 || !black_point_mutable_while_playing ||
-      !exposure_mutable_while_playing || !scoreboard_polygon_mutable_while_playing || !invalid_black_point_rejected ||
-      black_point_after_invalid != TRUE || !invalid_exposure_rejected ||
-      std::abs(exposure_after_invalid - 1.0) > 1e-6 || !invalid_high_bit_depth_rejected ||
+  if (!ok || !scoreboard_controls_ok || !high_bit_depth_is_restart_only || !sink_accepts_rgb10 ||
+      !black_point_mutable_while_playing || !exposure_mutable_while_playing ||
+      !scoreboard_polygon_mutable_while_playing || !invalid_black_point_rejected || black_point_after_invalid != TRUE ||
+      !invalid_exposure_rejected || std::abs(exposure_after_invalid - 1.0) > 1e-6 || !invalid_high_bit_depth_rejected ||
       high_bit_depth_after_invalid != TRUE || !invalid_epoch_rejected) {
     std::cerr << "videoprep property roundtrip failed: epoch=" << stitched_output_epoch_value
               << " rotation=" << post_stitch_rotate_degrees << " last-ok=" << last_property_set_ok
@@ -404,6 +429,25 @@ int main(int argc, char** argv) {
   gst_object_unref(alias_precedence);
   if (alias_state != GST_STATE_CHANGE_SUCCESS || alias_width != 4096U) {
     std::cerr << "videoprep max-output-width alias precedence failed\n";
+    return 1;
+  }
+
+  GstElement* placement_precedence = gst_element_factory_make("playcropper", nullptr);
+  g_object_set(G_OBJECT(placement_precedence), "plugin-private-config", "scoreboard-position=upper-center", nullptr);
+  gchar* placement = nullptr;
+  g_object_get(G_OBJECT(placement_precedence), "scoreboard-position", &placement, nullptr);
+  const bool private_position_ok = placement && std::string(placement) == "upper-center";
+  // The getter value is the rollback snapshot for a failed runtime batch.
+  g_object_set(G_OBJECT(placement_precedence), "scoreboard-position", "upper-right", nullptr);
+  g_object_set(G_OBJECT(placement_precedence), "scoreboard-position", placement, nullptr);
+  g_free(placement);
+  placement = nullptr;
+  g_object_get(G_OBJECT(placement_precedence), "scoreboard-position", &placement, nullptr);
+  const bool restored_position_ok = placement && std::string(placement) == "upper-center";
+  g_free(placement);
+  gst_object_unref(placement_precedence);
+  if (!private_position_ok || !restored_position_ok) {
+    std::cerr << "Initial private scoreboard placement must be readable and restorable\n";
     return 1;
   }
 

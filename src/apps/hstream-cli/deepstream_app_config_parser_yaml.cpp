@@ -369,6 +369,7 @@ gboolean parse_hmplaycropper_yaml(
   SET_LOCATOR(locator, *config, show_scoreboard);
   SET_LOCATOR_CHARS(locator, *config, scoreboard_projected_width);
   SET_LOCATOR_CHARS(locator, *config, scoreboard_projected_height);
+  SET_LOCATOR_CHARS(locator, *config, scoreboard_position);
   SET_LOCATOR(locator, *config, scoreboard_scale);
   SET_LOCATOR(locator, *config, runtime_output_max_width);
   SET_LOCATOR(locator, *config, runtime_output_max_height);

@@ -199,6 +199,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/draw_display:rink_mini_map_options",
         ":rink_mask_image",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/stitching:stitching",
@@ -212,6 +213,7 @@ cc_library(
         "@platforms//cpu:x86_64": [
             "//src/libs/draw_display:analytics_overlay_gl",
             "//src/libs/draw_display:player_overlays",
+            "//src/libs/draw_display:rink_mini_map",
         ],
         "//conditions:default": [],
     }),
@@ -500,6 +502,8 @@ cc_binary(
         ":hm_gpu_preview",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/player_analytics:frame_meta",
+        "//src/libs/stitching:playback_rink_map",
+        "//src/libs/stitching:stitching",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ],

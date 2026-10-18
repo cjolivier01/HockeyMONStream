@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
@@ -1276,6 +1277,12 @@ int main() {
 
     auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
     ok &= expect(hugin_lock.ok(), "field-mask lock test must acquire the Hugin artifact lock");
+    bool visited = false;
+    const auto editor_read = hm::stitching::try_visit_current_field_mask(root.string(), [&](const std::string&) {
+      visited = true;
+      return absl::OkStatus();
+    });
+    ok &= expect(absl::IsUnavailable(editor_read) && !visited, "Mask assistance must not wait on a calibration writer");
     std::atomic<bool> field_mask_read_finished{false};
     std::atomic<bool> field_mask_read_result{false};
     std::atomic<bool> field_mask_write_finished{false};
@@ -1298,6 +1305,15 @@ int main() {
       hugin_lock->reset();
     field_mask_reader.join();
     field_mask_writer.join();
+    ok &= expect(
+        hm::stitching::try_visit_current_field_mask(
+            root.string(),
+            [&](const std::string&) {
+              visited = true;
+              return absl::OkStatus();
+            }).ok() &&
+            visited,
+        "Mask assistance can pin the released current generation");
     ok &= expect(
         field_mask_read_finished && field_mask_read_result,
         "field-mask validation must resume after the Hugin artifact lock is released");

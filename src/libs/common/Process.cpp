@@ -63,7 +63,8 @@ int run_command(
     const std::string& working_dir,
     const std::map<std::string, std::string>& env,
     std::function<void(const std::string&, const std::string&)> callback,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    int input_fd) {
   if (cmd.empty()) {
     std::cerr << "Error: command is empty." << std::endl;
     return -1;
@@ -132,6 +133,11 @@ int run_command(
     // Change working directory if provided.
     if (directory && chdir(directory) != 0)
       child_error("chdir failed\n", sizeof("chdir failed\n") - 1);
+
+    if (input_fd >= 0 && dup2(input_fd, STDIN_FILENO) == -1)
+      child_error("dup2 stdin failed\n", sizeof("dup2 stdin failed\n") - 1);
+    if (input_fd == STDIN_FILENO && fcntl(STDIN_FILENO, F_SETFD, 0) == -1)
+      child_error("stdin flags failed\n", sizeof("stdin flags failed\n") - 1);
 
     // Redirect stdout and stderr.
     // Close the read ends; the child only writes.

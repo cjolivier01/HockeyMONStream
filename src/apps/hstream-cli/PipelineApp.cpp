@@ -6,7 +6,6 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
-#include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "PipelineAssetOptions.h"
 #include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
@@ -17,7 +16,11 @@
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
 #include "configurator.h"
+#include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/LiveOutputEpoch.h"
+#include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include "hstream/src/apps/apps-common/deepstream_config.h"
@@ -1139,6 +1142,7 @@ PipelineApplication::PipelineApplication()
       selecting_(FALSE) {
   preview_overlay_state_ =
       hm::pipeline_internal::PreviewOverlayRuntimeState(preview_overlay_selection_from_environment());
+  rink_map_preview_requested_ = g_strcmp0(g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP"), "1") == 0;
   memset(fps_, 0, sizeof(fps_));
   memset(fps_avg_, 0, sizeof(fps_avg_));
   g_mutex_init(&fps_lock_);
@@ -1807,9 +1811,33 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
     const std::string rink_mask_file = (hm::Configurator::get_game_dir(game_id) / "rink_mask_0.png").string();
 
+    std::shared_ptr<const hm::stitching::PlaybackRinkMap> rink_map;
+    if (!sources_only) {
+      rink_map_preview_active_ = false;
+      if (rink_map_preview_requested_) {
+        const char* run = g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_RUN");
+        auto prepared = hm::stitching::LoadPlaybackRinkMap(
+            hm::Configurator::get_game_dir(game_id), [this] { return g_atomic_int_get(&cintr_) != 0; });
+        if (prepared.ok()) {
+          rink_map = std::move(*prepared);
+          rink_map_preview_active_ = true;
+          g_print("HSTREAM_RINK_MAP status=ready teams=unknown run=%s\n", run ? run : "0");
+        } else {
+          g_printerr(
+              "HSTREAM_RINK_MAP status=unavailable run=%s message=%s\n",
+              run ? run : "0",
+              prepared.status().ToString().c_str());
+        }
+      }
+    }
+
     auto configure_overlays = [&](GstElement* sink, const hm::player_analytics::Config& analytics) {
       g_object_set(G_OBJECT(sink), "rink-mask-file", rink_mask_file.c_str(), nullptr);
       hm::gpu_preview::configure_player_analytics(sink, analytics.drawing_layers(), analytics.pose.confidence_threshold);
+      const char* size = g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_SIZE");
+      const char* position = g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_POSITION");
+      hm::gpu_preview::configure_rink_mini_map(
+          sink, rink_map, hm::draw_display::RinkMiniMapPreferences(size ? size : "", position ? position : ""));
     };
 
     struct PreviewProbeState {
@@ -5722,6 +5750,9 @@ void PipelineApplication::commit_runtime_property(
     const std::string& element_name,
     const std::string& property_name,
     const PreparedRuntimeProperty& prepared) {
+  // Selection is an operator action, not a setting to repeat after a seek/restart.
+  if (property_name == "scoreboard-reselect")
+    return;
   runtime_property_overrides_.erase(
       std::remove_if(
           runtime_property_overrides_.begin(),
@@ -6444,7 +6475,9 @@ bool PipelineApplication::apply_preview_overlay_state(
     producers.push_back(state);
   }
 
-  const guint producer_flags = preview_overlay_producer_flags(selection, active_ui_preview_channel_);
+  auto producer_selection = selection;
+  producer_selection.players = producer_selection.players || rink_map_preview_active_;
+  const guint producer_flags = preview_overlay_producer_flags(producer_selection, active_ui_preview_channel_);
   bool applied = true;
   for (const SinkState& state : sinks) {
     g_object_set(
@@ -7092,8 +7125,78 @@ void PipelineApplication::cancel_stitch_frame_completion_timeout() {
   }
 }
 
+void PipelineApplication::remember_scoreboard_selection(
+    AppCtx* app_ctx,
+    GstObject* source,
+    const std::string& epoch_text) {
+  if (!app_ctx)
+    return;
+  std::shared_ptr<GstMessage> message;
+  {
+    std::lock_guard<std::mutex> lock(app_ctx->scoreboard_selection_mu);
+    message = std::move(app_ctx->pending_scoreboard_selection);
+  }
+  if (!message)
+    return;
+  const auto* structure = gst_message_get_structure(message.get());
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (!app_ctx || stage == stage_app_contexts_.end() ||
+      std::none_of(
+          stage->second.begin(), stage->second.end(), [app_ctx](const auto& item) { return item.get() == app_ctx; }) ||
+      GST_MESSAGE_SRC(message.get()) != source)
+    return;
+  const char* polygon = gst_structure_get_string(structure, "polygon");
+  const char* generation = gst_structure_get_string(structure, "output-generation");
+  const char* authorization = gst_structure_get_string(structure, "authorization-id");
+  auto* app = static_cast<HmApp*>(app_ctx);
+  const auto config_path =
+      hm::get_node_value(app->configurator().config(), "pipeline.hmstitcher.config-file", std::string());
+  if (!polygon || !generation || !*generation || !authorization || config_path.empty() ||
+      !hm::stitching::validate_stitched_output_generation(
+           config_path, generation, app->configurator().active_stitching_invalidation_id())
+           .ok())
+    return;
+  const auto saved = hm::stitching::load_game_config_file(std::filesystem::path(config_path) / "config.yaml");
+  if (!saved.ok() || !saved->has_value() ||
+      hm::get_node_value(**saved, "rink.stitched_output_generation", std::string()) != generation)
+    return;
+  const auto current_epoch = hm::stitching::parse_live_output_epoch(epoch_text);
+  if (!current_epoch.ok() || current_epoch->authorization_id != authorization)
+    return;
+  // The worker already applied this selection. Record only replay state:
+  // reapplying its property here would clear its frame-epoch cache and let
+  // the unchanged producer epoch restore the preceding polygon next frame.
+  const std::string element_name = GST_OBJECT_NAME(GST_MESSAGE_SRC(message.get()));
+  PreparedRuntimeProperty prepared;
+  if (!prepare_runtime_property(element_name, "scoreboard-perspective-polygon", polygon, &prepared))
+    return;
+  commit_runtime_property(element_name, "scoreboard-perspective-polygon", prepared);
+  for (auto& assignment : runtime_property_overrides_) {
+    if (assignment.property_name != "stitched-output-epoch")
+      continue;
+    auto epoch = hm::stitching::parse_live_output_epoch(assignment.value);
+    if (epoch.ok() && epoch->authorization_id == authorization) {
+      epoch->scoreboard_property_value = polygon;
+      assignment.value = hm::stitching::serialize_live_output_epoch(*epoch);
+    }
+  }
+  g_print("HSTREAM_SCOREBOARD_SELECTION status=committed generation=%s\n", generation);
+}
+
 gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage* message) {
   const GstStructure* structure = message ? gst_message_get_structure(message) : nullptr;
+  if (structure && gst_structure_has_name(structure, "hstream-scoreboard-selected")) {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    if (!app_ctx)
+      return TRUE;
+    gchar* epoch = nullptr;
+    if (auto* stitcher = app_ctx->pipeline.hmstitcher_bin.elem_hmstitcher)
+      g_object_get(stitcher, "stitched-output-epoch", &epoch, nullptr);
+    remember_scoreboard_selection(
+        app_ctx, GST_OBJECT(app_ctx->pipeline.common_elements.hmplaycropper_bin.playcropper), epoch ? epoch : "");
+    g_free(epoch);
+    return TRUE;
+  }
   if (!structure || !gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {
     return FALSE;
   }
@@ -8127,11 +8230,23 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     app_ctx_ptr->eos_received = TRUE;
     calibration_stopped = stop_pipeline_gracefully(app_ctx_ptr, 5 * GST_SECOND);
   }
+  // Hold the retiring identities until its worker stops. Its synchronous bus
+  // receipt captures even a selection completed while teardown is draining.
+  GstElement* retiring_cropper = app_ctx_ptr->pipeline.common_elements.hmplaycropper_bin.playcropper;
+  if (retiring_cropper)
+    gst_object_ref(retiring_cropper);
+  gchar* retiring_epoch = nullptr;
+  if (auto* stitcher = app_ctx_ptr->pipeline.hmstitcher_bin.elem_hmstitcher)
+    g_object_get(stitcher, "stitched-output-epoch", &retiring_epoch, nullptr);
   if (calibration_restart || runtime_seek_restart) {
     destroy_pipeline_for_recreate(app_ctx_ptr);
   } else {
     destroy_pipeline(app_ctx_ptr);
   }
+  remember_scoreboard_selection(app_ctx_ptr, GST_OBJECT(retiring_cropper), retiring_epoch ? retiring_epoch : "");
+  g_free(retiring_epoch);
+  if (retiring_cropper)
+    gst_object_unref(retiring_cropper);
   if (retired_tracker) {
     gchar* telemetry_path = nullptr;
     if (g_object_class_find_property(G_OBJECT_GET_CLASS(retired_tracker), "telemetry-output-path"))

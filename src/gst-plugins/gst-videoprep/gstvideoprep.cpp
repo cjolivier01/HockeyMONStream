@@ -149,6 +149,8 @@ enum {
   PROP_PLUGIN_PRIVATE_CONFIG,
   PROP_POST_STITCH_ROTATE_DEGREES,
   PROP_STITCHED_OUTPUT_EPOCH,
+  PROP_SCOREBOARD_POSITION,
+  PROP_SCOREBOARD_RESELECT,
   PROP_SCOREBOARD_PERSPECTIVE_POLYGON,
   PROP_MAX_OUTPUT_WIDTH,
   PROP_FIXED_EDGE_ROTATION_ANGLE,
@@ -1190,6 +1192,26 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_SCOREBOARD_POSITION,
+      g_param_spec_string(
+          "scoreboard-position",
+          "Scoreboard position",
+          "Upper-left, upper-center or upper-right Program scoreboard placement",
+          NULL,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_SCOREBOARD_RESELECT,
+      g_param_spec_boolean(
+          "scoreboard-reselect",
+          "Select scoreboard",
+          "Request scoreboard corner selection on the next Program frame",
+          FALSE,
+          GParamFlags(G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_SCOREBOARD_PERSPECTIVE_POLYGON,
       g_param_spec_string(
           "scoreboard-perspective-polygon",
@@ -1423,6 +1445,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->config_file = NULL;
   assert(!videoprep->plugin_type);
   videoprep->plugin_type = NULL; // strdup("videoprep");
+  videoprep->scoreboard_position = NULL;
   videoprep->scoreboard_perspective_polygon = NULL;
   videoprep->stitched_output_authorization_id = NULL;
   videoprep->stitched_output_scoreboard_polygon = NULL;
@@ -1451,6 +1474,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->shadow_lift_set = FALSE;
   videoprep->shadow_lift_black_point_set = FALSE;
   videoprep->exposure_set = FALSE;
+  videoprep->scoreboard_position_set = FALSE;
   videoprep->scoreboard_perspective_polygon_set = FALSE;
   videoprep->property_set_sequence = 0;
   videoprep->plugin_private_config_sequence = 0;
@@ -1466,6 +1490,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->shadow_lift_sequence = 0;
   videoprep->shadow_lift_black_point_sequence = 0;
   videoprep->exposure_sequence = 0;
+  videoprep->scoreboard_position_sequence = 0;
   videoprep->scoreboard_perspective_polygon_sequence = 0;
   videoprep->priv_factory = new VideoPrepLibrary_Factory();
 
@@ -1513,6 +1538,8 @@ static void gst_videoprep_finalize(GObject* object) {
     g_free(videoprep->config_file);
   if (videoprep->plugin_type)
     g_free(videoprep->plugin_type);
+  if (videoprep->scoreboard_position)
+    g_free(videoprep->scoreboard_position);
   if (videoprep->scoreboard_perspective_polygon)
     g_free(videoprep->scoreboard_perspective_polygon);
   if (videoprep->stitched_output_authorization_id)
@@ -1641,6 +1668,35 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       g_free(previous);
       g_free(previous_scoreboard);
+      break;
+    }
+    case PROP_SCOREBOARD_RESELECT:
+      videoprep->last_property_set_ok =
+          videoprep->priv && g_value_get_boolean(value) && set_priv_property("scoreboard-reselect", "1");
+      break;
+    case PROP_SCOREBOARD_POSITION: {
+      const char* requested = g_value_get_string(value);
+      if (!requested ||
+          (std::string_view(requested) != "upper-left" && std::string_view(requested) != "upper-center" &&
+           std::string_view(requested) != "upper-right")) {
+        videoprep->last_property_set_ok = FALSE;
+        break;
+      }
+      gchar* previous = videoprep->scoreboard_position ? g_strdup(videoprep->scoreboard_position) : nullptr;
+      const gboolean previous_set = videoprep->scoreboard_position_set;
+      const guint previous_sequence = videoprep->scoreboard_position_sequence;
+      hm::gst::set_value(videoprep->scoreboard_position, value);
+      videoprep->scoreboard_position_set = TRUE;
+      videoprep->scoreboard_position_sequence = ++videoprep->property_set_sequence;
+      if (!videoprep->scoreboard_position ||
+          !set_priv_property("scoreboard-position", videoprep->scoreboard_position)) {
+        g_free(videoprep->scoreboard_position);
+        videoprep->scoreboard_position = previous;
+        previous = nullptr;
+        videoprep->scoreboard_position_set = previous_set;
+        videoprep->scoreboard_position_sequence = previous_sequence;
+      }
+      g_free(previous);
       break;
     }
     case PROP_SCOREBOARD_PERSPECTIVE_POLYGON: {
@@ -1904,6 +1960,11 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
                       : ""}))) &&
         ok;
   }
+  if (videoprep->scoreboard_position_set && videoprep->scoreboard_position &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->scoreboard_position_sequence, "scoreboard-position")) {
+    ok = videoprep->priv->SetProperty(Property("scoreboard-position", videoprep->scoreboard_position)) && ok;
+  }
   if (videoprep->scoreboard_perspective_polygon_set && videoprep->scoreboard_perspective_polygon &&
       typed_property_wins_over_private_config(
           videoprep, videoprep->scoreboard_perspective_polygon_sequence, "scoreboard-perspective-polygon")) {
@@ -2013,6 +2074,21 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
                    videoprep->stitched_output_scoreboard_polygon ? videoprep->stitched_output_scoreboard_polygon : ""})
               .c_str());
       break;
+    case PROP_SCOREBOARD_POSITION: {
+      std::string position = videoprep->scoreboard_position ? videoprep->scoreboard_position : "upper-left";
+      if (!typed_property_wins_over_private_config(
+              videoprep, videoprep->scoreboard_position_sequence, "scoreboard-position") &&
+          videoprep->plugin_private_config) {
+        const std::vector<std::string> pairs = absl::StrSplit(videoprep->plugin_private_config, ';');
+        for (const auto& pair : pairs) {
+          const std::string prefix = "scoreboard-position=";
+          if (pair.rfind(prefix, 0) == 0)
+            position = pair.substr(prefix.size());
+        }
+      }
+      g_value_set_string(value, position.c_str());
+      break;
+    }
     case PROP_SCOREBOARD_PERSPECTIVE_POLYGON:
       g_value_set_string(value, videoprep->scoreboard_perspective_polygon);
       break;

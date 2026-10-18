@@ -2959,6 +2959,8 @@ struct StitchingExperimentDialog::Impl {
     validation->setWordWrap(true);
     layout->addWidget(validation);
     auto* choices = new QTableWidget(static_cast<int>(inspection->frames.size()), 5);
+    choices->setAlternatingRowColors(true);
+    choices->setStyleSheet("QTableWidget { background: white; alternate-background-color: #f0f0f0; color: #161616; }");
     choices->setObjectName("stitchExperimentSelectedFrames");
     choices->setHorizontalHeaderLabels(
         inspection->player_selected
@@ -3612,6 +3614,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   candidate_layout->addLayout(matrix_actions);
   candidate_layout->addLayout(batch_actions);
   s.table = new QTableWidget(0, 10);
+  s.table->setAlternatingRowColors(true);
+  s.table->setStyleSheet("QTableWidget { background: white; alternate-background-color: #f0f0f0; color: #161616; }");
   s.table->setObjectName("stitchExperimentCandidates");
   s.table->setHorizontalHeaderLabels(
       {"Candidate",

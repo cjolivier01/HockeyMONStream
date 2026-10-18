@@ -201,3 +201,24 @@ and verifies a black background after resize/remap. It also checks that ordinary
 Qt updates preserve renderer pixels and resize does not deliver posted events.
 A resized process-paused preview remains black until playback resumes; the
 runner cannot redraw while SIGSTOP-paused.
+
+The hidden-target sizing regression runs with
+`QT_QPA_PLATFORM=xcb HSTREAM_UI_TEST_PREVIEW_GEOMETRY_ONLY=1 xvfb-run -a bazel-bin/src/apps/hstream-ui/hstream_ui_test`.
+It resizes a hidden native target, simulates a delayed configure event restoring
+its initial size, and checks that showing Program fills the letterboxed surface
+without resizing the main window or draining posted events. Live X11 captures
+also check the selected target's Qt and native geometry before reading the
+diagnostic image.
+
+### Reviewed rink mini-map
+
+With a saved fitted `rink-map.yaml` in an isolated game, set
+`HSTREAM_UI_E2E_RINK_MAP=1` and run `scripts/test_hstream_ui_e2e.sh --x11-preview`.
+This enables the next-playback mini-map, disables player boxes, and requires
+`HSTREAM_RINK_MAP status=ready` from the real runner. Inspect the Program and
+Stitched preview captures for the rink and player circles matching detection-box colours.
+`HSTREAM_UI_E2E_RINK_MAP_SIZE=large` and
+`HSTREAM_UI_E2E_RINK_MAP_POSITION=upper-left` exercise the next-playback display
+preferences (also accepts `compact`/`standard` and `lower-left`). The fixture
+must match the copied game's calibration; partial/stale maps fail preparation.
+The ordinary archive geometry check still runs, since the map is preview-only.

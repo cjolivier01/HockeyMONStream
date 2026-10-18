@@ -1,9 +1,9 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
-#include <map>
 #include <vector>
 namespace hm {
 
@@ -31,7 +31,10 @@ int run_command(
     const std::string& working_dir,
     const std::map<std::string, std::string>& env,
     std::function<void(const std::string&, const std::string&)> callback,
-    const std::function<bool()>& is_cancelled = {});
+    const std::function<bool()>& is_cancelled = {},
+    // Optional borrowed descriptor; caller keeps it open for this call.
+    // A regular input file avoids pipe backpressure for batch tools.
+    int input_fd = -1);
 
 std::optional<std::string> findExecutable(const std::string& executable, const std::vector<std::string>& envVars);
 std::vector<std::string> splitPaths(const std::string& paths);

@@ -1,5 +1,65 @@
 INCLUDE_PREFIX = "hstream/src/libs/stitching"
 
+cc_library(
+  name = "rink_mask_geometry",
+  srcs = ["RinkMaskGeometry.cpp"],
+  hdrs = ["RinkMaskGeometry.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = ["@opencv_linux//:opencv", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_library(
+  name = "playback_rink_map",
+  srcs = ["PlaybackRinkMap.cpp"],
+  hdrs = ["PlaybackRinkMap.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  linkopts = ["-lcrypto"],
+  deps = [
+    ":rink_map", ":rink_leveling", ":stitching", ":hugin_project",
+    ":canvas_constraint_check", ":game_config", ":transaction_state",
+    "//src/libs/assets:asset_manager", "//src/libs/common:process",
+    "@com_google_absl//absl/strings", "@opencv_linux//:opencv", "@yaml-cpp",
+  ],
+)
+
+cc_test(
+  name = "rink_mask_geometry_test",
+  srcs = ["RinkMaskGeometryTest.cpp"],
+  deps = [":rink_mask_geometry"],
+)
+
+cc_library(
+  name = "rink_map",
+  srcs = ["RinkMap.cpp"],
+  hdrs = ["RinkMap.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = ["@opencv_linux//:opencv", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+  name = "playback_rink_map_test",
+  srcs = ["PlaybackRinkMapTest.cpp"],
+  deps = [":playback_rink_map", ":stitching"],
+)
+
+cc_test(
+  name = "rink_map_test",
+  srcs = ["RinkMapTest.cpp"],
+  deps = [":rink_map"],
+)
+
+cc_library(
+  name = "rink_landmarks",
+  srcs = ["RinkLandmarks.cpp"],
+  hdrs = ["RinkLandmarks.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = ["//src/libs/onnx:session", "@opencv_linux//:opencv", "@com_google_absl//absl/status:statusor"],
+)
+
 filegroup(
   name = "runtime_sources",
   srcs = glob(
@@ -161,7 +221,7 @@ sh_test(
 cc_library(
   name = "canvas_constraint_check",
   srcs = ["CanvasConstraintCheck.cpp"],
-  hdrs = ["CanvasConstraintCheck.h"],
+  hdrs = ["CanvasConstraintCheck.h", "MappingCanvasPlacement.h"],
   include_prefix = INCLUDE_PREFIX,
   linkopts = [
     "-lcrypto",
@@ -847,4 +907,10 @@ cc_test(
     name = "video_lens_metadata_test",
     srcs = ["VideoLensMetadataTest.cpp"],
     deps = [":auto_input_lens"],
+)
+
+cc_test(
+  name = "rink_landmarks_test",
+  srcs = ["RinkLandmarksTest.cpp"],
+  deps = [":rink_landmarks"],
 )

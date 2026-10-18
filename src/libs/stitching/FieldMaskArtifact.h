@@ -17,4 +17,10 @@ absl::Status visit_current_field_mask(
     const std::string& expected_invalidation_id,
     const std::function<absl::Status(const std::string& mask_path)>& consumer);
 
+// Editor snapshot variant: returns Unavailable instead of waiting for a writer.
+// The consumer must pin/validate its file and finish before locks are released.
+absl::Status try_visit_current_field_mask(
+    const std::string& game_dir,
+    const std::function<absl::Status(const std::string& mask_path)>& consumer);
+
 } // namespace hm::stitching

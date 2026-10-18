@@ -45,6 +45,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -236,6 +237,10 @@ struct _AppCtx {
   // whose metadata cannot be modified by the overlay callbacks.
   processed_output_callback processed_output_cb{nullptr};
   element_message_callback element_message_cb{nullptr};
+  // Selection receipts outlive their bus so reconstruction cannot discard an
+  // accepted operator change before the main context records its replay state.
+  std::mutex scoreboard_selection_mu;
+  std::shared_ptr<GstMessage> pending_scoreboard_selection;
   bus_message_callback bus_message_cb{nullptr};
   defer_eos_callback defer_eos_cb{nullptr};
   fatal_pipeline_error_callback fatal_pipeline_error_cb{nullptr};

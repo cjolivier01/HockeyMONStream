@@ -29,6 +29,7 @@
 #include <QtGui/QTextBlock>
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
+#include <QtGui/QWindow>
 #include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
@@ -91,6 +92,195 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool scoreboardControlChecks(HStreamWindow* window) {
+    const QString config_path = window->gameDirectoryText() + "/config.yaml";
+    QFile file(config_path);
+    const bool existed = file.exists();
+    if (existed && !file.open(QIODevice::ReadOnly))
+      return false;
+    const QByteArray original = existed ? file.readAll() : QByteArray("{}\n");
+    file.close();
+    const YAML::Node old_user = YAML::Clone(window->user_layer_);
+    auto* old_process = window->pipeline_process_;
+    const auto old_run = window->pipeline_run_generation_;
+    const auto old_game = window->active_run_game_id_;
+    const bool old_stop = window->pipeline_stop_requested_;
+    const bool old_paused = window->pipeline_paused_;
+    const bool old_calibration_pending = window->calibration_pending_;
+    const bool old_calibration = window->active_run_is_calibration_;
+    window->calibration_pending_ = false;
+    window->active_run_is_calibration_ = false;
+    const int old_mode = window->run_mode_selector_->currentIndex();
+    window->run_mode_selector_->setCurrentIndex(window->run_mode_selector_->findData("program"));
+    window->user_layer_["pipeline"]["hmplaycropper"]["scoreboard-position"] = "upper-right";
+    YAML::Node config = YAML::Load(original.toStdString());
+    config["rink"]["scoreboard"]["position"] = "upper-center";
+    window->loadScoreboardControls(config);
+    auto* combo = window->scoreboard_position_combo_;
+    bool ok = combo->currentData() == "upper-center" && !window->scoreboard_select_button_->isEnabled();
+    config["pipeline"]["hmplaycropper"]["private-properties"]["scoreboard-position"] = "upper-right";
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+      return false;
+    file.write(QByteArray::fromStdString(YAML::Dump(config)));
+    file.close();
+    window->loadScoreboardControls(config);
+    ok &= combo->currentData() == "upper-right";
+    combo->setCurrentIndex(combo->findData("upper-center"));
+    const auto saved = YAML::LoadFile(config_path.toStdString());
+    ok &= saved["rink"]["scoreboard"]["position"].as<std::string>() == "upper-center" &&
+        !saved["pipeline"]["hmplaycropper"]["private-properties"]["scoreboard-position"].IsDefined();
+    if (!ok)
+      std::cerr << "Scoreboard persistence checks failed\n";
+    window->loadScoreboardControls(saved);
+    ok &= combo->currentData() == "upper-center";
+    ok &= startStubPipelineProcess(window);
+    window->active_run_game_id_ = window->game_id_edit_->text().trimmed();
+    window->pipeline_run_generation_ = 917;
+    window->pipeline_stop_requested_ = false;
+    window->pipeline_paused_ = false;
+    window->scoreboard_runtime_ready_ = true;
+    window->updateScoreboardControls();
+    ok &= window->scoreboard_select_button_->isEnabled();
+    combo->setCurrentIndex(combo->findData("upper-left"));
+    ok &= !combo->isEnabled() && window->pending_scoreboard_property_ == "scoreboard-position";
+    ok &= !window->handleScoreboardControlOutput("runtime property playcropper0 scoreboard-position=upper-right");
+    ok &= window->handleScoreboardControlOutput("runtime property playcropper0 scoreboard-position=upper-left") &&
+        combo->isEnabled() && window->scoreboard_controls_status_->text().contains("applied");
+    if (!ok)
+      std::cerr << "Scoreboard live placement failed: " << window->scoreboard_controls_status_->text().toStdString()
+                << "\n";
+    for (auto* transition :
+         {&window->pending_playback_seek_generation_,
+          &window->playback_seek_recovery_generation_,
+          &window->pending_process_pause_generation_,
+          &window->pending_process_resume_generation_}) {
+      const auto before = *transition;
+      *transition = 456;
+      window->updatePlaybackSeekControls();
+      ok &= !combo->isEnabled() && !window->scoreboard_select_button_->isEnabled();
+      *transition = before;
+      window->updatePlaybackSeekControls();
+    }
+    window->requestScoreboardSelection();
+    ok &= window->pending_scoreboard_property_ == "scoreboard-reselect" && !combo->isEnabled();
+    ok &= window->handleScoreboardControlOutput("runtime command failed: rejected playcropper0 scoreboard-reselect") &&
+        window->scoreboard_select_button_->isEnabled();
+    window->requestScoreboardSelection();
+    ++window->pipeline_run_generation_;
+    ok &= !window->handleScoreboardControlOutput("runtime property playcropper0 scoreboard-reselect=1");
+    window->pipeline_paused_ = true;
+    window->updateScoreboardControls();
+    ok &= !window->scoreboard_select_button_->isEnabled();
+    killStubPipelineProcess(window);
+    window->pipeline_process_ = old_process;
+    window->pipeline_run_generation_ = old_run;
+    window->active_run_game_id_ = old_game;
+    window->pipeline_stop_requested_ = old_stop;
+    window->calibration_pending_ = old_calibration_pending;
+    window->active_run_is_calibration_ = old_calibration;
+    window->pipeline_paused_ = old_paused;
+    window->run_mode_selector_->setCurrentIndex(old_mode);
+    window->user_layer_ = old_user;
+    window->pending_scoreboard_property_.clear();
+    window->scoreboard_runtime_ready_ = false;
+    window->scoreboard_reselect_waiting_ = false;
+    ok &= file.open(QIODevice::WriteOnly | QIODevice::Truncate);
+    if (file.isOpen()) {
+      ok &= file.write(original) == original.size();
+      file.close();
+    }
+    if (!existed)
+      file.remove();
+    window->loadScoreboardControls(YAML::Load(original.toStdString()));
+    return ok;
+  }
+
+  static void scoreboardDiagnostic(HStreamWindow* w) {
+    std::cerr << "Scoreboard ready=" << w->scoreboard_runtime_ready_ << " stage=" << w->playback_stage_.toStdString()
+              << " calibration=" << w->calibration_pending_
+              << " status=" << w->scoreboard_controls_status_->text().toStdString()
+              << " run-game=" << w->active_run_game_id_.toStdString() << " selected=" << w->gameIdText().toStdString()
+              << '\n';
+  }
+
+  static bool rinkMapStatusChecks(HStreamWindow* window) {
+    const auto old_run = window->pipeline_run_generation_;
+    const auto old_requested_run = window->rink_map_requested_generation_;
+    const auto old_active_game = window->active_run_game_id_;
+    const auto old_game = window->game_id_edit_->text();
+    const int old_backend = window->mapping_backend_combo_->currentIndex();
+    const int old_mode = window->run_mode_selector_->currentIndex();
+    const bool old_render = window->render_video_toggle_->isChecked();
+    const bool old_check = window->rink_map_preview_check_->isChecked();
+    window->game_id_edit_->setText("rink-map-status-test");
+    window->active_run_game_id_ = window->game_id_edit_->text();
+    window->pipeline_run_generation_ = 941;
+    window->mapping_backend_combo_->setCurrentIndex(window->mapping_backend_combo_->findData("nona"));
+    window->run_mode_selector_->setCurrentIndex(window->run_mode_selector_->findData("program"));
+    window->render_video_toggle_->setChecked(true);
+    window->rink_map_preview_check_->setChecked(true);
+    window->updateRinkMapControls();
+    auto* status = window->rink_map_preview_status_;
+    const auto displays = [status](const char* message) {
+#if defined(__x86_64__)
+      return status->text().contains(message);
+#else
+      (void)message;
+      return status->text().contains("requires the x86 desktop GPU preview");
+#endif
+    };
+    bool ok = displays("Save a reviewed");
+    window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=940", false);
+    ok &= displays("Save a reviewed");
+    window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=941", false);
+    ok &= displays("Map prepared");
+    window->handlePipelineOutputLine(
+        "HSTREAM_RINK_MAP status=unavailable run=941 message=FAILED_PRECONDITION: Calibration changed; review and save again",
+        true);
+    ok &= displays("Calibration changed") && !status->text().contains("FAILED_PRECONDITION");
+    ++window->pipeline_run_generation_;
+    window->updateRinkMapControls();
+    ok &= displays("Save a reviewed");
+    window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=941", false);
+    ok &= displays("Save a reviewed");
+    window->game_id_edit_->setText("another-rink-map-test");
+    window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=942", false);
+    ok &= !status->text().contains("Map prepared");
+    window->render_video_toggle_->setChecked(false);
+    ok &= displays("Render video");
+    window->render_video_toggle_->setChecked(true);
+    ok &= displays("Save a reviewed");
+    auto* old_process = window->pipeline_process_;
+    const bool old_embedded = window->pipeline_render_embedded_;
+    ok &= startStubPipelineProcess(window);
+    window->pipeline_render_embedded_ = true;
+    window->rink_map_requested_generation_ = 0;
+    window->updateRinkMapControls();
+    ok &= displays("Restart playback");
+    window->rink_map_requested_generation_ = window->pipeline_run_generation_;
+    window->updateRinkMapControls();
+    ok &= displays("Preparing");
+    window->pipeline_render_embedded_ = false;
+    window->updateRinkMapControls();
+    ok &= displays("embedded X11");
+    killStubPipelineProcess(window);
+    window->pipeline_process_ = old_process;
+    window->pipeline_render_embedded_ = old_embedded;
+    window->mapping_backend_combo_->setCurrentIndex(window->mapping_backend_combo_->findData("opencv-affine-ransac"));
+    ok &= displays("NONA");
+    window->rink_map_preview_check_->setChecked(false);
+    ok &= displays("off") && !window->rink_map_size_combo_->isEnabled();
+    window->game_id_edit_->setText(old_game);
+    window->mapping_backend_combo_->setCurrentIndex(old_backend);
+    window->run_mode_selector_->setCurrentIndex(old_mode);
+    window->render_video_toggle_->setChecked(old_render);
+    window->rink_map_preview_check_->setChecked(old_check);
+    window->pipeline_run_generation_ = old_run;
+    window->rink_map_requested_generation_ = old_requested_run;
+    window->active_run_game_id_ = old_active_game;
+    window->updateRinkLevelingControls();
+    return ok;
+  }
   static QString activeArchivePath(HStreamWindow* window, const QString& output) {
     return output == "archive-program-4k" ? window->active_program_4k_output_path_
         : output == "archive-stitched"    ? window->active_stitched_archive_output_path_
@@ -824,8 +1014,8 @@ bool expect_composed_focus_control(
     const std::string& description) {
   if (!window || !button || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
     return true;
-  int current_light_pixels = -1;
-  int stale_light_pixels = -1;
+  int current_glyph_pixels = -1;
+  int stale_glyph_pixels = -1;
   const QPoint current_center = button->mapTo(window, button->rect().center());
   for (int attempt = 0; attempt < 50; ++attempt) {
     QApplication::processEvents();
@@ -834,23 +1024,27 @@ bool expect_composed_focus_control(
     if (!composed.isNull()) {
       const QImage image = composed.toImage().convertToFormat(QImage::Format_RGB32);
       const qreal scale = composed.devicePixelRatio();
-      auto light_pixels = [&image, scale](const QPoint& center) {
+      auto glyph_pixels = [&image, scale](const QPoint& center) {
         const QPoint scaled(qRound(center.x() * scale), qRound(center.y() * scale));
         const int radius = std::max(1, qRound(12 * scale));
         int count = 0;
         for (int y = std::max(0, scaled.y() - radius); y < std::min(image.height(), scaled.y() + radius); ++y) {
           for (int x = std::max(0, scaled.x() - radius); x < std::min(image.width(), scaled.x() + radius); ++x) {
             const QColor pixel = image.pixelColor(x, y);
-            if (pixel.red() + pixel.green() + pixel.blue() >= 600)
+            // Expand/Restore use the shared blue action icons. Include their
+            // shaded/antialiased pixels, excluding the darker fill, hover tint
+            // and translucent border over that tint.
+            if (pixel.green() >= 100 && pixel.blue() > pixel.red() + 25 && pixel.blue() > pixel.green() + 12 &&
+                2 * (pixel.green() - pixel.red()) > pixel.blue() - pixel.green())
               ++count;
           }
         }
         return count;
       };
-      current_light_pixels = light_pixels(current_center);
-      stale_light_pixels =
-          stale_center.has_value() && *stale_center != current_center ? light_pixels(*stale_center) : 0;
-      if (current_light_pixels >= 8 && stale_light_pixels <= 2)
+      current_glyph_pixels = glyph_pixels(current_center);
+      stale_glyph_pixels =
+          stale_center.has_value() && *stale_center != current_center ? glyph_pixels(*stale_center) : 0;
+      if (current_glyph_pixels >= 8 && stale_glyph_pixels <= 2)
         return true;
     }
     if (attempt + 1 < 50)
@@ -858,8 +1052,8 @@ bool expect_composed_focus_control(
   }
   return expect(
       false,
-      description + ": composed maximize glyph pixels current=" + std::to_string(current_light_pixels) +
-          " stale=" + std::to_string(stale_light_pixels));
+      description + ": composed maximize glyph pixels current=" + std::to_string(current_glyph_pixels) +
+          " stale=" + std::to_string(stale_glyph_pixels));
 }
 
 bool capture_widget_artifact(QWidget* widget, const QString& name) {
@@ -3897,6 +4091,49 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   return program_discovery_visible && program_discovery_completed && set_test_calibration_status(window, "pending");
 }
 
+bool test_preview_remap_geometry(HStreamWindow* window) {
+  if (QGuiApplication::platformName() != "xcb")
+    return true;
+  auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
+  auto* preview_surface = require_child<QWidget>(window, "previewSurface");
+  auto* preview_target = require_child<QWidget>(window, "previewRenderTarget");
+  auto* tabs = require_child<QTabWidget>(window, "previewTabs");
+  if (!program_host || !preview_surface || !preview_target || !tabs)
+    return false;
+  const int original_tab = tabs->currentIndex();
+  const bool surface_hidden = preview_surface->isHidden();
+  tabs->setCurrentIndex(0);
+  preview_surface->show();
+  QGuiApplication::sync();
+  const QSize original_host_size = program_host->size();
+  program_host->resize(original_host_size.width() - 40, original_host_size.height() - 24);
+  if (!expect(
+          preview_target->windowHandle()->size() == preview_target->size(),
+          "Resizing the host must also size its hidden native target before remapping"))
+    return false;
+  program_host->resize(original_host_size);
+  // Reproduce a delayed native configure restoring the initial child size.
+  // Showing Program must repair it even without a host/aspect-ratio change.
+  preview_target->windowHandle()->setGeometry(0, 0, 100, 30);
+  QGuiApplication::sync();
+  PostedEventProbe remap_probe;
+  remap_probe.arm();
+  preview_target->show();
+  if (!expect(!remap_probe.delivered(), "Remapping a native preview must not drain posted events"))
+    return false;
+  QGuiApplication::sync();
+  if (!expect(
+          preview_target->geometry() == preview_surface->rect(),
+          "Showing Program must fill the letterboxed surface after stale native sizing") ||
+      !expect_x11_widget_state(preview_target, true, "Remapped Program must use the repaired native size"))
+    return false;
+  preview_target->hide();
+  if (surface_hidden)
+    preview_surface->hide();
+  tabs->setCurrentIndex(original_tab);
+  return true;
+}
+
 bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
@@ -4111,6 +4348,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           preview_target, false, "Stopped Program target must use its Qt host as the native X11 coordinate space")) {
     return false;
   }
+  if (!test_preview_remap_geometry(window))
+    return false;
   stitched_host->resize(900, 600);
   HStreamWindowTestAccess::updatePreviewTabResolution(window, "stitched", 15287, 6958);
   QApplication::processEvents();
@@ -16027,6 +16266,50 @@ bool prepare_real_e2e_game(const QString& game_id) {
   return true;
 }
 
+bool exercise_scoreboard_controls(HStreamWindow* window, const QString& artifact_dir) {
+  auto wait = [](const std::function<bool()>& ready) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!ready() && timer.elapsed() < 15000)
+      QTest::qWait(20);
+    return ready();
+  };
+  auto* select = window->findChild<QPushButton*>("selectScoreboardButton");
+  auto* position = window->findChild<QComboBox*>("scoreboardPositionCombo");
+  auto* status = window->findChild<QLabel*>("scoreboardControlsStatus");
+  if (!select || !position || !status || !wait([&] { return select->isEnabled(); })) {
+    HStreamWindowTestAccess::scoreboardDiagnostic(window);
+    return false;
+  }
+  const auto read_polygon = [&] {
+    return YAML::Dump(
+        YAML::LoadFile(
+            (window->gameDirectoryText() + "/config.yaml").toStdString())["rink"]["scoreboard"]["perspective_polygon"]);
+  };
+  const auto original = read_polygon();
+  for (const char* action : {"scoreboardCancelButton", "scoreboardSaveButton"}) {
+    select->click();
+    if (!wait([&] { return window->findChild<QDialog*>("scoreboardSelectionDialog") != nullptr; }))
+      return false;
+    auto* dialog = window->findChild<QDialog*>("scoreboardSelectionDialog");
+    dialog->grab().save(QDir(artifact_dir).filePath("scoreboard-selection.png"));
+    auto* button = dialog->findChild<QPushButton*>(action);
+    if (!button || !button->isEnabled())
+      return false;
+    button->click();
+    if (!wait([&] { return !window->findChild<QDialog*>("scoreboardSelectionDialog") && position->isEnabled(); }) ||
+        read_polygon() != original)
+      return false;
+  }
+  for (const char* placement : {"upper-center", "upper-right", "upper-left"}) {
+    position->setCurrentIndex(position->findData(placement));
+    if (!wait([&] { return position->isEnabled() && status->text().contains("applied"); }))
+      return false;
+    QTest::qWait(150);
+  }
+  return window->completeLogText().contains("Scoreboard selection cancelled; keeping previous selection");
+}
+
 bool submit_no_scoreboard(HStreamWindow* window, QString* error) {
   QDialog* dialog = window ? window->findChild<QDialog*>("scoreboardSelectionDialog") : nullptr;
   QPushButton* button = dialog ? dialog->findChild<QPushButton*>("scoreboardNoScoreboardButton") : nullptr;
@@ -16355,6 +16638,25 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     activate(show_play_tracking);
   if (preview_overlays.contains("rink") && !show_rink_mask->isChecked())
     activate(show_rink_mask);
+  const bool require_rink_map = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP");
+  if (require_rink_map) {
+    auto* rink_map = require_child<QCheckBox>(window, "showRinkMiniMapCheck");
+    if (!rink_map || !rink_map->isEnabled())
+      return false;
+    rink_map->setChecked(true);
+    show_player_tracking->setChecked(false);
+    for (const auto& option :
+         {std::pair{"rinkMiniMapSizeCombo", "HSTREAM_UI_E2E_RINK_MAP_SIZE"},
+          {"rinkMiniMapPositionCombo", "HSTREAM_UI_E2E_RINK_MAP_POSITION"}}) {
+      if (qEnvironmentVariableIsSet(option.second)) {
+        auto* combo = require_child<QComboBox>(window, option.first);
+        const int index = combo ? combo->findData(qEnvironmentVariable(option.second)) : -1;
+        if (index < 0)
+          return false;
+        combo->setCurrentIndex(index);
+      }
+    }
+  }
   const QStringList requested_outputs =
       qEnvironmentVariable("HSTREAM_UI_E2E_OUTPUTS", "archive-file").split(',', Qt::SkipEmptyParts);
   for (const QString& output : {QString("archive-file"), QString("archive-stitched"), QString("archive-program-4k")}) {
@@ -16380,6 +16682,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   timer.start();
   bool observed_first_frame = false;
   bool submitted_scoreboard = false;
+  bool checked_scoreboard_controls = false;
+  const bool require_scoreboard_controls = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_SCOREBOARD_CONTROLS");
   qint64 first_frame_at_ms = -1;
   QString interaction_error;
   NativePreviewCapture program_preview;
@@ -16404,6 +16708,17 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return;
     }
     auto capture_channel = [&](const QString& channel, const QString& output_name) {
+      QWidget* target = channel == "program" ? program_render_target
+          : channel == "stitched"            ? stitched_render_target
+                                             : camera1_render_target;
+      QGuiApplication::sync();
+      if (!expect(
+              target->geometry() == target->parentWidget()->rect(),
+              "Selected GPU preview must fill its letterboxed surface") ||
+          !expect_x11_widget_state(target, true, "Selected GPU preview native geometry must match Qt")) {
+        interaction_error = "selected GPU preview has stale native geometry";
+        return NativePreviewCapture{};
+      }
       const QFileInfo canonical_output(QDir(artifact_dir).filePath(output_name));
       const QString output_path = diagnostic_capture_attempt_path(artifact_dir, output_name, x11_preview_attempts);
       QFile::remove(output_path);
@@ -16471,7 +16786,15 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return;
     if (!calibration_only) {
       preview_tabs->setCurrentIndex(0);
-      program_target_acknowledged = program_target_acknowledged || wait_for_renderer(program_surface);
+      program_target_acknowledged = wait_for_renderer(program_surface);
+      QGuiApplication::sync();
+      if (!expect(
+              program_render_target->geometry() == program_surface->rect(),
+              "Returning to Program must fill its letterboxed surface") ||
+          !expect_x11_widget_state(program_render_target, true, "Returning to Program must retain native sizing")) {
+        interaction_error = "Program preview geometry changed after switching tabs";
+        return;
+      }
     }
     x11_previews_captured = (calibration_only || (program_target_acknowledged && program_preview.passed)) &&
         stitched_target_acknowledged && camera1_target_acknowledged && stitched_preview.passed &&
@@ -16494,7 +16817,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       stop_and_preserve_failure();
       return false;
     }
-    if (!submitted_scoreboard && !window->scoreboardSelectorUrl().isEmpty()) {
+    if (!require_scoreboard_controls && !submitted_scoreboard && !window->scoreboardSelectorUrl().isEmpty()) {
       submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
       if (!submitted_scoreboard) {
         std::cerr << "Could not submit the scoreboard selector: " << interaction_error.toStdString() << '\n';
@@ -16512,6 +16835,14 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
           first_frame_at_ms = timer.elapsed();
         }
         break;
+      }
+    }
+    if (observed_first_frame && require_scoreboard_controls && !checked_scoreboard_controls) {
+      checked_scoreboard_controls = exercise_scoreboard_controls(window, artifact_dir);
+      if (!checked_scoreboard_controls) {
+        std::cerr << "Real scoreboard reselection/placement failed\n";
+        stop_and_preserve_failure();
+        return false;
       }
     }
     if (observed_first_frame) {
@@ -16656,6 +16987,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   report += QString("stitched_preview_channel: %1\n").arg(stitched_channel_observed ? "OBSERVED" : "MISSING");
   report += QString("camera1_preview_channel: %1\n").arg(camera1_channel_observed ? "OBSERVED" : "MISSING");
   report += QString("visual_match: %1\n").arg(visual_match ? "PASS" : "FAIL");
+  if (require_rink_map)
+    report += QString("rink_map_status: %1\n").arg(window->findChild<QLabel*>("rinkMiniMapStatusLabel")->text());
   write_e2e_text(QDir(artifact_dir).filePath("report.txt"), report);
   std::cout << report.toStdString();
   if (!visual_verifier_output.isEmpty()) {
@@ -16663,6 +16996,12 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   }
 
   if (!expect(observed_native_asset_setup, "Real UI run should delegate native asset verification to hstream-cli") ||
+      !expect(
+          !require_rink_map || final_log.contains("HSTREAM_RINK_MAP status=ready teams=unknown"),
+          "Real UI playback should prepare the reviewed rink map") ||
+      !expect(
+          !require_rink_map || window->findChild<QLabel*>("rinkMiniMapStatusLabel")->text().contains("Map prepared"),
+          "Real UI playback should display rink-map preparation status") ||
       !expect(observed_command, "Real UI run should launch hstream-cli") ||
       !expect(
           !require_scoreboard || submitted_scoreboard,
@@ -17748,6 +18087,13 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_GEOMETRY_ONLY")) {
+    HStreamWindow window;
+    window.resize(1440, 900);
+    window.show();
+    QGuiApplication::sync();
+    return test_preview_remap_geometry(&window) ? 0 : 1;
+  }
   if (!test_path_preferences())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PATHS_ONLY"))
@@ -17853,6 +18199,10 @@ int main(int argc, char** argv) {
     std::cerr << "test_wheel_routing_log_follow_and_calibration_analysis failed\n";
     return 1;
   }
+  if (!expect(
+          HStreamWindowTestAccess::rinkMapStatusChecks(&window),
+          "Rink-map status must explain availability and reject stale runs"))
+    return 1;
 
   if (!test_window_title_tracks_selected_game(&window)) {
     std::cerr << "test_window_title_tracks_selected_game failed\n";
@@ -17878,6 +18228,10 @@ int main(int argc, char** argv) {
     std::cerr << "test_game_setup failed\n";
     return 1;
   }
+  if (!expect(
+          HStreamWindowTestAccess::scoreboardControlChecks(&window),
+          "Scoreboard controls preserve game precedence, save aliases, and fence runtime acknowledgements"))
+    return 1;
   if (!test_rink_mask_time(window.gameDirectoryText()) ||
       !(test_control_point_resolution(window.gameDirectoryText()) &&
         test_control_point_filtering(window.gameDirectoryText())) ||

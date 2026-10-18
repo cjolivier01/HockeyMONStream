@@ -3,6 +3,7 @@
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
@@ -19,11 +20,13 @@
 #include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include "src/apps/hstream-ui/RinkMapDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/StitchingStillPreview.h"
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
 #include "src/apps/hstream-ui/TelemetryDbPublisher.h"
+#include "src/apps/hstream-ui/ValueControlWheel.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
@@ -58,6 +61,7 @@
 #include <QtGui/QStandardItemModel>
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
+#include <QtGui/QWindow>
 #if QT_CONFIG(xcb)
 #include <QtGui/qguiapplication_platform.h>
 #include <xcb/xcb.h>
@@ -196,6 +200,17 @@ void sync_native_display() {
   if (xcb_connection_t* connection = native_x11_connection())
     std::free(xcb_get_input_focus_reply(connection, xcb_get_input_focus(connection), nullptr));
 #endif
+}
+
+void set_native_child_geometry(QWidget* child, const QRect& geometry) {
+  child->setGeometry(geometry);
+  // QWidget defers native geometry updates while hidden. Keep its existing
+  // QWindow in sync too, so a delayed native resize cannot restore the initial
+  // 100x30 size when a preview tab is shown. QWindow uses logical coordinates.
+  if (QWindow* window = child->windowHandle()) {
+    if (QWidget* parent = child->nativeParentWidget())
+      window->setGeometry(QRect(child->mapTo(parent, QPoint()), child->size()));
+  }
 }
 
 // Keep fractional percentages without displaying a long tail of zeroes.
@@ -700,6 +715,12 @@ class NativeVideoTarget : public hm::ui::NativePreviewSurface {
   }
 
  protected:
+  void showEvent(QShowEvent* event) override {
+    if (QWidget* surface = parentWidget())
+      set_native_child_geometry(this, surface->rect());
+    NativePreviewSurface::showEvent(event);
+  }
+
   void mouseDoubleClickEvent(QMouseEvent* event) override {
     if (event->button() == Qt::LeftButton && focus_available_ && focus_toggle_callback_) {
       focus_toggle_callback_();
@@ -787,10 +808,10 @@ class LetterboxRenderHost : public QWidget {
 
   void setVideoSize(int width, int height) {
     const double aspect_ratio = width > 0 && height > 0 ? static_cast<double>(width) / height : 16.0 / 9.0;
-    if (std::abs(aspect_ratio_ - aspect_ratio) < 0.0001)
-      return;
-    aspect_ratio_ = aspect_ratio;
-    updateGeometry();
+    if (std::abs(aspect_ratio_ - aspect_ratio) >= 0.0001) {
+      aspect_ratio_ = aspect_ratio;
+      updateGeometry();
+    }
     layoutRenderSurface();
   }
 
@@ -870,8 +891,8 @@ class LetterboxRenderHost : public QWidget {
       focus_button_->hide();
     if (remap_target)
       render_target_->hide();
-    render_surface_->setGeometry(x, y, width, height);
-    render_target_->setGeometry(0, 0, width, height);
+    set_native_child_geometry(render_surface_, QRect(x, y, width, height));
+    set_native_child_geometry(render_target_, QRect(0, 0, width, height));
     constexpr int kButtonMargin = 6;
     focus_button_->move(width - focus_button_->width() - kButtonMargin, kButtonMargin);
     if (remap_target) {
@@ -5164,36 +5185,8 @@ HStreamWindow::~HStreamWindow() {
 }
 
 bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
-  if (event && event->type() == QEvent::Wheel) {
-    auto* widget = qobject_cast<QWidget*>(watched);
-    const bool belongs_to_window = widget && (widget == this || isAncestorOf(widget));
-    const bool changes_value = qobject_cast<QAbstractSpinBox*>(widget) || qobject_cast<QComboBox*>(widget) ||
-        (qobject_cast<QAbstractSlider*>(widget) && !qobject_cast<QScrollBar*>(widget)) ||
-        qobject_cast<QLineEdit*>(widget) || qobject_cast<QRadioButton*>(widget) || qobject_cast<QCheckBox*>(widget) ||
-        qobject_cast<QTabBar*>(widget);
-    if (belongs_to_window && changes_value) {
-      auto* wheel = static_cast<QWheelEvent*>(event);
-      QAbstractScrollArea* scroll_area = nullptr;
-      for (QWidget* parent = widget->parentWidget(); parent && !scroll_area; parent = parent->parentWidget())
-        scroll_area = qobject_cast<QAbstractScrollArea*>(parent);
-      if (scroll_area) {
-        const QPoint pixels = wheel->pixelDelta();
-        const QPoint angles = wheel->angleDelta();
-        const bool horizontal = std::abs(pixels.x()) > std::abs(pixels.y()) ||
-            (pixels.isNull() && std::abs(angles.x()) > std::abs(angles.y()));
-        QScrollBar* bar = horizontal ? scroll_area->horizontalScrollBar() : scroll_area->verticalScrollBar();
-        const int raw_delta =
-            horizontal ? (pixels.x() != 0 ? pixels.x() : angles.x()) : (pixels.y() != 0 ? pixels.y() : angles.y());
-        if (bar && raw_delta != 0) {
-          const bool pixel_scroll = horizontal ? pixels.x() != 0 : pixels.y() != 0;
-          const int delta = pixel_scroll ? raw_delta : raw_delta * std::max(1, bar->singleStep()) / 40;
-          bar->setValue(bar->value() - delta);
-        }
-      }
-      wheel->accept();
-      return true;
-    }
-  }
+  if (route_value_control_wheel(this, watched, event))
+    return true;
   if (watched == setup_preview_splitter_ && event && event->type() == QEvent::Resize && !setup_split_seeded_ &&
       setup_preview_splitter_->height() > 0 && setup_controls_scroll_) {
     setup_split_seeded_ = true;
@@ -5930,6 +5923,47 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   connect(rink_mask_time_edit_, &QLineEdit::textChanged, this, [this] { updatePresetDirtyState(); });
   rink_leveling_button_ = new QPushButton(action_icon(ActionIcon::Level), "Level rink…");
   rink_leveling_button_->setObjectName("selectRinkLevelingButton");
+  rink_map_button_ = new QPushButton(action_icon(ActionIcon::Inspect), "Rink map and goals…");
+  rink_map_button_->setObjectName("selectRinkMapButton");
+  rink_map_button_->setToolTip(
+      "Use detected landmarks or manual marks to map the rink. Sparse evidence can be saved as a partial map.");
+  connect(rink_map_button_, &QPushButton::clicked, this, [this] { selectRinkMap(); });
+  rink_map_preview_check_ = new QCheckBox("Show rink mini-map during playback");
+  rink_map_preview_check_->setObjectName("showRinkMiniMapCheck");
+  rink_map_preview_check_->setChecked(
+      QSettings(ui_settings_path(), QSettings::IniFormat).value("preview/rink-map", true).toBool());
+  rink_map_preview_check_->setToolTip(
+      "Applies on the next playback. Requires a saved, reviewed rink map and tracked players. "
+      "Shows player dots in their detection-box colours and recognized jersey numbers in the Program and Stitched previews. "
+      "Teams are unknown. This display is not added to exported video.");
+  connect(rink_map_preview_check_, &QCheckBox::toggled, this, [this](bool enabled) {
+    QSettings settings(ui_settings_path(), QSettings::IniFormat);
+    settings.setValue("preview/rink-map", enabled);
+    updateRinkMapControls();
+  });
+  rink_map_size_combo_ = new QComboBox();
+  rink_map_size_combo_->setObjectName("rinkMiniMapSizeCombo");
+  for (const auto& option :
+       {std::pair{"Icon", "icon"}, {"Compact", "compact"}, {"Standard", "standard"}, {"Large", "large"}})
+    rink_map_size_combo_->addItem(option.first, option.second);
+  rink_map_position_combo_ = new QComboBox();
+  rink_map_position_combo_->setObjectName("rinkMiniMapPositionCombo");
+  rink_map_position_combo_->addItem("Upper right", "upper-right");
+  rink_map_position_combo_->addItem("Lower left", "lower-left");
+  rink_map_position_combo_->addItem("Upper left", "upper-left");
+  for (const auto& option : {std::pair{rink_map_size_combo_, "size"}, {rink_map_position_combo_, "position"}}) {
+    const QString key = QString("preview/rink-map-%1").arg(option.second);
+    const QString fallback = option.first == rink_map_size_combo_ ? "standard" : "upper-right";
+    const auto value = QSettings(ui_settings_path(), QSettings::IniFormat).value(key, fallback).toString();
+    set_combo_to_data(option.first, option.first->findData(value) >= 0 ? value : fallback);
+    option.first->setToolTip("Applies on the next playback. Changes only the desktop mini-map display.");
+    connect(option.first, &QComboBox::currentIndexChanged, this, [combo = option.first, key] {
+      QSettings(ui_settings_path(), QSettings::IniFormat).setValue(key, combo->currentData());
+    });
+  }
+  rink_map_preview_status_ = new QLabel();
+  rink_map_preview_status_->setObjectName("rinkMiniMapStatusLabel");
+  rink_map_preview_status_->setWordWrap(true);
   rink_default_button_ = new QPushButton(action_icon(ActionIcon::Reset), "Reset to rink defaults");
   rink_default_button_->setObjectName("resetRinkLevelingButton");
   connect(rink_leveling_button_, &QPushButton::clicked, this, [this]() { selectRinkLeveling(); });
@@ -6315,6 +6349,8 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   game_id_edit_->setObjectName("gameIdEdit");
   game_id_edit_->setPlaceholderText("game-id");
   connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() {
+    rink_map_run_message_.clear();
+    rink_map_status_generation_ = 0;
     updateWindowTitle();
     updateArchiveOutputPathLabel();
     updatePresetDirtyState();
@@ -6520,8 +6556,29 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_status_->setObjectName("previewStatusLabel");
   auto* program_footer = new QHBoxLayout();
   program_footer->addWidget(preview_status_, 1);
+  scoreboard_select_button_ = new QPushButton(action_icon(ActionIcon::Crop), "Select scoreboard…");
+  scoreboard_select_button_->setObjectName("selectScoreboardButton");
+  scoreboard_select_button_->setToolTip(
+      "Select or reselect the scoreboard corners during Program playback. Resume playback first if paused.");
+  scoreboard_position_combo_ = new QComboBox();
+  scoreboard_position_combo_->setObjectName("scoreboardPositionCombo");
+  scoreboard_position_combo_->addItem("Upper left", "upper-left");
+  scoreboard_position_combo_->addItem("Upper center", "upper-center");
+  scoreboard_position_combo_->addItem("Upper right", "upper-right");
+  scoreboard_position_combo_->setToolTip(
+      "Scoreboard placement in Program output, including recordings and streams. Saved for this game; applies live during playback.");
+  program_footer->addWidget(scoreboard_select_button_);
+  program_footer->addWidget(new QLabel("Position:"));
+  program_footer->addWidget(scoreboard_position_combo_);
+  scoreboard_controls_status_ = new QLabel();
+  scoreboard_controls_status_->setObjectName("scoreboardControlsStatus");
+  scoreboard_controls_status_->setWordWrap(true);
+  connect(scoreboard_select_button_, &QPushButton::clicked, this, &HStreamWindow::requestScoreboardSelection);
+  connect(scoreboard_position_combo_, &QComboBox::currentIndexChanged, this, &HStreamWindow::changeScoreboardPosition);
+  loadScoreboardControls(baseline_config_);
   program_preview_layout->addWidget(preview_host, 1);
   program_preview_layout->addLayout(program_footer);
+  program_preview_layout->addWidget(scoreboard_controls_status_);
   auto* program_controls_column = new QWidget(program_splitter);
   program_controls_column->setObjectName("programControlsPane");
   auto* program_controls_column_layout = new QVBoxLayout(program_controls_column);
@@ -7475,7 +7532,14 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     rink_layout->addWidget(rink_mask_time_mode_, 6, 1);
     rink_layout->addWidget(rink_mask_time_edit_, 7, 1);
     rink_layout->addWidget(rink_mask_time_source_, 8, 0, 1, 2);
-    rink_layout->setRowStretch(9, 1);
+    rink_layout->addWidget(rink_map_button_, 9, 0, 1, 2);
+    rink_layout->addWidget(rink_map_preview_check_, 10, 0, 1, 2);
+    rink_layout->addWidget(new QLabel("Mini-map size"), 11, 0);
+    rink_layout->addWidget(rink_map_size_combo_, 11, 1);
+    rink_layout->addWidget(new QLabel("Mini-map position"), 12, 0);
+    rink_layout->addWidget(rink_map_position_combo_, 12, 1);
+    rink_layout->addWidget(rink_map_preview_status_, 13, 0, 1, 2);
+    rink_layout->setRowStretch(11, 1);
     updateProjectionParameterControls();
     updateProjectionFramingControls();
     synchronizeStitchedColorControls();
@@ -7945,6 +8009,7 @@ std::vector<double> HStreamWindow::stitchProjectionParameters() const {
 }
 
 void HStreamWindow::loadRinkLevelingControls(const YAML::Node& config) {
+  loadScoreboardControls(config);
   if (!rink_configuration_combo_)
     return;
   const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
@@ -8029,7 +8094,68 @@ void HStreamWindow::updateRinkLevelingControls() {
     rink_default_button_->setEnabled(enabled && !loaded_projection_framing_.rotation_inherited);
   if (rink_leveling_button_)
     rink_leveling_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
+  if (rink_map_button_)
+    rink_map_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
+  if (rink_map_preview_check_)
+    rink_map_preview_check_->setEnabled(enabled);
+  updateRinkMapControls();
   updateCropRotationControls();
+}
+
+void HStreamWindow::updateRinkMapControls() {
+  if (!rink_map_preview_status_)
+    return;
+  const bool checked = rink_map_preview_check_->isChecked();
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  for (auto* combo : {rink_map_size_combo_, rink_map_position_combo_})
+    combo->setEnabled(rink_map_preview_check_->isEnabled() && checked);
+  QString message;
+#if !defined(__x86_64__)
+  message = "The rink mini-map requires the x86 desktop GPU preview.";
+#else
+  if (!checked)
+    message = "Mini-map is off.";
+  else if (mappingBackend() != "nona")
+    message = "Mini-map requires a NONA stitching calibration.";
+  else if (render_video_toggle_ && !render_video_toggle_->isChecked())
+    message = "Enable Render video to show the mini-map.";
+  else if (isCalibrationRun())
+    message = "Mini-map is available during Program playback after calibration.";
+  else if (running && !pipeline_render_embedded_)
+    message = "Mini-map requires the embedded X11 GPU preview.";
+  else if (
+      !rink_map_run_message_.isEmpty() && rink_map_status_generation_ == pipeline_run_generation_ && game_id_edit_ &&
+      rink_map_status_game_ == game_id_edit_->text().trimmed())
+    message = (running ? "" : "Last playback: ") + rink_map_run_message_;
+  else if (running && rink_map_requested_generation_ != pipeline_run_generation_)
+    message = "Restart playback with Render video enabled to prepare the mini-map.";
+  else if (running)
+    message = "Preparing the reviewed rink map for playback…";
+  else
+    message = "Save a reviewed rink map, then start playback. Partial maps cannot locate players.";
+#endif
+  rink_map_preview_status_->setText(message);
+}
+
+bool HStreamWindow::handleRinkMapStatus(const QString& line) {
+  static const QRegularExpression ready(R"(^HSTREAM_RINK_MAP status=ready teams=unknown run=([0-9]+)$)");
+  static const QRegularExpression unavailable(R"(^HSTREAM_RINK_MAP status=unavailable run=([0-9]+) message=(.*)$)");
+  const auto success = ready.match(line), failure = unavailable.match(line);
+  if (!success.hasMatch() && !failure.hasMatch())
+    return false;
+  const auto match = success.hasMatch() ? success : failure;
+  if (match.captured(1).toULongLong() != pipeline_run_generation_ || pipeline_run_generation_ == 0 || !game_id_edit_ ||
+      active_run_game_id_ != game_id_edit_->text().trimmed())
+    return true;
+  rink_map_status_generation_ = pipeline_run_generation_;
+  rink_map_status_game_ = active_run_game_id_;
+  QString reason = failure.captured(2);
+  reason.remove(QRegularExpression("^[A-Z_]+: ?"));
+  rink_map_run_message_ = success.hasMatch() ? "Map prepared. Dots use track colours; teams are unknown."
+                                             : "Mini-map unavailable: " + reason;
+  updateRinkMapControls();
+  appendLog(line, failure.hasMatch());
+  return true;
 }
 
 bool HStreamWindow::cropRotationSuppressed() const {
@@ -8150,6 +8276,22 @@ void HStreamWindow::selectRinkLeveling() {
   updateRinkLevelingControls();
   updatePresetDirtyState();
   appendLog("Rink leveling selected. Save Preset to apply these angles and regenerate stitching.");
+}
+
+void HStreamWindow::selectRinkMap() {
+  if (!ensureSavedControlConfigLoaded() || !rink_map_button_ || !rink_map_button_->isEnabled() || !game_id_edit_)
+    return;
+  const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
+  const bool parameters_changed = saved_parameters == saved_projection_parameters_.end()
+      ? !stitchProjectionParameters().empty()
+      : saved_parameters->second != stitchProjectionParameters();
+  if (!rinkLevelingInputsUnchanged() || saved_projection_ != stitchProjection() || parameters_changed ||
+      stitchProjectionFraming() != saved_projection_framing_) {
+    QMessageBox::information(this, "Rink map", "Save and calibrate changed stitching settings before mapping the rink.");
+    return;
+  }
+  RinkMapDialog dialog(gameDirectory(game_id_edit_->text().trimmed()), this);
+  dialog.exec();
 }
 
 void HStreamWindow::selectProjectionCrop() {
@@ -10565,6 +10707,9 @@ void HStreamWindow::startPipeline() {
     return;
   }
   pipeline_state_->setText("STARTING");
+  pending_scoreboard_property_.clear();
+  scoreboard_runtime_ready_ = false;
+  scoreboard_reselect_waiting_ = false;
   resetPlaybackProgress(true);
   setPlaybackStartupStage("ui", "Preparing the game directory and saved configuration");
   const auto show_startup_error = [this](const QString& detail) {
@@ -10993,6 +11138,15 @@ void HStreamWindow::startPipeline() {
   if (render_video && !active_run_is_calibration_ && show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked())
     preview_overlays << "rink";
   env.insert("HSTREAM_UI_PREVIEW_OVERLAYS", preview_overlays.join(','));
+  const bool request_rink_map = render_video && embedded_render && !active_run_is_calibration_ &&
+      mappingBackend() == "nona" && rink_map_preview_check_ && rink_map_preview_check_->isChecked();
+  rink_map_requested_generation_ = request_rink_map ? pipeline_run_generation_ + 1 : 0;
+  env.insert("HSTREAM_UI_PREVIEW_RINK_MAP", request_rink_map ? "1" : "0");
+  env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_SIZE", rink_map_size_combo_->currentData().toString());
+  env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_POSITION", rink_map_position_combo_->currentData().toString());
+  env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_RUN", QString::number(pipeline_run_generation_ + 1));
+  rink_map_run_message_.clear();
+  rink_map_status_generation_ = 0;
   confirmed_show_player_tracking_ = preview_overlays.contains("players");
   confirmed_show_play_tracking_ = preview_overlays.contains("play");
   confirmed_show_rink_mask_ = preview_overlays.contains("rink");
@@ -11708,13 +11862,14 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   if (handleProcessPauseOutput(trimmed) || handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
       handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||
       handlePreviewOverlayDiagnostic(trimmed) || handlePreviewOverlayResponse(trimmed) ||
-      (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed))) {
+      handleRinkMapStatus(trimmed) || (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed))) {
     return;
   }
   handleTelemetryOutputStatus(trimmed);
   handleArchiveOutputStatus(trimmed);
   appendLog(trimmed, stderr_output);
-  handleRuntimeControlResponse(trimmed);
+  if (!handleScoreboardControlOutput(trimmed))
+    handleRuntimeControlResponse(trimmed);
   handleScoreboardSelectorOutput(trimmed);
   handleRinkLevelingOutput(trimmed);
   handleProjectionCropOutput(trimmed);
@@ -11948,6 +12103,10 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
     playback_progress_x10_ = qRound(std::clamp(fraction_value, 0.0, 1.0) * 1000.0);
   }
   setPlaybackProgressState(PlaybackProgressState::kRunning);
+  if (playback_stage_ == "0" && processed_ns > 0 && !scoreboard_runtime_ready_) {
+    scoreboard_runtime_ready_ = true;
+    updateScoreboardControls();
+  }
   updatePlaybackProgressPresentation();
   updatePlaybackSeekControls();
   return true;
@@ -12112,6 +12271,7 @@ void HStreamWindow::updatePlaybackSeekPositionPresentation() {
 }
 
 void HStreamWindow::updatePlaybackSeekControls() {
+  updateScoreboardControls();
   if (!playback_seek_controls_ || !playback_seek_slider_) {
     return;
   }
@@ -15197,6 +15357,160 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   showArchiveFinalizationFailure(failure_detail);
 }
 
+void HStreamWindow::loadScoreboardControls(const YAML::Node& config) {
+  if (!scoreboard_position_combo_)
+    return;
+  QString position = "upper-left";
+  for (const auto& layer : {baseline_layer_, user_layer_, config}) {
+    for (const char* path : hm::scoreboard::kPositionPaths) {
+      YAML::Node value;
+      if (lookup_yaml_path(layer, path, &value)) {
+        if (value.IsNull())
+          position = "upper-left";
+        else if (value.IsScalar())
+          position = QString::fromStdString(value.Scalar());
+      }
+    }
+  }
+  if (scoreboard_position_combo_->findData(position) < 0)
+    position = "upper-left";
+  const QSignalBlocker blocker(scoreboard_position_combo_);
+  set_combo_to_data(scoreboard_position_combo_, position);
+  saved_scoreboard_position_ = position;
+  scoreboard_controls_status_->clear();
+  updateScoreboardControls();
+}
+
+void HStreamWindow::updateScoreboardControls() {
+  if (!scoreboard_select_button_)
+    return;
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (!running || pending_scoreboard_run_ != pipeline_run_generation_) {
+    pending_scoreboard_property_.clear();
+    if (!running) {
+      scoreboard_reselect_waiting_ = false;
+      scoreboard_runtime_ready_ = false;
+    }
+  }
+  const bool selecting = scoreboard_reselect_waiting_ || scoreboard_selection_dialog_;
+  const bool available = !isArchiveFinalizing() && !isCalibrationRun() && !calibration_pending_ &&
+      pending_scoreboard_property_.isEmpty() && pending_playback_seek_generation_ == 0 &&
+      playback_seek_recovery_generation_ == 0 && pending_process_pause_generation_ == 0 &&
+      pending_process_resume_generation_ == 0 && (!running || (!pipeline_paused_ && !pipeline_stop_requested_));
+  const bool live = running && scoreboard_runtime_ready_ && active_run_game_id_ == game_id_edit_->text().trimmed();
+  scoreboard_select_button_->setEnabled(scoreboard_selection_dialog_ || (available && live && !selecting));
+  scoreboard_position_combo_->setEnabled(
+      available && !selecting && (!running || live) && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
+  if (scoreboard_controls_status_->text().isEmpty())
+    scoreboard_controls_status_->setText(
+        live ? "Scoreboard placement also applies to recordings and streams."
+             : "Start Program playback to select or reselect the scoreboard.");
+}
+
+bool HStreamWindow::sendScoreboardCommand(const QString& property, const QString& value) {
+  if (!pipeline_process_ || pipeline_process_->state() != QProcess::Running || !scoreboard_runtime_ready_ ||
+      pipeline_paused_ || !pending_scoreboard_property_.isEmpty())
+    return false;
+  const QByteArray command = QString("@set-property playcropper0 %1=%2\n").arg(property, value).toUtf8();
+  if (pipeline_process_->write(command) != command.size())
+    return false;
+  pending_scoreboard_property_ = property;
+  pending_scoreboard_value_ = value;
+  pending_scoreboard_run_ = pipeline_run_generation_;
+  const quint64 request = ++scoreboard_request_id_;
+  scoreboard_controls_status_->setText(
+      property == "scoreboard-reselect" ? "Opening scoreboard selection…" : "Applying scoreboard position…");
+  updateScoreboardControls();
+  QTimer::singleShot(runtimeControlAckTimeoutMs(), this, [this, request] {
+    if (request != scoreboard_request_id_ || pending_scoreboard_property_.isEmpty())
+      return;
+    pending_scoreboard_property_.clear();
+    scoreboard_reselect_waiting_ = false;
+    scoreboard_controls_status_->setText(
+        "No acknowledgement from playback. Saved position applies on the next playback.");
+    updateScoreboardControls();
+  });
+  return true;
+}
+
+void HStreamWindow::requestScoreboardSelection() {
+  if (scoreboard_selection_dialog_) {
+    scoreboard_selection_dialog_->show();
+    scoreboard_selection_dialog_->raise();
+    scoreboard_selection_dialog_->activateWindow();
+    return;
+  }
+  if (!scoreboard_select_button_->isEnabled())
+    return;
+  scoreboard_reselect_waiting_ = true;
+  if (!sendScoreboardCommand("scoreboard-reselect", "1")) {
+    scoreboard_reselect_waiting_ = false;
+    scoreboard_controls_status_->setText(
+        "Could not request scoreboard selection. Resume Program playback and try again.");
+    updateScoreboardControls();
+  }
+}
+
+void HStreamWindow::changeScoreboardPosition() {
+  if (!scoreboard_position_combo_ || !scoreboard_position_combo_->isEnabled())
+    return;
+  const QString position = scoreboard_position_combo_->currentData().toString();
+  const fs::path directory(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
+  absl::Status status;
+  {
+    auto lock = hm::stitching::GameConfigTransactionLock::TryAcquire(directory);
+    if (!lock.ok()) {
+      status = lock.status();
+    } else {
+      try {
+        const fs::path path = directory / "config.yaml";
+        YAML::Node config = fs::exists(path) ? YAML::LoadFile(path.string()) : YAML::Node(YAML::NodeType::Map);
+        config["rink"]["scoreboard"]["position"] = position.toStdString();
+        for (const char* key : {"scoreboard-position", "scoreboard_position"}) {
+          remove_yaml_path(config, {"pipeline", "hmplaycropper", key});
+          for (const char* bag : {"properties", "private-properties"})
+            remove_yaml_path(config, {"pipeline", "hmplaycropper", bag, key});
+        }
+        status = publish_yaml_config(path, config);
+      } catch (const std::exception& error) {
+        status = absl::InternalError(error.what());
+      }
+    }
+  }
+  if (!status.ok()) {
+    const QSignalBlocker blocker(scoreboard_position_combo_);
+    set_combo_to_data(scoreboard_position_combo_, saved_scoreboard_position_);
+    scoreboard_controls_status_->setText(
+        "Could not save scoreboard position: " + QString::fromStdString(status.ToString()));
+    return;
+  }
+  saved_scoreboard_position_ = position;
+  if (!sendScoreboardCommand("scoreboard-position", position))
+    scoreboard_controls_status_->setText("Scoreboard position saved for the next playback.");
+}
+
+bool HStreamWindow::handleScoreboardControlOutput(const QString& line) {
+  if (pending_scoreboard_property_.isEmpty() || pending_scoreboard_run_ != pipeline_run_generation_ ||
+      active_run_game_id_ != game_id_edit_->text().trimmed())
+    return false;
+  const bool success = line ==
+      QString("runtime property playcropper0 %1=%2").arg(pending_scoreboard_property_, pending_scoreboard_value_);
+  const bool failed = line.startsWith("runtime command failed:") && line.contains("playcropper0") &&
+      (line.contains(pending_scoreboard_property_) || line.contains("element not found"));
+  if (!success && !failed)
+    return false;
+  const bool selection = pending_scoreboard_property_ == "scoreboard-reselect";
+  pending_scoreboard_property_.clear();
+  if (failed)
+    scoreboard_reselect_waiting_ = false;
+  scoreboard_controls_status_->setText(
+      failed          ? "Playback rejected the change. Saved position applies on the next playback."
+          : selection ? "Choose the scoreboard corners in the selection window."
+                      : "Scoreboard position applied to Program output and saved for this game.");
+  updateScoreboardControls();
+  return true;
+}
+
 void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
   static const QRegularExpression selector_url(
       R"((https?://[^\s]+/\?token=[0-9a-fA-F]{64}))", QRegularExpression::CaseInsensitiveOption);
@@ -15212,6 +15526,7 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
       return;
     }
     scoreboard_selector_url_ = url_text;
+    scoreboard_reselect_waiting_ = true;
     if (preview_status_) {
       preview_status_->setText("Waiting for scoreboard selection");
     }
@@ -15266,6 +15581,7 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     connect(dialog, &QObject::destroyed, this, [this, dialog]() {
       if (scoreboard_selection_dialog_ == dialog)
         scoreboard_selection_dialog_ = nullptr;
+      updateScoreboardControls();
     });
     if (!dialog->loadError().isEmpty())
       appendLog(dialog->loadError());
@@ -15273,11 +15589,17 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     dialog->raise();
     dialog->activateWindow();
     appendLog(QString("scoreboard selector opened in Qt: %1").arg(url_text));
+    updateScoreboardControls();
     return;
   }
 
   if (!scoreboard_selector_url_.isEmpty() &&
-      (line.contains("Loaded scoreboard perspective polygon") || line.contains("Scoreboard overlay disabled"))) {
+      (line.contains("Loaded scoreboard perspective polygon") || line.contains("Scoreboard overlay disabled") ||
+       line.startsWith("Scoreboard selection cancelled;"))) {
+    scoreboard_reselect_waiting_ = false;
+    scoreboard_controls_status_->setText(
+        line.startsWith("Scoreboard selection cancelled;") ? "Selection cancelled. Previous scoreboard selection kept."
+                                                           : "Scoreboard selection saved.");
     if (preview_status_) {
       const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
       preview_status_->setText(
@@ -15289,6 +15611,7 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     appendLog("scoreboard selection complete; pipeline continuing");
     if (scoreboard_selection_dialog_)
       scoreboard_selection_dialog_->closeAfterBackendCompletion();
+    updateScoreboardControls();
   }
 }
 
@@ -16354,6 +16677,7 @@ void HStreamWindow::timeoutPreviewOverlayRequest(quint64 generation) {
 
 void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
   updatePlaybackSeekControls();
+  updateRinkMapControls();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (!running) {
     appendLog(
@@ -16672,6 +16996,7 @@ void HStreamWindow::updateStitchingStillPreview() {
 }
 
 void HStreamWindow::updateRunControls() {
+  updateScoreboardControls();
   updateStitchingStillPreview();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = isArchiveFinalizing();
