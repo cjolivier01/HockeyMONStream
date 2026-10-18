@@ -8,8 +8,25 @@ RANSAC and MAGSAC++ maps do not provide the calibrated source rays it needs.
 ## Marking and review
 
 **Find landmarks** detects painted lines and shows other recognized rink
-features as amber contours. Centre lines are assigned automatically. Blue and
-goal lines need a left/right identity from the observation list. Left/right mean
+features as coloured contours. Outlines alternate colour and black dashes:
+
+| Feature | Colour |
+| --- | --- |
+| Centre line | Red |
+| Blue line | Blue |
+| Goal line | Orange |
+| Centre ice circle | Yellow |
+| Zone circle | Lavender |
+| Crease | Light cyan |
+| Faceoff dot | Pink |
+| Goal | Magenta |
+| Slot box | Lime |
+| Trapezoid | Mint |
+
+Hover over a detected outline to see its identity. Reviewed line marks keep
+the colour of their assigned identity; disabled marks are grey. Centre lines
+are assigned automatically. Blue and goal lines need a left/right identity
+from the observation list. Left/right mean
 the rink ends as viewed from the cameras; near/far mean the two side boards.
 Detection scores describe the masks, not the accuracy of a goal position.
 
@@ -38,7 +55,8 @@ degenerate fits, implausible plane axes, and contradictory marks are rejected.
 Disable a rejected observation to save the usable partial evidence.
 
 A fitted map draws a cyan rink outline and estimated goal centres in both
-source views. Review both cameras before **Save reviewed map**. The displayed
+source views, with thinner projected rink markings in their feature colours.
+Review both cameras before **Save reviewed map**. The displayed
 angular residual measures agreement with the input marks, not metre accuracy;
 four marks can have zero residual. Extrapolated ends depend on the dimensions,
 mark selection, and the quality of the source calibration.

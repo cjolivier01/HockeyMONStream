@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
+#include <utility>
 
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
@@ -34,6 +36,51 @@
 
 namespace {
 namespace rink = hm::stitching;
+QColor landmarkColor(std::string_view label) {
+  // Keep a stable identity colour across model contours and reviewed marks.
+  static const std::pair<std::string_view, QColor> colors[]{
+      {"Center Line", QColor(255, 80, 80)},
+      {"Blue Line", QColor(55, 140, 255)},
+      {"Goal Line", QColor(255, 151, 60)},
+      {"Center Ice Circle", QColor(255, 210, 70)},
+      {"Zone Circle", QColor(160, 150, 255)},
+      {"Crease", QColor(65, 225, 255)},
+      {"Faceoff Dot", QColor(255, 125, 185)},
+      {"Goal", QColor(230, 110, 255)},
+      {"Slot Box", QColor(170, 230, 65)},
+      {"Trapezoid", QColor(60, 225, 165)},
+      {"Field", QColor(200, 210, 220)}};
+  for (const auto& [name, color] : colors)
+    if (label == name)
+      return color;
+  return QColor(200, 210, 220);
+}
+QColor observationColor(const rink::RinkMapObservation& observation) {
+  if (!observation.enabled)
+    return QColor(140, 140, 140);
+  const auto& feature = observation.feature;
+  if (feature.rfind("center", 0) == 0)
+    return landmarkColor("Center Line");
+  if (feature.rfind("blue-", 0) == 0)
+    return landmarkColor("Blue Line");
+  if (feature == "goal-left" || feature == "goal-right")
+    return landmarkColor("Goal");
+  if (feature.rfind("goal-", 0) == 0)
+    return landmarkColor("Goal Line");
+  if (feature == "near-boards" || feature == "far-boards")
+    return QColor(73, 214, 234);
+  return landmarkColor(observation.label);
+}
+QColor layoutColor(size_t index) {
+  // RinkLayoutDrawing: boards, goal, blue, centre, blue, goal lines.
+  if (index == 1 || index == 5)
+    return landmarkColor("Goal Line");
+  if (index == 2 || index == 4)
+    return landmarkColor("Blue Line");
+  if (index == 3)
+    return landmarkColor("Center Line");
+  return QColor(73, 214, 234); // Boards and estimated goal-mouth crosses.
+}
 QString featureName(const rink::RinkMapObservation& observation) {
   for (const auto& feature : rink::RinkMapFeatures())
     if (feature.id == observation.feature)
@@ -95,7 +142,7 @@ class RinkMapCanvas : public QGraphicsView {
     overlays_ = new QGraphicsItemGroup();
     overlays_->setHandlesChildEvents(false);
     scene()->addItem(overlays_);
-    auto path = [&](const std::vector<cv::Point2d>& points, QColor color, bool dashed) {
+    auto path = [&](const std::vector<cv::Point2d>& points, QColor color, const QString& tooltip, qreal width) {
       QPainterPath drawing;
       bool first = true;
       QPointF previous;
@@ -114,13 +161,22 @@ class RinkMapCanvas : public QGraphicsView {
         previous = point;
         first = false;
       }
-      auto* item = new QGraphicsPathItem(drawing, overlays_);
-      QPen pen(color, 2, dashed ? Qt::DashLine : Qt::SolidLine);
-      pen.setCosmetic(true);
-      item->setPen(pen);
+      // A solid black underlay fills the dash gaps. Cosmetic flat-cap strokes
+      // retain visible, alternating colour/black segments at every zoom level.
+      for (bool foreground : {false, true}) {
+        auto* item = new QGraphicsPathItem(drawing, overlays_);
+        QPen pen(foreground ? color : QColor(Qt::black), width);
+        pen.setCapStyle(Qt::FlatCap);
+        pen.setCosmetic(true);
+        if (foreground)
+          pen.setDashPattern({4, 4});
+        item->setPen(pen);
+        item->setToolTip(tooltip);
+        item->setAcceptedMouseButtons(Qt::NoButton);
+      }
     };
-    for (const auto& line : state.projected_layout[camera])
-      path(line, QColor(73, 214, 234), true);
+    for (size_t i = 0; i < state.projected_layout[camera].size(); ++i)
+      path(state.projected_layout[camera][i], layoutColor(i), "Estimated rink geometry", 2);
     if (state.projected_layout[camera].size() == 10) {
       for (int end = 0; end < 2; ++end) {
         const auto& cross = state.projected_layout[camera][6 + 2 * end];
@@ -138,16 +194,14 @@ class RinkMapCanvas : public QGraphicsView {
       auto outline = detection.outline;
       if (!outline.empty())
         outline.push_back(outline.front());
-      path(outline, QColor(230, 168, 65, 170), true);
+      path(outline, landmarkColor(detection.label), QString::fromStdString(detection.label), 3);
     }
     for (size_t index = 0; index < state.document.observations.size(); ++index) {
       const auto& observation = state.document.observations[index];
       if (observation.camera != camera || observation.pixels.empty())
         continue;
-      const QColor color = !observation.enabled ? QColor(140, 140, 140)
-          : observation.automatic               ? QColor(255, 195, 78)
-                                                : QColor(68, 224, 166);
-      path(observation.pixels, color, false);
+      const QColor color = observationColor(observation);
+      path(observation.pixels, color, featureName(observation), 3);
       const auto position = observation.pixels.front();
       auto* text = new QGraphicsTextItem(QString::number(index + 1) + " " + featureName(observation), overlays_);
       text->setDefaultTextColor(color);
@@ -235,11 +289,7 @@ class RinkMapSchematic : public QWidget {
       path.moveTo(screen(drawing[i].front()));
       for (const auto p : drawing[i])
         path.lineTo(screen(p));
-      painter.setPen(QPen(
-          i == 0                   ? QColor(172, 192, 209)
-              : (i == 2 || i == 4) ? QColor(64, 143, 255)
-                                   : QColor(230, 92, 103),
-          2));
+      painter.setPen(QPen(layoutColor(i), 2));
       painter.drawPath(path);
     }
     painter.setPen(QColor(215, 225, 235));
