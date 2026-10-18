@@ -12,6 +12,7 @@
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
 #include <QtGui/QWheelEvent>
+#include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>
@@ -33,6 +34,7 @@
 
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
+#include "src/apps/hstream-ui/ValueControlWheel.h"
 
 namespace {
 namespace rink = hm::stitching;
@@ -321,6 +323,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   setWindowTitle("Rink map and goal centres");
   resize(1380, 920);
   configure_preview_dialog_window(this);
+  qApp->installEventFilter(this);
   auto* root = new QVBoxLayout(this);
   auto* toolbar = new QHBoxLayout();
   detect_ = new QPushButton(action_icon(ActionIcon::Inspect), "Find landmarks");
@@ -526,12 +529,17 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
 }
 
 RinkMapDialog::~RinkMapDialog() {
+  qApp->removeEventFilter(this);
   if (job_)
     job_->cancelled = true;
   if (worker_) {
     worker_->wait();
     delete worker_;
   }
+}
+
+bool RinkMapDialog::eventFilter(QObject* watched, QEvent* event) {
+  return route_value_control_wheel(this, watched, event) || QDialog::eventFilter(watched, event);
 }
 
 void RinkMapDialog::setStatus(const QString& message, bool error) {

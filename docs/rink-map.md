@@ -33,7 +33,8 @@ Detection scores describe the masks, not the accuracy of a goal position.
 Choose a point or line above the image to add manual evidence. A point takes one
 click; a line takes two well-separated clicks along the paint or the **straight
 section** of the boards at ice level. Scroll to zoom and drag the image to pan.
-Green anchors can be dragged. Editing a detected line's endpoints converts it
+Green anchors can be dragged. Scrolling over selectors or dimension fields
+never changes their values, even when focused. Editing a detected line's endpoints converts it
 to a manual line. Uncheck incorrect evidence or remove it from the list.
 
 The dimensions are assumptions in metres. Defaults describe a 200 × 85 ft rink

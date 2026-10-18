@@ -14,12 +14,14 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
+#include <QtGui/QWheelEvent>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QGraphicsView>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
@@ -177,6 +179,49 @@ int main(int argc, char** argv) {
     RinkMapDialog dialog(game.path());
     dialog.show();
     ok &= expect(idle(dialog), "Partial reopen completes");
+    auto wheel = [](QWidget* widget, bool pixels = false) {
+      const QPoint position = widget->rect().center();
+      QWheelEvent event(
+          position,
+          widget->mapToGlobal(position),
+          pixels ? QPoint(0, 24) : QPoint(),
+          pixels ? QPoint() : QPoint(0, 120),
+          Qt::NoButton,
+          Qt::NoModifier,
+          Qt::NoScrollPhase,
+          false);
+      QApplication::sendEvent(widget, &event);
+    };
+    auto* feature = dialog.findChild<QComboBox*>("rinkMapFeatureCombo");
+    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    auto* identity = qobject_cast<QComboBox*>(table->cellWidget(0, 1));
+    for (bool focused : {false, true}) {
+      for (bool pixels : {false, true}) {
+        for (auto* combo : {feature, identity}) {
+          const int before = combo->currentIndex();
+          if (focused)
+            combo->setFocus();
+          else
+            combo->clearFocus();
+          wheel(combo, pixels);
+          ok &= expect(combo->currentIndex() == before, "Wheel must not change feature or observed identity");
+        }
+        for (auto* spin : dialog.findChildren<QDoubleSpinBox*>()) {
+          const double before = spin->value();
+          if (focused)
+            spin->setFocus();
+          else
+            spin->clearFocus();
+          wheel(spin, pixels);
+          wheel(spin->findChild<QLineEdit*>(), pixels);
+          ok &= expect(spin->value() == before, "Wheel must not change rink dimensions, even with focus");
+        }
+      }
+    }
+    auto* camera = dialog.findChild<QGraphicsView*>("rinkMapCamera0");
+    const double zoom = camera->transform().m11();
+    wheel(camera->viewport());
+    ok &= expect(camera->transform().m11() > zoom, "Image wheel zoom remains available");
     auto* save = dialog.findChild<QPushButton*>("saveRinkMapButton");
     ok &= expect(
         save->isEnabled() && save->text() == "Save partial map", "A saved single line stays partial after reopening");

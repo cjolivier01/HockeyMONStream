@@ -236,12 +236,20 @@ cc_library(
 )
 
 cc_library(
+    name = "value_control_wheel",
+    hdrs = ["ValueControlWheel.h"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_widgets"],
+)
+
+cc_library(
     name = "rink_map_dialog",
     srcs = ["RinkMapBackend.cpp", "RinkMapDialog.cpp"],
     hdrs = ["RinkMapBackend.h", "RinkMapDialog.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        ":value_control_wheel",
         ":action_icons",
         ":calibration_image",
         ":preview_dialog_window",
@@ -734,6 +742,7 @@ cc_library(
         ":projection_crop_dialog",
         ":rink_leveling_dialog",
         ":rink_map_dialog",
+        ":value_control_wheel",
         ":scoreboard_selection_dialog",
         ":stitching_experiment_dialog",
         ":telemetry_csv_publisher",

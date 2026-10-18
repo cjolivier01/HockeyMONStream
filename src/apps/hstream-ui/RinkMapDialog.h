@@ -24,6 +24,7 @@ class RinkMapDialog : public QDialog {
   ~RinkMapDialog() override;
 
  private:
+  bool eventFilter(QObject* watched, QEvent* event) override;
   void refresh();
   void update(bool detect = false);
   void rebuildTable();
