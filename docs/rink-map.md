@@ -83,7 +83,7 @@ checked under **Stitched → Rink**, then start playback. The Program and Stitch
 desktop GPU previews show an overhead rink with player circles in the same
 track colours as their detection boxes, including when boxes are hidden. The
 setting applies on the next playback and works independently of player boxes.
-It currently uses the x86 desktop GPU preview renderer. **Mini-map size** offers
+It currently requires the embedded X11 GPU preview on x86. **Mini-map size** offers
 Compact, Standard and Large; **Mini-map position** offers Lower left and Upper
 left. These preferences apply on the next playback and keep the complete panel
 inside the image. Standard preserves the original size.

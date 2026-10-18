@@ -8078,6 +8078,8 @@ void HStreamWindow::updateRinkMapControls() {
     message = "Enable Render video to show the mini-map.";
   else if (isCalibrationRun())
     message = "Mini-map is available during Program playback after calibration.";
+  else if (running && !pipeline_render_embedded_)
+    message = "Mini-map requires the embedded X11 GPU preview.";
   else if (
       !rink_map_run_message_.isEmpty() && rink_map_status_generation_ == pipeline_run_generation_ && game_id_edit_ &&
       rink_map_status_game_ == game_id_edit_->text().trimmed())
@@ -11090,8 +11092,8 @@ void HStreamWindow::startPipeline() {
   if (render_video && !active_run_is_calibration_ && show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked())
     preview_overlays << "rink";
   env.insert("HSTREAM_UI_PREVIEW_OVERLAYS", preview_overlays.join(','));
-  const bool request_rink_map = render_video && !active_run_is_calibration_ && mappingBackend() == "nona" &&
-      rink_map_preview_check_ && rink_map_preview_check_->isChecked();
+  const bool request_rink_map = render_video && embedded_render && !active_run_is_calibration_ &&
+      mappingBackend() == "nona" && rink_map_preview_check_ && rink_map_preview_check_->isChecked();
   rink_map_requested_generation_ = request_rink_map ? pipeline_run_generation_ + 1 : 0;
   env.insert("HSTREAM_UI_PREVIEW_RINK_MAP", request_rink_map ? "1" : "0");
   env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_SIZE", rink_map_size_combo_->currentData().toString());
