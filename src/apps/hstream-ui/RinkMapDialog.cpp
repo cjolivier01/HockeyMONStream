@@ -778,7 +778,7 @@ void RinkMapDialog::reject() {
     prompt.exec();
     close_prompt_active_ = false;
     if (prompt.clickedButton() != discard) {
-      if (needs_update)
+      if (needs_update || !resolved_)
         update();
       return;
     }

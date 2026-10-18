@@ -108,31 +108,39 @@ struct HStreamWindowTestAccess {
     window->rink_map_preview_check_->setChecked(true);
     window->updateRinkMapControls();
     auto* status = window->rink_map_preview_status_;
-    bool ok = status->text().contains("Save a reviewed");
+    const auto displays = [status](const char* message) {
+#if defined(__x86_64__)
+      return status->text().contains(message);
+#else
+      (void)message;
+      return status->text().contains("requires the x86 desktop GPU preview");
+#endif
+    };
+    bool ok = displays("Save a reviewed");
     window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=940", false);
-    ok &= status->text().contains("Save a reviewed");
+    ok &= displays("Save a reviewed");
     window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=941", false);
-    ok &= status->text().contains("Map prepared");
+    ok &= displays("Map prepared");
     window->handlePipelineOutputLine(
         "HSTREAM_RINK_MAP status=unavailable run=941 message=FAILED_PRECONDITION: Calibration changed; review and save again",
         true);
-    ok &= status->text().contains("Calibration changed") && !status->text().contains("FAILED_PRECONDITION");
+    ok &= displays("Calibration changed") && !status->text().contains("FAILED_PRECONDITION");
     ++window->pipeline_run_generation_;
     window->updateRinkMapControls();
-    ok &= status->text().contains("Save a reviewed");
+    ok &= displays("Save a reviewed");
     window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=941", false);
-    ok &= status->text().contains("Save a reviewed");
+    ok &= displays("Save a reviewed");
     window->game_id_edit_->setText("another-rink-map-test");
     window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=942", false);
     ok &= !status->text().contains("Map prepared");
     window->render_video_toggle_->setChecked(false);
-    window->updateRinkMapControls();
-    ok &= status->text().contains("Render video");
+    ok &= displays("Render video");
+    window->render_video_toggle_->setChecked(true);
+    ok &= displays("Save a reviewed");
     window->mapping_backend_combo_->setCurrentIndex(window->mapping_backend_combo_->findData("opencv-affine-ransac"));
-    window->updateRinkMapControls();
-    ok &= status->text().contains("NONA");
+    ok &= displays("NONA");
     window->rink_map_preview_check_->setChecked(false);
-    ok &= status->text().contains("off") && !window->rink_map_size_combo_->isEnabled();
+    ok &= displays("off") && !window->rink_map_size_combo_->isEnabled();
     window->game_id_edit_->setText(old_game);
     window->mapping_backend_combo_->setCurrentIndex(old_backend);
     window->run_mode_selector_->setCurrentIndex(old_mode);

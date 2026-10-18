@@ -343,6 +343,27 @@ int main(int argc, char** argv) {
     dialog.reject();
     ok &=
         expect(dialog.isVisible() && idle(dialog) && dialog.isWindowModified(), "Keep editing protects unsaved inputs");
+    ok &= write(bin.filePath("pano_trafo"), "#!/bin/sh\nsleep 0.25\nawk '{print $2, $3}'\n");
+    width->setValue(original_width - .2);
+    auto* stop = dialog.findChild<QPushButton*>("stopRinkMapButton");
+    ok &= expect(waitUntil([&] { return stop->isEnabled(); }), "Dimension edit starts a refit");
+    bool kept_editing = false;
+    QTimer keep_editing;
+    QObject::connect(&keep_editing, &QTimer::timeout, &dialog, [&] {
+      if (auto* prompt = dialog.findChild<QMessageBox*>("rinkMapDiscardPrompt")) {
+        kept_editing = true;
+        keep_editing.stop();
+        prompt->findChild<QPushButton*>("rinkMapKeepEditing")->click();
+      }
+    });
+    keep_editing.start(10);
+    dialog.reject();
+    ok &= expect(
+        waitUntil([&] { return kept_editing && !stop->isEnabled() && save->isEnabled(); }) && dialog.isVisible() &&
+            dialog.isWindowModified(),
+        "Keep editing after cancelling a refit restores Save without another edit");
+    keep_editing.stop();
+    ok &= write(bin.filePath("pano_trafo"), "#!/bin/sh\nawk '{print $2, $3}'\n");
     QTimer::singleShot(0, &dialog, [&] {
       auto* prompt = dialog.findChild<QMessageBox*>("rinkMapDiscardPrompt");
       if (prompt)

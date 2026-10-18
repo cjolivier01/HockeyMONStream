@@ -16460,6 +16460,7 @@ void HStreamWindow::timeoutPreviewOverlayRequest(quint64 generation) {
 
 void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
   updatePlaybackSeekControls();
+  updateRinkMapControls();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (!running) {
     appendLog(
