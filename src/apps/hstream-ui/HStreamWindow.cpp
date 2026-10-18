@@ -19,6 +19,7 @@
 #include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include "src/apps/hstream-ui/RinkMapDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/StitchingStillPreview.h"
@@ -5930,6 +5931,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   connect(rink_mask_time_edit_, &QLineEdit::textChanged, this, [this] { updatePresetDirtyState(); });
   rink_leveling_button_ = new QPushButton(action_icon(ActionIcon::Level), "Level rink…");
   rink_leveling_button_->setObjectName("selectRinkLevelingButton");
+  rink_map_button_ = new QPushButton(action_icon(ActionIcon::Inspect), "Rink map and goals…");
+  rink_map_button_->setObjectName("selectRinkMapButton");
+  rink_map_button_->setToolTip(
+      "Use detected landmarks or manual marks to map the rink. Sparse evidence can be saved as a partial map.");
+  connect(rink_map_button_, &QPushButton::clicked, this, [this] { selectRinkMap(); });
   rink_default_button_ = new QPushButton(action_icon(ActionIcon::Reset), "Reset to rink defaults");
   rink_default_button_->setObjectName("resetRinkLevelingButton");
   connect(rink_leveling_button_, &QPushButton::clicked, this, [this]() { selectRinkLeveling(); });
@@ -7475,7 +7481,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     rink_layout->addWidget(rink_mask_time_mode_, 6, 1);
     rink_layout->addWidget(rink_mask_time_edit_, 7, 1);
     rink_layout->addWidget(rink_mask_time_source_, 8, 0, 1, 2);
-    rink_layout->setRowStretch(9, 1);
+    rink_layout->addWidget(rink_map_button_, 9, 0, 1, 2);
+    rink_layout->setRowStretch(10, 1);
     updateProjectionParameterControls();
     updateProjectionFramingControls();
     synchronizeStitchedColorControls();
@@ -8029,6 +8036,8 @@ void HStreamWindow::updateRinkLevelingControls() {
     rink_default_button_->setEnabled(enabled && !loaded_projection_framing_.rotation_inherited);
   if (rink_leveling_button_)
     rink_leveling_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
+  if (rink_map_button_)
+    rink_map_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
   updateCropRotationControls();
 }
 
@@ -8150,6 +8159,22 @@ void HStreamWindow::selectRinkLeveling() {
   updateRinkLevelingControls();
   updatePresetDirtyState();
   appendLog("Rink leveling selected. Save Preset to apply these angles and regenerate stitching.");
+}
+
+void HStreamWindow::selectRinkMap() {
+  if (!ensureSavedControlConfigLoaded() || !rink_map_button_ || !rink_map_button_->isEnabled() || !game_id_edit_)
+    return;
+  const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
+  const bool parameters_changed = saved_parameters == saved_projection_parameters_.end()
+      ? !stitchProjectionParameters().empty()
+      : saved_parameters->second != stitchProjectionParameters();
+  if (!rinkLevelingInputsUnchanged() || saved_projection_ != stitchProjection() || parameters_changed ||
+      stitchProjectionFraming() != saved_projection_framing_) {
+    QMessageBox::information(this, "Rink map", "Save and calibrate changed stitching settings before mapping the rink.");
+    return;
+  }
+  RinkMapDialog dialog(gameDirectory(game_id_edit_->text().trimmed()), this);
+  dialog.exec();
 }
 
 void HStreamWindow::selectProjectionCrop() {

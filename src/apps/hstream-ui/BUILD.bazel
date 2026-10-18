@@ -60,6 +60,10 @@ filegroup(
         "CameraExperimentSource.h",
         "RinkLevelingDialog.cpp",
         "RinkLevelingDialog.h",
+        "RinkMapBackend.cpp",
+        "RinkMapBackend.h",
+        "RinkMapDialog.cpp",
+        "RinkMapDialog.h",
         "ProjectionCropDialog.cpp",
         "ProjectionCropDialog.h",
         "PipelineInspectorWidget.cpp",
@@ -228,6 +232,30 @@ cc_library(
         "//src/libs/stitching:hugin_project",
         "//src/libs/stitching:rink_leveling",
         "@qt//:qt_widgets",
+    ],
+)
+
+cc_library(
+    name = "rink_map_dialog",
+    srcs = ["RinkMapBackend.cpp", "RinkMapDialog.cpp"],
+    hdrs = ["RinkMapBackend.h", "RinkMapDialog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":action_icons",
+        ":calibration_image",
+        ":preview_dialog_window",
+        "//src/libs/assets:asset_manager",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:rink_landmarks",
+        "//src/libs/stitching:rink_leveling",
+        "//src/libs/stitching:rink_map",
+        "//src/libs/stitching:transaction_state",
+        "@opencv_linux//:opencv",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
     ],
 )
 
@@ -703,6 +731,7 @@ cc_library(
         ":player_analytics_controls",
         ":projection_crop_dialog",
         ":rink_leveling_dialog",
+        ":rink_map_dialog",
         ":scoreboard_selection_dialog",
         ":stitching_experiment_dialog",
         ":telemetry_csv_publisher",
@@ -1124,4 +1153,13 @@ sh_test(
     data = [":hstream-web-job"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     tags = ["local"],
+)
+
+cc_test(
+    name = "rink_map_dialog_test",
+    srcs = ["RinkMapDialogTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":rink_map_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
 )

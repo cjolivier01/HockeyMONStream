@@ -473,6 +473,7 @@ class HStreamWindow : public QMainWindow {
   double cameraPresetControlValue(const QString& id) const;
   void openPromotedStitchingLeveling(const QString& game_directory);
   void selectRinkLeveling();
+  void selectRinkMap();
   void selectProjectionCrop();
   bool ensureProjectionCropReviewed(bool* cancelled = nullptr);
   bool hasPendingCropSelection() const;
@@ -643,6 +644,7 @@ class HStreamWindow : public QMainWindow {
   QString saved_rink_mask_time_text_;
   std::array<QDoubleSpinBox*, 2> rink_angle_spins_{};
   QPushButton* rink_leveling_button_{nullptr};
+  QPushButton* rink_map_button_{nullptr};
   QPushButton* rink_default_button_{nullptr};
   QLabel* rink_rotation_source_{nullptr};
   std::vector<hm::stitching::StitchRinkConfiguration> rink_configurations_;
