@@ -3,13 +3,21 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 INCLUDE_PREFIX = "hstream/src/libs/draw_display"
 
 cc_library(
+    name = "rink_mini_map_options",
+    hdrs = ["RinkMiniMapOptions.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "rink_mini_map",
     srcs = ["RinkMiniMap.cpp"],
-    hdrs = ["RinkMiniMap.h", "RinkMiniMapOptions.h"],
+    hdrs = ["RinkMiniMap.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
         ":analytics_overlay",
+        ":rink_mini_map_options",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/player_analytics:frame_meta",
         "//src/libs/stitching:playback_rink_map",

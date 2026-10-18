@@ -199,6 +199,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/draw_display:rink_mini_map_options",
         ":rink_mask_image",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/stitching:stitching",
