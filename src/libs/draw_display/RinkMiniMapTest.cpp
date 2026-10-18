@@ -27,10 +27,12 @@ struct Frame {
       uint64_t expires = 120,
       bool ignored = false,
       NvOSD_ColorParams color = {0.2, 0.4, 0.7, 1},
-      bool overflow = false) {
+      bool overflow = false,
+      double shift_x = 0,
+      uint64_t pts_ns = 100) {
     check(frame, "Metadata allocation");
     frame->source_id = 4;
-    frame->buf_pts = 100;
+    frame->buf_pts = pts_ns;
     frame->source_frame_width = 800;
     frame->source_frame_height = 600;
     nvds_add_frame_meta_to_batch(batch, frame);
@@ -40,7 +42,7 @@ struct Frame {
     observation.coordinate_height = 600;
     p::PlayerRect player;
     player.track_id = 22;
-    player.rect.left = 350;
+    player.rect.left = 350 + shift_x;
     player.rect.top = 100;
     player.rect.width = 100;
     player.rect.height = 200;
@@ -150,8 +152,8 @@ int main() {
       for (const char* position : {"upper-right", "upper-left", "lower-left", ""}) {
         const bool upper = std::string_view(position) != "lower-left";
         const bool right = std::string_view(position) == "upper-right" || std::string_view(position).empty();
-        float previous_width = 0;
-        for (const char* size : {"compact", "standard", "large"}) {
+        float previous_width = 0, previous_height = 0;
+        for (const char* size : {"icon", "compact", "standard", "large"}) {
           hm::draw_display::RinkMiniMap sized(map, hm::draw_display::RinkMiniMapPreferences(size, position));
           commands.Clear();
           check(sized.Append(fresh.frame, 1600, 1200, display.width, display.height, &commands), "Sized map draws");
@@ -163,11 +165,47 @@ int main() {
           check(upper ? panel.y0 < display.height / 2 : panel.y1 > display.height / 2, "Selected map corner is used");
           check(right ? panel.x1 > display.width / 2 : panel.x0 < display.width / 2, "Selected map side is used");
           check(panel.x1 - panel.x0 > previous_width, "Map size presets increase the visible panel");
+          if (std::string_view(size) == "compact") {
+            check(std::abs((panel.x1 - panel.x0) / previous_width - 2) < .001, "Icon is half the width of Compact");
+            check(std::abs((panel.y1 - panel.y0) / previous_height - 2) < .001, "Icon is half the height of Compact");
+          }
           previous_width = panel.x1 - panel.x0;
+          previous_height = panel.y1 - panel.y0;
           check(commands.rejected() == 0, "Sized map fits the command budget");
         }
       }
     }
+    auto moving_map = std::make_shared<rink::PlaybackRinkMap>(*map);
+    moving_map->rays = {
+        *rink::RinkPointToRay(map->fit, {-10, 5}),
+        *rink::RinkPointToRay(map->fit, {10, 5}),
+        *rink::RinkPointToRay(map->fit, {-10, -5}),
+        *rink::RinkPointToRay(map->fit, {10, -5})};
+    hm::draw_display::RinkMiniMap stable(moving_map);
+    const auto draw_dot = [&](hm::draw_display::RinkMiniMap& renderer, Frame& input) {
+      commands.Clear();
+      check(renderer.Append(input.frame, 1600, 1200, 800, 600, &commands), "Smoothing frame renders");
+      cv::Point2d point(-1, -1);
+      for (size_t i = 0; i < commands.size(); ++i)
+        if (commands.data()[i].kind == a::detail::Kind::kDisc)
+          point = {commands.data()[i].x0, commands.data()[i].y0};
+      return point;
+    };
+    Frame first(generation, true, false, 0, false, {.2, .4, .7, 1}, false, 0, 1000000000);
+    const auto origin = draw_dot(stable, first);
+    Frame jitter(generation, true, false, 0, false, {.2, .4, .7, 1}, false, 50, 1033333333);
+    hm::draw_display::RinkMiniMap raw(moving_map);
+    const auto measured = draw_dot(raw, jitter), damped = draw_dot(stable, jitter);
+    check(cv::norm(damped - origin) < cv::norm(measured - origin) * .7, "Displayed dots damp box-foot movement");
+    Frame seek(generation, true, false, 0, false, {.2, .4, .7, 1}, false, 50, 500000000);
+    check(draw_dot(stable, seek) == measured, "Backward seeks reset displayed history");
+    Frame ahead(generation, true, false, 0, false, {.2, .4, .7, 1}, false, 0, 20000000000);
+    check(cv::norm(draw_dot(stable, ahead) - origin) < 1e-5, "Forward seeks reset displayed history");
+    Frame lost(generation, false, false);
+    commands.Clear();
+    check(!stable.Append(lost.frame, 1600, 1200, 800, 600, &commands), "Missing metadata withholds all dots");
+    jitter.frame->buf_pts = 20033333333;
+    check(draw_dot(stable, jitter) == measured, "Missing metadata clears old smoothing state");
     std::cout << "RinkMiniMap tests passed\n";
     return 0;
   } catch (const std::exception& error) {

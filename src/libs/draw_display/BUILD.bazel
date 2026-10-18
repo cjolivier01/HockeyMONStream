@@ -18,12 +18,27 @@ cc_library(
     deps = [
         ":analytics_overlay",
         ":rink_mini_map_options",
+        ":rink_track_smoothing",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/player_analytics:frame_meta",
         "//src/libs/stitching:playback_rink_map",
         "//src/libs/stitching:stitching",
         "@deepstream//:deepstream_lib",
     ],
+)
+
+cc_library(
+    name = "rink_track_smoothing",
+    srcs = ["RinkTrackSmoothing.cpp"],
+    hdrs = ["RinkTrackSmoothing.h"],
+    include_prefix = INCLUDE_PREFIX,
+    deps = ["@opencv_linux//:opencv"],
+)
+
+cc_test(
+    name = "rink_track_smoothing_test",
+    srcs = ["RinkTrackSmoothingTest.cpp"],
+    deps = [":rink_track_smoothing"],
 )
 
 cc_library(

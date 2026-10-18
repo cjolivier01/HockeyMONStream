@@ -24,6 +24,9 @@ struct PlaybackRinkMap {
   // Accept only the matching Hugin generation and exact live output size.
   // The returned angle is the frame's post-stitch rotation, including live edits.
   std::optional<double> OutputRotation(const std::string& generation, unsigned width, unsigned height) const;
+  // Projection-only sampling, also used by offline mask assistance before a
+  // rink plane exists. Coordinates are normalized pixel centres.
+  std::optional<cv::Vec3d> ViewingRay(double x, double y, double rotation, unsigned width, unsigned height) const;
   // Normalized box-foot coordinates in the full stitched frame, before Program
   // cropping. Invalid rays, points outside the ice and stale maps yield no dot.
   std::optional<cv::Point2d> Locate(double x, double y, double rotation, unsigned width, unsigned height) const;

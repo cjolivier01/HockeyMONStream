@@ -61,6 +61,7 @@
 #include <QtGui/QStandardItemModel>
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
+#include <QtGui/QWindow>
 #if QT_CONFIG(xcb)
 #include <QtGui/qguiapplication_platform.h>
 #include <xcb/xcb.h>
@@ -199,6 +200,17 @@ void sync_native_display() {
   if (xcb_connection_t* connection = native_x11_connection())
     std::free(xcb_get_input_focus_reply(connection, xcb_get_input_focus(connection), nullptr));
 #endif
+}
+
+void set_native_child_geometry(QWidget* child, const QRect& geometry) {
+  child->setGeometry(geometry);
+  // QWidget defers native geometry updates while hidden. Keep its existing
+  // QWindow in sync too, so a delayed native resize cannot restore the initial
+  // 100x30 size when a preview tab is shown. QWindow uses logical coordinates.
+  if (QWindow* window = child->windowHandle()) {
+    if (QWidget* parent = child->nativeParentWidget())
+      window->setGeometry(QRect(child->mapTo(parent, QPoint()), child->size()));
+  }
 }
 
 // Keep fractional percentages without displaying a long tail of zeroes.
@@ -703,6 +715,12 @@ class NativeVideoTarget : public hm::ui::NativePreviewSurface {
   }
 
  protected:
+  void showEvent(QShowEvent* event) override {
+    if (QWidget* surface = parentWidget())
+      set_native_child_geometry(this, surface->rect());
+    NativePreviewSurface::showEvent(event);
+  }
+
   void mouseDoubleClickEvent(QMouseEvent* event) override {
     if (event->button() == Qt::LeftButton && focus_available_ && focus_toggle_callback_) {
       focus_toggle_callback_();
@@ -790,10 +808,10 @@ class LetterboxRenderHost : public QWidget {
 
   void setVideoSize(int width, int height) {
     const double aspect_ratio = width > 0 && height > 0 ? static_cast<double>(width) / height : 16.0 / 9.0;
-    if (std::abs(aspect_ratio_ - aspect_ratio) < 0.0001)
-      return;
-    aspect_ratio_ = aspect_ratio;
-    updateGeometry();
+    if (std::abs(aspect_ratio_ - aspect_ratio) >= 0.0001) {
+      aspect_ratio_ = aspect_ratio;
+      updateGeometry();
+    }
     layoutRenderSurface();
   }
 
@@ -873,8 +891,8 @@ class LetterboxRenderHost : public QWidget {
       focus_button_->hide();
     if (remap_target)
       render_target_->hide();
-    render_surface_->setGeometry(x, y, width, height);
-    render_target_->setGeometry(0, 0, width, height);
+    set_native_child_geometry(render_surface_, QRect(x, y, width, height));
+    set_native_child_geometry(render_target_, QRect(0, 0, width, height));
     constexpr int kButtonMargin = 6;
     focus_button_->move(width - focus_button_->width() - kButtonMargin, kButtonMargin);
     if (remap_target) {
@@ -5925,7 +5943,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   });
   rink_map_size_combo_ = new QComboBox();
   rink_map_size_combo_->setObjectName("rinkMiniMapSizeCombo");
-  for (const auto& option : {std::pair{"Compact", "compact"}, {"Standard", "standard"}, {"Large", "large"}})
+  for (const auto& option :
+       {std::pair{"Icon", "icon"}, {"Compact", "compact"}, {"Standard", "standard"}, {"Large", "large"}})
     rink_map_size_combo_->addItem(option.first, option.second);
   rink_map_position_combo_ = new QComboBox();
   rink_map_position_combo_->setObjectName("rinkMiniMapPositionCombo");

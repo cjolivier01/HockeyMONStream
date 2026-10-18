@@ -29,6 +29,7 @@
 #include <QtGui/QTextBlock>
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
+#include <QtGui/QWindow>
 #include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
@@ -4086,6 +4087,49 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   return program_discovery_visible && program_discovery_completed && set_test_calibration_status(window, "pending");
 }
 
+bool test_preview_remap_geometry(HStreamWindow* window) {
+  if (QGuiApplication::platformName() != "xcb")
+    return true;
+  auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
+  auto* preview_surface = require_child<QWidget>(window, "previewSurface");
+  auto* preview_target = require_child<QWidget>(window, "previewRenderTarget");
+  auto* tabs = require_child<QTabWidget>(window, "previewTabs");
+  if (!program_host || !preview_surface || !preview_target || !tabs)
+    return false;
+  const int original_tab = tabs->currentIndex();
+  const bool surface_hidden = preview_surface->isHidden();
+  tabs->setCurrentIndex(0);
+  preview_surface->show();
+  QGuiApplication::sync();
+  const QSize original_host_size = program_host->size();
+  program_host->resize(original_host_size.width() - 40, original_host_size.height() - 24);
+  if (!expect(
+          preview_target->windowHandle()->size() == preview_target->size(),
+          "Resizing the host must also size its hidden native target before remapping"))
+    return false;
+  program_host->resize(original_host_size);
+  // Reproduce a delayed native configure restoring the initial child size.
+  // Showing Program must repair it even without a host/aspect-ratio change.
+  preview_target->windowHandle()->setGeometry(0, 0, 100, 30);
+  QGuiApplication::sync();
+  PostedEventProbe remap_probe;
+  remap_probe.arm();
+  preview_target->show();
+  if (!expect(!remap_probe.delivered(), "Remapping a native preview must not drain posted events"))
+    return false;
+  QGuiApplication::sync();
+  if (!expect(
+          preview_target->geometry() == preview_surface->rect(),
+          "Showing Program must fill the letterboxed surface after stale native sizing") ||
+      !expect_x11_widget_state(preview_target, true, "Remapped Program must use the repaired native size"))
+    return false;
+  preview_target->hide();
+  if (surface_hidden)
+    preview_surface->hide();
+  tabs->setCurrentIndex(original_tab);
+  return true;
+}
+
 bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
@@ -4300,6 +4344,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           preview_target, false, "Stopped Program target must use its Qt host as the native X11 coordinate space")) {
     return false;
   }
+  if (!test_preview_remap_geometry(window))
+    return false;
   stitched_host->resize(900, 600);
   HStreamWindowTestAccess::updatePreviewTabResolution(window, "stitched", 15287, 6958);
   QApplication::processEvents();
@@ -16658,6 +16704,17 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return;
     }
     auto capture_channel = [&](const QString& channel, const QString& output_name) {
+      QWidget* target = channel == "program" ? program_render_target
+          : channel == "stitched"            ? stitched_render_target
+                                             : camera1_render_target;
+      QGuiApplication::sync();
+      if (!expect(
+              target->geometry() == target->parentWidget()->rect(),
+              "Selected GPU preview must fill its letterboxed surface") ||
+          !expect_x11_widget_state(target, true, "Selected GPU preview native geometry must match Qt")) {
+        interaction_error = "selected GPU preview has stale native geometry";
+        return NativePreviewCapture{};
+      }
       const QFileInfo canonical_output(QDir(artifact_dir).filePath(output_name));
       const QString output_path = diagnostic_capture_attempt_path(artifact_dir, output_name, x11_preview_attempts);
       QFile::remove(output_path);
@@ -16725,7 +16782,15 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return;
     if (!calibration_only) {
       preview_tabs->setCurrentIndex(0);
-      program_target_acknowledged = program_target_acknowledged || wait_for_renderer(program_surface);
+      program_target_acknowledged = wait_for_renderer(program_surface);
+      QGuiApplication::sync();
+      if (!expect(
+              program_render_target->geometry() == program_surface->rect(),
+              "Returning to Program must fill its letterboxed surface") ||
+          !expect_x11_widget_state(program_render_target, true, "Returning to Program must retain native sizing")) {
+        interaction_error = "Program preview geometry changed after switching tabs";
+        return;
+      }
     }
     x11_previews_captured = (calibration_only || (program_target_acknowledged && program_preview.passed)) &&
         stitched_target_acknowledged && camera1_target_acknowledged && stitched_preview.passed &&
@@ -18018,6 +18083,13 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_GEOMETRY_ONLY")) {
+    HStreamWindow window;
+    window.resize(1440, 900);
+    window.show();
+    QGuiApplication::sync();
+    return test_preview_remap_geometry(&window) ? 0 : 1;
+  }
   if (!test_path_preferences())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PATHS_ONLY"))

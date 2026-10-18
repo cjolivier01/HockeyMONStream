@@ -9,6 +9,7 @@
 
 #include "hstream/src/libs/draw_display/AnalyticsOverlay.h"
 #include "hstream/src/libs/draw_display/RinkMiniMapOptions.h"
+#include "hstream/src/libs/draw_display/RinkTrackSmoothing.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 
 namespace hm::draw_display {
@@ -34,6 +35,10 @@ class RinkMiniMap {
   std::string output_generation_;
   unsigned width_{0}, height_{0};
   std::optional<double> rotation_;
+  RinkTrackSmoothing smoothing_;
+  std::optional<uint64_t> last_pts_, analytics_epoch_;
+  int last_frame_num_{0};
+  unsigned source_id_{0};
 };
 
 } // namespace hm::draw_display

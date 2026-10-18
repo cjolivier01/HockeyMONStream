@@ -28,7 +28,7 @@ class RinkMapDialog : public QDialog {
  private:
   bool eventFilter(QObject* watched, QEvent* event) override;
   void refresh();
-  void update(bool detect = false);
+  void update(bool detect = false, bool use_mask = false);
   void rebuildTable();
   void addPoint(int camera, QPointF point);
   void save();
@@ -67,6 +67,7 @@ class RinkMapDialog : public QDialog {
   QLabel* guidance_{nullptr};
   QLabel* edited_{nullptr};
   QPushButton* detect_{nullptr};
+  QPushButton* mask_{nullptr};
   QPushButton* stop_{nullptr};
   QPushButton* save_{nullptr};
   QPushButton* remove_{nullptr};

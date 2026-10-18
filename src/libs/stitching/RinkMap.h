@@ -45,6 +45,9 @@ struct RinkMapObservation {
   double confidence{1};
   std::vector<cv::Point2d> pixels;
   std::vector<cv::Vec3d> rays;
+  // Hash of the mask snapshot that supplied this reviewable observation.
+  // Empty for manual and landmark-model observations.
+  std::string mask_revision;
 };
 
 struct RinkMapDocument {

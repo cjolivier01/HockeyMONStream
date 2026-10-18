@@ -202,6 +202,14 @@ Qt updates preserve renderer pixels and resize does not deliver posted events.
 A resized process-paused preview remains black until playback resumes; the
 runner cannot redraw while SIGSTOP-paused.
 
+The hidden-target sizing regression runs with
+`QT_QPA_PLATFORM=xcb HSTREAM_UI_TEST_PREVIEW_GEOMETRY_ONLY=1 xvfb-run -a bazel-bin/src/apps/hstream-ui/hstream_ui_test`.
+It resizes a hidden native target, simulates a delayed configure event restoring
+its initial size, and checks that showing Program fills the letterboxed surface
+without resizing the main window or draining posted events. Live X11 captures
+also check the selected target's Qt and native geometry before reading the
+diagnostic image.
+
 ### Reviewed rink mini-map
 
 With a saved fitted `rink-map.yaml` in an isolated game, set

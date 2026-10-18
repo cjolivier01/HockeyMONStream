@@ -360,10 +360,14 @@ std::optional<double> PlaybackRinkMap::OutputRotation(const std::string& generat
   return angle;
 }
 
-std::optional<cv::Point2d> PlaybackRinkMap::Locate(double x, double y, double rotation, unsigned width, unsigned height)
-    const {
-  if (fit.state != RinkMapState::kReady || columns < 2 || rows < 2 || rays.size() != columns * rows || !width ||
-      !height || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(rotation))
+std::optional<cv::Vec3d> PlaybackRinkMap::ViewingRay(
+    double x,
+    double y,
+    double rotation,
+    unsigned width,
+    unsigned height) const {
+  if (columns < 2 || rows < 2 || rays.size() != columns * rows || !width || !height || !std::isfinite(x) ||
+      !std::isfinite(y) || !std::isfinite(rotation))
     return std::nullopt;
   if (x < 0 || x > 1 || y < 0 || y > 1)
     return std::nullopt;
@@ -380,8 +384,18 @@ std::optional<cv::Point2d> PlaybackRinkMap::Locate(double x, double y, double ro
   const auto c0 = rays[(iy + 1) * columns + ix], d = rays[(iy + 1) * columns + ix + 1];
   if (!finite(a) || !finite(b) || !finite(c0) || !finite(d))
     return std::nullopt;
-  auto point =
-      RinkRayToPoint(fit, a * ((1 - tx) * (1 - ty)) + b * (tx * (1 - ty)) + c0 * ((1 - tx) * ty) + d * (tx * ty));
+  auto ray = a * ((1 - tx) * (1 - ty)) + b * (tx * (1 - ty)) + c0 * ((1 - tx) * ty) + d * (tx * ty);
+  return ray;
+}
+
+std::optional<cv::Point2d> PlaybackRinkMap::Locate(double x, double y, double rotation, unsigned width, unsigned height)
+    const {
+  if (fit.state != RinkMapState::kReady)
+    return std::nullopt;
+  const auto ray = ViewingRay(x, y, rotation, width, height);
+  if (!ray)
+    return std::nullopt;
+  auto point = RinkRayToPoint(fit, *ray);
   if (!point.ok() || std::abs(point->x) > layout.length / 2 || std::abs(point->y) > layout.width / 2)
     return std::nullopt;
   const double corner_x = std::max(0.0, std::abs(point->x) - (layout.length / 2 - layout.corner_radius));

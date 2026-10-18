@@ -88,6 +88,26 @@ int main() {
     ok &= expect(!rink::RinkRayToPoint(*fitted, -ray({0, 0})).ok(), "A backwards ice-plane intersection must fail");
   }
   document.observations.clear();
+  for (const char* id : {"blue-left-line", "blue-right-line", "far-boards"})
+    document.observations.push_back(line(document.layout, id));
+  document.observations.back().mask_revision = std::string(64, 'a');
+  document.observations.back().automatic = true;
+  document.observations.back().enabled = false;
+  document.observations.push_back(point(document.layout, "center"));
+  fitted = rink::FitRinkMap(document);
+  ok &= expect(
+      fitted.ok() && fitted->state == rink::RinkMapState::kPartial, "Unchecked mask suggestions cannot complete a map");
+  document.observations[2].enabled = true;
+  fitted = rink::FitRinkMap(document);
+  ok &= expect(
+      fitted.ok() && fitted->state == rink::RinkMapState::kReady,
+      "Reviewed far boards, blue lines and centre ice can fit without the hidden near boards");
+  const auto mask_saved = rink::SerializeRinkMap(document);
+  const auto mask_loaded = mask_saved.ok() ? rink::ParseRinkMap(*mask_saved) : mask_saved.status();
+  ok &= expect(
+      mask_loaded.ok() && mask_loaded->observations[2].mask_revision == std::string(64, 'a'),
+      "Mask observation provenance survives save/reopen");
+  document.observations.clear();
   for (const char* id : {"center-near", "center-far", "blue-left-near", "blue-left-far"})
     document.observations.push_back(point(document.layout, id));
   fitted = rink::FitRinkMap(document);

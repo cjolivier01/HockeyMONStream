@@ -52,8 +52,9 @@ bool sameInputs(const rink::RinkMapDocument& a, const rink::RinkMapDocument& b) 
   for (size_t i = 0; i < a.observations.size(); ++i) {
     const auto& x = a.observations[i];
     const auto& y = b.observations[i];
-    if (std::tie(x.feature, x.label, x.camera, x.line, x.automatic, x.enabled, x.confidence, x.pixels) !=
-        std::tie(y.feature, y.label, y.camera, y.line, y.automatic, y.enabled, y.confidence, y.pixels))
+    if (std::tie(
+            x.feature, x.label, x.camera, x.line, x.automatic, x.enabled, x.confidence, x.pixels, x.mask_revision) !=
+        std::tie(y.feature, y.label, y.camera, y.line, y.automatic, y.enabled, y.confidence, y.pixels, y.mask_revision))
       return false;
   }
   return true;
@@ -232,6 +233,18 @@ class RinkMapCanvas : public QGraphicsView {
     };
     for (size_t i = 0; i < state.projected_layout[camera].size(); ++i)
       path(state.projected_layout[camera][i], layoutColor(i), "Estimated rink geometry", 2);
+    for (const auto& guide : state.mask_intersections) {
+      if (guide.camera != camera || guide.pixels.empty())
+        continue;
+      auto* ring = new QGraphicsEllipseItem(-7, -7, 14, 14, overlays_);
+      ring->setFlag(QGraphicsItem::ItemIgnoresTransformations);
+      ring->setPos(guide.pixels.front().x, guide.pixels.front().y);
+      ring->setPen(QPen(observationColor(guide), 2));
+      ring->setBrush(Qt::NoBrush);
+      ring->setAcceptedMouseButtons(Qt::NoButton);
+      ring->setToolTip(featureName(guide) + " — mask intersection guide, not an additional measurement");
+      ring->setData(0, "rinkMaskIntersectionGuide");
+    }
     if (state.projected_layout[camera].size() == 10) {
       for (int end = 0; end < 2; ++end) {
         const auto& cross = state.projected_layout[camera][6 + 2 * end];
@@ -415,6 +428,12 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   stop_ = new QPushButton(action_icon(ActionIcon::Stop), "Stop");
   stop_->setObjectName("stopRinkMapButton");
   toolbar->addWidget(detect_);
+  mask_ = new QPushButton(action_icon(ActionIcon::Inspect), "Use rink mask");
+  mask_->setObjectName("suggestRinkMaskButton");
+  mask_->setToolTip(
+      "Suggest the far straight boards from the saved ice mask. Review before checking Use. The near edge may follow the tops of boards and is excluded.");
+  toolbar->addWidget(mask_);
+  connect(mask_, &QPushButton::clicked, this, [this] { update(false, true); });
   toolbar->addWidget(stop_);
   auto* fit = new QPushButton("Fit images");
   toolbar->addWidget(fit);
@@ -478,6 +497,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
         observation.pixels[sample] = cv::Point2d(point.x(), point.y());
       }
       observation.automatic = false;
+      observation.mask_revision.clear();
       observation.confidence = 1;
       update();
     };
@@ -770,9 +790,13 @@ void RinkMapDialog::refreshGuidance() {
   else if (state_.fit.state == rink::RinkMapState::kInconsistent)
     help =
         "Check the selected identities and endpoints. Disable a suspect mark to inspect its effect, or Undo the last edit.";
+  else if (
+      far && identities.count("blue-left-line") && identities.count("blue-right-line") && !identities.count("center"))
+    help =
+        "With both blue lines and the far straight boards, mark the centre-ice point if visible. This can constrain the map without the hidden near boards.";
   else if (cross && !points && !(near && far))
     help =
-        "Parallel centre/blue lines cannot locate the goals. Add both straight board lines at ice level, or mark the near/far intersections of centre and one blue line.";
+        "Parallel lines alone cannot locate the goals. Try both blue lines, the far straight boards and the centre-ice point, or add visible near/far intersections. Do not mark the tops of near boards.";
   else
     help =
         "Try four separated anchors: centre line / near boards, centre / far boards, and the same two intersections on one blue line. Only mark features you can see.";
@@ -852,6 +876,7 @@ void RinkMapDialog::setBusy(bool busy) {
   busy_ = busy;
   const bool editable = snapshot_.has_value() && !busy;
   detect_->setEnabled(editable);
+  mask_->setEnabled(editable);
   stop_->setEnabled(busy);
   feature_->setEnabled(editable);
   table_->setEnabled(editable);
@@ -865,7 +890,7 @@ void RinkMapDialog::setBusy(bool busy) {
   refreshEditControls();
 }
 
-void RinkMapDialog::update(bool detect) {
+void RinkMapDialog::update(bool detect, bool use_mask) {
   if (busy_ || !snapshot_)
     return;
   flushDimensionEdit();
@@ -873,10 +898,11 @@ void RinkMapDialog::update(bool detect) {
   cancelLine();
   state_.document.layout = dimensionValues();
   auto valid = rink::ValidateRinkLayout(state_.document.layout);
-  if (!detect || !valid.ok()) {
+  if ((!detect && !use_mask) || !valid.ok()) {
     resolved_ = false;
     state_.fit = {};
     state_.projected_layout = {};
+    state_.mask_intersections.clear();
   }
   if (!valid.ok()) {
     setStatus(QString::fromStdString(std::string(valid.message())), true);
@@ -896,17 +922,18 @@ void RinkMapDialog::update(bool detect) {
   setBusy(true);
   refresh();
   setStatus(
-      detect ? "Preparing the landmark model (269 MiB on first use), then analysing the saved cameras…"
-             : "Updating calibrated rink geometry…");
+      use_mask     ? "Analysing the saved ice mask; excluding near-board occlusions…"
+          : detect ? "Preparing the landmark model (269 MiB on first use), then analysing the saved cameras…"
+                   : "Updating calibrated rink geometry…");
   job_ = std::make_shared<Job>();
   const auto job = job_;
   const auto snapshot = *snapshot_;
   const auto document = state_.document;
-  const auto before_detection = detect ? std::optional<EditState>(captureEdit()) : std::nullopt;
-  worker_ = QThread::create([job, snapshot, document, detect] {
-    job->result = UpdateRinkMap(snapshot, document, detect, [job] { return job->cancelled.load(); });
+  const auto before_detection = detect || use_mask ? std::optional<EditState>(captureEdit()) : std::nullopt;
+  worker_ = QThread::create([job, snapshot, document, detect, use_mask] {
+    job->result = UpdateRinkMap(snapshot, document, detect, [job] { return job->cancelled.load(); }, use_mask);
   });
-  connect(worker_, &QThread::finished, this, [this, job, detect, before_detection] {
+  connect(worker_, &QThread::finished, this, [this, job, detect, use_mask, before_detection] {
     auto* completed = worker_;
     worker_ = nullptr;
     completed->deleteLater();
@@ -920,16 +947,19 @@ void RinkMapDialog::update(bool detect) {
       auto result = std::move(**job->result);
       if (!detect) {
         result.detections = std::move(state_.detections);
-      } else {
+      }
+      if (detect || use_mask) {
         undo_history_.push_back(*before_detection);
         if (undo_history_.size() > 32)
           undo_history_.pop_front();
         redo_history_.clear();
-        history_detections_ = std::make_shared<Detections>(result.detections);
+        if (detect)
+          history_detections_ = std::make_shared<Detections>(result.detections);
       }
       state_ = std::move(result);
       resolved_ = true;
       setStatus(
+          (state_.assistance_message.empty() ? QString() : QString::fromStdString(state_.assistance_message) + "\n") +
           QString::fromStdString(state_.fit.message) +
           (state_.fit.state == rink::RinkMapState::kReady
                ? QString("  Residual to %1 marks: %2° (not a position accuracy).")
@@ -990,7 +1020,9 @@ void RinkMapDialog::rebuildTable() {
     });
     auto* source = new QTableWidgetItem(
         QString(observation.camera ? "R · " : "L · ") +
-        (observation.automatic ? QString("model %1%").arg(qRound(observation.confidence * 100)) : "manual"));
+        (!observation.mask_revision.empty() ? "mask · review"
+             : observation.automatic        ? QString("model %1%").arg(qRound(observation.confidence * 100))
+                                            : "manual"));
     source->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     table_->setItem(int(i), 2, source);
   }

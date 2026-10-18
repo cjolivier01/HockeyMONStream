@@ -38,10 +38,10 @@ commits one undoable edit. Observation rows alternate white and light grey. Scro
 never changes their values, even when focused. Editing a detected line's endpoints
 converts it to a manual line. Uncheck incorrect evidence or remove it from the list.
 
-Undo and Redo restore the last 32 edits, including successful landmark searches.
+Undo and Redo restore the last 32 edits, including successful landmark searches and mask suggestions.
 Rapid dimension edits form one step. Failed or stopped detection preserves the
 previous marks and redo history. Finding landmarks again replaces earlier model
-marks, including their assigned identities; manual marks are kept, and Undo can
+marks, including their assigned identities; manual and mask marks are kept, and Undo can
 restore the previous result. Unsaved edits are marked in the window and must be
 explicitly discarded before closing.
 
@@ -72,12 +72,40 @@ Rejected fits can also be saved as partial evidence, retaining every mark for
 later correction. Parallel goal lines alone remain partial even with measurement
 noise. Partial and rejected fits never enable player positions.
 
+If the near boards hide the ice edge, both identified blue lines, the far straight
+boards and a visible centre-ice point can constrain the map. The far board and
+parallel painted lines alone still leave it partial. Only mark features you can see.
+
 A fitted map draws a cyan rink outline and estimated goal centres in both
 source views, with thinner projected rink markings in their feature colours.
 Review both cameras before **Save reviewed map**. The displayed
 angular residual measures agreement with the input marks, not metre accuracy;
 four marks can have zero residual. Extrapolated ends depend on the dimensions,
 mark selection, and the quality of the source calibration.
+
+## Using the rink mask
+
+**Use rink mask** reads the saved, current ice mask and proposes one far straight-board
+line. The row starts unchecked and says **mask · review**. Inspect the overlay in the
+source camera before checking **Use**. Rounded corners, clipped edges, gaps and
+projection padding are excluded; a mask without enough straight support produces
+no suggestion. A busy calibration writer leaves the editor responsive and reports
+that the mask is unavailable.
+
+The near silhouette is never used as an ice-plane constraint. It can follow the
+tops of near boards or be interrupted by glass and posts; a smooth edge there
+does not establish where the boards meet the ice. End-board curves are not inferred.
+
+Hollow rings show where assigned centre, blue and goal lines meet the suggested far
+board within its observed span. These are visual guides derived from the lines,
+not extra measurements added to the fit. Hidden intersections are not extrapolated.
+Running the action again replaces earlier mask suggestions and preserves manual
+and model marks. Dragging a suggestion converts it to a manual mark. Undo restores
+the previous evidence.
+
+This offline operation decodes a bounded mask proxy and samples calibrated viewing
+rays. It records the mask hash with the source-pixel evidence. Reviewed marks remain
+saved evidence until you explicitly refresh them; it never modifies the ice mask.
 
 ## Playback mini-map
 
@@ -87,7 +115,8 @@ desktop GPU previews show an overhead rink with player circles in the same
 track colours as their detection boxes, including when boxes are hidden. The
 setting applies on the next playback and works independently of player boxes.
 It currently requires the embedded X11 GPU preview on x86. **Mini-map size** offers
-Compact, Standard and Large; **Mini-map position** defaults to Upper right and
+Icon, Compact, Standard and Large. Icon is half Compact's width and height.
+**Mini-map position** defaults to Upper right and
 also offers Upper left and Lower left. Existing saved placement is retained. These preferences apply on the next playback and keep the complete panel
 inside the image. Standard preserves the original size.
 
@@ -102,6 +131,15 @@ Positions are estimates: occlusion, loose boxes, calibration error and assumed
 rink dimensions affect accuracy. Players outside the estimated boards are
 omitted. A partial or stale map cannot place players; complete/review it before
 playback. Recalibration requires reviewing and saving again.
+
+Displayed positions use a three-sample median followed by an adaptive low-pass
+filter in rink metres. It damps box-foot jitter while responding faster to skating.
+Source timestamps drive the filter, so repainting a paused frame does not advance
+it. New tracks, colour changes, backward time, gaps over 300 ms, seek/reset metadata
+and calibration changes clear the relevant history. Untracked detections bypass
+filtering. Missing players are not extrapolated. The fixed 512-entry history has at
+most four probes per player and adds no frame readback or per-player allocation.
+Detection boxes, camera policy and telemetry retain their original measurements.
 
 A circle shows the jersey number when enabled jersey recognition supplies a
 fresh result for that track. Leading zeros are retained; missing or expired

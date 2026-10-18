@@ -91,6 +91,8 @@ int main(int argc, char** argv) {
   ok &= expect(!map.Locate(outside.x, outside.y, 0, 1800, 1200), "Rounded board corners exclude off-ice players");
   ok &= expect(!map.Locate(-.1, .5, 0, 1800, 1200), "Off-image feet are rejected");
   map.fit.state = rink::RinkMapState::kPartial;
+  ok &= expect(
+      map.ViewingRay(.5, .5, 0, 1800, 1200).has_value(), "Mask analysis can use projection before the rink is fitted");
   ok &= expect(!map.Locate(.5, .5, 0, 1800, 1200), "Partial maps cannot locate players");
   map.fit.state = rink::RinkMapState::kReady;
   if (access("/usr/bin/pano_trafo", X_OK) == 0) {

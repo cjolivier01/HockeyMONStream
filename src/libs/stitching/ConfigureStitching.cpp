@@ -4448,7 +4448,8 @@ absl::Status visit_current_field_mask_impl(
     const std::optional<double>& post_stitch_rotate_degrees,
     const std::optional<ValidatedStitchingArtifacts>& previously_validated,
     const std::optional<std::string>& loaded_hugin_generation,
-    const FieldMaskConsumer& consumer) {
+    const FieldMaskConsumer& consumer,
+    bool nonblocking = false) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");
   }
@@ -4456,10 +4457,19 @@ absl::Status visit_current_field_mask_impl(
     return absl::InvalidArgumentError("A field-mask consumer is required");
 
   const fs::path root(game_dir);
-  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  std::unique_ptr<CanvasConstraintArtifactLock> editor_lock;
+  if (nonblocking) {
+    HM_ASSIGN_OR_RETURN(editor_lock, try_lock_canvas_constraint_artifacts(root));
+    if (!editor_lock)
+      return absl::UnavailableError("Calibration is changing; try the rink mask again after it finishes");
+  }
+  auto hugin_lock = nonblocking
+      ? absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>>(std::unique_ptr<HuginProject::ArtifactLock>())
+      : HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
     return hugin_lock.status();
-  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  auto config_transaction =
+      nonblocking ? GameConfigTransactionLock::TryAcquire(root) : GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
     return config_transaction.status();
   std::string hugin_generation;
@@ -4491,7 +4501,7 @@ absl::Status visit_current_field_mask_impl(
     }
   }
   if (!reused_generation) {
-    if (max_output_width.has_value() && !stitch_artifact_metadata_is_reliable(root)) {
+    if (nonblocking || (max_output_width.has_value() && !stitch_artifact_metadata_is_reliable(root))) {
       HM_ASSIGN_OR_RETURN(hugin_generation, stitch_artifact_preflight_generation_id_locked(root));
     } else {
       HM_ASSIGN_OR_RETURN(hugin_generation, HuginProject::GenerationId(root, **hugin_lock));
@@ -4676,6 +4686,23 @@ absl::Status visit_current_field_mask(
       std::nullopt,
       std::nullopt,
       [&](const std::string& mask_path, const std::optional<CanvasSize>&) { return consumer(mask_path); });
+}
+
+absl::Status try_visit_current_field_mask(
+    const std::string& game_dir,
+    const std::function<absl::Status(const std::string&)>& consumer) {
+  if (!consumer)
+    return absl::InvalidArgumentError("A field-mask consumer is required");
+  return visit_current_field_mask_impl(
+      game_dir,
+      {},
+      {},
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      [&](const std::string& path, const std::optional<CanvasSize>&) { return consumer(path); },
+      true);
 }
 
 absl::StatusOr<cv::Mat> load_field_mask(

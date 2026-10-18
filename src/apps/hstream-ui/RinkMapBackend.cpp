@@ -1,5 +1,8 @@
 #include "src/apps/hstream-ui/RinkMapBackend.h"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -18,10 +21,13 @@
 #include "absl/strings/numbers.h"
 #include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "hstream/src/libs/stitching/RinkLeveling.h"
+#include "hstream/src/libs/stitching/RinkMaskGeometry.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
 
@@ -228,6 +234,231 @@ absl::StatusOr<std::array<std::vector<std::vector<cv::Point2d>>, 2>> ProjectLayo
     }
   return result;
 }
+absl::StatusOr<std::vector<cv::Point2d>> ProjectRays(
+    const RinkMapSnapshot& snapshot,
+    const std::vector<cv::Vec3d>& rays,
+    int camera,
+    const std::function<bool()>& cancelled) {
+  std::ostringstream input;
+  input.imbue(std::locale::classic());
+  input << std::setprecision(17);
+  for (auto ray : rays) {
+    ray /= cv::norm(ray);
+    input << camera << ' ' << 1799.5 - std::atan2(ray[1], ray[0]) * 1800 / kPi << ' '
+          << 899.5 - std::asin(std::clamp(ray[2], -1.0, 1.0)) * 1800 / kPi << '\n';
+  }
+  auto output = Transform(snapshot, QByteArray::fromStdString(input.str()), true, cancelled);
+  if (!output.ok())
+    return output.status();
+  return ReadPairs(*output, rays.size(), true);
+}
+
+bool InsideCamera(const RinkMapSnapshot& snapshot, int camera, cv::Point2d p) {
+  const auto size = snapshot.original_sizes[camera];
+  return std::isfinite(p.x) && std::isfinite(p.y) && p.x >= 0 && p.y >= 0 && p.x < size.width() && p.y < size.height();
+}
+
+absl::StatusOr<rink::RinkMapObservation> MaskBoard(
+    const RinkMapSnapshot& snapshot,
+    const std::function<bool()>& cancelled) {
+  QFile mask_file;
+  QSize mask_size;
+  QString pinned_path;
+  std::string pto, output_generation, hugin_generation;
+  rink::MappingCanvasPlacement placement;
+  struct stat identity{};
+  const auto status =
+      rink::try_visit_current_field_mask(snapshot.game_directory.toStdString(), [&](const std::string& path) {
+        // The visitor holds both publication locks. Never acquire them recursively.
+        const auto root = std::filesystem::path(snapshot.game_directory.toStdString());
+        const auto generation = rink::stitch_artifact_preflight_generation_id_locked(root);
+        const auto revision = CalibrationRevision(snapshot.game_directory);
+        if (!generation.ok() || !revision.ok() || GenerationDigest(*generation) != snapshot.generation ||
+            *revision != snapshot.revision)
+          return absl::FailedPreconditionError("Calibration changed. Reopen Rink map before using the mask.");
+        hugin_generation = *generation;
+        const auto config_text =
+            rink::read_bounded_regular_file_no_follow(root / "config.yaml", 4 * 1024 * 1024, "rink settings");
+        if (!config_text.ok())
+          return config_text.status();
+        try {
+          output_generation = YAML::Load(*config_text)["rink"]["stitched_output_generation"].as<std::string>();
+        } catch (const YAML::Exception& error) {
+          return absl::InvalidArgumentError(error.what());
+        }
+        const auto canvas = rink::read_mapping_canvas_placement_locked(root);
+        const auto project =
+            rink::read_bounded_regular_file_no_follow(root / "autooptimiser_out.pto", 4 * 1024 * 1024, "rink project");
+        if (!canvas.ok())
+          return canvas.status();
+        if (!project.ok())
+          return project.status();
+        placement = *canvas;
+        pto = *project;
+        const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+        if (descriptor < 0)
+          return absl::NotFoundError("The saved rink mask is unavailable");
+        if (!mask_file.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+          ::close(descriptor);
+          return absl::InternalError("Could not pin the rink mask");
+        }
+        if (::fstat(descriptor, &identity) != 0 || !S_ISREG(identity.st_mode) || identity.st_size <= 0 ||
+            identity.st_size > 64 * 1024 * 1024)
+          return absl::ResourceExhaustedError("The rink mask is not a bounded regular PNG");
+        pinned_path = QString("/proc/self/fd/%1").arg(descriptor);
+        QImageReader reader(pinned_path, "png");
+        mask_size = reader.size();
+        if (mask_size.width() <= 0 || mask_size.height() <= 0 || mask_size.width() > 65535 ||
+            mask_size.height() > 65535 || uint64_t(mask_size.width()) * mask_size.height() > 256ULL * 1024 * 1024)
+          return absl::ResourceExhaustedError("The rink mask has invalid dimensions");
+        return rink::validate_stitched_output_generation_dimensions(
+            output_generation, mask_size.width(), mask_size.height());
+      });
+  if (!status.ok())
+    return status;
+  if (cancelled && cancelled())
+    return absl::CancelledError("Rink mask assistance stopped");
+  QSize proxy_size = mask_size;
+  if (std::max(proxy_size.width(), proxy_size.height()) > 2048)
+    proxy_size.scale(2048, 2048, Qt::KeepAspectRatio);
+  const auto decoded = readCalibrationPng(pinned_path, proxy_size).convertToFormat(QImage::Format_Grayscale8);
+  if (decoded.isNull())
+    return absl::DataLossError("Could not decode the saved rink mask");
+  const auto digest = hm::assets::AssetManager::Sha256(pinned_path.toStdString(), cancelled);
+  if (!digest.ok())
+    return digest.status();
+  rink::PlaybackRinkMap projection;
+  // OutputRotation validates both the full dimensions and the Hugin identity.
+  projection.hugin_generation = hugin_generation;
+  const auto rotation = projection.OutputRotation(output_generation, mask_size.width(), mask_size.height());
+  if (!rotation)
+    return absl::InvalidArgumentError("The rink mask has unsupported output geometry");
+  const auto rays = rink::RinkProjectionRays(pto, placement, projection.columns, projection.rows, cancelled);
+  if (!rays.ok())
+    return rays.status();
+  projection.rays = *rays;
+  cv::Mat mask(
+      decoded.height(), decoded.width(), CV_8UC1, const_cast<uchar*>(decoded.constBits()), decoded.bytesPerLine());
+  cv::Mat unrotated;
+  const double c = std::cos(*rotation * kPi / 180), s = std::sin(*rotation * kPi / 180);
+  const double sx = double(mask.cols) / mask_size.width(), sy = double(mask.rows) / mask_size.height();
+  const double cx = (mask.cols - 1) / 2.0, cy = (mask.rows - 1) / 2.0;
+  const cv::Matx23d inverse(
+      c, s * sx / sy, cx - c * cx - s * sx / sy * cy, -s * sy / sx, c, cy + s * sy / sx * cx - c * cy);
+  cv::warpAffine(mask, unrotated, inverse, mask.size(), cv::INTER_NEAREST | cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
+  auto board = rink::SuggestFarRinkBoard(unrotated, [&](double x, double y) -> std::optional<cv::Vec3d> {
+    const double dx = (x - 0.5) * mask_size.width(), dy = (y - 0.5) * mask_size.height();
+    const double ox = 0.5 + (c * dx + s * dy) / mask_size.width();
+    const double oy = 0.5 + (-s * dx + c * dy) / mask_size.height();
+    // Do not fit newly exposed rotation padding or the original clipped frame.
+    if (ox < 0.02 || ox > 0.98 || oy < 0.02 || oy > 0.98)
+      return std::nullopt;
+    return projection.ViewingRay(x, y, 0, mask_size.width(), mask_size.height());
+  });
+  if (!board.ok())
+    return board.status();
+  rink::RinkMapObservation result;
+  result.feature = "far-boards";
+  result.label = "Ice mask far boards";
+  result.line = result.automatic = true;
+  result.enabled = false; // Silhouette agreement does not establish ice level.
+  result.confidence = 0.5;
+  result.mask_revision = *digest;
+  double best_span = 0;
+  for (int camera = 0; camera < 2; ++camera) {
+    const auto points = ProjectRays(snapshot, board->rays, camera, cancelled);
+    if (!points.ok())
+      return points.status();
+    std::vector<cv::Point2d> pixels;
+    std::vector<cv::Vec3d> visible;
+    for (size_t i = 0; i < points->size(); ++i)
+      if (InsideCamera(snapshot, camera, points->at(i))) {
+        pixels.push_back(points->at(i));
+        visible.push_back(board->rays[i]);
+      }
+    if (visible.size() < 8)
+      continue;
+    const double span = std::acos(std::clamp(visible.front().dot(visible.back()), -1.0, 1.0));
+    if (span > best_span) {
+      best_span = span;
+      result.camera = camera;
+      result.pixels = std::move(pixels);
+      result.rays = std::move(visible);
+    }
+  }
+  if (best_span < 12 * kPi / 180)
+    return absl::NotFoundError("Too little of the far boards is visible in either saved camera");
+  struct stat current{}, pinned{};
+  const auto mask_path = QDir(snapshot.game_directory).filePath("rink_mask_0.png").toStdString();
+  if (::lstat(mask_path.c_str(), &current) != 0 || ::fstat(mask_file.handle(), &pinned) != 0 ||
+      current.st_dev != identity.st_dev || current.st_ino != identity.st_ino || pinned.st_size != identity.st_size ||
+      pinned.st_mtim.tv_sec != identity.st_mtim.tv_sec || pinned.st_mtim.tv_nsec != identity.st_mtim.tv_nsec ||
+      pinned.st_ctim.tv_sec != identity.st_ctim.tv_sec || pinned.st_ctim.tv_nsec != identity.st_ctim.tv_nsec)
+    return absl::AbortedError("The rink mask changed during analysis. Try the mask again.");
+  return result;
+}
+absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskIntersections(
+    const RinkMapSnapshot& snapshot,
+    const rink::RinkMapDocument& document,
+    const std::function<bool()>& cancelled) {
+  std::vector<rink::RinkMapObservation> result;
+  const auto board = std::find_if(document.observations.begin(), document.observations.end(), [](const auto& o) {
+    return !o.mask_revision.empty() && o.feature == "far-boards" && o.line && o.rays.size() >= 2;
+  });
+  if (board == document.observations.end())
+    return result;
+  const auto normal = [](const auto& rays) {
+    cv::Matx33d covariance = cv::Matx33d::zeros();
+    for (const auto& ray : rays)
+      covariance += ray * ray.t();
+    cv::Mat values, vectors;
+    cv::eigen(cv::Mat(covariance), values, vectors);
+    return cv::Vec3d(vectors.at<double>(2, 0), vectors.at<double>(2, 1), vectors.at<double>(2, 2));
+  };
+  const auto board_normal = normal(board->rays);
+  const auto angle = [](cv::Vec3d a, cv::Vec3d b) { return std::acos(std::clamp(a.dot(b), -1.0, 1.0)); };
+  const auto first = board->rays.front(), last = board->rays.back();
+  std::vector<cv::Vec3d> rays;
+  std::vector<std::string> identities;
+  for (const auto& o : document.observations) {
+    if (!o.enabled || !o.line || o.rays.size() < 2 ||
+        (o.feature != "center-line" && o.feature != "blue-left-line" && o.feature != "blue-right-line" &&
+         o.feature != "goal-left-line" && o.feature != "goal-right-line"))
+      continue;
+    const auto identity = o.feature.substr(0, o.feature.size() - 5) + "-far";
+    if (std::find(identities.begin(), identities.end(), identity) != identities.end())
+      continue;
+    auto intersection = board_normal.cross(normal(o.rays));
+    if (cv::norm(intersection) < 0.1)
+      continue;
+    intersection /= cv::norm(intersection);
+    if (intersection.dot(first + last) < 0)
+      intersection = -intersection;
+    // Do not extend a short visible mask section into hidden corners or ends.
+    if (angle(first, intersection) + angle(intersection, last) > angle(first, last) + 0.5 * kPi / 180)
+      continue;
+    identities.push_back(identity);
+    rays.push_back(intersection);
+  }
+  if (rays.empty())
+    return result;
+  for (int camera = 0; camera < 2; ++camera) {
+    auto points = ProjectRays(snapshot, rays, camera, cancelled);
+    if (!points.ok())
+      return points.status();
+    for (size_t i = 0; i < points->size(); ++i) {
+      if (!InsideCamera(snapshot, camera, points->at(i)))
+        continue;
+      rink::RinkMapObservation guide;
+      guide.camera = camera;
+      guide.feature = identities[i];
+      guide.pixels = {points->at(i)};
+      guide.rays = {rays[i]};
+      result.push_back(std::move(guide));
+    }
+  }
+  return result;
+}
 } // namespace
 
 absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_directory) {
@@ -336,14 +567,29 @@ absl::StatusOr<RinkMapWorkResult> UpdateRinkMap(
     const RinkMapSnapshot& snapshot,
     rink::RinkMapDocument document,
     bool detect,
-    const std::function<bool()>& cancelled) {
+    const std::function<bool()>& cancelled,
+    bool use_mask) {
   RinkMapWorkResult result;
+  if (use_mask) {
+    auto board = MaskBoard(snapshot, cancelled);
+    if (!board.ok())
+      return board.status();
+    document.observations.erase(
+        std::remove_if(
+            document.observations.begin(),
+            document.observations.end(),
+            [](const auto& observation) { return observation.automatic && !observation.mask_revision.empty(); }),
+        document.observations.end());
+    document.observations.push_back(*board);
+    result.assistance_message =
+        "Far-board suggestion added unchecked. Review it at ice level, then check Use. The near mask edge is excluded because boards, glass and posts can hide the ice.";
+  }
   if (detect) {
     document.observations.erase(
         std::remove_if(
             document.observations.begin(),
             document.observations.end(),
-            [](const auto& observation) { return observation.automatic; }),
+            [](const auto& observation) { return observation.automatic && observation.mask_revision.empty(); }),
         document.observations.end());
     const char* override_path = std::getenv("HM_RINK_LANDMARKS_ONNX_MODEL");
     const QString model_path = override_path && *override_path
@@ -410,5 +656,9 @@ absl::StatusOr<RinkMapWorkResult> UpdateRinkMap(
   result.document = std::move(document);
   result.fit = *fit;
   result.projected_layout = std::move(*projected);
+  auto guides = MaskIntersections(snapshot, result.document, cancelled);
+  if (!guides.ok())
+    return guides.status();
+  result.mask_intersections = std::move(*guides);
   return result;
 }

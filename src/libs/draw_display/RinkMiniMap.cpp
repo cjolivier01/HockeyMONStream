@@ -36,23 +36,35 @@ bool RinkMiniMap::Append(
   const auto* snapshot = preview_overlay::find_overlay_snapshot_meta(frame);
   if (!generation || !snapshot || !std::isfinite(snapshot->coordinate_width) ||
       !std::isfinite(snapshot->coordinate_height) || snapshot->coordinate_width <= 0 ||
-      snapshot->coordinate_height <= 0)
+      snapshot->coordinate_height <= 0) {
+    smoothing_.Reset();
+    last_pts_.reset();
     return false;
+  }
   if (generation->generation() != output_generation_ || width_ != stitched_width || height_ != stitched_height) {
     output_generation_ = generation->generation();
     width_ = stitched_width;
     height_ = stitched_height;
     rotation_ = map_->OutputRotation(output_generation_, width_, height_);
+    smoothing_.Reset();
   }
   if (!rotation_)
     return false;
+  if (!last_pts_ || frame->source_id != source_id_ || frame->buf_pts < *last_pts_ ||
+      frame->buf_pts == player_analytics::kInvalidTime || frame->buf_pts - *last_pts_ > 300000000 ||
+      frame->frame_num < last_frame_num_)
+    smoothing_.Reset();
+  last_pts_ = frame->buf_pts;
+  last_frame_num_ = frame->frame_num;
+  source_id_ = frame->source_id;
   using analytics::Color;
   constexpr Color ink{0.10F, 0.15F, 0.22F, 1}, white{0.96F, 0.98F, 1, 1};
   constexpr Color red{0.86F, 0.16F, 0.23F, 1}, blue{0.12F, 0.39F, 0.86F, 1};
   const auto& rink = map_->layout;
-  const float factor = options_.size == RinkMiniMapOptions::Size::kCompact ? .75F
-      : options_.size == RinkMiniMapOptions::Size::kLarge                  ? 1.5F
-                                                                           : 1.0F;
+  const float factor = options_.size == RinkMiniMapOptions::Size::kIcon ? .375F
+      : options_.size == RinkMiniMapOptions::Size::kCompact             ? .75F
+      : options_.size == RinkMiniMapOptions::Size::kLarge               ? 1.5F
+                                                                        : 1.0F;
   // Fit the complete panel and outer margins, including on short panoramas.
   const float rink_width = std::min(
       {display_width * .29F * factor,
@@ -98,6 +110,11 @@ bool RinkMiniMap::Append(
   const auto* result = player_analytics::FindFrameResult(frame);
   if (result && (result->pts_ns != frame->buf_pts || result->stream_id != frame->source_id))
     result = nullptr;
+  if (result) {
+    if (analytics_epoch_ && *analytics_epoch_ != result->epoch)
+      smoothing_.Reset();
+    analytics_epoch_ = result->epoch;
+  }
   size_t visible = 0;
   // Reuse the upstream box palette even when box drawing is off. These colours
   // identify tracks, not teams; ignored players match the boxes' grey override.
@@ -115,7 +132,12 @@ bool RinkMiniMap::Append(
         stitched_height);
     if (!location)
       continue;
-    const auto p = point(*location);
+    const auto& palette = box.border_color;
+    const auto channel = [](double value) {
+      return std::isfinite(value) ? uint32_t(std::clamp(value, 0.0, 1.0) * 255 + .5) : 0U;
+    };
+    const uint32_t color_key = (channel(palette.red) << 16) | (channel(palette.green) << 8) | channel(palette.blue);
+    const auto p = point(smoothing_.Update(player.track_id, frame->buf_pts, color_key, *location));
     std::string_view number;
     if (result && player.track_id != player_analytics::kUntrackedId) {
       for (size_t i = 0; i < std::min(result->player_count, player_analytics::kMaximumTracks); ++i) {

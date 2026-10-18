@@ -122,6 +122,47 @@ int main(int argc, char** argv) {
     if (!expect(idle(dialog) && table->rowCount() == detected_rows, "Redo restores the detected observations"))
       return 1;
     std::cout << dialog.findChild<QLabel*>("rinkMapStatus")->text().toStdString() << '\n';
+    if (qEnvironmentVariableIsSet("HSTREAM_INSPECT_RINK_MASK")) {
+      dialog.findChild<QPushButton*>("suggestRinkMaskButton")->click();
+      if (!idle(dialog, 60000))
+        return 1;
+      std::cout << dialog.findChild<QLabel*>("rinkMapStatus")->text().toStdString() << '\n';
+      if (!expect(table->rowCount() == detected_rows + 1, "Real mask should add one reviewable far-board suggestion"))
+        return 1;
+      const int board_row = table->rowCount() - 1;
+      if (!expect(
+              table->item(board_row, 0)->checkState() == Qt::Unchecked &&
+                  table->item(board_row, 2)->text().contains("mask"),
+              "Mask evidence must start unchecked with its source visible"))
+        return 1;
+      dialog.findChild<QPushButton*>("rinkMapUndoButton")->click();
+      if (!expect(idle(dialog) && table->rowCount() == detected_rows, "Undo removes the mask suggestion"))
+        return 1;
+      dialog.findChild<QPushButton*>("rinkMapRedoButton")->click();
+      if (!expect(idle(dialog) && table->rowCount() == detected_rows + 1, "Redo restores the mask suggestion"))
+        return 1;
+      table->item(board_row, 0)->setCheckState(Qt::Checked);
+      if (!expect(
+              idle(dialog) && dialog.findChild<QPushButton*>("saveRinkMapButton")->isEnabled(),
+              "Reviewed mask evidence can be retained in a partial map"))
+        return 1;
+      dialog.findChild<QPushButton*>("rinkMapUndoButton")->click();
+      if (!expect(
+              idle(dialog) && table->item(board_row, 0)->checkState() == Qt::Unchecked,
+              "Undo restores the mask review state"))
+        return 1;
+      dialog.findChild<QPushButton*>("suggestRinkMaskButton")->click();
+      if (!expect(
+              idle(dialog, 60000) && table->rowCount() == detected_rows + 1,
+              "Refreshing the mask replaces its old suggestion without duplicating evidence"))
+        return 1;
+      size_t guides = 0;
+      for (auto* view : dialog.findChildren<QGraphicsView*>())
+        for (auto* item : view->scene()->items())
+          guides += item->data(0).toString() == "rinkMaskIntersectionGuide";
+      if (!expect(guides > 0, "The real centre line has a visual far-board intersection guide"))
+        return 1;
+    }
     const QString prefix = QString::fromLocal8Bit(argv[3]);
     dialog.grab().save(prefix + "-partial.png");
     if (argc >= 5) {

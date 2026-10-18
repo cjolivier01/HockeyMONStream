@@ -26,6 +26,9 @@ struct RinkMapWorkResult {
   hm::stitching::RinkMapFit fit;
   std::array<std::vector<hm::stitching::RinkLandmarkDetection>, 2> detections;
   std::array<std::vector<std::vector<cv::Point2d>>, 2> projected_layout;
+  // Derived visual guides only: never additional constraints in the fit.
+  std::vector<hm::stitching::RinkMapObservation> mask_intersections;
+  std::string assistance_message;
 };
 
 absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_directory);
@@ -34,4 +37,5 @@ absl::StatusOr<RinkMapWorkResult> UpdateRinkMap(
     const RinkMapSnapshot& snapshot,
     hm::stitching::RinkMapDocument document,
     bool detect,
-    const std::function<bool()>& cancelled);
+    const std::function<bool()>& cancelled,
+    bool use_mask = false);

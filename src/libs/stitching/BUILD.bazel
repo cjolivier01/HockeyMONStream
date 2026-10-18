@@ -1,6 +1,15 @@
 INCLUDE_PREFIX = "hstream/src/libs/stitching"
 
 cc_library(
+  name = "rink_mask_geometry",
+  srcs = ["RinkMaskGeometry.cpp"],
+  hdrs = ["RinkMaskGeometry.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = ["@opencv_linux//:opencv", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_library(
   name = "playback_rink_map",
   srcs = ["PlaybackRinkMap.cpp"],
   hdrs = ["PlaybackRinkMap.h"],
@@ -13,6 +22,12 @@ cc_library(
     "//src/libs/assets:asset_manager", "//src/libs/common:process",
     "@com_google_absl//absl/strings", "@opencv_linux//:opencv", "@yaml-cpp",
   ],
+)
+
+cc_test(
+  name = "rink_mask_geometry_test",
+  srcs = ["RinkMaskGeometryTest.cpp"],
+  deps = [":rink_mask_geometry"],
 )
 
 cc_library(

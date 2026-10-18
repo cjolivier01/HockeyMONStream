@@ -261,6 +261,8 @@ cc_library(
         "//src/libs/stitching:playback_rink_map",
         "//src/libs/stitching:rink_leveling",
         "//src/libs/stitching:rink_map",
+        "//src/libs/stitching:rink_mask_geometry",
+        "//src/libs/stitching:stitching",
         "//src/libs/stitching:transaction_state",
         "@com_google_absl//absl/strings",
         "@opencv_linux//:opencv",
