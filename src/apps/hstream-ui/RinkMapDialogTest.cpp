@@ -141,17 +141,11 @@ int main(int argc, char** argv) {
       "p f2 w3600 h1800 v360 n\"PNG\"\ni w3600 h1800 f4 v360 y0 p0 r0 n\"left.png\"\ni w3600 h1800 f4 v360 y0 p0 r0 n\"right.png\"\n";
   ok &= write(game.filePath("autooptimiser_out.pto"), pto);
   ok &= write(game.filePath("hm_project.pto"), pto);
-  for (const char* name :
-       {"mapping_0000.tif",
-        "mapping_0000_x.tif",
-        "mapping_0000_y.tif",
-        "mapping_0001.tif",
-        "mapping_0001_x.tif",
-        "mapping_0001_y.tif",
-        "seam_file.png"})
-    ok &= write(game.filePath(name), "fixture");
-  ok &= placement(game.filePath("mapping_0000.tif"), 900);
-  ok &= placement(game.filePath("mapping_0001.tif"), 1800);
+  for (const char* name : {"mapping_0000.tif", "mapping_0000_x.tif", "mapping_0000_y.tif"})
+    ok &= placement(game.filePath(name), 900);
+  for (const char* name : {"mapping_0001.tif", "mapping_0001_x.tif", "mapping_0001_y.tif"})
+    ok &= placement(game.filePath(name), 1800);
+  ok &= write(game.filePath("seam_file.png"), "fixture");
   const QByteArray config = "hstream_ui:\n  stitching_calibration:\n    status: complete\n";
   ok &= write(game.filePath("config.yaml"), config);
   ok &= write(
