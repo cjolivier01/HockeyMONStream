@@ -23,6 +23,7 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
 
@@ -179,13 +180,13 @@ int main(int argc, char** argv) {
     RinkMapDialog dialog(game.path());
     dialog.show();
     ok &= expect(idle(dialog), "Partial reopen completes");
-    auto wheel = [](QWidget* widget, bool pixels = false) {
+    auto wheel = [](QWidget* widget, bool pixels = false, bool include_angle = false) {
       const QPoint position = widget->rect().center();
       QWheelEvent event(
           position,
           widget->mapToGlobal(position),
           pixels ? QPoint(0, 24) : QPoint(),
-          pixels ? QPoint() : QPoint(0, 120),
+          pixels && !include_angle ? QPoint() : QPoint(0, 120),
           Qt::NoButton,
           Qt::NoModifier,
           Qt::NoScrollPhase,
@@ -225,6 +226,30 @@ int main(int argc, char** argv) {
     auto* save = dialog.findChild<QPushButton*>("saveRinkMapButton");
     ok &= expect(
         save->isEnabled() && save->text() == "Save partial map", "A saved single line stays partial after reopening");
+    // Exercise the same table with enough rows to expose pixel/row confusion.
+    // This extra selector has no document binding; it only tests wheel routing.
+    table->setRowCount(80);
+    auto* scrolling_identity = new QComboBox();
+    scrolling_identity->addItems({"Centre", "Blue", "Goal"});
+    scrolling_identity->setCurrentIndex(1);
+    table->setCellWidget(40, 1, scrolling_identity);
+    for (auto mode : {QAbstractItemView::ScrollPerItem, QAbstractItemView::ScrollPerPixel}) {
+      table->setVerticalScrollMode(mode);
+      QTest::qWait(10);
+      auto* bar = table->verticalScrollBar();
+      const int start = bar->maximum() / 2;
+      ok &= expect(start > 24, "Observation table must have room to scroll");
+      for (bool pixels : {false, true}) {
+        bar->setValue(start);
+        wheel(table->viewport(), pixels, true);
+        const int expected = bar->value();
+        ok &= expect(expected < start, "Native table wheel input scrolls upwards");
+        bar->setValue(start);
+        wheel(scrolling_identity, pixels, true);
+        ok &= expect(bar->value() == expected, "Wheel over a selector must match native table scrolling");
+        ok &= expect(scrolling_identity->currentIndex() == 1, "Scrolling must preserve the observed identity");
+      }
+    }
   }
   document.observations.clear();
   for (const char* id : {"center-near", "center-far", "blue-left-near", "blue-left-far"}) {

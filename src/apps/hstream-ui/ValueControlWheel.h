@@ -1,8 +1,6 @@
 #pragma once
 
-#include <algorithm>
-#include <cmath>
-
+#include <QtCore/QCoreApplication>
 #include <QtCore/QEvent>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QAbstractScrollArea>
@@ -34,18 +32,20 @@ inline bool route_value_control_wheel(QWidget* root, QObject* watched, QEvent* e
           break;
       }
       if (scroll_area) {
-        const QPoint pixels = wheel->pixelDelta();
-        const QPoint angles = wheel->angleDelta();
-        const bool horizontal = std::abs(pixels.x()) > std::abs(pixels.y()) ||
-            (pixels.isNull() && std::abs(angles.x()) > std::abs(angles.y()));
-        QScrollBar* bar = horizontal ? scroll_area->horizontalScrollBar() : scroll_area->verticalScrollBar();
-        const int raw_delta =
-            horizontal ? (pixels.x() != 0 ? pixels.x() : angles.x()) : (pixels.y() != 0 ? pixels.y() : angles.y());
-        if (bar && raw_delta != 0) {
-          const bool pixel_scroll = horizontal ? pixels.x() != 0 : pixels.y() != 0;
-          const int delta = pixel_scroll ? raw_delta : raw_delta * std::max(1, bar->singleStep()) / 40;
-          bar->setValue(bar->value() - delta);
-        }
+        // Let the viewport interpret pixels, rows and platform scroll settings.
+        // Its event is not a value-control event, so it bypasses this guard.
+        QWidget* viewport = scroll_area->viewport();
+        QWheelEvent forwarded(
+            viewport->mapFromGlobal(wheel->globalPosition().toPoint()),
+            wheel->globalPosition(),
+            wheel->pixelDelta(),
+            wheel->angleDelta(),
+            wheel->buttons(),
+            wheel->modifiers(),
+            wheel->phase(),
+            wheel->inverted(),
+            wheel->source());
+        QCoreApplication::sendEvent(viewport, &forwarded);
       }
       wheel->accept();
       return true;
