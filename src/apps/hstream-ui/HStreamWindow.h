@@ -652,6 +652,7 @@ class HStreamWindow : public QMainWindow {
   QString rink_map_run_message_;
   QString rink_map_status_game_;
   quint64 rink_map_status_generation_{0};
+  quint64 rink_map_requested_generation_{0};
   void updateRinkMapControls();
   bool handleRinkMapStatus(const QString& line);
   QPushButton* rink_default_button_{nullptr};

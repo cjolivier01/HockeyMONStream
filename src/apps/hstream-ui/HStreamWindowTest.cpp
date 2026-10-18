@@ -93,6 +93,7 @@
 struct HStreamWindowTestAccess {
   static bool rinkMapStatusChecks(HStreamWindow* window) {
     const auto old_run = window->pipeline_run_generation_;
+    const auto old_requested_run = window->rink_map_requested_generation_;
     const auto old_active_game = window->active_run_game_id_;
     const auto old_game = window->game_id_edit_->text();
     const int old_backend = window->mapping_backend_combo_->currentIndex();
@@ -137,6 +138,16 @@ struct HStreamWindowTestAccess {
     ok &= displays("Render video");
     window->render_video_toggle_->setChecked(true);
     ok &= displays("Save a reviewed");
+    auto* old_process = window->pipeline_process_;
+    ok &= startStubPipelineProcess(window);
+    window->rink_map_requested_generation_ = 0;
+    window->updateRinkMapControls();
+    ok &= displays("Restart playback");
+    window->rink_map_requested_generation_ = window->pipeline_run_generation_;
+    window->updateRinkMapControls();
+    ok &= displays("Preparing");
+    killStubPipelineProcess(window);
+    window->pipeline_process_ = old_process;
     window->mapping_backend_combo_->setCurrentIndex(window->mapping_backend_combo_->findData("opencv-affine-ransac"));
     ok &= displays("NONA");
     window->rink_map_preview_check_->setChecked(false);
@@ -147,6 +158,7 @@ struct HStreamWindowTestAccess {
     window->render_video_toggle_->setChecked(old_render);
     window->rink_map_preview_check_->setChecked(old_check);
     window->pipeline_run_generation_ = old_run;
+    window->rink_map_requested_generation_ = old_requested_run;
     window->active_run_game_id_ = old_active_game;
     window->updateRinkLevelingControls();
     return ok;

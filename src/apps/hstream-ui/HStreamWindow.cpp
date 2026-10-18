@@ -8082,6 +8082,8 @@ void HStreamWindow::updateRinkMapControls() {
       !rink_map_run_message_.isEmpty() && rink_map_status_generation_ == pipeline_run_generation_ && game_id_edit_ &&
       rink_map_status_game_ == game_id_edit_->text().trimmed())
     message = (running ? "" : "Last playback: ") + rink_map_run_message_;
+  else if (running && rink_map_requested_generation_ != pipeline_run_generation_)
+    message = "Restart playback with Render video enabled to prepare the mini-map.";
   else if (running)
     message = "Preparing the reviewed rink map for playback…";
   else
@@ -11088,12 +11090,10 @@ void HStreamWindow::startPipeline() {
   if (render_video && !active_run_is_calibration_ && show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked())
     preview_overlays << "rink";
   env.insert("HSTREAM_UI_PREVIEW_OVERLAYS", preview_overlays.join(','));
-  env.insert(
-      "HSTREAM_UI_PREVIEW_RINK_MAP",
-      render_video && !active_run_is_calibration_ && mappingBackend() == "nona" && rink_map_preview_check_ &&
-              rink_map_preview_check_->isChecked()
-          ? "1"
-          : "0");
+  const bool request_rink_map = render_video && !active_run_is_calibration_ && mappingBackend() == "nona" &&
+      rink_map_preview_check_ && rink_map_preview_check_->isChecked();
+  rink_map_requested_generation_ = request_rink_map ? pipeline_run_generation_ + 1 : 0;
+  env.insert("HSTREAM_UI_PREVIEW_RINK_MAP", request_rink_map ? "1" : "0");
   env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_SIZE", rink_map_size_combo_->currentData().toString());
   env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_POSITION", rink_map_position_combo_->currentData().toString());
   env.insert("HSTREAM_UI_PREVIEW_RINK_MAP_RUN", QString::number(pipeline_run_generation_ + 1));

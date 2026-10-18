@@ -91,6 +91,7 @@ inside the image. Standard preserves the original size.
 The status beneath these controls reports successful preparation or the reason
 the map could not load, including missing or stale calibration. It also explains
 when the selected backend, run mode or rendering choice cannot show the map.
+If playback starts with Render video off, restart with it enabled to prepare the map.
 A prepared map still requires matching current-frame metadata to appear.
 
 Each circle projects a tracked player's box bottom-centre onto the ice plane.
