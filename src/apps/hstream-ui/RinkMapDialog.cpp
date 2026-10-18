@@ -221,6 +221,11 @@ class RinkMapSchematic : public QWidget {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.fillRect(rect(), QColor(20, 30, 41));
+    if (!rink::ValidateRinkLayout(layout).ok()) {
+      painter.setPen(QColor(215, 225, 235));
+      painter.drawText(rect(), Qt::AlignCenter, "Enter valid rink dimensions");
+      return;
+    }
     const double scale = std::min((width() - 28) / layout.length, (height() - 54) / layout.width);
     const QPointF origin(width() / 2.0, height() / 2.0 + 5);
     auto screen = [&](cv::Point2d p) { return origin + QPointF(p.x * scale, -p.y * scale); };
@@ -342,6 +347,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   table_->setSelectionMode(QAbstractItemView::SingleSelection);
   side->addWidget(table_, 1);
   remove_ = new QPushButton(action_icon(ActionIcon::Remove), "Remove selected mark");
+  remove_->setObjectName("removeRinkMapObservationButton");
   side->addWidget(remove_);
   auto* layout_box = new QGroupBox("Rink dimensions (assumptions, metres)");
   auto* form = new QFormLayout(layout_box);
@@ -359,6 +365,9 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
     connect(dimensions_[i], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this] {
       if (!rebuilding_) {
         resolved_ = false;
+        state_.fit = {};
+        state_.projected_layout = {};
+        refresh();
         save_->setEnabled(false);
         refresh_timer_.start();
       }
@@ -416,7 +425,8 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
       refresh();
   });
   connect(table_, &QTableWidget::itemChanged, this, [this](QTableWidgetItem* item) {
-    if (rebuilding_ || item->column() != 0)
+    if (rebuilding_ || busy_ || item->column() != 0 || item->row() < 0 ||
+        size_t(item->row()) >= state_.document.observations.size())
       return;
     state_.document.observations[item->row()].enabled = item->checkState() == Qt::Checked;
     update();
@@ -495,7 +505,7 @@ void RinkMapDialog::setBusy(bool busy) {
   for (auto* dimension : dimensions_)
     dimension->setEnabled(editable);
   save_->setEnabled(
-      editable && resolved_ && !state_.document.observations.empty() &&
+      editable && resolved_ && (snapshot_->saved_map.has_value() || !state_.document.observations.empty()) &&
       state_.fit.state != rink::RinkMapState::kInconsistent);
 }
 
@@ -511,15 +521,25 @@ void RinkMapDialog::update(bool detect) {
       dimensions_[3]->value(),
       dimensions_[4]->value()};
   auto valid = rink::ValidateRinkLayout(state_.document.layout);
-  if (!valid.ok()) {
-    setStatus(QString::fromStdString(std::string(valid.message())), true);
-    save_->setEnabled(false);
-    return;
-  }
-  if (!detect) {
+  if (!detect || !valid.ok()) {
     resolved_ = false;
     state_.fit = {};
     state_.projected_layout = {};
+  }
+  if (!valid.ok()) {
+    setStatus(QString::fromStdString(std::string(valid.message())), true);
+    save_->setEnabled(false);
+    table_->setEnabled(false);
+    // A combo box may be emitting currentIndexChanged. Rebuild on the next
+    // turn so its sender survives the signal, and fence old row indices now.
+    QTimer::singleShot(0, this, [this] {
+      if (busy_)
+        return; // The running update will rebuild from its result.
+      rebuildTable();
+      refresh();
+      setBusy(false);
+    });
+    return;
   }
   setBusy(true);
   refresh();
@@ -595,7 +615,7 @@ void RinkMapDialog::rebuildTable() {
     identity->setCurrentIndex(std::max(0, identity->findData(QString::fromStdString(observation.feature))));
     table_->setCellWidget(int(i), 1, identity);
     connect(identity, &QComboBox::currentIndexChanged, this, [this, i, identity] {
-      if (rebuilding_ || busy_)
+      if (rebuilding_ || busy_ || i >= state_.document.observations.size())
         return;
       state_.document.observations[i].feature = identity->currentData().toString().toStdString();
       update();
@@ -646,6 +666,10 @@ void RinkMapDialog::save() {
   const auto status = SaveRinkMap(*snapshot_, state_.document);
   if (!status.ok()) {
     setStatus(QString::fromStdString(status.ToString()), true);
+    return;
+  }
+  if (state_.document.observations.empty()) {
+    setStatus("Saved an empty rink map. Previous observations and goal estimates are cleared.");
     return;
   }
   setStatus(

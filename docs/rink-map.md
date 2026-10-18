@@ -50,6 +50,7 @@ pixels, calibrated rays, and calibration identity in the game directory. It is
 written atomically. Reopening recomputes rays and fits; it never trusts a saved
 matrix. Calibration changes or a competing editor's save block stale writes.
 Unrelated game preferences do not invalidate the evidence.
+To clear a saved map, remove all observations and save the empty partial map.
 
 This is an offline map editor. It does not change the ice mask, leveling angles,
 camera tracking or Program output. Existing leveling selections are not retained

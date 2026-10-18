@@ -178,6 +178,38 @@ int main(int argc, char** argv) {
     ok &= expect(!save->isEnabled(), "Changed dimensions disable save immediately, before debounce");
     QTest::qWait(300);
     ok &= expect(!save->isEnabled(), "Invalid dimensions cannot save stale geometry");
+    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    auto* remove = dialog.findChild<QPushButton*>("removeRinkMapObservationButton");
+    table->selectRow(0);
+    remove->click();
+    ok &= expect(
+        waitUntil([&] { return table->rowCount() == 3 && table->isEnabled(); }),
+        "Removing a mark with invalid dimensions rebuilds the table");
+    table->item(2, 0)->setCheckState(Qt::Unchecked);
+    ok &= expect(waitUntil([&] { return table->isEnabled(); }), "Invalid-dimension checkbox edits remain safe");
+    auto* identity = qobject_cast<QComboBox*>(table->cellWidget(2, 1));
+    identity->setCurrentIndex(identity->findData("center"));
+    ok &= expect(waitUntil([&] { return table->isEnabled(); }), "Invalid-dimension identity edits remain safe");
+    ok &= expect(save->text() == "Save partial map", "Invalid dimensions discard the previous ready fit");
+    while (table->rowCount() > 0) {
+      const int before = table->rowCount();
+      table->selectRow(0);
+      remove->click();
+      if (!expect(waitUntil([&] { return table->rowCount() == before - 1; }), "Every removal updates row indices"))
+        return 1;
+    }
+    width->setValue(document.layout.width);
+    ok &= expect(waitUntil([&] { return save->isEnabled(); }), "Clearing a saved map can be persisted");
+    save->click();
+  }
+  {
+    RinkMapDialog dialog(game.path());
+    dialog.show();
+    ok &= expect(idle(dialog), "Cleared map reopen completes");
+    ok &= expect(
+        dialog.findChild<QTableWidget*>("rinkMapObservationsTable")->rowCount() == 0 &&
+            dialog.findChild<QPushButton*>("saveRinkMapButton")->text() == "Save partial map",
+        "Reopening a cleared map cannot resurrect removed marks or goal estimates");
   }
   ok &= write(game.filePath("config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: pending\n");
   ok &= expect(!SaveRinkMap(*snapshot, document).ok(), "Pending recalibration blocks saving old evidence");
