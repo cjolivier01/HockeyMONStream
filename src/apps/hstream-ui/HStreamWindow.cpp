@@ -5915,7 +5915,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       QSettings(ui_settings_path(), QSettings::IniFormat).value("preview/rink-map", true).toBool());
   rink_map_preview_check_->setToolTip(
       "Applies on the next playback. Requires a saved, reviewed rink map and tracked players. "
-      "Shows neutral player dots and recognized jersey numbers in the Program and Stitched previews. "
+      "Shows player dots in their detection-box colours and recognized jersey numbers in the Program and Stitched previews. "
       "Teams are unknown. This display is not added to exported video.");
   connect(rink_map_preview_check_, &QCheckBox::toggled, this, [](bool enabled) {
     QSettings settings(ui_settings_path(), QSettings::IniFormat);

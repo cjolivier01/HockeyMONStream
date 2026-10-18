@@ -2634,6 +2634,11 @@ PreviewOverlayInspection inspect_preview_overlays_for_test(GstElement* sink, Gst
   for (const auto& path : overlays.paths)
     result.colors.push_back({path.color.red, path.color.green, path.color.blue, path.color.alpha});
   result.analytics_command_count = self->state->player_commands.size();
+  for (size_t i = 0; i < self->state->player_commands.size(); ++i) {
+    const auto& command = self->state->player_commands.data()[i];
+    if (command.kind == hm::draw_display::analytics::detail::Kind::kDisc)
+      result.disc_colors.push_back({command.color.red, command.color.green, command.color.blue, command.color.alpha});
+  }
   return result;
 #else
   (void)sink;

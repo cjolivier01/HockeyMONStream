@@ -66,7 +66,8 @@ mark selection, and the quality of the source calibration.
 
 After saving a reviewed, fitted map, leave **Show rink mini-map during playback**
 checked under **Stitched → Rink**, then start playback. The Program and Stitched
-desktop GPU previews show an overhead rink with neutral player circles. The
+desktop GPU previews show an overhead rink with player circles in the same
+track colours as their detection boxes, including when boxes are hidden. The
 setting applies on the next playback and works independently of player boxes.
 It currently uses the x86 desktop GPU preview renderer.
 
@@ -79,8 +80,9 @@ playback. Recalibration requires reviewing and saving again.
 A circle shows the jersey number when enabled jersey recognition supplies a
 fresh result for that track. Leading zeros are retained; missing or expired
 numbers leave a plain circle. There is currently no home/away classification,
-so all players use the same neutral colour. Track colours and jersey numbers do
-not identify teams.
+so track colours and jersey numbers do not identify teams. Ignored players use
+the same grey as their detection boxes. Jersey digits switch between light and
+dark text to remain readable on the track colour.
 
 Startup validates the saved calibration, refits its source-camera evidence,
 and prepares a bounded output-pixel-to-ray grid through Hugin, using the

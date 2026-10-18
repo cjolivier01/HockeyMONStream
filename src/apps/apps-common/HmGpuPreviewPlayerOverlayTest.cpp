@@ -167,6 +167,9 @@ int main(int argc, char** argv) {
       Check(
           rink.analytics_command_count > 80 && rink.path_count == 0,
           "Mini-map must draw independently of player box and analytics toggles");
+      Check(
+          rink.disc_colors.size() == 2 && !first.colors.empty() && rink.disc_colors.back() == first.colors.front(),
+          "Mini-map dots must retain the detection box colour while box drawing is off");
       const auto stale = gpu::inspect_preview_overlays_for_test(sink, baked);
       Check(stale.analytics_command_count == 0, "Frame without calibration identity leaked mini-map");
     }

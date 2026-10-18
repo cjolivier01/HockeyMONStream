@@ -9,6 +9,17 @@
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 namespace hm::draw_display {
+RinkMiniMap::RinkMiniMap(std::shared_ptr<const stitching::PlaybackRinkMap> map) : map_(std::move(map)) {
+  if (!map_)
+    return;
+  layout_lines_ = stitching::RinkLayoutDrawing(map_->layout);
+  // Static geometry is prepared once; playback only scales cached points.
+  for (size_t i = 0; i < centre_circle_.size(); ++i) {
+    const double angle = i * 2 * 3.14159265358979323846 / (centre_circle_.size() - 1);
+    centre_circle_[i] = {4.572 * std::cos(angle), 4.572 * std::sin(angle)};
+  }
+}
+
 bool RinkMiniMap::Append(
     const NvDsFrameMeta* frame,
     unsigned stitched_width,
@@ -52,21 +63,18 @@ bool RinkMiniMap::Append(
         left + float(p.x / rink.length + 0.5) * rink_width, top + header + float(0.5 - p.y / rink.width) * rink_height);
   };
   commands->AddText(left, top + 3 * scale, 16 * scale, "RINK MAP - ESTIMATED", ink);
-  const auto lines = stitching::RinkLayoutDrawing(rink);
-  for (size_t i = 0; i < lines.size(); ++i) {
+  for (size_t i = 0; i < layout_lines_.size(); ++i) {
     const Color color = i == 0 ? ink : (i == 2 || i == 4) ? blue : red;
-    for (size_t j = 1; j < lines[i].size(); ++j) {
-      const auto a = point(lines[i][j - 1]), b = point(lines[i][j]);
+    for (size_t j = 1; j < layout_lines_[i].size(); ++j) {
+      const auto a = point(layout_lines_[i][j - 1]), b = point(layout_lines_[i][j]);
       commands->AddLine(a.x, a.y, b.x, b.y, 1.5F * scale, color);
     }
   }
   // Conventional centre circle; its diameter is a drawing cue, not an extra
   // observation or constraint on the saved map.
-  for (int i = 0; i < 32; ++i) {
-    const double a = i * 2 * 3.14159265358979323846 / 32;
-    const double b = (i + 1) * 2 * 3.14159265358979323846 / 32;
-    const auto p = point({4.572 * std::cos(a), 4.572 * std::sin(a)});
-    const auto q = point({4.572 * std::cos(b), 4.572 * std::sin(b)});
+  for (size_t i = 1; i < centre_circle_.size(); ++i) {
+    const auto p = point(centre_circle_[i - 1]);
+    const auto q = point(centre_circle_[i]);
     commands->AddLine(p.x, p.y, q.x, q.y, scale, blue);
   }
   for (double x : {-rink.length / 2 + rink.goal_inset, rink.length / 2 - rink.goal_inset}) {
@@ -77,11 +85,11 @@ bool RinkMiniMap::Append(
   if (result && (result->pts_ns != frame->buf_pts || result->stream_id != frame->source_id))
     result = nullptr;
   size_t visible = 0;
-  // Track colours do not encode teams. All dots are neutral until there is an
-  // explicit team classification; jersey numbers alone cannot supply one.
-  for (const auto& player : snapshot->player_rects) {
-    if (visible >= player_analytics::kMaximumTracks)
-      break;
+  // Reuse the upstream box palette even when box drawing is off. These colours
+  // identify tracks, not teams; ignored players match the boxes' grey override.
+  const size_t inspected = std::min(snapshot->player_rects.size(), player_analytics::kMaximumTracks);
+  for (size_t index = 0; index < inspected; ++index) {
+    const auto& player = snapshot->player_rects[index];
     const auto& box = player.rect;
     if (!std::isfinite(box.width) || !std::isfinite(box.height) || box.width <= 0 || box.height <= 0)
       continue;
@@ -110,12 +118,15 @@ bool RinkMiniMap::Append(
         break;
       }
     }
+    const auto& box_color = player.ignored ? preview_overlay::kIgnoredPlayerColor : box.border_color;
+    const Color color{float(box_color.red), float(box_color.green), float(box_color.blue), float(box_color.alpha)};
+    const Color label = color.red * .2126F + color.green * .7152F + color.blue * .0722F > .5F ? ink : white;
     const float radius = (number.empty() ? 5.0F : 10.0F) * scale;
     commands->AddDisc(p.x, p.y, radius + 1.5F * scale, white);
-    commands->AddDisc(p.x, p.y, radius, ink);
+    commands->AddDisc(p.x, p.y, radius, color);
     if (!number.empty()) {
       const float text_height = 13 * scale;
-      commands->AddText(p.x - number.size() * text_height / 3, p.y - text_height / 2, text_height, number, white);
+      commands->AddText(p.x - number.size() * text_height / 3, p.y - text_height / 2, text_height, number, label);
     }
     ++visible;
   }

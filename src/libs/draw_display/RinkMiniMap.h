@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,7 +16,7 @@ namespace hm::draw_display {
 // is immutable; each renderer owns its generation cache. No file/video I/O.
 class RinkMiniMap {
  public:
-  explicit RinkMiniMap(std::shared_ptr<const stitching::PlaybackRinkMap> map) : map_(std::move(map)) {}
+  explicit RinkMiniMap(std::shared_ptr<const stitching::PlaybackRinkMap> map);
   bool Append(
       const NvDsFrameMeta* frame,
       unsigned stitched_width,
@@ -26,6 +27,8 @@ class RinkMiniMap {
 
  private:
   std::shared_ptr<const stitching::PlaybackRinkMap> map_;
+  std::vector<std::vector<cv::Point2d>> layout_lines_;
+  std::array<cv::Point2d, 33> centre_circle_;
   std::string output_generation_;
   unsigned width_{0}, height_{0};
   std::optional<double> rotation_;

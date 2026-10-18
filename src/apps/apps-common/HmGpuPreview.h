@@ -51,6 +51,7 @@ struct PreviewOverlayInspection {
   bool diagnostic_coordinates_valid{false};
   std::vector<std::array<float, 4>> colors;
   std::size_t analytics_command_count{0};
+  std::vector<std::array<float, 4>> disc_colors;
 };
 
 inline constexpr std::size_t kMaximumPresentedFrameCaptureBytes = 32U * 1024U * 1024U;

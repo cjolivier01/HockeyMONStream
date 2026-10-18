@@ -20,7 +20,14 @@ void check(bool value, const char* message) {
 struct Frame {
   NvDsBatchMeta* batch{nvds_create_batch_meta(1)};
   NvDsFrameMeta* frame{batch ? nvds_acquire_frame_meta_from_pool(batch) : nullptr};
-  Frame(const std::string& generation, bool snapshot = true, bool jersey = true, uint64_t expires = 120) {
+  Frame(
+      const std::string& generation,
+      bool snapshot = true,
+      bool jersey = true,
+      uint64_t expires = 120,
+      bool ignored = false,
+      NvOSD_ColorParams color = {0.2, 0.4, 0.7, 1},
+      bool overflow = false) {
     check(frame, "Metadata allocation");
     frame->source_id = 4;
     frame->buf_pts = 100;
@@ -37,6 +44,13 @@ struct Frame {
     player.rect.top = 100;
     player.rect.width = 100;
     player.rect.height = 200;
+    player.rect.border_color = color;
+    player.ignored = ignored;
+    if (overflow) {
+      auto outside = player;
+      outside.rect.left = 1600;
+      observation.player_rects.assign(pa::kMaximumTracks, outside);
+    }
     observation.player_rects.push_back(player);
     if (snapshot)
       check(p::add_prepared_overlay_snapshot_meta(frame, observation), "Snapshot attachment");
@@ -67,6 +81,14 @@ size_t count(const a::CommandList& commands, a::detail::Kind kind, bool white = 
       ++result;
   return result;
 }
+bool dotColor(const a::CommandList& commands, const NvOSD_ColorParams& expected) {
+  const a::detail::Command* fill = nullptr;
+  for (size_t i = 0; i < commands.size(); ++i)
+    if (commands.data()[i].kind == a::detail::Kind::kDisc)
+      fill = &commands.data()[i];
+  return fill && fill->color.red == float(expected.red) && fill->color.green == float(expected.green) &&
+      fill->color.blue == float(expected.blue) && fill->color.alpha == float(expected.alpha);
+}
 } // namespace
 
 int main() {
@@ -83,9 +105,23 @@ int main() {
     Frame fresh(generation);
     check(overlay.Append(fresh.frame, 1600, 1200, 800, 600, &commands), "Valid mini-map must draw");
     check(count(commands, a::detail::Kind::kDisc) == 2, "One player produces one bordered dot");
+    check(dotColor(commands, {0.2, 0.4, 0.7, 1}), "Dot must use the immutable detection-box colour");
     check(
         count(commands, a::detail::Kind::kGlyph, true) == 2, "Known jersey retains both digits including leading zero");
     check(commands.rejected() == 0 && commands.size() < 200, "Mini-map stays within its drawing budget");
+    commands.Clear();
+    Frame ignored(generation, true, false, 120, true);
+    check(overlay.Append(ignored.frame, 1600, 1200, 800, 600, &commands), "Ignored track stays visible");
+    check(dotColor(commands, p::kIgnoredPlayerColor), "Ignored dots must match ignored boxes' grey colour");
+    commands.Clear();
+    Frame bright(generation, true, true, 120, false, {1, 1, 0, 1});
+    check(overlay.Append(bright.frame, 1600, 1200, 800, 600, &commands), "Bright track stays visible");
+    check(dotColor(commands, {1, 1, 0, 1}), "Bright dot retains the box colour");
+    check(count(commands, a::detail::Kind::kGlyph, true) == 0, "Bright dots use dark jersey digits for contrast");
+    commands.Clear();
+    Frame overflow(generation, true, false, 120, false, {0.2, 0.4, 0.7, 1}, true);
+    check(overlay.Append(overflow.frame, 1600, 1200, 800, 600, &commands), "Oversized snapshot retains the rink");
+    check(count(commands, a::detail::Kind::kDisc) == 0, "Off-ice players must consume the bounded inspection budget");
     commands.Clear();
     Frame expired(generation, true, true, 99);
     check(overlay.Append(expired.frame, 1600, 1200, 800, 600, &commands), "Expired jersey keeps player dot");
