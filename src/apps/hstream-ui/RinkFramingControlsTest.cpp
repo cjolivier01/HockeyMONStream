@@ -100,6 +100,18 @@ int main(int argc, char** argv) {
   ok &= !controls.validateForRun().isEmpty();
   anticipate->setChecked(true);
   ok &= controls.validateForRun().isEmpty();
+  ok &= !controls.validateSavedSettings(YAML::Node(YAML::NodeType::Map)).isEmpty();
+  auto settings = YAML::Load("hstream_ui: {stitching_calibration: {status: complete}}");
+  ok &= controls.validateSavedSettings(settings).isEmpty();
+  settings["hstream_ui"]["stitching_calibration"]["stale_from"] = "canvas";
+  ok &= !controls.validateSavedSettings(settings).isEmpty();
+  // The authoritative identity can change independently of every other file.
+  {
+    QFile identity(map_directory.filePath("stitching_generation_id"));
+    ok &= identity.open(QIODevice::WriteOnly) && identity.write("new identity") > 0;
+  }
+  ok &= !controls.validateForRun().isEmpty() && !enable->isEnabled();
+  ok &= wait([&] { return enable->isEnabled(); });
   // Play rechecks file identity even before the filesystem notification arrives.
   ok &= saveMap("partial");
   ok &= !controls.validateForRun().isEmpty() && !enable->isEnabled() && enable->isChecked();

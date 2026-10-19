@@ -333,8 +333,8 @@ struct HStreamWindowTestAccess {
     window->active_run_game_id_ = prior_game;
     return prepared;
   }
-  static bool savePreset(HStreamWindow* window) {
-    return window->savePreset();
+  static bool savePreset(HStreamWindow* window, bool require_rink_framing_ready = false, QString* error = nullptr) {
+    return window->savePreset(require_rink_framing_ready, error);
   }
   static void inheritCustomDetector(HStreamWindow* window) {
     window->baseline_config_["pipeline"]["primary-gie"]["config-file"] = "custom-detector.yaml";
@@ -8041,6 +8041,24 @@ bool test_job_export() {
             "Stitched-only scripts must omit Program options and disable DriveGPT capture"))
       return false;
   }
+  mode->setCurrentIndex(mode->findData("program"));
+  rink_framing->setChecked(true);
+  auto* frame_count = require_child<QSpinBox>(&window, "calibrationFrameCountSpin");
+  if (!frame_count)
+    return false;
+  frame_count->setValue(frame_count->value() + 1);
+  QFile preset(QDir(window.gameDirectoryText()).filePath("config.yaml"));
+  if (!preset.open(QIODevice::ReadOnly))
+    return false;
+  const auto before = preset.readAll();
+  preset.close();
+  QString error;
+  if (!expect(
+          !HStreamWindowTestAccess::savePreset(&window, true, &error) &&
+              error.contains("these settings require calibration again") && preset.open(QIODevice::ReadOnly) &&
+              preset.readAll() == before,
+          "Program export must reject pending calibration edits before publishing its settings"))
+    return false;
   return true;
 }
 

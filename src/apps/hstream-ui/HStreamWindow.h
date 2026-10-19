@@ -361,7 +361,7 @@ class HStreamWindow : public QMainWindow {
   void setPreviewFocusMode(bool focused, int tab_index);
   void restartStage();
   void maybeStartDeferredRestart();
-  bool savePreset();
+  bool savePreset(bool require_rink_framing_ready = false, QString* validation_error = nullptr);
   void saveJobScript();
   void resetCameraControls();
   void cleanStitchingCalibration();

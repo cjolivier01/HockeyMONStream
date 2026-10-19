@@ -11,6 +11,11 @@ inline void suppress_player_analytics(YAML::Node pipeline) {
     pipeline.remove("player-analytics");
 }
 
+inline void suppress_rink_framing(YAML::Node pipeline) {
+  if (pipeline && pipeline.IsMap() && pipeline["ds-playtracker"].IsMap())
+    pipeline["ds-playtracker"]["private-properties"]["rink-camera-enable"] = 0;
+}
+
 // Keep stitching calibration on the shortest useful video graph. Sources,
 // streammux, hmstitcher, sinks, audio, and preview branches remain available;
 // every stage that consumes the stitched output for Program production is
@@ -19,6 +24,7 @@ inline void configure_stitching_calibration_pipeline(YAML::Node pipeline, bool p
   if (!pipeline || !pipeline.IsMap())
     return;
   suppress_player_analytics(pipeline);
+  suppress_rink_framing(pipeline);
 
   constexpr const char* kDownstreamStages[] = {
       "hm-image-meta-merger",

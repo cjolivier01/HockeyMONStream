@@ -23,6 +23,7 @@ constexpr bool defaults[]{false, true, false, false};
 const char* map_files[]{
     "rink-map.yaml",
     "config.yaml",
+    "stitching_generation_id",
     "autooptimiser_out.pto",
     "hm_project.pto",
     "stitching_canvas_provenance",
@@ -276,6 +277,23 @@ QString RinkFramingControls::validateForRun() {
   if (!choices_[1]->isChecked() && !choices_[2]->isChecked() && !choices_[3]->isChecked())
     return "Select a rink-framing adjustment or turn off rink-aware framing.";
   return {};
+}
+
+QString RinkFramingControls::validateSavedSettings(const YAML::Node& config) const {
+  if (!choices_[0]->isChecked())
+    return {};
+  YAML::Node calibration = config;
+  for (const char* key : {"hstream_ui", "stitching_calibration"}) {
+    if (!calibration.IsMap())
+      break;
+    const auto child = static_cast<const YAML::Node&>(calibration)[key];
+    calibration.reset(child.IsDefined() ? child : YAML::Node(YAML::NodeType::Undefined));
+  }
+  if (calibration.IsMap() && calibration["status"].as<std::string>("") == "complete" &&
+      calibration["stale_from"].as<std::string>("").empty())
+    return {};
+  return "Rink-aware framing cannot be exported: these settings require calibration again. "
+         "Complete calibration and review the rink map, or turn off rink-aware framing.";
 }
 
 void RinkFramingControls::setCheckingSuspended(bool suspended) {

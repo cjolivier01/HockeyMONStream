@@ -36,7 +36,7 @@ pipeline:
   tracker: {enable: 1}
   player-analytics: {pose: {enable: 1, bundle: /unreadable}, action: {enable: 1, bundle: /unreadable}}
   ds-fieldmask: {enable: 1}
-  ds-playtracker: {enable: 1}
+  ds-playtracker: {enable: 1, private-properties: {rink-camera-enable: 1}}
   hmplaycropper: {enable: 1}
   nvds-analytics: {enable: 1}
   pre-process: {enable: 1}
@@ -53,6 +53,9 @@ pipeline:
 
   bool ok = true;
   ok &= expect(!pipeline["player-analytics"], "calibration must omit optional analytics before model resolution");
+  ok &= expect(
+      pipeline["ds-playtracker"]["private-properties"]["rink-camera-enable"].as<int>() == 0,
+      "preparation must clear the inherited Program-only rink framing request");
   ok &= expect(enabled(pipeline, "source0"), "calibration must retain decoded video sources");
   ok &= expect(enabled(pipeline, "hmstitcher"), "calibration must retain hmstitcher");
   ok &= expect(enabled(pipeline, "sink0"), "calibration must retain configured sinks");
@@ -143,7 +146,11 @@ pipeline:
   pipeline["sink2"]["type"] = 3;
   pipeline["tests"]["file-loop"] = 1;
   pipeline["tests"]["pipeline-recreate-sec"] = 5;
+  pipeline["ds-playtracker"]["private-properties"]["rink-camera-enable"] = true;
   hm::pipeline_internal::configure_stitching_player_scan_pipeline(pipeline);
+  ok &= expect(
+      pipeline["ds-playtracker"]["private-properties"]["rink-camera-enable"].as<int>() == 0,
+      "player scans must not require a Program rink map");
   ok &= expect(
       enabled(pipeline, "primary-gie") && enabled(pipeline, "ds-fieldmask") && !enabled(pipeline, "tracker") &&
           !enabled(pipeline, "ds-playtracker") && !enabled(pipeline, "hmplaycropper"),

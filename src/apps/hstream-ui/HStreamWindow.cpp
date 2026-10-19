@@ -17286,8 +17286,12 @@ void HStreamWindow::saveJobScript() {
     }
     args << "--sbatch" << directive;
   }
-  if (!savePreset()) {
-    QMessageBox::warning(this, "Save job script", "Could not save the current settings. See the runtime log.");
+  QString framing_error;
+  if (!savePreset(!stitched_only, &framing_error)) {
+    QMessageBox::warning(
+        this,
+        "Save job script",
+        framing_error.isEmpty() ? "Could not save the current settings. See the runtime log." : framing_error);
     return;
   }
   const QString tool = !development_bazel_bin_.isEmpty()
@@ -17319,7 +17323,7 @@ void HStreamWindow::saveJobScript() {
   process->start(tool, args);
 }
 
-bool HStreamWindow::savePreset() {
+bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validation_error) {
   if (!ensureSavedControlConfigLoaded())
     return false;
   if (!ensureGameDirectory()) {
@@ -17482,6 +17486,19 @@ bool HStreamWindow::savePreset() {
         calibration["invalidation_id"] = desired_owner;
         appendLog("Saved view changes will reuse the existing stitching alignment");
       }
+    }
+  }
+  // Export must validate the settings it is about to publish: pending view or
+  // input edits can invalidate a map that was usable when the dialog opened.
+  if (require_rink_framing_ready && rink_framing_controls_) {
+    const auto error = rink_framing_controls_->validateSavedSettings(config);
+    if (!error.isEmpty()) {
+      if (!published_playtracker_sidecar.isEmpty())
+        QFile::remove(published_playtracker_sidecar);
+      if (validation_error)
+        *validation_error = error;
+      appendLog(error);
+      return false;
     }
   }
   const QString intended_active_sidecar =

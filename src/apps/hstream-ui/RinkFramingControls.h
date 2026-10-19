@@ -25,6 +25,7 @@ class RinkFramingControls : public QWidget {
   void checkMap(bool force = false);
   void setCheckingSuspended(bool suspended);
   QString validateForRun();
+  QString validateSavedSettings(const YAML::Node& config) const;
   void loadConfig(const YAML::Node& defaults, const YAML::Node& user, const YAML::Node& game);
   void resetToDefaults();
   bool isDirty() const;

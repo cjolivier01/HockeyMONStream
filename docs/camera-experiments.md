@@ -136,6 +136,9 @@ background readiness check follows map/calibration file changes and pauses durin
 playback. **Check map again** retries after external repairs.
 
 Play and Program job export reject an enabled option without a usable map.
+Export also rejects pending settings that would invalidate the calibration before
+publishing those settings or creating a script. Calibration, player-frame scans
+and model/mask preparation clear the Program-only framing request.
 The runner checks again before building the graph, including on the execution
 host of an exported job. Missing, partial, inconsistent or stale maps are errors.
 The tracker also rejects map-loading failures and mismatched live output, even
