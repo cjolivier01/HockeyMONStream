@@ -195,6 +195,39 @@ binaries or Python wheels for Ubuntu 26.04. The original download is preserved.
 After upgrading an installed SDK, run `bazelisk sync --only=deepstream` before
 the next native build so Bazel refreshes its cached SDK directory listing.
 
+## Side-by-side video comparisons
+
+Create a comparison MP4 from two already synchronized videos using Python 3,
+FFmpeg and ffprobe:
+
+```bash
+scripts/side_by_side_video.py before.mp4 after.mp4 comparison.mp4
+scripts/side_by_side_video.py before.mp4 after.mp4 clip.mp4 --start 00:10:00 --duration 30
+```
+
+Start and duration accept seconds or `HH:MM:SS[.fraction]`. Without them, the
+output covers both videos from the beginning until the shorter video ends.
+Equal-sized panes preserve aspect ratios with black padding and no upscaling.
+The canvas is at most 7680×4320: two 4K 16:9 inputs produce 7680×2160. Use
+`--max-size 3840x2160` for a smaller limit.
+
+The first retained frames are aligned. Matching constant frame rates retain
+frame pairing; different/variable rates are sampled onto the left video's
+frame clock, duplicating or dropping frames to preserve playback speed.
+`--fps 30000/1001` overrides that rate. This does not discover recording offsets
+or correct clock drift. Audio comes from the left input (`--audio right` or
+`--audio none` changes this); missing audio is silent, and short audio is padded.
+By default, the script tries NVIDIA HEVC encoding at a fast preset (`p2`) with
+quality target 18, checking driver and output-size support first. Without a
+usable NVIDIA encoder, it uses CPU H.264 at `veryfast`, CRF 18. These settings
+favor speed and high visual quality over small files; they are not lossless.
+Decoding and layout use CPU FFmpeg filters. `--encoder cpu` forces H.264 for
+broader player compatibility; `--encoder nvenc` requires NVIDIA hardware.
+`--quality 16` keeps more detail at the cost of larger files (CPU CRF and NVENC
+CQ are different quality scales). Audio uses AAC.
+`--preset`, `--dry-run` and `--overwrite` are also available; existing output
+files are protected by default.
+
 ## InStat team-only PDF reports
 
 `scripts/hstream_instat_generate_team_only_reports.py` scans a directory of
