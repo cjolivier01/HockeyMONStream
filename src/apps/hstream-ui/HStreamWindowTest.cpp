@@ -7866,7 +7866,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     activate(start);
     if (!expect(wait([&] { return window->pipelineStateText() == "PLAYING"; }), "Framing run must start"))
       return false;
-    for (bool pending_check : {false, true}) {
+    for (int restart_case : {0, 1, 2}) {
+      const bool pending_check = restart_case != 0;
       const int commands = window->logText().count("pipeline command ");
       if (pending_check) {
         *release = false;
@@ -7877,9 +7878,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         const bool stopped = wait([&] { return window->pipelineStateText() == "STOPPED"; });
         QTest::qWait(200);
         const bool waited = window->logText().count("pipeline command ") == commands;
-        *release = true;
-        if (!expect(stopped && waited, "Restart must wait for the pending map check"))
+        if (!expect(stopped && waited, "Restart must wait for the pending map check")) {
+          *release = true;
           return false;
+        }
+        if (restart_case == 2) {
+          framing->setChecked(false);
+          // Deliver the cancelled worker's callback inside startPipeline's
+          // event drain, before its process/generation have advanced.
+          QTimer::singleShot(0, window, [release] {
+            *release = true;
+            QTest::qWait(50);
+          });
+          start->click();
+        } else {
+          *release = true;
+        }
       }
       if (!expect(
               wait([&] {
@@ -7888,6 +7902,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               }),
               "A valid map must let the requested stage restart continue"))
         return false;
+      framing->setChecked(true);
     }
     *ready = false;
     HStreamWindowTestAccess::recheckRinkMap(window);

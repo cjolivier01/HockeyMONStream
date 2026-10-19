@@ -17197,7 +17197,7 @@ void HStreamWindow::restartStage() {
 }
 
 void HStreamWindow::maybeStartDeferredRestart() {
-  if (!deferred_restart_requested_ || live_rotation_authorization_pending_ ||
+  if (!deferred_restart_requested_ || stitching_still_starting_ || live_rotation_authorization_pending_ ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing()) {
     return;
   }
