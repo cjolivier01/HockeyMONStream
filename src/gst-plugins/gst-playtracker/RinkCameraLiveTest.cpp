@@ -10,8 +10,14 @@ namespace {
 struct Output {
   std::vector<hm::BBox> boxes;
   std::optional<hm::BBox> native;
+  absl::Status error;
 };
-Output run(DsPlayTrackerCtx* context, int tick, const std::string& generation) {
+Output run(
+    DsPlayTrackerCtx* context,
+    int tick,
+    const std::string& generation,
+    bool players = true,
+    bool timestamp = true) {
   auto batch = std::unique_ptr<NvDsBatchMeta, decltype(&nvds_destroy_batch_meta)>(
       nvds_create_batch_meta(1), nvds_destroy_batch_meta);
   auto* metadata = nvds_acquire_frame_meta_from_pool(batch.get());
@@ -20,10 +26,10 @@ Output run(DsPlayTrackerCtx* context, int tick, const std::string& generation) {
   metadata->source_frame_height = metadata->pipeline_height = 3000;
   metadata->source_id = 0;
   metadata->frame_num = tick;
-  metadata->buf_pts = uint64_t(tick) * 16666667;
+  metadata->buf_pts = timestamp ? uint64_t(tick) * 16666667 : GST_CLOCK_TIME_NONE;
   if (!hm::stitching::add_stitched_output_generation_meta(metadata, generation))
     throw std::runtime_error("generation metadata");
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; players && i < 5; ++i) {
     auto* object = nvds_acquire_obj_meta_from_pool(batch.get());
     object->class_id = 0;
     object->object_id = i + 1;
@@ -41,8 +47,11 @@ Output run(DsPlayTrackerCtx* context, int tick, const std::string& generation) {
   GstDsPlayTrackerFrame frame;
   frame.frame_meta = metadata;
   frame.input_surf_params = &surface;
-  if (!DsPlayTrackerProcessFrame(context, frame, nullptr))
+  if (!DsPlayTrackerProcessFrame(context, frame, nullptr)) {
+    if (!frame.processing_error.ok())
+      return {{}, {}, frame.processing_error};
     throw std::runtime_error("native frame processing");
+  }
   return {frame.play_tracker_results.tracking_boxes, frame.native_program};
 }
 bool same(const hm::BBox& a, const hm::BBox& b) {
@@ -102,12 +111,17 @@ int main() {
         throw std::runtime_error("Anticipation changed native state, fast framing or zoom");
       moved |= std::abs(a.boxes.back().left - b.boxes.back().left) > 1;
     }
-    const auto a = run(native.get(), 180, generation), b = run(guided.get(), 180, "stale");
-    if (!moved || b.native || !same(a.boxes.back(), b.boxes.back()) || native->play_trackers.at(0).rink_guide)
-      throw std::runtime_error("Guide did not move, stale geometry was accepted, or disabled path prepared a guide");
-    const auto c = run(native.get(), 181, generation), d = run(guided.get(), 181, generation);
-    if (!same(c.boxes.back(), d.boxes.back()))
-      throw std::runtime_error("Geometry restoration reused stale prediction");
+    const auto b = run(guided.get(), 180, "stale");
+    if (!moved || b.error.ok() || b.error.message().find("does not match") == std::string::npos ||
+        native->play_trackers.at(0).rink_guide)
+      throw std::runtime_error("Stale geometry must fail explicitly, and disabled runs must not prepare a guide");
+    DsPlayTrackerCtxResetTracking(guided.get());
+    const auto empty = run(guided.get(), 0, "stale", false);
+    if (empty.error.ok())
+      throw std::runtime_error("Geometry validation must fail on the first frame even before detections arrive");
+    const auto untimed = run(guided.get(), 0, generation, false, false);
+    if (untimed.error.ok() || untimed.error.message().find("timestamps") == std::string::npos)
+      throw std::runtime_error("Missing source time must fail rather than silently disabling the guide");
     DsPlayTrackerCtxResetTracking(guided.get());
     if (!guided->play_trackers.empty())
       throw std::runtime_error("Reset retained guide history");

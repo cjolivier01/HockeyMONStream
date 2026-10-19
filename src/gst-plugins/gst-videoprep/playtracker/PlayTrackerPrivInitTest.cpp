@@ -301,6 +301,19 @@ int main() {
   params.m_inCaps = gst_caps_from_string("video/x-raw,format=RGBA,width=1280,height=720,framerate=30/1");
   params.m_outCaps = gst_caps_from_string("video/x-raw,format=RGBA,width=1280,height=720,framerate=30/1");
 
+  {
+    TestPlayTrackerPriv required_map(/*gpu_id=*/0, /*batch_size=*/1);
+    if (!required_map.SetProperty(hm::Property("rink-camera-enable", "1")) ||
+        !required_map.SetProperty(hm::Property("rink-camera-game-directory", (tmpdir / "no-map").string())) ||
+        !required_map.PreCapsInit(&params).ok())
+      return 90;
+    const auto missing_map = required_map.PostCapsInit(&params);
+    if (missing_map.ok() || missing_map.message().find("Rink-aware framing cannot start") == std::string::npos) {
+      std::cerr << "Missing rink map must fail caps initialization, never fall back to native framing\n";
+      return 91;
+    }
+  }
+
   absl::Status status = priv.PreCapsInit(&params);
   if (!status.ok()) {
     std::cerr << "PreCapsInit failed: " << status << std::endl;

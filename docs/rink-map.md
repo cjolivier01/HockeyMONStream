@@ -142,6 +142,12 @@ This offline operation decodes a bounded mask proxy and samples calibrated viewi
 rays. It records the mask hash with the source-pixel evidence. Reviewed marks remain
 saved evidence until you explicitly refresh them; it never modifies the ice mask.
 
+When **Enable rink-aware framing** is checked, a missing, incomplete or stale
+saved map blocks Program playback and Program job creation. The checkbox is
+disabled until the map is usable; an invalid saved selection remains visible and
+can be cleared with **Turn off rink-aware framing**. The runner also checks on
+startup, so an exported job cannot silently ignore an unusable map.
+
 ## Playback mini-map
 
 After saving a reviewed, fitted map, leave **Show rink mini-map during playback**

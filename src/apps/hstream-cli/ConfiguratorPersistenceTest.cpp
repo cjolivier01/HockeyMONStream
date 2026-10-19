@@ -2529,6 +2529,25 @@ play-tracker:
             !fs::exists(disabled_tracker_game_dir / "hstream-runtime"),
         "A disabled tracker must not require or materialize a runtime sidecar");
 
+    for (bool calibration_only : {false, true}) {
+      const fs::path enabled_framing = root / "rink-framing-enabled.yaml";
+      std::ofstream(enabled_framing) << "ds-playtracker:\n  private-properties:\n    rink-camera-enable: 1\n";
+      hm::Configurator framing(
+          "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+      const bool loaded = framing.configure().ok() &&
+          framing.underlay_config("pipeline", incomplete_pipeline.string()) &&
+          framing.overlay_config("pipeline", enabled_framing.string());
+      const auto status = loaded
+          ? framing.complete_configuration(
+                false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path(), calibration_only)
+          : absl::InternalError("framing fixture");
+      ok &= expect(
+          calibration_only
+              ? status.ok()
+              : !status.ok() && status.message().find("Rink-aware framing cannot start") != std::string::npos,
+          "Enabled rink framing rejects a missing map before graph creation; calibration-only work can repair it");
+    }
+
     hm::Configurator incomplete_configurator(
         "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
     const bool incomplete_loaded = incomplete_configurator.configure().ok() &&

@@ -256,7 +256,7 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
       return config_lock.status();
     auto saved = read_bounded_regular_file_no_follow(directory / "rink-map.yaml", 512 * 1024, "saved rink map");
     if (!saved.ok())
-      return absl::FailedPreconditionError("Save a reviewed rink map to show players on the rink");
+      return absl::FailedPreconditionError("Save a reviewed rink map before using rink-aware framing or the mini-map");
     auto parsed = ParseRinkMap(*saved);
     if (!parsed.ok())
       return parsed.status();
@@ -283,7 +283,7 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
     }
     auto provenance = HuginProject::ReadCanvasProvenanceLocked(directory);
     if (!provenance.ok() || !provenance->has_value() || (**provenance).mapping_backend != MappingBackend::kNona)
-      return absl::FailedPreconditionError("The rink mini-map requires a NONA calibration");
+      return absl::FailedPreconditionError("The rink map requires a NONA calibration");
     auto bounds = validate_stitch_generation_artifact_bounds_locked(directory);
     if (!bounds.ok())
       return bounds;

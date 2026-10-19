@@ -1141,6 +1141,7 @@ DsPlayTrackerReplayInput DsPlayTrackerCaptureReplayInput(
 
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream) {
   frame.native_program.reset();
+  frame.processing_error = absl::OkStatus();
   // We always do our calculations wrt the original image, since we tune based upon the camera
   // type, which is generally tied to the resolution. We scale in the play tracker when possible, but
   // it isn't perfectly scalable atm.
@@ -1182,6 +1183,43 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   }
   if (!play_tracker_ctx || !play_tracker_ctx->play_tracker) {
     return false;
+  }
+  const auto& rink_setup = ctx->initParams.rink_camera;
+  if (rink_setup.map) {
+    auto& tracker = *play_tracker_ctx;
+    if (tracker.play_tracker_config.living_boxes.size() < 2) {
+      frame.processing_error =
+          absl::FailedPreconditionError("Rink-aware framing requires separate fast and follower camera boxes");
+      return false;
+    }
+    const auto* generation = hm::stitching::find_stitched_output_generation_meta(frame.frame_meta);
+    const std::string empty;
+    const auto& identity = generation ? generation->generation() : empty;
+    const unsigned width = frame.frame_meta->source_frame_width, height = frame.frame_meta->source_frame_height;
+    if (!tracker.rink_guide || tracker.rink_generation != identity || tracker.rink_width != width ||
+        tracker.rink_height != height || frame.frame_meta->frame_num < tracker.rink_frame) {
+      tracker.rink_generation = identity;
+      tracker.rink_width = width;
+      tracker.rink_height = height;
+      tracker.rink_guide.reset();
+      const auto rotation = rink_setup.map->OutputRotation(identity, width, height);
+      if (!rotation) {
+        frame.processing_error = absl::FailedPreconditionError(
+            "Rink-aware framing stopped: the saved rink map does not match the live calibration or output. "
+            "Review and save the rink map, or turn off rink-aware framing.");
+        return false;
+      }
+      tracker.rink_guide =
+          std::make_unique<hm::playtracker_replay::RinkCameraGuide>(rink_setup, *rotation, width, height);
+      g_print("HSTREAM_RINK_CAMERA status=ready message=Program framing enabled for this calibration\n");
+    }
+    tracker.rink_frame = frame.frame_meta->frame_num;
+    if (frame.frame_meta->buf_pts == GST_CLOCK_TIME_NONE) {
+      tracker.rink_guide.reset();
+      frame.processing_error =
+          absl::FailedPreconditionError("Rink-aware framing stopped: source timestamps are unavailable");
+      return false;
+    }
   }
   std::vector<size_t> tracking_ids;
   std::vector<hm::BBox> tracking_boxes;
@@ -1243,34 +1281,8 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 
   frame.play_tracker_results =
       DsPlayTrackerStepCpu(play_tracker_ctx, std::move(tracking_ids), std::move(tracking_boxes));
-  const auto& rink_setup = ctx->initParams.rink_camera;
-  if (rink_setup.map && frame.play_tracker_results.tracking_boxes.size() >= 2) {
+  if (rink_setup.map) {
     auto& tracker = *play_tracker_ctx;
-    const auto* generation = hm::stitching::find_stitched_output_generation_meta(frame.frame_meta);
-    const std::string empty;
-    const auto& identity = generation ? generation->generation() : empty;
-    const unsigned width = frame.frame_meta->source_frame_width, height = frame.frame_meta->source_frame_height;
-    if (tracker.rink_generation != identity || tracker.rink_width != width || tracker.rink_height != height ||
-        frame.frame_meta->frame_num < tracker.rink_frame) {
-      tracker.rink_generation = identity;
-      tracker.rink_width = width;
-      tracker.rink_height = height;
-      tracker.rink_guide.reset();
-      const auto rotation = rink_setup.map->OutputRotation(identity, width, height);
-      if (rotation)
-        tracker.rink_guide =
-            std::make_unique<hm::playtracker_replay::RinkCameraGuide>(rink_setup, *rotation, width, height);
-      g_print(
-          "HSTREAM_RINK_CAMERA status=%s message=%s\n",
-          rotation ? "ready" : "unavailable",
-          rotation ? "Program framing enabled for this calibration"
-                   : "Rink map does not match the live output; using native camera framing");
-    }
-    tracker.rink_frame = frame.frame_meta->frame_num;
-    if (frame.frame_meta->buf_pts == GST_CLOCK_TIME_NONE) {
-      tracker.rink_guide.reset();
-      tracker.rink_width = 0; // Rebind after timestamps resume.
-    }
     if (tracker.rink_guide) {
       auto& results = frame.play_tracker_results;
       for (size_t i = 0; i < rink_count; ++i) {

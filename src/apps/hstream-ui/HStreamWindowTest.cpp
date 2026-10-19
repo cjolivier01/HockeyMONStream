@@ -7917,6 +7917,15 @@ bool test_job_export() {
   auto* rink_framing = require_child<QCheckBox>(&window, "rinkFramingEnable");
   if (!rink_framing || !expect(!rink_framing->isChecked(), "New games must leave rink framing off"))
     return false;
+  mode->setCurrentIndex(mode->findData("program"));
+  rink_framing->setChecked(true); // Simulate a saved or forced invalid selection.
+  activate(require_child<QPushButton>(&window, "startPipelineButton"));
+  if (!expect(
+          window.logText().contains("pipeline not started: Rink-aware framing cannot start") &&
+              window.pipelineStateText() == "STOPPED",
+          "Play must immediately reject enabled framing without a reviewed map"))
+    return false;
+  rink_framing->setChecked(false);
   render->setChecked(true);
   telemetry->setChecked(true);
   QTemporaryDir outputs;
@@ -7926,7 +7935,9 @@ bool test_job_export() {
     const bool stitched_selected = (selection & 2) != 0;
     const bool program_4k_selected = (selection & 4) != 0;
     const bool stitched_only = stitched_selected && !archive_selected && !program_4k_selected;
-    const bool invalid = calibration && !stitched_only;
+    const bool invalid_calibration = calibration && !stitched_only;
+    const bool invalid_framing = !calibration && !stitched_only && (selection & 1) != 0;
+    const bool invalid = invalid_calibration || invalid_framing;
     mode->setCurrentIndex(mode->findData(calibration ? "stitch-calibration" : "program"));
     archive->setChecked(archive_selected);
     stitched->setChecked(stitched_selected);
@@ -7979,9 +7990,11 @@ bool test_job_export() {
       if (!expect(preset.open(QIODevice::ReadOnly), "Invalid export must preserve the game config"))
         return false;
       if (!expect(
-              error_message.contains("Stitching Calibration can only save Archive Stitched") && !file_dialog_shown &&
-                  !QFileInfo::exists(path) && preset.readAll() == original_preset,
-              "Invalid calibration/archive combinations must show a UI error before export dialogs or config writes"))
+              error_message.contains(
+                  invalid_calibration ? "Stitching Calibration can only save Archive Stitched"
+                                      : "Rink-aware framing cannot start") &&
+                  !file_dialog_shown && !QFileInfo::exists(path) && preset.readAll() == original_preset,
+              "Invalid calibration or unavailable rink framing must fail before export dialogs or config writes"))
         return false;
       continue;
     }
@@ -16657,6 +16670,12 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   if (require_rink_framing) {
     auto* framing = require_child<QCheckBox>(window, "rinkFramingEnable");
     if (!framing)
+      return false;
+    QElapsedTimer readiness_timer;
+    readiness_timer.start();
+    while (!framing->isEnabled() && readiness_timer.elapsed() < 30000)
+      QTest::qWait(20);
+    if (!expect(framing->isEnabled(), "The reviewed game map must enable rink-aware framing"))
       return false;
     framing->setChecked(true);
     window->findChild<QCheckBox*>("rinkFramingGoals")->setChecked(false);

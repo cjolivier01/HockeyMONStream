@@ -1,18 +1,30 @@
 #pragma once
 
 #include <yaml-cpp/yaml.h>
+#include <QtCore/QFileSystemWatcher>
 #include <QtCore/QStringList>
+#include <QtCore/QTimer>
 #include <QtWidgets/QWidget>
 #include <array>
 #include <functional>
+#include <memory>
+#include "absl/status/status.h"
 
 class QCheckBox;
 class QLabel;
+class QPushButton;
+class QThread;
 
 // Next-run choices shared by desktop playback and exported Program jobs.
 class RinkFramingControls : public QWidget {
  public:
-  explicit RinkFramingControls(QWidget* parent = nullptr);
+  using MapCheck = std::function<absl::Status(const QString&, const std::function<bool()>&)>;
+  explicit RinkFramingControls(QWidget* parent = nullptr, MapCheck check = {});
+  ~RinkFramingControls() override;
+  void setGameDirectory(const QString& directory);
+  void checkMap(bool force = false);
+  void setCheckingSuspended(bool suspended);
+  QString validateForRun();
   void loadConfig(const YAML::Node& defaults, const YAML::Node& user, const YAML::Node& game);
   void resetToDefaults();
   bool isDirty() const;
@@ -25,9 +37,24 @@ class RinkFramingControls : public QWidget {
 
  private:
   void refresh();
+  void startMapCheck();
+  QByteArray mapSignature() const;
+  struct MapJob;
+  MapCheck check_;
+  QString directory_;
+  QByteArray signature_;
+  QString map_error_{"Select a game with a saved, reviewed rink map."};
+  QFileSystemWatcher watcher_;
+  QTimer check_timer_;
+  QThread* worker_{nullptr};
+  std::shared_ptr<MapJob> job_;
+  bool check_pending_{false};
+  bool map_ready_{false};
+  bool checking_suspended_{false};
   std::array<QCheckBox*, 4> choices_{};
   std::array<bool, 4> loaded_{{false, true, false, false}};
   QLabel* status_{nullptr};
+  QPushButton* turn_off_{nullptr};
   std::function<void()> changed_;
   bool loading_{false};
 };

@@ -150,9 +150,10 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
   }
 
   init_params_.rink_camera.map.reset();
-  if (rink_camera_enabled_ &&
-      (init_params_.rink_camera.settings.anticipate || init_params_.rink_camera.settings.frame_goals ||
-       init_params_.rink_camera.settings.adaptive_zoom)) {
+  if (rink_camera_enabled_) {
+    if (!init_params_.rink_camera.settings.anticipate && !init_params_.rink_camera.settings.frame_goals &&
+        !init_params_.rink_camera.settings.adaptive_zoom)
+      return absl::FailedPreconditionError("Select a rink-framing adjustment or turn off rink-aware framing");
     auto prepared = rink_camera_game_directory_.empty()
         ? absl::StatusOr<std::shared_ptr<const hm::stitching::PlaybackRinkMap>>(
               absl::FailedPreconditionError("Program game directory is unavailable"))
@@ -162,9 +163,11 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
       g_print(
           "HSTREAM_RINK_CAMERA status=prepared message=Reviewed map prepared; waiting for matching Program frames\n");
     } else {
-      g_printerr(
-          "HSTREAM_RINK_CAMERA status=unavailable message=%s; using native camera framing\n",
-          prepared.status().ToString().c_str());
+      return absl::FailedPreconditionError(
+          absl::StrCat(
+              "Rink-aware framing cannot start: ",
+              prepared.status().message(),
+              ". Review and save the rink map, or turn off rink-aware framing."));
     }
   }
 
@@ -257,6 +260,8 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig(const std::string& config_
     if (live_boxes.size() == 0) {
       return absl::InvalidArgumentError("vpplaytracker config play-tracker.live-boxes must not be empty");
     }
+    if (rink_camera_enabled_ && live_boxes.size() < 2)
+      return absl::FailedPreconditionError("Rink-aware framing requires separate fast and follower camera boxes");
     const float representative_fixed_edge_rotation_angle =
         0.5f * (fixed_edge_rotation_angle_left_ + fixed_edge_rotation_angle_right_);
     for (YAML::Node box : live_boxes) {
@@ -718,6 +723,8 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     if (frame_counter_ % frame_calculation_interval_ == 0) {
       try {
         if (!DsPlayTrackerProcessFrame(pt_context_, frame, cuda_stream_)) {
+          if (!frame.processing_error.ok())
+            return frame.processing_error;
           return absl::InternalError("Error calling DsPlayTrackerProcessFrame()");
         }
       } catch (const std::exception& error) {

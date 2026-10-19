@@ -129,6 +129,8 @@ void DsPlayTrackerAttachMetadataFullFrame(
     const hm::play_tracker::PlayTrackerResults& play_results);
 
 struct GstDsPlayTrackerFrame {
+  // Propagated to the pipeline bus by the owning asynchronous output worker.
+  absl::Status processing_error;
   bool capture_replay{false};
   bool checkpoint_replay{false};
   std::optional<DsPlayTrackerReplayInput> replay_input;

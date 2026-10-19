@@ -759,6 +759,7 @@ cc_library(
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:tensorrt_gpu_identity",
         "//src/libs/common:user_config",
+        "//src/libs/stitching:playback_rink_map",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:control_point_matcher",
         "//src/libs/stitching:game_config",
@@ -778,7 +779,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = ["@qt//:qt_widgets", "@yaml-cpp"],
+    deps = [":action_icons", "//src/libs/stitching:playback_rink_map", "@qt//:qt_widgets", "@qt//:qt_test", "@yaml-cpp"],
 )
 
 cc_test(

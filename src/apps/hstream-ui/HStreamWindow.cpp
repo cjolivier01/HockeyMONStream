@@ -6352,6 +6352,9 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() {
     rink_map_run_message_.clear();
     rink_map_status_generation_ = 0;
+    if (rink_framing_controls_)
+      rink_framing_controls_->setGameDirectory(
+          game_id_edit_->text().trimmed().isEmpty() ? QString() : gameDirectory(game_id_edit_->text().trimmed()));
     updateWindowTitle();
     updateArchiveOutputPathLabel();
     updatePresetDirtyState();
@@ -8115,6 +8118,8 @@ void HStreamWindow::updateRinkMapControls() {
     return;
   const bool checked = rink_map_preview_check_->isChecked();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (rink_framing_controls_)
+    rink_framing_controls_->setCheckingSuspended(running || (pipeline_state_ && pipeline_state_->text() == "STARTING"));
   for (auto* combo : {rink_map_size_combo_, rink_map_position_combo_})
     combo->setEnabled(rink_map_preview_check_->isEnabled() && checked);
   QString message;
@@ -8302,6 +8307,8 @@ void HStreamWindow::selectRinkMap() {
   }
   RinkMapDialog dialog(gameDirectory(game_id_edit_->text().trimmed()), this);
   dialog.exec();
+  if (rink_framing_controls_)
+    rink_framing_controls_->checkMap(true);
   if (dialog.levelingRequested())
     selectRinkLeveling(true);
 }
@@ -10491,8 +10498,11 @@ void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
                                                  : YAML::Clone(structural);
   }
   player_analytics_controls_->loadConfig(defaults, user_layer_, config, QFileInfo(structural_path).absolutePath());
-  if (rink_framing_controls_)
+  if (rink_framing_controls_) {
     rink_framing_controls_->loadConfig(defaults, user_layer_, config);
+    rink_framing_controls_->setGameDirectory(
+        game_id_edit_->text().trimmed().isEmpty() ? QString() : gameDirectory(game_id_edit_->text().trimmed()));
+  }
 }
 
 bool HStreamWindow::validatePlayerAnalyticsForRun() {
@@ -10724,7 +10734,21 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
+  if (!isCalibrationRun() && rink_framing_controls_) {
+    rink_framing_controls_->setGameDirectory(gameDirectory(game_id_edit_->text().trimmed()));
+    const auto error = rink_framing_controls_->validateForRun();
+    if (!error.isEmpty()) {
+      appendLog("pipeline not started: " + error);
+      pipeline_state_->setText("STOPPED");
+      resetPlaybackProgress(true);
+      setPlaybackProgressState(PlaybackProgressState::kError, error);
+      updateRunControls();
+      return;
+    }
+  }
   pipeline_state_->setText("STARTING");
+  if (rink_framing_controls_)
+    rink_framing_controls_->setCheckingSuspended(true);
   pending_scoreboard_property_.clear();
   scoreboard_runtime_ready_ = false;
   scoreboard_reselect_waiting_ = false;
@@ -17209,6 +17233,14 @@ void HStreamWindow::saveJobScript() {
   }
   if (!stitched_only && !validatePlayerAnalyticsForRun())
     return;
+  if (!stitched_only && rink_framing_controls_) {
+    rink_framing_controls_->setGameDirectory(gameDirectory(game_id_edit_->text().trimmed()));
+    const auto error = rink_framing_controls_->validateForRun();
+    if (!error.isEmpty()) {
+      QMessageBox::warning(this, "Save job script", error);
+      return;
+    }
+  }
   if (!ensureGameDirectory())
     return;
   const QString path = QFileDialog::getSaveFileName(

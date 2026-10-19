@@ -129,10 +129,19 @@ Anticipation preserves the native crop dimensions. Goal framing and adaptive
 zoom can widen the view and must be selected separately. Saving a preset retains
 the choices; the active run keeps the choices it started with.
 
-The runner loads the reviewed map once at startup and validates its identity
-against the live stitched frames. Missing, partial or stale maps retain native
-framing and report the reason in the Program controls and run log. Disabled
-framing does not load a map. Frame processing uses metadata only, applies the
+The checkbox is disabled until the selected game has a saved, reviewed map
+matching its calibration. An unavailable saved selection stays checked and shows
+why it cannot run; **Turn off rink-aware framing** explicitly clears it. The
+background readiness check follows map/calibration file changes and pauses during
+playback. **Check map again** retries after external repairs.
+
+Play and Program job export reject an enabled option without a usable map.
+The runner checks again before building the graph, including on the execution
+host of an exported job. Missing, partial, inconsistent or stale maps are errors.
+The tracker also rejects map-loading failures and mismatched live output, even
+before detections arrive. It never silently switches an enabled guide to native
+framing. Calibration-only runs remain available to repair the map. Disabled
+framing does not load a map in the runner. Frame processing uses metadata only, applies the
 guide after the native policy and before Program crop metadata/drawing, and
 leaves native state and exclusions intact. Seeks and source/geometry changes
 reset motion history; it warms up again from current tracks.
