@@ -17286,6 +17286,14 @@ void HStreamWindow::saveJobScript() {
     }
     args << "--sbatch" << directive;
   }
+  // The map can change while either modal export dialog is open.
+  if (!stitched_only && rink_framing_controls_) {
+    const auto error = rink_framing_controls_->validateForRun();
+    if (!error.isEmpty()) {
+      QMessageBox::warning(this, "Save job script", error);
+      return;
+    }
+  }
   QString framing_error;
   if (!savePreset(!stitched_only, &framing_error)) {
     QMessageBox::warning(

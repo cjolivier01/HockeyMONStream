@@ -10,6 +10,7 @@
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
+#include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
 #include <QtTest/qtest_widgets.h>
@@ -335,6 +336,12 @@ struct HStreamWindowTestAccess {
   }
   static bool savePreset(HStreamWindow* window, bool require_rink_framing_ready = false, QString* error = nullptr) {
     return window->savePreset(require_rink_framing_ready, error);
+  }
+  static QCheckBox* useRinkMapCheck(HStreamWindow* window, RinkFramingControls::MapCheck check) {
+    delete window->rink_framing_controls_;
+    window->rink_framing_controls_ = new RinkFramingControls(window, std::move(check));
+    window->rink_framing_controls_->setGameDirectory(window->gameDirectoryText());
+    return window->rink_framing_controls_->findChild<QCheckBox*>("rinkFramingEnable");
   }
   static void inheritCustomDetector(HStreamWindow* window) {
     window->baseline_config_["pipeline"]["primary-gie"]["config-file"] = "custom-detector.yaml";
@@ -7929,7 +7936,25 @@ bool test_job_export() {
   render->setChecked(true);
   telemetry->setChecked(true);
   QTemporaryDir outputs;
-  for (int selection = 0; selection < 16; ++selection) {
+  for (int selection = 0; selection < 17; ++selection) {
+    const bool map_changes_during_dialog = selection == 16;
+    const QString map_path = QDir(window.gameDirectoryText()).filePath("rink-map.yaml");
+    if (map_changes_during_dialog) {
+      QFile map(map_path);
+      if (!map.open(QIODevice::WriteOnly) || map.write("ready") < 0)
+        return false;
+      map.close();
+      rink_framing =
+          HStreamWindowTestAccess::useRinkMapCheck(&window, [](const QString& path, const std::function<bool()>&) {
+            return QFileInfo::exists(path + "/rink-map.yaml")
+                ? absl::OkStatus()
+                : absl::FailedPreconditionError("Save a reviewed rink map");
+          });
+      for (int i = 0; i < 500 && !rink_framing->isEnabled(); ++i)
+        QTest::qWait(10);
+      if (!expect(rink_framing->isEnabled(), "The export fixture must initially have a usable map"))
+        return false;
+    }
     const bool calibration = (selection & 8) != 0;
     const bool archive_selected = (selection & 1) != 0;
     const bool stitched_selected = (selection & 2) != 0;
@@ -7937,13 +7962,13 @@ bool test_job_export() {
     const bool stitched_only = stitched_selected && !archive_selected && !program_4k_selected;
     const bool invalid_calibration = calibration && !stitched_only;
     const bool invalid_framing = !calibration && !stitched_only && (selection & 1) != 0;
-    const bool invalid = invalid_calibration || invalid_framing;
+    const bool invalid = invalid_calibration || invalid_framing || map_changes_during_dialog;
     mode->setCurrentIndex(mode->findData(calibration ? "stitch-calibration" : "program"));
     archive->setChecked(archive_selected);
     stitched->setChecked(stitched_selected);
     program_4k->setChecked(program_4k_selected);
     telemetry->setChecked((selection & 7) != 7);
-    rink_framing->setChecked((selection & 1) != 0);
+    rink_framing->setChecked((selection & 1) != 0 || map_changes_during_dialog);
     QFile preset(QDir(window.gameDirectoryText()).filePath("config.yaml"));
     QByteArray original_preset;
     if (invalid) {
@@ -7960,7 +7985,7 @@ bool test_job_export() {
       QWidget* modal = QApplication::activeModalWidget();
       if (auto* file = qobject_cast<QFileDialog*>(modal)) {
         file_dialog_shown = true;
-        if (invalid) {
+        if (invalid && !map_changes_during_dialog) {
           file->reject();
           return;
         }
@@ -7977,6 +8002,8 @@ bool test_job_export() {
           QMetaObject::invokeMethod(file, "accept");
         });
       } else if (auto* input = qobject_cast<QInputDialog*>(modal)) {
+        if (map_changes_during_dialog)
+          QFile::remove(map_path);
         input->accept();
       } else if (auto* message = qobject_cast<QMessageBox*>(modal)) {
         if (message->icon() == QMessageBox::Warning || message->icon() == QMessageBox::Critical)
@@ -7993,7 +8020,8 @@ bool test_job_export() {
               error_message.contains(
                   invalid_calibration ? "Stitching Calibration can only save Archive Stitched"
                                       : "Rink-aware framing cannot start") &&
-                  !file_dialog_shown && !QFileInfo::exists(path) && preset.readAll() == original_preset,
+                  file_dialog_shown == map_changes_during_dialog && !QFileInfo::exists(path) &&
+                  preset.readAll() == original_preset,
               "Invalid calibration or unavailable rink framing must fail before export dialogs or config writes"))
         return false;
       continue;
