@@ -424,9 +424,14 @@ bool rink_comparison(const QStringList& args) {
   for (int part : {1, 2, 3}) {
     const int frame = timeline->maximum() * part / 4;
     for (int view : {2, 3}) {
+      const int inspected = timeline->value();
       views->setCurrentIndex(view);
       if (!wait_until([&] { return screenshot->isEnabled(); }, 60000))
         return false;
+      if (timeline->value() != inspected) {
+        std::cerr << "Switching paused A/B views changed the inspected sample\n";
+        return false;
+      }
       timeline->setValue(frame);
       QMetaObject::invokeMethod(timeline, "sliderReleased", Qt::DirectConnection);
       if (!wait_until([&] { return screenshot->isEnabled() || status->styleSheet().contains("#b42318"); }, 60000) ||

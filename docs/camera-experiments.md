@@ -92,7 +92,8 @@ ordinary camera experiments remain available.
 
 Apply creates two named views, **native** and **rink-aware**, with identical
 camera overrides. They differ only in the rink adjustment and replay exactly
-the same native player observations and starting state. The
+the same native player observations and starting state. Switching views while
+paused keeps the inspected sample for direct A/B comparison. The
 guide estimates collective motion from box feet in rink metres; it has no puck
 or home/away classifier. Existing ice-mask filtering and native player exclusions
 are preserved. The timeline shows each resulting Program path and crop width;

@@ -1092,6 +1092,7 @@ struct CameraExperimentDialog::Impl {
   void select_comparison(bool replay_now = false) {
     if (!session || changing_selection)
       return;
+    const size_t inspected = !replay_now && preview_open && !playing ? current : 0;
     const int index = comparison->currentIndex();
     if (index == 0)
       selected = std::make_shared<const std::vector<replay::Frame>>(session->original());
@@ -1101,17 +1102,17 @@ struct CameraExperimentDialog::Impl {
       selected = std::make_shared<const std::vector<replay::Frame>>(trials[index - 2].frames);
     else
       return;
+    current = selected->empty() ? 0 : std::min(inspected, selected->size() - 1);
     plot->trial = selected;
-    plot->frame = 0;
+    plot->frame = current;
     plot->update();
-    current = 0;
     capture->setEnabled(false);
     timeline->setRange(0, selected->empty() ? 0 : static_cast<int>(selected->size() - 1));
-    timeline->setValue(0);
+    timeline->setValue(static_cast<int>(current));
     save->setEnabled(index >= 2 && !source_dirty && !work.valid());
     update_frame();
     if (!source_dirty && (preview_open || replay_now)) {
-      open_preview(replay_now);
+      open_preview(replay_now, current);
     }
   }
 
