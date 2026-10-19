@@ -580,15 +580,21 @@ int main(int argc, char** argv) {
       table->selectRow(row);
       if (!expect(ends->isEnabled(), "Selected goal line can identify its board endpoints"))
         return false;
+      auto* tabs = dialog.findChild<QTabWidget*>("rinkMapCameraTabs");
+      const int selected_camera = row == 0 ? 1 : 0;
+      tabs->setCurrentIndex(1 - selected_camera);
       bool answered = false;
+      bool correct_camera = false;
       QTimer::singleShot(0, &dialog, [&] {
         if (auto* prompt = dialog.findChild<QMessageBox*>("rinkMapGoalLineEndsPrompt")) {
           answered = true;
+          correct_camera = tabs->currentIndex() == selected_camera;
           prompt->findChild<QPushButton*>(choice)->click();
         }
       });
       ends->click();
-      return expect(answered && idle(dialog), "Endpoint confirmation completes");
+      return expect(
+          answered && correct_camera && idle(dialog), "Endpoint confirmation shows the selected line's camera");
     };
     ok &= convert(0, "rinkMapCancelEnds");
     ok &= expect(

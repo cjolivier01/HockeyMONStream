@@ -1206,6 +1206,7 @@ void RinkMapDialog::useGoalLineEnds() {
   const auto original = state_.document.observations[row];
   if (!hasGoalLineEnds(original))
     return;
+  tabs_->setCurrentIndex(original.camera);
   QMessageBox prompt(
       QMessageBox::Question,
       "Identify the goal-line ends",
