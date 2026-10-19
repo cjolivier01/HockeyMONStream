@@ -136,6 +136,8 @@ background readiness check follows map/calibration file changes and pauses durin
 playback. **Check map again** retries after external repairs.
 
 Play and Program job export reject an enabled option without a usable map.
+Stage restart retains readiness for unchanged files; if a check is pending, the
+restart waits for its result and reports an invalid map instead of losing the request.
 Export also rejects pending settings that would invalidate the calibration before
 publishing those settings or creating a script. Calibration, player-frame scans
 and model/mask preparation clear the Program-only framing request.

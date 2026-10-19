@@ -340,8 +340,12 @@ struct HStreamWindowTestAccess {
   static QCheckBox* useRinkMapCheck(HStreamWindow* window, RinkFramingControls::MapCheck check) {
     delete window->rink_framing_controls_;
     window->rink_framing_controls_ = new RinkFramingControls(window, std::move(check));
+    window->rink_framing_controls_->setReadinessCallback([window] { window->maybeStartDeferredRestart(); });
     window->rink_framing_controls_->setGameDirectory(window->gameDirectoryText());
     return window->rink_framing_controls_->findChild<QCheckBox*>("rinkFramingEnable");
+  }
+  static void recheckRinkMap(HStreamWindow* window) {
+    window->rink_framing_controls_->checkMap(true);
   }
   static void inheritCustomDetector(HStreamWindow* window) {
     window->baseline_config_["pipeline"]["primary-gie"]["config-file"] = "custom-detector.yaml";
@@ -7838,6 +7842,69 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!restart_logged) {
     return false;
+  }
+
+  // Readiness must survive an ordinary stop/restart, and an internal restart
+  // must wait for a pending map check without losing the operator's request.
+  {
+    auto ready = std::make_shared<std::atomic<bool>>(true);
+    auto release = std::make_shared<std::atomic<bool>>(true);
+    auto* framing = HStreamWindowTestAccess::useRinkMapCheck(
+        window, [ready, release](const QString&, const std::function<bool()>& cancelled) {
+          while (!release->load() && !cancelled())
+            QThread::msleep(5);
+          return ready->load() ? absl::OkStatus() : absl::FailedPreconditionError("The rink map is partial");
+        });
+    auto wait = [](const std::function<bool()>& done) {
+      for (int i = 0; i < 500 && !done(); ++i)
+        QTest::qWait(10);
+      return done();
+    };
+    if (!expect(wait([&] { return framing->isEnabled(); }), "Restart fixture must have a reviewed map"))
+      return false;
+    framing->setChecked(true);
+    activate(start);
+    if (!expect(wait([&] { return window->pipelineStateText() == "PLAYING"; }), "Framing run must start"))
+      return false;
+    for (bool pending_check : {false, true}) {
+      const int commands = window->logText().count("pipeline command ");
+      if (pending_check) {
+        *release = false;
+        HStreamWindowTestAccess::recheckRinkMap(window);
+      }
+      activate(restart);
+      if (pending_check) {
+        const bool stopped = wait([&] { return window->pipelineStateText() == "STOPPED"; });
+        QTest::qWait(200);
+        const bool waited = window->logText().count("pipeline command ") == commands;
+        *release = true;
+        if (!expect(stopped && waited, "Restart must wait for the pending map check"))
+          return false;
+      }
+      if (!expect(
+              wait([&] {
+                return window->pipelineStateText() == "PLAYING" &&
+                    window->logText().count("pipeline command ") == commands + 1;
+              }),
+              "A valid map must let the requested stage restart continue"))
+        return false;
+    }
+    *ready = false;
+    HStreamWindowTestAccess::recheckRinkMap(window);
+    const int commands = window->logText().count("pipeline command ");
+    activate(restart);
+    if (!expect(
+            wait([&] {
+              return window->logText().contains(
+                  "pipeline not started: Rink-aware framing cannot start: The rink map is partial");
+            }) &&
+                window->pipelineStateText() == "STOPPED" && window->logText().count("pipeline command ") == commands,
+            "An invalid map must reject the deferred restart with its actual reason"))
+      return false;
+    framing->setChecked(false);
+    if (!HStreamWindowTestAccess::savePreset(window))
+      return false;
+    HStreamWindowTestAccess::useRinkMapCheck(window, {});
   }
 
   const QByteArray original_runner = qgetenv("HSTREAM_UI_TEST_RUNNER");

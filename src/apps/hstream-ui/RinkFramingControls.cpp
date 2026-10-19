@@ -263,6 +263,8 @@ void RinkFramingControls::startMapCheck() {
     job_.reset();
     if (check_pending_)
       check_timer_.start();
+    if (readiness_changed_)
+      readiness_changed_();
   });
   worker_->start();
 }
@@ -277,6 +279,11 @@ QString RinkFramingControls::validateForRun() {
   if (!choices_[1]->isChecked() && !choices_[2]->isChecked() && !choices_[3]->isChecked())
     return "Select a rink-framing adjustment or turn off rink-aware framing.";
   return {};
+}
+
+bool RinkFramingControls::isCheckingForRun() {
+  checkMap();
+  return choices_[0]->isChecked() && (check_pending_ || job_);
 }
 
 QString RinkFramingControls::validateSavedSettings(const YAML::Node& config) const {
@@ -307,6 +314,8 @@ void RinkFramingControls::setCheckingSuspended(bool suspended) {
       check_pending_ = true;
     }
   } else {
-    checkMap(true);
+    checkMap();
+    if (check_pending_)
+      check_timer_.start();
   }
 }

@@ -7179,6 +7179,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     framing_scroll->setFrameShape(QFrame::NoFrame);
     rink_framing_controls_ = new RinkFramingControls();
     rink_framing_controls_->setChangedCallback([this] { updatePresetDirtyState(); });
+    rink_framing_controls_->setReadinessCallback([this] { maybeStartDeferredRestart(); });
     framing_scroll->setWidget(rink_framing_controls_);
     control_tabs->addTab(framing_scroll, "Rink framing");
     control_tabs->addTab(add_slider_tab(color_controls, true), "Color");
@@ -17202,6 +17203,8 @@ void HStreamWindow::maybeStartDeferredRestart() {
   }
   const bool request_is_current = deferred_restart_pipeline_generation_ == pipeline_run_generation_ && game_id_edit_ &&
       game_id_edit_->text() == deferred_restart_game_id_;
+  if (request_is_current && !isCalibrationRun() && rink_framing_controls_ && rink_framing_controls_->isCheckingForRun())
+    return;
   deferred_restart_requested_ = false;
   deferred_restart_game_id_.clear();
   if (!request_is_current) {

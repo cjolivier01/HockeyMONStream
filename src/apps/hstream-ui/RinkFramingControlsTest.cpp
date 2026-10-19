@@ -100,6 +100,9 @@ int main(int argc, char** argv) {
   ok &= !controls.validateForRun().isEmpty();
   anticipate->setChecked(true);
   ok &= controls.validateForRun().isEmpty();
+  controls.setCheckingSuspended(true);
+  controls.setCheckingSuspended(false);
+  ok &= enable->isEnabled() && !controls.isCheckingForRun() && controls.validateForRun().isEmpty();
   ok &= !controls.validateSavedSettings(YAML::Node(YAML::NodeType::Map)).isEmpty();
   auto settings = YAML::Load("hstream_ui: {stitching_calibration: {status: complete}}");
   ok &= controls.validateSavedSettings(settings).isEmpty();

@@ -25,6 +25,7 @@ class RinkFramingControls : public QWidget {
   void checkMap(bool force = false);
   void setCheckingSuspended(bool suspended);
   QString validateForRun();
+  bool isCheckingForRun();
   QString validateSavedSettings(const YAML::Node& config) const;
   void loadConfig(const YAML::Node& defaults, const YAML::Node& user, const YAML::Node& game);
   void resetToDefaults();
@@ -33,6 +34,9 @@ class RinkFramingControls : public QWidget {
   QStringList arguments() const;
   void setChangedCallback(std::function<void()> callback) {
     changed_ = std::move(callback);
+  }
+  void setReadinessCallback(std::function<void()> callback) {
+    readiness_changed_ = std::move(callback);
   }
   void showRunStatus(const QString& message);
 
@@ -57,5 +61,6 @@ class RinkFramingControls : public QWidget {
   QLabel* status_{nullptr};
   QPushButton* turn_off_{nullptr};
   std::function<void()> changed_;
+  std::function<void()> readiness_changed_;
   bool loading_{false};
 };
