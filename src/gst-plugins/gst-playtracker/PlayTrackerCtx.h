@@ -14,6 +14,7 @@
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/common/ManagedObject.h"
 #include "hstream/src/libs/common/TrackColorMeta.h"
+#include "hstream/src/libs/playtracker_replay/RinkCameraGuide.h"
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 
@@ -34,6 +35,8 @@ struct DsPlayTrackerInitParams {
   std::string play_tracker_config_file;
   bool draw{false};
   bool color_players{false};
+  // Prepared once before frames; absent means zero map work in the frame path.
+  hm::playtracker_replay::RinkCameraSetup rink_camera;
   // // The class id we will set for the play box
   static constexpr inline int kPlayBoxClassIdBase = 99;
 };
@@ -52,6 +55,10 @@ struct DsPlayTrackerCtx {
     hm::play_tracker::PlayTrackerConfig play_tracker_config;
     std::unique_ptr<hm::play_tracker::PlayTracker> play_tracker;
     bool has_received_tracks{false};
+    std::unique_ptr<hm::playtracker_replay::RinkCameraGuide> rink_guide;
+    std::string rink_generation;
+    unsigned rink_width{0}, rink_height{0};
+    int64_t rink_frame{0};
   };
   // source_id -> play_tracker
   std::unordered_map<size_t, PlayTracker> play_trackers;
@@ -125,6 +132,9 @@ struct GstDsPlayTrackerFrame {
   bool capture_replay{false};
   bool checkpoint_replay{false};
   std::optional<DsPlayTrackerReplayInput> replay_input;
+  // Unadjusted follower for native replay verification. The ordinary results
+  // and Program metadata carry the actual, optionally guided crop.
+  std::optional<hm::BBox> native_program;
   /** NvDsObjectParams belonging to the object to be classified. */
   // NvDsObjectMeta* obj_meta = nullptr;
   NvDsFrameMeta* frame_meta = nullptr;

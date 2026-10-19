@@ -11,6 +11,7 @@
 
 #include <array>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -23,6 +24,7 @@ class QDoubleSpinBox;
 class QCheckBox;
 class QMessageBox;
 class QTabWidget;
+class QThread;
 class ScoreboardSelectionCanvas;
 
 // Offline calibration only: reads a locked snapshot, runs Hugin on temporary
@@ -56,6 +58,7 @@ class RinkLevelingDialog : public QDialog {
     return closed_after_backend_completion_;
   }
   void closeAfterBackendCompletion();
+  void useSavedLandmarks();
 
  protected:
   void reject() override;
@@ -105,6 +108,11 @@ class RinkLevelingDialog : public QDialog {
   QPushButton* next_button_{nullptr};
   QPushButton* previous_button_{nullptr};
   QPushButton* accept_button_{nullptr};
+  QPushButton* landmarks_button_{nullptr};
+  struct LandmarkJob;
+  std::shared_ptr<LandmarkJob> landmark_job_;
+  QThread* landmark_worker_{nullptr};
+  bool landmarks_estimated_{false};
   QTimer estimate_timer_;
   QProcess* process_{nullptr};
   QByteArray process_stdout_;

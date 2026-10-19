@@ -1556,7 +1556,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.rink_zoom = new QCheckBox("Widen for rushes; tighten when play settles");
   s.rink_zoom->setObjectName("experimentRinkZoom");
   for (auto* option : {s.rink_anticipate, s.rink_goals, s.rink_zoom}) {
-    option->setChecked(true);
+    option->setChecked(option == s.rink_anticipate);
     option->setEnabled(false);
     rink_layout->addWidget(option);
   }

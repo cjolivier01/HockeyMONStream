@@ -366,7 +366,7 @@ class RinkMapSchematic : public QWidget {
   rink::RinkLayout layout;
   bool ready{false};
   explicit RinkMapSchematic(QWidget* parent = nullptr) : QWidget(parent) {
-    setMinimumHeight(170);
+    setMinimumHeight(140);
   }
 
  protected:
@@ -510,6 +510,14 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   side->setContentsMargins(0, 0, 0, 0);
   auto* heading = new QLabel("Observed landmarks");
   side->addWidget(heading);
+  minimap_readiness_ = new QLabel();
+  minimap_readiness_->setObjectName("rinkMapMinimapReadiness");
+  framing_readiness_ = new QLabel();
+  framing_readiness_->setObjectName("rinkMapFramingReadiness");
+  for (auto* label : {minimap_readiness_, framing_readiness_}) {
+    label->setWordWrap(true);
+    side->addWidget(label);
+  }
   guidance_ = new QLabel();
   guidance_->setObjectName("rinkMapGuidanceLabel");
   guidance_->setWordWrap(true);
@@ -528,6 +536,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   side->addLayout(board_actions);
   table_ = new QTableWidget(0, 3);
   table_->setObjectName("rinkMapObservationsTable");
+  table_->setMinimumHeight(140);
   table_->setAlternatingRowColors(true);
   table_->setStyleSheet("QTableWidget { background: white; alternate-background-color: #f0f0f0; color: #161616; }");
   table_->setHorizontalHeaderLabels({"Use", "Identity", "Source"});
@@ -585,6 +594,17 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   root->addWidget(edited_);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
   save_ = buttons->addButton("Save partial map", QDialogButtonBox::ActionRole);
+  leveling_ = buttons->addButton("Save and use for leveling…", QDialogButtonBox::ActionRole);
+  leveling_->setObjectName("rinkMapLevelingButton");
+  leveling_->setIcon(action_icon(ActionIcon::Apply));
+  leveling_->setToolTip(
+      "Save these marks, then review optional leveling from the same source evidence. Partial maps can contain usable rectangle corners.");
+  connect(leveling_, &QPushButton::clicked, this, [this] {
+    if (save()) {
+      leveling_requested_ = true;
+      accept();
+    }
+  });
   save_->setObjectName("saveRinkMapButton");
   save_->setIcon(action_icon(ActionIcon::Save));
   root->addWidget(buttons);
@@ -783,23 +803,81 @@ void RinkMapDialog::refreshGuidance() {
     points |= !observation.line;
     cross |= observation.line && observation.feature != "near-boards" && observation.feature != "far-boards";
   }
-  const bool near = identities.count("near-boards"), far = identities.count("far-boards");
-  QString help;
-  if (state_.fit.state == rink::RinkMapState::kReady)
-    help = "Review the projected rink in both cameras. Goal estimates depend on these marks and rink dimensions.";
-  else if (state_.fit.state == rink::RinkMapState::kInconsistent)
+  QString readiness, help, color = "#925b00";
+  const auto dimensions = rink::ValidateRinkLayout(dimensionValues());
+  if (!snapshot_) {
+    readiness = "Unavailable — calibration not loaded";
+    help = "Complete NONA stitching calibration, then reopen this dialog. The map needs the calibrated camera views.";
+  } else if (!dimensions.ok()) {
+    readiness = "Not ready — invalid rink dimensions";
+    help = QString::fromStdString(std::string(dimensions.message()));
+  } else if (busy_ || refresh_timer_.isActive()) {
+    readiness = "Checking current landmarks…";
+    help = "Wait for the geometry check. Changes must be checked and saved before playback uses them.";
+  } else if (!resolved_) {
+    readiness = "Not ready — geometry check incomplete";
     help =
-        "Check the selected identities and endpoints. Disable a suspect mark to inspect its effect, or Undo the last edit.";
-  else if (
-      far && identities.count("blue-left-line") && identities.count("blue-right-line") && !identities.count("center"))
+        "The current marks have not passed the geometry check. See the message below, correct the problem and retry.";
+  } else if (state_.fit.state == rink::RinkMapState::kReady) {
+    readiness = hasUnsavedEdits() ? "Geometry ready — review and save" : "Ready — saved for this calibration";
+    color = hasUnsavedEdits() ? "#925b00" : "#237a3b";
     help =
-        "With both blue lines and the far straight boards, mark the centre-ice point if visible. This can constrain the map without the hidden near boards.";
-  else if (cross && !points && !(near && far))
+        "Enough landmark data for both uses. You do not need every rink item or visible goals. "
+        "Review the outline in both cameras, then Save reviewed map after changes. "
+        "Goal estimates depend on the marks and rink dimensions.\n"
+        "Enable the mini-map for playback. Program framing is off by default; enable it under Program → Rink framing.";
+  } else if (state_.fit.state == rink::RinkMapState::kInconsistent) {
+    readiness = "Not ready — marks need correction";
+    color = "#b23b32";
     help =
-        "Parallel lines alone cannot locate the goals. Try both blue lines, the far straight boards and the centre-ice point, or add visible near/far intersections. Do not mark the tops of near boards.";
-  else
-    help =
-        "Try four separated anchors: centre line / near boards, centre / far boards, and the same two intersections on one blue line. Only mark features you can see.";
+        "The marks cannot form a reliable map with these rink dimensions and camera calibration. "
+        "Check left/right identities, endpoints and dimensions; disable a suspect mark or Undo to see its effect. "
+        "Adding more marks is not necessarily the fix. You can still save partial evidence.";
+  } else {
+    readiness = "Not ready — more independent landmarks needed";
+    help = cross && !points && !identities.count("near-boards") && !identities.count("far-boards")
+        ? "Centre, blue and goal lines are parallel. They do not pin down positions across the rink, so players and play cannot be placed reliably."
+        : "The assigned marks do not yet locate positions both along and across the ice. Repeated marks of one feature are not enough.";
+    // Suggestions are alternatives, never a second readiness gate. Only the
+    // calibrated fit can accept the marks, including combinations not listed.
+    const std::vector<std::vector<std::string>> alternatives{
+        {"blue-left-line", "blue-right-line", "far-boards", "center"},
+        {"center-line", "blue-left-line", "near-boards", "far-boards"},
+        {"center-line", "blue-right-line", "near-boards", "far-boards"},
+        {"center-near", "center-far", "blue-left-near", "blue-left-far"},
+        {"center-near", "center-far", "blue-right-near", "blue-right-far"}};
+    std::vector<std::string> missing;
+    for (const auto& alternative : alternatives) {
+      std::vector<std::string> candidate;
+      for (const auto& feature : alternative)
+        if (!identities.count(feature))
+          candidate.push_back(feature);
+      if (missing.empty() || candidate.size() < missing.size())
+        missing = std::move(candidate);
+      if (missing.empty())
+        break;
+    }
+    if (missing.empty()) {
+      help +=
+          "\nThese identities could be sufficient, but their measured positions are too ambiguous. Spread endpoints along the actual marking and check that each identity is correct.";
+    } else {
+      QStringList names;
+      for (const auto& id : missing)
+        for (const auto& feature : rink::RinkMapFeatures())
+          if (id == feature.id)
+            names << feature.name;
+      help += "\nTo complete the map, add or enable: " + names.join(", ") + ".";
+    }
+    help +=
+        "\nUse ice-level marks, never board tops. Hidden near ice? Both blue lines, far boards and centre ice can suffice. Save partial map keeps unfinished work.";
+  }
+  minimap_readiness_->setText("Playback mini-map: " + readiness);
+  framing_readiness_->setText("Program framing: " + readiness);
+  for (auto* label : {minimap_readiness_, framing_readiness_})
+    label->setStyleSheet("font-weight: bold; color: " + color);
+  if (unassigned)
+    help += QString("\nAssign the %1 unassigned detection(s) in the list to use them.")
+                .arg(unassigned);
   guidance_->setText(QString("%1 enabled marks · %2 distinct identities · %3 unassigned\n%4")
                          .arg(enabled)
                          .arg(identities.size())
@@ -887,7 +965,9 @@ void RinkMapDialog::setBusy(bool busy) {
     dimension->setEnabled(editable);
   save_->setEnabled(
       editable && resolved_ && (snapshot_->saved_map.has_value() || !state_.document.observations.empty()));
+  leveling_->setEnabled(editable && resolved_ && !state_.document.observations.empty());
   refreshEditControls();
+  refreshGuidance();
 }
 
 void RinkMapDialog::update(bool detect, bool use_mask) {
@@ -1068,22 +1148,24 @@ void RinkMapDialog::addPoint(int camera, QPointF point) {
   update();
 }
 
-void RinkMapDialog::save() {
+bool RinkMapDialog::save() {
   if (busy_ || !snapshot_ || !resolved_ || refresh_timer_.isActive())
-    return;
+    return false;
   const auto status = SaveRinkMap(*snapshot_, state_.document);
   if (!status.ok()) {
     setStatus(QString::fromStdString(status.ToString()), true);
-    return;
+    return false;
   }
   clean_document_ = state_.document;
   refreshEditControls();
+  refreshGuidance();
   if (state_.document.observations.empty()) {
     setStatus("Saved an empty rink map. Previous observations and goal estimates are cleared.");
-    return;
+    return true;
   }
   setStatus(
       state_.fit.state == rink::RinkMapState::kReady
           ? "Saved reviewed rink map and estimated goal centres for this calibration."
           : "Saved partial observations. Goal locations remain unavailable until the map is constrained.");
+  return true;
 }

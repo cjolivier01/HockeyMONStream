@@ -171,8 +171,12 @@ struct PlayTrackerTelemetryDb::Impl {
       q.Execute();
     }
     if (!s.policy_boxes.empty()) {
-      for (const auto* role : {"fast", "program"}) {
-        const auto& b = std::string(role) == "fast" ? s.policy_boxes.front() : s.policy_boxes.back();
+      for (const auto* role : {"fast", "program", "program-native"}) {
+        if (std::string(role) == "program-native" && !s.native_program)
+          continue;
+        const auto& b = std::string(role) == "fast" ? s.policy_boxes.front()
+            : std::string(role) == "program-native" ? *s.native_program
+                                                    : s.policy_boxes.back();
         auto& q = query("INSERT INTO cameras VALUES(?,?,?,?,?,?,?)");
         q.Bind(1, run_id);
         q.Bind(2, item.id);

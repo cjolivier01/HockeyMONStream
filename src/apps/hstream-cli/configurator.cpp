@@ -6413,6 +6413,9 @@ absl::Status Configurator::materialize_playtracker_config(
   }
   if (!enabled)
     return absl::OkStatus();
+  // Resolve on the execution host, including exported jobs. Never freeze a
+  // workstation's game path into the portable framing options.
+  section["private-properties"]["rink-camera-game-directory"] = game_dir.string();
   YAML::Node configured_file = section["config-file"];
   if (!configured_file.IsScalar())
     return absl::InvalidArgumentError("pipeline.ds-playtracker.config-file must name a base YAML file");

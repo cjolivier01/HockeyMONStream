@@ -92,6 +92,28 @@ bool writeInProgressSnapshot(const QTemporaryDir& staging, const QImage& source,
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--saved-landmarks") {
+    RinkLevelingDialog dialog(QString::fromLocal8Bit(argv[2]), {0, 0, 0});
+    if (!expect(dialog.loadError().isEmpty(), qPrintable(dialog.loadError())))
+      return 1;
+    dialog.show();
+    auto* use = dialog.findChild<QPushButton*>("useSavedRinkLandmarksButton");
+    use->click();
+    auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
+    if (!waitUntil([&] { return use->isEnabled(); }, 60000) || !status->text().contains("Reused saved")) {
+      std::cerr << status->text().toStdString() << '\n';
+      return 1;
+    }
+    const QString prefix = QString::fromLocal8Bit(argv[3]);
+    dialog.grab().save(prefix + "-angles.png");
+    dialog.findChild<QTabWidget*>("rinkLevelingTabs")->setCurrentIndex(2);
+    auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
+    if (!waitUntil([&] { return accept->isEnabled(); }, 120000)) {
+      std::cerr << status->text().toStdString() << '\n';
+      return 1;
+    }
+    return dialog.grab().save(prefix + "-preview.png") ? 0 : 1;
+  }
   if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--inspect-snapshot") {
     RinkLevelingDialog dialog(QString::fromLocal8Bit(argv[2]), {0, 0, 0});
     if (!expect(dialog.loadError().isEmpty(), qPrintable(dialog.loadError())))

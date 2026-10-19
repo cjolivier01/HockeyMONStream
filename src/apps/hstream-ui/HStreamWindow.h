@@ -54,6 +54,7 @@ class QTimer;
 class QToolButton;
 class PipelineInspectorWidget;
 class PlayerAnalyticsControls;
+class RinkFramingControls;
 class RinkLevelingDialog;
 class ScoreboardSelectionDialog;
 class ProjectionCropDialog;
@@ -478,7 +479,7 @@ class HStreamWindow : public QMainWindow {
   void updateCropRotationControls();
   double cameraPresetControlValue(const QString& id) const;
   void openPromotedStitchingLeveling(const QString& game_directory);
-  void selectRinkLeveling();
+  void selectRinkLeveling(bool use_landmarks = false);
   void selectRinkMap();
   void selectProjectionCrop();
   bool ensureProjectionCropReviewed(bool* cancelled = nullptr);
@@ -714,6 +715,8 @@ class HStreamWindow : public QMainWindow {
   std::vector<QLabel*> camera_preview_notices_;
   QTabWidget* program_control_tabs_{nullptr};
   PlayerAnalyticsControls* player_analytics_controls_{nullptr};
+  RinkFramingControls* rink_framing_controls_{nullptr};
+  QStringList active_rink_framing_arguments_;
   QStringList active_player_analytics_arguments_;
   QString active_gpu_memory_profile_;
   QComboBox* gpu_memory_profile_combo_{nullptr};

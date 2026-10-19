@@ -52,6 +52,24 @@ distinct enabled identities and suggests the next useful marks. **Mark near
 boards** and **Mark far boards** select those line tools directly. Guidance is
 advisory; only the geometry fit determines whether a map is complete.
 
+The **Playback mini-map** and **Program framing** status rows show whether the
+current marks are incomplete, inconsistent, being checked, ready but unsaved,
+or saved and ready for this calibration. The explanation names missing features
+for one usable combination and explains why parallel or repeated marks cannot
+locate players. These are alternatives; every rink item is not required.
+**Save partial map** retains incomplete or inconsistent evidence for another
+session. Saving it does not enable either playback use. Correct invalid rink
+dimensions before saving.
+
+**Save and use for leveling…** saves the marks and opens the existing leveling
+preview. Manual and assigned automatic observations can contribute. A fitted
+map provides its ice plane; a partial map can still provide four explicitly
+identified goal-line/board corners. Detected line segments alone do not identify
+their intersections with the boards. The leveling dialog explains missing
+evidence and requires a preview before **Use angles**. Accepting angles stages
+them in the main window; **Save Preset** applies them. The resulting calibration
+change requires reviewing the rink map again.
+
 The dimensions are assumptions in metres. Defaults describe a 200 × 85 ft rink
 with 25 ft from centre to either blue line, an 11 ft goal-line inset and 28 ft
 corner radii. Set these for the actual rink before reviewing the result.

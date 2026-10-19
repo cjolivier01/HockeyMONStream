@@ -4630,9 +4630,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               projection_page->isAncestorOf(camera_vertical_fov) && projection_page->isAncestorOf(projection) &&
               alignment_page->isAncestorOf(control_points) && alignment_page->isAncestorOf(stitch_frame_time) &&
               projection_page->isAncestorOf(stitch_max_output_width) &&
-              alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 7 &&
-              program_control_tabs->tabText(4) == "Runtime" && program_control_tabs->tabText(5) == "Detection" &&
-              program_control_tabs->tabText(6) == "Players" && stitched_control_tabs->count() == 5 &&
+              alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 8 &&
+              program_control_tabs->tabText(5) == "Runtime" && program_control_tabs->tabText(6) == "Detection" &&
+              program_control_tabs->tabText(7) == "Players" &&
+              program_control_tabs->tabText(2) == "Rink framing" && stitched_control_tabs->count() == 5 &&
               stitched_control_tabs->tabText(1) == "Color & Precision" &&
               stitched_control_tabs->tabText(2) == "Alignment" && stitched_control_tabs->tabText(3) == "Projection" &&
               stitched_control_tabs->tabText(4) == "Rink" &&
@@ -7913,6 +7914,9 @@ bool test_job_export() {
     return false;
   game_id->setText("ui-job-export");
   activate(create);
+  auto* rink_framing = require_child<QCheckBox>(&window, "rinkFramingEnable");
+  if (!rink_framing || !expect(!rink_framing->isChecked(), "New games must leave rink framing off"))
+    return false;
   render->setChecked(true);
   telemetry->setChecked(true);
   QTemporaryDir outputs;
@@ -7928,6 +7932,7 @@ bool test_job_export() {
     stitched->setChecked(stitched_selected);
     program_4k->setChecked(program_4k_selected);
     telemetry->setChecked((selection & 7) != 7);
+    rink_framing->setChecked((selection & 1) != 0);
     QFile preset(QDir(window.gameDirectoryText()).filePath("config.yaml"));
     QByteArray original_preset;
     if (invalid) {
@@ -8006,6 +8011,15 @@ bool test_job_export() {
                 render->isChecked() && telemetry->isChecked() == ((selection & 7) != 7) &&
                 (mode->currentData().toString() == "stitch-calibration") == calibration,
             "Export must select exactly the requested archives and matching pipeline without changing local controls"))
+      return false;
+    if (!expect(
+            stitched_only
+                ? !text.contains("rink-camera-")
+                : text.contains(QString("--options=pipeline.ds-playtracker.private-properties.rink-camera-enable=%1")
+                                    .arg(int(rink_framing->isChecked()))) &&
+                    text.contains("rink-camera-anticipate=1") && text.contains("rink-camera-frame-goals=0") &&
+                    text.contains("rink-camera-adaptive-zoom=0") && !text.contains("rink-camera-game-directory="),
+            "Program jobs retain optional framing choices without embedding host-local map paths"))
       return false;
     if (stitched_only &&
         !expect(
@@ -11519,9 +11533,9 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  // Program: Tracking, Motion, Color, Crop Rotation, Runtime, Detection, Players.
+  // Program: Tracking, Motion, Rink framing, Color, Crop Rotation, Runtime, Detection, Players.
   // Stitched: Rotation, Color & Precision, Alignment, Projection, Rink.
-  if (!expect(window->cameraTabCount() == 12, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 13, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -16639,6 +16653,15 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   if (preview_overlays.contains("rink") && !show_rink_mask->isChecked())
     activate(show_rink_mask);
   const bool require_rink_map = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP");
+  const bool require_rink_framing = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_FRAMING");
+  if (require_rink_framing) {
+    auto* framing = require_child<QCheckBox>(window, "rinkFramingEnable");
+    if (!framing)
+      return false;
+    framing->setChecked(true);
+    window->findChild<QCheckBox*>("rinkFramingGoals")->setChecked(false);
+    window->findChild<QCheckBox*>("rinkFramingZoom")->setChecked(false);
+  }
   if (require_rink_map) {
     auto* rink_map = require_child<QCheckBox>(window, "showRinkMiniMapCheck");
     if (!rink_map || !rink_map->isEnabled())
@@ -16874,6 +16897,13 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   write_e2e_text(QDir(artifact_dir).filePath("preview-report.txt"), preview_report);
 
   window->grab().save(QDir(artifact_dir).filePath("ui-running.png"));
+  if (require_rink_framing) {
+    auto* controls = window->findChild<QTabWidget*>("programControlTabs");
+    for (int i = 0; i < controls->count(); ++i)
+      if (controls->tabText(i) == "Rink framing")
+        controls->setCurrentIndex(i);
+    window->findChild<QWidget*>("rinkFramingControls")->grab().save(QDir(artifact_dir).filePath("rink-framing-controls.png"));
+  }
   const QString log = window->completeLogText();
   const bool observed_native_asset_setup = log.contains("pretrained assets will be verified by hstream-cli");
   const bool observed_command = log.contains("pipeline command");
@@ -16961,6 +16991,10 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 
   QString report;
   report += QString("game_id: %1\n").arg(game_id);
+  if (require_rink_framing && !window->completeLogText().contains("HSTREAM_RINK_CAMERA status=ready")) {
+    std::cerr << "Program framing did not bind the reviewed map\n";
+    return false;
+  }
   report += QString("run_mode: %1\noutputs: %2\n").arg(run_mode, requested_outputs.join(','));
   report += QString("preview_overlays: %1\n").arg(preview_overlays.join(','));
   report += QString("output: %1\n").arg(output_path);

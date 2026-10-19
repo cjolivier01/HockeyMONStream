@@ -49,6 +49,7 @@ cc_library(
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:preview_overlay_meta",
+        "//src/libs/stitching:stitched_output_generation_meta",
         "//src/libs/common:utils",
         "@hm//hockeymon/csrc/play_tracker",
     ],
@@ -65,12 +66,19 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/common:track_color_meta",
+        "//src/libs/playtracker_replay:rink_camera_guide",
         ":playtracker_runtime_config",
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:utils",
         "@hm//hockeymon/csrc/play_tracker",
     ],
+)
+
+cc_test(
+    name = "rink_camera_live_test",
+    srcs = ["RinkCameraLiveTest.cpp"],
+    deps = [":playtracker_context", "//src/libs/stitching:stitched_output_generation_meta"],
 )
 
 cc_test(

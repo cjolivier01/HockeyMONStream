@@ -24,6 +24,9 @@ class RinkMapDialog : public QDialog {
   explicit RinkMapDialog(const QString& game_directory, QWidget* parent = nullptr);
   ~RinkMapDialog() override;
   void reject() override;
+  bool levelingRequested() const {
+    return leveling_requested_;
+  }
 
  private:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -31,7 +34,7 @@ class RinkMapDialog : public QDialog {
   void update(bool detect = false, bool use_mask = false);
   void rebuildTable();
   void addPoint(int camera, QPointF point);
-  void save();
+  bool save();
   void setBusy(bool busy);
   void restorePreview();
   void setStatus(const QString& message, bool error = false);
@@ -65,11 +68,15 @@ class RinkMapDialog : public QDialog {
   QWidget* sidebar_{nullptr};
   QLabel* status_{nullptr};
   QLabel* guidance_{nullptr};
+  QLabel* minimap_readiness_{nullptr};
+  QLabel* framing_readiness_{nullptr};
   QLabel* edited_{nullptr};
   QPushButton* detect_{nullptr};
   QPushButton* mask_{nullptr};
   QPushButton* stop_{nullptr};
   QPushButton* save_{nullptr};
+  QPushButton* leveling_{nullptr};
+  bool leveling_requested_{false};
   QPushButton* remove_{nullptr};
   QPushButton* undo_{nullptr};
   QPushButton* redo_{nullptr};

@@ -21,7 +21,7 @@ double blend(double seconds, double time_constant) {
 
 RinkCameraGuide::RinkCameraGuide(RinkCameraSetup setup, double rotation, unsigned width, unsigned height)
     : setup_(std::move(setup)), rotation_(rotation), width_(width), height_(height) {
-  if (!setup_.map)
+  if (!setup_.map || !setup_.settings.frame_goals)
     return;
   const double x = setup_.map->layout.length / 2 - setup_.map->layout.goal_inset;
   for (int i = 0; i < 2; ++i) {

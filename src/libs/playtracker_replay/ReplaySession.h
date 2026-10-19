@@ -34,6 +34,9 @@ struct Frame {
   uint64_t pts_ns{0};
   std::optional<hm::BBox> fast;
   std::optional<hm::BBox> follower;
+  // Recorded native follower when Program used optional rink framing.
+  // follower remains the actual archived Program view.
+  std::optional<hm::BBox> native_follower;
   float edge_rotation_left{0};
   float edge_rotation_right{0};
   PlayTracking tracking;

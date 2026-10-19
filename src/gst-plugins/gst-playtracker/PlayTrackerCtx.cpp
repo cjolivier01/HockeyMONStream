@@ -11,6 +11,7 @@
 #include "hstream/src/libs/common/PlotContext.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include <nvdsmeta.h>
 
@@ -1139,6 +1140,7 @@ DsPlayTrackerReplayInput DsPlayTrackerCaptureReplayInput(
 }
 
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream) {
+  frame.native_program.reset();
   // We always do our calculations wrt the original image, since we tune based upon the camera
   // type, which is generally tied to the resolution. We scale in the play tracker when possible, but
   // it isn't perfectly scalable atm.
@@ -1183,6 +1185,10 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   }
   std::vector<size_t> tracking_ids;
   std::vector<hm::BBox> tracking_boxes;
+  std::optional<std::array<hm::playtracker_replay::RinkCameraGuide::Track, 256>> rink_tracks;
+  if (ctx->initParams.rink_camera.map)
+    rink_tracks.emplace();
+  size_t rink_count = 0;
 
   const std::size_t object_count = g_list_length(frame.frame_meta->obj_meta_list);
   tracking_ids.reserve(object_count);
@@ -1212,6 +1218,8 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
             (tracker_bbox_info.org_bbox_coords.top + tracker_bbox_info.org_bbox_coords.height) * scale_y));
     size_t tracking_id = obj_meta->object_id;
     tracking_ids.push_back(tracking_id);
+    if (rink_tracks && rink_count < rink_tracks->size())
+      (*rink_tracks)[rink_count++] = {tracking_id, tracking_boxes.back(), false};
   }
 
   if (frame.capture_replay) {
@@ -1233,7 +1241,61 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
     return true;
   }
 
-  frame.play_tracker_results = DsPlayTrackerStepCpu(play_tracker_ctx, std::move(tracking_ids), std::move(tracking_boxes));
+  frame.play_tracker_results =
+      DsPlayTrackerStepCpu(play_tracker_ctx, std::move(tracking_ids), std::move(tracking_boxes));
+  const auto& rink_setup = ctx->initParams.rink_camera;
+  if (rink_setup.map && frame.play_tracker_results.tracking_boxes.size() >= 2) {
+    auto& tracker = *play_tracker_ctx;
+    const auto* generation = hm::stitching::find_stitched_output_generation_meta(frame.frame_meta);
+    const std::string empty;
+    const auto& identity = generation ? generation->generation() : empty;
+    const unsigned width = frame.frame_meta->source_frame_width, height = frame.frame_meta->source_frame_height;
+    if (tracker.rink_generation != identity || tracker.rink_width != width || tracker.rink_height != height ||
+        frame.frame_meta->frame_num < tracker.rink_frame) {
+      tracker.rink_generation = identity;
+      tracker.rink_width = width;
+      tracker.rink_height = height;
+      tracker.rink_guide.reset();
+      const auto rotation = rink_setup.map->OutputRotation(identity, width, height);
+      if (rotation)
+        tracker.rink_guide =
+            std::make_unique<hm::playtracker_replay::RinkCameraGuide>(rink_setup, *rotation, width, height);
+      g_print(
+          "HSTREAM_RINK_CAMERA status=%s message=%s\n",
+          rotation ? "ready" : "unavailable",
+          rotation ? "Program framing enabled for this calibration"
+                   : "Rink map does not match the live output; using native camera framing");
+    }
+    tracker.rink_frame = frame.frame_meta->frame_num;
+    if (frame.frame_meta->buf_pts == GST_CLOCK_TIME_NONE) {
+      tracker.rink_guide.reset();
+      tracker.rink_width = 0; // Rebind after timestamps resume.
+    }
+    if (tracker.rink_guide) {
+      auto& results = frame.play_tracker_results;
+      for (size_t i = 0; i < rink_count; ++i) {
+        const auto matches = [&](const auto& track) { return track.tracking_id == (*rink_tracks)[i].id; };
+        (*rink_tracks)[i].ignored =
+            std::any_of(
+                results.size_ignored_tracking_boxes.begin(), results.size_ignored_tracking_boxes.end(), matches) ||
+            (results.leftmost_tracking_bbox && matches(*results.leftmost_tracking_bbox)) ||
+            (results.rightmost_tracking_bbox && matches(*results.rightmost_tracking_bbox));
+      }
+      const auto& cluster = results.final_cluster_box;
+      const auto selected =
+          cluster.width() > 0 && cluster.height() > 0 ? std::optional<hm::BBox>(cluster) : std::nullopt;
+      frame.native_program = results.tracking_boxes.back();
+      hm::playtracker_replay::RinkCameraInfo info;
+      results.tracking_boxes.back() = tracker.rink_guide->Step(
+          frame.frame_meta->buf_pts,
+          *frame.native_program,
+          ctx->arena_box,
+          selected,
+          rink_tracks->data(),
+          rink_count,
+          &info);
+    }
+  }
   if (ctx->draw.load(std::memory_order_relaxed)) {
     if (!DsPlayTrackerDrawToDisplayMeta(ctx, frame).ok()) {
       return false;

@@ -93,6 +93,22 @@ cv::Point2d sourcePoint(cv::Point2d rink_point) {
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  if (argc == 4 && QString(argv[1]) == "--inspect-saved") {
+    RinkMapDialog dialog(QString::fromLocal8Bit(argv[2]));
+    dialog.show();
+    if (!idle(dialog))
+      return 1;
+    const QString prefix = QString::fromLocal8Bit(argv[3]);
+    if (!dialog.grab().save(prefix + "-ready.png"))
+      return 1;
+    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    for (int row = 1; row < table->rowCount(); ++row) {
+      table->item(row, 0)->setCheckState(Qt::Unchecked);
+      if (!idle(dialog))
+        return 1;
+    }
+    return dialog.grab().save(prefix + "-partial.png") ? 0 : 1;
+  }
   // Read-only real-game visual/inference check. Optional marks are source
   // pixels: camera feature x y, one per line. Screenshots stay outside Git.
   if (argc >= 4 && QString(argv[1]) == "--inspect-game") {
@@ -286,6 +302,12 @@ int main(int argc, char** argv) {
     auto* save = dialog.findChild<QPushButton*>("saveRinkMapButton");
     ok &= expect(
         save->isEnabled() && save->text() == "Save partial map", "A saved single line stays partial after reopening");
+    ok &= expect(
+        dialog.findChild<QLabel*>("rinkMapMinimapReadiness")->text().contains("Not ready") &&
+            dialog.findChild<QLabel*>("rinkMapFramingReadiness")->text().contains("Not ready") &&
+            dialog.findChild<QLabel*>("rinkMapGuidanceLabel")->text().contains("parallel") &&
+            dialog.findChild<QLabel*>("rinkMapGuidanceLabel")->text().contains("add or enable"),
+        "Partial maps explain both blocked uses, the geometry gap and a concrete completion option");
     // Exercise the same table with enough rows to expose pixel/row confusion.
     // This extra selector has no document binding; it only tests wheel routing.
     table->setRowCount(80);
@@ -322,7 +344,7 @@ int main(int argc, char** argv) {
     auto* width = dialog.findChild<QDoubleSpinBox*>("rinkMapDimension1");
     ok &= expect(!undo->isEnabled() && !redo->isEnabled() && !dialog.isWindowModified(), "Opening a map is clean");
     ok &= expect(
-        dialog.findChild<QLabel*>("rinkMapGuidanceLabel")->text().contains("Parallel"),
+        dialog.findChild<QLabel*>("rinkMapGuidanceLabel")->text().contains("parallel", Qt::CaseInsensitive),
         "Parallel-only evidence gives a concrete next step");
     auto* drag_view = dialog.findChild<QGraphicsView*>("rinkMapCamera0");
     auto find_anchor = [&]() -> QGraphicsItem* {
@@ -474,6 +496,35 @@ int main(int argc, char** argv) {
   ok &= expect(
       updated->fit.state == rink::RinkMapState::kReady && !updated->projected_layout[0].empty(),
       "Neutral-zone anchors project the entire rink");
+  {
+    const auto level = RinkLandmarkLeveling(*updated, {0, 0, 0}, 23);
+    ok &= expect(
+        level.ok() && std::abs(level->rotation_degrees[0] - 23) < 1e-8 && std::abs(level->rotation_degrees[1]) < 0.01 &&
+            std::abs(level->rotation_degrees[2]) < 0.01,
+        "Saved metric landmarks recover the ice normal while preserving yaw");
+    RinkMapWorkResult corners;
+    for (const char* id : {"goal-left-near", "goal-left-far", "goal-right-near", "goal-right-far"}) {
+      rink::RinkMapObservation mark;
+      mark.feature = id;
+      const auto point = *rink::RinkFeaturePoint(document.layout, id);
+      cv::Vec3d ray(point.x - 3, point.y + 19, -7);
+      ray /= cv::norm(ray);
+      mark.rays = {ray};
+      corners.document.observations.push_back(mark);
+    }
+    const auto partial_level = RinkLandmarkLeveling(corners, {0, 0, 0}, 17);
+    ok &= expect(
+        partial_level.ok() && partial_level->rotation_degrees[0] == 17,
+        "Explicit goal/board corners can level even when the metric map is partial");
+    corners.document.observations.back().enabled = false;
+    const auto incomplete_level = RinkLandmarkLeveling(corners, {0, 0, 0}, 0);
+    ok &= expect(
+        !incomplete_level.ok() && incomplete_level.status().message().find("four corners") != std::string::npos,
+        "Missing or disabled goal corners explain why leveling needs more evidence");
+    ok &= expect(
+        !RinkLandmarkLeveling(*partial, {0, 0, 0}, 0).ok(),
+        "Automatic line fragments are not fabricated rectangle corners");
+  }
   // QApplication adopts the desktop's C locale. Coordinate parsing must still
   // accept pano_trafo's dot decimals, including its out-of-view nan/inf values.
   {
@@ -530,6 +581,10 @@ int main(int argc, char** argv) {
     ok &= expect(
         save->isEnabled() && save->text() == "Save reviewed map",
         "Reopen recomputes a saved map from its source marks");
+    ok &= expect(
+        dialog.findChild<QLabel*>("rinkMapMinimapReadiness")->text().contains("Ready — saved") &&
+            dialog.findChild<QLabel*>("rinkMapFramingReadiness")->text().contains("Ready — saved"),
+        "Saved valid geometry enables both uses without requiring every rink feature");
     // A physically implausible fit is still evidence worth retaining.
     auto* rejected_width = dialog.findChild<QDoubleSpinBox*>("rinkMapDimension1");
     rejected_width->setValue(40);
@@ -543,6 +598,9 @@ int main(int argc, char** argv) {
     ok &= expect(
         !dialog.isWindowModified() && !rink::LoadPlaybackRinkMap(game.path().toStdString()).ok(),
         "Saving rejected evidence succeeds without enabling player locations");
+    ok &= expect(
+        dialog.findChild<QLabel*>("rinkMapFramingReadiness")->text().contains("marks need correction"),
+        "Saving inconsistent evidence never reports it ready for framing");
     {
       RinkMapDialog reopened(game.path());
       reopened.show();

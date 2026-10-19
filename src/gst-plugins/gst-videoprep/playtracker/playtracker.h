@@ -58,6 +58,8 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   DsPlayTrackerCtx* pt_context_{nullptr};
   PlayTrackerTelemetryDb telemetry_csv_;
   std::string telemetry_game_id_;
+  bool rink_camera_enabled_{false};
+  std::string rink_camera_game_directory_;
   std::string telemetry_run_configuration_;
   cv::Mat telemetry_rink_mask_;
   cv::Size telemetry_canvas_;

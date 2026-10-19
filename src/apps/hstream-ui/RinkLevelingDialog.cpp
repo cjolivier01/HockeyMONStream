@@ -1,5 +1,5 @@
-#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -8,6 +8,7 @@
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDialogButtonBox>
@@ -25,6 +26,7 @@
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "src/apps/hstream-ui/RinkMapBackend.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 namespace {
@@ -68,6 +70,11 @@ QByteArray sourceRevisionForFiles(const QString& directory, const QStringList& f
 }
 } // namespace
 
+struct RinkLevelingDialog::LandmarkJob {
+  std::atomic<bool> cancelled{false};
+  std::optional<absl::StatusOr<hm::stitching::RinkCornerLevelingEstimate>> result;
+};
+
 RinkLevelingDialog::RinkLevelingDialog(
     const QString& game_directory,
     const std::array<double, 3>& current_rotation,
@@ -95,6 +102,12 @@ RinkLevelingDialog::RinkLevelingDialog(
   post_method_check_ = new QCheckBox("Mark vertical posts");
   post_method_check_->setObjectName("markRinkPostsCheck");
   layout->addWidget(post_method_check_);
+  landmarks_button_ = new QPushButton(action_icon(ActionIcon::Apply), "Use saved rink landmarks");
+  landmarks_button_->setObjectName("useSavedRinkLandmarksButton");
+  landmarks_button_->setToolTip(
+      "Reuse identified manual or detected marks from Rink map and goals. Preview before applying.");
+  layout->addWidget(landmarks_button_);
+  connect(landmarks_button_, &QPushButton::clicked, this, &RinkLevelingDialog::useSavedLandmarks);
   instructions_ = new QLabel();
   instructions_->setWordWrap(true);
   layout->addWidget(instructions_);
@@ -235,6 +248,12 @@ RinkLevelingDialog::RinkLevelingDialog(
 }
 
 RinkLevelingDialog::~RinkLevelingDialog() {
+  if (landmark_worker_) {
+    landmark_job_->cancelled = true;
+    landmark_worker_->disconnect(this);
+    landmark_worker_->wait();
+    delete landmark_worker_;
+  }
   if (process_) {
     process_->disconnect(this);
     process_->kill();
@@ -411,6 +430,7 @@ void RinkLevelingDialog::setBusy(bool busy) {
   for (auto* spin : angle_spins_)
     spin->setEnabled(enabled);
   post_method_check_->setEnabled(enabled);
+  landmarks_button_->setEnabled(enabled && !in_progress_calibration_);
   blend_preview_check_->setEnabled(enabled);
   previous_button_->setEnabled(enabled);
   next_button_->setEnabled(enabled);
@@ -476,7 +496,8 @@ void RinkLevelingDialog::navigate(int direction) {
 void RinkLevelingDialog::requestPreview() {
   if (busy_ || !load_error_.isEmpty())
     return;
-  if (corner_method_ && (canvases_[0]->points().size() != 2 || canvases_[1]->points().size() != 2)) {
+  if (corner_method_ && !landmarks_estimated_ &&
+      (canvases_[0]->points().size() != 2 || canvases_[1]->points().size() != 2)) {
     fail("Select two rectangle corners in each camera image before continuing to Preview.");
     return;
   }
@@ -497,6 +518,7 @@ void RinkLevelingDialog::requestPreview() {
 void RinkLevelingDialog::selectionChanged() {
   if (restoring_marks_)
     return;
+  landmarks_estimated_ = false;
   estimated_ = false;
   manual_angles_ = false;
   preview_requested_ = false;
@@ -870,6 +892,8 @@ void RinkLevelingDialog::acceptAngles() {
 }
 
 void RinkLevelingDialog::reject() {
+  if (landmark_job_)
+    landmark_job_->cancelled = true;
   estimate_timer_.stop();
   preview_requested_ = false;
   if (rectangle_confirmation_) {
@@ -885,6 +909,75 @@ void RinkLevelingDialog::reject() {
     process_ = nullptr;
   }
   QDialog::reject();
+}
+
+void RinkLevelingDialog::useSavedLandmarks() {
+  if (busy_ || !load_error_.isEmpty() || in_progress_calibration_)
+    return;
+  estimate_timer_.stop();
+  invalidatePreview();
+  landmarks_estimated_ = false;
+  setBusy(true);
+  status_->setText("Checking saved landmarks against this calibration…");
+  landmark_job_ = std::make_shared<LandmarkJob>();
+  const auto job = landmark_job_;
+  const auto directory = game_directory_;
+  const auto revision = source_revision_;
+  const auto rotation = published_rotation_;
+  const double yaw = angle_spins_[0]->value();
+  landmark_worker_ = QThread::create([job, directory, revision, rotation, yaw] {
+    const auto work = [&]() -> absl::StatusOr<hm::stitching::RinkCornerLevelingEstimate> {
+      if (sourceRevision(directory) != revision)
+        return absl::FailedPreconditionError("Calibration changed. Reopen leveling before using saved landmarks.");
+      auto snapshot = LoadRinkMapSnapshot(directory);
+      if (!snapshot.ok())
+        return snapshot.status();
+      if (!snapshot->saved_map)
+        return absl::FailedPreconditionError(
+            "No saved rink landmarks. Save a partial or reviewed map in Rink map and goals first.");
+      auto document = hm::stitching::ParseRinkMap(*snapshot->saved_map);
+      if (!document.ok())
+        return document.status();
+      if (document->generation != snapshot->generation ||
+          document->calibration_revision != snapshot->revision.toStdString())
+        return absl::FailedPreconditionError(
+            "Saved landmarks belong to a different calibration. Review and save the map again.");
+      auto result = UpdateRinkMap(*snapshot, *document, false, [job] { return job->cancelled.load(); });
+      if (!result.ok())
+        return result.status();
+      if (job->cancelled || sourceRevision(directory) != revision)
+        return absl::CancelledError("Landmark leveling stopped or calibration changed; no angles were applied.");
+      return RinkLandmarkLeveling(*result, rotation, yaw);
+    };
+    job->result = work();
+  });
+  connect(landmark_worker_, &QThread::finished, this, [this, job] {
+    auto* completed = landmark_worker_;
+    landmark_worker_ = nullptr;
+    completed->deleteLater();
+    landmark_job_.reset();
+    setBusy(false);
+    if (job->cancelled)
+      return;
+    if (!job->result || !job->result->ok()) {
+      fail(
+          job->result ? QString::fromStdString(job->result->status().ToString()) : "Landmark leveling did not finish.");
+      return;
+    }
+    const auto& estimate = **job->result;
+    for (size_t i = 0; i < angle_spins_.size(); ++i) {
+      const QSignalBlocker blocked(angle_spins_[i]);
+      angle_spins_[i]->setValue(estimate.rotation_degrees[i]);
+    }
+    landmarks_estimated_ = estimated_ = true;
+    manual_angles_ = false;
+    status_->setText(
+        QString(
+            "Reused saved landmarks from the calibrated camera views. Rectangle angle mismatch: %1°. "
+            "Use Next to inspect Preview, then Use angles if it looks correct. The saved map is unchanged.")
+            .arg(estimate.orthogonality_error_degrees, 0, 'f', 2));
+  });
+  landmark_worker_->start();
 }
 
 void RinkLevelingDialog::cancelCalibration() {

@@ -12,8 +12,8 @@ namespace hm::playtracker_replay {
 
 struct RinkCameraSettings {
   bool anticipate{true};
-  bool frame_goals{true};
-  bool adaptive_zoom{true};
+  bool frame_goals{false};
+  bool adaptive_zoom{false};
 };
 
 struct RinkCameraSetup {

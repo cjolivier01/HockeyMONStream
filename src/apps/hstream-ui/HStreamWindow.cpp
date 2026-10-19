@@ -19,6 +19,7 @@
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
 #include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
+#include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/RinkMapDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
@@ -7170,6 +7171,13 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
     control_tabs->addTab(add_slider_tab(tracking_controls, false), "Tracking");
     control_tabs->addTab(add_slider_tab(motion_controls, false), "Motion");
+    auto* framing_scroll = new QScrollArea();
+    framing_scroll->setWidgetResizable(true);
+    framing_scroll->setFrameShape(QFrame::NoFrame);
+    rink_framing_controls_ = new RinkFramingControls();
+    rink_framing_controls_->setChangedCallback([this] { updatePresetDirtyState(); });
+    framing_scroll->setWidget(rink_framing_controls_);
+    control_tabs->addTab(framing_scroll, "Rink framing");
     control_tabs->addTab(add_slider_tab(color_controls, true), "Color");
     const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
     auto* crop_page = add_slider_tab(crop_controls, false);
@@ -8251,7 +8259,7 @@ void HStreamWindow::openPromotedStitchingLeveling(const QString& game_directory)
   });
 }
 
-void HStreamWindow::selectRinkLeveling() {
+void HStreamWindow::selectRinkLeveling(bool use_landmarks) {
   if (!ensureSavedControlConfigLoaded())
     return;
   if (!rink_leveling_button_ || !rink_leveling_button_->isEnabled() || !game_id_edit_)
@@ -8268,6 +8276,8 @@ void HStreamWindow::selectRinkLeveling() {
       loaded_projection_framing_.rotation_degrees,
       this,
       stitchCameraSelection());
+  if (use_landmarks)
+    QTimer::singleShot(0, &dialog, [&dialog] { dialog.useSavedLandmarks(); });
   if (dialog.exec() != QDialog::Accepted)
     return;
   loaded_projection_framing_.rotation_degrees = dialog.rotationDegrees();
@@ -8292,6 +8302,8 @@ void HStreamWindow::selectRinkMap() {
   }
   RinkMapDialog dialog(gameDirectory(game_id_edit_->text().trimmed()), this);
   dialog.exec();
+  if (dialog.levelingRequested())
+    selectRinkLeveling(true);
 }
 
 void HStreamWindow::selectProjectionCrop() {
@@ -10279,6 +10291,10 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
               .arg(cameraControlValue("Lift_Shadow_Black_Point"));
   args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
   if (!calibration_only) {
+    if (rink_framing_controls_)
+      args
+          << (standalone || active_run_game_id_.isEmpty() ? rink_framing_controls_->arguments()
+                                                          : active_rink_framing_arguments_);
     if (player_analytics_controls_)
       args << (standalone || active_run_game_id_.isEmpty() ? player_analytics_controls_->arguments()
                                                          : active_player_analytics_arguments_);
@@ -10475,6 +10491,8 @@ void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
                                                  : YAML::Clone(structural);
   }
   player_analytics_controls_->loadConfig(defaults, user_layer_, config, QFileInfo(structural_path).absolutePath());
+  if (rink_framing_controls_)
+    rink_framing_controls_->loadConfig(defaults, user_layer_, config);
 }
 
 bool HStreamWindow::validatePlayerAnalyticsForRun() {
@@ -10766,7 +10784,9 @@ void HStreamWindow::startPipeline() {
   active_gpu_memory_profile_ = gpu_memory_profile_user_selected_ && gpu_memory_profile_combo_
       ? gpu_memory_profile_combo_->currentData().toString()
       : QString();
-  active_player_analytics_arguments_ = player_analytics_controls_ ? player_analytics_controls_->arguments() : QStringList();
+  active_player_analytics_arguments_ =
+      player_analytics_controls_ ? player_analytics_controls_->arguments() : QStringList();
+  active_rink_framing_arguments_ = rink_framing_controls_ ? rink_framing_controls_->arguments() : QStringList();
   active_control_point_matcher_ = controlPointMatcher();
   active_control_point_resolution_ = control_point_resolution_;
   active_control_point_filtering_ = control_point_filtering_;
@@ -11848,6 +11868,11 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   trimmed = trimmed.trimmed();
   if (trimmed.isEmpty())
     return;
+  if (rink_framing_controls_ && trimmed.startsWith("HSTREAM_RINK_CAMERA ")) {
+    const int message = trimmed.indexOf("message=");
+    if (message >= 0)
+      rink_framing_controls_->showRunStatus(trimmed.mid(message + 8));
+  }
   const bool calibration_preamble = trimmed.startsWith("Rejected calibrated MAGSAC hypothesis") ||
       trimmed.startsWith("Skipping pooled stitching calibration") ||
       trimmed.startsWith("Skipping stitching calibration frame pair") ||
@@ -17631,6 +17656,8 @@ void HStreamWindow::resetCameraControls() {
     set_combo_to_data(detector_precision_combo_, "fp32");
   if (!pipeline_running && player_analytics_controls_)
     player_analytics_controls_->resetToDefaults();
+  if (!pipeline_running && rink_framing_controls_)
+    rink_framing_controls_->resetToDefaults();
   if (!pipeline_running)
     setStitchingIterationSettings(default_iteration_settings_);
   if (!pipeline_running && stitch_frame_time_edit_) {
@@ -17933,6 +17960,7 @@ void HStreamWindow::updatePresetDirtyState() {
       saved_projection_framing_ != stitchProjectionFraming();
   bool dirty = retry_required || saved_auto_input_lens_frozen_ != autoInputLensFrozen() || detectorSelectionChanged() ||
       (player_analytics_controls_ && player_analytics_controls_->isDirty()) ||
+      (rink_framing_controls_ && rink_framing_controls_->isDirty()) ||
       (rink_mask_time_mode_ && saved_rink_mask_time_mode_ != rink_mask_time_mode_->currentData().toString()) ||
       (rink_mask_time_mode_ && rink_mask_time_mode_->currentData().toString() == "custom" &&
        saved_rink_mask_time_text_ != rink_mask_time_edit_->text()) ||
@@ -18988,6 +19016,8 @@ bool HStreamWindow::applySavedControlConfig(
       return false;
     }
   }
+  if (rink_framing_controls_)
+    rink_framing_controls_->applyChanges(config);
   const auto selected_plan_frame_count = selected_calibration_frame_count(config);
   if (!selected_plan_frame_count.ok()) {
     appendLog(QString("could not save preset: %1").arg(selected_plan_frame_count.status().ToString().c_str()));

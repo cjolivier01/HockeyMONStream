@@ -40,6 +40,11 @@ cluster/exclusions; it never edits native tracker inputs or state. Disabled
 settings reproduce the native trajectory. The desktop creates matched native
 and rink-aware trials with identical tuning for a fair comparison.
 
+The guide's independent `rink_camera_guide` target also serves optional native
+Program framing. Database `program` cameras retain actual adjusted output, with
+`program-native` providing the native trajectory for parity checks. Original and
+baseline therefore intentionally differ when the recorded run used the guide.
+
 `SaveTrial` writes a YAML descriptor containing the checkpoint, base state,
 recording manifest, exact selected inputs, trial overrides/results, and the
 explicit uncropped-panorama PTS mapping and file identity. This descriptor is

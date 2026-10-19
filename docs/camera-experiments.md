@@ -104,18 +104,56 @@ every instant while the camera catches up.
 The adjustment uses at most 256 observations and 512 motion histories, rejects
 implausible motion jumps, waits for three consistent tracks, and resets across
 time gaps and seeks. Pan/zoom changes are bounded and smoothed. Without reliable
-motion it returns toward the native camera. This is an experiment-only option:
-live Program tracking, telemetry measurements and game presets are unchanged.
+motion it returns toward the native camera. Experiment choices affect the trial
+only. **Program → Rink framing** separately enables the same guide for playback
+and Program archives. Both switches default off; anticipation is preselected,
+while goal framing and adaptive zoom default off to preserve native zoom.
 Save trial retains the exact map evidence, settings, calibration identity and
 per-frame diagnostics alongside its camera trajectory.
 The **Play tracking** overlay continues to show the native policy's boxes and
 movement thresholds before the adjustment; the visual timeline and frame label
 show the selected trial's final Program rectangle.
 
-`RinkCameraGuide.*` performs this metadata-only computation inside trial replay.
+`RinkCameraGuide.*` performs this metadata-only computation in trial replay and
+the native Program path. Its independent Bazel target does not depend on replay.
 `PlaybackRinkMap::Project` prepares the two goal anchors with a bounded inverse
 projection; it does not run for every player/frame. Original-camera preparation
 retains the published maps' width cap, including capped historical canvases.
+
+## Program playback and archives
+
+Select **Program → Rink framing → Enable rink-aware framing** for the next run.
+The current choices apply to desktop playback, Program archive encoders and
+saved job scripts. They are independent of the mini-map display toggle.
+Anticipation preserves the native crop dimensions. Goal framing and adaptive
+zoom can widen the view and must be selected separately. Saving a preset retains
+the choices; the active run keeps the choices it started with.
+
+The runner loads the reviewed map once at startup and validates its identity
+against the live stitched frames. Missing, partial or stale maps retain native
+framing and report the reason in the Program controls and run log. Disabled
+framing does not load a map. Frame processing uses metadata only, applies the
+guide after the native policy and before Program crop metadata/drawing, and
+leaves native state and exclusions intact. Seeks and source/geometry changes
+reset motion history; it warms up again from current tracks.
+
+For CLI jobs the settings are numeric flags under
+`pipeline.ds-playtracker.private-properties`:
+
+```yaml
+pipeline:
+  ds-playtracker:
+    private-properties:
+      rink-camera-enable: 0
+      rink-camera-anticipate: 1
+      rink-camera-frame-goals: 0
+      rink-camera-adaptive-zoom: 0
+```
+
+Use `--options=pipeline.ds-playtracker.private-properties.rink-camera-enable=1`
+to enable anticipation with the defaults. The execution host resolves the game
+directory; exported options contain no local map path. Stitched-only jobs omit
+the Program policy entirely.
 
 For a numerical comparison without video decoding:
 

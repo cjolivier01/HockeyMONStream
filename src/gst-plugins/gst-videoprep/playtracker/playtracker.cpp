@@ -144,8 +144,28 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     play_tracker_config_source_contents_ = ReadTelemetryConfigArtifact(play_tracker_config_source_file_);
   }
   if (play_tracker_config_source_contents_.empty()) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "could not read non-empty vpplaytracker base configuration snapshot: ", play_tracker_config_source_file_));
+    return absl::InvalidArgumentError(
+        absl::StrCat(
+            "could not read non-empty vpplaytracker base configuration snapshot: ", play_tracker_config_source_file_));
+  }
+
+  init_params_.rink_camera.map.reset();
+  if (rink_camera_enabled_ &&
+      (init_params_.rink_camera.settings.anticipate || init_params_.rink_camera.settings.frame_goals ||
+       init_params_.rink_camera.settings.adaptive_zoom)) {
+    auto prepared = rink_camera_game_directory_.empty()
+        ? absl::StatusOr<std::shared_ptr<const hm::stitching::PlaybackRinkMap>>(
+              absl::FailedPreconditionError("Program game directory is unavailable"))
+        : hm::stitching::LoadPlaybackRinkMap(rink_camera_game_directory_);
+    if (prepared.ok()) {
+      init_params_.rink_camera.map = std::move(*prepared);
+      g_print(
+          "HSTREAM_RINK_CAMERA status=prepared message=Reviewed map prepared; waiting for matching Program frames\n");
+    } else {
+      g_printerr(
+          "HSTREAM_RINK_CAMERA status=unavailable message=%s; using native camera framing\n",
+          prepared.status().ToString().c_str());
+    }
   }
 
   {
@@ -167,6 +187,21 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     telemetry_canvas_ = {};
     telemetry_geometry_.reset();
     auto startup_events = runtime_tuning_provenance_history_;
+    if (init_params_.rink_camera.map) {
+      const auto& settings = init_params_.rink_camera.settings;
+      startup_events.push_back(
+          {"rink-camera",
+           "settings",
+           absl::StrCat(
+               "anticipate=",
+               settings.anticipate,
+               ";frame-goals=",
+               settings.frame_goals,
+               ";adaptive-zoom=",
+               settings.adaptive_zoom),
+           "rink-map.yaml",
+           init_params_.rink_camera.map->source_document});
+    }
     if (!telemetry_run_configuration_.empty()) {
       startup_events.push_back(
           {"run-configuration",
@@ -290,6 +325,29 @@ void PlayTrackerPriv::RememberRuntimeTuning(DsPlayTrackerRuntimeTuning tuning, T
 bool PlayTrackerPriv::SetProperty(const Property& prop) {
   std::string key = prop.key;
   std::replace(key.begin(), key.end(), '_', '-');
+  if (key.rfind("rink-camera-", 0) == 0) {
+    std::lock_guard<std::mutex> lk(context_mu_);
+    if (pt_context_)
+      return false; // Next-run choices; map preparation never runs on a frame.
+    if (key == "rink-camera-game-directory") {
+      rink_camera_game_directory_ = prop.value;
+      return true;
+    }
+    if (prop.value != "0" && prop.value != "1" && prop.value != "false" && prop.value != "true")
+      return false;
+    const bool enabled = prop.value == "1" || prop.value == "true";
+    if (key == "rink-camera-enable")
+      rink_camera_enabled_ = enabled;
+    else if (key == "rink-camera-anticipate")
+      init_params_.rink_camera.settings.anticipate = enabled;
+    else if (key == "rink-camera-frame-goals")
+      init_params_.rink_camera.settings.frame_goals = enabled;
+    else if (key == "rink-camera-adaptive-zoom")
+      init_params_.rink_camera.settings.adaptive_zoom = enabled;
+    else
+      return false;
+    return true;
+  }
   auto apply_camera_geometry_locked = [this](const DsPlayTrackerRuntimeTuning& tuning) {
     return !pt_context_ || DsPlayTrackerCtxApplyRuntimeTuning(pt_context_, tuning).ok();
   };
@@ -483,6 +541,8 @@ bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
       seed.detector.tracks.clear();
       auto restored = hm::play_tracker::PlayTracker::from_snapshot(seed);
       tracker.play_tracker = std::move(restored);
+      tracker.rink_guide.reset();
+      tracker.rink_width = 0;
       tracker.has_received_tracks = true;
       prev_play_tracker_results_ = {};
       for (const auto& box : seed.living_boxes)
@@ -519,6 +579,8 @@ bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
     } else if (pt_context_) {
       pt_context_->player_colors.Reset();
       for (auto& [source, tracker] : pt_context_->play_trackers) {
+        tracker.rink_guide.reset();
+        tracker.rink_width = 0;
         auto state = tracker.play_tracker->snapshot();
         state.detector.tracks.clear();
         tracker.play_tracker = hm::play_tracker::PlayTracker::from_snapshot(state);
@@ -697,6 +759,10 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       if (frame.checkpoint_replay)
         replay_checkpoint_pending_ = false;
       telemetry_sample.policy_boxes.reserve(frame.play_tracker_results.tracking_boxes.size());
+      if (frame.native_program) {
+        const auto& box = *frame.native_program;
+        telemetry_sample.native_program = TelemetryBox{box.left, box.top, box.width(), box.height()};
+      }
       for (const hm::BBox& box : frame.play_tracker_results.tracking_boxes) {
         telemetry_sample.policy_boxes.push_back(
             TelemetryBox{

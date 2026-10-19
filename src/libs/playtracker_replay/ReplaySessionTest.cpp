@@ -48,7 +48,8 @@ std::string fixture(
     bool skipped_tick = false,
     unsigned width = 3840,
     unsigned height = 2160,
-    double fps = 10) {
+    double fps = 10,
+    bool guided = false) {
   fs::create_directories(directory);
   const hm::BBox arena(40, 0, width - 40, height);
   auto created = DsPlayTrackerCreateCpuTracker(arena, YAML::Load(kConfig)["play-tracker"]);
@@ -121,6 +122,10 @@ std::string fixture(
       previous_results = DsPlayTrackerStepCpu(&tracker, ids, boxes);
     for (const auto& box : previous_results.tracking_boxes)
       sample.policy_boxes.push_back({box.left, box.top, box.width(), box.height()});
+    if (guided && !sample.policy_boxes.empty()) {
+      sample.native_program = sample.policy_boxes.back();
+      sample.policy_boxes.back().left += 12;
+    }
     if (!legacy) {
       hm::playtracker::TelemetryReplaySample replay;
       replay.arena = {arena.left, arena.top, arena.right, arena.bottom};
@@ -229,6 +234,29 @@ int main(int argc, char** argv) {
     check(
         same_frames((*database_session)->baseline(), (*session)->baseline()),
         "database checkpoint replay matches CSV history");
+    {
+      auto guided_options = database_options;
+      guided_options.manifest_path = fixture<hm::playtracker::PlayTrackerTelemetryDb>(
+          directory / "guided-database", false, false, 3840, 2160, 10, true);
+      auto guided = ReplaySession::Prepare(guided_options);
+      check(guided.ok(), guided.status().ToString());
+      check(
+          same_frames((*guided)->baseline(), (*database_session)->baseline()),
+          "Guided recordings retain the exact native checkpoint trajectory");
+      for (size_t i = 0; i < (*guided)->original().size(); ++i) {
+        const auto& original = (*guided)->original()[i];
+        const auto& native = (*database_session)->original()[i];
+        if (!native.follower) {
+          check(!original.follower && !original.native_follower, "Empty native camera remains empty in guided capture");
+          continue;
+        }
+        check(
+            original.native_follower && original.follower && native.follower &&
+                std::abs(original.follower->left - native.follower->left - 12) < 0.02 &&
+                std::abs(original.native_follower->left - native.follower->left) < 0.02,
+            "Original view retains actual Program crop separately from native replay");
+      }
+    }
     check(
         !(*database_session)->baseline().front().overlays && (*database_session)->rink_mask_png().empty(),
         "seek preparation does not allocate drawings or load mask blobs");

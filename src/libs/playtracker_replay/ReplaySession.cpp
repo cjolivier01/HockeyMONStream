@@ -313,6 +313,7 @@ Frame step(
     OverlayBuilder* drawing = nullptr,
     RinkCameraGuide* guide = nullptr) {
   Frame result = sample.original;
+  result.native_follower.reset();
   result.fast = previous.fast;
   result.follower = previous.follower;
   result.tracking = previous.tracking;
@@ -365,7 +366,8 @@ void parity(const Frame& expected, const Frame& actual, double tolerance) {
     return a.has_value() == b.has_value() && (!a || same_box(*a, *b, tolerance));
   };
   require(
-      close(expected.fast, actual.fast) && close(expected.follower, actual.follower),
+      close(expected.fast, actual.fast) &&
+          close(expected.native_follower ? expected.native_follower : expected.follower, actual.follower),
       "Historical state could not be verified at sample " + std::to_string(expected.sample_id) +
           ". Both camera trajectories must agree within " + std::to_string(tolerance) +
           " pixels. Use the original arena/configuration and a compatible native implementation, or a new replay capture.");
@@ -629,8 +631,11 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
           result.fast = box;
         else if (q.Text(0) == "program")
           result.follower = box;
+        else if (q.Text(0) == "program-native")
+          result.native_follower = box;
       }
       require(result.fast.has_value() == result.follower.has_value(), "Recording has unmatched camera outputs");
+      require(!result.native_follower || result.follower, "Recording has an orphan native Program camera");
     };
     Frame previous_reference, previous_baseline;
     std::unique_ptr<OverlayBuilder> original_drawing, baseline_drawing;
@@ -651,6 +656,8 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
       previous_reference.sample_id = previous.Int(0);
       previous_reference.pts_ns = previous.Int(1);
       camera(previous.Int(0), previous_reference);
+      if (previous_reference.native_follower)
+        previous_reference.follower = previous_reference.native_follower;
     }
     Statement rows(
         db.get(),
