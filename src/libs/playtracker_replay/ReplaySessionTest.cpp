@@ -232,6 +232,46 @@ int main(int argc, char** argv) {
     check(
         !(*database_session)->baseline().front().overlays && (*database_session)->rink_mask_png().empty(),
         "seek preparation does not allocate drawings or load mask blobs");
+    auto rink_map = std::make_shared<hm::stitching::PlaybackRinkMap>();
+    rink_map->hugin_generation = "rink-camera-fixture\n";
+    rink_map->source_document = "reviewed fixture evidence";
+    rink_map->fit.state = hm::stitching::RinkMapState::kReady;
+    rink_map->fit.plane_to_ray = cv::Matx33d(1, 0, 0, 0, 1, 0, 0, 0, 20);
+    rink_map->columns = rink_map->rows = 2;
+    rink_map->rays = {{-35, -15, 20}, {35, -15, 20}, {-35, 15, 20}, {35, 15, 20}};
+    check(
+        !(*database_session)->RinkCameraRotation(*rink_map).ok(),
+        "Unbound historical geometry cannot use a current rink map");
+    {
+      hm::recording::Database db(database_options.manifest_path, true);
+      hm::recording::Statement geometry(db.get(), "UPDATE geometries SET revision=?");
+      geometry.Bind(
+          1,
+          "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(rink_map->hugin_generation.size()) + "\n" +
+              rink_map->hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:3840x2160\n:authorization");
+      geometry.Execute();
+    }
+    auto guided_session = ReplaySession::Prepare(database_options);
+    check(guided_session.ok(), guided_session.status().ToString());
+    check((*guided_session)->RinkCameraRotation(*rink_map).ok(), "Archived output identity binds the rink map");
+    RinkCameraSetup rink_setup{rink_map, {false, false, false}};
+    DsPlayTrackerRuntimeTuning guide_tuning;
+    guide_tuning.update_motion_tuning = false;
+    auto guided_trial = (*guided_session)->RunTrial("Rink controls off", guide_tuning, nullptr, &rink_setup);
+    check(guided_trial.ok(), guided_trial.status().ToString());
+    check(
+        same_frames(guided_trial->frames, (*guided_session)->baseline()),
+        "Disabled rink adjustments preserve native replay exactly");
+    rink_map->hugin_generation = "stale\n";
+    check(
+        !(*guided_session)->RunTrial("stale", guide_tuning, nullptr, &rink_setup).ok(),
+        "Mismatched map fails before producing a trial");
+    rink_map->hugin_generation = "rink-camera-fixture\n";
+    rink_map->fit.state = hm::stitching::RinkMapState::kPartial;
+    check(
+        !(*guided_session)->RunTrial("partial", guide_tuning, nullptr, &rink_setup).ok(),
+        "Partial maps cannot enable experimental framing");
+    rink_map->fit.state = hm::stitching::RinkMapState::kReady;
     auto drawing_options = database_options;
     drawing_options.prepare_overlays = true;
     auto drawing_session = ReplaySession::Prepare(drawing_options);
@@ -378,6 +418,14 @@ int main(int argc, char** argv) {
     check(!ReplaySession::Prepare(cadence_options).ok(), "sidecar/frame-index identity mismatch rejected");
     std::ofstream(directory / "panorama.mp4") << "test media identity";
     MediaBinding binding{(directory / "panorama.mp4").string(), 2000000000, 0, 3840, 2160};
+    const auto rink_saved =
+        (*guided_session)->SaveTrial((directory / "rink-trial.yaml").string(), *guided_trial, binding);
+    check(rink_saved.ok(), rink_saved.ToString());
+    const auto saved_rink = YAML::LoadFile((directory / "rink-trial.yaml").string())["rink_camera"];
+    check(
+        saved_rink["reviewed_map"].as<std::string>() == rink_map->source_document &&
+            !saved_rink["anticipate"].as<bool>() && saved_rink["version"].as<int>() == 1,
+        "Rink trial retains its exact evidence and settings");
     check(
         !(*session)->SaveTrial((*session)->manifest_path(), *candidate, binding).ok(),
         "cannot overwrite original telemetry manifest");

@@ -162,6 +162,11 @@ the map for that frame rather than retaining old player positions.
 The mini-map is a desktop preview overlay. It does not appear in encoded
 archives or change the camera policy, ice mask or leveling.
 
+Camera Experiments can separately use a matching reviewed map for optional
+rink-aware framing comparisons. This experiment uses the same recorded native
+observations and preserves ice-mask filtering; see
+[Camera experiments](camera-experiments.md#rink-aware-framing-experiment).
+
 ## Storage and scope
 
 `rink-map.yaml` stores the versioned evidence, dimensions, original source

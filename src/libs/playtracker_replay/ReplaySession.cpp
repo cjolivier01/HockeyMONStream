@@ -306,11 +306,17 @@ std::optional<hm::BBox> framed(const hm::BBox& box) {
   return box;
 }
 
-Frame step(Tracker* tracker, const Sample& sample, const Frame& previous, OverlayBuilder* drawing = nullptr) {
+Frame step(
+    Tracker* tracker,
+    const Sample& sample,
+    const Frame& previous,
+    OverlayBuilder* drawing = nullptr,
+    RinkCameraGuide* guide = nullptr) {
   Frame result = sample.original;
   result.fast = previous.fast;
   result.follower = previous.follower;
   result.tracking = previous.tracking;
+  result.rink_camera = previous.rink_camera;
   hm::play_tracker::PlayTrackerResults output;
   if (sample.stepped) {
     output = DsPlayTrackerStepCpu(tracker, sample.ids, sample.boxes);
@@ -325,6 +331,29 @@ Frame step(Tracker* tracker, const Sample& sample, const Frame& previous, Overla
     if (output.play_detection) {
       result.tracking.breakaway_edge = output.play_detection->breakaway_edge_center;
       result.tracking.breakaway_target = output.play_detection->breakaway_target_bbox;
+    }
+    if (guide && result.follower) {
+      std::array<RinkCameraGuide::Track, 256> tracks;
+      const size_t count = std::min(sample.ids.size(), tracks.size());
+      for (size_t i = 0; i < count; ++i) {
+        const auto matches = [&](const auto& track) { return track.tracking_id == sample.ids[i]; };
+        tracks[i] = {
+            sample.ids[i],
+            sample.boxes[i],
+            std::any_of(
+                output.size_ignored_tracking_boxes.begin(), output.size_ignored_tracking_boxes.end(), matches) ||
+                (output.leftmost_tracking_bbox && matches(*output.leftmost_tracking_bbox)) ||
+                (output.rightmost_tracking_bbox && matches(*output.rightmost_tracking_bbox))};
+      }
+      result.rink_camera.emplace();
+      result.follower = guide->Step(
+          sample.original.pts_ns,
+          *result.follower,
+          sample.arena,
+          result.tracking.cluster,
+          tracks.data(),
+          count,
+          &*result.rink_camera);
     }
   }
   if (drawing)
@@ -461,6 +490,7 @@ struct ReplaySession::Impl {
   std::vector<Frame> original, baseline;
   std::string rink_mask_png;
   std::string rink_mask_unavailable_reason{"This recording has no archived rink mask."};
+  std::string output_generation;
   uint32_t width{0}, height{0};
   uint64_t end_pts_ns{0};
 };
@@ -531,6 +561,18 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
     require(selected.Next(), "Selected range contains no recorded frames");
     const uint64_t start = selected.Int(0), source_id = selected.Int(1), seek = selected.Int(2),
                    reset = selected.Int(3), geometry = selected.Int(4);
+    Statement identity_geometry(
+        db.get(), "SELECT revision,coordinate_space FROM geometries WHERE run_id=? AND geometry_id=?");
+    identity_geometry.Bind(1, run);
+    identity_geometry.Bind(2, geometry);
+    if (identity_geometry.Next() && identity_geometry.Text(1) == "original_stitched_pixels") {
+      // FieldMaskPayload records the output identity followed by ':' and the
+      // publication authorization. The identity itself ends with a newline.
+      const auto revision = identity_geometry.Text(0);
+      const auto suffix = revision.find("\n:");
+      if (suffix != std::string::npos)
+        impl->output_generation = revision.substr(0, suffix + 1);
+    }
     Statement checkpoint(
         db.get(),
         "SELECT c.sample_id FROM checkpoints c JOIN frames f USING(run_id,sample_id) WHERE c.run_id=? AND c.sample_id<=? AND f.source_id=? AND f.seek_epoch=? AND f.reset_epoch=? AND f.geometry_id=? ORDER BY c.sample_id DESC LIMIT 1");
@@ -1069,7 +1111,8 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::Prepare(
 absl::StatusOr<TrialResult> ReplaySession::RunTrial(
     std::string name,
     const DsPlayTrackerRuntimeTuning& tuning,
-    const std::atomic<bool>* cancelled) const {
+    const std::atomic<bool>* cancelled,
+    const RinkCameraSetup* rink_camera) const {
   try {
     check_cancel(cancelled);
     validate_tuning(tuning);
@@ -1078,13 +1121,21 @@ absl::StatusOr<TrialResult> ReplaySession::RunTrial(
     require(status.ok(), status.ToString());
     hm::play_tracker::validate_snapshot(tracker.play_tracker->snapshot());
     TrialResult result{std::move(name), tuning, {}};
+    std::unique_ptr<RinkCameraGuide> guide;
+    if (rink_camera) {
+      require(bool(rink_camera->map), "Rink-aware framing needs a reviewed map");
+      const auto rotation = RinkCameraRotation(*rink_camera->map);
+      require(rotation.ok(), rotation.status().ToString());
+      guide = std::make_unique<RinkCameraGuide>(*rink_camera, *rotation, impl_->width, impl_->height);
+      result.rink_camera = *rink_camera;
+    }
     Frame previous = impl_->start.previous;
     std::unique_ptr<OverlayBuilder> drawing;
     if (impl_->options.prepare_overlays)
       drawing = std::make_unique<OverlayBuilder>();
     for (const auto& sample : impl_->samples) {
       check_cancel(cancelled);
-      previous = step(&tracker, sample, previous, drawing.get());
+      previous = step(&tracker, sample, previous, drawing.get(), guide.get());
       previous.edge_rotation_left = impl_->original.front().edge_rotation_left;
       previous.edge_rotation_right = impl_->original.front().edge_rotation_right;
       result.frames.push_back(previous);
@@ -1095,6 +1146,14 @@ absl::StatusOr<TrialResult> ReplaySession::RunTrial(
       return absl::CancelledError("Replay cancelled");
     return absl::InvalidArgumentError(error.what());
   }
+}
+
+absl::StatusOr<double> ReplaySession::RinkCameraRotation(const stitching::PlaybackRinkMap& map) const {
+  const auto rotation = map.OutputRotation(impl_->output_generation, impl_->width, impl_->height);
+  if (!rotation || map.fit.state != stitching::RinkMapState::kReady)
+    return absl::FailedPreconditionError(
+        "Rink-aware framing requires a reviewed map matching this recording's calibration and canvas");
+  return *rotation;
 }
 
 const std::vector<Frame>& ReplaySession::original() const {
@@ -1166,7 +1225,7 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
             "A trial descriptor cannot replace training CSVs");
     }
     for (const char* key : {"source_artifact", "effective_artifact"}) {
-      if (recording["config_provenance"][key])
+      if (recording["config_provenance"] && recording["config_provenance"][key])
         require(
             !protects(artifact_path(directory, recording["config_provenance"][key])),
             "A trial descriptor cannot replace original configuration artifacts");
@@ -1198,6 +1257,20 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
     document["base_checkpoint"] = hm::play_tracker::serialize_snapshot(base.snapshot());
     document["tuning"] = tuning_node(trial.tuning);
     document["update_motion_tuning"] = trial.tuning.update_motion_tuning;
+    if (trial.rink_camera) {
+      require(bool(trial.rink_camera->map), "Rink trial has no map snapshot");
+      const auto rotation = RinkCameraRotation(*trial.rink_camera->map);
+      require(rotation.ok(), rotation.status().ToString());
+      auto guide = document["rink_camera"];
+      guide["version"] = 1;
+      guide["anticipate"] = trial.rink_camera->settings.anticipate;
+      guide["frame_goals"] = trial.rink_camera->settings.frame_goals;
+      guide["adaptive_zoom"] = trial.rink_camera->settings.adaptive_zoom;
+      guide["output_generation"] = impl_->output_generation;
+      guide["rotation_degrees"] = *rotation;
+      guide["reviewed_map"] = trial.rink_camera->map->source_document;
+      guide["scope"] = "Experimental replay framing adjustment; native tracking inputs and state unchanged";
+    }
     auto binding = document["media"];
     binding["path"] = fs::absolute(media.path).string();
     binding["size_bytes"] = fs::file_size(media.path);
@@ -1225,6 +1298,7 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
       stitching["shadow_lift_black_point"] = media.stitching->shadow_lift_black_point;
       stitching["blend_mode"] = media.stitching->blend_mode;
       stitching["blend_feather_fraction"] = media.stitching->blend_feather_fraction;
+      stitching["max_output_width"] = media.stitching->max_output_width;
       for (const auto& source : media.stitching->cameras) {
         YAML::Node camera;
         camera["offset_ns"] = source.offset_ns;
@@ -1264,6 +1338,15 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
       }
       row["edge_rotation_left"] = frame.edge_rotation_left;
       row["edge_rotation_right"] = frame.edge_rotation_right;
+      if (frame.rink_camera) {
+        auto guide = row["rink_camera"];
+        guide["active"] = frame.rink_camera->active;
+        guide["located_players"] = frame.rink_camera->located;
+        guide["speed_mps"] = frame.rink_camera->speed_mps;
+        guide["lead_pixels"] = frame.rink_camera->lead_pixels;
+        guide["zoom_ratio"] = frame.rink_camera->zoom_ratio;
+        guide["goal"] = frame.rink_camera->goal;
+      }
       document["frames"].push_back(row);
     }
     YAML::Emitter emitter;

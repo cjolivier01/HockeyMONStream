@@ -5,6 +5,7 @@
 #include "src/apps/hstream-ui/HighlightPlan.h"
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
+#include "src/apps/hstream-ui/ValueControlWheel.h"
 
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentPreviewWorker.h"
@@ -560,12 +561,15 @@ struct CameraExperimentDialog::Impl {
   struct WorkResult {
     std::shared_ptr<replay::ReplaySession> session;
     std::optional<replay::TrialResult> trial;
+    std::optional<replay::TrialResult> native_trial;
     std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask;
     std::string rink_mask_reason;
     std::string error;
     std::pair<unsigned, unsigned> media_size;
     QString media_path;
     std::optional<replay::StitchingMedia> stitching;
+    std::shared_ptr<const hm::stitching::PlaybackRinkMap> rink_map;
+    std::string rink_map_reason;
   };
   CameraExperimentDialog* dialog;
   QLineEdit* manifest{nullptr};
@@ -587,6 +591,12 @@ struct CameraExperimentDialog::Impl {
   QCheckBox* draw_players{nullptr};
   QCheckBox* draw_play{nullptr};
   QCheckBox* draw_rink{nullptr};
+  QCheckBox* rink_aware{nullptr};
+  QCheckBox* rink_anticipate{nullptr};
+  QCheckBox* rink_goals{nullptr};
+  QCheckBox* rink_zoom{nullptr};
+  QLabel* rink_status{nullptr};
+  std::shared_ptr<const hm::stitching::PlaybackRinkMap> rink_map;
   std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask;
   QLineEdit* trial_name{nullptr};
   QComboBox* comparison{nullptr};
@@ -719,6 +729,9 @@ struct CameraExperimentDialog::Impl {
     // while that graph is being released, without stealing focus on each key.
     settings->setEnabled(!calculating && !closing_result && !playing && (!loading || !preview_open));
     parameter_tabs->setEnabled(editable);
+    rink_aware->setEnabled(editable && prepared && bool(rink_map));
+    for (auto* option : {rink_anticipate, rink_goals, rink_zoom})
+      option->setEnabled(editable && prepared && bool(rink_map) && rink_aware->isChecked());
     fast->setEnabled(editable);
     follower->setEnabled(editable);
     trial_name->setEnabled(editable);
@@ -915,9 +928,22 @@ struct CameraExperimentDialog::Impl {
         else {
           result.stitching = std::move(*sources);
           result.media_size = {result.session->width(), result.session->height()};
+          auto map = hm::stitching::LoadPlaybackRinkMap(media.toStdString(), [token] { return token->load(); });
+          if (map.ok()) {
+            const auto rotation = result.session->RinkCameraRotation(**map);
+            if (rotation.ok() && std::abs(*rotation - result.stitching->rotation) < 1e-8)
+              result.rink_map = *map;
+            else
+              result.rink_map_reason = rotation.ok()
+                  ? "The selected cameras use a different rotation from this recording."
+                  : std::string(rotation.status().message());
+          } else {
+            result.rink_map_reason = std::string(map.status().message());
+          }
         }
       } else if (!media.isEmpty()) {
         result.media_size = probe_media(media, &result.error);
+        result.rink_map_reason = "Select Original cameras to bind a reviewed rink map to this recording.";
       }
       return result;
     });
@@ -935,6 +961,15 @@ struct CameraExperimentDialog::Impl {
     }
     const auto prepared = session;
     const auto parameters = *values;
+    std::optional<replay::RinkCameraSetup> rink_setup;
+    if (rink_aware->isChecked()) {
+      if (!rink_map) {
+        show_status("Prepare original cameras with a matching reviewed rink map first.", true);
+        return;
+      }
+      rink_setup = replay::RinkCameraSetup{
+          rink_map, {rink_anticipate->isChecked(), rink_goals->isChecked(), rink_zoom->isChecked()}};
+    }
     const std::string name = trial_name->text().trimmed().isEmpty() ? "Trial " + std::to_string(trials.size() + 1)
                                                                     : trial_name->text().trimmed().toStdString();
     cancellation = std::make_shared<std::atomic<bool>>(false);
@@ -942,9 +977,18 @@ struct CameraExperimentDialog::Impl {
     close_preview();
     busy(true);
     show_status("Restoring the same starting state and calculating this trial…");
-    work = std::async(std::launch::async, [prepared, parameters, token, name]() {
+    work = std::async(std::launch::async, [prepared, parameters, token, name, rink_setup]() {
       WorkResult result;
-      auto trial = prepared->RunTrial(name, parameters, token.get());
+      if (rink_setup) {
+        auto native = prepared->RunTrial(name + " · native", parameters, token.get());
+        if (!native.ok()) {
+          result.error = native.status().ToString();
+          return result;
+        }
+        result.native_trial = std::move(*native);
+      }
+      auto trial = prepared->RunTrial(
+          rink_setup ? name + " · rink-aware" : name, parameters, token.get(), rink_setup ? &*rink_setup : nullptr);
       if (trial.ok())
         result.trial = std::move(*trial);
       else
@@ -1086,6 +1130,15 @@ struct CameraExperimentDialog::Impl {
                   .arg(frame.follower->top, 0, 'f', 1)
                   .arg(frame.follower->width(), 0, 'f', 1)
                   .arg(frame.follower->height(), 0, 'f', 1);
+    if (frame.rink_camera) {
+      const auto& guide = *frame.rink_camera;
+      text += guide.active ? QString("  ·  Rink: %1 m/s · lead %2 px · width ×%3%4")
+                                 .arg(guide.speed_mps, 0, 'f', 1)
+                                 .arg(guide.lead_pixels, 0, 'f', 0)
+                                 .arg(guide.zoom_ratio, 0, 'f', 2)
+                                 .arg(guide.goal ? (guide.goal < 0 ? " · left goal" : " · right goal") : "")
+                           : "  ·  Rink: waiting for consistent player motion";
+    }
     frame_label->setText(text);
     if (!timeline->isSliderDown())
       timeline->setValue(static_cast<int>(current));
@@ -1136,6 +1189,13 @@ struct CameraExperimentDialog::Impl {
         media_size = result.media_size;
         prepared_media = result.media_path;
         prepared_stitching = std::move(result.stitching);
+        rink_map = std::move(result.rink_map);
+        rink_status->setText(
+            rink_map
+                ? "Reviewed map matches this recording. Apply creates native and rink-aware views with identical camera overrides."
+                : QString::fromStdString(result.rink_map_reason));
+        if (!rink_map)
+          rink_aware->setChecked(false);
         changing_selection = true;
         comparison->clear();
         comparison->addItems({"Recorded original", "Recomputed baseline"});
@@ -1152,8 +1212,12 @@ struct CameraExperimentDialog::Impl {
                 .arg(session->width())
                 .arg(session->height()));
       } else if (result.trial) {
-        trials.push_back(std::move(*result.trial));
         changing_selection = true;
+        if (result.native_trial) {
+          trials.push_back(std::move(*result.native_trial));
+          comparison->addItem(QString::fromStdString(trials.back().name));
+        }
+        trials.push_back(std::move(*result.trial));
         comparison->addItem(QString::fromStdString(trials.back().name));
         comparison->setCurrentIndex(comparison->count() - 1);
         changing_selection = false;
@@ -1193,6 +1257,7 @@ CameraExperimentDialog::CameraExperimentDialog(
     const std::map<QString, double>& camera_controls,
     qint64 playback_start_ms)
     : QDialog(parent, Qt::Window), impl_(std::make_unique<Impl>(this)) {
+  qApp->installEventFilter(this);
   auto& s = *impl_;
   s.initial_controls = camera_controls;
   setWindowTitle("HStream · Camera experiments");
@@ -1477,6 +1542,36 @@ CameraExperimentDialog::CameraExperimentDialog(
         "ignore-largest-bbox-count"},
        {"Ignore_Oversized_Players", "Ignore oversized players (0 / 1)", 0, 1, 0, "ignore-oversized-bboxes"},
        {"Oversized_Player_Percent", "Larger than average (%)", 0, 1000, 50, "oversized-bbox-percent"}});
+  auto* rink_tab = new QWidget();
+  auto* rink_layout = new QVBoxLayout(rink_tab);
+  s.rink_aware = new QCheckBox("Experimental rink-aware framing");
+  s.rink_aware->setObjectName("experimentRinkAware");
+  s.rink_aware->setEnabled(false);
+  rink_layout->addWidget(s.rink_aware);
+  s.rink_anticipate = new QCheckBox("Lead the direction of play");
+  s.rink_anticipate->setObjectName("experimentRinkAnticipate");
+  s.rink_goals = new QCheckBox("Include the nearby goal during end-zone play");
+  s.rink_goals->setObjectName("experimentRinkGoals");
+  s.rink_zoom = new QCheckBox("Widen for rushes; tighten when play settles");
+  s.rink_zoom->setObjectName("experimentRinkZoom");
+  for (auto* option : {s.rink_anticipate, s.rink_goals, s.rink_zoom}) {
+    option->setChecked(true);
+    option->setEnabled(false);
+    rink_layout->addWidget(option);
+  }
+  s.rink_status = new QLabel("Prepare original cameras with a reviewed rink map to try this option.");
+  s.rink_status->setObjectName("experimentRinkStatus");
+  s.rink_status->setWordWrap(true);
+  rink_layout->addWidget(s.rink_status);
+  auto* rink_help = new QLabel(
+      "Uses collective player motion, without puck or team identification. "
+      "The adjustment is limited and smoothed, and falls back to the native camera when motion is uncertain. "
+      "Trials affect this experiment only. Ice-mask filtering is unchanged.");
+  rink_help->setWordWrap(true);
+  rink_layout->addWidget(rink_help);
+  rink_layout->addStretch();
+  tabs->addTab(rink_tab, "Rink framing");
+  connect(s.rink_aware, &QCheckBox::toggled, this, [this] { impl_->update_controls(); });
   auto* legacy = new QWidget();
   auto* legacy_layout = new QFormLayout(legacy);
   auto* legacy_help = new QLabel(
@@ -1674,6 +1769,7 @@ CameraExperimentDialog::CameraExperimentDialog(
 }
 
 CameraExperimentDialog::~CameraExperimentDialog() {
+  qApp->removeEventFilter(this);
   impl_->video->requestRedraw = {};
   if (impl_->cancellation)
     impl_->cancellation->store(true);
@@ -1681,6 +1777,10 @@ CameraExperimentDialog::~CameraExperimentDialog() {
     impl_->work.wait();
   // Fence the renderer while its Qt native child is still alive.
   impl_->preview.Close();
+}
+
+bool CameraExperimentDialog::eventFilter(QObject* watched, QEvent* event) {
+  return route_value_control_wheel(this, watched, event) || QDialog::eventFilter(watched, event);
 }
 
 void CameraExperimentDialog::done(int result) {

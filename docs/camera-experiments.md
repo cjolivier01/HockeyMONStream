@@ -81,6 +81,59 @@ Experiments use their own controls and tracker instances, independent of live
 Program controls and presets. Changes in an open experiment do not change the
 main window, and later main-window changes do not overwrite the experiment.
 
+## Rink-aware framing experiment
+
+With **Original cameras** selected, prepare a recording whose calibration matches
+a saved, reviewed rink map. The **Rink framing** tab enables an optional framing
+adjustment with independent controls for anticipating play, including the nearby
+goal, and widening during rushes or tightening during settled play. It defaults
+off. Partial, missing or stale maps leave this option unavailable with a reason;
+ordinary camera experiments remain available.
+
+Apply creates two named views, **native** and **rink-aware**, with identical
+camera overrides. They differ only in the rink adjustment and replay exactly
+the same native player observations and starting state. The
+guide estimates collective motion from box feet in rink metres; it has no puck
+or home/away classifier. Existing ice-mask filtering and native player exclusions
+are preserved. The timeline shows each resulting Program path and crop width;
+the frame label reports speed, added lead, width ratio and goal-framing requests.
+A goal request is a framing preference, not a guarantee that the goal fits at
+every instant while the camera catches up.
+
+The adjustment uses at most 256 observations and 512 motion histories, rejects
+implausible motion jumps, waits for three consistent tracks, and resets across
+time gaps and seeks. Pan/zoom changes are bounded and smoothed. Without reliable
+motion it returns toward the native camera. This is an experiment-only option:
+live Program tracking, telemetry measurements and game presets are unchanged.
+Save trial retains the exact map evidence, settings, calibration identity and
+per-frame diagnostics alongside its camera trajectory.
+The **Play tracking** overlay continues to show the native policy's boxes and
+movement thresholds before the adjustment; the visual timeline and frame label
+show the selected trial's final Program rectangle.
+
+`RinkCameraGuide.*` performs this metadata-only computation inside trial replay.
+`PlaybackRinkMap::Project` prepares the two goal anchors with a bounded inverse
+projection; it does not run for every player/frame. Original-camera preparation
+retains the published maps' width cap, including capped historical canvases.
+
+For a numerical comparison without video decoding:
+
+```sh
+bazelisk build --config=opt //src/libs/playtracker_replay:rink_camera_comparison
+bazel-bin/src/libs/playtracker_replay/rink_camera_comparison \
+  /path/game_telemetry-1.db /path/game 600 20 /tmp/comparison.csv
+```
+
+Offsets are relative to the recording's first PTS. The output aligns baseline
+and trial rectangles to the same sample and reports guide diagnostics. Existing
+output files are refused. For matched GPU screenshots and a moving A/B playback
+check, the dialog test accepts `--rink-comparison RECORDING.db GAME_DIRECTORY
+ARTIFACT_DIR OFFSET DURATION PLAYBACK_START`; the final value is the original
+source-time launch origin in seconds. This check captures three matching samples
+from both views; images stay outside the source repository.
+
+## Preview controls and drawings
+
 **Player boxes**, **Play tracking**, and **Rink mask** above the preview can change
 while playing or paused. Player boxes use the recorded observations, with stable
 colors and gray `IGNORED` labels for the selected camera policy's exclusions.

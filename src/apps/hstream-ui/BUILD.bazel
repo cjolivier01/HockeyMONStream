@@ -299,6 +299,8 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:hugin_project",
         "//src/libs/common:baseline_config",
         "//src/libs/common:user_config",
         "//src/libs/common:utils",
@@ -387,6 +389,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":value_control_wheel",
         "//src/apps/apps-common:rink_mask_image",
         ":native_preview_surface",
         ":action_icons",
