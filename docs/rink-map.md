@@ -88,7 +88,24 @@ constrain it. Duplicate detections do not supply missing geometry. Nearly
 degenerate fits, implausible plane axes, and contradictory marks are rejected.
 Rejected fits can also be saved as partial evidence, retaining every mark for
 later correction. Parallel goal lines alone remain partial even with measurement
-noise. Partial and rejected fits never enable player positions.
+noise. A **Line: Left/Right goal line** records two points anywhere along the
+paint; those clicks are not labelled as board intersections. With both goal
+lines marked, add the far straight boards and centre-ice point, or both straight
+board lines. Alternatively, mark all four **Point: Left/Right goal line / near/far
+boards** intersections at ice level. These point identities locate the ends;
+the midpoint of two arbitrary image clicks does not locate the goal centre.
+
+If an existing goal line already ends at both boards, select its row and choose
+**Use goal-line ends at boards…**. The image labels its endpoints **End 1** and
+**End 2**. Choose the end at the near boards; the other becomes the far-board
+point. This replaces the line with two confirmed point marks, preserves their
+camera coordinates and enabled state, and is one undoable edit. Repeat for the
+other goal line to supply all four corners without clicking them again. The
+points can then supply both the map fit and optional leveling. Automatic line
+ends require the same review because detections may stop short of the boards.
+
+The editor's missing-mark suggestions include these goal-line combinations.
+Partial and rejected fits never enable player positions.
 
 If the near boards hide the ice edge, both identified blue lines, the far straight
 boards and a visible centre-ice point can constrain the map. The far board and

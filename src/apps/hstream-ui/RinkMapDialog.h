@@ -34,6 +34,7 @@ class RinkMapDialog : public QDialog {
   void update(bool detect = false, bool use_mask = false);
   void rebuildTable();
   void addPoint(int camera, QPointF point);
+  void useGoalLineEnds();
   bool save();
   void setBusy(bool busy);
   void restorePreview();
@@ -78,6 +79,7 @@ class RinkMapDialog : public QDialog {
   QPushButton* leveling_{nullptr};
   bool leveling_requested_{false};
   QPushButton* remove_{nullptr};
+  QPushButton* goal_line_ends_{nullptr};
   QPushButton* undo_{nullptr};
   QPushButton* redo_{nullptr};
   std::array<QPushButton*, 2> board_shortcuts_{};

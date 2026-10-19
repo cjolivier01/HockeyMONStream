@@ -93,6 +93,63 @@ cv::Point2d sourcePoint(cv::Point2d rink_point) {
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  // Read-only demonstration: reuse goal-line endpoints projected by an existing
+  // saved map, then exercise explicit endpoint identification in the real UI.
+  if (argc == 4 && QString(argv[1]) == "--inspect-goal-ends") {
+    const auto snapshot = LoadRinkMapSnapshot(QString::fromLocal8Bit(argv[2]));
+    if (!snapshot.ok() || !snapshot->saved_map)
+      return 1;
+    const auto document = rink::ParseRinkMap(*snapshot->saved_map);
+    if (!document.ok())
+      return 1;
+    const auto mapped = UpdateRinkMap(*snapshot, *document, false, {});
+    if (!mapped.ok() || mapped->fit.state != rink::RinkMapState::kReady)
+      return 1;
+    RinkMapDialog dialog(QString::fromLocal8Bit(argv[2]));
+    dialog.show();
+    if (!idle(dialog))
+      return 1;
+    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    while (table->rowCount()) {
+      table->selectRow(0);
+      dialog.findChild<QPushButton*>("removeRinkMapObservationButton")->click();
+      if (!idle(dialog))
+        return 1;
+    }
+    for (int camera = 0; camera < 2; ++camera) {
+      const auto& line = mapped->projected_layout[camera][camera ? 5 : 1];
+      for (const auto p : {line.front(), line.back()})
+        if (!mark(dialog, camera, camera ? "goal-right-line" : "goal-left-line", {p.x, p.y}))
+          return 1;
+    }
+    if (table->rowCount() != 2)
+      return 1;
+    const QString prefix = QString::fromLocal8Bit(argv[3]);
+    for (int row : {0, 2}) {
+      table->selectRow(row);
+      QTest::qWait(50);
+      auto* ends = dialog.findChild<QPushButton*>("rinkMapGoalLineEndsButton");
+      if (!ends->isEnabled())
+        return 1;
+      if (row == 0 && !dialog.grab().save(prefix + "-numbered.png"))
+        return 1;
+      QTimer::singleShot(0, &dialog, [&] {
+        if (auto* prompt = dialog.findChild<QMessageBox*>("rinkMapGoalLineEndsPrompt")) {
+          if (row == 0)
+            prompt->grab().save(prefix + "-prompt.png");
+          prompt->findChild<QPushButton*>("rinkMapEnd1Near")->click();
+        }
+      });
+      ends->click();
+      if (!idle(dialog))
+        return 1;
+    }
+    std::cout << dialog.findChild<QLabel*>("rinkMapStatus")->text().toStdString() << '\n';
+    return dialog.findChild<QPushButton*>("saveRinkMapButton")->text() == "Save reviewed map" &&
+            dialog.grab().save(prefix + "-converted.png")
+        ? 0
+        : 1;
+  }
   if (argc == 4 && QString(argv[1]) == "--inspect-saved") {
     RinkMapDialog dialog(QString::fromLocal8Bit(argv[2]));
     dialog.show();
@@ -482,6 +539,112 @@ int main(int argc, char** argv) {
   }
   snapshot = LoadRinkMapSnapshot(game.path());
   if (!expect(snapshot.ok(), "Reload the saved history fixture"))
+    return 1;
+  document.observations.clear();
+  for (bool left : {true, false}) {
+    const std::string end = left ? "goal-left" : "goal-right";
+    rink::RinkMapObservation line;
+    line.feature = end + "-line";
+    line.line = true;
+    line.camera = left ? 1 : 0;
+    line.automatic = left;
+    line.pixels = {
+        sourcePoint(*rink::RinkFeaturePoint(document.layout, end + (left ? "-near" : "-far"))),
+        sourcePoint(*rink::RinkFeaturePoint(document.layout, end + (left ? "-far" : "-near")))};
+    document.observations.push_back(line);
+  }
+  const auto goal_fixture = UpdateRinkMap(*snapshot, document, false, {});
+  if (!expect(
+          goal_fixture.ok() && SaveRinkMap(*snapshot, goal_fixture->document).ok(),
+          "Save goal lines with board endpoints"))
+    return 1;
+  {
+    RinkMapDialog dialog(game.path());
+    dialog.show();
+    ok &= expect(idle(dialog), "Goal-line fixture opens");
+    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    auto* ends = dialog.findChild<QPushButton*>("rinkMapGoalLineEndsButton");
+    auto* undo = dialog.findChild<QPushButton*>("rinkMapUndoButton");
+    auto* redo = dialog.findChild<QPushButton*>("rinkMapRedoButton");
+    auto* save = dialog.findChild<QPushButton*>("saveRinkMapButton");
+    auto* guidance = dialog.findChild<QLabel*>("rinkMapGuidanceLabel");
+    dialog.resize(1100, 760);
+    QTest::qWait(20);
+    ok &= expect(
+        guidance->height() >= guidance->heightForWidth(guidance->width()),
+        "Missing-landmark guidance stays readable in a smaller dialog");
+    ok &= expect(
+        save->text() == "Save partial map" && guidance->text().contains("Both goal lines are marked"),
+        "Two generic lines stay partial and explain how to reuse their board endpoints");
+    auto convert = [&](int row, const char* choice) {
+      table->selectRow(row);
+      if (!expect(ends->isEnabled(), "Selected goal line can identify its board endpoints"))
+        return false;
+      bool answered = false;
+      QTimer::singleShot(0, &dialog, [&] {
+        if (auto* prompt = dialog.findChild<QMessageBox*>("rinkMapGoalLineEndsPrompt")) {
+          answered = true;
+          prompt->findChild<QPushButton*>(choice)->click();
+        }
+      });
+      ends->click();
+      return expect(answered && idle(dialog), "Endpoint confirmation completes");
+    };
+    ok &= convert(0, "rinkMapCancelEnds");
+    ok &= expect(
+        table->rowCount() == 2 && !dialog.isWindowModified() && !undo->isEnabled() && !redo->isEnabled(),
+        "Cancel leaves the original goal lines and history untouched");
+    table->item(0, 0)->setCheckState(Qt::Unchecked);
+    ok &= expect(idle(dialog), "Disable a goal line before conversion");
+    ok &= convert(0, "rinkMapEnd1Near");
+    ok &= expect(
+        table->rowCount() == 3 && table->item(0, 0)->checkState() == Qt::Unchecked &&
+            table->item(1, 0)->checkState() == Qt::Unchecked &&
+            dialog.findChild<QTabWidget*>("rinkMapCameraTabs")->currentIndex() == 1,
+        "Conversion preserves the disabled state and selected camera");
+    undo->click();
+    ok &= expect(idle(dialog) && table->rowCount() == 2, "One Undo restores the original goal line");
+    undo->click();
+    ok &= expect(idle(dialog) && !dialog.isWindowModified(), "Undo restores the original enabled state");
+    ok &= convert(0, "rinkMapEnd1Near");
+    ok &= expect(!ends->isEnabled(), "Point marks cannot be converted again");
+    ok &= convert(2, "rinkMapEnd2Near");
+    ok &= expect(
+        table->rowCount() == 4 && save->text() == "Save reviewed map" &&
+            dialog.findChild<QLabel*>("rinkMapMinimapReadiness")->text().contains("Geometry ready") &&
+            dialog.findChild<QLabel*>("rinkMapFramingReadiness")->text().contains("Geometry ready"),
+        "Both endpoint orders produce a usable map from the four existing corners");
+    undo->click();
+    ok &= expect(
+        idle(dialog) && table->rowCount() == 3 && save->text() == "Save partial map",
+        "Undoing a conversion also removes readiness");
+    redo->click();
+    ok &= expect(idle(dialog) && table->rowCount() == 4, "Redo restores both confirmed point marks");
+    save->click();
+    const auto converted_snapshot = LoadRinkMapSnapshot(game.path());
+    const auto converted = converted_snapshot.ok() && converted_snapshot->saved_map
+        ? rink::ParseRinkMap(*converted_snapshot->saved_map)
+        : absl::StatusOr<rink::RinkMapDocument>(absl::InternalError("missing saved map"));
+    if (!expect(converted.ok() && converted->observations.size() == 4, "Converted corners persist"))
+      return 1;
+    for (size_t i = 0; i < 4; ++i) {
+      const auto& corner = converted->observations[i];
+      const auto& original = document.observations[i / 2];
+      const size_t endpoint = i < 2 ? i : 3 - i;
+      ok &= expect(
+          !corner.line && !corner.automatic && corner.camera == original.camera && corner.enabled &&
+              corner.feature == std::string(i < 2 ? "goal-left" : "goal-right") + (i % 2 ? "-far" : "-near") &&
+              corner.pixels.size() == 1 && cv::norm(corner.pixels[0] - original.pixels[endpoint]) < 1e-8,
+          "Confirmed intersections retain exact source pixels and camera, with the chosen near/far identities");
+    }
+    const auto result = UpdateRinkMap(*converted_snapshot, *converted, false, {});
+    ok &= expect(
+        result.ok() && result->fit.state == rink::RinkMapState::kReady &&
+            RinkLandmarkLeveling(*result, {0, 0, 0}, 0).ok(),
+        "Saved converted endpoints supply both the metric map and optional leveling");
+  }
+  snapshot = LoadRinkMapSnapshot(game.path());
+  if (!expect(snapshot.ok(), "Reload after saving converted goal lines"))
     return 1;
   document.observations.clear();
   for (const char* id : {"center-near", "center-far", "blue-left-near", "blue-left-far"}) {

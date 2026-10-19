@@ -23,6 +23,7 @@
 #include <QtWidgets/QGraphicsEllipseItem>
 #include <QtWidgets/QGraphicsItemGroup>
 #include <QtWidgets/QGraphicsPixmapItem>
+#include <QtWidgets/QGraphicsRectItem>
 #include <QtWidgets/QGraphicsScene>
 #include <QtWidgets/QGraphicsSceneMouseEvent>
 #include <QtWidgets/QGraphicsTextItem>
@@ -32,6 +33,7 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
@@ -109,6 +111,10 @@ QString featureName(const rink::RinkMapObservation& observation) {
     if (feature.id == observation.feature)
       return QString::fromUtf8(feature.name);
   return QString::fromStdString(observation.label) + " — choose identity";
+}
+bool hasGoalLineEnds(const rink::RinkMapObservation& observation) {
+  return observation.line && observation.pixels.size() >= 2 &&
+      (observation.feature == "goal-left-line" || observation.feature == "goal-right-line");
 }
 class Anchor : public QGraphicsEllipseItem {
  public:
@@ -318,6 +324,18 @@ class RinkMapCanvas : public QGraphicsView {
           anchor->setData(2, int(sample));
           anchor->setPos(observation.pixels[sample].x, observation.pixels[sample].y);
           anchor->setEnabled(editing);
+          if (int(index) == selected && hasGoalLineEnds(observation) &&
+              (sample == 0 || sample + 1 == observation.pixels.size())) {
+            auto* label = new QGraphicsTextItem(sample == 0 ? "End 1" : "End 2", anchor);
+            label->setPos(8, -26);
+            label->setDefaultTextColor(Qt::black);
+            label->setAcceptedMouseButtons(Qt::NoButton);
+            auto* background = new QGraphicsRectItem(label->boundingRect(), label);
+            background->setBrush(Qt::white);
+            background->setPen(QPen(Qt::black, 1));
+            background->setFlag(QGraphicsItem::ItemStacksBehindParent);
+            background->setAcceptedMouseButtons(Qt::NoButton);
+          }
         }
       }
     }
@@ -504,9 +522,14 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   }
   preview_layout->addWidget(tabs_, 1);
   splitter->addWidget(preview);
-  sidebar_ = new QWidget();
+  auto* sidebar_scroll = new QScrollArea();
+  sidebar_scroll->setWidgetResizable(true);
+  sidebar_scroll->setFrameShape(QFrame::NoFrame);
+  sidebar_ = sidebar_scroll;
   sidebar_->setMinimumWidth(360);
-  auto* side = new QVBoxLayout(sidebar_);
+  auto* sidebar_content = new QWidget();
+  sidebar_scroll->setWidget(sidebar_content);
+  auto* side = new QVBoxLayout(sidebar_content);
   side->setContentsMargins(0, 0, 0, 0);
   auto* heading = new QLabel("Observed landmarks");
   side->addWidget(heading);
@@ -521,6 +544,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   guidance_ = new QLabel();
   guidance_->setObjectName("rinkMapGuidanceLabel");
   guidance_->setWordWrap(true);
+  guidance_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
   side->addWidget(guidance_);
   auto* board_actions = new QHBoxLayout();
   for (int i = 0; i < 2; ++i) {
@@ -548,7 +572,15 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   side->addWidget(table_, 1);
   remove_ = new QPushButton(action_icon(ActionIcon::Remove), "Remove selected mark");
   remove_->setObjectName("removeRinkMapObservationButton");
-  side->addWidget(remove_);
+  goal_line_ends_ = new QPushButton(action_icon(ActionIcon::Apply), "Use goal-line ends at boards…");
+  goal_line_ends_->setObjectName("rinkMapGoalLineEndsButton");
+  goal_line_ends_->setToolTip(
+      "Select a goal-line row. Reuse its existing endpoints as near/far board intersections after identifying the near end.");
+  auto* row_actions = new QHBoxLayout();
+  row_actions->addWidget(goal_line_ends_);
+  row_actions->addWidget(remove_);
+  side->addLayout(row_actions);
+  connect(goal_line_ends_, &QPushButton::clicked, this, &RinkMapDialog::useGoalLineEnds);
   auto* layout_box = new QGroupBox("Rink dimensions (assumptions, metres)");
   auto* form = new QFormLayout(layout_box);
   const char* labels[]{"Length", "Width", "Centre to blue line", "Goal line from end", "Corner radius"};
@@ -782,6 +814,11 @@ void RinkMapDialog::travelHistory(bool redo) {
 void RinkMapDialog::refreshEditControls() {
   undo_->setEnabled(!busy_ && (!undo_history_.empty() || pending_dimension_edit_.has_value()));
   redo_->setEnabled(!busy_ && redo_history_.size() && !pending_dimension_edit_);
+  const int selected = table_->currentRow();
+  goal_line_ends_->setEnabled(
+      snapshot_ && !busy_ && !refresh_timer_.isActive() && state_.document.observations.size() < 128 && selected >= 0 &&
+      size_t(selected) < state_.document.observations.size() &&
+      hasGoalLineEnds(state_.document.observations[selected]));
   const bool dirty = hasUnsavedEdits();
   setWindowModified(dirty);
   edited_->setText(dirty ? "Unsaved changes — save this map before playback." : "No unsaved changes.");
@@ -835,17 +872,31 @@ void RinkMapDialog::refreshGuidance() {
         "Adding more marks is not necessarily the fix. You can still save partial evidence.";
   } else {
     readiness = "Not ready — more independent landmarks needed";
-    help = cross && !points && !identities.count("near-boards") && !identities.count("far-boards")
-        ? "Centre, blue and goal lines are parallel. They do not pin down positions across the rink, so players and play cannot be placed reliably."
-        : "The assigned marks do not yet locate positions both along and across the ice. Repeated marks of one feature are not enough.";
+    const bool only_cross_lines =
+        cross && !points && !identities.count("near-boards") && !identities.count("far-boards");
+    const bool goal_line_ends =
+        only_cross_lines && identities.count("goal-left-line") && identities.count("goal-right-line");
+    if (goal_line_ends) {
+      help =
+          "Both goal lines are marked. To locate goal centres, identify their board intersections. "
+          "If your clicks already meet the boards at ice level, select each goal-line row and choose "
+          "Use goal-line ends at boards. This reuses your clicks.";
+    } else {
+      help = only_cross_lines
+          ? "Centre, blue and goal lines are parallel. They do not pin down positions across the rink, so players and play cannot be placed reliably."
+          : "The assigned marks do not yet locate positions both along and across the ice. Repeated marks of one feature are not enough.";
+    }
     // Suggestions are alternatives, never a second readiness gate. Only the
     // calibrated fit can accept the marks, including combinations not listed.
     const std::vector<std::vector<std::string>> alternatives{
         {"blue-left-line", "blue-right-line", "far-boards", "center"},
+        {"goal-left-line", "goal-right-line", "far-boards", "center"},
+        {"goal-left-line", "goal-right-line", "near-boards", "far-boards"},
         {"center-line", "blue-left-line", "near-boards", "far-boards"},
         {"center-line", "blue-right-line", "near-boards", "far-boards"},
         {"center-near", "center-far", "blue-left-near", "blue-left-far"},
-        {"center-near", "center-far", "blue-right-near", "blue-right-far"}};
+        {"center-near", "center-far", "blue-right-near", "blue-right-far"},
+        {"goal-left-near", "goal-left-far", "goal-right-near", "goal-right-far"}};
     std::vector<std::string> missing;
     for (const auto& alternative : alternatives) {
       std::vector<std::string> candidate;
@@ -866,18 +917,17 @@ void RinkMapDialog::refreshGuidance() {
         for (const auto& feature : rink::RinkMapFeatures())
           if (id == feature.id)
             names << feature.name;
-      help += "\nTo complete the map, add or enable: " + names.join(", ") + ".";
+      help +=
+          (goal_line_ends ? "\nOr add or enable: " : "\nTo complete the map, add or enable: ") + names.join(", ") + ".";
     }
-    help +=
-        "\nUse ice-level marks, never board tops. Hidden near ice? Both blue lines, far boards and centre ice can suffice. Save partial map keeps unfinished work.";
+    help += "\nUse ice-level marks, never board tops. Save partial map keeps unfinished work.";
   }
   minimap_readiness_->setText("Playback mini-map: " + readiness);
   framing_readiness_->setText("Program framing: " + readiness);
   for (auto* label : {minimap_readiness_, framing_readiness_})
     label->setStyleSheet("font-weight: bold; color: " + color);
   if (unassigned)
-    help += QString("\nAssign the %1 unassigned detection(s) in the list to use them.")
-                .arg(unassigned);
+    help += QString("\nAssign the %1 unassigned detection(s) in the list to use them.").arg(unassigned);
   guidance_->setText(QString("%1 enabled marks · %2 distinct identities · %3 unassigned\n%4")
                          .arg(enabled)
                          .arg(identities.size())
@@ -1148,6 +1198,61 @@ void RinkMapDialog::addPoint(int camera, QPointF point) {
   update();
 }
 
+void RinkMapDialog::useGoalLineEnds() {
+  const int row = table_->currentRow();
+  if (busy_ || refresh_timer_.isActive() || !snapshot_ || close_prompt_active_ || row < 0 ||
+      size_t(row) >= state_.document.observations.size() || state_.document.observations.size() >= 128)
+    return;
+  const auto original = state_.document.observations[row];
+  if (!hasGoalLineEnds(original))
+    return;
+  QMessageBox prompt(
+      QMessageBox::Question,
+      "Identify the goal-line ends",
+      QString(
+          "%1: use the two numbered ends already marked in the camera image.\n\n"
+          "Both ends must be where this goal line meets the boards at ice level. "
+          "Which end meets the near boards (closest to the camera)?\n\n"
+          "If either end stops short of the boards or sits on a board top, cancel and adjust it first.")
+          .arg(featureName(original)),
+      QMessageBox::NoButton,
+      this);
+  prompt.setObjectName("rinkMapGoalLineEndsPrompt");
+  auto* first_near = prompt.addButton("End 1 is near", QMessageBox::AcceptRole);
+  auto* last_near = prompt.addButton("End 2 is near", QMessageBox::AcceptRole);
+  auto* cancel = prompt.addButton(QMessageBox::Cancel);
+  first_near->setObjectName("rinkMapEnd1Near");
+  last_near->setObjectName("rinkMapEnd2Near");
+  cancel->setObjectName("rinkMapCancelEnds");
+  first_near->setIcon(action_icon(ActionIcon::Apply));
+  last_near->setIcon(action_icon(ActionIcon::Apply));
+  prompt.setDefaultButton(cancel);
+  prompt.setEscapeButton(cancel);
+  close_prompt_active_ = true;
+  prompt.exec();
+  close_prompt_active_ = false;
+  if (prompt.clickedButton() != first_near && prompt.clickedButton() != last_near)
+    return;
+  const bool first_is_near = prompt.clickedButton() == first_near;
+  const std::string end = original.feature == "goal-left-line" ? "goal-left" : "goal-right";
+  auto point = [&](bool near) {
+    auto mark = original;
+    mark.feature = end + (near ? "-near" : "-far");
+    mark.label = featureName(mark).toStdString();
+    mark.line = false;
+    mark.automatic = false; // Explicitly confirmed points survive future model searches.
+    mark.confidence = 1;
+    mark.mask_revision.clear();
+    mark.rays.clear();
+    mark.pixels = {near == first_is_near ? original.pixels.front() : original.pixels.back()};
+    return mark;
+  };
+  recordEdit();
+  state_.document.observations[row] = point(true);
+  state_.document.observations.insert(state_.document.observations.begin() + row + 1, point(false));
+  update();
+}
+
 bool RinkMapDialog::save() {
   if (busy_ || !snapshot_ || !resolved_ || refresh_timer_.isActive())
     return false;
@@ -1166,6 +1271,8 @@ bool RinkMapDialog::save() {
   setStatus(
       state_.fit.state == rink::RinkMapState::kReady
           ? "Saved reviewed rink map and estimated goal centres for this calibration."
-          : "Saved partial observations. Goal locations remain unavailable until the map is constrained.");
+          : state_.fit.state == rink::RinkMapState::kInconsistent
+          ? "Saved all marks. Review the marked positions, identities and rink dimensions before using this map."
+          : "Saved all marks. To locate goal centres and players, add the missing landmarks listed above.");
   return true;
 }
