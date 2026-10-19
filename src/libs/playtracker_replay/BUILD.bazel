@@ -5,7 +5,9 @@ cc_library(
     include_prefix = "hstream/src/libs/playtracker_replay",
     visibility = ["//visibility:public"],
     deps = [
+        ":rink_camera_guide",
         "//src/libs/recording",
+        "//src/libs/stitching:playback_rink_map",
         "//src/libs/common:preview_overlay_meta",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
@@ -13,6 +15,31 @@ cc_library(
         "@hm//hockeymon/csrc/play_tracker",
         "@yaml-cpp",
     ],
+)
+
+cc_library(
+    name = "rink_camera_guide",
+    srcs = ["RinkCameraGuide.cpp"],
+    hdrs = ["RinkCameraGuide.h"],
+    include_prefix = "hstream/src/libs/playtracker_replay",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/stitching:playback_rink_map",
+        "@hm//hockeymon/csrc/play_tracker",
+    ],
+)
+
+cc_test(
+    name = "rink_camera_guide_test",
+    srcs = ["RinkCameraGuideTest.cpp"],
+    deps = [":rink_camera_guide"],
+)
+
+cc_binary(
+    name = "rink_camera_comparison",
+    srcs = ["RinkCameraComparison.cpp"],
+    tags = ["manual"],
+    deps = [":playtracker_replay"],
 )
 
 cc_test(

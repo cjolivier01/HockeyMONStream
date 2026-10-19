@@ -32,6 +32,19 @@ restored from the same immutable pre-frame checkpoint; recorded configuration
 events after the fork cannot overwrite its overrides. Repeated trial calls can
 run concurrently. A cancelled or failed call cannot mutate the session.
 
+An optional `RinkCameraSetup` adds experimental framing after each native step.
+Its map must match the selected database geometry's archived stitched-output
+identity and dimensions. Legacy recordings without this identity cannot enable
+the guide. `RinkCameraGuide` uses bounded source-time histories and the native
+cluster/exclusions; it never edits native tracker inputs or state. Disabled
+settings reproduce the native trajectory. The desktop creates matched native
+and rink-aware trials with identical tuning for a fair comparison.
+
+The guide's independent `rink_camera_guide` target also serves optional native
+Program framing. Database `program` cameras retain actual adjusted output, with
+`program-native` providing the native trajectory for parity checks. Original and
+baseline therefore intentionally differ when the recorded run used the guide.
+
 `SaveTrial` writes a YAML descriptor containing the checkpoint, base state,
 recording manifest, exact selected inputs, trial overrides/results, and the
 explicit uncropped-panorama PTS mapping and file identity. This descriptor is

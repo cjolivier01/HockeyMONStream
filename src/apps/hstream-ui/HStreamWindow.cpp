@@ -19,6 +19,7 @@
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
 #include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
+#include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/RinkMapDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
@@ -6351,6 +6352,9 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() {
     rink_map_run_message_.clear();
     rink_map_status_generation_ = 0;
+    if (rink_framing_controls_)
+      rink_framing_controls_->setGameDirectory(
+          game_id_edit_->text().trimmed().isEmpty() ? QString() : gameDirectory(game_id_edit_->text().trimmed()));
     updateWindowTitle();
     updateArchiveOutputPathLabel();
     updatePresetDirtyState();
@@ -7170,6 +7174,14 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
     control_tabs->addTab(add_slider_tab(tracking_controls, false), "Tracking");
     control_tabs->addTab(add_slider_tab(motion_controls, false), "Motion");
+    auto* framing_scroll = new QScrollArea();
+    framing_scroll->setWidgetResizable(true);
+    framing_scroll->setFrameShape(QFrame::NoFrame);
+    rink_framing_controls_ = new RinkFramingControls();
+    rink_framing_controls_->setChangedCallback([this] { updatePresetDirtyState(); });
+    rink_framing_controls_->setReadinessCallback([this] { maybeStartDeferredRestart(); });
+    framing_scroll->setWidget(rink_framing_controls_);
+    control_tabs->addTab(framing_scroll, "Rink framing");
     control_tabs->addTab(add_slider_tab(color_controls, true), "Color");
     const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
     auto* crop_page = add_slider_tab(crop_controls, false);
@@ -8107,6 +8119,8 @@ void HStreamWindow::updateRinkMapControls() {
     return;
   const bool checked = rink_map_preview_check_->isChecked();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (rink_framing_controls_)
+    rink_framing_controls_->setCheckingSuspended(running || (pipeline_state_ && pipeline_state_->text() == "STARTING"));
   for (auto* combo : {rink_map_size_combo_, rink_map_position_combo_})
     combo->setEnabled(rink_map_preview_check_->isEnabled() && checked);
   QString message;
@@ -8251,7 +8265,7 @@ void HStreamWindow::openPromotedStitchingLeveling(const QString& game_directory)
   });
 }
 
-void HStreamWindow::selectRinkLeveling() {
+void HStreamWindow::selectRinkLeveling(bool use_landmarks) {
   if (!ensureSavedControlConfigLoaded())
     return;
   if (!rink_leveling_button_ || !rink_leveling_button_->isEnabled() || !game_id_edit_)
@@ -8268,6 +8282,8 @@ void HStreamWindow::selectRinkLeveling() {
       loaded_projection_framing_.rotation_degrees,
       this,
       stitchCameraSelection());
+  if (use_landmarks)
+    QTimer::singleShot(0, &dialog, [&dialog] { dialog.useSavedLandmarks(); });
   if (dialog.exec() != QDialog::Accepted)
     return;
   loaded_projection_framing_.rotation_degrees = dialog.rotationDegrees();
@@ -8292,6 +8308,10 @@ void HStreamWindow::selectRinkMap() {
   }
   RinkMapDialog dialog(gameDirectory(game_id_edit_->text().trimmed()), this);
   dialog.exec();
+  if (rink_framing_controls_)
+    rink_framing_controls_->checkMap(true);
+  if (dialog.levelingRequested())
+    selectRinkLeveling(true);
 }
 
 void HStreamWindow::selectProjectionCrop() {
@@ -10279,6 +10299,10 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
               .arg(cameraControlValue("Lift_Shadow_Black_Point"));
   args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
   if (!calibration_only) {
+    if (rink_framing_controls_)
+      args
+          << (standalone || active_run_game_id_.isEmpty() ? rink_framing_controls_->arguments()
+                                                          : active_rink_framing_arguments_);
     if (player_analytics_controls_)
       args << (standalone || active_run_game_id_.isEmpty() ? player_analytics_controls_->arguments()
                                                          : active_player_analytics_arguments_);
@@ -10475,6 +10499,11 @@ void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
                                                  : YAML::Clone(structural);
   }
   player_analytics_controls_->loadConfig(defaults, user_layer_, config, QFileInfo(structural_path).absolutePath());
+  if (rink_framing_controls_) {
+    rink_framing_controls_->loadConfig(defaults, user_layer_, config);
+    rink_framing_controls_->setGameDirectory(
+        game_id_edit_->text().trimmed().isEmpty() ? QString() : gameDirectory(game_id_edit_->text().trimmed()));
+  }
 }
 
 bool HStreamWindow::validatePlayerAnalyticsForRun() {
@@ -10706,7 +10735,21 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
+  if (!isCalibrationRun() && rink_framing_controls_) {
+    rink_framing_controls_->setGameDirectory(gameDirectory(game_id_edit_->text().trimmed()));
+    const auto error = rink_framing_controls_->validateForRun();
+    if (!error.isEmpty()) {
+      appendLog("pipeline not started: " + error);
+      pipeline_state_->setText("STOPPED");
+      resetPlaybackProgress(true);
+      setPlaybackProgressState(PlaybackProgressState::kError, error);
+      updateRunControls();
+      return;
+    }
+  }
   pipeline_state_->setText("STARTING");
+  if (rink_framing_controls_)
+    rink_framing_controls_->setCheckingSuspended(true);
   pending_scoreboard_property_.clear();
   scoreboard_runtime_ready_ = false;
   scoreboard_reselect_waiting_ = false;
@@ -10766,7 +10809,9 @@ void HStreamWindow::startPipeline() {
   active_gpu_memory_profile_ = gpu_memory_profile_user_selected_ && gpu_memory_profile_combo_
       ? gpu_memory_profile_combo_->currentData().toString()
       : QString();
-  active_player_analytics_arguments_ = player_analytics_controls_ ? player_analytics_controls_->arguments() : QStringList();
+  active_player_analytics_arguments_ =
+      player_analytics_controls_ ? player_analytics_controls_->arguments() : QStringList();
+  active_rink_framing_arguments_ = rink_framing_controls_ ? rink_framing_controls_->arguments() : QStringList();
   active_control_point_matcher_ = controlPointMatcher();
   active_control_point_resolution_ = control_point_resolution_;
   active_control_point_filtering_ = control_point_filtering_;
@@ -11848,6 +11893,11 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   trimmed = trimmed.trimmed();
   if (trimmed.isEmpty())
     return;
+  if (rink_framing_controls_ && trimmed.startsWith("HSTREAM_RINK_CAMERA ")) {
+    const int message = trimmed.indexOf("message=");
+    if (message >= 0)
+      rink_framing_controls_->showRunStatus(trimmed.mid(message + 8));
+  }
   const bool calibration_preamble = trimmed.startsWith("Rejected calibrated MAGSAC hypothesis") ||
       trimmed.startsWith("Skipping pooled stitching calibration") ||
       trimmed.startsWith("Skipping stitching calibration frame pair") ||
@@ -17147,12 +17197,14 @@ void HStreamWindow::restartStage() {
 }
 
 void HStreamWindow::maybeStartDeferredRestart() {
-  if (!deferred_restart_requested_ || live_rotation_authorization_pending_ ||
+  if (!deferred_restart_requested_ || stitching_still_starting_ || live_rotation_authorization_pending_ ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing()) {
     return;
   }
   const bool request_is_current = deferred_restart_pipeline_generation_ == pipeline_run_generation_ && game_id_edit_ &&
       game_id_edit_->text() == deferred_restart_game_id_;
+  if (request_is_current && !isCalibrationRun() && rink_framing_controls_ && rink_framing_controls_->isCheckingForRun())
+    return;
   deferred_restart_requested_ = false;
   deferred_restart_game_id_.clear();
   if (!request_is_current) {
@@ -17184,6 +17236,14 @@ void HStreamWindow::saveJobScript() {
   }
   if (!stitched_only && !validatePlayerAnalyticsForRun())
     return;
+  if (!stitched_only && rink_framing_controls_) {
+    rink_framing_controls_->setGameDirectory(gameDirectory(game_id_edit_->text().trimmed()));
+    const auto error = rink_framing_controls_->validateForRun();
+    if (!error.isEmpty()) {
+      QMessageBox::warning(this, "Save job script", error);
+      return;
+    }
+  }
   if (!ensureGameDirectory())
     return;
   const QString path = QFileDialog::getSaveFileName(
@@ -17229,8 +17289,20 @@ void HStreamWindow::saveJobScript() {
     }
     args << "--sbatch" << directive;
   }
-  if (!savePreset()) {
-    QMessageBox::warning(this, "Save job script", "Could not save the current settings. See the runtime log.");
+  // The map can change while either modal export dialog is open.
+  if (!stitched_only && rink_framing_controls_) {
+    const auto error = rink_framing_controls_->validateForRun();
+    if (!error.isEmpty()) {
+      QMessageBox::warning(this, "Save job script", error);
+      return;
+    }
+  }
+  QString framing_error;
+  if (!savePreset(!stitched_only, &framing_error)) {
+    QMessageBox::warning(
+        this,
+        "Save job script",
+        framing_error.isEmpty() ? "Could not save the current settings. See the runtime log." : framing_error);
     return;
   }
   const QString tool = !development_bazel_bin_.isEmpty()
@@ -17262,7 +17334,7 @@ void HStreamWindow::saveJobScript() {
   process->start(tool, args);
 }
 
-bool HStreamWindow::savePreset() {
+bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validation_error) {
   if (!ensureSavedControlConfigLoaded())
     return false;
   if (!ensureGameDirectory()) {
@@ -17425,6 +17497,19 @@ bool HStreamWindow::savePreset() {
         calibration["invalidation_id"] = desired_owner;
         appendLog("Saved view changes will reuse the existing stitching alignment");
       }
+    }
+  }
+  // Export must validate the settings it is about to publish: pending view or
+  // input edits can invalidate a map that was usable when the dialog opened.
+  if (require_rink_framing_ready && rink_framing_controls_) {
+    const auto error = rink_framing_controls_->validateSavedSettings(config);
+    if (!error.isEmpty()) {
+      if (!published_playtracker_sidecar.isEmpty())
+        QFile::remove(published_playtracker_sidecar);
+      if (validation_error)
+        *validation_error = error;
+      appendLog(error);
+      return false;
     }
   }
   const QString intended_active_sidecar =
@@ -17631,6 +17716,8 @@ void HStreamWindow::resetCameraControls() {
     set_combo_to_data(detector_precision_combo_, "fp32");
   if (!pipeline_running && player_analytics_controls_)
     player_analytics_controls_->resetToDefaults();
+  if (!pipeline_running && rink_framing_controls_)
+    rink_framing_controls_->resetToDefaults();
   if (!pipeline_running)
     setStitchingIterationSettings(default_iteration_settings_);
   if (!pipeline_running && stitch_frame_time_edit_) {
@@ -17933,6 +18020,7 @@ void HStreamWindow::updatePresetDirtyState() {
       saved_projection_framing_ != stitchProjectionFraming();
   bool dirty = retry_required || saved_auto_input_lens_frozen_ != autoInputLensFrozen() || detectorSelectionChanged() ||
       (player_analytics_controls_ && player_analytics_controls_->isDirty()) ||
+      (rink_framing_controls_ && rink_framing_controls_->isDirty()) ||
       (rink_mask_time_mode_ && saved_rink_mask_time_mode_ != rink_mask_time_mode_->currentData().toString()) ||
       (rink_mask_time_mode_ && rink_mask_time_mode_->currentData().toString() == "custom" &&
        saved_rink_mask_time_text_ != rink_mask_time_edit_->text()) ||
@@ -18988,6 +19076,8 @@ bool HStreamWindow::applySavedControlConfig(
       return false;
     }
   }
+  if (rink_framing_controls_)
+    rink_framing_controls_->applyChanges(config);
   const auto selected_plan_frame_count = selected_calibration_frame_count(config);
   if (!selected_plan_frame_count.ok()) {
     appendLog(QString("could not save preset: %1").arg(selected_plan_frame_count.status().ToString().c_str()));

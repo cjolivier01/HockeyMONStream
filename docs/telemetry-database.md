@@ -22,6 +22,15 @@ Direct runs enable recording with:
 - `runs`: UUID, source game ID, producer/start time, original/effective configurations, completion/outcome and sample count.
 - `frames`: unique sample sequence, original/source timestamps and frame IDs, seek/reset identities, dimensions through a geometry reference, and detection/track counts.
 - `detections`, `tracks`, `cameras`: original stitched-coordinate observations and fast/Program camera outputs. Detection/track ordinals preserve original input ordering. Track IDs use decimal strings to retain unsigned 64-bit values.
+
+When rink framing is active, `cameras.role=program` remains the actual Program
+crop and the additional `program-native` role retains its unadjusted follower.
+Native replay verifies against `program-native` when present; the Original view
+still displays `program`. Existing captures without the extra role retain their
+previous behavior. Checkpoints and replay inputs remain native, and startup
+configuration events preserve the guide settings and reviewed map evidence.
+There is no schema change. Seek restoration seeds native policy state and warms
+the optional guide from new observations rather than old player velocities.
 - `replay_frames`, `replay_tracks`, `checkpoints`: exact native TLBR inputs, wrapper state, rotations, and periodic complete native snapshots/base configurations captured before the associated step.
 - `config_events`: effective sample boundaries and configuration contents.
 - The startup `run-configuration` event contains `run-config.yaml`: the full resolved launch YAML (including CLI overrides and generated settings), loaded baseline/user/game layers, app/subconfiguration documents, current game settings, and referenced text config contents. Layer snapshots preserve parsed values; referenced files preserve raw text. Missing optional files and directory references are explicit. Binary models/video remain external. This archive is captured once before startup and survives database publication/merging under the run UUID; existing tracker runtime changes continue to be recorded at their effective sample boundaries.

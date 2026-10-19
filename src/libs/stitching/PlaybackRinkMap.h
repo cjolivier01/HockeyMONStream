@@ -18,6 +18,8 @@ struct PlaybackRinkMap {
   RinkLayout layout;
   RinkMapFit fit;
   std::string hugin_generation;
+  // Exact reviewed evidence retained for experiment provenance.
+  std::string source_document;
   size_t columns{257}, rows{129};
   std::vector<cv::Vec3d> rays;
 
@@ -30,6 +32,9 @@ struct PlaybackRinkMap {
   // Normalized box-foot coordinates in the full stitched frame, before Program
   // cropping. Invalid rays, points outside the ice and stale maps yield no dot.
   std::optional<cv::Point2d> Locate(double x, double y, double rotation, unsigned width, unsigned height) const;
+  // Inverse of ViewingRay for an ice-plane point. Bounded grid search/refinement;
+  // intended for preparing static anchors, not for every player on every frame.
+  std::optional<cv::Point2d> Project(cv::Point2d point, double rotation, unsigned width, unsigned height) const;
 };
 
 // Shared with the editor; preserves the original revision format.

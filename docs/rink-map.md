@@ -52,6 +52,24 @@ distinct enabled identities and suggests the next useful marks. **Mark near
 boards** and **Mark far boards** select those line tools directly. Guidance is
 advisory; only the geometry fit determines whether a map is complete.
 
+The **Playback mini-map** and **Program framing** status rows show whether the
+current marks are incomplete, inconsistent, being checked, ready but unsaved,
+or saved and ready for this calibration. The explanation names missing features
+for one usable combination and explains why parallel or repeated marks cannot
+locate players. These are alternatives; every rink item is not required.
+**Save partial map** retains incomplete or inconsistent evidence for another
+session. Saving it does not enable either playback use. Correct invalid rink
+dimensions before saving.
+
+**Save and use for leveling…** saves the marks and opens the existing leveling
+preview. Manual and assigned automatic observations can contribute. A fitted
+map provides its ice plane; a partial map can still provide four explicitly
+identified goal-line/board corners. Detected line segments alone do not identify
+their intersections with the boards. The leveling dialog explains missing
+evidence and requires a preview before **Use angles**. Accepting angles stages
+them in the main window; **Save Preset** applies them. The resulting calibration
+change requires reviewing the rink map again.
+
 The dimensions are assumptions in metres. Defaults describe a 200 × 85 ft rink
 with 25 ft from centre to either blue line, an 11 ft goal-line inset and 28 ft
 corner radii. Set these for the actual rink before reviewing the result.
@@ -70,7 +88,24 @@ constrain it. Duplicate detections do not supply missing geometry. Nearly
 degenerate fits, implausible plane axes, and contradictory marks are rejected.
 Rejected fits can also be saved as partial evidence, retaining every mark for
 later correction. Parallel goal lines alone remain partial even with measurement
-noise. Partial and rejected fits never enable player positions.
+noise. A **Line: Left/Right goal line** records two points anywhere along the
+paint; those clicks are not labelled as board intersections. With both goal
+lines marked, add the far straight boards and centre-ice point, or both straight
+board lines. Alternatively, mark all four **Point: Left/Right goal line / near/far
+boards** intersections at ice level. These point identities locate the ends;
+the midpoint of two arbitrary image clicks does not locate the goal centre.
+
+If an existing goal line already ends at both boards, select its row and choose
+**Use goal-line ends at boards…**. The image labels its endpoints **End 1** and
+**End 2**. Choose the end at the near boards; the other becomes the far-board
+point. This replaces the line with two confirmed point marks, preserves their
+camera coordinates and enabled state, and is one undoable edit. Repeat for the
+other goal line to supply all four corners without clicking them again. The
+points can then supply both the map fit and optional leveling. Automatic line
+ends require the same review because detections may stop short of the boards.
+
+The editor's missing-mark suggestions include these goal-line combinations.
+Partial and rejected fits never enable player positions.
 
 If the near boards hide the ice edge, both identified blue lines, the far straight
 boards and a visible centre-ice point can constrain the map. The far board and
@@ -106,6 +141,12 @@ the previous evidence.
 This offline operation decodes a bounded mask proxy and samples calibrated viewing
 rays. It records the mask hash with the source-pixel evidence. Reviewed marks remain
 saved evidence until you explicitly refresh them; it never modifies the ice mask.
+
+When **Enable rink-aware framing** is checked, a missing, incomplete or stale
+saved map blocks Program playback and Program job creation. The checkbox is
+disabled until the map is usable; an invalid saved selection remains visible and
+can be cleared with **Turn off rink-aware framing**. The runner also checks on
+startup, so an exported job cannot silently ignore an unusable map.
 
 ## Playback mini-map
 
@@ -161,6 +202,11 @@ the map for that frame rather than retaining old player positions.
 
 The mini-map is a desktop preview overlay. It does not appear in encoded
 archives or change the camera policy, ice mask or leveling.
+
+Camera Experiments can separately use a matching reviewed map for optional
+rink-aware framing comparisons. This experiment uses the same recorded native
+observations and preserves ice-mask filtering; see
+[Camera experiments](camera-experiments.md#rink-aware-framing-experiment).
 
 ## Storage and scope
 

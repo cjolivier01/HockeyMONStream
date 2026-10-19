@@ -1321,8 +1321,10 @@ absl::Status PipelineApplication::configureInstances(
 
       app_ctx->configurator().set_encode_job(encode_job_);
 
-      if (current_stage_ < 0)
+      if (current_stage_ < 0) {
         hm::pipeline_internal::suppress_player_analytics(app_ctx->configurator().config()["pipeline"]);
+        hm::pipeline_internal::suppress_rink_framing(app_ctx->configurator().config()["pipeline"]);
+      }
 
       if (stitching_calibration_only_ && current_stage_ >= 0) {
         hm::pipeline_internal::configure_stitching_calibration_pipeline(

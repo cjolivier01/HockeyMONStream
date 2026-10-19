@@ -8,6 +8,7 @@
 #include <QtCore/QTimer>
 #include <QtGui/QImage>
 #include <QtGui/QMouseEvent>
+#include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -81,6 +82,26 @@ bool smoke() {
   }
   first.show();
   QCoreApplication::processEvents();
+  auto* rink_aware = widget<QCheckBox>(first, "experimentRinkAware");
+  if (!rink_aware || rink_aware->isEnabled() || rink_aware->isChecked())
+    return false;
+  start_offset->setFocus();
+  const double before_scroll = start_offset->value();
+  const QPoint local = start_offset->rect().center();
+  QWheelEvent wheel(
+      local,
+      start_offset->mapToGlobal(local),
+      {},
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::NoScrollPhase,
+      false);
+  QApplication::sendEvent(start_offset, &wheel);
+  if (start_offset->value() != before_scroll) {
+    std::cerr << "Wheel input changed a focused experiment value\n";
+    return false;
+  }
   auto* maximize_window = widget<QToolButton>(first, "maximizeCameraExperimentWindowButton");
   auto* resize_grip = first.findChild<QSizeGrip*>();
   if (!first.windowFlags().testFlag(Qt::WindowMaximizeButtonHint) || !first.isSizeGripEnabled() || !resize_grip ||
@@ -332,6 +353,118 @@ bool confirmation(const QString& manifest) {
     return false;
   }
   std::cout << "PASS: unconfirmed replay creates no trial, message persists, confirmation allows a trial\n";
+  return true;
+}
+
+bool rink_comparison(const QStringList& args) {
+  if (args.size() != 8) {
+    std::cerr << "Usage: --rink-comparison RECORDING.db GAME_DIRECTORY ARTIFACT_DIR OFFSET DURATION PLAYBACK_START\n";
+    return false;
+  }
+  if (!QDir().mkpath(args[4]))
+    return false;
+  CameraExperimentDialog dialog(args[3], nullptr, {}, std::llround(args[7].toDouble() * 1000));
+  dialog.setWindowFlag(Qt::WindowTransparentForInput);
+  dialog.setAttribute(Qt::WA_ShowWithoutActivating);
+  dialog.show();
+  widget<QLineEdit>(dialog, "experimentManifest")->setText(args[2]);
+  widget<QComboBox>(dialog, "experimentSourceMode")->setCurrentIndex(0);
+  widget<QLineEdit>(dialog, "experimentGameDirectory")->setText(args[3]);
+  widget<QDoubleSpinBox>(dialog, "experimentIn")->setValue(args[5].toDouble());
+  widget<QDoubleSpinBox>(dialog, "experimentDuration")->setValue(args[6].toDouble());
+  widget<QDoubleSpinBox>(dialog, "experimentVideoOrigin")->setValue(args[5].toDouble());
+  widget<QCheckBox>(dialog, "experimentUncropped")->setChecked(true);
+  widget<QCheckBox>(dialog, "experimentLoop")->setChecked(false);
+  auto* prepare = widget<QPushButton>(dialog, "experimentPrepare");
+  auto* apply = widget<QPushButton>(dialog, "experimentApply");
+  auto* status = widget<QLabel>(dialog, "experimentStatus");
+  prepare->click();
+  if (!wait_until([&] { return prepare->isEnabled(); }, 60000) || !apply->isEnabled()) {
+    std::cerr << "Prepare failed: " << status->text().toStdString() << '\n';
+    return false;
+  }
+  auto* enabled = widget<QCheckBox>(dialog, "experimentRinkAware");
+  if (!enabled->isEnabled()) {
+    std::cerr << widget<QLabel>(dialog, "experimentRinkStatus")->text().toStdString() << '\n';
+    return false;
+  }
+  enabled->setChecked(true);
+  widget<QTabWidget>(dialog, "experimentControlTabs")->setCurrentIndex(3);
+  widget<QLineEdit>(dialog, "experimentTrialName")->setText("Rink-aware framing");
+  apply->click();
+  auto* screenshot = widget<QPushButton>(dialog, "experimentScreenshot");
+  if (!wait_until([&] { return screenshot->isEnabled() || status->styleSheet().contains("#b42318"); }, 60000) ||
+      !screenshot->isEnabled()) {
+    std::cerr << "Trial preview failed: " << status->text().toStdString() << '\n';
+    return false;
+  }
+  auto* play = widget<QPushButton>(dialog, "experimentPlay");
+  auto* views = widget<QComboBox>(dialog, "experimentComparison");
+  auto* timeline = widget<QSlider>(dialog, "experimentTimeline");
+  auto* target = widget<QWidget>(dialog, "experimentVideoTarget");
+  auto* label = widget<QLabel>(dialog, "experimentFrameStatus");
+  // Exercise moving playback for both trajectories before matched stills.
+  if (views->count() != 4 || !views->itemText(2).contains("native") || !views->itemText(3).contains("rink-aware"))
+    return false;
+  for (int view : {3, 2}) {
+    views->setCurrentIndex(view);
+    if (!wait_until([&] { return screenshot->isEnabled(); }, 60000))
+      return false;
+    const int first = timeline->value();
+    if (play->text() != "Pause")
+      play->click();
+    if (!wait_until([&] { return screenshot->isEnabled() && timeline->value() > first + 60; }, 60000)) {
+      std::cerr << "Comparison playback made no progress: " << status->text().toStdString() << '\n';
+      return false;
+    }
+    play->click();
+    if (!wait_until([&] { return apply->isEnabled(); }, 60000))
+      return false;
+  }
+  for (int part : {1, 2, 3}) {
+    const int frame = timeline->maximum() * part / 4;
+    for (int view : {2, 3}) {
+      const int inspected = timeline->value();
+      views->setCurrentIndex(view);
+      if (!wait_until([&] { return screenshot->isEnabled(); }, 60000))
+        return false;
+      if (timeline->value() != inspected) {
+        std::cerr << "Switching paused A/B views changed the inspected sample\n";
+        return false;
+      }
+      timeline->setValue(frame);
+      QMetaObject::invokeMethod(timeline, "sliderReleased", Qt::DirectConnection);
+      if (!wait_until([&] { return screenshot->isEnabled() || status->styleSheet().contains("#b42318"); }, 60000) ||
+          !screenshot->isEnabled() || timeline->value() != frame)
+        return false;
+      QString error;
+      const QString name = QString("%1-%2").arg(view == 2 ? "baseline" : "rink").arg(part);
+      const QString path = QDir(args[4]).filePath(name + ".png");
+      if (!dialog.captureScreenshot(path, &error)) {
+        std::cerr << error.toStdString() << '\n';
+        return false;
+      }
+      const QImage screenshot_image(path);
+      const double scale = double(screenshot_image.width()) / dialog.width();
+      const QPoint origin = target->mapTo(&dialog, QPoint());
+      const QImage image = screenshot_image.copy(QRect(
+          qRound(origin.x() * scale),
+          qRound(origin.y() * scale),
+          qRound(target->width() * scale),
+          qRound(target->height() * scale)));
+      const QSize fitted = QSize(1280, 720).scaled(image.size(), Qt::KeepAspectRatio);
+      const QRect video_rect(
+          (image.width() - fitted.width()) / 2,
+          (image.height() - fitted.height()) / 2,
+          fitted.width(),
+          fitted.height());
+      if (!image.copy(video_rect).save(QDir(args[4]).filePath(name + "-video.png")))
+        return false;
+      std::cout << name.toStdString() << ": " << label->text().toStdString() << '\n';
+    }
+  }
+  widget<QPushButton>(dialog, "experimentStopPreview")->click();
+  std::cout << "PASS: rink-aware trial, moving A/B playback, exact-sample native GPU comparisons\n";
   return true;
 }
 
@@ -702,6 +835,8 @@ bool e2e(const QStringList& args) {
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
   try {
+    if (app.arguments().contains("--rink-comparison"))
+      return rink_comparison(app.arguments()) ? 0 : 1;
     if (app.arguments().contains("--e2e"))
       return e2e(app.arguments()) ? 0 : 1;
     if (app.arguments().size() == 3 && app.arguments()[1] == "--confirmation")

@@ -4,6 +4,7 @@
 #include "hstream/src/libs/recording/Database.h"
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
+#include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -709,6 +710,11 @@ absl::StatusOr<bool> get_yaml_bool_value(const YAML::Node& node, const std::stri
   if (!value.has_value())
     return default_value;
   try {
+    if (value->IsScalar()) {
+      const auto text = value->as<std::string>();
+      if (text == "0" || text == "1")
+        return text == "1";
+    }
     return value->as<bool>();
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Invalid boolean config value for " + key + ": " + exception.what());
@@ -6413,6 +6419,9 @@ absl::Status Configurator::materialize_playtracker_config(
   }
   if (!enabled)
     return absl::OkStatus();
+  // Resolve on the execution host, including exported jobs. Never freeze a
+  // workstation's game path into the portable framing options.
+  section["private-properties"]["rink-camera-game-directory"] = game_dir.string();
   YAML::Node configured_file = section["config-file"];
   if (!configured_file.IsScalar())
     return absl::InvalidArgumentError("pipeline.ds-playtracker.config-file must name a base YAML file");
@@ -9355,6 +9364,31 @@ absl::Status Configurator::complete_configuration(
 
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
   const fs::path game_dir = resolved_game_dir();
+  bool rink_framing_enabled = false;
+  if (!clean_requested && !stitching_calibration_only)
+    HM_ASSIGN_OR_RETURN(
+        rink_framing_enabled,
+        get_yaml_bool_value(pipeline, "ds-playtracker.private-properties.rink-camera-enable", false));
+  if (rink_framing_enabled) {
+    bool tracker_enabled, anticipate, frame_goals, adaptive_zoom;
+    HM_ASSIGN_OR_RETURN(tracker_enabled, get_yaml_bool_value(pipeline, "ds-playtracker.enable", false));
+    HM_ASSIGN_OR_RETURN(
+        anticipate, get_yaml_bool_value(pipeline, "ds-playtracker.private-properties.rink-camera-anticipate", true));
+    HM_ASSIGN_OR_RETURN(
+        frame_goals, get_yaml_bool_value(pipeline, "ds-playtracker.private-properties.rink-camera-frame-goals", false));
+    HM_ASSIGN_OR_RETURN(
+        adaptive_zoom,
+        get_yaml_bool_value(pipeline, "ds-playtracker.private-properties.rink-camera-adaptive-zoom", false));
+    if (!tracker_enabled)
+      return absl::FailedPreconditionError("Rink-aware framing requires an enabled Program play tracker");
+    if (!anticipate && !frame_goals && !adaptive_zoom)
+      return absl::FailedPreconditionError("Select a rink-framing adjustment or turn off rink-aware framing");
+    const auto map = stitching::LoadPlaybackRinkMap(game_dir);
+    if (!map.ok())
+      return absl::FailedPreconditionError(
+          "Rink-aware framing cannot start: " + std::string(map.status().message()) +
+          ". Open Rink map and goals to review and save the map, or turn off rink-aware framing.");
+  }
   if (!clean_requested)
     HM_RETURN_IF_ERROR(materialize_playtracker_config(pipeline, game_dir, pipeline_config_dir));
 

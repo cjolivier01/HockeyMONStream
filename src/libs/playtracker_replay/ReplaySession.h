@@ -13,6 +13,7 @@
 #include "hockeymon/csrc/play_tracker/BoxUtils.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
+#include "hstream/src/libs/playtracker_replay/RinkCameraGuide.h"
 
 namespace hm::playtracker_replay {
 
@@ -33,10 +34,14 @@ struct Frame {
   uint64_t pts_ns{0};
   std::optional<hm::BBox> fast;
   std::optional<hm::BBox> follower;
+  // Recorded native follower when Program used optional rink framing.
+  // follower remains the actual archived Program view.
+  std::optional<hm::BBox> native_follower;
   float edge_rotation_left{0};
   float edge_rotation_right{0};
   PlayTracking tracking;
   std::shared_ptr<const hm::preview_overlay::OverlaySnapshot> overlays;
+  std::optional<RinkCameraInfo> rink_camera;
 };
 
 struct PrepareOptions {
@@ -74,6 +79,7 @@ struct StitchingMedia {
   bool shadow_lift_black_point{false};
   std::string blend_mode{"laplacian"};
   double blend_feather_fraction{0.05};
+  size_t max_output_width{0};
 };
 
 struct MediaBinding {
@@ -93,6 +99,7 @@ struct TrialResult {
   std::string name;
   DsPlayTrackerRuntimeTuning tuning;
   std::vector<Frame> frames;
+  std::optional<RinkCameraSetup> rink_camera;
 };
 
 // This synchronous CPU API is intended to run on a worker thread. Prepared
@@ -105,7 +112,10 @@ class ReplaySession {
   absl::StatusOr<TrialResult> RunTrial(
       std::string name,
       const DsPlayTrackerRuntimeTuning& tuning,
-      const std::atomic<bool>* cancelled = nullptr) const;
+      const std::atomic<bool>* cancelled = nullptr,
+      const RinkCameraSetup* rink_camera = nullptr) const;
+  // A current map must match the geometry archived with this exact range.
+  absl::StatusOr<double> RinkCameraRotation(const stitching::PlaybackRinkMap& map) const;
   absl::Status SaveTrial(const std::string& path, const TrialResult& trial, const MediaBinding& media) const;
 
   const std::vector<Frame>& original() const;

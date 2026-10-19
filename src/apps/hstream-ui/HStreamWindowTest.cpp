@@ -10,6 +10,7 @@
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
+#include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
 #include <QtTest/qtest_widgets.h>
@@ -333,8 +334,18 @@ struct HStreamWindowTestAccess {
     window->active_run_game_id_ = prior_game;
     return prepared;
   }
-  static bool savePreset(HStreamWindow* window) {
-    return window->savePreset();
+  static bool savePreset(HStreamWindow* window, bool require_rink_framing_ready = false, QString* error = nullptr) {
+    return window->savePreset(require_rink_framing_ready, error);
+  }
+  static QCheckBox* useRinkMapCheck(HStreamWindow* window, RinkFramingControls::MapCheck check) {
+    delete window->rink_framing_controls_;
+    window->rink_framing_controls_ = new RinkFramingControls(window, std::move(check));
+    window->rink_framing_controls_->setReadinessCallback([window] { window->maybeStartDeferredRestart(); });
+    window->rink_framing_controls_->setGameDirectory(window->gameDirectoryText());
+    return window->rink_framing_controls_->findChild<QCheckBox*>("rinkFramingEnable");
+  }
+  static void recheckRinkMap(HStreamWindow* window) {
+    window->rink_framing_controls_->checkMap(true);
   }
   static void inheritCustomDetector(HStreamWindow* window) {
     window->baseline_config_["pipeline"]["primary-gie"]["config-file"] = "custom-detector.yaml";
@@ -4630,9 +4641,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               projection_page->isAncestorOf(camera_vertical_fov) && projection_page->isAncestorOf(projection) &&
               alignment_page->isAncestorOf(control_points) && alignment_page->isAncestorOf(stitch_frame_time) &&
               projection_page->isAncestorOf(stitch_max_output_width) &&
-              alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 7 &&
-              program_control_tabs->tabText(4) == "Runtime" && program_control_tabs->tabText(5) == "Detection" &&
-              program_control_tabs->tabText(6) == "Players" && stitched_control_tabs->count() == 5 &&
+              alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 8 &&
+              program_control_tabs->tabText(5) == "Runtime" && program_control_tabs->tabText(6) == "Detection" &&
+              program_control_tabs->tabText(7) == "Players" &&
+              program_control_tabs->tabText(2) == "Rink framing" && stitched_control_tabs->count() == 5 &&
               stitched_control_tabs->tabText(1) == "Color & Precision" &&
               stitched_control_tabs->tabText(2) == "Alignment" && stitched_control_tabs->tabText(3) == "Projection" &&
               stitched_control_tabs->tabText(4) == "Rink" &&
@@ -7832,6 +7844,84 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
 
+  // Readiness must survive an ordinary stop/restart, and an internal restart
+  // must wait for a pending map check without losing the operator's request.
+  {
+    auto ready = std::make_shared<std::atomic<bool>>(true);
+    auto release = std::make_shared<std::atomic<bool>>(true);
+    auto* framing = HStreamWindowTestAccess::useRinkMapCheck(
+        window, [ready, release](const QString&, const std::function<bool()>& cancelled) {
+          while (!release->load() && !cancelled())
+            QThread::msleep(5);
+          return ready->load() ? absl::OkStatus() : absl::FailedPreconditionError("The rink map is partial");
+        });
+    auto wait = [](const std::function<bool()>& done) {
+      for (int i = 0; i < 500 && !done(); ++i)
+        QTest::qWait(10);
+      return done();
+    };
+    if (!expect(wait([&] { return framing->isEnabled(); }), "Restart fixture must have a reviewed map"))
+      return false;
+    framing->setChecked(true);
+    activate(start);
+    if (!expect(wait([&] { return window->pipelineStateText() == "PLAYING"; }), "Framing run must start"))
+      return false;
+    for (int restart_case : {0, 1, 2}) {
+      const bool pending_check = restart_case != 0;
+      const int commands = window->logText().count("pipeline command ");
+      if (pending_check) {
+        *release = false;
+        HStreamWindowTestAccess::recheckRinkMap(window);
+      }
+      activate(restart);
+      if (pending_check) {
+        const bool stopped = wait([&] { return window->pipelineStateText() == "STOPPED"; });
+        QTest::qWait(200);
+        const bool waited = window->logText().count("pipeline command ") == commands;
+        if (!expect(stopped && waited, "Restart must wait for the pending map check")) {
+          *release = true;
+          return false;
+        }
+        if (restart_case == 2) {
+          framing->setChecked(false);
+          // Deliver the cancelled worker's callback inside startPipeline's
+          // event drain, before its process/generation have advanced.
+          QTimer::singleShot(0, window, [release] {
+            *release = true;
+            QTest::qWait(50);
+          });
+          start->click();
+        } else {
+          *release = true;
+        }
+      }
+      if (!expect(
+              wait([&] {
+                return window->pipelineStateText() == "PLAYING" &&
+                    window->logText().count("pipeline command ") == commands + 1;
+              }),
+              "A valid map must let the requested stage restart continue"))
+        return false;
+      framing->setChecked(true);
+    }
+    *ready = false;
+    HStreamWindowTestAccess::recheckRinkMap(window);
+    const int commands = window->logText().count("pipeline command ");
+    activate(restart);
+    if (!expect(
+            wait([&] {
+              return window->logText().contains(
+                  "pipeline not started: Rink-aware framing cannot start: The rink map is partial");
+            }) &&
+                window->pipelineStateText() == "STOPPED" && window->logText().count("pipeline command ") == commands,
+            "An invalid map must reject the deferred restart with its actual reason"))
+      return false;
+    framing->setChecked(false);
+    if (!HStreamWindowTestAccess::savePreset(window))
+      return false;
+    HStreamWindowTestAccess::useRinkMapCheck(window, {});
+  }
+
   const QByteArray original_runner = qgetenv("HSTREAM_UI_TEST_RUNNER");
   const int process_errors_before = window->logText().count("pipeline process error");
   qputenv("HSTREAM_UI_TEST_RUNNER", "/tmp/hstream-ui-missing-runner");
@@ -7913,21 +8003,54 @@ bool test_job_export() {
     return false;
   game_id->setText("ui-job-export");
   activate(create);
+  auto* rink_framing = require_child<QCheckBox>(&window, "rinkFramingEnable");
+  if (!rink_framing || !expect(!rink_framing->isChecked(), "New games must leave rink framing off"))
+    return false;
+  mode->setCurrentIndex(mode->findData("program"));
+  rink_framing->setChecked(true); // Simulate a saved or forced invalid selection.
+  activate(require_child<QPushButton>(&window, "startPipelineButton"));
+  if (!expect(
+          window.logText().contains("pipeline not started: Rink-aware framing cannot start") &&
+              window.pipelineStateText() == "STOPPED",
+          "Play must immediately reject enabled framing without a reviewed map"))
+    return false;
+  rink_framing->setChecked(false);
   render->setChecked(true);
   telemetry->setChecked(true);
   QTemporaryDir outputs;
-  for (int selection = 0; selection < 16; ++selection) {
+  for (int selection = 0; selection < 17; ++selection) {
+    const bool map_changes_during_dialog = selection == 16;
+    const QString map_path = QDir(window.gameDirectoryText()).filePath("rink-map.yaml");
+    if (map_changes_during_dialog) {
+      QFile map(map_path);
+      if (!map.open(QIODevice::WriteOnly) || map.write("ready") < 0)
+        return false;
+      map.close();
+      rink_framing =
+          HStreamWindowTestAccess::useRinkMapCheck(&window, [](const QString& path, const std::function<bool()>&) {
+            return QFileInfo::exists(path + "/rink-map.yaml")
+                ? absl::OkStatus()
+                : absl::FailedPreconditionError("Save a reviewed rink map");
+          });
+      for (int i = 0; i < 500 && !rink_framing->isEnabled(); ++i)
+        QTest::qWait(10);
+      if (!expect(rink_framing->isEnabled(), "The export fixture must initially have a usable map"))
+        return false;
+    }
     const bool calibration = (selection & 8) != 0;
     const bool archive_selected = (selection & 1) != 0;
     const bool stitched_selected = (selection & 2) != 0;
     const bool program_4k_selected = (selection & 4) != 0;
     const bool stitched_only = stitched_selected && !archive_selected && !program_4k_selected;
-    const bool invalid = calibration && !stitched_only;
+    const bool invalid_calibration = calibration && !stitched_only;
+    const bool invalid_framing = !calibration && !stitched_only && (selection & 1) != 0;
+    const bool invalid = invalid_calibration || invalid_framing || map_changes_during_dialog;
     mode->setCurrentIndex(mode->findData(calibration ? "stitch-calibration" : "program"));
     archive->setChecked(archive_selected);
     stitched->setChecked(stitched_selected);
     program_4k->setChecked(program_4k_selected);
     telemetry->setChecked((selection & 7) != 7);
+    rink_framing->setChecked((selection & 1) != 0 || map_changes_during_dialog);
     QFile preset(QDir(window.gameDirectoryText()).filePath("config.yaml"));
     QByteArray original_preset;
     if (invalid) {
@@ -7944,7 +8067,7 @@ bool test_job_export() {
       QWidget* modal = QApplication::activeModalWidget();
       if (auto* file = qobject_cast<QFileDialog*>(modal)) {
         file_dialog_shown = true;
-        if (invalid) {
+        if (invalid && !map_changes_during_dialog) {
           file->reject();
           return;
         }
@@ -7961,6 +8084,8 @@ bool test_job_export() {
           QMetaObject::invokeMethod(file, "accept");
         });
       } else if (auto* input = qobject_cast<QInputDialog*>(modal)) {
+        if (map_changes_during_dialog)
+          QFile::remove(map_path);
         input->accept();
       } else if (auto* message = qobject_cast<QMessageBox*>(modal)) {
         if (message->icon() == QMessageBox::Warning || message->icon() == QMessageBox::Critical)
@@ -7974,9 +8099,12 @@ bool test_job_export() {
       if (!expect(preset.open(QIODevice::ReadOnly), "Invalid export must preserve the game config"))
         return false;
       if (!expect(
-              error_message.contains("Stitching Calibration can only save Archive Stitched") && !file_dialog_shown &&
-                  !QFileInfo::exists(path) && preset.readAll() == original_preset,
-              "Invalid calibration/archive combinations must show a UI error before export dialogs or config writes"))
+              error_message.contains(
+                  invalid_calibration ? "Stitching Calibration can only save Archive Stitched"
+                                      : "Rink-aware framing cannot start") &&
+                  file_dialog_shown == map_changes_during_dialog && !QFileInfo::exists(path) &&
+                  preset.readAll() == original_preset,
+              "Invalid calibration or unavailable rink framing must fail before export dialogs or config writes"))
         return false;
       continue;
     }
@@ -8007,6 +8135,15 @@ bool test_job_export() {
                 (mode->currentData().toString() == "stitch-calibration") == calibration,
             "Export must select exactly the requested archives and matching pipeline without changing local controls"))
       return false;
+    if (!expect(
+            stitched_only
+                ? !text.contains("rink-camera-")
+                : text.contains(QString("--options=pipeline.ds-playtracker.private-properties.rink-camera-enable=%1")
+                                    .arg(int(rink_framing->isChecked()))) &&
+                    text.contains("rink-camera-anticipate=1") && text.contains("rink-camera-frame-goals=0") &&
+                    text.contains("rink-camera-adaptive-zoom=0") && !text.contains("rink-camera-game-directory="),
+            "Program jobs retain optional framing choices without embedding host-local map paths"))
+      return false;
     if (stitched_only &&
         !expect(
             !text.contains("--options=rink.tracking.") && !text.contains("--options=pipeline.player-analytics.") &&
@@ -8014,6 +8151,24 @@ bool test_job_export() {
             "Stitched-only scripts must omit Program options and disable DriveGPT capture"))
       return false;
   }
+  mode->setCurrentIndex(mode->findData("program"));
+  rink_framing->setChecked(true);
+  auto* frame_count = require_child<QSpinBox>(&window, "calibrationFrameCountSpin");
+  if (!frame_count)
+    return false;
+  frame_count->setValue(frame_count->value() + 1);
+  QFile preset(QDir(window.gameDirectoryText()).filePath("config.yaml"));
+  if (!preset.open(QIODevice::ReadOnly))
+    return false;
+  const auto before = preset.readAll();
+  preset.close();
+  QString error;
+  if (!expect(
+          !HStreamWindowTestAccess::savePreset(&window, true, &error) &&
+              error.contains("these settings require calibration again") && preset.open(QIODevice::ReadOnly) &&
+              preset.readAll() == before,
+          "Program export must reject pending calibration edits before publishing its settings"))
+    return false;
   return true;
 }
 
@@ -11519,9 +11674,9 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  // Program: Tracking, Motion, Color, Crop Rotation, Runtime, Detection, Players.
+  // Program: Tracking, Motion, Rink framing, Color, Crop Rotation, Runtime, Detection, Players.
   // Stitched: Rotation, Color & Precision, Alignment, Projection, Rink.
-  if (!expect(window->cameraTabCount() == 12, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 13, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -16639,6 +16794,21 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   if (preview_overlays.contains("rink") && !show_rink_mask->isChecked())
     activate(show_rink_mask);
   const bool require_rink_map = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP");
+  const bool require_rink_framing = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_FRAMING");
+  if (require_rink_framing) {
+    auto* framing = require_child<QCheckBox>(window, "rinkFramingEnable");
+    if (!framing)
+      return false;
+    QElapsedTimer readiness_timer;
+    readiness_timer.start();
+    while (!framing->isEnabled() && readiness_timer.elapsed() < 30000)
+      QTest::qWait(20);
+    if (!expect(framing->isEnabled(), "The reviewed game map must enable rink-aware framing"))
+      return false;
+    framing->setChecked(true);
+    window->findChild<QCheckBox*>("rinkFramingGoals")->setChecked(false);
+    window->findChild<QCheckBox*>("rinkFramingZoom")->setChecked(false);
+  }
   if (require_rink_map) {
     auto* rink_map = require_child<QCheckBox>(window, "showRinkMiniMapCheck");
     if (!rink_map || !rink_map->isEnabled())
@@ -16874,6 +17044,13 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   write_e2e_text(QDir(artifact_dir).filePath("preview-report.txt"), preview_report);
 
   window->grab().save(QDir(artifact_dir).filePath("ui-running.png"));
+  if (require_rink_framing) {
+    auto* controls = window->findChild<QTabWidget*>("programControlTabs");
+    for (int i = 0; i < controls->count(); ++i)
+      if (controls->tabText(i) == "Rink framing")
+        controls->setCurrentIndex(i);
+    window->findChild<QWidget*>("rinkFramingControls")->grab().save(QDir(artifact_dir).filePath("rink-framing-controls.png"));
+  }
   const QString log = window->completeLogText();
   const bool observed_native_asset_setup = log.contains("pretrained assets will be verified by hstream-cli");
   const bool observed_command = log.contains("pipeline command");
@@ -16961,6 +17138,10 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 
   QString report;
   report += QString("game_id: %1\n").arg(game_id);
+  if (require_rink_framing && !window->completeLogText().contains("HSTREAM_RINK_CAMERA status=ready")) {
+    std::cerr << "Program framing did not bind the reviewed map\n";
+    return false;
+  }
   report += QString("run_mode: %1\noutputs: %2\n").arg(run_mode, requested_outputs.join(','));
   report += QString("preview_overlays: %1\n").arg(preview_overlays.join(','));
   report += QString("output: %1\n").arg(output_path);

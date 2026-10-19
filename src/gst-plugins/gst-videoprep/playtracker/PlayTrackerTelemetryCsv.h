@@ -78,6 +78,9 @@ struct TelemetrySample {
   // Native playtracker order: first is the fast policy box, last is the
   // follower/Program camera box. A one-box policy uses the same box for both.
   std::vector<TelemetryBox> policy_boxes;
+  // Present when rink framing adjusts Program. policy_boxes keeps the actual
+  // output; this additional camera role preserves exact native replay checks.
+  std::optional<TelemetryBox> native_program;
   std::optional<TelemetryReplaySample> replay;
 };
 

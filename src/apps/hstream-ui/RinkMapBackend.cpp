@@ -530,6 +530,61 @@ absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_director
   return result;
 }
 
+absl::StatusOr<rink::RinkCornerLevelingEstimate> RinkLandmarkLeveling(
+    const RinkMapWorkResult& landmarks,
+    const std::array<double, 3>& published_rotation,
+    double yaw) {
+  const auto vector = [](cv::Vec3d ray) { return std::array<double, 3>{ray[0], ray[1], ray[2]}; };
+  if (landmarks.fit.state == rink::RinkMapState::kReady) {
+    // A validated plane uses every enabled observation, including automatic
+    // line samples. The synthetic rectangle only extracts that plane's normal.
+    std::vector<rink::RinkLevelingRayLine> edges;
+    for (double x : {-landmarks.document.layout.blue_line_distance, landmarks.document.layout.blue_line_distance}) {
+      auto near = rink::RinkPointToRay(landmarks.fit, {x, -landmarks.document.layout.width / 2});
+      auto far = rink::RinkPointToRay(landmarks.fit, {x, landmarks.document.layout.width / 2});
+      if (!near.ok() || !far.ok())
+        return absl::FailedPreconditionError("The fitted map cannot provide leveling rays");
+      edges.push_back({vector(*near), vector(*far)});
+    }
+    return rink::EstimateRinkLevelingFromCorners(edges, published_rotation, yaw);
+  }
+  // Never treat arbitrary line-segment endpoints as board intersections.
+  // A goal line can be cut off by players, boards or the camera crop.
+  for (const auto& pair :
+       {std::pair{"goal-left", "goal-right"},
+        std::pair{"blue-left", "blue-right"},
+        std::pair{"center", "blue-left"},
+        std::pair{"center", "blue-right"}}) {
+    std::vector<rink::RinkLevelingRayLine> edges;
+    for (const char* end : {pair.first, pair.second}) {
+      std::array<cv::Vec3d, 2> rays{};
+      for (int side = 0; side < 2; ++side) {
+        const std::string identity = std::string(end) + (side ? "-far" : "-near");
+        size_t count = 0;
+        for (const auto& mark : landmarks.document.observations) {
+          if (!mark.enabled || mark.line || mark.feature != identity || mark.rays.size() != 1)
+            continue;
+          if (count && cv::norm(rays[side] / cv::norm(rays[side]) - mark.rays.front()) > 0.035)
+            return absl::FailedPreconditionError(
+                "Repeated " + identity + " points disagree between camera views; review or disable a suspect point");
+          rays[side] += mark.rays.front();
+          ++count;
+        }
+        if (count)
+          rays[side] /= cv::norm(rays[side]);
+      }
+      if (cv::norm(rays[0]) > 0.5 && cv::norm(rays[1]) > 0.5)
+        edges.push_back({vector(rays[0]), vector(rays[1])});
+    }
+    if (edges.size() == 2)
+      return rink::EstimateRinkLevelingFromCorners(edges, published_rotation, yaw);
+  }
+  return absl::FailedPreconditionError(
+      "Saved landmarks cannot determine leveling yet. Mark the near/far board intersections of both goal lines "
+      "at ice level, or complete the rink map with independent landmarks. Detected goal-line segments alone "
+      "have arbitrary endpoints and do not define the four corners. Your partial marks remain saved.");
+}
+
 absl::Status SaveRinkMap(RinkMapSnapshot& snapshot, const rink::RinkMapDocument& document) {
   auto text = rink::SerializeRinkMap(document);
   if (!text.ok())

@@ -256,11 +256,12 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
       return config_lock.status();
     auto saved = read_bounded_regular_file_no_follow(directory / "rink-map.yaml", 512 * 1024, "saved rink map");
     if (!saved.ok())
-      return absl::FailedPreconditionError("Save a reviewed rink map to show players on the rink");
+      return absl::FailedPreconditionError("Save a reviewed rink map before using rink-aware framing or the mini-map");
     auto parsed = ParseRinkMap(*saved);
     if (!parsed.ok())
       return parsed.status();
     document = *parsed;
+    result->source_document = *saved;
     auto generation = stitch_artifact_preflight_generation_id_locked(directory);
     if (!generation.ok())
       return generation.status();
@@ -282,7 +283,7 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
     }
     auto provenance = HuginProject::ReadCanvasProvenanceLocked(directory);
     if (!provenance.ok() || !provenance->has_value() || (**provenance).mapping_backend != MappingBackend::kNona)
-      return absl::FailedPreconditionError("The rink mini-map requires a NONA calibration");
+      return absl::FailedPreconditionError("The rink map requires a NONA calibration");
     auto bounds = validate_stitch_generation_artifact_bounds_locked(directory);
     if (!bounds.ok())
       return bounds;
@@ -403,5 +404,61 @@ std::optional<cv::Point2d> PlaybackRinkMap::Locate(double x, double y, double ro
   if (std::hypot(corner_x, corner_y) > layout.corner_radius + 1e-6)
     return std::nullopt;
   return *point;
+}
+
+std::optional<cv::Point2d> PlaybackRinkMap::Project(cv::Point2d point, double rotation, unsigned width, unsigned height)
+    const {
+  if (columns < 2 || rows < 2 || columns > 512 || rows > 256 || rays.size() != columns * rows || !width || !height ||
+      !std::isfinite(rotation))
+    return std::nullopt;
+  const auto target = RinkPointToRay(fit, point);
+  if (!target.ok())
+    return std::nullopt;
+  const cv::Vec3d direction = *target / cv::norm(*target);
+  double best = -1;
+  cv::Point2d pixel;
+  for (size_t i = 0; i < rays.size(); ++i) {
+    if (!finite(rays[i]))
+      continue;
+    const double similarity = direction.dot(rays[i]) / cv::norm(rays[i]);
+    if (similarity > best) {
+      best = similarity;
+      pixel = {double(i % columns) / (columns - 1), double(i / columns) / (rows - 1)};
+    }
+  }
+  if (best < 0)
+    return std::nullopt;
+  for (int iteration = 0; iteration < 10; ++iteration) {
+    const auto sample = ViewingRay(pixel.x, pixel.y, 0, width, height);
+    if (!sample)
+      return std::nullopt;
+    const auto ray = *sample / cv::norm(*sample);
+    const auto residual = direction - ray;
+    if (cv::norm(residual) < 1e-7)
+      break;
+    constexpr double epsilon = 1e-5;
+    const double dx = pixel.x < 0.5 ? epsilon : -epsilon, dy = pixel.y < 0.5 ? epsilon : -epsilon;
+    const auto x = ViewingRay(pixel.x + dx, pixel.y, 0, width, height);
+    const auto y = ViewingRay(pixel.x, pixel.y + dy, 0, width, height);
+    if (!x || !y)
+      return std::nullopt;
+    const auto a = (*x / cv::norm(*x) - ray) / dx, b = (*y / cv::norm(*y) - ray) / dy;
+    const double aa = a.dot(a), ab = a.dot(b), bb = b.dot(b), determinant = aa * bb - ab * ab;
+    if (determinant < 1e-12)
+      return std::nullopt;
+    pixel.x += std::clamp((bb * a.dot(residual) - ab * b.dot(residual)) / determinant, -0.05, 0.05);
+    pixel.y += std::clamp((aa * b.dot(residual) - ab * a.dot(residual)) / determinant, -0.05, 0.05);
+    if (pixel.x < 0 || pixel.x > 1 || pixel.y < 0 || pixel.y > 1)
+      return std::nullopt;
+  }
+  const auto check = ViewingRay(pixel.x, pixel.y, 0, width, height);
+  if (!check || cv::norm(*check / cv::norm(*check) - direction) > 1e-5)
+    return std::nullopt;
+  const double angle = rotation * kPi / 180, c = std::cos(angle), s = std::sin(angle);
+  const double dx = (pixel.x - 0.5) * width, dy = (pixel.y - 0.5) * height;
+  pixel = {0.5 + (c * dx + s * dy) / width, 0.5 + (-s * dx + c * dy) / height};
+  if (pixel.x < 0 || pixel.x > 1 || pixel.y < 0 || pixel.y > 1)
+    return std::nullopt;
+  return pixel;
 }
 } // namespace hm::stitching

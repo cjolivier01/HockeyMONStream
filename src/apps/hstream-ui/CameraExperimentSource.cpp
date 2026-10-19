@@ -23,7 +23,9 @@
 #include <sstream>
 
 // Qt must be parsed before the GL/X11 headers used by stitching.
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 // apps-common uses a logging category owned by its embedding application.
@@ -224,7 +226,22 @@ absl::StatusOr<hm::playtracker_replay::StitchingMedia> PrepareExperimentSources(
         ResolveExperimentStitchingSettings(config, automatic_high_bit_depth, &media, baseline->values, *user);
     if (!settings.ok())
       return settings;
-    auto artifacts = hm::stitching::lock_validated_stitching_artifacts(media.directory);
+    {
+      // Replay the published maps at their original cap, even when current
+      // next-run settings ask for a different one. The subsequent locked load
+      // still validates dimensions and freezes the complete artifact revision.
+      auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(media.directory);
+      if (!lock.ok())
+        return lock.status();
+      if (!*lock)
+        return absl::UnavailableError("Stitching calibration is changing; prepare the experiment again");
+      auto provenance = hm::stitching::HuginProject::ReadCanvasProvenanceLocked(media.directory);
+      if (!provenance.ok())
+        return provenance.status();
+      if (provenance->has_value())
+        media.max_output_width = (**provenance).max_output_width;
+    }
+    auto artifacts = hm::stitching::lock_validated_stitching_artifacts(media.directory, media.max_output_width);
     if (!artifacts.ok())
       return artifacts.status();
     if (!artifacts->artifact_lock)
@@ -249,6 +266,7 @@ absl::StatusOr<hm::playtracker_replay::StitchingMedia> PrepareExperimentSources(
            name == "stitching_generation_id"))
         media.artifact_paths.push_back(entry.path().string());
     }
+    media.artifact_paths.push_back((fs::path(media.directory) / "rink-map.yaml").string());
     return media;
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError(std::string("Could not prepare original camera inputs: ") + error.what());
@@ -345,6 +363,7 @@ bool CameraExperimentSource::Build(
              << ";exposure=" << (media.high_bit_depth ? media.exposure : 0.0)
              << ";shadow-lift=" << (media.high_bit_depth ? media.shadow_lift : 0.0)
              << ";shadow-lift-black-point=" << (media.high_bit_depth && media.shadow_lift_black_point);
+  properties << ";max-output-width=" << media.max_output_width;
   g_object_set(
       stitcher,
       "plugin-type",

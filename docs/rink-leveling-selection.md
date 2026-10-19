@@ -58,6 +58,20 @@ the selector closes without returning a stale Skip response.
 instead of **Skip leveling** and returns the accepted angles to the controls; choose **Save Preset** to apply them and
 trigger the normal stitching invalidation flow.
 
+**Use saved rink landmarks** reuses the map editor's saved manual or assigned
+automatic observations from both camera images. It validates their calibration,
+recomputes their rays in a background task, and derives pitch/roll while keeping
+yaw. A fitted map supplies its plane. A partial map can instead supply explicit
+near/far board intersections for both goal lines (or a matching rectangle from
+the centre/blue lines). Duplicate observations must agree. An arbitrary detected
+line segment is not treated as a pair of board intersections. Insufficient marks
+produce an explanation and remain saved for later completion.
+
+The map editor also offers **Save and use for leveling…**. Neither action applies
+angles automatically: inspect **Preview**, then **Use angles** and **Save Preset**.
+Changing calibration invalidates the saved map's playback binding until it is
+reviewed and saved again. Imported leveling does not rewrite the map evidence.
+
 In the post-calibration editor, **Cancel**, Escape, and closing the dialog discard its changes, even after estimating
 or rendering a preview. An accepted selection also remains staged until Save Preset (starting playback saves a
 staged selection first). The dialog and preset save both check that the original calibration still matches before

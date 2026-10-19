@@ -70,6 +70,8 @@ filegroup(
         "PipelineInspectorWidget.h",
         "PlayerAnalyticsControls.cpp",
         "PlayerAnalyticsControls.h",
+        "RinkFramingControls.cpp",
+        "RinkFramingControls.h",
         "PreviewDialogWindow.h",
         "NativePreviewSurface.cpp",
         "NativePreviewSurface.h",
@@ -225,6 +227,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":rink_map_dialog",
         ":action_icons",
         ":scoreboard_selection_dialog",
         "//src/libs/stitching:canvas_constraint_check",
@@ -299,6 +302,8 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:hugin_project",
         "//src/libs/common:baseline_config",
         "//src/libs/common:user_config",
         "//src/libs/common:utils",
@@ -387,6 +392,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":value_control_wheel",
         "//src/apps/apps-common:rink_mask_image",
         ":native_preview_surface",
         ":action_icons",
@@ -721,8 +727,8 @@ cc_test(
 
 cc_library(
     name = "hstream_window",
-    srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp"],
-    hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h"],
+    srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp", "RinkFramingControls.cpp"],
+    hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h", "RinkFramingControls.h"],
     copts = COMMON_COPTS,
     linkopts = ["-lxcb"],
     target_compatible_with = QT_UI_COMPATIBILITY,
@@ -753,6 +759,7 @@ cc_library(
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:tensorrt_gpu_identity",
         "//src/libs/common:user_config",
+        "//src/libs/stitching:playback_rink_map",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:control_point_matcher",
         "//src/libs/stitching:game_config",
@@ -764,6 +771,15 @@ cc_library(
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "rink_framing_controls_test",
+    srcs = ["RinkFramingControlsTest.cpp", "RinkFramingControls.cpp", "RinkFramingControls.h"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":action_icons", "//src/libs/stitching:playback_rink_map", "@qt//:qt_widgets", "@qt//:qt_test", "@yaml-cpp"],
 )
 
 cc_test(

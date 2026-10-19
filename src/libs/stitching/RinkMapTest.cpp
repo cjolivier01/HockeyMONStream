@@ -107,6 +107,24 @@ int main() {
   ok &= expect(
       mask_loaded.ok() && mask_loaded->observations[2].mask_revision == std::string(64, 'a'),
       "Mask observation provenance survives save/reopen");
+  for (bool both_boards : {false, true}) {
+    document.observations.clear();
+    for (const char* id : {"goal-left-line", "goal-right-line", "far-boards"})
+      document.observations.push_back(line(document.layout, id));
+    document.observations.push_back(
+        both_boards ? line(document.layout, "near-boards") : point(document.layout, "center"));
+    fitted = rink::FitRinkMap(document);
+    ok &= expect(
+        fitted.ok() && fitted->state == rink::RinkMapState::kReady,
+        "Goal-line completion suggestions supply enough independent geometry");
+  }
+  document.observations.clear();
+  for (const char* id : {"goal-left-near", "goal-left-far", "goal-right-near", "goal-right-far"})
+    document.observations.push_back(point(document.layout, id));
+  fitted = rink::FitRinkMap(document);
+  ok &= expect(
+      fitted.ok() && fitted->state == rink::RinkMapState::kReady,
+      "Four goal-line/board intersections locate the map without other landmarks");
   document.observations.clear();
   for (const char* id : {"center-near", "center-far", "blue-left-near", "blue-left-far"})
     document.observations.push_back(point(document.layout, id));

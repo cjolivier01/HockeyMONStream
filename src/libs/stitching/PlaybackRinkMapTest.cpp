@@ -85,6 +85,10 @@ int main(int argc, char** argv) {
       auto rotated = map.Locate(x, y, degrees, 900, 600);
       ok &= expect(
           rotated && cv::norm(*rotated - point) < 0.015, "Post-stitch rotation and scaling preserve player locations");
+      auto projected = map.Project(point, degrees, 900, 600);
+      ok &= expect(
+          projected && cv::norm(*projected - cv::Point2d(x, y)) < 0.00002,
+          "Inverse rink projection preserves cropped, rotated and resized anchors");
     }
   }
   auto outside = normalized({30, 12});

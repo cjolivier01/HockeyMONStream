@@ -8,6 +8,7 @@
 #include <QtGui/QImage>
 
 #include "hstream/src/libs/stitching/RinkLandmarks.h"
+#include "hstream/src/libs/stitching/RinkLeveling.h"
 #include "hstream/src/libs/stitching/RinkMap.h"
 
 struct RinkMapSnapshot {
@@ -32,6 +33,12 @@ struct RinkMapWorkResult {
 };
 
 absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_directory);
+// Uses freshly recalculated rays. Partial metric maps may still contain the
+// four explicit ice-level rectangle corners needed by the leveling estimator.
+absl::StatusOr<hm::stitching::RinkCornerLevelingEstimate> RinkLandmarkLeveling(
+    const RinkMapWorkResult& landmarks,
+    const std::array<double, 3>& published_rotation,
+    double yaw);
 absl::Status SaveRinkMap(RinkMapSnapshot& snapshot, const hm::stitching::RinkMapDocument& document);
 absl::StatusOr<RinkMapWorkResult> UpdateRinkMap(
     const RinkMapSnapshot& snapshot,

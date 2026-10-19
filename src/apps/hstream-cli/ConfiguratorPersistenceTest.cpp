@@ -2529,6 +2529,36 @@ play-tracker:
             !fs::exists(disabled_tracker_game_dir / "hstream-runtime"),
         "A disabled tracker must not require or materialize a runtime sidecar");
 
+    for (int preparation : {0, 1, 2, 3}) {
+      for (const char* enabled : {"0", "false", "1", "true", "invalid"}) {
+        const fs::path enabled_framing = root / "rink-framing-enabled.yaml";
+        std::ofstream(enabled_framing)
+            << "ds-playtracker:\n  private-properties:\n    rink-camera-enable: " << enabled
+            << "\n    rink-camera-anticipate: true\n    rink-camera-frame-goals: false\n    rink-camera-adaptive-zoom: 0\n";
+        hm::Configurator framing(
+            "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+        const bool loaded = framing.configure().ok() &&
+            framing.underlay_config("pipeline", incomplete_pipeline.string()) &&
+            framing.overlay_config("pipeline", enabled_framing.string());
+        if (preparation == 2)
+          hm::pipeline_internal::configure_stitching_player_scan_pipeline(framing.config()["pipeline"]);
+        if (preparation == 3)
+          hm::pipeline_internal::suppress_rink_framing(framing.config()["pipeline"]);
+        const auto status = loaded
+            ? framing.complete_configuration(
+                  false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path(), preparation == 1)
+            : absl::InternalError("framing fixture");
+        const bool disabled = std::string(enabled) == "0" || std::string(enabled) == "false";
+        const bool invalid = std::string(enabled) == "invalid";
+        ok &= expect(
+            preparation != 0 || disabled ? status.ok()
+                                         : !status.ok() &&
+                    status.message().find(invalid ? "Invalid boolean" : "Rink-aware framing cannot start") !=
+                        std::string::npos,
+            "Boolean and integer framing settings must fail early only for Program; preparation can repair maps");
+      }
+    }
+
     hm::Configurator incomplete_configurator(
         "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
     const bool incomplete_loaded = incomplete_configurator.configure().ok() &&
