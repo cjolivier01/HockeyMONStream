@@ -211,7 +211,8 @@ Equal-sized panes preserve aspect ratios with black padding and no upscaling.
 The canvas is at most 7680×4320: two 4K 16:9 inputs produce 7680×2160. Use
 `--max-size 3840x2160` for a smaller limit.
 
-The first retained frames are aligned. Matching constant frame rates retain
+The inputs are aligned by playback time, retaining their audio/video offsets.
+An initial gap before a video starts holds its first picture. Matching constant frame rates retain
 frame pairing; different/variable rates are sampled onto the left video's
 frame clock, duplicating or dropping frames to preserve playback speed.
 `--fps 30000/1001` overrides that rate. This does not discover recording offsets

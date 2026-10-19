@@ -29,7 +29,7 @@ class Video:
   height: float
   fps: Fraction
   audio: bool
-  duration: float | None
+  end_time: float | None
 
 
 def time_seconds(value: str) -> float:
@@ -104,9 +104,15 @@ def probe(path: Path) -> Video:
       break
   if fps <= 0:
     raise ValueError(f"Cannot determine frame rate for {path}")
-  duration_text = video.get("duration", data.get("format", {}).get("duration"))
-  duration = float(duration_text) if duration_text not in (None, "N/A") else None
-  return Video(width, height, fps, any(stream.get("codec_type") == "audio" for stream in streams), duration)
+  def seconds(value, default=None):
+    return float(value) if value not in (None, "N/A") else default
+
+  container = data.get("format", {})
+  duration = seconds(video.get("duration"))
+  container_start = seconds(container.get("start_time"), 0.0)
+  video_start = seconds(video.get("start_time"), container_start)
+  end_time = video_start + duration - container_start if duration is not None else seconds(container.get("duration"))
+  return Video(width, height, fps, any(stream.get("codec_type") == "audio" for stream in streams), end_time)
 
 
 def layout(videos: list[Video], bounds: tuple[int, int]) -> tuple[int, int, list[tuple[int, int]]]:
@@ -202,8 +208,8 @@ def run(args) -> None:
     raise ValueError(f"Output directory does not exist: {output.parent}")
   videos = [probe(path) for path in inputs]
   for path, video in zip(inputs, videos):
-    if video.duration is not None and args.start >= video.duration:
-      raise ValueError(f"--start is at or beyond the end of {path} ({video.duration:g} seconds)")
+    if video.end_time is not None and args.start >= video.end_time:
+      raise ValueError(f"--start is at or beyond the end of {path} ({video.end_time:g} seconds)")
   fps = args.fps or videos[0].fps
   pane_width, pane_height, sizes = layout(videos, args.max_size)
   encoder, encoding_options = encoder_options(args, pane_width * 2, pane_height, fps)
@@ -213,7 +219,7 @@ def run(args) -> None:
   filters = []
   for index, (width, height) in enumerate(sizes):
     filters.append(
-        f"[{index}:V:0]setpts=PTS-STARTPTS,fps={fps}:start_time=0,"
+        f"[{index}:V:0]fps={fps}:start_time=0,"
         f"scale={width}:{height}:flags=lanczos,setsar=1,"
         f"pad={pane_width}:{pane_height}:(ow-iw)/2:(oh-ih)/2:color=black[v{index}]")
   filters.append("[v0][v1]hstack=inputs=2:shortest=1[v]")
@@ -233,7 +239,7 @@ def run(args) -> None:
   command += encoding_options + ["-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output)]
   print(f"Output: {pane_width * 2}x{pane_height}, {fps} fps; {encoder}; quality {args.quality}; "
         f"audio: {args.audio if has_audio else 'none'}", flush=True)
-  print("Timing: align the first retained frames; stop at the shorter video or requested duration.", flush=True)
+  print("Timing: align playback times; stop at the shorter video or requested duration.", flush=True)
   if any(video.fps != fps for video in videos):
     print("Frame rates differ: frames will be duplicated/dropped to preserve playback speed.", flush=True)
   if args.dry_run:

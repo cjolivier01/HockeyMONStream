@@ -1,5 +1,6 @@
 """Check geometry and actual FFmpeg frame pairing, trimming and audio duration."""
 
+from array import array
 from fractions import Fraction
 import json
 from pathlib import Path
@@ -73,9 +74,9 @@ class EncodingTest(unittest.TestCase):
   def tearDownClass(cls):
     cls.temporary.cleanup()
 
-  def encode(self, name, *options, right=None):
+  def encode(self, name, *options, left=None, right=None):
     output = self.directory / name
-    run(sys.executable, str(SCRIPT), str(self.left), str(right or self.right), str(output),
+    run(sys.executable, str(SCRIPT), str(left or self.left), str(right or self.right), str(output),
         "--encoder", "cpu", "--crf", "0", "--preset", "ultrafast", *options)
     info = json.loads(run("ffprobe", "-v", "error", "-count_frames", "-show_streams", "-of", "json", str(output)).stdout)
     return output, info["streams"]
@@ -110,6 +111,27 @@ class EncodingTest(unittest.TestCase):
     for frame in range(20):
       y = frames[frame * 128 * 48 * 3:]
       self.assertEqual(y[24 * 128 + 96], 16 + (frame // 2) * 8)
+
+  def test_delayed_picture_keeps_audio_sync_and_end_time(self):
+    delayed = self.directory / "delayed.mp4"
+    run("ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+        "nullsrc=s=64x48:r=10:d=2,geq=lum='16+N*8':cb=128:cr=128",
+        "-f", "lavfi", "-i", "aevalsrc='if(between(t,1.1,1.2),0.5*sin(2*PI*1000*t),0)':s=48000:d=3",
+        "-filter_complex", "[0:v]setpts=PTS+1/TB[v]", "-map", "[v]", "-map", "1:a",
+        "-fps_mode", "vfr", "-c:v", "libx264", "-crf", "0", "-preset", "ultrafast", "-c:a", "aac", str(delayed))
+    output, streams = self.encode("delayed-output.mp4", left=delayed, right=delayed)
+    self.assertEqual(int(streams[0]["nb_read_frames"]), 30)
+    frames = run("ffmpeg", "-v", "error", "-i", str(output), "-an", "-f", "rawvideo", "-pix_fmt", "yuv444p", "-").stdout
+    stride = 128 * 48 * 3
+    # The second picture arrives at 1.1 seconds, together with the audio pulse.
+    self.assertEqual(frames[10 * stride + 24 * 128 + 32], 16)
+    self.assertEqual(frames[11 * stride + 24 * 128 + 32], 24)
+    samples = array("h", run("ffmpeg", "-v", "error", "-i", str(output), "-vn", "-ac", "1", "-ar", "48000",
+                             "-f", "s16le", "-").stdout)
+    pulse = next(index for index, sample in enumerate(samples) if abs(sample) > 1000) / 48000
+    self.assertAlmostEqual(pulse, 1.1, delta=0.02)
+    _, streams = self.encode("delayed-trim.mp4", "--start", "2.5", "--duration", "0.3", left=delayed, right=delayed)
+    self.assertEqual(int(streams[0]["nb_read_frames"]), 3)
 
   def test_rotation_and_sample_aspect(self):
     rotated = self.directory / "rotated.mp4"
