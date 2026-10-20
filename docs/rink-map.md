@@ -129,23 +129,28 @@ mark selection, and the quality of the source calibration.
 
 **Use rink mask** reads the saved, current ice mask and proposes a far straight-board
 line and a smooth near-board arc wherever there is enough support. Both rows start
-unchecked and say **mask · review**. Select the near-board row to reveal three green
-handles: the two ends and a point on the middle of the arc. Drag them to adjust the
+unchecked and say **mask · review**. The editor selects the new near-board row
+and opens its camera with three green handles: the two ends and a point on the middle of the arc. Drag them to adjust the
 estimated ice/board junction, then check **Use**. The curve follows all three points
 while dragging, and release commits one undoable edit. Save/reopen retains the arc
 and its three handles, including after manual adjustment.
 
 The near-side fit uses broad agreement across the central lower mask boundary,
 bridging local obstructions and ignoring excursions such as open bench doors.
+If the panorama crops out the middle of the near edge, visible sections on
+either side can still supply the arc; pixels on the crop boundary never pull
+the fit toward the frame edge.
 It fits a straight board in calibrated viewing rays, then displays a smooth
 quadratic arc through three projected source points. This is a starting estimate:
 the mask can follow board tops, glass or posts above the actual ice edge. Adjust
 and review it at ice level before including it in the map. End-board curves are
 not inferred. Clipped boundaries and projection padding are excluded; a side
 without enough support produces no suggestion, without discarding a valid
-suggestion for the other side. The far-side fit still requires continuous support.
+suggestion for the other side. A completely cropped near edge cannot supply
+an arc. The far-side fit still requires continuous support.
 A busy calibration writer leaves the editor responsive and reports that the mask
-is unavailable.
+is unavailable. If the saved mask dimensions do not match the calibration,
+play the game once to regenerate the mask, then reopen the editor.
 
 Hollow rings show where assigned centre, blue and goal lines meet the suggested far
 board within its observed span. These are visual guides derived from the lines,

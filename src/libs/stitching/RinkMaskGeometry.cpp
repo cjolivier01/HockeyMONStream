@@ -45,17 +45,24 @@ absl::StatusOr<RinkMaskBoard> suggestBoard(
   // Exclude the rounded ends and padding; inspect only the requested edge.
   const int start = left + width / 5, end = left + 4 * width / 5;
   std::vector<Sample> samples;
+  // The frame edge is not a board measurement. A near edge cropped out in
+  // the middle can still be estimated from visible sections on either side.
+  std::vector<int> clipped;
   for (int x = start; x < end; ++x) {
     int y = near ? mask.rows - 1 : 0;
     while (y >= 0 && y < mask.rows && components.at<int>(y, x) != largest)
       y += near ? -1 : 1;
-    if (y <= std::max(3, mask.rows / 50) || y >= mask.rows - std::max(3, mask.rows / 50))
+    if (y <= std::max(3, mask.rows / 50) || y >= mask.rows - std::max(3, mask.rows / 50)) {
+      if (near && y >= mask.rows - std::max(3, mask.rows / 50))
+        clipped.push_back(x);
       continue;
+    }
     const auto ray = ray_at((x + 0.5) / mask.cols, (y + 0.5) / mask.rows);
     if (ray && valid(*ray))
       samples.push_back({x, *ray / cv::norm(*ray)});
   }
-  if (samples.size() < 64 || samples.size() < size_t((end - start) * (near ? 0.55 : 0.8)))
+  const auto available = size_t(end - start) - clipped.size();
+  if (samples.size() < 64 || samples.size() < size_t(available * (near ? 0.55 : 0.8)))
     return absl::NotFoundError("The " + side + " boundary is clipped or has too many gaps");
   const double tolerance = std::sin((near ? 0.6 : 0.35) * kRadians);
   std::vector<Sample> best;
@@ -85,17 +92,27 @@ absl::StatusOr<RinkMaskBoard> suggestBoard(
   for (const auto& sample : samples)
     if (std::abs(n.dot(sample.ray)) <= tolerance)
       best.push_back(sample);
-  if (best.size() < samples.size() * support || best.back().x - best.front().x < width * 0.4 ||
-      best.size() < size_t(best.back().x - best.front().x) * (near ? 0.55 : 0.9))
+  const int span = best.empty() ? 0 : best.back().x - best.front().x;
+  const auto clipped_in_span = std::count_if(clipped.begin(), clipped.end(), [&](int x) {
+    return !best.empty() && x >= best.front().x && x <= best.back().x;
+  });
+  if (best.size() < samples.size() * support || span < width * (near ? 0.2 : 0.4) ||
+      best.size() < size_t(span - clipped_in_span) * (near ? 0.55 : 0.9))
     return absl::NotFoundError("The " + side + "-board support is too short or irregular");
   if (near) {
-    // Do not infer an entire arc from just two isolated patches at its ends.
+    // Require support across the visible boundary, but do not penalize a
+    // middle section lost to the bottom crop. Missing projection coverage or
+    // contradictory contours still count against the fit.
     std::array<size_t, 3> thirds{};
-    const int span = best.back().x - best.front().x + 1;
+    std::array<size_t, 3> visible_thirds{};
+    for (int x = best.front().x; x <= best.back().x; ++x)
+      if (!std::binary_search(clipped.begin(), clipped.end(), x))
+        ++visible_thirds[std::min(2, 3 * (x - best.front().x) / (span + 1))];
     for (const auto& sample : best)
-      ++thirds[std::min(2, 3 * (sample.x - best.front().x) / span)];
-    if (*std::min_element(thirds.begin(), thirds.end()) < size_t(span * 0.08))
-      return absl::NotFoundError("Near-board support is missing across too much of the arc");
+      ++thirds[std::min(2, 3 * (sample.x - best.front().x) / (span + 1))];
+    for (size_t i = 0; i < thirds.size(); ++i)
+      if (thirds[i] < visible_thirds[i] * 0.24)
+        return absl::NotFoundError("Near-board support is missing across too much of the arc");
   } else {
     for (size_t i = 1; i < best.size(); ++i)
       if (best[i].x - best[i - 1].x > std::max(4, width / 40))

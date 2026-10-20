@@ -1156,6 +1156,16 @@ void RinkMapDialog::update(bool detect, bool use_mask) {
     job_.reset();
     setBusy(false);
     rebuildTable();
+    if (use_mask && !job->cancelled && job->result && job->result->ok()) {
+      for (size_t row = 0; row < state_.document.observations.size(); ++row) {
+        const auto& mark = state_.document.observations[row];
+        if (mark.arc && mark.automatic && !mark.mask_revision.empty()) {
+          table_->selectRow(int(row));
+          tabs_->setCurrentIndex(mark.camera);
+          break;
+        }
+      }
+    }
     refresh();
     if (close_after_worker_) {
       close_after_worker_ = false;

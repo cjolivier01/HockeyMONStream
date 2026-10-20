@@ -83,6 +83,17 @@ int main() {
             .ok(),
         "A small missing near-side projection section can be bridged");
     check(!hm::stitching::SuggestNearRinkBoard(full, ray).ok(), "A clipped near edge cannot become an arc");
+    const auto cropped_mask = nearMask(true).rowRange(0, 348).clone();
+    const auto cropped = hm::stitching::SuggestNearRinkBoard(
+        cropped_mask, [](double x, double y) { return panoramaRay(x, y * 348 / 400); });
+    check(cropped.ok(), "Visible near-board sections can bridge a middle section lost to the bottom crop");
+    for (const auto& r : cropped->rays)
+      check(std::abs(plane.dot(r)) < .003, "The bottom crop does not pull the arc away from the visible board plane");
+    auto all_clipped = nearMask(false);
+    all_clipped.rowRange(80, all_clipped.rows).setTo(255);
+    check(
+        !hm::stitching::SuggestNearRinkBoard(all_clipped, panoramaRay).ok(),
+        "A visible far edge alone cannot supply a near arc when the entire near edge is cropped");
     check(!hm::stitching::SuggestNearRinkBoard(mask(true), ray).ok(), "Wild lower contours cannot become an arc");
     check(
         !hm::stitching::SuggestNearRinkBoard(

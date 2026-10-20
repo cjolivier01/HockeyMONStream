@@ -22,7 +22,8 @@ absl::StatusOr<RinkMaskBoard> SuggestFarRinkBoard(
 
 // Smooth starting arc from the lower, central silhouette. Fits a straight
 // board's viewing-ray plane robustly, bridging local occlusions/door openings
-// instead of following them. Returned rays sample that smooth arc. The mask
+// instead of following them. Visible sections can bridge a bottom-cropped
+// middle; crop-edge pixels never constrain the fit. Returned rays sample that smooth arc. The mask
 // may follow board tops: the operator must adjust/review this at ice level.
 absl::StatusOr<RinkMaskBoard> SuggestNearRinkBoard(
     const cv::Mat& mask,

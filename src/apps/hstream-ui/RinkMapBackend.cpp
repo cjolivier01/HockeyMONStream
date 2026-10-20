@@ -312,8 +312,14 @@ absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskBoards(
         if (mask_size.width() <= 0 || mask_size.height() <= 0 || mask_size.width() > 65535 ||
             mask_size.height() > 65535 || uint64_t(mask_size.width()) * mask_size.height() > 256ULL * 1024 * 1024)
           return absl::ResourceExhaustedError("The rink mask has invalid dimensions");
-        return rink::validate_stitched_output_generation_dimensions(
+        const auto dimensions = rink::validate_stitched_output_generation_dimensions(
             output_generation, mask_size.width(), mask_size.height());
+        if (!dimensions.ok())
+          return absl::FailedPreconditionError(
+              "The saved rink mask (" + std::to_string(mask_size.width()) + "x" + std::to_string(mask_size.height()) +
+              ") does not match this stitched calibration. "
+              "Play the game once to regenerate the mask, then reopen Rink map.");
+        return absl::OkStatus();
       });
   if (!status.ok())
     return status;

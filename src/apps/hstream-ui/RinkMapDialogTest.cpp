@@ -165,7 +165,13 @@ int main(int argc, char** argv) {
     for (int row = 0; row < table->rowCount(); ++row) {
       const auto* identity = qobject_cast<QComboBox*>(table->cellWidget(row, 1));
       if (identity && identity->currentData() == "near-boards" && table->item(row, 2)->text().contains("mask")) {
-        table->selectRow(row);
+        if (!expect(table->currentRow() == row, "Mask assistance selects its new near-board arc"))
+          return 1;
+        const int camera = table->item(row, 2)->text().startsWith("R") ? 1 : 0;
+        if (!expect(
+                dialog.findChild<QTabWidget*>("rinkMapCameraTabs")->currentIndex() == camera,
+                "Mask assistance opens the camera containing the near arc"))
+          return 1;
         QTest::qWait(50);
         return dialog.grab().save(QString::fromLocal8Bit(argv[3])) ? 0 : 1;
       }
