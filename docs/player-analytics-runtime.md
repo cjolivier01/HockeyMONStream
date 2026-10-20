@@ -189,7 +189,8 @@ cropped-out players cannot leave labels clamped to its edge.
 One producer assigns the 32-color palette to full 64-bit tracks before the tracked
 preview tee. Boxes, skeletons and labels share those colors across views. Released
 colors are reused and temporary palette overflow can recover uniqueness. Untracked
-objects do not acquire a player color. Only current-frame skeletons are drawn;
+objects do not acquire a player color. Skeletons use fresh observations or, when
+continuous drawing is enabled, tracked-box display poses retained for up to 250 ms;
 jersey/action labels may persist until their evidence expires. Action text comes
 from the prepared model's label map, without hockey-event renaming.
 
