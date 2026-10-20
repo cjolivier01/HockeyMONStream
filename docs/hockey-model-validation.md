@@ -56,6 +56,11 @@ passed initially; `scoreboard_selector_test` and `hstream_ui_test` both passed
 on retry with the original PATH (5.1s and 184.0s). Their earlier failures were in
 unrelated HTTP/calibration timing paths. Thus all 175 supported tests have a
 passing run, with the excluded detector/video limitations above still open.
+After rebasing onto current master, 174/175 passed together; the broad UI test
+hit its unrelated rink-leveling durability-retry assertion, then passed alone
+in 161.3s. The rebased full supported build, seven native regression binaries
+and actual hockey processor integration also passed. Both independent PR
+reviews reported no necessary fixes.
 
 Jetson validation was attempted: `stubby` is unreachable (`No route to host`)
 and `make jetson` reports that `/opt/jetson-sysroot` is absent. No Jetson build or
