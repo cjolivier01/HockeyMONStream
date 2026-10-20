@@ -292,7 +292,7 @@ struct PlayerAnalyticsProcessor::Impl {
         if (action)
           evidence.action = std::make_unique<ActionState>();
         if (team)
-          evidence.team = std::make_unique<TeamConsensus>();
+          evidence.team = std::make_unique<TeamConsensus>(config.team_clustering);
       }
     }
     for (auto& [id, evidence] : source.evidence) {
@@ -329,8 +329,14 @@ struct PlayerAnalyticsProcessor::Impl {
         // track. Dropping it from the due set is what keeps the feature cheap
         // to leave enabled: after the opening seconds the queue is empty and
         // its scheduling turn is lent to pose, jersey or action.
-        if (feature == 3 && source.evidence.at(ids[i]).team->settled())
+        if (feature == 3 && source.evidence.at(ids[i]).team->settled(source.team_clusterer->generation()))
           continue;
+        // A box this short leaves a torso band of a few pixels, which tells
+        // the model nothing and would still occupy a slot in the fit.
+        if (feature == 3 && boxes[i].height < config.team_clustering.minimum_track_height) {
+          ++counters.team_size_skipped;
+          continue;
+        }
         if (feature == 2) {
           const auto& state = *source.evidence.at(ids[i]).action;
           if (!state.history.ready(frame->buf_pts)) {
@@ -576,7 +582,7 @@ struct PlayerAnalyticsProcessor::Impl {
         const int visible_height =
             std::max(0, std::min(c.top + c.height, int(image->view().height)) - std::max(c.top, 0));
         if (int64_t(visible_width) * visible_height * 2 < int64_t(c.width) * c.height) {
-          ++counters.invalid_rois;
+          ++counters.team_visibility_skipped;
           continue;
         }
         selected[batch_count] = index;
@@ -607,7 +613,14 @@ struct PlayerAnalyticsProcessor::Impl {
             source.team_clusterer->Observe(host_embeddings + i * kTeamEmbedding, host_team[i].lightness);
         if (assignment.cluster < 0)
           ++counters.team_unassigned;
-        source.evidence.at(ids[selected[i]]).team->Observe(frame->buf_pts, assignment.cluster, assignment.margin);
+        auto& consensus = *source.evidence.at(ids[selected[i]]).team;
+        const bool was_committed = consensus.committed();
+        consensus.Observe(frame->buf_pts, assignment.cluster, assignment.margin, source.team_clusterer->generation());
+        // Counted separately from results: an embedding the clusterer declined
+        // is still a result, and a run that reports no side at all would
+        // otherwise look identical to one that labels every skater.
+        if (!was_committed && consensus.committed())
+          ++counters.team_committed;
         ++counters.team_results;
       }
     }

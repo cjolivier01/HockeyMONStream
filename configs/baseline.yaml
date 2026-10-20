@@ -561,7 +561,9 @@ team:
   min_margin: 0.12
   # Process every Nth frame. Affiliation changes far more slowly than pose.
   frame_stride: 2
-  # Tracks shorter than this are mostly ice once cropped to the torso.
+  # Tracks shorter than this are mostly ice once cropped to the torso. A 20px
+  # box leaves a 7x5 band to upscale; a few pixels of flat colour tell the
+  # model nothing and still occupy the fit.
   min_track_height: 60
 
   # HStream only. Per-track inference rate, not a frame rate: affiliation is
@@ -574,6 +576,25 @@ team:
   # faster, so the native side ships the generic re-identification embedding
   # even though HockeyMON's `backend` above defaults to the team-trained one.
   model: reidentificationnet-deployable-v1.2
+  # HStream only. Mean CIELAB L the two groups must differ by before they are
+  # named dark and light. The chest band takes in ice, boards and other
+  # players, so per-crop lightness is noisy; under about this much true
+  # separation the ranking is a coin flip that lands differently at every
+  # refit, and every badge on screen would swap HOME for AWAY together.
+  # Unranked is reported as no badge, which is honest rather than wrong.
+  min_lightness_gap: 6.0
+  # HStream only. Smallest share of the reservoir either group may hold. Two
+  # squads split roughly evenly; a lopsided split means the fit separated
+  # something else, most often the officials from everyone else when the two
+  # sweaters are close in appearance. Refusing to name that is better than
+  # badging every skater the same and the referees the opposite.
+  min_cluster_share: 0.25
+  # HStream only. Margin-weighted evidence a group must accumulate before a
+  # track's side is called, and the factor by which a challenger must beat the
+  # incumbent to take it afterwards. Roughly two confident reads to commit, so
+  # one stray crop cannot name a skater.
+  acquisition_evidence: 1.0
+  switch_hysteresis: 1.35
 
   prtreid:
     # Empty means "download to the torch hub cache on first use".

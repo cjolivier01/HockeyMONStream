@@ -94,13 +94,24 @@ class JerseyConsensus {
 // which is what keeps this feature affordable in a realtime pipeline.
 class TeamConsensus {
  public:
+  // Thresholds come from configs/baseline.yaml, like the clusterer's.
+  explicit TeamConsensus(const TeamClusteringSettings& settings) noexcept : settings_(settings) {}
+
   // At most one vote per source timestamp. A declined embedding -- a negative
   // cluster, or a margin outside [0,1] -- records the attempt and nothing
   // else. Evidence does not decay: a skater's side is a fact about the game,
   // not a reading that goes stale, so there is nothing for time to erode.
-  bool Observe(uint64_t pts_ns, int cluster, float margin) noexcept;
-  // True once the vote has committed and further inference is wasted.
-  bool settled() const noexcept {
+  bool Observe(uint64_t pts_ns, int cluster, float margin, uint32_t generation) noexcept;
+  // True once the vote has committed under the centroids currently in force.
+  // A refit moves them, so a track judged against the previous generation is
+  // offered again: without that, a side called against a half-warmed split is
+  // permanent, and the only crops still feeding the fit are the ones it could
+  // not call.
+  bool settled(uint32_t generation) const noexcept {
+    return current_ >= 0 && generation_ == generation;
+  }
+  // Whether a side has been called at all, regardless of generation.
+  bool committed() const noexcept {
     return current_ >= 0;
   }
   TeamResult Result(uint64_t now_ns, std::optional<int8_t> dark_cluster,
@@ -108,9 +119,11 @@ class TeamConsensus {
   void Reset() noexcept;
 
  private:
+  TeamClusteringSettings settings_;
   std::array<double, 2> evidence_{};
   uint64_t last_attempt_{kInvalidTime};
   uint64_t observed_at_{kInvalidTime};
+  uint32_t generation_{0};
   int current_{-1};
 };
 

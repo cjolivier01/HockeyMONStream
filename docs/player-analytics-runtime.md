@@ -109,8 +109,12 @@ be rebuilt together; no persistent telemetry schema changes.
 
 `max-due-rois` is an aggregate model-sample budget shared by pose, jersey, action
 and team. Weighted rotating turns favor pose 2:1:1:1 and lend unused work. Team
-lends almost all of its turns after the opening seconds: a skater does not change
-sides, so a track leaves the due set for good once its affiliation commits. Guided OCR costs
+lends most of its turns after the opening seconds, because a track leaves the due
+set once its affiliation commits. It does not go silent: each refit re-opens every
+settled track for one read, so a side called against a half-warmed split can still
+be corrected, and a track occluded past `track-retention-ms` returns as a new
+identity and re-warms. Expect a trickle, not zero, and expect the badge to drop
+out while a skater is re-acquired. Guided OCR costs
 two samples unless a pose is already scheduled. All admitted candidates are
 considered before the cap, so early tracks with incomplete action history cannot
 hide later ready tracks. Capacity and low video cadence may prevent action history

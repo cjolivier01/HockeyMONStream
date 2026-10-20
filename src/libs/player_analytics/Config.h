@@ -19,10 +19,15 @@ enum class JerseyRoiMode { kBox, kPose };
 // to under `pipeline.player-analytics.team`. One table so the configurator and
 // the UI's validation preview cannot disagree about what the baseline owns;
 // the two apply different precedence rules to the same set of names.
-inline constexpr std::array<std::pair<const char*, const char*>, 5> kTeamCanonicalKeys{{
+inline constexpr std::array<std::pair<const char*, const char*>, 10> kTeamCanonicalKeys{{
     {"warmup_samples", "warmup-samples"},
     {"refit_interval", "refit-interval"},
     {"min_margin", "min-margin"},
+    {"min_lightness_gap", "min-lightness-gap"},
+    {"min_cluster_share", "min-cluster-share"},
+    {"acquisition_evidence", "acquisition-evidence"},
+    {"switch_hysteresis", "switch-hysteresis"},
+    {"min_track_height", "min-track-height"},
     {"rate_hz", "rate-hz"},
     {"model", "model"},
 }};

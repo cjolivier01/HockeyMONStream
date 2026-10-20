@@ -44,6 +44,8 @@ YAML::Node Defaults() {
       "plot: {plot_pose: false, plot_actions: false, plot_jersey_numbers: false, plot_teams: false}\n"
       "game: {home_is_dark: null}\n"
       "team: {enabled: false, rate_hz: 2, warmup_samples: 200, refit_interval: 600, min_margin: 0.12,\n"
+      "       min_lightness_gap: 6.0, min_cluster_share: 0.25, acquisition_evidence: 1.0,\n"
+      "       switch_hysteresis: 1.35, min_track_height: 60,\n"
       "       model: reidentificationnet-deployable-v1.2}\n"
       "pipeline: {primary-gie: {enable: 1}, tracker: {enable: 1}}\n");
 }

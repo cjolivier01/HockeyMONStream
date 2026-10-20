@@ -74,10 +74,17 @@ def analyze(database, required=('pose', 'jersey', 'action'), batch=8, expect_ove
         for _, kind, event in sorted(events, key=lambda event: event[0]):
             if kind == 'kernel':
                 identity = reduction(event['name'])
-                preceding = (identity[0], identity[1], 0) if identity else None
-                if preceding:
+                if identity:
+                    if preceding is not None:
+                        failures.append(
+                            f'{preceding[0]} reducer left {len(preceding[1]) - preceding[2]} transfer(s) outstanding')
+                    preceding = (identity[0], identity[1], 0)
                     active = True
-                    reducer_counts[preceding[0]] += 1
+                    reducer_counts[identity[0]] += 1
+                # Anything else runs between a reducer and its transfers --
+                # team's inference does exactly that -- so an expectation that
+                # is still outstanding survives it. It is cleared below, once
+                # every transfer it named has arrived.
                 continue
             if not device_to_host(event['direction']):
                 continue

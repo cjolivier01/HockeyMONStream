@@ -49,10 +49,27 @@ struct TeamClusteringSettings {
   // unassigned rather than pushed onto whichever centroid is marginally
   // nearer. Goalies and partly-occluded crops land here.
   float minimum_margin{0};
+  // Mean CIELAB L the two groups must differ by before they are named dark
+  // and light. Below it the ranking is noise, and since it is recomputed at
+  // every refit a noisy ranking makes every badge on screen swap sides
+  // together. Unranked reports no badge instead.
+  float minimum_lightness_gap{0};
+  // Smallest share of the reservoir either group may hold. A lopsided split
+  // means the fit separated something other than the two squads.
+  float minimum_cluster_share{0};
+  // Margin-weighted evidence a group must gather before a track commits, and
+  // the factor a challenger must beat the incumbent by afterwards.
+  double acquisition_evidence{0};
+  double switch_hysteresis{0};
+  // Tracking boxes shorter than this leave a torso band too small to carry
+  // team information, and it would still occupy the fit.
+  float minimum_track_height{0};
 
   bool valid() const {
     return warmup_samples > 0 && warmup_samples <= kTeamReservoir && refit_interval > 0 && refit_interval <= 1000000 &&
-        minimum_margin >= 0 && minimum_margin < 1;
+        minimum_margin >= 0 && minimum_margin < 1 && minimum_lightness_gap >= 0 && minimum_lightness_gap <= 100 &&
+        minimum_cluster_share >= 0 && minimum_cluster_share <= 0.5F && acquisition_evidence > 0 &&
+        switch_hysteresis >= 1 && minimum_track_height >= 0 && minimum_track_height <= 10000;
   }
 };
 

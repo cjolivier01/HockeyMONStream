@@ -36,9 +36,20 @@ class TeamClusterer {
   // in force after any refit this call triggers. No heap allocation.
   TeamAssignment Observe(const float* embedding, float lightness) noexcept;
 
-  // Index of the lower-lightness cluster once fitted.
+  // Index of the lower-lightness cluster, once a fit has separated the two
+  // groups by enough crop lightness to tell them apart and the split is
+  // balanced enough to be two squads rather than the officials against
+  // everyone. Absent means the overlay names nobody, which is the honest
+  // answer; a guessed ranking would flip at the next refit and take every
+  // badge on screen with it.
   std::optional<int8_t> dark_cluster() const noexcept {
-    return fitted_ ? std::optional<int8_t>(dark_cluster_) : std::nullopt;
+    return ranked_ && balanced_ ? std::optional<int8_t>(dark_cluster_) : std::nullopt;
+  }
+
+  // Bumped by each refit. A track that committed under an older generation is
+  // worth re-reading: the centroids it was judged against have moved.
+  uint32_t generation() const noexcept {
+    return generation_;
   }
 
   bool fitted() const noexcept {
@@ -66,8 +77,11 @@ class TeamClusterer {
   // Ring cursor once the reservoir is full, so the window stays recent.
   size_t cursor_{0};
   size_t since_fit_{0};
+  uint32_t generation_{0};
   bool full_{false};
   bool fitted_{false};
+  bool ranked_{false};
+  bool balanced_{false};
   int8_t dark_cluster_{0};
 };
 

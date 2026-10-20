@@ -111,7 +111,8 @@ gboolean Stop(GstBaseTransform* transform) noexcept {
         " budget-deferred=%" G_GUINT64_FORMAT " jersey-pose-skipped=%" G_GUINT64_FORMAT
         " jersey-visibility-skipped=%" G_GUINT64_FORMAT " action-history-unready=%" G_GUINT64_FORMAT
         " action-history-resets=%" G_GUINT64_FORMAT " team-enqueues=%" G_GUINT64_FORMAT
-        " team-results=%" G_GUINT64_FORMAT " team-unassigned=%" G_GUINT64_FORMAT "\n",
+        " team-results=%" G_GUINT64_FORMAT " team-unassigned=%" G_GUINT64_FORMAT " team-committed=%" G_GUINT64_FORMAT
+        " team-size-skipped=%" G_GUINT64_FORMAT " team-visibility-skipped=%" G_GUINT64_FORMAT "\n",
         counters.frames,
         counters.pose_enqueues,
         counters.pose_results,
@@ -133,7 +134,10 @@ gboolean Stop(GstBaseTransform* transform) noexcept {
         counters.action_history_resets,
         counters.team_enqueues,
         counters.team_results,
-        counters.team_unassigned);
+        counters.team_unassigned,
+        counters.team_committed,
+        counters.team_size_skipped,
+        counters.team_visibility_skipped);
     delete processor;
   }
   return TRUE;

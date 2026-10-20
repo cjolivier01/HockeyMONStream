@@ -399,15 +399,7 @@ bool ActionLabelState::Observe(
 }
 
 
-// Evidence a cluster must accumulate before the vote commits. Roughly two
-// confident observations, so one stray crop cannot name a track.
-constexpr double kTeamAcquisition = 1.0;
-// A challenger must beat the incumbent by this factor to take the label,
-// matching the jersey consensus. Switching should be rare here: the right
-// answer never changes, so a flip means one of the two reads was wrong.
-constexpr double kTeamHysteresis = 1.35;
-
-bool TeamConsensus::Observe(uint64_t pts_ns, int cluster, float margin) noexcept {
+bool TeamConsensus::Observe(uint64_t pts_ns, int cluster, float margin, uint32_t generation) noexcept {
   if (pts_ns == kInvalidTime || last_attempt_ == pts_ns)
     return false;
   last_attempt_ = pts_ns;
@@ -425,15 +417,18 @@ bool TeamConsensus::Observe(uint64_t pts_ns, int cluster, float margin) noexcept
   observed_at_ = pts_ns;
 
   const int best = evidence_[0] >= evidence_[1] ? 0 : 1;
-  if (evidence_[static_cast<size_t>(best)] < kTeamAcquisition)
+  if (evidence_[static_cast<size_t>(best)] < settings_.acquisition_evidence)
     return true;
-  if (current_ < 0) {
+  // Evidence carries across refits, so a side called early against a
+  // half-warmed split is overturned once the newer reads outweigh it -- which
+  // is the point of re-offering a settled track after each refit. Switching
+  // should still be rare: the right answer never changes, so a flip means one
+  // of the two reads was wrong.
+  if (current_ < 0 ||
+      (best != current_ &&
+       evidence_[static_cast<size_t>(best)] >= evidence_[static_cast<size_t>(current_)] * settings_.switch_hysteresis))
     current_ = best;
-    return true;
-  }
-  if (best != current_ &&
-      evidence_[static_cast<size_t>(best)] >= evidence_[static_cast<size_t>(current_)] * kTeamHysteresis)
-    current_ = best;
+  generation_ = generation;
   return true;
 }
 
@@ -456,6 +451,7 @@ void TeamConsensus::Reset() noexcept {
   evidence_ = {};
   last_attempt_ = kInvalidTime;
   observed_at_ = kInvalidTime;
+  generation_ = 0;
   current_ = -1;
 }
 

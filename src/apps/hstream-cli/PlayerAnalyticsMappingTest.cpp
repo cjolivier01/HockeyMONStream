@@ -191,6 +191,13 @@ void TeamSettingsReachTheFeature(const YAML::Node& baseline) {
           parsed->team.rate_hz == baseline["team"]["rate_hz"].as<double>(),
       "Clustering tuning did not come from the baseline");
   Require(
+      parsed->team_clustering.minimum_lightness_gap == baseline["team"]["min_lightness_gap"].as<float>() &&
+          parsed->team_clustering.minimum_cluster_share == baseline["team"]["min_cluster_share"].as<float>() &&
+          parsed->team_clustering.acquisition_evidence == baseline["team"]["acquisition_evidence"].as<double>() &&
+          parsed->team_clustering.switch_hysteresis == baseline["team"]["switch_hysteresis"].as<double>() &&
+          parsed->team_clustering.minimum_track_height == baseline["team"]["min_track_height"].as<float>(),
+      "Ranking, balance, commitment and size thresholds did not come from the baseline");
+  Require(
       parsed->team.model == baseline["team"]["model"].as<std::string>(), "team.model did not come from the baseline");
   Require(
       parsed->home_is_dark.has_value() && *parsed->home_is_dark,

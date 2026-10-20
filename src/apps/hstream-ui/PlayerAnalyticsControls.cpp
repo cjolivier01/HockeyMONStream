@@ -179,7 +179,10 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
       "Labels describe generic activities, not hockey events.");
   action_help->setWordWrap(true);
   static_cast<QFormLayout*>(compute->layout())->addRow(action_help);
-  addFlag(kAnalytics + "team.enable", {}, "playerTeamEnable", "Label home and away", compute);
+  // Unlike the other three, team has a canonical enable key that HockeyMON
+  // reads as well, so write both or the saved game would enable the feature
+  // in one application and leave it off in the other.
+  addFlag("team.enabled", kAnalytics + "team.enable", "playerTeamEnable", "Label home and away", compute);
   addModel(kAnalytics + "team.model", "playerTeamModel", "Team model", compute);
   addPath(kAnalytics + "team.bundle", "playerTeamBundle", true, compute);
   auto* team_help = new QLabel(
@@ -560,7 +563,8 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
           analytics["team"] = YAML::Node(YAML::NodeType::Map);
         if (analytics["team"].IsMap())
           for (const auto& [canonical, native] : pa::kTeamCanonicalKeys)
-            if (!analytics["team"][native] && canonical_team[canonical] && !canonical_team[canonical].IsNull())
+            if (!analytics["team"][native] && canonical_team[canonical] && !canonical_team[canonical].IsNull() &&
+                canonical_team[canonical].IsScalar())
               analytics["team"][native] = canonical_team[canonical].Scalar();
       }
       const YAML::Node home_is_dark = Get(effective, "game.home_is_dark");

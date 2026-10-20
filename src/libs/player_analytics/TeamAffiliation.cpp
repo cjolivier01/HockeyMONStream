@@ -32,8 +32,11 @@ void TeamClusterer::Reset() noexcept {
   count_ = 0;
   cursor_ = 0;
   since_fit_ = 0;
+  generation_ = 0;
   full_ = false;
   fitted_ = false;
+  ranked_ = false;
+  balanced_ = false;
   dark_cluster_ = 0;
 }
 
@@ -166,18 +169,39 @@ void TeamClusterer::Fit() noexcept {
     }
   }
 
-  // Rank the two groups by mean crop lightness so they can be named.
   std::array<double, 2> lightness{};
   std::array<size_t, 2> members{};
   for (size_t i = 0; i < n; ++i) {
     lightness[membership[i]] += lightness_[i];
     ++members[membership[i]];
   }
-  const double mean0 = members[0] != 0 ? lightness[0] / static_cast<double>(members[0]) : 1e9;
-  const double mean1 = members[1] != 0 ? lightness[1] / static_cast<double>(members[1]) : 1e9;
-  dark_cluster_ = mean0 <= mean1 ? 0 : 1;
+
+  // Two squads divide the ice roughly evenly. A lopsided split means the fit
+  // separated something else, and the usual something else is the officials:
+  // they are plain person detections here, and when the two sweaters are
+  // close in appearance the squads merge and the stripes take the other
+  // group. Badging every skater the same and the referees the opposite is
+  // worse than saying nothing, so refuse the split rather than name it.
+  const size_t smaller = std::min(members[0], members[1]);
+  balanced_ = static_cast<float>(smaller) >= settings_.minimum_cluster_share * static_cast<float>(n);
+
+  // Rank the two groups by mean crop lightness so they can be named. The
+  // chest band takes in ice, boards and other skaters, so this mean carries
+  // real noise; ranking on a gap smaller than that noise would land
+  // differently at each refit and swap every badge on screen at once. Once a
+  // ranking is established it is kept: sweaters do not change mid-game, and
+  // the centroid pairing above means index 0 still denotes the same squad.
+  if (members[0] != 0 && members[1] != 0) {
+    const double mean0 = lightness[0] / static_cast<double>(members[0]);
+    const double mean1 = lightness[1] / static_cast<double>(members[1]);
+    if (!ranked_ && std::fabs(mean0 - mean1) >= settings_.minimum_lightness_gap) {
+      dark_cluster_ = mean0 <= mean1 ? 0 : 1;
+      ranked_ = true;
+    }
+  }
 
   fitted_ = true;
+  ++generation_;
   since_fit_ = 0;
 }
 

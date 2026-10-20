@@ -72,7 +72,7 @@ For example, replace these paths with private fixture/runtime paths:
       "expect_overlay": true,
       "minimum_analytics_counters": {
         "pose-enqueues": 1, "jersey-enqueues": 1, "action-enqueues": 1, "team-enqueues": 1,
-        "pose-results": 1, "jersey-results": 1, "action-results": 1, "team-results": 1
+        "pose-results": 1, "jersey-results": 1, "action-results": 1, "team-committed": 1
       },
       "maximum_analytics_counters": {"maximum-frame-samples": 32},
       "maximum_overlay_counters": {"suppressed": 0, "rejected-commands": 0},
@@ -97,7 +97,11 @@ flag in the disabled cases. Use the [configuration example](../configs/player-an
 for enabled settings, with target-local bundles and explicit ReID configuration.
 Set per-case minimum counters for every enabled model; an action run must actually
 classify a complete 9.9-second history, and a team run must get past
-`warmup-samples` crops before it reports any side at all. A clip longer than this warmup is necessary
+`warmup-samples` crops before it reports any side at all. Use `team-committed`,
+not `team-results`: a result is recorded for every embedding including the ones
+the clusterer declines, so a run that never labels a single skater still reports
+results. If `team-unassigned` is close to `team-results`, the margin floor is
+wrong for the embedding in use rather than the clip being hard. A clip longer than this warmup is necessary
 but tracking/pose gaps can still prevent inference, correctly failing validation.
 
 ```sh
