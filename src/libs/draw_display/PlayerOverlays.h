@@ -13,7 +13,8 @@ enum PlayerLayer : uint32_t {
   kPlayerBoxes = player_analytics::kDrawPlayerBoxes,
   kPose = player_analytics::kDrawPose,
   kJerseys = player_analytics::kDrawJerseys,
-  kActions = player_analytics::kDrawActions
+  kActions = player_analytics::kDrawActions,
+  kTeams = player_analytics::kDrawTeams
 };
 
 // Shared by Program's CUDA overlay and the GPU preview's box diagnostics.

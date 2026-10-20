@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
 
 namespace pa = hm::player_analytics;
@@ -140,5 +141,59 @@ int main() {
       label.Observe(12 * pa::kSecond, 2 * pa::kSecond, 6, 0.81F), "two consistent action challengers should switch");
   ok &= Check(label.Result(15 * pa::kSecond).label == -1, "action labels cannot persist indefinitely");
   ok &= Check(!label.Observe(16 * pa::kSecond, 15 * pa::kSecond, 5, 1), "short action windows must be rejected");
+
+  // Mirrors the shipped configs/baseline.yaml team block.
+  constexpr pa::TeamClusteringSettings kTeam{200, 600, 0.12F, 6.0F, 0.25F, 1.0, 1.35, 60.0F};
+  pa::TeamConsensus team(kTeam);
+  ok &= Check(!team.settled(0) && !team.committed(), "a new track has no side");
+  ok &= Check(!team.Observe(pa::kInvalidTime, 0, 1, 0), "invalid timestamps cannot vote on a side");
+  ok &= Check(team.Observe(1 * pa::kSecond, 0, 0.3F, 0), "a margin-weighted vote is recorded");
+  ok &= Check(!team.Observe(1 * pa::kSecond, 1, 1, 0), "duplicate team results must not vote twice");
+  ok &= Check(!team.Observe(2 * pa::kSecond, 0, 1.5F, 0), "a margin outside [0,1] is refused, not accumulated");
+  ok &= Check(
+      !team.Observe(3 * pa::kSecond, 0, std::numeric_limits<float>::quiet_NaN(), 0),
+      "a NaN margin is refused rather than poisoning evidence that never decays");
+  ok &= Check(!team.committed(), "one weak crop must not name a side");
+  ok &= Check(team.Observe(4 * pa::kSecond, 0, 0.8F, 0) && team.settled(0), "accumulated margin commits the side");
+  ok &= Check(
+      team.Result(5 * pa::kSecond, std::optional<int8_t>(0), std::optional<bool>(true)).label == pa::TeamLabel::kHome,
+      "the darker cluster is home when the game says so");
+  ok &= Check(
+      team.Result(5 * pa::kSecond, std::optional<int8_t>(1), std::nullopt).label == pa::TeamLabel::kLight,
+      "without home_is_dark the side is reported as dark or light");
+  ok &= Check(
+      team.Result(5 * pa::kSecond, std::nullopt, std::optional<bool>(true)).label == pa::TeamLabel::kUnknown,
+      "an unranked split cannot name a side");
+  // Affiliation does not lapse: a skater is still on the same team an hour on.
+  ok &= Check(
+      team.Result(3600 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).label == pa::TeamLabel::kDark,
+      "a settled side must not expire");
+
+  // A refit moves the centroids the vote was judged against, so the track is
+  // offered again -- otherwise a side called against a half-warmed split is
+  // permanent however much the fit improves.
+  ok &= Check(!team.settled(1) && team.committed(), "a refit re-opens a settled track");
+  ok &= Check(
+      team.Result(6 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).cluster == 0,
+      "re-opening a track must not blank its current side");
+  ok &= Check(
+      team.Observe(7 * pa::kSecond, 1, 0.5F, 1) && !team.settled(1),
+      "a contrary read under new centroids must remain eligible for correction");
+  ok &= Check(
+      team.Result(8 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).cluster == 0,
+      "a single contrary read must not flip a settled side");
+  for (uint64_t i = 9; i < 14; ++i)
+    if (!team.settled(1))
+      team.Observe(i * pa::kSecond, 1, 0.9F, 1);
+  ok &= Check(
+      team.Result(14 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).cluster == 1,
+      "sustained contrary evidence clears hysteresis and switches the side");
+  ok &= Check(team.settled(1), "a corrected side retires under the current centroids");
+  team.Observe(15 * pa::kSecond, 1, 0.0F, 2);
+  ok &= Check(!team.settled(2), "zero evidence cannot confirm a refitted side");
+  team.Observe(16 * pa::kSecond, 1, 0.5F, 2);
+  ok &= Check(team.settled(2), "agreement confirms a retained side under new centroids");
+  team.Reset();
+  ok &= Check(!team.settled(1) && !team.committed(), "reset clears the side");
   return ok ? 0 : 1;
 }

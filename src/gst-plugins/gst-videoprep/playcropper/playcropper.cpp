@@ -406,7 +406,8 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
   } else if (key == "player-overlay-layers") {
     const int value = std::atoi(prop.value.c_str());
     player_overlay_layers_ = static_cast<uint32_t>(value) &
-        (player_analytics::kDrawPose | player_analytics::kDrawJerseys | player_analytics::kDrawActions);
+        (player_analytics::kDrawPose | player_analytics::kDrawJerseys | player_analytics::kDrawActions |
+         player_analytics::kDrawTeams);
   } else if (key == "player-joint-confidence") {
     float value = 0;
     if (!parse_finite_float(prop.value, &value) || value < 0 || value > 1)

@@ -13,6 +13,7 @@ cc_library(
         ":frame_work_plan",
         "//src/libs/player_analytics:config",
         "//src/libs/player_analytics:frame_meta",
+        "//src/libs/player_analytics:team_affiliation",
         "//src/libs/player_analytics:temporal_state",
         "//src/libs/player_analytics/runtime:native_engine",
         "//src/libs/player_analytics/runtime:pose_gpu",

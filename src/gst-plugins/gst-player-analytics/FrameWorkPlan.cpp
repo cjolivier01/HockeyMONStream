@@ -16,7 +16,7 @@ FrameWorkPlan PlanFrameWork(const DueWork& due, size_t budget, bool pose_guided_
   if (!cursor)
     return result;
   budget = std::min(budget, kMaximumDueRois);
-  constexpr std::array<size_t, 4> turns{{0, 0, 1, 2}};
+  constexpr std::array<size_t, 5> turns{{0, 0, 1, 2, 3}};
   while (result.samples < budget) {
     bool progressed = false;
     for (size_t turn = 0; turn < turns.size() && !progressed; ++turn) {

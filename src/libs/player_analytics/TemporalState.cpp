@@ -1,5 +1,7 @@
 #include "hstream/src/libs/player_analytics/TemporalState.h"
 
+#include "hstream/src/libs/player_analytics/TeamAffiliation.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -126,7 +128,7 @@ size_t TrackScheduler::SelectDue(
     std::array<uint64_t, kMaximumDueRois>* output,
     size_t limit) const noexcept {
   const size_t f = static_cast<size_t>(feature);
-  if (!output || f >= 3 || now_ == kInvalidTime || interval_ns == 0)
+  if (!output || f >= kFeatureCount || now_ == kInvalidTime || interval_ns == 0)
     return 0;
   std::array<const TrackRecord*, kMaximumTracks> due{};
   size_t count = 0;
@@ -154,7 +156,7 @@ size_t TrackScheduler::SelectDue(
 
 bool TrackScheduler::MarkAttempt(Feature feature, uint64_t id) noexcept {
   const size_t f = static_cast<size_t>(feature);
-  if (f >= 3 || now_ == kInvalidTime || id == kUntrackedId)
+  if (f >= kFeatureCount || now_ == kInvalidTime || id == kUntrackedId)
     return false;
   for (size_t i = 0; i < maximum_tracks_; ++i)
     if (tracks_[i].id == id && tracks_[i].visible) {
@@ -394,6 +396,67 @@ bool ActionLabelState::Observe(
     return true;
   }
   return false;
+}
+
+
+bool TeamConsensus::Observe(uint64_t pts_ns, int cluster, float margin, uint32_t generation) noexcept {
+  if (pts_ns == kInvalidTime || last_attempt_ == pts_ns)
+    return false;
+  last_attempt_ = pts_ns;
+  // The margin is a ratio in [0,1] by construction, so anything else means the
+  // clusterer saw something it should have declined. Evidence is a running sum
+  // with no decay and the track retires once it commits, so a single poisoned
+  // addition is permanent -- JerseyConsensus bounds its own evidence for the
+  // same reason.
+  if (cluster < 0 || cluster > 1 || !std::isfinite(margin) || margin < 0 || margin > 1)
+    return false;
+
+  // Weight by margin so a crop that sat between the centroids counts for less
+  // than one that landed squarely on a squad.
+  evidence_[static_cast<size_t>(cluster)] += static_cast<double>(margin);
+  observed_at_ = pts_ns;
+
+  const int best = evidence_[0] >= evidence_[1] ? 0 : 1;
+  if (evidence_[static_cast<size_t>(best)] < settings_.acquisition_evidence)
+    return true;
+  // Evidence carries across refits, so a side called early against a
+  // half-warmed split is overturned once the newer reads outweigh it -- which
+  // is the point of re-offering a settled track after each refit. Switching
+  // should still be rare: the right answer never changes, so a flip means one
+  // of the two reads was wrong.
+  if (current_ < 0 ||
+      (best != current_ &&
+       evidence_[static_cast<size_t>(best)] >= evidence_[static_cast<size_t>(current_)] * settings_.switch_hysteresis))
+    current_ = best;
+  // A contrary read must not retire the track before enough further samples
+  // can overcome hysteresis. Only agreement with the retained (or just
+  // switched) side confirms it under these centroids.
+  if (cluster == current_ && margin > 0)
+    generation_ = generation;
+  return true;
+}
+
+TeamResult TeamConsensus::Result(
+    uint64_t now_ns, std::optional<int8_t> dark_cluster, std::optional<bool> home_is_dark) const noexcept {
+  (void)now_ns;
+  TeamResult result;
+  if (current_ < 0 || !dark_cluster.has_value())
+    return result;
+  result.cluster = static_cast<int8_t>(current_);
+  result.evidence = static_cast<float>(evidence_[static_cast<size_t>(current_)]);
+  result.observed_at = observed_at_;
+  // No expiry: affiliation does not lapse the way a jersey read does.
+  result.expires_at = kInvalidTime;
+  result.label = NameClusters(*dark_cluster, home_is_dark)[static_cast<size_t>(current_)];
+  return result;
+}
+
+void TeamConsensus::Reset() noexcept {
+  evidence_ = {};
+  last_attempt_ = kInvalidTime;
+  observed_at_ = kInvalidTime;
+  generation_ = 0;
+  current_ = -1;
 }
 
 } // namespace hm::player_analytics

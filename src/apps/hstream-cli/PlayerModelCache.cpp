@@ -549,7 +549,7 @@ absl::Status PreparePlayerModelCache(
     const auto tracker = resolved["tracker"];
     bool enabled = false;
     if (analytics && analytics.IsMap())
-      for (const char* feature : {"pose", "jersey", "action"})
+      for (const char* feature : {"pose", "jersey", "action", "team"})
         enabled = enabled || (analytics[feature] && Flag(analytics[feature]["enable"]));
     const bool reid = tracker && Flag(tracker["enable"]) && Flag(tracker["reid-enable"]);
     // Deliberately precedes all paths, environment access, callbacks and GPU work.
@@ -568,7 +568,10 @@ absl::Status PreparePlayerModelCache(
     const auto global = application ? application["global-gpu-id"] : YAML::Node();
     const int default_gpu = global && !global.IsNull() ? std::max(0, global.as<int>()) : 0;
     for (const auto& entry : std::vector<std::pair<const char*, const pa::FeatureConfig*>>{
-             {"pose", &parsed->pose}, {"jersey", &parsed->jersey}, {"action", &parsed->action}}) {
+             {"pose", &parsed->pose},
+             {"jersey", &parsed->jersey},
+             {"action", &parsed->action},
+             {"team", &parsed->team}}) {
       if (!entry.second->enabled || entry.second->model == "custom")
         continue;
       const auto* model = options.model_lookup ? options.model_lookup(entry.first, entry.second->model)

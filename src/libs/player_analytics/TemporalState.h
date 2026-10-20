@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -9,13 +10,16 @@
 
 namespace hm::player_analytics {
 
-enum class Feature : size_t { kPose = 0, kJersey = 1, kAction = 2 };
+// Appended, never renumbered: the processor compares these positionally.
+enum class Feature : size_t { kPose = 0, kJersey = 1, kAction = 2, kTeam = 3 };
+inline constexpr size_t kFeatureCount = 4;
 
 struct TrackRecord {
   uint64_t id{kUntrackedId};
   uint64_t incarnation{0};
   uint64_t last_seen{kInvalidTime};
-  std::array<uint64_t, 3> last_attempt{{kInvalidTime, kInvalidTime, kInvalidTime}};
+  std::array<uint64_t, kFeatureCount> last_attempt{
+      {kInvalidTime, kInvalidTime, kInvalidTime, kInvalidTime}};
   bool visible{false};
 };
 
@@ -78,6 +82,47 @@ class JerseyConsensus {
   std::array<uint64_t, 110> observed_{};
   uint64_t now_{kInvalidTime};
   uint64_t last_attempt_{kInvalidTime};
+  int current_{-1};
+};
+
+// Per-track team vote.
+//
+// Modelled on JerseyConsensus, but over two cluster indices rather than 110
+// jersey numbers, and without expiry: a skater does not change side, so once
+// the vote commits it stays committed for the life of the track. That is also
+// what lets the processor retire a settled track from the due set entirely,
+// which is what keeps this feature affordable in a realtime pipeline.
+class TeamConsensus {
+ public:
+  // Thresholds come from configs/baseline.yaml, like the clusterer's.
+  explicit TeamConsensus(const TeamClusteringSettings& settings) noexcept : settings_(settings) {}
+
+  // At most one vote per source timestamp. A declined embedding -- a negative
+  // cluster, or a margin outside [0,1] -- records the attempt and nothing
+  // else. Evidence does not decay: a skater's side is a fact about the game,
+  // not a reading that goes stale, so there is nothing for time to erode.
+  bool Observe(uint64_t pts_ns, int cluster, float margin, uint32_t generation) noexcept;
+  // True once the vote has committed under the centroids currently in force.
+  // A refit moves them, so a track judged against the previous generation is
+  // offered again until a read confirms its side or contrary votes switch it.
+  // Without that, a side called against an earlier split is permanent.
+  bool settled(uint32_t generation) const noexcept {
+    return current_ >= 0 && generation_ == generation;
+  }
+  // Whether a side has been called at all, regardless of generation.
+  bool committed() const noexcept {
+    return current_ >= 0;
+  }
+  TeamResult Result(uint64_t now_ns, std::optional<int8_t> dark_cluster,
+      std::optional<bool> home_is_dark) const noexcept;
+  void Reset() noexcept;
+
+ private:
+  TeamClusteringSettings settings_;
+  std::array<double, 2> evidence_{};
+  uint64_t last_attempt_{kInvalidTime};
+  uint64_t observed_at_{kInvalidTime};
+  uint32_t generation_{0};
   int current_{-1};
 };
 

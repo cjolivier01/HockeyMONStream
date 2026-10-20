@@ -65,6 +65,7 @@
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/player_analytics/Config.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -5988,7 +5989,8 @@ absl::Status Configurator::map_common_config_keys() {
     for (const auto& [canonical, native] :
          {std::pair<const char*, const char*>("plot.plot_pose", "draw-pose"),
           {"plot.plot_jersey_numbers", "draw-jerseys"},
-          {"plot.plot_actions", "draw-actions"}}) {
+          {"plot.plot_actions", "draw-actions"},
+          {"plot.plot_teams", "draw-teams"}}) {
       std::optional<YAML::Node> source;
       HM_ASSIGN_OR_RETURN(
           source,
@@ -6000,6 +6002,59 @@ absl::Status Configurator::map_common_config_keys() {
       } catch (const YAML::Exception& error) {
         return absl::InvalidArgumentError(std::string("Invalid ") + canonical + ": " + error.what());
       }
+    }
+    // Which sweater the home side wore belongs to the game, not to the
+    // analytics block, so it is mapped rather than duplicated. Null is the
+    // honest answer "nobody said", and leaving the native key unset is how
+    // that reaches the overlay as DARK/LIGHT instead of a guessed side.
+    {
+      std::optional<YAML::Node> source;
+      HM_ASSIGN_OR_RETURN(
+          source,
+          canonical_source(
+              "game.home_is_dark", "pipeline.player-analytics.home-is-dark", analytics["home-is-dark"], true));
+      if (source && !source->IsNull()) {
+        // 1/0 as well as true/false: that is the spelling every mapped flag is
+        // written in, and ParseConfig accepts it, so rejecting it here would
+        // let a game config validate in the UI and then abort the run.
+        if (!source->IsScalar())
+          return absl::InvalidArgumentError("game.home_is_dark must be a boolean or 0/1");
+        const std::string value = source->Scalar();
+        if (value == "1" || value == "0") {
+          analytics["home-is-dark"] = value == "1" ? 1 : 0;
+        } else {
+          try {
+            analytics["home-is-dark"] = source->as<bool>() ? 1 : 0;
+          } catch (const YAML::Exception& error) {
+            return absl::InvalidArgumentError(std::string("Invalid game.home_is_dark: ") + error.what());
+          }
+        }
+      }
+    }
+    // Team affiliation carries no compiled-in tuning for its clustering: the
+    // clusterer refuses to run without those values and ParseConfig refuses to
+    // build a config that omits them, so the baseline is the only place the
+    // shipped behavior is stated. `model` is the exception -- its default is
+    // the catalog's, because a model id is an asset identity rather than a
+    // tuning knob. Structural YAML still wins at the same explicit layer.
+    if (!analytics["team"] || analytics["team"].IsNull())
+      analytics["team"] = YAML::Node(YAML::NodeType::Map);
+    if (!analytics["team"].IsMap())
+      return absl::InvalidArgumentError("pipeline.player-analytics.team must be a mapping");
+    YAML::Node team = analytics["team"];
+    HM_RETURN_IF_ERROR(map_bool("team.enabled", "pipeline.player-analytics.team.enable", team, "enable"));
+    for (const auto& [canonical, native] : player_analytics::kTeamCanonicalKeys) {
+      const std::string canonical_path = std::string("team.") + canonical;
+      std::optional<YAML::Node> source;
+      HM_ASSIGN_OR_RETURN(
+          source,
+          canonical_source(
+              canonical_path, std::string("pipeline.player-analytics.team.") + native, team[native], true));
+      if (!source || source->IsNull())
+        continue;
+      if (!source->IsScalar())
+        return absl::InvalidArgumentError(canonical_path + " must be a scalar");
+      team[native] = source->Scalar();
     }
   }
 

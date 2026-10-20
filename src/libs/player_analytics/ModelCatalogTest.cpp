@@ -8,12 +8,13 @@
 namespace pa = hm::player_analytics;
 
 int main(int argc, char** argv) {
-  if (argc != 5)
+  if (argc != 6)
     return 1;
-  const char* features[] = {"pose", "jersey", "action", "reid"};
-  for (int index = 0; index < 4; ++index) {
-    const std::string id =
-        index == 3 ? "reidentificationnet-deployable-v1.2" : std::string(pa::DefaultModelId(features[index]));
+  const char* features[] = {"pose", "jersey", "action", "reid", "team"};
+  for (int index = 0; index < 5; ++index) {
+    const std::string id = (index == 3 || index == 4)
+        ? "reidentificationnet-deployable-v1.2"
+        : std::string(pa::DefaultModelId(features[index]));
     const auto* model = pa::FindModel(features[index], id);
     if (!model)
       return 2;

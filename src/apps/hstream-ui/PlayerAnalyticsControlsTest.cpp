@@ -11,9 +11,10 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <string>
 
 namespace {
-void Require(bool condition, const char* message) {
+void Require(bool condition, const std::string& message) {
   if (!condition) {
     std::cerr << message << '\n';
     std::exit(1);
@@ -36,8 +37,16 @@ void Write(const QString& path, const QByteArray& text) {
   Require(file.open(QIODevice::WriteOnly) && file.write(text) == text.size(), "Cannot create test configuration");
 }
 YAML::Node Defaults() {
+  // The team block mirrors configs/baseline.yaml: the feature has no
+  // compiled-in tuning, so a baseline layer that omits it is not a valid
+  // starting point for this widget.
   return YAML::Load(
-      "plot: {plot_pose: false, plot_actions: false, plot_jersey_numbers: false}\n"
+      "plot: {plot_pose: false, plot_actions: false, plot_jersey_numbers: false, plot_teams: false}\n"
+      "game: {home_is_dark: null}\n"
+      "team: {enabled: false, rate_hz: 2, warmup_samples: 200, refit_interval: 600, min_margin: 0.12,\n"
+      "       min_lightness_gap: 6.0, min_cluster_share: 0.25, acquisition_evidence: 1.0,\n"
+      "       switch_hysteresis: 1.35, min_track_height: 60,\n"
+      "       model: reidentificationnet-deployable-v1.2}\n"
       "pipeline: {primary-gie: {enable: 1}, tracker: {enable: 1}}\n");
 }
 YAML::Node PoseManifest() {
@@ -62,10 +71,22 @@ preprocessing: {id: rtmpose-coco17-affine-v1, color: rgb,
   node["source"]["config_sha256"] = std::string(64, 'b');
   return node;
 }
-QString Bundle(const QString& root, const QString& name) {
+YAML::Node TeamManifest() {
+  auto node = PoseManifest();
+  node["feature"] = "team";
+  node["model_family"] = "reidentificationnet";
+  node["inputs"] = YAML::Load("[{name: input, dtype: float32, shape: [-1,3,256,128]}]");
+  node["outputs"] = YAML::Load("[{name: fc_pred, dtype: float32, shape: [-1,256]}]");
+  node.remove("topology_id");
+  node["preprocessing"] = YAML::Load(
+      "{id: reidentificationnet-rgb-bilinear-v1, color: rgb, interpolation: bilinear, "
+      "offsets: [123.675,116.28,103.53], scale: 0.01735207357279195}");
+  return node;
+}
+QString Bundle(const QString& root, const QString& name, const YAML::Node& manifest = PoseManifest()) {
   const QString path = QDir(root).filePath(name);
   Require(QDir().mkpath(path), "Cannot create bundle fixture");
-  Write(QDir(path).filePath("manifest.json"), QByteArray::fromStdString(YAML::Dump(PoseManifest())));
+  Write(QDir(path).filePath("manifest.json"), QByteArray::fromStdString(YAML::Dump(manifest)));
   // Deliberately not real models. The UI may stat their existence but must never
   // deserialize/read them; runtime compatibility is the native engine's job.
   Write(QDir(path).filePath("model.engine"), "not an engine");
@@ -463,6 +484,87 @@ void ReId(const QString& root) {
   Control<QLineEdit>(widget, "playerReidConfig")->setText("/proc/1/analytics-disabled-do-not-open");
   Require(widget.validateForRun().isEmpty(), "Disabled ReID inspected retained path");
 }
+// Ticking the team box must not block the run. The configurator's canonical
+// mapping has not run at UI time, so the widget has to apply the same table
+// itself -- without it the preview reports a missing baseline value the
+// operator has no control to supply.
+void TeamEnableIsUsable() {
+  PlayerAnalyticsControls widget;
+  widget.loadConfig(Defaults(), YAML::Node(), YAML::Node(), "/configs");
+  Require(widget.validateForRun().isEmpty(), "A fresh widget failed validation");
+  Control<QCheckBox>(widget, "playerTeamEnable")->setChecked(true);
+  const QString error = widget.validateForRun();
+  Require(error.isEmpty(), "Enabling team blocked the run: " + std::string(error.toUtf8().constData()));
+  Control<QCheckBox>(widget, "playerDrawTeams")->setChecked(true);
+  Require(widget.validateForRun().isEmpty(), "Drawing team labels blocked the run");
+  const auto args = widget.arguments();
+  Require(
+      args.contains("--options=pipeline.player-analytics.team.enable=true") &&
+          args.contains("--options=plot.plot_teams=true"),
+      "Team compute and drawing choices did not reach the runner arguments");
+}
+void TeamModelAndPrecedence(const QString& root) {
+  PlayerAnalyticsControls widget;
+  const auto defaults = Defaults();
+  const auto builtin = QString("reidentificationnet-deployable-v1.2");
+  widget.loadConfig(defaults, YAML::Node(), YAML::Node(), root);
+  Control<QCheckBox>(widget, "playerTeamEnable")->setChecked(true);
+  Require(
+      widget.arguments().contains("--options=pipeline.player-analytics.team.model=" + builtin),
+      "Enabled team model was omitted from arguments");
+  const auto bundle = Bundle(root, "prepared team with spaces", TeamManifest());
+  SelectModel(widget, "playerTeamModel", "custom");
+  Control<QLineEdit>(widget, "playerTeamBundle")->setText("prepared team with spaces");
+  Require(widget.validateForRun().isEmpty(), "Custom team metadata was rejected");
+  const auto frozen = widget.arguments();
+  Require(
+      frozen.contains("--options=pipeline.player-analytics.team.model=custom") &&
+          frozen.contains("--options=pipeline.player-analytics.team.bundle=" + bundle),
+      "Unsaved custom team selection did not reach launch/export");
+  YAML::Node saved;
+  Require(widget.applyChanges(saved).isEmpty(), "Cannot save custom team model");
+  widget.loadConfig(defaults, YAML::Node(), saved, root);
+  Require(
+      !widget.isDirty() && widget.validateForRun().isEmpty() && widget.arguments() == frozen,
+      "Save/reload changed custom team arguments");
+  SelectModel(widget, "playerTeamModel", builtin.toUtf8().constData());
+  Require(
+      widget.arguments() != frozen && frozen.contains("--options=pipeline.player-analytics.team.model=custom"),
+      "Next-run edits changed the frozen model choice");
+
+  auto user = YAML::Load(
+      "pipeline: {player-analytics: {home-is-dark: invalid, "
+      "team: {warmup-samples: 900, rate-hz: -1, model: unknown}}}");
+  auto game = YAML::Load(
+      "game: {home_is_dark: true}\n"
+      "team: {enabled: true, warmup_samples: 200, rate_hz: 2, model: reidentificationnet-deployable-v1.2}");
+  widget.loadConfig(defaults, user, game, root);
+  Require(
+      widget.validateForRun().isEmpty() && Control<QComboBox>(widget, "playerTeamModel")->currentData() == builtin &&
+          widget.arguments().contains("--options=pipeline.player-analytics.team.model=" + builtin),
+      "Later canonical team settings did not override earlier native values");
+  game["pipeline"]["player-analytics"]["team"]["warmup-samples"] = 900;
+  widget.loadConfig(defaults, user, game, root);
+  Require(!widget.validateForRun().isEmpty(), "Same-layer native tuning failed to beat canonical");
+  game["pipeline"]["player-analytics"]["team"]["warmup-samples"] = 200;
+  game["pipeline"]["player-analytics"]["team"]["model"] = "custom";
+  game["pipeline"]["player-analytics"]["team"]["bundle"] = bundle.toStdString();
+  widget.loadConfig(defaults, user, game, root);
+  Require(
+      widget.validateForRun().isEmpty() && Control<QComboBox>(widget, "playerTeamModel")->currentData() == "custom" &&
+          widget.arguments().contains("--options=pipeline.player-analytics.team.model=custom"),
+      "Same-layer native model failed to beat canonical");
+  game["game"]["home_is_dark"] = YAML::Node();
+  widget.loadConfig(defaults, user, game, root);
+  Require(!widget.validateForRun().isEmpty(), "Canonical null incorrectly erased native home-is-dark");
+  user["pipeline"]["player-analytics"]["home-is-dark"] = false;
+  game["team"]["model"] = "custom";
+  game["pipeline"]["player-analytics"]["team"].remove("model");
+  widget.loadConfig(defaults, user, game, root);
+  Require(
+      widget.validateForRun().isEmpty() && Control<QComboBox>(widget, "playerTeamModel")->currentData() == "custom",
+      "Canonical custom model was not displayed or validated with its native bundle");
+}
 } // namespace
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
@@ -475,6 +577,8 @@ int main(int argc, char** argv) {
   LayersAndPersistence(directory.path());
   DependenciesAndExport(directory.path());
   ReId(directory.path());
+  TeamEnableIsUsable();
+  TeamModelAndPrecedence(directory.path());
   std::cout
       << "Player analytics UI defaults, layers, native preservation, prerequisites, save/reload and export passed\n";
 }

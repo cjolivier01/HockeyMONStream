@@ -218,6 +218,7 @@ cc_library(
         ":analytics_overlay",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/player_analytics:frame_meta",
+        "//src/libs/player_analytics:team_affiliation",
     ],
 )
 

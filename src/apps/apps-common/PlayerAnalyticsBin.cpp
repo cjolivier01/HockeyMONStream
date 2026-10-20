@@ -23,10 +23,11 @@ absl::StatusOr<PlayerAnalyticsConfig> ResolvePlayerAnalyticsConfig(
       return absl::InvalidArgumentError("player-analytics.gpu-id must be nonnegative");
     result.gpu_id = static_cast<unsigned>(gpu_id);
     YAML::Node resolved = YAML::Clone(node);
-    for (const char* feature : {"pose", "jersey", "action"}) {
+    for (const char* feature : {"pose", "jersey", "action", "team"}) {
       const bool enabled = std::string(feature) == "pose" ? result.analytics.pose.enabled
           : std::string(feature) == "jersey"              ? result.analytics.jersey.enabled
-                                                          : result.analytics.action.enabled;
+          : std::string(feature) == "action"              ? result.analytics.action.enabled
+                                                          : result.analytics.team.enabled;
       if (!enabled)
         continue;
       if (!resolved[feature]["bundle"] || !resolved[feature]["bundle"].IsScalar() ||
@@ -42,8 +43,10 @@ absl::StatusOr<PlayerAnalyticsConfig> ResolvePlayerAnalyticsConfig(
         result.analytics.pose.bundle = path;
       else if (std::string(feature) == "jersey")
         result.analytics.jersey.bundle = path;
-      else
+      else if (std::string(feature) == "action")
         result.analytics.action.bundle = path;
+      else
+        result.analytics.team.bundle = path;
     }
     result.serialized = YAML::Dump(resolved);
     return result;

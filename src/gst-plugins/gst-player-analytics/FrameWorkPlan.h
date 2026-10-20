@@ -10,9 +10,10 @@ namespace hm::player_analytics {
 
 struct DueWork {
   // The scheduler supplies oldest-due order. Action includes only ready, new
-  // causal windows; pose-guided jersey is eligible only with same-frame pose.
-  std::array<std::array<uint64_t, kMaximumTracks>, 3> ids{};
-  std::array<size_t, 3> counts{};
+  // causal windows; pose-guided jersey is eligible only with same-frame pose;
+  // team excludes tracks whose affiliation has already settled.
+  std::array<std::array<uint64_t, kMaximumTracks>, 4> ids{};
+  std::array<size_t, 4> counts{};
 };
 
 struct FrameWorkPlan : DueWork {
@@ -20,9 +21,14 @@ struct FrameWorkPlan : DueWork {
 };
 
 // A model sample consumes one aggregate frame-budget unit. Rotating weighted
-// turns pose,pose,jersey,action favor evidence collection while preserving fair
-// service. Empty/unready queues lend their slots. Pose-guided OCR atomically
-// adds a due pose too (two units), or reuses that frame's already planned pose.
+// turns pose,pose,jersey,action,team favor evidence collection while preserving
+// fair service. Empty/unready queues lend their slots, which is most of what
+// team costs: its queue drains as affiliations settle and the slots go to
+// whoever still needs them. It does not stay empty -- a refit re-opens every
+// settled track once, and a track lost for longer than the retention window
+// comes back as a new identity with no evidence -- so the steady state is a
+// trickle rather than nothing. Pose-guided OCR atomically adds a due pose too
+// (two units), or reuses that frame's already planned pose.
 // The cursor belongs to the source epoch, not a model or a renderer.
 FrameWorkPlan PlanFrameWork(const DueWork& due, size_t budget, bool pose_guided_jersey, unsigned* cursor) noexcept;
 

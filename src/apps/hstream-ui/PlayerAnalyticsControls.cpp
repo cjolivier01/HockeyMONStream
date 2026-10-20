@@ -53,6 +53,34 @@ YAML::Node Get(const YAML::Node& root, const QString& path, bool* ancestor_repla
   }
   return current;
 }
+YAML::Node MappedValue(
+    const std::vector<YAML::Node>& layers,
+    const QString& canonical_path,
+    const QString& native_path) {
+  YAML::Node canonical(YAML::NodeType::Undefined), native(YAML::NodeType::Undefined);
+  int canonical_rank = -1, native_rank = -1;
+  for (size_t rank = 0; rank < layers.size(); ++rank) {
+    const auto update = [&](const QString& path, YAML::Node& previous, int& previous_rank) {
+      bool replaced = false;
+      const auto next = Get(layers[rank], path, &replaced);
+      if (next.IsDefined() || replaced) {
+        previous.reset(next);
+        previous_rank = static_cast<int>(rank);
+      }
+    };
+    update(canonical_path, canonical, canonical_rank);
+    update(native_path, native, native_rank);
+  }
+  // Match the runner: a later canonical leaf wins, same-layer native wins,
+  // and canonical null suppresses mapping without clearing a native value.
+  if (native.IsDefined() &&
+      (!canonical.IsDefined() || canonical.IsNull() ||
+       (native_rank >= canonical_rank && (native_rank > 0 || !native.IsNull()))))
+    return native;
+  if (canonical.IsDefined() && !canonical.IsNull())
+    return canonical;
+  return YAML::Node(YAML::NodeType::Undefined);
+}
 YAML::Node Merge(const YAML::Node& low, const YAML::Node& high) {
   if (!high.IsDefined())
     return YAML::Clone(low);
@@ -179,6 +207,18 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
       "Labels describe generic activities, not hockey events.");
   action_help->setWordWrap(true);
   static_cast<QFormLayout*>(compute->layout())->addRow(action_help);
+  // Unlike the other three, team has a canonical enable key that HockeyMON
+  // reads as well, so write both or the saved game would enable the feature
+  // in one application and leave it off in the other.
+  addFlag("team.enabled", kAnalytics + "team.enable", "playerTeamEnable", "Label home and away", compute);
+  addModel(kAnalytics + "team.model", "playerTeamModel", "Team model", compute);
+  addPath(kAnalytics + "team.bundle", "playerTeamBundle", true, compute);
+  auto* team_help = new QLabel(
+      "Teams are split by appearance within this game, so the two groups read DARK and LIGHT until "
+      "game.home_is_dark says which sweater the home side wore. The split needs a few hundred crops "
+      "before the first labels appear, and a track stops being sampled once its side is decided.");
+  team_help->setWordWrap(true);
+  static_cast<QFormLayout*>(compute->layout())->addRow(team_help);
   layout->addWidget(compute);
   auto* tracker = new QGroupBox("Native tracker appearance matching");
   new QFormLayout(tracker);
@@ -204,6 +244,7 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
       "Follow the tracked player between pose updates for up to 250 ms. Applies on the next run.");
   addFlag("plot.plot_jersey_numbers", kAnalytics + "draw-jerseys", "playerDrawJerseys", "Jersey numbers", drawing);
   addFlag("plot.plot_actions", kAnalytics + "draw-actions", "playerDrawActions", "Activity labels", drawing);
+  addFlag("plot.plot_teams", kAnalytics + "draw-teams", "playerDrawTeams", "Team labels", drawing);
   addFlag(
       "plot.plot_individual_player_tracking",
       "pipeline.hmplaycropper.plot-player-tracking",
@@ -309,32 +350,15 @@ QVariant PlayerAnalyticsControls::read(const Field& field, const std::vector<YAM
     }
   }
   YAML::Node resolved(YAML::NodeType::Undefined);
-  if (field.native_alias.isEmpty()) {
+  if (field.key == kAnalytics + "team.model") {
+    resolved.reset(MappedValue(layers, "team.model", field.key));
+  } else if (field.native_alias.isEmpty()) {
     YAML::Node merged(YAML::NodeType::Map);
     for (const auto& layer : layers)
       merged = Merge(merged, layer);
     resolved.reset(Get(merged, field.key));
   } else {
-    YAML::Node canonical(YAML::NodeType::Undefined), native(YAML::NodeType::Undefined);
-    int canonical_rank = -1, native_rank = -1;
-    for (size_t rank = 0; rank < layers.size(); ++rank) {
-      const auto update = [&](const QString& path, YAML::Node& previous, int& previous_rank) {
-        bool replaced = false;
-        const auto next = Get(layers[rank], path, &replaced);
-        if (next.IsDefined() || replaced) {
-          previous.reset(next);
-          previous_rank = static_cast<int>(rank);
-        }
-      };
-      update(field.key, canonical, canonical_rank);
-      update(field.native_alias, native, native_rank);
-    }
-    // A null canonical value suppresses its mapping. Same-layer native wins;
-    // later canonical values override older native values that still exist.
-    if (native.IsDefined() && (!canonical.IsDefined() || canonical.IsNull() || native_rank >= canonical_rank))
-      resolved.reset(native);
-    else if (canonical.IsDefined() && !canonical.IsNull())
-      resolved.reset(canonical);
+    resolved.reset(MappedValue(layers, field.key, field.native_alias));
   }
   *valid = true;
   try {
@@ -476,6 +500,17 @@ YAML::Node PlayerAnalyticsControls::effectiveConfig() const {
   if (!error.isEmpty())
     throw std::invalid_argument(error.toStdString());
   YAML::Node effective = Merge(Merge(defaults_, user_), edited);
+  // Resolve before flattening loses which layer supplied each spelling.
+  // Model display, validation and launch arguments must agree with the CLI.
+  const std::vector<YAML::Node> layers{defaults_, user_, edited};
+  const auto map = [&](const QString& canonical, const QString& native) {
+    const auto selected = MappedValue(layers, canonical, native);
+    if (selected.IsDefined())
+      Set(effective, native.split('.'), selected);
+  };
+  for (const auto& [canonical, native] : pa::kTeamCanonicalKeys)
+    map(QString("team.") + canonical, kAnalytics + "team." + native);
+  map("game.home_is_dark", kAnalytics + "home-is-dark");
   for (const auto& field : fields_)
     if (!field.native_alias.isEmpty())
       Set(effective, field.native_alias.split('.'), YAML::Node(value(field).toBool()));
@@ -500,7 +535,7 @@ QStringList PlayerAnalyticsControls::arguments() const {
           : field.key.left(field.key.lastIndexOf('.')) + ".enable";
       bool enabled = false;
       for (const auto& candidate : fields_)
-        if (candidate.key == owner)
+        if (candidate.key == owner || candidate.native_alias == owner)
           enabled = value(candidate).toBool();
       if (!enabled)
         continue;
@@ -548,8 +583,8 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
       return "Player analytics require pipeline.primary-gie.enable=1.";
     if (parsed->jersey.enabled && parsed->jersey_roi_mode == pa::JerseyRoiMode::kPose && parsed->maximum_due_rois < 2)
       return "Pose-guided jersey recognition requires max-due-rois >= 2.";
-    const std::array<std::pair<const char*, const pa::FeatureConfig*>, 3> features{
-        {{"pose", &parsed->pose}, {"jersey", &parsed->jersey}, {"action", &parsed->action}}};
+    const std::array<std::pair<const char*, const pa::FeatureConfig*>, 4> features{
+        {{"pose", &parsed->pose}, {"jersey", &parsed->jersey}, {"action", &parsed->action}, {"team", &parsed->team}}};
     for (const auto& [name, feature] : features) {
       if (!feature->enabled || feature->model != "custom")
         continue;
@@ -567,7 +602,8 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
             .arg(name, QString::fromUtf8(manifest.status().message().data(), manifest.status().message().size()));
       const auto expected = std::string(name) == "pose" ? pa::ModelFeature::kPose
           : std::string(name) == "jersey"               ? pa::ModelFeature::kJersey
-                                                        : pa::ModelFeature::kAction;
+          : std::string(name) == "action"               ? pa::ModelFeature::kAction
+                                                        : pa::ModelFeature::kTeam;
       if (manifest->feature != expected || manifest->maximum_batch < parsed->batch_size)
         return QString("The %1 custom model has the wrong feature or insufficient batch capacity.").arg(name);
       for (const auto& file : {manifest->engine_file, manifest->onnx_file})

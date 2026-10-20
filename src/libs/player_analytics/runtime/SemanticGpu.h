@@ -25,9 +25,44 @@ struct JerseyCrop {
   int height{0};
 };
 
+inline constexpr int kTeamInputWidth = 128;
+inline constexpr int kTeamInputHeight = 256;
+inline constexpr size_t kTeamInputElements = 3 * kTeamInputWidth * kTeamInputHeight;
+
+// The crop rectangle carries no feature-specific state, so the team path takes
+// the jersey one rather than declaring an identical twin. Only the band that
+// produces it differs; see MakeTeamCrop.
+using TeamCrop = JerseyCrop;
+
 // Zero means unsupported batch. The caller allocates this once iff jersey is
 // enabled. At batch8 the bound is ~26 MiB, independent of video canvas size.
 size_t JerseyScratchBytes(size_t maximum_batch) noexcept;
+
+struct TeamObservation {
+  // Mean CIELAB L of the resized crop, 0..100. The embedding has no
+  // photometric axis, so ranking the two clusters dark-vs-light needs this
+  // measured separately from the pixels the model actually saw.
+  float lightness{0};
+};
+
+// Resize each crop to 256x128 and apply the reidentificationnet-rgb-bilinear-v1
+// preprocessing: half-pixel bilinear (torch align_corners=false), then
+// (pixel - offset) * scale per channel. Also returns each crop's mean
+// lightness, which costs one extra pass over the already-resized batch.
+//
+// Unlike the jersey path there is no scratch buffer and no coefficient pass:
+// plain bilinear is a 2x2 gather, so each output pixel is computed directly
+// from the surface. Crops are bounded CPU metadata and are copied into the
+// launch arguments by value, so host_crops may be reused once this returns.
+// No allocation or synchronization; the caller serializes and retires every
+// submitted operation before reusing or freeing the outputs, on errors too.
+cudaError_t PreprocessTeam(
+    const ImageView& image,
+    const TeamCrop* host_crops,
+    size_t batch,
+    float* device_input,
+    TeamObservation* device_observations,
+    cudaStream_t stream);
 
 // Crops are bounded CPU metadata, not pixels. Copies them into CUDA launch
 // arguments by value; host_crops may be released/reused after this call returns.

@@ -1,6 +1,6 @@
 # Native player analytics
 
-Pose, jersey and action inference are opt-in. Ordinary playback omits `hmplayeranalytics` entirely;
+Pose, jersey, action and team inference are opt-in. Ordinary playback omits `hmplayeranalytics` entirely;
 no inference engine, stream, ROI buffer or analytics pad probe is created. Drawing
 preferences do not enable inference. Immutable semantic metadata feeds optional GPU drawing.
 
@@ -59,7 +59,7 @@ in [the validation record](player-analytics-validation.md).
 The [benchmark procedure](player-analytics-benchmark.md) repeats frozen-runtime
 comparisons and separately checks compact transfers with Nsight Systems.
 
-## Jersey and action inference
+## Jersey, action and team inference
 
 See [the combined example](../configs/player-analytics/semantics-example.yaml).
 Each feature requires explicit `enable: 1`; its supported model is selected by default.
@@ -70,7 +70,19 @@ fresh same-frame shoulders/hips; it skips incomplete poses without falling back
 to bbox crops. Action requires explicit COCO17 pose at at least 10 Hz or `fps`.
 In `fps` mode actual input cadence and model budgets must still satisfy the
 history's source-time gap requirements. Drawing
-preferences cannot satisfy either dependency.
+preferences cannot satisfy either dependency. Team needs neither pose nor a
+jersey read -- it crops a chest band straight from the tracking box -- but it is
+the one feature whose tuning the baseline must supply: `rate-hz`,
+`warmup-samples`, `refit-interval` and `min-margin` have no compiled-in default
+and an enabled `team` block without them fails startup. It has no
+`confidence-threshold`; `min-margin` is the floor below which an embedding is
+left unassigned.
+
+Team affiliation is fitted per stream, not classified: two centroids over the
+embeddings this game has produced, ranked dark-vs-light by mean crop lightness.
+`game.home_is_dark` maps to `pipeline.player-analytics.home-is-dark` and names
+the two groups; without it the overlay reads DARK and LIGHT, which is unnamed
+but never wrong.
 
 Jersey inference uses the hockey PARSeq profile with the full 95-token vocabulary,
 one/two digits followed by EOS, and preserved leading zeroes. GPU preprocessing
@@ -91,19 +103,31 @@ processing one window cannot strengthen its label. The bundled model profile is
 NTU60 daily activities, **not a trained hockey event detector**. Useful hockey
 accuracy requires separate evaluation or training.
 
-Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V3`, schema 3, with separate fresh
-COCO17 observations and retained display poses. All producers and consumers must
+Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V4`, schema 4, with separate fresh
+COCO17 observations, retained display poses and team affiliation. All producers and consumers must
 be rebuilt together; no persistent telemetry schema changes.
 
-`max-due-rois` is an aggregate model-sample budget shared by pose, jersey and action.
-Weighted rotating turns favor pose 2:1:1 and lend unused work. Guided OCR costs
+`max-due-rois` is an aggregate model-sample budget shared by pose, jersey, action
+and team. Weighted rotating turns favor pose 2:1:1:1 and lend unused work. Team
+lends most of its turns after the opening seconds, because a track leaves the due
+set once its affiliation commits under a balanced, lightness-ranked fit. An
+unpublishable fit supplies no track votes and keeps collecting bounded samples
+until it can be replaced. Each accepted refit reopens settled tracks until a
+read confirms their side or contrary evidence clears switching hysteresis. A
+track occluded past `track-retention-ms` returns as a new identity and re-warms.
+A published fit is retained when a refit collapses both centroids into one old
+squad, even when within-squad variation follows the previous split axis. Expect a trickle, not zero, and expect the badge to drop
+out while a skater is re-acquired. Guided OCR costs
 two samples unless a pose is already scheduled. All admitted candidates are
 considered before the cap, so early tracks with incomplete action history cannot
 hide later ready tracks. Capacity and low video cadence may prevent action history
 from becoming ready; the pipeline reports unknown rather than inventing poses.
 The scheduler bounds analytics work without dropping video frames.
 
-Per sample, compact D2H is 204 bytes for pose or 8 bytes for jersey/action. Action
+Per sample, compact D2H is 204 bytes for pose or 8 bytes for jersey/action. Team is
+the exception: 4 bytes of crop lightness plus the raw 1 KiB embedding, because the
+two-means fit that turns an embedding into a side is a host-side per-stream model
+and no reduction kernel can stand in for it. Action
 inputs upload CPU skeleton coordinates/confidences, never video or crop pixels.
 Shutdown counters include actual model enqueues/results, aggregate model samples,
 maximum-frame-samples, budget-deferred, jersey pose/visibility skips and action
@@ -143,8 +167,8 @@ rectangle before the tracked tee, so Program transformations cannot change the
 Stitched view's decision. The existing CUDA/GL command compositors draw the labels;
 there is no video readback or separate inference pass.
 
-The Program Controls **Players** tab offers next-run pose, jersey and action
-compute toggles, model selectors, jersey ROI mode and optional tracker ReID.
+The Program Controls **Players** tab offers next-run pose, jersey, action and
+team compute toggles, model selectors, jersey ROI mode and optional tracker ReID.
 Save Preset changes only edited leaves. Unsaved choices are included in launch
 and exported jobs; an active run keeps its original snapshot. Enabled-only
 preflight validates model choices and dependencies without loading engines or touching
@@ -166,6 +190,7 @@ Drawing is independent of compute:
 | `plot.plot_pose` | `pipeline.player-analytics.draw-pose` |
 | `plot.plot_jersey_numbers` | `pipeline.player-analytics.draw-jerseys` |
 | `plot.plot_actions` | `pipeline.player-analytics.draw-actions` |
+| `plot.plot_teams` | `pipeline.player-analytics.draw-teams` |
 
 The native key wins at the same explicit layer; a later canonical setting wins
 over an older native setting. Canonical null suppresses its optional mapping.

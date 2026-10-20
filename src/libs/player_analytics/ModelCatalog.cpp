@@ -30,6 +30,21 @@ constexpr CatalogModel kModels[] = {
      "a69d882572452c6c046d998bd587c39cf614b45844e50d32ec24803ca6a3e9bd",
      kActionContract,
      8},
+    // Team affiliation reuses the ReIdentificationNet weights already vetted
+    // for the tracker, under its own feature so the contract can pin the
+    // embedding width. Measured on a labelled tv-14-2-p1 crop set it split the
+    // two squads at 89.5%, against 86.8% for a team-supervised alternative,
+    // while being cheaper to run and needing no additional download.
+    {"team",
+     "reidentificationnet-deployable-v1.2",
+     "NVIDIA ReIdentificationNet",
+     "https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/reidentificationnet/deployable_v1.2/"
+     "files?redirect=true&path=resnet50_market1501_aicity156.onnx",
+     "0e21d09278508ec835955f422a9fdd3cd59b2a6ecdef98d705f388f33cebac2b",
+     kTeamContract,
+     // kMaximumBatch, not the tracker's 32: this runs through NativeEngine,
+     // whose contract caps engine batch at the analytics batch size.
+     8},
     {"reid",
      "reidentificationnet-deployable-v1.2",
      "NVIDIA ReIdentificationNet",

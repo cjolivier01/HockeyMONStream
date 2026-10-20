@@ -517,9 +517,26 @@ cc_test(
         "configurator.h",
         "deepstream_app.h",
     ],
-    args = ["$(location //configs:baseline.yaml)"],
+    args = [
+        "$(location //configs:baseline.yaml)",
+        "$(location //configs:player-analytics/semantics-example.yaml)",
+    ],
     copts = HSTREAM_CLI_COPTS,
-    data = ["//configs:baseline.yaml"],
+    data = [
+        "//configs:baseline.yaml",
+        "//configs:player-analytics/semantics-example.yaml",
+    ],
     linkopts = HSTREAM_CLI_LINKOPTS,
     deps = HSTREAM_CLI_DEPS,
+)
+
+py_test(
+    name = "player_analytics_calibration_test",
+    srcs = ["PlayerAnalyticsCalibrationTest.py"],
+    main = "PlayerAnalyticsCalibrationTest.py",
+    args = ["$(location :hstream-cli)"],
+    data = [":hstream-cli"],
+    env_inherit = ["HOME"],
+    tags = ["local"],
+    size = "medium",
 )

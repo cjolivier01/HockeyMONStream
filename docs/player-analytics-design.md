@@ -58,12 +58,14 @@ element. Stop/cancellation releases contexts and buffers after outstanding work 
 
 ## Configuration and prepared models
 
-Native settings live under `pipeline.player-analytics`, with nested pose, jersey, and
-action enable flags, model selections, optional custom paths, update rates, confidence thresholds, and global
+Native settings live under `pipeline.player-analytics`, with nested pose, jersey,
+action and team enable flags, model selections, optional custom paths, update rates, confidence thresholds, and global
 object/batch limits. All enable flags default false. Existing synchronized canonical
-`plot.plot_pose`, `plot.plot_jersey_numbers`, and `plot.plot_actions` map to drawing
-preferences using the normal provenance rules; explicit native properties win at the
-same layer. Preserve the shared baseline byte for byte. New settings are parsed only
+`plot.plot_pose`, `plot.plot_jersey_numbers`, `plot.plot_actions` and `plot.plot_teams`
+map to drawing preferences using the normal provenance rules; explicit native
+properties win at the same layer. The team feature's tuning and `game.home_is_dark`
+map the same way, and unlike the other three it has no compiled-in fallback: the
+baseline is the only statement of those defaults. Preserve the shared baseline byte for byte. New settings are parsed only
 after layer resolution. Enabled built-in selections download and prepare automatically
 before pipeline allocation. Invalid custom models fail clearly; disabled features
 ignore their paths and require no model tooling.

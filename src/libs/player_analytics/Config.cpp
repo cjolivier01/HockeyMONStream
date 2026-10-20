@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string_view>
 
 namespace hm::player_analytics {
 namespace {
@@ -88,9 +89,11 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
     Enable(node["pose"], &config.pose);
     Enable(node["jersey"], &config.jersey);
     Enable(node["action"], &config.action);
+    Enable(node["team"], &config.team);
     config.drawing.pose = Flag(node["draw-pose"]);
     config.drawing.jersey = Flag(node["draw-jerseys"]);
     config.drawing.action = Flag(node["draw-actions"]);
+    config.drawing.team = Flag(node["draw-teams"]);
     const auto pose = node["pose"];
     if (pose && pose["continuous-drawing"] && !pose["continuous-drawing"].IsNull())
       config.continuous_pose_drawing = Flag(pose["continuous-drawing"]);
@@ -99,6 +102,57 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
     ReadFeature(node["pose"], "pose", &config.pose);
     ReadFeature(node["jersey"], "jersey", &config.jersey);
     ReadFeature(node["action"], "action", &config.action);
+    if (config.team.enabled) {
+      // No fallbacks: configs/baseline.yaml owns these, the configurator maps
+      // them in, and a configuration that reaches here without them is a
+      // plumbing bug that must fail loudly rather than run on invented tuning.
+      // `model` is not in the list because a model id names an asset rather
+      // than tuning a behavior; its default belongs to the catalog.
+      const auto& team = node["team"];
+      // Affiliation has no per-observation confidence: the clusterer reports a
+      // margin and min-margin is the floor. Accepting the key and ignoring it
+      // would read as a knob that does nothing.
+      if (team["confidence-threshold"])
+        throw std::invalid_argument("team has no confidence-threshold; its assignment floor is team.min-margin");
+      // Checked before ReadFeature so a missing rate-hz names itself rather
+      // than surfacing as a range complaint about a value nobody supplied.
+      for (const auto& [canonical, native] : kTeamCanonicalKeys) {
+        // `model` names an asset rather than tuning a behavior; its default
+        // belongs to the catalog, so it is the one mapped key not required.
+        if (std::string_view(native) == "model")
+          continue;
+        if (!team[native] || team[native].IsNull())
+          throw std::invalid_argument(
+              std::string("team.") + native + " must be supplied by the baseline configuration");
+      }
+    }
+    ReadFeature(node["team"], "team", &config.team);
+    if (config.team.enabled) {
+      const auto& team = node["team"];
+      auto& clustering = config.team_clustering;
+      clustering.warmup_samples = team["warmup-samples"].as<size_t>();
+      clustering.refit_interval = team["refit-interval"].as<size_t>();
+      clustering.minimum_margin = team["min-margin"].as<float>();
+      clustering.minimum_lightness_gap = team["min-lightness-gap"].as<float>();
+      clustering.minimum_cluster_share = team["min-cluster-share"].as<float>();
+      clustering.acquisition_evidence = team["acquisition-evidence"].as<double>();
+      clustering.switch_hysteresis = team["switch-hysteresis"].as<double>();
+      clustering.minimum_track_height = team["min-track-height"].as<float>();
+      if (!std::isfinite(clustering.minimum_margin) || !std::isfinite(clustering.minimum_lightness_gap) ||
+          !std::isfinite(clustering.minimum_cluster_share) || !std::isfinite(clustering.acquisition_evidence) ||
+          !std::isfinite(clustering.switch_hysteresis) || !std::isfinite(clustering.minimum_track_height) ||
+          !clustering.valid())
+        throw std::invalid_argument(
+            "team clustering values out of range: warmup-samples in [1,512], refit-interval positive, min-margin "
+            "in [0,1), min-lightness-gap in [0,100], min-cluster-share in [0,0.5], acquisition-evidence positive, "
+            "switch-hysteresis at least 1, min-track-height in [0,10000]");
+      // Flag(), not as<bool>(): the configurator writes the canonical
+      // game.home_is_dark through as 1/0 like every other mapped flag, and
+      // yaml-cpp's bool conversion rejects that spelling. Absent and null stay
+      // "nobody said", which is why the presence test is separate.
+      if (node["home-is-dark"] && !node["home-is-dark"].IsNull())
+        config.home_is_dark = Flag(node["home-is-dark"]);
+    }
     if (config.jersey.enabled && node["jersey"]["roi-mode"]) {
       const auto mode = node["jersey"]["roi-mode"].as<std::string>();
       if (mode == "pose")

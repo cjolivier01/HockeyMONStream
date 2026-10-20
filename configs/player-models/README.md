@@ -11,6 +11,7 @@ playback requires no Python export, manual bundle path, or environment variable.
 | Pose | RTMPose-M, COCO 17 joints | 8 | HockeyMONStream release |
 | Jersey | Hockey PARSeq, CC BY-NC 3.0; noncommercial | 8 | HockeyMONStream release |
 | Action | STGCN++, COCO2D joint, NTU60 generic activities | 8 | HockeyMONStream release |
+| Team | NVIDIA ReIdentificationNet deployable_v1.2 ONNX | 8 | NVIDIA NGC directly |
 | ReID (default) | DeepStream supplied NvDCF ETLT, deployable_v1.0 | 32 | Installed SDK, or NVIDIA NGC |
 | ReID (alternative) | NVIDIA ReIdentificationNet deployable_v1.2 ONNX | 32 | NVIDIA NGC directly |
 
@@ -24,6 +25,17 @@ the cache-local graph name; `provenance.json` records its digest and public URL.
 `0e5b7f702ce7e3734e45f27b819866f15f6b083048481d1afae2089136e20201`
 (NGC `deployable_v1.0`). Native preparation caps batch/history/workspace without
 changing the model. SDK files are read-only; engine creation uses private cache staging.
+
+`team.json` is the same NVIDIA ONNX deployed differently: player analytics runs
+it as a batched feature through `NativeEngine` with its own CUDA bilinear
+preprocessing, so it has a player-analytics contract and a maximum batch of 8
+rather than the tracker's 32. The network separates individuals, not teams; the
+two-means fit over its embeddings is what produces an affiliation, and
+`game.home_is_dark` is what names the two groups. Selecting it under `team`
+does not affect the tracker, and selecting it under `reid` does not affect team
+affiliation. The two never share a prepared bundle -- the cache key hashes the
+contract itself, and these are different contracts -- so enabling both stores
+two engines. They do share the single ONNX download.
 
 `reid.json` describes the separately selected ONNX alternative
 and has a separate native tracker contract. Its `tracker` map contains the
@@ -49,7 +61,7 @@ source checkpoint/configuration and exporter identities. Published graphs are
 self-contained ONNX files. Private image crops, skeleton fixtures, validation
 tensors, raw export manifests, and TensorRT engines are excluded from release.
 
-`src/libs/player_analytics/ModelCatalogData.inc` embeds these four JSON contracts
+`src/libs/player_analytics/ModelCatalogData.inc` embeds these five JSON contracts
 so selection and preparation do not depend on finding a source checkout. After
 editing a contract, update its hash in `provenance.json` and regenerate the include
 from the repository root:
@@ -60,7 +72,7 @@ from pathlib import Path
 root = Path("configs/player-models")
 header = "// Generated from configs/player-models/*.json; regenerate as documented there.\n"
 blocks = []
-for feature in ("pose", "jersey", "action", "reid"):
+for feature in ("pose", "jersey", "action", "reid", "team"):
     document = (root / f"{feature}.json").read_text()
     assert ')MODEL"' not in document
     blocks.append(

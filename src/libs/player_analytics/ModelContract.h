@@ -12,7 +12,7 @@
 
 namespace hm::player_analytics {
 
-enum class ModelFeature { kPose, kJersey, kAction };
+enum class ModelFeature { kPose, kJersey, kAction, kTeam };
 
 struct RuntimeIdentity {
   // Actual loaded SDK version queries, never compiler header versions.

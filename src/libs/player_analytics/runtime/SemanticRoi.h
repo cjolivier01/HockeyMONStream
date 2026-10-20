@@ -31,6 +31,27 @@ JerseyCropSelection MakeJerseyCrop(
     JerseyRoiMode mode,
     const Pose* pose = nullptr) noexcept;
 
+enum class TeamCropReason { kReady, kInvalidGeometry, kOutsideImage, kTooLarge };
+struct TeamCropSelection {
+  TeamCrop crop;
+  TeamCropReason reason{TeamCropReason::kInvalidGeometry};
+  explicit operator bool() const noexcept {
+    return reason == TeamCropReason::kReady;
+  }
+};
+
+// Chest band of the tracking box: x32-68%, y20-45%. Metadata-only, no pixels
+// or allocations, and no pose mode -- affiliation needs sweater colour, not
+// joint geometry, so a box is enough and a missing pose must not skip a track.
+//
+// The band is narrower and higher than the jersey ROI on purpose. Measured
+// over a labelled crop set, widening it toward the jersey band cost the
+// embedding 8 points of team accuracy (86.8% -> 78.9%) because the crop then
+// takes in pants, skates and the ice between the legs; tightening further
+// plateaus.
+TeamCropSelection MakeTeamCrop(
+    const ImageView& image, const Box& box, float metadata_width, float metadata_height) noexcept;
+
 absl::StatusOr<JerseyVocabulary> MakeJerseyVocabulary(const ModelManifest& manifest);
 
 } // namespace hm::player_analytics

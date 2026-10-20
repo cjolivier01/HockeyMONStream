@@ -2615,7 +2615,8 @@ void configure_player_analytics(GstElement* sink, unsigned layers, float joint_c
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
   std::lock_guard<std::mutex> lock(self->state->mutex);
   self->state->player_analytics_layers = layers &
-      (hm::player_analytics::kDrawPose | hm::player_analytics::kDrawJerseys | hm::player_analytics::kDrawActions);
+      (hm::player_analytics::kDrawPose | hm::player_analytics::kDrawJerseys | hm::player_analytics::kDrawActions |
+       hm::player_analytics::kDrawTeams);
   self->state->player_joint_confidence = joint_confidence;
   self->state->player_commands.Clear();
 #else
