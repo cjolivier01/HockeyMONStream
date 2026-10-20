@@ -61,13 +61,19 @@ locate players. These are alternatives; every rink item is not required.
 session. Saving it does not enable either playback use. Correct invalid rink
 dimensions before saving.
 
-**Save and use for leveling…** saves the marks and opens the existing leveling
-preview. Manual and assigned automatic observations can contribute. A fitted
-map provides its ice plane; a partial map can still provide four explicitly
+**Save and use for leveling…** saves the marks and checks that they can supply
+leveling before opening the preview. If evidence is missing, the editor stays
+open with your saved marks and an explanation. When goal-line endpoints need
+identities, the relevant line is selected; **Use goal-line ends at boards…**
+reuses those clicks after you identify which end is near. Manual and assigned
+automatic observations can contribute. A fitted map provides its ice plane; a partial map can still provide four explicitly
 identified goal-line/board corners. Detected line segments alone do not identify
-their intersections with the boards. The leveling dialog explains missing
-evidence and requires a preview before **Use angles**. Accepting angles stages
-them in the main window; **Save Preset** applies them. The resulting calibration
+their intersections with the boards. Successful reuse opens **Preview** directly
+and shows the saved observations in yellow on both camera tabs. No points need
+to be re-entered. Edit these reference marks in the map editor; placing new
+manual leveling points clears the reference overlay and starts a new estimate.
+The leveling dialog requires a preview before **Use angles**. Accepting angles
+stages them in the main window; **Save Preset** applies them. The resulting calibration
 change requires reviewing the rink map again.
 
 The dimensions are assumptions in metres. Defaults describe a 200 × 85 ft rink

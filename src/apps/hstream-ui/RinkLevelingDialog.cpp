@@ -73,6 +73,7 @@ QByteArray sourceRevisionForFiles(const QString& directory, const QStringList& f
 struct RinkLevelingDialog::LandmarkJob {
   std::atomic<bool> cancelled{false};
   std::optional<absl::StatusOr<hm::stitching::RinkCornerLevelingEstimate>> result;
+  std::array<QVector<ScoreboardSelectionCanvas::ReferenceMark>, 2> marks;
 };
 
 RinkLevelingDialog::RinkLevelingDialog(
@@ -109,6 +110,7 @@ RinkLevelingDialog::RinkLevelingDialog(
   layout->addWidget(landmarks_button_);
   connect(landmarks_button_, &QPushButton::clicked, this, &RinkLevelingDialog::useSavedLandmarks);
   instructions_ = new QLabel();
+  instructions_->setObjectName("rinkLevelingInstructions");
   instructions_->setWordWrap(true);
   layout->addWidget(instructions_);
   tabs_ = new QTabWidget();
@@ -125,7 +127,9 @@ RinkLevelingDialog::RinkLevelingDialog(
     for (const auto& name : {"Undo point", "Clear", "Fit image"}) {
       auto* button = new QPushButton(name);
       button->setIcon(action_icon(
-          QString(name) == "Undo point" ? ActionIcon::Undo : QString(name) == "Clear" ? ActionIcon::Delete : ActionIcon::Fit));
+          QString(name) == "Undo point"  ? ActionIcon::Undo
+              : QString(name) == "Clear" ? ActionIcon::Delete
+                                         : ActionIcon::Fit));
       button->setObjectName(QString("rinkLevelingCamera%1%2").arg(camera).arg(QString(name).remove(' ')));
       actions->addWidget(button);
       connect(button, &QPushButton::clicked, this, [this, camera, name]() {
@@ -469,6 +473,19 @@ void RinkLevelingDialog::switchMethod(bool corners) {
     const QSignalBlocker blocked(angle_spins_[index]);
     angle_spins_[index]->setValue(initial_rotation_[index]);
   }
+  tabs_->setCurrentIndex(0);
+  restoring_marks_ = false;
+  selectionChanged();
+}
+
+void RinkLevelingDialog::updateInstructions() {
+  if (landmarks_estimated_) {
+    instructions_->setText(
+        "Saved rink landmarks supplied these angles; no points need to be entered again. "
+        "The camera tabs show the saved marks in yellow. Edit them in Rink map and goals. "
+        "Inspect Preview, then choose Use angles. Placing new points starts a manual estimate.");
+    return;
+  }
   instructions_->setText(
       corner_method_
           ? "Select four corners of a rectangle on the ice: two at one end in Left camera, then two at the other "
@@ -478,9 +495,6 @@ void RinkLevelingDialog::switchMethod(bool corners) {
           : "Mark the top and bottom of at least three tall, upright wall or glass posts, spread across both cameras. "
             "Each pair of clicks marks one post. Avoid rink corners, sloping beams and short marks. "
             "Scroll to zoom, drag the image to pan, and drag a numbered point to adjust it.");
-  tabs_->setCurrentIndex(0);
-  restoring_marks_ = false;
-  selectionChanged();
 }
 
 void RinkLevelingDialog::navigate(int direction) {
@@ -519,6 +533,9 @@ void RinkLevelingDialog::selectionChanged() {
   if (restoring_marks_)
     return;
   landmarks_estimated_ = false;
+  for (auto* canvas : canvases_)
+    canvas->setReferenceMarks({});
+  updateInstructions();
   estimated_ = false;
   manual_angles_ = false;
   preview_requested_ = false;
@@ -823,7 +840,9 @@ void RinkLevelingDialog::preview() {
                 preview_canvas_->fitImage();
                 accept_button_->setEnabled(true);
                 status_->setText(
-                    "Inspect the walls and both rink ends. Use angles when satisfied, or Prev to adjust the marks.");
+                    landmarks_estimated_
+                        ? "Reused saved landmarks. Inspect the walls and both rink ends, then Use angles when satisfied."
+                        : "Inspect the walls and both rink ends. Use angles when satisfied, or Prev to adjust the marks.");
               });
         });
   };
@@ -917,6 +936,9 @@ void RinkLevelingDialog::useSavedLandmarks() {
   estimate_timer_.stop();
   invalidatePreview();
   landmarks_estimated_ = false;
+  for (auto* canvas : canvases_)
+    canvas->setReferenceMarks({});
+  updateInstructions();
   setBusy(true);
   status_->setText("Checking saved landmarks against this calibration…");
   landmark_job_ = std::make_shared<LandmarkJob>();
@@ -947,6 +969,15 @@ void RinkLevelingDialog::useSavedLandmarks() {
         return result.status();
       if (job->cancelled || sourceRevision(directory) != revision)
         return absl::CancelledError("Landmark leveling stopped or calibration changed; no angles were applied.");
+      for (const auto& mark : result->document.observations) {
+        if (!mark.enabled)
+          continue;
+        ScoreboardSelectionCanvas::ReferenceMark reference;
+        reference.arc = mark.arc;
+        for (const auto& point : mark.pixels)
+          reference.points.push_back({point.x, point.y});
+        job->marks[mark.camera].push_back(std::move(reference));
+      }
       return RinkLandmarkLeveling(*result, rotation, yaw);
     };
     job->result = work();
@@ -971,11 +1002,17 @@ void RinkLevelingDialog::useSavedLandmarks() {
     }
     landmarks_estimated_ = estimated_ = true;
     manual_angles_ = false;
-    status_->setText(
-        QString(
-            "Reused saved landmarks from the calibrated camera views. Rectangle angle mismatch: %1°. "
-            "Use Next to inspect Preview, then Use angles if it looks correct. The saved map is unchanged.")
-            .arg(estimate.orthogonality_error_degrees, 0, 'f', 2));
+    restoring_marks_ = true;
+    for (size_t camera = 0; camera < canvases_.size(); ++camera) {
+      canvases_[camera]->clearPoints();
+      canvases_[camera]->setReferenceMarks(job->marks[camera]);
+    }
+    restoring_marks_ = false;
+    updateInstructions();
+    instructions_->setText(
+        instructions_->text() +
+        QString(" Rectangle angle mismatch: %1°.").arg(estimate.orthogonality_error_degrees, 0, 'f', 2));
+    requestPreview();
   });
   landmark_worker_->start();
 }

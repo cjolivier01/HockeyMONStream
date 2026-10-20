@@ -100,19 +100,21 @@ int main(int argc, char** argv) {
     auto* use = dialog.findChild<QPushButton*>("useSavedRinkLandmarksButton");
     use->click();
     auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
-    if (!waitUntil([&] { return use->isEnabled(); }, 60000) || !status->text().contains("Reused saved")) {
+    auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
+    if (!waitUntil([&] { return accept->isEnabled(); }, 120000) || !status->text().contains("Reused saved")) {
       std::cerr << status->text().toStdString() << '\n';
       return 1;
     }
     const QString prefix = QString::fromLocal8Bit(argv[3]);
-    dialog.grab().save(prefix + "-angles.png");
-    dialog.findChild<QTabWidget*>("rinkLevelingTabs")->setCurrentIndex(2);
-    auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
-    if (!waitUntil([&] { return accept->isEnabled(); }, 120000)) {
-      std::cerr << status->text().toStdString() << '\n';
+    if (!dialog.grab().save(prefix + "-preview.png"))
       return 1;
+    for (int camera = 0; camera < 2; ++camera) {
+      dialog.findChild<QTabWidget*>("rinkLevelingTabs")->setCurrentIndex(camera);
+      QTest::qWait(30);
+      if (!dialog.grab().save(prefix + QString("-camera%1.png").arg(camera)))
+        return 1;
     }
-    return dialog.grab().save(prefix + "-preview.png") ? 0 : 1;
+    return 0;
   }
   if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--inspect-snapshot") {
     RinkLevelingDialog dialog(QString::fromLocal8Bit(argv[2]), {0, 0, 0});
@@ -713,8 +715,8 @@ int main(int argc, char** argv) {
       if (version >= 12) {
         selected_camera.input_lens.projection = "full-frame-fisheye";
         selected_camera.input_lens.optimization = "fixed";
-        current_provenance += "input-lens=" + QByteArray::fromStdString(
-            hm::stitching::SerializeStitchInputLens(selected_camera.input_lens)) + '\n';
+        current_provenance += "input-lens=" +
+            QByteArray::fromStdString(hm::stitching::SerializeStitchInputLens(selected_camera.input_lens)) + '\n';
       }
       if (version == 11 || version == 13 || version == 15)
         current_provenance += "manual-control-points=" + QByteArray(64, 'a') + '\n';
@@ -730,7 +732,8 @@ int main(int argc, char** argv) {
       advanceToPreview(selected);
       auto* accept = selected.findChild<QPushButton*>("acceptRinkLevelingButton");
       ok &= expect(
-          waitUntil([&]() { return accept->isEnabled(); }), "automatic and manual calibrations can preview new leveling");
+          waitUntil([&]() { return accept->isEnabled(); }),
+          "automatic and manual calibrations can preview new leveling");
       accept->click();
       ok &= expect(selected.result() == QDialog::Accepted, "re-leveling promoted matches returns the revised angles");
     }

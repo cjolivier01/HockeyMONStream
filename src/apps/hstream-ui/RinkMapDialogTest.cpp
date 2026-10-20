@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/RinkMapDialog.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
+#include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 #include <tiffio.h>
 #include <unistd.h>
@@ -597,6 +599,13 @@ int main(int argc, char** argv) {
     ok &= expect(
         save->text() == "Save partial map" && guidance->text().contains("Both goal lines are marked"),
         "Two generic lines stay partial and explain how to reuse their board endpoints");
+    auto* leveling = dialog.findChild<QPushButton*>("rinkMapLevelingButton");
+    leveling->click();
+    ok &= expect(
+        dialog.isVisible() && !dialog.levelingRequested() && !dialog.isWindowModified() &&
+            dialog.findChild<QLabel*>("rinkMapStatus")->text().contains("without clicking the points again") &&
+            table->currentRow() == 0 && ends->isEnabled(),
+        "Unidentified goal ends stay saved in the map editor with the existing line selected for identification");
     auto convert = [&](int row, const char* choice) {
       table->selectRow(row);
       if (!expect(ends->isEnabled(), "Selected goal line can identify its board endpoints"))
@@ -647,7 +656,10 @@ int main(int argc, char** argv) {
         "Undoing a conversion also removes readiness");
     redo->click();
     ok &= expect(idle(dialog) && table->rowCount() == 4, "Redo restores both confirmed point marks");
-    save->click();
+    leveling->click();
+    ok &= expect(
+        dialog.levelingRequested() && dialog.result() == QDialog::Accepted,
+        "Identified goal ends hand off to leveling without new clicks");
     const auto converted_snapshot = LoadRinkMapSnapshot(game.path());
     const auto converted = converted_snapshot.ok() && converted_snapshot->saved_map
         ? rink::ParseRinkMap(*converted_snapshot->saved_map)
@@ -669,6 +681,82 @@ int main(int argc, char** argv) {
         result.ok() && result->fit.state == rink::RinkMapState::kReady &&
             RinkLandmarkLeveling(*result, {0, 0, 0}, 0).ok(),
         "Saved converted endpoints supply both the metric map and optional leveling");
+  }
+  {
+    // Exercise the real saved-map handoff and worker with deterministic still
+    // rendering. Keep the saved goal-line segments as well as identified points.
+    auto saved = LoadRinkMapSnapshot(game.path());
+    if (!expect(saved.ok() && saved->saved_map.has_value(), "Load the map for the leveling handoff"))
+      return 1;
+    auto marks = rink::ParseRinkMap(*saved->saved_map);
+    if (!expect(marks.ok(), "Parse the map for the leveling handoff"))
+      return 1;
+    marks->observations.insert(marks->observations.end(), document.observations.begin(), document.observations.end());
+    const auto with_lines = UpdateRinkMap(*saved, *marks, false, {});
+    if (!expect(
+            with_lines.ok() && SaveRinkMap(*saved, with_lines->document).ok(),
+            "Save lines alongside the confirmed corners"))
+      return 1;
+    const auto saved_text = *saved->saved_map;
+    const QByteArray old_modify = qgetenv("HM_PANO_MODIFY");
+    const QByteArray old_nona = qgetenv("HM_NONA");
+    ok &= write(
+        bin.filePath("pano_modify"),
+        "#!/bin/sh\nfor arg; do\ncase \"$arg\" in --output=*) output=${arg#--output=} ;; *.pto) input=$arg ;; esac\ndone\ncp \"$input\" \"$output\"\n");
+    ok &= write(bin.filePath("nona"), "#!/bin/sh\ncp left.png preview.png\n");
+    for (const char* tool : {"pano_modify", "nona"})
+      ok &= QFile::setPermissions(bin.filePath(tool), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    qputenv("HM_PANO_MODIFY", bin.filePath("pano_modify").toUtf8());
+    qputenv("HM_NONA", bin.filePath("nona").toUtf8());
+    RinkLevelingDialog leveling(game.path(), {17, -20, 3});
+    ok &= expect(leveling.loadError().isEmpty(), "Leveling opens the same calibration snapshot");
+    leveling.show();
+    leveling.useSavedLandmarks();
+    auto* accept = leveling.findChild<QPushButton*>("acceptRinkLevelingButton");
+    auto* tabs = leveling.findChild<QTabWidget*>("rinkLevelingTabs");
+    ok &= expect(
+        waitUntil([&] { return accept->isEnabled(); }) && tabs->currentIndex() == 2 &&
+            leveling.findChild<QLabel*>("rinkLevelingInstructions")
+                ->text()
+                .contains("no points need to be entered again"),
+        "Saved landmarks automatically render Preview without asking for manual corners");
+    ok &= expect(std::abs(leveling.rotationDegrees()[0] - 17) < 1e-6, "Landmark reuse preserves the chosen yaw");
+    auto yellowPixels = [](ScoreboardSelectionCanvas* canvas) {
+      const auto image = canvas->grab().toImage();
+      size_t count = 0;
+      for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x) {
+          const auto color = image.pixelColor(x, y);
+          count += color.red() > 230 && color.green() > 180 && color.blue() < 110;
+        }
+      return count;
+    };
+    for (int camera = 0; camera < 2; ++camera) {
+      tabs->setCurrentIndex(camera);
+      QTest::qWait(30);
+      auto* canvas = static_cast<ScoreboardSelectionCanvas*>(
+          leveling.findChild<QWidget*>(QString("rinkLevelingCamera%1").arg(camera)));
+      ok &= expect(
+          canvas->points().isEmpty() && yellowPixels(canvas) > 100,
+          "Both camera tabs show the saved lines and points as reference marks, separate from manual corners");
+    }
+    auto* left = static_cast<ScoreboardSelectionCanvas*>(leveling.findChild<QWidget*>("rinkLevelingCamera0"));
+    tabs->setCurrentIndex(0);
+    left->setPoints({{200, 300}});
+    ok &= expect(
+        !accept->isEnabled() && yellowPixels(left) == 0 &&
+            leveling.findChild<QLabel*>("rinkLevelingInstructions")->text().startsWith("Select four corners"),
+        "Starting a manual selection clears the saved overlay and invalidates its preview");
+    const auto unchanged = LoadRinkMapSnapshot(game.path());
+    ok &= expect(unchanged.ok() && unchanged->saved_map == saved_text, "Leveling never rewrites saved map evidence");
+    if (old_modify.isNull())
+      qunsetenv("HM_PANO_MODIFY");
+    else
+      qputenv("HM_PANO_MODIFY", old_modify);
+    if (old_nona.isNull())
+      qunsetenv("HM_NONA");
+    else
+      qputenv("HM_NONA", old_nona);
   }
   snapshot = LoadRinkMapSnapshot(game.path());
   if (!expect(snapshot.ok(), "Reload after saving converted goal lines"))

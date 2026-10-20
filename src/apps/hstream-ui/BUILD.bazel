@@ -1191,5 +1191,5 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":rink_map_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
+    deps = [":rink_map_dialog", ":rink_leveling_dialog", ":scoreboard_selection_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
 )

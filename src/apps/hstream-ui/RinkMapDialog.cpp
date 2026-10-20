@@ -666,6 +666,26 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
       "Save these marks, then review optional leveling from the same source evidence. Partial maps can contain usable rectangle corners.");
   connect(leveling_, &QPushButton::clicked, this, [this] {
     if (save()) {
+      // Eligibility is invariant under the published rotation. Check the fresh
+      // rays here so missing evidence stays beside the marks the user can fix.
+      const auto estimate = RinkLandmarkLeveling(state_, {0, 0, 0}, 0);
+      if (!estimate.ok()) {
+        QString guidance;
+        for (size_t row = 0; row < state_.document.observations.size(); ++row) {
+          const auto& mark = state_.document.observations[row];
+          if (mark.enabled && hasGoalLineEnds(mark)) {
+            table_->selectRow(int(row));
+            tabs_->setCurrentIndex(mark.camera);
+            guidance =
+                " If both numbered ends meet the boards at ice level, choose Use goal-line ends at boards "
+                "for each goal line to identify the near end without clicking the points again.";
+            break;
+          }
+        }
+        setStatus(
+            "Saved your marks. " + QString::fromStdString(std::string(estimate.status().message())) + guidance, true);
+        return;
+      }
       leveling_requested_ = true;
       accept();
     }
