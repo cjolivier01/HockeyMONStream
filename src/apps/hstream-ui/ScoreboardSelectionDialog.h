@@ -103,6 +103,9 @@ class ScoreboardSelectionDialog : public QDialog {
       int request_timeout_ms = 10000);
 
   QString loadError() const;
+  // Fetch the backend's session-local draft without persisting it or replacing
+  // corners the operator has already begun editing.
+  void loadProposal();
   void closeAfterBackendCompletion();
 
   std::function<void(const QString&)> cancellationFailed;
@@ -144,6 +147,8 @@ class ScoreboardSelectionDialog : public QDialog {
   QPushButton* cancel_button_{nullptr};
   QNetworkAccessManager* network_{nullptr};
   QPointer<QNetworkReply> pending_reply_;
+  QPointer<QNetworkReply> proposal_reply_;
+  bool selection_edited_{false};
   bool submitting_{false};
   bool backend_completed_{false};
   int request_timeout_ms_{10000};

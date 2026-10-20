@@ -34,7 +34,7 @@ bool expect(bool condition, const char* message) {
 }
 
 std::string file_identity(const std::filesystem::path& path) {
-  struct stat metadata{};
+  struct stat metadata {};
   if (::stat(path.c_str(), &metadata) != 0)
     return {};
   std::ostringstream value;
@@ -299,6 +299,14 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
     ok &= expect(
         http_request(port, "/?token=" + token, false, authority_host).rfind("HTTP/1.1 200 ", 0) == 0,
         "valid scoreboard selector GET must succeed");
+    const auto proposal = http_request(port, "/initial?token=" + token, false, authority_host);
+    ok &= expect(
+        proposal.find("\"points\":[]") != std::string::npos &&
+            proposal.find("Automatic detection unavailable") != std::string::npos,
+        "Model failure must expose an empty draft and a visible manual-selection explanation");
+    ok &= expect(
+        http_request(port, "/initial?token=wrong", false, authority_host).rfind("HTTP/1.1 403 ", 0) == 0,
+        "Proposal metadata must require the selector token");
     ok &= expect(
         http_request(port, "/none?token=" + token, true, authority_host).rfind("HTTP/1.1 200 ", 0) == 0,
         "valid scoreboard selector POST must succeed");
@@ -317,6 +325,8 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
 } // namespace
 
 int main() {
+  // Keep HTTP protocol tests offline; detector failures retain manual selection.
+  ::setenv("HM_SCOREBOARD_ONNX_MODEL", "/nonexistent-scoreboard-test.onnx", 1);
   bool ok = true;
   using Selector = hm::stitching::ScoreboardSelector;
   Selector::Polygon points{{{90, 80}, {10, 10}, {90, 10}, {10, 80}}};
@@ -439,11 +449,10 @@ int main() {
   const cv::Mat mismatched_live_rotation_snapshot(24, 32, CV_8UC3, cv::Scalar(32, 64, 96));
   ok &= expect(
       live_rotation_generation.ok() &&
-          absl::IsAborted(
-              hm::stitching::save_stitched_image(
-                  directory.string(),
-                  mismatched_live_rotation_snapshot,
-                  live_rotation_generation.ok() ? *live_rotation_generation : "")),
+          absl::IsAborted(hm::stitching::save_stitched_image(
+              directory.string(),
+              mismatched_live_rotation_snapshot,
+              live_rotation_generation.ok() ? *live_rotation_generation : "")),
       "snapshot publication must reject image dimensions that disagree with the producer generation");
   const cv::Mat live_rotation_snapshot(32, 96, CV_8UC3, cv::Scalar(32, 64, 96));
   ok &= expect(

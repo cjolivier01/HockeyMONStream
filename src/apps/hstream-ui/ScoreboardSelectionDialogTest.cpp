@@ -40,7 +40,8 @@ bool wait_until(const std::function<bool()>& condition, int timeout_ms = 3000) {
 
 class SelectorServer {
  public:
-  explicit SelectorServer(int response_status = 200) : response_status_(response_status) {
+  explicit SelectorServer(int response_status = 200, QByteArray response_body = {})
+      : response_status_(response_status), response_body_(std::move(response_body)) {
     QObject::connect(&server_, &QTcpServer::newConnection, &server_, [this]() {
       QTcpSocket* socket = server_.nextPendingConnection();
       QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket]() {
@@ -57,7 +58,9 @@ class SelectorServer {
         request_received_ = true;
         if (response_status_ == 0)
           return;
-        const QByteArray body = response_status_ == 200 ? "saved\n" : "invalid test selection\n";
+        QByteArray body = response_body_;
+        if (body.isEmpty())
+          body = response_status_ == 200 ? "saved\n" : "invalid test selection\n";
         const QByteArray reason = response_status_ == 200 ? "OK" : "Bad Request";
         socket->write(
             "HTTP/1.1 " + QByteArray::number(response_status_) + " " + reason + "\r\nContent-Length: " +
@@ -92,10 +95,34 @@ class SelectorServer {
  private:
   QTcpServer server_;
   int response_status_;
+  QByteArray response_body_;
   QByteArray request_;
   bool request_received_{false};
   bool complete_{false};
 };
+
+bool test_proposal_draft(const QString& image_path, bool edit_before_reply) {
+  SelectorServer server(200, R"({"points":[[10,10],[90,10],[90,70],[10,70]],"message":"Review suggested corners"})");
+  if (!server.listen())
+    return false;
+  ScoreboardSelectionDialog dialog(server.url(), image_path, {});
+  auto* canvas = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("scoreboardSelectionCanvas"));
+  dialog.loadProposal();
+  if (edit_before_reply)
+    canvas->setPoints({{12, 14}});
+  bool ok = wait_until([&] { return server.complete(); });
+  ok &= wait_until([&] { return edit_before_reply ? canvas->points().size() == 1 : canvas->points().size() == 4; });
+  // Allow the response callback to run even when the one edited point is
+  // already present before the reply arrives.
+  QTest::qWait(50);
+  ok &= expect(server.request().startsWith("GET /initial?token="), "Proposal must use authenticated metadata");
+  ok &= expect(
+      edit_before_reply ? canvas->points() == QVector<QPoint>{{12, 14}}
+                        : canvas->points() == QVector<QPoint>{{10, 10}, {90, 10}, {90, 70}, {10, 70}},
+      "Draft must populate empty selection but preserve operator edits");
+  dialog.closeAfterBackendCompletion();
+  return ok;
+}
 
 bool test_canvas_controls(const QString& image_path) {
   ScoreboardSelectionCanvas canvas;
@@ -368,8 +395,8 @@ int main(int argc, char** argv) {
     if (!absurd_dimension_image.save(absurd_dimension_path))
       return 1;
   }
-  const bool ok = test_canvas_controls(image_path) &&
-      test_large_image_viewport_cache(large_image_path, large_image_size) &&
+  const bool ok = test_proposal_draft(image_path, false) && test_proposal_draft(image_path, true) &&
+      test_canvas_controls(image_path) && test_large_image_viewport_cache(large_image_path, large_image_size) &&
       test_absurd_source_dimensions_are_rejected(absurd_dimension_path) && test_successful_submission(image_path) &&
       test_failed_submission_remains_open(image_path) && test_cancel_success(image_path) &&
       test_cancel_failure_escapes_modal(image_path, false) && test_cancel_failure_escapes_modal(image_path, true) &&

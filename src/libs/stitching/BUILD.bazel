@@ -1,6 +1,25 @@
 INCLUDE_PREFIX = "hstream/src/libs/stitching"
 
 cc_library(
+  name = "scoreboard_proposal",
+  srcs = ["ScoreboardProposal.cpp"],
+  hdrs = ["ScoreboardProposal.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "//src/libs/onnx:session", "//src/libs/assets:asset_manager",
+    "//toolchains/jetson:cuda_runtime", "@local_cuda//:cuda",
+    "@opencv_linux//:opencv", "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "scoreboard_proposal_test",
+  srcs = ["ScoreboardProposalTest.cpp"],
+  deps = [":scoreboard_proposal"],
+)
+
+cc_library(
   name = "rink_mask_geometry",
   srcs = ["RinkMaskGeometry.cpp"],
   hdrs = ["RinkMaskGeometry.h"],
@@ -177,6 +196,7 @@ cc_library(
   visibility = ["//visibility:public"],
   implementation_deps = [":orientation_internal"],
   deps = [
+    ":scoreboard_proposal",
     ":stitching_reframe",
     ":calibration_match_images",
     ":calibration_matches",

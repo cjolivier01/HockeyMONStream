@@ -700,6 +700,7 @@ void ScoreboardSelectionDialog::buildUi() {
 
   network_ = new QNetworkAccessManager(this);
   canvas_->selectionChanged = [this]() {
+    selection_edited_ = true;
     refreshSelectionUi();
     if (submitting_ || !load_error_.isEmpty())
       return;
@@ -733,6 +734,53 @@ void ScoreboardSelectionDialog::buildUi() {
     });
   }
   refreshSelectionUi();
+  selection_edited_ = false;
+}
+
+void ScoreboardSelectionDialog::loadProposal() {
+  if (!load_error_.isEmpty() || !initial_points_.isEmpty() || proposal_reply_)
+    return;
+  QUrl url = selector_url_;
+  url.setPath("/initial");
+  QNetworkRequest request(url);
+  request.setTransferTimeout(request_timeout_ms_);
+  auto* reply = network_->get(request);
+  proposal_reply_ = reply;
+  connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    reply->deleteLater();
+    proposal_reply_.clear();
+    if (submitting_ || backend_completed_ || selection_edited_)
+      return;
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(reply->readAll(), &error);
+    if (reply->error() != QNetworkReply::NoError || error.error != QJsonParseError::NoError || !document.isObject()) {
+      status_message_->setText("Could not load suggested corners. Select the four corners manually.");
+      return;
+    }
+    const auto object = document.object();
+    const auto array = object.value("points").toArray();
+    QVector<QPoint> points;
+    for (const auto entry : array) {
+      const auto pair = entry.toArray();
+      if (pair.size() != 2 || !pair[0].isDouble() || !pair[1].isDouble())
+        break;
+      const double x = pair[0].toDouble(), y = pair[1].toDouble();
+      if (!std::isfinite(x) || !std::isfinite(y) || x != std::floor(x) || y != std::floor(y) || x < 0 || y < 0 ||
+          x >= canvas_->imageSize().width() || y >= canvas_->imageSize().height())
+        break;
+      points.push_back(QPoint(int(x), int(y)));
+    }
+    if (!array.isEmpty() && (array.size() != 4 || points.size() != 4)) {
+      status_message_->setText("Invalid suggested corners. Select the four corners manually.");
+      return;
+    }
+    if (points.size() == 4) {
+      canvas_->setPoints(points);
+      canvas_->focusPoints();
+      status_title_->setText("Review suggested corners");
+    }
+    status_message_->setText(object.value("message").toString());
+  });
 }
 
 void ScoreboardSelectionDialog::refreshSelectionUi() {

@@ -1,0 +1,33 @@
+{
+  "schema": "scoreboard-mask2former-r50-v1",
+  "checkpoint_sha256": "be9607b97a90cc02523d0e238a47bc4db6e3a34d52378ceaded3e38303ec0682",
+  "input": [
+    1,
+    3,
+    768,
+    2048
+  ],
+  "outputs": [
+    [
+      1,
+      100,
+      2
+    ],
+    [
+      1,
+      100,
+      192,
+      512
+    ]
+  ],
+  "opset": 17,
+  "torch": "2.11.0a0+git3193646",
+  "maximum_absolute_parity_error": [
+    3.337860107421875e-06,
+    0.000553131103515625
+  ],
+  "artifacts": {
+    "scoreboard-mask2former-r50-3d7fc57ac7ab4513.onnx": "3d7fc57ac7ab45139411bdb28500f518c97dda8b45a91b0d3a14c91bd3eb2665",
+    "scoreboard-mask2former-r50-2cd82b9e3f1d87d1.pt": "2cd82b9e3f1d87d1a5a93e5f80491189750ab0e9ec201e9500cccc57334bd704"
+  }
+}
