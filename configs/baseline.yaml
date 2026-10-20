@@ -34,9 +34,8 @@ plot:
   plot_trajectories: false
   plot_speed: false
   plot_jersey_numbers: false
-  # Home/away (or dark/light) labels under each tracked player. Rendered by
-  # HockeyMON's overlay trunk from the team trunk's output; see the `team`
-  # block below. NOT IMPLEMENTED IN HSTREAM YET.
+  # Home/away (or dark/light) labels under each tracked player. Drawn from the
+  # team feature's output in both applications; see the `team` block below.
   plot_teams: false
   # Badge match officials in the tracking overlay. Only has an effect with a
   # detector whose head distinguishes them (--detector-model hockeyref); on a
@@ -523,14 +522,18 @@ detector:
   max_referees: 3
 
 #
-# Team affiliation. NOT IMPLEMENTED IN HSTREAM YET: no native code reads these
-# keys; HockeyMON's team trunk is the only consumer. They are listed in both
-# copies of this file to keep the two synchronized.
+# Team affiliation.
 #
 # Team identity is relative to the game being watched, so there is no model
-# that outputs "home" for an arbitrary crop. The trunk takes a pose-guided
-# torso crop per track, splits the game's players into two appearance groups,
-# and `game.home_is_dark` names those groups.
+# that outputs "home" for an arbitrary crop. Both applications take a torso
+# crop per track, split the game's players into two appearance groups with a
+# two-means fit, and `game.home_is_dark` names those groups.
+#
+# `enabled`, `warmup_samples`, `refit_interval` and `min_margin` mean the same
+# thing to both and are read by both. The rest belong to one side: `backend`,
+# `frame_stride`, `min_track_height` and `prtreid` are HockeyMON's, `rate_hz`
+# and `model` are HStream's, and each application ignores the other's as
+# elsewhere in this file.
 #
 team:
   # Off by default. Turning it on with backend `prtreid` requires that package
@@ -560,6 +563,17 @@ team:
   frame_stride: 2
   # Tracks shorter than this are mostly ice once cropped to the torso.
   min_track_height: 60
+
+  # HStream only. Per-track inference rate, not a frame rate: affiliation is
+  # static, so a low rate costs no accuracy. A track also leaves the schedule
+  # outright once its vote commits, which is what makes the feature cheap
+  # enough to leave on.
+  rate_hz: 2
+  # HStream only. NVIDIA TAO ReIdentificationNet. Scored 89.5% against
+  # PRTReid's 86.8% on the same hand-labelled hockey crops and ran 1.34x
+  # faster, so the native side ships the generic re-identification embedding
+  # even though HockeyMON's `backend` above defaults to the team-trained one.
+  model: reidentificationnet-deployable-v1.2
 
   prtreid:
     # Empty means "download to the torch hub cache on first use".

@@ -20,6 +20,11 @@ struct AnalyticsCounters {
   uint64_t jersey_results{0};
   uint64_t action_enqueues{0};
   uint64_t action_results{0};
+  uint64_t team_enqueues{0};
+  uint64_t team_results{0};
+  // Embeddings the clusterer declined to assign: either it has not fitted yet,
+  // or the two centroids were too close to call for this crop.
+  uint64_t team_unassigned{0};
   uint64_t model_samples{0};
   uint64_t maximum_frame_samples{0};
   uint64_t budget_deferred{0};

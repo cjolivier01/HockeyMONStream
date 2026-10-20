@@ -9,11 +9,15 @@
 namespace {
 
 using hm::player_analytics::kTeamEmbedding;
-using hm::player_analytics::kTeamWarmupSamples;
 using hm::player_analytics::NameClusters;
 using hm::player_analytics::TeamClusterer;
+using hm::player_analytics::TeamClusteringSettings;
 using hm::player_analytics::TeamLabel;
 using hm::player_analytics::TeamLabelText;
+
+// Mirrors the shipped configs/baseline.yaml team block. The clusterer has no
+// defaults of its own, so a test must say what tuning it is exercising.
+constexpr TeamClusteringSettings kSettings{200, 600, 0.12F};
 
 bool Check(bool condition, const char* what) {
   if (!condition) {
@@ -44,7 +48,7 @@ std::array<float, kTeamEmbedding> MakeEmbedding(uint32_t& state, bool second_squ
 }
 
 bool SeparatesTwoSquads() {
-  TeamClusterer clusterer;
+  TeamClusterer clusterer(kSettings);
   uint32_t state = 7;
   // Dark squad gets low lightness, light squad high, so the ranking is known.
   for (int i = 0; i < 200; ++i) {
@@ -77,20 +81,19 @@ bool SeparatesTwoSquads() {
 }
 
 bool DeclinesBeforeWarmup() {
-  TeamClusterer clusterer;
+  TeamClusterer clusterer(kSettings);
   uint32_t state = 11;
   bool ok = true;
-  for (size_t i = 0; i < kTeamWarmupSamples - 1; ++i) {
+  for (size_t i = 0; i < kSettings.warmup_samples - 1; ++i) {
     const auto embedding = MakeEmbedding(state, i % 2 == 1, 0.2F);
-    ok &= Check(clusterer.Observe(embedding.data(), 50.0F).cluster < 0,
-        "no assignment before the warmup threshold");
+    ok &= Check(clusterer.Observe(embedding.data(), 50.0F).cluster < 0, "no assignment before the warmup threshold");
   }
   ok &= Check(!clusterer.fitted(), "not fitted before the warmup threshold");
   return ok;
 }
 
 bool DeclinesAmbiguousEmbeddings() {
-  TeamClusterer clusterer;
+  TeamClusterer clusterer(kSettings);
   uint32_t state = 13;
   for (int i = 0; i < 200; ++i) {
     const auto embedding = MakeEmbedding(state, (i % 2) == 1, 0.2F);
@@ -111,7 +114,7 @@ bool IsDeterministic() {
   std::vector<int8_t> first;
   std::vector<int8_t> second;
   for (int run = 0; run < 2; ++run) {
-    TeamClusterer clusterer;
+    TeamClusterer clusterer(kSettings);
     uint32_t state = 29;
     std::vector<int8_t>& into = run == 0 ? first : second;
     for (int i = 0; i < 200; ++i) {
@@ -125,21 +128,23 @@ bool IsDeterministic() {
 bool NamesClusters() {
   bool ok = true;
   auto unnamed = NameClusters(0, std::nullopt);
-  ok &= Check(unnamed[0] == TeamLabel::kDark && unnamed[1] == TeamLabel::kLight,
+  ok &= Check(
+      unnamed[0] == TeamLabel::kDark && unnamed[1] == TeamLabel::kLight,
       "without home_is_dark the labels stay dark/light");
 
   auto home_dark = NameClusters(0, true);
-  ok &= Check(home_dark[0] == TeamLabel::kHome && home_dark[1] == TeamLabel::kAway,
-      "home_is_dark names the dark cluster home");
+  ok &= Check(
+      home_dark[0] == TeamLabel::kHome && home_dark[1] == TeamLabel::kAway, "home_is_dark names the dark cluster home");
 
   auto home_light = NameClusters(0, false);
-  ok &= Check(home_light[0] == TeamLabel::kAway && home_light[1] == TeamLabel::kHome,
+  ok &= Check(
+      home_light[0] == TeamLabel::kAway && home_light[1] == TeamLabel::kHome,
       "home_is_light names the light cluster home");
 
   // The mapping follows the dark cluster, not the index.
   auto flipped = NameClusters(1, true);
-  ok &= Check(flipped[0] == TeamLabel::kAway && flipped[1] == TeamLabel::kHome,
-      "naming follows whichever cluster is darker");
+  ok &= Check(
+      flipped[0] == TeamLabel::kAway && flipped[1] == TeamLabel::kHome, "naming follows whichever cluster is darker");
   return ok;
 }
 
@@ -147,18 +152,19 @@ bool RendersLabels() {
   bool ok = true;
   ok &= Check(std::string_view(TeamLabelText(TeamLabel::kHome)) == "HOME", "home badge text");
   ok &= Check(std::string_view(TeamLabelText(TeamLabel::kLight)) == "LIGHT", "light badge text");
-  ok &= Check(std::string_view(TeamLabelText(TeamLabel::kUnknown)).empty(),
+  ok &= Check(
+      std::string_view(TeamLabelText(TeamLabel::kUnknown)).empty(),
       "an undecided track renders no badge rather than a placeholder");
   return ok;
 }
 
 bool SurvivesNullEmbedding() {
-  TeamClusterer clusterer;
+  TeamClusterer clusterer(kSettings);
   return Check(clusterer.Observe(nullptr, 50.0F).cluster < 0, "a null embedding is declined");
 }
 
 bool ResetClearsState() {
-  TeamClusterer clusterer;
+  TeamClusterer clusterer(kSettings);
   uint32_t state = 31;
   for (int i = 0; i < 200; ++i) {
     const auto embedding = MakeEmbedding(state, (i % 2) == 1, 0.2F);
@@ -170,7 +176,7 @@ bool ResetClearsState() {
   return ok;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
   bool ok = true;

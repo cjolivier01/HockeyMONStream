@@ -15,6 +15,7 @@
 #include "hstream/src/gst-plugins/gst-player-analytics/BorrowedImage.h"
 #include "hstream/src/gst-plugins/gst-player-analytics/FrameWorkPlan.h"
 #include "hstream/src/libs/player_analytics/FrameMeta.h"
+#include "hstream/src/libs/player_analytics/TeamAffiliation.h"
 #include "hstream/src/libs/player_analytics/TemporalState.h"
 #include "hstream/src/libs/player_analytics/runtime/NativeEngine.h"
 #include "hstream/src/libs/player_analytics/runtime/PoseGpu.h"
@@ -83,15 +84,21 @@ struct PlayerAnalyticsProcessor::Impl {
     std::unique_ptr<PoseDrawingState> pose_drawing;
     std::unique_ptr<JerseyConsensus> jersey;
     std::unique_ptr<ActionState> action;
+    std::unique_ptr<TeamConsensus> team;
   };
   struct Source {
-    explicit Source(const Config& config) : scheduler(config.maximum_tracks, config.track_retention_ns) {}
+    explicit Source(const Config& config)
+        : scheduler(config.maximum_tracks, config.track_retention_ns), team_clusterer(config.team_clustering) {}
     TrackScheduler scheduler;
     std::map<uint64_t, Evidence> evidence;
+    // Team identity is a property of the game on this pad, not of a track, so
+    // the two centroids are fitted once per source and shared by every skater.
+    TeamClusterer team_clusterer;
     unsigned scheduling_cursor{0};
     void Reset() noexcept {
       scheduler.Reset();
       evidence.clear();
+      team_clusterer.Reset();
       scheduling_cursor = 0;
     }
     std::string geometry;
@@ -110,6 +117,7 @@ struct PlayerAnalyticsProcessor::Impl {
   std::unique_ptr<NativeEngine> pose;
   std::unique_ptr<NativeEngine> jersey;
   std::unique_ptr<NativeEngine> action;
+  std::unique_ptr<NativeEngine> team;
   JerseyVocabulary jersey_vocabulary;
   void* jersey_scratch{nullptr};
   size_t jersey_scratch_bytes{0};
@@ -118,13 +126,16 @@ struct PlayerAnalyticsProcessor::Impl {
   ActionObservation* device_actions{nullptr};
   ActionObservation* host_actions{nullptr};
   float* host_action_tensor{nullptr};
+  TeamObservation* device_team{nullptr};
+  TeamObservation* host_team{nullptr};
+  float* host_embeddings{nullptr};
   PoseAffine* device_affines{nullptr};
   Pose* device_poses{nullptr};
   PoseAffine* host_affines{nullptr};
   Pose* host_poses{nullptr};
   std::map<uint32_t, Source> sources;
   AnalyticsCounters counters;
-  std::array<uint64_t, 3> intervals{};
+  std::array<uint64_t, 4> intervals{};
   uint64_t next_epoch{1};
   std::atomic<uint64_t> publication_epoch{1};
   std::atomic<bool> flushing{false};
@@ -143,6 +154,7 @@ struct PlayerAnalyticsProcessor::Impl {
     pose.reset();
     jersey.reset();
     action.reset();
+    team.reset();
     if (jersey_scratch)
       Cleanup(cudaFree(jersey_scratch), "jersey scratch release");
     if (device_jerseys)
@@ -155,6 +167,12 @@ struct PlayerAnalyticsProcessor::Impl {
       Cleanup(cudaFreeHost(host_actions), "host action release");
     if (host_action_tensor)
       Cleanup(cudaFreeHost(host_action_tensor), "host action tensor release");
+    if (device_team)
+      Cleanup(cudaFree(device_team), "team release");
+    if (host_team)
+      Cleanup(cudaFreeHost(host_team), "host team release");
+    if (host_embeddings)
+      Cleanup(cudaFreeHost(host_embeddings), "host team embedding release");
     if (device_affines)
       Cleanup(cudaFree(device_affines), "affine release");
     if (device_poses)
@@ -268,6 +286,8 @@ struct PlayerAnalyticsProcessor::Impl {
           evidence.jersey = std::make_unique<JerseyConsensus>();
         if (action)
           evidence.action = std::make_unique<ActionState>();
+        if (team)
+          evidence.team = std::make_unique<TeamConsensus>();
       }
     }
     for (auto& [id, evidence] : source.evidence) {
@@ -282,7 +302,7 @@ struct PlayerAnalyticsProcessor::Impl {
     }
 
     DueWork due;
-    for (size_t feature = 0; feature < 3; ++feature) {
+    for (size_t feature = 0; feature < 4; ++feature) {
       if (!intervals[feature])
         continue;
       std::array<const TrackRecord*, kMaximumTracks> eligible{};
@@ -299,6 +319,13 @@ struct PlayerAnalyticsProcessor::Impl {
           ++counters.jersey_pose_skipped;
           continue;
         }
+        // A skater does not change sides mid-game, so once the vote has
+        // committed there is nothing left for the model to learn about this
+        // track. Dropping it from the due set is what keeps the feature cheap
+        // to leave enabled: after the opening seconds the queue is empty and
+        // its scheduling turn is lent to pose, jersey or action.
+        if (feature == 3 && source.evidence.at(ids[i]).team->settled())
+          continue;
         if (feature == 2) {
           const auto& state = *source.evidence.at(ids[i]).action;
           if (!state.history.ready(frame->buf_pts)) {
@@ -329,10 +356,10 @@ struct PlayerAnalyticsProcessor::Impl {
         config.maximum_due_rois,
         config.jersey.enabled && config.jersey_roi_mode == JerseyRoiMode::kPose,
         &source.scheduling_cursor);
-    for (size_t f = 0; f < 3; ++f)
+    for (size_t f = 0; f < 4; ++f)
       counters.budget_deferred += due.counts[f] - plan.counts[f];
     std::unique_ptr<BorrowedImage> image;
-    if (plan.counts[0] || plan.counts[1]) {
+    if (plan.counts[0] || plan.counts[1] || plan.counts[3]) {
       auto mapped = BorrowedImage::Map(surface, frame->batch_id, gpu_id);
       if (!mapped.ok())
         return mapped.status();
@@ -519,6 +546,66 @@ struct PlayerAnalyticsProcessor::Impl {
         ++counters.action_results;
       }
     }
+    for (size_t offset = 0; offset < plan.counts[3];) {
+      if (Cancelled(publication))
+        return absl::CancelledError("Player analytics batch was flushed");
+      size_t batch_count = 0;
+      while (offset < plan.counts[3] && batch_count < config.batch_size) {
+        const uint64_t id = plan.ids[3][offset++];
+        source.scheduler.MarkAttempt(Feature::kTeam, id);
+        const size_t index = std::find(ids.begin(), ids.begin() + count, id) - ids.begin();
+        if (index == count)
+          continue;
+        const auto crop = MakeTeamCrop(image->view(), boxes[index], source.width, source.height);
+        if (!crop) {
+          ++counters.invalid_rois;
+          continue;
+        }
+        // Sweater colour survives occlusion better than OCR does, so there is
+        // no minimum size here. A band that is mostly off-canvas is another
+        // matter: the missing part is black padding, and the embedding would
+        // describe the padding as much as the sweater.
+        const auto& c = crop.crop;
+        const int visible_width =
+            std::max(0, std::min(c.left + c.width, int(image->view().width)) - std::max(c.left, 0));
+        const int visible_height =
+            std::max(0, std::min(c.top + c.height, int(image->view().height)) - std::max(c.top, 0));
+        if (int64_t(visible_width) * visible_height * 2 < int64_t(c.width) * c.height) {
+          ++counters.invalid_rois;
+          continue;
+        }
+        selected[batch_count] = index;
+        crops[batch_count++] = c;
+      }
+      if (!batch_count)
+        continue;
+      fence.pending = true;
+      PA_RETURN_IF_ERROR(
+          Cuda(PreprocessTeam(image->view(), crops.data(), batch_count, team->input(), device_team, stream)));
+      PA_RETURN_IF_ERROR(team->Enqueue(batch_count, stream));
+      ++counters.team_enqueues;
+      submitted(batch_count);
+      PA_RETURN_IF_ERROR(Cuda(cudaMemcpyAsync(
+          host_team, device_team, batch_count * sizeof(TeamObservation), cudaMemcpyDeviceToHost, stream)));
+      // The embedding is the one analytics output that leaves the GPU as a
+      // tensor rather than a decoded scalar: the two-means fit is a host-side
+      // per-stream model, not something a reduction kernel could stand in for.
+      PA_RETURN_IF_ERROR(Cuda(cudaMemcpyAsync(
+          host_embeddings,
+          team->output(0),
+          batch_count * kTeamEmbedding * sizeof(float),
+          cudaMemcpyDeviceToHost,
+          stream)));
+      PA_RETURN_IF_ERROR(fence.Finish());
+      for (size_t i = 0; i < batch_count; ++i) {
+        const auto assignment =
+            source.team_clusterer.Observe(host_embeddings + i * kTeamEmbedding, host_team[i].lightness);
+        if (assignment.cluster < 0)
+          ++counters.team_unassigned;
+        source.evidence.at(ids[selected[i]]).team->Observe(frame->buf_pts, assignment.cluster, assignment.margin);
+        ++counters.team_results;
+      }
+    }
     for (size_t i = 0; i < count; ++i) {
       const auto found = source.evidence.find(ids[i]);
       if (found == source.evidence.end())
@@ -531,7 +618,11 @@ struct PlayerAnalyticsProcessor::Impl {
       const auto retained_pose = !has_pose[i] && evidence.pose_drawing
           ? evidence.pose_drawing->Result(frame->buf_pts, boxes[i])
           : RetainedPose{};
-      if (!has_pose[i] && retained_pose.observed_at == kInvalidTime && !jersey_label.text[0] && action_label.label < 0)
+      const auto team_label = evidence.team
+          ? evidence.team->Result(frame->buf_pts, source.team_clusterer.dark_cluster(), config.home_is_dark)
+          : TeamResult{};
+      if (!has_pose[i] && retained_pose.observed_at == kInvalidTime && !jersey_label.text[0] &&
+          action_label.label < 0 && team_label.label == TeamLabel::kUnknown)
         continue;
       auto& player = result.players[result.player_count++];
       player.track_id = ids[i];
@@ -539,6 +630,7 @@ struct PlayerAnalyticsProcessor::Impl {
       player.jersey = jersey_label;
       player.action = action_label;
       player.retained_pose = retained_pose;
+      player.team = team_label;
       if (action && action_label.label >= 0) {
         const auto& text = action->manifest().labels.at(static_cast<size_t>(action_label.label));
         const size_t length = std::min(text.size(), player.action_text.size() - 1);
@@ -581,12 +673,13 @@ absl::StatusOr<std::unique_ptr<PlayerAnalyticsProcessor>> PlayerAnalyticsProcess
       (config.jersey.enabled && config.jersey_roi_mode != JerseyRoiMode::kBox &&
        config.jersey_roi_mode != JerseyRoiMode::kPose) ||
       (config.jersey.enabled && config.jersey_roi_mode == JerseyRoiMode::kPose &&
-       (!config.pose.enabled || config.maximum_due_rois < 2)))
+       (!config.pose.enabled || config.maximum_due_rois < 2)) ||
+      (config.team.enabled && !config.team_clustering.valid()))
     return absl::InvalidArgumentError("Invalid player analytics execution bounds or pose dependency");
   auto impl = std::make_unique<Impl>();
   impl->config = config;
   impl->gpu_id = gpu_id;
-  const std::array<const FeatureConfig*, 3> features{{&config.pose, &config.jersey, &config.action}};
+  const std::array<const FeatureConfig*, 4> features{{&config.pose, &config.jersey, &config.action, &config.team}};
   for (size_t i = 0; i < features.size(); ++i) {
     const auto& feature = *features[i];
     if (!feature.enabled)
@@ -647,6 +740,18 @@ absl::StatusOr<std::unique_ptr<PlayerAnalyticsProcessor>> PlayerAnalyticsProcess
     PA_RETURN_IF_ERROR(Cuda(cudaMallocHost(
         reinterpret_cast<void**>(&impl->host_action_tensor),
         config.batch_size * ActionHistory::kTensorFloats * sizeof(float))));
+  }
+  if (config.team.enabled) {
+    auto engine = NativeEngine::Load(config.team.bundle, ModelFeature::kTeam, gpu_id, config.batch_size);
+    if (!engine.ok())
+      return engine.status();
+    impl->team = std::move(*engine);
+    PA_RETURN_IF_ERROR(
+        Cuda(cudaMalloc(reinterpret_cast<void**>(&impl->device_team), config.batch_size * sizeof(TeamObservation))));
+    PA_RETURN_IF_ERROR(
+        Cuda(cudaMallocHost(reinterpret_cast<void**>(&impl->host_team), config.batch_size * sizeof(TeamObservation))));
+    PA_RETURN_IF_ERROR(Cuda(cudaMallocHost(
+        reinterpret_cast<void**>(&impl->host_embeddings), config.batch_size * kTeamEmbedding * sizeof(float))));
   }
   return std::unique_ptr<PlayerAnalyticsProcessor>(new PlayerAnalyticsProcessor(std::move(impl)));
 }

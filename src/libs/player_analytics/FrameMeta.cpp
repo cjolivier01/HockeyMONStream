@@ -100,6 +100,18 @@ bool ValidateFrameResult(const FrameResult& result) noexcept {
          !Times(player.action.observed_at, player.action.expires_at, result.pts_ns) ||
          player.action.window_start == kInvalidTime || player.action.window_start > player.action.observed_at))
       return false;
+    // A named side must carry the cluster it was named from, and vice versa.
+    // Affiliation never lapses, so expires_at is kInvalidTime by construction
+    // and Times() -- which demands a real expiry -- does not apply here.
+    if ((player.team.label != TeamLabel::kUnknown) != (player.team.cluster >= 0) || player.team.cluster > 1 ||
+        player.team.cluster < -1 || !std::isfinite(player.team.evidence) || player.team.evidence < 0 ||
+        player.team.expires_at != kInvalidTime)
+      return false;
+    if (player.team.cluster >= 0 &&
+        (player.team.observed_at == kInvalidTime || player.team.observed_at > result.pts_ns))
+      return false;
+    if (player.team.cluster < 0 && player.team.observed_at != kInvalidTime)
+      return false;
   }
   return true;
 }

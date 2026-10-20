@@ -179,6 +179,15 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
       "Labels describe generic activities, not hockey events.");
   action_help->setWordWrap(true);
   static_cast<QFormLayout*>(compute->layout())->addRow(action_help);
+  addFlag(kAnalytics + "team.enable", {}, "playerTeamEnable", "Label home and away", compute);
+  addModel(kAnalytics + "team.model", "playerTeamModel", "Team model", compute);
+  addPath(kAnalytics + "team.bundle", "playerTeamBundle", true, compute);
+  auto* team_help = new QLabel(
+      "Teams are split by appearance within this game, so the two groups read DARK and LIGHT until "
+      "Game settings say which sweater the home side wore. The split needs a few hundred crops before "
+      "the first labels appear, and a track stops being sampled once its side is decided.");
+  team_help->setWordWrap(true);
+  static_cast<QFormLayout*>(compute->layout())->addRow(team_help);
   layout->addWidget(compute);
   auto* tracker = new QGroupBox("Native tracker appearance matching");
   new QFormLayout(tracker);
@@ -204,6 +213,7 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
       "Follow the tracked player between pose updates for up to 250 ms. Applies on the next run.");
   addFlag("plot.plot_jersey_numbers", kAnalytics + "draw-jerseys", "playerDrawJerseys", "Jersey numbers", drawing);
   addFlag("plot.plot_actions", kAnalytics + "draw-actions", "playerDrawActions", "Activity labels", drawing);
+  addFlag("plot.plot_teams", kAnalytics + "draw-teams", "playerDrawTeams", "Team labels", drawing);
   addFlag(
       "plot.plot_individual_player_tracking",
       "pipeline.hmplaycropper.plot-player-tracking",
@@ -548,8 +558,8 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
       return "Player analytics require pipeline.primary-gie.enable=1.";
     if (parsed->jersey.enabled && parsed->jersey_roi_mode == pa::JerseyRoiMode::kPose && parsed->maximum_due_rois < 2)
       return "Pose-guided jersey recognition requires max-due-rois >= 2.";
-    const std::array<std::pair<const char*, const pa::FeatureConfig*>, 3> features{
-        {{"pose", &parsed->pose}, {"jersey", &parsed->jersey}, {"action", &parsed->action}}};
+    const std::array<std::pair<const char*, const pa::FeatureConfig*>, 4> features{
+        {{"pose", &parsed->pose}, {"jersey", &parsed->jersey}, {"action", &parsed->action}, {"team", &parsed->team}}};
     for (const auto& [name, feature] : features) {
       if (!feature->enabled || feature->model != "custom")
         continue;
@@ -567,7 +577,8 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
             .arg(name, QString::fromUtf8(manifest.status().message().data(), manifest.status().message().size()));
       const auto expected = std::string(name) == "pose" ? pa::ModelFeature::kPose
           : std::string(name) == "jersey"               ? pa::ModelFeature::kJersey
-                                                        : pa::ModelFeature::kAction;
+          : std::string(name) == "action"               ? pa::ModelFeature::kAction
+                                                        : pa::ModelFeature::kTeam;
       if (manifest->feature != expected || manifest->maximum_batch < parsed->batch_size)
         return QString("The %1 custom model has the wrong feature or insufficient batch capacity.").arg(name);
       for (const auto& file : {manifest->engine_file, manifest->onnx_file})

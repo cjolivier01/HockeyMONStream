@@ -40,6 +40,8 @@ struct Config {
   // the settled-track short circuit retires a track from the due set entirely
   // once its consensus commits.
   FeatureConfig team{false, {}, 2, 0.5F};
+  // Two-means tuning, supplied entirely by configs/baseline.yaml.
+  TeamClusteringSettings team_clustering;
   JerseyRoiMode jersey_roi_mode{JerseyRoiMode::kBox};
   // Which sweater the home side wore. Unset leaves the overlay reading
   // DARK/LIGHT, which is correct but unnamed, rather than guessing a side.

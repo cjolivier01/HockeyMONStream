@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
 
 namespace pa = hm::player_analytics;
@@ -140,5 +141,37 @@ int main() {
       label.Observe(12 * pa::kSecond, 2 * pa::kSecond, 6, 0.81F), "two consistent action challengers should switch");
   ok &= Check(label.Result(15 * pa::kSecond).label == -1, "action labels cannot persist indefinitely");
   ok &= Check(!label.Observe(16 * pa::kSecond, 15 * pa::kSecond, 5, 1), "short action windows must be rejected");
+
+  pa::TeamConsensus team;
+  ok &= Check(!team.settled(), "a new track has no side");
+  ok &= Check(!team.Observe(pa::kInvalidTime, 0, 1), "invalid timestamps cannot vote on a side");
+  ok &= Check(team.Observe(1 * pa::kSecond, 0, 0.3F), "a margin-weighted vote is recorded");
+  ok &= Check(!team.Observe(1 * pa::kSecond, 1, 1), "duplicate team results must not vote twice");
+  ok &= Check(!team.settled(), "one weak crop must not name a side");
+  ok &= Check(team.Observe(2 * pa::kSecond, 0, 0.8F) && team.settled(), "accumulated margin commits the side");
+  ok &= Check(
+      team.Result(3 * pa::kSecond, std::optional<int8_t>(0), std::optional<bool>(true)).label == pa::TeamLabel::kHome,
+      "the darker cluster is home when the game says so");
+  ok &= Check(
+      team.Result(3 * pa::kSecond, std::optional<int8_t>(1), std::nullopt).label == pa::TeamLabel::kLight,
+      "without home_is_dark the side is reported as dark or light");
+  ok &= Check(
+      team.Result(3 * pa::kSecond, std::nullopt, std::optional<bool>(true)).label == pa::TeamLabel::kUnknown,
+      "an unranked split cannot name a side");
+  // Affiliation does not lapse: a skater is still on the same team an hour on.
+  ok &= Check(
+      team.Result(3600 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).label == pa::TeamLabel::kDark,
+      "a settled side must not expire");
+  ok &= Check(team.Observe(4 * pa::kSecond, 1, 0.5F) && !team.Observe(4 * pa::kSecond, 1, 0.5F), "votes are per pts");
+  ok &= Check(
+      team.Result(5 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).cluster == 0,
+      "a single contrary read must not flip a settled side");
+  for (uint64_t i = 5; i < 10; ++i)
+    team.Observe(i * pa::kSecond, 1, 0.9F);
+  ok &= Check(
+      team.Result(10 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).cluster == 1,
+      "sustained contrary evidence clears hysteresis and switches the side");
+  team.Reset();
+  ok &= Check(!team.settled(), "reset clears the side");
   return ok ? 0 : 1;
 }

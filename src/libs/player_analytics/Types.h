@@ -31,6 +31,31 @@ enum DrawingLayer : uint32_t {
 // stays allocation-free; the contract rejects a model of any other width.
 inline constexpr size_t kTeamEmbedding = 256;
 
+// Embeddings retained toward the two-means fit. A recent window rather than
+// the whole game: lighting drifts between periods, and the last few hundred
+// crops describe the ice as it looks now. Fixed so nothing allocates.
+inline constexpr size_t kTeamReservoir = 512;
+
+// Two-means tunables. Every one of these is owned by configs/baseline.yaml and
+// has no compiled-in default: ParseConfig refuses a team configuration that
+// does not carry them, so one file answers what the shipped behaviour is.
+struct TeamClusteringSettings {
+  // Embeddings seen before the first fit. Fitting on a handful taken from one
+  // end of the rink yields two centroids that both describe the same squad.
+  size_t warmup_samples{0};
+  // Embeddings between refits once fitted, so the split tracks slow drift.
+  size_t refit_interval{0};
+  // Normalized centroid-distance gap below which an embedding is left
+  // unassigned rather than pushed onto whichever centroid is marginally
+  // nearer. Goalies and partly-occluded crops land here.
+  float minimum_margin{0};
+
+  bool valid() const {
+    return warmup_samples > 0 && warmup_samples <= kTeamReservoir && refit_interval > 0 && refit_interval <= 1000000 &&
+        minimum_margin >= 0 && minimum_margin < 1;
+  }
+};
+
 // All positions are pre-crop DeepStream metadata pixels, which may differ from
 // NvBufSurface pixels. The inference adapter owns the per-axis conversion.
 struct Keypoint {

@@ -208,6 +208,90 @@ __global__ void ActionReduce(const float* logits, ActionObservation* observation
     observations[blockIdx.x] = top.valid ? ActionObservation{top.index, top.confidence} : ActionObservation{};
 }
 
+// reidentificationnet-rgb-bilinear-v1, as declared by the manifest and
+// enforced by TeamProfile(). Kept here rather than read from the manifest for
+// the same reason the jersey kernel hardcodes its own: the contract pins the
+// preprocessing id, so a model wanting different numbers is a different id.
+constexpr float kTeamScale = 0.01735207357279195F;
+// Namespace-scope constexpr arrays are not addressable from device code, so
+// the per-channel offsets live inside a device function instead.
+__device__ __forceinline__ float TeamOffset(int channel) {
+  constexpr float offsets[3] = {123.675F, 116.28F, 103.53F};
+  return offsets[channel];
+}
+
+__global__ void TeamResample(const ImageView image, CropArguments crops, float* output) {
+  const int x = blockIdx.x * blockDim.x + threadIdx.x, y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= kTeamInputWidth || y >= kTeamInputHeight)
+    return;
+  const auto crop = crops.values[blockIdx.z];
+  // Half-pixel source coordinates, clamped to the crop's own edge. That is
+  // torch's align_corners=false, which is what cut these crops on the Python
+  // side. Clamping is against the crop, not the image: a crop may hang off the
+  // surface, and Read() pads those pixels black exactly as the jersey path does.
+  const float sx =
+      fminf(fmaxf((x + 0.5F) * crop.width / kTeamInputWidth - 0.5F, 0.0F), static_cast<float>(crop.width - 1));
+  const float sy =
+      fminf(fmaxf((y + 0.5F) * crop.height / kTeamInputHeight - 0.5F, 0.0F), static_cast<float>(crop.height - 1));
+  const int x0 = static_cast<int>(sx), y0 = static_cast<int>(sy);
+  const int x1 = min(x0 + 1, crop.width - 1), y1 = min(y0 + 1, crop.height - 1);
+  const float fx = sx - x0, fy = sy - y0;
+  for (int channel = 0; channel < 3; ++channel) {
+    const float lower_left = Read(image, crop.left + x0, crop.top + y0, channel);
+    const float lower_right = Read(image, crop.left + x1, crop.top + y0, channel);
+    const float upper_left = Read(image, crop.left + x0, crop.top + y1, channel);
+    const float upper_right = Read(image, crop.left + x1, crop.top + y1, channel);
+    const float top = __fmaf_rn(fx, lower_right - lower_left, lower_left);
+    const float bottom = __fmaf_rn(fx, upper_right - upper_left, upper_left);
+    const size_t index =
+        (static_cast<size_t>(blockIdx.z) * 3 + channel) * kTeamInputHeight * kTeamInputWidth + y * kTeamInputWidth + x;
+    output[index] = (__fmaf_rn(fy, bottom - top, top) - TeamOffset(channel)) * kTeamScale;
+  }
+}
+
+__device__ float SrgbToLinear(float value) {
+  return value <= 0.04045F ? value / 12.92F : powf((value + 0.055F) / 1.055F, 2.4F);
+}
+
+// CIELAB L from sRGB in0..1, D65, matching hmlib/team/features.py::rgb_to_lab.
+// Only L is wanted, so the chromatic axes and their white-point divisions drop out.
+__device__ float Lightness(float red, float green, float blue) {
+  constexpr float kEpsilon = 216.0F / 24389.0F, kKappa = 24389.0F / 27.0F;
+  const float y = 0.2126F * SrgbToLinear(red) + 0.7152F * SrgbToLinear(green) + 0.0722F * SrgbToLinear(blue);
+  const float f = y > kEpsilon ? cbrtf(fmaxf(y, 1e-12F)) : (kKappa * y + 16.0F) / 116.0F;
+  return __fmaf_rn(116.0F, f, -16.0F);
+}
+
+// Reads back the normalized batch and undoes the scaling rather than resampling
+// the surface a second time. One pass, and the lightness then describes exactly
+// the pixels the model was shown. The Python side pools to32x32 before
+// converting; this averages per-pixel L, which is the quantity that pooling
+// approximates. Each thread owns a fixed stride of the crop, so the sum is
+// reproducible run to run.
+__global__ void TeamLightnessReduce(const float* input, TeamObservation* observations) {
+  constexpr int kThreads = 256, kPixels = kTeamInputWidth * kTeamInputHeight;
+  __shared__ float storage[kThreads];
+  const int tid = threadIdx.x;
+  const float* crop = input + static_cast<size_t>(blockIdx.x) * kTeamInputElements;
+  float sum = 0;
+  for (int pixel = tid; pixel < kPixels; pixel += kThreads) {
+    float channels[3];
+    for (int channel = 0; channel < 3; ++channel)
+      channels[channel] =
+          fminf(fmaxf((crop[channel * kPixels + pixel] / kTeamScale + TeamOffset(channel)) / 255.0F, 0.0F), 1.0F);
+    sum += Lightness(channels[0], channels[1], channels[2]);
+  }
+  storage[tid] = sum;
+  __syncthreads();
+  for (int stride = kThreads / 2; stride > 0; stride /= 2) {
+    if (tid < stride)
+      storage[tid] += storage[tid + stride];
+    __syncthreads();
+  }
+  if (tid == 0)
+    observations[blockIdx.x].lightness = storage[0] / kPixels;
+}
+
 bool ValidImage(const ImageView& image) {
   return image.data && image.width > 0 && image.height > 0 && image.width <= 65536 && image.height <= 65536 &&
       image.pitch >= static_cast<size_t>(image.width) * 4 && image.pitch % 4 == 0 &&
@@ -252,6 +336,32 @@ cudaError_t PreprocessJersey(
   if (result != cudaSuccess)
     return result;
   Vertical<<<dim3(kJerseyInputWidth / 16, kJerseyInputHeight / 16, batch), dim3(16, 16), 0, stream>>>(work, input);
+  return cudaGetLastError();
+}
+
+cudaError_t PreprocessTeam(
+    const ImageView& image,
+    const TeamCrop* crops,
+    size_t batch,
+    float* input,
+    TeamObservation* observations,
+    cudaStream_t stream) {
+  if (!ValidImage(image) || !crops || !input || !observations || !stream || batch == 0 || batch > kMaximumBatch)
+    return cudaErrorInvalidValue;
+  CropArguments arguments{};
+  for (size_t index = 0; index < batch; ++index) {
+    const auto& crop = crops[index];
+    if (crop.left < -1000000 || crop.top < -1000000 || crop.left > 1000000 || crop.top > 1000000 || crop.width < 1 ||
+        crop.height < 1 || crop.width > kJerseyMaximumCropExtent || crop.height > kJerseyMaximumCropExtent)
+      return cudaErrorInvalidValue;
+    arguments.values[index] = crop;
+  }
+  TeamResample<<<dim3(kTeamInputWidth / 16, kTeamInputHeight / 16, batch), dim3(16, 16), 0, stream>>>(
+      image, arguments, input);
+  const auto result = cudaGetLastError();
+  if (result != cudaSuccess)
+    return result;
+  TeamLightnessReduce<<<batch, 256, 0, stream>>>(input, observations);
   return cudaGetLastError();
 }
 

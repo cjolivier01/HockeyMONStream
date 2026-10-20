@@ -33,8 +33,7 @@ JerseyCropSelection MakeJerseyCrop(
 
 enum class TeamCropReason { kReady, kInvalidGeometry, kOutsideImage, kTooLarge };
 struct TeamCropSelection {
-  // Same integer surface rect as the jersey path; only the band differs.
-  JerseyCrop crop;
+  TeamCrop crop;
   TeamCropReason reason{TeamCropReason::kInvalidGeometry};
   explicit operator bool() const noexcept {
     return reason == TeamCropReason::kReady;

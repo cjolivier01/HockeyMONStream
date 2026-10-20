@@ -14,7 +14,7 @@ float SquaredDistance(const float* a, const float* b) noexcept {
   return total;
 }
 
-}  // namespace
+} // namespace
 
 void TeamClusterer::Reset() noexcept {
   count_ = 0;
@@ -143,7 +143,7 @@ void TeamClusterer::Fit() noexcept {
 }
 
 TeamAssignment TeamClusterer::Observe(const float* embedding, float lightness) noexcept {
-  if (embedding == nullptr) {
+  if (embedding == nullptr || !settings_.valid()) {
     return {};
   }
 
@@ -158,7 +158,7 @@ TeamAssignment TeamClusterer::Observe(const float* embedding, float lightness) n
   count_ = full_ ? kTeamReservoir : cursor_;
   ++since_fit_;
 
-  if (count_ >= kTeamWarmupSamples && (!fitted_ || since_fit_ >= kTeamRefitInterval)) {
+  if (count_ >= settings_.warmup_samples && (!fitted_ || since_fit_ >= settings_.refit_interval)) {
     Fit();
   }
   if (!fitted_) {
@@ -173,7 +173,7 @@ TeamAssignment TeamClusterer::Observe(const float* embedding, float lightness) n
   const float d1 = std::sqrt(SquaredDistance(scaled.data(), centroids_[1].data()));
   const float total = d0 + d1;
   const float margin = total > 1e-6F ? std::fabs(d0 - d1) / total : 0.0F;
-  if (margin < kTeamMinimumMargin) {
+  if (margin < settings_.minimum_margin) {
     return {};
   }
   return {static_cast<int8_t>(d0 <= d1 ? 0 : 1), margin};
@@ -208,4 +208,4 @@ const char* TeamLabelText(TeamLabel label) noexcept {
   return "";
 }
 
-}  // namespace hm::player_analytics
+} // namespace hm::player_analytics

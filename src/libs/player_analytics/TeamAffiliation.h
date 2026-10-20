@@ -9,24 +9,6 @@
 
 namespace hm::player_analytics {
 
-// Samples retained toward the two-means fit. A reservoir rather than the whole
-// game: lighting drifts between periods, and the most recent window describes
-// the ice as it looks now. Fixed so the accumulator never allocates.
-inline constexpr size_t kTeamReservoir = 512;
-
-// Embeddings seen before the first fit. Fitting on a handful taken from one
-// end of the rink yields two centroids that both describe the same squad.
-inline constexpr size_t kTeamWarmupSamples = 64;
-
-// Embeddings between refits once fitted, so the split tracks slow drift
-// without recomputing every frame.
-inline constexpr size_t kTeamRefitInterval = 256;
-
-// Normalised centroid-distance gap below which an embedding is left
-// unassigned rather than pushed onto whichever centroid is marginally nearer.
-// Goalies and partly-occluded crops land here.
-inline constexpr float kTeamMinimumMargin = 0.12F;
-
 struct TeamAssignment {
   // -1 when the split has not settled or the margin was too small to call.
   int8_t cluster{-1};
@@ -44,6 +26,11 @@ struct TeamAssignment {
 // lightness supplied alongside it.
 class TeamClusterer {
  public:
+  // Settings are owned by configs/baseline.yaml; there is no default
+  // constructor, so no caller can quietly invent its own tuning. An invalid
+  // settings block leaves the clusterer inert rather than guessing.
+  explicit TeamClusterer(const TeamClusteringSettings& settings) noexcept : settings_(settings) {}
+
   // `embedding` is kTeamEmbedding floats; `lightness` is the crop's mean
   // CIELAB L. Returns the assignment for this embedding under the centroids
   // in force after any refit this call triggers. No heap allocation.
@@ -66,6 +53,8 @@ class TeamClusterer {
 
  private:
   void Fit() noexcept;
+
+  TeamClusteringSettings settings_;
 
   std::array<std::array<float, kTeamEmbedding>, kTeamReservoir> samples_{};
   std::array<float, kTeamReservoir> lightness_{};
@@ -91,4 +80,4 @@ std::array<TeamLabel, 2> NameClusters(int8_t dark_cluster, std::optional<bool> h
 // placeholder, because an undecided track is better shown bare than wrong.
 const char* TeamLabelText(TeamLabel label) noexcept;
 
-}  // namespace hm::player_analytics
+} // namespace hm::player_analytics

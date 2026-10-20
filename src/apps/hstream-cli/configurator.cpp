@@ -6002,6 +6002,32 @@ absl::Status Configurator::map_common_config_keys() {
         return absl::InvalidArgumentError(std::string("Invalid ") + canonical + ": " + error.what());
       }
     }
+    // Team affiliation carries no compiled-in tuning: the clusterer refuses to
+    // run without these and ParseConfig refuses to build a config that omits
+    // them, so the baseline is the only place the shipped behavior is stated.
+    // Structural YAML still wins at the same explicit layer, as everywhere else.
+    if (!analytics["team"] || analytics["team"].IsNull())
+      analytics["team"] = YAML::Node(YAML::NodeType::Map);
+    if (!analytics["team"].IsMap())
+      return absl::InvalidArgumentError("pipeline.player-analytics.team must be a mapping");
+    YAML::Node team = analytics["team"];
+    HM_RETURN_IF_ERROR(map_bool("team.enabled", "pipeline.player-analytics.team.enable", team, "enable"));
+    for (const auto& [canonical, native] :
+         {std::pair<const char*, const char*>("team.warmup_samples", "warmup-samples"),
+          {"team.refit_interval", "refit-interval"},
+          {"team.min_margin", "min-margin"},
+          {"team.rate_hz", "rate-hz"},
+          {"team.model", "model"}}) {
+      std::optional<YAML::Node> source;
+      HM_ASSIGN_OR_RETURN(
+          source,
+          canonical_source(canonical, std::string("pipeline.player-analytics.team.") + native, team[native], true));
+      if (!source || source->IsNull())
+        continue;
+      if (!source->IsScalar())
+        return absl::InvalidArgumentError(std::string(canonical) + " must be a scalar");
+      team[native] = source->Scalar();
+    }
   }
 
   if (pipeline["hmplaycropper"].IsMap()) {
