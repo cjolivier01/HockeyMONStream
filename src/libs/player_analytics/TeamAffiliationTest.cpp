@@ -509,6 +509,29 @@ bool ProvisionalFitsKeepLearning() {
   return ok;
 }
 
+bool RefusesAnAlignedFitOfOneSquad() {
+  TeamClusterer clusterer(kSettings);
+  const auto observe = [&clusterer](float coordinate, float lightness) {
+    std::array<float, kTeamEmbedding> embedding{};
+    embedding[0] = coordinate;
+    return clusterer.Observe(embedding.data(), lightness);
+  };
+  for (int i = 0; i < 256; ++i)
+    observe(i % 2 ? 10.0F : -10.0F, i % 2 ? 80.0F : 20.0F);
+  const auto dark = observe(-9.0F, 20.0F).cluster;
+  const auto light = observe(10.0F, 80.0F).cluster;
+  const auto generation = clusterer.generation();
+  bool ok = Check(dark >= 0 && light >= 0 && dark != light, "both squads are assigned before the homogeneous refit");
+  // Only dark players remain in the reservoir, and their appearance varies
+  // along exactly the same axis as the original dark/light division.
+  for (int i = 0; i < 700; ++i)
+    observe(i % 2 ? -11.0F : -9.0F, 20.0F);
+  ok &= Check(clusterer.generation() == generation, "an aligned split inside one squad must not replace the fit");
+  ok &= Check(observe(-9.0F, 20.0F).cluster == dark, "the lighter dark player must retain the dark side");
+  ok &= Check(observe(10.0F, 80.0F).cluster == light, "the other squad remains recognizable");
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -528,6 +551,7 @@ int main() {
   ok &= SurvivesNullEmbedding();
   ok &= ResetClearsState();
   ok &= ProvisionalFitsKeepLearning();
+  ok &= RefusesAnAlignedFitOfOneSquad();
   if (ok) {
     std::cout << "team affiliation tests passed\n";
   }

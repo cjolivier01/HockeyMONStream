@@ -1421,6 +1421,11 @@ absl::Status PipelineApplication::configureInstances(
       }
       if (stitching_player_scan_output_ && app_ctx->configurator().stitching_calibration_required())
         return absl::FailedPreconditionError("Player frame scanning requires a completed baseline calibration");
+      // Completion maps canonical team.enabled back into the native block.
+      // Reapply the stage policy after the last mapping, before any model
+      // preparation or parsing can inspect the temporary calibration graph.
+      if (current_stage_ < 0 || stitching_calibration_only_)
+        hm::pipeline_internal::suppress_player_analytics(app_ctx->configurator().config()["pipeline"]);
       if (stitching_player_scan_output_)
         hm::pipeline_internal::configure_stitching_player_scan_pipeline(app_ctx->configurator().config()["pipeline"]);
       if (int8_sample_output_) {

@@ -114,7 +114,9 @@ set once its affiliation commits under a balanced, lightness-ranked fit. An
 unpublishable fit supplies no track votes and keeps collecting bounded samples
 until it can be replaced. Each accepted refit reopens settled tracks until a
 read confirms their side or contrary evidence clears switching hysteresis. A
-track occluded past `track-retention-ms` returns as a new identity and re-warms. Expect a trickle, not zero, and expect the badge to drop
+track occluded past `track-retention-ms` returns as a new identity and re-warms.
+A published fit is retained when a refit collapses both centroids into one old
+squad, even when within-squad variation follows the previous split axis. Expect a trickle, not zero, and expect the badge to drop
 out while a skater is re-acquired. Guided OCR costs
 two samples unless a pose is already scheduled. All admitted candidates are
 considered before the cap, so early tracks with incomplete action history cannot

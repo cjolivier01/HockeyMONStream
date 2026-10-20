@@ -199,6 +199,16 @@ void TeamClusterer::Fit() noexcept {
   if (refitting) {
     const auto current = RawCentroids();
     const float alignment = Alignment(current, previous);
+    std::array<int, 2> previous_membership{};
+    for (size_t k = 0; k < 2; ++k) {
+      std::array<float, kTeamEmbedding> scaled_centroid{};
+      for (size_t d = 0; d < kTeamEmbedding; ++d)
+        scaled_centroid[d] = (current[k][d] - previous_mean[d]) * previous_deviation[d];
+      previous_membership[k] = SquaredDistance(scaled_centroid.data(), previous_centroids[0].data()) <=
+              SquaredDistance(scaled_centroid.data(), previous_centroids[1].data())
+          ? 0
+          : 1;
+    }
     // Once a split is good enough to publish, protect it. A worse fit must not
     // replace it, and neither must one whose relationship to it cannot be
     // established: the reservoir goes single-squad for minutes at a time --
@@ -209,19 +219,23 @@ void TeamClusterer::Fit() noexcept {
     // squads wear a mix of badges. Keep the previous split and try again next
     // interval; stale centroids describe the ice far better than a fit of one
     // team pretending to be two.
-    if (ranked_ && balanced_ && (!balanced || std::fabs(alignment) < kPairingAlignment)) {
+    // Within-squad variation can align with the old squad axis too. In that
+    // case both candidate centroids still belong to one old squad; alignment
+    // alone cannot distinguish it from a genuine two-squad refit.
+    if (ranked_ && balanced_ &&
+        (!balanced || std::fabs(alignment) < kPairingAlignment || previous_membership[0] == previous_membership[1])) {
       centroids_ = previous_centroids;
       mean_ = previous_mean;
       inverse_deviation_ = previous_deviation;
       since_fit_ = 0;
       return;
     }
-    // A negative alignment means this fit numbered the squads the other way
-    // round. Renumber it rather than the game: a track that settled on index 1
-    // keeps voting for index 1, and if that now means the other side it wears
-    // the wrong badge for the rest of the game -- permanently, because a
-    // settled track is only re-offered against centroids it has already seen.
-    if (alignment < 0) {
+    // Keep published indices using ownership in the previous fit's metric.
+    // Raw-axis orientation alone can disagree with that metric when its
+    // dimension scales differ. Provisional indices have no track evidence
+    // to preserve, so only their axis orientation is carried forward.
+    const bool reversed = ranked_ && balanced_ ? previous_membership[0] == 1 : alignment < 0;
+    if (reversed) {
       std::swap(centroids_[0], centroids_[1]);
       std::swap(members[0], members[1]);
       for (size_t i = 0; i < n; ++i)
