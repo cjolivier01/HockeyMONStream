@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/ScoreboardProposal.h"
 
 #include <fcntl.h>
 #include <array>
@@ -24,6 +25,29 @@
 #include <tiffio.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
+
+namespace {
+
+bool reject_proposal = false;
+
+} // namespace
+
+namespace hm::stitching {
+
+// Supply the inference boundary in this test binary so HTTP failure handling
+// stays deterministic and offline. The production model has its own test target.
+absl::StatusOr<std::optional<ScoreboardProposal>> SuggestScoreboard(
+    const cv::Mat&,
+    cv::Size,
+    const std::function<bool()>&) {
+  if (reject_proposal) {
+    // Convex tilted corners can share extrema in the selector's ordering.
+    return ScoreboardProposal{{{{25, 10}, {50, 5}, {75, 10}, {50, 30}}}, 0.99};
+  }
+  return absl::UnavailableError("Scoreboard model unavailable in HTTP fixture");
+}
+
+} // namespace hm::stitching
 
 namespace {
 
@@ -158,7 +182,11 @@ std::string http_request(
   return response;
 }
 
-bool exercise_http_selector(const std::filesystem::path& directory, bool remote = false, int cancel_mode = 0) {
+bool exercise_http_selector(
+    const std::filesystem::path& directory,
+    bool remote = false,
+    int cancel_mode = 0,
+    bool invalid_proposal = false) {
   const std::string authority_host = remote ? "scoreboard.test" : "127.0.0.1";
   cv::Mat image(32, 96, CV_8UC3, cv::Scalar(255, 255, 255));
   if (!cv::imwrite((directory / "s.png").string(), image))
@@ -191,6 +219,7 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
       ::unsetenv("HM_SCOREBOARD_PUBLIC_HOST");
     }
     ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", cancel_mode ? "60000" : "250", 1);
+    reject_proposal = invalid_proposal;
     bool cancelled = false;
     const auto status = hm::stitching::ScoreboardSelector::Run(directory, [&] {
       char value;
@@ -300,10 +329,11 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
         http_request(port, "/?token=" + token, false, authority_host).rfind("HTTP/1.1 200 ", 0) == 0,
         "valid scoreboard selector GET must succeed");
     const auto proposal = http_request(port, "/initial?token=" + token, false, authority_host);
+    const char* expected_message =
+        invalid_proposal ? "Automatic corners could not be used" : "Automatic detection unavailable";
     ok &= expect(
-        proposal.find("\"points\":[]") != std::string::npos &&
-            proposal.find("Automatic detection unavailable") != std::string::npos,
-        "Model failure must expose an empty draft and a visible manual-selection explanation");
+        proposal.find("\"points\":[]") != std::string::npos && proposal.find(expected_message) != std::string::npos,
+        "Failed or rejected proposals must expose an empty draft and a visible manual-selection explanation");
     ok &= expect(
         http_request(port, "/initial?token=wrong", false, authority_host).rfind("HTTP/1.1 403 ", 0) == 0,
         "Proposal metadata must require the selector token");
@@ -325,8 +355,6 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
 } // namespace
 
 int main() {
-  // Keep HTTP protocol tests offline; detector failures retain manual selection.
-  ::setenv("HM_SCOREBOARD_ONNX_MODEL", "/nonexistent-scoreboard-test.onnx", 1);
   bool ok = true;
   using Selector = hm::stitching::ScoreboardSelector;
   Selector::Polygon points{{{90, 80}, {10, 10}, {90, 10}, {10, 80}}};
@@ -424,6 +452,10 @@ int main() {
   }
   YAML::Node remote_fixture_config = YAML::LoadFile((directory / "config.yaml").string());
   remote_fixture_config["rink"].remove("scoreboard");
+  std::ofstream(directory / "config.yaml") << remote_fixture_config << '\n';
+  ok &= expect(
+      exercise_http_selector(directory, false, 0, true),
+      "Rejected automatic corners must keep the manual editor available and allow an operator choice");
   std::ofstream(directory / "config.yaml") << remote_fixture_config << '\n';
   ok &= expect(
       exercise_http_selector(directory, true),

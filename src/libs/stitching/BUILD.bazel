@@ -295,6 +295,7 @@ cc_test(
   name = "scoreboard_selector_test",
   srcs = ["ScoreboardSelectorTest.cpp"],
   deps = [
+    ":scoreboard_proposal",
     ":stitching",
     "@opencv_linux//:opencv",
     "@yaml-cpp",

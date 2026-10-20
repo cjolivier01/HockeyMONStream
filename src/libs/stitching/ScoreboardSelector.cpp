@@ -771,10 +771,13 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir, const std::functi
         for (size_t i = 0; i < polygon.size(); ++i)
           polygon[i] = {(**suggested).corners[i].x, (**suggested).corners[i].y};
         auto validated = ValidateAndOrder(polygon, dimensions.cols, dimensions.rows);
-        if (!validated.ok())
-          return validated.status();
-        initial = *validated;
-        proposal_message = "Suggested scoreboard corners. Review or adjust them, then save.";
+        if (!validated.ok()) {
+          std::cerr << "Scoreboard proposal rejected: " << validated.status() << '\n';
+          proposal_message = "Automatic corners could not be used. Select the four corners manually; see the run log.";
+        } else {
+          initial = *validated;
+          proposal_message = "Suggested scoreboard corners. Review or adjust them, then save.";
+        }
       } else {
         proposal_message = "No confident scoreboard found. Please select its four corners.";
       }
