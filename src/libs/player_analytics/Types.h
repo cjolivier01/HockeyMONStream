@@ -11,6 +11,8 @@ inline constexpr size_t kMaximumTracks = 256;
 inline constexpr size_t kMaximumDueRois = 32;
 inline constexpr size_t kMaximumBatch = 8;
 inline constexpr size_t kCocoJoints = 17;
+inline constexpr size_t kHarpetJoints = 18;
+enum class PoseTopology : uint32_t { kCoco17 = 17, kHarpet18 = 18 };
 inline constexpr size_t kActionSamples = 100;
 inline constexpr uint64_t kSecond = 1000000000ULL;
 inline constexpr uint64_t kInvalidTime = std::numeric_limits<uint64_t>::max();
@@ -81,7 +83,7 @@ struct Keypoint {
   float confidence{0};
 };
 
-using Pose = std::array<Keypoint, kCocoJoints>;
+using Pose = std::array<Keypoint, kHarpetJoints>;
 
 struct Box {
   float left{0};
@@ -150,9 +152,11 @@ struct PlayerResult {
 };
 
 struct FrameResult {
-  // Version 4 adds TeamResult alongside the retained pose introduced in version 3.
-  static constexpr uint32_t kSchemaVersion = 4;
+  // Version 5 adds the pose topology and the eighteenth joint HARPET carries,
+  // after version 4's TeamResult and version 3's retained pose.
+  static constexpr uint32_t kSchemaVersion = 5;
   uint32_t schema_version{kSchemaVersion};
+  PoseTopology pose_topology{PoseTopology::kCoco17};
   uint32_t stream_id{0};
   uint64_t epoch{0};
   uint64_t sequence{0};

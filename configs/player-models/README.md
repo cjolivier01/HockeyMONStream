@@ -9,6 +9,8 @@ playback requires no Python export, manual bundle path, or environment variable.
 | Feature | Model | Maximum batch | Distribution |
 | --- | --- | ---: | --- |
 | Pose | RTMPose-M, COCO 17 joints | 8 | HockeyMONStream release |
+| Pose (hockey) | RTMPose-M, MPII16 + stick top/tip | 8 | HockeyMONStream release |
+| Action (hockey) | STGCN++, HARPET four actions | 8 | HockeyMONStream release |
 | Jersey | Hockey PARSeq, CC BY-NC 3.0; noncommercial | 8 | HockeyMONStream release |
 | Action | STGCN++, COCO2D joint, NTU60 generic activities | 8 | HockeyMONStream release |
 | Team | NVIDIA ReIdentificationNet deployable_v1.2 ONNX | 8 | NVIDIA NGC directly |
@@ -50,8 +52,10 @@ upstream license texts, including the hockey weights' CC BY-NC 3.0 terms and the
 PARSeq implementation's separate Apache license and NOTICE. Automatic download
 does not waive the hockey weights' noncommercial terms. NVIDIA's model-card
 terms govern ReID; its preprocessing example's MIT notice applies only to the
-example. The action labels are the original NTU60 vocabulary, not hockey event
-labels. Conversion and runtime checks do not establish hockey accuracy.
+example. The generic action model retains NTU60 labels. `hockey-action.json` instead binds
+backward skating, forward skating, passing and shooting to `hockey-pose.json`.
+See the [runtime contract](../../docs/player-analytics-runtime.md#hockey-pose-and-actions)
+and the HockeyMON training record for measured accuracy and limitations.
 
 The three mirrored graphs each have `.NOTICE.txt` and `.NOTICE.json` release
 sidecars. The text sidecar includes complete license texts; the JSON sidecar
@@ -61,7 +65,7 @@ source checkpoint/configuration and exporter identities. Published graphs are
 self-contained ONNX files. Private image crops, skeleton fixtures, validation
 tensors, raw export manifests, and TensorRT engines are excluded from release.
 
-`src/libs/player_analytics/ModelCatalogData.inc` embeds these five JSON contracts
+`src/libs/player_analytics/ModelCatalogData.inc` embeds these seven JSON contracts
 so selection and preparation do not depend on finding a source checkout. After
 editing a contract, update its hash in `provenance.json` and regenerate the include
 from the repository root:
@@ -72,11 +76,11 @@ from pathlib import Path
 root = Path("configs/player-models")
 header = "// Generated from configs/player-models/*.json; regenerate as documented there.\n"
 blocks = []
-for feature in ("pose", "jersey", "action", "reid", "team"):
+for feature in ("pose", "jersey", "action", "reid", "team", "hockey-pose", "hockey-action"):
     document = (root / f"{feature}.json").read_text()
     assert ')MODEL"' not in document
     blocks.append(
-        f'constexpr const char k{feature.capitalize()}Contract[] = R"MODEL('
+        f'constexpr const char k{feature.title().replace("-", "")}Contract[] = R"MODEL('
         + document + ')MODEL";\n'
     )
 Path("src/libs/player_analytics/ModelCatalogData.inc").write_text(

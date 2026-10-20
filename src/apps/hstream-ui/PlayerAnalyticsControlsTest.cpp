@@ -407,6 +407,16 @@ void DependenciesAndExport(const QString& root) {
   PlayerAnalyticsControls widget;
   auto defaults = Defaults();
   widget.loadConfig(defaults, YAML::Node(), YAML::Node(), root);
+  Control<QCheckBox>(widget, "playerPoseEnable")->setChecked(true);
+  Control<QCheckBox>(widget, "playerActionEnable")->setChecked(true);
+  SelectModel(widget, "playerPoseModel", "rtmpose-m-harpet18-256x192");
+  Require(widget.validateForRun().contains("same joint layout"), "Mixed hockey/COCO pair was accepted");
+  SelectModel(widget, "playerActionModel", "stgcnpp-harpet18-actions4");
+  Require(widget.validateForRun().isEmpty(), "Paired hockey selections require no custom files");
+  Require(
+      widget.arguments().contains("--options=pipeline.player-analytics.action.model=stgcnpp-harpet18-actions4"),
+      "Hockey model selection did not reach the runner");
+  widget.loadConfig(defaults, YAML::Node(), YAML::Node(), root);
   Control<QCheckBox>(widget, "playerActionEnable")->setChecked(true);
   SelectModel(widget, "playerActionModel", "custom");
   Control<QLineEdit>(widget, "playerActionBundle")->setText("/missing/action");

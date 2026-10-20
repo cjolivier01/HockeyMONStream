@@ -219,6 +219,86 @@
         "sha256": "0e21d09278508ec835955f422a9fdd3cd59b2a6ecdef98d705f388f33cebac2b",
         "url": "https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/reidentificationnet/deployable_v1.2/files?redirect=true&path=resnet50_market1501_aicity156.onnx"
       }
+    },
+    {
+      "feature": "pose",
+      "model_id": "rtmpose-m-harpet18-256x192",
+      "description": "HARPET pose fine-tuning",
+      "maximum_batch": 8,
+      "contract": "hockey-pose.json",
+      "contract_sha256": "d03377eac3d536b5481e23fba3a5278e3f2c2286847bcecdab74c221c8878c90",
+      "source": {
+        "url": "https://github.com/cjolivier01/HockeyMON/releases/download/v0.0.1/rtmpose-m-harpet18-256x192-9edcf24e57fc88ee.pth",
+        "sha256": "9edcf24e57fc88ee4e1f381bad16e36dda8a3da60f54b4617268ed7dcbddba61",
+        "config_sha256": "5662609be70cd6f6002c6719b8b54f76def7b253f8b3292252536dc8d61decf8",
+        "license": "Apache-2.0 (OpenMMLab code); VIP-HARPET training data, retain dataset and pretrained-weight attribution; see hockey-training.md"
+      },
+      "notice": "notices/hockey-pose.md",
+      "license_files": [
+        "licenses/mmpose-apache-2.0.txt"
+      ],
+      "conversion": {
+        "description": "Frozen fine-tuned weights, ONNX opset 17, dynamic batch; all validation inputs verified in PyTorch, ONNX and native FP16 TensorRT.",
+        "exporter_sha256": "817a80fcfd4ac4c2aefd946f66b1f63250a04ea80adfa87528bedf70d27d865a"
+      },
+      "onnx": {
+        "file": "rtmpose-m-harpet18-256x192-de819b8bdf6f0c01.onnx",
+        "sha256": "de819b8bdf6f0c014ad39507148555e3adb797b23db21cbf6a513b321c0aeb6f",
+        "bytes": 54520767,
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/rtmpose-m-harpet18-256x192-de819b8bdf6f0c01.onnx"
+      },
+      "release_notice": {
+        "file": "rtmpose-m-harpet18-256x192-de819b8bdf6f0c01.NOTICE.txt",
+        "sha256": "54589594ed6aaa7595bf5051bcbdfdbcc1189b571ce6bd3bd867c6453adb1d93",
+        "bytes": 12295,
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/rtmpose-m-harpet18-256x192-de819b8bdf6f0c01.NOTICE.txt"
+      },
+      "release_provenance": {
+        "file": "rtmpose-m-harpet18-256x192-de819b8bdf6f0c01.NOTICE.json",
+        "sha256": "eb567532c66eea6504c8a19c79a873d172bffc82b36183fe73af2d546947a494",
+        "bytes": 13802,
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/rtmpose-m-harpet18-256x192-de819b8bdf6f0c01.NOTICE.json"
+      }
+    },
+    {
+      "feature": "action",
+      "model_id": "stgcnpp-harpet18-actions4",
+      "description": "HARPET action fine-tuning",
+      "maximum_batch": 8,
+      "contract": "hockey-action.json",
+      "contract_sha256": "d718e245c54cfef2445329882773ed53b7ea3b9ac1de7331b8396faefa3356a9",
+      "source": {
+        "url": "https://github.com/cjolivier01/HockeyMON/releases/download/v0.0.1/stgcnpp-harpet18-actions4-218bdaab24a27111.pth",
+        "sha256": "218bdaab24a27111ff551dceb51c2da5719db5d013b9a31d2e0318ef7a8604ca",
+        "config_sha256": "cda497aebd8bcd959476320cd06cc0f69c279d96ec44185d340bb4b4ca769e4f",
+        "license": "Apache-2.0 (OpenMMLab code); VIP-HARPET training data, retain dataset and pretrained-weight attribution; see hockey-training.md"
+      },
+      "notice": "notices/hockey-action.md",
+      "license_files": [
+        "licenses/mmaction2-apache-2.0.txt"
+      ],
+      "conversion": {
+        "description": "Frozen fine-tuned weights, ONNX opset 17, dynamic batch; all validation inputs verified in PyTorch, ONNX and native FP16 TensorRT.",
+        "exporter_sha256": "817a80fcfd4ac4c2aefd946f66b1f63250a04ea80adfa87528bedf70d27d865a"
+      },
+      "onnx": {
+        "file": "stgcnpp-harpet18-actions4-833d3ec938ca4018.onnx",
+        "sha256": "833d3ec938ca4018de3a547b88c135626f293abd23497e58b0d670692a744c66",
+        "bytes": 5641131,
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/stgcnpp-harpet18-actions4-833d3ec938ca4018.onnx"
+      },
+      "release_notice": {
+        "file": "stgcnpp-harpet18-actions4-833d3ec938ca4018.NOTICE.txt",
+        "sha256": "6810eb49b37c2eddf6f7bef8b5178432d60ffb093a208653fae4655d3469c021",
+        "bytes": 12293,
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/stgcnpp-harpet18-actions4-833d3ec938ca4018.NOTICE.txt"
+      },
+      "release_provenance": {
+        "file": "stgcnpp-harpet18-actions4-833d3ec938ca4018.NOTICE.json",
+        "sha256": "728630172962ac378f0da78f04e523060d20661a0dec1fbced132f00b9211a3a",
+        "bytes": 7882,
+        "url": "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/stgcnpp-harpet18-actions4-833d3ec938ca4018.NOTICE.json"
+      }
     }
   ],
   "release_tag": "pretrained-assets-v1",

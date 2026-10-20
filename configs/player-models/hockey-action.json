@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "feature": "action",
+  "model_id": "stgcnpp-harpet18-actions4",
+  "model_family": "stgcnpp",
+  "topology_id": "harpet18",
+  "inputs": [
+    {
+      "name": "skeleton",
+      "dtype": "float32",
+      "shape": [
+        -1,
+        1,
+        3,
+        18,
+        3
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "name": "logits",
+      "dtype": "float32",
+      "shape": [
+        -1,
+        4
+      ]
+    }
+  ],
+  "onnx": {
+    "file": "model.onnx",
+    "opset": 17,
+    "sha256": "833d3ec938ca4018de3a547b88c135626f293abd23497e58b0d670692a744c66"
+  },
+  "source": {
+    "url": "https://github.com/cjolivier01/HockeyMON/releases/download/v0.0.1/stgcnpp-harpet18-actions4-218bdaab24a27111.pth",
+    "sha256": "218bdaab24a27111ff551dceb51c2da5719db5d013b9a31d2e0318ef7a8604ca",
+    "config_sha256": "cda497aebd8bcd959476320cd06cc0f69c279d96ec44185d340bb4b4ca769e4f",
+    "license": "Apache-2.0 (OpenMMLab code); VIP-HARPET training data, retain dataset and pretrained-weight attribution; see hockey-training.md"
+  },
+  "preprocessing": {
+    "id": "stgcnpp-harpet18-causal-v1",
+    "coordinate_normalization": "pixels_model_root_body_height",
+    "samples": 3,
+    "sample_period_ns": 166666667,
+    "max_gap_ns": 250000000,
+    "second_person": "absent"
+  },
+  "labels": [
+    "backward skating",
+    "forward skating",
+    "passing",
+    "shooting"
+  ]
+}

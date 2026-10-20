@@ -195,5 +195,26 @@ int main() {
   ok &= Check(team.settled(2), "agreement confirms a retained side under new centroids");
   team.Reset();
   ok &= Check(!team.settled(1) && !team.committed(), "reset clears the side");
+
+  pa::ActionHistory hockey(pa::PoseTopology::kHarpet18);
+  std::array<float, 3 * 18 * 3> hockey_tensor{};
+  auto hockey_pose = Pose(200);
+  hockey_pose[17] = {900, 800, 0.8F};
+  hockey.Observe(0, hockey_pose, 1000, 1000);
+  hockey.Observe(200000000, hockey_pose, 1000, 1000);
+  ok &= Check(!hockey.ready(200000000), "hockey requires all three causal samples");
+  hockey.Observe(400000000, hockey_pose, 1000, 1000);
+  ok &= Check(
+      hockey.ready(400000000) && hockey.window_end() == 333333334 && hockey.tensor_floats() == hockey_tensor.size() &&
+          hockey.WriteTensor(400000000, hockey_tensor.data(), hockey_tensor.size()) && hockey_tensor[0] == 200 &&
+          hockey_tensor[17 * 3] == 900 && hockey_tensor.back() == 0.8F,
+      "hockey history must preserve pixel coordinates, stick tip and three-frame order");
+  hockey_pose[6].confidence = 0;
+  ok &= Check(
+      !hockey.Observe(500000000, hockey_pose, 1000, 1000) && hockey.size() == 0,
+      "missing pelvis must invalidate root-normalized hockey action evidence");
+  pa::ActionLabelState hockey_label(pa::PoseTopology::kHarpet18);
+  ok &= Check(hockey_label.Observe(333333334, 0, 3, 0.9F), "hockey action should accept the short trained window");
+  ok &= Check(!hockey_label.Observe(500000001, 166666667, 4, 0.9F), "hockey labels must be bounded by four classes");
   return ok ? 0 : 1;
 }

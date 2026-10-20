@@ -17,6 +17,24 @@ constexpr std::array<std::array<unsigned, 2>, 19> kBones{{
     {15, 13}, {13, 11}, {16, 14}, {14, 12}, {11, 12}, {5, 11}, {6, 12}, {5, 6}, {5, 7}, {6, 8},
     {7, 9},   {8, 10},  {1, 2},   {0, 1},   {0, 2},   {1, 3},  {2, 4},  {3, 5}, {4, 6},
 }};
+constexpr std::array<std::array<unsigned, 2>, 16> kHarpetBones{{
+    {0, 1},
+    {1, 2},
+    {2, 6},
+    {3, 6},
+    {3, 4},
+    {4, 5},
+    {6, 7},
+    {7, 8},
+    {8, 9},
+    {7, 12},
+    {7, 13},
+    {12, 11},
+    {11, 10},
+    {13, 14},
+    {14, 15},
+    {16, 17},
+}};
 
 Color PlayerColor(uint8_t slot) {
   if (slot >= player_analytics::kTrackPalette.size())
@@ -155,16 +173,29 @@ void BuildPlayerOverlays(
         continue;
       const auto& pose = fresh ? player.pose : retained.pose;
       const Color color = PlayerColor(player.color_slot);
-      for (const auto& bone : kBones) {
+      const bool hockey = result->pose_topology == player_analytics::PoseTopology::kHarpet18;
+      const auto* bones = hockey ? kHarpetBones.data() : kBones.data();
+      const size_t bone_count = hockey ? kHarpetBones.size() : kBones.size();
+      for (size_t bone_index = 0; bone_index < bone_count; ++bone_index) {
+        const auto& bone = bones[bone_index];
         const auto& a = pose[bone[0]];
         const auto& b = pose[bone[1]];
         if (a.confidence <= 0 || b.confidence <= 0 || a.confidence < joint_confidence ||
             b.confidence < joint_confidence)
           continue;
         const Point start = map({a.x, a.y}), end = map({b.x, b.y});
-        commands->AddLine(start.x, start.y, end.x, end.y, line_width, color);
+        const bool stick = hockey && bone[0] == 16;
+        commands->AddLine(
+            start.x,
+            start.y,
+            end.x,
+            end.y,
+            stick ? 1.5F * line_width : line_width,
+            stick ? Color{1.0F, 0.85F, 0.1F, 1.0F} : color);
       }
-      for (const auto& joint : pose) {
+      const size_t joint_count = hockey ? player_analytics::kHarpetJoints : player_analytics::kCocoJoints;
+      for (size_t joint_index = 0; joint_index < joint_count; ++joint_index) {
+        const auto& joint = pose[joint_index];
         if (joint.confidence <= 0 || joint.confidence < joint_confidence)
           continue;
         const Point point = map({joint.x, joint.y});

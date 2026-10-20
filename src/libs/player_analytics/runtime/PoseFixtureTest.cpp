@@ -8,6 +8,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -83,23 +84,24 @@ int main(int argc, char** argv) {
         {box[0].as<float>(), box[1].as<float>(), box[2].as<float>(), box[3].as<float>()},
         config["metadata_size"][0].as<float>(),
         config["metadata_size"][1].as<float>()};
-    auto reference_input = Read(fixture / "input.f32", pa::kPoseInputElements);
-    auto reference_pose = Read(fixture / "reference_pose.f32", 17 * 3);
-    std::vector<float> actual_input(pa::kPoseInputElements);
-    std::array<std::vector<float>, 2> reference, actual;
-    for (size_t index = 0; index < 2; ++index) {
-      const size_t count = 17 * (index == 0 ? 384 : 512);
-      reference[index] = Read(fixture / ("reference_" + std::to_string(index) + ".f32"), count);
-      actual[index].resize(count);
-    }
-    pa::Pose pose{};
     Cuda(cudaSetDevice(0));
     auto loaded = pa::NativeEngine::Load(argv[1], pa::ModelFeature::kPose, 0, 1);
     Check(loaded.ok(), loaded.status().ToString());
     auto engine = std::move(*loaded);
+    const size_t joints = engine->manifest().pose_joints;
+    auto reference_input = Read(fixture / "input.f32", pa::kPoseInputElements);
+    auto reference_pose = Read(fixture / "reference_pose.f32", joints * 3);
+    std::vector<float> actual_input(pa::kPoseInputElements);
+    std::array<std::vector<float>, 2> reference, actual;
+    for (size_t index = 0; index < 2; ++index) {
+      const size_t count = joints * (index == 0 ? 384 : 512);
+      reference[index] = Read(fixture / ("reference_" + std::to_string(index) + ".f32"), count);
+      actual[index].resize(count);
+    }
+    pa::Pose pose{};
     Buffer frame(rgba.step * rgba.rows), affines(sizeof(pa::PoseAffine)), results(sizeof(pa::Pose));
     pa::ImageView view{frame.data, rgba.step, rgba.cols, rgba.rows, pa::PixelFormat::kRgba8};
-    const auto affine = pa::MakePoseAffine(view, roi);
+    const auto affine = pa::MakePoseAffine(view, roi, engine->manifest().pose_padding);
     Check(affine.ok(), affine.status().ToString());
     Stream stream; // All host/device buffers survive both success and failure fences.
     Cuda(cudaMemcpyAsync(frame.data, rgba.data, rgba.step * rgba.rows, cudaMemcpyHostToDevice, stream.stream));
@@ -107,14 +109,14 @@ int main(int argc, char** argv) {
     Cuda(pa::PreprocessPose(view, affines.as<pa::PoseAffine>(), 1, engine->input(), stream.stream));
     const auto status = engine->Enqueue(1, stream.stream);
     Check(status.ok(), status.ToString());
-    Cuda(
-        pa::DecodePose(
-            engine->output(0),
-            engine->output(1),
-            affines.as<pa::PoseAffine>(),
-            1,
-            results.as<pa::Pose>(),
-            stream.stream));
+    Cuda(pa::DecodePose(
+        engine->output(0),
+        engine->output(1),
+        affines.as<pa::PoseAffine>(),
+        1,
+        results.as<pa::Pose>(),
+        stream.stream,
+        joints));
     // Validation-only readback of pixels/distributions; production copies only compact Pose.
     Cuda(cudaMemcpyAsync(
         actual_input.data(),
@@ -133,6 +135,15 @@ int main(int argc, char** argv) {
     Cuda(cudaStreamSynchronize(stream.stream));
     const float preprocessing = Difference(reference_input, actual_input);
     std::cout << "real player MMPose preprocessing max_abs=" << preprocessing << '\n';
+    if (preprocessing >= .00001F) {
+      std::cerr << std::setprecision(17) << "affine x0/y0/dx/dy=" << affine->x0 << ',' << affine->y0 << ','
+                << affine->dx << ',' << affine->dy << '\n';
+      for (size_t i = 0, shown = 0; i < actual_input.size() && shown < 8; ++i)
+        if (std::abs(actual_input[i] - reference_input[i]) > .00001F) {
+          std::cerr << "crop mismatch at " << i << ": " << actual_input[i] << " vs " << reference_input[i] << '\n';
+          ++shown;
+        }
+    }
     Check(preprocessing < 0.00001F, "GPU crop differs from MMPose/OpenCV reference");
     // Use the prepared precision contract, then independently constrain the
     // decoded joints below. Raw FP16 SimCC error alone is not pixel error.
@@ -149,7 +160,7 @@ int main(int argc, char** argv) {
     }
     double maximum_position = 0, maximum_score = 0;
     size_t exact_argmax = 0;
-    for (size_t j = 0; j < 17; ++j) {
+    for (size_t j = 0; j < joints; ++j) {
       // Direct decoder parity isolates CUDA reduction from FP16 model variation.
       const auto xb = actual[0].begin() + j * 384, yb = actual[1].begin() + j * 512;
       const auto xi = std::max_element(xb, xb + 384) - xb, yi = std::max_element(yb, yb + 512) - yb;
@@ -171,8 +182,8 @@ int main(int argc, char** argv) {
     }
     const double input_pixel =
         std::max(affine->dx * affine->surface_to_metadata_x, affine->dy * affine->surface_to_metadata_y);
-    std::cout << "real player 17-joint argmax agreement=" << exact_argmax
-              << "/17 max_metadata_position=" << maximum_position
+    std::cout << "real player joint argmax agreement=" << exact_argmax << '/' << joints
+              << " max_metadata_position=" << maximum_position
               << " max_model_position=" << maximum_position / input_pixel << " max_confidence=" << maximum_score
               << '\n';
     Check(distributions_match, "real player inference exceeds prepared precision tolerances");

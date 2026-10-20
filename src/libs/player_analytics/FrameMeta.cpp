@@ -47,12 +47,13 @@ bool Times(uint64_t observed, uint64_t expires, uint64_t frame_pts) {
 } // namespace
 
 NvDsMetaType FrameResultMetaType() {
-  static const auto type = nvds_get_user_meta_type(const_cast<gchar*>("HSTREAM.PLAYER_ANALYTICS.V4"));
+  static const auto type = nvds_get_user_meta_type(const_cast<gchar*>("HSTREAM.PLAYER_ANALYTICS.V5"));
   return type;
 }
 
 bool ValidateFrameResult(const FrameResult& result) noexcept {
   if (result.schema_version != FrameResult::kSchemaVersion || result.player_count > kMaximumTracks ||
+      (result.pose_topology != PoseTopology::kCoco17 && result.pose_topology != PoseTopology::kHarpet18) ||
       result.pts_ns == kInvalidTime || !Position(result.coordinate_width) || !Position(result.coordinate_height) ||
       result.coordinate_width <= 0 || result.coordinate_height <= 0)
     return false;
@@ -96,7 +97,8 @@ bool ValidateFrameResult(const FrameResult& result) noexcept {
         return false;
     }
     if (player.action.label != -1 &&
-        (player.action.label < 0 || player.action.label >= 60 || !Confidence(player.action.confidence) ||
+        (player.action.label < 0 || player.action.label >= (result.pose_topology == PoseTopology::kHarpet18 ? 4 : 60) ||
+         !Confidence(player.action.confidence) ||
          !Times(player.action.observed_at, player.action.expires_at, result.pts_ns) ||
          player.action.window_start == kInvalidTime || player.action.window_start > player.action.observed_at))
       return false;

@@ -29,7 +29,8 @@ JerseyCropSelection MakeJerseyCrop(
     float metadata_width,
     float metadata_height,
     JerseyRoiMode mode,
-    const Pose* pose = nullptr) noexcept;
+    const Pose* pose = nullptr,
+    PoseTopology topology = PoseTopology::kCoco17) noexcept;
 
 enum class TeamCropReason { kReady, kInvalidGeometry, kOutsideImage, kTooLarge };
 struct TeamCropSelection {

@@ -50,6 +50,10 @@ struct ModelManifest {
   std::vector<TensorContract> outputs;
   std::string preprocessing_id;
   std::string topology_id;
+  size_t pose_joints{17};
+  float pose_padding{1.25F};
+  size_t action_samples{100};
+  size_t action_persons{2};
   std::vector<std::string> charset;
   size_t eos_index{0};
   std::vector<std::string> labels;

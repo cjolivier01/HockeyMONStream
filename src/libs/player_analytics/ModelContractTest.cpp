@@ -109,6 +109,31 @@ int main(int argc, char** argv) {
   action["preprocessing"]["max_gap_ns"] = 1000000000;
   if (pa::ParseModelManifest(action).ok())
     return 8;
+  auto hockey_pose = YAML::Clone(node);
+  hockey_pose["topology_id"] = "harpet18";
+  hockey_pose["preprocessing"]["id"] = "rtmpose-harpet18-affine-v1";
+  hockey_pose["preprocessing"]["padding"] = 3.5;
+  hockey_pose["outputs"][0]["shape"][1] = 18;
+  hockey_pose["outputs"][1]["shape"][1] = 18;
+  auto hockey = pa::ParseModelManifest(hockey_pose);
+  if (!hockey.ok() || hockey->pose_joints != 18 || hockey->pose_padding != 3.5F)
+    return 10;
+  hockey_pose["preprocessing"]["padding"] = 1.25;
+  if (pa::ParseModelManifest(hockey_pose).ok())
+    return 11;
+  action["topology_id"] = "harpet18";
+  action["inputs"][0]["shape"] = YAML::Load("[-1,1,3,18,3]");
+  action["outputs"][0]["shape"] = YAML::Load("[-1,4]");
+  action["labels"] = YAML::Load("[backward skating, forward skating, passing, shooting]");
+  action["preprocessing"] = YAML::Load(R"({id: stgcnpp-harpet18-causal-v1,
+      coordinate_normalization: pixels_model_root_body_height, sample_period_ns: 166666667,
+      max_gap_ns: 250000000, samples: 3, second_person: absent})");
+  const auto hockey_action = pa::ParseModelManifest(action);
+  if (!hockey_action.ok() || hockey_action->action_samples != 3 || hockey_action->labels.size() != 4)
+    return 12;
+  action["topology_id"] = "coco17";
+  if (pa::ParseModelManifest(action).ok())
+    return 13;
   // Optional real prepared-bundle fixture, supplied only by the offline parity
   // workflow. No model file or runtime is required for ordinary CPU tests.
   for (int i = 1; i < argc; ++i) {

@@ -87,5 +87,16 @@ int main() {
   input->players[0].pose[0].x = std::numeric_limits<float>::quiet_NaN();
   if (pa::ValidateFrameResult(*input))
     return 8;
+  input->players[0].pose[0].x = 0;
+  input->pose_topology = pa::PoseTopology::kHarpet18;
+  input->players[0].action.label = 4;
+  if (pa::ValidateFrameResult(*input))
+    return 14;
+  input->players[0].action = {};
+  if (!pa::ValidateFrameResult(*input))
+    return 15;
+  input->pose_topology = static_cast<pa::PoseTopology>(19);
+  if (pa::ValidateFrameResult(*input))
+    return 16;
   return 0;
 }

@@ -312,15 +312,8 @@ void PlayerAnalyticsControls::addModel(const QString& key, const QString& name, 
   editor->setObjectName(name);
   const auto feature = ModelFeature(key);
   const auto id = std::string(pa::DefaultModelId(feature));
-  const auto* model = pa::FindModel(feature, id);
-  const QString title = model ? QString::fromUtf8(model->label) : QString::fromStdString(id);
-  editor->addItem(title, QString::fromStdString(id));
-  if (feature == "reid") {
-    const std::string alternative = "reidentificationnet-deployable-v1.2";
-    const auto* nvidia = pa::FindModel(feature, alternative);
-    if (nvidia && alternative != id)
-      editor->addItem(QString::fromUtf8(nvidia->label), QString::fromStdString(alternative));
-  }
+  for (const auto* model : pa::ModelsForFeature(feature))
+    editor->addItem(QString::fromUtf8(model->label), QString::fromUtf8(model->id));
   editor->addItem("Custom…", "custom");
   editor->setProperty("knownModelCount", editor->count());
   editor->setToolTip("Uses the supplied model or downloads it when needed, prepares it for this GPU, then reuses it.");
