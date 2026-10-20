@@ -302,7 +302,7 @@ bool Push(Harness& test, uint64_t pts, int frame_number, size_t count, uint64_t*
 bool Enabled(const char* bundle) {
   Harness test(
       "pose: {enable: true, bundle: '" + std::string(bundle) +
-      "', rate-hz: 10, confidence-threshold: 0}\nmax-tracks: 4\nmax-due-rois: 2\nbatch-size: 2\n");
+      "', rate-hz: 10, confidence-threshold: 0, continuous-drawing: false}\nmax-tracks: 4\nmax-due-rois: 2\nbatch-size: 2\n");
   if (!test.harness)
     return false;
   uint64_t epoch = 0;

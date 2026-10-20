@@ -144,6 +144,26 @@ player-analytics:
   config.drawing.action = false;
   Require(config.drawing_layers() == 0 && config.enabled(), "Drawing off disabled requested compute");
 }
+
+void PoseCadenceAndDrawing(const YAML::Node& baseline) {
+  hm::Configurator configurator("unused", "/not-opened", -1);
+  Map(configurator, baseline);
+  const std::string prefix = "pipeline.player-analytics.pose.";
+  for (const auto& [key, value] :
+       {std::pair{"enable", "true"},
+        {"bundle", "/not-opened/pose"},
+        {"rate-hz", "fps"},
+        {"continuous-drawing", "false"}})
+    Require(configurator.apply_config_item(prefix + key, value).ok(), "Pose CLI override failed");
+  const auto resolved = hm::gst::ResolvePlayerAnalyticsConfig(configurator.config()["pipeline"], "/not-opened", 0);
+  Require(
+      resolved.ok() && resolved->analytics.pose.every_frame && !resolved->analytics.continuous_pose_drawing,
+      "CLI pose overrides did not replace baseline defaults");
+  const auto plugin = hm::player_analytics::ParseConfig(YAML::Load(resolved->serialized));
+  Require(
+      plugin.ok() && plugin->pose.every_frame && !plugin->continuous_pose_drawing,
+      "Serialized plugin settings lost fps or continuous drawing");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -152,5 +172,6 @@ int main(int argc, char** argv) {
   const auto baseline = YAML::LoadFile(argv[1]);
   Precedence(baseline);
   DrawingAndCalibration(baseline);
+  PoseCadenceAndDrawing(baseline);
   std::cout << "Actual Configurator drawing precedence, compute gating and calibration suppression passed\n";
 }

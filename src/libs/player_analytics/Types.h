@@ -17,6 +17,7 @@ inline constexpr uint64_t kInvalidTime = std::numeric_limits<uint64_t>::max();
 inline constexpr uint64_t kUntrackedId = std::numeric_limits<uint64_t>::max();
 inline constexpr uint64_t kActionSamplePeriod = 100000000ULL;
 inline constexpr uint64_t kActionMaximumGap = 150000000ULL;
+inline constexpr uint64_t kPoseDrawingMaximumAge = 250000000ULL;
 inline constexpr uint8_t kNoColor = 255;
 enum DrawingLayer : uint32_t { kDrawPlayerBoxes = 1, kDrawPose = 2, kDrawJerseys = 4, kDrawActions = 8 };
 
@@ -54,6 +55,12 @@ struct ActionResult {
   uint64_t expires_at{kInvalidTime};
 };
 
+// Display-only estimate in the current frame's coordinates. Never pose evidence.
+struct RetainedPose {
+  Pose pose{};
+  uint64_t observed_at{kInvalidTime};
+};
+
 struct PlayerResult {
   uint64_t track_id{kUntrackedId};
   Box box;
@@ -62,6 +69,7 @@ struct PlayerResult {
   bool has_pose{false};
   Pose pose;
   uint64_t pose_observed_at{kInvalidTime};
+  RetainedPose retained_pose;
   JerseyResult jersey;
   ActionResult action;
   // Bounded printable display label from the actual model manifest, not a remap.
@@ -69,7 +77,7 @@ struct PlayerResult {
 };
 
 struct FrameResult {
-  static constexpr uint32_t kSchemaVersion = 1;
+  static constexpr uint32_t kSchemaVersion = 3;
   uint32_t schema_version{kSchemaVersion};
   uint32_t stream_id{0};
   uint64_t epoch{0};

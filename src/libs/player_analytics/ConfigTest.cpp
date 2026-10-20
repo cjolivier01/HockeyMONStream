@@ -13,7 +13,8 @@ int main() {
           "action: {enable: 0, bundle: /no/such/model}\n"
           "max-tracks: invalid\ndraw-pose: true\ndraw-jerseys: 1\n"));
   if (!absent.ok() || absent->enabled() || !disabled.ok() || disabled->enabled() || !disabled->drawing.pose ||
-      !disabled->drawing.jersey) {
+      !disabled->drawing.jersey || !absent->continuous_pose_drawing || absent->pose.rate_hz != 10 ||
+      absent->pose.every_frame) {
     std::cerr << "disabled parsing must ignore models/limits while preserving draw preferences\n";
     return 1;
   }
@@ -25,6 +26,12 @@ int main() {
            "action: {enable: 1, bundle: x}",
            "jersey: {enable: 1, bundle: x, roi-mode: pose}",
            "pose: {enable: 1, bundle: x, rate-hz: .nan}",
+           "pose: {enable: 1, rate-hz: 0}",
+           "pose: {enable: 1, rate-hz: [fps]}",
+           "pose: {enable: 1, rate-hz: unknown}",
+           "jersey: {enable: 1, rate-hz: fps}",
+           "pose: {enable: 1}\naction: {enable: 1, rate-hz: fps}",
+           "pose: {continuous-drawing: invalid}",
            "pose: {enable: 1, bundle: x, rate-hz: 9}\naction: {enable: 1, bundle: y}",
            "pose: {enable: 1, bundle: x}\nmax-tracks: 257",
            "pose: {enable: 1, bundle: x}\nmax-due-rois: 33",
@@ -58,5 +65,12 @@ int main() {
     std::cerr << "legacy explicit paths must retain their custom-model semantics\n";
     return 5;
   }
+  const auto fps = pa::ParseConfig(
+      YAML::Load("pose: {enable: true, rate-hz: fps, continuous-drawing: false}\naction: {enable: true}"));
+  if (!fps.ok() || !fps->pose.every_frame || fps->continuous_pose_drawing)
+    return 7;
+  const auto numeric = pa::ParseConfig(YAML::Load("pose: {enable: true, rate-hz: 29.97}"));
+  if (!numeric.ok() || numeric->pose.every_frame || numeric->pose.rate_hz != 29.97)
+    return 8;
   return 0;
 }

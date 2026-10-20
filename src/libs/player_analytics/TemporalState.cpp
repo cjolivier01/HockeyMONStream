@@ -20,6 +20,35 @@ uint64_t Deadline(uint64_t pts, uint64_t interval) {
 
 } // namespace
 
+void PoseDrawingState::Observe(uint64_t pts_ns, const Pose& pose, const Box& box) noexcept {
+  pose_ = pose;
+  box_ = box;
+  observed_at_ = pts_ns;
+}
+
+RetainedPose PoseDrawingState::Result(uint64_t now_ns, const Box& box) const noexcept {
+  RetainedPose result;
+  if (observed_at_ == kInvalidTime || now_ns == kInvalidTime || now_ns <= observed_at_ ||
+      now_ns - observed_at_ > kPoseDrawingMaximumAge || box_.width <= 0 || box_.height <= 0 || box.width <= 0 ||
+      box.height <= 0)
+    return result;
+  for (size_t i = 0; i < pose_.size(); ++i) {
+    const auto& point = pose_[i];
+    if (!Probability(point.confidence))
+      return {};
+    if (point.confidence == 0)
+      continue;
+    // Always reproject the original observation, avoiding accumulated drift.
+    const double x = box.left + (double(point.x) - box_.left) * box.width / box_.width;
+    const double y = box.top + (double(point.y) - box_.top) * box.height / box_.height;
+    if (!std::isfinite(x) || !std::isfinite(y) || std::abs(x) > 1000000 || std::abs(y) > 1000000)
+      return {};
+    result.pose[i] = {static_cast<float>(x), static_cast<float>(y), point.confidence};
+  }
+  result.observed_at = observed_at_;
+  return result;
+}
+
 TrackScheduler::TrackScheduler(size_t maximum_tracks, uint64_t retention_ns)
     : maximum_tracks_(std::min(maximum_tracks, kMaximumTracks)), retention_ns_(retention_ns) {}
 

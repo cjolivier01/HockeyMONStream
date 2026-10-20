@@ -153,6 +153,13 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
   addFlag(kAnalytics + "pose.enable", {}, "playerPoseEnable", "Estimate pose", compute);
   addModel(kAnalytics + "pose.model", "playerPoseModel", "Pose model", compute);
   addPath(kAnalytics + "pose.bundle", "playerPoseBundle", true, compute);
+  auto* pose_rate = new QLineEdit();
+  pose_rate->setObjectName("playerPoseRate");
+  pose_rate->setToolTip("Updates per second (default 10), or fps for every video frame. Applies on the next run.");
+  static_cast<QFormLayout*>(compute->layout())->addRow("Pose updates per second / fps", pose_rate);
+  fields_.push_back({kAnalytics + "pose.rate-hz", {}, Kind::kRate, pose_rate, QString("10")});
+  const size_t rate_index = fields_.size() - 1;
+  connect(pose_rate, &QLineEdit::textChanged, this, [this, rate_index] { changed(rate_index); });
   addFlag(kAnalytics + "jersey.enable", {}, "playerJerseyEnable", "Read jersey numbers", compute);
   addModel(kAnalytics + "jersey.model", "playerJerseyModel", "Jersey model", compute);
   addPath(kAnalytics + "jersey.bundle", "playerJerseyBundle", true, compute);
@@ -186,6 +193,15 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
   auto* drawing = new QGroupBox("Drawing");
   new QFormLayout(drawing);
   addFlag("plot.plot_pose", kAnalytics + "draw-pose", "playerDrawPose", "Pose skeletons", drawing);
+  addFlag(
+      kAnalytics + "pose.continuous-drawing",
+      {},
+      "playerContinuousPoseDrawing",
+      "Keep pose visible between updates",
+      drawing,
+      true);
+  fields_.back().editor->setToolTip(
+      "Follow the tracked player between pose updates for up to 250 ms. Applies on the next run.");
   addFlag("plot.plot_jersey_numbers", kAnalytics + "draw-jerseys", "playerDrawJerseys", "Jersey numbers", drawing);
   addFlag("plot.plot_actions", kAnalytics + "draw-actions", "playerDrawActions", "Activity labels", drawing);
   addFlag(
@@ -209,12 +225,14 @@ void PlayerAnalyticsControls::addFlag(
     const QString& alias,
     const QString& name,
     const QString& label,
-    QWidget* parent) {
+    QWidget* parent,
+    bool default_on) {
   auto* editor = new QCheckBox(label);
   editor->setObjectName(name);
   editor->setToolTip("Applies on the next run. Save Preset keeps this choice for the selected game.");
   static_cast<QFormLayout*>(parent->layout())->addRow(editor);
-  fields_.push_back({key, alias, Kind::kFlag, editor, false});
+  fields_.push_back({key, alias, Kind::kFlag, editor, default_on});
+  fields_.back().default_on = default_on;
   const size_t index = fields_.size() - 1;
   connect(editor, &QCheckBox::toggled, this, [this, index] { changed(index); });
 }
@@ -321,7 +339,7 @@ QVariant PlayerAnalyticsControls::read(const Field& field, const std::vector<YAM
   *valid = true;
   try {
     if (field.kind == Kind::kFlag)
-      return Flag(resolved);
+      return Flag(resolved, field.default_on);
     if (field.kind == Kind::kModel && (!resolved.IsDefined() || resolved.IsNull())) {
       YAML::Node merged(YAML::NodeType::Map);
       for (const auto& layer : layers)
@@ -334,7 +352,7 @@ QVariant PlayerAnalyticsControls::read(const Field& field, const std::vector<YAM
       return QString::fromStdString(std::string(pa::DefaultModelId(ModelFeature(field.key))));
     }
     if (!resolved.IsDefined() || resolved.IsNull())
-      return field.kind == Kind::kRoi ? QString("bbox") : QString();
+      return field.kind == Kind::kRoi ? QString("bbox") : field.kind == Kind::kRate ? QString("10") : QString();
     if (!resolved.IsScalar())
       throw std::invalid_argument("Expected a scalar path/mode");
     return QString::fromStdString(resolved.as<std::string>());
@@ -347,7 +365,7 @@ void PlayerAnalyticsControls::setValue(Field& field, const QVariant& selected) {
   const QSignalBlocker blocker(field.editor);
   if (field.kind == Kind::kFlag)
     static_cast<QCheckBox*>(field.editor)->setChecked(selected.toBool());
-  else if (field.kind == Kind::kPath)
+  else if (field.kind == Kind::kPath || field.kind == Kind::kRate)
     static_cast<QLineEdit*>(field.editor)->setText(selected.toString());
   else {
     auto* combo = static_cast<QComboBox*>(field.editor);
