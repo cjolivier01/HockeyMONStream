@@ -55,8 +55,27 @@ bool sameInputs(const rink::RinkMapDocument& a, const rink::RinkMapDocument& b) 
     const auto& x = a.observations[i];
     const auto& y = b.observations[i];
     if (std::tie(
-            x.feature, x.label, x.camera, x.line, x.automatic, x.enabled, x.confidence, x.pixels, x.mask_revision) !=
-        std::tie(y.feature, y.label, y.camera, y.line, y.automatic, y.enabled, y.confidence, y.pixels, y.mask_revision))
+            x.feature,
+            x.label,
+            x.camera,
+            x.line,
+            x.automatic,
+            x.enabled,
+            x.confidence,
+            x.pixels,
+            x.mask_revision,
+            x.arc) !=
+        std::tie(
+            y.feature,
+            y.label,
+            y.camera,
+            y.line,
+            y.automatic,
+            y.enabled,
+            y.confidence,
+            y.pixels,
+            y.mask_revision,
+            y.arc))
       return false;
   }
   return true;
@@ -115,6 +134,15 @@ QString featureName(const rink::RinkMapObservation& observation) {
 bool hasGoalLineEnds(const rink::RinkMapObservation& observation) {
   return observation.line && observation.pixels.size() >= 2 &&
       (observation.feature == "goal-left-line" || observation.feature == "goal-right-line");
+}
+QPainterPath arcPath(const std::vector<cv::Point2d>& points) {
+  QPainterPath path;
+  if (points.size() != 3)
+    return path;
+  const auto control = 2 * points[1] - 0.5 * (points[0] + points[2]);
+  path.moveTo(points[0].x, points[0].y);
+  path.quadTo(control.x, control.y, points[2].x, points[2].y);
+  return path;
 }
 class Anchor : public QGraphicsEllipseItem {
  public:
@@ -277,6 +305,8 @@ class RinkMapCanvas : public QGraphicsView {
       const QColor color = observationColor(observation);
       const auto observation_paths = path(observation.pixels, color, featureName(observation), 3, false);
       for (auto* item : observation_paths) {
+        if (observation.arc)
+          item->setPath(arcPath(observation.pixels));
         item->setData(0, "rinkMapObservationPath");
         item->setData(1, int(index));
       }
@@ -288,7 +318,7 @@ class RinkMapCanvas : public QGraphicsView {
       text->setPos(position.x, position.y);
       if (int(index) == selected || !observation.automatic) {
         for (size_t sample = 0; sample < observation.pixels.size(); ++sample) {
-          if (observation.automatic && sample != 0 && sample + 1 != observation.pixels.size())
+          if (observation.automatic && !observation.arc && sample != 0 && sample + 1 != observation.pixels.size())
             continue;
           auto* anchor = new Anchor(
               [this, index, sample](QPointF position) {
@@ -301,13 +331,16 @@ class RinkMapCanvas : public QGraphicsView {
                sample,
                observation_paths,
                text,
+               arc = observation.arc,
                automatic = observation.automatic,
                line = observation.line](QPointF point) {
                 (*preview_pixels)[sample] = {point.x(), point.y()};
                 QPainterPath drawing;
                 const auto& first = preview_pixels->front();
                 drawing.moveTo(first.x, first.y);
-                if (automatic && line) {
+                if (arc) {
+                  drawing = arcPath(*preview_pixels);
+                } else if (automatic && line) {
                   const auto& last = preview_pixels->back();
                   drawing.lineTo(last.x, last.y);
                 } else {
@@ -449,7 +482,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   mask_ = new QPushButton(action_icon(ActionIcon::Inspect), "Use rink mask");
   mask_->setObjectName("suggestRinkMaskButton");
   mask_->setToolTip(
-      "Suggest the far straight boards from the saved ice mask. Review before checking Use. The near edge may follow the tops of boards and is excluded.");
+      "Suggest far boards and a smooth near-board arc from the saved ice mask. Select the near-board row to adjust its three points to ice level, then check Use.");
   toolbar->addWidget(mask_);
   connect(mask_, &QPushButton::clicked, this, [this] { update(false, true); });
   toolbar->addWidget(stop_);
@@ -507,7 +540,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
       const QSize size = snapshot_->original_sizes[observation.camera];
       point.setX(std::clamp(point.x(), 0.0, double(size.width() - 1)));
       point.setY(std::clamp(point.y(), 0.0, double(size.height() - 1)));
-      if (observation.automatic && observation.line) {
+      if (observation.automatic && observation.line && !observation.arc) {
         auto first = observation.pixels.front(), last = observation.pixels.back();
         (sample == 0 ? first : last) = cv::Point2d(point.x(), point.y());
         observation.pixels = {first, last};
@@ -1052,7 +1085,7 @@ void RinkMapDialog::update(bool detect, bool use_mask) {
   setBusy(true);
   refresh();
   setStatus(
-      use_mask     ? "Analysing the saved ice mask; excluding near-board occlusions…"
+      use_mask     ? "Analysing the saved ice mask; fitting boards across local obstructions…"
           : detect ? "Preparing the landmark model (269 MiB on first use), then analysing the saved cameras…"
                    : "Updating calibrated rink geometry…");
   job_ = std::make_shared<Job>();
@@ -1241,6 +1274,7 @@ void RinkMapDialog::useGoalLineEnds() {
     mark.feature = end + (near ? "-near" : "-far");
     mark.label = featureName(mark).toStdString();
     mark.line = false;
+    mark.arc = false;
     mark.automatic = false; // Explicitly confirmed points survive future model searches.
     mark.confidence = 1;
     mark.mask_revision.clear();

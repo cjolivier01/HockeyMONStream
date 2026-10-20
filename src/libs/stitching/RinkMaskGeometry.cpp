@@ -2,6 +2,7 @@
 
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace hm::stitching {
@@ -22,11 +23,11 @@ cv::Vec3d normal(const std::vector<Sample>& samples) {
   cv::eigen(cv::Mat(covariance), values, vectors);
   return {vectors.at<double>(2, 0), vectors.at<double>(2, 1), vectors.at<double>(2, 2)};
 }
-} // namespace
-
-absl::StatusOr<RinkMaskBoard> SuggestFarRinkBoard(
+absl::StatusOr<RinkMaskBoard> suggestBoard(
     const cv::Mat& mask,
-    const std::function<std::optional<cv::Vec3d>(double, double)>& ray_at) {
+    const std::function<std::optional<cv::Vec3d>(double, double)>& ray_at,
+    bool near) {
+  const std::string side = near ? "near" : "far";
   if (mask.type() != CV_8UC1 || mask.cols < 128 || mask.rows < 32 || mask.cols > 2048 || mask.rows > 2048 || !ray_at)
     return absl::InvalidArgumentError("Rink mask assistance needs a bounded grayscale mask");
   cv::Mat binary, components, stats, centroids;
@@ -40,23 +41,23 @@ absl::StatusOr<RinkMaskBoard> SuggestFarRinkBoard(
       largest = i;
   const int left = stats.at<int>(largest, cv::CC_STAT_LEFT), width = stats.at<int>(largest, cv::CC_STAT_WIDTH);
   if (width < mask.cols / 2 || stats.at<int>(largest, cv::CC_STAT_AREA) < mask.total() / 20)
-    return absl::NotFoundError("Too little continuous ice is visible to suggest the far boards");
-  // Exclude the rounded ends and padding. Only the TOP silhouette is read.
+    return absl::NotFoundError("Too little continuous ice is visible to suggest the " + side + " boards");
+  // Exclude the rounded ends and padding; inspect only the requested edge.
   const int start = left + width / 5, end = left + 4 * width / 5;
   std::vector<Sample> samples;
   for (int x = start; x < end; ++x) {
-    int y = 0;
-    while (y < mask.rows && components.at<int>(y, x) != largest)
-      ++y;
+    int y = near ? mask.rows - 1 : 0;
+    while (y >= 0 && y < mask.rows && components.at<int>(y, x) != largest)
+      y += near ? -1 : 1;
     if (y <= std::max(3, mask.rows / 50) || y >= mask.rows - std::max(3, mask.rows / 50))
       continue;
     const auto ray = ray_at((x + 0.5) / mask.cols, (y + 0.5) / mask.rows);
     if (ray && valid(*ray))
       samples.push_back({x, *ray / cv::norm(*ray)});
   }
-  if (samples.size() < 64 || samples.size() < size_t((end - start) * 0.8))
-    return absl::NotFoundError("The far boundary is clipped or has too many gaps");
-  const double tolerance = std::sin(0.35 * kRadians);
+  if (samples.size() < 64 || samples.size() < size_t((end - start) * (near ? 0.55 : 0.8)))
+    return absl::NotFoundError("The " + side + " boundary is clipped or has too many gaps");
+  const double tolerance = std::sin((near ? 0.6 : 0.35) * kRadians);
   std::vector<Sample> best;
   // Deterministic broad-baseline hypotheses; no dependence on global RNG state.
   const size_t stride = std::max(size_t(1), samples.size() / 20);
@@ -75,29 +76,71 @@ absl::StatusOr<RinkMaskBoard> SuggestFarRinkBoard(
     }
   }
   // The central search band can still include the starts of rounded corners.
-  // Trim its unsupported ends, but do not bridge internal occlusions.
-  if (best.size() < samples.size() * 0.65)
-    return absl::NotFoundError("No broad straight far-board section agrees with the camera calibration");
+  // Near-board proposals may bridge interruptions, but need broad support.
+  const double support = near ? 0.55 : 0.65;
+  if (best.size() < samples.size() * support)
+    return absl::NotFoundError("No broad straight " + side + "-board section agrees with the camera calibration");
   const auto n = normal(best);
   best.clear();
   for (const auto& sample : samples)
     if (std::abs(n.dot(sample.ray)) <= tolerance)
       best.push_back(sample);
-  if (best.size() < samples.size() * 0.65 || best.back().x - best.front().x < width * 0.4 ||
-      best.size() < size_t(best.back().x - best.front().x) * 0.9)
-    return absl::NotFoundError("Far-board support is too short or irregular");
-  for (size_t i = 1; i < best.size(); ++i)
-    if (best[i].x - best[i - 1].x > std::max(4, width / 40))
-      return absl::NotFoundError("Obstructions break the far-board boundary; mark a visible section manually");
+  if (best.size() < samples.size() * support || best.back().x - best.front().x < width * 0.4 ||
+      best.size() < size_t(best.back().x - best.front().x) * (near ? 0.55 : 0.9))
+    return absl::NotFoundError("The " + side + "-board support is too short or irregular");
+  if (near) {
+    // Do not infer an entire arc from just two isolated patches at its ends.
+    std::array<size_t, 3> thirds{};
+    const int span = best.back().x - best.front().x + 1;
+    for (const auto& sample : best)
+      ++thirds[std::min(2, 3 * (sample.x - best.front().x) / span)];
+    if (*std::min_element(thirds.begin(), thirds.end()) < size_t(span * 0.08))
+      return absl::NotFoundError("Near-board support is missing across too much of the arc");
+  } else {
+    for (size_t i = 1; i < best.size(); ++i)
+      if (best[i].x - best[i - 1].x > std::max(4, width / 40))
+        return absl::NotFoundError("Obstructions break the far-board boundary; mark a visible section manually");
+  }
   if (std::acos(std::clamp(best.front().ray.dot(best.back().ray), -1.0, 1.0)) < 20 * kRadians)
-    return absl::NotFoundError("The visible far boards are too short for a reliable suggestion");
+    return absl::NotFoundError("The visible " + side + " boards are too short for a reliable suggestion");
   RinkMaskBoard result;
   double squared = 0;
   for (const auto& sample : best)
     squared += std::pow(std::asin(std::clamp(n.dot(sample.ray), -1.0, 1.0)), 2);
   result.rms_degrees = std::sqrt(squared / best.size()) / kRadians;
-  for (size_t i = 0; i < 32; ++i)
-    result.rays.push_back(best[i * (best.size() - 1) / 31].ray);
+  if (near) {
+    // Great-circle interpolation gives a single smooth projected board arc,
+    // independent of individual silhouette steps, posts and door openings.
+    const auto fitted_normal = normal(best);
+    auto first = best.front().ray - fitted_normal * fitted_normal.dot(best.front().ray);
+    auto last = best.back().ray - fitted_normal * fitted_normal.dot(best.back().ray);
+    first /= cv::norm(first);
+    last /= cv::norm(last);
+    const double angle = std::acos(std::clamp(first.dot(last), -1.0, 1.0));
+    if (angle >= 170 * kRadians)
+      return absl::NotFoundError("The near-board arc spans too much of the camera view");
+    for (size_t i = 0; i <= 32; ++i) {
+      const double t = i / 32.0;
+      auto ray = first * std::sin((1 - t) * angle) + last * std::sin(t * angle);
+      result.rays.push_back(ray / cv::norm(ray));
+    }
+  } else {
+    for (size_t i = 0; i < 32; ++i)
+      result.rays.push_back(best[i * (best.size() - 1) / 31].ray);
+  }
   return result;
+}
+} // namespace
+
+absl::StatusOr<RinkMaskBoard> SuggestFarRinkBoard(
+    const cv::Mat& mask,
+    const std::function<std::optional<cv::Vec3d>(double, double)>& ray_at) {
+  return suggestBoard(mask, ray_at, false);
+}
+
+absl::StatusOr<RinkMaskBoard> SuggestNearRinkBoard(
+    const cv::Mat& mask,
+    const std::function<std::optional<cv::Vec3d>(double, double)>& ray_at) {
+  return suggestBoard(mask, ray_at, true);
 }
 } // namespace hm::stitching

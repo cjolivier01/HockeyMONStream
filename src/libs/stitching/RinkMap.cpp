@@ -22,7 +22,8 @@ absl::Status ValidateObservation(const RinkMapObservation& observation) {
       observation.mask_revision.size() > 128 || !std::isfinite(observation.confidence) || observation.confidence < 0 ||
       observation.confidence > 1 || observation.pixels.empty() || observation.pixels.size() > kMaximumSamples ||
       observation.pixels.size() != observation.rays.size() || (!observation.line && observation.pixels.size() != 1) ||
-      (observation.line && observation.pixels.size() < 2))
+      (observation.line && observation.pixels.size() < 2) ||
+      (observation.arc && (!observation.line || observation.pixels.size() != 3)))
     return absl::InvalidArgumentError("Invalid rink landmark observation");
   for (size_t i = 0; i < observation.pixels.size(); ++i) {
     const auto pixel = observation.pixels[i];
@@ -376,6 +377,8 @@ absl::StatusOr<std::string> SerializeRinkMap(const RinkMapDocument& document) {
     entry["label"] = observation.label;
     entry["camera"] = observation.camera;
     entry["line"] = observation.line;
+    if (observation.arc)
+      entry["arc"] = true;
     entry["automatic"] = observation.automatic;
     if (!observation.mask_revision.empty())
       entry["mask_revision"] = observation.mask_revision;
@@ -417,6 +420,7 @@ absl::StatusOr<RinkMapDocument> ParseRinkMap(const std::string& text) {
       observation.label = entry["label"].as<std::string>();
       observation.camera = entry["camera"].as<int>();
       observation.line = entry["line"].as<bool>();
+      observation.arc = entry["arc"].as<bool>(false);
       observation.automatic = entry["automatic"].as<bool>();
       observation.mask_revision = entry["mask_revision"].as<std::string>("");
       observation.enabled = entry["enabled"].as<bool>();
