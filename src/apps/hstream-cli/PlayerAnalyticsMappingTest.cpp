@@ -1,4 +1,5 @@
 #include "hstream/src/apps/apps-common/PlayerAnalyticsBin.h"
+#include "hstream/src/libs/player_analytics/Config.h"
 #include "src/apps/hstream-cli/StitchingCalibrationMode.h"
 #include "src/apps/hstream-cli/configurator.h"
 
@@ -36,7 +37,8 @@ void Precedence(const YAML::Node& baseline) {
   for (const auto& [canonical, native] :
        {std::pair<const char*, const char*>{"plot_pose", "draw-pose"},
         {"plot_jersey_numbers", "draw-jerseys"},
-        {"plot_actions", "draw-actions"}}) {
+        {"plot_actions", "draw-actions"},
+        {"plot_teams", "draw-teams"}}) {
     for (const bool canonical_value : {false, true}) {
       for (const auto& ranks : {std::pair{-1, -1}, {1, 1}, {2, 1}, {1, 2}, {3, 2}, {3, 3}}) {
         auto document = YAML::Clone(baseline);
@@ -85,7 +87,7 @@ player-analytics:
   gpu-id: invalid
   batch-size: invalid
 )");
-  for (const char* key : {"plot_pose", "plot_jersey_numbers", "plot_actions"})
+  for (const char* key : {"plot_pose", "plot_jersey_numbers", "plot_actions", "plot_teams"})
     document["plot"][key] = true;
   hm::Configurator configurator("unused", "/not-opened", -1);
   Map(configurator, document);
@@ -93,7 +95,8 @@ player-analytics:
   Require(
       resolved.ok() && !resolved->analytics.enabled() && resolved->serialized.empty() &&
           resolved->analytics.drawing.pose && resolved->analytics.drawing.jersey &&
-          resolved->analytics.drawing.action && resolved->analytics.drawing_layers() == 0,
+          resolved->analytics.drawing.action && resolved->analytics.drawing.team &&
+          resolved->analytics.drawing_layers() == 0,
       "Drawing preferences activated compute, validated disabled fields, or lost their independent settings");
   auto element = hm::gst::CreatePlayerAnalytics(*resolved, false);
   Require(element.ok() && *element == nullptr, "Drawing-only settings attempted model/plugin setup");
@@ -166,6 +169,42 @@ void PoseCadenceAndDrawing(const YAML::Node& baseline) {
 }
 } // namespace
 
+// The team feature reads tuning the baseline owns and a side name the game
+// owns, none of which it can invent. Both are mapped rather than duplicated, so
+// a missing mapping shows up only when the feature is actually switched on --
+// which is what this covers.
+void TeamSettingsReachTheFeature(const YAML::Node& baseline) {
+  auto document = YAML::Clone(baseline);
+  document["team"]["enabled"] = true;
+  document["game"]["home_is_dark"] = true;
+  document["pipeline"] = YAML::Node(YAML::NodeType::Map);
+  hm::Configurator configurator("unused", "/not-opened", -1);
+  Map(configurator, document);
+  const auto analytics = configurator.config()["pipeline"]["player-analytics"];
+  const auto parsed = hm::player_analytics::ParseConfig(analytics);
+  Require(parsed.ok(), "Baseline team settings did not survive mapping: " + std::string(parsed.status().message()));
+  Require(parsed->team.enabled, "team.enabled did not reach the native feature");
+  Require(
+      parsed->team_clustering.warmup_samples == baseline["team"]["warmup_samples"].as<size_t>() &&
+          parsed->team_clustering.refit_interval == baseline["team"]["refit_interval"].as<size_t>() &&
+          parsed->team_clustering.minimum_margin == baseline["team"]["min_margin"].as<float>() &&
+          parsed->team.rate_hz == baseline["team"]["rate_hz"].as<double>(),
+      "Clustering tuning did not come from the baseline");
+  Require(
+      parsed->team.model == baseline["team"]["model"].as<std::string>(), "team.model did not come from the baseline");
+  Require(
+      parsed->home_is_dark.has_value() && *parsed->home_is_dark,
+      "game.home_is_dark never reached the feature, so the badge can only read DARK/LIGHT");
+
+  // Null is the honest "nobody said", and must stay unnamed rather than guess.
+  auto unnamed = YAML::Clone(document);
+  unnamed["game"]["home_is_dark"] = YAML::Node();
+  hm::Configurator second("unused", "/not-opened", -1);
+  Map(second, unnamed);
+  const auto without = hm::player_analytics::ParseConfig(second.config()["pipeline"]["player-analytics"]);
+  Require(without.ok() && !without->home_is_dark.has_value(), "An unset home_is_dark was resolved to a side");
+}
+
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   Require(argc == 2, "Usage: player_analytics_mapping_test BASELINE_YAML");
@@ -173,5 +212,6 @@ int main(int argc, char** argv) {
   Precedence(baseline);
   DrawingAndCalibration(baseline);
   PoseCadenceAndDrawing(baseline);
+  TeamSettingsReachTheFeature(baseline);
   std::cout << "Actual Configurator drawing precedence, compute gating and calibration suppression passed\n";
 }

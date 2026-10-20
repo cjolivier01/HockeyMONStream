@@ -44,4 +44,5 @@ plot:
   plot_pose: true
   plot_jersey_numbers: true
   plot_actions: true
+  plot_teams: true
   plot_individual_player_tracking: true

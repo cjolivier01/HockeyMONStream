@@ -119,27 +119,20 @@ JerseyCropSelection MakeJerseyCrop(
   } else {
     return result;
   }
-  result.reason = JerseyCropReason::kInvalidGeometry;
-  const double sx = image.width / static_cast<double>(metadata_width);
-  const double sy = image.height / static_cast<double>(metadata_height);
-  left = std::floor(left * sx);
-  top = std::floor(top * sy);
-  right = std::ceil(right * sx);
-  bottom = std::ceil(bottom * sy);
-  if (!std::isfinite(left) || !std::isfinite(top) || !std::isfinite(right) || !std::isfinite(bottom) || right <= left ||
-      bottom <= top || std::max({std::abs(left), std::abs(top), std::abs(right), std::abs(bottom)}) > 1000000)
-    return result;
-  if (right <= 0 || bottom <= 0 || left >= image.width || top >= image.height) {
-    result.reason = JerseyCropReason::kOutsideImage;
-    return result;
+  switch (ResolveBand(image, left, top, right, bottom, metadata_width, metadata_height, &result.crop)) {
+    case BandOutcome::kReady:
+      result.reason = JerseyCropReason::kReady;
+      break;
+    case BandOutcome::kOutsideImage:
+      result.reason = JerseyCropReason::kOutsideImage;
+      break;
+    case BandOutcome::kTooLarge:
+      result.reason = JerseyCropReason::kTooLarge;
+      break;
+    case BandOutcome::kInvalidGeometry:
+      result.reason = JerseyCropReason::kInvalidGeometry;
+      break;
   }
-  if (right - left > kJerseyMaximumCropExtent || bottom - top > kJerseyMaximumCropExtent) {
-    result.reason = JerseyCropReason::kTooLarge;
-    return result;
-  }
-  result.crop = {
-      static_cast<int>(left), static_cast<int>(top), static_cast<int>(right - left), static_cast<int>(bottom - top)};
-  result.reason = JerseyCropReason::kReady;
   return result;
 }
 

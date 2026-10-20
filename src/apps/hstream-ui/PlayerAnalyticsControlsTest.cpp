@@ -11,9 +11,10 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <string>
 
 namespace {
-void Require(bool condition, const char* message) {
+void Require(bool condition, const std::string& message) {
   if (!condition) {
     std::cerr << message << '\n';
     std::exit(1);
@@ -36,8 +37,14 @@ void Write(const QString& path, const QByteArray& text) {
   Require(file.open(QIODevice::WriteOnly) && file.write(text) == text.size(), "Cannot create test configuration");
 }
 YAML::Node Defaults() {
+  // The team block mirrors configs/baseline.yaml: the feature has no
+  // compiled-in tuning, so a baseline layer that omits it is not a valid
+  // starting point for this widget.
   return YAML::Load(
-      "plot: {plot_pose: false, plot_actions: false, plot_jersey_numbers: false}\n"
+      "plot: {plot_pose: false, plot_actions: false, plot_jersey_numbers: false, plot_teams: false}\n"
+      "game: {home_is_dark: null}\n"
+      "team: {enabled: false, rate_hz: 2, warmup_samples: 200, refit_interval: 600, min_margin: 0.12,\n"
+      "       model: reidentificationnet-deployable-v1.2}\n"
       "pipeline: {primary-gie: {enable: 1}, tracker: {enable: 1}}\n");
 }
 YAML::Node PoseManifest() {
@@ -463,6 +470,25 @@ void ReId(const QString& root) {
   Control<QLineEdit>(widget, "playerReidConfig")->setText("/proc/1/analytics-disabled-do-not-open");
   Require(widget.validateForRun().isEmpty(), "Disabled ReID inspected retained path");
 }
+// Ticking the team box must not block the run. The configurator's canonical
+// mapping has not run at UI time, so the widget has to apply the same table
+// itself -- without it the preview reports a missing baseline value the
+// operator has no control to supply.
+void TeamEnableIsUsable() {
+  PlayerAnalyticsControls widget;
+  widget.loadConfig(Defaults(), YAML::Node(), YAML::Node(), "/configs");
+  Require(widget.validateForRun().isEmpty(), "A fresh widget failed validation");
+  Control<QCheckBox>(widget, "playerTeamEnable")->setChecked(true);
+  const QString error = widget.validateForRun();
+  Require(error.isEmpty(), "Enabling team blocked the run: " + std::string(error.toUtf8().constData()));
+  Control<QCheckBox>(widget, "playerDrawTeams")->setChecked(true);
+  Require(widget.validateForRun().isEmpty(), "Drawing team labels blocked the run");
+  const auto args = widget.arguments();
+  Require(
+      args.contains("--options=pipeline.player-analytics.team.enable=true") &&
+          args.contains("--options=plot.plot_teams=true"),
+      "Team compute and drawing choices did not reach the runner arguments");
+}
 } // namespace
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
@@ -475,6 +501,7 @@ int main(int argc, char** argv) {
   LayersAndPersistence(directory.path());
   DependenciesAndExport(directory.path());
   ReId(directory.path());
+  TeamEnableIsUsable();
   std::cout
       << "Player analytics UI defaults, layers, native preservation, prerequisites, save/reload and export passed\n";
 }

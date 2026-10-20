@@ -65,6 +65,7 @@
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/player_analytics/Config.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -6002,30 +6003,47 @@ absl::Status Configurator::map_common_config_keys() {
         return absl::InvalidArgumentError(std::string("Invalid ") + canonical + ": " + error.what());
       }
     }
-    // Team affiliation carries no compiled-in tuning: the clusterer refuses to
-    // run without these and ParseConfig refuses to build a config that omits
-    // them, so the baseline is the only place the shipped behavior is stated.
-    // Structural YAML still wins at the same explicit layer, as everywhere else.
+    // Which sweater the home side wore belongs to the game, not to the
+    // analytics block, so it is mapped rather than duplicated. Null is the
+    // honest answer "nobody said", and leaving the native key unset is how
+    // that reaches the overlay as DARK/LIGHT instead of a guessed side.
+    {
+      std::optional<YAML::Node> source;
+      HM_ASSIGN_OR_RETURN(
+          source,
+          canonical_source(
+              "game.home_is_dark", "pipeline.player-analytics.home-is-dark", analytics["home-is-dark"], true));
+      if (source && !source->IsNull()) {
+        try {
+          analytics["home-is-dark"] = source->as<bool>() ? 1 : 0;
+        } catch (const YAML::Exception& error) {
+          return absl::InvalidArgumentError(std::string("Invalid game.home_is_dark: ") + error.what());
+        }
+      }
+    }
+    // Team affiliation carries no compiled-in tuning for its clustering: the
+    // clusterer refuses to run without those values and ParseConfig refuses to
+    // build a config that omits them, so the baseline is the only place the
+    // shipped behavior is stated. `model` is the exception -- its default is
+    // the catalog's, because a model id is an asset identity rather than a
+    // tuning knob. Structural YAML still wins at the same explicit layer.
     if (!analytics["team"] || analytics["team"].IsNull())
       analytics["team"] = YAML::Node(YAML::NodeType::Map);
     if (!analytics["team"].IsMap())
       return absl::InvalidArgumentError("pipeline.player-analytics.team must be a mapping");
     YAML::Node team = analytics["team"];
     HM_RETURN_IF_ERROR(map_bool("team.enabled", "pipeline.player-analytics.team.enable", team, "enable"));
-    for (const auto& [canonical, native] :
-         {std::pair<const char*, const char*>("team.warmup_samples", "warmup-samples"),
-          {"team.refit_interval", "refit-interval"},
-          {"team.min_margin", "min-margin"},
-          {"team.rate_hz", "rate-hz"},
-          {"team.model", "model"}}) {
+    for (const auto& [canonical, native] : player_analytics::kTeamCanonicalKeys) {
+      const std::string canonical_path = std::string("team.") + canonical;
       std::optional<YAML::Node> source;
       HM_ASSIGN_OR_RETURN(
           source,
-          canonical_source(canonical, std::string("pipeline.player-analytics.team.") + native, team[native], true));
+          canonical_source(
+              canonical_path, std::string("pipeline.player-analytics.team.") + native, team[native], true));
       if (!source || source->IsNull())
         continue;
       if (!source->IsScalar())
-        return absl::InvalidArgumentError(std::string(canonical) + " must be a scalar");
+        return absl::InvalidArgumentError(canonical_path + " must be a scalar");
       team[native] = source->Scalar();
     }
   }

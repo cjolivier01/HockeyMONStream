@@ -113,6 +113,10 @@ pa::FrameResult Result(size_t count = 1) {
     p.action.observed_at = 95;
     p.action.expires_at = 130;
     std::memcpy(p.action_text.data(), "falling", 8);
+    p.team.label = pa::TeamLabel::kHome;
+    p.team.cluster = 0;
+    p.team.evidence = 2;
+    p.team.observed_at = 95;
   }
   return result;
 }
@@ -283,6 +287,48 @@ void RetainedPoseDrawing() {
   Check(commands.size() == 36, "tee branch lost retained pose drawing");
   semantic.pts_ns = 99 + pa::kPoseDrawingMaximumAge + 1;
   Check(!pa::ValidateFrameResult(semantic), "expired display estimate was accepted");
+}
+
+// Team drawing must not depend on any other layer being on. Every plot_* flag
+// defaults false, so "enable the team feature and tick Team labels" is the
+// ordinary way to use this, and it was once a no-op: the early returns above
+// the label loop enumerated only pose, jersey and action.
+void TeamLabelsStandAlone() {
+  Frame frame;
+  frame.Attach(Result());
+  a::CommandList list;
+  a::BuildPlayerOverlays(frame.frame, a::kTeams, .3F, nullptr, 800, 600, &list);
+  const size_t team_only = list.size();
+  Check(team_only != 0, "a team-only drawing selection painted nothing");
+
+  // Affiliation does not expire the way a jersey read does.
+  list.Clear();
+  auto settled = Result();
+  settled.players[0].jersey.expires_at = 99;
+  settled.players[0].action.expires_at = 99;
+  Frame expired;
+  expired.Attach(settled);
+  a::BuildPlayerOverlays(expired.frame, a::kTeams, .3F, nullptr, 800, 600, &list);
+  Check(list.size() == team_only, "a settled team label expired alongside the jersey read");
+
+  // An undecided track renders nothing rather than a placeholder badge.
+  list.Clear();
+  auto unknown = Result();
+  unknown.players[0].team = {};
+  Frame undecided;
+  undecided.Attach(unknown);
+  a::BuildPlayerOverlays(undecided.frame, a::kTeams, .3F, nullptr, 800, 600, &list);
+  Check(list.empty(), "an unknown affiliation painted a badge");
+
+  // And it stacks under the other two rather than replacing them.
+  list.Clear();
+  Frame all;
+  all.Attach(Result());
+  a::BuildPlayerOverlays(all.frame, a::kJerseys | a::kActions, .3F, nullptr, 800, 600, &list);
+  const size_t without_team = list.size();
+  list.Clear();
+  a::BuildPlayerOverlays(all.frame, a::kJerseys | a::kActions | a::kTeams, .3F, nullptr, 800, 600, &list);
+  Check(list.size() > without_team, "the team badge did not add a row to the label stack");
 }
 void FreshnessAndLabels() {
   Frame expired;
@@ -531,7 +577,8 @@ int main() {
       {"baked_boxes", BakedBoxesNeverDraw},
       {"labels_require_visible_player", LabelsRequireVisiblePlayer},
       {"ignored_players", IgnoredPlayers},
-      {"ignored_and_semantic_labels", IgnoredAndSemanticLabels}};
+      {"ignored_and_semantic_labels", IgnoredAndSemanticLabels},
+      {"team_labels_stand_alone", TeamLabelsStandAlone}};
   unsigned failures = 0;
   for (const auto& test : cases) {
     try {

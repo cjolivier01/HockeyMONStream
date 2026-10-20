@@ -411,7 +411,12 @@ bool TeamConsensus::Observe(uint64_t pts_ns, int cluster, float margin) noexcept
   if (pts_ns == kInvalidTime || last_attempt_ == pts_ns)
     return false;
   last_attempt_ = pts_ns;
-  if (cluster < 0 || cluster > 1)
+  // The margin is a ratio in [0,1] by construction, so anything else means the
+  // clusterer saw something it should have declined. Evidence is a running sum
+  // with no decay and the track retires once it commits, so a single poisoned
+  // addition is permanent -- JerseyConsensus bounds its own evidence for the
+  // same reason.
+  if (cluster < 0 || cluster > 1 || !std::isfinite(margin) || margin < 0 || margin > 1)
     return false;
 
   // Weight by margin so a crop that sat between the centroids counts for less

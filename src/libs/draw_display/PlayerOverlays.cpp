@@ -138,7 +138,7 @@ void BuildPlayerOverlays(
         AddIgnoredPlayerLabel(rect, transform, coordinate_width, coordinate_height, commands);
     }
   }
-  if (!(layers & (kPose | kJerseys | kActions)))
+  if (!(layers & (kPose | kJerseys | kActions | kTeams)))
     return;
   if (!result)
     return;
@@ -172,7 +172,7 @@ void BuildPlayerOverlays(
       }
     }
   }
-  if (!(layers & (kJerseys | kActions)))
+  if (!(layers & (kJerseys | kActions | kTeams)))
     return;
   const auto* snapshot = preview_overlay::find_overlay_snapshot_meta(frame);
   const auto is_ignored = [frame, snapshot](uint64_t id) {

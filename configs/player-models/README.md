@@ -33,8 +33,9 @@ rather than the tracker's 32. The network separates individuals, not teams; the
 two-means fit over its embeddings is what produces an affiliation, and
 `game.home_is_dark` is what names the two groups. Selecting it under `team`
 does not affect the tracker, and selecting it under `reid` does not affect team
-affiliation, though both reuse one cached engine only if the engine's batch and
-precision happen to match.
+affiliation. The two never share a prepared bundle -- the cache key hashes the
+contract itself, and these are different contracts -- so enabling both stores
+two engines. They do share the single ONNX download.
 
 `reid.json` describes the separately selected ONNX alternative
 and has a separate native tracker contract. Its `tracker` map contains the

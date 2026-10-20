@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -19,7 +21,7 @@ using hm::player_analytics::TeamLabelText;
 // defaults of its own, so a test must say what tuning it is exercising.
 constexpr TeamClusteringSettings kSettings{200, 600, 0.12F};
 
-bool Check(bool condition, const char* what) {
+bool Check(bool condition, const std::string& what) {
   if (!condition) {
     std::cerr << "FAIL: " << what << '\n';
   }
@@ -163,6 +165,86 @@ bool SurvivesNullEmbedding() {
   return Check(clusterer.Observe(nullptr, 50.0F).cluster < 0, "a null embedding is declined");
 }
 
+// The bug this guards: Lloyd's reseeds from the current reservoir, so a refit
+// can hand squad A the index squad B had. A track that already settled keeps
+// voting for its stored index and silently changes sides -- permanently, since
+// a settled track is never sampled again.
+bool RefitKeepsClusterIdentity() {
+  // Refit often relative to warmup so the test actually crosses a refit.
+  constexpr TeamClusteringSettings kFrequent{64, 64, 0.12F};
+  bool ok = true;
+  // Several seeds: a single one can pass by luck, and the failure was
+  // intermittent (measured at roughly half of refits before the fix).
+  for (uint32_t seed = 1; seed <= 12; ++seed) {
+    TeamClusterer clusterer(kFrequent);
+    uint32_t state = seed;
+    for (int i = 0; i < 80; ++i) {
+      const auto embedding = MakeEmbedding(state, (i % 2) == 1, 0.2F);
+      clusterer.Observe(embedding.data(), (i % 2) == 1 ? 80.0F : 20.0F);
+    }
+    const auto settled = MakeEmbedding(state, false, 0.2F);
+    const auto before = clusterer.Observe(settled.data(), 20.0F);
+    ok &= Check(before.cluster >= 0, "the first squad is assigned before the refit");
+    const auto dark_before = clusterer.dark_cluster();
+
+    // Drift the whole distribution the way changing ice lighting would, which
+    // is what refitting exists to track, then cross several refits.
+    for (int i = 0; i < 400; ++i) {
+      auto embedding = MakeEmbedding(state, (i % 2) == 1, 0.25F);
+      for (size_t d = 0; d < kTeamEmbedding; ++d)
+        embedding[d] += 0.15F;
+      clusterer.Observe(embedding.data(), (i % 2) == 1 ? 78.0F : 22.0F);
+    }
+    const auto after = clusterer.Observe(settled.data(), 20.0F);
+    ok &= Check(after.cluster >= 0, "the same squad is still assigned after the refit");
+    ok &= Check(
+        after.cluster == before.cluster,
+        "a refit renamed the clusters, so every settled track changed sides (seed " + std::to_string(seed) + ")");
+    ok &= Check(clusterer.dark_cluster() == dark_before, "the dark cluster followed the rename");
+  }
+  return ok;
+}
+
+bool DeclinesNonFiniteEmbeddings() {
+  TeamClusterer clusterer(kSettings);
+  uint32_t state = 17;
+  for (int i = 0; i < 200; ++i) {
+    const auto embedding = MakeEmbedding(state, (i % 2) == 1, 0.2F);
+    clusterer.Observe(embedding.data(), (i % 2) == 1 ? 80.0F : 20.0F);
+  }
+  bool ok = Check(clusterer.fitted(), "fitted before the poisoned sample");
+  const size_t buffered = clusterer.buffered();
+
+  // An FP16 overflow in the network must not reach the reservoir: it would
+  // poison the mean and deviation of its dimension and every later assignment.
+  auto poisoned = MakeEmbedding(state, false, 0.2F);
+  poisoned[7] = std::numeric_limits<float>::infinity();
+  ok &= Check(clusterer.Observe(poisoned.data(), 20.0F).cluster < 0, "a non-finite embedding is declined");
+  auto nan_sample = MakeEmbedding(state, true, 0.2F);
+  nan_sample[200] = std::numeric_limits<float>::quiet_NaN();
+  ok &= Check(clusterer.Observe(nan_sample.data(), 80.0F).cluster < 0, "a NaN embedding is declined");
+  const auto clean = MakeEmbedding(state, false, 0.2F);
+  ok &= Check(
+      clusterer.Observe(clean.data(), std::numeric_limits<float>::quiet_NaN()).cluster < 0,
+      "a NaN lightness is declined");
+  ok &= Check(clusterer.buffered() == buffered, "declined samples never enter the reservoir");
+
+  // And the split still works afterwards.
+  int agree = 0, assigned = 0;
+  for (int i = 0; i < 40; ++i) {
+    const bool second = (i % 2) == 1;
+    const auto embedding = MakeEmbedding(state, second, 0.2F);
+    const auto result = clusterer.Observe(embedding.data(), second ? 80.0F : 20.0F);
+    if (result.cluster < 0)
+      continue;
+    ++assigned;
+    if ((result.cluster == *clusterer.dark_cluster()) == !second)
+      ++agree;
+  }
+  ok &= Check(assigned > 30 && agree == assigned, "the reservoir survived the rejected samples intact");
+  return ok;
+}
+
 bool ResetClearsState() {
   TeamClusterer clusterer(kSettings);
   uint32_t state = 31;
@@ -181,6 +263,8 @@ bool ResetClearsState() {
 int main() {
   bool ok = true;
   ok &= SeparatesTwoSquads();
+  ok &= RefitKeepsClusterIdentity();
+  ok &= DeclinesNonFiniteEmbeddings();
   ok &= DeclinesBeforeWarmup();
   ok &= DeclinesAmbiguousEmbeddings();
   ok &= IsDeterministic();

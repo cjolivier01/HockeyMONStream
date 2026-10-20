@@ -43,8 +43,10 @@ absl::StatusOr<PlayerAnalyticsConfig> ResolvePlayerAnalyticsConfig(
         result.analytics.pose.bundle = path;
       else if (std::string(feature) == "jersey")
         result.analytics.jersey.bundle = path;
-      else
+      else if (std::string(feature) == "action")
         result.analytics.action.bundle = path;
+      else
+        result.analytics.team.bundle = path;
     }
     result.serialized = YAML::Dump(resolved);
     return result;

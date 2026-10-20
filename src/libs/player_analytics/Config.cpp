@@ -101,28 +101,39 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
     ReadFeature(node["pose"], "pose", &config.pose);
     ReadFeature(node["jersey"], "jersey", &config.jersey);
     ReadFeature(node["action"], "action", &config.action);
-    ReadFeature(node["team"], "team", &config.team);
     if (config.team.enabled) {
       // No fallbacks: configs/baseline.yaml owns these, the configurator maps
       // them in, and a configuration that reaches here without them is a
       // plumbing bug that must fail loudly rather than run on invented tuning.
+      // `model` is not in the list because a model id names an asset rather
+      // than tuning a behavior; its default belongs to the catalog.
       const auto& team = node["team"];
       // Affiliation has no per-observation confidence: the clusterer reports a
       // margin and min-margin is the floor. Accepting the key and ignoring it
       // would read as a knob that does nothing.
       if (team["confidence-threshold"])
         throw std::invalid_argument("team has no confidence-threshold; its assignment floor is team.min-margin");
-      for (const char* key : {"warmup-samples", "refit-interval", "min-margin"})
+      // Checked before ReadFeature so a missing rate-hz names itself rather
+      // than surfacing as a range complaint about a value nobody supplied.
+      for (const char* key : {"rate-hz", "warmup-samples", "refit-interval", "min-margin"})
         if (!team[key] || team[key].IsNull())
           throw std::invalid_argument(std::string("team.") + key + " must be supplied by the baseline configuration");
+    }
+    ReadFeature(node["team"], "team", &config.team);
+    if (config.team.enabled) {
+      const auto& team = node["team"];
       config.team_clustering.warmup_samples = team["warmup-samples"].as<size_t>();
       config.team_clustering.refit_interval = team["refit-interval"].as<size_t>();
       config.team_clustering.minimum_margin = team["min-margin"].as<float>();
       if (!std::isfinite(config.team_clustering.minimum_margin) || !config.team_clustering.valid())
         throw std::invalid_argument(
             "team.warmup-samples must be in [1,512], team.refit-interval positive and team.min-margin in [0,1)");
+      // Flag(), not as<bool>(): the configurator writes the canonical
+      // game.home_is_dark through as 1/0 like every other mapped flag, and
+      // yaml-cpp's bool conversion rejects that spelling. Absent and null stay
+      // "nobody said", which is why the presence test is separate.
       if (node["home-is-dark"] && !node["home-is-dark"].IsNull())
-        config.home_is_dark = node["home-is-dark"].as<bool>();
+        config.home_is_dark = Flag(node["home-is-dark"]);
     }
     if (config.jersey.enabled && node["jersey"]["roi-mode"]) {
       const auto mode = node["jersey"]["roi-mode"].as<std::string>();

@@ -237,3 +237,33 @@ validation belongs to the implementation's platform test record.
 The model card (updated2024-11-27) says ready for commercial use and links its licensing
 section to the [NVIDIA AI Enterprise EULA](https://www.nvidia.com/en-us/data-center/products/nvidia-ai-enterprise/eula/).
 Do not label the weights Apache-2.0 based on the sample code's license.
+
+## Team affiliation, and why the same ReID graph
+
+Team identity is relative to the game being watched. No model outputs "home" for
+an arbitrary crop, so there is no classifier to select here — the feature clusters
+per stream and `game.home_is_dark` names the two groups. What the model supplies is
+an appearance vector; what decides a side is the two-means fit over the vectors
+this game has produced.
+
+The expectation going in was that generic re-identification would lose. It is
+trained to separate *individuals*, which works against grouping teammates, and the
+SoccerNet Game State Reconstruction authors added a team head to PRTReid for
+exactly that reason. Measured on the same 38 hand-labelled hockey crops, it did
+not: TAO ReIdentificationNet split the two squads at 89.5% against PRTReid's 86.8%,
+and ran 1.34x faster through the same ONNX Runtime CUDA session (83.4 ms versus
+112.1 ms for 12 crops). A mean-CIELAB baseline reached 76.3% and did not improve
+with a cleaner crop — it is saturated near that figure whatever it is fed — so the
+colour path was not ported.
+
+The crop is the chest band, x 32–68% and y 20–45% of the tracking box. Widening it
+toward the jersey ROI cost 8 points (86.8% to 78.9%): the crop then takes in pants,
+skates and the ice between the legs. Tightening further plateaus.
+
+That makes `team` a second deployment of the graph above rather than a new
+download. It carries its own contract because the deployment differs — batched
+through `NativeEngine` with CUDA bilinear preprocessing at maximum batch 8, not
+inside NvDCF at 32 — so the two never share a prepared bundle, only the ONNX.
+Neither the comparison above nor the conversion results establish accuracy on any
+particular rink; lighting and sweater similarity both move the number, and the
+clusterer declines an embedding it cannot call rather than guessing.

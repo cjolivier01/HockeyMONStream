@@ -47,7 +47,7 @@ bool Times(uint64_t observed, uint64_t expires, uint64_t frame_pts) {
 } // namespace
 
 NvDsMetaType FrameResultMetaType() {
-  static const auto type = nvds_get_user_meta_type(const_cast<gchar*>("HSTREAM.PLAYER_ANALYTICS.V3"));
+  static const auto type = nvds_get_user_meta_type(const_cast<gchar*>("HSTREAM.PLAYER_ANALYTICS.V4"));
   return type;
 }
 

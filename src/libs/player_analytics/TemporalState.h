@@ -94,9 +94,10 @@ class JerseyConsensus {
 // which is what keeps this feature affordable in a realtime pipeline.
 class TeamConsensus {
  public:
-  // At most one vote per source timestamp. A negative cluster means the
-  // embedding was declined (too close to both centroids) and only ages the
-  // existing evidence.
+  // At most one vote per source timestamp. A declined embedding -- a negative
+  // cluster, or a margin outside [0,1] -- records the attempt and nothing
+  // else. Evidence does not decay: a skater's side is a fact about the game,
+  // not a reading that goes stale, so there is nothing for time to erode.
   bool Observe(uint64_t pts_ns, int cluster, float margin) noexcept;
   // True once the vote has committed and further inference is wasted.
   bool settled() const noexcept {

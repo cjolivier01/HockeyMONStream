@@ -67,12 +67,12 @@ For example, replace these paths with private fixture/runtime paths:
       },
       "detector_engine": "/bench/detector.engine",
       "monitor_artifacts": ["/bench/games/fixture/config.yaml", "/bench/detector.engine"],
-      "features": ["pose", "jersey", "action"],
+      "features": ["pose", "jersey", "action", "team"],
       "expect_analytics": true,
       "expect_overlay": true,
       "minimum_analytics_counters": {
-        "pose-enqueues": 1, "jersey-enqueues": 1, "action-enqueues": 1,
-        "pose-results": 1, "jersey-results": 1, "action-results": 1
+        "pose-enqueues": 1, "jersey-enqueues": 1, "action-enqueues": 1, "team-enqueues": 1,
+        "pose-results": 1, "jersey-results": 1, "action-results": 1, "team-results": 1
       },
       "maximum_analytics_counters": {"maximum-frame-samples": 32},
       "maximum_overlay_counters": {"suppressed": 0, "rejected-commands": 0},
@@ -88,12 +88,16 @@ the complete `artifacts` list is checked around the suite. Warm up copied games
 first because localization can legitimately rewrite filesystem bindings. Never
 silently accept changed artifacts in measured comparisons.
 
-Add master, pose, jersey-only, pose+action, all3 without drawing, boxes-only, ReID
-and all3+draw+ReID cases using the same pattern. Turn off every optional drawing
+Add master, pose, jersey-only, pose+action, team-only, all4 without drawing,
+boxes-only, ReID and all4+draw+ReID cases using the same pattern. Team is the one
+feature whose steady-state cost differs from its warmup cost: affiliations settle
+and the tracks stop being sampled, so measure a clip long enough to cross that
+point rather than only the opening seconds. Turn off every optional drawing
 flag in the disabled cases. Use the [configuration example](../configs/player-analytics/semantics-example.yaml)
 for enabled settings, with target-local bundles and explicit ReID configuration.
 Set per-case minimum counters for every enabled model; an action run must actually
-classify a complete 9.9-second history. A clip longer than this warmup is necessary
+classify a complete 9.9-second history, and a team run must get past
+`warmup-samples` crops before it reports any side at all. A clip longer than this warmup is necessary
 but tracking/pose gaps can still prevent inference, correctly failing validation.
 
 ```sh

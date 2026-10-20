@@ -87,18 +87,23 @@ struct PlayerAnalyticsProcessor::Impl {
     std::unique_ptr<TeamConsensus> team;
   };
   struct Source {
-    explicit Source(const Config& config)
-        : scheduler(config.maximum_tracks, config.track_retention_ns), team_clusterer(config.team_clustering) {}
+    explicit Source(const Config& config) : scheduler(config.maximum_tracks, config.track_retention_ns) {
+      if (config.team.enabled)
+        team_clusterer = std::make_unique<TeamClusterer>(config.team_clustering);
+    }
     TrackScheduler scheduler;
     std::map<uint64_t, Evidence> evidence;
     // Team identity is a property of the game on this pad, not of a track, so
     // the two centroids are fitted once per source and shared by every skater.
-    TeamClusterer team_clusterer;
+    // Held behind a pointer like the other per-feature state: the reservoir is
+    // half a megabyte, and a 64-stream run with team off should not carry it.
+    std::unique_ptr<TeamClusterer> team_clusterer;
     unsigned scheduling_cursor{0};
     void Reset() noexcept {
       scheduler.Reset();
       evidence.clear();
-      team_clusterer.Reset();
+      if (team_clusterer)
+        team_clusterer->Reset();
       scheduling_cursor = 0;
     }
     std::string geometry;
@@ -599,7 +604,7 @@ struct PlayerAnalyticsProcessor::Impl {
       PA_RETURN_IF_ERROR(fence.Finish());
       for (size_t i = 0; i < batch_count; ++i) {
         const auto assignment =
-            source.team_clusterer.Observe(host_embeddings + i * kTeamEmbedding, host_team[i].lightness);
+            source.team_clusterer->Observe(host_embeddings + i * kTeamEmbedding, host_team[i].lightness);
         if (assignment.cluster < 0)
           ++counters.team_unassigned;
         source.evidence.at(ids[selected[i]]).team->Observe(frame->buf_pts, assignment.cluster, assignment.margin);
@@ -619,7 +624,7 @@ struct PlayerAnalyticsProcessor::Impl {
           ? evidence.pose_drawing->Result(frame->buf_pts, boxes[i])
           : RetainedPose{};
       const auto team_label = evidence.team
-          ? evidence.team->Result(frame->buf_pts, source.team_clusterer.dark_cluster(), config.home_is_dark)
+          ? evidence.team->Result(frame->buf_pts, source.team_clusterer->dark_cluster(), config.home_is_dark)
           : TeamResult{};
       if (!has_pose[i] && retained_pose.observed_at == kInvalidTime && !jersey_label.text[0] &&
           action_label.label < 0 && team_label.label == TeamLabel::kUnknown)

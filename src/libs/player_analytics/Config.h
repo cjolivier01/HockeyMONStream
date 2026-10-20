@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include <yaml-cpp/yaml.h>
 
@@ -12,6 +14,18 @@
 namespace hm::player_analytics {
 
 enum class JerseyRoiMode { kBox, kPose };
+
+// Canonical baseline keys under `team:` paired with the native keys they map
+// to under `pipeline.player-analytics.team`. One table so the configurator and
+// the UI's validation preview cannot disagree about what the baseline owns;
+// the two apply different precedence rules to the same set of names.
+inline constexpr std::array<std::pair<const char*, const char*>, 5> kTeamCanonicalKeys{{
+    {"warmup_samples", "warmup-samples"},
+    {"refit_interval", "refit-interval"},
+    {"min_margin", "min-margin"},
+    {"rate_hz", "rate-hz"},
+    {"model", "model"},
+}};
 
 struct FeatureConfig {
   bool enabled{false};
@@ -36,10 +50,11 @@ struct Config {
   FeatureConfig pose{false, {}, 10, 0.3F};
   FeatureConfig jersey{false, {}, 2, 0.8F};
   FeatureConfig action{false, {}, 1, 0.5F};
-  // Affiliation is static per track, so a low rate costs nothing in accuracy;
-  // the settled-track short circuit retires a track from the due set entirely
-  // once its consensus commits.
-  FeatureConfig team{false, {}, 2, 0.5F};
+  // No rate or threshold literal here, unlike the three above: ParseConfig
+  // refuses an enabled team feature that did not bring rate-hz from the
+  // baseline, and rejects confidence-threshold outright, so a value here would
+  // be a second unreachable statement of the shipped default.
+  FeatureConfig team;
   // Two-means tuning, supplied entirely by configs/baseline.yaml.
   TeamClusteringSettings team_clustering;
   JerseyRoiMode jersey_roi_mode{JerseyRoiMode::kBox};

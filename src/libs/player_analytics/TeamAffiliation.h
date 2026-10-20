@@ -53,6 +53,7 @@ class TeamClusterer {
 
  private:
   void Fit() noexcept;
+  std::array<std::array<float, kTeamEmbedding>, 2> RawCentroids() const noexcept;
 
   TeamClusteringSettings settings_;
 

@@ -1,5 +1,6 @@
 #include "hstream/src/libs/player_analytics/TeamAffiliation.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace hm::player_analytics {
@@ -16,6 +17,17 @@ float SquaredDistance(const float* a, const float* b) noexcept {
 
 } // namespace
 
+// The centroids undone back to embedding space. Standardisation is refitted
+// every time, so the stored centroids of two different fits are not comparable
+// as they stand.
+std::array<std::array<float, kTeamEmbedding>, 2> TeamClusterer::RawCentroids() const noexcept {
+  std::array<std::array<float, kTeamEmbedding>, 2> raw{};
+  for (size_t k = 0; k < 2; ++k)
+    for (size_t d = 0; d < kTeamEmbedding; ++d)
+      raw[k][d] = centroids_[k][d] / inverse_deviation_[d] + mean_[d];
+  return raw;
+}
+
 void TeamClusterer::Reset() noexcept {
   count_ = 0;
   cursor_ = 0;
@@ -27,6 +39,14 @@ void TeamClusterer::Reset() noexcept {
 
 void TeamClusterer::Fit() noexcept {
   const size_t n = count_;
+
+  // Keep the previous split's identity before the standardisation that the
+  // old centroids are expressed in is overwritten. Raw embedding space is the
+  // only frame the two fits share.
+  const bool refitting = fitted_;
+  std::array<std::array<float, kTeamEmbedding>, 2> previous{};
+  if (refitting)
+    previous = RawCentroids();
 
   // Standardise per dimension. The embedding's axes carry very different
   // variances, and a raw Euclidean fit is dominated by whichever happens to be
@@ -127,6 +147,25 @@ void TeamClusterer::Fit() noexcept {
     }
   }
 
+  // Lloyd's seeds from whatever is in the reservoir now, so nothing ties this
+  // fit's index 0 to the last one's. Unmatched, a refit renames the two squads:
+  // a track that settled on index 1 keeps voting for index 1, which now means
+  // the other side, and it wears the wrong badge for the rest of the game --
+  // permanently, because a settled track is never sampled again. Pair the new
+  // centroids with the nearest old ones and swap if that is the better match.
+  if (refitting) {
+    const auto current = RawCentroids();
+    const float keep =
+        SquaredDistance(current[0].data(), previous[0].data()) + SquaredDistance(current[1].data(), previous[1].data());
+    const float swap =
+        SquaredDistance(current[0].data(), previous[1].data()) + SquaredDistance(current[1].data(), previous[0].data());
+    if (swap < keep) {
+      std::swap(centroids_[0], centroids_[1]);
+      for (size_t i = 0; i < n; ++i)
+        membership[i] ^= 1;
+    }
+  }
+
   // Rank the two groups by mean crop lightness so they can be named.
   std::array<double, 2> lightness{};
   std::array<size_t, 2> members{};
@@ -143,8 +182,16 @@ void TeamClusterer::Fit() noexcept {
 }
 
 TeamAssignment TeamClusterer::Observe(const float* embedding, float lightness) noexcept {
-  if (embedding == nullptr || !settings_.valid()) {
+  if (embedding == nullptr || !settings_.valid() || !std::isfinite(lightness)) {
     return {};
+  }
+  // An FP16 overflow inside the network costs more than this observation: a
+  // single non-finite component poisons the mean and deviation of its
+  // dimension, and through them every assignment the reservoir ever produces.
+  for (size_t d = 0; d < kTeamEmbedding; ++d) {
+    if (!std::isfinite(embedding[d])) {
+      return {};
+    }
   }
 
   for (size_t d = 0; d < kTeamEmbedding; ++d) {
@@ -173,7 +220,10 @@ TeamAssignment TeamClusterer::Observe(const float* embedding, float lightness) n
   const float d1 = std::sqrt(SquaredDistance(scaled.data(), centroids_[1].data()));
   const float total = d0 + d1;
   const float margin = total > 1e-6F ? std::fabs(d0 - d1) / total : 0.0F;
-  if (margin < settings_.minimum_margin) {
+  // Written as a positive test so a NaN margin declines rather than passing a
+  // `< threshold` check that is false for NaN. Failing open here would hand
+  // the consensus an evidence value it can never recover from.
+  if (!(margin >= settings_.minimum_margin)) {
     return {};
   }
   return {static_cast<int8_t>(d0 <= d1 ? 0 : 1), margin};

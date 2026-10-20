@@ -356,7 +356,7 @@ cudaError_t PreprocessTeam(
       return cudaErrorInvalidValue;
     arguments.values[index] = crop;
   }
-  TeamResample<<<dim3(kTeamInputWidth / 16, kTeamInputHeight / 16, batch), dim3(16, 16), 0, stream>>>(
+  TeamResample<<<dim3((kTeamInputWidth + 15) / 16, (kTeamInputHeight + 15) / 16, batch), dim3(16, 16), 0, stream>>>(
       image, arguments, input);
   const auto result = cudaGetLastError();
   if (result != cudaSuccess)

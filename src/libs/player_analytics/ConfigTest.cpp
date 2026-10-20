@@ -77,6 +77,7 @@ int main() {
   // default. Out-of-range values fail the same way.
   for (const char* invalid_team : {
            "team: {enable: 1}",
+           "team: {enable: 1, warmup-samples: 200, refit-interval: 600, min-margin: 0.12}",
            "team: {enable: 1, warmup-samples: 200, refit-interval: 600}",
            "team: {enable: 1, warmup-samples: 200, min-margin: 0.12}",
            "team: {enable: 1, refit-interval: 600, min-margin: 0.12}",
@@ -94,10 +95,12 @@ int main() {
     }
   }
   const auto team =
-      pa::ParseConfig(YAML::Load("team: {enable: 1, warmup-samples: 200, refit-interval: 600, min-margin: 0.12}\n"
+      pa::ParseConfig(YAML::Load("team: {enable: 1, rate-hz: 2, warmup-samples: 200, refit-interval: 600, "
+                                 "min-margin: 0.12}\n"
                                  "home-is-dark: true\ndraw-teams: 1\n"));
   if (!team.ok() || !team->team.enabled || !team->drawing.team ||
-      team->team.model != "reidentificationnet-deployable-v1.2" || team->team_clustering.warmup_samples != 200 ||
+      team->team.model != "reidentificationnet-deployable-v1.2" || team->team.rate_hz != 2 ||
+      team->team_clustering.warmup_samples != 200 ||
       team->team_clustering.refit_interval != 600 || team->team_clustering.minimum_margin != 0.12F ||
       team->home_is_dark != true || (team->drawing_layers() & pa::kDrawTeams) == 0) {
     std::cerr << "a complete team configuration must parse with its baseline tuning intact\n";
@@ -105,7 +108,7 @@ int main() {
   }
   // Team needs no pose, so it must not drag the pose dependency in with it.
   const auto alone =
-      pa::ParseConfig(YAML::Load("team: {enable: 1, warmup-samples: 64, refit-interval: 256, min-margin: 0}\n"));
+      pa::ParseConfig(YAML::Load("team: {enable: 1, rate-hz: 2, warmup-samples: 64, refit-interval: 256, min-margin: 0}\n"));
   if (!alone.ok() || !alone->enabled() || alone->pose.enabled || alone->home_is_dark.has_value()) {
     std::cerr << "team recognition must stand alone and leave the side unnamed when not told\n";
     return 8;

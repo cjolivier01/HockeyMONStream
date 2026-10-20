@@ -12,7 +12,17 @@ import subprocess
 
 from benchmark_player_analytics import digest, hashes, inspect_log, stop
 
-REDUCERS = {'DecodeKernel': ('pose', 204), 'JerseyDecode': ('jersey', 8), 'ActionReduce': ('action', 8)}
+#: Reduction kernel -> (feature, per-item bytes of each D2H that follows it, in
+#: order). Every feature but team answers with one decoded scalar per sample.
+#: Team sends two: the mean lightness, then the raw embedding, because the
+#: two-means fit that turns an embedding into a side is a host-side per-stream
+#: model and no reduction kernel can stand in for it.
+REDUCERS = {
+    'DecodeKernel': ('pose', (204,)),
+    'JerseyDecode': ('jersey', (8,)),
+    'ActionReduce': ('action', (8,)),
+    'TeamLightnessReduce': ('team', (4, 4 * 256)),
+}
 
 
 def reduction(name):
@@ -63,7 +73,8 @@ def analyze(database, required=('pose', 'jersey', 'action'), batch=8, expect_ove
         preceding, active = None, False
         for _, kind, event in sorted(events, key=lambda event: event[0]):
             if kind == 'kernel':
-                preceding = reduction(event['name'])
+                identity = reduction(event['name'])
+                preceding = (identity[0], identity[1], 0) if identity else None
                 if preceding:
                     active = True
                     reducer_counts[preceding[0]] += 1
@@ -77,13 +88,16 @@ def analyze(database, required=('pose', 'jersey', 'action'), batch=8, expect_ove
                 failures.append(f'Unattributed D2H on analytics stream {stream}: {event["bytes"]} bytes')
                 other.append(dict(event, phase='active-unattributed'))
                 continue
-            feature, item_bytes = preceding
+            feature, sizes, index = preceding
+            item_bytes = sizes[index]
             size = event['bytes']
             if size <= 0 or size % item_bytes or size > batch * item_bytes:
                 failures.append(f'{feature} D2H outside compact result bound: {size} bytes')
             compact.append(dict(event, feature=feature, item_bytes=item_bytes, batch=size // item_bytes))
-            counts[feature] += 1
-            preceding = None  # One compact result transfer per reducer invocation.
+            if index == 0:
+                counts[feature] += 1  # Count reducer invocations, not transfers.
+            index += 1
+            preceding = (feature, sizes, index) if index < len(sizes) else None
     for feature in required:
         if counts[feature] == 0:
             failures.append(f'No compact {feature} result transfer observed')

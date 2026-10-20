@@ -184,8 +184,8 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
   addPath(kAnalytics + "team.bundle", "playerTeamBundle", true, compute);
   auto* team_help = new QLabel(
       "Teams are split by appearance within this game, so the two groups read DARK and LIGHT until "
-      "Game settings say which sweater the home side wore. The split needs a few hundred crops before "
-      "the first labels appear, and a track stops being sampled once its side is decided.");
+      "game.home_is_dark says which sweater the home side wore. The split needs a few hundred crops "
+      "before the first labels appear, and a track stops being sampled once its side is decided.");
   team_help->setWordWrap(true);
   static_cast<QFormLayout*>(compute->layout())->addRow(team_help);
   layout->addWidget(compute);
@@ -545,7 +545,29 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
           return changed(field);
       return false;
     };
-    const auto parsed = pa::ParseConfig(Get(effective, "pipeline.player-analytics"));
+    // The configurator maps the canonical team keys into the native block at
+    // run time; this preview is built from the merged document before that has
+    // happened. Apply the same table here, filling only what is absent, or
+    // ticking the team box would report a missing baseline value the operator
+    // has no way to supply.
+    YAML::Node analytics = YAML::Clone(Get(effective, "pipeline.player-analytics"));
+    if (!analytics.IsDefined() || analytics.IsNull())
+      analytics = YAML::Node(YAML::NodeType::Map);
+    if (analytics.IsMap()) {
+      const YAML::Node canonical_team = Get(effective, "team");
+      if (canonical_team.IsDefined() && canonical_team.IsMap()) {
+        if (!analytics["team"] || analytics["team"].IsNull())
+          analytics["team"] = YAML::Node(YAML::NodeType::Map);
+        if (analytics["team"].IsMap())
+          for (const auto& [canonical, native] : pa::kTeamCanonicalKeys)
+            if (!analytics["team"][native] && canonical_team[canonical] && !canonical_team[canonical].IsNull())
+              analytics["team"][native] = canonical_team[canonical].Scalar();
+      }
+      const YAML::Node home_is_dark = Get(effective, "game.home_is_dark");
+      if (!analytics["home-is-dark"] && home_is_dark.IsDefined() && !home_is_dark.IsNull())
+        analytics["home-is-dark"] = home_is_dark.Scalar();
+    }
+    const auto parsed = pa::ParseConfig(analytics);
     if (!parsed.ok())
       return QString::fromUtf8(parsed.status().message().data(), parsed.status().message().size());
     const bool reid = Flag(Get(effective, "pipeline.tracker.reid-enable"));
