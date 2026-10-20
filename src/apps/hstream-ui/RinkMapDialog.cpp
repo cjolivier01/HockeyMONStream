@@ -137,6 +137,10 @@ bool hasGoalLineEnds(const rink::RinkMapObservation& observation) {
   return observation.line && observation.pixels.size() >= 2 &&
       (observation.feature == "goal-left-line" || observation.feature == "goal-right-line");
 }
+int selectedObservationRow(const QTableWidget* table) {
+  const auto rows = table->selectionModel()->selectedRows();
+  return rows.size() == 1 ? rows.front().row() : -1;
+}
 QPainterPath arcPath(const std::vector<cv::Point2d>& points) {
   QPainterPath path;
   if (points.size() != 3)
@@ -787,7 +791,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   connect(remove_, &QPushButton::clicked, this, &RinkMapDialog::removeSelected);
   connect(table_, &QTableWidget::itemSelectionChanged, this, [this] {
     if (!rebuilding_) {
-      const int row = table_->currentRow();
+      const int row = selectedObservationRow(table_);
       if (row >= 0 && row < int(state_.document.observations.size()))
         tabs_->setCurrentIndex(state_.document.observations[row].camera);
       refresh();
@@ -885,12 +889,19 @@ bool RinkMapDialog::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void RinkMapDialog::removeSelected() {
-  const int row = table_->currentRow();
+  const int row = selectedObservationRow(table_);
   if (busy_ || !snapshot_ || close_prompt_active_ || QApplication::mouseButtons() != Qt::NoButton || row < 0 ||
-      row >= int(state_.document.observations.size()) || !table_->selectionModel()->hasSelection())
+      row >= int(state_.document.observations.size()))
     return;
   recordEdit();
   state_.document.observations.erase(state_.document.observations.begin() + row);
+  // A different observation will occupy this row after rebuilding. Leave it
+  // unselected until the user explicitly chooses it in the image or list.
+  {
+    const QSignalBlocker blocker(table_);
+    table_->clearSelection();
+    table_->setCurrentCell(-1, -1);
+  }
   update();
 }
 
@@ -961,10 +972,8 @@ void RinkMapDialog::travelHistory(bool redo) {
 void RinkMapDialog::refreshEditControls() {
   undo_->setEnabled(!busy_ && (!undo_history_.empty() || pending_dimension_edit_.has_value()));
   redo_->setEnabled(!busy_ && redo_history_.size() && !pending_dimension_edit_);
-  const int selected = table_->currentRow();
-  remove_->setEnabled(
-      snapshot_ && !busy_ && selected >= 0 && size_t(selected) < state_.document.observations.size() &&
-      table_->selectionModel()->hasSelection());
+  const int selected = selectedObservationRow(table_);
+  remove_->setEnabled(snapshot_ && !busy_ && selected >= 0 && size_t(selected) < state_.document.observations.size());
   goal_line_ends_->setEnabled(
       snapshot_ && !busy_ && !refresh_timer_.isActive() && state_.document.observations.size() < 128 && selected >= 0 &&
       size_t(selected) < state_.document.observations.size() &&
@@ -1274,7 +1283,7 @@ void RinkMapDialog::update(bool detect, bool use_mask) {
 
 void RinkMapDialog::refresh() {
   for (int camera = 0; camera < 2; ++camera)
-    cameras_[camera]->overlays(state_, camera, table_->currentRow(), !busy_);
+    cameras_[camera]->overlays(state_, camera, selectedObservationRow(table_), !busy_);
   schematic_->layout = state_.document.layout;
   schematic_->ready = state_.fit.state == rink::RinkMapState::kReady;
   schematic_->update();
@@ -1285,7 +1294,7 @@ void RinkMapDialog::refresh() {
 
 void RinkMapDialog::rebuildTable() {
   rebuilding_ = true;
-  const int selected = table_->currentRow();
+  const int selected = selectedObservationRow(table_);
   table_->setRowCount(int(state_.document.observations.size()));
   for (size_t i = 0; i < state_.document.observations.size(); ++i) {
     const auto& observation = state_.document.observations[i];
@@ -1360,7 +1369,7 @@ void RinkMapDialog::addPoint(int camera, QPointF point) {
 }
 
 void RinkMapDialog::useGoalLineEnds() {
-  const int row = table_->currentRow();
+  const int row = selectedObservationRow(table_);
   if (busy_ || refresh_timer_.isActive() || !snapshot_ || close_prompt_active_ || row < 0 ||
       size_t(row) >= state_.document.observations.size() || state_.document.observations.size() >= 128)
     return;

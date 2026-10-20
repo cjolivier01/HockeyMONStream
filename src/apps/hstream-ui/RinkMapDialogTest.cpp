@@ -1143,6 +1143,20 @@ int main(int argc, char** argv) {
     ok &= expect(idle(dialog) && table->rowCount() == 2, "Redo repeats feature deletion");
     undo->click();
     ok &= expect(idle(dialog), "Restore before list deletion");
+    table->selectRow(0);
+    // Qt keeps the current index separate from selection. Exercise that state
+    // directly because modified arrow-key behavior varies by selection mode.
+    table->selectionModel()->setCurrentIndex(table->model()->index(1, 2), QItemSelectionModel::NoUpdate);
+    ok &= expect(
+        table->currentRow() == 1 && table->selectionModel()->isRowSelected(0, {}) && tabs->currentIndex() == 0,
+        "Current-index navigation does not change the selected observation");
+    QTest::keyClick(table, Qt::Key_Delete);
+    ok &= expect(
+        idle(dialog) && table->rowCount() == 2 && table->item(0, 2)->text().startsWith("R") &&
+            !table->selectionModel()->hasSelection() && !remove->isEnabled(),
+        "Delete targets the selected row, preserves the unselected current row, and clears selection");
+    undo->click();
+    ok &= expect(idle(dialog), "Restore after deleting a selected row with a different current index");
     table->selectRow(1);
     auto* dimension = dialog.findChild<QDoubleSpinBox*>("rinkMapDimension1");
     auto* field = dimension->findChild<QLineEdit*>();
