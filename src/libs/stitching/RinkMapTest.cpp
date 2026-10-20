@@ -107,6 +107,25 @@ int main() {
   ok &= expect(
       mask_loaded.ok() && mask_loaded->observations[2].mask_revision == std::string(64, 'a'),
       "Mask observation provenance survives save/reopen");
+  auto arc = line(document.layout, "near-boards");
+  arc.arc = true;
+  arc.enabled = false;
+  arc.mask_revision = std::string(64, 'b');
+  arc.pixels.insert(arc.pixels.begin() + 1, {150, 180});
+  arc.rays.insert(arc.rays.begin() + 1, ray({0, -document.layout.width / 2}));
+  document.observations.push_back(arc);
+  const auto arc_saved = rink::SerializeRinkMap(document);
+  const auto arc_loaded = arc_saved.ok() ? rink::ParseRinkMap(*arc_saved) : arc_saved.status();
+  ok &= expect(
+      arc_loaded.ok() && arc_loaded->observations.back().arc && !arc_loaded->observations.back().enabled &&
+          arc_loaded->observations.back().pixels == arc.pixels && !arc_loaded->observations[2].arc,
+      "Three-point arcs and ordinary lines preserve their shape and review state on reopen");
+  document.observations.back().enabled = true;
+  fitted = rink::FitRinkMap(document);
+  ok &= expect(fitted.ok() && fitted->state == rink::RinkMapState::kReady, "Reviewed arc rays constrain the ice plane");
+  document.observations.back().pixels.pop_back();
+  document.observations.back().rays.pop_back();
+  ok &= expect(!rink::SerializeRinkMap(document).ok(), "An arc must retain exactly three handles");
   for (bool both_boards : {false, true}) {
     document.observations.clear();
     for (const char* id : {"goal-left-line", "goal-right-line", "far-boards"})

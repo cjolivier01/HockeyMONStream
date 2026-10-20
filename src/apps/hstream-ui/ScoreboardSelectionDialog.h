@@ -42,6 +42,12 @@ class ScoreboardSelectionCanvas : public QWidget {
   void clearPoints();
   // Select independent endpoint pairs instead of a four-corner polygon.
   void setLineSelectionMode(int maximum_points = 8);
+  struct ReferenceMark {
+    QVector<QPointF> points;
+    bool arc{false};
+  };
+  // Saved evidence in original image coordinates, drawn without editable handles.
+  void setReferenceMarks(const QVector<ReferenceMark>& marks);
 
   std::function<void()> selectionChanged;
   std::function<void(const QPoint&, bool)> hoverChanged;
@@ -58,7 +64,7 @@ class ScoreboardSelectionCanvas : public QWidget {
 
  private:
   QPoint clampImagePoint(const QPointF& point) const;
-  QPointF imageToScreen(const QPoint& point) const;
+  QPointF imageToScreen(const QPointF& point) const;
   QPointF screenToImage(const QPointF& point) const;
   int pointNear(const QPointF& position) const;
   void setScaleAround(const QPointF& position, double scale);
@@ -69,6 +75,7 @@ class ScoreboardSelectionCanvas : public QWidget {
   QImage image_;
   QSize image_size_;
   QVector<QPoint> points_;
+  QVector<ReferenceMark> reference_marks_;
   bool line_selection_mode_{false};
   int maximum_points_{4};
   double view_scale_{1.0};

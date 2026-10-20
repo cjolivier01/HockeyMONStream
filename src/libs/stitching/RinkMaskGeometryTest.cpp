@@ -23,6 +23,27 @@ cv::Mat mask(bool obstruction) {
   }
   return result;
 }
+std::optional<cv::Vec3d> panoramaRay(double x, double y) {
+  const double yaw = (x - .5) * 2, pitch = (y - .5) * 1.2;
+  return cv::Vec3d(std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch));
+}
+cv::Mat nearMask(bool interrupted) {
+  cv::Mat result(400, 800, CV_8UC1, cv::Scalar(0));
+  for (int x = 30; x < 770; ++x) {
+    // A straight physical board is curved in the equirectangular mask.
+    const double yaw = ((x + .5) / 800 - .5) * 2;
+    int bottom = int((std::atan(.5 * std::cos(yaw)) / 1.2 + .5) * 400);
+    if (interrupted) {
+      if (x >= 390 && x < 440)
+        bottom += 30; // Open bench door: ice extends below the usual boundary.
+      if (x >= 260 && x < 290)
+        bottom -= 75; // Foreground obstruction.
+    }
+    for (int y = 80; y < bottom; ++y)
+      result.at<uchar>(y, x) = 255;
+  }
+  return result;
+}
 } // namespace
 int main() {
   try {
@@ -48,6 +69,37 @@ int main() {
              .ok(),
         "Missing projection coverage cannot bridge a board");
     check(!hm::stitching::SuggestFarRinkBoard(cv::Mat(32, 4096, CV_8UC1), ray).ok(), "Mask analysis is bounded");
+    const auto near = hm::stitching::SuggestNearRinkBoard(nearMask(false), panoramaRay);
+    const auto interrupted = hm::stitching::SuggestNearRinkBoard(nearMask(true), panoramaRay);
+    check(near.ok() && interrupted.ok(), "Near-board arc bridges door openings and foreground obstructions");
+    const auto plane = near->rays.front().cross(near->rays.back());
+    for (size_t i = 0; i < near->rays.size(); ++i) {
+      check(cv::norm(near->rays[i] - interrupted->rays[i]) < .003, "Local interruptions do not pull the arc");
+      check(std::abs(plane.dot(near->rays[i])) < 1e-10, "The proposed arc stays smooth through interruptions");
+    }
+    check(
+        hm::stitching::SuggestNearRinkBoard(
+            nearMask(true), [](double x, double y) { return x > .45 && x < .53 ? std::nullopt : panoramaRay(x, y); })
+            .ok(),
+        "A small missing near-side projection section can be bridged");
+    check(!hm::stitching::SuggestNearRinkBoard(full, ray).ok(), "A clipped near edge cannot become an arc");
+    const auto cropped_mask = nearMask(true).rowRange(0, 348).clone();
+    const auto cropped = hm::stitching::SuggestNearRinkBoard(
+        cropped_mask, [](double x, double y) { return panoramaRay(x, y * 348 / 400); });
+    check(cropped.ok(), "Visible near-board sections can bridge a middle section lost to the bottom crop");
+    for (const auto& r : cropped->rays)
+      check(std::abs(plane.dot(r)) < .003, "The bottom crop does not pull the arc away from the visible board plane");
+    auto all_clipped = nearMask(false);
+    all_clipped.rowRange(80, all_clipped.rows).setTo(255);
+    check(
+        !hm::stitching::SuggestNearRinkBoard(all_clipped, panoramaRay).ok(),
+        "A visible far edge alone cannot supply a near arc when the entire near edge is cropped");
+    check(!hm::stitching::SuggestNearRinkBoard(mask(true), ray).ok(), "Wild lower contours cannot become an arc");
+    check(
+        !hm::stitching::SuggestNearRinkBoard(
+             nearMask(false), [](double x, double y) { return x > .37 && x < .63 ? std::nullopt : panoramaRay(x, y); })
+             .ok(),
+        "Isolated end patches cannot supply a near-board arc");
     std::cout << "RinkMaskGeometry tests passed\n";
     return 0;
   } catch (const std::exception& e) {

@@ -258,9 +258,10 @@ bool InsideCamera(const RinkMapSnapshot& snapshot, int camera, cv::Point2d p) {
   return std::isfinite(p.x) && std::isfinite(p.y) && p.x >= 0 && p.y >= 0 && p.x < size.width() && p.y < size.height();
 }
 
-absl::StatusOr<rink::RinkMapObservation> MaskBoard(
+absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskBoards(
     const RinkMapSnapshot& snapshot,
-    const std::function<bool()>& cancelled) {
+    const std::function<bool()>& cancelled,
+    std::string& unavailable) {
   QFile mask_file;
   QSize mask_size;
   QString pinned_path;
@@ -311,8 +312,14 @@ absl::StatusOr<rink::RinkMapObservation> MaskBoard(
         if (mask_size.width() <= 0 || mask_size.height() <= 0 || mask_size.width() > 65535 ||
             mask_size.height() > 65535 || uint64_t(mask_size.width()) * mask_size.height() > 256ULL * 1024 * 1024)
           return absl::ResourceExhaustedError("The rink mask has invalid dimensions");
-        return rink::validate_stitched_output_generation_dimensions(
+        const auto dimensions = rink::validate_stitched_output_generation_dimensions(
             output_generation, mask_size.width(), mask_size.height());
+        if (!dimensions.ok())
+          return absl::FailedPreconditionError(
+              "The saved rink mask (" + std::to_string(mask_size.width()) + "x" + std::to_string(mask_size.height()) +
+              ") does not match this stitched calibration. "
+              "Play the game once to regenerate the mask, then reopen Rink map.");
+        return absl::OkStatus();
       });
   if (!status.ok())
     return status;
@@ -346,7 +353,7 @@ absl::StatusOr<rink::RinkMapObservation> MaskBoard(
   const cv::Matx23d inverse(
       c, s * sx / sy, cx - c * cx - s * sx / sy * cy, -s * sy / sx, c, cy + s * sy / sx * cx - c * cy);
   cv::warpAffine(mask, unrotated, inverse, mask.size(), cv::INTER_NEAREST | cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
-  auto board = rink::SuggestFarRinkBoard(unrotated, [&](double x, double y) -> std::optional<cv::Vec3d> {
+  const auto ray_at = [&](double x, double y) -> std::optional<cv::Vec3d> {
     const double dx = (x - 0.5) * mask_size.width(), dy = (y - 0.5) * mask_size.height();
     const double ox = 0.5 + (c * dx + s * dy) / mask_size.width();
     const double oy = 0.5 + (-s * dx + c * dy) / mask_size.height();
@@ -354,40 +361,65 @@ absl::StatusOr<rink::RinkMapObservation> MaskBoard(
     if (ox < 0.02 || ox > 0.98 || oy < 0.02 || oy > 0.98)
       return std::nullopt;
     return projection.ViewingRay(x, y, 0, mask_size.width(), mask_size.height());
-  });
-  if (!board.ok())
-    return board.status();
-  rink::RinkMapObservation result;
-  result.feature = "far-boards";
-  result.label = "Ice mask far boards";
-  result.line = result.automatic = true;
-  result.enabled = false; // Silhouette agreement does not establish ice level.
-  result.confidence = 0.5;
-  result.mask_revision = *digest;
-  double best_span = 0;
-  for (int camera = 0; camera < 2; ++camera) {
-    const auto points = ProjectRays(snapshot, board->rays, camera, cancelled);
-    if (!points.ok())
-      return points.status();
-    std::vector<cv::Point2d> pixels;
-    std::vector<cv::Vec3d> visible;
-    for (size_t i = 0; i < points->size(); ++i)
-      if (InsideCamera(snapshot, camera, points->at(i))) {
-        pixels.push_back(points->at(i));
-        visible.push_back(board->rays[i]);
-      }
-    if (visible.size() < 8)
+  };
+  std::vector<rink::RinkMapObservation> results;
+  for (bool near : {false, true}) {
+    auto board = near ? rink::SuggestNearRinkBoard(unrotated, ray_at) : rink::SuggestFarRinkBoard(unrotated, ray_at);
+    if (!board.ok()) {
+      if (!absl::IsNotFound(board.status()))
+        return board.status();
+      unavailable += std::string(board.status().message()) + ". ";
       continue;
-    const double span = std::acos(std::clamp(visible.front().dot(visible.back()), -1.0, 1.0));
-    if (span > best_span) {
-      best_span = span;
-      result.camera = camera;
-      result.pixels = std::move(pixels);
-      result.rays = std::move(visible);
     }
+    rink::RinkMapObservation result;
+    result.feature = near ? "near-boards" : "far-boards";
+    result.label = near ? "Ice mask near-board arc" : "Ice mask far boards";
+    result.line = result.automatic = true;
+    result.arc = near;
+    result.enabled = false; // Silhouette agreement does not establish ice level.
+    result.confidence = 0.5;
+    result.mask_revision = *digest;
+    double best_span = 0;
+    for (int camera = 0; camera < 2; ++camera) {
+      const auto points = ProjectRays(snapshot, board->rays, camera, cancelled);
+      if (!points.ok())
+        return points.status();
+      // Keep one continuous visible segment, never connect across a camera seam.
+      size_t begin = 0;
+      while (begin < points->size()) {
+        while (begin < points->size() && !InsideCamera(snapshot, camera, points->at(begin)))
+          ++begin;
+        size_t end = begin;
+        while (end < points->size() && InsideCamera(snapshot, camera, points->at(end)) &&
+               (end == begin ||
+                cv::norm(points->at(end) - points->at(end - 1)) < snapshot.original_sizes[camera].width() / 3.0))
+          ++end;
+        if (end - begin >= 8) {
+          const double span = std::acos(std::clamp(board->rays[begin].dot(board->rays[end - 1]), -1.0, 1.0));
+          if (span > best_span) {
+            best_span = span;
+            result.camera = camera;
+            if (near) {
+              const size_t middle = (begin + end - 1) / 2;
+              result.pixels = {points->at(begin), points->at(middle), points->at(end - 1)};
+              result.rays = {board->rays[begin], board->rays[middle], board->rays[end - 1]};
+            } else {
+              result.pixels.assign(points->begin() + begin, points->begin() + end);
+              result.rays.assign(board->rays.begin() + begin, board->rays.begin() + end);
+            }
+          }
+        }
+        begin = end;
+      }
+    }
+    if (best_span >= 12 * kPi / 180)
+      results.push_back(std::move(result));
+    else
+      unavailable +=
+          std::string("Too little of the ") + (near ? "near" : "far") + " boards is visible in either saved camera. ";
   }
-  if (best_span < 12 * kPi / 180)
-    return absl::NotFoundError("Too little of the far boards is visible in either saved camera");
+  if (results.empty())
+    return absl::NotFoundError(unavailable);
   struct stat current{}, pinned{};
   const auto mask_path = QDir(snapshot.game_directory).filePath("rink_mask_0.png").toStdString();
   if (::lstat(mask_path.c_str(), &current) != 0 || ::fstat(mask_file.handle(), &pinned) != 0 ||
@@ -395,7 +427,7 @@ absl::StatusOr<rink::RinkMapObservation> MaskBoard(
       pinned.st_mtim.tv_sec != identity.st_mtim.tv_sec || pinned.st_mtim.tv_nsec != identity.st_mtim.tv_nsec ||
       pinned.st_ctim.tv_sec != identity.st_ctim.tv_sec || pinned.st_ctim.tv_nsec != identity.st_ctim.tv_nsec)
     return absl::AbortedError("The rink mask changed during analysis. Try the mask again.");
-  return result;
+  return results;
 }
 absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskIntersections(
     const RinkMapSnapshot& snapshot,
@@ -626,18 +658,26 @@ absl::StatusOr<RinkMapWorkResult> UpdateRinkMap(
     bool use_mask) {
   RinkMapWorkResult result;
   if (use_mask) {
-    auto board = MaskBoard(snapshot, cancelled);
-    if (!board.ok())
-      return board.status();
+    std::string unavailable;
+    auto boards = MaskBoards(snapshot, cancelled, unavailable);
+    if (!boards.ok())
+      return boards.status();
     document.observations.erase(
         std::remove_if(
             document.observations.begin(),
             document.observations.end(),
             [](const auto& observation) { return observation.automatic && !observation.mask_revision.empty(); }),
         document.observations.end());
-    document.observations.push_back(*board);
-    result.assistance_message =
-        "Far-board suggestion added unchecked. Review it at ice level, then check Use. The near mask edge is excluded because boards, glass and posts can hide the ice.";
+    document.observations.insert(document.observations.end(), boards->begin(), boards->end());
+    const bool has_near = std::any_of(boards->begin(), boards->end(), [](const auto& board) { return board.arc; });
+    result.assistance_message = boards->size() == 2 ? "Far-board line and near-board arc added unchecked. "
+        : has_near ? "Near-board arc added unchecked; no supported far-board line found. "
+                   : "Far-board line added unchecked; no supported near-board arc found. ";
+    result.assistance_message += has_near
+        ? "Select the near-board row and drag its three points to the estimated ice edge, then check Use. The mask may follow board tops; door openings and local obstructions are smoothed over."
+        : "Review the line at ice level, then check Use.";
+    if (!unavailable.empty())
+      result.assistance_message += " " + unavailable;
   }
   if (detect) {
     document.observations.erase(

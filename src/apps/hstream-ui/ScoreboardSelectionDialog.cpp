@@ -28,7 +28,6 @@
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QVBoxLayout>
 
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -102,6 +101,7 @@ ScoreboardSelectionCanvas::ScoreboardSelectionCanvas(QWidget* parent) : QWidget(
 }
 
 bool ScoreboardSelectionCanvas::setImage(const QString& path) {
+  reference_marks_.clear();
   QImageReader reader(path);
   image_size_ = reader.size();
   if (!image_size_.isValid() || image_size_.isEmpty()) {
@@ -239,6 +239,11 @@ void ScoreboardSelectionCanvas::setLineSelectionMode(int maximum_points) {
   update();
 }
 
+void ScoreboardSelectionCanvas::setReferenceMarks(const QVector<ReferenceMark>& marks) {
+  reference_marks_ = marks;
+  update();
+}
+
 bool ScoreboardSelectionCanvas::event(QEvent* event) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
   if (event->type() == QEvent::DevicePixelRatioChange) {
@@ -267,6 +272,26 @@ void ScoreboardSelectionCanvas::paintEvent(QPaintEvent*) {
       !qFuzzyCompare(viewport_cache_.devicePixelRatio(), pixel_ratio))
     renderViewportCache();
   painter.drawPixmap(QPointF(0, 0), viewport_cache_);
+
+  painter.setPen(QPen(QColor(255, 210, 75), 2));
+  painter.setBrush(Qt::NoBrush);
+  for (const auto& mark : reference_marks_) {
+    if (mark.points.isEmpty())
+      continue;
+    QPainterPath path(imageToScreen(mark.points.front()));
+    if (mark.arc && mark.points.size() == 3) {
+      const QPointF first = imageToScreen(mark.points[0]);
+      const QPointF middle = imageToScreen(mark.points[1]);
+      const QPointF last = imageToScreen(mark.points[2]);
+      path.quadTo(2 * middle - (first + last) / 2, last);
+    } else {
+      for (qsizetype i = 1; i < mark.points.size(); ++i)
+        path.lineTo(imageToScreen(mark.points[i]));
+    }
+    painter.drawPath(path);
+    for (const auto& point : mark.points)
+      painter.drawEllipse(imageToScreen(point), 5, 5);
+  }
 
   const QVector<QPoint> polygon = line_selection_mode_ ? points_ : ordered_points(points_);
   if (polygon.size() >= 2) {
@@ -407,8 +432,8 @@ QPoint ScoreboardSelectionCanvas::clampImagePoint(const QPointF& point) const {
   };
 }
 
-QPointF ScoreboardSelectionCanvas::imageToScreen(const QPoint& point) const {
-  return (QPointF(point) + (line_selection_mode_ ? QPointF(0.5, 0.5) : QPointF())) * view_scale_ + view_offset_;
+QPointF ScoreboardSelectionCanvas::imageToScreen(const QPointF& point) const {
+  return (point + (line_selection_mode_ ? QPointF(0.5, 0.5) : QPointF())) * view_scale_ + view_offset_;
 }
 
 QPointF ScoreboardSelectionCanvas::screenToImage(const QPointF& point) const {

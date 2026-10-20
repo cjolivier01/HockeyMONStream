@@ -48,6 +48,10 @@ struct RinkMapObservation {
   // Hash of the mask snapshot that supplied this reviewable observation.
   // Empty for manual and landmark-model observations.
   std::string mask_revision;
+  // Three source-image handles (start, on-curve midpoint, end). The smooth
+  // display arc is a quadratic through these points; their calibrated rays
+  // still constrain a straight physical marking on the ice.
+  bool arc{false};
 };
 
 struct RinkMapDocument {

@@ -61,13 +61,19 @@ locate players. These are alternatives; every rink item is not required.
 session. Saving it does not enable either playback use. Correct invalid rink
 dimensions before saving.
 
-**Save and use for leveling…** saves the marks and opens the existing leveling
-preview. Manual and assigned automatic observations can contribute. A fitted
-map provides its ice plane; a partial map can still provide four explicitly
+**Save and use for leveling…** saves the marks and checks that they can supply
+leveling before opening the preview. If evidence is missing, the editor stays
+open with your saved marks and an explanation. When goal-line endpoints need
+identities, the relevant line is selected; **Use goal-line ends at boards…**
+reuses those clicks after you identify which end is near. Manual and assigned
+automatic observations can contribute. A fitted map provides its ice plane; a partial map can still provide four explicitly
 identified goal-line/board corners. Detected line segments alone do not identify
-their intersections with the boards. The leveling dialog explains missing
-evidence and requires a preview before **Use angles**. Accepting angles stages
-them in the main window; **Save Preset** applies them. The resulting calibration
+their intersections with the boards. Successful reuse opens **Preview** directly
+and shows the saved observations in yellow on both camera tabs. No points need
+to be re-entered. Edit these reference marks in the map editor; placing new
+manual leveling points clears the reference overlay and starts a new estimate.
+The leveling dialog requires a preview before **Use angles**. Accepting angles
+stages them in the main window; **Save Preset** applies them. The resulting calibration
 change requires reviewing the rink map again.
 
 The dimensions are assumptions in metres. Defaults describe a 200 × 85 ft rink
@@ -109,7 +115,8 @@ Partial and rejected fits never enable player positions.
 
 If the near boards hide the ice edge, both identified blue lines, the far straight
 boards and a visible centre-ice point can constrain the map. The far board and
-parallel painted lines alone still leave it partial. Only mark features you can see.
+parallel painted lines alone still leave it partial. Use visible features where
+possible; any near-board mask estimate needs explicit review at ice level.
 
 A fitted map draws a cyan rink outline and estimated goal centres in both
 source views, with thinner projected rink markings in their feature colours.
@@ -120,23 +127,37 @@ mark selection, and the quality of the source calibration.
 
 ## Using the rink mask
 
-**Use rink mask** reads the saved, current ice mask and proposes one far straight-board
-line. The row starts unchecked and says **mask · review**. Inspect the overlay in the
-source camera before checking **Use**. Rounded corners, clipped edges, gaps and
-projection padding are excluded; a mask without enough straight support produces
-no suggestion. A busy calibration writer leaves the editor responsive and reports
-that the mask is unavailable.
+**Use rink mask** reads the saved, current ice mask and proposes a far straight-board
+line and a smooth near-board arc wherever there is enough support. Both rows start
+unchecked and say **mask · review**. The editor selects the new near-board row
+and opens its camera with three green handles: the two ends and a point on the middle of the arc. Drag them to adjust the
+estimated ice/board junction, then check **Use**. The curve follows all three points
+while dragging, and release commits one undoable edit. Save/reopen retains the arc
+and its three handles, including after manual adjustment.
 
-The near silhouette is never used as an ice-plane constraint. It can follow the
-tops of near boards or be interrupted by glass and posts; a smooth edge there
-does not establish where the boards meet the ice. End-board curves are not inferred.
+The near-side fit uses broad agreement across the central lower mask boundary,
+bridging local obstructions and ignoring excursions such as open bench doors.
+If the panorama crops out the middle of the near edge, visible sections on
+either side can still supply the arc; pixels on the crop boundary never pull
+the fit toward the frame edge.
+It fits a straight board in calibrated viewing rays, then displays a smooth
+quadratic arc through three projected source points. This is a starting estimate:
+the mask can follow board tops, glass or posts above the actual ice edge. Adjust
+and review it at ice level before including it in the map. End-board curves are
+not inferred. Clipped boundaries and projection padding are excluded; a side
+without enough support produces no suggestion, without discarding a valid
+suggestion for the other side. A completely cropped near edge cannot supply
+an arc. The far-side fit still requires continuous support.
+A busy calibration writer leaves the editor responsive and reports that the mask
+is unavailable. If the saved mask dimensions do not match the calibration,
+play the game once to regenerate the mask, then reopen the editor.
 
 Hollow rings show where assigned centre, blue and goal lines meet the suggested far
 board within its observed span. These are visual guides derived from the lines,
 not extra measurements added to the fit. Hidden intersections are not extrapolated.
 Running the action again replaces earlier mask suggestions and preserves manual
-and model marks. Dragging a suggestion converts it to a manual mark. Undo restores
-the previous evidence.
+and model marks. Dragging a suggestion converts it to a manual mark; a near-board
+arc keeps all three handles. Undo restores the previous evidence.
 
 This offline operation decodes a bounded mask proxy and samples calibrated viewing
 rays. It records the mask hash with the source-pixel evidence. Reviewed marks remain
@@ -212,7 +233,9 @@ observations and preserves ice-mask filtering; see
 
 `rink-map.yaml` stores the versioned evidence, dimensions, original source
 pixels, calibrated rays, and calibration identity in the game directory. It is
-written atomically. Reopening recomputes rays and fits; it never trusts a saved
+written atomically. The optional observation `arc` flag retains three-point
+editing; existing maps without it keep their ordinary point/line shapes.
+Reopening recomputes rays and fits; it never trusts a saved
 matrix. Calibration changes or a competing editor's save block stale writes.
 Unrelated game preferences do not invalidate the evidence.
 To clear a saved map, remove all observations and save the empty partial map.
@@ -250,6 +273,7 @@ The editor reads bounded PNG proxies once and runs only when requested.
 
 ```sh
 bazelisk test --config=opt --cpu=k8 \
+  //src/libs/stitching:rink_mask_geometry_test \
   //src/libs/stitching:rink_map_test \
   //src/libs/stitching:rink_landmarks_test \
   //src/libs/stitching:playback_rink_map_test \
@@ -265,6 +289,16 @@ inference and saves screenshots outside the checkout. An optional text file of
 QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/rink_map_dialog_test \
   --inspect-game "$HOME/Videos/<game>" /tmp/rink-map
 ```
+
+To inspect only mask assistance without running landmark inference:
+
+```sh
+QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/rink_map_dialog_test \
+  --inspect-mask "$HOME/Videos/<game>" /tmp/rink-mask.png
+```
+
+This selects and captures the near-board arc without saving the map; it reports
+failure if the mask has no supported near-board arc.
 
 For an isolated copied game only, append a marks file and `--save-reviewed-map`
 to save a fitted fixture. `playback_rink_map_test --load-game <copied-game>`

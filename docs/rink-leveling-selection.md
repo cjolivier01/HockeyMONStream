@@ -68,7 +68,13 @@ line segment is not treated as a pair of board intersections. Insufficient marks
 produce an explanation and remain saved for later completion.
 
 The map editor also offers **Save and use for leveling…**. Neither action applies
-angles automatically: inspect **Preview**, then **Use angles** and **Save Preset**.
+angles automatically: successful reuse renders **Preview** directly, with the
+saved source observations visible in yellow on both camera tabs. There is no
+need to enter them again. Edit the saved marks in the map editor; adding manual
+leveling points clears the reference overlay and starts a new estimate. Inspect
+**Preview**, then **Use angles** and **Save Preset**. If the saved marks cannot
+supply leveling, the map editor stays open with guidance, including how to
+identify existing goal-line endpoints as board intersections without re-clicking.
 Changing calibration invalidates the saved map's playback binding until it is
 reviewed and saved again. Imported leveling does not rewrite the map evidence.
 

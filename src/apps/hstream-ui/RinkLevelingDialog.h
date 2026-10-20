@@ -69,6 +69,7 @@ class RinkLevelingDialog : public QDialog {
   void preview();
   void selectionChanged();
   void switchMethod(bool corners);
+  void updateInstructions();
   void navigate(int direction);
   void requestPreview();
   void invalidatePreview();
