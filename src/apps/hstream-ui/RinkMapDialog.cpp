@@ -585,7 +585,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
     tabs_->addTab(cameras_[camera], camera ? "Right camera" : "Left camera");
     cameras_[camera]->clicked = [this, camera](QPointF point) { addPoint(camera, point); };
     cameras_[camera]->selected = [this](int row) {
-      if (busy_ || row == table_->currentRow())
+      if (busy_ || (row == table_->currentRow() && (row < 0 || table_->selectionModel()->isRowSelected(row, {}))))
         return;
       if (row >= 0) {
         table_->selectRow(row);
@@ -862,7 +862,8 @@ bool RinkMapDialog::eventFilter(QObject* watched, QEvent* event) {
       table_) {
     if (auto* identity = qobject_cast<QComboBox*>(watched); identity && table_->isAncestorOf(identity)) {
       const int row = table_->indexAt(identity->mapTo(table_->viewport(), QPoint())).row();
-      if (row >= 0 && size_t(row) < state_.document.observations.size() && row != table_->currentRow())
+      if (row >= 0 && size_t(row) < state_.document.observations.size() &&
+          !table_->selectionModel()->isRowSelected(row, {}))
         table_->selectRow(row);
     }
   }

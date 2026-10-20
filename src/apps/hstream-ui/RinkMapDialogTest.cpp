@@ -1064,6 +1064,20 @@ int main(int argc, char** argv) {
         table->currentRow() == 0 && anchor(0, 0) && anchor(0, 2) && remove->isEnabled() && !dialog.isWindowModified() &&
             !undo->isEnabled(),
         "Clicking near an unchecked line selects its row and handles without an edit");
+    QTest::mouseClick(
+        table->viewport(), Qt::LeftButton, Qt::ControlModifier, table->visualItemRect(table->item(0, 2)).center());
+    ok &= expect(
+        table->currentRow() == 0 && !table->selectionModel()->hasSelection() && !remove->isEnabled(),
+        "Ctrl-click clears row selection while retaining the current index");
+    click({1100, 650});
+    ok &= expect(
+        table->selectionModel()->isRowSelected(0, {}) && remove->isEnabled(),
+        "Clicking the image reselects a cleared current row");
+    QTest::keyClick(view, Qt::Key_Delete);
+    ok &= expect(idle(dialog) && table->rowCount() == 2, "Reselected observations can be deleted");
+    undo->click();
+    ok &=
+        expect(idle(dialog) && table->rowCount() == 3 && !dialog.isWindowModified(), "Restore before camera selection");
     table->selectRow(1);
     ok &= expect(tabs->currentIndex() == 1, "List selection reveals the other camera");
     tabs->setCurrentIndex(0);
