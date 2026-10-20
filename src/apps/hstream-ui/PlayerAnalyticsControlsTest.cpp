@@ -72,6 +72,36 @@ QString Bundle(const QString& root, const QString& name) {
   Write(QDir(path).filePath("model.onnx"), "not an onnx");
   return path;
 }
+void PoseDrawingAndRate() {
+  PlayerAnalyticsControls widget;
+  widget.loadConfig(Defaults(), YAML::Node(), YAML::Node(), "/configs");
+  auto* continuous = Control<QCheckBox>(widget, "playerContinuousPoseDrawing");
+  auto* rate = Control<QLineEdit>(widget, "playerPoseRate");
+  Require(continuous->isChecked() && rate->text() == "10" && !widget.isDirty(), "Pose defaults differ from runtime");
+  continuous->setChecked(false);
+  rate->setText("fps");
+  Control<QCheckBox>(widget, "playerPoseEnable")->setChecked(true);
+  Control<QCheckBox>(widget, "playerActionEnable")->setChecked(true);
+  Require(widget.validateForRun().isEmpty(), "Every-frame pose rejected with actions enabled");
+  Require(
+      widget.arguments().contains("--options=pipeline.player-analytics.pose.rate-hz=fps") &&
+          widget.arguments().contains("--options=pipeline.player-analytics.pose.continuous-drawing=false"),
+      "Unsaved pose cadence/drawing choice was not exported");
+  YAML::Node saved;
+  Require(widget.applyChanges(saved).isEmpty(), "Cannot save pose preferences");
+  widget.loadConfig(Defaults(), YAML::Node(), saved, "/configs");
+  Require(!continuous->isChecked() && rate->text() == "fps" && !widget.isDirty(), "Pose preferences did not reload");
+  rate->setText("invalid");
+  Require(!widget.validateForRun().isEmpty(), "Invalid pose cadence accepted");
+  widget.resetToDefaults();
+  Require(continuous->isChecked() && rate->text() == "10", "Pose defaults were not restored");
+  widget.loadConfig(
+      Defaults(),
+      YAML::Load("pipeline: {player-analytics: {pose: {continuous-drawing: false, rate-hz: 20}}}"),
+      YAML::Load("pipeline: {player-analytics: {pose: {continuous-drawing: true, rate-hz: fps}}}"),
+      "/configs");
+  Require(continuous->isChecked() && rate->text() == "fps", "Game pose preferences lost layer precedence");
+}
 void Disabled() {
   PlayerAnalyticsControls widget;
   const auto invalid = YAML::Load(R"(
@@ -439,6 +469,7 @@ int main(int argc, char** argv) {
   QTemporaryDir directory;
   Require(directory.isValid(), "Cannot create test directory");
   Disabled();
+  PoseDrawingAndRate();
   ModelChoices(directory.path());
   LegacyProgramBoxes(directory.path());
   LayersAndPersistence(directory.path());

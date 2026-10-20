@@ -47,6 +47,22 @@ class TrackScheduler {
   uint64_t excluded_count_{0};
 };
 
+// One admitted track's display state. The owner resets on missing tracks,
+// incarnation changes, seeks and geometry changes. No video pixels are retained.
+class PoseDrawingState {
+ public:
+  void Observe(uint64_t pts_ns, const Pose& pose, const Box& box) noexcept;
+  RetainedPose Result(uint64_t now_ns, const Box& box) const noexcept;
+  void Reset() noexcept {
+    observed_at_ = kInvalidTime;
+  }
+
+ private:
+  Pose pose_{};
+  Box box_;
+  uint64_t observed_at_{kInvalidTime};
+};
+
 class JerseyConsensus {
  public:
   // At most one observation per source timestamp. Unknown/invalid readings age

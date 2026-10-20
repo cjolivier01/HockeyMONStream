@@ -13,6 +13,7 @@ pipeline:
       enable: 1
       model: rtmpose-m-coco17-256x192 # optional: this is the default pose model
       rate-hz: 10
+      continuous-drawing: true
       confidence-threshold: 0.3
 ```
 
@@ -36,8 +37,11 @@ the stream is fenced before borrowed buffers/imports are released, including
 error and flush paths.
 
 `max-tracks` (default/hard maximum 256), `max-due-rois` (32), and `batch-size`
-(8) bound state and inference. Poses are attached only to the frame that generated
-them. Scheduling uses stitched media PTS and full 64-bit native track IDs.
+(8) bound state and inference. Fresh pose evidence is attached only to the frame
+that generated it. The shared baseline defaults `pose.rate-hz` to `10`; setting
+it to `fps` makes every incoming frame eligible, including fractional and variable
+frame rates. The shared work budget still applies. Scheduling uses stitched media
+PTS and full 64-bit native track IDs.
 Continuous chapter transitions retain state; seeks, discontinuities, invalid
 or backward timestamps, source replacement and geometry changes retire it.
 Flush cancellation prevents old results from publishing. Bounded shutdown counters
@@ -45,7 +49,8 @@ report frames, enqueues, results, capacity/cadence exclusions and cancellation.
 
 Calibration, rink-mask preparation, player-selection scans, INT8 sampling and
 legacy negative stages suppress analytics before graph construction. The shared
-HockeyMON baseline is unchanged. Prepared bundles and weights stay outside Git.
+HockeyMON baseline carries native cadence/drawing preferences without enabling
+analytics. Prepared bundles and weights stay outside Git.
 
 The plugin supports pitched NVMM RGBA8 and packed RGB10A2. This does not establish
 10-bit support for unrelated upstream cropper/stitcher paths. Model inference has
@@ -62,7 +67,9 @@ A `model` ID makes that selection explicit. `model: custom` uses an existing `bu
 directory instead; legacy paths without a model ID retain this custom behavior.
 Bbox jersey mode works without pose. Pose-guided jersey requires pose enabled and
 fresh same-frame shoulders/hips; it skips incomplete poses without falling back
-to bbox crops. Action requires explicit COCO17 pose at at least 10 Hz. Drawing
+to bbox crops. Action requires explicit COCO17 pose at at least 10 Hz or `fps`.
+In `fps` mode actual input cadence and model budgets must still satisfy the
+history's source-time gap requirements. Drawing
 preferences cannot satisfy either dependency.
 
 Jersey inference uses the hockey PARSeq profile with the full 95-token vocabulary,
@@ -84,6 +91,10 @@ processing one window cannot strengthen its label. The bundled model profile is
 NTU60 daily activities, **not a trained hockey event detector**. Useful hockey
 accuracy requires separate evaluation or training.
 
+Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V3`, schema 3, with separate fresh
+COCO17 observations and retained display poses. All producers and consumers must
+be rebuilt together; no persistent telemetry schema changes.
+
 `max-due-rois` is an aggregate model-sample budget shared by pose, jersey and action.
 Weighted rotating turns favor pose 2:1:1 and lend unused work. Guided OCR costs
 two samples unless a pose is already scheduled. All admitted candidates are
@@ -100,6 +111,21 @@ history readiness/resets. Interpret retained labels separately from fresh infere
 
 
 ## Drawing and desktop controls
+
+`pipeline.player-analytics.pose.continuous-drawing` defaults to `true` in the
+shared baseline. Program Controls → Players exposes **Keep pose visible between
+updates** and **Pose updates per second / fps**. Both apply on the next run and
+are included in saved presets and exported jobs.
+
+Between inference updates, `PoseDrawingState` reprojects the latest skeleton
+from its original tracked box into the current box, preserving joint confidence.
+It expires after 250 ms of source time and clears when the track disappears,
+its identity expires, or the source/geometry/playback state resets. Only compact
+coordinates are retained; this adds no video readback or model work. Metadata
+keeps this display estimate and its original observation time separate from fresh
+pose evidence. Both Program CUDA drawing and GPU previews use it; action history
+and pose-guided jersey crops continue to consume fresh inference only. Setting
+the flag to `false` draws skeletons only on their inference frames.
 
 Player boxes show camera-excluded players in gray with `IGNORED` above the box,
 in both Program output and GPU previews. The marker comes from the current native

@@ -52,8 +52,12 @@ void ReadFeature(const YAML::Node& node, const char* name, FeatureConfig* config
   } else if (!FindModel(name, config->model)) {
     throw std::invalid_argument(std::string(name) + ".model is not a supported model selection: " + config->model);
   }
-  if (node["rate-hz"])
-    config->rate_hz = node["rate-hz"].as<double>();
+  if (node["rate-hz"]) {
+    config->every_frame =
+        std::string(name) == "pose" && node["rate-hz"].IsScalar() && node["rate-hz"].Scalar() == "fps";
+    if (!config->every_frame)
+      config->rate_hz = node["rate-hz"].as<double>();
+  }
   if (!std::isfinite(config->rate_hz) || config->rate_hz <= 0 || config->rate_hz > 240)
     throw std::invalid_argument(std::string(name) + ".rate-hz must be finite and in (0,240]");
   if (node["confidence-threshold"])
@@ -87,6 +91,9 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
     config.drawing.pose = Flag(node["draw-pose"]);
     config.drawing.jersey = Flag(node["draw-jerseys"]);
     config.drawing.action = Flag(node["draw-actions"]);
+    const auto pose = node["pose"];
+    if (pose && pose["continuous-drawing"] && !pose["continuous-drawing"].IsNull())
+      config.continuous_pose_drawing = Flag(pose["continuous-drawing"]);
     if (!config.enabled())
       return config;
     ReadFeature(node["pose"], "pose", &config.pose);
@@ -102,8 +109,9 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
     if (!config.pose.enabled &&
         (config.action.enabled || (config.jersey.enabled && config.jersey_roi_mode == JerseyRoiMode::kPose)))
       throw std::invalid_argument("action and pose-guided jersey recognition require explicit pose.enable");
-    if (config.action.enabled && config.pose.rate_hz < 10)
-      throw std::invalid_argument("action recognition requires pose.rate-hz >= 10 for the causal sample profile");
+    if (config.action.enabled && !config.pose.every_frame && config.pose.rate_hz < 10)
+      throw std::invalid_argument(
+          "action recognition requires pose.rate-hz >= 10 or fps for the causal sample profile");
     config.maximum_tracks = Limit(node, "max-tracks", kMaximumTracks, kMaximumTracks);
     config.maximum_due_rois = Limit(node, "max-due-rois", kMaximumDueRois, kMaximumDueRois);
     if (config.jersey.enabled && config.jersey_roi_mode == JerseyRoiMode::kPose && config.maximum_due_rois < 2)

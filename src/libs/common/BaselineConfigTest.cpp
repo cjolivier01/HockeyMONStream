@@ -50,6 +50,10 @@ int main() {
   ok &= expect(bundled.ok(), bundled.ok() ? "Bundled baseline should load" : bundled.status().ToString());
   if (bundled.ok()) {
     const YAML::Node camera = bundled->values["rink"]["camera"];
+    const YAML::Node pose = bundled->values["pipeline"]["player-analytics"]["pose"];
+    ok &= expect(
+        pose["rate-hz"].as<double>() == 10 && pose["continuous-drawing"].as<bool>(),
+        "Bundled baseline should default pose to 10 Hz with continuous drawing");
     ok &= expect(
         bundled->path.filename() == hm::baseline_config::kBaselineFilename && bundled->values["camera"].IsMap() &&
             bundled->values["plot"].IsMap() && bundled->values["aspen"].IsMap() &&

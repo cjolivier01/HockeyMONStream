@@ -9,6 +9,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -121,6 +122,76 @@ pa::Config Base() {
   config.maximum_due_rois = 3;
   config.batch_size = 1;
   return config;
+}
+
+void DrawingAndCadence(const char* bundle, Fixture& image, const pa::Box& box) {
+  auto config = Base();
+  config.pose.enabled = true;
+  config.pose.bundle = bundle;
+  config.pose.rate_hz = 1; // Deliberately longer than the bounded display hold.
+  auto processor = Create(config);
+  const auto fresh = Process(*processor, image, pa::kSecond, 0, {{kId, box}});
+  Require(fresh.player_count == 1 && fresh.players[0].has_pose, "Missing initial pose observation");
+  auto moved = box;
+  moved.left += 5;
+  moved.width *= 1.1F;
+  const auto held = Process(*processor, image, pa::kSecond + 33333333, 1, {{kId, moved}});
+  Require(
+      held.player_count == 1 && !held.players[0].has_pose && held.players[0].pose_observed_at == pa::kInvalidTime &&
+          held.players[0].retained_pose.observed_at == pa::kSecond && processor->counters().pose_results == 1,
+      "Display retention created a fresh inference observation");
+  for (size_t i = 0; i < fresh.players[0].pose.size(); ++i) {
+    const auto& point = fresh.players[0].pose[i];
+    const auto& retained = held.players[0].retained_pose.pose[i];
+    Require(retained.confidence == point.confidence, "Display retention changed joint confidence");
+    if (point.confidence > 0)
+      Require(
+          std::abs(retained.x - (moved.left + (point.x - box.left) * moved.width / box.width)) < .01F &&
+              std::abs(retained.y - point.y) < .01F,
+          "Retained skeleton did not follow the current tracked box");
+  }
+  Require(
+      Process(*processor, image, pa::kSecond + pa::kPoseDrawingMaximumAge, 2, {{kId, box}}).player_count == 1 &&
+          Process(*processor, image, pa::kSecond + pa::kPoseDrawingMaximumAge + 1, 3, {{kId, box}}).player_count == 0,
+      "Display retention expiry boundary failed");
+  Process(*processor, image, 2 * pa::kSecond, 4, {{kId, box}});
+  Process(*processor, image, 2 * pa::kSecond + 10000000, 5, {});
+  Require(
+      Process(*processor, image, 2 * pa::kSecond + 20000000, 6, {{kId, box}}).player_count == 0,
+      "Reappearing track inherited its missing-track display pose");
+  processor->Reset(false);
+  Require(
+      Process(*processor, image, 2 * pa::kSecond + 30000000, 7, {{kId, box}}).players[0].has_pose,
+      "Reset failed to retire cadence/display state");
+  const auto seek = Process(*processor, image, pa::kSecond, 8, {{kId, box}});
+  Require(
+      seek.players[0].has_pose && seek.players[0].retained_pose.observed_at == pa::kInvalidTime,
+      "Seek published retained display state");
+
+  config.continuous_pose_drawing = false;
+  processor = Create(config);
+  Process(*processor, image, 0, 0, {{kId, box}});
+  Require(
+      Process(*processor, image, 33333333, 1, {{kId, box}}).player_count == 0,
+      "Continuous-drawing off retained a skeleton");
+
+  auto yaml = YAML::Load("pose: {enable: true, model: custom, rate-hz: fps}\nbatch-size: 1");
+  yaml["pose"]["bundle"] = bundle;
+  const auto parsed = pa::ParseConfig(yaml);
+  Require(parsed.ok(), "Cannot parse every-frame pose config");
+  processor = Create(*parsed);
+  // Fractional 30/60 fps intervals, a 1 ns step, and a long gap all admit work.
+  const std::array<uint64_t, 6> times{{0, 33333333, 66700000, 83383333, 83383334, pa::kSecond}};
+  for (size_t i = 0; i < times.size(); ++i) {
+    const auto result = Process(*processor, image, times[i], i, {{kId, box}});
+    Require(
+        result.player_count == 1 && result.players[0].has_pose && result.players[0].pose_observed_at == times[i] &&
+            processor->counters().pose_results == i + 1,
+        "fps cadence skipped an incoming frame");
+  }
+  Process(*processor, image, times.back(), times.size(), {{kId, box}});
+  Require(processor->counters().pose_results == times.size(), "Duplicate PTS ran every-frame inference twice");
+  std::cout << "Continuous pose follows boxes, expires, clears on track loss/seek/reset; off and fps cadence passed\n";
 }
 
 void Jersey(const char* bundle, Fixture& image) {
@@ -274,13 +345,22 @@ void Capacity(const char* pose, const char* action, Fixture& image) {
         frame * pa::kActionSamplePeriod,
         frame,
         {{kId, kPoseBox}, {kId + 1, kPoseBox}, {kId + 2, kPoseBox}});
-    Require(
-        result.player_count == 1 && result.players[0].has_pose && result.players[0].action.label < 0,
-        "Capacity-limited inference created unsupported action evidence");
-    Require(
-        result.players[0].track_id == kId || result.players[0].track_id == kId + 1,
-        "Capacity-limited scheduler admitted an excluded identity");
-    ++counts[result.players[0].track_id - kId];
+    Require(result.player_count == (frame ? 2 : 1), "Budget deferral lost continuous pose drawing");
+    size_t fresh_count = 0;
+    for (size_t i = 0; i < result.player_count; ++i) {
+      const auto& player = result.players[i];
+      Require(player.action.label < 0, "Display retention created unsupported action evidence");
+      Require(
+          player.track_id == kId || player.track_id == kId + 1,
+          "Capacity-limited scheduler admitted an excluded identity");
+      if (player.has_pose) {
+        ++fresh_count;
+        ++counts[player.track_id - kId];
+      } else {
+        Require(player.retained_pose.observed_at != pa::kInvalidTime, "Deferred pose has no display estimate");
+      }
+    }
+    Require(fresh_count == 1, "Budget deferral created extra pose evidence");
   }
   const auto& counters = processor->counters();
   Require(
@@ -324,12 +404,19 @@ void Guided(const char* pose, const char* jersey, Fixture& real_image) {
 
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
+  if (argc == 4 && std::string(argv[3]) == "--pose-drawing") {
+    Fixture image(cv::imread(argv[2]));
+    DrawingAndCadence(argv[1], image, {0, 0, float(image.width), float(image.height)});
+    return 0;
+  }
   if (argc != 6) {
     std::cerr << "Usage: PlayerAnalyticsSemanticTest POSE_BUNDLE JERSEY_BUNDLE ACTION_BUNDLE POSE_SCENE JERSEY_SCENE\n";
+    std::cerr << "   or: PlayerAnalyticsSemanticTest POSE_BUNDLE POSE_SCENE --pose-drawing\n";
     return 1;
   }
   Fixture pose_image(cv::imread(argv[4]));
   Fixture jersey_image(cv::imread(argv[5]));
+  DrawingAndCadence(argv[1], pose_image, kPoseBox);
   Jersey(argv[2], jersey_image);
   Actions(argv[1], argv[2], argv[3], pose_image);
   Capacity(argv[1], argv[3], pose_image);

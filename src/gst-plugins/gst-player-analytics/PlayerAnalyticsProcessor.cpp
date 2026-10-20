@@ -80,6 +80,7 @@ struct PlayerAnalyticsProcessor::Impl {
   };
   struct Evidence {
     uint64_t incarnation{0};
+    std::unique_ptr<PoseDrawingState> pose_drawing;
     std::unique_ptr<JerseyConsensus> jersey;
     std::unique_ptr<ActionState> action;
   };
@@ -261,6 +262,8 @@ struct PlayerAnalyticsProcessor::Impl {
       auto& evidence = inserted.first->second;
       if (inserted.second) {
         evidence.incarnation = record->incarnation;
+        if (pose && config.continuous_pose_drawing)
+          evidence.pose_drawing = std::make_unique<PoseDrawingState>();
         if (jersey)
           evidence.jersey = std::make_unique<JerseyConsensus>();
         if (action)
@@ -269,6 +272,8 @@ struct PlayerAnalyticsProcessor::Impl {
     }
     for (auto& [id, evidence] : source.evidence) {
       const auto* record = source.scheduler.Find(id);
+      if (evidence.pose_drawing && !record->visible)
+        evidence.pose_drawing->Reset();
       if (evidence.action && evidence.action->last_pose != kInvalidTime &&
           (!record->visible || frame->buf_pts - evidence.action->last_pose > kActionMaximumGap)) {
         evidence.action->Reset();
@@ -523,13 +528,17 @@ struct PlayerAnalyticsProcessor::Impl {
       const auto action_label = evidence.action && evidence.action->history.ready(frame->buf_pts)
           ? evidence.action->label.Result(frame->buf_pts)
           : ActionResult{};
-      if (!has_pose[i] && !jersey_label.text[0] && action_label.label < 0)
+      const auto retained_pose = !has_pose[i] && evidence.pose_drawing
+          ? evidence.pose_drawing->Result(frame->buf_pts, boxes[i])
+          : RetainedPose{};
+      if (!has_pose[i] && retained_pose.observed_at == kInvalidTime && !jersey_label.text[0] && action_label.label < 0)
         continue;
       auto& player = result.players[result.player_count++];
       player.track_id = ids[i];
       player.box = boxes[i];
       player.jersey = jersey_label;
       player.action = action_label;
+      player.retained_pose = retained_pose;
       if (action && action_label.label >= 0) {
         const auto& text = action->manifest().labels.at(static_cast<size_t>(action_label.label));
         const size_t length = std::min(text.size(), player.action_text.size() - 1);
@@ -543,6 +552,8 @@ struct PlayerAnalyticsProcessor::Impl {
         for (auto& keypoint : player.pose)
           if (keypoint.confidence < config.pose.confidence_threshold)
             keypoint.confidence = 0;
+        if (evidence.pose_drawing)
+          evidence.pose_drawing->Observe(frame->buf_pts, player.pose, boxes[i]);
       }
     }
     std::lock_guard<std::mutex> publication_lock(publication_mutex);
@@ -566,7 +577,7 @@ absl::StatusOr<std::unique_ptr<PlayerAnalyticsProcessor>> PlayerAnalyticsProcess
       config.maximum_tracks > kMaximumTracks || config.maximum_due_rois == 0 ||
       config.maximum_due_rois > kMaximumDueRois || config.batch_size > config.maximum_due_rois ||
       config.track_retention_ns < 1000000 || config.track_retention_ns > 60 * kSecond ||
-      (config.action.enabled && (!config.pose.enabled || config.pose.rate_hz < 10)) ||
+      (config.action.enabled && (!config.pose.enabled || (!config.pose.every_frame && config.pose.rate_hz < 10))) ||
       (config.jersey.enabled && config.jersey_roi_mode != JerseyRoiMode::kBox &&
        config.jersey_roi_mode != JerseyRoiMode::kPose) ||
       (config.jersey.enabled && config.jersey_roi_mode == JerseyRoiMode::kPose &&
@@ -580,12 +591,14 @@ absl::StatusOr<std::unique_ptr<PlayerAnalyticsProcessor>> PlayerAnalyticsProcess
     const auto& feature = *features[i];
     if (!feature.enabled)
       continue;
-    if (!std::isfinite(feature.rate_hz) || feature.rate_hz <= 0 || feature.rate_hz > 240 ||
-        !std::isfinite(feature.confidence_threshold) || feature.confidence_threshold < 0 ||
+    if ((feature.every_frame && i != 0) || !std::isfinite(feature.rate_hz) || feature.rate_hz <= 0 ||
+        feature.rate_hz > 240 || !std::isfinite(feature.confidence_threshold) || feature.confidence_threshold < 0 ||
         feature.confidence_threshold > 1 || feature.bundle.empty() || feature.bundle.size() > 4096 ||
         feature.bundle.find('\0') != std::string::npos)
       return absl::InvalidArgumentError("Invalid enabled player analytics model settings");
-    const double interval = std::ceil(double(kSecond) / feature.rate_hz);
+    // BeginFrame rejects repeated PTS. A 1 ns interval admits every new frame,
+    // including variable/fractional frame rates, without a rounded FPS estimate.
+    const double interval = feature.every_frame ? 1 : std::ceil(double(kSecond) / feature.rate_hz);
     if (!std::isfinite(interval) || interval >= double(kInvalidTime))
       return absl::InvalidArgumentError("Player analytics cadence exceeds source-time range");
     impl->intervals[i] = static_cast<uint64_t>(interval);

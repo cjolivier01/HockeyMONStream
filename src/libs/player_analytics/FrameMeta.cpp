@@ -47,7 +47,7 @@ bool Times(uint64_t observed, uint64_t expires, uint64_t frame_pts) {
 } // namespace
 
 NvDsMetaType FrameResultMetaType() {
-  static const auto type = nvds_get_user_meta_type(const_cast<gchar*>("HSTREAM.PLAYER_ANALYTICS.V1"));
+  static const auto type = nvds_get_user_meta_type(const_cast<gchar*>("HSTREAM.PLAYER_ANALYTICS.V3"));
   return type;
 }
 
@@ -69,6 +69,14 @@ bool ValidateFrameResult(const FrameResult& result) noexcept {
       if (player.pose_observed_at != result.pts_ns)
         return false;
       for (const auto& keypoint : player.pose)
+        if (!Position(keypoint.x) || !Position(keypoint.y) || !Confidence(keypoint.confidence))
+          return false;
+    }
+    if (player.retained_pose.observed_at != kInvalidTime) {
+      if (player.has_pose || player.retained_pose.observed_at >= result.pts_ns ||
+          result.pts_ns - player.retained_pose.observed_at > kPoseDrawingMaximumAge)
+        return false;
+      for (const auto& keypoint : player.retained_pose.pose)
         if (!Position(keypoint.x) || !Position(keypoint.y) || !Confidence(keypoint.confidence))
           return false;
     }

@@ -20,6 +20,8 @@ struct FeatureConfig {
   // "custom" selects the explicit directory; otherwise this is a catalog ID.
   // The runner resolves built-ins into the internal directory before playback.
   std::string model;
+  // Pose's "fps" cadence follows incoming frames without timestamp rounding.
+  bool every_frame{false};
 };
 
 struct DrawingConfig {
@@ -34,6 +36,7 @@ struct Config {
   FeatureConfig action{false, {}, 1, 0.5F};
   JerseyRoiMode jersey_roi_mode{JerseyRoiMode::kBox};
   DrawingConfig drawing;
+  bool continuous_pose_drawing{true};
   size_t maximum_tracks{kMaximumTracks};
   size_t maximum_due_rois{kMaximumDueRois};
   size_t batch_size{kMaximumBatch};

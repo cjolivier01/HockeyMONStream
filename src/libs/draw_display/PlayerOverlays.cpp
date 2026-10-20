@@ -144,19 +144,25 @@ void BuildPlayerOverlays(
   if (layers & kPose) {
     for (size_t i = 0; i < result->player_count; ++i) {
       const auto& player = result->players[i];
-      if (!player.has_pose || player.pose_observed_at != result->pts_ns)
+      const auto& retained = player.retained_pose;
+      const bool fresh = player.has_pose && player.pose_observed_at == result->pts_ns;
+      const bool held = retained.observed_at != player_analytics::kInvalidTime &&
+          retained.observed_at < result->pts_ns &&
+          result->pts_ns - retained.observed_at <= player_analytics::kPoseDrawingMaximumAge;
+      if (!fresh && !held)
         continue;
+      const auto& pose = fresh ? player.pose : retained.pose;
       const Color color = PlayerColor(player.color_slot);
       for (const auto& bone : kBones) {
-        const auto& a = player.pose[bone[0]];
-        const auto& b = player.pose[bone[1]];
+        const auto& a = pose[bone[0]];
+        const auto& b = pose[bone[1]];
         if (a.confidence <= 0 || b.confidence <= 0 || a.confidence < joint_confidence ||
             b.confidence < joint_confidence)
           continue;
         const Point start = map({a.x, a.y}), end = map({b.x, b.y});
         commands->AddLine(start.x, start.y, end.x, end.y, line_width, color);
       }
-      for (const auto& joint : player.pose) {
+      for (const auto& joint : pose) {
         if (joint.confidence <= 0 || joint.confidence < joint_confidence)
           continue;
         const Point point = map({joint.x, joint.y});

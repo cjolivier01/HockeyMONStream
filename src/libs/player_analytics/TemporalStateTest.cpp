@@ -24,6 +24,29 @@ pa::Pose Pose(float x = 250, float confidence = 0.9F) {
 
 int main() {
   bool ok = true;
+  pa::PoseDrawingState drawing;
+  const pa::Box original{100, 200, 300, 600}, moved{200, 100, 600, 300};
+  drawing.Observe(pa::kSecond, Pose(), original);
+  auto retained = drawing.Result(pa::kSecond + 33333333, moved);
+  ok &= Check(
+      retained.observed_at == pa::kSecond && retained.pose[0].x == 500 && retained.pose[0].y == 250 &&
+          retained.pose[0].confidence == 0.9F,
+      "retained pose must follow translation/scale without changing its observation time");
+  retained = drawing.Result(pa::kSecond + pa::kPoseDrawingMaximumAge, original);
+  ok &= Check(retained.pose[0].x == 250 && retained.pose[0].y == 500, "drawing accumulated reprojection drift");
+  for (const auto pts : {pa::kSecond, pa::kSecond - 1, pa::kInvalidTime, pa::kSecond + pa::kPoseDrawingMaximumAge + 1})
+    ok &= Check(drawing.Result(pts, original).observed_at == pa::kInvalidTime, "invalid/expired pose was retained");
+  ok &= Check(
+      drawing.Result(pa::kSecond + 1, {0, 0, 0, 1}).observed_at == pa::kInvalidTime, "invalid current box accepted");
+  drawing.Reset();
+  ok &= Check(drawing.Result(pa::kSecond + 1, original).observed_at == pa::kInvalidTime, "reset retained a pose");
+  auto masked = Pose();
+  masked[0].confidence = 0;
+  drawing.Observe(pa::kSecond, masked, original);
+  ok &= Check(drawing.Result(pa::kSecond + 1, moved).pose[0].confidence == 0, "retention revived a masked joint");
+  masked[1].x = std::numeric_limits<float>::quiet_NaN();
+  drawing.Observe(pa::kSecond, masked, original);
+  ok &= Check(drawing.Result(pa::kSecond + 1, moved).observed_at == pa::kInvalidTime, "nonfinite pose retained");
   pa::TrackScheduler scheduler(2, pa::kSecond);
   const uint64_t first[] = {100, 200, 300};
   scheduler.BeginFrame(1, 0, first, 3);

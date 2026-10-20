@@ -263,6 +263,27 @@ void OverflowColors() {
   }
   Check(overflow, "overflow alias was not advertised");
 }
+void RetainedPoseDrawing() {
+  auto semantic = Result();
+  semantic.player_count = 1;
+  auto& player = semantic.players[0];
+  player.retained_pose = {player.pose, 99};
+  player.has_pose = false;
+  player.pose = {};
+  player.pose_observed_at = pa::kInvalidTime;
+  Frame held;
+  held.Attach(semantic);
+  a::CommandList commands;
+  a::BuildPlayerOverlays(held.frame, a::kPose, .3F, nullptr, 800, 600, &commands);
+  Check(commands.size() == 36, "retained pose did not draw between inference frames");
+  Frame branch;
+  branch.CopyFrom(held);
+  commands.Clear();
+  a::BuildPlayerOverlays(branch.frame, a::kPose, .3F, nullptr, 800, 600, &commands);
+  Check(commands.size() == 36, "tee branch lost retained pose drawing");
+  semantic.pts_ns = 99 + pa::kPoseDrawingMaximumAge + 1;
+  Check(!pa::ValidateFrameResult(semantic), "expired display estimate was accepted");
+}
 void FreshnessAndLabels() {
   Frame expired;
   auto semantic = Result();
@@ -504,6 +525,7 @@ int main() {
       {"copy_on_write_colors", CopyOnWriteColors},
       {"overflow_colors", OverflowColors},
       {"freshness_labels_priority", FreshnessAndLabels},
+      {"retained_pose_drawing", RetainedPoseDrawing},
       {"baked_transform_and_empty", BakedTransformsAndEmpty},
       {"zero_confidence", ZeroConfidenceNeverDraws},
       {"baked_boxes", BakedBoxesNeverDraw},

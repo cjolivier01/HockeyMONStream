@@ -69,6 +69,21 @@ int main() {
   if (pa::ValidateFrameResult(*input))
     return 7; // Old poses cannot be painted as a fresh same-frame observation.
   input->players[0].pose_observed_at = input->pts_ns;
+  input->players[0].retained_pose.observed_at = 9;
+  if (pa::ValidateFrameResult(*input))
+    return 17; // Display estimates and fresh evidence must stay distinct.
+  input->players[0].has_pose = false;
+  if (!pa::ValidateFrameResult(*input))
+    return 18;
+  input->pts_ns = 9 + pa::kPoseDrawingMaximumAge + 1;
+  if (pa::ValidateFrameResult(*input))
+    return 19;
+  input->pts_ns = 10;
+  input->players[0].retained_pose.observed_at = 11;
+  if (pa::ValidateFrameResult(*input))
+    return 20;
+  input->players[0].retained_pose = {};
+  input->players[0].has_pose = true;
   input->players[0].pose[0].x = std::numeric_limits<float>::quiet_NaN();
   if (pa::ValidateFrameResult(*input))
     return 8;
