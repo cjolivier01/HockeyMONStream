@@ -30,6 +30,7 @@
 #     visibility = ["//visibility:public"],
 # )
 exports_files([
+    "side_by_side_video.py",
     "prepare_recording_int8.py",
     "quantize_detector_onnx.py",
     "capture_stitching_projection_frames.py",
@@ -50,6 +51,14 @@ exports_files([
     "test_hstream_ui_e2e.sh",
     "test_uri_playlist_memory.py",
 ])
+
+py_test(
+    name = "side_by_side_video_test",
+    size = "small",
+    srcs = ["side_by_side_video.py", "side_by_side_video_test.py"],
+    imports = ["."],
+    main = "side_by_side_video_test.py",
+)
 
 py_test(
     name = "uri_playlist_memory_checker_test",
