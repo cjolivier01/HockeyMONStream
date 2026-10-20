@@ -10,9 +10,11 @@
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
+#include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
+#include <QtGui/QPainterPathStroker>
 #include <QtGui/QShortcut>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
@@ -152,6 +154,7 @@ class Anchor : public QGraphicsEllipseItem {
     setBrush(QColor(68, 224, 166));
     setPen(QPen(Qt::black, 1));
     setCursor(Qt::SizeAllCursor);
+    setAcceptedMouseButtons(Qt::LeftButton);
     setZValue(20);
   }
 
@@ -206,7 +209,9 @@ class RinkMapCanvas : public QGraphicsView {
     fitted_ = true;
   }
   std::function<void(QPointF)> clicked;
+  std::function<void(int)> selected;
   std::function<void(size_t, size_t, QPointF)> moved;
+  bool marking{false};
   void pendingPoint(std::optional<QPointF> point) {
     delete pending_;
     pending_ = nullptr;
@@ -302,8 +307,9 @@ class RinkMapCanvas : public QGraphicsView {
       const auto& observation = state.document.observations[index];
       if (observation.camera != camera || observation.pixels.empty())
         continue;
-      const QColor color = observationColor(observation);
-      const auto observation_paths = path(observation.pixels, color, featureName(observation), 3, false);
+      const bool active = int(index) == selected;
+      const QColor color = active ? QColor(68, 224, 166) : observationColor(observation);
+      const auto observation_paths = path(observation.pixels, color, featureName(observation), active ? 5 : 3, false);
       for (auto* item : observation_paths) {
         if (observation.arc)
           item->setPath(arcPath(observation.pixels));
@@ -316,17 +322,25 @@ class RinkMapCanvas : public QGraphicsView {
       text->setDefaultTextColor(color);
       text->setFlag(QGraphicsItem::ItemIgnoresTransformations);
       text->setPos(position.x, position.y);
+      text->setAcceptedMouseButtons(Qt::NoButton);
+      text->setData(0, "rinkMapObservationLabel");
+      text->setData(1, int(index));
+      if (observation.pixels.size() == 1) {
+        auto* point = new QGraphicsEllipseItem(-4, -4, 8, 8, overlays_);
+        point->setFlag(QGraphicsItem::ItemIgnoresTransformations);
+        point->setPos(position.x, position.y);
+        point->setPen(QPen(Qt::black, 1));
+        point->setBrush(color);
+        point->setAcceptedMouseButtons(Qt::NoButton);
+        point->setData(0, "rinkMapObservationPoint");
+        point->setData(1, int(index));
+      }
       if (int(index) == selected || !observation.automatic) {
         for (size_t sample = 0; sample < observation.pixels.size(); ++sample) {
           if (observation.automatic && !observation.arc && sample != 0 && sample + 1 != observation.pixels.size())
             continue;
           auto* anchor = new Anchor(
-              [this, index, sample](QPointF position) {
-                QTimer::singleShot(0, this, [this, index, sample, position] {
-                  if (moved)
-                    moved(index, sample, position);
-                });
-              },
+              [this, index, sample](QPointF position) { pending_move_ = std::make_tuple(index, sample, position); },
               [preview_pixels,
                sample,
                observation_paths,
@@ -390,26 +404,64 @@ class RinkMapCanvas : public QGraphicsView {
   }
   void mousePressEvent(QMouseEvent* event) override {
     press_ = event->position();
-    anchor_pressed_ = dynamic_cast<Anchor*>(itemAt(event->position().toPoint())) != nullptr;
+    pressed_observation_ = observationAt(event->position().toPoint());
     QGraphicsView::mousePressEvent(event);
+    anchor_pressed_ = dynamic_cast<Anchor*>(scene()->mouseGrabberItem()) != nullptr;
+    if (anchor_pressed_)
+      pressed_observation_ = scene()->mouseGrabberItem()->data(1).toInt();
   }
   void mouseReleaseEvent(QMouseEvent* event) override {
     QGraphicsView::mouseReleaseEvent(event);
-    if (event->button() == Qt::LeftButton && !anchor_pressed_ && QLineF(press_, event->position()).length() < 4 &&
-        clicked) {
+    if (event->button() != Qt::LeftButton)
+      return;
+    // Selection rebuilds the overlays. Wait until the scene has finished
+    // dispatching release, so an anchor is never destroyed inside its handler.
+    if (anchor_pressed_) {
+      if (selected)
+        selected(pressed_observation_);
+      if (auto move = std::exchange(pending_move_, std::nullopt); move && moved)
+        moved(std::get<0>(*move), std::get<1>(*move), std::get<2>(*move));
+    } else if (QLineF(press_, event->position()).length() < 4) {
       const auto point = mapToScene(event->position().toPoint());
-      if (sceneRect().contains(point))
+      if (!marking && selected)
+        selected(pressed_observation_);
+      else if (clicked && sceneRect().contains(point))
         clicked(point);
     }
   }
 
  private:
+  int observationAt(QPoint position) const {
+    // Hit-test in viewport pixels so thin lines and arcs are equally easy to
+    // select at every zoom. Only measured observations are editable; projected
+    // rink geometry and raw model contours remain reference overlays.
+    for (auto* item : items(position)) {
+      const auto kind = item->data(0).toString();
+      if (kind == "rinkMapAnchor" || kind == "rinkMapObservationLabel" || kind == "rinkMapObservationPoint")
+        return item->data(1).toInt();
+    }
+    QPainterPathStroker stroker;
+    stroker.setWidth(14);
+    stroker.setCapStyle(Qt::RoundCap);
+    for (auto* item : scene()->items()) {
+      if (item->data(0) != "rinkMapObservationPath")
+        continue;
+      const auto* path = static_cast<QGraphicsPathItem*>(item);
+      const auto screen_path = item->deviceTransform(viewportTransform()).map(path->path());
+      if (stroker.createStroke(screen_path).contains(position))
+        return item->data(1).toInt();
+    }
+    return -1;
+  }
+
   QSize original_;
   QGraphicsItemGroup* overlays_{nullptr};
   QGraphicsEllipseItem* pending_{nullptr};
   QPointF press_;
   bool fitted_{true};
   bool anchor_pressed_{false};
+  int pressed_observation_{-1};
+  std::optional<std::tuple<size_t, size_t, QPointF>> pending_move_;
 };
 
 class RinkMapSchematic : public QWidget {
@@ -507,8 +559,8 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   toolbar->addWidget(new PreviewDialogWindowSizeButton(this));
   root->addLayout(toolbar);
   auto* instructions = new QLabel(
-      "Choose a point or line, then mark it in either camera. Lines need two clicks along the paint or straight boards. "
-      "Scroll to zoom, drag to pan, and drag green marks to correct them. Sparse detections can be saved as a partial map.");
+      "Click a mark or its row to select it, drag green handles to adjust it, and press Delete to remove it. "
+      "Choose a point or line to add marks; lines need two clicks. Scroll to zoom and drag the image to pan.");
   instructions->setWordWrap(true);
   root->addWidget(instructions);
   auto* splitter = new QSplitter(Qt::Horizontal);
@@ -518,7 +570,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   auto* preview_header = new QHBoxLayout();
   feature_ = new QComboBox();
   feature_->setObjectName("rinkMapFeatureCombo");
-  feature_->addItem("Inspect / pan (no new marks)", "");
+  feature_->addItem("Select / edit / pan", "");
   for (const auto& feature : rink::RinkMapFeatures())
     feature_->addItem(QString(feature.line ? "Line: " : "Point: ") + feature.name, feature.id);
   preview_header->addWidget(feature_, 1);
@@ -532,6 +584,17 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
     cameras_[camera]->setObjectName(QString("rinkMapCamera%1").arg(camera));
     tabs_->addTab(cameras_[camera], camera ? "Right camera" : "Left camera");
     cameras_[camera]->clicked = [this, camera](QPointF point) { addPoint(camera, point); };
+    cameras_[camera]->selected = [this](int row) {
+      if (busy_ || row == table_->currentRow())
+        return;
+      if (row >= 0) {
+        table_->selectRow(row);
+        table_->scrollToItem(table_->item(row, 0));
+      } else {
+        table_->setCurrentCell(-1, -1);
+        table_->clearSelection();
+      }
+    };
     cameras_[camera]->moved = [this](size_t index, size_t sample, QPointF point) {
       if (busy_ || index >= state_.document.observations.size())
         return;
@@ -603,8 +666,9 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   table_->setSelectionBehavior(QAbstractItemView::SelectRows);
   table_->setSelectionMode(QAbstractItemView::SingleSelection);
   side->addWidget(table_, 1);
-  remove_ = new QPushButton(action_icon(ActionIcon::Remove), "Remove selected mark");
+  remove_ = new QPushButton(action_icon(ActionIcon::Delete), "Delete selected mark");
   remove_->setObjectName("removeRinkMapObservationButton");
+  remove_->setToolTip("Delete the selected mark from the image and list (Delete). Undo restores it.");
   goal_line_ends_ = new QPushButton(action_icon(ActionIcon::Apply), "Use goal-line ends at boards…");
   goal_line_ends_->setObjectName("rinkMapGoalLineEndsButton");
   goal_line_ends_->setToolTip(
@@ -709,21 +773,18 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
     for (auto* camera : cameras_)
       camera->fit();
   });
-  connect(feature_, &QComboBox::currentIndexChanged, this, [this] { cancelLine(); });
+  connect(feature_, &QComboBox::currentIndexChanged, this, [this] {
+    cancelLine();
+    for (auto* camera : cameras_)
+      camera->marking = !feature_->currentData().toString().isEmpty();
+  });
   connect(tabs_, &QTabWidget::currentChanged, this, [this] { cancelLine(); });
   connect(focus_, &QToolButton::clicked, this, [this] {
     const bool focused = !sidebar_->isHidden();
     sidebar_->setVisible(!focused);
     focus_->setFocused(focused);
   });
-  connect(remove_, &QPushButton::clicked, this, [this] {
-    const int row = table_->currentRow();
-    if (row >= 0 && row < int(state_.document.observations.size())) {
-      recordEdit();
-      state_.document.observations.erase(state_.document.observations.begin() + row);
-      update();
-    }
-  });
+  connect(remove_, &QPushButton::clicked, this, &RinkMapDialog::removeSelected);
   connect(table_, &QTableWidget::itemSelectionChanged, this, [this] {
     if (!rebuilding_) {
       const int row = table_->currentRow();
@@ -797,7 +858,39 @@ RinkMapDialog::~RinkMapDialog() {
 }
 
 bool RinkMapDialog::eventFilter(QObject* watched, QEvent* event) {
+  if ((event->type() == QEvent::FocusIn || event->type() == QEvent::MouseButtonPress) && !rebuilding_ && !busy_ &&
+      table_) {
+    if (auto* identity = qobject_cast<QComboBox*>(watched); identity && table_->isAncestorOf(identity)) {
+      const int row = table_->indexAt(identity->mapTo(table_->viewport(), QPoint())).row();
+      if (row >= 0 && size_t(row) < state_.document.observations.size() && row != table_->currentRow())
+        table_->selectRow(row);
+    }
+  }
+  if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
+    auto* key = static_cast<QKeyEvent*>(event);
+    auto* widget = qobject_cast<QWidget*>(watched);
+    const bool editing_marks = widget && table_ && cameras_[0] && cameras_[1] &&
+        (widget == table_ || table_->isAncestorOf(widget) || widget == cameras_[0] || widget == cameras_[1] ||
+         cameras_[0]->isAncestorOf(widget) || cameras_[1]->isAncestorOf(widget));
+    if (editing_marks && key->key() == Qt::Key_Delete && key->modifiers() == Qt::NoModifier &&
+        !QApplication::activePopupWidget()) {
+      if (event->type() == QEvent::KeyPress && !key->isAutoRepeat())
+        removeSelected();
+      key->accept();
+      return true;
+    }
+  }
   return route_value_control_wheel(this, watched, event) || QDialog::eventFilter(watched, event);
+}
+
+void RinkMapDialog::removeSelected() {
+  const int row = table_->currentRow();
+  if (busy_ || !snapshot_ || close_prompt_active_ || QApplication::mouseButtons() != Qt::NoButton || row < 0 ||
+      row >= int(state_.document.observations.size()) || !table_->selectionModel()->hasSelection())
+    return;
+  recordEdit();
+  state_.document.observations.erase(state_.document.observations.begin() + row);
+  update();
 }
 
 rink::RinkLayout RinkMapDialog::dimensionValues() const {
@@ -841,7 +934,7 @@ void RinkMapDialog::recordEdit() {
 }
 
 void RinkMapDialog::travelHistory(bool redo) {
-  if (busy_ || !snapshot_)
+  if (busy_ || !snapshot_ || QApplication::mouseButtons() != Qt::NoButton)
     return;
   flushDimensionEdit();
   auto& from = redo ? redo_history_ : undo_history_;
@@ -868,6 +961,9 @@ void RinkMapDialog::refreshEditControls() {
   undo_->setEnabled(!busy_ && (!undo_history_.empty() || pending_dimension_edit_.has_value()));
   redo_->setEnabled(!busy_ && redo_history_.size() && !pending_dimension_edit_);
   const int selected = table_->currentRow();
+  remove_->setEnabled(
+      snapshot_ && !busy_ && selected >= 0 && size_t(selected) < state_.document.observations.size() &&
+      table_->selectionModel()->hasSelection());
   goal_line_ends_->setEnabled(
       snapshot_ && !busy_ && !refresh_timer_.isActive() && state_.document.observations.size() < 128 && selected >= 0 &&
       size_t(selected) < state_.document.observations.size() &&
@@ -1256,6 +1352,7 @@ void RinkMapDialog::addPoint(int camera, QPointF point) {
   recordEdit();
   cancelLine();
   state_.document.observations.push_back(std::move(observation));
+  feature_->setCurrentIndex(0);
   rebuildTable();
   table_->selectRow(int(state_.document.observations.size()) - 1);
   update();
