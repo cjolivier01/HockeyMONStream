@@ -5,9 +5,12 @@ proposes a quadrilateral from the October 15 Mask2Former R50 scoreboard model
 (best iteration 4000). The desktop dialog and browser show the same editable
 draft. Only Save publishes it through the existing canvas-generation checks.
 Existing selections, including the four-zero disabled sentinel, skip model
-lookup, download and inference. Reselecting a saved polygon starts from that
-polygon. No confident detection leaves an empty editor; model/download errors
-are reported in the run log and editor without disabling manual selection.
+lookup, download and inference. This includes games that saved only a native
+`scoreboard-perspective-polygon`/`scoreboard_perspective_polygon` CSV property
+under `pipeline.hmplaycropper`, `properties`, or `private-properties`.
+Reselecting a saved polygon starts from that polygon. No confident detection
+leaves an empty editor; model/download errors are reported in the run log and
+editor without disabling manual selection.
 
 `ScoreboardSelector::Run` owns this one-shot work on the existing selector
 worker before announcing its private URL. It uses the already pinned `s.png`

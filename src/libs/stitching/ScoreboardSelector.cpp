@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -16,12 +17,14 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <random>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -437,21 +440,62 @@ async function post(path,body='{}'){const r=await fetch(path+'?token='+encodeURI
 std::optional<ScoreboardSelector::Polygon> load_existing(const fs::path& game_dir) {
   try {
     auto loaded_config = load_game_config_file(game_dir / "config.yaml");
-    if (!loaded_config.ok() || !loaded_config->has_value())
+    if (!loaded_config.ok()) {
+      std::cerr << "Unable to read saved scoreboard selection: " << loaded_config.status() << '\n';
       return std::nullopt;
-    const YAML::Node polygon = (**loaded_config)["rink"]["scoreboard"]["perspective_polygon"];
-    if (!polygon || !polygon.IsSequence() || polygon.size() != 4)
-      return std::nullopt;
-    ScoreboardSelector::Polygon result;
-    for (size_t index = 0; index < result.size(); ++index) {
-      if (!polygon[index].IsSequence() || polygon[index].size() != 2)
-        return std::nullopt;
-      result[index] = {polygon[index][0].as<int>(), polygon[index][1].as<int>()};
     }
-    return result;
-  } catch (...) {
-    return std::nullopt;
+    if (!loaded_config->has_value())
+      return std::nullopt;
+    const auto child = [](const YAML::Node& parent, const char* key) {
+      if (!parent.IsMap())
+        return YAML::Node();
+      const YAML::Node value = parent[key];
+      return value.IsDefined() ? value : YAML::Node();
+    };
+    const YAML::Node config = **loaded_config;
+    const YAML::Node polygon = child(child(child(config, "rink"), "scoreboard"), "perspective_polygon");
+    if (polygon.IsSequence() && polygon.size() == 4) {
+      ScoreboardSelector::Polygon result;
+      for (size_t index = 0; index < result.size(); ++index) {
+        if (!polygon[index].IsSequence() || polygon[index].size() != 2)
+          throw std::invalid_argument("Saved scoreboard polygon must contain four [x, y] pairs");
+        result[index] = {polygon[index][0].as<int>(), polygon[index][1].as<int>()};
+      }
+      return result;
+    }
+    // Older/native game configs may save only the plugin's CSV property.
+    // Recognize the same aliases Save clears so reselect never redetects them.
+    const YAML::Node cropper = child(child(config, "pipeline"), "hmplaycropper");
+    if (!cropper.IsMap())
+      return std::nullopt;
+    for (const YAML::Node& bag : {cropper, child(cropper, "properties"), child(cropper, "private-properties")}) {
+      if (!bag.IsMap())
+        continue;
+      for (const char* key : {"scoreboard-perspective-polygon", "scoreboard_perspective_polygon"}) {
+        const YAML::Node value = bag[key];
+        if (!value.IsDefined() || value.IsNull())
+          continue;
+        const YAML::Node coordinates = YAML::Load("[" + value.as<std::string>() + "]");
+        if (!coordinates.IsSequence() || coordinates.size() != 8)
+          throw std::invalid_argument("Saved native scoreboard polygon must contain eight coordinates");
+        std::array<int, 8> rounded;
+        for (size_t i = 0; i < rounded.size(); ++i) {
+          const double coordinate = std::round(coordinates[i].as<double>());
+          if (!std::isfinite(coordinate) || coordinate < std::numeric_limits<int>::min() ||
+              coordinate > std::numeric_limits<int>::max())
+            throw std::invalid_argument("Saved native scoreboard coordinate is outside the integer range");
+          rounded[i] = static_cast<int>(coordinate);
+        }
+        ScoreboardSelector::Polygon result;
+        for (size_t i = 0; i < result.size(); ++i)
+          result[i] = {rounded[2 * i], rounded[2 * i + 1]};
+        return result;
+      }
+    }
+  } catch (const std::exception& error) {
+    std::cerr << "Unable to load saved scoreboard selection: " << error.what() << '\n';
   }
+  return std::nullopt;
 }
 
 bool valid_public_host(const std::string& host) {

@@ -29,6 +29,7 @@
 namespace {
 
 bool reject_proposal = false;
+int proposal_calls = 0;
 
 } // namespace
 
@@ -40,6 +41,7 @@ absl::StatusOr<std::optional<ScoreboardProposal>> SuggestScoreboard(
     const cv::Mat&,
     cv::Size,
     const std::function<bool()>&) {
+  ++proposal_calls;
   if (reject_proposal) {
     // Convex tilted corners can share extrema in the selector's ordering.
     return ScoreboardProposal{{{{25, 10}, {50, 5}, {75, 10}, {50, 30}}}, 0.99};
@@ -186,7 +188,8 @@ bool exercise_http_selector(
     const std::filesystem::path& directory,
     bool remote = false,
     int cancel_mode = 0,
-    bool invalid_proposal = false) {
+    bool invalid_proposal = false,
+    const std::optional<hm::stitching::ScoreboardSelector::Polygon>& expected_saved = std::nullopt) {
   const std::string authority_host = remote ? "scoreboard.test" : "127.0.0.1";
   cv::Mat image(32, 96, CV_8UC3, cv::Scalar(255, 255, 255));
   if (!cv::imwrite((directory / "s.png").string(), image))
@@ -226,7 +229,8 @@ bool exercise_http_selector(
       cancelled = cancelled || ::read(cancellation_pipe[0], &value, 1) == 1;
       return cancelled;
     });
-    _exit((cancel_mode ? absl::IsCancelled(status) : status.ok()) ? 0 : 1);
+    const bool expected_calls = proposal_calls == (expected_saved.has_value() ? 0 : 1);
+    _exit((cancel_mode ? absl::IsCancelled(status) : status.ok()) && expected_calls ? 0 : 1);
   }
   ::close(output_pipe[1]);
   ::close(cancellation_pipe[0]);
@@ -329,11 +333,23 @@ bool exercise_http_selector(
         http_request(port, "/?token=" + token, false, authority_host).rfind("HTTP/1.1 200 ", 0) == 0,
         "valid scoreboard selector GET must succeed");
     const auto proposal = http_request(port, "/initial?token=" + token, false, authority_host);
-    const char* expected_message =
-        invalid_proposal ? "Automatic corners could not be used" : "Automatic detection unavailable";
+    const char* expected_message = expected_saved.has_value() ? "Review the corners"
+        : invalid_proposal                                    ? "Automatic corners could not be used"
+                                                              : "Automatic detection unavailable";
+    std::ostringstream expected_points;
+    expected_points << "\"points\":[";
+    if (expected_saved.has_value() && !hm::stitching::ScoreboardSelector::IsDisabled(*expected_saved)) {
+      for (size_t i = 0; i < expected_saved->size(); ++i) {
+        if (i)
+          expected_points << ',';
+        expected_points << '[' << (*expected_saved)[i].x << ',' << (*expected_saved)[i].y << ']';
+      }
+    }
+    expected_points << ']';
     ok &= expect(
-        proposal.find("\"points\":[]") != std::string::npos && proposal.find(expected_message) != std::string::npos,
-        "Failed or rejected proposals must expose an empty draft and a visible manual-selection explanation");
+        proposal.find(expected_points.str()) != std::string::npos &&
+            proposal.find(expected_message) != std::string::npos,
+        "Saved corners must remain the draft; failed proposals must explain the empty manual selection");
     ok &= expect(
         http_request(port, "/initial?token=wrong", false, authority_host).rfind("HTTP/1.1 403 ", 0) == 0,
         "Proposal metadata must require the selector token");
@@ -412,6 +428,7 @@ int main() {
     ok &= expect(polygon.IsSequence() && polygon.size() == 4, "saved sentinel must contain four points");
     ok &= expect(polygon[3][0].as<int>() == 0 && polygon[3][1].as<int>() == 0, "saved sentinel must stay zero");
   }
+  fixture_config = YAML::LoadFile((directory / "config.yaml").string());
   fixture_config["rink"].remove("scoreboard");
   std::ofstream(directory / "config.yaml") << fixture_config << '\n';
   cv::imwrite((directory / "s.png").string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(255, 255, 255)));
@@ -456,6 +473,21 @@ int main() {
   ok &= expect(
       exercise_http_selector(directory, false, 0, true),
       "Rejected automatic corners must keep the manual editor available and allow an operator choice");
+  const Selector::Polygon saved_corners{{{10, 5}, {80, 5}, {80, 25}, {10, 25}}};
+  for (const char* bag : {"", "properties", "private-properties"}) {
+    for (const char* key : {"scoreboard-perspective-polygon", "scoreboard_perspective_polygon"}) {
+      for (bool no_scoreboard : {false, true}) {
+        YAML::Node alias_config = YAML::Clone(remote_fixture_config);
+        auto cropper = alias_config["pipeline"]["hmplaycropper"];
+        auto destination = *bag ? cropper[bag] : cropper;
+        destination[key] = no_scoreboard ? "0,0,0,0,0,0,0,0" : "10,5,80,5,80,25,10,25";
+        std::ofstream(directory / "config.yaml") << alias_config << '\n';
+        ok &= expect(
+            exercise_http_selector(directory, false, 0, false, no_scoreboard ? disabled : saved_corners),
+            "Saved native polygon aliases, including disabled sentinels, must bypass inference on reselect");
+      }
+    }
+  }
   std::ofstream(directory / "config.yaml") << remote_fixture_config << '\n';
   ok &= expect(
       exercise_http_selector(directory, true),
