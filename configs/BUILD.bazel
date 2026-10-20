@@ -17,6 +17,7 @@ exports_files([
     "player-models/action.json",
     "player-models/reid.json",
     "player-models/team.json",
+    "player-analytics/semantics-example.yaml",
 ])
 
 # Offline conversion inputs; playback reads the generated baseline presets.

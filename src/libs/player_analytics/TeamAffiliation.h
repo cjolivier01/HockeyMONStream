@@ -65,6 +65,9 @@ class TeamClusterer {
  private:
   void Fit() noexcept;
   std::array<std::array<float, kTeamEmbedding>, 2> RawCentroids() const noexcept;
+  static float Alignment(
+      const std::array<std::array<float, kTeamEmbedding>, 2>& current,
+      const std::array<std::array<float, kTeamEmbedding>, 2>& previous) noexcept;
 
   TeamClusteringSettings settings_;
 

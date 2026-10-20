@@ -39,6 +39,14 @@ float Jitter(uint32_t& state, float scale) noexcept {
   return (static_cast<float>(Next(state) >> 8) / 16777216.0F - 0.5F) * scale;
 }
 
+// Box-Muller off the same generator. Appearance spreads are Gaussian, and a
+// uniform stand-in has no tails, which is where these failures live.
+float Normal(uint32_t& state, float deviation) noexcept {
+  const float u1 = std::max((static_cast<float>(Next(state) >> 8) + 1.0F) / 16777217.0F, 1e-7F);
+  const float u2 = static_cast<float>(Next(state) >> 8) / 16777216.0F;
+  return deviation * std::sqrt(-2.0F * std::log(u1)) * std::cos(6.2831853F * u2);
+}
+
 // Two separated squads in embedding space: one centred at -1 on the first
 // half of the axes, one at +1, both with the same small jitter everywhere.
 std::array<float, kTeamEmbedding> MakeEmbedding(uint32_t& state, bool second_squad, float spread) {
@@ -316,6 +324,130 @@ bool RefusesALopsidedSplit() {
   return ok;
 }
 
+// Appearance groups as a real rink presents them: two squads separated on a
+// narrow band of dimensions and close together, officials far from both on a
+// different band, and a shared per-dimension background. The earlier fixtures
+// put the squads too far apart for either failure below to appear.
+struct World {
+  std::array<float, kTeamEmbedding> dark{}, light{}, official{};
+  explicit World(uint32_t& state) {
+    for (size_t d = 0; d < kTeamEmbedding; ++d) {
+      const float base = Normal(state, 0.05F);
+      dark[d] = base + (d < 32 ? -0.45F : 0.0F);
+      light[d] = base + (d < 32 ? 0.45F : 0.0F);
+      official[d] = base + (d >= 32 && d < 96 ? 4.0F : 0.0F);
+    }
+  }
+};
+
+std::array<float, kTeamEmbedding> Sample(uint32_t& state, const std::array<float, kTeamEmbedding>& centre) {
+  std::array<float, kTeamEmbedding> out{};
+  for (size_t d = 0; d < kTeamEmbedding; ++d)
+    out[d] = centre[d] + Normal(state, 0.12F);
+  return out;
+}
+
+// Which cluster index a squad currently lands in, by majority over fresh crops.
+int SquadIndex(
+    TeamClusterer& clusterer,
+    uint32_t& state,
+    const std::array<float, kTeamEmbedding>& centre,
+    float lightness) {
+  int votes[2] = {0, 0};
+  for (int i = 0; i < 25; ++i) {
+    const auto result = clusterer.Observe(Sample(state, centre).data(), lightness);
+    if (result.cluster >= 0)
+      ++votes[result.cluster];
+  }
+  if (!votes[0] && !votes[1])
+    return -1;
+  return votes[0] >= votes[1] ? 0 : 1;
+}
+
+// A lopsided fit is withheld, but it used to latch the ranking anyway. When
+// the officials stop being sampled and the two squads do separate, that stale
+// ranking is published and kept -- inverting every badge for the rest of the
+// game, measured at half of seeds.
+bool ALopsidedFitCannotRankTheGame() {
+  int inverted = 0, correct = 0;
+  for (uint32_t seed = 1; seed <= 20; ++seed) {
+    uint32_t state = seed * 7919u + 1u;
+    World world(state);
+    TeamClusterer clusterer(kSettings);
+    // Opening stretch: both squads plus officials. k=2 separates the stripes
+    // from everyone, which is lopsided and must not be published -- but it
+    // used to establish the ranking all the same.
+    for (int i = 0; i < 650; ++i) {
+      const bool official = (i % 7) == 0;
+      const auto& centre = official ? world.official : ((i % 2) ? world.light : world.dark);
+      const float lightness = official ? 85.0F : ((i % 2) ? 55.0F : 40.0F);
+      clusterer.Observe(Sample(state, centre).data(), lightness + Normal(state, 2.0F));
+    }
+    // Officials drop out; the two squads now separate on their own.
+    for (int i = 0; i < 2400; ++i) {
+      const auto& centre = (i % 2) ? world.light : world.dark;
+      clusterer.Observe(Sample(state, centre).data(), ((i % 2) ? 55.0F : 40.0F) + Normal(state, 2.0F));
+    }
+    const auto dark = clusterer.dark_cluster();
+    const int dark_index = SquadIndex(clusterer, state, world.dark, 40.0F);
+    if (!dark || dark_index < 0)
+      continue;
+    // The darker squad must read DARK.
+    if (NameClusters(*dark, std::nullopt)[static_cast<size_t>(dark_index)] == TeamLabel::kDark)
+      ++correct;
+    else
+      ++inverted;
+  }
+  bool ok = Check(correct > 0, "no seed ever produced a usable ranking");
+  return Check(
+             inverted == 0,
+             "the ranking was latched from the officials split, so every badge is inverted (" +
+                 std::to_string(inverted) + " of " + std::to_string(inverted + correct) + " seeds)") &&
+      ok;
+}
+
+// A settled track stops being sampled, so the reservoir can go single-squad
+// for minutes. k=2 then splits that one squad down the middle, both new
+// centroids land inside one old cluster, and the pairing has nothing to work
+// with: accepting either answer renames the squads on a coin flip, after
+// which tracks settled before and after the stretch wear opposite badges.
+bool RefusesAFitOfOneSquad() {
+  int flipped = 0, stable = 0;
+  for (uint32_t seed = 1; seed <= 30; ++seed) {
+    uint32_t state = seed * 104729u + 3u;
+    World world(state);
+    TeamClusterer clusterer(kSettings);
+    for (int i = 0; i < 400; ++i) {
+      const auto& centre = (i % 2) ? world.light : world.dark;
+      clusterer.Observe(Sample(state, centre).data(), (i % 2) ? 80.0F : 20.0F);
+    }
+    const int before = SquadIndex(clusterer, state, world.dark, 20.0F);
+    if (before < 0 || !clusterer.dark_cluster())
+      continue;
+    // Only the dark squad is sampled, for several refit intervals.
+    for (int i = 0; i < 1800; ++i)
+      clusterer.Observe(Sample(state, world.dark).data(), 20.0F);
+    // Balanced play resumes.
+    for (int i = 0; i < 1800; ++i) {
+      const auto& centre = (i % 2) ? world.light : world.dark;
+      clusterer.Observe(Sample(state, centre).data(), (i % 2) ? 80.0F : 20.0F);
+    }
+    const int after = SquadIndex(clusterer, state, world.dark, 20.0F);
+    if (after < 0)
+      continue;
+    if (after == before)
+      ++stable;
+    else
+      ++flipped;
+  }
+  bool ok = Check(stable > 0, "no seed kept a usable split across the homogeneous stretch");
+  return Check(
+             flipped == 0,
+             "a fit of one squad renamed the clusters, so the two squads now wear a mix (" + std::to_string(flipped) +
+                 " of " + std::to_string(flipped + stable) + " seeds)") &&
+      ok;
+}
+
 bool ResetClearsState() {
   TeamClusterer clusterer(kSettings);
   uint32_t state = 31;
@@ -338,6 +470,8 @@ int main() {
   ok &= DeclinesNonFiniteEmbeddings();
   ok &= RankingIsStableAndHonest();
   ok &= RefusesALopsidedSplit();
+  ok &= ALopsidedFitCannotRankTheGame();
+  ok &= RefusesAFitOfOneSquad();
   ok &= DeclinesBeforeWarmup();
   ok &= DeclinesAmbiguousEmbeddings();
   ok &= IsDeterministic();

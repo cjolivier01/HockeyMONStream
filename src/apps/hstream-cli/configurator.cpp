@@ -6014,10 +6014,20 @@ absl::Status Configurator::map_common_config_keys() {
           canonical_source(
               "game.home_is_dark", "pipeline.player-analytics.home-is-dark", analytics["home-is-dark"], true));
       if (source && !source->IsNull()) {
-        try {
-          analytics["home-is-dark"] = source->as<bool>() ? 1 : 0;
-        } catch (const YAML::Exception& error) {
-          return absl::InvalidArgumentError(std::string("Invalid game.home_is_dark: ") + error.what());
+        // 1/0 as well as true/false: that is the spelling every mapped flag is
+        // written in, and ParseConfig accepts it, so rejecting it here would
+        // let a game config validate in the UI and then abort the run.
+        if (!source->IsScalar())
+          return absl::InvalidArgumentError("game.home_is_dark must be a boolean or 0/1");
+        const std::string value = source->Scalar();
+        if (value == "1" || value == "0") {
+          analytics["home-is-dark"] = value == "1" ? 1 : 0;
+        } else {
+          try {
+            analytics["home-is-dark"] = source->as<bool>() ? 1 : 0;
+          } catch (const YAML::Exception& error) {
+            return absl::InvalidArgumentError(std::string("Invalid game.home_is_dark: ") + error.what());
+          }
         }
       }
     }

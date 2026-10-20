@@ -212,10 +212,32 @@ void TeamSettingsReachTheFeature(const YAML::Node& baseline) {
   Require(without.ok() && !without->home_is_dark.has_value(), "An unset home_is_dark was resolved to a side");
 }
 
+// The shipped example is read on its own, with no baseline behind it, and the
+// docs point operators and benchmark authors at it. Growing the required key
+// set silently invalidated it once; parse it here so that cannot recur.
+void TheShippedExampleParses(const std::string& path) {
+  const auto document = YAML::LoadFile(path);
+  const auto analytics = document["pipeline"]["player-analytics"];
+  Require(analytics && analytics.IsMap(), "The example has no pipeline.player-analytics block");
+  const auto parsed = hm::player_analytics::ParseConfig(analytics);
+  Require(parsed.ok(), "The shipped example no longer parses: " + std::string(parsed.status().message()));
+  Require(
+      parsed->pose.enabled && parsed->jersey.enabled && parsed->action.enabled && parsed->team.enabled,
+      "The example is meant to enable every feature");
+  // Drawing comes from the canonical plot block, which the configurator maps.
+  // An enabled feature nobody draws costs a download, an engine and the
+  // inference, and shows nothing for it.
+  for (const char* key : {"plot_pose", "plot_jersey_numbers", "plot_actions", "plot_teams"})
+    Require(
+        document["plot"][key] && document["plot"][key].as<bool>(),
+        std::string("The example enables a feature it never draws: ") + key);
+}
+
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
-  Require(argc == 2, "Usage: player_analytics_mapping_test BASELINE_YAML");
+  Require(argc == 3, "Usage: player_analytics_mapping_test BASELINE_YAML SEMANTICS_EXAMPLE_YAML");
   const auto baseline = YAML::LoadFile(argv[1]);
+  TheShippedExampleParses(argv[2]);
   Precedence(baseline);
   DrawingAndCalibration(baseline);
   PoseCadenceAndDrawing(baseline);

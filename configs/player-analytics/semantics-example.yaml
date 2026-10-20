@@ -24,13 +24,18 @@ pipeline:
       enable: 1
       model: reidentificationnet-deployable-v1.2 # NVIDIA EULA; shared with the tracker ReID
       rate-hz: 2 # Per track, not per frame. A settled track stops being sampled.
-      # The configurator fills these three from configs/baseline.yaml, which
-      # owns them; they are spelled out here because this file is read on its
-      # own and the clusterer has no defaults to fall back on. There is no
+      # The configurator fills these from configs/baseline.yaml, which owns
+      # them; they are spelled out here because this file is read on its own
+      # and the clusterer has no defaults to fall back on. There is no
       # confidence-threshold: the assignment floor is min-margin.
       warmup-samples: 200
       refit-interval: 600
       min-margin: 0.12
+      min-lightness-gap: 6.0
+      min-cluster-share: 0.25
+      acquisition-evidence: 1.0
+      switch-hysteresis: 1.35
+      min-track-height: 60
     # Which sweater the home side wore. Omit it and the overlay reads
     # DARK/LIGHT, which is correct but unnamed; there is no way to infer
     # which side is "home" from pixels.

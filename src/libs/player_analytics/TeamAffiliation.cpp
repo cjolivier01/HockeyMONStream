@@ -6,6 +6,15 @@
 namespace hm::player_analytics {
 namespace {
 
+// How closely the new split's axis must line up with the old one, as |cos|,
+// before the pairing between them is believed. Not a tuning knob: it asks
+// whether the question has an answer at all. Two fits of the same two squads
+// separate them along nearly the same direction whatever the lighting has
+// done; a fit of one squad split down the middle picks an arbitrary direction
+// inside it, which is orthogonal to the squad axis and carries no information
+// about which old cluster is which.
+constexpr float kPairingAlignment = 0.5F;
+
 float SquaredDistance(const float* a, const float* b) noexcept {
   float total = 0;
   for (size_t i = 0; i < kTeamEmbedding; ++i) {
@@ -20,6 +29,23 @@ float SquaredDistance(const float* a, const float* b) noexcept {
 // The centroids undone back to embedding space. Standardisation is refitted
 // every time, so the stored centroids of two different fits are not comparable
 // as they stand.
+// Cosine between the two fits' separating axes. Positive means they number
+// the groups the same way, negative means reversed, and near zero means the
+// two fits are not describing the same division at all.
+float TeamClusterer::Alignment(
+    const std::array<std::array<float, kTeamEmbedding>, 2>& current,
+    const std::array<std::array<float, kTeamEmbedding>, 2>& previous) noexcept {
+  double dot = 0, current_norm = 0, previous_norm = 0;
+  for (size_t d = 0; d < kTeamEmbedding; ++d) {
+    const double a = current[0][d] - current[1][d], b = previous[0][d] - previous[1][d];
+    dot += a * b;
+    current_norm += a * a;
+    previous_norm += b * b;
+  }
+  const double scale = std::sqrt(current_norm) * std::sqrt(previous_norm);
+  return scale > 1e-12 ? static_cast<float>(dot / scale) : 0.0F;
+}
+
 std::array<std::array<float, kTeamEmbedding>, 2> TeamClusterer::RawCentroids() const noexcept {
   std::array<std::array<float, kTeamEmbedding>, 2> raw{};
   for (size_t k = 0; k < 2; ++k)
@@ -48,6 +74,9 @@ void TeamClusterer::Fit() noexcept {
   // only frame the two fits share.
   const bool refitting = fitted_;
   std::array<std::array<float, kTeamEmbedding>, 2> previous{};
+  const auto previous_centroids = centroids_;
+  const auto previous_mean = mean_;
+  const auto previous_deviation = inverse_deviation_;
   if (refitting)
     previous = RawCentroids();
 
@@ -55,20 +84,22 @@ void TeamClusterer::Fit() noexcept {
   // variances, and a raw Euclidean fit is dominated by whichever happens to be
   // widest rather than by the one separating the squads.
   for (size_t d = 0; d < kTeamEmbedding; ++d) {
-    float sum = 0;
+    // Accumulated in double: 512 finite floats can still sum past the float
+    // range, and an infinite sum turns the whole standardisation into NaN.
+    double sum = 0;
     for (size_t i = 0; i < n; ++i) {
       sum += samples_[i][d];
     }
-    const float mean = sum / static_cast<float>(n);
-    float variance = 0;
+    const double mean = sum / static_cast<double>(n);
+    double variance = 0;
     for (size_t i = 0; i < n; ++i) {
-      const float d0 = samples_[i][d] - mean;
+      const double d0 = samples_[i][d] - mean;
       variance += d0 * d0;
     }
-    variance /= static_cast<float>(n);
-    mean_[d] = mean;
-    const float deviation = std::sqrt(variance);
-    inverse_deviation_[d] = deviation > 1e-6F ? 1.0F / deviation : 1.0F;
+    variance /= static_cast<double>(n);
+    mean_[d] = static_cast<float>(mean);
+    const double deviation = std::sqrt(variance);
+    inverse_deviation_[d] = deviation > 1e-6 ? static_cast<float>(1.0 / deviation) : 1.0F;
   }
 
   // Scratch for the standardised reservoir. Static extent, no allocation.
@@ -151,30 +182,10 @@ void TeamClusterer::Fit() noexcept {
   }
 
   // Lloyd's seeds from whatever is in the reservoir now, so nothing ties this
-  // fit's index 0 to the last one's. Unmatched, a refit renames the two squads:
-  // a track that settled on index 1 keeps voting for index 1, which now means
-  // the other side, and it wears the wrong badge for the rest of the game --
-  // permanently, because a settled track is never sampled again. Pair the new
-  // centroids with the nearest old ones and swap if that is the better match.
-  if (refitting) {
-    const auto current = RawCentroids();
-    const float keep =
-        SquaredDistance(current[0].data(), previous[0].data()) + SquaredDistance(current[1].data(), previous[1].data());
-    const float swap =
-        SquaredDistance(current[0].data(), previous[1].data()) + SquaredDistance(current[1].data(), previous[0].data());
-    if (swap < keep) {
-      std::swap(centroids_[0], centroids_[1]);
-      for (size_t i = 0; i < n; ++i)
-        membership[i] ^= 1;
-    }
-  }
-
-  std::array<double, 2> lightness{};
+  // fit's index 0 to the last one's.
   std::array<size_t, 2> members{};
-  for (size_t i = 0; i < n; ++i) {
-    lightness[membership[i]] += lightness_[i];
+  for (size_t i = 0; i < n; ++i)
     ++members[membership[i]];
-  }
 
   // Two squads divide the ice roughly evenly. A lopsided split means the fit
   // separated something else, and the usual something else is the officials:
@@ -183,7 +194,45 @@ void TeamClusterer::Fit() noexcept {
   // group. Badging every skater the same and the referees the opposite is
   // worse than saying nothing, so refuse the split rather than name it.
   const size_t smaller = std::min(members[0], members[1]);
-  balanced_ = static_cast<float>(smaller) >= settings_.minimum_cluster_share * static_cast<float>(n);
+  const bool balanced = static_cast<float>(smaller) >= settings_.minimum_cluster_share * static_cast<float>(n);
+
+  if (refitting) {
+    const auto current = RawCentroids();
+    const float alignment = Alignment(current, previous);
+    // Once a split is good enough to publish, protect it. A worse fit must not
+    // replace it, and neither must one whose relationship to it cannot be
+    // established: the reservoir goes single-squad for minutes at a time --
+    // a settled track stops being sampled, so the window holds only whoever
+    // is new or still undecided -- and k=2 then splits one squad down the
+    // middle. Both new centroids land inside one old cluster and the pairing
+    // becomes a coin flip, measured at 13 of 30 seeds, after which the two
+    // squads wear a mix of badges. Keep the previous split and try again next
+    // interval; stale centroids describe the ice far better than a fit of one
+    // team pretending to be two.
+    if (balanced_ && (!balanced || std::fabs(alignment) < kPairingAlignment)) {
+      centroids_ = previous_centroids;
+      mean_ = previous_mean;
+      inverse_deviation_ = previous_deviation;
+      since_fit_ = 0;
+      return;
+    }
+    // A negative alignment means this fit numbered the squads the other way
+    // round. Renumber it rather than the game: a track that settled on index 1
+    // keeps voting for index 1, and if that now means the other side it wears
+    // the wrong badge for the rest of the game -- permanently, because a
+    // settled track is only re-offered against centroids it has already seen.
+    if (alignment < 0) {
+      std::swap(centroids_[0], centroids_[1]);
+      std::swap(members[0], members[1]);
+      for (size_t i = 0; i < n; ++i)
+        membership[i] ^= 1;
+    }
+  }
+  balanced_ = balanced;
+
+  std::array<double, 2> lightness{};
+  for (size_t i = 0; i < n; ++i)
+    lightness[membership[i]] += lightness_[i];
 
   // Rank the two groups by mean crop lightness so they can be named. The
   // chest band takes in ice, boards and other skaters, so this mean carries
@@ -194,7 +243,13 @@ void TeamClusterer::Fit() noexcept {
   if (members[0] != 0 && members[1] != 0) {
     const double mean0 = lightness[0] / static_cast<double>(members[0]);
     const double mean1 = lightness[1] / static_cast<double>(members[1]);
-    if (!ranked_ && std::fabs(mean0 - mean1) >= settings_.minimum_lightness_gap) {
+    // Only rank from a split that is publishable. A lopsided fit separates
+    // the officials from everyone else, and its lightness gap is large and
+    // meaningless -- striped shirts against a merged field. Latching the
+    // ranking from it and publishing that later, when the squads do separate,
+    // inverts every badge for the rest of the game, measured at 10 of 20
+    // seeds.
+    if (!ranked_ && balanced_ && std::fabs(mean0 - mean1) >= settings_.minimum_lightness_gap) {
       dark_cluster_ = mean0 <= mean1 ? 0 : 1;
       ranked_ = true;
     }
