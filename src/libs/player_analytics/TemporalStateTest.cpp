@@ -176,15 +176,23 @@ int main() {
   ok &= Check(
       team.Result(6 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).cluster == 0,
       "re-opening a track must not blank its current side");
-  ok &= Check(team.Observe(7 * pa::kSecond, 1, 0.5F, 1) && team.settled(1), "a read under the new generation settles");
+  ok &= Check(
+      team.Observe(7 * pa::kSecond, 1, 0.5F, 1) && !team.settled(1),
+      "a contrary read under new centroids must remain eligible for correction");
   ok &= Check(
       team.Result(8 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).cluster == 0,
       "a single contrary read must not flip a settled side");
   for (uint64_t i = 9; i < 14; ++i)
-    team.Observe(i * pa::kSecond, 1, 0.9F, 1);
+    if (!team.settled(1))
+      team.Observe(i * pa::kSecond, 1, 0.9F, 1);
   ok &= Check(
       team.Result(14 * pa::kSecond, std::optional<int8_t>(0), std::nullopt).cluster == 1,
       "sustained contrary evidence clears hysteresis and switches the side");
+  ok &= Check(team.settled(1), "a corrected side retires under the current centroids");
+  team.Observe(15 * pa::kSecond, 1, 0.0F, 2);
+  ok &= Check(!team.settled(2), "zero evidence cannot confirm a refitted side");
+  team.Observe(16 * pa::kSecond, 1, 0.5F, 2);
+  ok &= Check(team.settled(2), "agreement confirms a retained side under new centroids");
   team.Reset();
   ok &= Check(!team.settled(1) && !team.committed(), "reset clears the side");
   return ok ? 0 : 1;

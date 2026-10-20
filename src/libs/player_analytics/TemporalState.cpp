@@ -428,7 +428,11 @@ bool TeamConsensus::Observe(uint64_t pts_ns, int cluster, float margin, uint32_t
       (best != current_ &&
        evidence_[static_cast<size_t>(best)] >= evidence_[static_cast<size_t>(current_)] * settings_.switch_hysteresis))
     current_ = best;
-  generation_ = generation;
+  // A contrary read must not retire the track before enough further samples
+  // can overcome hysteresis. Only agreement with the retained (or just
+  // switched) side confirms it under these centroids.
+  if (cluster == current_ && margin > 0)
+    generation_ = generation;
   return true;
 }
 

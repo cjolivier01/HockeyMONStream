@@ -209,7 +209,7 @@ void TeamClusterer::Fit() noexcept {
     // squads wear a mix of badges. Keep the previous split and try again next
     // interval; stale centroids describe the ice far better than a fit of one
     // team pretending to be two.
-    if (balanced_ && (!balanced || std::fabs(alignment) < kPairingAlignment)) {
+    if (ranked_ && balanced_ && (!balanced || std::fabs(alignment) < kPairingAlignment)) {
       centroids_ = previous_centroids;
       mean_ = previous_mean;
       inverse_deviation_ = previous_deviation;
@@ -287,7 +287,10 @@ TeamAssignment TeamClusterer::Observe(const float* embedding, float lightness) n
   if (count_ >= settings_.warmup_samples && (!fitted_ || since_fit_ >= settings_.refit_interval)) {
     Fit();
   }
-  if (!fitted_) {
+  // Provisional fits may describe officials or variation within one squad.
+  // They cannot supply stable cluster identities for track evidence, and
+  // committing those votes would retire every track before a usable refit.
+  if (!dark_cluster().has_value()) {
     return {};
   }
 

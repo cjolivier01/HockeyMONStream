@@ -1,4 +1,5 @@
 #include "hstream/src/libs/player_analytics/TeamAffiliation.h"
+#include "hstream/src/libs/player_analytics/TemporalState.h"
 
 #include <array>
 #include <cmath>
@@ -461,6 +462,53 @@ bool ResetClearsState() {
   return ok;
 }
 
+// Exercise the processor's actual admission condition with persistent tracks.
+// Neither an unranked balanced fit nor an officials-vs-players split may
+// commit provisional identities and drain sampling before a usable refit.
+bool ProvisionalFitsKeepLearning() {
+  namespace pa = hm::player_analytics;
+  bool ok = true;
+  for (bool officials : {false, true}) {
+    TeamClusterer clusterer(kSettings);
+    std::vector<pa::TeamConsensus> tracks(14, pa::TeamConsensus(kSettings));
+    size_t sampled = 0;
+    for (uint64_t frame = 0; frame < 160; ++frame) {
+      for (size_t i = 0; i < tracks.size(); ++i) {
+        if (tracks[i].settled(clusterer.generation()))
+          continue;
+        std::array<float, kTeamEmbedding> embedding{};
+        float lightness = 20.0F;
+        if (frame < 30) {
+          // A single squad varies along dim0, or two distant officials
+          // dominate the initial split. Neither can name the two squads.
+          embedding[0] = officials ? (i < 2 ? 10.0F : 0.0F) : (i % 2 ? 1.0F : -1.0F);
+          lightness = officials && i < 2 ? 80.0F : 20.0F;
+        } else {
+          // Genuine squads now separate along a different embedding axis.
+          embedding[1] = i % 2 ? 10.0F : -10.0F;
+          lightness = i % 2 ? 80.0F : 20.0F;
+        }
+        const auto assignment = clusterer.Observe(embedding.data(), lightness);
+        tracks[i].Observe((frame + 1) * pa::kSecond / 2, assignment.cluster, assignment.margin, clusterer.generation());
+        ++sampled;
+      }
+      if (frame == 29) {
+        ok &= Check(clusterer.fitted() && !clusterer.dark_cluster(), "opening fit remains unpublishable");
+        for (const auto& track : tracks)
+          ok &= Check(!track.committed(), "provisional cluster identities never enter track evidence");
+      }
+    }
+    ok &= Check(sampled >= kSettings.warmup_samples + kSettings.refit_interval, "sampling reaches a later refit");
+    ok &= Check(clusterer.dark_cluster().has_value(), "a publishable fit replaces an unrelated provisional split");
+    for (size_t i = 0; i < tracks.size(); ++i) {
+      const auto result = tracks[i].Result(80 * pa::kSecond, clusterer.dark_cluster(), std::nullopt);
+      ok &= Check(result.label == (i % 2 ? TeamLabel::kLight : TeamLabel::kDark), "later labels match both squads");
+      ok &= Check(tracks[i].settled(clusterer.generation()), "usable track evidence eventually retires sampling");
+    }
+  }
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -479,6 +527,7 @@ int main() {
   ok &= RendersLabels();
   ok &= SurvivesNullEmbedding();
   ok &= ResetClearsState();
+  ok &= ProvisionalFitsKeepLearning();
   if (ok) {
     std::cout << "team affiliation tests passed\n";
   }

@@ -324,11 +324,10 @@ struct PlayerAnalyticsProcessor::Impl {
           ++counters.jersey_pose_skipped;
           continue;
         }
-        // A skater does not change sides mid-game, so once the vote has
-        // committed there is nothing left for the model to learn about this
-        // track. Dropping it from the due set is what keeps the feature cheap
-        // to leave enabled: after the opening seconds the queue is empty and
-        // its scheduling turn is lent to pose, jersey or action.
+        // Only publishable fits supply votes. Retire a track once its side is
+        // confirmed under the current fit; a refit reopens it until another
+        // agreeing read or sufficient contrary evidence. Unranked warmup
+        // keeps collecting at the configured cadence and shared ROI budget.
         if (feature == 3 && source.evidence.at(ids[i]).team->settled(source.team_clusterer->generation()))
           continue;
         // A box this short leaves a torso band of a few pixels, which tells

@@ -10,7 +10,7 @@
 namespace hm::player_analytics {
 
 struct TeamAssignment {
-  // -1 when the split has not settled or the margin was too small to call.
+  // -1 when the split cannot be named or the margin was too small to call.
   int8_t cluster{-1};
   float margin{0};
 };
@@ -33,7 +33,8 @@ class TeamClusterer {
 
   // `embedding` is kTeamEmbedding floats; `lightness` is the crop's mean
   // CIELAB L. Returns the assignment for this embedding under the centroids
-  // in force after any refit this call triggers. No heap allocation.
+  // in force after any refit this call triggers, only once the fit is balanced
+  // and ranked. Provisional fits never contribute track votes. No heap allocation.
   TeamAssignment Observe(const float* embedding, float lightness) noexcept;
 
   // Index of the lower-lightness cluster, once a fit has separated the two

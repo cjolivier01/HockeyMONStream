@@ -110,5 +110,5 @@ cc_library(
 cc_test(
     name = "team_affiliation_test",
     srcs = ["TeamAffiliationTest.cpp"],
-    deps = [":team_affiliation"],
+    deps = [":team_affiliation", ":temporal_state"],
 )

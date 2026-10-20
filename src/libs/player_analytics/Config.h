@@ -18,7 +18,7 @@ enum class JerseyRoiMode { kBox, kPose };
 // Canonical baseline keys under `team:` paired with the native keys they map
 // to under `pipeline.player-analytics.team`. One table so the configurator and
 // the UI's validation preview cannot disagree about what the baseline owns;
-// the two apply different precedence rules to the same set of names.
+// both resolve layer precedence before passing the native block to ParseConfig.
 inline constexpr std::array<std::pair<const char*, const char*>, 10> kTeamCanonicalKeys{{
     {"warmup_samples", "warmup-samples"},
     {"refit_interval", "refit-interval"},

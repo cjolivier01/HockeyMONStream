@@ -104,9 +104,8 @@ class TeamConsensus {
   bool Observe(uint64_t pts_ns, int cluster, float margin, uint32_t generation) noexcept;
   // True once the vote has committed under the centroids currently in force.
   // A refit moves them, so a track judged against the previous generation is
-  // offered again: without that, a side called against a half-warmed split is
-  // permanent, and the only crops still feeding the fit are the ones it could
-  // not call.
+  // offered again until a read confirms its side or contrary votes switch it.
+  // Without that, a side called against an earlier split is permanent.
   bool settled(uint32_t generation) const noexcept {
     return current_ >= 0 && generation_ == generation;
   }

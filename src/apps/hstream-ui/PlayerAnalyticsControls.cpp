@@ -53,6 +53,34 @@ YAML::Node Get(const YAML::Node& root, const QString& path, bool* ancestor_repla
   }
   return current;
 }
+YAML::Node MappedValue(
+    const std::vector<YAML::Node>& layers,
+    const QString& canonical_path,
+    const QString& native_path) {
+  YAML::Node canonical(YAML::NodeType::Undefined), native(YAML::NodeType::Undefined);
+  int canonical_rank = -1, native_rank = -1;
+  for (size_t rank = 0; rank < layers.size(); ++rank) {
+    const auto update = [&](const QString& path, YAML::Node& previous, int& previous_rank) {
+      bool replaced = false;
+      const auto next = Get(layers[rank], path, &replaced);
+      if (next.IsDefined() || replaced) {
+        previous.reset(next);
+        previous_rank = static_cast<int>(rank);
+      }
+    };
+    update(canonical_path, canonical, canonical_rank);
+    update(native_path, native, native_rank);
+  }
+  // Match the runner: a later canonical leaf wins, same-layer native wins,
+  // and canonical null suppresses mapping without clearing a native value.
+  if (native.IsDefined() &&
+      (!canonical.IsDefined() || canonical.IsNull() ||
+       (native_rank >= canonical_rank && (native_rank > 0 || !native.IsNull()))))
+    return native;
+  if (canonical.IsDefined() && !canonical.IsNull())
+    return canonical;
+  return YAML::Node(YAML::NodeType::Undefined);
+}
 YAML::Node Merge(const YAML::Node& low, const YAML::Node& high) {
   if (!high.IsDefined())
     return YAML::Clone(low);
@@ -322,32 +350,15 @@ QVariant PlayerAnalyticsControls::read(const Field& field, const std::vector<YAM
     }
   }
   YAML::Node resolved(YAML::NodeType::Undefined);
-  if (field.native_alias.isEmpty()) {
+  if (field.key == kAnalytics + "team.model") {
+    resolved.reset(MappedValue(layers, "team.model", field.key));
+  } else if (field.native_alias.isEmpty()) {
     YAML::Node merged(YAML::NodeType::Map);
     for (const auto& layer : layers)
       merged = Merge(merged, layer);
     resolved.reset(Get(merged, field.key));
   } else {
-    YAML::Node canonical(YAML::NodeType::Undefined), native(YAML::NodeType::Undefined);
-    int canonical_rank = -1, native_rank = -1;
-    for (size_t rank = 0; rank < layers.size(); ++rank) {
-      const auto update = [&](const QString& path, YAML::Node& previous, int& previous_rank) {
-        bool replaced = false;
-        const auto next = Get(layers[rank], path, &replaced);
-        if (next.IsDefined() || replaced) {
-          previous.reset(next);
-          previous_rank = static_cast<int>(rank);
-        }
-      };
-      update(field.key, canonical, canonical_rank);
-      update(field.native_alias, native, native_rank);
-    }
-    // A null canonical value suppresses its mapping. Same-layer native wins;
-    // later canonical values override older native values that still exist.
-    if (native.IsDefined() && (!canonical.IsDefined() || canonical.IsNull() || native_rank >= canonical_rank))
-      resolved.reset(native);
-    else if (canonical.IsDefined() && !canonical.IsNull())
-      resolved.reset(canonical);
+    resolved.reset(MappedValue(layers, field.key, field.native_alias));
   }
   *valid = true;
   try {
@@ -489,6 +500,17 @@ YAML::Node PlayerAnalyticsControls::effectiveConfig() const {
   if (!error.isEmpty())
     throw std::invalid_argument(error.toStdString());
   YAML::Node effective = Merge(Merge(defaults_, user_), edited);
+  // Resolve before flattening loses which layer supplied each spelling.
+  // Model display, validation and launch arguments must agree with the CLI.
+  const std::vector<YAML::Node> layers{defaults_, user_, edited};
+  const auto map = [&](const QString& canonical, const QString& native) {
+    const auto selected = MappedValue(layers, canonical, native);
+    if (selected.IsDefined())
+      Set(effective, native.split('.'), selected);
+  };
+  for (const auto& [canonical, native] : pa::kTeamCanonicalKeys)
+    map(QString("team.") + canonical, kAnalytics + "team." + native);
+  map("game.home_is_dark", kAnalytics + "home-is-dark");
   for (const auto& field : fields_)
     if (!field.native_alias.isEmpty())
       Set(effective, field.native_alias.split('.'), YAML::Node(value(field).toBool()));
@@ -513,7 +535,7 @@ QStringList PlayerAnalyticsControls::arguments() const {
           : field.key.left(field.key.lastIndexOf('.')) + ".enable";
       bool enabled = false;
       for (const auto& candidate : fields_)
-        if (candidate.key == owner)
+        if (candidate.key == owner || candidate.native_alias == owner)
           enabled = value(candidate).toBool();
       if (!enabled)
         continue;
@@ -548,30 +570,7 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
           return changed(field);
       return false;
     };
-    // The configurator maps the canonical team keys into the native block at
-    // run time; this preview is built from the merged document before that has
-    // happened. Apply the same table here, filling only what is absent, or
-    // ticking the team box would report a missing baseline value the operator
-    // has no way to supply.
-    YAML::Node analytics = YAML::Clone(Get(effective, "pipeline.player-analytics"));
-    if (!analytics.IsDefined() || analytics.IsNull())
-      analytics = YAML::Node(YAML::NodeType::Map);
-    if (analytics.IsMap()) {
-      const YAML::Node canonical_team = Get(effective, "team");
-      if (canonical_team.IsDefined() && canonical_team.IsMap()) {
-        if (!analytics["team"] || analytics["team"].IsNull())
-          analytics["team"] = YAML::Node(YAML::NodeType::Map);
-        if (analytics["team"].IsMap())
-          for (const auto& [canonical, native] : pa::kTeamCanonicalKeys)
-            if (!analytics["team"][native] && canonical_team[canonical] && !canonical_team[canonical].IsNull() &&
-                canonical_team[canonical].IsScalar())
-              analytics["team"][native] = canonical_team[canonical].Scalar();
-      }
-      const YAML::Node home_is_dark = Get(effective, "game.home_is_dark");
-      if (!analytics["home-is-dark"] && home_is_dark.IsDefined() && !home_is_dark.IsNull())
-        analytics["home-is-dark"] = home_is_dark.Scalar();
-    }
-    const auto parsed = pa::ParseConfig(analytics);
+    const auto parsed = pa::ParseConfig(Get(effective, "pipeline.player-analytics"));
     if (!parsed.ok())
       return QString::fromUtf8(parsed.status().message().data(), parsed.status().message().size());
     const bool reid = Flag(Get(effective, "pipeline.tracker.reid-enable"));
