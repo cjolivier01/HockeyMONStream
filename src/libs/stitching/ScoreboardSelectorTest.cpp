@@ -221,7 +221,7 @@ bool exercise_http_selector(
       ::unsetenv("HM_SCOREBOARD_ALLOW_REMOTE");
       ::unsetenv("HM_SCOREBOARD_PUBLIC_HOST");
     }
-    ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", cancel_mode ? "60000" : "250", 1);
+    ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", cancel_mode ? "60000" : expected_saved ? "5000" : "250", 1);
     reject_proposal = invalid_proposal;
     bool cancelled = false;
     const auto status = hm::stitching::ScoreboardSelector::Run(directory, [&] {
@@ -282,12 +282,14 @@ bool exercise_http_selector(
       return ok;
     }
     int ready_pipe[2]{};
-    const bool pipe_created = ::pipe(ready_pipe) == 0;
-    ok &= pipe_created;
+    // The saved-selection cases exercise bypass, not the already-covered slow
+    // client timeout. Give their config fsync enough time on a loaded host.
+    const bool pipe_created = !expected_saved.has_value() && ::pipe(ready_pipe) == 0;
+    ok &= expected_saved.has_value() || pipe_created;
     pid_t slow_client = -1;
     if (pipe_created)
       slow_client = ::fork();
-    ok &= slow_client >= 0;
+    ok &= expected_saved.has_value() || slow_client >= 0;
     if (slow_client == 0) {
       ::close(ready_pipe[0]);
       const int socket = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -353,9 +355,11 @@ bool exercise_http_selector(
     ok &= expect(
         http_request(port, "/initial?token=wrong", false, authority_host).rfind("HTTP/1.1 403 ", 0) == 0,
         "Proposal metadata must require the selector token");
-    ok &= expect(
-        http_request(port, "/none?token=" + token, true, authority_host).rfind("HTTP/1.1 200 ", 0) == 0,
-        "valid scoreboard selector POST must succeed");
+    const auto post_response = http_request(port, "/none?token=" + token, true, authority_host);
+    if (!expect(post_response.rfind("HTTP/1.1 200 ", 0) == 0, "valid scoreboard selector POST must succeed")) {
+      ok = false;
+      std::cerr << "Scoreboard POST response: " << post_response << '\n';
+    }
   } else {
     ::kill(child, SIGTERM);
   }
