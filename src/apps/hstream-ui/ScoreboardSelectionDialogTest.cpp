@@ -101,25 +101,38 @@ class SelectorServer {
   bool complete_{false};
 };
 
-bool test_proposal_draft(const QString& image_path, bool edit_before_reply) {
+bool test_proposal_draft(const QString& image_path, bool edit_before_reply, bool press_before_reply = false) {
   SelectorServer server(200, R"({"points":[[10,10],[90,10],[90,70],[10,70]],"message":"Review suggested corners"})");
   if (!server.listen())
     return false;
   ScoreboardSelectionDialog dialog(server.url(), image_path, {});
   auto* canvas = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("scoreboardSelectionCanvas"));
+  QApplication::processEvents(); // Finish the initial fit before simulating operator input.
   dialog.loadProposal();
   if (edit_before_reply)
     canvas->setPoints({{12, 14}});
+  const QPoint click = canvas->rect().center();
+  if (press_before_reply)
+    QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier, click);
+  const double original_scale = canvas->viewScale();
   bool ok = wait_until([&] { return server.complete(); });
-  ok &= wait_until([&] { return edit_before_reply ? canvas->points().size() == 1 : canvas->points().size() == 4; });
+  ok &= wait_until([&] { return canvas->points().size() == (press_before_reply ? 0 : edit_before_reply ? 1 : 4); });
   // Allow the response callback to run even when the one edited point is
   // already present before the reply arrives.
   QTest::qWait(50);
   ok &= expect(server.request().startsWith("GET /initial?token="), "Proposal must use authenticated metadata");
-  ok &= expect(
-      edit_before_reply ? canvas->points() == QVector<QPoint>{{12, 14}}
-                        : canvas->points() == QVector<QPoint>{{10, 10}, {90, 10}, {90, 70}, {10, 70}},
-      "Draft must populate empty selection but preserve operator edits");
+  if (press_before_reply) {
+    ok &= expect(
+        canvas->points().isEmpty() && canvas->viewScale() == original_scale,
+        "A proposal must preserve an in-progress first click and its viewport");
+    QTest::mouseRelease(canvas, Qt::LeftButton, Qt::NoModifier, click);
+    ok &= expect(canvas->points().size() == 1, "The operator's first click must still add a corner");
+  } else {
+    ok &= expect(
+        edit_before_reply ? canvas->points() == QVector<QPoint>{{12, 14}}
+                          : canvas->points() == QVector<QPoint>{{10, 10}, {90, 10}, {90, 70}, {10, 70}},
+        "Draft must populate empty selection but preserve operator edits");
+  }
   dialog.closeAfterBackendCompletion();
   return ok;
 }
@@ -396,7 +409,8 @@ int main(int argc, char** argv) {
       return 1;
   }
   const bool ok = test_proposal_draft(image_path, false) && test_proposal_draft(image_path, true) &&
-      test_canvas_controls(image_path) && test_large_image_viewport_cache(large_image_path, large_image_size) &&
+      test_proposal_draft(image_path, false, true) && test_canvas_controls(image_path) &&
+      test_large_image_viewport_cache(large_image_path, large_image_size) &&
       test_absurd_source_dimensions_are_rejected(absurd_dimension_path) && test_successful_submission(image_path) &&
       test_failed_submission_remains_open(image_path) && test_cancel_success(image_path) &&
       test_cancel_failure_escapes_modal(image_path, false) && test_cancel_failure_escapes_modal(image_path, true) &&

@@ -749,7 +749,7 @@ void ScoreboardSelectionDialog::loadProposal() {
   connect(reply, &QNetworkReply::finished, this, [this, reply]() {
     reply->deleteLater();
     proposal_reply_.clear();
-    if (submitting_ || backend_completed_ || selection_edited_)
+    if (submitting_ || backend_completed_ || selection_edited_ || canvas_->pointerInteractionActive())
       return;
     QJsonParseError error;
     const auto document = QJsonDocument::fromJson(reply->readAll(), &error);
