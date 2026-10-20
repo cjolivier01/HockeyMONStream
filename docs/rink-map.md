@@ -32,11 +32,18 @@ Detection scores describe the masks, not the accuracy of a goal position.
 
 Choose a point or line above the image to add manual evidence. A point takes one
 click; a line takes two well-separated clicks along the paint or the **straight
-section** of the boards at ice level. Scroll to zoom and drag the image to pan.
-Green anchors and their attached lines follow the pointer while dragging; release
+section** of the boards at ice level. Completing a mark returns to **Select / edit / pan**.
+Click an existing point, line, arc, or its label to select its observation row and
+highlight it in green. Selecting a row also opens its camera. Unchecked model and
+mask suggestions can be selected and adjusted before enabling them.
+Scroll to zoom and drag the image to pan. Green anchors and their attached lines follow the pointer while dragging; release
 commits one undoable edit. Observation rows alternate white and light grey. Scrolling over selectors or dimension fields
 never changes their values, even when focused. Editing a detected line's endpoints
-converts it to a manual line. Uncheck incorrect evidence or remove it from the list.
+converts it to a manual line. Uncheck incorrect evidence or use **Delete selected mark**
+below the list. The Delete key removes the selected observation when the image or
+list has focus; it does not remove marks while editing dimensions or an open dropdown.
+Click empty image space to clear the selection. Deletions can be undone.
+Projected rink geometry and raw detection contours remain reference overlays.
 
 Undo and Redo restore the last 32 edits, including successful landmark searches and mask suggestions.
 Rapid dimension edits form one step. Failed or stopped detection preserves the

@@ -954,8 +954,14 @@ int main(int argc, char** argv) {
     if (!expect(idle(dialog), "Arc fixture opens"))
       return 1;
     auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
-    table->selectRow(0);
     auto* view = dialog.findChild<QGraphicsView*>("rinkMapCamera0");
+    QPointF arc_click;
+    for (auto* item : view->scene()->items())
+      if (item->data(0) == "rinkMapObservationPath")
+        arc_click = static_cast<QGraphicsPathItem*>(item)->path().pointAtPercent(.25);
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene(arc_click));
+    ok &= expect(
+        table->currentRow() == 0 && !dialog.isWindowModified(), "Clicking an unchecked arc selects it without an edit");
     auto* undo = dialog.findChild<QPushButton*>("rinkMapUndoButton");
     auto* redo = dialog.findChild<QPushButton*>("rinkMapRedoButton");
     auto anchors = [&] {
@@ -1012,6 +1018,178 @@ int main(int argc, char** argv) {
             !saved->observations[0].automatic && saved->observations[0].pixels.size() == 3 &&
             cv::norm(saved->observations[0].pixels[1] - cv::Point2d(changed.x(), changed.y())) < .01,
         "Save/reopen retains the manual three-point arc");
+  }
+  {
+    snapshot = LoadRinkMapSnapshot(game.path());
+    if (!expect(snapshot.ok(), "Reload before direct feature editing"))
+      return 1;
+    rink::RinkMapObservation line;
+    line.feature = "center-line";
+    line.line = line.automatic = true;
+    line.enabled = false;
+    line.pixels = {{600, 650}, {1100, 650}, {1600, 650}};
+    auto right = line;
+    right.camera = 1;
+    rink::RinkMapObservation point;
+    point.feature = "center-near";
+    point.automatic = true;
+    point.enabled = false;
+    point.pixels = {{2500, 1300}};
+    document.observations = {line, right, point};
+    auto prepared = UpdateRinkMap(*snapshot, document, false, {});
+    if (!expect(prepared.ok() && SaveRinkMap(*snapshot, prepared->document).ok(), "Save direct editing fixture"))
+      return 1;
+    RinkMapDialog dialog(game.path());
+    dialog.show();
+    if (!expect(idle(dialog), "Direct editing fixture opens"))
+      return 1;
+    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    auto* tabs = dialog.findChild<QTabWidget*>("rinkMapCameraTabs");
+    auto* view = dialog.findChild<QGraphicsView*>("rinkMapCamera0");
+    auto* undo = dialog.findChild<QPushButton*>("rinkMapUndoButton");
+    auto* redo = dialog.findChild<QPushButton*>("rinkMapRedoButton");
+    auto* remove = dialog.findChild<QPushButton*>("removeRinkMapObservationButton");
+    auto click = [&](QPointF position, QPoint offset = {}) {
+      QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene(position) + offset);
+    };
+    auto anchor = [&](int row, int sample) -> QGraphicsItem* {
+      for (auto* item : view->scene()->items())
+        if (item->data(0) == "rinkMapAnchor" && item->data(1).toInt() == row && item->data(2).toInt() == sample)
+          return item;
+      return nullptr;
+    };
+    ok &= expect(!anchor(0, 0), "Unselected automatic lines initially have no handles");
+    click({1100, 650}, {0, 5});
+    ok &= expect(
+        table->currentRow() == 0 && anchor(0, 0) && anchor(0, 2) && remove->isEnabled() && !dialog.isWindowModified() &&
+            !undo->isEnabled(),
+        "Clicking near an unchecked line selects its row and handles without an edit");
+    QTest::mouseClick(
+        table->viewport(), Qt::LeftButton, Qt::ControlModifier, table->visualItemRect(table->item(0, 2)).center());
+    ok &= expect(
+        table->currentRow() == 0 && !table->selectionModel()->hasSelection() && !remove->isEnabled(),
+        "Ctrl-click clears row selection while retaining the current index");
+    click({1100, 650});
+    ok &= expect(
+        table->selectionModel()->isRowSelected(0, {}) && remove->isEnabled(),
+        "Clicking the image reselects a cleared current row");
+    QTest::keyClick(view, Qt::Key_Delete);
+    ok &= expect(idle(dialog) && table->rowCount() == 2, "Reselected observations can be deleted");
+    undo->click();
+    ok &=
+        expect(idle(dialog) && table->rowCount() == 3 && !dialog.isWindowModified(), "Restore before camera selection");
+    table->selectRow(1);
+    ok &= expect(tabs->currentIndex() == 1, "List selection reveals the other camera");
+    tabs->setCurrentIndex(0);
+    click({2500, 1300});
+    ok &= expect(table->currentRow() == 2 && anchor(2, 0), "An unchecked point is selectable directly");
+    click({2900, 1600});
+    QTest::keyClick(view, Qt::Key_Delete);
+    ok &= expect(
+        table->currentRow() == -1 && table->rowCount() == 3 && !remove->isEnabled(),
+        "Empty image clicks clear selection and disable deletion");
+    const QPoint pan_start = view->mapFromScene(QPointF(1100, 650));
+    const QPoint pan_end = pan_start + QPoint(20, 20);
+    QTest::mousePress(view->viewport(), Qt::LeftButton, Qt::NoModifier, pan_start);
+    QMouseEvent pan(
+        QEvent::MouseMove,
+        pan_end,
+        view->viewport()->mapToGlobal(pan_end),
+        Qt::NoButton,
+        Qt::LeftButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(view->viewport(), &pan);
+    QTest::mouseRelease(view->viewport(), Qt::LeftButton, Qt::NoModifier, pan_end);
+    ok &= expect(
+        table->currentRow() == -1 && !dialog.isWindowModified(),
+        "Dragging across a line pans without selecting or editing");
+    // Selection tolerance is measured in screen pixels, including after zoom.
+    QWheelEvent zoom(
+        pan_start,
+        view->viewport()->mapToGlobal(pan_start),
+        {},
+        {0, 120},
+        Qt::NoButton,
+        Qt::NoModifier,
+        Qt::NoScrollPhase,
+        false);
+    QApplication::sendEvent(view->viewport(), &zoom);
+    click({1100, 650}, {0, 5});
+    if (!expect(table->currentRow() == 0 && anchor(0, 0), "Zoom preserves line selection tolerance"))
+      return 1;
+    const auto original = anchor(0, 0)->pos();
+    const auto start = view->mapFromScene(original), finish = start + QPoint(24, 18);
+    QTest::mousePress(view->viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    QTest::keyClick(view, Qt::Key_Delete);
+    ok &= expect(table->rowCount() == 3 && !dialog.isWindowModified(), "Delete cannot remove a handle during a drag");
+    QMouseEvent motion(
+        QEvent::MouseMove, finish, view->viewport()->mapToGlobal(finish), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(view->viewport(), &motion);
+    QTest::mouseRelease(view->viewport(), Qt::LeftButton, Qt::NoModifier, finish);
+    ok &= expect(
+        idle(dialog) && table->item(0, 2)->text().contains("manual") && anchor(0, 1) && !anchor(0, 2) &&
+            table->item(0, 0)->checkState() == Qt::Unchecked,
+        "Dragging an automatic line reduces it to two manual endpoints without enabling it");
+    undo->click();
+    ok &= expect(idle(dialog) && anchor(0, 2) && !dialog.isWindowModified(), "Undo restores the automatic samples");
+    QTest::keyClick(view, Qt::Key_Delete);
+    ok &= expect(
+        idle(dialog) && table->rowCount() == 2 && dialog.isWindowModified(),
+        "Delete from the image removes the selected feature");
+    undo->click();
+    ok &=
+        expect(idle(dialog) && table->rowCount() == 3 && !dialog.isWindowModified(), "Undo restores a deleted feature");
+    redo->click();
+    ok &= expect(idle(dialog) && table->rowCount() == 2, "Redo repeats feature deletion");
+    undo->click();
+    ok &= expect(idle(dialog), "Restore before list deletion");
+    table->selectRow(0);
+    // Qt keeps the current index separate from selection. Exercise that state
+    // directly because modified arrow-key behavior varies by selection mode.
+    table->selectionModel()->setCurrentIndex(table->model()->index(1, 2), QItemSelectionModel::NoUpdate);
+    ok &= expect(
+        table->currentRow() == 1 && table->selectionModel()->isRowSelected(0, {}) && tabs->currentIndex() == 0,
+        "Current-index navigation does not change the selected observation");
+    QTest::keyClick(table, Qt::Key_Delete);
+    ok &= expect(
+        idle(dialog) && table->rowCount() == 2 && table->item(0, 2)->text().startsWith("R") &&
+            !table->selectionModel()->hasSelection() && !remove->isEnabled(),
+        "Delete targets the selected row, preserves the unselected current row, and clears selection");
+    undo->click();
+    ok &= expect(idle(dialog), "Restore after deleting a selected row with a different current index");
+    table->selectRow(1);
+    auto* dimension = dialog.findChild<QDoubleSpinBox*>("rinkMapDimension1");
+    auto* field = dimension->findChild<QLineEdit*>();
+    field->setFocus();
+    field->setCursorPosition(field->text().size());
+    QTest::keyClick(field, Qt::Key_Delete);
+    ok &= expect(table->rowCount() == 3 && !dialog.isWindowModified(), "Delete in dimensions leaves features alone");
+    auto* identity = qobject_cast<QComboBox*>(table->cellWidget(1, 1));
+    table->selectRow(0);
+    identity->setFocus();
+    ok &= expect(
+        table->currentRow() == 1 && tabs->currentIndex() == 1,
+        "Focusing an identity selects the matching row and camera");
+    identity->showPopup();
+    QTest::keyClick(identity->view(), Qt::Key_Delete);
+    ok &= expect(
+        table->rowCount() == 3 && !dialog.isWindowModified(), "Delete in an open dropdown leaves features alone");
+    identity->hidePopup();
+    QTest::keyClick(table, Qt::Key_Delete);
+    ok &= expect(idle(dialog) && table->rowCount() == 2, "Delete from the list removes its selected feature");
+    undo->click();
+    ok &= expect(idle(dialog), "Restore before button deletion");
+    table->selectRow(2);
+    remove->click();
+    ok &= expect(idle(dialog) && table->rowCount() == 2, "List button deletes a point observation");
+    dialog.findChild<QPushButton*>("saveRinkMapButton")->click();
+    snapshot = LoadRinkMapSnapshot(game.path());
+    auto saved = snapshot.ok() && snapshot->saved_map
+        ? rink::ParseRinkMap(*snapshot->saved_map)
+        : absl::StatusOr<rink::RinkMapDocument>(absl::InternalError("Missing edited map"));
+    ok &= expect(
+        saved.ok() && saved->observations.size() == 2 && saved->observations[1].camera == 1,
+        "Saved deletion preserves the other camera's feature");
   }
   ok &= write(game.filePath("config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: pending\n");
   ok &= expect(!rink::LoadPlaybackRinkMap(game.path().toStdString()).ok(), "Playback rejects pending calibration");

@@ -34,6 +34,7 @@ class RinkMapDialog : public QDialog {
   void update(bool detect = false, bool use_mask = false);
   void rebuildTable();
   void addPoint(int camera, QPointF point);
+  void removeSelected();
   void useGoalLineEnds();
   bool save();
   void setBusy(bool busy);
