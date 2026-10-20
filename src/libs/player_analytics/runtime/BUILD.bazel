@@ -99,6 +99,12 @@ cc_binary(
 )
 
 cc_binary(
+    name = "team_gpu_test",
+    srcs = ["TeamGpuTest.cpp"],
+    deps = [":semantic_gpu"],
+)
+
+cc_binary(
     name = "semantic_engine_test",
     srcs = ["SemanticEngineTest.cpp"],
     deps = [":native_engine", ":semantic_roi", ":semantic_gpu"],
