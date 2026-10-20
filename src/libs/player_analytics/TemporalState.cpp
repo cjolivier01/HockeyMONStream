@@ -1,5 +1,7 @@
 #include "hstream/src/libs/player_analytics/TemporalState.h"
 
+#include "hstream/src/libs/player_analytics/TeamAffiliation.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -126,7 +128,7 @@ size_t TrackScheduler::SelectDue(
     std::array<uint64_t, kMaximumDueRois>* output,
     size_t limit) const noexcept {
   const size_t f = static_cast<size_t>(feature);
-  if (!output || f >= 3 || now_ == kInvalidTime || interval_ns == 0)
+  if (!output || f >= kFeatureCount || now_ == kInvalidTime || interval_ns == 0)
     return 0;
   std::array<const TrackRecord*, kMaximumTracks> due{};
   size_t count = 0;
@@ -154,7 +156,7 @@ size_t TrackScheduler::SelectDue(
 
 bool TrackScheduler::MarkAttempt(Feature feature, uint64_t id) noexcept {
   const size_t f = static_cast<size_t>(feature);
-  if (f >= 3 || now_ == kInvalidTime || id == kUntrackedId)
+  if (f >= kFeatureCount || now_ == kInvalidTime || id == kUntrackedId)
     return false;
   for (size_t i = 0; i < maximum_tracks_; ++i)
     if (tracks_[i].id == id && tracks_[i].visible) {
@@ -394,6 +396,62 @@ bool ActionLabelState::Observe(
     return true;
   }
   return false;
+}
+
+
+// Evidence a cluster must accumulate before the vote commits. Roughly two
+// confident observations, so one stray crop cannot name a track.
+constexpr double kTeamAcquisition = 1.0;
+// A challenger must beat the incumbent by this factor to take the label,
+// matching the jersey consensus. Switching should be rare here: the right
+// answer never changes, so a flip means one of the two reads was wrong.
+constexpr double kTeamHysteresis = 1.35;
+
+bool TeamConsensus::Observe(uint64_t pts_ns, int cluster, float margin) noexcept {
+  if (pts_ns == kInvalidTime || last_attempt_ == pts_ns)
+    return false;
+  last_attempt_ = pts_ns;
+  if (cluster < 0 || cluster > 1)
+    return false;
+
+  // Weight by margin so a crop that sat between the centroids counts for less
+  // than one that landed squarely on a squad.
+  evidence_[static_cast<size_t>(cluster)] += static_cast<double>(margin);
+  observed_at_ = pts_ns;
+
+  const int best = evidence_[0] >= evidence_[1] ? 0 : 1;
+  if (evidence_[static_cast<size_t>(best)] < kTeamAcquisition)
+    return true;
+  if (current_ < 0) {
+    current_ = best;
+    return true;
+  }
+  if (best != current_ &&
+      evidence_[static_cast<size_t>(best)] >= evidence_[static_cast<size_t>(current_)] * kTeamHysteresis)
+    current_ = best;
+  return true;
+}
+
+TeamResult TeamConsensus::Result(
+    uint64_t now_ns, std::optional<int8_t> dark_cluster, std::optional<bool> home_is_dark) const noexcept {
+  (void)now_ns;
+  TeamResult result;
+  if (current_ < 0 || !dark_cluster.has_value())
+    return result;
+  result.cluster = static_cast<int8_t>(current_);
+  result.evidence = static_cast<float>(evidence_[static_cast<size_t>(current_)]);
+  result.observed_at = observed_at_;
+  // No expiry: affiliation does not lapse the way a jersey read does.
+  result.expires_at = kInvalidTime;
+  result.label = NameClusters(*dark_cluster, home_is_dark)[static_cast<size_t>(current_)];
+  return result;
+}
+
+void TeamConsensus::Reset() noexcept {
+  evidence_ = {};
+  last_attempt_ = kInvalidTime;
+  observed_at_ = kInvalidTime;
+  current_ = -1;
 }
 
 } // namespace hm::player_analytics

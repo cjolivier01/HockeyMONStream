@@ -5988,7 +5988,8 @@ absl::Status Configurator::map_common_config_keys() {
     for (const auto& [canonical, native] :
          {std::pair<const char*, const char*>("plot.plot_pose", "draw-pose"),
           {"plot.plot_jersey_numbers", "draw-jerseys"},
-          {"plot.plot_actions", "draw-actions"}}) {
+          {"plot.plot_actions", "draw-actions"},
+          {"plot.plot_teams", "draw-teams"}}) {
       std::optional<YAML::Node> source;
       HM_ASSIGN_OR_RETURN(
           source,

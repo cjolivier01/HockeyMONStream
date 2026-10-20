@@ -60,7 +60,7 @@ from pathlib import Path
 root = Path("configs/player-models")
 header = "// Generated from configs/player-models/*.json; regenerate as documented there.\n"
 blocks = []
-for feature in ("pose", "jersey", "action", "reid"):
+for feature in ("pose", "jersey", "action", "reid", "team"):
     document = (root / f"{feature}.json").read_text()
     assert ')MODEL"' not in document
     blocks.append(

@@ -20,6 +20,15 @@ pipeline:
       model: stgcnpp-coco2d-joint-ntu60
       rate-hz: 1
       confidence-threshold: 0.5
+    team:
+      enable: 1
+      model: reidentificationnet-deployable-v1.2 # NVIDIA EULA; shared with the tracker ReID
+      rate-hz: 2
+      confidence-threshold: 0.5
+    # Which sweater the home side wore. Omit it and the overlay reads
+    # DARK/LIGHT, which is correct but unnamed; there is no way to infer
+    # which side is "home" from pixels.
+    home-is-dark: true
     max-tracks: 256
     max-due-rois: 32 # Aggregate model samples, not 32 per feature.
     batch-size: 8

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 
 #include <yaml-cpp/yaml.h>
@@ -28,13 +29,21 @@ struct DrawingConfig {
   bool pose{false};
   bool jersey{false};
   bool action{false};
+  bool team{false};
 };
 
 struct Config {
   FeatureConfig pose{false, {}, 10, 0.3F};
   FeatureConfig jersey{false, {}, 2, 0.8F};
   FeatureConfig action{false, {}, 1, 0.5F};
+  // Affiliation is static per track, so a low rate costs nothing in accuracy;
+  // the settled-track short circuit retires a track from the due set entirely
+  // once its consensus commits.
+  FeatureConfig team{false, {}, 2, 0.5F};
   JerseyRoiMode jersey_roi_mode{JerseyRoiMode::kBox};
+  // Which sweater the home side wore. Unset leaves the overlay reading
+  // DARK/LIGHT, which is correct but unnamed, rather than guessing a side.
+  std::optional<bool> home_is_dark;
   DrawingConfig drawing;
   bool continuous_pose_drawing{true};
   size_t maximum_tracks{kMaximumTracks};
@@ -44,11 +53,12 @@ struct Config {
 
   uint32_t drawing_layers() const {
     return (pose.enabled && drawing.pose ? kDrawPose : 0U) | (jersey.enabled && drawing.jersey ? kDrawJerseys : 0U) |
-        (action.enabled && drawing.action ? kDrawActions : 0U);
+        (action.enabled && drawing.action ? kDrawActions : 0U) |
+        (team.enabled && drawing.team ? kDrawTeams : 0U);
   }
 
   bool enabled() const {
-    return pose.enabled || jersey.enabled || action.enabled;
+    return pose.enabled || jersey.enabled || action.enabled || team.enabled;
   }
 };
 

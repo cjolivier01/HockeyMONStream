@@ -19,7 +19,17 @@ inline constexpr uint64_t kActionSamplePeriod = 100000000ULL;
 inline constexpr uint64_t kActionMaximumGap = 150000000ULL;
 inline constexpr uint64_t kPoseDrawingMaximumAge = 250000000ULL;
 inline constexpr uint8_t kNoColor = 255;
-enum DrawingLayer : uint32_t { kDrawPlayerBoxes = 1, kDrawPose = 2, kDrawJerseys = 4, kDrawActions = 8 };
+enum DrawingLayer : uint32_t {
+  kDrawPlayerBoxes = 1,
+  kDrawPose = 2,
+  kDrawJerseys = 4,
+  kDrawActions = 8,
+  kDrawTeams = 16
+};
+
+// Embedding width produced by the team model. Fixed so per-track accumulation
+// stays allocation-free; the contract rejects a model of any other width.
+inline constexpr size_t kTeamEmbedding = 256;
 
 // All positions are pre-crop DeepStream metadata pixels, which may differ from
 // NvBufSurface pixels. The inference adapter owns the per-axis conversion.
@@ -61,6 +71,26 @@ struct RetainedPose {
   uint64_t observed_at{kInvalidTime};
 };
 
+// Which side of the game a track plays for.
+//
+// Team identity is relative to the game being watched, so nothing predicts
+// kHome directly: the clusterer splits skaters into two appearance groups,
+// ranks those groups dark-against-light, and the per-game `home_is_dark`
+// setting names them. With that setting absent the labels stay kDark/kLight,
+// which is correct but unnamed, rather than an even bet on which side is home.
+enum class TeamLabel : uint8_t { kUnknown = 0, kHome = 1, kAway = 2, kDark = 3, kLight = 4 };
+
+struct TeamResult {
+  TeamLabel label{TeamLabel::kUnknown};
+  // Raw 0/1 cluster index before naming, -1 when unassigned. Kept so the
+  // consensus votes on a stable quantity even if the dark/light ranking flips
+  // while the centroids are still settling.
+  int8_t cluster{-1};
+  float evidence{0};
+  uint64_t observed_at{kInvalidTime};
+  uint64_t expires_at{kInvalidTime};
+};
+
 struct PlayerResult {
   uint64_t track_id{kUntrackedId};
   Box box;
@@ -72,12 +102,14 @@ struct PlayerResult {
   RetainedPose retained_pose;
   JerseyResult jersey;
   ActionResult action;
+  TeamResult team;
   // Bounded printable display label from the actual model manifest, not a remap.
   std::array<char, 65> action_text{};
 };
 
 struct FrameResult {
-  static constexpr uint32_t kSchemaVersion = 3;
+  // Version 4 adds TeamResult alongside the retained pose introduced in version 3.
+  static constexpr uint32_t kSchemaVersion = 4;
   uint32_t schema_version{kSchemaVersion};
   uint32_t stream_id{0};
   uint64_t epoch{0};

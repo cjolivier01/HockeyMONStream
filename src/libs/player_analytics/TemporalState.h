@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -9,13 +10,16 @@
 
 namespace hm::player_analytics {
 
-enum class Feature : size_t { kPose = 0, kJersey = 1, kAction = 2 };
+// Appended, never renumbered: the processor compares these positionally.
+enum class Feature : size_t { kPose = 0, kJersey = 1, kAction = 2, kTeam = 3 };
+inline constexpr size_t kFeatureCount = 4;
 
 struct TrackRecord {
   uint64_t id{kUntrackedId};
   uint64_t incarnation{0};
   uint64_t last_seen{kInvalidTime};
-  std::array<uint64_t, 3> last_attempt{{kInvalidTime, kInvalidTime, kInvalidTime}};
+  std::array<uint64_t, kFeatureCount> last_attempt{
+      {kInvalidTime, kInvalidTime, kInvalidTime, kInvalidTime}};
   bool visible{false};
 };
 
@@ -78,6 +82,34 @@ class JerseyConsensus {
   std::array<uint64_t, 110> observed_{};
   uint64_t now_{kInvalidTime};
   uint64_t last_attempt_{kInvalidTime};
+  int current_{-1};
+};
+
+// Per-track team vote.
+//
+// Modelled on JerseyConsensus, but over two cluster indices rather than 110
+// jersey numbers, and without expiry: a skater does not change side, so once
+// the vote commits it stays committed for the life of the track. That is also
+// what lets the processor retire a settled track from the due set entirely,
+// which is what keeps this feature affordable in a realtime pipeline.
+class TeamConsensus {
+ public:
+  // At most one vote per source timestamp. A negative cluster means the
+  // embedding was declined (too close to both centroids) and only ages the
+  // existing evidence.
+  bool Observe(uint64_t pts_ns, int cluster, float margin) noexcept;
+  // True once the vote has committed and further inference is wasted.
+  bool settled() const noexcept {
+    return current_ >= 0;
+  }
+  TeamResult Result(uint64_t now_ns, std::optional<int8_t> dark_cluster,
+      std::optional<bool> home_is_dark) const noexcept;
+  void Reset() noexcept;
+
+ private:
+  std::array<double, 2> evidence_{};
+  uint64_t last_attempt_{kInvalidTime};
+  uint64_t observed_at_{kInvalidTime};
   int current_{-1};
 };
 

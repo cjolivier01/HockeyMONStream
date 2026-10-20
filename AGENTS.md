@@ -33,6 +33,7 @@ Notes:
 - This repo assumes CUDA/DeepStream/OpenCV and other system headers are installed; see `WORKSPACE.bazel` for local_repository paths (e.g., DeepStream under `/opt/nvidia/deepstream/deepstream`).
 - Some DeepStream components have extra runtime shared-lib deps (e.g. tracker needs `libmosquitto1`).
 - Game directories default to `$HOME/Videos/<game_id>`. Override with `HM_GAME_DIR=/path/to/games_root` (game dir becomes `${HM_GAME_DIR}/<game_id>`).
+- Every default configuration value must live in, and be read from, `configs/baseline.yaml`. No compiled-in literal defaults, and no independent default set in a plugin, configurator, or UI: add the key to the baseline and resolve it, so one file answers what the shipped behaviour is. A value that genuinely has no sensible default must fail startup rather than silently pick one.
 - The canonical default config is the bundled `configs/baseline.yaml`; keep it byte-for-byte synchronized with HockeyMOM's `hmlib/config/baseline.yaml`. Override explicitly via `HM_CONFIG_ROOT=/path/to/config` for development; invalid overrides fail startup rather than falling back.
 - Install Bazelisk once via `scripts/install_bazelisk.sh` (the `bld` script will prompt if missing).
 - One-pass stitching delays `hmstitcher` output caps and buffer-pool allocation until the first input batch generates/loads control masks and reveals the actual stitched canvas size. If CUDA OOM appears in one-pass runs, inspect the runtime canvas dimensions and downstream caps/pool reallocation path rather than tuning guessed width/height padding.

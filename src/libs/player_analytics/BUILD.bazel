@@ -48,8 +48,8 @@ cc_binary(
 cc_test(
     name = "model_catalog_test",
     srcs = ["ModelCatalogTest.cpp"],
-    args = ["$(location //configs:player-models/" + feature + ".json)" for feature in ["pose", "jersey", "action", "reid"]],
-    data = ["//configs:player-models/" + feature + ".json" for feature in ["pose", "jersey", "action", "reid"]],
+    args = ["$(location //configs:player-models/" + feature + ".json)" for feature in ["pose", "jersey", "action", "reid", "team"]],
+    data = ["//configs:player-models/" + feature + ".json" for feature in ["pose", "jersey", "action", "reid", "team"]],
     deps = [":model_catalog", ":model_contract"],
 )
 
@@ -74,7 +74,7 @@ cc_library(
     hdrs = ["TemporalState.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [":types"],
+    deps = [":team_affiliation", ":types"],
 )
 
 cc_binary(
@@ -96,4 +96,19 @@ cc_binary(
     name = "frame_meta_test",
     srcs = ["FrameMetaTest.cpp"],
     deps = [":frame_meta"],
+)
+
+cc_library(
+    name = "team_affiliation",
+    srcs = ["TeamAffiliation.cpp"],
+    hdrs = ["TeamAffiliation.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":types"],
+)
+
+cc_test(
+    name = "team_affiliation_test",
+    srcs = ["TeamAffiliationTest.cpp"],
+    deps = [":team_affiliation"],
 )

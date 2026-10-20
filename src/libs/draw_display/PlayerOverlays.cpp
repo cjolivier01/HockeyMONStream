@@ -1,5 +1,7 @@
 #include "hstream/src/libs/draw_display/PlayerOverlays.h"
 
+#include "hstream/src/libs/player_analytics/TeamAffiliation.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -189,7 +191,11 @@ void BuildPlayerOverlays(
     const auto& player = result->players[i];
     const bool jersey = (layers & kJerseys) && player.jersey.text[0] && player.jersey.expires_at >= result->pts_ns;
     const bool action = (layers & kActions) && player.action.label >= 0 && player.action.expires_at >= result->pts_ns;
-    if (!jersey && !action)
+    // Affiliation does not expire the way a jersey read does, so there is no
+    // freshness term here: a settled team label stands for the life of the
+    // track.
+    const bool team = (layers & kTeams) && player.team.label != player_analytics::TeamLabel::kUnknown;
+    if (!jersey && !action && !team)
       continue;
     const Color color = PlayerColor(player.color_slot);
     const auto& box = player.box;
@@ -224,6 +230,8 @@ void BuildPlayerOverlays(
       label(player.jersey.text.data());
     if (action)
       label(player.action_text.data());
+    if (team)
+      label(player_analytics::TeamLabelText(player.team.label));
   }
 }
 

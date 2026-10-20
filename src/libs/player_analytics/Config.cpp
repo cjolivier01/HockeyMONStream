@@ -88,9 +88,11 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
     Enable(node["pose"], &config.pose);
     Enable(node["jersey"], &config.jersey);
     Enable(node["action"], &config.action);
+    Enable(node["team"], &config.team);
     config.drawing.pose = Flag(node["draw-pose"]);
     config.drawing.jersey = Flag(node["draw-jerseys"]);
     config.drawing.action = Flag(node["draw-actions"]);
+    config.drawing.team = Flag(node["draw-teams"]);
     const auto pose = node["pose"];
     if (pose && pose["continuous-drawing"] && !pose["continuous-drawing"].IsNull())
       config.continuous_pose_drawing = Flag(pose["continuous-drawing"]);
@@ -99,6 +101,9 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
     ReadFeature(node["pose"], "pose", &config.pose);
     ReadFeature(node["jersey"], "jersey", &config.jersey);
     ReadFeature(node["action"], "action", &config.action);
+    ReadFeature(node["team"], "team", &config.team);
+    if (config.team.enabled && node["home-is-dark"] && !node["home-is-dark"].IsNull())
+      config.home_is_dark = node["home-is-dark"].as<bool>();
     if (config.jersey.enabled && node["jersey"]["roi-mode"]) {
       const auto mode = node["jersey"]["roi-mode"].as<std::string>();
       if (mode == "pose")

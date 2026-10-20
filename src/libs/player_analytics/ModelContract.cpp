@@ -176,6 +176,24 @@ void JerseyProfile(const YAML::Node& node, ModelManifest* manifest) {
         "PARSeq output vocabulary is missing a digit");
 }
 
+// The team feature consumes an embedding, not a classification. Pinning the
+// width here is what lets the per-track accumulator stay fixed-capacity: a
+// model of any other output size is rejected at load rather than discovered
+// as a buffer overrun later.
+void TeamProfile(const YAML::Node& node, ModelManifest* manifest) {
+  Require(manifest->model_family == "reidentificationnet", "team model family must be reidentificationnet");
+  manifest->inputs = Tensors(node["inputs"], {{-1, 3, 256, 128}});
+  manifest->outputs = Tensors(node["outputs"], {{-1, static_cast<int>(kTeamEmbedding)}});
+  const auto p = node["preprocessing"];
+  Keys(p, {"id", "color", "interpolation", "offsets", "scale"});
+  manifest->preprocessing_id = String(p, "id");
+  Require(manifest->preprocessing_id == "reidentificationnet-rgb-bilinear-v1", "unsupported team preprocessing");
+  Require(String(p, "color") == "rgb" && String(p, "interpolation") == "bilinear",
+      "unsupported team crop/color convention");
+  Numbers(p, "offsets", {123.675, 116.28, 103.53});
+  Number(p, "scale", 0.01735207357279195);
+}
+
 void ActionProfile(const YAML::Node& node, ModelManifest* manifest) {
   Require(manifest->model_family == "stgcnpp", "action model family must be stgcnpp");
   manifest->topology_id = String(node, "topology_id");
@@ -225,6 +243,8 @@ absl::StatusOr<ModelManifest> ParseModelManifest(const YAML::Node& node) {
       manifest.feature = ModelFeature::kJersey;
     else if (feature == "action")
       manifest.feature = ModelFeature::kAction;
+    else if (feature == "team")
+      manifest.feature = ModelFeature::kTeam;
     else
       throw std::invalid_argument("unknown model feature");
     const auto source = node["source"];
@@ -276,6 +296,9 @@ absl::StatusOr<ModelManifest> ParseModelManifest(const YAML::Node& node) {
         break;
       case ModelFeature::kAction:
         ActionProfile(node, &manifest);
+        break;
+      case ModelFeature::kTeam:
+        TeamProfile(node, &manifest);
         break;
     }
     std::set<std::string> names;
