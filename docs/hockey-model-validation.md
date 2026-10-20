@@ -30,6 +30,11 @@ cover MPII/stick drawing and paired hockey model selection. The fixture and
 engine replay utilities are offline only and may read pixels/distributions back;
 normal playback still transfers compact metadata only.
 
+`player_analytics_semantic_test POSE_BUNDLE ACTION_BUNDLE POSE_FIXTURE_DIR --hockey`
+also passed with the published models: two tracked players run actual pose and
+three-sample action inference, preserve stick joints and batch identity, and
+clear action evidence after gaps and seeks. Duplicate timestamps add no evidence.
+
 Build commands on this host require a matching local TensorRT SDK for detector
 targets and an explicit `gio` link for the existing jetson-utils network library:
 
@@ -46,8 +51,11 @@ was attempted and fails there. This is outside the player-analytics SDK resolver
 The existing `side_by_side_video_test` also hangs in its delayed-audio FFmpeg
 fixture on this machine. These limitations are recorded rather than changing
 unrelated detector/video code. Qt tests require `QT_QPA_PLATFORM=offscreen` and
-`--test_env=HOME` in this environment; some full desktop tests also exercise
-timing-sensitive unrelated calibration/publication paths.
+`--test_env=HOME` in this environment. Of the 175 supported suite tests, 173
+passed initially; `scoreboard_selector_test` and `hstream_ui_test` both passed
+on retry with the original PATH (5.1s and 184.0s). Their earlier failures were in
+unrelated HTTP/calibration timing paths. Thus all 175 supported tests have a
+passing run, with the excluded detector/video limitations above still open.
 
 Jetson validation was attempted: `stubby` is unreachable (`No route to host`)
 and `make jetson` reports that `/opt/jetson-sysroot` is absent. No Jetson build or
