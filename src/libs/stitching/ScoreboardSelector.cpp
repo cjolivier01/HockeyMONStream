@@ -2,12 +2,14 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/ScoreboardProposal.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -15,12 +17,14 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <random>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -30,6 +34,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <poll.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -67,7 +72,7 @@ absl::StatusOr<std::string> snapshot_file_identity(const fs::path& path) {
       ::close(descriptor);
     }
   } close{descriptor};
-  struct stat metadata{};
+  struct stat metadata {};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0)
     return absl::FailedPreconditionError("Stitched snapshot is not a readable regular file: " + path.string());
   return snapshot_identity(metadata);
@@ -105,7 +110,7 @@ absl::StatusOr<OpenedSnapshotFile> open_snapshot_file(const fs::path& path) {
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0)
     return absl::NotFoundError("Stitched snapshot is missing: " + path.string());
-  struct stat metadata{};
+  struct stat metadata {};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
       static_cast<uint64_t>(metadata.st_size) > kMaximumSnapshotBytes) {
     ::close(descriptor);
@@ -132,7 +137,7 @@ absl::StatusOr<std::string> read_opened_snapshot_file(OpenedSnapshotFile* snapsh
       return absl::FailedPreconditionError("Stitched snapshot changed while it was being read");
     offset += static_cast<size_t>(count);
   }
-  struct stat after{};
+  struct stat after {};
   if (::fstat(snapshot->descriptor, &after) != 0 || snapshot->identity != snapshot_identity(after))
     return absl::AbortedError("Stitched snapshot changed while it was being read");
   return bytes;
@@ -427,6 +432,7 @@ std::string selector_html(int width, int height, const std::optional<ScoreboardS
 const token=new URLSearchParams(location.search).get('token');const image=document.getElementById('image'),canvas=document.getElementById('overlay'),ctx=canvas.getContext('2d');let points=)HTML"
        << initial.str() << ";const nativeWidth=" << width << ",nativeHeight=" << height << R"HTML(;
 image.src='/image?token='+encodeURIComponent(token);image.onload=()=>{canvas.width=nativeWidth;canvas.height=nativeHeight;draw()};function draw(){ctx.clearRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#ff2d55';ctx.strokeStyle='#ff2d55';ctx.lineWidth=5;points.forEach((p,i)=>{ctx.beginPath();ctx.arc(p[0],p[1],12,0,Math.PI*2);ctx.fill();ctx.fillText(String(i+1),p[0]+15,p[1]-15)});if(points.length>1){ctx.beginPath();ctx.moveTo(...points[0]);points.slice(1).forEach(p=>ctx.lineTo(...p));ctx.stroke()}}canvas.onclick=e=>{if(points.length>=4)return;const r=canvas.getBoundingClientRect();points.push([Math.round((e.clientX-r.left)*nativeWidth/r.width),Math.round((e.clientY-r.top)*nativeHeight/r.height)]);draw()};
+fetch('/initial?token='+encodeURIComponent(token)).then(r=>r.json()).then(s=>{document.getElementById('status').textContent=s.message}).catch(()=>{document.getElementById('status').textContent='Could not load proposal status. Select corners manually.'});
 async function post(path,body='{}'){const r=await fetch(path+'?token='+encodeURIComponent(token),{method:'POST',headers:{'Content-Type':'application/json'},body});document.getElementById('status').textContent=await r.text();if(r.ok)document.querySelectorAll('button').forEach(b=>b.disabled=true)}document.getElementById('save').onclick=()=>post('/save',JSON.stringify({points}));document.getElementById('clear').onclick=()=>{points=[];draw()};document.getElementById('none').onclick=()=>post('/none');document.getElementById('cancel').onclick=()=>post('/cancel');</script></body></html>)HTML";
   return html.str();
 }
@@ -434,21 +440,62 @@ async function post(path,body='{}'){const r=await fetch(path+'?token='+encodeURI
 std::optional<ScoreboardSelector::Polygon> load_existing(const fs::path& game_dir) {
   try {
     auto loaded_config = load_game_config_file(game_dir / "config.yaml");
-    if (!loaded_config.ok() || !loaded_config->has_value())
+    if (!loaded_config.ok()) {
+      std::cerr << "Unable to read saved scoreboard selection: " << loaded_config.status() << '\n';
       return std::nullopt;
-    const YAML::Node polygon = (**loaded_config)["rink"]["scoreboard"]["perspective_polygon"];
-    if (!polygon || !polygon.IsSequence() || polygon.size() != 4)
-      return std::nullopt;
-    ScoreboardSelector::Polygon result;
-    for (size_t index = 0; index < result.size(); ++index) {
-      if (!polygon[index].IsSequence() || polygon[index].size() != 2)
-        return std::nullopt;
-      result[index] = {polygon[index][0].as<int>(), polygon[index][1].as<int>()};
     }
-    return result;
-  } catch (...) {
-    return std::nullopt;
+    if (!loaded_config->has_value())
+      return std::nullopt;
+    const auto child = [](const YAML::Node& parent, const char* key) {
+      if (!parent.IsMap())
+        return YAML::Node();
+      const YAML::Node value = parent[key];
+      return value.IsDefined() ? value : YAML::Node();
+    };
+    const YAML::Node config = **loaded_config;
+    const YAML::Node polygon = child(child(child(config, "rink"), "scoreboard"), "perspective_polygon");
+    if (polygon.IsSequence() && polygon.size() == 4) {
+      ScoreboardSelector::Polygon result;
+      for (size_t index = 0; index < result.size(); ++index) {
+        if (!polygon[index].IsSequence() || polygon[index].size() != 2)
+          throw std::invalid_argument("Saved scoreboard polygon must contain four [x, y] pairs");
+        result[index] = {polygon[index][0].as<int>(), polygon[index][1].as<int>()};
+      }
+      return result;
+    }
+    // Older/native game configs may save only the plugin's CSV property.
+    // Recognize the same aliases Save clears so reselect never redetects them.
+    const YAML::Node cropper = child(child(config, "pipeline"), "hmplaycropper");
+    if (!cropper.IsMap())
+      return std::nullopt;
+    for (const YAML::Node& bag : {cropper, child(cropper, "properties"), child(cropper, "private-properties")}) {
+      if (!bag.IsMap())
+        continue;
+      for (const char* key : {"scoreboard-perspective-polygon", "scoreboard_perspective_polygon"}) {
+        const YAML::Node value = bag[key];
+        if (!value.IsDefined() || value.IsNull())
+          continue;
+        const YAML::Node coordinates = YAML::Load("[" + value.as<std::string>() + "]");
+        if (!coordinates.IsSequence() || coordinates.size() != 8)
+          throw std::invalid_argument("Saved native scoreboard polygon must contain eight coordinates");
+        std::array<int, 8> rounded;
+        for (size_t i = 0; i < rounded.size(); ++i) {
+          const double coordinate = std::round(coordinates[i].as<double>());
+          if (!std::isfinite(coordinate) || coordinate < std::numeric_limits<int>::min() ||
+              coordinate > std::numeric_limits<int>::max())
+            throw std::invalid_argument("Saved native scoreboard coordinate is outside the integer range");
+          rounded[i] = static_cast<int>(coordinate);
+        }
+        ScoreboardSelector::Polygon result;
+        for (size_t i = 0; i < result.size(); ++i)
+          result[i] = {rounded[2 * i], rounded[2 * i + 1]};
+        return result;
+      }
+    }
+  } catch (const std::exception& error) {
+    std::cerr << "Unable to load saved scoreboard selection: " << error.what() << '\n';
   }
+  return std::nullopt;
 }
 
 bool valid_public_host(const std::string& host) {
@@ -740,6 +787,62 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir, const std::functi
   const std::string expected_host = browser_host + ":" + std::to_string(port);
   const std::string expected_origin = "http://" + expected_host;
   HM_RETURN_IF_ERROR(cancellation());
+  // Saved selections (including the disabled sentinel) bypass model lookup,
+  // download and inference. A generated polygon remains session-local until Save.
+  auto initial = load_existing(game_dir);
+  std::string proposal_message = "Review the corners, then save the selection.";
+  if (!initial.has_value()) {
+    std::clog << "Finding scoreboard corners for operator review\n";
+    try {
+      const int longest = std::max(dimensions.cols, dimensions.rows);
+      const int flags = longest > 8192 ? cv::IMREAD_REDUCED_COLOR_8
+          : longest > 4096             ? cv::IMREAD_REDUCED_COLOR_4
+          : longest > 2048             ? cv::IMREAD_REDUCED_COLOR_2
+                                       : cv::IMREAD_COLOR;
+      cv::Mat preview = cv::imdecode(encoded, flags);
+      if (!preview.empty() && (preview.cols > 8192 || preview.rows > 8192)) {
+        const double scale = 8192.0 / std::max(preview.cols, preview.rows);
+        cv::resize(preview, preview, {}, scale, scale, cv::INTER_AREA);
+      }
+      auto suggested = SuggestScoreboard(preview, dimensions.size(), is_cancelled);
+      if (!suggested.ok()) {
+        if (absl::IsCancelled(suggested.status()))
+          return suggested.status();
+        std::cerr << "Scoreboard proposal unavailable: " << suggested.status() << '\n';
+        proposal_message = "Automatic detection unavailable. Select the four corners manually; see the run log.";
+      } else if (suggested->has_value()) {
+        Polygon polygon;
+        for (size_t i = 0; i < polygon.size(); ++i)
+          polygon[i] = {(**suggested).corners[i].x, (**suggested).corners[i].y};
+        auto validated = ValidateAndOrder(polygon, dimensions.cols, dimensions.rows);
+        if (!validated.ok()) {
+          std::cerr << "Scoreboard proposal rejected: " << validated.status() << '\n';
+          proposal_message = "Automatic corners could not be used. Select the four corners manually; see the run log.";
+        } else {
+          initial = *validated;
+          proposal_message = "Suggested scoreboard corners. Review or adjust them, then save.";
+        }
+      } else {
+        proposal_message = "No confident scoreboard found. Please select its four corners.";
+      }
+    } catch (const std::exception& error) {
+      std::cerr << "Scoreboard proposal failed: " << error.what() << '\n';
+      proposal_message = "Automatic detection failed. Select the four corners manually; see the run log.";
+    }
+  }
+  HM_RETURN_IF_ERROR(cancellation());
+  // Small authenticated metadata response shared by the native Qt dialog and
+  // browser. It never changes config.yaml or outlives this canvas generation.
+  std::ostringstream initial_json;
+  initial_json << "{\"message\":\"" << proposal_message << "\",\"points\":[";
+  if (initial.has_value() && !IsDisabled(*initial)) {
+    for (size_t i = 0; i < initial->size(); ++i) {
+      if (i)
+        initial_json << ',';
+      initial_json << '[' << (*initial)[i].x << ',' << (*initial)[i].y << ']';
+    }
+  }
+  initial_json << "]}";
   std::cerr << "Scoreboard corners are not configured. Open this private, expiring URL:\n  " << expected_origin
             << "/?token=" << token << "\n";
   std::cerr << std::flush;
@@ -800,12 +903,16 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir, const std::functi
           200,
           "OK",
           "text/html; charset=utf-8",
-          selector_html(dimensions.cols, dimensions.rows, load_existing(game_dir)),
+          selector_html(dimensions.cols, dimensions.rows, initial),
           client_deadline);
       continue;
     }
     if (request->method == "GET" && path == "/image") {
       respond_to_client(client, 200, "OK", "image/png", snapshot_bytes, client_deadline);
+      continue;
+    }
+    if (request->method == "GET" && path == "/initial") {
+      respond_to_client(client, 200, "OK", "application/json", initial_json.str(), client_deadline);
       continue;
     }
     const auto origin = request->headers.find("origin");

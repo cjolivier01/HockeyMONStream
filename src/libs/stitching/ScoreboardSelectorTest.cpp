@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/ScoreboardProposal.h"
 
 #include <fcntl.h>
 #include <array>
@@ -27,6 +28,31 @@
 
 namespace {
 
+bool reject_proposal = false;
+int proposal_calls = 0;
+
+} // namespace
+
+namespace hm::stitching {
+
+// Supply the inference boundary in this test binary so HTTP failure handling
+// stays deterministic and offline. The production model has its own test target.
+absl::StatusOr<std::optional<ScoreboardProposal>> SuggestScoreboard(
+    const cv::Mat&,
+    cv::Size,
+    const std::function<bool()>&) {
+  ++proposal_calls;
+  if (reject_proposal) {
+    // Convex tilted corners can share extrema in the selector's ordering.
+    return ScoreboardProposal{{{{25, 10}, {50, 5}, {75, 10}, {50, 30}}}, 0.99};
+  }
+  return absl::UnavailableError("Scoreboard model unavailable in HTTP fixture");
+}
+
+} // namespace hm::stitching
+
+namespace {
+
 bool expect(bool condition, const char* message) {
   if (!condition)
     std::cerr << "FAIL: " << message << '\n';
@@ -34,7 +60,7 @@ bool expect(bool condition, const char* message) {
 }
 
 std::string file_identity(const std::filesystem::path& path) {
-  struct stat metadata{};
+  struct stat metadata {};
   if (::stat(path.c_str(), &metadata) != 0)
     return {};
   std::ostringstream value;
@@ -158,7 +184,12 @@ std::string http_request(
   return response;
 }
 
-bool exercise_http_selector(const std::filesystem::path& directory, bool remote = false, int cancel_mode = 0) {
+bool exercise_http_selector(
+    const std::filesystem::path& directory,
+    bool remote = false,
+    int cancel_mode = 0,
+    bool invalid_proposal = false,
+    const std::optional<hm::stitching::ScoreboardSelector::Polygon>& expected_saved = std::nullopt) {
   const std::string authority_host = remote ? "scoreboard.test" : "127.0.0.1";
   cv::Mat image(32, 96, CV_8UC3, cv::Scalar(255, 255, 255));
   if (!cv::imwrite((directory / "s.png").string(), image))
@@ -190,14 +221,16 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
       ::unsetenv("HM_SCOREBOARD_ALLOW_REMOTE");
       ::unsetenv("HM_SCOREBOARD_PUBLIC_HOST");
     }
-    ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", cancel_mode ? "60000" : "250", 1);
+    ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", cancel_mode ? "60000" : expected_saved ? "5000" : "250", 1);
+    reject_proposal = invalid_proposal;
     bool cancelled = false;
     const auto status = hm::stitching::ScoreboardSelector::Run(directory, [&] {
       char value;
       cancelled = cancelled || ::read(cancellation_pipe[0], &value, 1) == 1;
       return cancelled;
     });
-    _exit((cancel_mode ? absl::IsCancelled(status) : status.ok()) ? 0 : 1);
+    const bool expected_calls = proposal_calls == (expected_saved.has_value() ? 0 : 1);
+    _exit((cancel_mode ? absl::IsCancelled(status) : status.ok()) && expected_calls ? 0 : 1);
   }
   ::close(output_pipe[1]);
   ::close(cancellation_pipe[0]);
@@ -249,12 +282,14 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
       return ok;
     }
     int ready_pipe[2]{};
-    const bool pipe_created = ::pipe(ready_pipe) == 0;
-    ok &= pipe_created;
+    // The saved-selection cases exercise bypass, not the already-covered slow
+    // client timeout. Give their config fsync enough time on a loaded host.
+    const bool pipe_created = !expected_saved.has_value() && ::pipe(ready_pipe) == 0;
+    ok &= expected_saved.has_value() || pipe_created;
     pid_t slow_client = -1;
     if (pipe_created)
       slow_client = ::fork();
-    ok &= slow_client >= 0;
+    ok &= expected_saved.has_value() || slow_client >= 0;
     if (slow_client == 0) {
       ::close(ready_pipe[0]);
       const int socket = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -299,9 +334,32 @@ bool exercise_http_selector(const std::filesystem::path& directory, bool remote 
     ok &= expect(
         http_request(port, "/?token=" + token, false, authority_host).rfind("HTTP/1.1 200 ", 0) == 0,
         "valid scoreboard selector GET must succeed");
+    const auto proposal = http_request(port, "/initial?token=" + token, false, authority_host);
+    const char* expected_message = expected_saved.has_value() ? "Review the corners"
+        : invalid_proposal                                    ? "Automatic corners could not be used"
+                                                              : "Automatic detection unavailable";
+    std::ostringstream expected_points;
+    expected_points << "\"points\":[";
+    if (expected_saved.has_value() && !hm::stitching::ScoreboardSelector::IsDisabled(*expected_saved)) {
+      for (size_t i = 0; i < expected_saved->size(); ++i) {
+        if (i)
+          expected_points << ',';
+        expected_points << '[' << (*expected_saved)[i].x << ',' << (*expected_saved)[i].y << ']';
+      }
+    }
+    expected_points << ']';
     ok &= expect(
-        http_request(port, "/none?token=" + token, true, authority_host).rfind("HTTP/1.1 200 ", 0) == 0,
-        "valid scoreboard selector POST must succeed");
+        proposal.find(expected_points.str()) != std::string::npos &&
+            proposal.find(expected_message) != std::string::npos,
+        "Saved corners must remain the draft; failed proposals must explain the empty manual selection");
+    ok &= expect(
+        http_request(port, "/initial?token=wrong", false, authority_host).rfind("HTTP/1.1 403 ", 0) == 0,
+        "Proposal metadata must require the selector token");
+    const auto post_response = http_request(port, "/none?token=" + token, true, authority_host);
+    if (!expect(post_response.rfind("HTTP/1.1 200 ", 0) == 0, "valid scoreboard selector POST must succeed")) {
+      ok = false;
+      std::cerr << "Scoreboard POST response: " << post_response << '\n';
+    }
   } else {
     ::kill(child, SIGTERM);
   }
@@ -374,6 +432,7 @@ int main() {
     ok &= expect(polygon.IsSequence() && polygon.size() == 4, "saved sentinel must contain four points");
     ok &= expect(polygon[3][0].as<int>() == 0 && polygon[3][1].as<int>() == 0, "saved sentinel must stay zero");
   }
+  fixture_config = YAML::LoadFile((directory / "config.yaml").string());
   fixture_config["rink"].remove("scoreboard");
   std::ofstream(directory / "config.yaml") << fixture_config << '\n';
   cv::imwrite((directory / "s.png").string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(255, 255, 255)));
@@ -416,6 +475,25 @@ int main() {
   remote_fixture_config["rink"].remove("scoreboard");
   std::ofstream(directory / "config.yaml") << remote_fixture_config << '\n';
   ok &= expect(
+      exercise_http_selector(directory, false, 0, true),
+      "Rejected automatic corners must keep the manual editor available and allow an operator choice");
+  const Selector::Polygon saved_corners{{{10, 5}, {80, 5}, {80, 25}, {10, 25}}};
+  for (const char* bag : {"", "properties", "private-properties"}) {
+    for (const char* key : {"scoreboard-perspective-polygon", "scoreboard_perspective_polygon"}) {
+      for (bool no_scoreboard : {false, true}) {
+        YAML::Node alias_config = YAML::Clone(remote_fixture_config);
+        auto cropper = alias_config["pipeline"]["hmplaycropper"];
+        auto destination = *bag ? cropper[bag] : cropper;
+        destination[key] = no_scoreboard ? "0,0,0,0,0,0,0,0" : "10,5,80,5,80,25,10,25";
+        std::ofstream(directory / "config.yaml") << alias_config << '\n';
+        ok &= expect(
+            exercise_http_selector(directory, false, 0, false, no_scoreboard ? disabled : saved_corners),
+            "Saved native polygon aliases, including disabled sentinels, must bypass inference on reselect");
+      }
+    }
+  }
+  std::ofstream(directory / "config.yaml") << remote_fixture_config << '\n';
+  ok &= expect(
       exercise_http_selector(directory, true),
       "remote scoreboard mode must accept its explicit public authority and matching origin");
   ::setenv("HM_SCOREBOARD_BIND_HOST", "0.0.0.0", 1);
@@ -439,11 +517,10 @@ int main() {
   const cv::Mat mismatched_live_rotation_snapshot(24, 32, CV_8UC3, cv::Scalar(32, 64, 96));
   ok &= expect(
       live_rotation_generation.ok() &&
-          absl::IsAborted(
-              hm::stitching::save_stitched_image(
-                  directory.string(),
-                  mismatched_live_rotation_snapshot,
-                  live_rotation_generation.ok() ? *live_rotation_generation : "")),
+          absl::IsAborted(hm::stitching::save_stitched_image(
+              directory.string(),
+              mismatched_live_rotation_snapshot,
+              live_rotation_generation.ok() ? *live_rotation_generation : "")),
       "snapshot publication must reject image dimensions that disagree with the producer generation");
   const cv::Mat live_rotation_snapshot(32, 96, CV_8UC3, cv::Scalar(32, 64, 96));
   ok &= expect(
