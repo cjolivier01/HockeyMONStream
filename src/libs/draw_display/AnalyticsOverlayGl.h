@@ -25,6 +25,8 @@ struct GlCounters {
 // x86 GLX compatibility context, OpenGL 2.1/GLSL 1.20. One calling thread and
 // context per instance, bound lazily at first visible render. Renders into the
 // caller's CURRENT framebuffer/viewport with top-left output-pixel coordinates.
+// Coordinate extents may exceed texture limits: a large source panorama maps
+// into the existing bounded viewport without allocating a source-sized image.
 // Destination must be opaque and use linear blending (as in HmGpuPreview's
 // video/black framebuffer; no GL_FRAMEBUFFER_SRGB conversion).
 // No surface copy, framebuffer readback, glFinish, or context changes occur.

@@ -1,4 +1,5 @@
 #include "hstream/src/libs/draw_display/AnalyticsOverlayGl.h"
+#include "hstream/src/libs/draw_display/Watermark.h"
 
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
@@ -444,22 +445,54 @@ void StateAndCapacity(Context& owner) {
   GlCheck();
   std::cout << "gl_state restores_arrays_textures_blend_unpack=1 cross_context_rejected=1 capacity_untouched=1\n";
 }
-void ScaledViewport() {
+void ScaledViewport(float width, float height) {
   Target target(128, 96);
   target.Clear();
   glViewport(16, 12, 96, 72);
   a::CommandList commands;
-  commands.AddFill(0, 0, 64, 48, {1, 0, 0, 1});
-  commands.AddDisc(32, 24, 5, {0, 1, 0, 1});
+  commands.AddFill(0, 0, width, height, {1, 0, 0, 1});
+  commands.AddDisc(width / 2, height / 2, std::min(width, height) / 10, {0, 1, 0, 1});
   a::GlCompositor renderer;
-  Check(renderer.Render(64, 48, commands).drawn, "scaled draw failed");
+  Check(renderer.Render(width, height, commands).drawn, "scaled draw failed");
   const auto actual = target.Read();
   const auto at = [&](unsigned x, unsigned y, unsigned c) { return actual[(y * 128 + x) * 4 + c]; };
   Check(at(16, 12, 0) == 255 && at(111, 83, 0) == 255 && at(64, 48, 1) == 255, "scaled viewport coordinate mismatch");
   Check(
       at(15, 12, 0) != 255 && at(112, 83, 0) != 255 && at(16, 11, 0) != 255 && at(111, 84, 0) != 255,
       "letterbox was overwritten");
-  std::cout << "gl_viewport output_coordinates_scaled=1 letterbox_preserved=1\n";
+  std::cout << "gl_viewport width=" << width << " height=" << height
+            << " output_coordinates_scaled=1 letterbox_preserved=1\n";
+}
+void LargeCanvasWatermark() {
+  // The native panorama is wider than 16K; only the bounded preview framebuffer
+  // is allocated. Match the geometry that failed in blackhawks-p3 playback.
+  constexpr float width = 20457, height = 5256;
+  Target target(2560, 658);
+  target.Clear();
+  const auto before = target.Read();
+  a::CommandList commands;
+  Check(
+      hm::draw_display::AppendWatermark(
+          &commands, width, height, std::min(width / target.width, height / target.height)),
+      "large-canvas watermark commands rejected");
+  a::GlCompositor renderer;
+  const auto rendered = renderer.Render(width, height, commands);
+  Check(rendered.status == a::GlRenderStatus::kOk && rendered.drawn, "large-canvas watermark render failed");
+  const auto actual = target.Read();
+  unsigned changed = 0;
+  for (unsigned y = 0; y < target.height; ++y)
+    for (unsigned x = 0; x < target.width; ++x) {
+      const size_t pixel = (y * target.width + x) * 4;
+      if (std::memcmp(actual.data() + pixel, before.data() + pixel, 4) == 0)
+        continue;
+      ++changed;
+      Check(
+          x >= target.width - 352 && x < target.width - 31 && y >= target.height - 111,
+          "large-canvas watermark escaped its bottom-right rectangle");
+      Check(actual[pixel] > before[pixel], "large-canvas watermark is not red");
+    }
+  Check(changed > 100, "large-canvas watermark is not visible");
+  std::cout << "gl_watermark canvas=20457x5256 preview=2560x658 visible=1 placement=bottom-right\n";
 }
 void FailureSuppression() {
   Target target(128, 96);
@@ -490,6 +523,12 @@ void FailureSuppression() {
   Check(
       outside.Render(128, 96, clipped).status == a::GlRenderStatus::kOk && outside.counters().buffer_allocations == 0,
       "fully clipped GL work allocated resources");
+  for (float invalid : {0.0F, -1.0F, NAN, INFINITY}) {
+    Check(
+        outside.Render(invalid, 96, commands).status == a::GlRenderStatus::kInvalidArgument &&
+            outside.Render(128, invalid, commands).status == a::GlRenderStatus::kInvalidArgument,
+        "invalid GL coordinate extent accepted");
+  }
   std::cout << "gl_failure missing_font_cached=1 gl_error_retires=1 video_untouched=1 clipped_resources=0\n";
 }
 void Benchmark(unsigned width, unsigned height) {
@@ -559,7 +598,10 @@ int main(int argc, char** argv) {
     Pixels(false);
     Pixels(true);
     StateAndCapacity(context);
-    ScaledViewport();
+    ScaledViewport(64, 48);
+    ScaledViewport(20457, 5256);
+    ScaledViewport(5256, 20457);
+    LargeCanvasWatermark();
     FailureSuppression();
     if (argc == 2 && std::string(argv[1]) == "--benchmark") {
       Benchmark(1920, 1080);
