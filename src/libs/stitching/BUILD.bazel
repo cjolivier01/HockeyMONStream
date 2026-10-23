@@ -311,7 +311,6 @@ cc_test(
     "@opencv_linux//:opencv",
     "@yaml-cpp",
   ],
-  data = ["//configs:baseline.yaml"],
 )
 
 cc_test(
@@ -881,7 +880,6 @@ cc_test(
   name = "rink_mask_frame_time_test",
   srcs = ["RinkMaskFrameTimeTest.cpp"],
   deps = [":rink_mask_frame_time", ":game_config", "@yaml-cpp"],
-  data = ["//configs:baseline.yaml"],
 )
 
 cc_test(

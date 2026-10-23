@@ -563,7 +563,6 @@ cc_test(
         "@opencv_linux//:opencv",
         "@yaml-cpp",
     ],
-    data = ["//configs:baseline.yaml"],
 )
 
 cc_library(

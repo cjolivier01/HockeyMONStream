@@ -105,5 +105,4 @@ cc_test(
         ":dsfieldmask_lib",
         "//src/libs/stitching",
     ],
-    data = ["//configs:baseline.yaml"],
 )

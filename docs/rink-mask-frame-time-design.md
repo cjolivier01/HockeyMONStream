@@ -69,6 +69,29 @@ survive. Sources that cannot be sampled at a time — anything other than two
 recorded URI-MULTIPLE cameras with known durations — need
 `stitching.rink_mask_frame_time: auto` before they can build a mask.
 
+## Where a timed frame cannot be reached
+
+Only the startup preparation below can sample a chosen frame. Every other path
+that needs a new mask builds it from the frame in hand, and `create_field_mask`
+rejects that rather than saving a mask from the wrong moment. Since the shipped
+default is now a time, these two cases reach every game instead of only the
+venues that chose one:
+
+- Changing the final stitched-output rotation during playback invalidates the
+  mask's output generation. The running stitcher rebuilds the mask from the
+  current frame and publication fails with "The selected rink mask time
+  requires a mask preparation pass; restart playback", which ends the run.
+  Restart to rebuild at the configured frame, or select Automatic for that
+  game.
+- A stitching-experiment baseline prepared before the selection changed keeps a
+  mask the player-frame scan cannot load, and that scan deliberately creates no
+  mask (`PlayerFrameScan::Create`). Prepare the baseline again, or select
+  Automatic for the source game, before resuming a queued player-selection
+  candidate.
+
+Closing these would mean letting a running graph schedule its own timed
+sampling pass, which is a larger change than the selection itself.
+
 The shared baseline remains byte-for-byte synchronized with HockeyMON. This is
 a native HStream runtime setting; the Python producer does not sample this time.
 
