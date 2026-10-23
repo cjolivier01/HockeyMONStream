@@ -908,17 +908,26 @@ bool run_rink_mask_reactivation_test(Window window) {
   unsigned rink_width = 0;
   unsigned rink_height = 0;
   std::string rink_capture_error;
-  const bool rink_captured = initially_loaded &&
-      hm::gpu_preview::capture_presented_frame(sink, &rink_rgba, &rink_width, &rink_height, &rink_capture_error);
-  bool rink_visible = false;
-  if (rink_captured && rink_width > 0 && rink_height > 0 &&
-      rink_rgba.size() >= static_cast<size_t>(rink_width) * rink_height * 4U) {
-    const size_t center = (static_cast<size_t>(rink_height / 2) * rink_width + rink_width / 2) * 4U;
-    const auto red = rink_rgba[center + 0];
-    const auto green = rink_rgba[center + 1];
-    const auto blue = rink_rgba[center + 2];
-    rink_visible = green > 40 && green > red + 20 && green > blue + 20;
-  }
+  // Texture loading can precede the window manager's first map/resize. Wait
+  // for visible pixels before quiescing, instead of sampling a cleared front
+  // buffer once. A missing mask still fails within the same bounded deadline.
+  bool rink_captured = false;
+  const bool rink_visible = initially_loaded &&
+      wait_for_condition(
+                                [&] {
+                                  rink_captured = hm::gpu_preview::capture_presented_frame(
+                                      sink, &rink_rgba, &rink_width, &rink_height, &rink_capture_error);
+                                  if (!rink_captured || rink_width == 0 || rink_height == 0 ||
+                                      rink_rgba.size() < static_cast<size_t>(rink_width) * rink_height * 4U)
+                                    return false;
+                                  const size_t center =
+                                      (static_cast<size_t>(rink_height / 2) * rink_width + rink_width / 2) * 4U;
+                                  const auto red = rink_rgba[center + 0];
+                                  const auto green = rink_rgba[center + 1];
+                                  const auto blue = rink_rgba[center + 2];
+                                  return green > 40 && green > red + 20 && green > blue + 20;
+                                },
+                                std::chrono::seconds(10));
 
   hm::gpu_preview::set_isolation_active(gate, false, 17);
   const bool quiesced = hm::gpu_preview::quiesce(sink, 17);
