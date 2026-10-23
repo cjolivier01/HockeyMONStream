@@ -1123,7 +1123,8 @@ absl::StatusOr<std::string> read_rink_mask_frame_time_default(const YAML::Node& 
       return absl::InvalidArgumentError("stitching.rink_mask_frame_time_default must be a time or auto");
     const auto parsed = ParseRinkMaskFrameTime(value.as<std::string>());
     if (!parsed.ok())
-      return parsed.status();
+      return absl::InvalidArgumentError(
+          "stitching.rink_mask_frame_time_default is invalid: " + std::string(parsed.status().message()));
     return FormatRinkMaskFrameTime(*parsed);
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Invalid default rink mask frame time: " + std::string(exception.what()));

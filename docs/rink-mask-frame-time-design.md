@@ -22,9 +22,10 @@ stitching:
 ```
 
 `rink_mask_frame_time_default` is what a game inherits when neither it nor its
-venue names a frame, and the baseline is the only place it is written: there is
-no compiled-in fallback, and a missing or unparseable value fails rather than
-quietly selecting another frame.
+venue names a frame. The baseline is where it ships and the only place it needs
+to be, though a later layer may override it like any other key. There is no
+compiled-in fallback: once something needs it, a missing or unparseable value
+fails rather than quietly selecting another frame.
 
 In **Stitched → Rink**, **Ice mask frame** offers **Rink default**,
 **Automatic**, and **Custom time**. The inherited value appears below the

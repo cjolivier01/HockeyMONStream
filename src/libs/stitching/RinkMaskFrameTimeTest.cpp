@@ -2,6 +2,9 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <yaml-cpp/yaml.h>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 
@@ -142,5 +145,20 @@ stitching:
           written["late"]["rink_mask_frame_time"].as<std::string>() == "-00:00:02" &&
           *read_rink_mask_frame_time(config) == "-00:00:03",
       "A venue with no mask-frame override must stay on the configured default in worker documents");
+
+  // A configuration root whose baseline dropped the key has no default left to
+  // fall back on, and saying so beats picking a frame nobody asked for.
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / ("rink-mask-frame-time-test-" + std::to_string(::getpid()));
+  fs::create_directories(root);
+  std::ofstream(root / "baseline.yaml") << "stitching:\n  rink_config: null\n";
+  ::setenv("HM_CONFIG_ROOT", root.c_str(), /*overwrite=*/1);
+  YAML::Node without_default;
+  without_default["stitching"]["rink_config"] = YAML::Node(YAML::NodeType::Null);
+  ok &= expect(
+      !read_rink_mask_frame_time_default(without_default).ok() && !read_rink_mask_frame_time(without_default).ok(),
+      "A baseline without the key must fail rather than restore a compiled-in default");
+  ::unsetenv("HM_CONFIG_ROOT");
+  fs::remove_all(root);
   return ok ? 0 : 1;
 }
