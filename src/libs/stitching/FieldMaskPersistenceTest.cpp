@@ -67,8 +67,10 @@ int main() {
   const fs::path root = fs::temp_directory_path() / ("field-mask-persistence-test-" + std::to_string(::getpid()));
   fs::create_directories(root);
   {
+    // Most of this fixture publishes masks without sampled-frame provenance,
+    // which is the automatic selection rather than the configured default.
     std::ofstream config(root / "config.yaml");
-    config << "unrelated:\n  keep: true\n";
+    config << "unrelated:\n  keep: true\nstitching:\n  rink_mask_frame_time: auto\n";
   }
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
     std::ofstream(root / name) << "p f2 w32 h24\n";
@@ -185,6 +187,13 @@ int main() {
     std::ofstream(root / "config.yaml") << YAML::Dump(legacy) << '\n';
     ok &=
         expect(!hm::stitching::is_field_mask_configured(root.string()), "A changed time must invalidate a saved mask");
+    // A game that never chose a frame now inherits the configured default, so
+    // its automatic mask needs regenerating with sampled-frame provenance.
+    legacy["stitching"].remove("rink_mask_frame_time");
+    std::ofstream(root / "config.yaml") << YAML::Dump(legacy) << '\n';
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()),
+        "The configured default must invalidate a mask saved without a selection");
     std::ofstream(root / "config.yaml") << YAML::Dump(original_mask_config) << '\n';
     struct stat config_metadata{};
     ok &= expect(

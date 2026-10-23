@@ -21,7 +21,15 @@ int main() {
            {"00:10:00", 600000000000LL},
            {"-00:00:01", -1000000000LL},
            {"-00:00:00.125", -125000000},
-           {"27:01:02.3", 97262300000000LL}}) {
+           {"27:01:02.3", 97262300000000LL},
+           // Shorthand: bare seconds, MM:SS, and single-digit fields.
+           {"-1", -1000000000LL},
+           {"0", 0},
+           {"90", 90000000000LL},
+           {"-1.5", -1500000000LL},
+           {"1:30", 90000000000LL},
+           {"-0:30", -30000000000LL},
+           {"1:02:03", 3723000000000LL}}) {
     const auto parsed = ParseRinkMaskFrameTime(input);
     ok &= expect(parsed.ok() && parsed->has_value() && **parsed == value, "Signed time must parse correctly");
     if (parsed.ok()) {
@@ -30,7 +38,22 @@ int main() {
     }
   }
   for (const char* bad :
-       {"", "-00:00:00", "00:60:00", "00:00:60", "1", "00:00:01.1234", "00:00:01x", "-auto", "9999999:59:59.999"})
+       {"",
+        "-",
+        "-00:00:00",
+        // Negative zero in every spelling the shorthand allows.
+        "-0",
+        "-0.000",
+        "-0:00",
+        "00:60:00",
+        "00:00:60",
+        "0:60",
+        "1:60:00",
+        "00:00:01.1234",
+        "00:00:01x",
+        "-auto",
+        "1:2:3:4",
+        "9999999:59:59.999"})
     ok &= expect(!ParseRinkMaskFrameTime(bad).ok(), "Invalid or overflowing times must fail");
   ok &= expect(
       ParseRinkMaskFrameTime("auto").ok() && !*ParseRinkMaskFrameTime("auto"), "auto must be distinct from zero");
@@ -42,6 +65,23 @@ int main() {
           !ResolveRinkMaskFrameTime(-61000000000LL, 60000000000ULL).ok() && !ResolveRinkMaskFrameTime(-1, 0).ok() &&
           !ResolveRinkMaskFrameTime(-1, std::numeric_limits<uint64_t>::max()).ok(),
       "Out-of-range and unknown recording durations must fail");
+  // The bundled baseline answers what the shipped behaviour is: the last
+  // second of the recording, for every venue and for games with none selected.
+  const YAML::Node shipped;
+  ok &= expect(
+      read_rink_mask_frame_time_default(shipped).ok() && *read_rink_mask_frame_time_default(shipped) == "-00:00:01",
+      "The bundled baseline must default the ice mask frame to one second before the end");
+  ok &= expect(
+      read_rink_mask_frame_time(shipped).ok() && *read_rink_mask_frame_time(shipped) == "-00:00:01",
+      "A game with no rink and no selection must inherit that default");
+  for (const char* venue : {"vallco", "sharks-ice", "tv-dublin", "fremont"}) {
+    YAML::Node venue_config;
+    venue_config["stitching"]["rink_config"] = venue;
+    ok &= expect(
+        read_rink_mask_frame_time(venue_config).ok() && *read_rink_mask_frame_time(venue_config) == "-00:00:01",
+        "Every bundled venue must inherit the same ice mask frame");
+  }
+
   YAML::Node config = YAML::Load(R"(
 stitching:
   rink_configs:
@@ -53,6 +93,7 @@ stitching:
       display_name: Ordinary rink
       rotation_degrees: [0, 0, 0]
   rink_config: late
+  rink_mask_frame_time_default: '-00:00:03'
 )");
   ok &= expect(*read_rink_mask_frame_time(config) == "-00:00:01", "Selected rink must supply its default");
   config["stitching"]["rink_mask_frame_time"] = "00:00:00";
@@ -62,7 +103,18 @@ stitching:
   config["stitching"]["rink_mask_frame_time"] = YAML::Node(YAML::NodeType::Null);
   ok &= expect(*read_rink_mask_frame_time(config) == "-00:00:01", "Null must restore rink inheritance");
   config["stitching"]["rink_config"] = "ordinary";
-  ok &= expect(*read_rink_mask_frame_time(config) == "auto", "Other rinks must retain automatic behavior");
+  ok &= expect(
+      *read_rink_mask_frame_time(config) == "-00:00:03",
+      "A venue without its own time must inherit the configured default");
+  config["stitching"]["rink_mask_frame_time_default"] = "auto";
+  ok &=
+      expect(*read_rink_mask_frame_time(config) == "auto", "An automatic configured default must reach that venue too");
+  config["stitching"]["rink_mask_frame_time_default"] = "-00:00:00";
+  ok &= expect(
+      !read_rink_mask_frame_time_default(config).ok() && !read_rink_mask_frame_time(config).ok(),
+      "An invalid configured default must fail instead of selecting another frame");
+  config["stitching"]["rink_mask_frame_time_default"] = "-3";
+  ok &= expect(*read_rink_mask_frame_time(config) == "-00:00:03", "Configured defaults must accept the same shorthand");
   YAML::Node effective = YAML::Clone(config);
   effective["stitching"]["rink_mask_frame_time"] = "00:00:12.5";
   ok &= expect(
@@ -76,5 +128,12 @@ stitching:
   ok &= expect(
       materialize_stitch_rink_context(config, effective).ok() && *read_rink_mask_frame_time(config) == "-00:00:02",
       "Materialized profiles must retain the mask-frame default");
+  restore_generated_stitch_rink_context(config);
+  effective["stitching"]["rink_config"] = "ordinary";
+  ok &= expect(
+      materialize_stitch_rink_context(config, effective).ok() &&
+          !config["stitching"]["rink_configs"]["ordinary"]["rink_mask_frame_time"] &&
+          *read_rink_mask_frame_time(config) == "-00:00:03",
+      "A venue with no mask-frame override must stay on the configured default in worker documents");
   return ok ? 0 : 1;
 }

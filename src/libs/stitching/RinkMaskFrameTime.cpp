@@ -10,11 +10,26 @@ namespace hm::stitching {
 absl::StatusOr<std::optional<int64_t>> ParseRinkMaskFrameTime(const std::string& value) {
   if (value == "auto")
     return std::nullopt;
-  static const std::regex syntax(R"(^(-?)([0-9]{2,6}):([0-5][0-9]):([0-5][0-9])(?:[.]([0-9]{1,3}))?$)");
+  // Seconds, MM:SS or HH:MM:SS, as highlight and clip times are written, with
+  // an optional sign: -1 and -00:00:01 both select the recording's last second.
+  static const std::regex syntax(R"(^(-?)([0-9]{1,6})(?::([0-9]{1,2}))?(?::([0-9]{1,2}))?(?:[.]([0-9]{1,3}))?$)");
   std::smatch match;
   if (!std::regex_match(value, match, syntax))
-    return absl::InvalidArgumentError("Rink mask frame time must be auto or [-]HH:MM:SS[.mmm]");
-  const int64_t seconds = std::stoll(match[2]) * 3600 + std::stoll(match[3]) * 60 + std::stoll(match[4]);
+    return absl::InvalidArgumentError(
+        "Rink mask frame time must be auto, or [-]SS, [-]MM:SS or [-]HH:MM:SS with optional .mmm");
+  const bool has_minutes = match[3].matched;
+  const bool has_hours = match[4].matched;
+  const int64_t first = std::stoll(match[2]);
+  const int64_t second = has_minutes ? std::stoll(match[3]) : 0;
+  const int64_t third = has_hours ? std::stoll(match[4]) : 0;
+  const int64_t hours = has_hours ? first : 0;
+  const int64_t minutes = has_hours ? second : has_minutes ? first : 0;
+  const int64_t whole_seconds = has_hours ? third : has_minutes ? second : first;
+  if (has_minutes && whole_seconds > 59)
+    return absl::InvalidArgumentError("Rink mask frame time seconds must be below 60 after a colon");
+  if (has_hours && minutes > 59)
+    return absl::InvalidArgumentError("Rink mask frame time minutes must be below 60 in HH:MM:SS");
+  const int64_t seconds = hours * 3600 + minutes * 60 + whole_seconds;
   std::string fraction = match[5];
   fraction.append(3 - fraction.size(), '0');
   const int64_t milliseconds = std::stoll(fraction);

@@ -97,14 +97,20 @@ struct StitchRinkConfiguration {
   std::string display_name;
   // One rotation of the registered camera pair, not per-camera corrections.
   std::array<double, 3> rotation_degrees{0.0, 0.0, 0.0};
-  std::string rink_mask_frame_time{"auto"};
+  // Empty when the venue does not override stitching.rink_mask_frame_time_default.
+  std::string rink_mask_frame_time;
 };
 
 // Definitions live in stitching.rink_configs in the shared baseline. An empty
 // stitching.rink_config selects no venue default (legacy zero rotation).
 absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurations(const YAML::Node& config);
 absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config);
-// Resolves the direct setting, then the selected rink default, then auto.
+// Venue-independent ice-mask frame from stitching.rink_mask_frame_time_default,
+// read from the supplied document or, when it omits the key, from the bundled
+// baseline. There is no compiled-in default: a missing key is an error.
+absl::StatusOr<std::string> read_rink_mask_frame_time_default(const YAML::Node& config);
+// Resolves the direct setting, then the selected rink's override, then the
+// configured default above.
 absl::StatusOr<std::string> read_rink_mask_frame_time(const YAML::Node& config);
 bool restore_generated_rink_mask_frame_time(YAML::Node& config);
 absl::StatusOr<bool> materialize_rink_mask_frame_time(YAML::Node& config, const YAML::Node& effective);

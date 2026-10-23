@@ -1049,7 +1049,9 @@ absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurat
       StitchProjectionFraming view;
       HM_RETURN_IF_ERROR(read_framing_array(entry.second, "rotation_degrees", view.rotation_degrees));
       HM_RETURN_IF_ERROR(validate_projection_view(view));
-      std::string mask_time = "auto";
+      // Empty leaves the venue on the configured default rather than freezing
+      // today's default into every profile that does not care.
+      std::string mask_time;
       const YAML::Node mask_value = entry.second["rink_mask_frame_time"];
       if (mask_value && !mask_value.IsNull()) {
         if (!mask_value.IsScalar())
@@ -1093,6 +1095,41 @@ absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config)
   }
 }
 
+absl::StatusOr<std::string> read_rink_mask_frame_time_default(const YAML::Node& config) {
+  try {
+    // Returns the declared scalar, or a null node when this document inherits
+    // one. Missing keys on a const map yield nodes that cannot be rebound.
+    const auto declared = [](const YAML::Node& root) -> YAML::Node {
+      const YAML::Node stitching = root && root.IsMap() ? root["stitching"] : YAML::Node();
+      if (!stitching || !stitching.IsMap())
+        return YAML::Node();
+      const YAML::Node value = stitching["rink_mask_frame_time_default"];
+      return value && !value.IsNull() ? value : YAML::Node();
+    };
+    YAML::Node value = declared(config);
+    if (value.IsNull()) {
+      // Callers hand us game documents and partially layered configurations as
+      // well as fully merged ones, so the shipped default comes from the
+      // baseline itself rather than from a literal here.
+      const auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      value.reset(declared(baseline->values));
+    }
+    if (value.IsNull())
+      return absl::InvalidArgumentError(
+          "stitching.rink_mask_frame_time_default is required; add it to the baseline configuration");
+    if (!value.IsScalar())
+      return absl::InvalidArgumentError("stitching.rink_mask_frame_time_default must be a time or auto");
+    const auto parsed = ParseRinkMaskFrameTime(value.as<std::string>());
+    if (!parsed.ok())
+      return parsed.status();
+    return FormatRinkMaskFrameTime(*parsed);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Invalid default rink mask frame time: " + std::string(exception.what()));
+  }
+}
+
 absl::StatusOr<std::string> read_rink_mask_frame_time(const YAML::Node& config) {
   try {
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
@@ -1111,10 +1148,10 @@ absl::StatusOr<std::string> read_rink_mask_frame_time(const YAML::Node& config) 
       std::vector<StitchRinkConfiguration> profiles;
       HM_ASSIGN_OR_RETURN(profiles, read_stitch_rink_configurations(config));
       for (const auto& profile : profiles)
-        if (profile.id == rink)
+        if (profile.id == rink && !profile.rink_mask_frame_time.empty())
           return profile.rink_mask_frame_time;
     }
-    return std::string("auto");
+    return read_rink_mask_frame_time_default(config);
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Invalid rink mask frame time: " + std::string(exception.what()));
   }
@@ -1780,7 +1817,8 @@ absl::StatusOr<bool> materialize_stitch_rink_context(YAML::Node& config, const Y
     YAML::Node definitions(YAML::NodeType::Map);
     for (const auto& profile : profiles) {
       definitions[profile.id]["display_name"] = profile.display_name;
-      definitions[profile.id]["rink_mask_frame_time"] = profile.rink_mask_frame_time;
+      if (!profile.rink_mask_frame_time.empty())
+        definitions[profile.id]["rink_mask_frame_time"] = profile.rink_mask_frame_time;
       definitions[profile.id]["rotation_degrees"] =
           std::vector<double>(profile.rotation_degrees.begin(), profile.rotation_degrees.end());
     }

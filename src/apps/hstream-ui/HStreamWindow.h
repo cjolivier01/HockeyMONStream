@@ -649,6 +649,9 @@ class HStreamWindow : public QMainWindow {
   QLabel* rink_mask_time_source_{nullptr};
   QString saved_rink_mask_time_mode_;
   QString saved_rink_mask_time_text_;
+  // Configured ice-mask frame for venues that do not name one, resolved with
+  // the rink profiles so the inherited hint does not reload the baseline.
+  std::string rink_mask_time_default_;
   std::array<QDoubleSpinBox*, 2> rink_angle_spins_{};
   QPushButton* rink_leveling_button_{nullptr};
   QPushButton* rink_map_button_{nullptr};

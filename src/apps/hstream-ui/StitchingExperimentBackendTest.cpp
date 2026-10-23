@@ -470,6 +470,9 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   resolved["game"]["stitching"]["frame_offsets"]["left"] = 0;
   resolved["game"]["stitching"]["frame_offsets"]["right"] = saved_offsets ? 70.330809 : 1;
   resolved["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  // The fixture mask above carries no sampled-frame provenance, so this
+  // baseline is an automatic one rather than the configured ice-mask frame.
+  resolved["stitching"]["rink_mask_frame_time"] = "auto";
   resolved["rink"]["stitched_output_generation"] = *output_generation;
   if (!write(directory / "config.yaml", YAML::Dump(resolved)))
     return false;

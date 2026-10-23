@@ -5063,6 +5063,12 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!rink_configurations.ok())
     throw std::runtime_error(rink_configurations.status().ToString());
   rink_configurations_ = *rink_configurations;
+  const auto rink_mask_time_default = hm::stitching::read_rink_mask_frame_time_default(baseline_config_);
+  if (!rink_mask_time_default.ok()) {
+    throw std::runtime_error(
+        "Effective baseline ice mask frame default is invalid: " + rink_mask_time_default.status().ToString());
+  }
+  rink_mask_time_default_ = *rink_mask_time_default;
   auto camera_configurations = hm::stitching::read_stitch_camera_configurations(baseline_config_);
   if (!camera_configurations.ok()) {
     throw std::runtime_error(
@@ -5908,12 +5914,12 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   rink_mask_time_mode_->addItem("Custom time", "custom");
   rink_mask_time_edit_ = new QLineEdit();
   rink_mask_time_edit_->setObjectName("rinkMaskTimeEdit");
-  rink_mask_time_edit_->setPlaceholderText("[-]HH:MM:SS[.mmm]");
+  rink_mask_time_edit_->setPlaceholderText("[-][[HH:]MM:]SS[.mmm]");
   set_control_help(
       rink_mask_time_edit_,
       "Frame used to create the final stitched ice mask. Positive times are measured from the recording start; "
-      "negative times from the synchronized recording end. Example: -00:00:01 is one second before the end. "
-      "Independent of Reference frame and Playback start.");
+      "negative times from the synchronized recording end. Write seconds (-1), MM:SS (1:30) or HH:MM:SS, with "
+      "optional milliseconds: -1 is one second before the end. Independent of Reference frame and Playback start.");
   rink_mask_time_source_ = new QLabel();
   rink_mask_time_source_->setObjectName("rinkMaskTimeSourceLabel");
   rink_mask_time_source_->setWordWrap(true);
@@ -8027,9 +8033,13 @@ void HStreamWindow::loadRinkLevelingControls(const YAML::Node& config) {
   const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
   const auto profiles = hm::stitching::read_stitch_rink_configurations(effective);
   const auto selection = hm::stitching::read_stitch_rink_selection(effective);
+  const auto mask_time_default = hm::stitching::read_rink_mask_frame_time_default(effective);
   if (!profiles.ok() || !selection.ok())
     throw std::invalid_argument(!profiles.ok() ? profiles.status().ToString() : selection.status().ToString());
+  if (!mask_time_default.ok())
+    throw std::invalid_argument(mask_time_default.status().ToString());
   rink_configurations_ = *profiles;
+  rink_mask_time_default_ = *mask_time_default;
   if (rink_mask_time_mode_ && rink_mask_time_edit_) {
     YAML::Node private_values = YAML::Clone(config);
     hm::stitching::restore_generated_rink_mask_frame_time(private_values);
@@ -8083,14 +8093,18 @@ void HStreamWindow::updateRinkLevelingControls() {
     rink_mask_time_mode_->setEnabled(idle);
     rink_mask_time_edit_->setEnabled(idle && custom);
     rink_mask_time_edit_->setVisible(custom);
-    std::string default_time = "auto";
+    std::string default_time = rink_mask_time_default_;
+    QString inherited_source = "Default";
     for (const auto& profile : rink_configurations_)
-      if (profile.id == rink_configuration_combo_->currentData().toString().toStdString())
+      if (profile.id == rink_configuration_combo_->currentData().toString().toStdString() &&
+          !profile.rink_mask_frame_time.empty()) {
         default_time = profile.rink_mask_frame_time;
+        inherited_source = "Rink default";
+      }
     rink_mask_time_source_->setText(
         rink_mask_time_mode_->currentData().toString() == "inherit"
-            ? (default_time == "auto" ? "Rink default: first available stitched frame"
-                                      : QString("Rink default: %1").arg(QString::fromStdString(default_time)))
+            ? (default_time == "auto" ? QString("%1: first available stitched frame").arg(inherited_source)
+                                      : QString("%1: %2").arg(inherited_source, QString::fromStdString(default_time)))
             : (custom ? "Uses this game's time; preserves stitching alignment"
                       : "Uses the first available stitched frame"));
   }
@@ -8221,8 +8235,13 @@ bool HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) {
       config["stitching"]["rink_mask_frame_time"] = "auto";
     } else {
       const auto parsed = hm::stitching::ParseRinkMaskFrameTime(rink_mask_time_edit_->text().trimmed().toStdString());
-      if (!parsed.ok() || !parsed->has_value()) {
-        appendLog("Could not save ice mask frame: enter [-]HH:MM:SS[.mmm].");
+      if (!parsed.ok()) {
+        appendLog(QString("Could not save ice mask frame: %1.")
+                      .arg(QString::fromStdString(std::string(parsed.status().message()))));
+        return false;
+      }
+      if (!parsed->has_value()) {
+        appendLog("Could not save ice mask frame: choose Automatic instead of typing auto.");
         return false;
       }
       config["stitching"]["rink_mask_frame_time"] = hm::stitching::FormatRinkMaskFrameTime(*parsed);
