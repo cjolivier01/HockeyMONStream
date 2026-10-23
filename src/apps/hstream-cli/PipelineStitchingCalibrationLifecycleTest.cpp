@@ -586,6 +586,10 @@ bool write_game_config(
          << "      left: 0\n"
          << "      right: 0\n"
          << "stitching:\n"
+         // These cases exercise masks taken from the first stitched frame,
+         // including multi-context runs that timed preparation rejects. The
+         // timed case below selects its own frames.
+         << "  rink_mask_frame_time: auto\n"
          << "  camera_config: gopro-mission-1\n"
          << "  camera_fov:\n"
          << "    horizontal_fov: 127.2\n"

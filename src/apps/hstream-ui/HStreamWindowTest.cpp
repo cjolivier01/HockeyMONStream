@@ -14928,7 +14928,16 @@ bool test_rink_mask_time(const QString& source_game_directory) {
     std::ofstream(fixture / "s.png") << "old-mask-frame";
     if (run == 0) {
       mode->setCurrentIndex(mode->findData("custom"));
-      time->setText("-00:00:02.5");
+      // Negative zero names the recording end, where no frame exists.
+      time->setText("-00:00:00");
+      activate(save);
+      if (!expect(
+              YAML::LoadFile(config_path.string())["stitching"]["rink_mask_frame_time"].IsNull() &&
+                  fs::exists(fixture / "rink_mask_0.png"),
+              "A rejected ice mask frame must not be saved or invalidate the mask"))
+        return false;
+      // Shorthand seconds reach the same frame as -00:00:02.500.
+      time->setText("-2.5");
     } else {
       if (run == 1 && !expect(time->text() == "-00:00:02.500", "Signed time must reload with canonical precision"))
         return false;

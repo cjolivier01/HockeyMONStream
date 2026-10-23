@@ -771,6 +771,9 @@ bool make_rink_mask_fixture(const fs::path& root, std::string* output_generation
     return false;
   }
   YAML::Node config;
+  // The mask above has no sampled-frame provenance, so this fixture is an
+  // automatic one rather than the configured ice-mask frame.
+  config["stitching"]["rink_mask_frame_time"] = "auto";
   config["rink"]["stitched_output_generation"] = *generation;
   std::ofstream config_output(root / "config.yaml");
   config_output << config << '\n';

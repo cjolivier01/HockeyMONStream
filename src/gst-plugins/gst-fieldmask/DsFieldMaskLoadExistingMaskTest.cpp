@@ -82,6 +82,9 @@ int main() {
   cv::Mat seam(64, 64, CV_8UC1, cv::Scalar(0));
   seam.colRange(32, seam.cols).setTo(255);
   cv::imwrite((tmpdir / "seam_file.png").string(), seam);
+  // This fixture publishes a mask with no sampled-frame provenance, which is
+  // the automatic selection rather than the configured ice-mask frame.
+  std::ofstream(tmpdir / "config.yaml") << "stitching:\n  rink_mask_frame_time: auto\n";
   cv::Mat mask(64, 64, CV_8UC1, cv::Scalar(0));
   mask(cv::Rect(8, 16, 48, 33)).setTo(255);
   hm::stitching::RinkProfile profile;
@@ -314,7 +317,9 @@ int main() {
 
   {
     std::ofstream config(tmpdir / "config.yaml");
-    config << "hstream_ui:\n"
+    config << "stitching:\n"
+              "  rink_mask_frame_time: auto\n"
+              "hstream_ui:\n"
               "  stitching_calibration:\n"
               "    status: pending\n"
               "    artifacts_invalidated: false\n"
