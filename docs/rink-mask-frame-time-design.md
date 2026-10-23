@@ -82,8 +82,10 @@ venues that chose one:
   mask's output generation. The running stitcher rebuilds the mask from the
   current frame and publication fails with "The selected rink mask time
   requires a mask preparation pass; restart playback", which ends the run.
-  Restart to rebuild at the configured frame, or select Automatic for that
-  game.
+  The restart repairs it: the saved rotation makes the old mask unusable, so
+  startup runs the mask pass alone — no new solve — and builds the mask at the
+  configured frame from the canvas with that rotation applied. Selecting
+  Automatic for the game avoids the interruption instead.
 - A stitching-experiment baseline prepared before the selection changed keeps a
   mask the player-frame scan cannot load, and that scan deliberately creates no
   mask (`PlayerFrameScan::Create`). Prepare that baseline again before resuming
