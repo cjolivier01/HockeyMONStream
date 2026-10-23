@@ -85,9 +85,10 @@ venues that chose one:
   game.
 - A stitching-experiment baseline prepared before the selection changed keeps a
   mask the player-frame scan cannot load, and that scan deliberately creates no
-  mask (`PlayerFrameScan::Create`). Prepare the baseline again, or select
-  Automatic for the source game, before resuming a queued player-selection
-  candidate.
+  mask (`PlayerFrameScan::Create`). Prepare that baseline again before resuming
+  a queued player-selection candidate: the candidate runs against its own
+  private copy of the game, so changing the source game's selection only
+  affects baselines created after it.
 
 Closing these would mean letting a running graph schedule its own timed
 sampling pass, which is a larger change than the selection itself.

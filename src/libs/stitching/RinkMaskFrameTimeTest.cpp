@@ -129,10 +129,17 @@ stitching:
       materialize_stitch_rink_context(config, effective).ok() && *read_rink_mask_frame_time(config) == "-00:00:02",
       "Materialized profiles must retain the mask-frame default");
   restore_generated_stitch_rink_context(config);
+  // Start from a document that knows no venues, so materialization has to
+  // write the catalog instead of accepting a matching one.
+  config["stitching"].remove("rink_configs");
+  config["stitching"]["rink_config"] = YAML::Node(YAML::NodeType::Null);
   effective["stitching"]["rink_config"] = "ordinary";
+  const auto materialized = materialize_stitch_rink_context(config, effective);
+  const YAML::Node written = config["stitching"]["rink_configs"];
   ok &= expect(
-      materialize_stitch_rink_context(config, effective).ok() &&
-          !config["stitching"]["rink_configs"]["ordinary"]["rink_mask_frame_time"] &&
+      materialized.ok() && *materialized && written["ordinary"]["display_name"] &&
+          !written["ordinary"]["rink_mask_frame_time"] &&
+          written["late"]["rink_mask_frame_time"].as<std::string>() == "-00:00:02" &&
           *read_rink_mask_frame_time(config) == "-00:00:03",
       "A venue with no mask-frame override must stay on the configured default in worker documents");
   return ok ? 0 : 1;
