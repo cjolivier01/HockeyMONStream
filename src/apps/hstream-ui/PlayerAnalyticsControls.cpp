@@ -203,8 +203,9 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
   addModel(kAnalytics + "action.model", "playerActionModel", "Activity model", compute);
   addPath(kAnalytics + "action.bundle", "playerActionBundle", true, compute);
   auto* action_help = new QLabel(
-      "Activities require pose at 10 Hz or faster and 9.9 seconds of continuous observations. "
-      "Labels describe generic activities, not hockey events.");
+      "Activities require pose at 10 Hz or faster, and continuous observations: 9.9 seconds for the generic "
+      "model, a third of a second for the hockey one. The generic labels describe everyday activities, not "
+      "hockey events; the hockey model needs the hockey pose selected with it.");
   action_help->setWordWrap(true);
   static_cast<QFormLayout*>(compute->layout())->addRow(action_help);
   // Unlike the other three, team has a canonical enable key that HockeyMON

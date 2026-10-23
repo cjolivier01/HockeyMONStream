@@ -28,7 +28,8 @@ The initial supported profiles are RTMPose-M COCO17 (256×192), hockey PARSeq
 (100 samples, generic NTU60 labels). An NTU60 prediction is not a hockey shot/pass/check
 label. The action timeline is causal, 10 Hz over 9.9 seconds; published ten-clip benchmark
 accuracy does not describe this deployment. HARPET18 has a different skeleton and is
-not accepted by this initial COCO17 profile.
+not accepted by this COCO17 profile; it has its own paired pose and action
+selections under [Hockey exports](#hockey-exports) below.
 
 ## Export environment
 

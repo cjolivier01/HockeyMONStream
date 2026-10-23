@@ -134,13 +134,11 @@ data limitations, reproducible commands and other candidate datasets are in
 Benchmark boxes come from body annotations; detector-to-action live accuracy is
 not established by those scores.
 
-Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V2`, schema 2, with an explicit pose
-topology and 18-slot storage (the final slot is zero for COCO17). All producers
-and consumers must be rebuilt together; no persistent telemetry schema changes.
-
-Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V4`, schema 4, with separate fresh
-COCO17 observations, retained display poses and team affiliation. All producers and consumers must
-be rebuilt together; no persistent telemetry schema changes.
+Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V5`, schema 5: an explicit pose
+topology with 18-slot storage (the final slot is zero for COCO17), separate
+fresh observations and retained display poses, and team affiliation. All
+producers and consumers must be rebuilt together; no persistent telemetry
+schema changes.
 
 `max-due-rois` is an aggregate model-sample budget shared by pose, jersey, action
 and team. Weighted rotating turns favor pose 2:1:1:1 and lend unused work. Team
@@ -159,8 +157,9 @@ hide later ready tracks. Capacity and low video cadence may prevent action histo
 from becoming ready; the pipeline reports unknown rather than inventing poses.
 The scheduler bounds analytics work without dropping video frames.
 
-Per sample, compact D2H is 204 bytes for a COCO17 pose, 216 for HARPET18, or 8
-bytes for jersey/action. Team is
+Per sample, compact D2H is 216 bytes for a pose -- the decoder always fills the
+18-slot array and zeroes the unused slot for COCO17 -- or 8 bytes for
+jersey/action. Team is
 the exception: 4 bytes of crop lightness plus the raw 1 KiB embedding, because the
 two-means fit that turns an embedding into a side is a host-side per-stream model
 and no reduction kernel can stand in for it. Action
