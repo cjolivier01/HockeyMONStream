@@ -5,11 +5,13 @@
 
 namespace hm::gpu {
 
-enum class PixelFormat { kRgba8, kRgb10A2, kNv12, kP010, kRgb8, kGray8 };
+enum class PixelFormat { kRgba8, kRgb10A2, kNv12, kP010, kRgb8, kGray8, kRgba16Float };
 
 // Borrowed GPU planes. YUV inputs require explicit range/matrix coefficients:
 // rgb = y_scale * (Y - y_offset) + chroma coefficients * (U/V - uv_offset).
 // Components are in 8-bit video units, including P010 scaled by 255/1023.
+// RGBA16Float stores four IEEE binary16 components in the same 0..255 units
+// used by the panorama engine (not normalized 0..1).
 struct Image {
   const void* plane0;
   const void* plane1;

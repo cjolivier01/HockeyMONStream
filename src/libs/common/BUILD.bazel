@@ -88,7 +88,11 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
-    ":utils_base",
+    ":status_macros",
+    "@deepstream//:deepstream_lib",
+    "@hm//hockeymon/csrc/play_tracker",
+    "@hm-cupano//src/cuda:cuda_status",
+    "@jetson-utils//image:image_format",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
   ]
@@ -348,13 +352,7 @@ cc_library(
     hdrs = ["utils.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
-        "@gstreamer",
-        "@deepstream//:deepstream_lib",
-        "@hm//hockeymon/csrc/play_tracker",
-        "@hm-cupano//src/cuda:cuda_status",
-        "@jetson-utils//image:image_format",
-    ],
+    deps = ["@gstreamer", "@yaml-cpp"],
 )
 
 cc_library(
@@ -465,4 +463,12 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = ["@gstreamer", "@yaml-cpp"],
+)
+
+cc_library(
+    name = "status_macros",
+    hdrs = ["StatusMacros.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":utils_base", "@com_google_absl//absl/status:status", "@com_google_absl//absl/status:statusor"],
 )

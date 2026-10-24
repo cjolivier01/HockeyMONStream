@@ -3,6 +3,12 @@
 #include "hstream/src/libs/gpu/Image.h"
 #include "hstream/src/libs/gpu/Runtime.h"
 
+#if defined(HSTREAM_USE_HIP)
+#include <hip/hip_fp16.h>
+#else
+#include <cuda_fp16.h>
+#endif
+
 namespace hm::gpu {
 __device__ inline float Clamp(float value, float low, float high) {
   return fminf(fmaxf(value, low), high);
@@ -20,6 +26,14 @@ __device__ inline float4 Pixel(const Image& image, int x, int y) {
         ((p >> 10) & 1023) * (255.f / 1023),
         ((p >> 20) & 1023) * (255.f / 1023),
         (p >> 30) * 85.f);
+  }
+  if (image.format == PixelFormat::kRgba16Float) {
+    const auto* p = reinterpret_cast<const __half*>(row) + static_cast<size_t>(x) * 4;
+    return make_float4(
+        Clamp(__half2float(p[0]), 0, 255),
+        Clamp(__half2float(p[1]), 0, 255),
+        Clamp(__half2float(p[2]), 0, 255),
+        Clamp(__half2float(p[3]), 0, 255));
   }
   if (image.format == PixelFormat::kRgb8) {
     const auto* p = row + static_cast<size_t>(x) * 3;

@@ -35,7 +35,7 @@
 
 #include "absl/status/status.h"
 #include "hstream/src/libs/common/Process.h"
-#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HomographyMaps.h"

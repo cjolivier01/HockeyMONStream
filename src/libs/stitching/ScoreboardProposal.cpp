@@ -1,6 +1,8 @@
 #include "hstream/src/libs/stitching/ScoreboardProposal.h"
 
+#if !defined(HSTREAM_SCOREBOARD_CPU_ONLY)
 #include <cuda_runtime_api.h>
+#endif
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
@@ -47,6 +49,11 @@ absl::StatusOr<std::optional<ScoreboardProposal>> SuggestScoreboard(
     if (!status.ok())
       return status;
   }
+#if defined(HSTREAM_SCOREBOARD_CPU_ONLY)
+  // This is a bounded offline still suggestion. The installed ORT build has
+  // no AMD execution provider; do not probe or load CUDA from an AMD process.
+  const bool has_cuda = false;
+#else
   int devices = 0;
   const auto availability = cudaGetDeviceCount(&devices);
   const auto providers = Ort::GetAvailableProviders();
@@ -54,6 +61,7 @@ absl::StatusOr<std::optional<ScoreboardProposal>> SuggestScoreboard(
       std::find(providers.begin(), providers.end(), "CUDAExecutionProvider") != providers.end();
   if (availability != cudaSuccess && availability != cudaErrorNoDevice && availability != cudaErrorInsufficientDriver)
     return absl::InternalError(std::string("Scoreboard CUDA device query failed: ") + cudaGetErrorString(availability));
+#endif
   std::clog << "Scoreboard proposal execution provider=" << (has_cuda ? "cuda" : "cpu") << '\n';
   return InferScoreboard(
       path.string(),

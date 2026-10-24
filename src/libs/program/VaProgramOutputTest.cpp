@@ -1,7 +1,10 @@
 // Test-only bounded upload/readback around the production GPU crop and VA pool.
 #include "hstream/src/libs/program/VaProgramOutput.h"
+#include <gst/codecparsers/gsth264parser.h>
+#include <gst/codecparsers/gsth265parser.h>
 #include "hstream/src/libs/gpu/vaapi/VaHipFrame.h"
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
+#include "hstream/src/libs/program/EncodedColorimetry.h"
 #include "hstream/src/libs/program/ProgramGpu.h"
 
 #include <gst/app/gstappsink.h>
@@ -25,6 +28,85 @@ void Check(bool ok, const std::string& message) {
 void Hip(hipError_t status) {
   Check(status == hipSuccess, hipGetErrorString(status));
 }
+// Inspect only compressed NAL units. Verify VUI independently of caps, which
+// some decoders inherit even when the stream itself omits color signaling.
+struct EncodedChecks {
+  bool hevc;
+  GstH264NalParser* avc{gst_h264_nal_parser_new()};
+  GstH265Parser* h265{gst_h265_parser_new()};
+  std::vector<std::vector<uint8_t>> slices;
+  GstClockTime pts{}, dts{}, duration{};
+  unsigned headers{0}, packets{0};
+  ~EncodedChecks() {
+    gst_h264_nal_parser_free(avc);
+    gst_h265_parser_free(h265);
+  }
+  template <class Vui>
+  void Color(const Vui& vui) {
+    Check(
+        vui.video_signal_type_present_flag && vui.colour_description_present_flag && !vui.video_full_range_flag &&
+            vui.colour_primaries == 1 && vui.transfer_characteristics == 1 && vui.matrix_coefficients == 1 &&
+            vui.chroma_loc_info_present_flag && vui.chroma_sample_loc_type_top_field == 1 &&
+            vui.chroma_sample_loc_type_bottom_field == 1,
+        "Encoded SPS lost source color or centered chroma");
+    ++headers;
+  }
+  void Inspect(GstBuffer* buffer, bool after) {
+    GstMapInfo map{};
+    Check(gst_buffer_map(buffer, &map, GST_MAP_READ), "Cannot inspect compressed test bytes");
+    std::vector<std::vector<uint8_t>> payloads;
+    for (size_t offset = 0; offset < map.size;) {
+      unsigned start, length;
+      bool vcl;
+      if (hevc) {
+        GstH265NalUnit nal{};
+        auto result = gst_h265_parser_identify_nalu(h265, map.data, offset, map.size, &nal);
+        Check(result == GST_H265_PARSER_OK || result == GST_H265_PARSER_NO_NAL_END, "Invalid HEVC NAL");
+        start = nal.offset;
+        length = nal.size;
+        vcl = nal.type <= 31;
+        if (after && nal.type == GST_H265_NAL_SPS) {
+          GstH265SPS sps{};
+          Check(gst_h265_parser_parse_sps(h265, &nal, &sps, TRUE) == GST_H265_PARSER_OK, "Invalid HEVC SPS");
+          Check(sps.vui_parameters_present_flag, "Missing HEVC VUI");
+          Color(sps.vui_params);
+        } else if (after && nal.type == GST_H265_NAL_VPS)
+          Check(gst_h265_parser_parse_nal(h265, &nal) == GST_H265_PARSER_OK, "Invalid HEVC VPS");
+      } else {
+        GstH264NalUnit nal{};
+        auto result = gst_h264_parser_identify_nalu(avc, map.data, offset, map.size, &nal);
+        Check(result == GST_H264_PARSER_OK || result == GST_H264_PARSER_NO_NAL_END, "Invalid H264 NAL");
+        start = nal.offset;
+        length = nal.size;
+        vcl = nal.type == 1 || nal.type == 5;
+        if (after && nal.type == GST_H264_NAL_SPS) {
+          GstH264SPS sps{};
+          Check(gst_h264_parser_parse_sps(avc, &nal, &sps) == GST_H264_PARSER_OK, "Invalid H264 SPS");
+          Check(sps.vui_parameters_present_flag, "Missing H264 VUI");
+          Color(sps.vui_parameters);
+          gst_h264_sps_clear(&sps);
+        }
+      }
+      Check(length && start + length > offset && start + length <= map.size, "Invalid NAL bounds");
+      if (vcl)
+        payloads.emplace_back(map.data + start, map.data + start + length);
+      offset = start + length;
+    }
+    gst_buffer_unmap(buffer, &map);
+    if (after) {
+      Check(payloads == slices, "Color metadata changed encoded slice payloads");
+      Check(
+          GST_BUFFER_PTS(buffer) == pts && GST_BUFFER_DTS(buffer) == dts && GST_BUFFER_DURATION(buffer) == duration,
+          "Color metadata changed encoded timing");
+      ++packets;
+    } else {
+      slices = std::move(payloads);
+      pts = GST_BUFFER_PTS(buffer);
+      dts = GST_BUFFER_DTS(buffer);
+      duration = GST_BUFFER_DURATION(buffer);
+    }
+  }
+};
 struct Results {
   std::atomic<unsigned> frames{0};
 };
@@ -96,11 +178,38 @@ int main(int argc, char** argv) {
   info.colorimetry.transfer = GST_VIDEO_TRANSFER_BT709;
   GError* error{};
   const std::string codec = ten_bit ? "h265" : "h264";
-  const std::string graph = "appsrc name=input format=time ! va" + codec + "enc b-frames=0 key-int-max=1 ! " + codec +
-      "parse ! va" + codec + "dec ! video/x-raw,format=" + (ten_bit ? "P010_10LE" : "NV12") +
+  const std::string graph = "appsrc name=input format=time ! va" + codec +
+      "enc name=encoder b-frames=0 key-int-max=1 ! " + codec + "parse ! va" + codec +
+      "dec ! video/x-raw,format=" + (ten_bit ? "P010_10LE" : "NV12") +
       " ! appsink name=result sync=false emit-signals=true";
   auto* pipeline = gst_parse_launch(graph.c_str(), &error);
   Check(pipeline && !error, error ? error->message : "cannot create encode pipeline");
+  EncodedChecks encoded{ten_bit};
+  auto* encoder = gst_bin_get_by_name(GST_BIN(pipeline), "encoder");
+  auto* encoded_pad = gst_element_get_static_pad(encoder, "src");
+  gst_pad_add_probe(
+      encoded_pad,
+      GST_PAD_PROBE_TYPE_BUFFER,
+      [](GstPad*, GstPadProbeInfo* info, gpointer data) {
+        static_cast<EncodedChecks*>(data)->Inspect(GST_PAD_PROBE_INFO_BUFFER(info), false);
+        return GST_PAD_PROBE_OK;
+      },
+      &encoded,
+      nullptr);
+  const auto filter_status = hm::program::InstallEncodedColorimetry(
+      encoder, ten_bit ? hm::program::EncodedCodec::kHevc : hm::program::EncodedCodec::kH264, info, 1024 * 1024);
+  Check(filter_status.ok(), filter_status.ToString());
+  gst_pad_add_probe(
+      encoded_pad,
+      GST_PAD_PROBE_TYPE_BUFFER,
+      [](GstPad*, GstPadProbeInfo* info, gpointer data) {
+        static_cast<EncodedChecks*>(data)->Inspect(GST_PAD_PROBE_INFO_BUFFER(info), true);
+        return GST_PAD_PROBE_OK;
+      },
+      &encoded,
+      nullptr);
+  gst_object_unref(encoded_pad);
+  gst_object_unref(encoder);
   pool->SetDisplayContext(pipeline);
   auto* input = gst_bin_get_by_name(GST_BIN(pipeline), "input");
   auto* result = gst_bin_get_by_name(GST_BIN(pipeline), "result");
@@ -166,6 +275,7 @@ int main(int argc, char** argv) {
   }
   Check(message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS, "encode output did not reach EOS");
   Check(results.frames == 32, "encode dropped frames");
+  Check(encoded.packets == 32 && encoded.headers > 0, "Missing encoded colorimetry verification");
   gst_element_set_state(pipeline, GST_STATE_NULL);
   gst_message_unref(message);
   gst_object_unref(bus);

@@ -1,7 +1,8 @@
 # AMD GPU port
 
 Status: native HIP kernels, VA/HIP video interoperability, and native MIGraphX
-detector execution work on AMD. **The
+detector execution work on AMD. A standalone raw-camera Program qualifier now
+composes stitching, detection, rink filtering, tracking, crop and hardware encode. **The
 `hstream-cli` and desktop video pipelines still require NVIDIA.** This is the
 compute/video/inference foundation of the port, not an AMD release of the application.
 
@@ -109,7 +110,7 @@ pending, so preparation currently recompiles the model at startup.
 
 `src/libs/detection/HipDetector.*` composes that session with shared CUDA/HIP
 preprocessing and proposal filtering. It accepts GPU RGBA8, packed RGB10, NV12
-and P010. YUV callers supply color matrix/range coefficients from their negotiated
+and P010, plus the panorama engine's half-float RGBA output. YUV callers supply color matrix/range coefficients from their negotiated
 video format. Preprocessing uses half-pixel bilinear RGB sampling, explicit
 aspect/padding settings, and the model's scale factor. GPU filtering accepts the
 shipped YOLO `[1,N,6]` xyxy/score/class output contract. Only valid proposals cross
@@ -288,3 +289,63 @@ so passing a PCI symlink alias can trigger an error while starting elements.
 This remains component qualification. Raw-camera pairing/stitching, full Program
 configuration/startup, model caching, audio, seek/reset, native desktop controls
 and installed AMD runtime discovery are still pending.
+
+
+## Raw-camera Program qualification
+
+`//src/libs/program:hip_program_fixture` composes two hardware HEVC readers,
+linear P010 imports, HIP conversion/stitching, MIGraphX detection, saved rink
+pruning, native tracking/camera policy, Program crop and HEVC/MP4 output. Its
+arguments are:
+
+```
+GAME MODEL INFER_YAML CAMERA_YAML LEFT RIGHT LEFT_SECONDS RIGHT_SECONDS FRAMES
+MODEL_WIDTH MODEL_HEIGHT OUTPUT_WIDTH OUTPUT_HEIGHT OUTPUT_MP4
+```
+
+It consumes an existing reviewed, unrotated calibration and explicit raw chapter
+paths/seek times. Input pairs must remain within half a frame after their explicit
+seek offsets. It checks the current Hugin/output generation, loads maps through
+the existing locked/pinned artifact snapshot, and requires the saved rink mask
+in that exact geometry. It refuses an existing output file. This is a hardware
+qualifier with explicit test tuning, not a replacement application runner: it
+has no chapter transitions, audio, user configuration mapping, seek commands,
+archive publication, or desktop integration.
+
+`ConfigureStitchingCore` exposes the shared CPU control plane without NVIDIA
+surfaces. `ConfigureStitchingNv` adapts the existing NVIDIA entry points through
+lazy, bounded calibration image readers/writers, preserving validation before
+readback. The artifact locking, generation and publication algorithms are shared.
+`StatusMacros` and `utils_base` no longer pull GPU headers into CPU callers.
+On AMD, optional scoreboard still suggestions use the installed ONNX CPU
+provider; that path is separate from production video inference.
+
+`gpu/ConvertImage` writes every decoded pixel, including image edges, into IEEE
+binary16 RGBA in the panorama engine's 0–255 units. Detection and Program crop
+sample this format directly. No intermediate 8-bit frame or GPU-to-CPU copy is
+needed. Seven source formats, pitch/tail guards, odd and single-pixel dimensions,
+overlap rejection and half-float detector/crop numerics pass on HIP and CUDA.
+
+The installed GStreamer 1.24.2 VA encoder omits color and chroma-location fields
+from HEVC VUI. Container color tags alone do not fix readers that prioritize the
+bitstream. `program/EncodedColorimetry` applies libavcodec's H.264/HEVC metadata
+bitstream filters before parsing/muxing. It preserves the actual encoder input's
+range, matrix, transfer and primaries and marks centered output chroma. Only
+bounded compressed access-unit bytes are copied on the CPU; there is no video
+decoding, pixel readback or re-encoding. Hardware tests independently parse the
+resulting SPS and compare every encoded slice payload and timestamp before and
+after the filter. Invalid caps, unknown color, malformed packets and packet-bound
+violations fail with a bus error.
+
+On RX 9060 XT, the `vegas-calheat-1` raw 7680×4320 camera pair at 60 seconds produced
+120 frames through a validated **15632×4100** panorama and a **3840×2160 Main10**
+Program export. There were 2,382 confirmed track observations and 119 camera-led
+crops after the initial full-canvas frame. The warmed loop took **9.40 seconds**
+for 2.002 seconds of source video, excluding model preparation. This configuration
+is not real-time. `ffprobe` verifies all 120 frames, 60000/1001 fps, centered chroma
+and full-range BT.709 matching the raw inputs. Bounded offline thumbnails were
+inspected after export; the processing loop never reads video back.
+
+The current CLI/UI acceptance workflow remains incomplete. Calibration creation,
+application configuration, model caching, source/audio lifecycle and native desktop
+preview must be integrated and qualified before AMD application support is claimed.

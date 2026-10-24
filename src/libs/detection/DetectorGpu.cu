@@ -68,7 +68,8 @@ cudaError_t PreprocessDetector(const Image& image, const Letterbox& box, float* 
       box.resized_height <= 0 || box.left < 0 || box.top < 0 || box.left > box.width - box.resized_width ||
       box.top > box.height - box.resized_height || !std::isfinite(box.scale) || box.scale <= 0 ||
       (image.format != PixelFormat::kRgba8 && image.format != PixelFormat::kRgb10A2 &&
-       image.format != PixelFormat::kNv12 && image.format != PixelFormat::kP010) ||
+       image.format != PixelFormat::kNv12 && image.format != PixelFormat::kP010 &&
+       image.format != PixelFormat::kRgba16Float) ||
       static_cast<size_t>(box.width) > std::numeric_limits<size_t>::max() / box.height / (3 * sizeof(float)))
     return cudaErrorInvalidValue;
   const dim3 block(16, 16),

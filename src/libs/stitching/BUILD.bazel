@@ -8,9 +8,12 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     "//src/libs/onnx:session", "//src/libs/assets:asset_manager",
-    "//toolchains/jetson:cuda_runtime", "@local_cuda//:cuda",
     "@opencv_linux//:opencv", "@com_google_absl//absl/status:statusor",
-  ],
+  ] + select({
+    "//:use_hip": [],
+    "//conditions:default": ["//toolchains/jetson:cuda_runtime", "@local_cuda//:cuda"],
+  }),
+  local_defines = select({"//:use_hip": ["HSTREAM_SCOREBOARD_CPU_ONLY=1"], "//conditions:default": []}),
 )
 
 cc_test(
@@ -121,7 +124,7 @@ cc_library(
     ":transaction_state",
     "//src/libs/onnx:execution_provider",
     "//src/libs/common:baseline_config",
-    "//src/libs/common:status",
+    "//src/libs/common:status_macros",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
@@ -137,7 +140,7 @@ cc_library(
   deps = [
     ":canvas_constraint_check",
     ":game_config",
-    "//src/libs/common:status",
+    "//src/libs/common:status_macros",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
@@ -166,6 +169,15 @@ cc_library(
 
 cc_library(
   name = "stitching",
+  srcs = ["ConfigureStitchingNv.cpp"],
+  hdrs = ["ConfigureStitching.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [":stitching_core", "//src/libs/common:utils_base", "//src/libs/common:surface"],
+)
+
+cc_library(
+  name = "stitching_core",
   srcs = [
     "CalibrationModels.cpp",
     "ConfigureStitching.cpp",
@@ -176,7 +188,7 @@ cc_library(
   hdrs = [
     "CalibrationCompletion.h",
     "CalibrationModels.h",
-    "ConfigureStitching.h",
+    "ConfigureStitchingCore.h",
     "FieldMaskArtifact.h",
     "LiveStitchingGeneration.h",
     "Orientation.h",
@@ -212,8 +224,8 @@ cc_library(
     ":rink_segmentation",
     ":transaction_state",
     "//src/libs/common:baseline_config",
-    "//src/libs/common:utils",
-    "@hm-cupano//src/pano:cuda_matrix",
+    "//src/libs/common:utils_base",
+    "//src/libs/common:status_macros",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
@@ -393,8 +405,8 @@ cc_library(
     ":feature_matcher",
     ":game_config",
     ":transaction_state",
-    "//src/libs/common:status",
-    "//src/libs/common:utils",
+    "//src/libs/common:status_macros",
+    "//src/libs/common:utils_base",
     "@yaml-cpp",
     "@opencv_linux//:opencv",
   ],
@@ -462,8 +474,9 @@ cc_library(
     ":homography_maps",
     ":rink_leveling",
     ":transaction_state",
-    "//src/libs/common:status",
-    "//src/libs/common:utils",
+    "//src/libs/common:status_macros",
+    "//src/libs/common:utils_base",
+    "//src/libs/common:process",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
@@ -802,7 +815,7 @@ cc_library(
   deps = [
     ":player_frame_selection",
     ":transaction_state",
-    "//src/libs/common:status",
+    "//src/libs/common:status_macros",
     "@opencv_linux//:opencv",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
@@ -853,7 +866,7 @@ cc_library(
     ":transaction_state",
     "//src/libs/common:baseline_config",
     "//src/libs/common:user_config",
-    "//src/libs/common:status",
+    "//src/libs/common:status_macros",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",

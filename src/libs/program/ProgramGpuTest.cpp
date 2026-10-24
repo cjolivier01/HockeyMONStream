@@ -1,6 +1,7 @@
 #include "hstream/src/libs/program/ProgramGpu.h"
 #include "hstream/src/libs/program/ShadowToneCurve.h"
 
+#include <opencv2/core.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -41,7 +42,7 @@ struct Stream {
 };
 void Test(PixelFormat format, float angle, float lift, bool black, float exposure, cudaStream_t stream) {
   constexpr int width = 8, height = 6, out_width = 13, out_height = 9;
-  constexpr size_t pitch = 40, out_pitch = 64;
+  constexpr size_t pitch = 80, out_pitch = 64;
   const bool gray = format == PixelFormat::kGray8, rgb = format == PixelFormat::kRgb8;
   const int channels = gray ? 1 : rgb ? 3 : 4;
   std::vector<uint8_t> source(pitch * height, 0xa5), uv(pitch * height / 2, 0x5a);
@@ -60,6 +61,13 @@ void Test(PixelFormat format, float angle, float lift, bool black, float exposur
         if (channels == 4)
           p[3] = a;
         pixel = {float(r), float(gray ? r : g), float(gray ? r : b), float(channels == 4 ? a : 255)};
+      } else if (format == PixelFormat::kRgba16Float) {
+        auto* p = reinterpret_cast<cv::float16_t*>(source.data() + y * pitch) + x * 4;
+        p[0] = cv::float16_t(r + .125f);
+        p[1] = cv::float16_t(g + .25f);
+        p[2] = cv::float16_t(b + .0625f);
+        p[3] = cv::float16_t(a + .5f);
+        pixel = {float(p[0]), float(p[1]), float(p[2]), float(p[3])};
       } else if (format == PixelFormat::kRgb10A2) {
         reinterpret_cast<uint32_t*>(source.data() + y * pitch)[x] =
             (r * 4) | ((g * 4) << 10) | ((b * 4) << 20) | (uint32_t(x % 4) << 30);
@@ -280,7 +288,8 @@ int main() {
           PixelFormat::kGray8,
           PixelFormat::kRgb10A2,
           PixelFormat::kNv12,
-          PixelFormat::kP010}) {
+          PixelFormat::kP010,
+          PixelFormat::kRgba16Float}) {
       Test(format, 0, 0, false, 0, stream.value);
       Test(format, 12, 65, false, .6, stream.value);
       Test(format, -18, 100, true, 1.3, stream.value);

@@ -30,7 +30,7 @@ struct Buffer {
 };
 void TestImage(PixelFormat format, cudaStream_t stream) {
   constexpr int width = 6, height = 4;
-  constexpr size_t pitch = 32;
+  constexpr size_t pitch = 64;
   std::vector<uint8_t> source(pitch * height, 0xa5), chroma(pitch * height / 2, 0x5a);
   cv::Mat reference(height, width, CV_32FC3);
   for (int y = 0; y < height; ++y)
@@ -44,6 +44,13 @@ void TestImage(PixelFormat format, cudaStream_t stream) {
         p[2] = b;
         p[3] = 255;
         color = cv::Vec3f(r, g, b);
+      } else if (format == PixelFormat::kRgba16Float) {
+        auto* p = reinterpret_cast<cv::float16_t*>(source.data() + y * pitch) + x * 4;
+        p[0] = cv::float16_t(15.125f + x * 30);
+        p[1] = cv::float16_t(20.25f + y * 50);
+        p[2] = cv::float16_t(8.0625f + x * 8 + y * 9);
+        p[3] = cv::float16_t(255.f);
+        color = cv::Vec3f(float(p[0]), float(p[1]), float(p[2]));
       } else if (format == PixelFormat::kRgb10A2) {
         const uint32_t r = 60 + x * 120, g = 80 + y * 200, b = 32 + x * 32 + y * 36;
         reinterpret_cast<uint32_t*>(source.data() + y * pitch)[x] = r | (g << 10) | (b << 20) | (3u << 30);
@@ -175,7 +182,12 @@ int main() {
   cudaStream_t stream{};
   try {
     Gpu(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-    for (auto format : {PixelFormat::kRgba8, PixelFormat::kRgb10A2, PixelFormat::kNv12, PixelFormat::kP010})
+    for (auto format :
+         {PixelFormat::kRgba8,
+          PixelFormat::kRgb10A2,
+          PixelFormat::kNv12,
+          PixelFormat::kP010,
+          PixelFormat::kRgba16Float})
       TestImage(format, stream);
     TestFiltering(stream);
     Gpu(cudaStreamDestroy(stream));

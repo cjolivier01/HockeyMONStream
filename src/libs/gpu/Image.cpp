@@ -21,6 +21,10 @@ bool ValidateImage(const Image& image) {
     case PixelFormat::kRgb10A2:
       bytes = alignment = 4;
       break;
+    case PixelFormat::kRgba16Float:
+      bytes = 8;
+      alignment = 2;
+      break;
     case PixelFormat::kRgb8:
       bytes = 3;
       alignment = 1;

@@ -33,7 +33,7 @@ cc_test(
     name = "gpu_test",
     srcs = ["ProgramGpuTest.cpp"],
     tags = ["manual", "requires-gpu"],
-    deps = [":gpu", ":shadow_tone_curve"],
+    deps = [":gpu", ":shadow_tone_curve", "@opencv_linux//:opencv"],
 )
 
 cc_test(
@@ -45,7 +45,8 @@ cc_test(
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_output_pool"],
+    deps = [":gpu", ":va_program_output", ":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool"],
+    linkopts = ["-lgstcodecparsers-1.0"],
 )
 
 cc_library(
@@ -69,7 +70,8 @@ cc_test(
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_output_pool"],
+    deps = [":gpu", ":va_program_output", ":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool"],
+    linkopts = ["-lgstcodecparsers-1.0"],
 )
 
 cc_test(
@@ -97,4 +99,36 @@ cc_test(
     }),
     deps = [":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_output_pool",
             "@mesa_interop", "@mesa_interop//:gstreamer_gl"],
+)
+
+cc_binary(
+    name = "hip_program_fixture",
+    srcs = ["HipProgramFixture.cpp"],
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":gpu", ":va_program_output", ":encoded_colorimetry",
+        "//src/libs/gpu:convert_image",
+        "//src/libs/gpu/vaapi:va_output_pool",
+        "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
+        "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",
+        "@hm-cupano//src/pano:cuda_pano",
+    ],
+)
+
+cc_library(
+    name = "encoded_colorimetry",
+    srcs = ["EncodedColorimetry.cpp"],
+    hdrs = ["EncodedColorimetry.h"],
+    include_prefix = "hstream/src/libs/program",
+    linkopts = ["-L/usr/local/lib", "-lavcodec", "-lavutil"],
+    deps = ["@gstreamer", "@com_google_absl//absl/status:status"],
+)
+
+cc_test(
+    name = "encoded_colorimetry_test",
+    srcs = ["EncodedColorimetryTest.cpp"],
+    deps = [":encoded_colorimetry"],
 )

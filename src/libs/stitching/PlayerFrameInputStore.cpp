@@ -18,7 +18,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 namespace hm::stitching {

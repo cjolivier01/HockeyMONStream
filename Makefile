@@ -51,7 +51,7 @@ test-amd-kernels:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu:portable_gpu_tests
 
 test-amd-video:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test //src/libs/program:encoded_colorimetry_test
 
 test-amd-inference:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/migraphx:session_test //src/libs/detection:gpu_test //src/libs/detection:postprocess_test //src/libs/detection:hip_detector_failure_test
