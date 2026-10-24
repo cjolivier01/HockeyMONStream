@@ -51,7 +51,16 @@ file of at most 16 MiB and does not save ordinary preferences to the game.
 `-c` continues to mean an application pipeline, not a settings overlay.
 
 The same helper exposes bounded scoreboard snapshot/save operations and live
-rotation authorization validation. An accepted rotation is applied with its
+rotation authorization validation. HockeyMON single-source runs keep their reference
+canvas in the private backend session. The Qt selector uses the session's pinned
+PNG and corners, never a saved pair's `s.png`. Native save verifies the source
+playlist under the game config lock before persisting to a saved single-source
+game. Temporary source overrides retain their selection only for the current run,
+including seeks. Once Python's frame-owner mailbox is ready, its pause receipt
+includes `mode=cooperative` only after the frame owner stops advancement. Qt keeps
+the supervisor alive to serve selection and other runtime requests; resume also
+waits for the frame-owner receipt. Startup and native pauses retain SIGSTOP and
+require resume before selection. An accepted rotation is applied with its
 scoreboard epoch; each produced frame carries its exact native output generation
 for telemetry and replay. Native rink maps are loaded and fitted through
 `LoadPlaybackRinkMap`; Python receives the fitted plane and bounded viewing-ray
@@ -193,6 +202,13 @@ pose, jersey, action, team and ReID ONNX CUDA providers or native inference.
 Pose binds both CUDA inputs and outputs to the accepted device; only bounded
 crops move if preprocessing uses a different GPU. Existing explicit CPU
 execution and diagnosed automatic CPU fallback remain available.
+
+HockeyMON's supervisor freezes the accepted bindings in a private, versioned
+`accepted-models.json` tied to its session and game. Its worker reapplies those
+bindings after original YAML/CLI overrides, checking model/custom-path identity
+and retaining captured relative custom-path spellings. Other Python model and
+control choices remain outside that snapshot; seeks reuse it without persisting
+it into user configuration.
 
 This prepares the selected model exactly. In particular, native default ReID is
 DeepStream's pinned `resnet50_market1501.etlt` model and its SDK preprocessing

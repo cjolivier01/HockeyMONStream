@@ -635,6 +635,41 @@ int main() {
         new_canvas.ok() && absl::IsAborted(Selector::Save(single_directory, disabled, new_canvas->generation)),
         "single-source scoreboard must reject a game changed to multiple camera playlists");
   }
+  const auto source_reference = directory / "private-source";
+  std::filesystem::create_directories(source_reference);
+  const auto recording = source_reference / "recording.mp4";
+  std::ofstream(recording) << "recording";
+  YAML::Node reference_config;
+  reference_config["game"]["videos"]["source"].push_back(recording.string());
+  std::ofstream(source_reference / "config.yaml") << reference_config << '\n';
+  cv::imwrite((source_reference / "s.png").string(), replacement_snapshot);
+  const auto reference_canvas = Selector::OpenCanvas(source_reference, true);
+  auto pair_config = YAML::LoadFile((directory / "config.yaml").string());
+  pair_config["game"]["videos"]["left"] = recording.string();
+  pair_config["game"]["videos"]["right"] = recording.string();
+  std::ofstream(directory / "config.yaml") << pair_config << '\n';
+  const auto pair_ownership = Selector::SameSingleSource(directory, source_reference);
+  ok &= expect(pair_ownership.ok() && !*pair_ownership, "A private source must not claim a saved pair's scoreboard");
+  if (reference_canvas.ok()) {
+    ok &= expect(
+        absl::IsAborted(Selector::Save(directory, disabled, reference_canvas->generation, source_reference)),
+        "A private source must not persist coordinates into a saved pair");
+    single_config["game"]["videos"].remove("right");
+    single_config["game"]["videos"]["source"] = recording.string();
+    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+    std::filesystem::remove(single_directory / "s.png");
+    const auto same_ownership = Selector::SameSingleSource(single_directory, source_reference);
+    ok &= expect(
+        same_ownership.ok() && *same_ownership &&
+            Selector::Save(single_directory, disabled, reference_canvas->generation, source_reference).ok(),
+        "Saved single-source selections persist through a private canvas without publishing game/s.png");
+    ok &= expect(!std::filesystem::exists(single_directory / "s.png"), "Persistence must not create a saved canvas");
+    single_config["game"]["videos"]["right"] = recording.string();
+    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+    ok &= expect(
+        absl::IsAborted(Selector::Save(single_directory, disabled, reference_canvas->generation, source_reference)),
+        "A saved source change during selection must reject the private canvas");
+  }
   std::filesystem::remove_all(directory);
   return ok ? 0 : 1;
 }

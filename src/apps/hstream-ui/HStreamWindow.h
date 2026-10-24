@@ -784,6 +784,7 @@ class HStreamWindow : public QMainWindow {
   QString active_telemetry_manifest_path_;
   QString active_run_completed_archive_suffix_;
   bool pipeline_paused_{false};
+  bool pipeline_cooperative_pause_{false};
   quint64 process_pause_generation_{0};
   quint64 pending_process_pause_generation_{0};
   quint64 pending_process_resume_generation_{0};

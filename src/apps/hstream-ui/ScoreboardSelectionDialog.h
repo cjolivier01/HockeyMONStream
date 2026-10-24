@@ -106,6 +106,7 @@ class ScoreboardSelectionDialog : public QDialog {
   // Fetch the backend's session-local draft without persisting it or replacing
   // corners the operator has already begun editing.
   void loadProposal();
+  void setRunScopedSelection();
   void closeAfterBackendCompletion();
 
   std::function<void(const QString&)> cancellationFailed;
@@ -148,6 +149,7 @@ class ScoreboardSelectionDialog : public QDialog {
   QNetworkAccessManager* network_{nullptr};
   QPointer<QNetworkReply> pending_reply_;
   QPointer<QNetworkReply> proposal_reply_;
+  bool run_scoped_{false};
   bool selection_edited_{false};
   bool submitting_{false};
   bool backend_completed_{false};
