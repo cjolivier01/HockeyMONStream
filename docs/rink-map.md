@@ -191,12 +191,13 @@ checked under **Stitched → Rink**, then start playback. The Program and Stitch
 desktop GPU previews show an overhead rink with player circles in the same
 track colours as their detection boxes, including when boxes are hidden. Once
 the team feature has named the two sides, the circles switch to showing
-affiliation instead: one hue, filled dark for the dark side and light for the
-light side, and hollow for a skater whose side is not known yet. A game where
-nothing has been named keeps the track colours, so a run with teams off looks
-as it always did. The
-setting applies on the next playback and works independently of player boxes.
-It currently requires the embedded X11 GPU preview on x86. **Mini-map size** offers
+affiliation instead: navy blue for Home, gold for Away, and hollow for a skater
+whose side is not known yet. Home and Away keep those colours regardless of
+which sweaters they wear. Without a home-sweater mapping, DARK/LIGHT sides
+retain dark/light fills. A game where nothing has been named keeps the track
+colours, so a run with teams off looks as it always did. The setting applies
+on the next playback and works independently of player boxes.
+It currently requires the embedded NVIDIA X11 GPU preview on x86. **Mini-map size** offers
 Icon, Compact, Standard and Large. Icon is half Compact's width and height.
 **Mini-map position** defaults to Upper right and
 also offers Upper left and Lower left. Existing saved placement is retained. These preferences apply on the next playback and keep the complete panel
