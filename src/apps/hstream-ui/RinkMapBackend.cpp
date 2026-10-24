@@ -15,11 +15,14 @@
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
 #include <QtCore/QProcess>
+#include <QtCore/QStandardPaths>
 #include <QtGui/QImageReader>
 
 #include "absl/strings/numbers.h"
 #include "hstream/src/libs/assets/AssetManager.h"
+#include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
@@ -48,9 +51,32 @@ absl::Status CalibrationComplete(const QString& directory) {
   try {
     const YAML::Node config = YAML::Load(*text);
     const auto calibration = config["hstream_ui"]["stitching_calibration"];
-    if (!calibration.IsMap() || calibration["status"].as<std::string>("") != "complete" ||
-        !calibration["stale_from"].as<std::string>("").empty())
+    const auto stale = calibration.IsMap() ? calibration["stale_from"].as<std::string>("") : "";
+    if (!calibration.IsMap() || (calibration["status"].as<std::string>("") != "complete" && stale != "rink-mask") ||
+        (!stale.empty() && stale != "rink-mask"))
       return absl::FailedPreconditionError("Complete stitching calibration before mapping the rink");
+    const auto stitching = config["stitching"];
+    const auto framing = stitching.IsMap() ? stitching["projection_framing"] : YAML::Node();
+    const auto rotation = framing.IsMap() ? framing["rotation_degrees"] : YAML::Node();
+    const auto provenance = rink::HuginProject::ReadCanvasProvenanceLocked(directory.toStdString());
+    if (!provenance.ok() || !provenance->has_value() || (**provenance).mapping_backend != rink::MappingBackend::kNona)
+      return absl::FailedPreconditionError("Rink mapping needs a completed NONA camera calibration");
+    const bool published_leveling =
+        (**provenance).projection_framing && (**provenance).projection_framing->has_leveling_rotation();
+    // Explicitly accepted zero angles are valid too. A missing rotation with
+    // no leveled venue calibration has not gone through the leveling step.
+    if (!published_leveling && (!rotation.IsSequence() || rotation.size() != 3))
+      return absl::FailedPreconditionError(
+          "Level the rink first, save the preset and finish calibration before opening Rink map. "
+          "Changing leveling later invalidates the map.");
+    if (rotation.IsSequence() && rotation.size() == 3) {
+      for (size_t i = 0; i < 3; ++i) {
+        const double angle = rotation[i].as<double>();
+        if (!std::isfinite(angle) ||
+            ((**provenance).projection_framing && angle != (**provenance).projection_framing->rotation_degrees[i]))
+          return absl::FailedPreconditionError("Finish applying the saved leveling angles before opening Rink map");
+      }
+    }
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError(error.what());
   }
@@ -261,7 +287,9 @@ bool InsideCamera(const RinkMapSnapshot& snapshot, int camera, cv::Point2d p) {
 absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskBoards(
     const RinkMapSnapshot& snapshot,
     const std::function<bool()>& cancelled,
-    std::string& unavailable) {
+    std::string& unavailable,
+    const RinkMaskPreparation& prepare_mask,
+    const RinkMaskProgress& progress) {
   QFile mask_file;
   QSize mask_size;
   QString pinned_path;
@@ -318,11 +346,33 @@ absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskBoards(
           return absl::FailedPreconditionError(
               "The saved rink mask (" + std::to_string(mask_size.width()) + "x" + std::to_string(mask_size.height()) +
               ") does not match this stitched calibration. "
-              "Play the game once to regenerate the mask, then reopen Rink map.");
+              "A replacement mask is required.");
         return absl::OkStatus();
       });
-  if (!status.ok())
-    return status;
+  if (!status.ok()) {
+    if (!prepare_mask || absl::IsUnavailable(status) || absl::IsAborted(status))
+      return status;
+    // Check the source identity before launching anything that can publish.
+    // A stale mask may be regenerated; a changed calibration cannot be used by
+    // an editor holding older source images and marks.
+    auto current = LoadRinkMapSnapshot(snapshot.game_directory);
+    if (!current.ok())
+      return current.status();
+    if (current->generation != snapshot.generation || current->revision != snapshot.revision)
+      return absl::FailedPreconditionError("Calibration changed. Reopen Rink map before preparing the mask.");
+    if (cancelled && cancelled())
+      return absl::CancelledError("Rink mask preparation stopped");
+    if (progress)
+      progress("Preparing the missing or stale ice mask. This can take a few minutes…");
+    const auto prepared = prepare_mask(cancelled, progress);
+    if (!prepared.ok())
+      return prepared;
+    // Re-open and validate the published mask, including its generation and
+    // dimensions. Retry once only; a successful process exit is not a receipt.
+    return MaskBoards(snapshot, cancelled, unavailable, {}, progress);
+  }
+  if (progress)
+    progress("Ice mask ready. Finding the near and far boards…");
   if (cancelled && cancelled())
     return absl::CancelledError("Rink mask assistance stopped");
   QSize proxy_size = mask_size;
@@ -493,6 +543,75 @@ absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskIntersections(
 }
 } // namespace
 
+RinkMaskPreparation RinkMaskPreparer(
+    const QString& runner,
+    const QString& working_directory,
+    const QString& pipeline_config,
+    const QString& game_directory,
+    QProcessEnvironment environment) {
+  const auto game = QFileInfo(game_directory);
+  environment.insert("HM_GAME_DIR", game.absolutePath());
+  environment.insert("USE_NEW_NVSTREAMMUX", "yes");
+  for (const auto& key : environment.keys())
+    if (key.startsWith("HSTREAM_UI_PREVIEW_") || key.startsWith("HSTREAM_CALIBRATION_") ||
+        key == "HSTREAM_RINK_LEVELING_FLOW" || key == "HSTREAM_PROJECTION_CROP_FLOW" || key == "HSTREAM_JOB_MANIFEST" ||
+        key == "HSTREAM_ARCHIVE_RUN_ID")
+      environment.remove(key);
+  const QString executable = QFileInfo(runner).isAbsolute() ? runner : QStandardPaths::findExecutable(runner);
+  std::map<std::string, std::string> env;
+  for (const auto& key : environment.keys())
+    env.emplace(key.toStdString(), environment.value(key).toStdString());
+  const std::vector<std::string> arguments{
+      executable.toStdString(),
+      "-g",
+      game.fileName().toStdString(),
+      "-c",
+      pipeline_config.toStdString(),
+      "--enable-sources=URI-MULTIPLE",
+      "--enable-sinks=FAKE",
+      "--stitching-calibration-only",
+      "--stitching-calibration-with-ice-mask",
+      "--time-limit=1"};
+  return [arguments, env, working_directory](const auto& cancelled, const auto& progress) -> absl::Status {
+    if (arguments.front().empty() || !QFileInfo(QString::fromStdString(arguments.front())).isExecutable())
+      return absl::NotFoundError("The hstream-cli runner is unavailable; cannot prepare the rink mask");
+    std::string tail;
+    const int result = hm::run_command(
+        arguments,
+        working_directory.toStdString(),
+        env,
+        [&](const std::string& error, const std::string& output) {
+          const auto& line = error.empty() ? output : error;
+          tail += line + '\n';
+          if (tail.size() > 8192)
+            tail.erase(0, tail.size() - 8192);
+          if (progress && (line.rfind("HSTREAM_CALIBRATION ", 0) == 0 || line.rfind("HSTREAM_STARTUP ", 0) == 0)) {
+            const auto message = line.find("message=");
+            if (message != std::string::npos)
+              progress(QString::fromStdString(line.substr(message + 8, 1000)));
+          }
+        },
+        cancelled);
+    if (cancelled && cancelled())
+      return absl::CancelledError("Rink mask preparation stopped. Your marks are retained.");
+    if (result != 0)
+      return absl::InternalError("Rink mask preparation failed: " + tail);
+    return absl::OkStatus();
+  };
+}
+
+absl::Status CheckRinkMapSetup(const QString& game_directory) {
+  auto lock = rink::try_lock_canvas_constraint_artifacts(game_directory.toStdString());
+  if (!lock.ok())
+    return lock.status();
+  if (!*lock)
+    return absl::UnavailableError("Calibration is changing; finish it before opening Rink map");
+  auto config_lock = rink::GameConfigTransactionLock::TryAcquire(game_directory.toStdString());
+  if (!config_lock.ok())
+    return config_lock.status();
+  return CalibrationComplete(game_directory);
+}
+
 absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_directory) {
   RinkMapSnapshot result;
   result.game_directory = game_directory;
@@ -655,11 +774,13 @@ absl::StatusOr<RinkMapWorkResult> UpdateRinkMap(
     rink::RinkMapDocument document,
     bool detect,
     const std::function<bool()>& cancelled,
-    bool use_mask) {
+    bool use_mask,
+    const RinkMaskPreparation& prepare_mask,
+    const RinkMaskProgress& progress) {
   RinkMapWorkResult result;
   if (use_mask) {
     std::string unavailable;
-    auto boards = MaskBoards(snapshot, cancelled, unavailable);
+    auto boards = MaskBoards(snapshot, cancelled, unavailable, prepare_mask, progress);
     if (!boards.ok())
       return boards.status();
     document.observations.erase(

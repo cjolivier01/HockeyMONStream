@@ -156,7 +156,7 @@ absl::StatusOr<cv::Vec3d> RinkFeatureLine(const RinkLayout& layout, const std::s
   return absl::InvalidArgumentError("Unknown rink line");
 }
 
-absl::StatusOr<RinkMapFit> FitRinkMap(const RinkMapDocument& document) {
+static absl::StatusOr<RinkMapFit> FitRinkMapImpl(const RinkMapDocument& document) {
   auto valid = ValidateRinkLayout(document.layout);
   if (!valid.ok())
     return valid;
@@ -303,6 +303,44 @@ absl::StatusOr<RinkMapFit> FitRinkMap(const RinkMapDocument& document) {
   result.plane_to_ray = transform;
   result.message =
       "Rink map fitted. Goal centres and end-board extents are estimates from the selected rink dimensions; review them in both cameras.";
+  return result;
+}
+
+absl::StatusOr<RinkMapFit> FitRinkMap(const RinkMapDocument& document) {
+  auto result = FitRinkMapImpl(document);
+  if (!result.ok() || result->state != RinkMapState::kInconsistent)
+    return result;
+  // Offline, bounded diagnosis. A mark is a review candidate only when the
+  // remaining evidence independently passes every normal fit check. Preserve
+  // all inputs and let the operator decide whether to move or disable it.
+  auto trial = document;
+  for (size_t i = 0; i < trial.observations.size(); ++i) {
+    auto& observation = trial.observations[i];
+    if (!observation.enabled || observation.feature.empty())
+      continue;
+    observation.enabled = false;
+    const auto without = FitRinkMapImpl(trial);
+    observation.enabled = true;
+    if (without.ok() && without->state == RinkMapState::kReady)
+      result->review_observations.push_back(i);
+  }
+  if (!result->review_observations.empty()) {
+    result->message = "Conflicting landmarks. Review ";
+    for (size_t j = 0; j < result->review_observations.size(); ++j) {
+      const auto i = result->review_observations[j];
+      const auto& observation = document.observations[i];
+      const auto feature = std::find_if(RinkMapFeatures().begin(), RinkMapFeatures().end(), [&](const auto& f) {
+        return observation.feature == f.id;
+      });
+      if (j)
+        result->message += "; ";
+      result->message += "mark " + std::to_string(i + 1) + ": " + feature->name +
+          (observation.camera ? " (right camera)" : " (left camera)");
+    }
+    result->message +=
+        ". The other marks fit when one of these is excluded. Correct its position or identity, or uncheck Use "
+        "if it is wrong, then review and save. No marks have been discarded.";
+  }
   return result;
 }
 

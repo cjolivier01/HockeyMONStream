@@ -18,15 +18,16 @@ class QTabWidget;
 class RinkMapCanvas;
 class RinkMapSchematic;
 class PreviewFocusButton;
+class QProgressDialog;
 
 class RinkMapDialog : public QDialog {
  public:
-  explicit RinkMapDialog(const QString& game_directory, QWidget* parent = nullptr);
+  explicit RinkMapDialog(
+      const QString& game_directory,
+      QWidget* parent = nullptr,
+      RinkMaskPreparation prepare_mask = {});
   ~RinkMapDialog() override;
   void reject() override;
-  bool levelingRequested() const {
-    return leveling_requested_;
-  }
 
  private:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -45,6 +46,11 @@ class RinkMapDialog : public QDialog {
   void travelHistory(bool redo);
   void refreshEditControls();
   void refreshGuidance();
+  void startGuide();
+  void leaveGuide();
+  void showGuideStep();
+  void moveGuide(int direction);
+  void applyGuideAction();
   void cancelLine();
   hm::stitching::RinkLayout dimensionValues() const;
   using Detections = decltype(RinkMapWorkResult::detections);
@@ -77,8 +83,23 @@ class RinkMapDialog : public QDialog {
   QPushButton* mask_{nullptr};
   QPushButton* stop_{nullptr};
   QPushButton* save_{nullptr};
-  QPushButton* leveling_{nullptr};
-  bool leveling_requested_{false};
+  RinkMaskPreparation prepare_mask_;
+  QProgressDialog* progress_{nullptr};
+  QLabel* guide_prompt_{nullptr};
+  QPushButton* guide_previous_{nullptr};
+  QPushButton* guide_next_{nullptr};
+  QPushButton* guide_action_{nullptr};
+  QPushButton* guide_start_{nullptr};
+  struct GuideStep {
+    std::string feature;
+    int observation{-1};
+    bool conflict{false};
+  };
+  std::vector<GuideStep> guide_steps_;
+  size_t guide_index_{0};
+  bool guide_active_{false};
+  bool guide_selecting_{false};
+  bool guide_advance_{false};
   QPushButton* remove_{nullptr};
   QPushButton* goal_line_ends_{nullptr};
   QPushButton* undo_{nullptr};
@@ -90,6 +111,8 @@ class RinkMapDialog : public QDialog {
   bool rebuilding_{false};
   bool busy_{false};
   bool resolved_{false};
+  bool playback_verified_{false};
+  QString playback_error_;
   bool close_prompt_active_{false};
   bool close_after_worker_{false};
   std::optional<hm::stitching::RinkMapDocument> clean_document_;

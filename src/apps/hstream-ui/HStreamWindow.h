@@ -481,7 +481,7 @@ class HStreamWindow : public QMainWindow {
   void updateCropRotationControls();
   double cameraPresetControlValue(const QString& id) const;
   void openPromotedStitchingLeveling(const QString& game_directory);
-  void selectRinkLeveling(bool use_landmarks = false);
+  void selectRinkLeveling();
   void selectRinkMap();
   void selectProjectionCrop();
   bool ensureProjectionCropReviewed(bool* cancelled = nullptr);
@@ -662,6 +662,8 @@ class HStreamWindow : public QMainWindow {
   QComboBox* rink_map_position_combo_{nullptr};
   QLabel* rink_map_preview_status_{nullptr};
   QString rink_map_run_message_;
+  bool rink_map_editor_active_{false};
+  std::map<QString, QString> rink_map_frame_messages_;
   QString rink_map_status_game_;
   quint64 rink_map_status_generation_{0};
   quint64 rink_map_requested_generation_{0};

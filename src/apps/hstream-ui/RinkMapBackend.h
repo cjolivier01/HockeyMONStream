@@ -4,6 +4,7 @@
 #include <atomic>
 #include <memory>
 
+#include <QtCore/QProcessEnvironment>
 #include <QtCore/QTemporaryDir>
 #include <QtGui/QImage>
 
@@ -32,6 +33,16 @@ struct RinkMapWorkResult {
   std::string assistance_message;
 };
 
+using RinkMaskProgress = std::function<void(const QString&)>;
+using RinkMaskPreparation = std::function<absl::Status(const std::function<bool()>&, const RinkMaskProgress&)>;
+// Uses the same native calibration-only runner as the rest of the desktop.
+RinkMaskPreparation RinkMaskPreparer(
+    const QString& runner,
+    const QString& working_directory,
+    const QString& pipeline_config,
+    const QString& game_directory,
+    QProcessEnvironment environment);
+absl::Status CheckRinkMapSetup(const QString& game_directory);
 absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_directory);
 // Uses freshly recalculated rays. Partial metric maps may still contain the
 // four explicit ice-level rectangle corners needed by the leveling estimator.
@@ -45,4 +56,6 @@ absl::StatusOr<RinkMapWorkResult> UpdateRinkMap(
     hm::stitching::RinkMapDocument document,
     bool detect,
     const std::function<bool()>& cancelled,
-    bool use_mask = false);
+    bool use_mask = false,
+    const RinkMaskPreparation& prepare_mask = {},
+    const RinkMaskProgress& progress = {});

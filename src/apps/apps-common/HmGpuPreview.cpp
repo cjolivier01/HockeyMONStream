@@ -533,6 +533,10 @@ struct RendererState {
   float player_joint_confidence{0.3F};
   hm::draw_display::analytics::CommandList player_commands;
   std::unique_ptr<hm::draw_display::RinkMiniMap> rink_mini_map;
+  guint64 rink_map_run{0};
+  const char* rink_map_last_reason{nullptr};
+  bool rink_map_status_reported{false};
+  gint64 rink_map_status_time{0};
   hm::draw_display::analytics::CommandList watermark_commands{64, 64};
   std::unique_ptr<hm::draw_display::analytics::GlCompositor> player_compositor;
   uint64_t player_overlay_suppressions{0};
@@ -964,6 +968,24 @@ void add_rect_paths(
 
 std::optional<std::uint32_t> exact_positive_dimension(float dimension);
 
+void report_rink_map_frame(RendererState* state, const char* reason) {
+  if (!state->rink_mini_map || (state->channel != "program" && state->channel != "stitched"))
+    return;
+  const auto now = g_get_monotonic_time();
+  if (!state->rink_map_status_reported ||
+      (reason != state->rink_map_last_reason && now - state->rink_map_status_time >= G_USEC_PER_SEC)) {
+    state->rink_map_status_reported = true;
+    state->rink_map_status_time = now;
+    state->rink_map_last_reason = reason;
+    g_print(
+        "HSTREAM_RINK_MAP_FRAME channel=%s run=%" G_GUINT64_FORMAT " status=%s message=%s\n",
+        state->channel.c_str(),
+        state->rink_map_run,
+        reason ? "unavailable" : "ready",
+        reason ? reason : "Mini-map drawing with matching playback geometry.");
+  }
+}
+
 PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* buffer) {
   RendererState* state = self->state;
   PreviewOverlays overlays;
@@ -975,11 +997,15 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   overlays.stitched_surface_height =
       static_cast<float>(state->source_height ? state->source_height : state->negotiated_height);
   NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buffer);
-  if (!batch_meta || !batch_meta->frame_meta_list)
+  if (!batch_meta || !batch_meta->frame_meta_list) {
+    report_rink_map_frame(state, "The preview frame is missing its frame metadata.");
     return overlays;
+  }
   auto* frame_meta = static_cast<NvDsFrameMeta*>(batch_meta->frame_meta_list->data);
-  if (!frame_meta)
+  if (!frame_meta) {
+    report_rink_map_frame(state, "The preview frame is missing its frame metadata.");
     return overlays;
+  }
   if (const auto* generation = hm::stitching::find_stitched_output_generation_meta(frame_meta)) {
     overlays.stitched_output_generation = generation->generation();
   }
@@ -997,6 +1023,7 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
     overlays.coordinate_width = static_cast<float>(state->negotiated_width);
     overlays.coordinate_height = static_cast<float>(state->negotiated_height);
     overlays.diagnostic_coordinates_valid = false;
+    report_rink_map_frame(state, "The preview frame is missing its Program crop geometry.");
     return overlays;
   }
   if (state->channel == "program" && attached_transform) {
@@ -1163,9 +1190,13 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   if (state->rink_mini_map && (state->channel == "program" || state->channel == "stitched")) {
     const auto width = exact_positive_dimension(overlays.stitched_surface_width);
     const auto height = exact_positive_dimension(overlays.stitched_surface_height);
-    if (width && height)
+    const char* reason = "The preview frame is missing its stitched canvas dimensions.";
+    if (width && height) {
       state->rink_mini_map->Append(
           frame_meta, *width, *height, overlays.coordinate_width, overlays.coordinate_height, &state->player_commands);
+      reason = state->rink_mini_map->unavailableReason();
+    }
+    report_rink_map_frame(state, reason);
   }
   return overlays;
 }
@@ -2627,6 +2658,9 @@ void configure_rink_mini_map(
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
   std::lock_guard<std::mutex> lock(self->state->mutex);
   self->state->rink_mini_map = map ? std::make_unique<hm::draw_display::RinkMiniMap>(std::move(map), options) : nullptr;
+  const char* run = g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_RUN");
+  self->state->rink_map_run = run ? g_ascii_strtoull(run, nullptr, 10) : 0;
+  self->state->rink_map_status_reported = false;
 #else
   (void)sink;
   (void)map;

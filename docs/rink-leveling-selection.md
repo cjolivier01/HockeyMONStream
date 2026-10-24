@@ -67,16 +67,14 @@ the centre/blue lines). Duplicate observations must agree. An arbitrary detected
 line segment is not treated as a pair of board intersections. Insufficient marks
 produce an explanation and remain saved for later completion.
 
-The map editor also offers **Save and use for leveling…**. Neither action applies
-angles automatically: successful reuse renders **Preview** directly, with the
-saved source observations visible in yellow on both camera tabs. There is no
-need to enter them again. Edit the saved marks in the map editor; adding manual
-leveling points clears the reference overlay and starts a new estimate. Inspect
-**Preview**, then **Use angles** and **Save Preset**. If the saved marks cannot
-supply leveling, the map editor stays open with guidance, including how to
-identify existing goal-line endpoints as board intersections without re-clicking.
-Changing calibration invalidates the saved map's playback binding until it is
-reviewed and saved again. Imported leveling does not rewrite the map evidence.
+The map editor requires applied leveling and completed calibration; it has no
+leveling handoff button. **Use saved rink landmarks** remains available in the
+leveling dialog for revisiting an existing setup. Successful reuse renders
+**Preview** directly, with the saved source observations visible in yellow on
+both camera tabs. Adding manual leveling points clears this reference overlay
+and starts a new estimate. Inspect **Preview**, then **Use angles** and **Save
+Preset**. Changing calibration invalidates the map's playback binding until it
+is reviewed and saved again. Imported leveling does not rewrite map evidence.
 
 In the post-calibration editor, **Cancel**, Escape, and closing the dialog discard its changes, even after estimating
 or rendering a preview. An accepted selection also remains staged until Save Preset (starting playback saves a

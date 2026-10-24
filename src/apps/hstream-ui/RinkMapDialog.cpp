@@ -34,6 +34,7 @@
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMessageBox>
+#include <QtWidgets/QProgressDialog>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSplitter>
@@ -41,6 +42,7 @@
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QVBoxLayout>
 
+#include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
 #include "src/apps/hstream-ui/ValueControlWheel.h"
@@ -520,9 +522,11 @@ class RinkMapSchematic : public QWidget {
 struct RinkMapDialog::Job {
   std::atomic<bool> cancelled{false};
   std::optional<absl::StatusOr<RinkMapWorkResult>> result;
+  std::optional<absl::Status> playback_status;
 };
 
-RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : QDialog(parent, Qt::Window) {
+RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent, RinkMaskPreparation prepare_mask)
+    : QDialog(parent, Qt::Window), prepare_mask_(std::move(prepare_mask)) {
   setObjectName("rinkMapDialog");
   setWindowTitle("Rink map and goal centres[*]");
   resize(1380, 920);
@@ -581,6 +585,31 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   focus_ = new PreviewFocusButton(preview);
   preview_header->addWidget(focus_);
   preview_layout->addLayout(preview_header);
+  auto* guided = new QGroupBox("Next landmark");
+  auto* guided_layout = new QVBoxLayout(guided);
+  guide_prompt_ = new QLabel("Find landmarks and use the rink mask, or start guided marking.");
+  guide_prompt_->setObjectName("rinkMapGuidePrompt");
+  guide_prompt_->setWordWrap(true);
+  guide_prompt_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+  guided_layout->addWidget(guide_prompt_);
+  auto* guided_buttons = new QHBoxLayout();
+  guide_start_ = new QPushButton(action_icon(ActionIcon::Inspect), "Guide remaining marks");
+  guide_start_->setObjectName("rinkMapGuideStart");
+  guide_previous_ = new QPushButton(action_icon(ActionIcon::Previous), "Previous");
+  guide_previous_->setObjectName("rinkMapGuidePrevious");
+  guide_next_ = new QPushButton(action_icon(ActionIcon::Next), "Next / skip");
+  guide_next_->setObjectName("rinkMapGuideNext");
+  guide_action_ = new QPushButton(action_icon(ActionIcon::Apply), "Use this mark");
+  guide_action_->setObjectName("rinkMapGuideApply");
+  guide_action_->hide();
+  for (auto* button : {guide_start_, guide_previous_, guide_next_, guide_action_})
+    guided_buttons->addWidget(button);
+  guided_layout->addLayout(guided_buttons);
+  preview_layout->addWidget(guided);
+  connect(guide_start_, &QPushButton::clicked, this, &RinkMapDialog::startGuide);
+  connect(guide_previous_, &QPushButton::clicked, this, [this] { moveGuide(-1); });
+  connect(guide_next_, &QPushButton::clicked, this, [this] { moveGuide(1); });
+  connect(guide_action_, &QPushButton::clicked, this, &RinkMapDialog::applyGuideAction);
   tabs_ = new QTabWidget();
   tabs_->setObjectName("rinkMapCameraTabs");
   for (int camera = 0; camera < 2; ++camera) {
@@ -727,37 +756,6 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   root->addWidget(edited_);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
   save_ = buttons->addButton("Save partial map", QDialogButtonBox::ActionRole);
-  leveling_ = buttons->addButton("Save and use for leveling…", QDialogButtonBox::ActionRole);
-  leveling_->setObjectName("rinkMapLevelingButton");
-  leveling_->setIcon(action_icon(ActionIcon::Apply));
-  leveling_->setToolTip(
-      "Save these marks, then review optional leveling from the same source evidence. Partial maps can contain usable rectangle corners.");
-  connect(leveling_, &QPushButton::clicked, this, [this] {
-    if (save()) {
-      // Eligibility is invariant under the published rotation. Check the fresh
-      // rays here so missing evidence stays beside the marks the user can fix.
-      const auto estimate = RinkLandmarkLeveling(state_, {0, 0, 0}, 0);
-      if (!estimate.ok()) {
-        QString guidance;
-        for (size_t row = 0; row < state_.document.observations.size(); ++row) {
-          const auto& mark = state_.document.observations[row];
-          if (mark.enabled && hasGoalLineEnds(mark)) {
-            table_->selectRow(int(row));
-            tabs_->setCurrentIndex(mark.camera);
-            guidance =
-                " If both numbered ends meet the boards at ice level, choose Use goal-line ends at boards "
-                "for each goal line to identify the near end without clicking the points again.";
-            break;
-          }
-        }
-        setStatus(
-            "Saved your marks. " + QString::fromStdString(std::string(estimate.status().message())) + guidance, true);
-        return;
-      }
-      leveling_requested_ = true;
-      accept();
-    }
-  });
   save_->setObjectName("saveRinkMapButton");
   save_->setIcon(action_icon(ActionIcon::Save));
   root->addWidget(buttons);
@@ -778,6 +776,8 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
       camera->fit();
   });
   connect(feature_, &QComboBox::currentIndexChanged, this, [this] {
+    if (!guide_selecting_)
+      leaveGuide();
     cancelLine();
     for (auto* camera : cameras_)
       camera->marking = !feature_->currentData().toString().isEmpty();
@@ -792,6 +792,9 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent) : Q
   connect(table_, &QTableWidget::itemSelectionChanged, this, [this] {
     if (!rebuilding_) {
       const int row = selectedObservationRow(table_);
+      if (!guide_selecting_ && guide_active_ && guide_index_ < guide_steps_.size() &&
+          row != guide_steps_[guide_index_].observation)
+        leaveGuide();
       if (row >= 0 && row < int(state_.document.observations.size()))
         tabs_->setCurrentIndex(state_.document.observations[row].camera);
       refresh();
@@ -894,6 +897,8 @@ void RinkMapDialog::removeSelected() {
       row >= int(state_.document.observations.size()))
     return;
   recordEdit();
+  guide_active_ = false;
+  guide_steps_.clear();
   state_.document.observations.erase(state_.document.observations.begin() + row);
   // A different observation will occupy this row after rebuilding. Leave it
   // unselected until the user explicitly chooses it in the image or list.
@@ -953,6 +958,8 @@ void RinkMapDialog::travelHistory(bool redo) {
   auto& to = redo ? undo_history_ : redo_history_;
   if (from.empty())
     return;
+  guide_active_ = false;
+  guide_steps_.clear();
   to.push_back(captureEdit());
   auto restored = std::move(from.back());
   from.pop_back();
@@ -1015,20 +1022,23 @@ void RinkMapDialog::refreshGuidance() {
     help =
         "The current marks have not passed the geometry check. See the message below, correct the problem and retry.";
   } else if (state_.fit.state == rink::RinkMapState::kReady) {
-    readiness = hasUnsavedEdits() ? "Geometry ready — review and save" : "Ready — saved for this calibration";
+    readiness = hasUnsavedEdits() ? "Geometry ready — review and save"
+        : playback_verified_      ? "Ready — saved and validated for playback"
+                                  : "Not ready — playback validation failed";
     color = hasUnsavedEdits() ? "#925b00" : "#237a3b";
     help =
         "Enough landmark data for both uses. You do not need every rink item or visible goals. "
         "Review the outline in both cameras, then Save reviewed map after changes. "
         "Goal estimates depend on the marks and rink dimensions.\n"
         "Enable the mini-map for playback. Program framing is off by default; enable it under Program → Rink framing.";
+    if (!hasUnsavedEdits() && !playback_verified_) {
+      color = "#b23b32";
+      help = playback_error_;
+    }
   } else if (state_.fit.state == rink::RinkMapState::kInconsistent) {
     readiness = "Not ready — marks need correction";
     color = "#b23b32";
-    help =
-        "The marks cannot form a reliable map with these rink dimensions and camera calibration. "
-        "Check left/right identities, endpoints and dimensions; disable a suspect mark or Undo to see its effect. "
-        "Adding more marks is not necessarily the fix. You can still save partial evidence.";
+    help = QString::fromStdString(state_.fit.message);
   } else {
     readiness = "Not ready — more independent landmarks needed";
     const bool only_cross_lines =
@@ -1086,7 +1096,10 @@ void RinkMapDialog::refreshGuidance() {
   for (auto* label : {minimap_readiness_, framing_readiness_})
     label->setStyleSheet("font-weight: bold; color: " + color);
   if (unassigned)
-    help += QString("\nAssign the %1 unassigned detection(s) in the list to use them.").arg(unassigned);
+    help += (state_.fit.state == rink::RinkMapState::kReady
+                 ? QString("\nThe %1 unassigned detection(s) are unused; no further marks are required.")
+                 : QString("\nGuided marking can help assign the %1 unassigned detection(s), or use the list."))
+                .arg(unassigned);
   guidance_->setText(QString("%1 enabled marks · %2 distinct identities · %3 unassigned\n%4")
                          .arg(enabled)
                          .arg(identities.size())
@@ -1099,6 +1112,200 @@ void RinkMapDialog::cancelLine() {
   for (auto* camera : cameras_)
     if (camera)
       camera->pendingPoint(std::nullopt);
+}
+
+void RinkMapDialog::leaveGuide() {
+  if (!guide_active_)
+    return;
+  guide_active_ = false;
+  guide_advance_ = false;
+  guide_action_->hide();
+  guide_prompt_->setText(
+      "Manual editing. Choose Guide remaining marks for updated steps, or Previous / Next to resume.");
+}
+
+void RinkMapDialog::startGuide() {
+  if (busy_ || !snapshot_ || !resolved_)
+    return;
+  guide_steps_.clear();
+  guide_index_ = 0;
+  guide_active_ = true;
+  guide_advance_ = false;
+  for (const auto row : state_.fit.review_observations)
+    guide_steps_.push_back({state_.document.observations[row].feature, int(row), true});
+  if (guide_steps_.empty() && state_.fit.state != rink::RinkMapState::kReady) {
+    // Choose a usable recipe that reuses the operator's existing evidence.
+    // Recipes suggest inputs only; the calibrated fit remains authoritative.
+    const std::vector<std::vector<std::string>> recipes{
+        {"goal-left-near", "goal-left-far", "goal-right-near", "goal-right-far"},
+        {"blue-left-line", "blue-right-line", "far-boards", "center"},
+        {"goal-left-line", "goal-right-line", "far-boards", "center"},
+        {"goal-left-line", "goal-right-line", "near-boards", "far-boards"},
+        {"center-line", "blue-left-line", "near-boards", "far-boards"},
+        {"center-line", "blue-right-line", "near-boards", "far-boards"},
+        {"center-near", "center-far", "blue-left-near", "blue-left-far"},
+        {"center-near", "center-far", "blue-right-near", "blue-right-far"}};
+    int best_cost = 1000;
+    for (const auto& recipe : recipes) {
+      int cost = 0;
+      std::vector<GuideStep> steps;
+      std::set<size_t> assigned;
+      for (const auto& feature : recipe) {
+        const bool line_feature =
+            std::any_of(rink::RinkMapFeatures().begin(), rink::RinkMapFeatures().end(), [&](const auto& definition) {
+              return feature == definition.id && definition.line;
+            });
+        int row = -1, item_cost = 3;
+        for (size_t i = 0; i < state_.document.observations.size(); ++i) {
+          const auto& mark = state_.document.observations[i];
+          if (assigned.count(i))
+            continue;
+          const bool candidate = line_feature && mark.line && mark.feature.empty() &&
+              ((feature.find("blue-") == 0 && mark.label == "Blue Line") ||
+               (feature.find("goal-") == 0 && mark.label == "Goal Line"));
+          const int candidate_cost = mark.feature == feature ? (mark.enabled ? 0 : 1) : candidate ? 2 : 4;
+          if (candidate_cost < item_cost) {
+            row = int(i);
+            item_cost = candidate_cost;
+          }
+        }
+        if (row >= 0)
+          assigned.insert(size_t(row));
+        steps.push_back({feature, row, false});
+        cost += item_cost;
+      }
+      if (cost < best_cost) {
+        best_cost = cost;
+        guide_steps_ = std::move(steps);
+      }
+    }
+    while (guide_index_ < guide_steps_.size()) {
+      const auto& step = guide_steps_[guide_index_];
+      if (step.observation < 0)
+        break;
+      const auto& mark = state_.document.observations[step.observation];
+      if (!mark.enabled || mark.feature != step.feature)
+        break;
+      ++guide_index_;
+    }
+    // Complete identities can still conflict. Open their first mark for
+    // correction instead of claiming that adding arbitrary evidence will help.
+    if (guide_index_ == guide_steps_.size() && state_.fit.state != rink::RinkMapState::kReady)
+      guide_index_ = 0;
+  }
+  showGuideStep();
+}
+
+void RinkMapDialog::moveGuide(int direction) {
+  if (busy_ || !snapshot_)
+    return;
+  guide_active_ = true;
+  if (direction < 0 && guide_index_)
+    --guide_index_;
+  else if (direction > 0 && guide_index_ < guide_steps_.size())
+    ++guide_index_;
+  showGuideStep();
+}
+
+void RinkMapDialog::showGuideStep() {
+  if (busy_ || !guide_active_)
+    return;
+  guide_selecting_ = true;
+  feature_->setCurrentIndex(0);
+  cancelLine();
+  guide_action_->hide();
+  guide_previous_->setEnabled(guide_index_ > 0);
+  guide_next_->setEnabled(guide_index_ < guide_steps_.size());
+  if (guide_index_ >= guide_steps_.size()) {
+    guide_prompt_->setText(
+        state_.fit.state == rink::RinkMapState::kReady
+            ? "Geometry is ready. Review the outline in both cameras, then Save reviewed map for playback."
+            : "Some marks still need attention. Choose Guide remaining marks to update the steps, or Previous to review.");
+    guide_selecting_ = false;
+    return;
+  }
+  auto& step = guide_steps_[guide_index_];
+  // Indices can change after an ordinary list edit or Undo. Rebind by identity
+  // rather than selecting or changing an unrelated observation.
+  if (step.observation >= int(state_.document.observations.size()) ||
+      (step.observation >= 0 && !state_.document.observations[step.observation].feature.empty() &&
+       state_.document.observations[step.observation].feature != step.feature))
+    step.observation = -1;
+  if (step.observation < 0)
+    for (size_t i = 0; i < state_.document.observations.size(); ++i)
+      if (state_.document.observations[i].feature == step.feature) {
+        step.observation = int(i);
+        break;
+      }
+  const auto found = std::find_if(rink::RinkMapFeatures().begin(), rink::RinkMapFeatures().end(), [&](const auto& f) {
+    return step.feature == f.id;
+  });
+  const QString name = found == rink::RinkMapFeatures().end() ? QString::fromStdString(step.feature) : found->name;
+  QString instruction;
+  if (step.observation >= 0) {
+    const auto& mark = state_.document.observations[step.observation];
+    table_->selectRow(step.observation);
+    table_->scrollToItem(table_->item(step.observation, 0));
+    tabs_->setCurrentIndex(mark.camera);
+    if (step.conflict && !mark.enabled) {
+      instruction = name + " is excluded. Its coordinates are retained; use the list to enable it after correction.";
+    } else if (
+        step.conflict &&
+        std::find(
+            state_.fit.review_observations.begin(), state_.fit.review_observations.end(), size_t(step.observation)) !=
+            state_.fit.review_observations.end()) {
+      instruction = "Review " + name +
+          ": this mark conflicts with the other landmarks. Drag it to the correct "
+          "ice-level location or exclude it if it is wrong. Its coordinates are kept for Undo or later correction.";
+      guide_action_->setText("Exclude this mark");
+      guide_action_->show();
+    } else if (mark.feature.empty() || !mark.enabled) {
+      instruction = "Review the highlighted " + name +
+          ". Adjust its handles on the ice marking, then confirm. "
+          "Near/far boards mean the ice edge, not the board top. Use Next to skip an incorrect suggestion.";
+      guide_action_->setText("Use as " + name);
+      guide_action_->show();
+    } else {
+      instruction = name + " is already marked. Drag its handles to correct it, or choose Next.";
+    }
+  } else {
+    const int preferred_camera = step.feature.find("right") != std::string::npos ? 1 : 0;
+    tabs_->setCurrentIndex(preferred_camera);
+    table_->clearSelection();
+    table_->setCurrentCell(-1, -1);
+    feature_->setCurrentIndex(feature_->findData(QString::fromStdString(step.feature)));
+    if (step.feature == "center")
+      instruction =
+          "Select centre ice: click the centre faceoff dot, in the middle of the centre circle. "
+          "Do not click where the centre line meets the boards.";
+    else if (found != rink::RinkMapFeatures().end() && found->line)
+      instruction = "Mark " + name + ": select two well-separated points on the same ice-level line.";
+    else
+      instruction = "Select " + name +
+          ": click where the painted line meets the boards at ice level. "
+          "Near is closest to the cameras; far is across the rink. Switch camera tabs if needed.";
+  }
+  guide_prompt_->setText(QString("Step %1 of %2 — %3").arg(guide_index_ + 1).arg(guide_steps_.size()).arg(instruction));
+  guide_selecting_ = false;
+  refresh();
+}
+
+void RinkMapDialog::applyGuideAction() {
+  if (busy_ || !guide_active_ || guide_index_ >= guide_steps_.size())
+    return;
+  const auto step = guide_steps_[guide_index_];
+  if (step.observation < 0 || step.observation >= int(state_.document.observations.size()))
+    return;
+  recordEdit();
+  auto& mark = state_.document.observations[step.observation];
+  if (step.conflict)
+    mark.enabled = false;
+  else {
+    mark.feature = step.feature;
+    mark.enabled = true;
+  }
+  guide_advance_ = true;
+  update();
 }
 
 void RinkMapDialog::reject() {
@@ -1174,7 +1381,11 @@ void RinkMapDialog::setBusy(bool busy) {
     dimension->setEnabled(editable);
   save_->setEnabled(
       editable && resolved_ && (snapshot_->saved_map.has_value() || !state_.document.observations.empty()));
-  leveling_->setEnabled(editable && resolved_ && !state_.document.observations.empty());
+  for (auto* control : {guide_start_, guide_previous_, guide_next_, guide_action_})
+    if (control)
+      control->setEnabled(editable);
+  guide_previous_->setEnabled(editable && guide_index_ > 0 && !guide_steps_.empty());
+  guide_next_->setEnabled(editable && guide_index_ < guide_steps_.size());
   refreshEditControls();
   refreshGuidance();
 }
@@ -1219,13 +1430,48 @@ void RinkMapDialog::update(bool detect, bool use_mask) {
   const auto snapshot = *snapshot_;
   const auto document = state_.document;
   const auto before_detection = detect || use_mask ? std::optional<EditState>(captureEdit()) : std::nullopt;
-  worker_ = QThread::create([job, snapshot, document, detect, use_mask] {
-    job->result = UpdateRinkMap(snapshot, document, detect, [job] { return job->cancelled.load(); }, use_mask);
+  if (use_mask) {
+    progress_ = new QProgressDialog("Checking the saved ice mask…", "Stop", 0, 0, this);
+    progress_->setObjectName("rinkMapMaskProgress");
+    progress_->setWindowTitle("Prepare rink mask");
+    progress_->setWindowModality(Qt::WindowModal);
+    progress_->setMinimumDuration(500);
+    progress_->setValue(0);
+    connect(progress_, &QProgressDialog::canceled, this, [job] { job->cancelled = true; });
+  }
+  const auto prepare_mask = prepare_mask_;
+  const bool check_playback = !detect && !use_mask && !hasUnsavedEdits() && snapshot.saved_map.has_value();
+  if (!detect && !use_mask) {
+    playback_verified_ = false;
+    playback_error_.clear();
+  }
+  worker_ = QThread::create([this, job, snapshot, document, detect, use_mask, prepare_mask, check_playback] {
+    const auto progress = [this, job](const QString& message) {
+      QMetaObject::invokeMethod(
+          this,
+          [this, job, message] {
+            if (job_ == job && progress_ && !job->cancelled)
+              progress_->setLabelText(message);
+          },
+          Qt::QueuedConnection);
+    };
+    job->result = UpdateRinkMap(
+        snapshot, document, detect, [job] { return job->cancelled.load(); }, use_mask, prepare_mask, progress);
+    if (check_playback && job->result->ok() && (**job->result).fit.state == rink::RinkMapState::kReady) {
+      const auto playback =
+          rink::LoadPlaybackRinkMap(snapshot.game_directory.toStdString(), [job] { return job->cancelled.load(); });
+      job->playback_status = playback.status();
+    }
   });
   connect(worker_, &QThread::finished, this, [this, job, detect, use_mask, before_detection] {
     auto* completed = worker_;
     worker_ = nullptr;
     completed->deleteLater();
+    if (progress_) {
+      progress_->reset();
+      progress_->deleteLater();
+      progress_ = nullptr;
+    }
     if (job->cancelled) {
       setStatus("Stopped. Previous marks are retained.");
     } else if (!job->result || !job->result->ok()) {
@@ -1247,6 +1493,13 @@ void RinkMapDialog::update(bool detect, bool use_mask) {
       }
       state_ = std::move(result);
       resolved_ = true;
+      if (job->playback_status) {
+        playback_verified_ = job->playback_status->ok();
+        playback_error_ = QString::fromStdString(std::string(job->playback_status->message()));
+      } else if (hasUnsavedEdits()) {
+        playback_verified_ = false;
+        playback_error_.clear();
+      }
       setStatus(
           (state_.assistance_message.empty() ? QString() : QString::fromStdString(state_.assistance_message) + "\n") +
           QString::fromStdString(state_.fit.message) +
@@ -1273,6 +1526,15 @@ void RinkMapDialog::update(bool detect, bool use_mask) {
       }
     }
     refresh();
+    if (!job->cancelled && job->result && job->result->ok()) {
+      if (detect || use_mask || (!guide_active_ && guide_steps_.empty() && !state_.fit.review_observations.empty()))
+        startGuide();
+      else if (guide_advance_) {
+        guide_advance_ = false;
+        moveGuide(1);
+      } else if (guide_active_)
+        showGuideStep();
+    }
     if (close_after_worker_) {
       close_after_worker_ = false;
       QTimer::singleShot(0, this, [this] { reject(); });
@@ -1313,6 +1575,7 @@ void RinkMapDialog::rebuildTable() {
     connect(identity, &QComboBox::currentIndexChanged, this, [this, i, identity] {
       if (rebuilding_ || busy_ || i >= state_.document.observations.size())
         return;
+      leaveGuide();
       recordEdit();
       state_.document.observations[i].feature = identity->currentData().toString().toStdString();
       update();
@@ -1362,7 +1625,14 @@ void RinkMapDialog::addPoint(int camera, QPointF point) {
   recordEdit();
   cancelLine();
   state_.document.observations.push_back(std::move(observation));
+  const bool guided = guide_active_ && guide_index_ < guide_steps_.size() && guide_steps_[guide_index_].feature == id;
+  if (guided) {
+    guide_steps_[guide_index_].observation = int(state_.document.observations.size()) - 1;
+    guide_advance_ = true;
+  }
+  guide_selecting_ = guided;
   feature_->setCurrentIndex(0);
+  guide_selecting_ = false;
   rebuildTable();
   table_->selectRow(int(state_.document.observations.size()) - 1);
   update();
@@ -1420,6 +1690,8 @@ void RinkMapDialog::useGoalLineEnds() {
     return mark;
   };
   recordEdit();
+  guide_active_ = false;
+  guide_steps_.clear();
   state_.document.observations[row] = point(true);
   state_.document.observations.insert(state_.document.observations.begin() + row + 1, point(false));
   update();
@@ -1446,5 +1718,7 @@ bool RinkMapDialog::save() {
           : state_.fit.state == rink::RinkMapState::kInconsistent
           ? "Saved all marks. Review the marked positions, identities and rink dimensions before using this map."
           : "Saved all marks. To locate goal centres and players, add the missing landmarks listed above.");
+  if (state_.fit.state == rink::RinkMapState::kReady)
+    update();
   return true;
 }
