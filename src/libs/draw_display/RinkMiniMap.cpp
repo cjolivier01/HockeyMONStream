@@ -116,8 +116,21 @@ bool RinkMiniMap::Append(
     analytics_epoch_ = result->epoch;
   }
   size_t visible = 0;
-  // Reuse the upstream box palette even when box drawing is off. These colours
-  // identify tracks, not teams; ignored players match the boxes' grey override.
+  // Teams, when the game has named them, are the thing worth reading off a
+  // minimap: two groups in one hue, dark against light, rather than 32 track
+  // colours nobody can tell apart at this size. Without a side the dot is
+  // hollow, which says "not known" instead of guessing a group. Ignored
+  // players keep the boxes' grey override.
+  const Color team_dark{0.16F, 0.18F, 0.22F, 1.0F};
+  const Color team_light{0.93F, 0.94F, 0.96F, 1.0F};
+  // Only switch to the two-group reading once the game has actually named a
+  // side. A run with teams off keeps the track colours it has always drawn
+  // rather than turning every dot hollow.
+  bool any_side = false;
+  if (result) {
+    for (size_t i = 0; i < std::min(result->player_count, player_analytics::kMaximumTracks) && !any_side; ++i)
+      any_side = result->players[i].team.label != player_analytics::TeamLabel::kUnknown;
+  }
   const size_t inspected = std::min(snapshot->player_rects.size(), player_analytics::kMaximumTracks);
   for (size_t index = 0; index < inspected; ++index) {
     const auto& player = snapshot->player_rects[index];
@@ -139,13 +152,18 @@ bool RinkMiniMap::Append(
     const uint32_t color_key = (channel(palette.red) << 16) | (channel(palette.green) << 8) | channel(palette.blue);
     const auto p = point(smoothing_.Update(player.track_id, frame->buf_pts, color_key, *location));
     std::string_view number;
+    auto side = player_analytics::TeamLabel::kUnknown;
     if (result && player.track_id != player_analytics::kUntrackedId) {
       for (size_t i = 0; i < std::min(result->player_count, player_analytics::kMaximumTracks); ++i) {
         const auto& value = result->players[i];
-        const auto& jersey = value.jersey;
-        if (value.track_id != player.track_id || jersey.observed_at > frame->buf_pts ||
-            jersey.expires_at < frame->buf_pts)
+        if (value.track_id != player.track_id)
           continue;
+        // Same walk the jersey read already costs: affiliation rides along on
+        // the entry this loop was going to find anyway.
+        side = value.team.label;
+        const auto& jersey = value.jersey;
+        if (jersey.observed_at > frame->buf_pts || jersey.expires_at < frame->buf_pts)
+          break;
         size_t length = 0;
         while (length < 2 && jersey.text[length] >= '0' && jersey.text[length] <= '9')
           ++length;
@@ -154,12 +172,27 @@ bool RinkMiniMap::Append(
         break;
       }
     }
+    const bool dark_side = side == player_analytics::TeamLabel::kHome || side == player_analytics::TeamLabel::kDark;
+    const bool light_side = side == player_analytics::TeamLabel::kAway || side == player_analytics::TeamLabel::kLight;
     const auto& box_color = player.ignored ? preview_overlay::kIgnoredPlayerColor : box.border_color;
-    const Color color{float(box_color.red), float(box_color.green), float(box_color.blue), float(box_color.alpha)};
-    const Color label = color.red * .2126F + color.green * .7152F + color.blue * .0722F > .5F ? ink : white;
+    const Color track_color{
+        float(box_color.red), float(box_color.green), float(box_color.blue), float(box_color.alpha)};
+    const bool named = !player.ignored && (dark_side || light_side);
+    const Color color = !named ? track_color : dark_side ? team_dark : team_light;
     const float radius = (number.empty() ? 5.0F : 10.0F) * scale;
+    // A named side fills; an unknown one is left hollow over the ice so the
+    // two readings cannot be mistaken for each other.
+    const bool hollow = !named && !player.ignored && any_side;
     commands->AddDisc(p.x, p.y, radius + 1.5F * scale, white);
-    commands->AddDisc(p.x, p.y, radius, color);
+    if (hollow) {
+      commands->AddDisc(p.x, p.y, radius, ink);
+      commands->AddDisc(p.x, p.y, radius - 1.5F * scale, white);
+    } else {
+      commands->AddDisc(p.x, p.y, radius, color);
+    }
+    // Numbers read against whatever the dot ended up being filled with.
+    const Color fill = hollow ? white : color;
+    const Color label = fill.red * .2126F + fill.green * .7152F + fill.blue * .0722F > .5F ? ink : white;
     if (!number.empty()) {
       const float text_height = 13 * scale;
       commands->AddText(p.x - number.size() * text_height / 3, p.y - text_height / 2, text_height, number, label);

@@ -29,7 +29,9 @@ struct Frame {
       NvOSD_ColorParams color = {0.2, 0.4, 0.7, 1},
       bool overflow = false,
       double shift_x = 0,
-      uint64_t pts_ns = 100) {
+      uint64_t pts_ns = 100,
+      pa::TeamLabel team = pa::TeamLabel::kUnknown,
+      bool team_names_other_track = false) {
     check(frame, "Metadata allocation");
     frame->source_id = 4;
     frame->buf_pts = pts_ns;
@@ -63,12 +65,20 @@ struct Frame {
       result.coordinate_width = 800;
       result.coordinate_height = 600;
       result.player_count = 1;
-      result.players[0].track_id = 22;
+      result.players[0].track_id = team_names_other_track ? 23 : 22;
       result.players[0].box = {350, 100, 100, 200};
       result.players[0].jersey.text = {'0', '7', '\0'};
       result.players[0].jersey.observed_at = 80;
       result.players[0].jersey.expires_at = expires;
       result.players[0].jersey.confidence = .9;
+      if (team != pa::TeamLabel::kUnknown) {
+        // A named side carries the evidence that named it; the metadata
+        // validator refuses a label without its cluster and observation.
+        result.players[0].team.label = team;
+        result.players[0].team.cluster = team == pa::TeamLabel::kHome || team == pa::TeamLabel::kDark ? 0 : 1;
+        result.players[0].team.evidence = 2.0F;
+        result.players[0].team.observed_at = pts_ns;
+      }
       check(pa::AttachFrameResult(frame, result), "Jersey attachment");
     }
   }
@@ -120,6 +130,34 @@ int main() {
     check(overlay.Append(bright.frame, 1600, 1200, 800, 600, &commands), "Bright track stays visible");
     check(dotColor(commands, {1, 1, 0, 1}), "Bright dot retains the box colour");
     check(count(commands, a::detail::Kind::kGlyph, true) == 0, "Bright dots use dark jersey digits for contrast");
+    commands.Clear();
+    // A named side reads as one of two groups in one hue, not as its track
+    // colour: on a minimap the question is which team, not which skater.
+    Frame dark_side(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome);
+    check(overlay.Append(dark_side.frame, 1600, 1200, 800, 600, &commands), "A named dark side stays visible");
+    check(dotColor(commands, {0.16, 0.18, 0.22, 1}), "The dark side fills with the dark team colour");
+    commands.Clear();
+    Frame light_side(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kLight);
+    check(overlay.Append(light_side.frame, 1600, 1200, 800, 600, &commands), "A named light side stays visible");
+    check(dotColor(commands, {0.93, 0.94, 0.96, 1}), "The light side fills with the light team colour");
+    check(
+        count(commands, a::detail::Kind::kGlyph, true) == 0,
+        "Digits on a light dot are drawn dark so they stay readable");
+    commands.Clear();
+    // Someone on the ice has a side, so a skater without one is drawn hollow
+    // rather than filled with a colour that would read as a third group.
+    Frame unknown_side(
+        generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kDark, true);
+    check(overlay.Append(unknown_side.frame, 1600, 1200, 800, 600, &commands), "An unnamed skater stays visible");
+    check(count(commands, a::detail::Kind::kDisc) == 3, "An unknown side is drawn as a ring, not a filled dot");
+    check(dotColor(commands, {0.96, 0.98, 1, 1}), "The ring is left open over the ice");
+    commands.Clear();
+    // Teams off: nothing has been named, so the track colours stay as they
+    // were rather than every dot going hollow.
+    Frame unnamed(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1});
+    check(overlay.Append(unnamed.frame, 1600, 1200, 800, 600, &commands), "An unnamed run still draws");
+    check(dotColor(commands, {0.2, 0.4, 0.7, 1}), "Without any named side the dots keep their track colour");
+    check(count(commands, a::detail::Kind::kDisc) == 2, "An unnamed dot is a plain filled dot");
     commands.Clear();
     Frame overflow(generation, true, false, 120, false, {0.2, 0.4, 0.7, 1}, true);
     check(overlay.Append(overflow.frame, 1600, 1200, 800, 600, &commands), "Oversized snapshot retains the rink");
