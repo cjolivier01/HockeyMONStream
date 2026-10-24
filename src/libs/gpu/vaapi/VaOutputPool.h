@@ -3,6 +3,7 @@
 #include <gst/gst.h>
 #include <gst/va/va_fwd.h>
 #include <gst/video/video-info.h>
+#include <filesystem>
 #include <memory>
 
 #include "absl/status/statusor.h"
@@ -32,6 +33,9 @@ class VaOutputPool {
   GstVaDisplay* display() const {
     return display_;
   }
+  const std::filesystem::path& render_node() const {
+    return render_node_;
+  }
   void SetDisplayContext(GstElement* element) const;
 
  private:
@@ -39,5 +43,6 @@ class VaOutputPool {
   GstVaDisplay* display_{};
   GstCaps* caps_{};
   GstBufferPool* pool_{};
+  std::filesystem::path render_node_;
 };
 } // namespace hm::gpu

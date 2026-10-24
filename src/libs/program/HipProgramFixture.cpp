@@ -2,9 +2,9 @@
 // GPU-resident; only detections/tracks and saved calibration artifacts use CPU
 // memory. Bounds/tracker tuning come from the baseline; codec/output choices
 // and explicit input/model arguments remain qualification controls.
-#include <gst/app/gstappsink.h>
-#include <gst/app/gstappsrc.h>
+#include <fcntl.h>
 #include <gst/video/video-info-dma.h>
+#include <unistd.h>
 
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
@@ -13,9 +13,9 @@
 #include "hstream/src/libs/media/StereoFramePlan.h"
 #include "hstream/src/libs/program/AmdProgramProcessor.h"
 #include "hstream/src/libs/program/AmdProgramSettings.h"
-#include "hstream/src/libs/program/EncodedColorimetry.h"
 #include "hstream/src/libs/program/ProgramDetectorSettings.h"
 #include "hstream/src/libs/program/ProgramLaunchConfig.h"
+#include "hstream/src/libs/program/VaProgramSink.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 #include <chrono>
@@ -23,7 +23,6 @@
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
-#include <thread>
 #include "yaml-cpp/yaml.h"
 
 namespace {
@@ -43,50 +42,6 @@ void Status(const absl::Status& status) {
   Check(status.ok(), status.ToString());
 }
 using Buffer = std::unique_ptr<GstBuffer, decltype(&gst_buffer_unref)>;
-struct Pipeline {
-  GstElement* value{};
-  GstElement* endpoint{};
-  ~Pipeline() {
-    if (value)
-      gst_element_set_state(value, GST_STATE_NULL);
-    if (endpoint)
-      gst_object_unref(endpoint);
-    if (value)
-      gst_object_unref(value);
-  }
-  void Create(const char* graph, const char* endpoint_name) {
-    GError* error{};
-    value = gst_parse_launch(graph, &error);
-    if (error) {
-      const std::string message(error->message);
-      g_error_free(error);
-      throw std::runtime_error(message);
-    }
-    Check(value, "Pipeline creation failed");
-    endpoint = gst_bin_get_by_name(GST_BIN(value), endpoint_name);
-    Check(endpoint, "Missing endpoint");
-  }
-  std::string Error() {
-    auto* bus = gst_element_get_bus(value);
-    auto* message = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR);
-    gst_object_unref(bus);
-    if (!message)
-      return {};
-    GError* error{};
-    gchar* debug{};
-    gst_message_parse_error(message, &error, &debug);
-    const std::string text = std::string(error->message) + ": " + (debug ? debug : "");
-    g_error_free(error);
-    g_free(debug);
-    gst_message_unref(message);
-    return text;
-  }
-  void Start() {
-    Check(
-        gst_element_set_state(value, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE,
-        "Pipeline start failed: " + Error());
-  }
-};
 hm::gpu::VaVideoReaderConfig ReaderConfig(
     const hm::program::AmdProgramSettings& settings,
     const std::vector<std::filesystem::path>& paths) {
@@ -291,7 +246,6 @@ int main(int argc, char** argv) {
         b = Read(*right);
       }
     };
-    Pipeline output;
     read_pair();
     const auto left_info = Info(a.sample.get()), right_info = Info(b.sample.get());
     Check(
@@ -306,22 +260,24 @@ int main(int argc, char** argv) {
     out_info.fps_d = left_info.fps_d;
     out_info.colorimetry = left_info.colorimetry;
     out_info.chroma_site = GST_VIDEO_CHROMA_SITE_JPEG;
-    auto pool = Take(hm::gpu::VaOutputPool::Create(config.device, out_info, settings.output_pool_frames));
-    output.Create(
-        "appsrc name=frames format=time ! vah265enc name=encoder bitrate=20000 b-frames=0 "
-        "key-int-max=60 ! h265parse ! mp4mux ! filesink name=file",
-        "frames");
-    auto* encoder = gst_bin_get_by_name(GST_BIN(output.value), "encoder");
-    const auto encoded_color = hm::program::InstallEncodedColorimetry(
-        encoder, hm::program::EncodedCodec::kHevc, out_info, settings.maximum_encoded_packet_bytes);
-    gst_object_unref(encoder);
-    Status(encoded_color);
-    pool->SetDisplayContext(output.value);
-    gst_app_src_set_caps(GST_APP_SRC(output.endpoint), pool->caps());
-    auto* file = gst_bin_get_by_name(GST_BIN(output.value), "file");
-    g_object_set(file, "location", output_file.c_str(), nullptr);
-    gst_object_unref(file);
-    output.Start();
+    const int output_fd = open(output_file.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+    Check(output_fd >= 0, "Cannot exclusively create fixture output");
+    auto created_output = hm::program::VaProgramSink::Create(
+        {hm::program::VaProgramSinkKind::kHevcMp4,
+         config.device,
+         out_info,
+         settings.output_pool_frames,
+         settings.operation_timeout_ns,
+         settings.cancellation_poll_ns,
+         false,
+         output_fd,
+         20000,
+         60,
+         settings.maximum_encoded_packet_bytes,
+         0,
+         nullptr});
+    close(output_fd);
+    auto output = Take(std::move(created_output));
     uint64_t observations = 0, crops = 0, highest_id = 0;
     GstClockTime first = GST_CLOCK_TIME_NONE, previous = GST_CLOCK_TIME_NONE;
     const auto begin = std::chrono::steady_clock::now();
@@ -351,44 +307,21 @@ int main(int argc, char** argv) {
       crops += observed.crop.has_value();
       for (const auto& track : observed.tracks)
         highest_id = std::max(highest_id, track.id);
-      const auto now = std::chrono::steady_clock::now();
-      const auto timeout = std::chrono::nanoseconds(settings.operation_timeout_ns);
-      const auto deadline = timeout > std::chrono::steady_clock::time_point::max() - now
-          ? std::chrono::steady_clock::time_point::max()
-          : now + timeout;
-      auto acquired = pool->Acquire();
-      while (absl::IsResourceExhausted(acquired.status()) && std::chrono::steady_clock::now() < deadline) {
-        const auto error = output.Error();
-        Check(error.empty(), error);
-        std::this_thread::sleep_for(std::chrono::nanoseconds(settings.cancellation_poll_ns));
-        acquired = pool->Acquire();
-      }
-      Buffer buffer(Take(std::move(acquired)), gst_buffer_unref);
+      Buffer buffer(Take(output->Acquire()), gst_buffer_unref);
       Status(processor->Render(buffer.get(), out_info, render));
-      GST_BUFFER_PTS(buffer.get()) = pts - first;
-      GST_BUFFER_DURATION(buffer.get()) = stereo ? synchronized_duration : a.duration;
-      Check(
-          gst_app_src_push_buffer(GST_APP_SRC(output.endpoint), buffer.release()) == GST_FLOW_OK,
-          "Output refused frame");
+      Status(output->Push(buffer.release(), pts - first, stereo ? synchronized_duration : a.duration));
       std::cout << "Frame " << sequence << " detections=" << completed.detection_count
                 << " rink=" << observed.detections.size() << " tracks=" << observed.tracks.size()
                 << " crop=" << crop.left << ',' << crop.top << ',' << crop.right << ',' << crop.bottom << '\n'
                 << std::flush;
     }
     Check(observations && crops, "No tracked Program camera output");
-    Check(gst_app_src_end_of_stream(GST_APP_SRC(output.endpoint)) == GST_FLOW_OK, "Output refused EOS");
-    auto* bus = gst_element_get_bus(output.value);
-    auto* message = gst_bus_timed_pop_filtered(
-        bus, settings.operation_timeout_ns, static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
-    gst_object_unref(bus);
-    const bool eos = message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS;
-    if (message)
-      gst_message_unref(message);
-    Check(eos, "Output did not complete mux EOS: " + output.Error());
+    Status(output->Finish());
     const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
     std::cout << frames << " raw pairs -> " << observations << " tracks -> " << crops << " Program crops, " << seconds
               << " seconds; HEVC MP4 closed\n";
     if (verify_reset) {
+      auto pool = Take(hm::gpu::VaOutputPool::Create(config.device, out_info, settings.output_pool_frames));
       Buffer output_frame(Take(pool->Acquire()), gst_buffer_unref);
       auto wrong_color = out_info;
       wrong_color.colorimetry.transfer = GST_VIDEO_TRANSFER_SMPTE2084;

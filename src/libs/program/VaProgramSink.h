@@ -1,0 +1,52 @@
+#pragma once
+
+#include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
+
+namespace hm::program {
+enum class VaProgramSinkKind { kDiscard, kHevcMp4, kPreview };
+struct VaProgramSinkConfig {
+  VaProgramSinkKind kind;
+  int device;
+  GstVideoInfo video;
+  unsigned pool_frames; // Preview needs at least two: displayed frame and replacement.
+  GstClockTime operation_timeout, cancellation_poll;
+  bool realtime;
+  // Encode mode duplicates this empty regular file's writable descriptor at
+  // offset zero. No other writer may use it during this owner. Its caller owns
+  // output naming, exclusive creation, publication and cleanup after failure.
+  int output_fd;
+  unsigned bitrate_kbps, keyframe_interval;
+  size_t maximum_encoded_packet_bytes;
+  // Preview mode accepts an external X11 window or zero for a sink-owned one.
+  uintptr_t window;
+  // Optional caller-owned GL display context, retained by the pipeline. Any
+  // externally wrapped EGL/GBM/native-display resources must outlive this sink.
+  GstContext* gl_context;
+};
+
+// Bounded GPU output owner. Acquire returns an exclusively owned linear VA
+// surface for AmdProgramProcessor::Render. Push consumes that surface, including
+// on failure. No video map/readback occurs here. One thread owns all operations
+// and destruction except concurrent Cancel; driver calls are not interruptible.
+class VaProgramSink {
+ public:
+  static absl::StatusOr<std::unique_ptr<VaProgramSink>> Create(const VaProgramSinkConfig& config);
+  ~VaProgramSink();
+  VaProgramSink(const VaProgramSink&) = delete;
+  VaProgramSink& operator=(const VaProgramSink&) = delete;
+
+  absl::StatusOr<GstBuffer*> Acquire();
+  absl::Status Push(GstBuffer* buffer, GstClockTime time, GstClockTime duration);
+  // Drain output through mux/sink EOS with a bounded, cancellable wait. File
+  // publication is permitted only after this succeeds.
+  absl::Status Finish();
+  absl::Status SetWindow(uintptr_t window);
+  void Cancel() noexcept;
+  const GstVideoInfo& video_info() const;
+
+ private:
+  struct Impl;
+  explicit VaProgramSink(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl_;
+};
+} // namespace hm::program

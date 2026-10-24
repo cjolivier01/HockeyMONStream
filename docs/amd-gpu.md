@@ -578,3 +578,33 @@ The first stereo review found a tiny-negative-time edge when a saved offset
 rounds to an integer frame; the synchronized clock now uses the planner
 rounding tolerance at zero, with a passing regression.
 Both second-round stereo reviews found no necessary fixes.
+
+`program/VaProgramSink` extracts output ownership from the raw Program qualifier.
+It allocates a bounded pool of linear VA surfaces, waits for reuse with explicit
+deadlines/cancellation, and routes completed GPU frames to discard, GL preview
+or HEVC/MP4 output. The encode caller supplies an empty regular file descriptor
+and owns naming, exclusive creation and publication; the sink duplicates that
+descriptor and requires successful mux EOS before completion. Cancellation and
+errors never report successful completion. Preview accepts a native window and
+an optional GL display context. No video pixels are mapped or copied to host.
+
+Hardware tests cover five-frame NV12 and P010 HEVC files, duplicate descriptor
+ownership, repeated EOS, post-EOS rejection, nonempty-file rejection, timestamp
+overflow, exhausted-pool timeout, concurrent cancellation of a blocked acquire,
+retained surfaces after destruction and headless EGL/GL preview. The configured
+qualifier now uses both the stereo and sink owners. These are reusable runtime
+components; normal CLI/UI routing and application audio remain pending.
+
+Output review found that the generic VA encoder factory can select another
+GPU on a multi-device host. `gpu/vaapi/VaElement` now shares the reader factory
+selection with output, matching the pool's canonical render node and refusing
+unknown devices. A one-surface GL preview also stalls while retaining its last
+picture; preview now requires capacity for the displayed frame and replacement.
+Tests verify selected-node identity, no fallback for an unknown node, rejected
+one-surface preview and cancellation during a clocked EOS wait. The first real
+120-pair run with the output owner closed its 4K Main10 MP4 in 8.18391 seconds
+after preparation, with the same 2,719 track observations and 119 crops.
+All nine focused output/source hardware tests and the full local x86 build
+pass after the fixes. Both second-round output reviews found no necessary
+fixes. Jetson still lacks its cross-compiler and reachable host; native SBSA
+requires an ARM64 machine.

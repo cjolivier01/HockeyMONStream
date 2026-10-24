@@ -1,6 +1,14 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "va_element",
+    srcs = ["VaElement.cpp"],
+    hdrs = ["VaElement.h"],
+    include_prefix = "hstream/src/libs/gpu/vaapi",
+    deps = ["@gstreamer"],
+)
+
+cc_library(
     name = "va_stereo_video",
     srcs = ["VaStereoVideo.cpp"],
     hdrs = ["VaStereoVideo.h"],
@@ -33,7 +41,7 @@ cc_library(
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = ["@gstreamer", "@com_google_absl//absl/status:statusor"],
+    deps = [":va_element", "@gstreamer", "@com_google_absl//absl/status:statusor"],
 )
 
 cc_test(

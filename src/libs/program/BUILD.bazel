@@ -3,6 +3,31 @@ load("//bazel:gpu_library.bzl", "gpu_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "va_program_sink",
+    srcs = ["VaProgramSink.cpp"],
+    hdrs = ["VaProgramSink.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool", "//src/libs/gpu/vaapi:va_element"],
+)
+
+cc_test(
+    name = "va_program_sink_test",
+    srcs = ["VaProgramSinkTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_program_sink", ":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_element", "//src/libs/media:mp4_video_track",
+            "//src/libs/media:test_mp4", "@mesa_interop", "@mesa_interop//:gstreamer_gl"],
+)
+
+cc_library(
     name = "amd_program_settings",
     srcs = ["AmdProgramSettings.cpp"],
     hdrs = ["AmdProgramSettings.h"],
@@ -125,7 +150,7 @@ cc_binary(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [
-        ":amd_program_processor", ":encoded_colorimetry", ":amd_program_settings",
+        ":amd_program_processor", ":va_program_sink", ":amd_program_settings",
         ":launch_config", ":detector_settings", "//src/libs/media:stereo_frame_plan",
         "//src/libs/stitching:stitching_algorithms",
         "//src/libs/common:baseline_config",

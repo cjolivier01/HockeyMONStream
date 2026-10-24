@@ -48,6 +48,7 @@ absl::StatusOr<std::unique_ptr<VaOutputPool>> VaOutputPool::Create(
   const auto render = std::filesystem::canonical(path, error);
   if (error)
     return absl::UnavailableError("Cannot resolve HIP render node " + path + ": " + error.message());
+  result->render_node_ = render;
   result->display_ = gst_va_display_drm_new_from_path(render.c_str());
   if (!result->display_)
     return absl::UnavailableError("Cannot open VA on HIP device " + path);
