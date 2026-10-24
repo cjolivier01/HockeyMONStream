@@ -124,6 +124,9 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   bool plot_play_tracking_{false};
   bool plot_player_tracking_{false};
   uint32_t player_overlay_layers_{0};
+  // Live drawing selection from the desktop, authoritative once set.
+  uint32_t live_player_layers_{0};
+  bool live_player_layers_set_{false};
   float player_joint_confidence_{0.3F};
   draw_display::analytics::CommandList player_overlay_commands_;
   std::unique_ptr<draw_display::analytics::Compositor> player_overlay_compositor_;

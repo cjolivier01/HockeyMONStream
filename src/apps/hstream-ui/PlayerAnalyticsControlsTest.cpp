@@ -1,11 +1,14 @@
 #include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
 
+#include "hstream/src/libs/player_analytics/Types.h"
+
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 
 #include <array>
@@ -576,11 +579,109 @@ void TeamModelAndPrecedence(const QString& root) {
       "Canonical custom model was not displayed or validated with its native bundle");
 }
 } // namespace
+// Drawing is the only part of this tab a running pipeline can honour, so the
+// window needs the selection as a bitmask and the compute choices need to say
+// plainly that they are waiting for the next run.
+void LiveDrawingSelection() {
+  PlayerAnalyticsControls widget;
+  namespace pa = hm::player_analytics;
+  Control<QCheckBox>(widget, "playerDrawPose")->setChecked(false);
+  Control<QCheckBox>(widget, "playerDrawJerseys")->setChecked(false);
+  Control<QCheckBox>(widget, "playerDrawActions")->setChecked(false);
+  Control<QCheckBox>(widget, "playerDrawTeams")->setChecked(false);
+  Control<QCheckBox>(widget, "playerDrawBoxes")->setChecked(false);
+  Require(widget.drawingLayers() == 0, "No drawing selected must report no layers");
+  Control<QCheckBox>(widget, "playerDrawTeams")->setChecked(true);
+  Require(widget.drawingLayers() == pa::kDrawTeams, "Team labels must report their own layer");
+  Control<QCheckBox>(widget, "playerDrawPose")->setChecked(true);
+  Control<QCheckBox>(widget, "playerDrawBoxes")->setChecked(true);
+  Require(
+      widget.drawingLayers() == unsigned(pa::kDrawTeams | pa::kDrawPose | pa::kDrawPlayerBoxes),
+      "Every drawing switch must contribute its layer");
+
+  widget.setLiveDrawingOnly(true);
+  Require(
+      Control<QCheckBox>(widget, "playerDrawTeams")->isEnabled() &&
+          Control<QCheckBox>(widget, "playerDrawPose")->isEnabled() &&
+          Control<QCheckBox>(widget, "playerDrawBoxes")->isEnabled(),
+      "Drawing stays editable during a run");
+  Require(
+      !Control<QCheckBox>(widget, "playerPoseEnable")->isEnabled() &&
+          !Control<QCheckBox>(widget, "playerTeamEnable")->isEnabled() &&
+          !Control<QComboBox>(widget, "playerPoseModel")->isEnabled(),
+      "Compute choices are disabled during a run");
+  Require(
+      Control<QLabel>(widget, "playerAnalyticsStatus")->text().contains("applies to this run"),
+      "The status says why the compute choices are disabled");
+  widget.setLiveDrawingOnly(false);
+  Require(
+      Control<QCheckBox>(widget, "playerPoseEnable")->isEnabled(),
+      "Compute choices come back when no run owns the pipeline");
+}
+
+// Which sweater the home side wore is the only thing that turns DARK/LIGHT
+// into HOME/AWAY, and it has to be sayable in the app rather than by hand.
+void HomeSweater() {
+  PlayerAnalyticsControls widget;
+  auto* side = Control<QComboBox>(widget, "playerHomeSide");
+  Require(side->currentData().toString().isEmpty(), "Nobody has named the sides by default");
+
+  YAML::Node game;
+  side->setCurrentIndex(side->findData(QString("true")));
+  Require(widget.applyChanges(game).isEmpty(), "Saving the home sweater failed");
+  Require(game["game"]["home_is_dark"].as<bool>(), "Home wearing dark must save as true");
+
+  PlayerAnalyticsControls reloaded;
+  reloaded.loadConfig(YAML::Node(), YAML::Node(), game, QDir::currentPath());
+  Require(
+      Control<QComboBox>(reloaded, "playerHomeSide")->currentData().toString() == "true",
+      "The saved home sweater must come back");
+
+  // The configurator writes the mapped native flag as 1/0.
+  YAML::Node native;
+  native["pipeline"]["player-analytics"]["home-is-dark"] = 0;
+  PlayerAnalyticsControls mapped;
+  mapped.loadConfig(YAML::Node(), native, YAML::Node(), QDir::currentPath());
+  Require(
+      Control<QComboBox>(mapped, "playerHomeSide")->currentData().toString() == "false",
+      "A native 1/0 home sweater must be understood");
+
+  YAML::Node cleared;
+  Control<QComboBox>(reloaded, "playerHomeSide")->setCurrentIndex(0);
+  Require(reloaded.applyChanges(cleared).isEmpty(), "Clearing the home sweater failed");
+  Require(
+      cleared["game"]["home_is_dark"].IsNull(),
+      "Clearing it must say nobody named the sides rather than dropping the key");
+  // Saved and unsaved clears have to agree: an edit reconciles the native key
+  // the same way the other mapped flags do, so a run cannot read HOME/AWAY
+  // from a native setting the operator just cleared.
+  YAML::Node with_native;
+  with_native["pipeline"]["player-analytics"]["home-is-dark"] = 1;
+  PlayerAnalyticsControls over_native;
+  over_native.loadConfig(YAML::Node(), YAML::Node(), with_native, QDir::currentPath());
+  Control<QComboBox>(over_native, "playerHomeSide")->setCurrentIndex(0);
+  Require(over_native.applyChanges(with_native).isEmpty(), "Clearing over a native sweater failed");
+  Require(
+      with_native["pipeline"]["player-analytics"]["home-is-dark"].IsNull() &&
+          with_native["game"]["home_is_dark"].IsNull(),
+      "An edited clear must reconcile the native key rather than leave it naming the sides");
+  // An edited clear has to reach a run that was never saved, like every other
+  // control here; an untouched one must stay out of the way of a native value.
+  Require(
+      reloaded.arguments().contains("--options=pipeline.player-analytics.home-is-dark=null"),
+      "A cleared home sweater must reach an unsaved run");
+  PlayerAnalyticsControls untouched;
+  Require(
+      untouched.arguments().filter("home-is-dark").isEmpty(), "An untouched home sweater must not override anything");
+}
+
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
   QTemporaryDir directory;
   Require(directory.isValid(), "Cannot create test directory");
   Disabled();
+  LiveDrawingSelection();
+  HomeSweater();
   PoseDrawingAndRate();
   ModelChoices(directory.path());
   LegacyProgramBoxes(directory.path());

@@ -7205,7 +7205,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     analytics_scroll->setWidgetResizable(true);
     analytics_scroll->setFrameShape(QFrame::NoFrame);
     player_analytics_controls_ = new PlayerAnalyticsControls();
-    player_analytics_controls_->setChangedCallback([this] { updatePresetDirtyState(); });
+    player_analytics_controls_->setChangedCallback([this] {
+      updatePresetDirtyState();
+      schedulePlayerDrawingRuntimeControl();
+    });
     analytics_scroll->setWidget(player_analytics_controls_);
     loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
     control_tabs->addTab(analytics_scroll, "Players");
@@ -11931,7 +11934,8 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   if (handleProcessPauseOutput(trimmed) || handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
       handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||
       handlePreviewOverlayDiagnostic(trimmed) || handlePreviewOverlayResponse(trimmed) ||
-      handleRinkMapStatus(trimmed) || (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed))) {
+      handlePlayerDrawingResponse(trimmed) || handleRinkMapStatus(trimmed) ||
+      (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed))) {
     return;
   }
   handleTelemetryOutputStatus(trimmed);
@@ -16260,6 +16264,32 @@ bool HStreamWindow::handlePreviewOverlayDiagnostic(const QString& line) {
   return true;
 }
 
+bool HStreamWindow::handlePlayerDrawingResponse(const QString& line) {
+  static const QRegularExpression pattern(
+      R"(^HSTREAM_PLAYER_DRAWING status=(applied|failed) generation=(\d+) layers=(\d+)(?: reason=(.*))?$)");
+  const QRegularExpressionMatch match = pattern.match(line);
+  if (!match.hasMatch())
+    return false;
+  const unsigned layers = match.captured(3).toUInt();
+  if (match.captured(1) == "applied") {
+    // Only an accepted selection may be deduplicated against; a write that the
+    // runner refused must be sent again when the operator tries once more.
+    published_player_drawing_layers_ = layers;
+    appendLog(QString("player drawing layers=%1 apply=live").arg(layers));
+  } else {
+    published_player_drawing_layers_.reset();
+    appendLog(QString("player drawing layers=%1 apply=failed reason=%2")
+                  .arg(layers)
+                  .arg(match.captured(4).isEmpty() ? QString("rejected") : match.captured(4)));
+  }
+  pending_player_drawing_layers_.reset();
+  // Camera controls can be waiting behind this answer, and the selection can
+  // have moved on while it was in flight; both are settled from here.
+  schedulePlayerDrawingRuntimeControl();
+  flushScheduledRuntimeControls();
+  return true;
+}
+
 bool HStreamWindow::handlePreviewOverlayResponse(const QString& line) {
   static const QRegularExpression pattern(
       R"(^HSTREAM_PREVIEW_OVERLAYS status=(applied|failed) generation=(\d+) players=([01]) play=([01]) rink=([01])(?: reason=(.*))?$)");
@@ -17069,6 +17099,17 @@ void HStreamWindow::updateRunControls() {
   updateScoreboardControls();
   updateStitchingStillPreview();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (player_analytics_controls_)
+    player_analytics_controls_->setLiveDrawingOnly(running && !isCalibrationRun());
+  if (!running) {
+    // Nothing queued may cross into the next run: its graph starts from the
+    // launch arguments, and a stale mask would overwrite them.
+    published_player_drawing_layers_.reset();
+    pending_player_drawing_layers_.reset();
+    scheduled_player_drawing_layers_.reset();
+    scheduled_player_drawing_ready_ = false;
+    ++scheduled_player_drawing_generation_;
+  }
   const bool finalizing = isArchiveFinalizing();
   const bool archive_recovery_was_cleared =
       !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
@@ -21672,6 +21713,36 @@ void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, double 
   });
 }
 
+void HStreamWindow::schedulePlayerDrawingRuntimeControl() {
+  if (!player_analytics_controls_ || !pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
+      isCalibrationRun()) {
+    return;
+  }
+  const unsigned layers = player_analytics_controls_->drawingLayers();
+  const std::optional<unsigned> in_force =
+      pending_player_drawing_layers_ ? pending_player_drawing_layers_ : published_player_drawing_layers_;
+  if (in_force && *in_force == layers) {
+    // Toggled away and back inside the debounce. Drop the queued value and
+    // retire its timer, or the pipeline would be sent a selection the tab no
+    // longer shows.
+    scheduled_player_drawing_layers_.reset();
+    scheduled_player_drawing_ready_ = false;
+    ++scheduled_player_drawing_generation_;
+    return;
+  }
+  scheduled_player_drawing_layers_ = layers;
+  scheduled_player_drawing_ready_ = false;
+  const quint64 generation = ++scheduled_player_drawing_generation_;
+  QTimer::singleShot(120, this, [this, generation]() {
+    if (generation != scheduled_player_drawing_generation_ || !pipeline_process_ ||
+        pipeline_process_->state() == QProcess::NotRunning) {
+      return;
+    }
+    scheduled_player_drawing_ready_ = true;
+    flushScheduledRuntimeControls();
+  });
+}
+
 void HStreamWindow::schedulePlaycropperRuntimeControl(const QString& id, int value) {
   appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
   scheduled_playcropper_controls_[id] = value;
@@ -21988,6 +22059,27 @@ void HStreamWindow::flushScheduledRuntimeControls() {
           {tone_element, "exposure", QString::number(cameraControlValue("Exposure_x100") / 100.0, 'f', 2)});
     }
     publishRuntimeControlBatch({controls.begin(), controls.end()}, commands);
+    return;
+  }
+  if (scheduled_player_drawing_ready_ && scheduled_player_drawing_layers_) {
+    const unsigned layers = *scheduled_player_drawing_layers_;
+    scheduled_player_drawing_layers_.reset();
+    scheduled_player_drawing_ready_ = false;
+    // A calibration graph can take the pipeline over between the edit and
+    // this flush. It draws none of these layers, so drop the update.
+    if (isCalibrationRun())
+      return;
+    // One command, not a property per element: which Program and preview
+    // elements exist depends on the graph this run built, and the runner is
+    // the only side that knows. It answers with HSTREAM_PLAYER_DRAWING.
+    const QByteArray command =
+        QString("@set-player-drawing %1 %2\n").arg(++player_drawing_request_).arg(layers).toUtf8();
+    if (pipeline_process_->write(command) == command.size()) {
+      pending_player_drawing_layers_ = layers;
+      appendLog(QString("player drawing layers=%1 apply=scheduled").arg(layers));
+    } else {
+      appendLog("player drawing apply=failed reason=runtime command write");
+    }
     return;
   }
   if (scheduled_playtracker_controls_ready_ && !scheduled_playtracker_controls_.empty()) {

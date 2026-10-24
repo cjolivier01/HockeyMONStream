@@ -609,6 +609,7 @@ enum SinkProperty {
   kSinkPropertyShowPlayTracking,
   kSinkPropertyShowRinkMask,
   kSinkPropertyRinkMaskFile,
+  kSinkPropertyPlayerOverlayLayers,
 };
 
 thread_local RendererState* current_x_error_target = nullptr;
@@ -1983,6 +1984,15 @@ void preview_sink_set_property(GObject* object, guint property_id, const GValue*
       case kSinkPropertySourceHeight:
         state->source_height = g_value_get_uint(value);
         break;
+      case kSinkPropertyPlayerOverlayLayers:
+        // Live drawing selection. Clearing the command list drops overlays
+        // built for the previous selection instead of leaving them on screen
+        // until the next frame rebuilds them.
+        state->player_analytics_layers = g_value_get_uint(value) &
+            (hm::player_analytics::kDrawPose | hm::player_analytics::kDrawJerseys | hm::player_analytics::kDrawActions |
+             hm::player_analytics::kDrawTeams);
+        state->player_commands.Clear();
+        break;
       case kSinkPropertyRinkMaskFile:
         state->rink_mask_file = g_value_get_string(value) ? g_value_get_string(value) : "";
         state->rink_mask_dirty = true;
@@ -2033,6 +2043,9 @@ void preview_sink_get_property(GObject* object, guint property_id, GValue* value
     }
     std::lock_guard<std::mutex> lock(state->mutex);
     switch (property_id) {
+      case kSinkPropertyPlayerOverlayLayers:
+        g_value_set_uint(value, state->player_analytics_layers);
+        break;
       case kSinkPropertyWindowId:
         g_value_set_uint64(value, state->window_id);
         break;
@@ -2141,6 +2154,19 @@ void gst_hm_gpu_preview_sink_class_init(GstHmGpuPreviewSinkClass* klass) {
           "Show play tracking",
           "Draw play-tracker state geometry in the GPU preview",
           FALSE,
+          G_PARAM_READWRITE));
+  g_object_class_install_property(
+      object_class,
+      kSinkPropertyPlayerOverlayLayers,
+      g_param_spec_uint(
+          "player-drawing-layers",
+          "Player drawing layers",
+          "Live drawing bitmask: boxes 1, pose 2, jerseys 4, actions 8, teams 16. The preview draws the "
+          "analytics layers and takes boxes through show-player-tracking, but it accepts the complete "
+          "selection so one value can address every element that draws.",
+          0,
+          31,
+          0,
           G_PARAM_READWRITE));
   g_object_class_install_property(
       object_class,

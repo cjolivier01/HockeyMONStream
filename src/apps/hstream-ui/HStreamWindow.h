@@ -336,6 +336,7 @@ class HStreamWindow : public QMainWindow {
   bool handleGpuPreviewStatus(const QString& line);
   bool handlePreviewOverlayDiagnostic(const QString& line);
   bool handlePreviewOverlayResponse(const QString& line);
+  bool handlePlayerDrawingResponse(const QString& line);
   QLabel* previewStatusForChannel(const QString& channel) const;
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;
@@ -427,6 +428,7 @@ class HStreamWindow : public QMainWindow {
   QString writePlaytrackerRuntimeConfig();
   void schedulePlaytrackerRuntimeControl(const QString& id, double value);
   void schedulePlaycropperRuntimeControl(const QString& id, int value);
+  void schedulePlayerDrawingRuntimeControl();
   QString pipelineRunnerPath() const;
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
@@ -1030,6 +1032,13 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> scheduled_rotation_controls_;
   std::map<QString, double> scheduled_playtracker_controls_;
   std::map<QString, int> scheduled_playcropper_controls_;
+  // Player-analytics drawing selection waiting to reach a running pipeline,
+  // and the one it is already showing. Drawing is the only live part of the
+  // Players tab; compute choices wait for the next run.
+  std::optional<unsigned> scheduled_player_drawing_layers_;
+  std::optional<unsigned> published_player_drawing_layers_;
+  std::optional<unsigned> pending_player_drawing_layers_;
+  quint64 player_drawing_request_{0};
   bool scheduled_rotation_controls_ready_{false};
   bool live_rotation_authorization_pending_{false};
   bool deferred_restart_requested_{false};
@@ -1041,6 +1050,7 @@ class HStreamWindow : public QMainWindow {
   bool close_waiting_for_live_rotation_authorization_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};
+  bool scheduled_player_drawing_ready_{false};
   std::optional<std::map<QString, double>> publishing_playtracker_controls_;
   bool scheduled_playtracker_force_all_targets_{false};
   bool publishing_playtracker_force_all_targets_{false};
@@ -1049,5 +1059,6 @@ class HStreamWindow : public QMainWindow {
   quint64 scheduled_rotation_control_generation_{0};
   quint64 scheduled_playtracker_control_generation_{0};
   quint64 scheduled_playcropper_control_generation_{0};
+  quint64 scheduled_player_drawing_generation_{0};
   QString last_playtracker_runtime_snapshot_;
 };

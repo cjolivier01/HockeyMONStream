@@ -83,7 +83,35 @@ Team affiliation is fitted per stream, not classified: two centroids over the
 embeddings this game has produced, ranked dark-vs-light by mean crop lightness.
 `game.home_is_dark` maps to `pipeline.player-analytics.home-is-dark` and names
 the two groups; without it the overlay reads DARK and LIGHT, which is unnamed
-but never wrong.
+but never wrong. **Home sweater** in the Players tab writes it: dark, light,
+or not set. Clearing it writes an explicit null rather than removing the key,
+and it never reaches through to erase a native `home-is-dark`, which still
+wins where one exists.
+
+The ranking is taken on the first balanced fit whose groups differ by
+`min_lightness_gap`, and a later fit can take it back. Each correction then
+asks for one more consecutive confirmation than the last, up to five, so
+sustained contradiction always wins while a ranking cannot be walked back and
+forth by evidence that keeps changing its mind.
+
+One limitation to know about: a track leaves the sampling schedule once its
+side commits, so a game whose tracks all settle shortly after the first fit
+can stop producing the crops a refit needs, and a wrong ranking then waits on
+track churn. `team-unranked` and `team-reranks` make that visible, but there
+is no deadline on it. Early crops can catch
+one squad under the lights and the other in shadow, and a ranking taken that
+way is wrong for the rest of the game, so a fit measuring the opposite order
+replaces it once it beats the same bar by `switch_hysteresis` on consecutive
+accepted fits — the terms the per-track vote already uses against its own
+incumbent. A refit that was thrown away counts for neither side and breaks the
+run. Centroid pairing keeps index 0 on the same squad across refits, so
+the contradiction is evidence about the ranking rather than about which group
+is which, and flipping it relabels every badge at once with no per-track
+churn. An established ranking is never withdrawn: a fit that cannot tell
+leaves the current answer standing rather than blanking every badge.
+`team-reranks` in the shutdown counters reports how often this happened, and
+`team-unranked` separates crops that arrived before any ranking from
+`team-unassigned`, which counts crops the centroids were too close to call.
 
 Jersey inference uses the hockey PARSeq profile with the full 95-token vocabulary,
 one/two digits followed by EOS, and preserved leading zeroes. GPU preprocessing
@@ -139,6 +167,22 @@ topology with 18-slot storage (the final slot is zero for COCO17), separate
 fresh observations and retained display poses, and team affiliation. All
 producers and consumers must be rebuilt together; no persistent telemetry
 schema changes.
+
+Drawing selections apply to a run in progress. The desktop sends the whole
+selection with `@set-player-drawing <generation> <layers>`, and the runner
+applies it to the Program cropper and to whichever preview sinks that graph
+built -- which of them exist depends on the run, so addressing them by name
+from the desktop would fail whenever one is absent. The runner answers
+`HSTREAM_PLAYER_DRAWING status=applied|failed`, and only an accepted
+selection is remembered as live. The same mask is reapplied when the graph is
+rebuilt, so a seek or stage restart does not revert to the launch-time
+choice. It is authoritative over the launch-time `player-overlay-layers` and
+`plot-player-tracking` keys, so a layer switched off mid-run stays off.
+`player-drawing-layers` is also allowlisted as an ordinary runtime property
+for scripted use against a named element. It selects among results the models already produced:
+no model starts, stops, or changes cadence, which is why the compute choices
+in the Players tab disable themselves while a run owns the pipeline. Tracks
+that had no colour allocated when the run started draw grey until it restarts.
 
 `max-due-rois` is an aggregate model-sample budget shared by pose, jersey, action
 and team. Weighted rotating turns favor pose 2:1:1:1 and lend unused work. Team

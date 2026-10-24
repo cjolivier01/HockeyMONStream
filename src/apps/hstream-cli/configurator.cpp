@@ -6020,7 +6020,12 @@ absl::Status Configurator::map_common_config_keys() {
         if (!source->IsScalar())
           return absl::InvalidArgumentError("game.home_is_dark must be a boolean or 0/1");
         const std::string value = source->Scalar();
-        if (value == "1" || value == "0") {
+        if (value == "null" || value == "~") {
+          // A CLI override is always a string, so this is how a run says
+          // nobody named the sides. Leave the native key unset, which is the
+          // same thing a YAML null means.
+          analytics.remove("home-is-dark");
+        } else if (value == "1" || value == "0") {
           analytics["home-is-dark"] = value == "1" ? 1 : 0;
         } else {
           try {
