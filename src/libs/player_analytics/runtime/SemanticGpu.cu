@@ -201,9 +201,10 @@ __global__ void JerseyDecode(const float* logits, JerseyVocabulary vocabulary, J
   observations[blockIdx.x] = result;
 }
 
+template <int Labels>
 __global__ void ActionReduce(const float* logits, ActionObservation* observations) {
   __shared__ ReductionStorage<64> scratch;
-  const auto top = TopProbability<kActionLabels, 64>(logits + blockIdx.x * kActionLabels, scratch);
+  const auto top = TopProbability<Labels, 64>(logits + blockIdx.x * Labels, scratch);
   if (threadIdx.x == 0)
     observations[blockIdx.x] = top.valid ? ActionObservation{top.index, top.confidence} : ActionObservation{};
 }
@@ -381,10 +382,20 @@ cudaError_t DecodeJersey(
   return cudaGetLastError();
 }
 
-cudaError_t ReduceAction(const float* logits, size_t batch, ActionObservation* observations, cudaStream_t stream) {
+cudaError_t ReduceAction(
+    const float* logits,
+    size_t batch,
+    ActionObservation* observations,
+    cudaStream_t stream,
+    size_t labels) {
   if (!logits || !observations || !stream || batch == 0 || batch > kMaximumBatch)
     return cudaErrorInvalidValue;
-  ActionReduce<<<batch, 64, 0, stream>>>(logits, observations);
+  if (labels == 4)
+    ActionReduce<4><<<batch, 64, 0, stream>>>(logits, observations);
+  else if (labels == kActionLabels)
+    ActionReduce<kActionLabels><<<batch, 64, 0, stream>>>(logits, observations);
+  else
+    return cudaErrorInvalidValue;
   return cudaGetLastError();
 }
 } // namespace hm::player_analytics

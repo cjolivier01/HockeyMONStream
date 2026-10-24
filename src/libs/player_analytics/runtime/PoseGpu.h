@@ -42,9 +42,9 @@ struct PoseAffine {
   float surface_to_metadata_y{0};
 };
 
-// Pure CPU metadata arithmetic; never touches frame pixels. Expands 1.25 then
+// Pure CPU metadata arithmetic; never touches frame pixels. Expands by profile padding then
 // fixes 192:256 aspect in surface pixels. Out-of-frame ROIs retain their affine.
-absl::StatusOr<PoseAffine> MakePoseAffine(const ImageView& image, const PoseRoi& roi);
+absl::StatusOr<PoseAffine> MakePoseAffine(const ImageView& image, const PoseRoi& roi, float padding = 1.25F);
 
 // Borrowed GPU-only input. The caller uploads the bounded affine array and
 // owns all buffer lifetimes through stream completion. No allocation or sync.
@@ -57,7 +57,7 @@ cudaError_t PreprocessPose(
     float* device_input,
     cudaStream_t stream);
 
-// Reduces full SimCC distributions on GPU; only batch*17 keypoints need D2H.
+// Reduces full SimCC distributions on GPU; only batch*18-slot poses need D2H.
 // First argmax wins ties, split ratio=2, confidence=min(x_max,y_max) clamped
 // to [0,1]. Nonfinite/nonpositive joints produce a zero-confidence keypoint.
 cudaError_t DecodePose(
@@ -66,6 +66,7 @@ cudaError_t DecodePose(
     const PoseAffine* device_affines,
     size_t batch,
     Pose* device_results,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    size_t joints = kCocoJoints);
 
 } // namespace hm::player_analytics

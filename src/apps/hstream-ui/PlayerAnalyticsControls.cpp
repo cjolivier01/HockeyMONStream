@@ -203,8 +203,9 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
   addModel(kAnalytics + "action.model", "playerActionModel", "Activity model", compute);
   addPath(kAnalytics + "action.bundle", "playerActionBundle", true, compute);
   auto* action_help = new QLabel(
-      "Activities require pose at 10 Hz or faster and 9.9 seconds of continuous observations. "
-      "Labels describe generic activities, not hockey events.");
+      "Activities require pose at 10 Hz or faster, and continuous observations: 9.9 seconds for the generic "
+      "model, a third of a second for the hockey one. The generic labels describe everyday activities, not "
+      "hockey events; the hockey model needs the hockey pose selected with it.");
   action_help->setWordWrap(true);
   static_cast<QFormLayout*>(compute->layout())->addRow(action_help);
   // Unlike the other three, team has a canonical enable key that HockeyMON
@@ -312,15 +313,8 @@ void PlayerAnalyticsControls::addModel(const QString& key, const QString& name, 
   editor->setObjectName(name);
   const auto feature = ModelFeature(key);
   const auto id = std::string(pa::DefaultModelId(feature));
-  const auto* model = pa::FindModel(feature, id);
-  const QString title = model ? QString::fromUtf8(model->label) : QString::fromStdString(id);
-  editor->addItem(title, QString::fromStdString(id));
-  if (feature == "reid") {
-    const std::string alternative = "reidentificationnet-deployable-v1.2";
-    const auto* nvidia = pa::FindModel(feature, alternative);
-    if (nvidia && alternative != id)
-      editor->addItem(QString::fromUtf8(nvidia->label), QString::fromStdString(alternative));
-  }
+  for (const auto* model : pa::ModelsForFeature(feature))
+    editor->addItem(QString::fromUtf8(model->label), QString::fromUtf8(model->id));
   editor->addItem("Custom…", "custom");
   editor->setProperty("knownModelCount", editor->count());
   editor->setToolTip("Uses the supplied model or downloads it when needed, prepares it for this GPU, then reuses it.");

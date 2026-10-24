@@ -69,6 +69,7 @@ bool ValidBox(const Box& box) {
 
 struct PlayerAnalyticsProcessor::Impl {
   struct ActionState {
+    explicit ActionState(PoseTopology topology) : history(topology), label(topology) {}
     ActionHistory history;
     ActionLabelState label;
     uint64_t last_pose{kInvalidTime};
@@ -117,6 +118,8 @@ struct PlayerAnalyticsProcessor::Impl {
   };
 
   Config config;
+  PoseTopology pose_topology{PoseTopology::kCoco17};
+  size_t action_tensor_floats{ActionHistory::kTensorFloats};
   int gpu_id{0};
   cudaStream_t stream{nullptr};
   std::unique_ptr<NativeEngine> pose;
@@ -290,7 +293,7 @@ struct PlayerAnalyticsProcessor::Impl {
         if (jersey)
           evidence.jersey = std::make_unique<JerseyConsensus>();
         if (action)
-          evidence.action = std::make_unique<ActionState>();
+          evidence.action = std::make_unique<ActionState>(pose_topology);
         if (team)
           evidence.team = std::make_unique<TeamConsensus>(config.team_clustering);
       }
@@ -300,7 +303,7 @@ struct PlayerAnalyticsProcessor::Impl {
       if (evidence.pose_drawing && !record->visible)
         evidence.pose_drawing->Reset();
       if (evidence.action && evidence.action->last_pose != kInvalidTime &&
-          (!record->visible || frame->buf_pts - evidence.action->last_pose > kActionMaximumGap)) {
+          (!record->visible || frame->buf_pts - evidence.action->last_pose > evidence.action->history.maximum_gap())) {
         evidence.action->Reset();
         ++counters.action_history_resets;
       }
@@ -378,6 +381,7 @@ struct PlayerAnalyticsProcessor::Impl {
     // Fence lifetime follows image lifetime on every return and exception.
     StreamFence fence{stream};
     FrameResult result;
+    result.pose_topology = pose_topology;
     result.stream_id = frame->source_id;
     result.epoch = source.epoch;
     result.sequence = frame->frame_num;
@@ -404,7 +408,8 @@ struct PlayerAnalyticsProcessor::Impl {
         const size_t index = std::find(ids.begin(), ids.begin() + count, id) - ids.begin();
         if (index == count)
           continue;
-        auto affine = MakePoseAffine(image->view(), {boxes[index], float(source.width), float(source.height)});
+        auto affine = MakePoseAffine(
+            image->view(), {boxes[index], float(source.width), float(source.height)}, pose->manifest().pose_padding);
         if (!affine.ok()) {
           ++counters.invalid_rois;
           auto& state = source.evidence.at(id).action;
@@ -426,8 +431,14 @@ struct PlayerAnalyticsProcessor::Impl {
       PA_RETURN_IF_ERROR(pose->Enqueue(batch_count, stream));
       ++counters.pose_enqueues;
       submitted(batch_count);
-      PA_RETURN_IF_ERROR(
-          Cuda(DecodePose(pose->output(0), pose->output(1), device_affines, batch_count, device_poses, stream)));
+      PA_RETURN_IF_ERROR(Cuda(DecodePose(
+          pose->output(0),
+          pose->output(1),
+          device_affines,
+          batch_count,
+          device_poses,
+          stream,
+          pose->manifest().pose_joints)));
       PA_RETURN_IF_ERROR(
           Cuda(cudaMemcpyAsync(host_poses, device_poses, batch_count * sizeof(Pose), cudaMemcpyDeviceToHost, stream)));
       PA_RETURN_IF_ERROR(fence.Finish());
@@ -466,7 +477,8 @@ struct PlayerAnalyticsProcessor::Impl {
             source.width,
             source.height,
             config.jersey_roi_mode,
-            has_pose[index] ? &fresh_poses[index] : nullptr);
+            has_pose[index] ? &fresh_poses[index] : nullptr,
+            pose_topology);
         if (!crop) {
           if (crop.reason == JerseyCropReason::kInsufficientPose)
             ++counters.jersey_pose_skipped;
@@ -521,9 +533,7 @@ struct PlayerAnalyticsProcessor::Impl {
         // A planned current pose can invalidate a previously ready history.
         if (state.history.window_end() == state.attempted_window ||
             !state.history.WriteTensor(
-                frame->buf_pts,
-                host_action_tensor + batch_count * ActionHistory::kTensorFloats,
-                ActionHistory::kTensorFloats))
+                frame->buf_pts, host_action_tensor + batch_count * action_tensor_floats, action_tensor_floats))
           continue;
         source.scheduler.MarkAttempt(Feature::kAction, id);
         state.attempted_window = state.history.window_end();
@@ -535,13 +545,14 @@ struct PlayerAnalyticsProcessor::Impl {
       PA_RETURN_IF_ERROR(Cuda(cudaMemcpyAsync(
           action->input(),
           host_action_tensor,
-          batch_count * ActionHistory::kTensorFloats * sizeof(float),
+          batch_count * action_tensor_floats * sizeof(float),
           cudaMemcpyHostToDevice,
           stream)));
       PA_RETURN_IF_ERROR(action->Enqueue(batch_count, stream));
       ++counters.action_enqueues;
       submitted(batch_count);
-      PA_RETURN_IF_ERROR(Cuda(ReduceAction(action->output(0), batch_count, device_actions, stream)));
+      PA_RETURN_IF_ERROR(
+          Cuda(ReduceAction(action->output(0), batch_count, device_actions, stream, action->manifest().labels.size())));
       PA_RETURN_IF_ERROR(Cuda(cudaMemcpyAsync(
           host_actions, device_actions, batch_count * sizeof(ActionObservation), cudaMemcpyDeviceToHost, stream)));
       PA_RETURN_IF_ERROR(fence.Finish());
@@ -720,6 +731,8 @@ absl::StatusOr<std::unique_ptr<PlayerAnalyticsProcessor>> PlayerAnalyticsProcess
     if (!engine.ok())
       return engine.status();
     impl->pose = std::move(*engine);
+    impl->pose_topology =
+        impl->pose->manifest().topology_id == "harpet18" ? PoseTopology::kHarpet18 : PoseTopology::kCoco17;
     PA_RETURN_IF_ERROR(
         Cuda(cudaMalloc(reinterpret_cast<void**>(&impl->device_affines), config.batch_size * sizeof(PoseAffine))));
     PA_RETURN_IF_ERROR(
@@ -750,13 +763,16 @@ absl::StatusOr<std::unique_ptr<PlayerAnalyticsProcessor>> PlayerAnalyticsProcess
     if (!engine.ok())
       return engine.status();
     impl->action = std::move(*engine);
+    if (impl->action->manifest().topology_id != impl->pose->manifest().topology_id)
+      return absl::InvalidArgumentError("pose and action model topologies must match");
+    impl->action_tensor_floats = ActionHistory(impl->pose_topology).tensor_floats();
     PA_RETURN_IF_ERROR(Cuda(
         cudaMalloc(reinterpret_cast<void**>(&impl->device_actions), config.batch_size * sizeof(ActionObservation))));
     PA_RETURN_IF_ERROR(Cuda(
         cudaMallocHost(reinterpret_cast<void**>(&impl->host_actions), config.batch_size * sizeof(ActionObservation))));
     PA_RETURN_IF_ERROR(Cuda(cudaMallocHost(
         reinterpret_cast<void**>(&impl->host_action_tensor),
-        config.batch_size * ActionHistory::kTensorFloats * sizeof(float))));
+        config.batch_size * impl->action_tensor_floats * sizeof(float))));
   }
   if (config.team.enabled) {
     auto engine = NativeEngine::Load(config.team.bundle, ModelFeature::kTeam, gpu_id, config.batch_size);

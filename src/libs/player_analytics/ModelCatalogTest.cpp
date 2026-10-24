@@ -8,13 +8,16 @@
 namespace pa = hm::player_analytics;
 
 int main(int argc, char** argv) {
-  if (argc != 6)
+  if (argc != 8)
     return 1;
-  const char* features[] = {"pose", "jersey", "action", "reid", "team"};
-  for (int index = 0; index < 5; ++index) {
-    const std::string id = (index == 3 || index == 4)
-        ? "reidentificationnet-deployable-v1.2"
-        : std::string(pa::DefaultModelId(features[index]));
+  // Argument order follows the data list in BUILD.bazel: the four defaults,
+  // team, then the two hockey models that are selectable but not default.
+  const char* features[] = {"pose", "jersey", "action", "reid", "team", "pose", "action"};
+  for (int index = 0; index < 7; ++index) {
+    const std::string id = (index == 3 || index == 4) ? "reidentificationnet-deployable-v1.2"
+        : index == 5                                  ? "rtmpose-m-harpet18-256x192"
+        : index == 6                                  ? "stgcnpp-harpet18-actions4"
+                                                      : std::string(pa::DefaultModelId(features[index]));
     const auto* model = pa::FindModel(features[index], id);
     if (!model)
       return 2;
@@ -48,5 +51,8 @@ int main(int argc, char** argv) {
   if (pa::DefaultModelId("reid") != "deepstream" || !pa::FindModel("reid", "deepstream") ||
       pa::FindModel("pose", "reidentificationnet-deployable-v1.2"))
     return 7;
+  if (pa::ModelsForFeature("pose").size() != 2 || pa::ModelsForFeature("action").size() != 2 ||
+      !pa::ModelsForFeature("unknown").empty())
+    return 8;
   return 0;
 }

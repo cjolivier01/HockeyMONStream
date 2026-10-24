@@ -1,0 +1,15 @@
+# Apply with the ordinary hockey app configuration. Models prepare on first use.
+pipeline:
+  player-analytics:
+    pose:
+      enable: 1
+      model: rtmpose-m-harpet18-256x192
+      rate-hz: 10
+      confidence-threshold: 0.3
+    action:
+      enable: 1
+      model: stgcnpp-harpet18-actions4
+      rate-hz: 3
+      confidence-threshold: 0.5
+    draw-pose: 1
+    draw-actions: 1

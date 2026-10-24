@@ -113,6 +113,7 @@ cudaError_t ReduceAction(
     const float* device_logits,
     size_t batch,
     ActionObservation* device_results,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    size_t labels = kActionLabels);
 
 } // namespace hm::player_analytics
