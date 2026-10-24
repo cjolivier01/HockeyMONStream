@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
     Check(check({video}).ok(), check({video}).ToString());
     for (const auto* unsupported :
          {"pipeline.hmaudio.enable=1",
-          "pipeline.hmplaycropper.show-scoreboard=1",
+
           "pipeline.tracker.enable=0",
           "pipeline.player-analytics.pose.enable=true",
           "plot.plot_individual_player_tracking=true",

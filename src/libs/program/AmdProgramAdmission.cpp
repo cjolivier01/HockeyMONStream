@@ -86,11 +86,6 @@ absl::Status ValidateAmdProgramAdmission(const config::ProgramConfiguration& con
           name == "nvds-analytics")
         reject({"pipeline." + name + ".enable"}, name.c_str());
     }
-    reject(
-        {"pipeline.hmplaycropper.show-scoreboard",
-         "pipeline.hmplaycropper.properties.show-scoreboard",
-         "pipeline.hmplaycropper.private-properties.show-scoreboard"},
-        "scoreboard extraction");
     reject({"pipeline.tracker.reid-enable"}, "appearance reassociation");
     for (const auto* feature : {"pose", "jersey", "action"})
       reject({std::string("pipeline.player-analytics.") + feature + ".enable"}, "player analytics");

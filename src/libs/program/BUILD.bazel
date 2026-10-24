@@ -5,6 +5,7 @@ package(default_visibility = ["//visibility:public"])
 cc_library(
     name = "render_settings",
     hdrs = ["ProgramRenderSettings.h"],
+    deps = ["//src/libs/scoreboard:plan"],
     include_prefix = "hstream/src/libs/program",
 )
 
@@ -84,7 +85,7 @@ cc_library(
     name = "gpu_headers",
     hdrs = ["ProgramGpu.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = [":frame_geometry", "//src/libs/gpu:image", "//src/libs/gpu:runtime"],
+    deps = [":frame_geometry", "//src/libs/gpu:image", "//src/libs/gpu:runtime", "//src/libs/scoreboard:plan"],
 )
 
 gpu_library(
@@ -286,4 +287,19 @@ cc_test(
     name = "file_output_test",
     srcs = ["ProgramFileOutputTest.cpp"],
     deps = [":file_output"],
+)
+
+cc_library(
+    name = "scoreboard_config",
+    srcs = ["ProgramScoreboardConfig.cpp"],
+    hdrs = ["ProgramScoreboardConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_layers", "//src/libs/common:config_path", "//src/libs/scoreboard:plan"],
+)
+cc_test(
+    name = "scoreboard_config_test",
+    srcs = ["ProgramScoreboardConfigTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)", "$(location //configs:ds_hockey_app_config.yaml)"],
+    data = ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml"],
+    deps = [":scoreboard_config"],
 )

@@ -278,6 +278,99 @@ void TestYuv(bool ten_bit, bool full_range, float kr, float kb, cudaStream_t str
   bad.color.uv_range = std::numeric_limits<float>::quiet_NaN();
   Check(RenderProgramYuv(image, bad, t, 0, false, 0, stream) == cudaErrorInvalidValue, "nonfinite YUV matrix rejected");
 }
+void TestScoreboard(bool ten_bit, cudaStream_t stream) {
+  constexpr int sw = 32, sh = 24, ow = 64, oh = 32;
+  constexpr size_t pitch = 160;
+  std::vector<cv::float16_t> source(sw * sh * 4);
+  for (int y = 0; y < sh; ++y)
+    for (int x = 0; x < sw; ++x) {
+      const size_t index = (y * sw + x) * 4;
+      source[index] = cv::float16_t(10 + x * 4);
+      source[index + 1] = cv::float16_t(20 + y * 7);
+      source[index + 2] = cv::float16_t(3 + x * 2 + y);
+      source[index + 3] = cv::float16_t(0); // Video alpha must not erase the scoreboard.
+    }
+  Buffer input(source.size() * sizeof(cv::float16_t)), luma(pitch * oh + 32), chroma(pitch * oh / 2 + 32);
+  Gpu(cudaMemcpyAsync(
+      input.data, source.data(), source.size() * sizeof(cv::float16_t), cudaMemcpyHostToDevice, stream));
+  Gpu(cudaMemsetAsync(luma.data, 0xa5, pitch * oh + 32, stream));
+  Gpu(cudaMemsetAsync(chroma.data, 0xa5, pitch * oh / 2 + 32, stream));
+  const Image image{input.data, nullptr, sw * 8, 0, sw, sh, PixelFormat::kRgba16Float};
+  const float maximum = ten_bit ? 1023 : 255;
+  const YuvEncoding color{.2126f, .0722f, 0, maximum, ten_bit ? 512.f : 128.f, maximum};
+  const YuvOutput output{
+      luma.data, chroma.data, pitch, pitch, ow, oh, ten_bit ? PixelFormat::kP010 : PixelFormat::kNv12, color};
+  const FrameTransformGeometry transform{hm::BBox(0, 0, sw, sh), hm::Point{0, 0}, hm::BBox(4, 4, 28, 20), 0};
+  const auto made = hm::scoreboard::MakePlan(
+      {{{2, 2}, {26, 3}, {25, 19}, {3, 18}}}, sw, sh, ow, oh, 25, 17, hm::scoreboard::Position::kUpperRight);
+  Check(made.ok(), made.status().ToString().c_str());
+  const auto plan = *made;
+  Gpu(RenderProgramYuv(image, output, transform, 0, false, 1.3f, stream, &plan));
+  std::vector<uint8_t> ys(pitch * oh + 32), uvs(pitch * oh / 2 + 32);
+  Gpu(cudaMemcpyAsync(ys.data(), luma.data, ys.size(), cudaMemcpyDeviceToHost, stream));
+  Gpu(cudaMemcpyAsync(uvs.data(), chroma.data, uvs.size(), cudaMemcpyDeviceToHost, stream));
+  Gpu(cudaStreamSynchronize(stream));
+  const auto code = [&](const std::vector<uint8_t>& bytes, int x, int y) {
+    const auto* row = bytes.data() + y * pitch;
+    return ten_bit ? int(reinterpret_cast<const uint16_t*>(row)[x] >> 6) : int(row[x]);
+  };
+  const auto expected = [&](int x, int y) {
+    double sx = 4. + double(x) / ow * 24, sy = 4. + double(y) / oh * 16;
+    double gain = exposure_gain(1.3f);
+    if (x >= plan.left && x < plan.left + plan.width && y < plan.height) {
+      const double px = x - plan.left, py = y;
+      const auto* h = plan.inverse;
+      const double d = h[6] * px + h[7] * py + h[8];
+      sx = (h[0] * px + h[1] * py + h[2]) / d;
+      sy = (h[3] * px + h[4] * py + h[5]) / d;
+      gain = 1; // Scoreboard samples the original panorama after crop tone.
+    }
+    const double r = std::clamp((10 + sx * 4) * gain, 0., 255.) / 255;
+    const double g = std::clamp((20 + sy * 7) * gain, 0., 255.) / 255;
+    const double b = std::clamp((3 + sx * 2 + sy) * gain, 0., 255.) / 255;
+    const double ycode = color.kr * r + (1 - color.kr - color.kb) * g + color.kb * b;
+    return std::array<double, 3>{
+        maximum * ycode,
+        color.uv_offset + maximum * (b - ycode) / (2 * (1 - color.kb)),
+        color.uv_offset + maximum * (r - ycode) / (2 * (1 - color.kr))};
+  };
+  for (int y = 0; y < oh; ++y)
+    for (int x = 0; x < ow; ++x)
+      Check(std::abs(code(ys, x, y) - std::lround(expected(x, y)[0])) <= 1, "Scoreboard luma/untouched crop mismatch");
+  for (int y = 0; y < oh; y += 2)
+    for (int x = 0; x < ow; x += 2)
+      for (int c = 1; c <= 2; ++c) {
+        double mean = 0;
+        for (int j = 0; j < 2; ++j)
+          for (int i = 0; i < 2; ++i)
+            mean += expected(x + i, y + j)[c] / 4;
+        Check(std::abs(code(uvs, x + c - 1, y / 2) - std::lround(mean)) <= 1, "Scoreboard mixed-block chroma mismatch");
+      }
+  for (const auto* bytes : {&ys, &uvs}) {
+    const size_t rows = (bytes->size() - 32) / pitch;
+    for (size_t y = 0; y < rows; ++y)
+      Check(
+          std::all_of(
+              bytes->begin() + y * pitch + ow * (ten_bit ? 2 : 1),
+              bytes->begin() + (y + 1) * pitch,
+              [](uint8_t value) { return value == 0xa5; }),
+          "Scoreboard overwrote pitch padding");
+    Check(
+        std::all_of(bytes->end() - 32, bytes->end(), [](uint8_t value) { return value == 0xa5; }),
+        "Scoreboard overwrote guard");
+  }
+  auto invalid = plan;
+  invalid.source_width += 1;
+  Check(
+      RenderProgramYuv(image, output, transform, 0, false, 0, stream, &invalid) == cudaErrorInvalidValue,
+      "Scoreboard accepted stale source geometry");
+  invalid = plan;
+  invalid.inverse[8] = std::numeric_limits<float>::quiet_NaN();
+  Check(
+      RenderProgramYuv(image, output, transform, 0, false, 0, stream, &invalid) == cudaErrorInvalidValue,
+      "Scoreboard accepted malformed transform");
+}
+
 } // namespace
 int main() {
   try {
@@ -299,7 +392,9 @@ int main() {
         TestYuv(ten_bit, full, .2126, .0722, stream.value);
         TestYuv(ten_bit, full, .299, .114, stream.value);
       }
-    std::cout << "8 YUV output and 18 Program crop/rotation/tone format cases passed\n";
+    TestScoreboard(false, stream.value);
+    TestScoreboard(true, stream.value);
+    std::cout << "2 scoreboard, 8 YUV output and 21 Program crop/rotation/tone format cases passed\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

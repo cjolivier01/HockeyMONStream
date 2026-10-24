@@ -250,7 +250,8 @@ absl::Status AmdProgramProcessor::Render(
         settings.shadow_lift_percent,
         settings.lift_shadow_black_point,
         settings.exposure,
-        impl.stream));
+        impl.stream,
+        settings.scoreboard ? &*settings.scoreboard : nullptr));
     Status(destination->Complete());
     impl.retired = false;
     return absl::OkStatus();

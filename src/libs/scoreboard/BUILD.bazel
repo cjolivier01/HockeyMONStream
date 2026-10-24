@@ -63,3 +63,12 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
 )
+
+cc_library(
+    name = "plan",
+    srcs = ["ScoreboardPlan.cpp"],
+    hdrs = ["ScoreboardPlan.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":placement", "@opencv_linux//:opencv", "@com_google_absl//absl/status:statusor"],
+)

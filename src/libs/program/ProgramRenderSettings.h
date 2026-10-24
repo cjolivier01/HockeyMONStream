@@ -1,5 +1,8 @@
 #pragma once
 
+#include <optional>
+#include "hstream/src/libs/scoreboard/ScoreboardPlan.h"
+
 namespace hm::program {
 // Resolved rendering controls, shared independently of any GPU SDK.
 struct ProgramRenderSettings {
@@ -8,5 +11,6 @@ struct ProgramRenderSettings {
   float shadow_lift_percent;
   bool lift_shadow_black_point;
   float exposure;
+  std::optional<scoreboard::Plan> scoreboard;
 };
 } // namespace hm::program

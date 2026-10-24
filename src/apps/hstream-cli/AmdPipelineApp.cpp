@@ -25,6 +25,7 @@
 #include "hstream/src/libs/program/ProgramFileOutput.h"
 #include "hstream/src/libs/program/ProgramLaunchConfig.h"
 #include "hstream/src/libs/program/ProgramOutputConfig.h"
+#include "hstream/src/libs/program/ProgramScoreboardConfig.h"
 #include "hstream/src/libs/program/VaProgramSink.h"
 
 namespace {
@@ -104,7 +105,9 @@ void Run(const hm::program::AmdPipelineOptions& args) {
       args.application.empty() ? root / "ds_hockey_app_config.yaml" : std::filesystem::path(args.application),
       args.options));
   Status(hm::program::ValidateAmdProgramAdmission(launch.configuration));
-  const auto output_config = Take(hm::program::ResolveProgramOutputConfig(launch.configuration));
+  auto output_config = Take(hm::program::ResolveProgramOutputConfig(launch.configuration));
+  const auto scoreboard = Take(
+      hm::program::ResolveProgramScoreboardConfig(launch.configuration, output_config.width, output_config.height));
   const auto start = args.start.value_or(output_config.start_ns);
   const auto limit = args.limit;
   std::unique_ptr<hm::program::ProgramFileOutput> file;
@@ -166,6 +169,14 @@ void Run(const hm::program::AmdPipelineOptions& args) {
        launch.amd.compact_stitch_workspace,
        launch.configuration.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
        launch.configuration.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>()}));
+  if (scoreboard)
+    output_config.render.scoreboard = Take(hm::program::PrepareProgramScoreboard(
+        *scoreboard,
+        processor->generation(),
+        processor->width(),
+        processor->height(),
+        output_config.width,
+        output_config.height));
   GstVideoInfo output_info{};
   Require(
       gst_video_info_set_format(&output_info, GST_VIDEO_FORMAT_P010_10LE, output_config.width, output_config.height),

@@ -87,6 +87,32 @@ __device__ void StoreCode(void* row, int x, float value, bool ten_bit) {
   else
     static_cast<uint8_t*>(row)[x] = code;
 }
+__device__ float4 ScoreboardPixel(const gpu::Image& input, int x, int y, const scoreboard::Plan& plan, float4 base) {
+  if (!plan.width || x < plan.left || y < plan.top || x - plan.left >= plan.width || y - plan.top >= plan.height)
+    return base;
+  x -= plan.left;
+  y -= plan.top;
+  const auto* h = plan.inverse;
+  const float denominator = h[6] * x + h[7] * y + h[8];
+  const float sx = (h[0] * x + h[1] * y + h[2]) / denominator;
+  const float sy = (h[3] * x + h[4] * y + h[5]) / denominator;
+  if (!isfinite(sx) || !isfinite(sy) || sx < -.01f || sy < -.01f || sx > input.width - 1 + .01f ||
+      sy > input.height - 1 + .01f)
+    return base;
+  // Only numerical roundoff at a validated image edge is clamped. No source
+  // padding or transparent decoder alpha participates in scoreboard sampling.
+  const float fx = gpu::Clamp(sx, 0, input.width - 1), fy = gpu::Clamp(sy, 0, input.height - 1);
+  const int x0 = static_cast<int>(floorf(fx)), y0 = static_cast<int>(floorf(fy));
+  const int x1 = x0 + 1 < input.width ? x0 + 1 : x0;
+  const int y1 = y0 + 1 < input.height ? y0 + 1 : y0;
+  const auto a = gpu::Pixel(input, x0, y0), b = gpu::Pixel(input, x1, y0);
+  const auto c = gpu::Pixel(input, x0, y1), d = gpu::Pixel(input, x1, y1);
+  return make_float4(
+      gpu::Mix(a.x, b.x, c.x, d.x, fx - x0, fy - y0),
+      gpu::Mix(a.y, b.y, c.y, d.y, fx - x0, fy - y0),
+      gpu::Mix(a.z, b.z, c.z, d.z, fx - x0, fy - y0),
+      255);
+}
 __global__ void RenderYuv(
     gpu::Image input,
     YuvOutput output,
@@ -94,7 +120,8 @@ __global__ void RenderYuv(
     float gamma,
     float amount,
     bool lift_black,
-    float gain) {
+    float gain,
+    scoreboard::Plan overlay) {
   const int x = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
   const int y = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
   if (x >= output.width || y >= output.height)
@@ -105,7 +132,8 @@ __global__ void RenderYuv(
   for (int j = 0; j < 2; ++j) {
     auto* row = static_cast<uint8_t*>(output.y) + (y + j) * output.y_pitch;
     for (int i = 0; i < 2; ++i) {
-      const auto p = Sample(input, x + i, y + j, output.width, output.height, t, 4, gamma, amount, lift_black, gain);
+      const auto base = Sample(input, x + i, y + j, output.width, output.height, t, 4, gamma, amount, lift_black, gain);
+      const auto p = ScoreboardPixel(input, x + i, y + j, overlay, base);
       const float r = gpu::Clamp(p.x, 0, 255) / 255;
       const float g = gpu::Clamp(p.y, 0, 255) / 255;
       const float b = gpu::Clamp(p.z, 0, 255) / 255;
@@ -179,7 +207,13 @@ cudaError_t RenderProgramYuv(
     float lift,
     bool lift_black,
     float exposure,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    const scoreboard::Plan* overlay) {
+  if (overlay &&
+      (!scoreboard::ValidatePlan(*overlay) || overlay->source_width != input.width ||
+       overlay->source_height != input.height || overlay->output_width != output.width ||
+       overlay->output_height != output.height))
+    return cudaErrorInvalidValue;
   const gpu::Image destination{
       output.y,
       output.uv,
@@ -229,7 +263,14 @@ cudaError_t RenderProgramYuv(
       t.angle};
   const dim3 block(16, 16), grid((output.width / 2 + 15) / 16, (output.height / 2 + 15) / 16);
   RenderYuv<<<grid, block, 0, stream>>>(
-      input, output, transform, shadow_lift_gamma(lift), shadow_lift_amount(lift), lift_black, exposure_gain(exposure));
+      input,
+      output,
+      transform,
+      shadow_lift_gamma(lift),
+      shadow_lift_amount(lift),
+      lift_black,
+      exposure_gain(exposure),
+      overlay ? *overlay : scoreboard::Plan{});
   return cudaGetLastError();
 }
 } // namespace hm::playcropper

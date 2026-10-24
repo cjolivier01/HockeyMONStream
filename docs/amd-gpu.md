@@ -3,8 +3,8 @@
 Status: native HIP kernels, VA/HIP video interoperability and MIGraphX inference
 work on AMD. A ROCm build of `hstream-cli` now owns the saved-calibration Program
 video path: stereo decode, stitching, detection, rink filtering, geometric
-tracking, camera crop, GL preview and HEVC/MP4 output. Desktop integration, audio,
-scoreboard and other optional application features remain unfinished. This is
+tracking, camera crop, saved scoreboard, GL preview and HEVC/MP4 output. Desktop integration, audio
+and other optional application features remain unfinished. This is
 not yet a complete AMD application release.
 
 ## Implemented paths
@@ -631,10 +631,10 @@ applied to the Program output after detection. This does not yet reproduce
 pre-inference tone changes from the native high-bit stitching path.
 
 The supported command is currently explicit video-only playback. `AmdProgramAdmission`
-rejects enabled audio, scoreboard, analytics, diagnostic overlays, telemetry and
+rejects enabled audio, analytics, diagnostic overlays, telemetry and
 other known unconnected stages before preparing the GPU. It also rejects disabling
-a mandatory Program stage. Disable audio and scoreboard explicitly while qualifying
-this increment:
+a mandatory Program stage. Disable audio explicitly for current playback. The
+example also disables scoreboard so games without a saved polygon can run:
 
 ```bash
 bazelisk build --config=opt --config=rocm //src/apps/hstream-cli:hstream-cli
@@ -665,7 +665,7 @@ the completed file is already published.
 The CLI accepts one application YAML and rejects two-stage calibration, unknown
 arguments, unsupported sinks and malformed time/preview arguments. Time limits
 advance from completed Program frames. Runtime stdin commands, desktop preview
-channel routing, seek/pause acknowledgments, audio, scoreboard, player overlays,
+channel routing, seek/pause acknowledgments, audio, interactive scoreboard selection, player overlays,
 telemetry, managed jobs and automatic calibration are still integration work.
 Tracker association uses the explicit AMD geometric settings; it does not run
 NvDCF's appearance model. Model compilation is repeated at startup until the
@@ -689,3 +689,43 @@ checks pass after the fixes, as does the full local x86 build. The corrected
 and centered chroma. An offline 960-pixel still was inspected; that bounded
 validation readback is outside playback. The synchronized baseline companion is
 HockeyMON PR #219 at `c978e984`; existing default values remain unchanged.
+
+## Saved scoreboard on AMD
+
+`ProgramScoreboardConfig` resolves the enabled flag, saved polygon, dimensions,
+scale and placement by configuration layer, including native property bags. The
+shared baseline now explicitly supplies `rink.scoreboard.position: upper-left`.
+Disabled/all-zero polygons allocate nothing. Enabled overlays require a saved
+polygon and its `rink.stitched_output_generation`; preparation compares that
+identity with the processor's loaded generation before producing frames. Missing
+or stale geometry fails startup. Interactive selection and live placement/reselect
+commands still need desktop integration. Current AMD sampling requires bilinear
+filtering and zero sharpening; other requests fail explicitly.
+
+`scoreboard/ScoreboardPlan` preserves the native least-relative-change aspect
+adjustment and left/center/right placement. It validates a convex polygon inside
+the current panorama and a finite projective mapping without a pole in the
+output rectangle. `RenderProgramYuv` samples that rectangle directly from the
+owned panorama while producing NV12/P010 Program output. Original video alpha
+cannot erase the overlay. The scoreboard follows the native ordering after
+Program crop/tone and therefore samples the original panorama's colors. There
+is no extra video allocation, upload, download, map, file access or stream wait
+per frame. The direct homography uses one bilinear reconstruction, whereas the
+NVIDIA scoreboard first resizes a cropped image and then warps it; subpixel
+values are not claimed identical to that two-pass reconstruction.
+
+GPU tests use a half-float synthetic panorama and independently verify every
+luma/chroma output value, including mixed overlay/background 2x2 chroma blocks,
+zero source alpha, unaffected crop pixels, row padding and guards. They also
+reject stale dimensions and nonfinite matrices. CPU tests cover generation
+binding, native aliases/layers, disabled sentinel, baseline reset, malformed
+polygons, sizing and all placement modes. Existing NVIDIA scoreboard tests
+remain unchanged.
+
+The real AMD CLI export with scoreboard enabled completed 120 frames and 2,719
+track observations. Its atomic MP4 is 3840×2160 HEVC Main10, 2.002 seconds; a
+bounded offline still confirms the saved scoreboard in the upper-left. Five
+focused HIP tests, six NVIDIA-build tests (including the local V100 kernel test
+and existing scoreboard interpolation regression), and the full x86 build pass.
+Both scoreboard reviews found no necessary fixes. ARM/Jetson validation retains
+the missing local sysroot/native ARM64 host and unreachable `stubby` limitations.

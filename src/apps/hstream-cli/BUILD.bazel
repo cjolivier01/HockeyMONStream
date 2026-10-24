@@ -125,6 +125,7 @@ cc_binary(
             ":amd_pipeline_options", "//src/libs/program:amd_program_admission", "//src/libs/program:file_output",
             "//src/libs/program:amd_program_processor", "//src/libs/program:launch_config",
             "//src/libs/program:detector_settings", "//src/libs/program:output_config",
+            "//src/libs/program:scoreboard_config",
             "//src/libs/program:va_program_sink", "//src/libs/gpu/vaapi:va_stereo_video",
             "//src/libs/common:baseline_config", "//src/libs/common:config_path",
             "//src/libs/common:process_diagnostics", "//src/libs/common:utils_base",
