@@ -56,6 +56,11 @@ class VaProgramSink {
   // publication is permitted only after this succeeds.
   absl::Status Finish();
   absl::Status SetWindow(uintptr_t window);
+  // Call between submissions. PAUSED freezes the shared audio/video clock;
+  // preroll may remain pending until resume supplies the next input. No waits
+  // or application operation deadlines remain active after this returns.
+  absl::Status SetPaused(bool paused);
+  absl::Status SetAudioMuted(bool muted);
   void Cancel() noexcept;
   const GstVideoInfo& video_info() const;
 

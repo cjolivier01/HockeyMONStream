@@ -28,7 +28,8 @@ int main(int argc, char** argv) {
         settings->gpu_id == 0 && settings->reader_queue_frames == 2 && settings->output_pool_frames == 8 &&
             settings->operation_timeout_ns == 30000000000ULL && settings->cancellation_poll_ns == 10000000 &&
             settings->maximum_inference_io_bytes == 268435456 && settings->maximum_encoded_packet_bytes == 67108864 &&
-            settings->compact_stitch_workspace && settings->tracker.maximum_tracks == 512,
+            settings->compact_stitch_workspace && settings->tracker.maximum_tracks == 512 &&
+            settings->maximum_runtime_command_bytes == 8192,
         "Shipped resource bounds changed");
     auto override = YAML::Clone(baseline->values);
     override["runtime"]["amd"]["gpu_id"] = 1;

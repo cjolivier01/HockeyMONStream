@@ -42,6 +42,7 @@ absl::StatusOr<AmdProgramSettings> ResolveAmdProgramSettings(const YAML::Node& c
       return absl::InvalidArgumentError("runtime.amd.cancellation_poll_ms exceeds operation_timeout_ms");
     result.maximum_inference_io_bytes = Integer<size_t>(config, "maximum_inference_io_bytes");
     result.maximum_encoded_packet_bytes = Integer<int>(config, "maximum_encoded_packet_bytes");
+    result.maximum_runtime_command_bytes = Integer<size_t>(config, "maximum_runtime_command_bytes");
     result.compact_stitch_workspace = Required(config, "compact_stitch_workspace").as<bool>();
     const bool cache_enabled = Required(config, "model_cache.enable").as<bool>();
     auto cache_directory = Required(config, "model_cache.directory").as<std::string>();

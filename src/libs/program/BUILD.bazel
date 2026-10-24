@@ -3,6 +3,19 @@ load("//bazel:gpu_library.bzl", "gpu_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "runtime_control",
+    srcs = ["ProgramRuntimeControl.cpp"],
+    hdrs = ["ProgramRuntimeControl.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+cc_test(
+    name = "runtime_control_test",
+    srcs = ["ProgramRuntimeControlTest.cpp"],
+    deps = [":runtime_control"],
+)
+
+cc_library(
     name = "audio_config",
     srcs = ["ProgramAudioConfig.cpp"],
     hdrs = ["ProgramAudioConfig.h"],

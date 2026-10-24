@@ -16,6 +16,7 @@ struct AmdProgramSettings {
   unsigned reader_queue_frames, output_pool_frames;
   uint64_t operation_timeout_ns, cancellation_poll_ns;
   size_t maximum_inference_io_bytes, maximum_encoded_packet_bytes;
+  size_t maximum_runtime_command_bytes;
   bool compact_stitch_workspace;
   std::optional<gpu::MigraphxCacheConfig> model_cache;
   tracking::TrackerConfig tracker;

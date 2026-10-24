@@ -542,7 +542,7 @@ Earlier recordings described above had ten-bit pixels but that incorrect profile
 label; rebuilt output reports both `Main 10` and `yuv420p10le`.
 
 The configured qualifier and normal ROCm CLI share these components. Desktop
-routing, live controls and installed AMD discovery
+routing, seek/overlay controls and installed AMD discovery
 remain integration work.
 
 Configured validation on the RX 9060 XT: 120 raw stereo pairs from
@@ -664,8 +664,8 @@ the completed file is already published.
 
 The CLI accepts one application YAML and rejects two-stage calibration, unknown
 arguments, unsupported sinks and malformed time/preview arguments. Time limits
-advance from completed Program frames. Runtime stdin commands, desktop preview
-channel routing, seek/pause acknowledgments, interactive scoreboard selection, player overlays,
+advance from completed Program frames. Desktop preview channel routing, seek
+acknowledgments, interactive scoreboard selection, player overlays,
 telemetry, managed jobs and automatic calibration are still integration work.
 Tracker association uses the explicit AMD geometric settings; it does not run
 NvDCF's appearance model. Compiled-model reuse follows `runtime.amd.model_cache`.
@@ -841,3 +841,28 @@ removes preparation directories; SIGKILL can leave a private `.prepare-*`
 directory, which can be removed when no preparation is running. There is no
 automatic eviction: users may remove old entries while playback is stopped.
 The byte limit is per program, not a total cache quota.
+
+## AMD playback runtime controls
+
+The CLI consumes newline-terminated stdin commands between complete audio/video
+submissions through `program/ProgramRuntimeControl`. `@process-pause N` and
+`@process-resume N` implement the desktop generation protocol: N must be a
+positive integer, a new pause advances the generation, and resume must match it.
+A successful output state change precedes the `HSTREAM_PROCESS_PAUSE` acknowledgment.
+All output pipelines pause their clocks, and the producer waits without any
+source/audio/output operation deadline in flight. The desktop may then SIGSTOP
+the process until SIGCONT followed by the matching resume command. Preroll can
+remain pending while paused; resume supplies the remaining input.
+
+`@set-render-audio-muted 0|1` changes only preview volume and emits the existing
+`HSTREAM_RENDER_AUDIO` acknowledgment with its branch count. Archive PCM and
+encoded audio remain unchanged. `@quit` or `q` cancels the run without publishing
+a partial output. SIGINT/SIGTERM also interrupt a paused control waiter.
+
+`runtime.amd.maximum_runtime_command_bytes` bounds both retained line storage
+and input work per unpaused service call. Overlong/malformed commands report
+an error; a truncated line is never executed at EOF. Ordinary stdin EOF leaves
+playback running; EOF while paused cancels because no resume can arrive.
+Controls become active after the first completed pair, so model preparation is
+not acknowledged as a paused playback graph. Seek, preview-channel routing and
+other native runtime mutations are still unconnected.

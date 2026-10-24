@@ -48,6 +48,7 @@ struct VaProgramSink::Impl {
   GstClockTime previous{GST_CLOCK_TIME_NONE};
   int64_t audio_samples{};
   bool retired{false}, eos_sent{false}, finished{false}, audio_finalized{false};
+  bool paused{false};
   std::atomic<bool> cancelled{false};
   ~Impl() {
     if (pipeline)
@@ -304,6 +305,11 @@ absl::StatusOr<std::unique_ptr<VaProgramSink>> VaProgramSink::Create(const VaPro
 }
 absl::StatusOr<GstBuffer*> VaProgramSink::Acquire() {
   auto& impl = *impl_;
+  const auto status = impl.Poll();
+  if (!status.ok())
+    return status;
+  if (impl.paused)
+    return absl::FailedPreconditionError("Cannot acquire Program output while paused");
   const auto deadline = Deadline(impl.config.operation_timeout);
   for (;;) {
     const auto status = impl.Poll();
@@ -327,6 +333,8 @@ absl::Status VaProgramSink::Push(GstBuffer* buffer, GstClockTime time, GstClockT
   const auto status = impl.Poll();
   if (!status.ok())
     return status;
+  if (impl.paused)
+    return absl::FailedPreconditionError("Cannot push Program output while paused");
   if (impl.eos_sent)
     return absl::FailedPreconditionError("Cannot push Program output after EOS");
   if (!buffer || !gst_buffer_is_writable(buffer) || !GST_CLOCK_TIME_IS_VALID(time) ||
@@ -347,6 +355,8 @@ absl::Status VaProgramSink::Finish() {
   const auto status = impl.Poll();
   if (!status.ok())
     return status;
+  if (impl.paused)
+    return absl::FailedPreconditionError("Resume Program output before EOS");
   if (impl.finished)
     return absl::OkStatus();
   if (!impl.eos_sent) {
@@ -380,6 +390,8 @@ absl::Status VaProgramSink::PushAudio(const media::AudioFrame& frame) {
   auto status = impl.Poll();
   if (!status.ok())
     return status;
+  if (impl.paused)
+    return absl::FailedPreconditionError("Cannot push Program audio while paused");
   if (!impl.audio_input || impl.eos_sent)
     return absl::FailedPreconditionError("Program audio requires an active audio input");
   const auto& config = *impl.config.audio;
@@ -427,6 +439,34 @@ absl::Status VaProgramSink::SetWindow(uintptr_t window) {
   if (impl.config.kind != VaProgramSinkKind::kPreview || !window || impl.eos_sent)
     return absl::FailedPreconditionError("An active preview and positive window ID are required");
   gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(impl.sink), window);
+  return absl::OkStatus();
+}
+absl::Status VaProgramSink::SetPaused(bool paused) {
+  auto& impl = *impl_;
+  const auto status = impl.Poll();
+  if (!status.ok())
+    return status;
+  if (impl.eos_sent)
+    return absl::FailedPreconditionError("Cannot pause Program output after EOS");
+  if (paused != impl.paused) {
+    if (gst_element_set_state(impl.pipeline, paused ? GST_STATE_PAUSED : GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
+      return impl.Retire(absl::UnavailableError("Program output refused pause/resume"));
+    impl.paused = paused;
+  }
+  return impl.Poll();
+}
+absl::Status VaProgramSink::SetAudioMuted(bool muted) {
+  auto& impl = *impl_;
+  const auto status = impl.Poll();
+  if (!status.ok())
+    return status;
+  if (impl.config.kind != VaProgramSinkKind::kPreview || !impl.config.audio || impl.eos_sent)
+    return absl::FailedPreconditionError("Mute requires an active Program audio preview");
+  auto* volume = gst_bin_get_by_name(GST_BIN(impl.pipeline), "volume");
+  if (!volume)
+    return impl.Retire(absl::InternalError("Program preview lost its audio volume control"));
+  g_object_set(volume, "mute", muted, nullptr);
+  gst_object_unref(volume);
   return absl::OkStatus();
 }
 void VaProgramSink::Cancel() noexcept {

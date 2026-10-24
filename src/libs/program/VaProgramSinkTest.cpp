@@ -155,7 +155,12 @@ int main(int argc, char** argv) {
       Check(!hm::gpu::MakeVaElement("h265enc", "/missing/render-node"), "Unknown render node fell back to default GPU");
     }
     auto sink = Take(hm::program::VaProgramSink::Create(config));
+    Status(sink->SetPaused(true));
+    Check(!sink->Acquire().ok() && !sink->Finish().ok(), "Paused output accepted submission/EOS");
+    Status(sink->SetPaused(false));
     frames(*sink);
+    Check(!sink->SetPaused(true).ok(), "Finished output accepted pause");
+    Check(!sink->SetAudioMuted(true).ok(), "Discard output accepted preview mute");
     sink.reset();
     {
       auto blocked = Take(hm::program::VaProgramSink::Create(config));
@@ -189,10 +194,31 @@ int main(int argc, char** argv) {
     {
       auto paced = config;
       paced.realtime = true;
+      auto clocked = Take(hm::program::VaProgramSink::Create(paced));
+      for (unsigned i = 0; i < 2; ++i) {
+        Buffer buffer(Take(clocked->Acquire()), gst_buffer_unref);
+        tile.Render(buffer.get(), info);
+        Status(clocked->Push(buffer.release(), i * 500 * GST_MSECOND, 40 * GST_MSECOND));
+      }
+      Status(clocked->SetPaused(true));
+      std::this_thread::sleep_for(std::chrono::milliseconds(600));
+      Status(clocked->SetPaused(false));
+      const auto resumed = std::chrono::steady_clock::now();
+      Status(clocked->Finish());
+      Check(
+          std::chrono::steady_clock::now() - resumed >= std::chrono::milliseconds(250),
+          "Paused wall time consumed the video clock");
+    }
+    {
+      auto paced = config;
+      paced.realtime = true;
       auto waiting = Take(hm::program::VaProgramSink::Create(paced));
       Buffer buffer(Take(waiting->Acquire()), gst_buffer_unref);
       tile.Render(buffer.get(), info);
       Status(waiting->Push(buffer.release(), 5 * GST_SECOND, 40 * GST_MSECOND));
+      Status(waiting->SetPaused(true));
+      std::this_thread::sleep_for(std::chrono::milliseconds(30));
+      Status(waiting->SetPaused(false));
       auto completion = std::async(std::launch::async, [&] { return waiting->Finish(); });
       Check(
           completion.wait_for(std::chrono::milliseconds(30)) == std::future_status::timeout,
@@ -342,6 +368,13 @@ int main(int argc, char** argv) {
       preview.realtime = true;
       preview_sink = Take(hm::program::VaProgramSink::Create(preview));
       for (int64_t i = 0; i < 5; ++i) {
+        if (i == 2) {
+          Status(preview_sink->SetPaused(true));
+          Status(preview_sink->SetAudioMuted(true));
+          std::this_thread::sleep_for(std::chrono::milliseconds(80));
+          Status(preview_sink->SetAudioMuted(false));
+          Status(preview_sink->SetPaused(false));
+        }
         Buffer buffer(Take(preview_sink->Acquire()), gst_buffer_unref);
         tile.Render(buffer.get(), preview.video);
         Status(preview_sink->Push(buffer.release(), i * 40 * GST_MSECOND, 40 * GST_MSECOND));

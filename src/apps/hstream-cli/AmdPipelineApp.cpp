@@ -27,6 +27,7 @@
 #include "hstream/src/libs/program/ProgramFileOutput.h"
 #include "hstream/src/libs/program/ProgramLaunchConfig.h"
 #include "hstream/src/libs/program/ProgramOutputConfig.h"
+#include "hstream/src/libs/program/ProgramRuntimeControl.h"
 #include "hstream/src/libs/program/ProgramScoreboardConfig.h"
 #include "hstream/src/libs/program/VaProgramSink.h"
 
@@ -232,6 +233,36 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   std::signal(SIGTERM, Stop);
   std::signal(SIGINT, Stop);
   Cancellation cancellation(*source, audio.get(), outputs, launch.amd.cancellation_poll_ns);
+  auto control = Take(hm::program::ProgramRuntimeControl::Create(
+      STDIN_FILENO,
+      launch.amd.maximum_runtime_command_bytes,
+      launch.amd.cancellation_poll_ns,
+      {
+          [&](bool paused) {
+            for (const auto& output : outputs) {
+              const auto status = output->SetPaused(paused);
+              if (!status.ok())
+                return status;
+            }
+            return absl::OkStatus();
+          },
+          [&](bool muted) -> absl::StatusOr<size_t> {
+            size_t branches = 0;
+            size_t index = 0;
+            for (const auto& name : args.sinks) {
+              if (name == "RENDER" && sink_audio) {
+                const auto status = outputs[index]->SetAudioMuted(muted);
+                if (!status.ok())
+                  return status;
+                ++branches;
+              }
+              ++index;
+            }
+            return branches;
+          },
+          [](const std::string& message) { g_print("%s", message.c_str()); },
+          [] { return interrupted.load(std::memory_order_relaxed) != 0; },
+      }));
   g_print("HSTREAM_AMD_PREPARATION state=ready\n");
   const auto first = pair->time;
   const auto first_audio_sample = audio ? gst_util_uint64_scale_round(first, audio->format().rate, GST_SECOND) : 0;
@@ -264,6 +295,9 @@ void Run(const hm::program::AmdPipelineOptions& args) {
         completed.observation.tracks.size());
     if (limit && pair->time - first + pair->duration >= *limit)
       break;
+    // No source, audio or output operation is waiting when a pause is
+    // acknowledged. SIGSTOP can therefore never consume their stall budgets.
+    Status(control->Service());
     pair = Take(source->Read());
     if (!pair)
       break;
