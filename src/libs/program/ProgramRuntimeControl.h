@@ -28,6 +28,9 @@ class ProgramRuntimeControl {
     std::function<absl::Status(int64_t, bool, uint64_t)> seek;
     std::function<absl::Status(const std::string&, uint64_t)> preview;
     std::function<absl::Status(const pipeline_internal::PreviewOverlayCommand&)> overlays;
+    // Explicit quit requests may drain completed frames. EOF/cancellation do
+    // not invoke this callback and must not masquerade as an operator stop.
+    std::function<void()> stop;
   };
   static absl::StatusOr<std::unique_ptr<ProgramRuntimeControl>> Create(
       int input_fd,

@@ -38,7 +38,20 @@ namespace {
 static_assert(std::atomic<int>::is_always_lock_free, "Signal cancellation requires lock-free atomics");
 std::atomic<int> interrupted{0};
 void Stop(int signal) {
-  interrupted.store(signal, std::memory_order_relaxed);
+  // SIGINT is the desktop's graceful Stop. SIGTERM (including parent death)
+  // always cancels, and a later SIGINT must never downgrade that cancellation.
+  if (signal == SIGTERM)
+    interrupted.store(signal, std::memory_order_relaxed);
+  else {
+    int running = 0;
+    interrupted.compare_exchange_strong(running, signal, std::memory_order_relaxed);
+  }
+}
+bool DrainRequested() {
+  return interrupted.load(std::memory_order_relaxed) == SIGINT;
+}
+bool AbortRequested() {
+  return interrupted.load(std::memory_order_relaxed) == SIGTERM;
 }
 struct Failure : std::runtime_error {
   absl::Status status;
@@ -67,7 +80,7 @@ class Cancellation {
       : worker_([&, audio, poll] {
           std::unique_lock<std::mutex> lock(mutex_);
           while (!done_) {
-            if (interrupted) {
+            if (AbortRequested()) {
               source.Cancel();
               if (audio)
                 audio->Cancel();
@@ -451,6 +464,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
                 reason ? reason : "");
             return absl::OkStatus();
           },
+          [] { Stop(SIGINT); },
       }));
   g_print("HSTREAM_AMD_PREPARATION state=ready\n");
   if (!args.preview_windows.empty()) {
@@ -458,6 +472,15 @@ void Run(const hm::program::AmdPipelineOptions& args) {
     g_print("HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=1\n", args.preview_active.c_str());
     Status(select_preview(args.preview_active, 1));
   }
+  const auto service_control = [&] {
+    const auto status = control->Service();
+    if (!(absl::IsCancelled(status) && DrainRequested()))
+      Status(status);
+    return !DrainRequested();
+  };
+  // A quit command queued during model preparation must not consume a first frame.
+  if (!service_control())
+    throw Failure(absl::CancelledError("Program stopped before its first completed frame"));
   for (;;) {
     const auto completed =
         Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get()));
@@ -520,19 +543,26 @@ void Run(const hm::program::AmdPipelineOptions& args) {
     // No source, audio or output operation is waiting when a pause is
     // acknowledged. SIGSTOP can therefore never consume their stall budgets.
     repositioned = false;
-    Status(control->Service());
+    if (!service_control())
+      break;
     if (!repositioned)
       pair = Take(source->Read());
     if (!pair)
       break;
   }
-  for (const auto& output : outputs)
+  if (DrainRequested())
+    g_print("HSTREAM_AMD_STOP status=draining frames=%" G_GUINT64_FORMAT "\n", frames);
+  for (const auto& output : outputs) {
+    // A desktop Stop can SIGCONT a process whose output clocks are still
+    // PAUSED. Resume the clocks before waiting for the audio/video mux EOS.
+    Status(output->SetPaused(false));
     Status(output->Finish());
+  }
   publish_preview_ready();
-  if (interrupted)
+  if (AbortRequested())
     throw Failure(absl::CancelledError("Program cancelled before publication"));
   if (file)
-    Status(file->Commit([] { return interrupted.load(std::memory_order_relaxed) != 0; }));
+    Status(file->Commit(AbortRequested));
   g_print(
       "HSTREAM_AMD_COMPLETE frames=%" G_GUINT64_FORMAT " track-observations=%" G_GUINT64_FORMAT "\n", frames, tracks);
 }

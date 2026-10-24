@@ -977,3 +977,13 @@ NVIDIA compositor callers retain BT.709 limited-range encoding. No frame mapping
 readback, extra full-frame image or additional stream wait is introduced. GPU
 uploads contain only bounded drawing commands. All-off rendering allocates no
 overlay GPU resources; capacity failures suppress and report the diagnostic layer.
+
+### Graceful Program Stop
+
+The desktop's SIGINT and explicit stdin `q`/`@quit` stop at a complete audio/video
+frame boundary, resume paused output clocks, and drain every sink through EOS.
+A file is named only after that drain and its AAC edit succeed, so a deliberate
+Stop retains the completed clip. A queued quit before the first frame produces
+no file. SIGTERM, parent death, paused stdin EOF and processing/output failures
+still abort and discard the unnamed output. A later SIGINT cannot downgrade a
+SIGTERM cancellation. Decoder/output waits retain their configured bounds.

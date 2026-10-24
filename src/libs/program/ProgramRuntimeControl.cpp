@@ -24,7 +24,8 @@ absl::StatusOr<std::unique_ptr<ProgramRuntimeControl>> ProgramRuntimeControl::Cr
     uint64_t poll_ns,
     Callbacks callbacks) {
   if (!maximum || !poll_ns || poll_ns > uint64_t(INT64_MAX) || !callbacks.pause || !callbacks.mute || !callbacks.emit ||
-      !callbacks.cancelled || !callbacks.reset_progress || !callbacks.seek || !callbacks.preview || !callbacks.overlays)
+      !callbacks.cancelled || !callbacks.reset_progress || !callbacks.seek || !callbacks.preview ||
+      !callbacks.overlays || !callbacks.stop)
     return absl::InvalidArgumentError("Runtime control requires explicit bounds and callbacks");
   const int fd = fcntl(input_fd, F_DUPFD_CLOEXEC, 0);
   if (fd < 0)
@@ -48,8 +49,10 @@ absl::Status ProgramRuntimeControl::Command(const std::string& line) {
     return absl::OkStatus();
   }
   if (command == "q" || command == "@quit") {
-    if (!(input >> extra))
+    if (!(input >> extra)) {
+      callbacks_.stop();
       return absl::CancelledError("Program stopped by runtime command");
+    }
   }
   input >> value;
   const bool trailing = bool(input >> extra);

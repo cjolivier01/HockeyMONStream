@@ -20,6 +20,7 @@ struct Fixture {
   int writer{-1};
   std::atomic<bool> cancelled{false};
   bool paused{false}, muted{false}, fail_pause{false};
+  bool stopped{false};
   size_t pause_calls{0};
   uint64_t reset_generation{0}, seek_generation{0};
   int64_t seek_position{0};
@@ -78,7 +79,8 @@ struct Fixture {
          [this](const hm::pipeline_internal::PreviewOverlayCommand& command) {
            overlays = command;
            return absl::OkStatus();
-         }});
+         },
+         [this] { stopped = true; }});
     close(pipefd[0]);
     Check(created.ok(), created.status().ToString());
     control = std::move(*created);
@@ -194,7 +196,7 @@ int main() {
       fixture.Start();
       fixture.WaitMessage("status=prepared");
       fixture.cancelled = true;
-      Check(absl::IsCancelled(fixture.Complete()), "paused control ignored cancellation");
+      Check(absl::IsCancelled(fixture.Complete()) && !fixture.stopped, "cancellation became an explicit stop");
     }
     {
       Fixture fixture;
@@ -203,7 +205,7 @@ int main() {
       fixture.WaitMessage("status=prepared");
       close(fixture.writer);
       fixture.writer = -1;
-      Check(absl::IsCancelled(fixture.Complete()), "paused EOF did not stop playback");
+      Check(absl::IsCancelled(fixture.Complete()) && !fixture.stopped, "paused EOF became an explicit stop");
     }
     {
       Fixture fixture;
@@ -216,7 +218,15 @@ int main() {
     {
       Fixture fixture;
       fixture.Send("@quit\n");
-      Check(absl::IsCancelled(fixture.control->Service()), "quit failed");
+      Check(absl::IsCancelled(fixture.control->Service()) && fixture.stopped, "quit failed");
+    }
+    {
+      Fixture fixture;
+      fixture.Send("@process-pause 1\n");
+      fixture.Start();
+      fixture.WaitMessage("status=prepared");
+      fixture.Send("@quit\n");
+      Check(absl::IsCancelled(fixture.Complete()) && fixture.stopped, "paused quit failed");
     }
     {
       Fixture fixture;
