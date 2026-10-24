@@ -50,7 +50,13 @@ absl::StatusOr<AmdPipelineOptions> ParseAmdPipelineOptions(std::vector<std::stri
         {"game-id", 'g', 0, G_OPTION_ARG_STRING, &raw.game, "Saved calibrated game", "ID"},
         {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &raw.applications, "One application YAML", "FILE"},
         {"enable-sources", 0, 0, G_OPTION_ARG_STRING, &raw.sources, "Saved camera chapters", "URI-MULTIPLE"},
-        {"enable-sinks", 0, 0, G_OPTION_ARG_STRING, &raw.sinks, "Program outputs", "FAKE,RENDER,ENCODE_FILE"},
+        {"enable-sinks",
+         0,
+         0,
+         G_OPTION_ARG_STRING,
+         &raw.sinks,
+         "Program outputs",
+         "FAKE,RENDER,ENCODE_FILE,ENCODE_PROGRAM_4K_FILE"},
         {"options", 'o', 0, G_OPTION_ARG_STRING_ARRAY, &raw.options, "Configuration overrides", "KEY=VALUE,..."},
         {"start-time", 's', 0, G_OPTION_ARG_STRING, &raw.start, "Synchronized start time", "SECONDS|HH:MM:SS"},
         {"time-limit", 't', 0, G_OPTION_ARG_STRING, &raw.limit, "Completed video duration", "SECONDS|HH:MM:SS"},
@@ -115,7 +121,9 @@ absl::StatusOr<AmdPipelineOptions> ParseAmdPipelineOptions(std::vector<std::stri
     std::istringstream names(raw.sinks);
     Require(std::string(raw.sinks).back() != ',', "Empty Program sink");
     for (std::string name; std::getline(names, name, ',');) {
-      Require(name == "FAKE" || name == "RENDER" || name == "ENCODE_FILE", "Unsupported AMD Program sink: " + name);
+      Require(
+          name == "FAKE" || name == "RENDER" || name == "ENCODE_FILE" || name == "ENCODE_PROGRAM_4K_FILE",
+          "Unsupported AMD Program sink: " + name);
       Require(result.sinks.insert(name).second, "Duplicate Program sink: " + name);
     }
     Require(

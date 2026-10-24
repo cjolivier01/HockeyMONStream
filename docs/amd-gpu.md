@@ -259,7 +259,7 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 | Model execution | Native MIGraphX inference in the ROCm CLI | Broader numerical qualification and optional analytics |
 | Tracking | Native geometric association, shared rink filter and camera policy | Appearance reassociation, telemetry and desktop seek policy |
 | Crop and preview | Shared HIP crop into VA output; native-window EGL Program preview with tracked-player boxes | Source/Stitched channels and Play/Rink diagnostics |
-| Desktop, jobs and publication | Saved Program playback and atomic local CLI MP4 output | Live controls, managed archives and highlight export |
+| Desktop, jobs and publication | Saved Program playback and managed Program/4K archives | Additional live controls, exported job launch and highlight export |
 
 Do not pass `--config=rocm` to `//...` as an application build: many targets
 still directly depend on NVIDIA libraries. Compute tests do not establish
@@ -649,20 +649,22 @@ HM_CONFIG_ROOT="$PWD/configs" /tmp/hstream-private-gstva/run \
 ```
 
 Use `RENDER` for a GL preview, optionally with `--render-window-id=XID` and
-`--render-realtime`. Use `ENCODE_FILE` with an explicit
-`--options=video_out.output_video_path=/path/to/new.mp4` for HEVC output. Sink names
-may be comma-separated. Rendering needs an available display; a headless host
+`--render-realtime`. Use `ENCODE_FILE` for the Program archive and
+`ENCODE_PROGRAM_4K_FILE` for an independent copy fitted within 3840×2160.
+`--options=video_out.output_video_path=/path/to/new.mp4` selects an explicit
+Program filename. Sink names may be comma-separated. Rendering needs an available
+display; a headless host
 can still run FAKE/ENCODE_FILE. Private runtime launchers remain required on the
 qualified host; package discovery and installation are pending.
 
 `ProgramFileOutput` holds an unnamed file on the destination filesystem. Only
 after every sink reports EOS does it flush the file and create the final name
 without replacement. Errors, cancellation and process death leave no partial
-MP4 at that name. The directory is pinned for the run. This initial publication
-path requires Linux `O_TMPFILE` and `/proc/self/fd`; unsupported filesystems fail
-before GPU preparation. It does not replace managed archive publication or
-`hstream-finalize`. An error flushing the directory after linking reports that
-the completed file is already published.
+MP4 at that name. The directory is pinned for the run. This staging path requires
+Linux `O_TMPFILE` and `/proc/self/fd`; unsupported filesystems fail before GPU
+preparation. Managed runs register the completed file with the existing archive
+publisher, described below. An error flushing the directory after linking
+reports that the completed working file is already named.
 
 The CLI accepts one application YAML and rejects two-stage calibration, unknown
 arguments, unsupported sinks and malformed time/preview arguments. Time limits
@@ -998,3 +1000,48 @@ game with audio and at least two seconds remaining, supply `HM_CONFIG_ROOT` and
 `HM_GAME_DIR`, and launch Bazel through the private runtimes above. The test
 requires ffprobe/ffmpeg to inspect and fully decode the temporary output clips;
 those offline checks are the only video readback in the test.
+
+### Managed Program archives
+
+The desktop can save Program and 4K Program together with native preview. Each
+branch has a bounded VA pool and renders the same processed panorama directly
+into its output size; detection/tracking runs once per pair. Scoreboard plans
+are prepared separately for each output, and preview diagnostic boxes never
+enter either archive. Native sink IDs, output names and bitrate overrides follow
+configuration layer precedence. The 4K branch preserves Program aspect without
+upscaling; native per-sink Program scaling must preserve the same aspect.
+
+Automatic bitrate uses the highest video-track bitrate among the saved camera
+chapters and scales its per-pixel density to each archive size, using the shared
+integer bitrate helper. Metadata comes from the native MP4 header reader without
+opening a decoder or subprocess. Explicit native/canonical/AMD bitrates retain
+precedence; missing source bitrate retains the configured fallback and reports
+that choice. The AMD archive path supports hardware Main10 HEVC in MP4 and
+bilinear 4K fitting. Incompatible explicit codec, profile, container, scaling
+and interpolation settings fail before GPU preparation. Duplicate output paths
+and sink IDs also fail preflight.
+
+A desktop run already supplies `HSTREAM_JOB_MANIFEST`; default output names
+resolve inside that private workspace. After every output reaches EOS and AAC
+editing completes, the CLI names each file without replacement, registers its
+exact open descriptor identity, and marks the manifest encoded. The existing
+desktop publisher or `hstream-finalize` remuxes to faststart MP4, publishes the
+versioned game-local files and origin sidecars, then removes owned working files.
+Failure marks the manifest failed and prevents final publication. A producer
+without telemetry support rejects a manifest requesting telemetry at startup;
+it never clears that request. DriveGPT capture remains unavailable on AMD.
+
+Without a manifest, ordinary archive names use the configured output-root/game
+directory. Explicit Program paths retain their requested location. No output
+name is overwritten. Program/4K simultaneous output and the desktop Stop path
+can be qualified with `HSTREAM_UI_E2E_AMD_ARCHIVES=1` alongside the existing
+`HSTREAM_UI_E2E_AMD_PROGRAM=1` desktop test. Exported `--encode-job` launch remains
+unimplemented; the native finalizer can already supervise this CLI directly.
+
+Qualification processed 120 pairs into simultaneous 4096×2304 and 3840×2160
+Main10 HEVC/AAC archives. Both fully decode, start at zero, last 2.002 seconds
+and retain the 60-second recording offset in their sidecars. A desktop Stop
+published both 13-frame clips and cleaned its run directory. The existing
+faststart remux uses a millisecond movie/edit clock: those short outputs report
+0.216883-second video and 0.217000-second audio. SIGTERM during dual encoding
+records a failed manifest with no registered outputs or named MP4s.

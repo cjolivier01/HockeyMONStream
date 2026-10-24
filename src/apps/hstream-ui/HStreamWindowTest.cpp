@@ -16817,6 +16817,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
 // Opt-in hardware qualification. Use a private copy of a calibrated game:
 // ordinary desktop controls save next-run choices into that game's config.
 bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) {
+  const bool archives = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AMD_ARCHIVES");
   auto* game = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
@@ -16848,6 +16849,10 @@ bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) 
     if (!toggle)
       return false;
     toggle->setChecked(false);
+  }
+  if (archives) {
+    window->findChild<QCheckBox*>("outputToggle_archive-file")->setChecked(true);
+    window->findChild<QCheckBox*>("outputToggle_archive-program-4k")->setChecked(true);
   }
   render->setChecked(true);
   tabs->setCurrentIndex(0);
@@ -16913,10 +16918,43 @@ bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) 
               10000),
           "Returning to Program must restore a newly acknowledged native frame"))
     return false;
-  return expect(
-      target->geometry() == target->parentWidget()->rect() &&
-          QRegularExpression("HSTREAM_AMD_FRAME .* tracks=[1-9]").match(window->logText()).hasMatch(),
-      "AMD desktop playback must fill its native target and retain detected tracks");
+  if (!expect(
+          target->geometry() == target->parentWidget()->rect() &&
+              QRegularExpression("HSTREAM_AMD_FRAME .* tracks=[1-9]").match(window->logText()).hasMatch(),
+          "AMD desktop playback must fill its native target and retain detected tracks"))
+    return false;
+  activate(stop);
+  if (!expect(
+          QTest::qWaitFor([&] { return window->pipelineStateText() == "STOPPED"; }, 30000) &&
+              window->completeLogText().contains("pipeline finished exit=0 status=normal"),
+          "AMD desktop Stop must drain successfully"))
+    return false;
+  if (archives) {
+    const auto finished = [&] {
+      const auto* headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
+      return headline && headline->property("finalizationState").toString() != "running";
+    };
+    if (!expect(
+            QTest::qWaitFor(finished, 60000) &&
+                window->findChild<QLabel*>("archiveFinalizeHeadline")->property("finalizationState").toString() ==
+                    "complete",
+            "AMD Program archives must complete managed publication"))
+      return false;
+    for (const auto* name : {"archiveOutputPath", "program4kOutputPath"}) {
+      const auto* label = require_child<QLabel>(window, name);
+      if (!label || !expect(label->text().startsWith("Completed archive: "), "Archive path was not published"))
+        return false;
+      const auto path = label->text().mid(QString("Completed archive: ").size());
+      if (!expect(QFileInfo(path).isFile() && QFileInfo(path).size() > 0, "Published AMD archive is empty"))
+        return false;
+      std::cout << "AMD_UI_PUBLISHED " << path.toStdString() << '\n';
+    }
+    if (!expect(
+            window->completeLogText().contains("All outputs published; run working files removed."),
+            "Managed publication did not remove owned working files"))
+      return false;
+  }
+  return true;
 }
 #endif
 

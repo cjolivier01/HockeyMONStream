@@ -55,6 +55,13 @@ cc_library(
 )
 
 cc_library(
+    name = "video_bitrate",
+    hdrs = ["VideoBitrate.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "utils",
     srcs = [
         "ApplicationPayload.cpp",
@@ -67,7 +74,6 @@ cc_library(
         "PlotContext.h",
         "RenderSet.h",
         "TempFile.h",
-        "VideoBitrate.h",
         "pipeline_utils.h",
     ],
     copts = [
@@ -77,6 +83,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":video_bitrate",
         ":config_yaml",
         ":config_path",
         ":pinned_file",

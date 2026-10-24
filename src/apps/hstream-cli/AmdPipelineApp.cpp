@@ -21,10 +21,12 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/gpu/vaapi/VaStereoVideo.h"
 #include "hstream/src/libs/media/AudioPlaylist.h"
 #include "hstream/src/libs/program/AmdProgramAdmission.h"
 #include "hstream/src/libs/program/AmdProgramProcessor.h"
+#include "hstream/src/libs/program/ProgramArchiveConfig.h"
 #include "hstream/src/libs/program/ProgramAudioConfig.h"
 #include "hstream/src/libs/program/ProgramDetectorSettings.h"
 #include "hstream/src/libs/program/ProgramFileOutput.h"
@@ -33,6 +35,7 @@
 #include "hstream/src/libs/program/ProgramRuntimeControl.h"
 #include "hstream/src/libs/program/ProgramScoreboardConfig.h"
 #include "hstream/src/libs/program/VaProgramSink.h"
+#include "hstream/src/libs/publication/Publication.h"
 
 namespace {
 static_assert(std::atomic<int>::is_always_lock_free, "Signal cancellation requires lock-free atomics");
@@ -121,6 +124,9 @@ hm::gpu::VaVideoReaderConfig Reader(
       launch.amd.cancellation_poll_ns};
 }
 void Run(const hm::program::AmdPipelineOptions& args) {
+  hm::publication::ValidatePipelineStart(false);
+  const bool encoding = args.sinks.count("ENCODE_FILE") || args.sinks.count("ENCODE_PROGRAM_4K_FILE");
+  Require(hm::publication::EnvironmentManifest().empty() || encoding, "Managed Program runs require an archive sink");
   hm::pipeline_internal::PreviewOverlaySelection initial_overlays;
   if (const auto* value = std::getenv("HSTREAM_UI_PREVIEW_OVERLAYS")) {
     std::istringstream names(value);
@@ -145,17 +151,51 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   Status(hm::program::ValidateAmdProgramAdmission(launch.configuration));
   const auto audio_config = Take(hm::program::ResolveProgramAudioConfig(launch.configuration, launch.frame_offsets));
   auto output_config = Take(hm::program::ResolveProgramOutputConfig(launch.configuration));
-  const auto scoreboard = Take(
-      hm::program::ResolveProgramScoreboardConfig(launch.configuration, output_config.width, output_config.height));
   const auto start = args.start.value_or(output_config.start_ns);
   const auto limit = args.limit;
-  std::unique_ptr<hm::program::ProgramFileOutput> file;
-  if (args.sinks.count("ENCODE_FILE")) {
-    const auto path = hm::get_node(launch.configuration.values, "video_out.output_video_path");
-    Require(
-        path && path->IsScalar() && !path->as<std::string>().empty(),
-        "AMD ENCODE_FILE requires video_out.output_video_path for its new MP4");
-    file = Take(hm::program::ProgramFileOutput::Create(path->as<std::string>()));
+  std::optional<hm::BitratePerPixel> source_bitrate;
+  std::filesystem::path archive_directory;
+  if (encoding) {
+    archive_directory = hm::publication::EnvironmentWorkingDirectory();
+    if (archive_directory.empty())
+      archive_directory = Take(hm::user_config::output_root(launch.configuration.values)) / args.game;
+    uint64_t selected_bitrate = 0, selected_pixels = 0;
+    std::set<std::filesystem::path> visited;
+    for (const auto& camera : launch.chapters)
+      for (const auto& chapter : camera) {
+        if (!visited.insert(chapter).second)
+          continue;
+        const auto metadata = Take(hm::media::ReadMp4VideoTrack(chapter, launch.amd.operation_timeout_ns, {}));
+        if (!metadata.bitrate)
+          continue;
+        const auto pixels = uint64_t(metadata.width) * metadata.height;
+        if (*metadata.bitrate > selected_bitrate ||
+            (*metadata.bitrate == selected_bitrate && pixels < selected_pixels)) {
+          selected_bitrate = *metadata.bitrate;
+          selected_pixels = pixels;
+          source_bitrate = hm::make_bitrate_per_pixel(selected_bitrate, metadata.width, metadata.height);
+        }
+      }
+    if (!source_bitrate)
+      g_printerr("Program source video bitrate metadata is unavailable; retaining configured archive bitrate\n");
+  }
+  const auto archives = Take(hm::program::ResolveProgramArchives(
+      launch.configuration, args.sinks, output_config, archive_directory, source_bitrate));
+  std::map<std::string, std::unique_ptr<hm::program::ProgramFileOutput>> files;
+  for (const auto& [name, archive] : archives) {
+    std::filesystem::create_directories(archive.path.parent_path());
+    files.emplace(name, Take(hm::program::ProgramFileOutput::Create(archive.path)));
+    g_print(
+        "HSTREAM_OUTPUT type=archive sink=%d kind=%s existed=0 size=-1 mtime-ms=-1 codec=hevc path=%s\n",
+        archive.sink_id,
+        archive.kind.c_str(),
+        archive.path.c_str());
+    g_print(
+        "HSTREAM_AMD_ARCHIVE sink=%d width=%d height=%d bitrate-kbps=%u\n",
+        archive.sink_id,
+        archive.output.width,
+        archive.output.height,
+        archive.output.bitrate_kbps);
   }
   char pci[32]{};
   const auto device = hipDeviceGetPCIBusId(pci, sizeof(pci), launch.amd.gpu_id);
@@ -215,14 +255,6 @@ void Run(const hm::program::AmdPipelineOptions& args) {
        launch.configuration.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
        launch.configuration.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>(),
        calibration}));
-  if (scoreboard)
-    output_config.render.scoreboard = Take(hm::program::PrepareProgramScoreboard(
-        *scoreboard,
-        processor->generation(),
-        processor->width(),
-        processor->height(),
-        output_config.width,
-        output_config.height));
   GstVideoInfo output_info{};
   Require(
       gst_video_info_set_format(&output_info, GST_VIDEO_FORMAT_P010_10LE, output_config.width, output_config.height),
@@ -232,6 +264,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   output_info.colorimetry = left.colorimetry;
   output_info.chroma_site = GST_VIDEO_CHROMA_SITE_JPEG;
   std::vector<std::unique_ptr<hm::program::VaProgramSink>> outputs;
+  std::vector<std::pair<GstVideoInfo, hm::program::ProgramRenderSettings>> render_settings;
   hm::program::VaProgramSink* preview_output{};
   std::optional<hm::program::VaProgramAudioConfig> sink_audio;
   if (audio_config) {
@@ -244,20 +277,40 @@ void Run(const hm::program::AmdPipelineOptions& args) {
         mute && std::string(mute) == "1"};
   }
   for (const auto& name : args.sinks) {
-    const auto kind = name == "ENCODE_FILE" ? hm::program::VaProgramSinkKind::kHevcMp4
-        : name == "RENDER"                  ? hm::program::VaProgramSinkKind::kPreview
-                                            : hm::program::VaProgramSinkKind::kDiscard;
+    const auto kind = files.count(name) ? hm::program::VaProgramSinkKind::kHevcMp4
+        : name == "RENDER"              ? hm::program::VaProgramSinkKind::kPreview
+                                        : hm::program::VaProgramSinkKind::kDiscard;
+    auto settings = archives.count(name) ? archives.at(name).output : output_config;
+    auto info = output_info;
+    Require(
+        gst_video_info_set_format(&info, GST_VIDEO_FORMAT_P010_10LE, settings.width, settings.height),
+        "Invalid Program archive output geometry");
+    info.fps_n = left.fps_n;
+    info.fps_d = left.fps_d;
+    info.colorimetry = left.colorimetry;
+    info.chroma_site = GST_VIDEO_CHROMA_SITE_JPEG;
+    const auto scoreboard =
+        Take(hm::program::ResolveProgramScoreboardConfig(launch.configuration, settings.width, settings.height));
+    if (scoreboard)
+      settings.render.scoreboard = Take(hm::program::PrepareProgramScoreboard(
+          *scoreboard,
+          processor->generation(),
+          processor->width(),
+          processor->height(),
+          settings.width,
+          settings.height));
+    render_settings.emplace_back(info, settings.render);
     auto output = hm::program::VaProgramSink::Create(
         {kind,
          launch.amd.gpu_id,
-         output_info,
+         info,
          launch.amd.output_pool_frames,
          launch.amd.operation_timeout_ns,
          launch.amd.cancellation_poll_ns,
          name == "RENDER" && (args.realtime || output_config.realtime),
-         name == "ENCODE_FILE" ? file->fd() : -1,
-         output_config.bitrate_kbps,
-         output_config.keyframe_interval,
+         files.count(name) ? files.at(name)->fd() : -1,
+         settings.bitrate_kbps,
+         settings.keyframe_interval,
          launch.amd.maximum_encoded_packet_bytes,
          args.preview_windows.empty() ? args.window : args.preview_windows.at("program"),
          nullptr,
@@ -408,11 +461,11 @@ void Run(const hm::program::AmdPipelineOptions& args) {
             const __int128 requested = relative ? static_cast<__int128>(playback_position) + amount : amount;
             const auto position = relative ? static_cast<uint64_t>(std::clamp<__int128>(requested, 0, horizon))
                                            : static_cast<uint64_t>(amount);
-            if (file || position > horizon) {
+            if (encoding || position > horizon) {
               g_print(
                   "HSTREAM_SEEK status=failed generation=%" G_GUINT64_FORMAT " reason=%s\n",
                   generation,
-                  file ? "local-render-required" : "position-out-of-range");
+                  encoding ? "local-render-required" : "position-out-of-range");
               return absl::OkStatus();
             }
             pair.reset();
@@ -487,12 +540,13 @@ void Run(const hm::program::AmdPipelineOptions& args) {
         Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get()));
     if (overlay_state.selection().players)
       preview_boxes.Update(pair->time, completed.observation.tracks);
-    for (const auto& output : outputs) {
+    for (size_t index = 0; index < outputs.size(); ++index) {
+      const auto& output = outputs[index];
       std::unique_ptr<GstBuffer, decltype(&gst_buffer_unref)> buffer(Take(output->Acquire()), gst_buffer_unref);
       Status(processor->Render(
           buffer.get(),
-          output_info,
-          output_config.render,
+          render_settings[index].first,
+          render_settings[index].second,
           output.get() == preview_output && overlay_state.selection().players ? &preview_boxes : nullptr));
       Status(output->Push(buffer.release(), pair->time - first, pair->duration));
     }
@@ -562,8 +616,13 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   publish_preview_ready();
   if (AbortRequested())
     throw Failure(absl::CancelledError("Program cancelled before publication"));
-  if (file)
+  for (const auto& [name, file] : files) {
     Status(file->Commit(AbortRequested));
+    const auto& archive = archives.at(name);
+    hm::publication::RegisterOutput(archive.path, archive.kind, true, file->fd());
+  }
+  Require(!AbortRequested(), "Program cancelled before managed completion");
+  hm::publication::CompletePipeline(true, start / GST_MSECOND);
   g_print(
       "HSTREAM_AMD_COMPLETE frames=%" G_GUINT64_FORMAT " track-observations=%" G_GUINT64_FORMAT "\n", frames, tracks);
 }
@@ -627,6 +686,11 @@ int main(int argc, char** argv) {
     hm::diagnostics::Log("amd-error", error.what());
     std::cerr << "hstream-cli: " << error.what() << '\n';
     result = interrupted ? 128 + interrupted : 1;
+    try {
+      hm::publication::CompletePipeline(false, 0);
+    } catch (const std::exception& publication_error) {
+      std::cerr << "hstream-cli could not record failed publication: " << publication_error.what() << '\n';
+    }
   }
   hm::diagnostics::Finish(result);
   return result;

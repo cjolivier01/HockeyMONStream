@@ -29,6 +29,8 @@ int main() {
     Check(
         result.ok() && result->window == 1234 && result->realtime && result->sinks.size() == 2,
         "Preview controls lost");
+    result = parse({"--enable-sinks=RENDER,ENCODE_FILE,ENCODE_PROGRAM_4K_FILE"});
+    Check(result.ok() && result->sinks.size() == 3, "Independent Program archives rejected");
     result = parse({"--stitch-frame-time=00:03:39", "--clean-expected-invalidation-id=saved-revision"});
     Check(
         result.ok() && result->saved_stitch_time == "00:03:39" && result->expected_invalidation == "saved-revision",

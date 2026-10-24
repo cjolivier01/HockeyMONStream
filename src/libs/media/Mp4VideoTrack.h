@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 
 #include "absl/status/statusor.h"
 
@@ -21,6 +22,8 @@ struct Mp4VideoTrack {
   // combined origin + frame timestamp once, without nanosecond carry errors.
   int64_t start_ticks;
   int time_base_n, time_base_d;
+  // Header video bitrate only; absence does not fall back to whole-file/audio.
+  std::optional<uint64_t> bitrate;
 };
 // Read one ordinary local MP4's video-track metadata without opening a codec,
 // decoding images, or probing via GstDiscoverer. The video duration excludes

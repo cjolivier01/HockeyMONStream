@@ -128,6 +128,7 @@ absl::StatusOr<Mp4VideoTrack> ReadMp4VideoTrack(
               int64_t(video->avg_frame_rate.num) * video->r_frame_rate.den,
       video->start_time,
       video->time_base.num,
-      video->time_base.den};
+      video->time_base.den,
+      codec->bit_rate > 0 ? std::optional<uint64_t>(codec->bit_rate) : std::nullopt};
 }
 } // namespace hm::media

@@ -11608,6 +11608,18 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   const bool calibration_ended_incomplete = calibration_pending_ && !stopped_by_user;
   const bool completed_successfully =
       exit_status == QProcess::NormalExit && exit_code == 0 && !stopped_by_user && !calibration_ended_incomplete;
+  bool archive_completed = completed_successfully;
+  if (stopped_by_user && exit_status == QProcess::NormalExit && exit_code == 0 && !calibration_pending_ &&
+      !managed_archive_manifest_.isEmpty()) {
+    try {
+      // A capable runner drains deliberate Stop through mux EOS and commits
+      // its manifest. Keep playback's stopped state, but publish that completed
+      // clip. Legacy/interrupted runners have no such completion authority.
+      archive_completed = hm::publication::PipelineCompleted(managed_archive_manifest_.toStdString());
+    } catch (const std::exception& error) {
+      appendLog(QString("Could not verify stopped archive completion: %1").arg(QString::fromUtf8(error.what())));
+    }
+  }
   QStringList archive_results;
   const QString archive_game_id = active_run_game_id_;
   bool retain_archive_log_guard_for_recovery = false;
@@ -11624,14 +11636,14 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
         (initial_size < 0 || archive_info.size() != initial_size ||
          archive_info.lastModified().toMSecsSinceEpoch() != initial_mtime_ms);
     if (output_updated && archive_info.size() > 0) {
-      output_states_[output_id]->setText(completed_successfully ? "FINALIZING" : "INCOMPLETE");
+      output_states_[output_id]->setText(archive_completed ? "FINALIZING" : "INCOMPLETE");
       archive_results << QString("archive %1: %2 (%3 bytes)")
                              .arg(
-                                 completed_successfully ? "container closed; lossless MP4 finalization starting"
-                                                        : "may be incomplete",
+                                 archive_completed ? "container closed; lossless MP4 finalization starting"
+                                                   : "may be incomplete",
                                  path)
                              .arg(archive_info.size());
-      if (completed_successfully) {
+      if (archive_completed) {
         pending_archive_finalizations_.push_back({path, archive_game_id, output_id, hevc_video, stitched_archive});
       } else {
         retain_archive_log_guard_for_recovery = true;

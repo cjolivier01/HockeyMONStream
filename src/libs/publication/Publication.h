@@ -24,7 +24,10 @@ void BeginRun(const fs::path& manifest, bool telemetry_required = false);
 bool PipelineCompleted(const fs::path& manifest);
 fs::path EnvironmentManifest();
 fs::path EnvironmentWorkingDirectory();
-void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc = false);
+// Validate a producer's manifest before allocating resources or writing outputs.
+// A producer lacking telemetry must not silently clear the supervisor's request.
+void ValidatePipelineStart(bool supports_telemetry);
+void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc = false, int expected_fd = -1);
 // Explicit calibration replacement may retire a registered output. Caps-only
 // replacement must additionally prove that the old telemetry contains no samples.
 void RetireOutput(const fs::path& path, bool require_empty_telemetry = false);

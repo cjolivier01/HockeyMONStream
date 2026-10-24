@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
               info->fps_d == 1 && info->frames == 5 && info->duration_ns == 200000000 &&
               info->start_ns == (path == offset ? 400000000 : 0),
           "Video track inherited an audio tail or lost its start/fps/frame count");
+      Check(info->bitrate && *info->bitrate > 0, "MP4 video header bitrate was lost");
     }
     Check(
         absl::IsCancelled(ReadMp4VideoTrack(ordinary, 1000000000, [] { return true; }).status()),
