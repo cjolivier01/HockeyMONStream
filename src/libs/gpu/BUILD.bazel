@@ -1,0 +1,29 @@
+cc_library(
+    name = "runtime",
+    hdrs = ["Runtime.h"],
+    include_prefix = "hstream/src/libs/gpu",
+    visibility = ["//visibility:public"],
+    deps = select({
+        "//:use_hip": ["@hstream_rocm//:runtime"],
+        "//conditions:default": ["//toolchains/jetson:cuda_runtime", "@local_cuda//:cuda"],
+    }),
+)
+
+test_suite(
+    name = "portable_gpu_tests",
+    tags = ["manual"],
+    tests = [
+        "//src/libs/draw_display:analytics_overlay_test",
+        "//src/libs/highlights:texture_blend_test",
+        "//src/libs/player_analytics/runtime:pose_gpu_test",
+        "//src/libs/player_analytics/runtime:team_gpu_test",
+        "@hm-cupano//src/cuda:cudaBlend_test",
+        "@hm-cupano//src/cuda:cudaBlend3_test",
+        "@hm-cupano//src/cuda:cudaBlendN_test",
+        "@hm-cupano//src/pano:cudaMat_basic_test",
+        "@hm-cupano//src/pano:cudaPano_test",
+        "@hm-cupano//src/pano:cudaPano3_test",
+        "@hm-cupano//src/pano:cudaPanoN_test",
+        "@hm-cupano//src/pano:rgb10Remap_test",
+    ],
+)

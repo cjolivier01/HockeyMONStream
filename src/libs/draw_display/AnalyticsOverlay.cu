@@ -1,6 +1,6 @@
 #include "hstream/src/libs/draw_display/AnalyticsOverlayInternal.h"
 
-#include <cuda_runtime.h>
+#include "hstream/src/libs/gpu/Runtime.h"
 
 namespace hm::draw_display::analytics::detail {
 namespace {
@@ -131,8 +131,8 @@ __global__ void Draw420(
   }
   float u, v;
   if constexpr (TenBit) {
-    const auto* uv = reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(image.chroma) +
-                                                        (y / 2) * image.chroma_pitch) + x;
+    const auto* uv =
+        reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(image.chroma) + (y / 2) * image.chroma_pitch) + x;
     u = uv[0] / storage_scale;
     v = uv[1] / storage_scale;
   } else {
@@ -174,8 +174,7 @@ __global__ void Draw420(
     }
   }
   if constexpr (TenBit) {
-    auto* uv = reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(image.chroma) +
-                                           (y / 2) * image.chroma_pitch) + x;
+    auto* uv = reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(image.chroma) + (y / 2) * image.chroma_pitch) + x;
     uv[0] = static_cast<uint16_t>(fminf(1023.0F, fmaxf(0.0F, floorf(u + 0.5F)))) << 6;
     uv[1] = static_cast<uint16_t>(fminf(1023.0F, fmaxf(0.0F, floorf(v + 0.5F)))) << 6;
   } else {
@@ -197,11 +196,11 @@ cudaError_t Raster(
     cudaStream_t stream) {
   const dim3 threads(kTileSize, kTileSize);
   if (image.format == PixelFormat::kP010)
-    Draw420<true><<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(
-        image, commands, tiles, references, atlas);
+    Draw420<true>
+        <<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(image, commands, tiles, references, atlas);
   else if (image.format == PixelFormat::kI420)
-    Draw420<false><<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(
-        image, commands, tiles, references, atlas);
+    Draw420<false>
+        <<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(image, commands, tiles, references, atlas);
   else if (image.format == PixelFormat::kRgb10A2)
     Draw<true><<<tile_count, threads, 0, stream>>>(image, commands, tiles, references, atlas);
   else

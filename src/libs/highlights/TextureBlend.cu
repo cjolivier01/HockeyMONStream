@@ -1,6 +1,8 @@
-#include <cuda_runtime.h>
+#include "hstream/src/libs/highlights/TextureBlend.h"
+
 #include <cstdint>
-#include "src/libs/highlights/TextureBlend.h"
+#include <limits>
+
 namespace hm::highlights {
 namespace {
 __global__ void blend(
@@ -17,8 +19,10 @@ __global__ void blend(
     int w,
     int h) {
   const int tx = blockIdx.x * blockDim.x + threadIdx.x, ty = blockIdx.y * blockDim.y + threadIdx.y;
+  if (tx >= w || ty >= h)
+    return;
   const int x = ox + tx, y = oy + ty;
-  if (tx >= w || ty >= h || x < 0 || y < 0 || x >= iw || y >= ih)
+  if (x < 0 || y < 0 || x >= iw || y >= ih)
     return;
   const float sx = (tx + 0.5f) * tw / w - 0.5f, sy = (ty + 0.5f) * th / h - 0.5f;
   const int x0 = floorf(sx), y0 = floorf(sy);
@@ -70,7 +74,13 @@ cudaError_t BlendTexture(
     int w,
     int h,
     cudaStream_t stream) {
-  if (!image || !texture || width <= 0 || height <= 0 || tw <= 0 || th <= 0 || w <= 0 || h <= 0)
+  if (!image || !texture || width <= 0 || height <= 0 || tw <= 0 || th <= 0 || w <= 0 || h <= 0 ||
+      pitch < static_cast<size_t>(width) * 4 || pitch % alignof(uint32_t) != 0 ||
+      static_cast<size_t>(height) > std::numeric_limits<size_t>::max() / pitch ||
+      w > std::numeric_limits<int>::max() - 15 || h > std::numeric_limits<int>::max() - 15 ||
+      static_cast<int64_t>(x) + w > std::numeric_limits<int>::max() ||
+      static_cast<int64_t>(y) + h > std::numeric_limits<int>::max() ||
+      static_cast<int64_t>(tw) * th > std::numeric_limits<int>::max())
     return cudaErrorInvalidValue;
   blend<<<dim3((w + 15) / 16, (h + 15) / 16), dim3(16, 16), 0, stream>>>(
       static_cast<unsigned char*>(image),
@@ -88,6 +98,10 @@ cudaError_t BlendTexture(
   return cudaGetLastError();
 }
 cudaError_t ClearFrame(void* image, size_t pitch, int w, int h, bool ten, cudaStream_t stream) {
+  if (!image || w <= 0 || h <= 0 || pitch < static_cast<size_t>(w) * 4 || pitch % alignof(uint32_t) != 0 ||
+      static_cast<size_t>(h) > std::numeric_limits<size_t>::max() / pitch || w > std::numeric_limits<int>::max() - 15 ||
+      h > std::numeric_limits<int>::max() - 15)
+    return cudaErrorInvalidValue;
   clear<<<dim3((w + 15) / 16, (h + 15) / 16), dim3(16, 16), 0, stream>>>(
       static_cast<unsigned char*>(image), pitch, w, h, ten);
   return cudaGetLastError();

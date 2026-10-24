@@ -42,6 +42,14 @@ WINDOWS_SIGNING_TIMESTAMP_URL ?= http://timestamp.digicert.com
 
 all: print_targets
 
+.PHONY: amd-kernels test-amd-kernels
+
+amd-kernels:
+	$(BAZEL) build --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) //src/libs/gpu:portable_gpu_tests //src/libs/player_analytics/runtime:semantic_gpu_test
+
+test-amd-kernels:
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu:portable_gpu_tests
+
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hstream-job hstream-finalize hstream-cli run-hstream-cli hstream-ui hstream-web-job run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
@@ -216,6 +224,7 @@ print_targets:
 		'x86_64         Build optimized for x86_64 (--cpu=k8, auto-adds Blackwell host flags when needed).' \
 		'arm64          Build optimized for native non-Jetson arm64/SBSA hosts (--config=arm64).' \
 		'jetson         Build optimized for Jetson (--config=jetson, needs $(JETSON_SYSROOT)).' \
+		'amd-kernels    Build the portable GPU kernels and tests with native HIP/ROCm (see docs/amd-gpu.md).' \
 		'' \
 		'Apps' \
 		'----' \
@@ -249,6 +258,7 @@ print_targets:
 		'Tests' \
 		'-----' \
 		'test           Run Bazel tests with --config=opt.' \
+		'test-amd-kernels Run the shared pixel and preprocessing tests on AMD.' \
 		'' \
 		'Maintenance & Cleanup' \
 		'---------------------' \

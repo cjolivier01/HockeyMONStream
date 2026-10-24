@@ -8,6 +8,9 @@ load("//bazel:conditional_local_repository.bzl", "conditional_local_repository")
 load("//bazel:libsoup_repository.bzl", "libsoup_repository")
 load("//bazel:onnxruntime_gpu_repository.bzl", "onnxruntime_gpu_arm64_repository")
 load("//bazel:player_tensorrt_sdk_repository.bzl", "player_tensorrt_sdk_repository")
+load("//bazel:rocm_repository.bzl", "rocm_repository")
+
+rocm_repository(name = "hstream_rocm")
 
 player_tensorrt_sdk_repository(name = "player_tensorrt")
 load("//bazel:tensorrt_sdk_repository.bzl", "tensorrt_sdk_repository")
@@ -207,6 +210,7 @@ git_repository(
 git_repository(
     name = "hm-cupano",
     commit = "ffc00431e008e3846442e5b1901e6e69513a380f",
+    repo_mapping = {"@local_rocm": "@hstream_rocm"},
     remote = "ssh://git@github.com/cjolivier01/hm-cupano",
 )
 
@@ -215,6 +219,7 @@ git_repository(
     commit = "c34f73a80ee39093f749b01293cd9bed9ef0eaca",
     patch_args = ["-p1"],
     patches = ["//third_party/patches:jetson_utils_libsoup3.patch"],
+    repo_mapping = {"@rocm_sdk_includes": "@hstream_rocm"},
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
 

@@ -1,8 +1,7 @@
 #include "hstream/src/libs/player_analytics/runtime/SemanticGpu.h"
 
-#include <cuda_runtime.h>
-#include <math_constants.h>
 #include <algorithm>
+#include <limits>
 
 namespace hm::player_analytics {
 namespace {
@@ -129,9 +128,9 @@ struct ReductionStorage {
 template <int Classes, int Threads>
 __device__ Distribution TopProbability(const float* logits, ReductionStorage<Threads>& storage) {
   const int tid = threadIdx.x;
-  const float value = tid < Classes ? logits[tid] : -CUDART_INF_F;
+  const float value = tid < Classes ? logits[tid] : -std::numeric_limits<float>::infinity();
   storage.invalid[tid] = tid < Classes && !isfinite(value);
-  storage.value[tid] = isfinite(value) ? value : -CUDART_INF_F;
+  storage.value[tid] = isfinite(value) ? value : -std::numeric_limits<float>::infinity();
   storage.index[tid] = tid;
   __syncthreads();
   for (int stride = Threads / 2; stride > 0; stride /= 2) {

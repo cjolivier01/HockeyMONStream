@@ -29,6 +29,11 @@ build --linkopt=-Wl,-rpath,/opt/nvidia/deepstream/deepstream/lib/gst-plugins
 build:opt -c opt
 build:opt --copt=-O3
 
+# Native AMD kernels. Only targets documented in docs/amd-gpu.md are portable;
+# DeepStream/TensorRT application targets still require the NVIDIA backend.
+build:rocm --define=backend=hip
+build:rocm --define=jetson_use_hip=true
+
 build:debug -c dbg --strip="never"
 build:debug --copt=-g3
 build:debug --copt=-O0
