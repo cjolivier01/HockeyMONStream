@@ -145,7 +145,9 @@ For HockeyMON Program exports the existing Save job script flow calls
 `hm-cli --export-job --game-dir DIR --output PATH --force`, with each SBATCH
 directive passed as a separate `--sbatch` argument. The current choices are saved
 before export. The generated job resolves `hm-cli` on the execution host and
-does not retain a private UI session. Stitched-only exports and native Program
+does not retain a private UI session. Both exporters request one node, one task
+and one GPU before operator SBATCH directives, and preserve the selected working
+output root. Stitched-only exports and native Program
 exports continue through `hstream-job`.
 
 Focused validation targets are `//src/apps/hstream-ui:backend_options_test` and
