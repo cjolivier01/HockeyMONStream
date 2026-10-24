@@ -9260,6 +9260,55 @@ bool HStreamWindow::saveStitchingCalibrationState(
   return true;
 }
 
+bool HStreamWindow::resolveInitialProgramSources() {
+  initial_program_requires_stitching_.reset();
+  if (!hockeyMonProgram() || backend_.initial_launch.isEmpty())
+    return true;
+  try {
+    QFile file(backend_.initial_launch);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 1024 * 1024)
+      throw std::runtime_error("Initial HockeyMON source document is unavailable or oversized");
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(file.readAll(), &error);
+    const auto launch = document.object();
+    const auto ownership = launch.value("source_ownership").toObject();
+    const QString game = game_id_edit_->text().trimmed();
+    if (error.error != QJsonParseError::NoError || !document.isObject() || launch.value("version").toDouble(-1) != 1 ||
+        launch.value("module").toString() != "hmlib.cli.hmtrack" || launch.value("game_id").toString() != game ||
+        game != initial_launch_game_ || ownership.value("version").toDouble(-1) != 1 ||
+        ownership.value("game_id").toString() != game || !launch.value("arguments").isArray() ||
+        ownership.value("arguments") != launch.value("arguments") || !launch.value("cwd").isString() ||
+        ownership.value("cwd") != launch.value("cwd") || !ownership.value("sources").isObject()) {
+      throw std::runtime_error(
+          "Initial HockeyMON sources were not resolved for this launch; reopen with the matching hmtrack --camera-ui=1 launcher");
+    }
+    const auto sources = ownership.value("sources").toObject();
+    const auto roles = sources.keys();
+    if (roles != QStringList{"source"} && roles != QStringList{"left", "right"})
+      throw std::runtime_error("Initial HockeyMON sources require one recording or a complete Left/Right pair");
+    for (const auto& role : roles) {
+      const auto paths = sources.value(role);
+      if (!paths.isArray() || paths.toArray().isEmpty())
+        throw std::runtime_error("Initial HockeyMON source roles must contain recording paths");
+      for (const auto& value : paths.toArray()) {
+        const QFileInfo source(value.toString());
+        if (!value.isString() || !source.isAbsolute() || !source.isFile())
+          throw std::runtime_error("An initial HockeyMON recording is unavailable: " + value.toString().toStdString());
+      }
+    }
+    initial_program_requires_stitching_ = sources.contains("left");
+    return true;
+  } catch (const std::exception& error) {
+    const QString detail = QString::fromUtf8(error.what());
+    appendLog("pipeline not started: " + detail);
+    pipeline_state_->setText("STOPPED");
+    resetPlaybackProgress(true);
+    setPlaybackProgressState(PlaybackProgressState::kError, detail);
+    updateRunControls();
+    return false;
+  }
+}
+
 bool HStreamWindow::prepareStitchingCalibrationRun(
     const QString& runner,
     const QString& working_dir,
@@ -9271,6 +9320,16 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   }
   *calibration_required = false;
   active_stitching_reframe_ = false;
+  if (hockeyMonProgram() && !backend_.initial_launch.isEmpty()) {
+    if (!initial_program_requires_stitching_.has_value()) {
+      appendLog("Initial HockeyMON source ownership must be resolved before stitching admission");
+      return false;
+    }
+    if (!*initial_program_requires_stitching_) {
+      appendLog("Initial HockeyMON single-source playback leaves saved Left/Right calibration unchanged");
+      return true;
+    }
+  }
   const int control_points = active_calibration_control_points_;
   const int frame_count = active_calibration_frame_count_;
   const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "config.yaml";
@@ -9314,7 +9373,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         config = YAML::LoadFile(config_path.string());
       if (!yaml_defined(config) || config.IsNull())
         config = YAML::Node(YAML::NodeType::Map);
-      if (hockeyMonProgram()) {
+      if (hockeyMonProgram() && !initial_program_requires_stitching_.has_value()) {
         const auto has_source = [&config](const QString& role) {
           YAML::Node paths;
           if (!lookup_yaml_path(config, "game.videos." + role, &paths))
@@ -11035,6 +11094,9 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 }
 
 void HStreamWindow::startPipeline() {
+  if (!resolveInitialProgramSources())
+    return;
+  const bool initial_single_source = initial_program_requires_stitching_ == false;
   QScopedValueRollback<bool> starting_still(stitching_still_starting_, true);
   updateStitchingStillPreview();
   QTimer::singleShot(0, this, [this] { updateStitchingStillPreview(); });
@@ -11049,7 +11111,7 @@ void HStreamWindow::startPipeline() {
     appendLog("close Highlights before starting the main pipeline");
     return;
   }
-  if (!pending_leveling_revision_.isEmpty() || hasPendingCropSelection()) {
+  if (!initial_single_source && (!pending_leveling_revision_.isEmpty() || hasPendingCropSelection())) {
     savePreset();
     if (!pending_leveling_revision_.isEmpty() || hasPendingCropSelection()) {
       appendLog("Save the selected calibration view before starting playback.");
@@ -11083,7 +11145,7 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
-  if (mappingBackend() == "nona" && !runAutooptimizer()) {
+  if (!initial_single_source && mappingBackend() == "nona" && !runAutooptimizer()) {
     const QString detail = "The NONA mapping backend requires Run panorama autooptimizer to be enabled";
     appendLog("pipeline not started: " + detail);
     pipeline_state_->setText("STOPPED");
@@ -11124,7 +11186,7 @@ void HStreamWindow::startPipeline() {
     return;
   }
   bool crop_review_cancelled = false;
-  if (!ensureProjectionCropReviewed(&crop_review_cancelled)) {
+  if (!initial_single_source && !ensureProjectionCropReviewed(&crop_review_cancelled)) {
     if (crop_review_cancelled) {
       pipeline_state_->setText("STOPPED");
       resetPlaybackProgress(false);

@@ -499,6 +499,7 @@ class HStreamWindow : public QMainWindow {
   bool writeRinkLevelingSelection(YAML::Node& config);
   void storeProjectionParameterControls();
   void updateProjectionCompatibility();
+  bool resolveInitialProgramSources();
   bool prepareStitchingCalibrationRun(
       const QString& runner,
       const QString& working_dir,
@@ -1020,6 +1021,7 @@ class HStreamWindow : public QMainWindow {
   QString development_pipeline_runner_;
   hm::ui::BackendOptions backend_;
   QString initial_launch_game_;
+  std::optional<bool> initial_program_requires_stitching_;
   std::unique_ptr<QTemporaryDir> backend_preview_directory_;
   std::unique_ptr<hm::ui::BackendPreview> backend_preview_;
   bool active_hockeymon_program_{false};

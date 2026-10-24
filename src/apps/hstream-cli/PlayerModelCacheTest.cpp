@@ -220,6 +220,54 @@ void ReuseAndCorruption() {
       "Explicit built-in did not replace malformed legacy path");
   fixture.NoStaging();
 }
+void ResolvedReIdDevice() {
+  const auto custom = [] {
+    return YAML::Load(
+        "tracker: {enable: 1, reid-enable: 1, reid-model: custom, reid-config-file: /operator/tracker.yaml}");
+  };
+  PlayerModelCacheOptions forbidden;
+  forbidden.cancelled = [] {
+    throw std::runtime_error("Custom device resolution invoked model preparation");
+    return false;
+  };
+  for (const int global : {-1, 0, 1}) {
+    for (const char* local : {"", "null", "2", "\"3\""}) {
+      auto pipeline = custom();
+      pipeline["application"]["global-gpu-id"] = global;
+      if (*local)
+        pipeline["tracker"]["gpu-id"] = YAML::Load(local);
+      const auto status = PreparePlayerModelCache(pipeline, "/unused", forbidden);
+      Expect(status.ok(), status.ToString());
+      const int expected = std::string(local) == "2" ? 2 : std::string(local) == "\"3\"" ? 3 : std::max(0, global);
+      Expect(pipeline["tracker"]["gpu-id"].as<int>() == expected, "ReID device inheritance was not materialized");
+    }
+  }
+  auto omitted = custom();
+  Expect(PreparePlayerModelCache(omitted, "/unused", forbidden).ok(), "Implicit ReID device resolution failed");
+  Expect(omitted["tracker"]["gpu-id"].as<int>() == 0, "Implicit native ReID device was not materialized");
+  auto invalid = custom();
+  invalid["tracker"]["gpu-id"] = -1;
+  Expect(!PreparePlayerModelCache(invalid, "/unused", forbidden).ok(), "Negative ReID device was accepted");
+
+  // Materialize after the normal preparation path too, and preserve the
+  // original configuration if another selected model cannot be prepared.
+  Fixture fixture;
+  for (const bool fail : {true, false}) {
+    auto pipeline = fixture.Pipeline();
+    pipeline["tracker"] = custom()["tracker"];
+    pipeline["application"]["global-gpu-id"] = 1;
+    if (fail)
+      ::setenv("HM_TEST_PLAYER_MODEL_HELPER_FAIL", "1", 1);
+    else
+      ::unsetenv("HM_TEST_PLAYER_MODEL_HELPER_FAIL");
+    const auto status = PreparePlayerModelCache(pipeline, fixture.directory, fixture.options);
+    Expect(status.ok() != fail, "Unexpected preparation result for resolved device");
+    if (fail)
+      Expect(!pipeline["tracker"]["gpu-id"], "Failed preparation published a ReID device");
+    else
+      Expect(pipeline["tracker"]["gpu-id"].as<int>() == 1, "Prepared ReID device was not materialized");
+  }
+}
 void FailedPreparation() {
   Fixture fixture;
   auto pipeline = fixture.Pipeline();
@@ -309,6 +357,7 @@ int main(int argc, char** argv) {
       return Helper(argc, argv);
     OffAndCustom();
     ReuseAndCorruption();
+    ResolvedReIdDevice();
     FailedPreparation();
     CancelledPreparation();
     ConcurrentPreparation();
