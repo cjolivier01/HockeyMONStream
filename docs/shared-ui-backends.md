@@ -185,6 +185,15 @@ bundle manifest remains authoritative for preprocessing, source identity and
 engine bindings. Disabled and custom selections retain their configured paths
 and produce no prepared entry.
 
+Enabled analytics and ReID materialize `pipeline.player-analytics.gpu-id` and
+`pipeline.tracker.gpu-id`, respectively, including custom selections. Resolution
+uses the cache's existing per-group/application inheritance. Python retains
+those accepted devices with the assets across seek rebuilds, carrying them to
+pose, jersey, action, team and ReID ONNX CUDA providers or native inference.
+Pose binds both CUDA inputs and outputs to the accepted device; only bounded
+crops move if preprocessing uses a different GPU. Existing explicit CPU
+execution and diagnosed automatic CPU fallback remain available.
+
 This prepares the selected model exactly. In particular, native default ReID is
 DeepStream's pinned `resnet50_market1501.etlt` model and its SDK preprocessing
 profile; the separately selectable ONNX ReIdentificationNet is not a substitute.
@@ -210,10 +219,9 @@ helper through `HM_HSTREAM_MODEL_INFER` and starts it with `--engine PATH`,
 `--gpu-id N` and its direct `--parent-pid`. The same helper ships beside the other
 native binaries on desktop, Jetson and ARM64/SBSA.
 
-Preparation materializes `pipeline.tracker.gpu-id` for enabled ReID, including
-custom selections, using the cache's existing tracker/application inheritance.
-The Python graph and helper retain that accepted device across seek rebuilds;
-the selected portable ONNX ReID model passes it to its CUDA provider as well.
+The Python graph and helper retain preparation's accepted tracker device across
+seek rebuilds; the selected portable ONNX ReID model passes it to its CUDA
+provider as well.
 
 Requests contain a little-endian uint32 crop count from 1 through 32 followed by
 float32 `[N,3,256,128]` preprocessed pixels. Responses contain that same count and

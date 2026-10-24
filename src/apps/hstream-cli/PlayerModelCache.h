@@ -26,7 +26,7 @@ struct PlayerModelCacheOptions {
 
 // Resolve enabled built-in selections into verified immutable GPU-specific
 // bundles before native config parsing. Disabled and custom selections perform
-// no preparation. Enabled ReID publishes its resolved tracker GPU for alternate
+// no preparation. Enabled analytics/ReID publish their resolved GPUs for alternate
 // runtimes, including custom selections. The caller owns cancellation signal
 // handling. YAML paths/devices change only after all preparation succeeds.
 absl::Status PreparePlayerModelCache(
