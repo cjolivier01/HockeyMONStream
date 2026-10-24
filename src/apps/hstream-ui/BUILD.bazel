@@ -1019,7 +1019,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":player_analytics_controls", "@qt//:qt_widgets", "@yaml-cpp"],
+    deps = [":player_analytics_controls", "//src/libs/player_analytics:types", "@qt//:qt_widgets", "@yaml-cpp"],
 )
 
 cc_test(

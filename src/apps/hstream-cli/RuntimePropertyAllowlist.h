@@ -18,11 +18,15 @@ inline bool is_allowlisted_runtime_property(std::string_view element_name, std::
         property_name == "fixed-edge-rotation-angle-right" || property_name == "shadow-lift" ||
         property_name == "shadow-lift-black-point" || property_name == "exposure" ||
         property_name == "scoreboard-perspective-polygon" || property_name == "scoreboard-position" ||
-        property_name == "scoreboard-reselect")) ||
+        property_name == "scoreboard-reselect" ||
+        // Which analytics layers Program bakes. Drawing only: it selects among
+        // results the models already produced, and enabling a layer mid-run
+        // starts no model and changes no inference schedule.
+        property_name == "player-drawing-layers")) ||
       ((element_name == "program_gpu_preview_sink" || element_name == "stitched_gpu_preview_sink" ||
         element_name == "hmstitcher_preview_sink") &&
        (property_name == "show-player-tracking" || property_name == "show-play-tracking" ||
-        property_name == "show-rink-mask"));
+        property_name == "show-rink-mask" || property_name == "player-drawing-layers"));
 }
 
 } // namespace pipeline

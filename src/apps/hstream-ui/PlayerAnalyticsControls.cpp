@@ -646,11 +646,56 @@ void PlayerAnalyticsControls::updateStatus() {
     field.label->setVisible(custom);
   }
   const auto error = validation(false);
+  if (!error.isEmpty()) {
+    status_->setText(error);
+    return;
+  }
   status_->setText(
-      error.isEmpty() ? "Changes apply on the next run. Save Preset keeps these choices. Standard models are "
-                        "downloaded and prepared automatically when needed, then reused for this GPU."
-                      : error);
+      live_drawing_only_
+          ? "Drawing applies to the run in progress. The compute choices above it are disabled until it stops, "
+            "because starting or stopping a model mid-run would change what is being measured."
+          : "Changes apply on the next run. Save Preset keeps these choices. Standard models are "
+            "downloaded and prepared automatically when needed, then reused for this GPU.");
 }
+bool PlayerAnalyticsControls::isDrawingField(const QString& key) {
+  // The four analytics layers plus the Program box switch. Everything else in
+  // the Drawing group feeds per-track state the processor owns, so it changes
+  // what is computed and has to wait for the next run.
+  return key == "plot.plot_pose" || key == "plot.plot_jersey_numbers" || key == "plot.plot_actions" ||
+      key == "plot.plot_teams" || key == "plot.plot_individual_player_tracking";
+}
+
+unsigned PlayerAnalyticsControls::drawingLayers() const {
+  unsigned layers = 0;
+  for (const auto& field : fields_) {
+    if (field.kind != Kind::kFlag || !value(field).toBool())
+      continue;
+    if (field.key == "plot.plot_individual_player_tracking")
+      layers |= hm::player_analytics::kDrawPlayerBoxes;
+    else if (field.key == "plot.plot_pose")
+      layers |= hm::player_analytics::kDrawPose;
+    else if (field.key == "plot.plot_jersey_numbers")
+      layers |= hm::player_analytics::kDrawJerseys;
+    else if (field.key == "plot.plot_actions")
+      layers |= hm::player_analytics::kDrawActions;
+    else if (field.key == "plot.plot_teams")
+      layers |= hm::player_analytics::kDrawTeams;
+  }
+  return layers;
+}
+
+void PlayerAnalyticsControls::setLiveDrawingOnly(bool live) {
+  live_drawing_only_ = live;
+  for (auto& field : fields_) {
+    const bool editable = !live || isDrawingField(field.key);
+    if (field.editor)
+      field.editor->setEnabled(editable);
+    if (field.label)
+      field.label->setEnabled(editable);
+  }
+  updateStatus();
+}
+
 QString PlayerAnalyticsControls::validateForRun() {
   const auto error = validation(true);
   if (error.isEmpty())

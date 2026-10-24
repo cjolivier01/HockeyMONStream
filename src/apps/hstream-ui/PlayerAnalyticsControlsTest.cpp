@@ -1,11 +1,14 @@
 #include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
 
+#include "hstream/src/libs/player_analytics/Types.h"
+
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 
 #include <array>
@@ -566,11 +569,52 @@ void TeamModelAndPrecedence(const QString& root) {
       "Canonical custom model was not displayed or validated with its native bundle");
 }
 } // namespace
+// Drawing is the only part of this tab a running pipeline can honour, so the
+// window needs the selection as a bitmask and the compute choices need to say
+// plainly that they are waiting for the next run.
+void LiveDrawingSelection() {
+  PlayerAnalyticsControls widget;
+  namespace pa = hm::player_analytics;
+  Control<QCheckBox>(widget, "playerDrawPose")->setChecked(false);
+  Control<QCheckBox>(widget, "playerDrawJerseys")->setChecked(false);
+  Control<QCheckBox>(widget, "playerDrawActions")->setChecked(false);
+  Control<QCheckBox>(widget, "playerDrawTeams")->setChecked(false);
+  Control<QCheckBox>(widget, "playerDrawBoxes")->setChecked(false);
+  Require(widget.drawingLayers() == 0, "No drawing selected must report no layers");
+  Control<QCheckBox>(widget, "playerDrawTeams")->setChecked(true);
+  Require(widget.drawingLayers() == pa::kDrawTeams, "Team labels must report their own layer");
+  Control<QCheckBox>(widget, "playerDrawPose")->setChecked(true);
+  Control<QCheckBox>(widget, "playerDrawBoxes")->setChecked(true);
+  Require(
+      widget.drawingLayers() == unsigned(pa::kDrawTeams | pa::kDrawPose | pa::kDrawPlayerBoxes),
+      "Every drawing switch must contribute its layer");
+
+  widget.setLiveDrawingOnly(true);
+  Require(
+      Control<QCheckBox>(widget, "playerDrawTeams")->isEnabled() &&
+          Control<QCheckBox>(widget, "playerDrawPose")->isEnabled() &&
+          Control<QCheckBox>(widget, "playerDrawBoxes")->isEnabled(),
+      "Drawing stays editable during a run");
+  Require(
+      !Control<QCheckBox>(widget, "playerPoseEnable")->isEnabled() &&
+          !Control<QCheckBox>(widget, "playerTeamEnable")->isEnabled() &&
+          !Control<QComboBox>(widget, "playerPoseModel")->isEnabled(),
+      "Compute choices are disabled during a run");
+  Require(
+      Control<QLabel>(widget, "playerAnalyticsStatus")->text().contains("run in progress"),
+      "The status says why the compute choices are disabled");
+  widget.setLiveDrawingOnly(false);
+  Require(
+      Control<QCheckBox>(widget, "playerPoseEnable")->isEnabled(),
+      "Compute choices come back when no run owns the pipeline");
+}
+
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
   QTemporaryDir directory;
   Require(directory.isValid(), "Cannot create test directory");
   Disabled();
+  LiveDrawingSelection();
   PoseDrawingAndRate();
   ModelChoices(directory.path());
   LegacyProgramBoxes(directory.path());

@@ -158,6 +158,7 @@ enum {
   PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT,
   PROP_DYNAMIC_ACCELERATION_SCALING,
   PROP_PREVIEW_OVERLAY_FLAGS,
+  PROP_PLAYER_OVERLAY_LAYERS,
   PROP_HIGH_BIT_DEPTH,
   PROP_HIGH_BIT_DEPTH_OUTPUT,
   PROP_SHADOW_LIFT,
@@ -1294,6 +1295,18 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_PLAYER_OVERLAY_LAYERS,
+      g_param_spec_uint(
+          "player-drawing-layers",
+          "Player drawing layers",
+          "Live drawing bitmask: boxes 1, pose 2, jerseys 4, actions 8, teams 16",
+          0,
+          31,
+          0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_HIGH_BIT_DEPTH,
       g_param_spec_boolean(
           "high-bit-depth",
@@ -1456,6 +1469,8 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->fixed_edge_rotation_angle_right = 10.0;
   videoprep->dynamic_acceleration_scaling = 1.0;
   videoprep->preview_overlay_flags = 0;
+  videoprep->player_overlay_layers = 0;
+  videoprep->player_overlay_layers_set = FALSE;
   videoprep->high_bit_depth = FALSE;
   videoprep->high_bit_depth_output = FALSE;
   videoprep->shadow_lift = 0.0;
@@ -1798,6 +1813,17 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       break;
     }
+    case PROP_PLAYER_OVERLAY_LAYERS: {
+      const guint previous = videoprep->player_overlay_layers;
+      const gboolean previous_set = videoprep->player_overlay_layers_set;
+      videoprep->player_overlay_layers = g_value_get_uint(value);
+      videoprep->player_overlay_layers_set = TRUE;
+      if (!set_priv_property("player-drawing-layers", std::to_string(videoprep->player_overlay_layers))) {
+        videoprep->player_overlay_layers = previous;
+        videoprep->player_overlay_layers_set = previous_set;
+      }
+      break;
+    }
     case PROP_HIGH_BIT_DEPTH: {
       const gboolean previous = videoprep->high_bit_depth;
       const gboolean previous_set = videoprep->high_bit_depth_set;
@@ -2012,6 +2038,13 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
              Property("preview-overlay-flags", std::to_string(videoprep->preview_overlay_flags))) &&
         ok;
   }
+  // Drawing layers are live, so a later set must win over the private config
+  // the bin built at launch rather than being re-applied underneath it.
+  if (videoprep->player_overlay_layers_set) {
+    ok = videoprep->priv->SetProperty(
+             Property("player-drawing-layers", std::to_string(videoprep->player_overlay_layers))) &&
+        ok;
+  }
   if (videoprep->high_bit_depth_set &&
       typed_property_wins_over_private_config(videoprep, videoprep->high_bit_depth_sequence, "high-bit-depth")) {
     ok = videoprep->priv->SetProperty(Property("high-bit-depth", videoprep->high_bit_depth ? "1" : "0")) && ok;
@@ -2109,6 +2142,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_PREVIEW_OVERLAY_FLAGS:
       g_value_set_uint(value, videoprep->preview_overlay_flags);
+      break;
+    case PROP_PLAYER_OVERLAY_LAYERS:
+      g_value_set_uint(value, videoprep->player_overlay_layers);
       break;
     case PROP_HIGH_BIT_DEPTH:
       g_value_set_boolean(value, videoprep->high_bit_depth);

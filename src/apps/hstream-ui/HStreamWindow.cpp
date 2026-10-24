@@ -7205,7 +7205,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     analytics_scroll->setWidgetResizable(true);
     analytics_scroll->setFrameShape(QFrame::NoFrame);
     player_analytics_controls_ = new PlayerAnalyticsControls();
-    player_analytics_controls_->setChangedCallback([this] { updatePresetDirtyState(); });
+    player_analytics_controls_->setChangedCallback([this] {
+      updatePresetDirtyState();
+      schedulePlayerDrawingRuntimeControl();
+    });
     analytics_scroll->setWidget(player_analytics_controls_);
     loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
     control_tabs->addTab(analytics_scroll, "Players");
@@ -17069,6 +17072,10 @@ void HStreamWindow::updateRunControls() {
   updateScoreboardControls();
   updateStitchingStillPreview();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (player_analytics_controls_)
+    player_analytics_controls_->setLiveDrawingOnly(running && !isCalibrationRun());
+  if (!running)
+    published_player_drawing_layers_.reset();
   const bool finalizing = isArchiveFinalizing();
   const bool archive_recovery_was_cleared =
       !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
@@ -21672,6 +21679,27 @@ void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, double 
   });
 }
 
+void HStreamWindow::schedulePlayerDrawingRuntimeControl() {
+  if (!player_analytics_controls_ || !pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
+      isCalibrationRun()) {
+    return;
+  }
+  const unsigned layers = player_analytics_controls_->drawingLayers();
+  if (published_player_drawing_layers_ && *published_player_drawing_layers_ == layers)
+    return;
+  scheduled_player_drawing_layers_ = layers;
+  scheduled_player_drawing_ready_ = false;
+  const quint64 generation = ++scheduled_player_drawing_generation_;
+  QTimer::singleShot(120, this, [this, generation]() {
+    if (generation != scheduled_player_drawing_generation_ || !pipeline_process_ ||
+        pipeline_process_->state() == QProcess::NotRunning) {
+      return;
+    }
+    scheduled_player_drawing_ready_ = true;
+    flushScheduledRuntimeControls();
+  });
+}
+
 void HStreamWindow::schedulePlaycropperRuntimeControl(const QString& id, int value) {
   appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
   scheduled_playcropper_controls_[id] = value;
@@ -21988,6 +22016,22 @@ void HStreamWindow::flushScheduledRuntimeControls() {
           {tone_element, "exposure", QString::number(cameraControlValue("Exposure_x100") / 100.0, 'f', 2)});
     }
     publishRuntimeControlBatch({controls.begin(), controls.end()}, commands);
+    return;
+  }
+  if (scheduled_player_drawing_ready_ && scheduled_player_drawing_layers_) {
+    const unsigned layers = *scheduled_player_drawing_layers_;
+    scheduled_player_drawing_layers_.reset();
+    scheduled_player_drawing_ready_ = false;
+    const QString value = QString::number(layers);
+    // Program bakes the whole selection; the previews draw the analytics
+    // layers and keep taking boxes through their own switch.
+    std::vector<RuntimePropertyCommand> commands{
+        {"playcropper0", "player-drawing-layers", value},
+        {"program_gpu_preview_sink", "player-drawing-layers", value},
+        {"stitched_gpu_preview_sink", "player-drawing-layers", value},
+        {"hmstitcher_preview_sink", "player-drawing-layers", value}};
+    if (publishRuntimeControlBatch({{"Player_Drawing_Layers", double(layers)}}, commands))
+      published_player_drawing_layers_ = layers;
     return;
   }
   if (scheduled_playtracker_controls_ready_ && !scheduled_playtracker_controls_.empty()) {

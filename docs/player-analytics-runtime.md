@@ -122,6 +122,15 @@ Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V4`, schema 4, with separate fresh
 COCO17 observations, retained display poses and team affiliation. All producers and consumers must
 be rebuilt together; no persistent telemetry schema changes.
 
+Drawing selections apply to a run in progress. The desktop sends the whole
+selection as `player-drawing-layers` to `playcropper0` and to the GPU preview
+sinks, and that live mask is authoritative over the launch-time
+`player-overlay-layers` and `plot-player-tracking` keys, so a layer switched
+off mid-run stays off. It selects among results the models already produced:
+no model starts, stops, or changes cadence, which is why the compute choices
+in the Players tab disable themselves while a run owns the pipeline. Tracks
+that had no colour allocated when the run started draw grey until it restarts.
+
 `max-due-rois` is an aggregate model-sample budget shared by pose, jersey, action
 and team. Weighted rotating turns favor pose 2:1:1:1 and lend unused work. Team
 lends most of its turns after the opening seconds, because a track leaves the due
