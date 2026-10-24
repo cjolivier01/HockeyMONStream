@@ -35,12 +35,15 @@ int main(int argc, char** argv) {
         changed.ok() && changed->gpu_id == 1 && changed->reader_queue_frames == 3 &&
             changed->tracker.keep_lost_frames == 0,
         "Explicit settings were ignored");
-    // Every scalar must come from the effective document, including every
-    // association parameter. Removing any one must fail instead of defaulting.
+    // Every resource/association setting must come from the effective document.
+    // Playback/output settings have their own resolver and missing-key tests.
     const auto amd = baseline->values["runtime"]["amd"];
     for (const auto& entry : amd) {
+      const auto key = entry.first.as<std::string>();
+      if (key == "output" || key == "playback_start_seconds")
+        continue;
       auto missing = YAML::Clone(baseline->values);
-      missing["runtime"]["amd"].remove(entry.first.as<std::string>());
+      missing["runtime"]["amd"].remove(key);
       Check(!hm::program::ResolveAmdProgramSettings(missing).ok(), "Missing AMD key acquired a hidden default");
     }
     for (const auto& entry : amd["tracker"]) {

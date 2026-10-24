@@ -3,6 +3,29 @@ load("//bazel:gpu_library.bzl", "gpu_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "render_settings",
+    hdrs = ["ProgramRenderSettings.h"],
+    include_prefix = "hstream/src/libs/program",
+)
+
+cc_library(
+    name = "output_config",
+    srcs = ["ProgramOutputConfig.cpp"],
+    hdrs = ["ProgramOutputConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":render_settings", "//src/libs/common:config_layers", "//src/libs/common:config_path",
+            "//src/libs/stitching:game_config", "//src/libs/stitching:stitching_algorithms"],
+)
+
+cc_test(
+    name = "output_config_test",
+    srcs = ["ProgramOutputConfigTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)"],
+    data = ["//configs:baseline.yaml"],
+    deps = [":output_config"],
+)
+
+cc_library(
     name = "va_program_sink",
     srcs = ["VaProgramSink.cpp"],
     hdrs = ["VaProgramSink.h"],
@@ -185,7 +208,7 @@ cc_library(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [
-        ":gpu", ":va_program_output",
+        ":gpu", ":va_program_output", ":render_settings",
         "//src/libs/gpu:convert_image",
         "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
         "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",
@@ -236,4 +259,31 @@ cc_test(
     args = ["$(location //configs:config_infer_yolov8_hockey_fp16.yaml)"],
     data = ["//configs:config_infer_yolov8_hockey_fp16.yaml"],
     deps = [":detector_settings", "//src/libs/assets:asset_manager"],
+)
+
+cc_library(
+    name = "amd_program_admission",
+    srcs = ["AmdProgramAdmission.cpp"],
+    hdrs = ["AmdProgramAdmission.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_layers", "//src/libs/common:config_path"],
+)
+cc_test(
+    name = "amd_program_admission_test",
+    srcs = ["AmdProgramAdmissionTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)", "$(location //configs:ds_hockey_app_config.yaml)"],
+    data = ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml"],
+    deps = [":amd_program_admission"],
+)
+cc_library(
+    name = "file_output",
+    srcs = ["ProgramFileOutput.cpp"],
+    hdrs = ["ProgramFileOutput.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+cc_test(
+    name = "file_output_test",
+    srcs = ["ProgramFileOutputTest.cpp"],
+    deps = [":file_output"],
 )

@@ -1,10 +1,11 @@
 # AMD GPU port
 
-Status: native HIP kernels, VA/HIP video interoperability, and native MIGraphX
-detector execution work on AMD. A standalone raw-camera Program qualifier now
-composes stitching, detection, rink filtering, tracking, crop and hardware encode. **The
-`hstream-cli` and desktop video pipelines still require NVIDIA.** This is the
-compute/video/inference foundation of the port, not an AMD release of the application.
+Status: native HIP kernels, VA/HIP video interoperability and MIGraphX inference
+work on AMD. A ROCm build of `hstream-cli` now owns the saved-calibration Program
+video path: stereo decode, stitching, detection, rink filtering, geometric
+tracking, camera crop, GL preview and HEVC/MP4 output. Desktop integration, audio,
+scoreboard and other optional application features remain unfinished. This is
+not yet a complete AMD application release.
 
 ## Implemented paths
 
@@ -99,7 +100,7 @@ through NULL. GStreamer 1.24.2 closes the postprocessor's filter on PAUSED → R
 and only reopens it on NULL → READY, so stopping at READY fails renegotiation.
 Samples retain their surfaces across seek, chapter change and reader destruction.
 No decoded pixels are mapped. The reader returns file-relative stream timestamps;
-the future playlist owner must supply chapter offsets and pair the cameras.
+`VaVideoPlaylist` supplies chapter offsets and `VaStereoVideo` pairs the cameras.
 Cancellation is permanent and checked between bounded waits. GStreamer/driver
 calls themselves are not interruptible. Errors retire the reader.
 
@@ -251,13 +252,13 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 
 | Boundary | Current implementation | Remaining AMD work |
 | --- | --- | --- |
-| Decode and encode | NVIDIA codecs and NVMM; standalone VA/HIP codec tests | Integrate AMD codecs and imported surfaces into the application graph |
-| Allocation and batching | `NvBufSurface`, NVIDIA pools and DeepStream metadata | Portable surface ownership and synchronization integrated with GStreamer |
-| Stitching integration | HIP-capable `hm-cupano` called by a DeepStream plugin | Connect HIP to portable surfaces; port high-bit conversion adapters |
-| Model execution | TensorRT application; standalone native MIGraphX detector | Application integration, model preparation/cache identity, broader numerical qualification |
-| Tracking | Native geometric tracker and shared rink/camera policy qualified independently | Application integration preserving observations, resets and seek behavior |
-| Crop and preview | CUDA transforms and NVIDIA graphics interop | Portable crop/surface adapters and qualified AMD graphics interop |
-| Desktop, jobs and publication | NVIDIA runner and media paths | Playback, seeking, audio, archive and highlight export on the AMD backend |
+| Decode and encode | VA H.264/HEVC stereo readers and HEVC/MP4 output in the ROCm CLI | Audio and additional application sink modes |
+| Allocation and pairing | Bounded VA DMA-BUF pools, HIP imports and exact stereo clock | Broader codec/device qualification |
+| Stitching | Saved calibration with HIP `hm-cupano` and shared conversion | Automatic calibration, rotated generations and live controls |
+| Model execution | Native MIGraphX inference in the ROCm CLI | Compiled-model cache, broader numerical qualification and optional analytics |
+| Tracking | Native geometric association, shared rink filter and camera policy | Appearance reassociation, telemetry and desktop seek policy |
+| Crop and preview | Shared HIP crop into VA output; native-window GL preview | Desktop channels, resize, pause and tab behavior |
+| Desktop, jobs and publication | Core video CLI and atomic local MP4 output | Desktop playback/controls, audio, managed archives and highlight export |
 
 Do not pass `--config=rocm` to `//...` as an application build: many targets
 still directly depend on NVIDIA libraries. Compute tests do not establish
@@ -326,9 +327,9 @@ GStreamer build or misleading caps are needed. The canonical render-node path
 is also required: VA factories compare their path with the context verbatim,
 so passing a PCI symlink alias can trigger an error while starting elements.
 
-This remains component qualification. Raw-camera pairing/stitching, full Program
-configuration/startup, model caching, audio, seek/reset, native desktop controls
-and installed AMD runtime discovery are still pending.
+These tests qualify components. The CLI integration described below composes
+raw-camera pairing/stitching and saved Program startup. Model caching, audio,
+desktop seek/reset controls and installed runtime discovery remain pending.
 
 
 ## Raw-camera Program qualification
@@ -406,8 +407,8 @@ requires every value from the effective document and validates integer ranges,
 timeout conversion and association settings before GPU preparation. It does not
 select an application backend or change NVIDIA/Aspen behavior. The raw Program
 qualifier now consumes these settings; its input/model paths and codec/output
-choices remain explicit qualification arguments. CLI/UI configuration loading
-and runtime ownership are still pending.
+choices remain explicit qualification arguments. The ROCm CLI now resolves application configuration and owns these components;
+desktop integration remains pending.
 
 ## Reusable Program processor
 
@@ -454,9 +455,8 @@ requires matching codec/geometry/frame rate, and exposes a continuous video
 clock separately from each retained sample's unchanged file segment/PTS. Seeks
 at a boundary select the next chapter; seeking exactly to the end produces
 clean EOS and still permits subsequent seeks. Errors retire the reader and
-cancellation is permanent. The raw Program qualifier now uses this owner, with
-one file per camera; application source selection and stereo/audio coordination
-remain pending.
+cancellation is permanent. The raw Program qualifier and ROCm CLI use this owner through `VaStereoVideo`;
+application audio coordination remains pending.
 
 The VA reader consumes non-selected compressed streams through closed valves.
 Leaving audio unlinked caused a demuxer error when its tail outlasted video;
@@ -566,7 +566,7 @@ sequence numbers after a seek and ends at the shorter synchronized recording.
 A half-failed seek retires both readers. The output clock comes from the frame
 index and saved origin, so chapter duration rounding and audio tails cannot
 shift Program time. Retained VA samples survive seeks and owner destruction.
-The configured qualifier uses this owner; normal CLI/UI playback and audio
+The configured qualifier and AMD CLI use this owner. Desktop playback and audio
 coordination remain pending. Hardware tests cover fractional offsets, both
 left- and right-limited EOS, 25/30 fps chapter transitions, retained pixels,
 backward/end seeks, partial seek failure and cancellation.
@@ -592,8 +592,8 @@ Hardware tests cover five-frame NV12 and P010 HEVC files, duplicate descriptor
 ownership, repeated EOS, post-EOS rejection, nonempty-file rejection, timestamp
 overflow, exhausted-pool timeout, concurrent cancellation of a blocked acquire,
 retained surfaces after destruction and headless EGL/GL preview. The configured
-qualifier now uses both the stereo and sink owners. These are reusable runtime
-components; normal CLI/UI routing and application audio remain pending.
+qualifier and AMD CLI use both the stereo and sink owners. Desktop routing and
+application audio remain pending.
 
 Output review found that the generic VA encoder factory can select another
 GPU on a multi-device host. `gpu/vaapi/VaElement` now shares the reader factory
@@ -608,3 +608,84 @@ All nine focused output/source hardware tests and the full local x86 build
 pass after the fixes. Both second-round output reviews found no necessary
 fixes. Jetson still lacks its cross-compiler and reachable host; native SBSA
 requires an ARM64 machine.
+
+## AMD CLI integration
+
+`--config=rocm` selects `src/apps/hstream-cli/AmdPipelineApp.cpp` for the existing
+`hstream-cli` target. CUDA builds retain `PipelineApp.cpp`. The AMD entry point
+loads immutable baseline/user/game/application/launch configuration and requires
+saved source chapters, synchronization, calibration and rink mask. It owns one
+serialized `VaStereoVideo`, `AmdProgramProcessor` and one bounded `VaProgramSink`
+per requested output. No steady-state video readback is added. SIGINT/SIGTERM
+cancel source/sink waits after preparation; during model compilation the process
+retains ordinary signal termination. A desktop parent identity is checked with
+`PR_SET_PDEATHSIG` before startup. GLib output and errors join the existing bounded
+process diagnostics.
+
+`ProgramOutputConfig` resolves dimensions, bitrate, playback start, preview
+clocking, crop, edge rotation and tone. AMD-specific defaults live exclusively
+under `runtime.amd` in the shared baseline. Canonical output settings and native
+property aliases respect layer precedence; a single canonical dimension preserves
+the baseline aspect unless the counterpart was explicitly configured. Tone is
+applied to the Program output after detection. This does not yet reproduce
+pre-inference tone changes from the native high-bit stitching path.
+
+The supported command is currently explicit video-only playback. `AmdProgramAdmission`
+rejects enabled audio, scoreboard, analytics, diagnostic overlays, telemetry and
+other known unconnected stages before preparing the GPU. It also rejects disabling
+a mandatory Program stage. Disable audio and scoreboard explicitly while qualifying
+this increment:
+
+```bash
+bazelisk build --config=opt --config=rocm //src/apps/hstream-cli:hstream-cli
+HM_CONFIG_ROOT="$PWD/configs" /tmp/hstream-private-gstva/run \
+  /tmp/hstream-private-migraphx/run bazel-bin/src/apps/hstream-cli/hstream-cli \
+  -g GAME -c configs/ds_hockey_app_config.yaml \
+  --enable-sources=URI-MULTIPLE --enable-sinks=FAKE --start-time=60 -t=2 \
+  --options=pipeline.hmaudio.enable=0,pipeline.hmplaycropper.show-scoreboard=0 \
+  --options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml
+```
+
+Use `RENDER` for a GL preview, optionally with `--render-window-id=XID` and
+`--render-realtime`. Use `ENCODE_FILE` with an explicit
+`--options=video_out.output_video_path=/path/to/new.mp4` for HEVC output. Sink names
+may be comma-separated. Rendering needs an available display; a headless host
+can still run FAKE/ENCODE_FILE. Private runtime launchers remain required on the
+qualified host; package discovery and installation are pending.
+
+`ProgramFileOutput` holds an unnamed file on the destination filesystem. Only
+after every sink reports EOS does it flush the file and create the final name
+without replacement. Errors, cancellation and process death leave no partial
+MP4 at that name. The directory is pinned for the run. This initial publication
+path requires Linux `O_TMPFILE` and `/proc/self/fd`; unsupported filesystems fail
+before GPU preparation. It does not replace managed archive publication or
+`hstream-finalize`. An error flushing the directory after linking reports that
+the completed file is already published.
+
+The CLI accepts one application YAML and rejects two-stage calibration, unknown
+arguments, unsupported sinks and malformed time/preview arguments. Time limits
+advance from completed Program frames. Runtime stdin commands, desktop preview
+channel routing, seek/pause acknowledgments, audio, scoreboard, player overlays,
+telemetry, managed jobs and automatic calibration are still integration work.
+Tracker association uses the explicit AMD geometric settings; it does not run
+NvDCF's appearance model. Model compilation is repeated at startup until the
+native cache is implemented.
+
+The initial normal CLI runs processed 120 frames and 2,719 track observations
+from `vegas-calheat-1` at 60 seconds. Encoded output was 3840×2160 HEVC with 120
+frames and a 2.002-second stream duration. These runs qualify the core video
+composition, not desktop or audio behavior. CPU startup tests cover argument
+rejection, feature admission, configuration precedence and publication on success,
+cancellation, SIGKILL and a conflicting destination.
+
+CLI review closure: round one fixed duplicate leveling rotation, missing feature
+aliases/native stages, native disable precedence and cancellation during the
+publication flush. Round two added mandatory stitching and calibration-only mode
+checks. Round three rejected unsupported post-stitch rotation requests; round
+four preserved explicit null clearing across layers. Both fifth-round reviews
+found no necessary fixes. All six focused HIP and eight native startup/config
+checks pass after the fixes, as does the full local x86 build. The corrected
+120-frame CLI export retains 2,719 track observations, Main10/full-range BT.709
+and centered chroma. An offline 960-pixel still was inspected; that bounded
+validation readback is outside playback. The synchronized baseline companion is
+HockeyMON PR #219 at `c978e984`; existing default values remain unchanged.

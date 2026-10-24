@@ -9,6 +9,7 @@
 
 #include "cupano/pano/blendMode.h"
 #include "hstream/src/libs/detection/HipDetector.h"
+#include "hstream/src/libs/program/ProgramRenderSettings.h"
 #include "hstream/src/libs/tracking/ProgramTracking.h"
 
 namespace hm::program {
@@ -22,14 +23,6 @@ struct AmdProgramProcessorConfig {
   pano::BlendSettings blend;
   bool minimize_blend, compact_workspace;
   float raise_center_ratio, lower_bottom_ratio;
-};
-
-struct ProgramRenderSettings {
-  bool no_crop;
-  float fixed_edge_rotation_angle_left, fixed_edge_rotation_angle_right;
-  float shadow_lift_percent;
-  bool lift_shadow_black_point;
-  float exposure;
 };
 
 struct AmdProgramFrame {

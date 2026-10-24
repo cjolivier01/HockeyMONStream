@@ -8,7 +8,7 @@ HSTREAM_CLI_SRCS = glob(
         "*.cpp",
         "*.h",
     ],
-    exclude = ["*Test.cpp", "PlayerModelCache.cpp"],
+    exclude = ["*Test.cpp", "PlayerModelCache.cpp", "AmdPipelineApp.cpp", "AmdPipelineOptions.cpp"],
 )
 
 HSTREAM_CLI_COPTS = [
@@ -107,12 +107,31 @@ filegroup(
 
 cc_binary(
     name = "hstream-cli",
-    srcs = HSTREAM_CLI_SRCS,
+    srcs = select({
+        "//:use_hip": ["AmdPipelineApp.cpp"],
+        "//conditions:default": HSTREAM_CLI_SRCS,
+    }),
     copts = HSTREAM_CLI_COPTS,
-    data = HSTREAM_CLI_RUNTIME_DATA,
+    data = select({
+        "//:use_hip": ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml",
+            "//configs:play_tracker_config.yaml", "//configs:config_infer_yolov8_hockey.yaml",
+            "//configs:config_infer_yolov8_hockey_fp16.yaml"],
+        "//conditions:default": HSTREAM_CLI_RUNTIME_DATA,
+    }),
     linkopts = HSTREAM_CLI_LINKOPTS,
     visibility = ["//visibility:public"],
-    deps = HSTREAM_CLI_DEPS,
+    deps = select({
+        "//:use_hip": [
+            ":amd_pipeline_options", "//src/libs/program:amd_program_admission", "//src/libs/program:file_output",
+            "//src/libs/program:amd_program_processor", "//src/libs/program:launch_config",
+            "//src/libs/program:detector_settings", "//src/libs/program:output_config",
+            "//src/libs/program:va_program_sink", "//src/libs/gpu/vaapi:va_stereo_video",
+            "//src/libs/common:baseline_config", "//src/libs/common:config_path",
+            "//src/libs/common:process_diagnostics", "//src/libs/common:utils_base",
+            "//src/libs/stitching:stitching_algorithms",
+        ],
+        "//conditions:default": HSTREAM_CLI_DEPS,
+    }),
 )
 
 cc_test(
@@ -541,4 +560,16 @@ py_test(
     env_inherit = ["HOME"],
     tags = ["local"],
     size = "medium",
+)
+
+cc_library(
+    name = "amd_pipeline_options",
+    srcs = ["AmdPipelineOptions.cpp"],
+    hdrs = ["AmdPipelineOptions.h"],
+    deps = ["//src/libs/common:utils_base", "@gstreamer", "@com_google_absl//absl/status:statusor"],
+)
+cc_test(
+    name = "amd_pipeline_options_test",
+    srcs = ["AmdPipelineOptionsTest.cpp"],
+    deps = [":amd_pipeline_options"],
 )
