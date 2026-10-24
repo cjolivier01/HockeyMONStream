@@ -7,6 +7,7 @@
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -1415,8 +1416,13 @@ int rename_archive_entry_no_replace(
     const char* destination_name) {
   constexpr unsigned int kRenameNoReplace = 1;
   const bool force_unsupported = g_getenv("HSTREAM_CONFIGURATOR_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED") != nullptr;
-  if (!force_unsupported && ::syscall(
-          SYS_renameat2, source_directory_fd, source_name, destination_directory_fd, destination_name,
+  if (!force_unsupported &&
+      ::syscall(
+          SYS_renameat2,
+          source_directory_fd,
+          source_name,
+          destination_directory_fd,
+          destination_name,
           kRenameNoReplace) == 0)
     return 0;
   const int rename_errno = force_unsupported ? EINVAL : errno;
@@ -1429,8 +1435,7 @@ int rename_archive_entry_no_replace(
   // locked, private cleanup directory must remain atomic: link then unlink
   // could delete a foreign source that replaces the original between calls.
   const bool private_destination = std::strcmp(destination_name, "entry") == 0 ||
-      std::strcmp(destination_name, "fallback") == 0 ||
-      std::strcmp(destination_name, "committed") == 0;
+      std::strcmp(destination_name, "fallback") == 0 || std::strcmp(destination_name, "committed") == 0;
   if (private_destination) {
     struct stat destination_stat{};
     if (::fstatat(destination_directory_fd, destination_name, &destination_stat, AT_SYMLINK_NOFOLLOW) == 0) {
@@ -4957,7 +4962,8 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
         cleanup_errno = errno;
       recovery_lock_fd = -1;
       if (cleanup_errno != 0) {
-        return absl::InternalError(TO_STRING("Failed to close archive work ownership lock: " << std::strerror(cleanup_errno)));
+        return absl::InternalError(
+            TO_STRING("Failed to close archive work ownership lock: " << std::strerror(cleanup_errno)));
       }
       absl::Status lock_cleanup = absl::OkStatus();
       if (have_recovery_lock_identity) {
@@ -8499,8 +8505,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
 
   const auto frozen = get_node(config_, "stitching.auto_input_lens_frozen");
   const auto private_frozen = get_node(private_config_, "stitching.auto_input_lens_frozen");
-  const bool freeze_changed = frozen.has_value() &&
-      (!private_frozen.has_value() || YAML::Dump(*frozen) != YAML::Dump(*private_frozen));
+  const bool freeze_changed =
+      frozen.has_value() && (!private_frozen.has_value() || YAML::Dump(*frozen) != YAML::Dump(*private_frozen));
   const bool private_matches = !freeze_changed && !provider_changed && !filtering_changed && !resolution_changed &&
       !rink_context_changed && !mask_time_changed && private_matcher_value.has_value() &&
       *private_matcher_value == matcher && private_backend_value.has_value() && *private_backend_value == backend &&
@@ -9014,6 +9020,29 @@ bool Configurator::overlay_config(const std::string& node_name, const std::strin
   }
   // std::cout << config_ << std::endl;
   return true;
+}
+
+absl::Status Configurator::apply_settings_overlay(const fs::path& path) {
+  auto bytes = stitching::read_bounded_regular_file_no_follow(path, 16 * 1024 * 1024, "runtime settings overlay");
+  if (!bytes.ok())
+    return bytes.status();
+  try {
+    const YAML::Node overlay = YAML::Load(*bytes);
+    if (!overlay.IsMap())
+      return absl::InvalidArgumentError("Runtime settings overlay must be a root mapping");
+    // Parsing and structural validation complete before touching the live config.
+    auto merged = merge_nodes(config_, overlay, /*warn_if_key_not_in_dest=*/false);
+    record_explicit_overlay(overlay, {}, 3);
+    config_ = merged;
+    YAML::Node document;
+    document["path"] = path.string();
+    document["role"] = "runtime-settings-overlay";
+    document["values"] = YAML::Clone(overlay);
+    recording_config_documents_.push_back(document);
+    return absl::OkStatus();
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Invalid runtime settings overlay: " + std::string(exception.what()));
+  }
 }
 
 YAML::Node Configurator::recording_configuration() const {

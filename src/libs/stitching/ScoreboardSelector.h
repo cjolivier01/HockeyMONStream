@@ -26,6 +26,18 @@ class ScoreboardSelector {
     std::string snapshot_identity;
   };
 
+  struct CanvasSnapshot {
+    int width{0};
+    int height{0};
+    std::string png_bytes;
+    CanvasGeneration generation;
+  };
+
+  // The immutable bytes and identity are captured together under native locks.
+  static absl::StatusOr<CanvasSnapshot> OpenCanvas(
+      const std::filesystem::path& game_dir,
+      bool allow_single_source = false);
+
   static bool IsDisabled(const Polygon& polygon);
   static absl::StatusOr<Polygon> ValidateAndOrder(Polygon polygon, int image_width, int image_height);
   static absl::Status Save(

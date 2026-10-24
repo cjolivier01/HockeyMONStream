@@ -1,6 +1,8 @@
 #include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/BackendOptions.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 
+#include <QtCore/QCommandLineParser>
 #include <QtCore/QDebug>
 #include <QtCore/QtGlobal>
 #include <QtGui/QIcon>
@@ -8,11 +10,25 @@
 #include <QtWidgets/QMessageBox>
 
 #include <exception>
+#include <iostream>
 
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "src/apps/hstream-ui/UiDiagnostics.h"
 
 int main(int argc, char** argv) {
+  // Help must also work on a headless machine with no display server.
+  for (int index = 1; index < argc; ++index) {
+    if (QString::fromLocal8Bit(argv[index]) == "--help" || QString::fromLocal8Bit(argv[index]) == "-h") {
+      std::cout << "Usage: hstream-ui [options]\n"
+                   "  --backend hstream|hockeymon    Program processing backend (default: hstream)\n"
+                   "  --backend-runner PATH         Absolute backend executable\n"
+                   "  --backend-launch PATH         Initial HockeyMON launch document\n"
+                   "  --game-id ID                  Select an existing game\n"
+                   "  --play                        Start the selected game\n"
+                   "  --stitching-calibration-only   Open shared native calibration mode\n";
+      return 0;
+    }
+  }
   hm::diagnostics::Initialize("hstream-ui", argc ? argv[0] : nullptr);
   install_qt_diagnostics();
   hm::ui_internal::configure_application_identity();
@@ -26,6 +42,17 @@ int main(int argc, char** argv) {
   }
 #endif
   QApplication app(argc, argv);
+  QCommandLineParser parser;
+  parser.addHelpOption();
+  parser.addOptions({
+      {QStringList{"backend"}, "Program processing backend", "name", "hstream"},
+      {QStringList{"backend-runner"}, "Absolute Program backend executable", "path"},
+      {QStringList{"backend-launch"}, "Private initial HockeyMON launch document", "path"},
+      {QStringList{"game-id", "g"}, "Select an existing game", "id"},
+      {QStringList{"play"}, "Start the selected game"},
+      {QStringList{"stitching-calibration-only"}, "Open shared native calibration mode"},
+  });
+  parser.process(app);
   UiDiagnostics diagnostics;
   hm::diagnostics::Breadcrumb("ui", "QApplication ready");
   if (!hm::diagnostics::Directory().empty())
@@ -36,7 +63,11 @@ int main(int argc, char** argv) {
   if (!desktop_error.isEmpty())
     qWarning().noquote() << "HStream desktop integration:" << desktop_error;
   try {
-    HStreamWindow window;
+    const hm::ui::BackendOptions backend{
+        parser.value("backend"), parser.value("backend-runner"), parser.value("backend-launch")};
+    backend.verifyRunner();
+    HStreamWindow window(nullptr, backend);
+    window.openGame(parser.value("game-id"), parser.isSet("play"), parser.isSet("stitching-calibration-only"));
     window.show();
     const int result = app.exec();
     hm::diagnostics::Finish(result);

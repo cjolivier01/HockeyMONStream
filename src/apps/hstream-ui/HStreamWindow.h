@@ -1,6 +1,7 @@
 #pragma once
 
 #include "src/apps/hstream-ui/ApplicationIdentity.h"
+#include "src/apps/hstream-ui/BackendOptions.h"
 
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -51,6 +52,7 @@ class QProgressBar;
 class QSplitter;
 class QThread;
 class QTimer;
+class QTemporaryDir;
 class QToolButton;
 class PipelineInspectorWidget;
 class PlayerAnalyticsControls;
@@ -58,6 +60,9 @@ class RinkFramingControls;
 class RinkLevelingDialog;
 class ScoreboardSelectionDialog;
 class ProjectionCropDialog;
+namespace hm::ui {
+class BackendPreview;
+}
 
 namespace hm::ui_internal {
 
@@ -124,7 +129,7 @@ class HStreamWindow : public QMainWindow {
   friend struct HStreamWindowTestAccess;
 
  public:
-  explicit HStreamWindow(QWidget* parent = nullptr);
+  explicit HStreamWindow(QWidget* parent = nullptr, const hm::ui::BackendOptions& backend = {});
   ~HStreamWindow() override;
 
   QString pipelineStateText() const;
@@ -137,6 +142,7 @@ class HStreamWindow : public QMainWindow {
   int videoSetCount() const;
   double cameraControlValue(const QString& id) const;
   int cameraTabCount() const;
+  void openGame(const QString& game_id, bool play, bool calibration_only = false);
 
  protected:
   void closeEvent(QCloseEvent* event) override;
@@ -434,6 +440,10 @@ class HStreamWindow : public QMainWindow {
   void schedulePlaycropperRuntimeControl(const QString& id, int value);
   void schedulePlayerDrawingRuntimeControl();
   QString pipelineRunnerPath() const;
+  QString nativeRunnerPath() const;
+  bool hockeyMonProgram() const;
+  void prepareBackendPreview(QProcessEnvironment& environment);
+  bool handleBackendPublication(const QString& line);
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
   QStringList pipelineArguments(bool standalone = false, bool job_export = false) const;
@@ -1027,6 +1037,14 @@ class HStreamWindow : public QMainWindow {
   bool saved_run_autooptimizer_{false};
   QString development_runtime_root_;
   QString development_pipeline_runner_;
+  hm::ui::BackendOptions backend_;
+  QString initial_launch_game_;
+  std::unique_ptr<QTemporaryDir> backend_preview_directory_;
+  std::unique_ptr<hm::ui::BackendPreview> backend_preview_;
+  bool active_hockeymon_program_{false};
+  QStringList active_backend_output_kinds_;
+  bool backend_publication_complete_{false};
+  QString backend_publication_error_;
   QString development_bazel_bin_;
   QString saved_stitch_frame_time_;
   hm::stitching::ControlPointFiltering saved_control_point_filtering_;
