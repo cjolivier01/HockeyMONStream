@@ -15,6 +15,15 @@ extern "C" {
 namespace hm::media {
 namespace {
 using Clock = std::chrono::steady_clock;
+// FFmpeg 6 introduced AV_PROFILE_*; FFmpeg 8 removed the old FF_PROFILE_*
+// names. Retain the older spelling only for SDKs predating the public names.
+#if defined(AV_PROFILE_UNKNOWN) && defined(AV_PROFILE_AAC_LOW)
+constexpr int kUnknownProfile = AV_PROFILE_UNKNOWN;
+constexpr int kAacLowProfile = AV_PROFILE_AAC_LOW;
+#else
+constexpr int kUnknownProfile = FF_PROFILE_UNKNOWN;
+constexpr int kAacLowProfile = FF_PROFILE_AAC_LOW;
+#endif
 int Channels(const AVCodecParameters& parameters) {
 #if LIBAVCODEC_VERSION_MAJOR >= 59
   return parameters.ch_layout.nb_channels;
@@ -134,7 +143,7 @@ absl::Status Mp4AudioReader::Open(const std::filesystem::path& path) {
     return impl.Retire(absl::InvalidArgumentError("MP4 has no audio track"));
   const auto* parameters = impl.audio->codecpar;
   if (parameters->codec_id != AV_CODEC_ID_AAC ||
-      (parameters->profile != FF_PROFILE_UNKNOWN && parameters->profile != FF_PROFILE_AAC_LOW))
+      (parameters->profile != kUnknownProfile && parameters->profile != kAacLowProfile))
     return impl.Retire(absl::UnimplementedError("MP4 audio requires AAC-LC"));
   if (parameters->sample_rate <= 0 || parameters->sample_rate > 96000 || Channels(*parameters) < 1 ||
       Channels(*parameters) > 2 || impl.audio->time_base.num <= 0 || impl.audio->time_base.den <= 0)
@@ -238,7 +247,7 @@ absl::StatusOr<std::optional<AudioFrame>> Mp4AudioReader::Read() {
     if (frame.sample_rate != impl.format.rate || Channels(frame) != impl.format.channels || frame.nb_samples <= 0 ||
         size_t(frame.nb_samples) > impl.config.maximum_frame_samples ||
         (frame.format != AV_SAMPLE_FMT_FLTP && frame.format != AV_SAMPLE_FMT_FLT) ||
-        impl.decoder->profile != FF_PROFILE_AAC_LOW || frame.pts == AV_NOPTS_VALUE)
+        impl.decoder->profile != kAacLowProfile || frame.pts == AV_NOPTS_VALUE)
       return impl.Retire(absl::DataLossError("AAC frame changed format or exceeded its sample bound"));
     const int64_t sample = av_rescale_q(frame.pts, impl.audio->time_base, {1, impl.format.rate});
     if (sample == INT64_MIN || sample > INT64_MAX - frame.nb_samples || sample < impl.previous_end)
