@@ -50,6 +50,13 @@ cc_library(
     deps = [":amdhip64"],
 )
 cc_import(name = "amdhip64", shared_library = "lib/libamdhip64.so")
+cc_library(
+    name = "migraphx",
+    hdrs = glob(["include/migraphx/**"]),
+    includes = ["include"],
+    deps = [":migraphx_c", ":runtime"],
+)
+cc_import(name = "migraphx_c", shared_library = "lib/libmigraphx_c.so")
 """)
 
 rocm_repository = repository_rule(

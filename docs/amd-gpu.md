@@ -1,9 +1,9 @@
 # AMD GPU port
 
-Status: native HIP builds of the shared compute kernels and VA/HIP video
-interoperability tests work on AMD. **The
+Status: native HIP kernels, VA/HIP video interoperability, and native MIGraphX
+detector execution work on AMD. **The
 `hstream-cli` and desktop video pipelines still require NVIDIA.** This is the
-compute portion of the port, not an AMD release of the application.
+compute/video/inference foundation of the port, not an AMD release of the application.
 
 ## Implemented paths
 
@@ -34,13 +34,14 @@ targets do not need CUDA, TensorRT, or DeepStream SDKs.
 make amd-kernels
 make test-amd-kernels
 make test-amd-video
+make test-amd-inference
 
 # Equivalent test command; also works without --config=rocm on NVIDIA.
 bazelisk test --config=opt --config=rocm --local_test_jobs=1 --test_output=errors \
   //src/libs/gpu:portable_gpu_tests
 ```
 
-The suite explicitly selects GPU tests, including HStream's overlay, highlights,
+The suite explicitly selects GPU tests, including HStream's detector, overlay, highlights,
 pose and team tests and eight tests from the pinned stitching library.
 Run GPU tests serially: concurrent CUDA contexts can exhaust device memory even
 when each individual test fits.
@@ -96,6 +97,45 @@ application restart/seek qualification must resolve the separate media-stack
 lifetime issue before claiming production playback support. RGBA/BGRA import
 layouts are accepted by the adapter, but only NV12/P010 codec paths are qualified.
 
+## Native AMD inference
+
+`src/libs/gpu/migraphx/MigraphxSession.*` compiles static ONNX shapes with
+MIGraphX's native GPU target. It supports FP32 or FP16 operations with contiguous
+FP32 bindings. It disables automatic copies, allocates bindings once, and uses
+one explicit caller-owned HIP stream. Destruction drains that stream before
+freeing model storage. All input shapes and the binding byte bound are explicit;
+unsupported tensor contracts fail preparation. Compiled-model caching is still
+pending, so preparation currently recompiles the model at startup.
+
+`src/libs/detection/HipDetector.*` composes that session with shared CUDA/HIP
+preprocessing and proposal filtering. It accepts GPU RGBA8, packed RGB10, NV12
+and P010. YUV callers supply color matrix/range coefficients from their negotiated
+video format. Preprocessing uses half-pixel bilinear RGB sampling, explicit
+aspect/padding settings, and the model's scale factor. GPU filtering accepts the
+shipped YOLO `[1,N,6]` xyxy/score/class output contract. Only valid proposals cross
+to the CPU for deterministic, class-aware NMS and inverse letterbox mapping.
+There is no frame readback. Metadata storage is bounded by model rows and the
+supplied I/O limit. Readback uses two stream waits and at most `N * 28 + 4` bytes
+per inference (usually a few kilobytes after thresholding). Frame-level batching,
+GPU NMS and asynchronous scheduling are future optimization work.
+
+`make test-amd-inference` requires the MIGraphX headers and runtime in the ROCm
+SDK. The tests exercise multi-input FP32/FP16 programs, successive stream-ordered
+results, teardown with queued work, invalid contracts, RGB/YUV preprocessing
+against OpenCV float bilinear sampling, and malformed proposal filtering. The
+CPU `//src/libs/detection:postprocess_test` additionally checks padding removal,
+class-aware NMS, output bounds and deterministic score ties.
+
+`//src/libs/detection:hip_detector_fixture` is an offline qualification tool. Its
+arguments are `MODEL IMAGE INFER_YAML fp32|fp16 WIDTH HEIGHT IO_BYTES OUTPUT_CSV
+RUNS`. It uploads one CPU-decoded image and writes only detection metadata; this
+bounded fixture path is not used for production video. On one real hockey
+fixture with the shipped 1408×544 small detector, native AMD FP16 and CPU ONNX
+FP32 both return 23 players. Matched box IoU is at least 0.9534 (mean 0.9834), with
+maximum confidence difference 0.0113. Eight native runs return identical results;
+warm preprocessing/inference/filtering/readback/NMS takes 4.4–4.7 ms on the RX
+9060 XT. This single-frame check does not qualify full-game detection or tracking.
+
 ## Application work still required
 
 | Boundary | Current implementation | Remaining AMD work |
@@ -103,7 +143,7 @@ layouts are accepted by the adapter, but only NV12/P010 codec paths are qualifie
 | Decode and encode | NVIDIA codecs and NVMM; standalone VA/HIP codec tests | Integrate AMD codecs and imported surfaces into the application graph |
 | Allocation and batching | `NvBufSurface`, NVIDIA pools and DeepStream metadata | Portable surface ownership and synchronization integrated with GStreamer |
 | Stitching integration | HIP-capable `hm-cupano` called by a DeepStream plugin | Connect HIP to portable surfaces; port high-bit conversion adapters |
-| Model execution | TensorRT and NVIDIA inference plugins | AMD inference, model preparation/cache identity, numerical qualification |
+| Model execution | TensorRT application; standalone native MIGraphX detector | Application integration, model preparation/cache identity, broader numerical qualification |
 | Tracking | DeepStream tracker interfaces and native camera policy | Tracker integration preserving observations, resets, and seek behavior |
 | Crop and preview | CUDA transforms and NVIDIA graphics interop | Portable crop/surface adapters and qualified AMD graphics interop |
 | Desktop, jobs and publication | NVIDIA runner and media paths | Playback, seeking, audio, archive and highlight export on the AMD backend |
@@ -114,7 +154,7 @@ end-to-end AMD playback or export support.
 
 ## Hardware evidence
 
-On the RX 9060 XT (`gfx1200`, ROCm 6.4.1), the twelve-test portable suite passes.
+On the RX 9060 XT (`gfx1200`, ROCm 6.4.1), the shared portable suite passes.
 Pose preprocessing reports zero error against OpenCV; the additional sixteen
 Pillow jersey crops have zero pixel mismatches and zero normalized error.
 Overlay checks cover RGBA8, RGB10A2, I420, P010, clipping, row padding, guard

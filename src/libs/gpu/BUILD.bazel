@@ -13,6 +13,7 @@ test_suite(
     name = "portable_gpu_tests",
     tags = ["manual"],
     tests = [
+        "//src/libs/detection:gpu_test",
         "//src/libs/draw_display:analytics_overlay_test",
         "//src/libs/highlights:texture_blend_test",
         "//src/libs/player_analytics/runtime:pose_gpu_test",

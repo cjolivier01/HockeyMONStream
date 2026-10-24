@@ -1,0 +1,65 @@
+load("//bazel:gpu_library.bzl", "gpu_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "gpu_headers",
+    hdrs = ["DetectorGpu.h"],
+    include_prefix = "hstream/src/libs/detection",
+    deps = [":types", "//src/libs/gpu:runtime"],
+)
+
+gpu_library(
+    name = "gpu",
+    srcs = ["DetectorGpu.cu"],
+    deps = [":gpu_headers"],
+)
+
+cc_library(
+    name = "types",
+    hdrs = ["DetectionTypes.h"],
+    include_prefix = "hstream/src/libs/detection",
+)
+
+cc_library(
+    name = "postprocess",
+    srcs = ["DetectionPostprocess.cpp"],
+    hdrs = ["DetectionPostprocess.h"],
+    include_prefix = "hstream/src/libs/detection",
+    deps = [":types", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_library(
+    name = "hip_detector",
+    srcs = ["HipDetector.cpp"],
+    hdrs = ["HipDetector.h"],
+    include_prefix = "hstream/src/libs/detection",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu", ":postprocess", "//src/libs/gpu/migraphx:session"],
+)
+
+cc_test(
+    name = "gpu_test",
+    srcs = ["DetectorGpuTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":gpu", ":postprocess", "@opencv_linux//:opencv"],
+)
+
+cc_binary(
+    name = "hip_detector_fixture",
+    srcs = ["HipDetectorFixture.cpp"],
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":hip_detector", "@opencv_linux//:opencv", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "postprocess_test",
+    srcs = ["DetectionPostprocessTest.cpp"],
+    deps = [":postprocess"],
+)

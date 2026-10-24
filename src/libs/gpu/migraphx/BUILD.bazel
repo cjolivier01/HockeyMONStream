@@ -1,0 +1,28 @@
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "session",
+    srcs = ["MigraphxSession.cpp"],
+    hdrs = ["MigraphxSession.h"],
+    include_prefix = "hstream/src/libs/gpu/migraphx",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        "@com_google_absl//absl/status:statusor",
+        "@hstream_rocm//:migraphx",
+    ],
+)
+
+cc_test(
+    name = "session_test",
+    srcs = ["MigraphxSessionTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":session"],
+)
