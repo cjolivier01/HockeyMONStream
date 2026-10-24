@@ -1,6 +1,30 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "va_stereo_video",
+    srcs = ["VaStereoVideo.cpp"],
+    hdrs = ["VaStereoVideo.h"],
+    include_prefix = "hstream/src/libs/gpu/vaapi",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_video_playlist", "//src/libs/media:stereo_frame_plan"],
+)
+
+cc_test(
+    name = "va_stereo_video_test",
+    srcs = ["VaStereoVideoTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_stereo_video", ":va_hip_frame", "//src/libs/media:test_mp4"],
+)
+
+cc_library(
     name = "va_video_reader",
     srcs = ["VaVideoReader.cpp"],
     hdrs = ["VaVideoReader.h"],

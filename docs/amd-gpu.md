@@ -559,3 +559,22 @@ path/snapshot consistency, unsupported detector options, alias precedence and
 frame-clock rounding. Round seven reproduced misleading VFR headers and
 B-frame demux rounding; per-read grid/count validation and bounded prefix
 discard address both. Both round-eight reviews found no necessary fixes.
+
+`gpu/vaapi/VaStereoVideo` now owns both camera playlists. It selects frame
+indices from saved fractional offsets, advances both sources together, resets
+sequence numbers after a seek and ends at the shorter synchronized recording.
+A half-failed seek retires both readers. The output clock comes from the frame
+index and saved origin, so chapter duration rounding and audio tails cannot
+shift Program time. Retained VA samples survive seeks and owner destruction.
+The configured qualifier uses this owner; normal CLI/UI playback and audio
+coordination remain pending. Hardware tests cover fractional offsets, both
+left- and right-limited EOS, 25/30 fps chapter transitions, retained pixels,
+backward/end seeks, partial seek failure and cancellation.
+
+The same 120-pair 4K Program qualification with the stereo owner produced
+2,719 confirmed track observations and 119 crops in 7.50771 seconds after
+preparation. Full x86 build and the three focused source/clock tests pass.
+The first stereo review found a tiny-negative-time edge when a saved offset
+rounds to an integer frame; the synchronized clock now uses the planner
+rounding tolerance at zero, with a passing regression.
+Both second-round stereo reviews found no necessary fixes.

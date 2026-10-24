@@ -8,6 +8,7 @@
 
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
+#include "hstream/src/libs/gpu/vaapi/VaStereoVideo.h"
 #include "hstream/src/libs/gpu/vaapi/VaVideoPlaylist.h"
 #include "hstream/src/libs/media/StereoFramePlan.h"
 #include "hstream/src/libs/program/AmdProgramProcessor.h"
@@ -86,24 +87,26 @@ struct Pipeline {
         "Pipeline start failed: " + Error());
   }
 };
-std::unique_ptr<hm::gpu::VaVideoPlaylist> OpenPlaylist(
+hm::gpu::VaVideoReaderConfig ReaderConfig(
     const hm::program::AmdProgramSettings& settings,
-    const std::vector<std::filesystem::path>& paths,
-    GstClockTime start,
-    const std::optional<uint64_t>& frame) {
+    const std::vector<std::filesystem::path>& paths) {
   char pci[32]{};
   Hip(hipDeviceGetPCIBusId(pci, sizeof(pci), settings.gpu_id));
   const auto metadata = Take(hm::media::ReadMp4VideoTrack(paths.at(0), settings.operation_timeout_ns, {}));
-  auto reader = Take(hm::gpu::VaVideoPlaylist::Create(
-      {metadata.codec == hm::media::VideoCodec::kHevc ? hm::gpu::VaVideoCodec::kHevc : hm::gpu::VaVideoCodec::kH264,
-       GST_VIDEO_FORMAT_P010_10LE,
-       std::string("/dev/dri/by-path/pci-") + pci + "-render",
-       settings.reader_queue_frames,
-       settings.operation_timeout_ns,
-       settings.cancellation_poll_ns},
-      paths,
-      {}));
-  Status(frame ? reader->SeekFrame(*frame) : reader->Seek(start));
+  return {
+      metadata.codec == hm::media::VideoCodec::kHevc ? hm::gpu::VaVideoCodec::kHevc : hm::gpu::VaVideoCodec::kH264,
+      GST_VIDEO_FORMAT_P010_10LE,
+      std::string("/dev/dri/by-path/pci-") + pci + "-render",
+      settings.reader_queue_frames,
+      settings.operation_timeout_ns,
+      settings.cancellation_poll_ns};
+}
+std::unique_ptr<hm::gpu::VaVideoPlaylist> OpenPlaylist(
+    const hm::program::AmdProgramSettings& settings,
+    const std::vector<std::filesystem::path>& paths,
+    GstClockTime start) {
+  auto reader = Take(hm::gpu::VaVideoPlaylist::Create(ReaderConfig(settings, paths), paths, {}));
+  Status(reader->Seek(start));
   return reader;
 }
 hm::gpu::VaVideoFrame Read(hm::gpu::VaVideoPlaylist& reader) {
@@ -139,6 +142,8 @@ int main(int argc, char** argv) {
     int frames, out_width, out_height;
     double left_start, right_start;
     std::optional<hm::media::StereoFramePlan> pair_plan;
+    std::array<double, 2> frame_offsets{};
+    GstClockTime configured_start{};
     std::vector<std::filesystem::path> left_files, right_files;
     YAML::Node camera;
     hm::detection::DetectorConfig config;
@@ -174,6 +179,8 @@ int main(int argc, char** argv) {
           "Camera frame rates differ");
       pair_plan = Take(hm::media::PlanStereoFrames(
           std::stod(argv[4]), launch.frame_offsets[0], launch.frame_offsets[1], left_meta.fps_n, left_meta.fps_d));
+      configured_start = static_cast<GstClockTime>(std::stod(argv[4]) * GST_SECOND);
+      frame_offsets = launch.frame_offsets;
       left_start = double(pair_plan->left_time_ns) / GST_SECOND;
       right_start = double(pair_plan->right_time_ns) / GST_SECOND;
       config = {
@@ -256,12 +263,36 @@ int main(int argc, char** argv) {
         pair_plan ? pair_plan->left_time_ns : static_cast<GstClockTime>(left_start * GST_SECOND);
     const GstClockTime right_seek =
         pair_plan ? pair_plan->right_time_ns : static_cast<GstClockTime>(right_start * GST_SECOND);
-    auto left = OpenPlaylist(
-        settings, left_files, left_seek, pair_plan ? std::make_optional(pair_plan->left_frame) : std::nullopt);
-    auto right = OpenPlaylist(
-        settings, right_files, right_seek, pair_plan ? std::make_optional(pair_plan->right_frame) : std::nullopt);
+    std::unique_ptr<hm::gpu::VaStereoVideo> stereo;
+    std::unique_ptr<hm::gpu::VaVideoPlaylist> left, right;
+    if (configured) {
+      stereo = Take(hm::gpu::VaStereoVideo::Create(
+          {{ReaderConfig(settings, left_files), ReaderConfig(settings, right_files)},
+           {left_files, right_files},
+           frame_offsets},
+          {}));
+      Status(stereo->Seek(configured_start));
+    } else {
+      left = OpenPlaylist(settings, left_files, left_seek);
+      right = OpenPlaylist(settings, right_files, right_seek);
+    }
+    hm::gpu::VaVideoFrame a, b;
+    GstClockTime synchronized_time{}, synchronized_duration{};
+    const auto read_pair = [&] {
+      if (stereo) {
+        auto pair = Take(stereo->Read());
+        Check(pair.has_value(), "Synchronized input ended early");
+        a = std::move(pair->cameras[0]);
+        b = std::move(pair->cameras[1]);
+        synchronized_time = pair->time;
+        synchronized_duration = pair->duration;
+      } else {
+        a = Read(*left);
+        b = Read(*right);
+      }
+    };
     Pipeline output;
-    auto a = Read(*left), b = Read(*right);
+    read_pair();
     const auto left_info = Info(a.sample.get()), right_info = Info(b.sample.get());
     Check(
         left_info.fps_n == right_info.fps_n && left_info.fps_d == right_info.fps_d &&
@@ -296,20 +327,19 @@ int main(int argc, char** argv) {
     const auto begin = std::chrono::steady_clock::now();
     for (int sequence = 0; sequence < frames; ++sequence) {
       if (sequence) {
-        a = Read(*left);
-        b = Read(*right);
+        read_pair();
       }
       const auto ai = Info(a.sample.get()), bi = Info(b.sample.get());
       Check(
           gst_video_info_is_equal(&left_info, &ai) && gst_video_info_is_equal(&right_info, &bi), "Input caps changed");
-      const auto pts = a.time, other_pts = b.time;
+      const auto pts = stereo ? synchronized_time : a.time, other_pts = b.time;
       Check(
           GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(other_pts) &&
               (!GST_CLOCK_TIME_IS_VALID(previous) || pts > previous),
           "Invalid raw-camera timestamps");
-      const double pair_delta = (double(pts) - double(other_pts)) / GST_SECOND - (left_start - right_start);
+      const double pair_delta = (double(a.time) - double(other_pts)) / GST_SECOND - (left_start - right_start);
       Check(
-          std::abs(pair_delta) < .5 * left_info.fps_d / left_info.fps_n,
+          stereo || std::abs(pair_delta) < .5 * left_info.fps_d / left_info.fps_n,
           "Raw-camera pair exceeds half-frame tolerance");
       if (!sequence)
         first = pts;
@@ -336,7 +366,7 @@ int main(int argc, char** argv) {
       Buffer buffer(Take(std::move(acquired)), gst_buffer_unref);
       Status(processor->Render(buffer.get(), out_info, render));
       GST_BUFFER_PTS(buffer.get()) = pts - first;
-      GST_BUFFER_DURATION(buffer.get()) = a.duration;
+      GST_BUFFER_DURATION(buffer.get()) = stereo ? synchronized_duration : a.duration;
       Check(
           gst_app_src_push_buffer(GST_APP_SRC(output.endpoint), buffer.release()) == GST_FLOW_OK,
           "Output refused frame");
@@ -370,12 +400,15 @@ int main(int argc, char** argv) {
       Check(
           absl::IsFailedPrecondition(processor->Render(output_frame.get(), out_info, render)),
           "Reset retained a stale panorama");
-      Status(pair_plan ? left->SeekFrame(pair_plan->left_frame) : left->Seek(left_seek));
-      Status(pair_plan ? right->SeekFrame(pair_plan->right_frame) : right->Seek(right_seek));
+      if (stereo) {
+        Status(stereo->Seek(configured_start));
+      } else {
+        Status(left->Seek(left_seek));
+        Status(right->Seek(right_seek));
+      }
       uint64_t reset_observations = 0;
       for (unsigned sequence = 0; sequence < 4; ++sequence) {
-        a = Read(*left);
-        b = Read(*right);
+        read_pair();
         const auto completed = Take(processor->Process(sequence, a.sample.get(), b.sample.get()));
         for (const auto& track : completed.observation.tracks) {
           Check(track.id > highest_id, "Seek reused an object ID");

@@ -130,6 +130,7 @@ cc_binary(
         "//src/libs/stitching:stitching_algorithms",
         "//src/libs/common:baseline_config",
         "//src/libs/gpu/vaapi:va_video_playlist",
+        "//src/libs/gpu/vaapi:va_stereo_video",
         "//src/libs/gpu/vaapi:va_output_pool",
     ],
 )
