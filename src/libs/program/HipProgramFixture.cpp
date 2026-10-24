@@ -13,6 +13,7 @@
 #include "hstream/src/libs/media/StereoFramePlan.h"
 #include "hstream/src/libs/program/AmdProgramProcessor.h"
 #include "hstream/src/libs/program/AmdProgramSettings.h"
+#include "hstream/src/libs/program/AmdVideoStages.h"
 #include "hstream/src/libs/program/ProgramDetectorSettings.h"
 #include "hstream/src/libs/program/ProgramLaunchConfig.h"
 #include "hstream/src/libs/program/VaProgramSink.h"
@@ -152,7 +153,8 @@ int main(int argc, char** argv) {
           detector.maintain_aspect,
           detector.symmetric_padding,
           detector.fp16 ? hm::gpu::MigraphxSession::Precision::kFloat16 : hm::gpu::MigraphxSession::Precision::kFloat32,
-          settings.maximum_inference_io_bytes, settings.model_cache};
+          settings.maximum_inference_io_bytes,
+          settings.model_cache};
       const auto& selected_blend = launch.blend;
       switch (Take(hm::stitching::ParseBlendMode(selected_blend.mode))) {
         case hm::stitching::BlendMode::kLaplacian:
@@ -193,20 +195,22 @@ int main(int argc, char** argv) {
           property["maintain-aspect-ratio"].as<int>() != 0,
           property["symmetric-padding"].as<int>() != 0,
           hm::gpu::MigraphxSession::Precision::kFloat16,
-          settings.maximum_inference_io_bytes, settings.model_cache};
+          settings.maximum_inference_io_bytes,
+          settings.model_cache};
     }
     Check(!std::filesystem::exists(output_file), "Output already exists");
     Check(frames > 0 && out_width > 0 && out_height > 0, "Invalid fixture dimensions or frame count");
-    auto processor = Take(hm::program::AmdProgramProcessor::Create(
-        {game,
-         config,
-         camera,
-         settings.tracker,
-         blend,
-         minimize_blend,
-         settings.compact_stitch_workspace,
-         baseline.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
-         baseline.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>()}));
+    const hm::program::AmdProgramProcessorConfig processor_config{
+        game,
+        config,
+        camera,
+        settings.tracker,
+        blend,
+        minimize_blend,
+        settings.compact_stitch_workspace,
+        baseline.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
+        baseline.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>()};
+    auto processor = Take(hm::program::AmdProgramProcessor::Create(processor_config));
     const hm::program::ProgramRenderSettings render{false, 0, 0, 0, false, 0};
     std::cout << "Validated raw panorama " << processor->width() << 'x' << processor->height()
               << " generation=" << processor->generation() << '\n';
@@ -358,6 +362,26 @@ int main(int argc, char** argv) {
           !processor->Reset().ok() && !processor->Render(output_frame.get(), out_info, render).ok(),
           "Processing failure did not retire the processor");
       std::cout << "Processor seek/reset, repeated Program/Stitched render, monotonic IDs and retirement passed\n";
+      processor.reset();
+      auto stitcher = Take(hm::program::AmdStitcher::Create(processor_config, 2));
+      auto retained = Take(stitcher->Process(a.sample.get(), b.sample.get()));
+      uint64_t before{}, after{};
+      Check(
+          hipMemcpy(&before, retained->image().plane0, sizeof(before), hipMemcpyDeviceToHost) == hipSuccess,
+          "Cannot sample retained test panorama");
+      read_pair();
+      auto next = Take(stitcher->Process(a.sample.get(), b.sample.get()));
+      Check(retained->image().plane0 != next->image().plane0, "Stitcher overwrote a retained downstream panorama");
+      Check(
+          absl::IsResourceExhausted(stitcher->Process(a.sample.get(), b.sample.get()).status()),
+          "Stitcher exceeded its panorama allocation bound");
+      stitcher.reset();
+      Check(
+          hipMemcpy(&after, retained->image().plane0, sizeof(after), hipMemcpyDeviceToHost) == hipSuccess &&
+              before == after,
+          "Downstream panorama did not survive producer destruction");
+      std::cout
+          << "Retained panoramas, bounded allocation and producer destruction passed (eight bytes read back per test sample)\n";
     }
     return 0;
   } catch (const std::exception& error) {

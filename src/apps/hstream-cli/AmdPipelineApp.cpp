@@ -25,7 +25,7 @@
 #include "hstream/src/libs/gpu/vaapi/VaStereoVideo.h"
 #include "hstream/src/libs/media/AudioPlaylist.h"
 #include "hstream/src/libs/program/AmdProgramAdmission.h"
-#include "hstream/src/libs/program/AmdProgramProcessor.h"
+#include "hstream/src/gst-plugins/gst-amd-program/AmdProgramGraph.h"
 #include "hstream/src/libs/program/ProgramArchiveConfig.h"
 #include "hstream/src/libs/program/ProgramAudioConfig.h"
 #include "hstream/src/libs/program/ProgramDetectorSettings.h"
@@ -244,7 +244,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
     case hm::stitching::BlendMode::kHardSeam:
       break;
   }
-  auto processor = Take(hm::program::AmdProgramProcessor::Create(
+  auto processor = Take(hm::program::AmdProgramGraph::Create(
       {launch.game,
        detector_config,
        launch.camera,
@@ -254,7 +254,11 @@ void Run(const hm::program::AmdPipelineOptions& args) {
        launch.amd.compact_stitch_workspace,
        launch.configuration.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
        launch.configuration.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>(),
-       calibration}));
+       calibration},
+      launch.amd.output_pool_frames,
+      launch.amd.operation_timeout_ns,
+      launch.amd.cancellation_poll_ns,
+      [] { return AbortRequested(); }));
   GstVideoInfo output_info{};
   Require(
       gst_video_info_set_format(&output_info, GST_VIDEO_FORMAT_P010_10LE, output_config.width, output_config.height),
@@ -537,17 +541,18 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   // A queued startup seek may land exactly at EOS and leave no input pair.
   while (pair) {
     const auto completed =
-        Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get()));
+        Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get(),
+                                pair->time, pair->duration));
     if (overlay_state.selection().players)
       preview_boxes.Update(pair->time, completed.observation.tracks);
     for (size_t index = 0; index < outputs.size(); ++index) {
       const auto& output = outputs[index];
       std::unique_ptr<GstBuffer, decltype(&gst_buffer_unref)> buffer(Take(output->Acquire()), gst_buffer_unref);
-      Status(processor->Render(
-          buffer.get(),
+      buffer.reset(Take(processor->Render(
+          buffer.release(),
           render_settings[index].first,
           render_settings[index].second,
-          output.get() == preview_output && overlay_state.selection().players ? &preview_boxes : nullptr));
+          output.get() == preview_output && overlay_state.selection().players ? &preview_boxes : nullptr)));
       Status(output->Push(buffer.release(), pair->time - first, pair->duration));
     }
     if (audio) {

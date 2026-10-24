@@ -17,6 +17,41 @@ struct ProgramObservation {
   std::optional<hm::BBox> crop;
 };
 
+// Independently owned stages for native/GStreamer composition. Only compact
+// observations cross these boundaries; none of these classes owns video pixels.
+class ProgramRinkFilter {
+ public:
+  static absl::StatusOr<std::unique_ptr<ProgramRinkFilter>> Create(
+      const cv::Mat& mask,
+      size_t maximum_detections,
+      float raise,
+      float lower);
+  ~ProgramRinkFilter();
+  absl::StatusOr<std::vector<detection::Proposal>> Process(
+      int width,
+      int height,
+      const std::vector<detection::Proposal>& detections) const;
+  hm::BBox arena() const;
+
+ private:
+  struct Impl;
+  explicit ProgramRinkFilter(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl_;
+};
+
+class ProgramCamera {
+ public:
+  static absl::StatusOr<std::unique_ptr<ProgramCamera>> Create(const hm::BBox& arena, const YAML::Node& config);
+  ~ProgramCamera();
+  absl::StatusOr<std::optional<hm::BBox>> Process(const std::vector<Observation>& tracks);
+  absl::Status Reset();
+
+ private:
+  struct Impl;
+  explicit ProgramCamera(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl_;
+};
+
 // Metadata-only Program processing in authoritative stitched coordinates. The
 // caller verifies calibration identity before supplying the saved mask. Frame
 // geometry must match exactly; archive/video scaling belongs to the caller's

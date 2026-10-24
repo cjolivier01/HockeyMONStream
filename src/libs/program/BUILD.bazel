@@ -265,16 +265,34 @@ cc_test(
 )
 
 cc_library(
+    name = "amd_program_types",
+    hdrs = ["AmdProgramTypes.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({"//:use_hip": [], "//conditions:default": ["@platforms//:incompatible"]}),
+    deps = [":render_settings", ":calibration", ":preview_boxes", "//src/libs/detection:hip_detector",
+            "//src/libs/tracking:program_tracking", "@hm-cupano//src/pano:cuda_pano"],
+)
+
+cc_library(
     name = "amd_program_processor",
     srcs = ["AmdProgramProcessor.cpp"],
     hdrs = ["AmdProgramProcessor.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({"//:use_hip": [], "//conditions:default": ["@platforms//:incompatible"]}),
+    deps = [":amd_program_types", ":amd_video_stages"],
+)
+
+cc_library(
+    name = "amd_video_stages",
+    srcs = ["AmdVideoStages.cpp"],
+    hdrs = ["AmdVideoStages.h"],
     include_prefix = "hstream/src/libs/program",
     target_compatible_with = select({
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [
-        ":gpu", ":va_program_output", ":render_settings", ":calibration", ":preview_boxes",
+        ":amd_program_types", ":gpu", ":va_program_output", ":render_settings", ":calibration", ":preview_boxes",
         "//src/libs/gpu:convert_image",
         "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
         "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",

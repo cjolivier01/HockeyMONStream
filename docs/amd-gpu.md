@@ -415,9 +415,10 @@ configuration and owns these components for both direct and desktop playback.
 
 ## Reusable Program processor
 
-`program/AmdProgramProcessor` now owns the validated saved panorama, GPU
-workspaces, MIGraphX detector, rink pruning, object association and native camera
-policy. The raw-camera qualifier uses this owner. `Process` consumes a paired
+`program/AmdProgramProcessor` is the synchronous compatibility facade used by
+the raw-camera qualifier. It composes independently owned `AmdStitcher`,
+`AmdDetector`, `ProgramTracking` and `AmdProgramRenderer` stages. The normal CLI
+uses the GStreamer elements described below. `Process` consumes a paired
 VA sample from each original camera and returns compact observation metadata;
 `Render` can draw the completed GPU panorama repeatedly into exclusively owned
 NV12/P010 output buffers at caller-selected sizes. A full-panorama render uses
@@ -441,7 +442,7 @@ Append `--verify-reset` to the raw qualifier command to exercise reader seeks,
 processor reset, monotonic IDs, repeated Program/full-panorama renders, rejected
 transfer changes and failure retirement. On the 120-pair hockey clip, all 120
 per-frame detection/tracking/crop log rows match the earlier composition. This
-reusable owner serves the ROCm CLI, including desktop-launched playback.
+facade and the ROCm CLI GStreamer graph share the same stage implementations.
 
 ## Chapter video clock
 
@@ -618,7 +619,7 @@ requires an ARM64 machine.
 `hstream-cli` target. CUDA builds retain `PipelineApp.cpp`. The AMD entry point
 loads immutable baseline/user/game/application/launch configuration and requires
 saved source chapters, synchronization, calibration and rink mask. It owns one
-serialized `VaStereoVideo`, `AmdProgramProcessor` and one bounded `VaProgramSink`
+`VaStereoVideo`, a componentized `AmdProgramGraph` and one bounded `VaProgramSink`
 per requested output. No steady-state video readback is added. SIGTERM
 cancels source/sink waits after preparation; SIGINT drains completed output.
 During model compilation the process
@@ -1047,3 +1048,75 @@ published both 13-frame clips and cleaned its run directory. The existing
 faststart remux uses a millisecond movie/edit clock: those short outputs report
 0.216883-second video and 0.217000-second audio. SIGTERM during dual encoding
 records a failed manifest with no registered outputs or named MP4s.
+
+## Componentized Program graph
+
+The ROCm CLI now uses the statically registered `hstreamamdprogram` plugin:
+
+```text
+paired VA samples → appsrc
+  → hmamdstitch → hmamdinfer → hmrinkfilter → hmobjecttrack → hmcameratrack
+  → appsink (completed panorama and observations)
+
+completed panorama + exclusive output → appsrc → hmamdcrop → appsink
+  → existing VA encoder or GL preview graph
+```
+
+These are separate GStreamer elements with pads, bus errors, state transitions
+and read-only `processed-frames` properties. Each owns its processing object;
+they do not dispatch into a shared monolithic processor. `AmdVideoStages` splits
+stitching, detection and rendering; `ProgramRinkFilter`, `NativeTracker` and
+`ProgramCamera` own the three metadata stages. The qualifier's older
+`AmdProgramProcessor` interface remains as a facade over these libraries.
+
+The application supplies resolved configuration through `CreateElement`; a
+factory without configuration refuses READY → PAUSED. The plugin is embedded
+in the CLI, not installed as a separately discoverable gst-launch module.
+`GST_DEBUG_DUMP_DOT_DIR` captures both actual graphs with element names and caps.
+The desktop Pipeline tab is not yet connected to these graphs.
+
+Internal `application/x-hstream-amd-frame` envelopes carry typed `GstMeta` with
+retained input samples, an owned immutable GPU panorama and compact observations.
+Header copies clone metadata and retain the panorama; render envelopes with an
+exclusive destination cannot be copied. Each stage validates its input phase.
+Panorama allocations are reused only after every downstream owner releases
+them, with the existing `runtime.amd.output_pool_frames` as their allocation
+ceiling. Allocation is lazy. GPU reads/writes complete at the stage boundary;
+no frame is mapped to system memory. Cropped output advertises linear DMA-BUF
+caps. If appsink still holds its completed buffer, the encoder handoff creates
+only a writable header, refs the exact existing memories, and pins the original
+pool buffer with parent-buffer metadata until the encoder releases it.
+
+The integration still admits one complete stereo pair at a time and renders
+outputs sequentially. Source pairing, audio, runtime commands and publication
+remain application-owned. The new boundaries permit further scheduling work;
+this change does not yet enable multiple frames in flight or promise a speedup.
+Seeks pass both graphs through READY, clearing queued envelopes and resetting
+tracker/camera histories while retaining compiled inference and stitching state.
+Failures retire the graph; cancellation tears it down before borrowed work can
+outlive its owners. Driver calls retain their existing interruption limitations.
+
+The tracker remains the tested motion/overlap implementation using HockeyMON's
+ByteTrack Kalman filter, high/low-score association and bounded retained tracks.
+It is not NvDCF appearance tracking or HockeyMON's complete Torch-based ByteTrack
+wrapper. `hmobjecttrack` now provides an independent replacement boundary.
+
+Qualification on `ripper` (RX 9060 XT) completed the same 120 raw stereo pairs
+with all per-frame detection/tracking counts matching the previous runner:
+2,719 track observations, zero-based HEVC/AAC, 120 frames and 2.002 seconds.
+The single 4K archive run reported 16.3 processing FPS and 18.67 seconds total
+including preparation; simultaneous 4096×2304 Program and 3840×2160 archives
+reported 13.1 processing FPS. Both outputs fully decode. These are short-run
+measurements, not sustained full-game benchmarks or a claimed speedup.
+
+All ten real-camera Stop/abort lifecycle cases pass. Native X11 qualification
+passes preview visibility/generation changes, pause/SIGSTOP/resume, paused
+resize and local seek. The extended `hip_program_fixture --verify-reset` also
+checks invalid-output admission, repeated renders, reset/ID behavior, distinct
+allocations for retained panoramas, exhaustion at the explicit bound, and frame
+lifetime after producer destruction. It reads back eight bytes per lifetime
+check solely in the hardware verifier. CPU component tests cover ordered stage
+execution, shared-header isolation, parent-pool lifetime without memory copying,
+state reset, EOS, unconfigured startup and exception/error propagation. The
+full local NVIDIA x86 build and V100 crop/overlay tests pass. ARM64/Jetson
+validation retains the documented missing host/sysroot and unreachable `stubby`.
