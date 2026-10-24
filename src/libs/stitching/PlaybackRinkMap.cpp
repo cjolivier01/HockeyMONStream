@@ -332,8 +332,7 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
   if (!fit.ok())
     return fit.status();
   if (fit->state != RinkMapState::kReady)
-    return absl::FailedPreconditionError(
-        "The saved rink map is partial or inconsistent; add and review anchors before playback");
+    return absl::FailedPreconditionError(fit->message);
   result->layout = document.layout;
   result->fit = *fit;
   auto rays = RinkProjectionRays(pto, canvas, result->columns, result->rows, cancelled);

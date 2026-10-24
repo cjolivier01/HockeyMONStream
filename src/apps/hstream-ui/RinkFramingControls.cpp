@@ -286,6 +286,13 @@ bool RinkFramingControls::isCheckingForRun() {
   return choices_[0]->isChecked() && (check_pending_ || job_);
 }
 
+QString RinkFramingControls::mapReadinessMessage() const {
+  if (check_pending_ || job_)
+    return "Checking the saved map for playback…";
+  return map_ready_ ? "Saved map is ready. Start playback to show the mini-map."
+                    : "Mini-map unavailable: " + map_error_;
+}
+
 QString RinkFramingControls::validateSavedSettings(const YAML::Node& config) const {
   if (!choices_[0]->isChecked())
     return {};

@@ -26,6 +26,9 @@ class RinkMiniMap {
       float display_width,
       float display_height,
       analytics::CommandList* commands);
+  const char* unavailableReason() const {
+    return unavailable_reason_;
+  }
 
  private:
   std::shared_ptr<const stitching::PlaybackRinkMap> map_;
@@ -39,6 +42,7 @@ class RinkMiniMap {
   std::optional<uint64_t> last_pts_, analytics_epoch_;
   int last_frame_num_{0};
   unsigned source_id_{0};
+  const char* unavailable_reason_{"Waiting for a preview frame."};
 };
 
 } // namespace hm::draw_display

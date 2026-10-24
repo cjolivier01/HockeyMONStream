@@ -29,14 +29,14 @@ bool RinkMiniMap::Append(
     float display_width,
     float display_height,
     analytics::CommandList* commands) {
+  unavailable_reason_ = "The preview frame has no usable drawing dimensions.";
   if (!map_ || !frame || !commands || !std::isfinite(display_width) || !std::isfinite(display_height) ||
       display_width <= 0 || display_height <= 0)
     return false;
   const auto* generation = stitching::find_stitched_output_generation_meta(frame);
   const auto* snapshot = preview_overlay::find_overlay_snapshot_meta(frame);
-  if (!generation || !snapshot || !std::isfinite(snapshot->coordinate_width) ||
-      !std::isfinite(snapshot->coordinate_height) || snapshot->coordinate_width <= 0 ||
-      snapshot->coordinate_height <= 0) {
+  if (!generation) {
+    unavailable_reason_ = "The preview frame is missing its stitched calibration identity.";
     smoothing_.Reset();
     last_pts_.reset();
     return false;
@@ -48,8 +48,14 @@ bool RinkMiniMap::Append(
     rotation_ = map_->OutputRotation(output_generation_, width_, height_);
     smoothing_.Reset();
   }
-  if (!rotation_)
+  if (!rotation_) {
+    unavailable_reason_ = "The saved map does not match this preview frame's calibration or canvas dimensions.";
     return false;
+  }
+  const bool have_tracks = snapshot && std::isfinite(snapshot->coordinate_width) &&
+      std::isfinite(snapshot->coordinate_height) && snapshot->coordinate_width > 0 && snapshot->coordinate_height > 0;
+  if (!have_tracks)
+    smoothing_.Reset();
   if (!last_pts_ || frame->source_id != source_id_ || frame->buf_pts < *last_pts_ ||
       frame->buf_pts == player_analytics::kInvalidTime || frame->buf_pts - *last_pts_ > 300000000 ||
       frame->frame_num < last_frame_num_)
@@ -82,8 +88,10 @@ bool RinkMiniMap::Append(
       ? display_height - rink_height - header - footer - 2 * margin
       : margin;
   const float bottom = top + rink_height + header + footer + margin;
-  if (!commands->AddFill(left - margin, top, left + rink_width + margin, bottom, {0.96F, 0.98F, 1, 0.90F}))
+  if (!commands->AddFill(left - margin, top, left + rink_width + margin, bottom, {0.96F, 0.98F, 1, 0.90F})) {
+    unavailable_reason_ = "The preview overlay drawing budget is full.";
     return false;
+  }
   const auto point = [&](cv::Point2d p) {
     return cv::Point2f(
         left + float(p.x / rink.length + 0.5) * rink_width, top + header + float(0.5 - p.y / rink.width) * rink_height);
@@ -118,7 +126,7 @@ bool RinkMiniMap::Append(
   size_t visible = 0;
   // Reuse the upstream box palette even when box drawing is off. These colours
   // identify tracks, not teams; ignored players match the boxes' grey override.
-  const size_t inspected = std::min(snapshot->player_rects.size(), player_analytics::kMaximumTracks);
+  const size_t inspected = have_tracks ? std::min(snapshot->player_rects.size(), player_analytics::kMaximumTracks) : 0;
   for (size_t index = 0; index < inspected; ++index) {
     const auto& player = snapshot->player_rects[index];
     const auto& box = player.rect;
@@ -167,7 +175,9 @@ bool RinkMiniMap::Append(
     ++visible;
   }
   char summary[64];
-  if (snapshot->player_rects.empty())
+  if (!have_tracks)
+    std::snprintf(summary, sizeof(summary), "WAITING FOR TRACKS");
+  else if (snapshot->player_rects.empty())
     std::snprintf(summary, sizeof(summary), "NO TRACKS - TEAMS UNKNOWN");
   else
     std::snprintf(
@@ -178,6 +188,7 @@ bool RinkMiniMap::Append(
         inspected,
         snapshot->player_rects.size() > inspected ? "+" : "");
   commands->AddText(left, top + header + rink_height + 4 * scale, 13 * scale, summary, ink);
+  unavailable_reason_ = nullptr;
   return true;
 }
 } // namespace hm::draw_display

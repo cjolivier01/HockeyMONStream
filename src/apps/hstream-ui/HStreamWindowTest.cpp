@@ -230,27 +230,28 @@ struct HStreamWindowTestAccess {
       return status->text().contains("requires the x86 desktop GPU preview");
 #endif
     };
-    bool ok = displays("Save a reviewed");
+    const auto idle_message = status->text();
+    bool ok = !idle_message.isEmpty();
     window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=940", false);
-    ok &= displays("Save a reviewed");
+    ok &= status->text() == idle_message;
     window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=941", false);
-    ok &= displays("Map prepared");
+    ok &= window->rink_map_run_message_.contains("Map prepared") && status->text() == idle_message;
     window->handlePipelineOutputLine(
         "HSTREAM_RINK_MAP status=unavailable run=941 message=FAILED_PRECONDITION: Calibration changed; review and save again",
         true);
-    ok &= displays("Calibration changed") && !status->text().contains("FAILED_PRECONDITION");
+    ok &= window->rink_map_run_message_.contains("Calibration changed") && status->text() == idle_message;
     ++window->pipeline_run_generation_;
     window->updateRinkMapControls();
-    ok &= displays("Save a reviewed");
+    ok &= status->text() == idle_message;
     window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=941", false);
-    ok &= displays("Save a reviewed");
+    ok &= status->text() == idle_message;
     window->game_id_edit_->setText("another-rink-map-test");
     window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=942", false);
     ok &= !status->text().contains("Map prepared");
     window->render_video_toggle_->setChecked(false);
     ok &= displays("Render video");
     window->render_video_toggle_->setChecked(true);
-    ok &= displays("Save a reviewed");
+    ok &= !status->text().contains("Map prepared");
     auto* old_process = window->pipeline_process_;
     const bool old_embedded = window->pipeline_render_embedded_;
     ok &= startStubPipelineProcess(window);
@@ -261,6 +262,37 @@ struct HStreamWindowTestAccess {
     window->rink_map_requested_generation_ = window->pipeline_run_generation_;
     window->updateRinkMapControls();
     ok &= displays("Preparing");
+    window->active_run_game_id_ = window->game_id_edit_->text();
+    const auto channel = window->selectedPipelinePreviewChannel();
+    if (channel == "program" || channel == "stitched") {
+      window->handlePipelineOutputLine(
+          QString(
+              "HSTREAM_RINK_MAP_FRAME channel=%1 run=942 status=unavailable "
+              "message=Frame calibration changed")
+              .arg(channel),
+          false);
+      ok &= displays("Frame calibration changed");
+      window->handlePipelineOutputLine(
+          QString(
+              "HSTREAM_RINK_MAP_FRAME channel=%1 run=941 status=ready "
+              "message=Old frame")
+              .arg(channel),
+          false);
+      ok &= displays("Frame calibration changed");
+      window->handlePipelineOutputLine(
+          QString(
+              "HSTREAM_RINK_MAP_FRAME channel=%1 run=942 status=ready "
+              "message=Mini-map drawing with matching playback geometry.")
+              .arg(channel),
+          false);
+      ok &= displays("Mini-map drawing");
+      window->handlePipelineOutputLine(
+          "HSTREAM_RINK_MAP status=unavailable run=942 message=Calibration changed during restart", true);
+      ok &= displays("Calibration changed during restart");
+      window->handlePipelineOutputLine("HSTREAM_RINK_MAP status=ready teams=unknown run=942", false);
+      ok &= displays("Map prepared") && !status->text().contains("Mini-map drawing");
+    }
+    window->rink_map_frame_messages_.clear();
     window->pipeline_render_embedded_ = false;
     window->updateRinkMapControls();
     ok &= displays("embedded X11");
@@ -10785,9 +10817,18 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     return false;
   activate(create);
   bool legacy_ready = true;
-  const bool legacy_dialog_opened = with_projection_crop_dialog(
-      [&]() { legacy_ready = HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
-      [](ProjectionCropDialog*) {});
+  bool legacy_dialog_opened = false;
+  // The saved-still/readiness workers briefly hold the artifact lock after
+  // loading a game. Retry the same review request once those readers finish.
+  QElapsedTimer legacy_review_timer;
+  legacy_review_timer.start();
+  while (!legacy_dialog_opened && legacy_review_timer.elapsed() < 5000) {
+    legacy_dialog_opened = with_projection_crop_dialog(
+        [&]() { legacy_ready = HStreamWindowTestAccess::ensureProjectionCropReviewed(window); },
+        [](ProjectionCropDialog*) {});
+    if (!legacy_dialog_opened)
+      QTest::qWait(20);
+  }
   if (!expect(
           legacy_dialog_opened && !legacy_ready,
           "Reusable legacy calibration must still prompt for startup crop review")) {
@@ -17190,8 +17231,13 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
           !require_rink_map || final_log.contains("HSTREAM_RINK_MAP status=ready teams=unknown"),
           "Real UI playback should prepare the reviewed rink map") ||
       !expect(
-          !require_rink_map || window->findChild<QLabel*>("rinkMiniMapStatusLabel")->text().contains("Map prepared"),
-          "Real UI playback should display rink-map preparation status") ||
+          !require_rink_map ||
+              (final_log.contains(
+                   QRegularExpression("HSTREAM_RINK_MAP_FRAME channel=program run=[0-9]+ status=ready ")) &&
+               (!verify_x11_preview ||
+                final_log.contains(
+                    QRegularExpression("HSTREAM_RINK_MAP_FRAME channel=stitched run=[0-9]+ status=ready ")))),
+          "Real UI playback should verify the map against actual preview frames") ||
       !expect(observed_command, "Real UI run should launch hstream-cli") ||
       !expect(
           !require_scoreboard || submitted_scoreboard,

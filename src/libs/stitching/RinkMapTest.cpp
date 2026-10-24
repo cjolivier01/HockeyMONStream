@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/RinkMap.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 
@@ -144,6 +145,18 @@ int main() {
   ok &= expect(
       fitted.ok() && fitted->state == rink::RinkMapState::kReady,
       "Four goal-line/board intersections locate the map without other landmarks");
+  auto conflict = document;
+  auto wrong_centre = point(conflict.layout, "center");
+  wrong_centre.rays = {ray({0, 10})};
+  conflict.observations.push_back(wrong_centre);
+  const auto diagnosed = rink::FitRinkMap(conflict);
+  ok &= expect(
+      diagnosed.ok() && diagnosed->state == rink::RinkMapState::kInconsistent &&
+          std::find(diagnosed->review_observations.begin(), diagnosed->review_observations.end(), 4) !=
+              diagnosed->review_observations.end() &&
+          diagnosed->message.find("Centre ice") != std::string::npos,
+      "A conflicting centre point is identified without silently dropping any evidence");
+  ok &= expect(conflict.observations.back().enabled, "Diagnosis never edits the source observations");
   document.observations.clear();
   for (const char* id : {"center-near", "center-far", "blue-left-near", "blue-left-far"})
     document.observations.push_back(point(document.layout, id));

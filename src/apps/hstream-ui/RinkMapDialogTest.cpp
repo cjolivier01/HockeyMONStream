@@ -28,6 +28,7 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMessageBox>
+#include <QtWidgets/QProgressDialog>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QTabWidget>
@@ -95,6 +96,64 @@ cv::Point2d sourcePoint(cv::Point2d rink_point) {
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  if (argc == 6 && QString(argv[1]) == "--prepare-mask") {
+    const QString game = QString::fromLocal8Bit(argv[2]);
+    RinkMapDialog dialog(
+        game,
+        nullptr,
+        RinkMaskPreparer(
+            QString::fromLocal8Bit(argv[3]),
+            QDir::currentPath(),
+            QString::fromLocal8Bit(argv[4]),
+            game,
+            QProcessEnvironment::systemEnvironment()));
+    dialog.show();
+    if (!idle(dialog))
+      return 1;
+    dialog.findChild<QPushButton*>("suggestRinkMaskButton")->click();
+    if (!idle(dialog, 300000))
+      return 1;
+    std::cout << dialog.findChild<QLabel*>("rinkMapStatus")->text().toStdString() << '\n';
+    const auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    bool found = false;
+    for (int row = 0; row < table->rowCount(); ++row)
+      found |= table->item(row, 2)->text().contains("mask");
+    QTest::qWait(100);
+    return found && dialog.grab().save(QString::fromLocal8Bit(argv[5])) ? 0 : 1;
+  }
+  if ((argc == 4 || argc == 5) && QString(argv[1]) == "--inspect-conflict") {
+    RinkMapDialog dialog(QString::fromLocal8Bit(argv[2]));
+    dialog.show();
+    if (!idle(dialog))
+      return 1;
+    const QString prefix = QString::fromLocal8Bit(argv[3]);
+    QTest::qWait(100);
+    std::cout << dialog.findChild<QLabel*>("rinkMapStatus")->text().toStdString() << '\n';
+    dialog.grab().save(prefix + "-conflict.png");
+    auto* apply = dialog.findChild<QPushButton*>("rinkMapGuideApply");
+    if (!expect(apply->isVisible() && apply->text() == "Exclude this mark", "Conflict has a direct review action"))
+      return 1;
+    apply->click();
+    if (!idle(dialog))
+      return 1;
+    std::cout << dialog.findChild<QLabel*>("rinkMapStatus")->text().toStdString() << '\n';
+    auto* save = dialog.findChild<QPushButton*>("saveRinkMapButton");
+    if (!expect(save->text() == "Save reviewed map", "Excluding the identified conflict yields a usable map"))
+      return 1;
+    for (int camera = 0; camera < 2; ++camera) {
+      dialog.findChild<QTabWidget*>("rinkMapCameraTabs")->setCurrentIndex(camera);
+      QTest::qWait(30);
+      dialog.grab().save(prefix + QString("-reviewed-%1.png").arg(camera));
+    }
+    if (argc == 5 && QString(argv[4]) == "--save-reviewed-map") {
+      save->click();
+      if (!idle(dialog) || dialog.isWindowModified())
+        return 1;
+      std::cout << dialog.findChild<QLabel*>("rinkMapMinimapReadiness")->text().toStdString() << '\n';
+      return rink::LoadPlaybackRinkMap(argv[2]).ok() ? 0 : 1;
+    }
+    return 0;
+  }
   // Read-only demonstration: reuse goal-line endpoints projected by an existing
   // saved map, then exercise explicit endpoint identification in the real UI.
   if (argc == 4 && QString(argv[1]) == "--inspect-goal-ends") {
@@ -165,8 +224,9 @@ int main(int argc, char** argv) {
     for (int row = 0; row < table->rowCount(); ++row) {
       const auto* identity = qobject_cast<QComboBox*>(table->cellWidget(row, 1));
       if (identity && identity->currentData() == "near-boards" && table->item(row, 2)->text().contains("mask")) {
-        if (!expect(table->currentRow() == row, "Mask assistance selects its new near-board arc"))
-          return 1;
+        // Guidance may prefer another missing landmark. Inspect this optional
+        // arc directly through the ordinary list, as an operator can.
+        table->selectRow(row);
         const int camera = table->item(row, 2)->text().startsWith("R") ? 1 : 0;
         if (!expect(
                 dialog.findChild<QTabWidget*>("rinkMapCameraTabs")->currentIndex() == camera,
@@ -290,7 +350,8 @@ int main(int argc, char** argv) {
           return 1;
         save->click();
         if (!expect(
-                dialog.findChild<QLabel*>("rinkMapStatus")->text().startsWith("Saved reviewed rink map"),
+                idle(dialog) && !dialog.isWindowModified() &&
+                    dialog.findChild<QLabel*>("rinkMapMinimapReadiness")->text().contains("Ready — saved"),
                 "Playback map preparation must save successfully"))
           return 1;
       }
@@ -311,7 +372,9 @@ int main(int argc, char** argv) {
   for (const char* name : {"mapping_0001.tif", "mapping_0001_x.tif", "mapping_0001_y.tif"})
     ok &= placement(game.filePath(name), 1800);
   ok &= write(game.filePath("seam_file.png"), "fixture");
-  const QByteArray config = "hstream_ui:\n  stitching_calibration:\n    status: complete\n";
+  const QByteArray config =
+      "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
+      "stitching:\n  projection_framing:\n    rotation_degrees: [0, 0, 0]\n";
   ok &= write(game.filePath("config.yaml"), config);
   ok &= write(
       game.filePath("stitching_canvas_provenance"),
@@ -319,10 +382,62 @@ int main(int argc, char** argv) {
   ok &= write(bin.filePath("pano_trafo"), "#!/bin/sh\nawk '{print $2, $3}'\n");
   QFile::setPermissions(bin.filePath("pano_trafo"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
   qputenv("PATH", bin.path().toLocal8Bit() + ":" + qgetenv("PATH"));
+  ok &= write(game.filePath("config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: complete\n");
+  ok &= expect(!CheckRinkMapSetup(game.path()).ok(), "An unlevelled calibration cannot open the map editor");
+  ok &= write(game.filePath("config.yaml"), config);
+  ok &= expect(CheckRinkMapSetup(game.path()).ok(), "Explicitly accepted zero leveling angles are valid");
   auto snapshot = LoadRinkMapSnapshot(game.path());
   if (!expect(ok && snapshot.ok(), snapshot.ok() ? "fixture" : snapshot.status().ToString().c_str()))
     return 1;
   auto competitor = *snapshot;
+  {
+    RinkMapDialog guided(game.path());
+    guided.show();
+    if (!expect(idle(guided), "Empty guided editor opens"))
+      return 1;
+    guided.findChild<QPushButton*>("rinkMapGuideStart")->click();
+    auto* feature = guided.findChild<QComboBox*>("rinkMapFeatureCombo");
+    for (const char* id : {"goal-left-near", "goal-left-far", "goal-right-near", "goal-right-far"}) {
+      ok &= expect(feature->currentData() == id, "Guided marking automatically arms the next required point");
+      const int camera = guided.findChild<QTabWidget*>("rinkMapCameraTabs")->currentIndex();
+      auto* view = guided.findChild<QGraphicsView*>(QString("rinkMapCamera%1").arg(camera));
+      const auto p = sourcePoint(*rink::RinkFeaturePoint({}, id));
+      QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene({p.x, p.y}));
+      ok &= expect(idle(guided), "Guided point is checked before advancing");
+    }
+    ok &= expect(
+        guided.findChild<QPushButton*>("saveRinkMapButton")->text() == "Save reviewed map",
+        "The four guided corners complete a map without using the feature dropdown");
+    guided.findChild<QPushButton*>("rinkMapGuidePrevious")->click();
+    ok &= expect(
+        guided.findChild<QTableWidget*>("rinkMapObservationsTable")->currentRow() == 3,
+        "Previous reselects the completed point for correction");
+    guided.findChild<QTableWidget*>("rinkMapObservationsTable")->selectRow(0);
+    ok &= expect(
+        guided.findChild<QLabel*>("rinkMapGuidePrompt")->text().contains("Manual editing"),
+        "Selecting another observation leaves guided marking for ordinary editing");
+  }
+  {
+    std::atomic<bool> preparing{false};
+    RinkMapDialog mask(game.path(), nullptr, [&](const auto& cancelled, const auto& progress) {
+      preparing = true;
+      progress("Preparing test ice mask");
+      while (!cancelled())
+        QThread::msleep(10);
+      return absl::CancelledError("Stopped test mask preparation");
+    });
+    mask.show();
+    ok &= expect(idle(mask), "Mask preparation fixture opens");
+    mask.findChild<QPushButton*>("suggestRinkMaskButton")->click();
+    ok &= expect(waitUntil([&] { return preparing.load(); }), "A missing mask starts the preparation worker");
+    auto* progress = mask.findChild<QProgressDialog*>("rinkMapMaskProgress");
+    ok &= expect(progress && waitUntil([&] { return progress->isVisible(); }), "Slow mask preparation shows progress");
+    progress->findChild<QPushButton*>()->click();
+    ok &= expect(
+        idle(mask) && !mask.isWindowModified() &&
+            mask.findChild<QTableWidget*>("rinkMapObservationsTable")->rowCount() == 0,
+        "Cancelling mask preparation retains the original evidence and leaves the editor responsive");
+  }
   rink::RinkMapDocument document;
   document.generation = snapshot->generation;
   document.calibration_revision = snapshot->revision.toStdString();
@@ -605,13 +720,9 @@ int main(int argc, char** argv) {
     ok &= expect(
         save->text() == "Save partial map" && guidance->text().contains("Both goal lines are marked"),
         "Two generic lines stay partial and explain how to reuse their board endpoints");
-    auto* leveling = dialog.findChild<QPushButton*>("rinkMapLevelingButton");
-    leveling->click();
     ok &= expect(
-        dialog.isVisible() && !dialog.levelingRequested() && !dialog.isWindowModified() &&
-            dialog.findChild<QLabel*>("rinkMapStatus")->text().contains("without clicking the points again") &&
-            table->currentRow() == 0 && ends->isEnabled(),
-        "Unidentified goal ends stay saved in the map editor with the existing line selected for identification");
+        !dialog.findChild<QPushButton*>("rinkMapLevelingButton"),
+        "Mapping cannot offer a releveling action that invalidates its own evidence");
     auto convert = [&](int row, const char* choice) {
       table->selectRow(row);
       if (!expect(ends->isEnabled(), "Selected goal line can identify its board endpoints"))
@@ -662,10 +773,8 @@ int main(int argc, char** argv) {
         "Undoing a conversion also removes readiness");
     redo->click();
     ok &= expect(idle(dialog) && table->rowCount() == 4, "Redo restores both confirmed point marks");
-    leveling->click();
-    ok &= expect(
-        dialog.levelingRequested() && dialog.result() == QDialog::Accepted,
-        "Identified goal ends hand off to leveling without new clicks");
+    save->click();
+    ok &= expect(idle(dialog) && !dialog.isWindowModified(), "Identified goal ends save without changing leveling");
     const auto converted_snapshot = LoadRinkMapSnapshot(game.path());
     const auto converted = converted_snapshot.ok() && converted_snapshot->saved_map
         ? rink::ParseRinkMap(*converted_snapshot->saved_map)

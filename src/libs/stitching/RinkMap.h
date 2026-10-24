@@ -71,6 +71,8 @@ struct RinkMapFit {
   cv::Matx33d plane_to_ray{cv::Matx33d::zeros()};
   double rms_degrees{0};
   size_t constraints{0};
+  // Observation indices worth reviewing; never silently excluded from the fit.
+  std::vector<size_t> review_observations;
 };
 
 // Fits points and line planes together. Parallel centre/blue/goal lines alone

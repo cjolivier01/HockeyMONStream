@@ -257,6 +257,7 @@ cc_library(
         ":calibration_image",
         ":preview_dialog_window",
         "//src/libs/assets:asset_manager",
+        "//src/libs/common:process",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",

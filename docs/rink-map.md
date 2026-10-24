@@ -1,8 +1,10 @@
 # Rink map and goal centres
 
-Open **Stitched → Rink → Rink map and goals…** after stitching calibration.
-The editor reads the two saved camera stills. It does not run the video pipeline
-or copy live GPU frames to the CPU. It currently requires a NONA calibration;
+Open **Stitched → Rink → Rink map and goals…** after applying leveling and completing
+stitching calibration. Save staged angles and finish calibration first; changing
+leveling later invalidates the map. Explicitly accepted zero angles are supported.
+The editor reads the two saved camera stills. Only missing or stale ice-mask
+preparation launches a bounded native calibration run; it adds no live frame readback. It currently requires a NONA calibration;
 RANSAC and MAGSAC++ maps do not provide the calibrated source rays it needs.
 
 ## Marking and review
@@ -26,13 +28,14 @@ features as coloured contours. Outlines alternate colour and black dashes:
 Hover over a detected outline to see its identity. Reviewed line marks keep
 the colour of their assigned identity; disabled marks are grey. Centre lines
 are assigned automatically. Blue and goal lines need a left/right identity
-from the observation list. Left/right mean
+from guided marking or the observation list. Left/right mean
 the rink ends as viewed from the cameras; near/far mean the two side boards.
 Detection scores describe the masks, not the accuracy of a goal position.
 
 Choose a point or line above the image to add manual evidence. A point takes one
 click; a line takes two well-separated clicks along the paint or the **straight
-section** of the boards at ice level. Completing a mark returns to **Select / edit / pan**.
+section** of the boards at ice level. Completing a mark returns to **Select / edit / pan**
+or advances to the next prompted landmark when guidance is active.
 Click an existing point, line, arc, or its label to select its observation row and
 highlight it in green. Selecting a row also opens its camera. Unchecked model and
 mask suggestions can be selected and adjusted before enabling them.
@@ -68,20 +71,20 @@ locate players. These are alternatives; every rink item is not required.
 session. Saving it does not enable either playback use. Correct invalid rink
 dimensions before saving.
 
-**Save and use for leveling…** saves the marks and checks that they can supply
-leveling before opening the preview. If evidence is missing, the editor stays
-open with your saved marks and an explanation. When goal-line endpoints need
-identities, the relevant line is selected; **Use goal-line ends at boards…**
-reuses those clicks after you identify which end is near. Manual and assigned
-automatic observations can contribute. A fitted map provides its ice plane; a partial map can still provide four explicitly
-identified goal-line/board corners. Detected line segments alone do not identify
-their intersections with the boards. Successful reuse opens **Preview** directly
-and shows the saved observations in yellow on both camera tabs. No points need
-to be re-entered. Edit these reference marks in the map editor; placing new
-manual leveling points clears the reference overlay and starts a new estimate.
-The leveling dialog requires a preview before **Use angles**. Accepting angles
-stages them in the main window; **Save Preset** applies them. The resulting calibration
-change requires reviewing the rink map again.
+**Guide remaining marks** selects a useful sequence from existing evidence. Each
+step opens the relevant camera and arms the point or line tool, or highlights a
+suggestion to review and confirm. **Previous** revisits a mark; **Next / skip**
+leaves a difficult suggestion for later. Finding landmarks or using the rink mask
+starts guidance automatically. The feature dropdown and observation list remain
+available for direct edits. Centre ice means the centre faceoff dot, not the
+centre-line intersection with the boards.
+
+When excluding one mark would make all remaining evidence pass the fit checks,
+the diagnostic names that mark and camera. Guidance selects it for correction
+and offers **Exclude this mark**. Exclusion retains the point and is undoable;
+no evidence is silently discarded. Once ready, unused detections are optional.
+Saving a ready map runs the same calibration and geometry validation as playback
+before the dialog reports **Ready — saved and validated for playback**.
 
 The dimensions are assumptions in metres. Defaults describe a 200 × 85 ft rink
 with 25 ft from centre to either blue line, an 11 ft goal-line inset and 28 ft
@@ -114,7 +117,7 @@ If an existing goal line already ends at both boards, select its row and choose
 point. This replaces the line with two confirmed point marks, preserves their
 camera coordinates and enabled state, and is one undoable edit. Repeat for the
 other goal line to supply all four corners without clicking them again. The
-points can then supply both the map fit and optional leveling. Automatic line
+points can then supply the map fit. Automatic line
 ends require the same review because detections may stop short of the boards.
 
 The editor's missing-mark suggestions include these goal-line combinations.
@@ -134,10 +137,14 @@ mark selection, and the quality of the source calibration.
 
 ## Using the rink mask
 
-**Use rink mask** reads the saved, current ice mask and proposes a far straight-board
+**Use rink mask** validates the saved ice mask. If it is missing or stale, the
+editor runs the native mask-preparation pipeline with a cancellable progress
+dialog, then validates the published result before continuing. Successful process
+exit alone is insufficient. Failure or cancellation retains all previous marks.
+With a valid mask, it proposes a far straight-board
 line and a smooth near-board arc wherever there is enough support. Both rows start
-unchecked and say **mask · review**. The editor selects the new near-board row
-and opens its camera with three green handles: the two ends and a point on the middle of the arc. Drag them to adjust the
+unchecked and say **mask · review**. Guidance selects the next useful landmark;
+the new near-board row can also be selected directly. Its camera shows three green handles: the two ends and a point on the middle of the arc. Drag them to adjust the
 estimated ice/board junction, then check **Use**. The curve follows all three points
 while dragging, and release commits one undoable edit. Save/reopen retains the arc
 and its three handles, including after manual adjustment.
@@ -156,8 +163,8 @@ without enough support produces no suggestion, without discarding a valid
 suggestion for the other side. A completely cropped near edge cannot supply
 an arc. The far-side fit still requires continuous support.
 A busy calibration writer leaves the editor responsive and reports that the mask
-is unavailable. If the saved mask dimensions do not match the calibration,
-play the game once to regenerate the mask, then reopen the editor.
+is busy. If the source calibration changes during preparation, reopen the editor
+to load the new camera geometry.
 
 Hollow rings show where assigned centre, blue and goal lines meet the suggested far
 board within its observed span. These are visual guides derived from the lines,
@@ -168,7 +175,8 @@ arc keeps all three handles. Undo restores the previous evidence.
 
 This offline operation decodes a bounded mask proxy and samples calibrated viewing
 rays. It records the mask hash with the source-pixel evidence. Reviewed marks remain
-saved evidence until you explicitly refresh them; it never modifies the ice mask.
+saved evidence until you explicitly refresh them. Valid masks are reused without
+regeneration.
 
 When **Enable rink-aware framing** is checked, a missing, incomplete or stale
 saved map blocks Program playback and Program job creation. The checkbox is
@@ -189,11 +197,14 @@ Icon, Compact, Standard and Large. Icon is half Compact's width and height.
 also offers Upper left and Lower left. Existing saved placement is retained. These preferences apply on the next playback and keep the complete panel
 inside the image. Standard preserves the original size.
 
-The status beneath these controls reports successful preparation or the reason
-the map could not load, including missing or stale calibration. It also explains
+While stopped, the status beneath these controls validates the current saved map.
+During playback it distinguishes preparation from drawing on a matching preview
+frame, and reports the actual failure reason, including conflicting marks, stale
+calibration or missing frame geometry. It also explains
 when the selected backend, run mode or rendering choice cannot show the map.
 If playback starts with Render video off, restart with it enabled to prepare the map.
-A prepared map still requires matching current-frame metadata to appear.
+A prepared map still requires matching current-frame geometry to appear. Status
+messages are fenced by the active run and preview channel.
 
 Each circle projects a tracked player's box bottom-centre onto the ice plane.
 Positions are estimates: occlusion, loose boxes, calibration error and assumed
@@ -225,8 +236,9 @@ and prepares a bounded output-pixel-to-ray grid through Hugin, using the
 published mapping TIFF origins and extents (including capped canvases). Playback maps
 only compact player metadata; it handles panorama crops, preview resizing and
 post-stitch rotation without reading video back to the CPU. Every frame must
-match the prepared calibration and output dimensions. Missing metadata hides
-the map for that frame rather than retaining old player positions.
+match the prepared calibration and output dimensions. Missing or stale geometry
+hides the map and reports why. Missing track snapshots retain the rink outline
+with **WAITING FOR TRACKS** and clear old dots and smoothing history.
 
 The mini-map is a desktop preview overlay. It does not appear in encoded
 archives or change the camera policy, ice mask or leveling.
@@ -248,7 +260,8 @@ Unrelated game preferences do not invalidate the evidence.
 To clear a saved map, remove all observations and save the empty partial map.
 
 The editor runs offline and supplies the optional playback mini-map. It does
-not change the ice mask, leveling angles, camera tracking or encoded Program output. Existing leveling selections are not retained
+not change leveling angles, camera tracking or encoded Program output. Its mask
+action regenerates missing or invalid ice masks through the existing native pipeline. Existing leveling selections are not retained
 by the leveling flow; mark the physical rink features in this editor. Detection
 uses the saved calibration pair, so occluded features may need manual help.
 
@@ -307,10 +320,22 @@ QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/rink_map_dialog_test \
 This selects and captures the near-board arc without saving the map; it reports
 failure if the mask has no supported near-board arc.
 
+To exercise regeneration, remove or invalidate only the mask in an isolated
+copied game and run:
+
+```sh
+QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/rink_map_dialog_test \
+  --prepare-mask /path/to/copied-game "$PWD/bazel-bin/src/apps/hstream-cli/hstream-cli" \
+  "$PWD/configs/ds_hockey_app_config.yaml" /tmp/rink-mask-prepared.png
+```
+
+This uses the production preparation callback and verifies that the replacement
+mask supplies board suggestions. It does not save landmark changes.
+
 For an isolated copied game only, append a marks file and `--save-reviewed-map`
 to save a fitted fixture. `playback_rink_map_test --load-game <copied-game>`
 checks native playback preparation. The real UI E2E driver accepts
-`HSTREAM_UI_E2E_RINK_MAP=1` to require successful preparation with player boxes
+`HSTREAM_UI_E2E_RINK_MAP=1` to require successful preparation and matching-frame drawing with player boxes
 disabled; use `--x11-preview` to capture both GPU previews. See
 [UI E2E testing](hstream-ui-e2e-testing.md).
 

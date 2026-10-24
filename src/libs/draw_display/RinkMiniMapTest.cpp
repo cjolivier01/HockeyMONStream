@@ -139,12 +139,17 @@ int main() {
     commands.Clear();
     Frame missing(generation, false);
     check(
-        !overlay.Append(missing.frame, 1600, 1200, 800, 600, &commands) && commands.empty(),
-        "No snapshot must not reuse old player locations");
+        overlay.Append(missing.frame, 1600, 1200, 800, 600, &commands) && count(commands, a::detail::Kind::kDisc) == 0,
+        "A missing track snapshot retains the rink outline without reusing old player positions");
+    commands.Clear();
     Frame stale(*rink::stitched_output_generation_id("other\n", 0, 1600, 1200));
     check(
         !overlay.Append(stale.frame, 1600, 1200, 800, 600, &commands) && commands.empty(),
         "Another calibration must not reuse the old map");
+    check(
+        overlay.unavailableReason() &&
+            std::string(overlay.unavailableReason()).find("calibration") != std::string::npos,
+        "Hidden maps explain their incompatible frame identity");
     check(
         !overlay.Append(fresh.frame, 800, 600, 800, 600, &commands) && commands.empty(),
         "Mismatched live canvas dimensions are rejected");
@@ -203,7 +208,9 @@ int main() {
     check(cv::norm(draw_dot(stable, ahead) - origin) < 1e-5, "Forward seeks reset displayed history");
     Frame lost(generation, false, false);
     commands.Clear();
-    check(!stable.Append(lost.frame, 1600, 1200, 800, 600, &commands), "Missing metadata withholds all dots");
+    check(
+        stable.Append(lost.frame, 1600, 1200, 800, 600, &commands) && count(commands, a::detail::Kind::kDisc) == 0,
+        "Missing metadata withholds all dots while retaining the rink");
     jitter.frame->buf_pts = 20033333333;
     check(draw_dot(stable, jitter) == measured, "Missing metadata clears old smoothing state");
     std::cout << "RinkMiniMap tests passed\n";
