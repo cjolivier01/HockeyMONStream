@@ -6,13 +6,13 @@ cc_library(
     name = "gpu_headers",
     hdrs = ["DetectorGpu.h"],
     include_prefix = "hstream/src/libs/detection",
-    deps = [":types", "//src/libs/gpu:runtime"],
+    deps = [":types", "//src/libs/gpu:runtime", "//src/libs/gpu:image"],
 )
 
 gpu_library(
     name = "gpu",
     srcs = ["DetectorGpu.cu"],
-    deps = [":gpu_headers"],
+    deps = [":gpu_headers", "//src/libs/gpu:image_sampling"],
 )
 
 cc_library(

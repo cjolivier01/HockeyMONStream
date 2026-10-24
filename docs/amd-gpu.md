@@ -240,3 +240,51 @@ video graph usable. ZLUDA is not a dependency of this native HIP implementation.
 AMD VA-API independently reports H.264, HEVC/Main10 and AV1 decode/encode
 capabilities on this machine; codec capabilities do not validate the missing
 surface integration.
+
+## Program pixels and output
+
+`src/libs/program/` now owns the existing crop geometry, bilinear inverse
+rotation, shadow lift and exposure. The NVIDIA adapter delegates to the same
+kernel compiled by NVCC or HIP. Its x/output-width sampling, black boundary,
+alpha and disabled-tone rounding behavior are retained. Detector and Program
+sampling share GPU image descriptors and RGB/NV12/P010 conversion; descriptors
+validate dimensions, pitch, alignment and address overflow before submission.
+
+Program can write RGBA, RGB or gray pixels, or directly produce NV12/P010.
+The YUV path retains floating-point samples through tone evaluation, quantizes
+once and averages chroma over each 2x2 output block. Output caps must specify
+centered chroma. Matrix/range are explicit; the caller must preserve source
+primaries and transfer or convert them separately. HDR is rejected by the VA
+adapter. Eight YUV format/range/matrix cases and eighteen packed-output
+format/rotation/tone cases compare against scalar pixel references.
+
+`VaOutputPool` creates bounded linear VA-owned DMA-BUF buffers on the selected
+HIP device's PCI render node. Acquisition is nonblocking when downstream owns
+all buffers. Import an exclusively owned output through `VaHipFrame`, submit
+the crop, and complete its stream before handing the original buffer to encode
+or GL. The pool and kernel never map video to CPU memory. Tests also retain an
+output buffer beyond pool destruction and import it successfully.
+
+The NV12/H.264 and P010/HEVC output tests each encode/decode 32 alternating crops
+at 25 fps. They check pixels, exact content times through the encoder's shifted
+segment, EOS and bounded pool reuse. This uses an integral nanosecond frame
+period; a separate 30 fps probe showed the parser accumulating sub-nanosecond
+frame-period truncation (1 ns by frame 3), not lost frames. Pixel readback is
+limited to the synthetic 384x192 test output.
+
+The two headless preview tests feed those buffers through
+`glupload -> glcolorconvert -> GLMemory` on the HIP device's EGL/GBM display.
+They inspect four synthetic framebuffer bytes and reach EOS. These tests qualify
+the GL memory handoff, not desktop embedding, resize, pause or tab behavior.
+`make test-amd-video` includes both encode and preview cases.
+
+GStreamer 1.24.2's VA format table advertises RGBA as DRM `RA24`, while the
+allocated surface exports the correct `AB24` layout. Direct YUV output avoids
+that RGB VPP negotiation bug and its extra conversion pass. No private
+GStreamer build or misleading caps are needed. The canonical render-node path
+is also required: VA factories compare their path with the context verbatim,
+so passing a PCI symlink alias can trigger an error while starting elements.
+
+This remains component qualification. Raw-camera pairing/stitching, full Program
+configuration/startup, model caching, audio, seek/reset, native desktop controls
+and installed AMD runtime discovery are still pending.

@@ -1,0 +1,100 @@
+load("//bazel:gpu_library.bzl", "gpu_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "frame_geometry",
+    srcs = ["FrameGeometry.cpp"],
+    hdrs = ["FrameGeometry.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["@hm//hockeymon/csrc/play_tracker"],
+)
+
+cc_library(
+    name = "shadow_tone_curve",
+    hdrs = ["ShadowToneCurve.h"],
+    include_prefix = "hstream/src/libs/program",
+)
+
+cc_library(
+    name = "gpu_headers",
+    hdrs = ["ProgramGpu.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":frame_geometry", "//src/libs/gpu:image", "//src/libs/gpu:runtime"],
+)
+
+gpu_library(
+    name = "gpu",
+    srcs = ["ProgramGpu.cu"],
+    deps = [":gpu_headers", ":shadow_tone_curve", "//src/libs/gpu:image_sampling"],
+)
+
+cc_test(
+    name = "gpu_test",
+    srcs = ["ProgramGpuTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":gpu", ":shadow_tone_curve"],
+)
+
+cc_test(
+    name = "va_program_output_test",
+    srcs = ["VaProgramOutputTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_output_pool"],
+)
+
+cc_library(
+    name = "va_program_output",
+    srcs = ["VaProgramOutput.cpp"],
+    hdrs = ["VaProgramOutput.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu_headers", "//src/libs/gpu/vaapi:va_hip_frame"],
+)
+cc_test(
+    name = "va_program_p010_output_test",
+    args = ["--p010"],
+    srcs = ["VaProgramOutputTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_output_pool"],
+)
+
+cc_test(
+    name = "va_program_preview_test",
+    srcs = ["VaProgramPreviewTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_output_pool",
+            "@mesa_interop", "@mesa_interop//:gstreamer_gl"],
+)
+
+cc_test(
+    name = "va_program_p010_preview_test",
+    srcs = ["VaProgramPreviewTest.cpp"],
+    args = ["--p010"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_output_pool",
+            "@mesa_interop", "@mesa_interop//:gstreamer_gl"],
+)

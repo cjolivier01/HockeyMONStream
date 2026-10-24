@@ -14,6 +14,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":play_cropper_cuda_lib",
+        "//src/libs/program:frame_geometry",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/gst-plugins/gst-playtracker:playtracker_context_header",
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_payload",
@@ -87,6 +88,7 @@ cc_test(
     srcs = ["ShadowToneCudaTest.cpp"],
     deps = [
         ":play_cropper_cuda_lib",
+        "//src/libs/program:frame_geometry",
         ":play_cropper_cuda_lib_h",
         ":shadow_tone_curve",
         "@deepstream//:deepstream_lib",
@@ -96,6 +98,7 @@ cc_test(
 
 cc_library(
     name = "shadow_tone_curve",
+    deps = ["//src/libs/program:shadow_tone_curve"],
     hdrs = ["ShadowToneCurve.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
@@ -123,6 +126,7 @@ cuda_library(
     # includes = ["."],
     visibility = ["//visibility:private"],
     deps = [
+        "//src/libs/program:gpu",
         ":play_cropper_cuda_lib_h",
         ":shadow_tone_curve",
         "//src/libs/common:utils",

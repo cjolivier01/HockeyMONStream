@@ -14,6 +14,7 @@ test_suite(
     tags = ["manual"],
     tests = [
         "//src/libs/detection:gpu_test",
+        "//src/libs/program:gpu_test",
         "//src/libs/draw_display:analytics_overlay_test",
         "//src/libs/highlights:texture_blend_test",
         "//src/libs/player_analytics/runtime:pose_gpu_test",
@@ -27,4 +28,20 @@ test_suite(
         "@hm-cupano//src/pano:cudaPanoN_test",
         "@hm-cupano//src/pano:rgb10Remap_test",
     ],
+)
+
+cc_library(
+    name = "image",
+    srcs = ["Image.cpp"],
+    hdrs = ["Image.h"],
+    include_prefix = "hstream/src/libs/gpu",
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "image_sampling",
+    hdrs = ["ImageSampling.cuh"],
+    include_prefix = "hstream/src/libs/gpu",
+    visibility = ["//visibility:public"],
+    deps = [":runtime", ":image"],
 )
