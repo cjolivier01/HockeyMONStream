@@ -109,8 +109,12 @@ absl::StatusOr<ProgramObservation> ProgramTracking::Process(
     std::vector<size_t> ids;
     std::vector<hm::BBox> boxes;
     for (const auto& track : output.tracks) {
-      ids.push_back(track.id);
       const auto& p = track.box;
+      // Match DsPlayTrackerProcessFrame: only players steer the camera.
+      // Other classes retain their identities for metadata consumers.
+      if (p.class_id != 0)
+        continue;
+      ids.push_back(track.id);
       boxes.emplace_back(p.left, p.top, p.right, p.bottom);
     }
     // Match the existing native policy's delayed initialization: empty frames

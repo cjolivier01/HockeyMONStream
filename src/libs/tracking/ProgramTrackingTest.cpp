@@ -70,17 +70,27 @@ live-boxes:
     Check(!program->Process(0, 2001, 1000, {}).ok(), "reject incompatible mask geometry");
     auto empty = program->Process(0, 2000, 1000, {});
     Check(empty.ok() && !empty->crop, "empty initial frames do not seed camera");
+    const std::vector<hm::detection::Proposal> officials{{1600, 400, 1640, 500, .9f, 1, 4}};
+    auto official_first = program->Process(1, 2000, 1000, officials);
+    Check(official_first.ok() && !official_first->crop, "tentative officials do not seed camera");
+    auto official_second = program->Process(2, 2000, 1000, officials);
+    Check(
+        official_second.ok() && official_second->tracks.size() == 1 && !official_second->crop,
+        "confirmed officials retain tracks without seeding camera");
+    Check(program->Reset().ok(), "reset official-only sequence");
+    Check(program->Process(0, 2000, 1000, {}).ok(), "start mixed-class sequence");
     std::vector<hm::detection::Proposal> detections{
         {400, 200, 440, 300, .9f, 0, 0},
         {600, 250, 640, 350, .9f, 0, 1},
         {800, 300, 840, 400, .9f, 0, 2},
-        {20, 10, 60, 80, .9f, 0, 3}};
+        {20, 10, 60, 80, .9f, 0, 3},
+        officials.front()};
     auto first = program->Process(1, 2000, 1000, detections);
     Check(
-        first.ok() && first->detections.size() == 3 && first->tracks.empty() && !first->crop,
+        first.ok() && first->detections.size() == 4 && first->tracks.empty() && !first->crop,
         "mask spectators before tracking and wait for confirmed tracks");
     auto second = program->Process(2, 2000, 1000, detections);
-    Check(second.ok() && second->tracks.size() == 3 && second->crop, "confirmed tracks drive Program camera");
+    Check(second.ok() && second->tracks.size() == 4 && second->crop, "confirmed players drive Program camera");
     const auto first_id = second->tracks.front().id;
     const auto arena =
         gst_hm_playtracker::program_camera_arena(hm::BBox(0, 0, 2000, 1000), hm::BBox(100, 200, 1899, 799));
@@ -93,8 +103,10 @@ live-boxes:
       std::vector<size_t> ids;
       std::vector<hm::BBox> boxes;
       for (const auto& track : output->tracks) {
-        ids.push_back(track.id);
         const auto& p = track.box;
+        if (p.class_id != 0)
+          continue;
+        ids.push_back(track.id);
         boxes.emplace_back(p.left, p.top, p.right, p.bottom);
       }
       const auto expected = reference.forward(ids, boxes).tracking_boxes.back();
@@ -102,7 +114,7 @@ live-boxes:
       Check(
           actual.left == expected.left && actual.top == expected.top && actual.right == expected.right &&
               actual.bottom == expected.bottom,
-          "native camera parity");
+          "native camera parity with mixed-class tracks");
       Check(
           std::isfinite(actual.left) && std::isfinite(actual.top) && actual.width() > 0 && actual.height() > 0,
           "finite positive camera crop");
