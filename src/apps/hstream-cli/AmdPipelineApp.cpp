@@ -239,6 +239,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   auto first = pair->time;
   auto first_audio_sample = audio ? gst_util_uint64_scale_round(first, audio->format().rate, GST_SECOND) : 0;
   uint64_t frames = 0, tracks = 0, completed_video = 0, previous_segments = 0, progress_generation = 0;
+  const uint64_t horizon = std::min(source->duration() - start, limit.value_or(source->duration() - start));
+  uint64_t playback_position = 0;
   bool repositioned = false;
   hm::PlaybackRateEstimator rate;
   auto rate_start = std::chrono::steady_clock::now();
@@ -298,8 +300,11 @@ void Run(const hm::program::AmdPipelineOptions& args) {
             }
             return absl::OkStatus();
           },
-          [&](uint64_t position, uint64_t generation) {
-            if (file || position > source->duration()) {
+          [&](int64_t amount, bool relative, uint64_t generation) {
+            const __int128 requested = relative ? static_cast<__int128>(playback_position) + amount : amount;
+            const auto position = relative ? static_cast<uint64_t>(std::clamp<__int128>(requested, 0, horizon))
+                                           : static_cast<uint64_t>(amount);
+            if (file || position > horizon) {
               g_print(
                   "HSTREAM_SEEK status=failed generation=%" G_GUINT64_FORMAT " reason=%s\n",
                   generation,
@@ -307,7 +312,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
               return absl::OkStatus();
             }
             pair.reset();
-            Status(source->Seek(position));
+            Status(source->Seek(start + position));
             pair = Take(source->Read());
             Status(processor->Reset());
             if (pair) {
@@ -321,11 +326,12 @@ void Run(const hm::program::AmdPipelineOptions& args) {
             }
             previous_segments = completed_video;
             repositioned = true;
+            playback_position = pair ? std::min(horizon, pair->time - start) : horizon;
             reset_rates();
             g_print(
                 "HSTREAM_SEEK status=ok generation=%" G_GUINT64_FORMAT " position_ns=%" G_GUINT64_FORMAT "\n",
                 generation,
-                pair ? pair->time : source->duration());
+                playback_position);
             return absl::OkStatus();
           },
       }));
@@ -361,13 +367,14 @@ void Run(const hm::program::AmdPipelineOptions& args) {
         completed.detection_count,
         completed.observation.tracks.size());
     const auto now = std::chrono::steady_clock::now();
-    const auto position = std::min(source->duration(), pair->time + pair->duration);
-    const auto remaining = source->duration() - position;
+    const auto position = std::min(horizon, pair->time + pair->duration - start);
+    playback_position = position;
+    const auto remaining = horizon - position;
     const auto speed = rate.sample(position, remaining, now, std::chrono::nanoseconds(pair->duration));
     const double seconds = std::chrono::duration<double>(now - rate_start).count();
     std::ostringstream progress;
-    progress << "HSTREAM_PROGRESS processed_ns=" << position << " total_ns=" << source->duration()
-             << " remaining_ns=" << remaining << " eta_ns=";
+    progress << "HSTREAM_PROGRESS processed_ns=" << position << " total_ns=" << horizon << " remaining_ns=" << remaining
+             << " eta_ns=";
     if (speed.eta_ns == hm::kUnknownPlaybackTime)
       progress << "unknown";
     else
@@ -375,7 +382,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
     progress << std::fixed << std::setprecision(6) << " speed_x=" << speed.speed_x
              << " fps=" << speed.speed_x * output_info.fps_n / output_info.fps_d
              << " fps_avg=" << (seconds > 0 ? rate_frames / seconds : 0)
-             << " fraction=" << static_cast<double>(position) / source->duration()
+             << " fraction=" << static_cast<double>(position) / horizon
              << " stage=0 instance=aggregate instances=1 generation=" << progress_generation;
     g_print("%s\n", progress.str().c_str());
     if (limit && completed_video >= *limit)

@@ -21,7 +21,9 @@ struct Fixture {
   std::atomic<bool> cancelled{false};
   bool paused{false}, muted{false}, fail_pause{false};
   size_t pause_calls{0};
-  uint64_t reset_generation{0}, seek_position{0}, seek_generation{0};
+  uint64_t reset_generation{0}, seek_generation{0};
+  int64_t seek_position{0};
+  bool seek_relative{false};
   std::mutex mutex;
   std::condition_variable wake;
   std::vector<std::string> messages;
@@ -59,8 +61,9 @@ struct Fixture {
            reset_generation = generation;
            return absl::OkStatus();
          },
-         [this](uint64_t position, uint64_t generation) {
+         [this](int64_t position, bool relative, uint64_t generation) {
            seek_position = position;
+           seek_relative = relative;
            seek_generation = generation;
            return absl::OkStatus();
          }});
@@ -133,6 +136,13 @@ int main() {
       Check(
           fixture.control->Service().ok() && fixture.seek_position == 123456789 && fixture.seek_generation == 2,
           "stale/malformed seek executed");
+      fixture.Send("@seek-relative -9223372036854775808 3\n");
+      Check(
+          fixture.control->Service().ok() && fixture.seek_relative && fixture.seek_position == INT64_MIN &&
+              fixture.seek_generation == 3,
+          "signed jump lost or overflowed");
+      fixture.Send("@seek-relative 0 4\n");
+      Check(fixture.control->Service().ok() && fixture.seek_generation == 3, "zero jump executed");
       fixture.Send("@process-pause +8\n@process-pause 0\n@process-pause 8 extra\n");
       Check(fixture.control->Service().ok() && fixture.pause_calls == 2, "malformed generation executed");
       fixture.Send(std::string(100, 'x') + "@quit\n@set-render-audio-muted 0\n");

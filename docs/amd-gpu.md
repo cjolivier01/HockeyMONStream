@@ -866,17 +866,21 @@ Controls become active after the first completed pair, so model preparation is
 not acknowledged as a paused playback graph. Preview-channel routing and other
 native runtime mutations are still unconnected.
 
-`@seek POSITION_NS GENERATION` seeks local preview/discard runs; archive outputs,
+`@seek POSITION_NS GENERATION` seeks local preview/discard runs relative to the
+configured playback start. `@seek-relative DELTA_NS GENERATION` jumps from the
+last completed playback position, clamping signed jumps to the run horizon; archive outputs,
 paused requests, stale generations and positions past the synchronized end are
 rejected before graph mutation. The stereo owner selects the exact first pair
 at or after the target. Audio seeks to that pair and restarts its sample origin.
 Output graphs go through READY to flush queued audio/video and restart at zero,
 retaining the VA pool, native window and volume choice. Inference/stitch resources
 survive; tracking and camera histories reset. A failed partial seek retires
-playback. Seeking exactly the synchronized duration completes the local run.
+playback. Seeking exactly the synchronized recording end completes the local run.
 
-Completed frames emit the desktop `HSTREAM_PROGRESS` fields with synchronized
-source position, duration, remaining time, rate, FPS and generation. Position
+Completed frames emit the desktop `HSTREAM_PROGRESS` fields with position and duration
+relative to the configured start, remaining time, rate, FPS and generation.
+The displayed horizon respects an explicit time limit; absolute source times
+remain in `HSTREAM_AMD_FRAME` diagnostics. Position
 queries never advance timed runs: the time limit counts completed video across
 seek segments. `@reset-progress-rate GENERATION` implements the existing reset
 acknowledgment and generation fencing; resume/seek also clear rate history.

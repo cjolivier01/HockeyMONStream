@@ -23,7 +23,8 @@ class ProgramRuntimeControl {
     // A failed status retires playback. Rejected requests return OK after their
     // failure acknowledgment, without partially modifying the graph.
     std::function<absl::Status(uint64_t)> reset_progress;
-    std::function<absl::Status(uint64_t, uint64_t)> seek;
+    // Amount is a nonnegative run-relative position, or a signed relative jump.
+    std::function<absl::Status(int64_t, bool, uint64_t)> seek;
   };
   static absl::StatusOr<std::unique_ptr<ProgramRuntimeControl>> Create(
       int input_fd,

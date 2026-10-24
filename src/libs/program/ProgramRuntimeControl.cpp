@@ -44,15 +44,17 @@ absl::Status ProgramRuntimeControl::Command(const std::string& line) {
   }
   input >> value;
   const bool trailing = bool(input >> extra);
-  const auto integer = [](const std::string& text, uint64_t* value) {
+  const auto integer = [](const std::string& text, auto* value) {
     const auto result = std::from_chars(text.data(), text.data() + text.size(), *value);
     return result.ec == std::errc{} && result.ptr == text.data() + text.size();
   };
-  if (command == "@seek") {
+  if (command == "@seek" || command == "@seek-relative") {
+    const bool relative = command == "@seek-relative";
     std::string surplus;
-    uint64_t position = 0, generation = 0;
+    int64_t position = 0;
+    uint64_t generation = 0;
     if (trailing && !(input >> surplus) && integer(value, &position) && integer(extra, &generation) && generation &&
-        position <= uint64_t(INT64_MAX)) {
+        (relative ? position != 0 : position >= 0)) {
       if (generation <= seek_generation_ || paused_) {
         callbacks_.emit(
             "HSTREAM_SEEK status=failed generation=" + std::to_string(generation) +
@@ -60,7 +62,7 @@ absl::Status ProgramRuntimeControl::Command(const std::string& line) {
         return absl::OkStatus();
       }
       seek_generation_ = generation;
-      return callbacks_.seek(position, generation);
+      return callbacks_.seek(position, relative, generation);
     }
   }
   if (!trailing && command == "@reset-progress-rate") {
