@@ -51,16 +51,19 @@ void Process(GstElement*, GstBuffer* buffer, gpointer data) {
   Check(frame->width() == 384 && frame->height() == 192 && frame->plane_count() == 2, "Wrong imported layout");
   const auto& y = frame->plane(0);
   const auto& uv = frame->plane(1);
+  const unsigned patch_x = (run.input_times.size() % 4) * 64;
   if (run.ten_bit) {
     Check(frame->format() == hm::gpu::VaHipFrame::Format::kP010, "Expected P010");
     using namespace hm::draw_display::analytics;
+    run.commands.Clear();
+    Check(run.commands.AddFill(patch_x, 0, patch_x + 64, 64, {1, 1, 1, 1}), "Cannot create test overlay");
     ImageView view{y.data, y.pitch, frame->width(), frame->height(), PixelFormat::kP010, uv.data, uv.pitch};
     const auto result = run.compositor.Render(view, run.commands, run.stream);
     Check(result.status == RenderStatus::kOk && result.launched, "HIP compositor did not draw on the VA surface");
   } else {
     Check(frame->format() == hm::gpu::VaHipFrame::Format::kNv12, "Expected NV12");
-    Hip(hipMemset2DAsync(y.data, y.pitch, 235, 64, 64, run.stream));
-    Hip(hipMemset2DAsync(uv.data, uv.pitch, 128, 64, 32, run.stream));
+    Hip(hipMemset2DAsync(static_cast<uint8_t*>(y.data) + patch_x, y.pitch, 235, 64, 64, run.stream));
+    Hip(hipMemset2DAsync(static_cast<uint8_t*>(uv.data) + patch_x, uv.pitch, 128, 64, 32, run.stream));
   }
   // Alternate explicit completion and the destructor's early-return drain.
   if (run.input_times.size() % 2) {
@@ -104,9 +107,11 @@ GstFlowReturn ReadResult(GstAppSink* sink, gpointer data) {
     const auto* p = plane + row * pitch;
     return run.ten_bit ? static_cast<int>(reinterpret_cast<const uint16_t*>(p)[x] >> 8) : static_cast<int>(p[x]);
   };
-  const int white = value(y, y_pitch, 32, 32);
-  const int white_u = value(uv, uv_pitch, 32, 16);
-  const int white_v = value(uv, uv_pitch, 33, 16);
+  const unsigned patch_x = (run.output_times.size() % 4) * 64 + 32;
+  const unsigned untouched_x = ((run.output_times.size() + 1) % 4) * 64 + 32;
+  const int white = value(y, y_pitch, patch_x, 32);
+  const int white_u = value(uv, uv_pitch, patch_x, 16);
+  const int white_v = value(uv, uv_pitch, patch_x + 1, 16);
   const int blue = value(y, y_pitch, 200, 100);
   if (white < 220 || white_u < 118 || white_u > 138 || white_v < 118 || white_v > 138) {
     std::cerr << (run.ten_bit ? "P010" : "NV12") << " output YUV = " << white << "," << white_u << "," << white_v
@@ -116,6 +121,7 @@ GstFlowReturn ReadResult(GstAppSink* sink, gpointer data) {
       white > 220 && white_u > 118 && white_u < 138 && white_v > 118 && white_v < 138,
       "HIP modification missing from encoded output");
   Check(blue > 15 && blue < 65 && value(uv, uv_pitch, 200, 50) > 200, "Unmodified video region was corrupted");
+  Check(value(y, y_pitch, untouched_x, 32) < 65, "Stale HIP patch survived surface reuse");
   gst_video_frame_unmap(&frame);
   run.output_times.push_back(GST_BUFFER_PTS(buffer));
   gst_sample_unref(sample);
@@ -134,7 +140,6 @@ void VideoRoundTrip(bool ten_bit) {
   run.ten_bit = ten_bit;
   Hip(hipGetDevice(&run.device));
   Hip(hipStreamCreateWithFlags(&run.stream, hipStreamNonBlocking));
-  Check(run.commands.AddFill(0, 0, 64, 64, {1, 1, 1, 1}), "Cannot create test overlay");
   const std::string format = ten_bit ? "P010_10LE" : "NV12";
   const std::string drm = ten_bit ? "P010" : "NV12";
   const std::string codec = ten_bit ? "h265" : "h264";
