@@ -113,21 +113,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
       args.game,
       args.application.empty() ? root / "ds_hockey_app_config.yaml" : std::filesystem::path(args.application),
       args.options));
-  if (args.saved_stitch_time) {
-    const auto saved = hm::get_node(launch.saved_game, "stitching.stitch_frame_time");
-    Require(
-        saved && saved->IsScalar() && saved->as<std::string>() == *args.saved_stitch_time,
-        "AMD playback requires --stitch-frame-time to match the saved calibration reference");
-  }
-  if (args.expected_invalidation) {
-    const auto saved = hm::get_node(launch.saved_game, "hstream_ui.stitching_calibration.invalidation_id");
-    const auto state = hm::get_node(launch.saved_game, "hstream_ui.stitching_calibration.status");
-    const auto invalidated = hm::get_node(launch.saved_game, "hstream_ui.stitching_calibration.artifacts_invalidated");
-    Require(
-        saved && saved->IsScalar() && saved->as<std::string>() == *args.expected_invalidation && state &&
-            state->IsScalar() && state->as<std::string>() == "complete" && (!invalidated || !invalidated->as<bool>()),
-        "AMD playback requires the requested completed calibration revision; automatic calibration is unavailable");
-  }
+  const hm::program::ProgramCalibrationRequest calibration{args.saved_stitch_time, args.expected_invalidation};
+  Status(hm::program::ValidateProgramCalibrationSelection(launch.saved_game, calibration));
   Status(hm::program::ValidateAmdProgramAdmission(launch.configuration));
   const auto audio_config = Take(hm::program::ResolveProgramAudioConfig(launch.configuration, launch.frame_offsets));
   auto output_config = Take(hm::program::ResolveProgramOutputConfig(launch.configuration));
@@ -199,7 +186,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
        launch.minimize_blend,
        launch.amd.compact_stitch_workspace,
        launch.configuration.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
-       launch.configuration.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>()}));
+       launch.configuration.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>(),
+       calibration}));
   if (scoreboard)
     output_config.render.scoreboard = Take(hm::program::PrepareProgramScoreboard(
         *scoreboard,

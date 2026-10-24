@@ -116,6 +116,7 @@ absl::StatusOr<std::unique_ptr<AmdProgramProcessor>> AmdProgramProcessor::Create
     Require(
         artifacts.artifact_lock && artifacts.load_snapshot,
         absl::FailedPreconditionError("Program requires compatible saved stitching artifacts"));
+    Status(ValidateLockedProgramCalibration(config.game_directory, config.calibration, *artifacts.artifact_lock));
     pano::ControlMasks masks;
     Require(
         masks.load(artifacts.load_snapshot->directory().string(), 0),
@@ -132,8 +133,8 @@ absl::StatusOr<std::unique_ptr<AmdProgramProcessor>> AmdProgramProcessor::Create
     Require(
         Take(stitching::current_stitched_output_generation_id(config.game_directory)) == generation,
         absl::FailedPreconditionError("AMD Program requires current unrotated saved geometry"));
-    const auto mask =
-        Take(stitching::load_field_mask_for_loaded_generation(config.game_directory, generation, loaded_generation));
+    const auto mask = Take(stitching::load_field_mask_for_loaded_generation(
+        config.game_directory, generation, loaded_generation, config.calibration.invalidation_id.value_or("")));
     auto tracking = Take(tracking::ProgramTracking::Create(
         mask, config.camera, config.tracker, config.raise_center_ratio, config.lower_bottom_ratio));
     DeviceScope device(config.detector.device);

@@ -9,6 +9,7 @@
 
 #include "cupano/pano/blendMode.h"
 #include "hstream/src/libs/detection/HipDetector.h"
+#include "hstream/src/libs/program/ProgramCalibration.h"
 #include "hstream/src/libs/program/ProgramRenderSettings.h"
 #include "hstream/src/libs/tracking/ProgramTracking.h"
 
@@ -23,6 +24,7 @@ struct AmdProgramProcessorConfig {
   pano::BlendSettings blend;
   bool minimize_blend, compact_workspace;
   float raise_center_ratio, lower_bottom_ratio;
+  ProgramCalibrationRequest calibration;
 };
 
 struct AmdProgramFrame {

@@ -123,6 +123,7 @@ cc_binary(
     deps = select({
         "//:use_hip": [
             ":amd_pipeline_options", "//src/libs/program:amd_program_admission", "//src/libs/program:file_output",
+            "//src/libs/program:calibration",
             "//src/libs/program:amd_program_processor", "//src/libs/program:launch_config",
             "//src/libs/program:detector_settings", "//src/libs/program:output_config",
             "//src/libs/program:scoreboard_config", "//src/libs/program:runtime_control",

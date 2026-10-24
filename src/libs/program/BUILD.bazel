@@ -237,12 +237,27 @@ cc_library(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [
-        ":gpu", ":va_program_output", ":render_settings",
+        ":gpu", ":va_program_output", ":render_settings", ":calibration",
         "//src/libs/gpu:convert_image",
         "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
         "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",
         "@hm-cupano//src/pano:cuda_pano",
     ],
+)
+
+cc_library(
+    name = "calibration",
+    srcs = ["ProgramCalibration.cpp"],
+    hdrs = ["ProgramCalibration.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_path", "//src/libs/common:utils_base",
+            "//src/libs/stitching:game_config", "//src/libs/stitching:hugin_project"],
+)
+
+cc_test(
+    name = "calibration_test",
+    srcs = ["ProgramCalibrationTest.cpp"],
+    deps = [":calibration"],
 )
 
 cc_library(

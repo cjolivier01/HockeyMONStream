@@ -915,7 +915,12 @@ Unknown/unmapped runtime selections fail without disturbing the current branch.
 Generations reject stale commands, and startup begins at generation 1 to match
 the UI. The optional desktop calibration revision/reference arguments must
 match the saved game snapshot; CLI overrides cannot rewrite that snapshot.
-They do not trigger automatic calibration.
+Reference times compare through the shared time parser, so `00:03:39.000` and
+`00:03:39` agree. `ProgramCalibration` repeats the owner/reference check against
+current saved configuration while the processor holds the Hugin artifact-load
+lock, and carries the owner into rink-mask loading. A replacement calibration
+during source/model preparation therefore fails startup. These arguments do
+not trigger automatic calibration.
 
 `VaProgramSink` observes glimagesink's draw callback and fences the GL thread
 from the processing owner before announcing `ready`. Submitted buffers and
