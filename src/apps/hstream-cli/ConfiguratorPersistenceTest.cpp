@@ -172,6 +172,46 @@ int main() {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = true;
   {
+    const auto directory = fs::temp_directory_path() / ("hstream-settings-overlay-" + std::to_string(getpid()));
+    fs::create_directories(directory);
+    const auto path = directory / "session.yaml";
+    hm::Configurator overlay_config("overlay", "configs", -1);
+    hm::ConfiguratorTestAccess::set_config(
+        &overlay_config,
+        YAML::Load(
+            "pipeline: {hmstitcher: {properties: {config-file: original.pto}}, sink0: {enable: 0}}\n"
+            "stitching: {post_stitch_rotate_degrees: 0}\n"));
+    const std::string contents =
+        "game: {videos: {left: ['first,chapter=.mp4', second.mp4], right: [right.mp4]}}\n"
+        "stitching: {post_stitch_rotate_degrees: 5, projection_framing: {crop: [1, 20, 3, 40]}}\n"
+        "pipeline: {sink0: {enable: 1}}\n";
+    std::ofstream(path) << contents;
+    const auto applied = overlay_config.apply_settings_overlay(path);
+    const auto values = overlay_config.config();
+    ok &= expect(
+        applied.ok() && values["game"]["videos"]["left"][0].as<std::string>() == "first,chapter=.mp4" &&
+            values["game"]["videos"]["left"].size() == 2 &&
+            values["stitching"]["projection_framing"]["crop"].size() == 4 &&
+            values["pipeline"]["hmstitcher"]["properties"]["config-file"].as<std::string>() == "original.pto" &&
+            values["pipeline"]["sink0"]["enable"].as<int>() == 1,
+        "session overlays preserve chapter punctuation, arrays and structural native properties");
+    ok &= expect(
+        overlay_config.apply_config_item("stitching.post_stitch_rotate_degrees", "7").ok() &&
+            overlay_config.config()["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7,
+        "explicit CLI leaf options override a session overlay");
+    const auto before = YAML::Dump(overlay_config.config());
+    std::ofstream(path) << "[not, a, mapping]\n";
+    ok &= expect(
+        !overlay_config.apply_settings_overlay(path).ok() && YAML::Dump(overlay_config.config()) == before,
+        "invalid session overlays fail without changing the runtime configuration");
+    const auto link = directory / "link.yaml";
+    fs::create_symlink(path, link);
+    ok &= expect(!overlay_config.apply_settings_overlay(link).ok(), "runtime overlays reject symlink inputs");
+    std::ofstream(path) << std::string(16 * 1024 * 1024 + 1, 'x');
+    ok &= expect(!overlay_config.apply_settings_overlay(path).ok(), "runtime overlays enforce the metadata byte limit");
+    fs::remove_all(directory);
+  }
+  {
     const auto directory = fs::temp_directory_path() / ("hstream-preparation-output-" + std::to_string(getpid()));
     fs::create_directories(directory / "game");
     const auto manifest = hm::publication::CreateRun(directory / "game", directory / "work", "preparation-test");
@@ -298,8 +338,7 @@ int main() {
     if (!job_status.ok() || !output_status.ok())
       std::cerr << "Encoding job configuration: " << job_status << "; outputs: " << output_status << '\n';
     ok &= expect(
-        job_status.ok() && output_status.ok() &&
-            !job.config()["pipeline"]["sink1"]["enable"].as<int>() &&
+        job_status.ok() && output_status.ok() && !job.config()["pipeline"]["sink1"]["enable"].as<int>() &&
             !job.config()["pipeline"]["ds-playtracker"]["show"].as<int>() &&
             !job.config()["pipeline"]["hmplaycropper"]["show"].as<int>() &&
             !job.config()["pipeline"]["hmplaycropper"]["private-properties"]["show"].as<int>() &&
@@ -2608,8 +2647,8 @@ game:
           orientation_config.underlay_config("pipeline", incomplete_pipeline.string()) &&
           orientation_config.apply_config_item("pipeline.hmplaycropper.show-scoreboard", "0").ok();
       const auto materialized = loaded ? orientation_config.complete_configuration(
-                                            false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path())
-                                      : absl::InternalError("orientation fixture did not load");
+                                             false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path())
+                                       : absl::InternalError("orientation fixture did not load");
       const auto tracker_path = materialized.ok()
           ? fs::path(orientation_config.config()["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
           : fs::path();
@@ -2655,7 +2694,8 @@ game:
       }
       fs::remove(orientation_game / "config.yaml");
       ok &= expect(
-          absl::IsNotFound(hm::ConfiguratorTestAccess::import_stitching_orientation(&orientation_config, orientation_game)),
+          absl::IsNotFound(
+              hm::ConfiguratorTestAccess::import_stitching_orientation(&orientation_config, orientation_game)),
           "A missing saved orientation must fail instead of using stale playlists");
     }
 
@@ -5971,17 +6011,20 @@ game:
     hm::Configurator lens_config(name, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     ok &= expect(lens_config.configure().ok(), "Auto launch fixture must load");
     if (lens_case == 0)
-      ok &= expect(lens_config.apply_config_item("stitching.max_output_width", "3072").ok(),
-                   "Simultaneous view edit must apply");
+      ok &= expect(
+          lens_config.apply_config_item("stitching.max_output_width", "3072").ok(),
+          "Simultaneous view edit must apply");
     if (lens_case == 1 || lens_case == 2 || lens_case == 4 || lens_case == 5)
-      ok &= expect(lens_config.apply_config_item("stitching.camera_config", "auto").ok(),
-                   "Explicit CLI Auto must apply");
+      ok &=
+          expect(lens_config.apply_config_item("stitching.camera_config", "auto").ok(), "Explicit CLI Auto must apply");
     if (lens_case == 4)
-      ok &= expect(lens_config.apply_config_item("stitching.auto_input_lens_frozen", "true").ok(),
-                   "Explicit snapshot replay must apply");
+      ok &= expect(
+          lens_config.apply_config_item("stitching.auto_input_lens_frozen", "true").ok(),
+          "Explicit snapshot replay must apply");
     if (lens_case == 5)
-      ok &= expect(lens_config.apply_config_item("stitching.camera_fov.horizontal_fov", "119").ok(),
-                   "Explicit CLI optics must retain manual intent");
+      ok &= expect(
+          lens_config.apply_config_item("stitching.camera_fov.horizontal_fov", "119").ok(),
+          "Explicit CLI optics must retain manual intent");
     const auto result = lens_config.complete_configuration(false, false, false, name);
     const auto after = YAML::LoadFile((directory / "config.yaml").string());
     const auto camera = hm::stitching::read_stitch_camera_selection(after);
@@ -5994,8 +6037,8 @@ game:
         result.message().find("Reframing requires") == std::string::npos;
     if (!persisted)
       std::cerr << name << ": " << result << "\n" << YAML::Dump(after) << '\n';
-    ok &= expect(persisted,
-                 "Auto must resolve before reframing, honor CLI refresh, and retain explicit frozen/manual optics");
+    ok &= expect(
+        persisted, "Auto must resolve before reframing, honor CLI refresh, and retain explicit frozen/manual optics");
   }
 
   // A higher-layer choice for one component must not release the other

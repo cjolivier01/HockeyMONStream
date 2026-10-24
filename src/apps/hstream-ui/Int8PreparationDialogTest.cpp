@@ -100,5 +100,32 @@ int main(int argc, char** argv) {
         dialog.findChild<QLabel*>("int8PreparationStatus")->text().contains("unavailable") && dialog.engine().isEmpty(),
         "missing tools must leave preparation inactive");
   }
+  {
+    // The shared desktop delegates Python preparation to hm-cli directly;
+    // native TensorRT tools are neither required nor passed to that backend.
+    const QString runner = root.filePath("hm-cli");
+    const QString arguments = root.filePath("arguments.txt");
+    if (!write(
+            runner,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + arguments.toUtf8() + "'\nprintf '%s\\n' '" + ready + "'\n") ||
+        !QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner))
+      return 1;
+    auto python_request = request;
+    python_request.runner = runner;
+    python_request.hockeymon = true;
+    python_request.detector_model = "yolo12l";
+    hm::ui::Int8PreparationDialog dialog(python_request);
+    bool accepted = false;
+    QObject::connect(&dialog, &QDialog::accepted, [&] { accepted = true; });
+    dialog.findChild<QPushButton*>("int8PrepareButton")->click();
+    ok &= check(waitFor([&] { return accepted; }), "Python INT8 preparation must use the backend runner");
+    QFile recorded(arguments);
+    ok &= check(
+        recorded.open(QIODevice::ReadOnly) &&
+            recorded.readAll() == "--prepare-detector\n--game-id\ngame\n--samples\n64\n--detector-model\nyolo12l\n",
+        "Python preparation arguments must match the backend protocol");
+    ok &= check(
+        dialog.engine() == engine && dialog.manifest() == manifest, "Python preparation must return its artifacts");
+  }
   return ok ? 0 : 1;
 }

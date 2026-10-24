@@ -40,6 +40,7 @@ HSTREAM_CLI_DEPS = [
     "//src/libs/common:shutdown_watchdog",
     "//src/libs/scoreboard:placement",
     "//src/libs/stitching:rink_mask_frame_time",
+    "//src/libs/stitching:transaction_state",
     "//src/libs/assets:asset_manager",
     "//src/libs/common:tensorrt_gpu_identity",
     # "//src/libs/common:mod_pipeline",

@@ -69,7 +69,7 @@ rsync -a \
 
 cd "${BUILD_DIR}"
 make HOST_CUDA_FLAGS="--config=${BAZEL_DEB_CONFIG}" \
-  hstream-job hstream-cli hstream-assets hstream-ui hstream-web-job yolo-custom-lib hstream-gst-plugins
+  hstream-job hstream-cli hstream-calibration-export hstream-assets hstream-ui hstream-web-job yolo-custom-lib hstream-gst-plugins
 
 VIDEOPREP_PLUGIN="${BUILD_DIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
 CUDA_NEEDED="$(patchelf --print-needed "${VIDEOPREP_PLUGIN}" | grep -E '^lib(cudart|npp[^.]*)[.]so[.]' || true)"
@@ -98,6 +98,7 @@ validate_native_cuda_code() {
 
 validate_native_cuda_code videoprep "${VIDEOPREP_PLUGIN}"
 validate_native_cuda_code hstream-cli "${BUILD_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
+validate_native_cuda_code hstream-calibration-export "${BUILD_DIR}/bazel-bin/src/apps/hstream-calibration-export/hstream-calibration-export"
 
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"

@@ -9,6 +9,7 @@
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
+#include "src/apps/hstream-ui/BackendPreview.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "src/apps/hstream-ui/HighlightPlan.h"
@@ -37,6 +38,9 @@
 #include <QtCore/QEventLoop>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSaveFile>
@@ -683,7 +687,7 @@ class NativeVideoTarget : public hm::ui::NativePreviewSurface {
   }
 
   QPaintEngine* paintEngine() const override {
-    return nullptr;
+    return NativePreviewSurface::paintEngine();
   }
 
   void setFocusToggleCallback(std::function<void()> callback) {
@@ -4830,7 +4834,9 @@ QString hm::ui_internal::development_runtime_root_for_application(const QString&
   return {};
 }
 
-HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
+HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& backend)
+    : QMainWindow(parent), backend_(backend) {
+  backend_.validate();
   selected_game_root_ = gameRoot();
   loadBaselineDefaults();
   hm::ui_internal::configure_application_identity();
@@ -4898,10 +4904,34 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
     }
   });
   buildUi();
+  connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int) {
+    if (backend_preview_ && backend_preview_directory_) {
+      backend_preview_->setChannel(
+          render_video_toggle_ && !render_video_toggle_->isChecked() ? "none" : selectedPipelinePreviewChannel());
+      backend_preview_->poll();
+    }
+  });
   refreshGames();
   refreshArchiveAvailability();
   updateRunControls();
-  appendLog(QString("hstream-ui started with hstream-cli runner backend=%1").arg(pipelineRunnerPath()));
+  appendLog(QString("hstream-ui started with %1 Program runner=%2; native workflows=%3")
+                .arg(backend_.name, pipelineRunnerPath(), nativeRunnerPath()));
+}
+
+void HStreamWindow::openGame(const QString& game_id, bool play, bool calibration_only) {
+  if (!game_id.isEmpty()) {
+    if (sanitized_game_id(game_id) != game_id ||
+        !QFileInfo::exists(QDir(gameDirectory(game_id)).filePath("config.yaml")))
+      throw std::runtime_error("The requested game must name an existing game under the selected game root");
+    selectGame(game_id);
+  }
+  initial_launch_game_ = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  if (!backend_.initial_launch.isEmpty() && initial_launch_game_.isEmpty())
+    throw std::runtime_error("--backend-launch requires a selected game");
+  if (calibration_only)
+    set_combo_to_data(run_mode_selector_, "stitch-calibration");
+  if (play)
+    QTimer::singleShot(0, this, [this]() { startPipeline(); });
 }
 
 void HStreamWindow::loadBaselineDefaults() {
@@ -5330,7 +5360,7 @@ int HStreamWindow::cameraTabCount() const {
 
 void HStreamWindow::buildUi() {
   setObjectName("hstreamUi");
-  setWindowTitle("HStream UI");
+  setWindowTitle(backend_.isHockeyMon() ? "HockeyMON — HStream UI" : "HStream UI");
   resize(1440, 900);
 
   auto* central = new QWidget(this);
@@ -5494,7 +5524,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   auto* status_bar = new QHBoxLayout();
   status_bar->setSpacing(4);
 
-  auto* title = new QLabel("HStream Runtime Control");
+  auto* title = new QLabel(backend_.isHockeyMon() ? "HockeyMON Runtime Control" : "HStream Runtime Control");
   title->setObjectName("titleLabel");
   QFont title_font = title->font();
   title_font.setBold(true);
@@ -6181,7 +6211,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
           "Save the current preset first so every candidate starts from the displayed stitching and rink settings.");
       return;
     }
-    const QString runner = pipelineRunnerPath();
+    const QString runner = nativeRunnerPath();
     if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
       QMessageBox::warning(this, "Stitching Experiments", "The hstream-cli runner is unavailable: " + runner);
       return;
@@ -6473,7 +6503,9 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
 
 void HStreamWindow::updateWindowTitle() {
   const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
-  setWindowTitle(game_id.isEmpty() ? QStringLiteral("HStream UI") : QStringLiteral("HStream UI — %1").arg(game_id));
+  const QString title =
+      backend_.isHockeyMon() ? QStringLiteral("HockeyMON — HStream UI") : QStringLiteral("HStream UI");
+  setWindowTitle(game_id.isEmpty() ? title : title + " — " + game_id);
 }
 
 void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
@@ -7631,7 +7663,21 @@ void HStreamWindow::scrollLogToTail() {
   log_scroll_is_programmatic_ = previous;
 }
 
+bool HStreamWindow::hockeyMonProgram() const {
+  return backend_.isHockeyMon() && !isCalibrationRun();
+}
+
 QString HStreamWindow::pipelineRunnerPath() const {
+  // A first hmstitch launch lets the shim translate its original Python CLI
+  // arguments, then exec the matching native calibration runner. Subsequent
+  // calibration runs already have canonical UI settings and go direct.
+  return hockeyMonProgram() || (backend_.isHockeyMon() && !backend_.initial_launch.isEmpty()) ? backend_.runner
+                                                                                              : nativeRunnerPath();
+}
+
+QString HStreamWindow::nativeRunnerPath() const {
+  if (backend_.name == "hstream" && !backend_.runner.isEmpty())
+    return backend_.runner;
   const QByteArray test_runner = qgetenv("HSTREAM_UI_TEST_RUNNER");
   if (!test_runner.isEmpty()) {
     return QString::fromLocal8Bit(test_runner);
@@ -7654,6 +7700,156 @@ QString HStreamWindow::pipelineRunnerPath() const {
     return bazel_runner;
   }
   return "hstream-cli";
+}
+
+void HStreamWindow::prepareBackendPreview(QProcessEnvironment& environment) {
+  if (backend_preview_)
+    backend_preview_->stop();
+  std::vector<QWidget*> targets = {preview_render_target_, stitched_render_target_};
+  targets.insert(targets.end(), camera_preview_render_targets_.begin(), camera_preview_render_targets_.end());
+  for (QWidget* target : targets) {
+    if (auto* surface = dynamic_cast<hm::ui::NativePreviewSurface*>(target)) {
+      surface->setImageMode(hockeyMonProgram());
+      surface->setImage({});
+    }
+  }
+  backend_preview_directory_.reset();
+  environment.remove("HSTREAM_UI_BACKEND_SESSION");
+  environment.remove("HM_UI_INITIAL_LAUNCH");
+  if (backend_.isHockeyMon()) {
+    environment.insert("HSTREAM_NATIVE_RUNNER", nativeRunnerPath());
+    if (!backend_.initial_launch.isEmpty()) {
+      if (active_run_game_id_ != initial_launch_game_)
+        throw std::runtime_error("Initial HockeyMON arguments belong to a different game; reopen the intended game");
+      environment.insert("HM_UI_INITIAL_LAUNCH", backend_.initial_launch);
+    }
+  }
+  if (!hockeyMonProgram())
+    return;
+  backend_preview_directory_ = std::make_unique<QTemporaryDir>(QDir::tempPath() + "/hstream-hockeymon-XXXXXX");
+  if (!backend_preview_directory_->isValid())
+    throw std::runtime_error("Could not create a private HockeyMON preview session");
+  environment.insert("HSTREAM_UI_BACKEND_SESSION", backend_preview_directory_->path());
+  if (environment.value("HM_HSTREAM_CALIBRATION_EXPORT").isEmpty()) {
+    const QString exporter = development_bazel_bin_.isEmpty()
+        ? QDir(QFileInfo(nativeRunnerPath()).absolutePath()).filePath("hstream-calibration-export")
+        : QDir(development_bazel_bin_).filePath("src/apps/hstream-calibration-export/hstream-calibration-export");
+    if (!QFileInfo(exporter).isExecutable())
+      throw std::runtime_error(("Matching calibration exporter is unavailable: " + exporter).toStdString());
+    environment.insert("HM_HSTREAM_CALIBRATION_EXPORT", exporter);
+  }
+  if (!backend_preview_) {
+    backend_preview_ = std::make_unique<hm::ui::BackendPreview>();
+    backend_preview_->frameReady = [this](const QString& channel, const QImage& image) {
+      if (auto* target = dynamic_cast<hm::ui::NativePreviewSurface*>(previewTargetForChannel(channel))) {
+        target->setImage(image);
+        if (channel == selectedPipelinePreviewChannel() &&
+            (!render_video_toggle_ || render_video_toggle_->isChecked())) {
+          if (QWidget* surface = previewSurfaceForChannel(channel))
+            surface->show();
+          target->show();
+          QLabel* notice = channel == "program" ? preview_external_notice_
+              : channel == "stitched"           ? stitched_external_notice_
+                                                : nullptr;
+          if (channel.startsWith("source")) {
+            bool valid = false;
+            const int index = channel.mid(6).toInt(&valid);
+            if (valid && index >= 0 && index < static_cast<int>(camera_preview_notices_.size()))
+              notice = camera_preview_notices_[index];
+          }
+          if (notice)
+            notice->hide();
+          if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning)
+            setPreviewRenderingLayout(true);
+        }
+      }
+    };
+    backend_preview_->failed = [this](const QString& error) {
+      appendLog("HockeyMON preview failed: " + error);
+      if (preview_status_)
+        preview_status_->setText("HockeyMON preview failed: " + error);
+    };
+  }
+  backend_preview_->start(backend_preview_directory_->path());
+  backend_preview_->setChannel(selectedPipelinePreviewChannel());
+}
+
+bool HStreamWindow::handleBackendPublication(const QString& line) {
+  const QString prefix = "HM_BACKEND_PUBLICATION ";
+  if (!line.startsWith(prefix))
+    return false;
+  if (!active_hockeymon_program_) {
+    appendLog("Unexpected HockeyMON publication receipt from a native run");
+    return true;
+  }
+  const auto fail = [this](const QString& detail) {
+    backend_publication_complete_ = false;
+    backend_publication_error_ = "HockeyMON publication failed: " + detail;
+    appendLog(backend_publication_error_);
+    for (const QString& kind : active_backend_output_kinds_)
+      output_states_.at(kind)->setText("FAILED");
+  };
+  if (line.size() > 1024 * 1024) {
+    fail("receipt exceeds the protocol size limit");
+    return true;
+  }
+  QJsonParseError error;
+  const auto document = QJsonDocument::fromJson(line.mid(prefix.size()).toUtf8(), &error);
+  const auto receipt = document.object();
+  if (error.error != QJsonParseError::NoError || !document.isObject() || receipt.value("version").toDouble(-1) != 1 ||
+      receipt.value("game_id").toString() != active_run_game_id_) {
+    fail("invalid receipt or game identity");
+    return true;
+  }
+  if (receipt.value("status").toString() != "complete" || !receipt.value("artifacts").isArray()) {
+    fail(receipt.value("error").toString("backend did not complete publication"));
+    return true;
+  }
+  const std::map<QString, QString> kinds = {
+      {"program", "archive-file"},
+      {"stitched", "archive-stitched"},
+      {"program-4k", "archive-program-4k"},
+      {"telemetry", ""}};
+  std::map<QString, QString> published;
+  for (const auto& value : receipt.value("artifacts").toArray()) {
+    const auto artifact = value.toObject();
+    const QString kind = artifact.value("kind").toString();
+    const QString path = artifact.value("path").toString();
+    const QFileInfo info(path);
+    if (!value.isObject() || !kinds.count(kind) || !info.isAbsolute() || !info.isFile() || info.isSymLink() ||
+        info.size() <= 0) {
+      fail("artifact is missing, empty, not a regular absolute path or has an unknown kind");
+      return true;
+    }
+    // A recording toggle can publish several segments of the same kind.
+    published[kind] = path;
+  }
+  for (const auto& [kind, output_id] : kinds) {
+    if (active_backend_output_kinds_.contains(output_id) && !published.count(kind)) {
+      fail("receipt is missing the requested " + kind + " recording");
+      return true;
+    }
+  }
+  if (active_run_telemetry_requested_ && !published.count("telemetry")) {
+    fail("receipt is missing the requested telemetry database");
+    return true;
+  }
+  for (const auto& [kind, path] : published) {
+    const QString output_id = kinds.at(kind);
+    if (!output_id.isEmpty())
+      output_states_.at(output_id)->setText("SAVED");
+    appendLog("HockeyMON published " + kind + ": " + path);
+    QLabel* label = kind == "program" ? archive_output_path_label_
+        : kind == "stitched"          ? stitched_archive_output_path_label_
+        : kind == "program-4k"        ? program_4k_output_path_label_
+                                      : nullptr;
+    if (label)
+      label->setText(path);
+  }
+  backend_publication_complete_ = true;
+  backend_publication_error_.clear();
+  refreshArchiveAvailability();
+  return true;
 }
 
 QString HStreamWindow::pipelineConfigPath(const QString& config_name) const {
@@ -7685,7 +7881,7 @@ QString HStreamWindow::pipelineWorkingDirectory() const {
 
 bool HStreamWindow::setupPretrainedAssets(const QStringList& pipeline_args) {
   Q_UNUSED(pipeline_args);
-  appendLog("pretrained assets will be verified by hstream-cli");
+  appendLog(QString("pretrained assets will be verified by %1").arg(hockeyMonProgram() ? "hm-cli" : "hstream-cli"));
   return true;
 }
 
@@ -9016,6 +9212,18 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         config = YAML::LoadFile(config_path.string());
       if (!yaml_defined(config) || config.IsNull())
         config = YAML::Node(YAML::NodeType::Map);
+      if (hockeyMonProgram()) {
+        const auto has_source = [&config](const QString& role) {
+          YAML::Node paths;
+          if (!lookup_yaml_path(config, "game.videos." + role, &paths))
+            return false;
+          return (paths.IsSequence() && paths.size() > 0) || (paths.IsScalar() && !paths.as<std::string>().empty());
+        };
+        if (has_source("source") && !has_source("left") && !has_source("right")) {
+          appendLog("HockeyMON single-source playback does not require stitching calibration");
+          return true;
+        }
+      }
       const auto plan_count = selected_calibration_frame_count(config);
       if (!plan_count.ok())
         throw std::invalid_argument(plan_count.status().ToString());
@@ -10212,7 +10420,8 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
   const bool test_embedded_preview = !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() &&
       qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
   const bool embed_render_window = !standalone &&
-      (hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ||
+      (hockeyMonProgram() ||
+       hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ||
        test_embedded_preview);
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
@@ -10325,7 +10534,12 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
     if (player_analytics_controls_)
       args << (standalone || active_run_game_id_.isEmpty() ? player_analytics_controls_->arguments()
                                                          : active_player_analytics_arguments_);
-    if (!detectorPrecision().isEmpty() && detectorSelectionChanged()) {
+    if (backend_.isHockeyMon() && !detectorPrecision().isEmpty()) {
+      args << "--options=hstream_ui.hockeymon.detector.model=" + detectorModel();
+      args << "--options=hstream_ui.hockeymon.detector.precision=" + detectorPrecision();
+      if (detectorPrecision() == "int8" && prepared_int8_model_ == detectorModel() && !prepared_int8_engine_.isEmpty())
+        args << "--options=hstream_ui.hockeymon.detector.engine=" + prepared_int8_engine_;
+    } else if (!detectorPrecision().isEmpty() && detectorSelectionChanged()) {
       args << QString("--options=pipeline.primary-gie.config-file=%1").arg(detectorConfigName());
       args << QString("--options=pipeline.primary-gie.model-engine-file=%1").arg(detectorEnginePath());
     }
@@ -10424,6 +10638,8 @@ void HStreamWindow::prepareRecordedInt8() {
   if (!baseline_config_root_.isEmpty())
     env.insert("HM_CONFIG_ROOT", baseline_config_root_);
   env.insert("HM_GAME_DIR", QFileInfo(gameDirectory(game_id_edit_->text().trimmed())).absolutePath());
+  if (backend_.isHockeyMon())
+    env.insert("HSTREAM_NATIVE_RUNNER", nativeRunnerPath());
   const auto runtime_error =
       configure_pipeline_runtime_environment(env, pipelineWorkingDirectory(), development_bazel_bin_);
   if (!runtime_error.isEmpty()) {
@@ -10431,14 +10647,16 @@ void HStreamWindow::prepareRecordedInt8() {
     return;
   }
   hm::ui::Int8PreparationDialog dialog(
-      {pipelineRunnerPath(),
+      {backend_.isHockeyMon() ? backend_.runner : nativeRunnerPath(),
        pipelineWorkingDirectory(),
        development_bazel_bin_.isEmpty() ? QDir(pipelineWorkingDirectory()).filePath("bazel-bin")
                                         : development_bazel_bin_,
        pipelineConfigPath("ds_hockey_app_config.yaml"),
        pipelineConfigPath(detectorConfigPrefix() + "_int8.yaml"),
        game_id_edit_->text().trimmed(),
-       env},
+       env,
+       backend_.isHockeyMon(),
+       detectorModel()},
       this);
   if (dialog.exec() != QDialog::Accepted)
     return;
@@ -10570,21 +10788,35 @@ void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
     return;
   const QSignalBlocker blocker(detector_precision_combo_);
   const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
-  YAML::Node prepared;
-  prepared_int8_engine_ = lookup_yaml_path(effective, "hstream_ui.detector_int8.engine", &prepared)
-      ? QString::fromStdString(prepared.as<std::string>())
-      : QString();
-  prepared_int8_manifest_ = lookup_yaml_path(effective, "hstream_ui.detector_int8.manifest", &prepared)
-      ? QString::fromStdString(prepared.as<std::string>())
-      : QString();
+  const QString prepared_prefix = backend_.isHockeyMon() ? "hstream_ui.hockeymon.detector" : "hstream_ui.detector_int8";
+  const auto prepared_value = [&](const QString& suffix) {
+    YAML::Node value;
+    return lookup_yaml_path(effective, prepared_prefix + "." + suffix, &value)
+        ? QString::fromStdString(value.as<std::string>())
+        : QString();
+  };
+  prepared_int8_engine_ = prepared_value("engine");
+  prepared_int8_manifest_ = prepared_value("manifest");
   const auto models = detectorModels();
-  prepared_int8_model_ = lookup_yaml_path(effective, "hstream_ui.detector_int8.model", &prepared)
-      ? QString::fromStdString(prepared.as<std::string>())
-      : QString();
+  prepared_int8_model_ = prepared_value("model");
   // Engines prepared before the model catalog existed were built from the
   // detector that was then the only one.
   if (prepared_int8_model_.isEmpty() && !prepared_int8_engine_.isEmpty())
     prepared_int8_model_ = models.front().id;
+  YAML::Node prepared_precision;
+  if (backend_.isHockeyMon() && lookup_yaml_path(effective, prepared_prefix + ".precision", &prepared_precision)) {
+    const QString precision = QString::fromStdString(prepared_precision.as<std::string>());
+    YAML::Node model;
+    if (!lookup_yaml_path(effective, prepared_prefix + ".model", &model) ||
+        detector_precision_combo_->findData(precision) < 0 ||
+        detector_model_combo_->findData(QString::fromStdString(model.as<std::string>())) < 0)
+      throw std::runtime_error("Invalid saved HockeyMON detector model or precision");
+    const QSignalBlocker model_blocker(detector_model_combo_);
+    set_combo_to_data(detector_model_combo_, QString::fromStdString(model.as<std::string>()));
+    set_combo_to_data(detector_precision_combo_, precision);
+    updateDetectorPrecisionStatus();
+    return;
+  }
   YAML::Node configured;
   QString file;
   if (lookup_yaml_path(effective, "pipeline.primary-gie.config-file", &configured))
@@ -10651,6 +10883,10 @@ void HStreamWindow::updateDetectorPrecisionStatus() {
   QString status;
   if (precision.isEmpty()) {
     status = "Keeps the saved or inherited detector configuration, including custom models and engines.";
+  } else if (backend_.isHockeyMon()) {
+    status = precision == "int8"
+        ? "HockeyMON uses a calibrated ONNX INT8 model. Prepare it from this recording, then check detection accuracy."
+        : "HockeyMON uses PyTorch " + precision.toUpper() + " inference for the selected detector.";
   } else if (precision == "fp32" || precision == "fp16") {
     status = precision == "fp32" ? "FP32 is the default detector precision. "
                                  : "FP16 allows faster half-precision inference. ";
@@ -10800,6 +11036,16 @@ void HStreamWindow::startPipeline() {
   managed_archive_manifest_.clear();
   active_run_game_id_ = game_id_edit_->text().trimmed();
   active_run_is_calibration_ = isCalibrationRun();
+  active_hockeymon_program_ = hockeyMonProgram();
+  active_backend_output_kinds_.clear();
+  if (active_hockeymon_program_) {
+    for (const QString kind : {"archive-file", "archive-stitched", "archive-program-4k"}) {
+      if (output_toggles_.at(kind)->isChecked())
+        active_backend_output_kinds_.append(kind);
+    }
+  }
+  backend_publication_complete_ = false;
+  backend_publication_error_.clear();
   active_run_telemetry_requested_ =
       !active_run_is_calibration_ && drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked();
   active_telemetry_manifest_path_.clear();
@@ -10904,7 +11150,7 @@ void HStreamWindow::startPipeline() {
   const bool stitched_archive_enabled = stitched_archive_toggle != output_toggles_.end() &&
       stitched_archive_toggle->second && stitched_archive_toggle->second->isChecked();
   const bool program_4k_enabled = !active_run_is_calibration_ && output_toggles_.at("archive-program-4k")->isChecked();
-  if (archive_enabled || stitched_archive_enabled || program_4k_enabled) {
+  if (!active_hockeymon_program_ && (archive_enabled || stitched_archive_enabled || program_4k_enabled)) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
     const QString archive_run_id = QString("%1-%2")
@@ -11028,7 +11274,7 @@ void HStreamWindow::startPipeline() {
   active_stitch_max_output_width_ = stitchingMaxOutputWidth();
   active_run_autooptimizer_ = runAutooptimizer();
   bool calibration_required = false;
-  if (!prepareStitchingCalibrationRun(runner, working_dir, env, &calibration_required)) {
+  if (!prepareStitchingCalibrationRun(nativeRunnerPath(), working_dir, env, &calibration_required)) {
     abandon_archive_start("stitching setup failed");
     showStitchingCalibrationDialog();
     failStitchingCalibration(
@@ -11107,7 +11353,9 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
-  setPlaybackStartupStage("launch", "Preparing GPU preview windows and launching hstream-cli");
+  setPlaybackStartupStage(
+      "launch",
+      QString("Preparing preview windows and launching %1").arg(hockeyMonProgram() ? "hm-cli" : "hstream-cli"));
 
   const bool embedded_render = std::any_of(
       args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--ui-preview-windows="); });
@@ -11221,6 +11469,25 @@ void HStreamWindow::startPipeline() {
           ? "audio enabled via pipeline.hmaudio.enable=1; local monitor audio follows Render video"
           : "audio enabled for encoded/stream outputs; local monitor audio is muted because Render video is off");
   env.insert("HSTREAM_UI_PARENT_PID", QString::number(QCoreApplication::applicationPid()));
+  try {
+    prepareBackendPreview(env);
+  } catch (const std::exception& error) {
+    abandon_archive_start("backend preview setup failed");
+    show_startup_error(QString::fromUtf8(error.what()));
+    active_run_game_id_.clear();
+    active_run_is_calibration_ = false;
+    active_hockeymon_program_ = false;
+    calibration_pending_ = false;
+    updateRunControls();
+    return;
+  }
+  if (active_hockeymon_program_) {
+    // Publication belongs to the Python backend. A successful native receipt
+    // must never admit or finalize the same output a second time.
+    env.remove("HSTREAM_JOB_MANIFEST");
+    env.remove("HSTREAM_ARCHIVE_RUN_ID");
+    env.insert("HM_OUTPUT_WORK_DIR", archive_output_work_dir(env, working_dir));
+  }
   pipeline_process_->setProcessEnvironment(env);
   pipeline_process_->setWorkingDirectory(working_dir);
 #ifdef Q_OS_UNIX
@@ -11425,6 +11692,8 @@ void HStreamWindow::stopPipeline() {
 }
 
 void HStreamWindow::handlePipelineStarted() {
+  if (pipeline_process_->processEnvironment().contains("HM_UI_INITIAL_LAUNCH"))
+    backend_.initial_launch.clear();
   hm::diagnostics::Breadcrumb(
       "pipeline", "started pid=" + std::to_string(pipeline_process_ ? pipeline_process_->processId() : 0));
   if (pipeline_inspector_) {
@@ -11507,6 +11776,14 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   readPipelineOutput();
   flushPipelineOutputFragments();
   pipeline_final_output_draining_ = false;
+  const bool finished_hockeymon = active_hockeymon_program_;
+  if (finished_hockeymon && exit_status == QProcess::NormalExit && exit_code == 0 && !backend_publication_complete_) {
+    backend_publication_error_ = backend_publication_error_.isEmpty()
+        ? "HockeyMON exited without a completed publication receipt"
+        : backend_publication_error_;
+    appendLog(backend_publication_error_);
+    exit_code = 1;
+  }
   if (pipeline_inspector_)
     pipeline_inspector_->setPipelineRunning(false);
   const bool stopped_by_user = pipeline_stop_requested_;
@@ -11584,6 +11861,12 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   if (projection_crop_dialog_)
     projection_crop_dialog_->closeAfterBackendCompletion();
   clearPreviewFrames();
+  if (finished_hockeymon && backend_preview_) {
+    // Retain the last preview until the next Play, including after failures.
+    backend_preview_->setChannel("none");
+    backend_preview_->setChannel(selectedPipelinePreviewChannel());
+    backend_preview_->poll();
+  }
   pipeline_stop_requested_ = false;
   if (calibration_pending_ && !stopped_by_user) {
     appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
@@ -11606,6 +11889,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   calibration_playback_restart_observed_ = false;
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
+  active_hockeymon_program_ = false;
   active_run_high_bit_depth_ = false;
   active_run_high_bit_depth_resolved_ = false;
   active_run_high_bit_depth_mode_.clear();
@@ -11632,8 +11916,9 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
                : calibration_hmstitcher_input_pool_failure_
                ? QString("GPU out of memory in the pre-stitch input-conversion buffer pool")
                : QString("GPU out of memory during stitching calibration"))
-        : !calibration_stall_watchdog_message_.isEmpty()
-        ? QString("Timed out: the camera no-progress watchdog expired")
+        : !calibration_stall_watchdog_message_.isEmpty() ? QString("Timed out: the camera no-progress watchdog expired")
+        : !backend_publication_error_.isEmpty()
+        ? backend_publication_error_
         : QString("Pipeline exited with code %1 (%2)")
               .arg(exit_code)
               .arg(exit_status == QProcess::NormalExit ? "normal exit" : "crashed");
@@ -11911,6 +12196,8 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   trimmed.remove('\r');
   trimmed = trimmed.trimmed();
   if (trimmed.isEmpty())
+    return;
+  if (handleBackendPublication(trimmed))
     return;
   if (rink_framing_controls_ && trimmed.startsWith("HSTREAM_RINK_CAMERA ")) {
     const int message = trimmed.indexOf("message=");
@@ -15470,10 +15757,11 @@ void HStreamWindow::updateScoreboardControls() {
   scoreboard_select_button_->setEnabled(scoreboard_selection_dialog_ || (available && live && !selecting));
   scoreboard_position_combo_->setEnabled(
       available && !selecting && (!running || live) && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
-  if (scoreboard_controls_status_->text().isEmpty())
-    scoreboard_controls_status_->setText(
-        live ? "Scoreboard placement also applies to recordings and streams."
-             : "Start Program playback to select or reselect the scoreboard.");
+  const QString ready_text = "Scoreboard placement also applies to recordings and streams.";
+  const QString idle_text = "Start Program playback to select or reselect the scoreboard.";
+  const QString status_text = scoreboard_controls_status_->text();
+  if (status_text.isEmpty() || status_text == ready_text || status_text == idle_text)
+    scoreboard_controls_status_->setText(live ? ready_text : idle_text);
 }
 
 bool HStreamWindow::sendScoreboardCommand(const QString& property, const QString& value) {
@@ -16404,6 +16692,8 @@ bool HStreamWindow::requestPipelinePreviewChannel(const QString& channel, Previe
     return false;
   }
   preview_generation_ = generation;
+  if (active_hockeymon_program_ && backend_preview_)
+    backend_preview_->setChannel(channel);
   pending_preview_channel_ = channel;
   pending_preview_generation_ = generation;
   setAllPreviewFocusAvailable(false);
@@ -17066,6 +17356,8 @@ void HStreamWindow::updateStitchingStillPreview() {
 }
 
 void HStreamWindow::updateRunControls() {
+  if (backend_mode_)
+    backend_mode_->setText(hockeyMonProgram() ? "Backend: hm-cli (Python)" : "Backend: hstream-cli");
   updateScoreboardControls();
   updateStitchingStillPreview();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
@@ -17245,6 +17537,7 @@ void HStreamWindow::saveJobScript() {
     return;
   }
   const bool stitched_only = enabledSinkNames(true) == QStringList{"ENCODE_STITCHED_FILE"};
+  const bool hockeymon_job = backend_.isHockeyMon() && !stitched_only;
   if (isCalibrationRun() && !stitched_only) {
     QMessageBox::warning(
         this,
@@ -17269,7 +17562,7 @@ void HStreamWindow::saveJobScript() {
   const QString path = QFileDialog::getSaveFileName(
       this,
       "Save job script",
-      QDir(gameDirectory(game_id_edit_->text().trimmed())).filePath("hstream-job.sh"),
+      QDir(gameDirectory(game_id_edit_->text().trimmed())).filePath(hockeymon_job ? "hm-job.sh" : "hstream-job.sh"),
       "Shell scripts (*.sh)");
   if (path.isEmpty())
     return;
@@ -17280,7 +17573,7 @@ void HStreamWindow::saveJobScript() {
       this,
       "Save job options",
       QString(
-          "This script runs hstream-cli from PATH on the execution host. "
+          "This script runs %2 from PATH on the execution host. "
           "Rendering is disabled. The job encodes the selected file outputs; "
           "if none are selected, the job encodes the 4K Program copy.\n"
           "Stitched-only jobs skip detection, play tracking and DriveGPT capture.\n"
@@ -17288,7 +17581,7 @@ void HStreamWindow::saveJobScript() {
           "Working output root: %1 (custom per-output paths still apply).\n\n"
           "Optional SBATCH directives, one per line (for example --partition=gpu).\n"
           "The script already requests one node, one task and one GPU. Blank is fine for direct execution.")
-          .arg(output_work_dir),
+          .arg(output_work_dir, hockeymon_job ? "hm-cli" : "hstream-cli"),
       QString(),
       &accepted);
   if (!accepted)
@@ -17325,16 +17618,20 @@ void HStreamWindow::saveJobScript() {
         framing_error.isEmpty() ? "Could not save the current settings. See the runtime log." : framing_error);
     return;
   }
-  const QString tool = !development_bazel_bin_.isEmpty()
-      ? QDir(development_bazel_bin_).filePath("src/apps/hstream-job/hstream-job")
-      : QDir(QCoreApplication::applicationDirPath()).filePath("hstream-job");
+  const QString tool = hockeymon_job      ? backend_.runner
+      : !development_bazel_bin_.isEmpty() ? QDir(development_bazel_bin_).filePath("src/apps/hstream-job/hstream-job")
+                                          : QDir(QCoreApplication::applicationDirPath()).filePath("hstream-job");
   auto* process = new QProcess(this);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
+  env.remove("HM_UI_INITIAL_LAUNCH");
+  env.remove("HSTREAM_UI_BACKEND_SESSION");
+  if (hockeymon_job)
+    args.prepend("--export-job");
   process->setProcessEnvironment(env);
   connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
-      QMessageBox::warning(this, "Save job script", "Could not launch hstream-job: " + process->errorString());
+      QMessageBox::warning(this, "Save job script", "Could not launch job exporter: " + process->errorString());
       process->deleteLater();
     }
   });
@@ -17840,7 +18137,7 @@ void HStreamWindow::cleanStitchingCalibration() {
   }
   const fs::path game_dir = fs::path(gameDirectory(game_id).toStdString());
   appendLog(QString("cleaning stitching calibration artifacts in %1").arg(QString::fromStdString(game_dir.string())));
-  const QString runner = pipelineRunnerPath();
+  const QString runner = nativeRunnerPath();
   if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
     appendLog(QString("stitching calibration clean failed: missing runner %1").arg(runner));
     return;
@@ -17854,7 +18151,7 @@ void HStreamWindow::cleanStitchingCalibration() {
     appendLog(runtime_error);
     return;
   }
-  if (!runStitchingClean(runner, working_dir, env, /*from_control_points=*/false, QString())) {
+  if (!runStitchingClean(nativeRunnerPath(), working_dir, env, /*from_control_points=*/false, QString())) {
     return;
   }
 
@@ -19072,7 +19369,18 @@ bool HStreamWindow::applySavedControlConfig(
   remove_yaml_path(config, {"runtime", "gpu-memory-profile"});
   remove_yaml_path(config, {"runtime", "gpu_memory_profile"});
   const auto previous_mask_time = hm::stitching::read_rink_mask_frame_time(merge_yaml_maps(baseline_config_, config));
-  if (!detectorPrecision().isEmpty() && detectorSelectionChanged()) {
+  if (backend_.isHockeyMon() && !detectorPrecision().isEmpty() && detectorSelectionChanged()) {
+    YAML::Node detector = config["hstream_ui"]["hockeymon"]["detector"];
+    detector["model"] = detectorModel().toStdString();
+    detector["precision"] = detectorPrecision().toStdString();
+    if (!prepared_int8_engine_.isEmpty() && prepared_int8_model_ == detectorModel()) {
+      detector["engine"] = prepared_int8_engine_.toStdString();
+      detector["manifest"] = prepared_int8_manifest_.toStdString();
+    } else {
+      detector.remove("engine");
+      detector.remove("manifest");
+    }
+  } else if (!detectorPrecision().isEmpty() && detectorSelectionChanged()) {
     try {
       const QString engine = detectorEnginePath();
       config["pipeline"]["primary-gie"]["config-file"] = detectorConfigName().toStdString();

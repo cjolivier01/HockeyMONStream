@@ -1,11 +1,13 @@
 #include "Int8PreparationDialog.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/ValueControlWheel.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QTimer>
+#include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QLabel>
@@ -17,6 +19,7 @@
 namespace hm::ui {
 Int8PreparationDialog::Int8PreparationDialog(Int8PreparationRequest request, QWidget* parent)
     : QDialog(parent), request_(std::move(request)) {
+  qApp->installEventFilter(this);
   setObjectName("int8PreparationDialog");
   setWindowTitle("Prepare INT8 from recording");
   resize(680, 470);
@@ -87,6 +90,7 @@ Int8PreparationDialog::Int8PreparationDialog(Int8PreparationRequest request, QWi
 }
 
 Int8PreparationDialog::~Int8PreparationDialog() {
+  qApp->removeEventFilter(this);
   if (process_.state() != QProcess::NotRunning) {
     process_.terminate();
     if (!process_.waitForFinished(5000)) {
@@ -96,6 +100,10 @@ Int8PreparationDialog::~Int8PreparationDialog() {
   }
 }
 
+bool Int8PreparationDialog::eventFilter(QObject* watched, QEvent* event) {
+  return route_value_control_wheel(this, watched, event) || QDialog::eventFilter(watched, event);
+}
+
 void Int8PreparationDialog::start() {
   const auto& env = request_.environment;
   const QString script = env.value(
@@ -103,7 +111,8 @@ void Int8PreparationDialog::start() {
   const QString builder = env.value(
       "HSTREAM_INT8_BUILDER", QDir(request_.bazel_bin).filePath("src/apps/int8-calib-builder/int8-calib-builder"));
   const QString assets = QDir(request_.bazel_bin).filePath("src/apps/hstream-assets/hstream-assets");
-  if (!QFileInfo(script).isFile() || !QFileInfo(builder).isExecutable() || !QFileInfo(assets).isExecutable()) {
+  if (!request_.hockeymon &&
+      (!QFileInfo(script).isFile() || !QFileInfo(builder).isExecutable() || !QFileInfo(assets).isExecutable())) {
     status_->setText(
         "INT8 preparation tools are unavailable. Build the source-checkout preparation tools as described in docs/detection-precision.md.");
     return;
@@ -118,23 +127,35 @@ void Int8PreparationDialog::start() {
   status_->setText("Checking preparation tools and sampling the recording…");
   process_.setWorkingDirectory(request_.working_directory);
   process_.setProcessEnvironment(env);
-  process_.setProgram(env.value("HSTREAM_INT8_PYTHON", "python3"));
-  process_.setArguments(
-      {script,
-       "--cli",
-       request_.runner,
-       "--builder",
-       builder,
-       "--assets",
-       assets,
-       "--app-config",
-       request_.app_config,
-       "--detector-config",
-       request_.detector_config,
-       "--game-id",
-       request_.game_id,
-       "--samples",
-       QString::number(count_->value())});
+  if (request_.hockeymon) {
+    process_.setProgram(request_.runner);
+    process_.setArguments(
+        {"--prepare-detector",
+         "--game-id",
+         request_.game_id,
+         "--samples",
+         QString::number(count_->value()),
+         "--detector-model",
+         request_.detector_model});
+  } else {
+    process_.setProgram(env.value("HSTREAM_INT8_PYTHON", "python3"));
+    process_.setArguments(
+        {script,
+         "--cli",
+         request_.runner,
+         "--builder",
+         builder,
+         "--assets",
+         assets,
+         "--app-config",
+         request_.app_config,
+         "--detector-config",
+         request_.detector_config,
+         "--game-id",
+         request_.game_id,
+         "--samples",
+         QString::number(count_->value())});
+  }
   process_.start();
 }
 

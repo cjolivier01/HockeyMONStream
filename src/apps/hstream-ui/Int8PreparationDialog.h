@@ -14,6 +14,8 @@ namespace hm::ui {
 struct Int8PreparationRequest {
   QString runner, working_directory, bazel_bin, app_config, detector_config, game_id;
   QProcessEnvironment environment;
+  bool hockeymon{false};
+  QString detector_model;
 };
 
 class Int8PreparationDialog : public QDialog {
@@ -28,6 +30,9 @@ class Int8PreparationDialog : public QDialog {
   }
   bool playWhenReady() const;
   void reject() override;
+
+ protected:
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
   void start();

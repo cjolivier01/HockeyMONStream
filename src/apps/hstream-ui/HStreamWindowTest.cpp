@@ -18263,6 +18263,7 @@ int main(int argc, char** argv) {
   if (!game_root.isValid() || !source_root.isValid() || !preferences.isValid()) {
     return 1;
   }
+  qputenv("HOME", preferences.path().toLocal8Bit());
   qputenv("XDG_CONFIG_HOME", preferences.path().toLocal8Bit());
   qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
   qunsetenv("USE_NEW_NVSTREAMMUX");

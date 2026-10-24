@@ -1,0 +1,17 @@
+cc_binary(
+    name = "hstream-calibration-export",
+    srcs = ["main.cpp"],
+    linkopts = ["-lcrypto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/common:baseline_config",
+        "//src/libs/common:user_config",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:live_output_epoch",
+        "//src/libs/stitching:live_stitching_generation",
+        "//src/libs/stitching:stitching",
+        "//src/libs/stitching:playback_rink_map",
+        "@yaml-cpp",
+    ],
+)

@@ -108,6 +108,8 @@ class Configurator {
 
   bool underlay_config(const std::string& node_name, const std::string& filename);
   bool overlay_config(const std::string& node_name, const std::string& filename);
+  // Root-level one-run settings, distinct from structural app pipeline files.
+  absl::Status apply_settings_overlay(const std::filesystem::path& path);
 
   absl::Status apply_config_item(const std::string& key, const std::string& value);
 
