@@ -98,12 +98,16 @@ struct PlayerAnalyticsProcessor::Impl {
     // Held behind a pointer like the other per-feature state: the reservoir is
     // half a megabyte, and a 64-stream run with team off should not carry it.
     std::unique_ptr<TeamClusterer> team_clusterer;
+    // Last ranking revision reported, so a correction is counted once rather
+    // than on every crop that follows it.
+    uint32_t team_ranking_revision{0};
     unsigned scheduling_cursor{0};
     void Reset() noexcept {
       scheduler.Reset();
       evidence.clear();
       if (team_clusterer)
         team_clusterer->Reset();
+      team_ranking_revision = 0;
       scheduling_cursor = 0;
     }
     std::string geometry;
@@ -610,8 +614,16 @@ struct PlayerAnalyticsProcessor::Impl {
       for (size_t i = 0; i < batch_count; ++i) {
         const auto assignment =
             source.team_clusterer->Observe(host_embeddings + i * kTeamEmbedding, host_team[i].lightness);
+        const uint32_t ranking_revision = source.team_clusterer->ranking_revision();
+        if (ranking_revision != source.team_ranking_revision) {
+          // The first revision is the split being named; later ones replaced a
+          // ranking that a stronger fit contradicted twice running.
+          if (source.team_ranking_revision != 0)
+            ++counters.team_reranks;
+          source.team_ranking_revision = ranking_revision;
+        }
         if (assignment.cluster < 0)
-          ++counters.team_unassigned;
+          ++(source.team_clusterer->dark_cluster().has_value() ? counters.team_unassigned : counters.team_unranked);
         auto& consensus = *source.evidence.at(ids[selected[i]]).team;
         const bool was_committed = consensus.committed();
         consensus.Observe(frame->buf_pts, assignment.cluster, assignment.margin, source.team_clusterer->generation());

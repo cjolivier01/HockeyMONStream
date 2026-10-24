@@ -42,7 +42,8 @@ class TeamClusterer {
   // balanced enough to be two squads rather than the officials against
   // everyone. Absent means the overlay names nobody, which is the honest
   // answer; a guessed ranking would flip at the next refit and take every
-  // badge on screen with it.
+  // badge on screen with it. Once established it is never withdrawn, only
+  // replaced by a later fit that contradicts it convincingly.
   std::optional<int8_t> dark_cluster() const noexcept {
     return ranked_ && balanced_ ? std::optional<int8_t>(dark_cluster_) : std::nullopt;
   }
@@ -51,6 +52,18 @@ class TeamClusterer {
   // worth re-reading: the centroids it was judged against have moved.
   uint32_t generation() const noexcept {
     return generation_;
+  }
+
+  // Bumped when the dark/light ranking is first established and again each
+  // time a later fit overturns it. Callers watch this to report a correction;
+  // it does not change on an ordinary refit that agrees with the ranking.
+  uint32_t ranking_revision() const noexcept {
+    return ranking_revision_;
+  }
+
+  // Mean-lightness gap, in CIELAB L, that the current ranking was taken on.
+  float ranking_gap() const noexcept {
+    return ranking_gap_;
   }
 
   bool fitted() const noexcept {
@@ -83,6 +96,11 @@ class TeamClusterer {
   size_t since_fit_{0};
   uint32_t generation_{0};
   bool full_{false};
+  uint32_t ranking_revision_{0};
+  // Consecutive accepted fits whose lightness order contradicts the ranking by
+  // more than the switch margin. One such fit is noise; the correction waits.
+  uint8_t contrary_fits_{0};
+  float ranking_gap_{0};
   bool fitted_{false};
   bool ranked_{false};
   bool balanced_{false};

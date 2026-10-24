@@ -84,6 +84,21 @@ embeddings this game has produced, ranked dark-vs-light by mean crop lightness.
 the two groups; without it the overlay reads DARK and LIGHT, which is unnamed
 but never wrong.
 
+The ranking is taken on the first balanced fit whose groups differ by
+`min_lightness_gap`, and a later fit can take it back. Early crops can catch
+one squad under the lights and the other in shadow, and a ranking taken that
+way is wrong for the rest of the game, so a fit measuring the opposite order
+replaces it once it beats the same bar by `switch_hysteresis` on two
+consecutive refits — the terms the per-track vote already uses against its own
+incumbent. Centroid pairing keeps index 0 on the same squad across refits, so
+the contradiction is evidence about the ranking rather than about which group
+is which, and flipping it relabels every badge at once with no per-track
+churn. An established ranking is never withdrawn: a fit that cannot tell
+leaves the current answer standing rather than blanking every badge.
+`team-reranks` in the shutdown counters reports how often this happened, and
+`team-unranked` separates crops that arrived before any ranking from
+`team-unassigned`, which counts crops the centroids were too close to call.
+
 Jersey inference uses the hockey PARSeq profile with the full 95-token vocabulary,
 one/two digits followed by EOS, and preserved leading zeroes. GPU preprocessing
 matches PIL bicubic antialiasing and uint8 rounding after each resize pass. Bbox

@@ -22,9 +22,16 @@ struct AnalyticsCounters {
   uint64_t action_results{0};
   uint64_t team_enqueues{0};
   uint64_t team_results{0};
-  // Embeddings the clusterer declined to assign: either it has not fitted yet,
-  // or the two centroids were too close to call for this crop.
+  // Embeddings the clusterer declined because the two centroids were too close
+  // to call for this crop.
   uint64_t team_unassigned{0};
+  // Embeddings that arrived before the split could be named at all. Counted
+  // apart from the margin refusals above so a run that is still waiting for a
+  // publishable split does not read like one whose crops are all ambiguous.
+  uint64_t team_unranked{0};
+  // Times a later fit overturned the dark/light ranking. Not an error: it is
+  // how an early ranking taken on a marginal gap gets corrected.
+  uint64_t team_reranks{0};
   // Tracks that newly committed to a side. The only counter that distinguishes
   // a run which labelled players from one that only ever ran the model.
   uint64_t team_committed{0};
