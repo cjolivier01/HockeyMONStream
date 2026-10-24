@@ -21,6 +21,7 @@ struct TrackerConfig {
   // assignment scratch. Both track and per-frame observation counts are capped.
   size_t confirmation_frames, maximum_tracks, maximum_cost_matrix_bytes;
 };
+absl::Status ValidateTrackerConfig(const TrackerConfig& config);
 struct Observation {
   uint64_t id;
   detection::Proposal box;

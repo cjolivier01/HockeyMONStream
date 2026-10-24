@@ -1,16 +1,19 @@
 // Hardware qualification of the composed raw-camera Program path. Video stays
 // GPU-resident; only detections/tracks and saved calibration artifacts use CPU
-// memory. Explicit fixture tuning is not an application configuration default.
+// memory. Bounds/tracker tuning come from the baseline; codec/output choices
+// and explicit input/model arguments remain qualification controls.
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
 #include <gst/video/video-info-dma.h>
 
 #include "cupano/pano/cudaPano.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/detection/HipDetector.h"
 #include "hstream/src/libs/detection/VaDetectorImage.h"
 #include "hstream/src/libs/gpu/ConvertImage.h"
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
 #include "hstream/src/libs/gpu/vaapi/VaVideoReader.h"
+#include "hstream/src/libs/program/AmdProgramSettings.h"
 #include "hstream/src/libs/program/EncodedColorimetry.h"
 #include "hstream/src/libs/program/VaProgramOutput.h"
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
@@ -86,17 +89,20 @@ struct Pipeline {
         "Pipeline start failed: " + Error());
   }
 };
-std::unique_ptr<hm::gpu::VaVideoReader> OpenReader(int device, const char* path, double start) {
+std::unique_ptr<hm::gpu::VaVideoReader> OpenReader(
+    const hm::program::AmdProgramSettings& settings,
+    const char* path,
+    double start) {
   Check(std::isfinite(start) && start >= 0 && start < double(G_MAXINT64 / GST_SECOND), "Invalid seek time");
   char pci[32]{};
-  Hip(hipDeviceGetPCIBusId(pci, sizeof(pci), device));
+  Hip(hipDeviceGetPCIBusId(pci, sizeof(pci), settings.gpu_id));
   auto reader = Take(hm::gpu::VaVideoReader::Create(
       {hm::gpu::VaVideoCodec::kHevc,
        GST_VIDEO_FORMAT_P010_10LE,
        std::string("/dev/dri/by-path/pci-") + pci + "-render",
-       2,
-       30 * GST_SECOND,
-       10 * GST_MSECOND}));
+       settings.reader_queue_frames,
+       settings.operation_timeout_ns,
+       settings.cancellation_poll_ns}));
   Status(reader->OpenFile(path, static_cast<GstClockTime>(start * GST_SECOND)));
   return reader;
 }
@@ -138,6 +144,8 @@ int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   std::cout << std::unitbuf;
   try {
+    const auto baseline = Take(hm::baseline_config::load());
+    const auto settings = Take(hm::program::ResolveAmdProgramSettings(baseline.values));
     const std::string game = argv[1];
     Check(!std::filesystem::exists(argv[14]), "Output already exists");
     const int frames = std::stoi(argv[9]), out_width = std::stoi(argv[12]), out_height = std::stoi(argv[13]);
@@ -151,7 +159,7 @@ int main(int argc, char** argv) {
         std::stoi(argv[10]),
         std::stoi(argv[11]),
         property["num-detected-classes"].as<int>(),
-        property["gpu-id"].as<int>(),
+        settings.gpu_id,
         attrs["topk"].as<int>(),
         property["net-scale-factor"].as<float>(),
         attrs["pre-cluster-threshold"].as<float>(),
@@ -159,7 +167,7 @@ int main(int argc, char** argv) {
         property["maintain-aspect-ratio"].as<int>() != 0,
         property["symmetric-padding"].as<int>() != 0,
         hm::gpu::MigraphxSession::Precision::kFloat16,
-        268435456};
+        settings.maximum_inference_io_bytes};
     Hip(hipSetDevice(config.device));
     Compute compute;
     auto artifacts = Take(hm::stitching::lock_stitching_artifacts_for_load(game, 0));
@@ -179,22 +187,21 @@ int main(int argc, char** argv) {
         Take(hm::stitching::current_stitched_output_generation_id(game)) == generation,
         "Fixture requires current unrotated saved geometry");
     auto mask = Take(hm::stitching::load_field_mask_for_loaded_generation(game, generation, loaded_generation));
-    // Explicit qualification controls. Runtime configuration is integrated separately.
     auto tracking = Take(hm::tracking::ProgramTracking::Create(
         mask,
         YAML::LoadFile(argv[4])["play-tracker"],
-        {.25, .6, .7, .8, .5, .7, true, 30, 2, 512, 8 * 1024 * 1024},
-        -.1,
-        .1));
+        settings.tracker,
+        baseline.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
+        baseline.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>()));
     compute.stitcher = std::make_unique<hm::pano::cuda::CudaStitchPano<half4, half4>>(
-        1, hm::pano::BlendSettings::Laplacian(11), masks, true, true, 0, true);
+        1, hm::pano::BlendSettings::Laplacian(11), masks, true, true, 0, settings.compact_stitch_workspace);
     Check(compute.stitcher->status().ok(), compute.stitcher->status().message());
     const int width = compute.stitcher->canvas_width(), height = compute.stitcher->canvas_height();
     Check(width == mask.cols && height == mask.rows, "Stitcher and rink mask geometry differ");
     std::cout << "Validated raw panorama " << width << 'x' << height << " generation=" << generation << '\n';
     auto detector = Take(hm::detection::HipDetector::Create(config));
-    auto left = OpenReader(config.device, argv[5], left_start);
-    auto right = OpenReader(config.device, argv[6], right_start);
+    auto left = OpenReader(settings, argv[5], left_start);
+    auto right = OpenReader(settings, argv[6], right_start);
     Pipeline output;
     auto a = Read(*left), b = Read(*right);
     const auto left_info = Info(a.get()), right_info = Info(b.get());
@@ -215,14 +222,14 @@ int main(int argc, char** argv) {
     out_info.fps_d = left_info.fps_d;
     out_info.colorimetry = left_info.colorimetry;
     out_info.chroma_site = GST_VIDEO_CHROMA_SITE_JPEG;
-    auto pool = Take(hm::gpu::VaOutputPool::Create(config.device, out_info, 8));
+    auto pool = Take(hm::gpu::VaOutputPool::Create(config.device, out_info, settings.output_pool_frames));
     output.Create(
-        "appsrc name=frames format=time max-buffers=2 ! vah265enc name=encoder bitrate=20000 b-frames=0 "
+        "appsrc name=frames format=time ! vah265enc name=encoder bitrate=20000 b-frames=0 "
         "key-int-max=60 ! h265parse ! mp4mux ! filesink name=file",
         "frames");
     auto* encoder = gst_bin_get_by_name(GST_BIN(output.value), "encoder");
-    const auto encoded_color =
-        hm::program::InstallEncodedColorimetry(encoder, hm::program::EncodedCodec::kHevc, out_info, 64 * 1024 * 1024);
+    const auto encoded_color = hm::program::InstallEncodedColorimetry(
+        encoder, hm::program::EncodedCodec::kHevc, out_info, settings.maximum_encoded_packet_bytes);
     gst_object_unref(encoder);
     Status(encoded_color);
     pool->SetDisplayContext(output.value);
@@ -281,12 +288,12 @@ int main(int argc, char** argv) {
       // Match the delayed camera initialization with an explicit fixture full-canvas view.
       const auto crop = observed.crop.value_or(hm::BBox(0, 0, width, height));
       const auto transform = hm::playcropper::CalculateFrameTransformGeometry(width, height, crop, false, 0, 0);
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(settings.operation_timeout_ns);
       auto acquired = pool->Acquire();
       while (absl::IsResourceExhausted(acquired.status()) && std::chrono::steady_clock::now() < deadline) {
         const auto error = output.Error();
         Check(error.empty(), error);
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::nanoseconds(settings.cancellation_poll_ns));
         acquired = pool->Acquire();
       }
       Buffer buffer(Take(std::move(acquired)), gst_buffer_unref);

@@ -387,3 +387,22 @@ inspected after export; the processing loop never reads video back.
 The current CLI/UI acceptance workflow remains incomplete. Calibration creation,
 application configuration, model caching, source/audio lifecycle and native desktop
 preview must be integrated and qualified before AMD application support is claimed.
+
+## Shared Program configuration
+
+`common/ConfigPath` resolves and updates YAML paths without depending on GPU or
+DeepStream headers. `tracking/ProgramCameraMapping` materializes the native camera
+document from the effective canonical configuration and its provenance ranks.
+The NVIDIA configurator delegates to this same mapping: baseline, user, game and
+launch precedence, native same-layer ties and live-box role validation are
+preserved. The mapping does not load or merge application configuration itself.
+
+`runtime.amd` in the shared baseline owns AMD GPU selection, decoder/output pool
+bounds, operation deadlines, cancellation polling, inference/packet byte limits,
+stitch workspace selection and geometric tracking tuning. `AmdProgramSettings`
+requires every value from the effective document and validates integer ranges,
+timeout conversion and association settings before GPU preparation. It does not
+select an application backend or change NVIDIA/Aspen behavior. The raw Program
+qualifier now consumes these settings; its input/model paths and codec/output
+choices remain explicit qualification arguments. CLI/UI configuration loading
+and runtime ownership are still pending.

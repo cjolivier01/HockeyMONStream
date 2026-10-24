@@ -162,7 +162,7 @@ struct NativeTracker::Impl {
 };
 NativeTracker::NativeTracker(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 NativeTracker::~NativeTracker() = default;
-absl::StatusOr<std::unique_ptr<NativeTracker>> NativeTracker::Create(const TrackerConfig& config) {
+absl::Status ValidateTrackerConfig(const TrackerConfig& config) {
   if (!Probability(config.low_score) || !Probability(config.high_score) || !Probability(config.new_track_score) ||
       config.low_score > config.high_score || config.high_score > config.new_track_score ||
       !Probability(config.high_match_cost) || config.high_match_cost <= 0 || config.high_match_cost >= 1 ||
@@ -171,6 +171,12 @@ absl::StatusOr<std::unique_ptr<NativeTracker>> NativeTracker::Create(const Track
       config.tentative_match_cost >= 1 || !config.confirmation_frames || !config.maximum_tracks ||
       config.maximum_tracks > std::numeric_limits<int>::max() / 2 || config.maximum_cost_matrix_bytes < sizeof(double))
     return absl::InvalidArgumentError("Invalid native tracker tuning or resource bounds");
+  return absl::OkStatus();
+}
+absl::StatusOr<std::unique_ptr<NativeTracker>> NativeTracker::Create(const TrackerConfig& config) {
+  const auto valid = ValidateTrackerConfig(config);
+  if (!valid.ok())
+    return valid;
   return std::unique_ptr<NativeTracker>(new NativeTracker(std::make_unique<Impl>(config)));
 }
 void NativeTracker::Reset() {

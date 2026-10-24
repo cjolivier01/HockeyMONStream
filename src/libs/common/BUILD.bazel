@@ -1,6 +1,15 @@
 INCLUDE_PREFIX = "hstream/src/libs/common/"
 
 cc_library(
+    name = "config_path",
+    srcs = ["ConfigPath.cpp"],
+    hdrs = ["ConfigPath.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@yaml-cpp", "@com_google_absl//absl/strings"],
+)
+
+cc_library(
     name = "shutdown_watchdog",
     srcs = ["ShutdownWatchdog.cpp"],
     hdrs = ["ShutdownWatchdog.h"],
@@ -59,6 +68,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":config_yaml",
+        ":config_path",
         ":pinned_file",
         ":process",
         ":utils_base",
@@ -102,7 +112,7 @@ cc_test(
     name = "pipeline_yaml_lookup_test",
     srcs = ["PipelineYamlLookupTest.cpp"],
     deps = [
-        ":utils",
+        ":config_path",
         "@yaml-cpp",
     ],
 )
