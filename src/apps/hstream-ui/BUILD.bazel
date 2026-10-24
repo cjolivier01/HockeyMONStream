@@ -870,6 +870,8 @@ cc_binary(
         "//src/apps/hstream-cli:hstream-cli",
         "//src/apps/hstream-job:hstream-job",
         "//src/apps/hstream-calibration-export:hstream-calibration-export",
+        "//src/apps/hstream-model-prepare:hstream-model-prepare",
+        "//src/apps/hstream-model-infer:hstream-model-infer",
     ],
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],

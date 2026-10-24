@@ -24,6 +24,8 @@ HSTREAM_CLI_LINKOPTS = [
 ]
 
 HSTREAM_CLI_RUNTIME_DATA = [
+    "//src/apps/hstream-model-prepare:hstream-model-prepare",
+    "//src/apps/hstream-model-infer:hstream-model-infer",
     "//src/apps/player-model-builder:player-model-builder",
     "//src/gst-plugins:hstream_runtime_plugins",
     "//src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo",
@@ -83,6 +85,7 @@ HSTREAM_CLI_DEPS = [
 
 cc_library(
     name = "player_model_cache",
+    visibility = ["//src/apps/hstream-model-prepare:__pkg__"],
     srcs = ["PlayerModelCache.cpp", "DeepStreamReIdCache.inc"],
     hdrs = ["PlayerModelCache.h"],
     deps = [

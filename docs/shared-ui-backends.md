@@ -153,3 +153,83 @@ exports continue through `hstream-job`.
 Focused validation targets are `//src/apps/hstream-ui:backend_options_test` and
 `//src/apps/hstream-ui:shared_backend_window_test`; the existing native desktop
 and X11 interaction suites remain regression coverage for the default backend.
+
+## Shared model preparation
+
+`hstream-model-prepare` exposes the same `PlayerModelCache` used by native
+playback. The HockeyMON supervisor merges structural nodes from the native
+application configuration into its resolved `pipeline` and launches this helper
+under its process guard before starting Python inference:
+
+```sh
+hstream-model-prepare --config /private/session/model-input.yaml \
+  --config-directory /opt/hstream/configs \
+  --output /private/session/model-resolved.yaml \
+  --receipt /private/session/model-receipt.json
+```
+
+The input may be a full configuration containing `pipeline`, or that pipeline
+mapping alone. Output always contains `pipeline`; unrelated full-config fields
+are preserved. Existing output and receipt paths are refused. A version-1 JSON
+receipt has `status: complete`, the absolute `output` path and a `prepared` array.
+Each entry identifies `feature`, `model`, `bundle`, `manifest`, `engine`, and the
+available `onnx` or `etlt` source plus `tracker_config` for ReID. The immutable
+bundle manifest remains authoritative for preprocessing, source identity and
+engine bindings. Disabled and custom selections retain their configured paths
+and produce no prepared entry.
+
+This prepares the selected model exactly. In particular, native default ReID is
+DeepStream's pinned `resnet50_market1501.etlt` model and its SDK preprocessing
+profile; the separately selectable ONNX ReIdentificationNet is not a substitute.
+The existing native cache owns SHA verification, GPU/runtime identity, locking,
+engine generation and cancellation. Both files publish only after preparation
+succeeds. SIGINT, SIGTERM, stdin `q`/`quit`, or a bound direct parent's death
+cancel preparation; stdin EOF allows batch jobs to continue. The optional
+`--parent-pid` or `HSTREAM_UI_PARENT_PID` must identify the helper's direct parent.
+The enclosing process guard still owns abrupt-exit descendant cleanup.
+
+Bazel CLI/UI runtime data and desktop, Jetson and native ARM64/SBSA packages
+include this helper and `player-model-builder`. The shared desktop supplies
+`HM_HSTREAM_MODEL_PREPARE`; installed helpers are adjacent to `hstream-cli`, and
+development builds use `src/apps/hstream-model-prepare/hstream-model-prepare`
+under the selected Bazel output tree.
+
+## Exact native appearance inference
+
+Python and the native SDK may ship incompatible TensorRT serialization versions.
+`hstream-model-infer` keeps the accepted engine in a persistent native process;
+it never rebuilds or substitutes the model. The worker selects the matching
+helper through `HM_HSTREAM_MODEL_INFER` and starts it with `--engine PATH`,
+`--gpu-id N` and its direct `--parent-pid`. The same helper ships beside the other
+native binaries on desktop, Jetson and ARM64/SBSA.
+
+Requests contain a little-endian uint32 crop count from 1 through 32 followed by
+float32 `[N,3,256,128]` preprocessed pixels. Responses contain that same count and
+float32 `[N,256]` raw features; the model's configured output normalization remains
+owned by the Python adapter. A zero count or clean stdin EOF ends the session.
+Partial records, unsupported engine bindings, nonfinite values and oversized
+batches fail visibly on stderr and close the transport. Stdout contains binary
+responses only; `--describe` is a separate JSON inspection invocation. Requests
+are split or zero-padded to the engine's exact fixed/dynamic batch profile, and
+padding outputs are discarded.
+
+The Python owner enforces read/write deadlines, validates response sizes and
+stops/reaps the helper during worker teardown. The helper additionally monitors
+a Linux pidfd for the owning process and sends itself SIGTERM when that process
+exits, including while blocked on input or CUDA. The session survives its
+creating Python worker thread exiting; `PR_SET_PDEATHSIG` would incorrectly end
+it at that point. The helper creates no descendants. Its GPU buffers and
+execution context are reused across requests. The ABI boundary requires a
+bounded host transfer of preprocessed appearance crops: at most 12 MiB of input
+and 32 KiB of output per request, never a full video frame. This is confined to
+the optional exact DeepStream ReID path; it avoids loading conflicting TensorRT
+runtimes into one Python process.
+
+On an RTX 5090, 20 warm requests through the production Python transport and
+native helper measured median latency of 0.93 ms for one crop, 3.34 ms for eight
+and 22.83 ms for 32. These measurements start with preprocessed CPU crops; they
+exclude extraction/normalization and any Python GPU-to-host crop copy. The
+opt-in `//src/apps/hstream-model-infer:model_infer_gpu_test`, with
+`HSTREAM_REID_ENGINE` naming an existing native engine, checks real persistent
+batches, invalid records, EOF, creator-thread exit and parent-process-death
+cleanup without preparing a new model.
