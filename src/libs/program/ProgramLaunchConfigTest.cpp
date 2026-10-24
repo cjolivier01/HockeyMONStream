@@ -60,14 +60,15 @@ int main(int argc, char** argv) {
     };
     auto result = load();
     Check(result.ok(), result.status().ToString());
-    Check(result->game == game_dir && result->chapters[0].size() == 2 &&
-              result->chapters[0][1] == game_dir / "left1.mp4" && result->frame_offsets[0] == 2.5,
-          "Saved chapters or fractional synchronization changed");
-    Check(result->camera["zoom-in-aggressiveness"].as<int>() == 61,
-          "Game camera tuning did not override user tuning");
+    Check(
+        result->game == game_dir && result->chapters[0].size() == 2 &&
+            result->chapters[0][1] == game_dir / "left1.mp4" && result->frame_offsets[0] == 2.5,
+        "Saved chapters or fractional synchronization changed");
+    Check(result->camera["zoom-in-aggressiveness"].as<int>() == 61, "Game camera tuning did not override user tuning");
     auto overridden = load({"rink.camera.zoom_in_aggressiveness=83"});
-    Check(overridden.ok() && overridden->camera["zoom-in-aggressiveness"].as<int>() == 83,
-          "Launch override did not reach the Program camera");
+    Check(
+        overridden.ok() && overridden->camera["zoom-in-aggressiveness"].as<int>() == 83,
+        "Launch override did not reach the Program camera");
 
     // Explicit native files preserve same-layer camera values. Higher launch
     // canonical values still win, using the shared NVIDIA mapping contract.
@@ -82,15 +83,38 @@ int main(int argc, char** argv) {
     Write(game_dir / "config.yaml", game);
     result = load();
     Check(result.ok(), result.status().ToString());
-    Check(result->camera["zoom-in-aggressiveness"].as<int>() == 29 &&
-              result->inference_file == game_dir / "custom-infer.yaml" &&
-              result->inference["property"]["network-mode"].as<int>() == 2,
-          "Game-relative native selection was ignored");
+    Check(
+        result->camera["zoom-in-aggressiveness"].as<int>() == 29 &&
+            result->inference_file == game_dir / "custom-infer.yaml" &&
+            result->inference["property"]["network-mode"].as<int>() == 2,
+        "Game-relative native selection was ignored");
     overridden = load({"rink.camera.zoom_in_aggressiveness=83"});
-    Check(overridden.ok() && overridden->camera["zoom-in-aggressiveness"].as<int>() == 83,
-          "Higher canonical layer did not override the selected native camera");
-    Check(!load({"pipeline.primary-gie.config-file=/missing/explicit-infer.yaml"}).ok(),
-          "Missing explicit inference selection fell back");
+    Check(
+        overridden.ok() && overridden->camera["zoom-in-aggressiveness"].as<int>() == 83,
+        "Higher canonical layer did not override the selected native camera");
+    game["pipeline"]["hmstitcher"]["blend-mode"] = "laplacian";
+    game["pipeline"]["hmstitcher"]["blend-feather-fraction"] = 0.12;
+    game["pipeline"]["hmstitcher"]["minimize-blend"] = 0;
+    Write(game_dir / "config.yaml", game);
+    result = load();
+    Check(result.ok() && !result->minimize_blend, "Saved native minimize-blend was ignored");
+    overridden = load({"stitching.minimize_blend=true"});
+    Check(overridden.ok() && overridden->minimize_blend, "Lower native minimize-blend overrode launch choice");
+    overridden = load({"stitching.minimize_blend=true", "pipeline.hmstitcher.minimize-blend=0"});
+    Check(overridden.ok() && !overridden->minimize_blend, "Native minimize-blend lost same-layer precedence");
+    overridden = load({"stitching.blend_mode=alpha,stitching.blend_feather_fraction=0.3"});
+    Check(
+        overridden.ok() && overridden->blend.mode == "alpha" && overridden->blend.feather_fraction == 0.3,
+        "Lower native blend alias overrode the launch layer");
+    overridden = load({"stitching.blend_mode=alpha,pipeline.hmstitcher.blend-mode=hard-seam"});
+    Check(overridden.ok() && overridden->blend.mode == "gpu-hard-seam", "Native blend lost its same-layer precedence");
+    overridden = load({"pipeline.hmstitcher.blend-mode=gpu-hard-seam", "stitching.blend_mode=alpha"});
+    Check(
+        overridden.ok() && overridden->blend.mode == "gpu-hard-seam",
+        "Separate launch groups changed native alias precedence");
+    Check(
+        !load({"pipeline.primary-gie.config-file=/missing/explicit-infer.yaml"}).ok(),
+        "Missing explicit inference selection fell back");
 
     // Older calibrations store synchronization in the top-level section; null
     // in the newer location must not hide that saved data.

@@ -14,6 +14,13 @@ struct Mp4VideoTrack {
   int fps_n, fps_d;
   uint64_t frames;
   int64_t start_ns, duration_ns;
+  // Nominal and average header rates agree. This is only a hint; readers must
+  // still validate presentation timestamps/durations before frame-index use.
+  bool constant_rate;
+  // Preserve the exact clock origin so frame-index seeks can convert the
+  // combined origin + frame timestamp once, without nanosecond carry errors.
+  int64_t start_ticks;
+  int time_base_n, time_base_d;
 };
 // Read one ordinary local MP4's video-track metadata without opening a codec,
 // decoding images, or probing via GstDiscoverer. The video duration excludes

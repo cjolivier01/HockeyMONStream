@@ -51,7 +51,7 @@ test-amd-kernels:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu:portable_gpu_tests
 
 test-amd-video:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/gpu/vaapi:va_video_reader_test //src/libs/gpu/vaapi:va_video_playlist_test //src/libs/media:mp4_video_track_test //src/libs/gpu/vaapi:va_probe_descriptors_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test //src/libs/program:encoded_colorimetry_test
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/gpu/vaapi:va_video_reader_test //src/libs/gpu/vaapi:va_video_playlist_test //src/libs/media:mp4_video_track_test //src/libs/gpu/vaapi:va_probe_descriptors_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test //src/libs/program:encoded_colorimetry_test
 
 test-amd-inference:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/migraphx:session_test //src/libs/detection:gpu_test //src/libs/detection:postprocess_test //src/libs/detection:hip_detector_failure_test
@@ -60,7 +60,7 @@ test-amd-tracking:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --test_output=errors //src/libs/tracking:native_tracker_test //src/libs/tracking:program_tracking_test //src/libs/detection:rink_detection_mask_test
 
 test-amd-driver-interop:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hstream-job hstream-finalize hstream-cli run-hstream-cli hstream-ui hstream-web-job run-hstream-ui \

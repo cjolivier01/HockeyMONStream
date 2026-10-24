@@ -108,7 +108,8 @@ Repeated chapter changes exposed an upstream GStreamer 1.24.2 leak:
 closes its DMA-BUF handles. On this host that leaked 13 descriptors per restart,
 without HIP involvement. The private build below fixes the probe and failed
 exports, leaving the installed library, plugins and core unchanged. It builds
-only `libgstva-1.0` against the installed 1.24.2 development packages. The source
+private `libgstva-1.0` and the matching VA plugin against the installed 1.24.2
+development packages. The plugin also fixes the Main10 profile constant described below. The source
 archive is SHA-pinned; the runtime retains its source, patch, build recipe and
 license. The recipe deliberately rejects other SDK versions.
 
@@ -237,7 +238,8 @@ scripts/build_amd_migraphx.sh /opt/rocm "$HOME/.cache/hstream/migraphx-6.4.1-loc
 ```
 
 The generated `run` launcher selects the private core before process startup.
-Bazel tests need `--test_env=LD_LIBRARY_PATH` to retain that selection; the Make
+Bazel tests need `--test_env=LD_LIBRARY_PATH` to retain that selection and
+`--test_env=GST_PLUGIN_PATH_1_0` for the private VA plugin; the Make
 target above includes it. The two hardware tests initialize MIGraphX, VA and EGL
 in opposite orders and render a synthetic OpenGL framebuffer on the selected
 HIP device. Their only pixel readback is four test bytes. The real 120-frame
@@ -488,3 +490,72 @@ checks pass, including native configurator persistence. The full local x86 build
 passes. Both startup configuration reviews found no necessary fixes. The Jetson
 attempt still lacks `aarch64-linux-gnu-gcc-11`, `stubby` is unreachable, and native
 SBSA requires an ARM64 host.
+
+
+The Program qualifier also accepts saved application configuration:
+
+```bash
+/tmp/hstream-private-gstva/run /tmp/hstream-private-migraphx/run \
+  bazel-bin/src/libs/program/hip_program_fixture \
+  --configured vegas-calheat-1 configs/ds_hockey_app_config.yaml \
+  60 120 3840 2160 /tmp/program.mp4 \
+  --options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml \
+  --verify-reset
+```
+
+The positional controls are game, application YAML, synchronized start seconds,
+frame count, output width/height and a new output filename. Ordered `--options`
+groups use native launch precedence. The selected YAML supplies model precision,
+preprocessing, thresholds and declared checksummed assets. `ImageInput` reads the
+ONNX input name and static RGB dimensions without loading tensor payloads or an
+inference runtime. Unsupported preprocessing, class/ROI filters, dynamic spatial
+shapes and prebuilt TensorRT precisions fail explicitly. Saved camera settings,
+chapter lists, fractional synchronization and blend settings are consumed in
+memory; no generated runtime YAML is published.
+
+`StereoFramePlan` selects the left frame at/after the requested start and the
+nearest right frame, with deterministic half-frame ties and bounded decimal
+rounding correction. `VaVideoPlaylist::SeekFrame` resolves those indices within
+each chapter. A global rational timestamp alone is insufficient: three five-frame
+30 fps chapters accumulate a one-nanosecond duration rounding difference, and an
+accurate seek can otherwise return the previous picture for one nanosecond.
+Frame-index seeking combines the original MP4 origin and integer frame offset
+on the track clock before converting to nanoseconds. This also prevents an
+extra one-nanosecond frame when the starting edit is fractional. It requires
+constant-rate metadata and integral frame ticks. Header rates are only a hint:
+frame-mode reads also validate actual presentation timestamps, durations and
+chapter frame counts. A variable-rate input with misleading constant-rate
+headers fails before processing. GStreamer B-frame segment conversion can
+produce a one-nanosecond tail of the preceding picture after a seek; the reader
+discards at most one such prefix and validates the following full frame.
+Tests cover fractional
+starts/offsets, ties, nonintegral frame periods, chapter boundaries, fractional
+origins and EOS.
+
+The private VA plugin corrects another GStreamer 1.24.2 defect: its
+`VAProfileHEVCMain10` branch sets `GST_H265_PROFILE_IDC_MAIN`, producing ten-bit
+pixels with a contradictory Main profile label. The pinned patch changes the
+constant to Main10. The output test now checks the SPS profile, compatibility
+flags and both bit depths, in addition to colorimetry and unchanged compressed
+slices. It fails with the original plugin and passes with the private plugin.
+Earlier recordings described above had ten-bit pixels but that incorrect profile
+label; rebuilt output reports both `Main 10` and `yuv420p10le`.
+
+This is still the configured qualification path. The normal CLI/desktop runtime,
+application stereo/audio ownership, live controls, model compilation cache and
+installed AMD discovery remain integration work.
+
+Configured validation on the RX 9060 XT: 120 raw stereo pairs from
+`vegas-calheat-1` at 60 seconds produced 2,719 confirmed track observations and
+119 camera-led crops in 8.17139 seconds, excluding model preparation. The
+3840×2160 HEVC file reports Main 10, yuv420p10le, 60000/1001, full-range BT.709
+and centered chroma. Seek/reset, repeated renders, increasing IDs and failure
+retirement pass. All 17 focused HIP tests and seven CUDA-build tests pass, as
+does the full local x86 build. Jetson validation still lacks the cross-compiler,
+`stubby` is unreachable, and the SBSA build requires a native ARM64 host.
+
+Review closure for configured startup: rounds one through six corrected asset
+path/snapshot consistency, unsupported detector options, alias precedence and
+frame-clock rounding. Round seven reproduced misleading VFR headers and
+B-frame demux rounding; per-read grid/count validation and bounded prefix
+discard address both. Both round-eight reviews found no necessary fixes.

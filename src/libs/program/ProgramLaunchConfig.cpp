@@ -55,6 +55,23 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
     if (!merged.ok())
       return merged.status();
     result.configuration = std::move(*merged);
+    const auto blend = stitching::ResolveBlendSettings(result.configuration.layers);
+    if (!blend.ok())
+      return blend.status();
+    result.blend = *blend;
+    const auto minimize = get_node(result.configuration.values, "stitching.minimize_blend");
+    const auto native_minimize = get_node(result.configuration.values, "pipeline.hmstitcher.minimize-blend");
+    if (!minimize)
+      return absl::InvalidArgumentError("Effective baseline requires stitching.minimize_blend");
+    const bool use_native = native_minimize && !native_minimize->IsNull() &&
+        Rank(result.configuration.ranks, "pipeline.hmstitcher.minimize-blend") >=
+            Rank(result.configuration.ranks, "stitching.minimize_blend");
+    if (use_native) {
+      const auto text = native_minimize->as<std::string>();
+      result.minimize_blend = text == "1" ? true : text == "0" ? false : native_minimize->as<bool>();
+    } else {
+      result.minimize_blend = minimize->as<bool>();
+    }
     auto settings = ResolveAmdProgramSettings(result.configuration.values);
     if (!settings.ok())
       return settings.status();
@@ -79,8 +96,8 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
     const auto inference_file = Reference(result.configuration, roots, "pipeline.primary-gie.config-file");
     if (!inference_file.ok())
       return inference_file.status();
-    result.inference_file = *inference_file;
-    result.inference = YAML::LoadFile(inference_file->string());
+    result.inference_file = fs::canonical(*inference_file);
+    result.inference = YAML::LoadFile(result.inference_file.string());
     if (!result.inference.IsMap() || !result.inference["property"].IsMap())
       return absl::InvalidArgumentError("Program requires an inference YAML property map");
     for (size_t index = 0; index < 2; ++index) {

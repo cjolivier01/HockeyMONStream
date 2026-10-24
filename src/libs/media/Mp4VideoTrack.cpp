@@ -107,6 +107,9 @@ absl::StatusOr<Mp4VideoTrack> ReadMp4VideoTrack(
   auto length = Nanoseconds(video->duration, video->time_base);
   if (!start.ok())
     return start.status();
+  // GStreamer scales stream PTS down to nanoseconds. Duration remains rounded
+  // as declared by the demuxer, but the origin must not exceed the first PTS.
+  *start = av_rescale_q_rnd(video->start_time, video->time_base, {1, 1000000000}, AV_ROUND_DOWN);
   if (!length.ok())
     return length.status();
   if (*length <= 0 || *start > std::numeric_limits<int64_t>::max() - *length)
@@ -119,6 +122,12 @@ absl::StatusOr<Mp4VideoTrack> ReadMp4VideoTrack(
       video->avg_frame_rate.den,
       static_cast<uint64_t>(video->nb_frames),
       *start,
-      *length};
+      *length,
+      video->r_frame_rate.num > 0 && video->r_frame_rate.den > 0 &&
+          int64_t(video->r_frame_rate.num) * video->avg_frame_rate.den ==
+              int64_t(video->avg_frame_rate.num) * video->r_frame_rate.den,
+      video->start_time,
+      video->time_base.num,
+      video->time_base.den};
 }
 } // namespace hm::media

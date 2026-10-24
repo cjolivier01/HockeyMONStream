@@ -9,9 +9,13 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
 #include "hstream/src/libs/gpu/vaapi/VaVideoPlaylist.h"
+#include "hstream/src/libs/media/StereoFramePlan.h"
 #include "hstream/src/libs/program/AmdProgramProcessor.h"
 #include "hstream/src/libs/program/AmdProgramSettings.h"
 #include "hstream/src/libs/program/EncodedColorimetry.h"
+#include "hstream/src/libs/program/ProgramDetectorSettings.h"
+#include "hstream/src/libs/program/ProgramLaunchConfig.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 #include <chrono>
 #include <cmath>
@@ -84,21 +88,22 @@ struct Pipeline {
 };
 std::unique_ptr<hm::gpu::VaVideoPlaylist> OpenPlaylist(
     const hm::program::AmdProgramSettings& settings,
-    const char* path,
-    double start) {
-  Check(std::isfinite(start) && start >= 0 && start < double(G_MAXINT64 / GST_SECOND), "Invalid seek time");
+    const std::vector<std::filesystem::path>& paths,
+    GstClockTime start,
+    const std::optional<uint64_t>& frame) {
   char pci[32]{};
   Hip(hipDeviceGetPCIBusId(pci, sizeof(pci), settings.gpu_id));
+  const auto metadata = Take(hm::media::ReadMp4VideoTrack(paths.at(0), settings.operation_timeout_ns, {}));
   auto reader = Take(hm::gpu::VaVideoPlaylist::Create(
-      {hm::gpu::VaVideoCodec::kHevc,
+      {metadata.codec == hm::media::VideoCodec::kHevc ? hm::gpu::VaVideoCodec::kHevc : hm::gpu::VaVideoCodec::kH264,
        GST_VIDEO_FORMAT_P010_10LE,
        std::string("/dev/dri/by-path/pci-") + pci + "-render",
        settings.reader_queue_frames,
        settings.operation_timeout_ns,
        settings.cancellation_poll_ns},
-      {path},
+      paths,
       {}));
-  Status(reader->Seek(static_cast<GstClockTime>(start * GST_SECOND)));
+  Status(frame ? reader->SeekFrame(*frame) : reader->Seek(start));
   return reader;
 }
 hm::gpu::VaVideoFrame Read(hm::gpu::VaVideoPlaylist& reader) {
@@ -115,55 +120,146 @@ GstVideoInfo Info(GstSample* sample) {
 } // namespace
 
 int main(int argc, char** argv) {
-  const bool verify_reset = argc == 16 && std::string(argv[15]) == "--verify-reset";
-  if (argc != 15 && !verify_reset) {
+  const bool configured = argc >= 9 && std::string(argv[1]) == "--configured";
+  bool verify_reset = argc == 16 && std::string(argv[15]) == "--verify-reset";
+  if (!configured && argc != 15 && !verify_reset) {
     std::cerr
         << "Usage: hip_program_fixture GAME MODEL INFER_YAML CAMERA_YAML LEFT RIGHT "
-           "LEFT_SECONDS RIGHT_SECONDS FRAMES MODEL_WIDTH MODEL_HEIGHT OUTPUT_WIDTH OUTPUT_HEIGHT OUTPUT_MP4 [--verify-reset]\n";
+           "LEFT_SECONDS RIGHT_SECONDS FRAMES MODEL_WIDTH MODEL_HEIGHT OUTPUT_WIDTH OUTPUT_HEIGHT OUTPUT_MP4 [--verify-reset]\n"
+        << "Or: hip_program_fixture --configured GAME APP_YAML START_SECONDS FRAMES OUT_WIDTH OUT_HEIGHT OUTPUT_MP4 "
+           "[--options=key=value,...] [--verify-reset]\n";
     return 2;
   }
   gst_init(&argc, &argv);
   std::cout << std::unitbuf;
   try {
-    const auto baseline = Take(hm::baseline_config::load());
-    const auto settings = Take(hm::program::ResolveAmdProgramSettings(baseline.values));
-    const std::string game = argv[1];
-    Check(!std::filesystem::exists(argv[14]), "Output already exists");
-    const int frames = std::stoi(argv[9]), out_width = std::stoi(argv[12]), out_height = std::stoi(argv[13]);
-    const double left_start = std::stod(argv[7]), right_start = std::stod(argv[8]);
+    auto baseline = Take(hm::baseline_config::load());
+    auto settings = Take(hm::program::ResolveAmdProgramSettings(baseline.values));
+    std::string game, output_file;
+    int frames, out_width, out_height;
+    double left_start, right_start;
+    std::optional<hm::media::StereoFramePlan> pair_plan;
+    std::vector<std::filesystem::path> left_files, right_files;
+    YAML::Node camera;
+    hm::detection::DetectorConfig config;
+    auto blend = hm::pano::BlendSettings::Laplacian(11);
+    bool minimize_blend = true;
+    if (configured) {
+      std::vector<std::string> options;
+      for (int i = 9; i < argc; ++i) {
+        const std::string argument = argv[i];
+        if (argument == "--verify-reset")
+          verify_reset = true;
+        else if (argument.rfind("--options=", 0) == 0)
+          options.push_back(argument.substr(10));
+        else
+          throw std::runtime_error("Unknown configured fixture argument: " + argument);
+      }
+      const auto launch = Take(hm::program::LoadProgramLaunchConfig(argv[2], argv[3], options));
+      const auto detector = Take(hm::program::PrepareProgramDetector(launch.inference_file, launch.inference, {}));
+      game = launch.game.string();
+      camera = launch.camera;
+      baseline.values = launch.configuration.values;
+      settings = launch.amd;
+      frames = std::stoi(argv[5]);
+      out_width = std::stoi(argv[6]);
+      out_height = std::stoi(argv[7]);
+      output_file = argv[8];
+      left_files = launch.chapters[0];
+      right_files = launch.chapters[1];
+      const auto left_meta = Take(hm::media::ReadMp4VideoTrack(left_files.at(0), settings.operation_timeout_ns, {}));
+      const auto right_meta = Take(hm::media::ReadMp4VideoTrack(right_files.at(0), settings.operation_timeout_ns, {}));
+      Check(
+          int64_t(left_meta.fps_n) * right_meta.fps_d == int64_t(right_meta.fps_n) * left_meta.fps_d,
+          "Camera frame rates differ");
+      pair_plan = Take(hm::media::PlanStereoFrames(
+          std::stod(argv[4]), launch.frame_offsets[0], launch.frame_offsets[1], left_meta.fps_n, left_meta.fps_d));
+      left_start = double(pair_plan->left_time_ns) / GST_SECOND;
+      right_start = double(pair_plan->right_time_ns) / GST_SECOND;
+      config = {
+          detector.onnx,
+          detector.input_name,
+          detector.width,
+          detector.height,
+          detector.classes,
+          settings.gpu_id,
+          detector.maximum_detections,
+          detector.scale,
+          detector.confidence_threshold,
+          detector.iou_threshold,
+          detector.maintain_aspect,
+          detector.symmetric_padding,
+          detector.fp16 ? hm::gpu::MigraphxSession::Precision::kFloat16 : hm::gpu::MigraphxSession::Precision::kFloat32,
+          settings.maximum_inference_io_bytes};
+      const auto& selected_blend = launch.blend;
+      switch (Take(hm::stitching::ParseBlendMode(selected_blend.mode))) {
+        case hm::stitching::BlendMode::kLaplacian:
+          blend = hm::pano::BlendSettings::Laplacian(baseline.values["stitching"]["max_blend_levels"].as<int>());
+          break;
+        case hm::stitching::BlendMode::kAlpha:
+          blend = hm::pano::BlendSettings::Alpha(selected_blend.feather_fraction);
+          break;
+        case hm::stitching::BlendMode::kHardSeam:
+          blend = hm::pano::BlendSettings::HardSeam();
+          break;
+      }
+      minimize_blend = launch.minimize_blend;
+    } else {
+      game = argv[1];
+      output_file = argv[14];
+      frames = std::stoi(argv[9]);
+      out_width = std::stoi(argv[12]);
+      out_height = std::stoi(argv[13]);
+      left_start = std::stod(argv[7]);
+      right_start = std::stod(argv[8]);
+      left_files = {argv[5]};
+      right_files = {argv[6]};
+      camera = YAML::LoadFile(argv[4])["play-tracker"];
+      const auto yaml = YAML::LoadFile(argv[3]), property = yaml["property"], attrs = yaml["class-attrs-all"];
+      Check(property["model-color-format"].as<int>() == 0, "Fixture requires RGB model");
+      config = {
+          argv[2],
+          "input",
+          std::stoi(argv[10]),
+          std::stoi(argv[11]),
+          property["num-detected-classes"].as<int>(),
+          settings.gpu_id,
+          attrs["topk"].as<int>(),
+          property["net-scale-factor"].as<float>(),
+          attrs["pre-cluster-threshold"].as<float>(),
+          attrs["nms-iou-threshold"].as<float>(),
+          property["maintain-aspect-ratio"].as<int>() != 0,
+          property["symmetric-padding"].as<int>() != 0,
+          hm::gpu::MigraphxSession::Precision::kFloat16,
+          settings.maximum_inference_io_bytes};
+    }
+    Check(!std::filesystem::exists(output_file), "Output already exists");
     Check(frames > 0 && out_width > 0 && out_height > 0, "Invalid fixture dimensions or frame count");
-    const auto yaml = YAML::LoadFile(argv[3]), property = yaml["property"], attrs = yaml["class-attrs-all"];
-    Check(property["model-color-format"].as<int>() == 0, "Fixture requires RGB model");
-    hm::detection::DetectorConfig config{
-        argv[2],
-        "input",
-        std::stoi(argv[10]),
-        std::stoi(argv[11]),
-        property["num-detected-classes"].as<int>(),
-        settings.gpu_id,
-        attrs["topk"].as<int>(),
-        property["net-scale-factor"].as<float>(),
-        attrs["pre-cluster-threshold"].as<float>(),
-        attrs["nms-iou-threshold"].as<float>(),
-        property["maintain-aspect-ratio"].as<int>() != 0,
-        property["symmetric-padding"].as<int>() != 0,
-        hm::gpu::MigraphxSession::Precision::kFloat16,
-        settings.maximum_inference_io_bytes};
     auto processor = Take(hm::program::AmdProgramProcessor::Create(
         {game,
          config,
-         YAML::LoadFile(argv[4])["play-tracker"],
+         camera,
          settings.tracker,
-         hm::pano::BlendSettings::Laplacian(11),
-         true,
+         blend,
+         minimize_blend,
          settings.compact_stitch_workspace,
          baseline.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
          baseline.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>()}));
     const hm::program::ProgramRenderSettings render{false, 0, 0, 0, false, 0};
     std::cout << "Validated raw panorama " << processor->width() << 'x' << processor->height()
               << " generation=" << processor->generation() << '\n';
-    auto left = OpenPlaylist(settings, argv[5], left_start);
-    auto right = OpenPlaylist(settings, argv[6], right_start);
+    Check(
+        std::isfinite(left_start) && left_start >= 0 && left_start < double(G_MAXINT64 / GST_SECOND) &&
+            std::isfinite(right_start) && right_start >= 0 && right_start < double(G_MAXINT64 / GST_SECOND),
+        "Invalid seek time");
+    const GstClockTime left_seek =
+        pair_plan ? pair_plan->left_time_ns : static_cast<GstClockTime>(left_start * GST_SECOND);
+    const GstClockTime right_seek =
+        pair_plan ? pair_plan->right_time_ns : static_cast<GstClockTime>(right_start * GST_SECOND);
+    auto left = OpenPlaylist(
+        settings, left_files, left_seek, pair_plan ? std::make_optional(pair_plan->left_frame) : std::nullopt);
+    auto right = OpenPlaylist(
+        settings, right_files, right_seek, pair_plan ? std::make_optional(pair_plan->right_frame) : std::nullopt);
     Pipeline output;
     auto a = Read(*left), b = Read(*right);
     const auto left_info = Info(a.sample.get()), right_info = Info(b.sample.get());
@@ -192,7 +288,7 @@ int main(int argc, char** argv) {
     pool->SetDisplayContext(output.value);
     gst_app_src_set_caps(GST_APP_SRC(output.endpoint), pool->caps());
     auto* file = gst_bin_get_by_name(GST_BIN(output.value), "file");
-    g_object_set(file, "location", argv[14], nullptr);
+    g_object_set(file, "location", output_file.c_str(), nullptr);
     gst_object_unref(file);
     output.Start();
     uint64_t observations = 0, crops = 0, highest_id = 0;
@@ -274,8 +370,8 @@ int main(int argc, char** argv) {
       Check(
           absl::IsFailedPrecondition(processor->Render(output_frame.get(), out_info, render)),
           "Reset retained a stale panorama");
-      Status(left->Seek(static_cast<GstClockTime>(left_start * GST_SECOND)));
-      Status(right->Seek(static_cast<GstClockTime>(right_start * GST_SECOND)));
+      Status(pair_plan ? left->SeekFrame(pair_plan->left_frame) : left->Seek(left_seek));
+      Status(pair_plan ? right->SeekFrame(pair_plan->right_frame) : right->Seek(right_seek));
       uint64_t reset_observations = 0;
       for (unsigned sequence = 0; sequence < 4; ++sequence) {
         a = Read(*left);

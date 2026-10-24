@@ -32,6 +32,10 @@ absl::StatusOr<std::filesystem::path> ResolveReference(
 struct ProgramConfiguration {
   YAML::Node values;
   LeafRanks ranks;
+  // Independent snapshots in precedence order for mappings with aliases.
+  // Native structural defaults share the first layer with the baseline;
+  // all option groups form one launch layer, matching native alias precedence.
+  std::vector<YAML::Node> layers;
 };
 
 // Immutable input snapshots. Baseline -> user -> game, then native application

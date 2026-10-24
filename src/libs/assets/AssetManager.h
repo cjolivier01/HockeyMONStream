@@ -53,6 +53,13 @@ class AssetManager {
       const std::vector<std::filesystem::path>& configs,
       const ConfigTransform& transform,
       const Limits& limits = {});
+  // Discover direct declarations in an immutable document snapshot. The
+  // caller supplies its captured absolute origin; this never reopens that
+  // YAML or follows child config files. Relative asset paths use its directory.
+  static absl::StatusOr<std::vector<AssetSpec>> DeclaredAssets(
+      const YAML::Node& document,
+      const std::filesystem::path& origin,
+      const Limits& limits = {});
   // Returns only assets whose declarations permit redistribution in a binary
   // package. Runtime discovery still retains non-redistributable assets so
   // they can be downloaded into the user's cache on demand.

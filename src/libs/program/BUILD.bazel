@@ -126,6 +126,8 @@ cc_binary(
     }),
     deps = [
         ":amd_program_processor", ":encoded_colorimetry", ":amd_program_settings",
+        ":launch_config", ":detector_settings", "//src/libs/media:stereo_frame_plan",
+        "//src/libs/stitching:stitching_algorithms",
         "//src/libs/common:baseline_config",
         "//src/libs/gpu/vaapi:va_video_playlist",
         "//src/libs/gpu/vaapi:va_output_pool",
@@ -174,6 +176,7 @@ cc_library(
         ":amd_program_settings", "//src/libs/common:config_layers",
         "//src/libs/common:baseline_config", "//src/libs/common:user_config",
         "//src/libs/stitching:game_config", "//src/libs/tracking:program_camera_mapping",
+        "//src/libs/stitching:stitching_algorithms",
     ],
 )
 
@@ -191,4 +194,20 @@ cc_test(
         "//configs:play_tracker_config.yaml", "//configs:config_infer_yolov8_hockey.yaml",
     ],
     deps = [":launch_config"],
+)
+
+cc_library(
+    name = "detector_settings",
+    srcs = ["ProgramDetectorSettings.cpp"],
+    hdrs = ["ProgramDetectorSettings.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/assets:asset_manager", "//src/libs/onnx:image_input", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "detector_settings_test",
+    srcs = ["ProgramDetectorSettingsTest.cpp"],
+    args = ["$(location //configs:config_infer_yolov8_hockey_fp16.yaml)"],
+    data = ["//configs:config_infer_yolov8_hockey_fp16.yaml"],
+    deps = [":detector_settings", "//src/libs/assets:asset_manager"],
 )

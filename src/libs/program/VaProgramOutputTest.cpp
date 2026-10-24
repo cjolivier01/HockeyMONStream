@@ -68,6 +68,11 @@ struct EncodedChecks {
         if (after && nal.type == GST_H265_NAL_SPS) {
           GstH265SPS sps{};
           Check(gst_h265_parser_parse_sps(h265, &nal, &sps, TRUE) == GST_H265_PARSER_OK, "Invalid HEVC SPS");
+          Check(
+              sps.profile_tier_level.profile_idc == GST_H265_PROFILE_IDC_MAIN_10 &&
+                  !sps.profile_tier_level.profile_compatibility_flag[GST_H265_PROFILE_IDC_MAIN] &&
+                  sps.bit_depth_luma_minus8 == 2 && sps.bit_depth_chroma_minus8 == 2,
+              "HEVC P010 output must signal Main10, without incompatible Main compatibility");
           Check(sps.vui_parameters_present_flag, "Missing HEVC VUI");
           Color(sps.vui_params);
         } else if (after && nal.type == GST_H265_NAL_VPS)

@@ -6,6 +6,7 @@
 
 #include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/program/AmdProgramSettings.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 namespace hm::program {
 struct ProgramLaunchConfig {
@@ -13,6 +14,8 @@ struct ProgramLaunchConfig {
   hm::config::ProgramConfiguration configuration;
   YAML::Node camera, inference;
   AmdProgramSettings amd;
+  stitching::ResolvedBlendSettings blend;
+  bool minimize_blend;
   std::array<std::vector<std::filesystem::path>, 2> chapters;
   std::array<double, 2> frame_offsets;
 };

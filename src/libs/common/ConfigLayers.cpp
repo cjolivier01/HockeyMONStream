@@ -107,12 +107,16 @@ absl::StatusOr<ProgramConfiguration> ResolveProgramConfiguration(
   if (!baseline.IsMap() || !user.IsMap() || !game.IsMap() || !native_app.IsMap())
     return absl::InvalidArgumentError("Program configuration layers must be YAML maps");
   try {
-    ProgramConfiguration result{YAML::Clone(baseline), {}};
+    ProgramConfiguration result{YAML::Clone(baseline), {}, {}};
+    YAML::Node defaults = YAML::Clone(baseline);
+    defaults["pipeline"] = MergeNodes(YAML::Clone(native_app), defaults["pipeline"], false);
+    result.layers = {defaults, YAML::Clone(user), YAML::Clone(game)};
     result.values = MergeNodes(result.values, YAML::Clone(user), false);
     RecordLeafRanks(user, {}, 1, result.ranks);
     result.values = MergeNodes(result.values, YAML::Clone(game), false);
     RecordLeafRanks(game, {}, 2, result.ranks);
     result.values["pipeline"] = MergeNodes(YAML::Clone(native_app), result.values["pipeline"], false);
+    YAML::Node layer(YAML::NodeType::Map);
     for (const auto& group : option_groups) {
       std::map<std::string, std::string> options;
       for (const auto item : absl::StrSplit(group, ',')) {
@@ -123,9 +127,11 @@ absl::StatusOr<ProgramConfiguration> ResolveProgramConfiguration(
       }
       for (const auto& [path, value] : options) {
         result.values = hm::set_node_value(result.values, path, value);
+        layer = hm::set_node_value(layer, path, value);
         result.ranks[path] = 3;
       }
     }
+    result.layers.push_back(std::move(layer));
     return result;
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError(std::string("Cannot resolve Program configuration: ") + error.what());

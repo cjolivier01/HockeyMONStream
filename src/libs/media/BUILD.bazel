@@ -22,3 +22,17 @@ cc_test(
     srcs = ["Mp4VideoTrackTest.cpp"],
     deps = [":mp4_video_track", ":test_mp4"],
 )
+
+cc_library(
+    name = "stereo_frame_plan",
+    srcs = ["StereoFramePlan.cpp"],
+    hdrs = ["StereoFramePlan.h"],
+    include_prefix = "hstream/src/libs/media",
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "stereo_frame_plan_test",
+    srcs = ["StereoFramePlanTest.cpp"],
+    deps = [":stereo_frame_plan"],
+)
