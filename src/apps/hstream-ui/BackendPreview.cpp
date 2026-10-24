@@ -43,9 +43,9 @@ QString BackendPreview::fileName(const QString& channel) {
   if (channel == "stitched")
     return "preview-stitched.jpg";
   if (channel == "source0")
-    return "preview-left.jpg";
+    return "preview-camera-1.jpg";
   if (channel == "source1")
-    return "preview-right.jpg";
+    return "preview-camera-2.jpg";
   return {};
 }
 

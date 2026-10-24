@@ -28,16 +28,180 @@ void writeFile(const QString& path, const QByteArray& contents) {
   require(file.open(QIODevice::WriteOnly), "Open fixture file");
   require(file.write(contents) == contents.size(), "Write fixture file");
 }
-bool waitFor(const std::function<bool()>& condition) {
+bool waitFor(const std::function<bool()>& condition, int timeout_ms = 10000) {
   QElapsedTimer timer;
   timer.start();
-  while (!condition() && timer.elapsed() < 10000)
+  while (!condition() && timer.elapsed() < timeout_ms)
     QTest::qWait(10);
   return condition();
 }
 } // namespace
 
 struct HStreamWindowTestAccess {
+  static void stopRealBackend(HStreamWindow& window) {
+    window.stopPipeline();
+  }
+  // Opt-in integration driver: use a disposable real game and the actual
+  // HockeyMON runner. The ordinary hermetic test below never enables it.
+  static void checkRealBackend(HStreamWindow& window, const QString& game) {
+    const QString application = QDir(QCoreApplication::applicationDirPath()).filePath("hstream-ui");
+    window.development_bazel_bin_ = hm::ui_internal::matching_development_bazel_bin(application);
+    window.development_runtime_root_ = hm::ui_internal::development_runtime_root_for_application(application);
+    window.development_pipeline_runner_ = hm::ui_internal::matching_development_pipeline_runner(application);
+    require(
+        !window.development_bazel_bin_.isEmpty() && !window.development_runtime_root_.isEmpty() &&
+            !window.development_pipeline_runner_.isEmpty(),
+        "Real integration checks require the matching built HStream tools");
+    const bool preparation_stop = qEnvironmentVariableIsSet("HM_UI_E2E_STOP_PREPARATION");
+    const bool initial_launch = !window.backend_.initial_launch.isEmpty();
+    const int cameras = qEnvironmentVariableIntValue("HM_UI_E2E_CAMERAS");
+    const QString captures = qEnvironmentVariable("HM_UI_E2E_CAPTURES");
+    const auto paintsSourcePixels = [](QWidget* target) {
+      // Ready receipts can arrive before the image polling timer paints the
+      // first frame. Inspect the rendered surface so a black placeholder cannot
+      // satisfy the real integration check or enter its screenshot evidence.
+      const QImage painted = target->grab().toImage();
+      if (painted.isNull())
+        return false;
+      int bright_samples = 0;
+      for (int row = 2; row < 6; ++row)
+        for (int column = 2; column < 6; ++column) {
+          const QColor pixel = painted.pixelColor(painted.width() * column / 8, painted.height() * row / 8);
+          if (qGray(pixel.rgb()) > 20)
+            ++bright_samples;
+        }
+      return bright_samples >= 4;
+    };
+    window.resize(1560, 960);
+    window.show();
+    window.openGame(game, false);
+    window.render_video_toggle_->setChecked(true);
+    window.realtime_playback_toggle_->setChecked(true);
+    window.drivegpt_csv_toggle_->setChecked(!initial_launch);
+    for (auto& [kind, toggle] : window.output_toggles_)
+      toggle->setChecked(!initial_launch && (kind == "archive-file" || kind == "archive-stitched"));
+    window.preview_tabs_->setCurrentIndex(0);
+    window.start_button_->click();
+    require(
+        waitFor([&] { return window.pipeline_process_->state() == QProcess::Running; }, 30000),
+        "Actual backend must start");
+    const auto pid = window.pipeline_process_->processId();
+    if (preparation_stop) {
+      require(
+          waitFor([&] { return window.log_->toPlainText().contains("Starting shared native calibration"); }, 30000),
+          "Actual native preparation must begin before Stop");
+    } else {
+      require(
+          waitFor(
+              [&] {
+                return window.pipeline_process_->state() == QProcess::NotRunning ||
+                    (window.backend_preview_directory_ &&
+                     QFileInfo(window.backend_preview_directory_->filePath("preview-final.jpg")).size() > 0);
+              },
+              180000),
+          "Actual Python Program must publish pixels");
+      require(
+          window.pipeline_process_->state() == QProcess::Running, "Actual Python Program must remain active for Stop");
+      for (int camera = 0; camera < cameras; ++camera) {
+        window.preview_tabs_->setCurrentIndex(2 + camera);
+        require(
+            waitFor(
+                [&] {
+                  return QFileInfo(window.backend_preview_directory_->filePath(
+                                       QString("preview-camera-%1.jpg").arg(camera + 1)))
+                             .size() > 0 &&
+                      window.camera_preview_render_targets_[camera]->isVisible() &&
+                      window.camera_preview_notices_[camera]->isHidden() &&
+                      paintsSourcePixels(window.camera_preview_render_targets_[camera]);
+                },
+                30000),
+            "Selecting an actual source tab must receive and display Python source pixels");
+        if (!captures.isEmpty()) {
+          require(QDir().mkpath(captures), "Create external screenshot directory");
+          require(
+              window.grab().save(QDir(captures).filePath(QString("source-%1.png").arg(camera + 1))),
+              "Save external source screenshot");
+        }
+      }
+      window.preview_tabs_->setCurrentIndex(0);
+      QTest::qWait(1000);
+    }
+    window.stop_button_->click();
+    require(window.pipeline_process_->state() == QProcess::NotRunning, "Actual Stop waits for every processing child");
+    require(window.pipeline_process_->exitCode() == 0, "Cooperative Stop permits successful worker finalization");
+    if (preparation_stop) {
+      require(
+          !window.log_->toPlainText().contains("Starting HockeyMON Python pipeline"),
+          "Stopping preparation never starts the Python worker");
+      require(
+          window.outputStateText("archive-file") == "NO FILE" &&
+              window.outputStateText("archive-stitched") == "NO FILE",
+          "Preparation cancellation never claims requested archives were saved");
+    } else {
+      require(window.backend_publication_complete_, "Actual Stop receives a complete publication receipt");
+      require(window.outputStateText("archive-file") == "SAVED", "Actual Stop publishes the requested Program archive");
+      if (!initial_launch)
+        require(
+            window.outputStateText("archive-stitched") == "SAVED",
+            "Actual Stop publishes the requested stitched archive");
+    }
+    std::cout << "REAL_QT_BACKEND_OK game=" << game.toStdString() << " pid=" << pid
+              << " preparation_stop=" << preparation_stop << '\n';
+    std::cout << window.log_->toPlainText().toStdString() << '\n';
+  }
+
+  static void checkResolvedLaunch(HStreamWindow& window) {
+    window.active_run_game_id_ = "game";
+    window.active_hockeymon_program_ = true;
+    window.active_backend_initial_launch_ = true;
+    window.backend_launch_received_ = false;
+    window.backend_launch_failed_ = false;
+    window.active_backend_output_kinds_.clear();
+    window.active_run_telemetry_requested_ = false;
+    window.active_run_local_render_only_ = true;
+    QJsonObject resolved{
+        {"version", 1}, {"game_id", "game"}, {"sinks", QJsonArray{"RENDER", "ENCODE_FILE"}}, {"telemetry", false}};
+    const auto launch = [&] {
+      return window.handleBackendLaunch(
+          "HM_BACKEND_LAUNCH " + QString::fromUtf8(QJsonDocument(resolved).toJson(QJsonDocument::Compact)));
+    };
+    require(launch() && window.backend_launch_received_, "Initial Python output intent is admitted");
+    require(
+        window.active_backend_output_kinds_ == QStringList{"archive-file"} &&
+            window.output_toggles_.at("archive-file")->isChecked() && !window.active_run_local_render_only_,
+        "Initial output request updates receipt requirements, display and seek admission");
+    require(
+        window.handleBackendPublication(
+            "HM_BACKEND_PUBLICATION {\"version\":1,\"game_id\":\"game\",\"status\":\"complete\",\"artifacts\":[]}") &&
+            !window.backend_publication_complete_,
+        "An explicit initial output requires its actual published artifact");
+    const QString cancelled =
+        "HM_BACKEND_PUBLICATION {\"version\":1,\"game_id\":\"game\",\"status\":\"cancelled\","
+        "\"stage\":\"preparing\",\"artifacts\":[]}";
+    window.pipeline_stop_requested_ = false;
+    require(
+        window.handleBackendPublication(cancelled) && !window.backend_publication_complete_,
+        "Unrequested cancellation cannot report successful completion");
+    window.pipeline_stop_requested_ = true;
+    require(
+        window.handleBackendPublication(cancelled) && window.backend_publication_complete_ &&
+            window.outputStateText("archive-file") == "NO FILE",
+        "Operator cancellation before processing reports no recording instead of missing publication");
+    window.pipeline_stop_requested_ = false;
+    window.backend_launch_received_ = false;
+    resolved["sinks"] = QJsonArray{"RENDER"};
+    require(launch() && window.active_backend_output_kinds_.isEmpty(), "Initial no-save overrides checked UI output");
+    require(!window.output_toggles_.at("archive-file")->isChecked(), "Initial no-save is reflected in the UI");
+    window.backend_launch_received_ = false;
+    window.active_backend_initial_launch_ = false;
+    resolved["sinks"] = QJsonArray{"RENDER", "ENCODE_FILE"};
+    require(launch() && window.backend_launch_failed_, "Ordinary launches cannot replace the desktop output request");
+    window.backend_launch_received_ = false;
+    window.backend_launch_failed_ = false;
+    window.backend_publication_error_.clear();
+    window.active_backend_output_kinds_.clear();
+  }
+
   static void checkLifecycle(HStreamWindow& window, const QString& runner, const QString& frames) {
     window.show();
     for (const bool completed_receipt : {true, false}) {
@@ -82,14 +246,29 @@ struct HStreamWindowTestAccess {
             return window.stitched_render_target_->isVisible() && color(window.stitched_render_target_).green() > 200;
           }),
           "Tab switching selects and paints the stitched producer frame");
-      window.pipeline_process_->write("@test-finish\n");
+      for (int camera = 0; camera < 2; ++camera) {
+        window.preview_tabs_->setCurrentIndex(2 + camera);
+        require(
+            waitFor([&] {
+              auto* target = window.camera_preview_render_targets_[camera];
+              const auto pixel = color(target);
+              return target->isVisible() && (camera == 0 ? pixel.blue() > 200 : pixel.red() > 200);
+            }),
+            "Camera tabs consume the actual Python Camera 1/2 filenames");
+        require(window.camera_preview_notices_[camera]->isHidden(), "A source frame clears its waiting placeholder");
+      }
+      window.preview_tabs_->setCurrentIndex(1);
+      if (completed_receipt)
+        window.stopPipeline();
+      else
+        window.pipeline_process_->write("@test-finish\n");
       require(
           waitFor([&] { return window.pipeline_process_->state() == QProcess::NotRunning; }),
           "Backend process must finish");
       require(window.backend_publication_complete_ == completed_receipt, "Completion requires a backend receipt");
       require(
           window.playback_progress_state_ ==
-              (completed_receipt ? HStreamWindow::PlaybackProgressState::kCompleted
+              (completed_receipt ? HStreamWindow::PlaybackProgressState::kStopped
                                  : HStreamWindow::PlaybackProgressState::kError),
           "Missing receipt must make a successful exit visibly fail");
       require(!window.preview_layout_compacted_, "Finishing restores the ordinary preview layout");
@@ -100,6 +279,7 @@ struct HStreamWindowTestAccess {
   }
 
   static void check(HStreamWindow& window, const QString& game_directory) {
+    checkResolvedLaunch(window);
     require(window.pipelineRunnerPath() == "/bin/true", "Program uses selected HockeyMON runner");
     require(window.backend_mode_->text().contains("hm-cli"), "Program identifies its Python backend");
     const QString native_runner = window.nativeRunnerPath();
@@ -220,6 +400,20 @@ struct HStreamWindowTestAccess {
 
 int main(int argc, char** argv) {
   try {
+    if (const QString game = qEnvironmentVariable("HM_UI_E2E_GAME"); !game.isEmpty()) {
+      QApplication app(argc, argv);
+      HStreamWindow window(
+          nullptr, {"hockeymon", qEnvironmentVariable("HM_CLI_BIN"), qEnvironmentVariable("HM_UI_E2E_INITIAL_LAUNCH")});
+      try {
+        HStreamWindowTestAccess::checkRealBackend(window, game);
+      } catch (...) {
+        // Never tear down QWidget/QProcess state while a real worker remains
+        // active, including when an integration assertion times out.
+        HStreamWindowTestAccess::stopRealBackend(window);
+        throw;
+      }
+      return 0;
+    }
     QTemporaryDir root;
     QTemporaryDir preferences;
     require(root.isValid() && preferences.isValid(), "Temporary game and preferences");
@@ -235,10 +429,10 @@ int main(int argc, char** argv) {
     const QString runner = root.filePath("backend.py");
     writeFile(runner, R"PY(import json, os, pathlib, shutil, sys
 session = pathlib.Path(os.environ['HSTREAM_UI_BACKEND_SESSION'])
-for name in ('preview-final.jpg', 'preview-stitched.jpg'):
+for name in ('preview-final.jpg', 'preview-stitched.jpg', 'preview-camera-1.jpg', 'preview-camera-2.jpg'):
     shutil.copyfile(pathlib.Path(os.environ['TEST_FRAMES']) / name, session / name)
 print('Pipeline running', flush=True)
-print('HSTREAM_PREVIEW_RUNTIME status=ready channel=program generation=2', flush=True)
+print('HSTREAM_PREVIEW_RUNTIME status=ready channel=program generation=1', flush=True)
 print('HSTREAM_PROGRESS instance=aggregate stage=0 instances=1 generation=0 processed_ns=1000000000 fps=10 fps_avg=10 speed_x=1', flush=True)
 for line in sys.stdin:
     fields = line.strip().split()
@@ -248,7 +442,7 @@ for line in sys.stdin:
         print(f'HSTREAM_PREVIEW channel={channel} status={status} generation={generation} message=shared preview', flush=True)
         if channel != 'none':
             print(f'HSTREAM_PREVIEW channel={channel} status=ready generation={generation} message=first frame resolution=320x180', flush=True)
-    elif fields[0] == '@test-finish':
+    elif fields[0] in ('@test-finish', 'q'):
         if os.environ['TEST_RECEIPT'] == '1':
             print('HM_BACKEND_PUBLICATION ' + json.dumps({'version': 1, 'game_id': 'game', 'status': 'complete', 'artifacts': []}), flush=True)
         break
@@ -258,6 +452,10 @@ for line in sys.stdin:
     require(frame.save(root.filePath("preview-final.jpg")), "Write Program frame fixture");
     frame.fill(Qt::green);
     require(frame.save(root.filePath("preview-stitched.jpg")), "Write stitched frame fixture");
+    frame.fill(Qt::blue);
+    require(frame.save(root.filePath("preview-camera-1.jpg")), "Write first source frame fixture");
+    frame.fill(Qt::yellow);
+    require(frame.save(root.filePath("preview-camera-2.jpg")), "Write second source frame fixture");
     HStreamWindowTestAccess::checkLifecycle(window, runner, root.path());
     std::cout << "Shared backend runner, publication, preview and detector isolation checks passed\n";
     return 0;

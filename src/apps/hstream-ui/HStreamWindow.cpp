@@ -7774,6 +7774,79 @@ void HStreamWindow::prepareBackendPreview(QProcessEnvironment& environment) {
   backend_preview_->setChannel(selectedPipelinePreviewChannel());
 }
 
+bool HStreamWindow::handleBackendLaunch(const QString& line) {
+  const QString prefix = "HM_BACKEND_LAUNCH ";
+  if (!line.startsWith(prefix))
+    return false;
+  const auto fail = [this](const QString& detail) {
+    backend_launch_failed_ = true;
+    backend_publication_error_ = "HockeyMON launch failed: " + detail;
+    appendLog(backend_publication_error_);
+  };
+  if (!active_hockeymon_program_ || backend_launch_received_ || line.size() > 65536) {
+    fail("unexpected or oversized resolved launch");
+    return true;
+  }
+  QJsonParseError error;
+  const auto document = QJsonDocument::fromJson(line.mid(prefix.size()).toUtf8(), &error);
+  const auto launch = document.object();
+  if (error.error != QJsonParseError::NoError || !document.isObject() || launch.value("version").toDouble(-1) != 1 ||
+      launch.value("game_id").toString() != active_run_game_id_ || !launch.value("sinks").isArray() ||
+      !launch.value("telemetry").isBool()) {
+    fail("invalid resolved launch or game identity");
+    return true;
+  }
+  const std::map<QString, QString> outputs = {
+      {"ENCODE_FILE", "archive-file"},
+      {"ENCODE_STITCHED_FILE", "archive-stitched"},
+      {"ENCODE_PROGRAM_4K_FILE", "archive-program-4k"},
+      {"RTMP", "youtube-primary"},
+      {"RTSP", "rtsp-local"}};
+  QStringList resolved_outputs;
+  bool network = false;
+  bool render = false;
+  for (const auto& value : launch.value("sinks").toArray()) {
+    const QString sink = value.toString();
+    if (!value.isString() || (sink != "FAKE" && sink != "RENDER" && !outputs.count(sink))) {
+      fail("unknown resolved output route");
+      return true;
+    }
+    render |= sink == "RENDER";
+    network |= sink == "RTMP" || sink == "RTSP";
+    if (sink.startsWith("ENCODE_"))
+      resolved_outputs.append(outputs.at(sink));
+  }
+  resolved_outputs.sort();
+  auto expected = active_backend_output_kinds_;
+  expected.sort();
+  const bool telemetry = launch.value("telemetry").toBool();
+  if (!active_backend_initial_launch_ &&
+      (resolved_outputs != expected || telemetry != active_run_telemetry_requested_)) {
+    fail("backend output routes disagree with the desktop request");
+    return true;
+  }
+  active_backend_output_kinds_ = resolved_outputs;
+  active_run_telemetry_requested_ = telemetry;
+  active_run_local_render_only_ = render && !network && resolved_outputs.isEmpty();
+  if (active_backend_initial_launch_) {
+    // The original Python CLI owns its first run. Reflect its resolved choices
+    // without persisting them or treating them as new operator edits.
+    for (const auto& [sink, output_id] : outputs) {
+      const bool enabled = launch.value("sinks").toArray().contains(sink);
+      const QSignalBlocker blocked(output_toggles_.at(output_id));
+      output_toggles_.at(output_id)->setChecked(enabled);
+      output_states_.at(output_id)->setText(enabled ? (sink.startsWith("ENCODE_") ? "WRITING" : "ON") : "OFF");
+    }
+    if (drivegpt_csv_toggle_) {
+      const QSignalBlocker blocked(drivegpt_csv_toggle_);
+      drivegpt_csv_toggle_->setChecked(telemetry);
+    }
+  }
+  backend_launch_received_ = true;
+  updatePlaybackSeekControls();
+  return true;
+}
+
 bool HStreamWindow::handleBackendPublication(const QString& line) {
   const QString prefix = "HM_BACKEND_PUBLICATION ";
   if (!line.startsWith(prefix))
@@ -7789,6 +7862,10 @@ bool HStreamWindow::handleBackendPublication(const QString& line) {
     for (const QString& kind : active_backend_output_kinds_)
       output_states_.at(kind)->setText("FAILED");
   };
+  if (backend_launch_failed_ || (active_backend_initial_launch_ && !backend_launch_received_)) {
+    fail("initial output routes were not resolved successfully");
+    return true;
+  }
   if (line.size() > 1024 * 1024) {
     fail("receipt exceeds the protocol size limit");
     return true;
@@ -7799,6 +7876,15 @@ bool HStreamWindow::handleBackendPublication(const QString& line) {
   if (error.error != QJsonParseError::NoError || !document.isObject() || receipt.value("version").toDouble(-1) != 1 ||
       receipt.value("game_id").toString() != active_run_game_id_) {
     fail("invalid receipt or game identity");
+    return true;
+  }
+  if (receipt.value("status").toString() == "cancelled" && receipt.value("stage").toString() == "preparing" &&
+      pipeline_stop_requested_ && receipt.value("artifacts").isArray() && receipt.value("artifacts").toArray().isEmpty()) {
+    for (const QString& kind : active_backend_output_kinds_)
+      output_states_.at(kind)->setText("NO FILE");
+    backend_publication_complete_ = true;
+    backend_publication_error_.clear();
+    appendLog("HockeyMON preparation cancelled before recording started");
     return true;
   }
   if (receipt.value("status").toString() != "complete" || !receipt.value("artifacts").isArray()) {
@@ -11037,6 +11123,9 @@ void HStreamWindow::startPipeline() {
   active_run_game_id_ = game_id_edit_->text().trimmed();
   active_run_is_calibration_ = isCalibrationRun();
   active_hockeymon_program_ = hockeyMonProgram();
+  active_backend_initial_launch_ = active_hockeymon_program_ && !backend_.initial_launch.isEmpty();
+  backend_launch_received_ = false;
+  backend_launch_failed_ = false;
   active_backend_output_kinds_.clear();
   if (active_hockeymon_program_) {
     for (const QString kind : {"archive-file", "archive-stitched", "archive-program-4k"}) {
@@ -11669,14 +11758,19 @@ void HStreamWindow::stopPipeline() {
     ::kill(target, SIGCONT);
     pipeline_paused_ = false;
   }
-  if (pid > 0) {
-    ::kill(target, SIGINT);
-  } else {
-    pipeline_process_->terminate();
-  }
-#else
-  pipeline_process_->terminate();
 #endif
+  // The Python supervisor must let its worker drain archives and telemetry.
+  // Signalling the whole group also signals its process guard, which treats
+  // that as forced cancellation and kills the worker before publication.
+  const bool cooperative_stop = active_hockeymon_program_ && pipeline_process_->write("q\n") == 2;
+  if (!cooperative_stop) {
+#ifdef Q_OS_UNIX
+    if (pid > 0)
+      ::kill(target, SIGINT);
+    else
+#endif
+      pipeline_process_->terminate();
+  }
   if (!pipeline_process_->waitForFinished(kPipelineTerminateGraceMs)) {
     appendLog("pipeline did not exit after terminate; killing");
 #ifdef Q_OS_UNIX
@@ -12197,7 +12291,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   trimmed = trimmed.trimmed();
   if (trimmed.isEmpty())
     return;
-  if (handleBackendPublication(trimmed))
+  if (handleBackendLaunch(trimmed) || handleBackendPublication(trimmed))
     return;
   if (rink_framing_controls_ && trimmed.startsWith("HSTREAM_RINK_CAMERA ")) {
     const int message = trimmed.indexOf("message=");

@@ -83,6 +83,14 @@ UI's existing process group; stopping or closing the desktop also stops those
 workers. Native workflow runners retain the existing runtime environment and
 GPU preview path.
 
+Before processing, `HM_BACKEND_LAUNCH` reports the resolved sinks and telemetry
+request. For the original Python CLI launch, these replace the UI's initial
+route choices and its frozen publication requirements; ordinary launches must
+match the desktop request. The desktop uses the backend's cooperative `q` Stop
+command for Python Program, with process-group termination reserved for timeout.
+Cancellation during native preparation carries `status: cancelled` and
+`stage: preparing`; it is accepted only after operator Stop and reports no files.
+
 ## Python preview transport
 
 Python publishes atomic JPEG replacements in the private session:
@@ -91,11 +99,14 @@ Python publishes atomic JPEG replacements in the private session:
 | --- | --- |
 | Program | `preview-final.jpg` |
 | Stitched | `preview-stitched.jpg` |
-| Left camera | `preview-left.jpg` |
-| Right camera | `preview-right.jpg` |
+| Camera 1 (single source or left camera) | `preview-camera-1.jpg` |
+| Camera 2 (right camera) | `preview-camera-2.jpg` |
 
 The UI polls only the selected channel, at most ten times per second, and does
-not decode unchanged files. Render-off and the Pipeline inspector select no
+not decode unchanged files. Python publishes only that selected channel, at
+most fifteen times per second. Camera tabs retain a bounded copy of decoded
+pixels before grading or overlays; single-source games publish Camera 1.
+Render-off and the Pipeline inspector select no
 image channel. Files must be regular JPEGs, not symlinks, of at most 8 MiB, no
 dimension over 4096 pixels and at most 4,194,304 pixels. These are protocol
 allocation bounds; the producer normally sends smaller previews. Decode failures

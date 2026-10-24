@@ -438,6 +438,7 @@ class HStreamWindow : public QMainWindow {
   bool hockeyMonProgram() const;
   void prepareBackendPreview(QProcessEnvironment& environment);
   bool handleBackendPublication(const QString& line);
+  bool handleBackendLaunch(const QString& line);
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
   QStringList pipelineArguments(bool standalone = false, bool job_export = false) const;
@@ -1022,6 +1023,9 @@ class HStreamWindow : public QMainWindow {
   std::unique_ptr<QTemporaryDir> backend_preview_directory_;
   std::unique_ptr<hm::ui::BackendPreview> backend_preview_;
   bool active_hockeymon_program_{false};
+  bool active_backend_initial_launch_{false};
+  bool backend_launch_received_{false};
+  bool backend_launch_failed_{false};
   QStringList active_backend_output_kinds_;
   bool backend_publication_complete_{false};
   QString backend_publication_error_;
