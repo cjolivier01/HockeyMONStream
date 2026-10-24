@@ -568,7 +568,9 @@ absl::Status PreparePlayerModelCache(
     const auto application = resolved["application"];
     const auto global = application ? application["global-gpu-id"] : YAML::Node();
     const int default_gpu = global && !global.IsNull() ? std::max(0, global.as<int>()) : 0;
-    std::optional<int> reid_gpu;
+    std::optional<int> analytics_gpu, reid_gpu;
+    if (enabled)
+      analytics_gpu = Gpu(analytics["gpu-id"], default_gpu);
     for (const auto& entry : std::vector<std::pair<const char*, const pa::FeatureConfig*>>{
              {"pose", &parsed->pose},
              {"jersey", &parsed->jersey},
@@ -579,7 +581,7 @@ absl::Status PreparePlayerModelCache(
       const auto* model = options.model_lookup ? options.model_lookup(entry.first, entry.second->model)
                                                : pa::FindModel(entry.first, entry.second->model);
       Require(model, "Unsupported built-in player model");
-      selected.push_back({model, Gpu(analytics["gpu-id"], default_gpu)});
+      selected.push_back({model, *analytics_gpu});
     }
     if (reid) {
       reid_gpu = Gpu(tracker["gpu-id"], default_gpu);
@@ -598,9 +600,14 @@ absl::Status PreparePlayerModelCache(
         selected.push_back({model, *reid_gpu});
       }
     }
-    if (selected.empty()) {
+    const auto publish_devices = [&] {
+      if (analytics_gpu)
+        pipeline["player-analytics"]["gpu-id"] = *analytics_gpu;
       if (reid_gpu)
         pipeline["tracker"]["gpu-id"] = *reid_gpu;
+    };
+    if (selected.empty()) {
+      publish_devices();
       return absl::OkStatus();
     }
     Cancel(options);
@@ -624,8 +631,7 @@ absl::Status PreparePlayerModelCache(
     Cancel(options);
     // Alternate runtimes must use the same resolved device as preparation,
     // including inherited devices and custom models that need no cache work.
-    if (reid_gpu)
-      pipeline["tracker"]["gpu-id"] = *reid_gpu;
+    publish_devices();
     for (const auto& entry : prepared) {
       if (entry.feature == "reid") {
         pipeline["tracker"]["reid-config-file"] = (entry.directory / "tracker.yaml").string();

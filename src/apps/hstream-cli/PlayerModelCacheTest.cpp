@@ -268,6 +268,57 @@ void ResolvedReIdDevice() {
       Expect(pipeline["tracker"]["gpu-id"].as<int>() == 1, "Prepared ReID device was not materialized");
   }
 }
+void ResolvedAnalyticsDevice() {
+  const auto custom = [] {
+    return YAML::Load(
+        "tracker: {enable: 1}\nplayer-analytics:\n"
+        "  pose: {enable: 1, model: custom, bundle: /operator/pose}\n"
+        "  jersey: {enable: 1, model: custom, bundle: /operator/jersey}\n"
+        "  action: {enable: 1, model: custom, bundle: /operator/action}\n"
+        "  team: {enable: 1, model: custom, bundle: /operator/team, rate-hz: 2, warmup-samples: 200, refit-interval: 600, min-margin: 0.12, min-lightness-gap: 6, min-cluster-share: 0.25, acquisition-evidence: 1, switch-hysteresis: 1.5, min-track-height: 60}");
+  };
+  PlayerModelCacheOptions forbidden;
+  forbidden.cancelled = [] {
+    throw std::runtime_error("Custom analytics device resolution invoked preparation");
+    return false;
+  };
+  for (const int global : {-1, 0, 1}) {
+    for (const char* local : {"", "null", "2", "\"3\""}) {
+      auto pipeline = custom();
+      pipeline["application"]["global-gpu-id"] = global;
+      if (*local)
+        pipeline["player-analytics"]["gpu-id"] = YAML::Load(local);
+      const auto status = PreparePlayerModelCache(pipeline, "/unused", forbidden);
+      Expect(status.ok(), status.ToString());
+      const int expected = std::string(local) == "2" ? 2 : std::string(local) == "\"3\"" ? 3 : std::max(0, global);
+      Expect(pipeline["player-analytics"]["gpu-id"].as<int>() == expected, "Analytics device was not materialized");
+    }
+  }
+  auto omitted = custom();
+  Expect(PreparePlayerModelCache(omitted, "/unused", forbidden).ok(), "Implicit analytics device resolution failed");
+  Expect(omitted["player-analytics"]["gpu-id"].as<int>() == 0, "Implicit analytics device was not materialized");
+  auto invalid = custom();
+  invalid["player-analytics"]["gpu-id"] = -1;
+  Expect(!PreparePlayerModelCache(invalid, "/unused", forbidden).ok(), "Negative analytics device was accepted");
+
+  Fixture fixture;
+  for (const bool fail : {true, false}) {
+    auto pipeline = fixture.Pipeline();
+    pipeline["player-analytics"].remove("gpu-id");
+    pipeline["application"]["global-gpu-id"] = 1;
+    if (fail)
+      ::setenv("HM_TEST_PLAYER_MODEL_HELPER_FAIL", "1", 1);
+    else
+      ::unsetenv("HM_TEST_PLAYER_MODEL_HELPER_FAIL");
+    const auto status = PreparePlayerModelCache(pipeline, fixture.directory, fixture.options);
+    Expect(status.ok() != fail, "Unexpected analytics preparation result");
+    if (fail)
+      Expect(!pipeline["player-analytics"]["gpu-id"], "Failed preparation published an analytics device");
+    else
+      Expect(pipeline["player-analytics"]["gpu-id"].as<int>() == 1, "Built-in analytics device was not materialized");
+  }
+  Expect(Read(fixture.journal).find("query 1") != std::string::npos, "Built-in analytics used the wrong GPU");
+}
 void FailedPreparation() {
   Fixture fixture;
   auto pipeline = fixture.Pipeline();
@@ -358,6 +409,7 @@ int main(int argc, char** argv) {
     OffAndCustom();
     ReuseAndCorruption();
     ResolvedReIdDevice();
+    ResolvedAnalyticsDevice();
     FailedPreparation();
     CancelledPreparation();
     ConcurrentPreparation();
