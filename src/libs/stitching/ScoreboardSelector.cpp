@@ -188,10 +188,15 @@ bool has_single_source(const YAML::Node& config) {
   for (const auto& entry : videos) {
     if (!entry.second || entry.second.IsNull())
       continue;
-    if (!entry.second.IsSequence())
+    if (entry.second.IsScalar()) {
+      if (!entry.second.as<std::string>().empty())
+        ++playlists;
+    } else if (entry.second.IsSequence()) {
+      if (entry.second.size() > 0)
+        ++playlists;
+    } else {
       return false;
-    if (entry.second.size() > 0)
-      ++playlists;
+    }
   }
   return playlists == 1;
 }

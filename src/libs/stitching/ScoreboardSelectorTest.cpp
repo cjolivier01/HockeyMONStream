@@ -622,8 +622,14 @@ int main() {
     ok &= expect(
         absl::IsAborted(Selector::Save(single_directory, disabled, single_canvas->generation)),
         "single-source scoreboard must reject a replaced image");
+    single_config["game"]["videos"]["source"] = "recording.mp4";
+    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
     const auto new_canvas = Selector::OpenCanvas(single_directory, true);
-    single_config["game"]["videos"]["right"].push_back("second.mp4");
+    ok &= expect(
+        new_canvas.ok() && new_canvas->generation.hugin_generation.empty() &&
+            Selector::Save(single_directory, disabled, new_canvas->generation).ok(),
+        "a scalar source playlist supports single-source scoreboard selection and save");
+    single_config["game"]["videos"]["right"] = "second.mp4";
     std::ofstream(single_directory / "config.yaml") << single_config << '\n';
     ok &= expect(
         new_canvas.ok() && absl::IsAborted(Selector::Save(single_directory, disabled, new_canvas->generation)),

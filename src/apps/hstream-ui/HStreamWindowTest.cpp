@@ -12085,6 +12085,15 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   auto active_calibration_lock = hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path());
+  // Loading the game also starts the rink-map readiness check, which briefly
+  // owns this lock. Acquire the contention fixture after that worker releases
+  // it; the Save Preset assertion below still runs while our lock is held.
+  QElapsedTimer calibration_lock_wait;
+  calibration_lock_wait.start();
+  while (active_calibration_lock.ok() && !*active_calibration_lock && calibration_lock_wait.elapsed() < 5000) {
+    QTest::qWait(10);
+    active_calibration_lock = hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path());
+  }
   if (!expect(
           active_calibration_lock.ok() && *active_calibration_lock,
           "Unchanged-width preset save must have a contended calibration fixture")) {
