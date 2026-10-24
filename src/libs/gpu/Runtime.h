@@ -4,7 +4,19 @@
 // driver shim: HIP builds must never pass these handles to NVIDIA libraries.
 // Selection is explicit and uniform across a target's host and device code.
 #if defined(HSTREAM_USE_HIP)
+#if !defined(__HIPCC__)
+#pragma push_macro("__noinline__")
+#endif
+#if defined(__HIPCC__)
 #include <hip/hip_runtime.h>
+#else
+// Host code only needs the runtime API. Device host-defines (notably
+// __noinline__) conflict with ordinary system headers such as GLib.
+#include <hip/hip_runtime_api.h>
+#endif
+#if !defined(__HIPCC__)
+#pragma pop_macro("__noinline__")
+#endif
 
 #define cudaError_t hipError_t
 #define cudaStream_t hipStream_t

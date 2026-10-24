@@ -65,6 +65,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/tracking:program_camera_config",
         "//src/libs/common:track_color_meta",
         "//src/libs/playtracker_replay:rink_camera_guide",
         ":playtracker_runtime_config",

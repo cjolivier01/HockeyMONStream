@@ -138,6 +138,74 @@ maximum confidence difference 0.0113. Eight native runs return identical results
 warm preprocessing/inference/filtering/readback/NMS takes 4.4–4.7 ms on the RX
 9060 XT. This single-frame check does not qualify full-game detection or tracking.
 
+## Tracking and shared Program policy
+
+`src/libs/tracking/NativeTracker.*` runs two-stage geometric association over the
+compact detection metadata, using HockeyMON's native Kalman filter without its
+Torch/CUDA wrapper. High-score observations can recover retained tracks;
+low-score observations maintain only previously observed tracks. Assignment
+memory, track counts, confirmation and retention are explicit caller settings.
+Only current measured boxes are published. Seeks require reset, and reset never
+reuses a track ID.
+
+`ProgramTracking.*` composes the shared rink filter, this tracker and the existing
+native camera policy. It requires an identity-validated mask in the same geometry
+as the incoming observations; mismatched dimensions fail. The application must
+supply resolved configuration. `ProgramCameraConfig.*` and
+`detection/RinkDetectionMask.*` are also used by the NVIDIA plugins, so their
+configuration, upper/lower rink rules and camera arena do not diverge.
+`make test-amd-tracking` covers association, lost tracks, bounded resources,
+mask pruning and frame-by-frame parity with the existing native camera engine.
+
+`//src/libs/tracking:hip_video_tracking_fixture` accepts
+`MODEL VIDEO INFER_YAML WIDTH HEIGHT IO_BYTES START_SECONDS FRAMES OUTPUT_CSV`.
+It hardware-decodes an already-stitched HEVC archive to VA P010, imports linear
+DMA-BUF planes, runs HIP/MIGraphX detection and writes native track metadata.
+The appsink advertises video layout metadata during allocation; without that
+GStreamer cannot allocate DMA-BUF output. No video pixels return to the CPU.
+`VaDetectorImage` requires negotiated color matrix/range and rejects PQ/HLG until
+an explicit tone-mapping stage is supplied.
+
+On the RX 9060 XT, 120 frames of an 8192×2356 Main10 hockey archive produced
+1,200 confirmed observations across 15 IDs, with strictly increasing timestamps.
+After model preparation, the measured loop took 1.1–1.7 seconds. This fixture
+uses explicit test tracker settings and does not yet run mask pruning, camera
+cropping, original-camera stitching, preview or output encoding. The composed
+Program metadata path is currently qualified by separate CPU tests.
+
+## MIGraphX and Mesa library isolation
+
+The ROCm 6.4.1 MIGraphX GPU module exports its embedded LLVM symbols, and its core
+loads plugins globally. Loading Mesa's different LLVM in the same process then
+aborts with duplicate command-line option registration. Changing library order
+alone only reverses which LLVM implementation fails. This affects combining
+inference with video/graphics; isolated inference tests do not expose it.
+
+The pinned source recipe `scripts/build_amd_migraphx.sh` rebuilds only MIGraphX's
+2.12.0 core with `RTLD_LOCAL | RTLD_DEEPBIND` for its private plugins. The existing
+ROCm GPU module, compiler and headers remain unchanged. This is a source change,
+not binary rewriting or driver-path preloading. It is currently restricted to
+the exact ROCm 6.4.1 MIGraphX SDK identity; another release needs qualification.
+
+On Ubuntu 24.04, preparation needs CMake, Ninja, GCC, curl, patch, the installed
+ROCm development packages, `libmsgpack-cxx-dev`, `nlohmann-json3-dev`,
+`libsqlite3-dev`, `libprotobuf-dev` and `protobuf-compiler`. Supply a new private
+prefix outside the installed SDK; the script refuses to overwrite a prefix:
+
+```sh
+scripts/build_amd_migraphx.sh /opt/rocm "$HOME/.cache/hstream/migraphx-6.4.1-local" 8
+"$HOME/.cache/hstream/migraphx-6.4.1-local/run" make test-amd-driver-interop
+```
+
+The generated `run` launcher selects the private core before process startup.
+Bazel tests need `--test_env=LD_LIBRARY_PATH` to retain that selection; the Make
+target above includes it. The two hardware tests initialize MIGraphX, VA and EGL
+in opposite orders and render a synthetic OpenGL framebuffer on the selected
+HIP device. Their only pixel readback is four test bytes. The real 120-frame
+video fixture and the multi-input FP32/FP16 session tests also pass with this
+private core. System libva, Mesa and ROCm libraries are never modified. Packaging
+and CLI/UI runtime discovery still need to incorporate this qualified runtime.
+
 ## Application work still required
 
 | Boundary | Current implementation | Remaining AMD work |
@@ -146,7 +214,7 @@ warm preprocessing/inference/filtering/readback/NMS takes 4.4–4.7 ms on the RX
 | Allocation and batching | `NvBufSurface`, NVIDIA pools and DeepStream metadata | Portable surface ownership and synchronization integrated with GStreamer |
 | Stitching integration | HIP-capable `hm-cupano` called by a DeepStream plugin | Connect HIP to portable surfaces; port high-bit conversion adapters |
 | Model execution | TensorRT application; standalone native MIGraphX detector | Application integration, model preparation/cache identity, broader numerical qualification |
-| Tracking | DeepStream tracker interfaces and native camera policy | Tracker integration preserving observations, resets, and seek behavior |
+| Tracking | Native geometric tracker and shared rink/camera policy qualified independently | Application integration preserving observations, resets and seek behavior |
 | Crop and preview | CUDA transforms and NVIDIA graphics interop | Portable crop/surface adapters and qualified AMD graphics interop |
 | Desktop, jobs and publication | NVIDIA runner and media paths | Playback, seeking, audio, archive and highlight export on the AMD backend |
 

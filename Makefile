@@ -42,7 +42,7 @@ WINDOWS_SIGNING_TIMESTAMP_URL ?= http://timestamp.digicert.com
 
 all: print_targets
 
-.PHONY: amd-kernels test-amd-kernels test-amd-video test-amd-inference
+.PHONY: amd-kernels test-amd-kernels test-amd-video test-amd-inference test-amd-tracking test-amd-driver-interop
 
 amd-kernels:
 	$(BAZEL) build --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) //src/libs/gpu:portable_gpu_tests //src/libs/player_analytics/runtime:semantic_gpu_test
@@ -51,10 +51,16 @@ test-amd-kernels:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu:portable_gpu_tests
 
 test-amd-video:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/detection:va_detector_image_test
 
 test-amd-inference:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/migraphx:session_test //src/libs/detection:gpu_test //src/libs/detection:postprocess_test //src/libs/detection:hip_detector_failure_test
+
+test-amd-tracking:
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --test_output=errors //src/libs/tracking:native_tracker_test //src/libs/tracking:program_tracking_test //src/libs/detection:rink_detection_mask_test
+
+test-amd-driver-interop:
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hstream-job hstream-finalize hstream-cli run-hstream-cli hstream-ui hstream-web-job run-hstream-ui \
@@ -267,6 +273,8 @@ print_targets:
 		'test-amd-kernels Run the shared pixel and preprocessing tests on AMD.' \
 		'test-amd-video Run VA/HIP hardware decode, processing and encode tests on AMD.' \
 		'test-amd-inference Run native MIGraphX and detector preprocessing tests on AMD.' \
+		'test-amd-tracking Test the shared rink filter, native tracking and Program camera policy.' \
+		'test-amd-driver-interop Test MIGraphX, VA and EGL together (requires isolated SDK loader).' \
 		'' \
 		'Maintenance & Cleanup' \
 		'---------------------' \

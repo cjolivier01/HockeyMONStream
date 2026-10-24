@@ -235,6 +235,15 @@ git_repository(
     remote = "ssh://git@github.com/cjolivier01/HockeyMON",
 )
 
+# Native metadata-only tracking reuses HockeyMON's Eigen Kalman filter.
+http_archive(
+    name = "eigen",
+    sha256 = "0215c6593c4ee9f1f7f28238c4e8995584ebf3b556e9dbf933d84feb98d5b9ef",
+    strip_prefix = "eigen-3.3.8",
+    urls = ["https://gitlab.com/libeigen/eigen/-/archive/3.3.8/eigen-3.3.8.tar.bz2"],
+    build_file = "//buildfiles:third_party/eigen.BUILD",
+)
+
 ################################ Multiblend ################################
 git_repository(
     name = "multiblend",
@@ -341,6 +350,13 @@ conditional_local_repository(
         "/opt/jetson-sysroot/usr",
         "/usr",
     ],
+)
+
+# Optional Linux VA/EGL coexistence qualification for native AMD execution.
+conditional_local_repository(
+    name = "mesa_interop",
+    build_file = "@//buildfiles:third_party/mesa_interop.BUILD",
+    paths = ["/usr"],
 )
 
 # Only selected by the native AMD video interoperability targets.

@@ -39,14 +39,12 @@ cc_library(
     name = "utils",
     srcs = [
         "ApplicationPayload.cpp",
-        "ConfigYaml.cpp",
         "PlotContext.cpp",
         "RenderSet.cpp",
         "pipeline_utils.cpp",
     ],
     hdrs = [
         "ApplicationPayload.h",
-        "ConfigYaml.h",
         "PlotContext.h",
         "RenderSet.h",
         "TempFile.h",
@@ -60,6 +58,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":config_yaml",
         ":pinned_file",
         ":process",
         ":utils_base",
@@ -457,4 +456,13 @@ cc_test(
     name = "track_color_meta_test",
     srcs = ["TrackColorMetaTest.cpp"],
     deps = [":track_color_meta"],
+)
+
+cc_library(
+    name = "config_yaml",
+    srcs = ["ConfigYaml.cpp"],
+    hdrs = ["ConfigYaml.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer", "@yaml-cpp"],
 )

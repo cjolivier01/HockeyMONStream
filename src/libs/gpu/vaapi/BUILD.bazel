@@ -12,6 +12,7 @@ cc_library(
     }),
     linkopts = ["-lgstva-1.0"],
     deps = [
+        "//src/libs/gpu:runtime",
         "@com_google_absl//absl/status:statusor",
         "@gstreamer",
         "@hstream_rocm//:runtime",

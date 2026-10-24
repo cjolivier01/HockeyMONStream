@@ -10,6 +10,7 @@ cc_library(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [
+        "//src/libs/gpu:runtime",
         "@com_google_absl//absl/status:statusor",
         "@hstream_rocm//:migraphx",
     ],
@@ -26,3 +27,18 @@ cc_test(
     }),
     deps = [":session"],
 )
+
+# Separate processes exercise both constructor orders. Run with the private
+# MIGraphX loader on SDKs whose GPU plugin leaks incompatible LLVM symbols.
+[cc_test(
+    name = "mesa_" + order + "_test",
+    srcs = ["MesaInteropTest.cpp"],
+    args = [] if order == "inference_first" else ["graphics-first"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = ["//src/libs/gpu:runtime", "@hstream_rocm//:migraphx", "@mesa_interop", "@vaapi"],
+) for order in ["inference_first", "graphics_first"]]

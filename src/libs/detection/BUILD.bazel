@@ -64,6 +64,18 @@ cc_test(
     deps = [":postprocess"],
 )
 
+cc_library(
+    name = "va_detector_image",
+    srcs = ["VaDetectorImage.cpp"],
+    hdrs = ["VaDetectorImage.h"],
+    include_prefix = "hstream/src/libs/detection",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu_headers", "//src/libs/gpu/vaapi:va_hip_frame"],
+)
+
 cc_test(
     name = "hip_detector_failure_test",
     linkstatic = True,
@@ -75,4 +87,30 @@ cc_test(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [":hip_detector", "@hstream_rocm//:migraphx"],
+)
+
+cc_library(
+    name = "rink_detection_mask",
+    srcs = ["RinkDetectionMask.cpp"],
+    hdrs = ["RinkDetectionMask.h"],
+    include_prefix = "hstream/src/libs/detection",
+    deps = ["@opencv_linux//:opencv"],
+)
+
+cc_test(
+    name = "rink_detection_mask_test",
+    srcs = ["RinkDetectionMaskTest.cpp"],
+    deps = [":rink_detection_mask"],
+)
+
+cc_test(
+    name = "va_detector_image_test",
+    srcs = ["VaDetectorImageTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_detector_image"],
 )
