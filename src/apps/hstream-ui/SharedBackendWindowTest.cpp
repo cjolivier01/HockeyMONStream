@@ -327,6 +327,50 @@ struct HStreamWindowTestAccess {
     window.active_hockeymon_program_ = true;
     window.active_run_telemetry_requested_ = false;
     const QString config_path = QDir(game_directory).filePath("config.yaml");
+    const QByteArray pair_config =
+        "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n"
+        "hstream_ui:\n  stitching_calibration:\n    status: complete\n";
+    writeFile(config_path, pair_config);
+    const QString initial_path = QDir(game_directory).filePath("initial.json");
+    const QString source_path = QDir(game_directory).filePath("prestitched.mp4");
+    writeFile(source_path, "recording");
+    QJsonObject initial{
+        {"version", 1},
+        {"module", "hmlib.cli.hmtrack"},
+        {"game_id", "game"},
+        {"cwd", game_directory},
+        {"arguments", QJsonArray{"--input-video", source_path}}};
+    window.backend_.initial_launch = initial_path;
+    writeFile(initial_path, QJsonDocument(initial).toJson());
+    window.startPipeline();
+    require(
+        window.pipeline_process_->state() == QProcess::NotRunning &&
+            window.log_->toPlainText().contains("sources were not resolved for this launch"),
+        "Legacy initial envelopes fail before any cleanup or calibration admission");
+    QJsonObject ownership{
+        {"version", 1},
+        {"game_id", "game"},
+        {"cwd", game_directory},
+        {"arguments", initial.value("arguments")},
+        {"sources", QJsonObject{{"source", QJsonArray{source_path}}}}};
+    initial.insert("source_ownership", ownership);
+    writeFile(initial_path, QJsonDocument(initial).toJson());
+    require(window.resolveInitialProgramSources(), "Resolved initial source ownership is admitted");
+    bool initial_calibration_required = true;
+    require(
+        window.prepareStitchingCalibrationRun(
+            "/must/not/clean-saved-pair", game_directory, {}, &initial_calibration_required) &&
+            !initial_calibration_required,
+        "Initial single-source override bypasses saved pair cleanup");
+    QFile protected_config(config_path);
+    require(protected_config.open(QIODevice::ReadOnly), "Read protected pair config");
+    require(protected_config.readAll() == pair_config, "Initial source admission leaves saved pair calibration intact");
+    protected_config.close();
+    initial.insert("arguments", QJsonArray{"--input-video", "changed-after-resolution.mp4"});
+    writeFile(initial_path, QJsonDocument(initial).toJson());
+    require(!window.resolveInitialProgramSources(), "Changed initial arguments invalidate resolved source ownership");
+    window.backend_.initial_launch.clear();
+    window.initial_program_requires_stitching_.reset();
     writeFile(config_path, "game:\n  videos:\n    source: [single.mp4]\n");
     bool calibration_required = true;
     require(

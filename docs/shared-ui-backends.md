@@ -14,6 +14,13 @@ hstream-ui --backend=hockeymon --backend-runner=/absolute/path/to/hm-cli \
 initial-launch document so `hmtrack --camera-ui=1` can preserve explicit Python
 arguments. It applies once, to the game selected at startup, and is not copied
 into exported jobs. A later Play uses the current saved and unsaved UI choices.
+Initial Program envelopes include source ownership resolved by the Python
+adapter before Qt opens, bound to the same game, arguments and working directory.
+Qt checks it before calibration cleanup or crop admission. A single-source CLI
+override therefore preserves the saved Left/Right calibration even when the
+selected game's normal inputs are a camera pair. Unresolved initial envelopes
+are rejected before changing calibration; recreate them through the matching
+`hmtrack --camera-ui=1` launcher.
 `--stitching-calibration-only` selects the native calibration workflow. When an
 initial `hmstitch` envelope is present, `hm-cli` first translates those original
 arguments and then executes the matching native runner, retaining native preview
@@ -202,6 +209,11 @@ it never rebuilds or substitutes the model. The worker selects the matching
 helper through `HM_HSTREAM_MODEL_INFER` and starts it with `--engine PATH`,
 `--gpu-id N` and its direct `--parent-pid`. The same helper ships beside the other
 native binaries on desktop, Jetson and ARM64/SBSA.
+
+Preparation materializes `pipeline.tracker.gpu-id` for enabled ReID, including
+custom selections, using the cache's existing tracker/application inheritance.
+The Python graph and helper retain that accepted device across seek rebuilds;
+the selected portable ONNX ReID model passes it to its CUDA provider as well.
 
 Requests contain a little-endian uint32 crop count from 1 through 32 followed by
 float32 `[N,3,256,128]` preprocessed pixels. Responses contain that same count and
