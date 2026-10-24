@@ -24,7 +24,7 @@ absl::StatusOr<std::unique_ptr<ProgramRuntimeControl>> ProgramRuntimeControl::Cr
     uint64_t poll_ns,
     Callbacks callbacks) {
   if (!maximum || !poll_ns || poll_ns > uint64_t(INT64_MAX) || !callbacks.pause || !callbacks.mute || !callbacks.emit ||
-      !callbacks.cancelled || !callbacks.reset_progress || !callbacks.seek || !callbacks.preview)
+      !callbacks.cancelled || !callbacks.reset_progress || !callbacks.seek || !callbacks.preview || !callbacks.overlays)
     return absl::InvalidArgumentError("Runtime control requires explicit bounds and callbacks");
   const int fd = fcntl(input_fd, F_DUPFD_CLOEXEC, 0);
   if (fd < 0)
@@ -38,6 +38,15 @@ absl::Status ProgramRuntimeControl::Command(const std::string& line) {
   input >> command;
   if (command.empty())
     return absl::OkStatus();
+  if (command == "@set-preview-overlays") {
+    pipeline_internal::PreviewOverlayCommand parsed;
+    const auto start = line.find('@');
+    if (pipeline_internal::parse_preview_overlay_command(line.substr(start + 1), &parsed))
+      return callbacks_.overlays(parsed);
+    callbacks_.emit(
+        "HSTREAM_PREVIEW_OVERLAYS status=failed generation=0 players=0 play=0 rink=0 reason=malformed-command\n");
+    return absl::OkStatus();
+  }
   if (command == "q" || command == "@quit") {
     if (!(input >> extra))
       return absl::CancelledError("Program stopped by runtime command");

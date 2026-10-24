@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hstream/src/libs/gpu/Image.h"
 #include "hstream/src/libs/gpu/Runtime.h"
 
 #include <cstddef>
@@ -36,6 +37,10 @@ struct ImageView {
   size_t chroma_pitch{0};
   void* chroma_v{nullptr};
   size_t chroma_v_pitch{0};
+  // Existing NVIDIA encoder surfaces use BT.709 limited range. Other owners
+  // must supply their resolved matrix/range in native code units explicitly.
+  bool explicit_yuv_encoding{false};
+  gpu::YuvEncoding yuv_encoding{};
 };
 
 namespace detail {

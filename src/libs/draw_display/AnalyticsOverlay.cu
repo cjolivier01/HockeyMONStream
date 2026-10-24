@@ -118,6 +118,9 @@ __global__ void Draw420(
   if (x + 1 >= image.width || y + 1 >= image.height)
     return;
   const float code_scale = TenBit ? 4.0F : 1.0F;
+  const auto color = image.explicit_yuv_encoding
+      ? image.yuv_encoding
+      : gpu::YuvEncoding{0.2126F, 0.0722F, 16 * code_scale, 219 * code_scale, 128 * code_scale, 224 * code_scale};
   const float storage_scale = TenBit ? 64.0F : 1.0F;
   float luma[4];
   for (int j = 0; j < 2; ++j) {
@@ -143,10 +146,10 @@ __global__ void Draw420(
   for (uint32_t reference = 0; reference < tile.reference_count; ++reference) {
     const Command c = commands[references[tile.first_reference + reference]];
     const float red = c.color.red, green = c.color.green, blue = c.color.blue;
-    const float y_linear = 0.2126F * red + 0.7152F * green + 0.0722F * blue;
-    const float target_y = (16.0F + 219.0F * y_linear) * code_scale;
-    const float target_u = (128.0F + 224.0F * (blue - y_linear) / 1.8556F) * code_scale;
-    const float target_v = (128.0F + 224.0F * (red - y_linear) / 1.5748F) * code_scale;
+    const float y_linear = color.kr * red + (1 - color.kr - color.kb) * green + color.kb * blue;
+    const float target_y = color.y_offset + color.y_range * y_linear;
+    const float target_u = color.uv_offset + color.uv_range * (blue - y_linear) / (2 * (1 - color.kb));
+    const float target_v = color.uv_offset + color.uv_range * (red - y_linear) / (2 * (1 - color.kr));
     float alpha_sum = 0.0F;
     for (int j = 0; j < 2; ++j)
       for (int i = 0; i < 2; ++i) {

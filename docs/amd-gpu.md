@@ -258,7 +258,7 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 | Stitching | Saved calibration with HIP `hm-cupano` and shared conversion | Automatic calibration, rotated generations and live controls |
 | Model execution | Native MIGraphX inference in the ROCm CLI | Broader numerical qualification and optional analytics |
 | Tracking | Native geometric association, shared rink filter and camera policy | Appearance reassociation, telemetry and desktop seek policy |
-| Crop and preview | Shared HIP crop into VA output; native-window EGL Program preview | Source/Stitched channels and preview overlays |
+| Crop and preview | Shared HIP crop into VA output; native-window EGL Program preview with tracked-player boxes | Source/Stitched channels and Play/Rink diagnostics |
 | Desktop, jobs and publication | Saved Program playback and atomic local CLI MP4 output | Live controls, managed archives and highlight export |
 
 Do not pass `--config=rocm` to `//...` as an application build: many targets
@@ -665,7 +665,7 @@ the completed file is already published.
 
 The CLI accepts one application YAML and rejects two-stage calibration, unknown
 arguments, unsupported sinks and malformed time/preview arguments. Time limits
-advance from completed Program frames. Additional desktop preview channels, interactive scoreboard selection, player overlays,
+advance from completed Program frames. Additional desktop preview channels, interactive scoreboard selection, analytics overlays,
 telemetry, managed jobs and automatic calibration are still integration work.
 Tracker association uses the explicit AMD geometric settings; it does not run
 NvDCF's appearance model. Compiled-model reuse follows `runtime.amd.model_cache`.
@@ -915,8 +915,9 @@ Unknown/unmapped runtime selections fail without disturbing the current branch.
 Generations reject stale commands, and startup begins at generation 1 to match
 the UI. The optional desktop calibration revision/reference arguments must
 match the saved game snapshot; CLI overrides cannot rewrite that snapshot.
-Reference times compare through the shared time parser, so `00:03:39.000` and
-`00:03:39` agree. `ProgramCalibration` repeats the owner/reference check against
+Reference times compare through an exact decimal nanosecond parser, so `62.099`
+and `00:01:02.099` agree without rounding distinct references together.
+`ProgramCalibration` repeats the owner/reference check against
 current saved configuration while the processor holds the Hugin artifact-load
 lock, and carries the owner into rink-mask loading. A replacement calibration
 during source/model preparation therefore fails startup. These arguments do
@@ -942,7 +943,7 @@ X11 display. Use a private copy of a calibrated game because normal desktop
 controls save next-run choices. With `HM_GAME_DIR` selecting that private root,
 run the matching `hstream_ui_test` binary with `HSTREAM_UI_E2E_GAME_ID=GAME` and
 `HSTREAM_UI_E2E_AMD_PROGRAM=1`, through the private runtime launchers above.
-The check exercises Play, Render off/on, an unavailable tab and return to
+The check exercises Play, Player boxes on/off, Render off/on, an unavailable tab and return to
 Program, and requires native readiness plus nonempty track observations.
 This does not qualify other tabs, optional live controls, archive jobs or
 physical monitor/speaker output. The first model compilation can take longer
@@ -956,3 +957,23 @@ stale/unmapped selections, seeking and SIGSTOP-paused resize. Its stopped GL
 child retained 10,000 nonblack sampled pixels after a parent-only clear; the
 new clear reduced that bounded diagnostic sample to zero. Pixel sampling was
 only in the external test driver. The ordinary desktop/CLI path has no readback.
+
+### Program preview player boxes
+
+The desktop Player boxes switch now applies live on AMD. Initial selection uses
+the existing `HSTREAM_UI_PREVIEW_OVERLAYS=players` launch contract. Runtime
+`@set-preview-overlays GENERATION PLAYERS PLAY RINK` uses the shared strict
+parser and generation state; successful requests receive `status=applied`.
+Unsupported Play/Rink layers and stale requests receive `status=failed` and
+leave the previous selection intact. These two diagnostic layers remain pending.
+
+`ProgramPreviewBoxes` retains bounded CPU metadata and shared track-color leases,
+then maps player boxes through the same source/crop/rotation geometry as the
+video. Only currently observed players draw; seek clears old tracks and leases.
+The processor uses its sparse GPU overlay compositor on the preview's owned P010
+output after crop/tone. The panorama and each archive render remain independent.
+Output matrix and range are explicit, including full-range video; existing
+NVIDIA compositor callers retain BT.709 limited-range encoding. No frame mapping,
+readback, extra full-frame image or additional stream wait is introduced. GPU
+uploads contain only bounded drawing commands. All-off rendering allocates no
+overlay GPU resources; capacity failures suppress and report the diagnostic layer.

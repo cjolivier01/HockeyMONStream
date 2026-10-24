@@ -10,6 +10,7 @@
 #include "cupano/pano/blendMode.h"
 #include "hstream/src/libs/detection/HipDetector.h"
 #include "hstream/src/libs/program/ProgramCalibration.h"
+#include "hstream/src/libs/program/ProgramPreviewBoxes.h"
 #include "hstream/src/libs/program/ProgramRenderSettings.h"
 #include "hstream/src/libs/tracking/ProgramTracking.h"
 
@@ -52,7 +53,13 @@ class AmdProgramProcessor {
   // called repeatedly for different output sizes. All writes finish on return.
   // Timestamps/metadata are assigned by the caller. Output must preserve the
   // input primaries/transfer; the renderer converts matrix/range only.
-  absl::Status Render(GstBuffer* output, const GstVideoInfo& info, const ProgramRenderSettings& settings);
+  // Optional diagnostic boxes apply only to this owned output, never the source
+  // panorama or another render (e.g. an archive). Metadata remains on the CPU.
+  absl::Status Render(
+      GstBuffer* output,
+      const GstVideoInfo& info,
+      const ProgramRenderSettings& settings,
+      ProgramPreviewBoxes* preview = nullptr);
   // Discard the last frame and camera/object history after a seek. Compiled
   // inference and stitch allocations survive; object IDs are never reused.
   // A processing/GPU failure retires the owner and requires reconstruction.

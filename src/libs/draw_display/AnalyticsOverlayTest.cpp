@@ -261,6 +261,87 @@ void EncoderFormatTests() {
   }
   std::cout << "encoder_formats i420/p010 sparse watermark passed\n";
 }
+// Independent code-value checks on explicit P010 matrix/range. Readback is
+// confined to this small synthetic test, never the preview implementation.
+void ExplicitYuvTests() {
+  Stream stream;
+  constexpr unsigned width = 16, height = 16, pitch = 40;
+  constexpr size_t bytes = pitch * height * 3 / 2;
+  uint8_t* device = nullptr;
+  Cuda(cudaMalloc(reinterpret_cast<void**>(&device), bytes));
+  a::ImageView image{device, pitch, width, height, a::PixelFormat::kP010};
+  image.chroma = device + pitch * height;
+  image.chroma_pitch = pitch;
+  image.explicit_yuv_encoding = true;
+  a::Compositor compositor;
+  for (const auto weights :
+       {std::array<float, 2>{.2126F, .0722F},
+        std::array<float, 2>{.299F, .114F},
+        std::array<float, 2>{.2627F, .0593F}}) {
+    for (const bool full : {false, true}) {
+      image.yuv_encoding = {
+          weights[0], weights[1], full ? 0.F : 64.F, full ? 1023.F : 876.F, 512.F, full ? 1023.F : 896.F};
+      for (const auto rgb : {a::Color{1, 0, 0, 1}, a::Color{0, 1, 0, 1}, a::Color{0, 0, 1, 1}}) {
+        std::vector<uint8_t> original(bytes, 0xa5), actual(bytes);
+        for (unsigned y = 0; y < height + height / 2; ++y) {
+          for (unsigned x = 0; x < width; ++x) {
+            const uint16_t value = (y < height ? 200 : 512) << 6;
+            std::memcpy(original.data() + y * pitch + x * 2, &value, 2);
+          }
+        }
+        Cuda(cudaMemcpyAsync(device, original.data(), bytes, cudaMemcpyHostToDevice, stream.value));
+        a::CommandList commands;
+        commands.AddFill(3, 3, 9, 9, rgb); // Includes partially covered chroma blocks.
+        Check(compositor.Render(image, commands, stream.value).launched, "explicit YUV overlay failed");
+        Cuda(cudaMemcpyAsync(actual.data(), device, bytes, cudaMemcpyDeviceToHost, stream.value));
+        Cuda(cudaStreamSynchronize(stream.value));
+        const auto code = [&](unsigned row, unsigned x) {
+          uint16_t value;
+          std::memcpy(&value, actual.data() + row * pitch + x * 2, 2);
+          Check(!(value & 63), "P010 low bits changed");
+          return value >> 6;
+        };
+        const double luma = weights[0] * rgb.red + (1.0 - weights[0] - weights[1]) * rgb.green + weights[1] * rgb.blue;
+        const double target_y = (full ? 0 : 64) + (full ? 1023 : 876) * luma;
+        const double target_u = 512 + (full ? 1023 : 896) * (rgb.blue - luma) / (2 * (1 - weights[1]));
+        const double target_v = 512 + (full ? 1023 : 896) * (rgb.red - luma) / (2 * (1 - weights[0]));
+        for (unsigned y = 0; y < height; ++y)
+          for (unsigned x = 0; x < width; ++x) {
+            const auto expected = x >= 3 && x < 9 && y >= 3 && y < 9 ? std::lround(target_y) : 200;
+            Check(std::abs(code(y, x) - expected) <= 1, "explicit YUV luma differs");
+          }
+        for (unsigned y = 0; y < height; y += 2)
+          for (unsigned x = 0; x < width; x += 2) {
+            unsigned covered = 0;
+            for (unsigned j = 0; j < 2; ++j)
+              for (unsigned i = 0; i < 2; ++i)
+                covered += x + i >= 3 && x + i < 9 && y + j >= 3 && y + j < 9;
+            const double alpha = covered / 4.0;
+            Check(
+                std::abs(code(height + y / 2, x) - std::lround(512 * (1 - alpha) + target_u * alpha)) <= 1 &&
+                    std::abs(code(height + y / 2, x + 1) - std::lround(512 * (1 - alpha) + target_v * alpha)) <= 1,
+                "explicit YUV chroma differs");
+          }
+        for (unsigned row = 0; row < height + height / 2; ++row)
+          Check(
+              std::equal(
+                  actual.begin() + row * pitch + width * 2,
+                  actual.begin() + (row + 1) * pitch,
+                  original.begin() + row * pitch + width * 2),
+              "explicit YUV padding changed");
+      }
+    }
+  }
+  a::CommandList commands;
+  commands.AddFill(0, 0, 4, 4, {1, 1, 1, 1});
+  image.yuv_encoding.y_range = -1;
+  Check(
+      compositor.Render(image, commands, stream.value).status == a::RenderStatus::kInvalidArgument,
+      "invalid explicit colorimetry accepted");
+  Cuda(cudaStreamSynchronize(stream.value));
+  Cuda(cudaFree(device));
+}
+
 void CapacityAndText() {
   Stream stream;
   Image image(128, 96, a::PixelFormat::kRgba8);
@@ -522,6 +603,7 @@ int main(int argc, char** argv) {
       return 0;
     PixelTests();
     EncoderFormatTests();
+    ExplicitYuvTests();
     CapacityAndText();
     BusyOwnership();
     if (argc == 2 && std::string(argv[1]) == "--benchmark")

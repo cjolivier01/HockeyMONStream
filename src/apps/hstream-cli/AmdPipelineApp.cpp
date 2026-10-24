@@ -108,6 +108,20 @@ hm::gpu::VaVideoReaderConfig Reader(
       launch.amd.cancellation_poll_ns};
 }
 void Run(const hm::program::AmdPipelineOptions& args) {
+  hm::pipeline_internal::PreviewOverlaySelection initial_overlays;
+  if (const auto* value = std::getenv("HSTREAM_UI_PREVIEW_OVERLAYS")) {
+    std::istringstream names(value);
+    std::string name;
+    while (std::getline(names, name, ',')) {
+      if (name.empty())
+        continue;
+      Require(name == "players", "AMD Program preview currently supports only the players diagnostic overlay");
+      initial_overlays.players = true;
+    }
+  }
+  Require(!initial_overlays.any() || args.sinks.count("RENDER"), "Preview overlays require the RENDER sink");
+  hm::pipeline_internal::PreviewOverlayRuntimeState overlay_state(initial_overlays);
+  hm::program::ProgramPreviewBoxes preview_boxes;
   const auto root = Take(hm::baseline_config::resolve_root());
   const auto launch = Take(hm::program::LoadProgramLaunchConfig(
       args.game,
@@ -401,6 +415,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
               for (const auto& output : outputs)
                 Status(output->ResetTimeline());
               next_preview_time = 0;
+              preview_boxes.Reset();
               preview_waiting = !args.preview_windows.empty() && preview_channel == "program";
             }
             previous_segments = completed_video;
@@ -414,6 +429,28 @@ void Run(const hm::program::AmdPipelineOptions& args) {
             return absl::OkStatus();
           },
           select_preview,
+          [&](const hm::pipeline_internal::PreviewOverlayCommand& command) {
+            const auto& s = command.selection;
+            const char* reason = !overlay_state.is_fresh(command) ? "stale-generation"
+                : !preview_output                                 ? "preview-unavailable"
+                : s.play || s.rink                                ? "unsupported-layer"
+                                                                  : nullptr;
+            if (!reason) {
+              overlay_state.commit(command);
+              if (!s.players)
+                preview_boxes.Reset();
+            }
+            g_print(
+                "HSTREAM_PREVIEW_OVERLAYS status=%s generation=%" G_GUINT64_FORMAT " players=%u play=%u rink=%u%s%s\n",
+                reason ? "failed" : "applied",
+                command.generation,
+                unsigned(s.players),
+                unsigned(s.play),
+                unsigned(s.rink),
+                reason ? " reason=" : "",
+                reason ? reason : "");
+            return absl::OkStatus();
+          },
       }));
   g_print("HSTREAM_AMD_PREPARATION state=ready\n");
   if (!args.preview_windows.empty()) {
@@ -424,9 +461,15 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   for (;;) {
     const auto completed =
         Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get()));
+    if (overlay_state.selection().players)
+      preview_boxes.Update(pair->time, completed.observation.tracks);
     for (const auto& output : outputs) {
       std::unique_ptr<GstBuffer, decltype(&gst_buffer_unref)> buffer(Take(output->Acquire()), gst_buffer_unref);
-      Status(processor->Render(buffer.get(), output_info, output_config.render));
+      Status(processor->Render(
+          buffer.get(),
+          output_info,
+          output_config.render,
+          output.get() == preview_output && overlay_state.selection().players ? &preview_boxes : nullptr));
       Status(output->Push(buffer.release(), pair->time - first, pair->duration));
     }
     if (audio) {

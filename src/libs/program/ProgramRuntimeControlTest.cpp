@@ -26,6 +26,7 @@ struct Fixture {
   bool seek_relative{false};
   std::string preview_channel;
   uint64_t preview_generation{0};
+  hm::pipeline_internal::PreviewOverlayCommand overlays;
   std::mutex mutex;
   std::condition_variable wake;
   std::vector<std::string> messages;
@@ -72,6 +73,10 @@ struct Fixture {
          [this](const std::string& channel, uint64_t generation) {
            preview_channel = channel;
            preview_generation = generation;
+           return absl::OkStatus();
+         },
+         [this](const hm::pipeline_internal::PreviewOverlayCommand& command) {
+           overlays = command;
            return absl::OkStatus();
          }});
     close(pipefd[0]);
@@ -150,6 +155,20 @@ int main() {
           fixture.control->Service().ok() && fixture.reset_generation == 3 && fixture.seek_position == 123456789 &&
               fixture.seek_generation == 2,
           "seek/reset fields lost");
+      fixture.Send("@set-preview-overlays 9 1 0 1\n");
+      Check(
+          fixture.control->Service().ok() && fixture.overlays.generation == 9 && fixture.overlays.selection.players &&
+              !fixture.overlays.selection.play && fixture.overlays.selection.rink,
+          "overlay command fields lost");
+      for (const auto* command :
+           {"@set-preview-overlays 0 0 0 0\n",
+            "@set-preview-overlays 10 2 0 0\n",
+            "@set-preview-overlays 10 0 0\n",
+            "@set-preview-overlays 10 0 0 0 extra\n"}) {
+        fixture.Send(command);
+        Check(
+            fixture.control->Service().ok() && fixture.overlays.generation == 9, "malformed overlay command executed");
+      }
       fixture.Send("@seek 999 1\n@seek 123 2 extra\n@seek -1 3\n");
       Check(
           fixture.control->Service().ok() && fixture.seek_position == 123456789 && fixture.seek_generation == 2,

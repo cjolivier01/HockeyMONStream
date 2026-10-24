@@ -77,6 +77,7 @@ struct AmdProgramProcessor::Impl {
   std::unique_ptr<CudaMat<half4>> left, right, panorama;
   std::unique_ptr<detection::HipDetector> detector;
   std::unique_ptr<tracking::ProgramTracking> tracking;
+  std::unique_ptr<draw_display::analytics::Compositor> preview_compositor;
   GstVideoInfo left_info{}, right_info{};
   hm::BBox crop;
   bool inputs_bound{false}, has_frame{false}, retired{false};
@@ -90,6 +91,7 @@ struct AmdProgramProcessor::Impl {
     Cleanup(hipSetDevice(device));
     if (stream)
       Cleanup(hipStreamSynchronize(stream));
+    preview_compositor.reset();
     detector.reset();
     panorama.reset();
     right.reset();
@@ -220,7 +222,8 @@ absl::StatusOr<AmdProgramFrame> AmdProgramProcessor::Process(uint64_t sequence, 
 absl::Status AmdProgramProcessor::Render(
     GstBuffer* output,
     const GstVideoInfo& info,
-    const ProgramRenderSettings& settings) {
+    const ProgramRenderSettings& settings,
+    ProgramPreviewBoxes* preview) {
   auto& impl = *impl_;
   if (impl.retired || !impl.has_frame)
     return absl::FailedPreconditionError("AMD Program has no completed frame to render");
@@ -253,6 +256,30 @@ absl::Status AmdProgramProcessor::Render(
         settings.exposure,
         impl.stream,
         settings.scoreboard ? &*settings.scoreboard : nullptr));
+    if (preview) {
+      namespace a = draw_display::analytics;
+      const auto& commands = preview->Build(transform, yuv.width, yuv.height);
+      if (!commands.empty()) {
+        Require(yuv.format == gpu::PixelFormat::kP010, absl::InvalidArgumentError("Preview boxes require P010 output"));
+        if (!impl.preview_compositor)
+          impl.preview_compositor = std::make_unique<a::Compositor>();
+        a::ImageView image{yuv.y, yuv.y_pitch, unsigned(yuv.width), unsigned(yuv.height), a::PixelFormat::kP010};
+        image.chroma = yuv.uv;
+        image.chroma_pitch = yuv.uv_pitch;
+        image.explicit_yuv_encoding = true;
+        image.yuv_encoding = yuv.color;
+        const auto drawn = impl.preview_compositor->Render(image, commands, impl.stream);
+        if (drawn.status == a::RenderStatus::kCudaError)
+          Hip(drawn.cuda_error);
+        Require(
+            drawn.status != a::RenderStatus::kInvalidArgument,
+            absl::InternalError("Invalid Program preview overlay geometry"));
+        if (drawn.status != a::RenderStatus::kOk)
+          g_printerr(
+              "HSTREAM_PREVIEW_OVERLAY_DIAGNOSTIC layer=players status=suppressed reason=%s\n",
+              a::ToString(drawn.status));
+      }
+    }
     Status(destination->Complete());
     impl.retired = false;
     return absl::OkStatus();

@@ -304,6 +304,15 @@ RenderResult Compositor::Render(
     return result;
   };
   const bool planar = image.format == PixelFormat::kI420 || image.format == PixelFormat::kP010;
+  if (image.explicit_yuv_encoding) {
+    const auto& c = image.yuv_encoding;
+    const float maximum = image.format == PixelFormat::kP010 ? 1023 : 255;
+    if (!planar || !Finite(c.kr) || !Finite(c.kb) || c.kr <= 0 || c.kb <= 0 || c.kr + c.kb >= 1 ||
+        !Finite(c.y_offset) || !Finite(c.y_range) || !Finite(c.uv_offset) || !Finite(c.uv_range) || c.y_offset < 0 ||
+        c.y_range <= 0 || c.y_offset + c.y_range > maximum || c.uv_range <= 0 || c.uv_offset - c.uv_range / 2 < -.5F ||
+        c.uv_offset + c.uv_range / 2 > maximum + .5F)
+      return invalid();
+  }
   const size_t luma_bytes = image.format == PixelFormat::kP010 ? 2U : (planar ? 1U : 4U);
   if (!image.data || !image.width || !image.height || image.width > kMaximumSide || image.height > kMaximumSide ||
       image.pitch < size_t(image.width) * luma_bytes || (!planar && image.pitch % 4) ||

@@ -12149,8 +12149,17 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   auto active_calibration_lock = hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path());
+  // Loading the game also starts background map validation. Let that reader
+  // finish before this test deliberately holds the artifact lock across Save.
+  const bool lock_ready = QTest::qWaitFor(
+      [&] {
+        if (active_calibration_lock.ok() && !*active_calibration_lock)
+          active_calibration_lock = hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path());
+        return !active_calibration_lock.ok() || bool(*active_calibration_lock);
+      },
+      2000);
   if (!expect(
-          active_calibration_lock.ok() && *active_calibration_lock,
+          lock_ready && active_calibration_lock.ok() && *active_calibration_lock,
           "Unchanged-width preset save must have a contended calibration fixture")) {
     return false;
   }
@@ -13988,7 +13997,16 @@ bool test_camera_controls(HStreamWindow* window) {
   for (int value = 471; value <= 490; ++value) {
     max_speed_x->setValue(value);
   }
-  QTest::qWait(220);
+  // The 200 ms debounce precedes the 40 ms acknowledgment timeout. A fixed
+  // 220 ms sleep can expire before the latest coalesced request times out.
+  const bool both_controls_timed_out = QTest::qWaitFor(
+      [&] {
+        return window->logText().contains(
+                   "camera control Max_Speed_X_x10=470 apply=failed reason=acknowledgement-timeout") &&
+            window->logText().contains(
+                "camera control Max_Speed_X_x10=490 apply=failed reason=acknowledgement-timeout");
+      },
+      2000);
   const fs::path runtime_dir = fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui";
   auto runtime_snapshot_count = [&]() {
     return static_cast<int>(std::count_if(
@@ -14001,10 +14019,7 @@ bool test_camera_controls(HStreamWindow* window) {
           runtime_snapshot_count() <= 2,
           "A non-acknowledging backend should retain at most the last acknowledged and one in-flight snapshot") &&
       expect(
-          window->logText().contains("camera control Max_Speed_X_x10=470 apply=failed "
-                                     "reason=acknowledgement-timeout") &&
-              window->logText().contains("camera control Max_Speed_X_x10=490 apply=failed "
-                                         "reason=acknowledgement-timeout"),
+          both_controls_timed_out,
           "A stalled live-control backend should time out both the in-flight and coalesced latest values");
   const auto timeout_hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
   if (!timeout_hugin_generation.ok()) {
@@ -16852,6 +16867,16 @@ bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) 
               environment.value("GST_PLUGIN_PATH_1_0") == qEnvironmentVariable("GST_PLUGIN_PATH_1_0"),
           "AMD desktop launch must preserve its private VA runtime without injecting DeepStream"))
     return false;
+  auto* boxes = require_child<QCheckBox>(window, "showPlayerTrackingCheck");
+  if (!boxes)
+    return false;
+  boxes->setChecked(true);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] { return window->completeLogText().contains("preview overlays players=1 play=0 rink=0 apply=live"); },
+              10000),
+          "Player boxes must receive a live application acknowledgment"))
+    return false;
   render->setChecked(false);
   if (!expect(
           QTest::qWaitFor([&] { return window->logText().contains("GPU preview disabled generation="); }, 10000),
@@ -16859,6 +16884,18 @@ bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) 
     return false;
   render->setChecked(true);
   if (!expect(QTest::qWaitFor(ready, 10000), "Render on must present a fresh Program frame"))
+    return false;
+  const auto before_boxes_off = window->completeLogText().size();
+  boxes->setChecked(false);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] {
+                return window->completeLogText()
+                    .mid(before_boxes_off)
+                    .contains("preview overlays players=0 play=0 rink=0 apply=live");
+              },
+              10000),
+          "Player boxes off must reconcile without a timeout"))
     return false;
   tabs->setCurrentIndex(1);
   if (!expect(

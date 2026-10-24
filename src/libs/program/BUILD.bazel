@@ -3,11 +3,17 @@ load("//bazel:gpu_library.bzl", "gpu_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "preview_overlay_runtime",
+    hdrs = ["PreviewOverlayRuntime.h"],
+    include_prefix = "hstream/src/libs/program",
+)
+
+cc_library(
     name = "runtime_control",
     srcs = ["ProgramRuntimeControl.cpp"],
     hdrs = ["ProgramRuntimeControl.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["@com_google_absl//absl/status:statusor"],
+    deps = [":preview_overlay_runtime", "@com_google_absl//absl/status:statusor"],
 )
 cc_test(
     name = "runtime_control_test",
@@ -228,6 +234,21 @@ cc_test(
 )
 
 cc_library(
+    name = "preview_boxes",
+    srcs = ["ProgramPreviewBoxes.cpp"],
+    hdrs = ["ProgramPreviewBoxes.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":frame_geometry", "//src/libs/draw_display:analytics_overlay",
+            "//src/libs/player_analytics:track_colors", "//src/libs/tracking:native_tracker"],
+)
+
+cc_test(
+    name = "preview_boxes_test",
+    srcs = ["ProgramPreviewBoxesTest.cpp"],
+    deps = [":preview_boxes"],
+)
+
+cc_library(
     name = "amd_program_processor",
     srcs = ["AmdProgramProcessor.cpp"],
     hdrs = ["AmdProgramProcessor.h"],
@@ -237,7 +258,7 @@ cc_library(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [
-        ":gpu", ":va_program_output", ":render_settings", ":calibration",
+        ":gpu", ":va_program_output", ":render_settings", ":calibration", ":preview_boxes",
         "//src/libs/gpu:convert_image",
         "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
         "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",

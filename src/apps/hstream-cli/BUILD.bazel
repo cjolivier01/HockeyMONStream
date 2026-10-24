@@ -30,6 +30,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/program:preview_overlay_runtime",
     "//src/libs/common:config_layers",
     "//src/libs/tracking:program_camera_mapping",
     "//src/libs/publication",
@@ -356,6 +357,7 @@ cc_test(
         "PreviewOverlayRuntime.h",
         "PreviewOverlayRuntimeTest.cpp",
     ],
+    deps = ["//src/libs/program:preview_overlay_runtime"],
     copts = HSTREAM_CLI_COPTS,
 )
 

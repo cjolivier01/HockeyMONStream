@@ -15,9 +15,7 @@ struct PackedOutput {
 
 // Matrix weights and legal-range scaling in native 8/10-bit code units.
 // Resolved from output colorimetry; never selected implicitly by a kernel.
-struct YuvEncoding {
-  float kr, kb, y_offset, y_range, uv_offset, uv_range;
-};
+using YuvEncoding = gpu::YuvEncoding;
 struct YuvOutput {
   void* y;
   void* uv;

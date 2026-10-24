@@ -7,6 +7,7 @@
 #include <string>
 
 #include "absl/status/statusor.h"
+#include "hstream/src/libs/program/PreviewOverlayRuntime.h"
 
 namespace hm::program {
 // Owns a duplicate of the input descriptor without changing its flags. Call
@@ -26,6 +27,7 @@ class ProgramRuntimeControl {
     // Amount is a nonnegative run-relative position, or a signed relative jump.
     std::function<absl::Status(int64_t, bool, uint64_t)> seek;
     std::function<absl::Status(const std::string&, uint64_t)> preview;
+    std::function<absl::Status(const pipeline_internal::PreviewOverlayCommand&)> overlays;
   };
   static absl::StatusOr<std::unique_ptr<ProgramRuntimeControl>> Create(
       int input_fd,
