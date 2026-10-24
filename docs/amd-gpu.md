@@ -122,7 +122,9 @@ GPU NMS and asynchronous scheduling are future optimization work.
 `make test-amd-inference` requires the MIGraphX headers and runtime in the ROCm
 SDK. The tests exercise multi-input FP32/FP16 programs, successive stream-ordered
 results, teardown with queued work, invalid contracts, RGB/YUV preprocessing
-against OpenCV float bilinear sampling, and malformed proposal filtering. The
+against OpenCV float bilinear sampling (including varying chroma), and malformed
+proposal filtering. A fault-injected SDK enqueue error verifies that queued reads
+of borrowed image planes finish before `Detect()` returns an error. The
 CPU `//src/libs/detection:postprocess_test` additionally checks padding removal,
 class-aware NMS, output bounds and deterministic score ties.
 

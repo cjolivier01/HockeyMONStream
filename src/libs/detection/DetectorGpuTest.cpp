@@ -49,24 +49,25 @@ void TestImage(PixelFormat format, cudaStream_t stream) {
         reinterpret_cast<uint32_t*>(source.data() + y * pitch)[x] = r | (g << 10) | (b << 20) | (3u << 30);
         color = cv::Vec3f(r, g, b) * (255.f / 1023);
       } else {
-        // Constant chroma: an independent BT.709 RGB reference with varying luma.
+        // Vary chroma across both axes to cover subsampling and pitched UV addressing.
         const int luma = 32 + x * 18 + y * 12;
+        const int u8 = 96 + (x / 2) * 10, v8 = 136 + (y / 2) * 16;
         float yf, uf, vf;
         if (format == PixelFormat::kNv12) {
           source[y * pitch + x] = luma;
-          chroma[(y / 2) * pitch + (x / 2) * 2] = 110;
-          chroma[(y / 2) * pitch + (x / 2) * 2 + 1] = 150;
+          chroma[(y / 2) * pitch + (x / 2) * 2] = u8;
+          chroma[(y / 2) * pitch + (x / 2) * 2 + 1] = v8;
           yf = luma;
-          uf = 110;
-          vf = 150;
+          uf = u8;
+          vf = v8;
         } else {
           reinterpret_cast<uint16_t*>(source.data() + y * pitch)[x] = (luma * 4) << 6;
           auto* p = reinterpret_cast<uint16_t*>(chroma.data() + (y / 2) * pitch);
-          p[(x / 2) * 2] = 440 << 6;
-          p[(x / 2) * 2 + 1] = 600 << 6;
+          p[(x / 2) * 2] = (u8 * 4) << 6;
+          p[(x / 2) * 2 + 1] = (v8 * 4) << 6;
           yf = luma * 4 * (255.f / 1023);
-          uf = 440 * (255.f / 1023);
-          vf = 600 * (255.f / 1023);
+          uf = u8 * 4 * (255.f / 1023);
+          vf = v8 * 4 * (255.f / 1023);
         }
         const float factor = format == PixelFormat::kNv12 ? 1.f : 1020.f / 1023;
         yf = (yf - 16 * factor) * 255 / (219 * factor);

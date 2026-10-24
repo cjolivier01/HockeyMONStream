@@ -18,6 +18,14 @@ void Cleanup(hipError_t status) noexcept {
   if (status != hipSuccess)
     std::fprintf(stderr, "AMD detector cleanup: %s\n", hipGetErrorString(status));
 }
+struct DrainOnFailure {
+  hipStream_t stream;
+  bool complete{false};
+  ~DrainOnFailure() {
+    if (!complete)
+      Cleanup(hipStreamSynchronize(stream));
+  }
+};
 class DeviceScope {
  public:
   explicit DeviceScope(int device) {
@@ -125,6 +133,7 @@ absl::StatusOr<std::vector<Proposal>> HipDetector::Detect(const Image& image, hi
     if (stream_device != config.device)
       return absl::InvalidArgumentError("Detector stream belongs to another device");
     impl.stream = stream;
+    DrainOnFailure drain{stream};
     Hip(PreprocessDetector(image, *box, impl.session->input(0).data, stream));
     auto status = impl.session->Enqueue(stream);
     if (!status.ok()) {
@@ -154,6 +163,7 @@ absl::StatusOr<std::vector<Proposal>> HipDetector::Detect(const Image& image, hi
           stream));
       Hip(hipStreamSynchronize(stream));
     }
+    drain.complete = true;
     return SuppressProposals(
         {impl.host_proposals, impl.host_proposals + *impl.host_count},
         config.iou_threshold,

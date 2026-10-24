@@ -30,6 +30,8 @@ class HipDetector {
   ~HipDetector();
   HipDetector(const HipDetector&) = delete;
   HipDetector& operator=(const HipDetector&) = delete;
+  // Synchronous on success and error: queued reads of the borrowed image are
+  // drained before returning, so the caller may then release/recycle it.
   absl::StatusOr<std::vector<Proposal>> Detect(const Image& image, hipStream_t stream);
 
  private:
