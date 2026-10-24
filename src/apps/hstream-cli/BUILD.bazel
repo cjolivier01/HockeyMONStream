@@ -126,6 +126,7 @@ cc_binary(
             "//src/libs/program:amd_program_processor", "//src/libs/program:launch_config",
             "//src/libs/program:detector_settings", "//src/libs/program:output_config",
             "//src/libs/program:scoreboard_config",
+            "//src/libs/program:audio_config", "//src/libs/media:audio_playlist",
             "//src/libs/program:va_program_sink", "//src/libs/gpu/vaapi:va_stereo_video",
             "//src/libs/common:baseline_config", "//src/libs/common:config_path",
             "//src/libs/common:process_diagnostics", "//src/libs/common:utils_base",

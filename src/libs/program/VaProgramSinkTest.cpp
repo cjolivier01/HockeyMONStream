@@ -8,6 +8,8 @@
 #include <gst/gl/gl.h>
 #include <unistd.h>
 
+#include <cmath>
+#include <fstream>
 #include <future>
 #include <thread>
 
@@ -93,6 +95,17 @@ struct Tile {
 };
 } // namespace
 int main(int argc, char** argv) {
+  hm::media::test::Directory audio_environment;
+  const auto alsa = audio_environment.path / "asound.conf";
+  {
+    std::ofstream config(alsa);
+    // The unrestricted ALSA null device advertises DSD rates through UINT_MAX;
+    // GStreamer 1.24's DSD probing overflows and loops forever. A PCM-only
+    // conversion wrapper exercises ALSA without that unrelated driver probe.
+    config << "</usr/share/alsa/alsa.conf>\npcm.hstream_null { type linear slave { pcm null format S16_LE } }\n";
+    Check(bool(config), "Cannot prepare bounded ALSA test device");
+  }
+  g_setenv("ALSA_CONFIG_PATH", alsa.c_str(), TRUE);
   g_setenv("GST_GL_WINDOW", "surfaceless", TRUE);
   g_setenv("GST_GL_PLATFORM", "egl", TRUE);
   g_setenv("GST_GL_API", "gles2", TRUE);
@@ -192,6 +205,27 @@ int main(int argc, char** argv) {
       Check(!waiting->Finish().ok(), "Cancelled EOS was reported as completion");
     }
     hm::media::test::Directory root;
+    {
+      auto audio_config = config;
+      audio_config.realtime = true;
+      audio_config.audio = hm::program::VaProgramAudioConfig{{48000, 2}, 4096, 192000, "", false};
+      auto blocked = Take(hm::program::VaProgramSink::Create(audio_config));
+      auto pending = std::async(std::launch::async, [&] {
+        for (int64_t i = 0; i < 1000; ++i) {
+          const auto status = blocked->PushAudio({i * 1024, {48000, 2}, std::vector<float>(2048)});
+          if (!status.ok())
+            return status;
+        }
+        return absl::OkStatus();
+      });
+      Check(
+          pending.wait_for(std::chrono::milliseconds(40)) == std::future_status::timeout,
+          "Unpaced audio escaped the queue bound");
+      blocked->Cancel();
+      Check(
+          pending.wait_for(std::chrono::seconds(1)) == std::future_status::ready && absl::IsCancelled(pending.get()),
+          "Blocked audio push did not cancel promptly");
+    }
     for (const auto format : {GST_VIDEO_FORMAT_NV12, GST_VIDEO_FORMAT_P010_10LE}) {
       const auto path = root.path / (format == GST_VIDEO_FORMAT_NV12 ? "eight.mp4" : "ten.mp4");
       auto encoded = config;
@@ -218,6 +252,66 @@ int main(int argc, char** argv) {
       close(encoded.output_fd);
       Check(!existing.ok(), "Output owner accepted a nonempty file");
     }
+    for (const int rate : {48000, 8000}) {
+      const auto path = root.path / ("audio-" + std::to_string(rate) + ".mp4");
+      std::cout << "Testing continuous HEVC/AAC output at " << rate << " Hz\n" << std::flush;
+      auto encoded = config;
+      encoded.kind = hm::program::VaProgramSinkKind::kHevcMp4;
+      encoded.video.fps_n = 60;
+      encoded.pool_frames = 8;
+      encoded.audio = hm::program::VaProgramAudioConfig{{rate, 2}, 8192, 192000, "", false};
+      // Smaller than AAC preroll at either rate: encoded buffering must free
+      // surfaces while the sequential producer submits the required PCM.
+      encoded.pool_frames = 2;
+      encoded.output_fd = open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+      Check(encoded.output_fd >= 0, "Cannot create audio test MP4");
+      Check(!hm::program::VaProgramSink::Create(encoded).ok(), "AAC finalizer accepted a write-only descriptor");
+      close(encoded.output_fd);
+      encoded.output_fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
+      Check(encoded.output_fd >= 0, "Cannot reopen audio test MP4");
+      sink = Take(hm::program::VaProgramSink::Create(encoded));
+      close(encoded.output_fd);
+      for (int64_t i = 0; i < 120; ++i) {
+        auto acquired = sink->Acquire();
+        Check(
+            acquired.ok(),
+            acquired.status().ToString() + " at frame " + std::to_string(i) + " rate " + std::to_string(rate));
+        Buffer buffer(*acquired, gst_buffer_unref);
+        tile.Render(buffer.get(), encoded.video);
+        const auto start = gst_util_uint64_scale(i, GST_SECOND, 60);
+        const auto end = gst_util_uint64_scale(i + 1, GST_SECOND, 60);
+        Status(sink->Push(buffer.release(), start, end - start));
+        const auto first_sample = i * rate / 60;
+        const auto sample_count = (i + 1) * rate / 60 - first_sample;
+        hm::media::AudioFrame audio{first_sample, {rate, 2}, std::vector<float>(sample_count * 2)};
+        for (int j = 0; j < sample_count; ++j)
+          audio.pcm[j * 2] = audio.pcm[j * 2 + 1] = .1f * std::sin((audio.sample + j) * 2 * M_PI * 997 / rate);
+        Status(sink->PushAudio(audio));
+      }
+      Status(sink->Finish());
+      Status(sink->Finish());
+      sink.reset();
+      const auto video = Take(hm::media::ReadMp4VideoTrack(path, 10 * GST_SECOND, {}));
+      Check(video.frames == 120 && video.duration_ns == 2 * GST_SECOND, "Audio changed encoded video duration");
+      auto reader = Take(hm::media::Mp4AudioReader::Create({10 * GST_SECOND, 1024 * 1024, 4096}));
+      Status(reader->Open(path));
+      Status(reader->Seek(0));
+      auto audio = Take(reader->Read());
+      Check(audio && audio->sample == 0, "Encoded AAC retained audible priming");
+      double error = 0;
+      size_t count = 0;
+      while (audio) {
+        for (size_t i = 0; i < audio->samples(); ++i) {
+          const auto sample = audio->sample + i;
+          if (sample >= size_t(2 * rate))
+            break;
+          error += std::abs(audio->pcm[i * 2] - .1 * std::sin(sample * 2 * M_PI * 997 / rate));
+          ++count;
+        }
+        audio = Take(reader->Read());
+      }
+      Check(count == size_t(2 * rate) && error / count < .005, "AAC edit shifted or lost audible samples");
+    }
     {
       Graphics graphics;
       auto preview = config;
@@ -230,6 +324,18 @@ int main(int argc, char** argv) {
       preview.pool_frames = 2;
       auto preview_sink = Take(hm::program::VaProgramSink::Create(preview));
       frames(*preview_sink);
+      preview_sink.reset();
+      preview.audio = hm::program::VaProgramAudioConfig{{48000, 2}, 8192, 192000, "hstream_null", false};
+      std::cout << "Testing clocked GL/ALSA preview\n" << std::flush;
+      preview.realtime = true;
+      preview_sink = Take(hm::program::VaProgramSink::Create(preview));
+      for (int64_t i = 0; i < 5; ++i) {
+        Buffer buffer(Take(preview_sink->Acquire()), gst_buffer_unref);
+        tile.Render(buffer.get(), preview.video);
+        Status(preview_sink->Push(buffer.release(), i * 40 * GST_MSECOND, 40 * GST_MSECOND));
+        Status(preview_sink->PushAudio({i * 1920, {48000, 2}, std::vector<float>(3840)}));
+      }
+      Status(preview_sink->Finish());
     }
     std::cout << "Program output bounds, cancellation, deadlines, HEVC mux EOS and GL preview passed\n";
     return 0;

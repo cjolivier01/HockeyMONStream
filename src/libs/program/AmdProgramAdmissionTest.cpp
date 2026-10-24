@@ -19,13 +19,11 @@ int main(int argc, char** argv) {
       Check(config.ok(), config.status().ToString());
       return hm::program::ValidateAmdProgramAdmission(*config);
     };
-    Check(!check({}).ok(), "Default audio/scoreboard silently discarded");
+    Check(check({}).ok(), "Default Program stages were rejected");
     const std::string video = "pipeline.hmaudio.enable=0,pipeline.hmplaycropper.show-scoreboard=0";
     Check(check({video}).ok(), check({video}).ToString());
     for (const auto* unsupported :
-         {"pipeline.hmaudio.enable=1",
-
-          "pipeline.tracker.enable=0",
+         {"pipeline.tracker.enable=0",
           "pipeline.player-analytics.pose.enable=true",
           "plot.plot_individual_player_tracking=true",
           "pipeline.primary-gie.interval=1",

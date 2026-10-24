@@ -3,6 +3,21 @@ load("//bazel:gpu_library.bzl", "gpu_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "audio_config",
+    srcs = ["ProgramAudioConfig.cpp"],
+    hdrs = ["ProgramAudioConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_layers", "//src/libs/common:config_path", "//src/libs/media:mp4_audio_reader"],
+)
+cc_test(
+    name = "audio_config_test",
+    srcs = ["ProgramAudioConfigTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)", "$(location //configs:ds_hockey_app_config.yaml)"],
+    data = ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml"],
+    deps = [":audio_config"],
+)
+
+cc_library(
     name = "render_settings",
     hdrs = ["ProgramRenderSettings.h"],
     deps = ["//src/libs/scoreboard:plan"],
@@ -35,7 +50,7 @@ cc_library(
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool", "//src/libs/gpu/vaapi:va_element"],
+    deps = [":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool", "//src/libs/gpu/vaapi:va_element", "//src/libs/media:mp4_audio_reader", "//src/libs/media:mp4_audio_edit"],
 )
 
 cc_test(

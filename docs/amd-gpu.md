@@ -252,13 +252,13 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 
 | Boundary | Current implementation | Remaining AMD work |
 | --- | --- | --- |
-| Decode and encode | VA H.264/HEVC stereo readers and HEVC/MP4 output in the ROCm CLI | Audio and additional application sink modes |
+| Decode and encode | VA H.264/HEVC stereo readers and HEVC/MP4 output in the ROCm CLI | Additional application sink modes |
 | Allocation and pairing | Bounded VA DMA-BUF pools, HIP imports and exact stereo clock | Broader codec/device qualification |
 | Stitching | Saved calibration with HIP `hm-cupano` and shared conversion | Automatic calibration, rotated generations and live controls |
 | Model execution | Native MIGraphX inference in the ROCm CLI | Compiled-model cache, broader numerical qualification and optional analytics |
 | Tracking | Native geometric association, shared rink filter and camera policy | Appearance reassociation, telemetry and desktop seek policy |
 | Crop and preview | Shared HIP crop into VA output; native-window GL preview | Desktop channels, resize, pause and tab behavior |
-| Desktop, jobs and publication | Core video CLI and atomic local MP4 output | Desktop playback/controls, audio, managed archives and highlight export |
+| Desktop, jobs and publication | Core video CLI and atomic local MP4 output | Desktop playback/controls, managed archives and highlight export |
 
 Do not pass `--config=rocm` to `//...` as an application build: many targets
 still directly depend on NVIDIA libraries. Compute tests do not establish
@@ -328,7 +328,7 @@ is also required: VA factories compare their path with the context verbatim,
 so passing a PCI symlink alias can trigger an error while starting elements.
 
 These tests qualify components. The CLI integration described below composes
-raw-camera pairing/stitching and saved Program startup. Model caching, audio,
+raw-camera pairing/stitching and saved Program startup. Model caching, desktop routing,
 desktop seek/reset controls and installed runtime discovery remain pending.
 
 
@@ -387,9 +387,9 @@ is not real-time. `ffprobe` verifies all 120 frames, 60000/1001 fps, centered ch
 and full-range BT.709 matching the raw inputs. Bounded offline thumbnails were
 inspected after export; the processing loop never reads video back.
 
-The current CLI/UI acceptance workflow remains incomplete. Calibration creation,
-application configuration, model caching, source/audio lifecycle and native desktop
-preview must be integrated and qualified before AMD application support is claimed.
+The desktop acceptance workflow remains incomplete. Automatic calibration,
+model caching and native desktop ownership still need integration. The CLI
+composition and its current supported boundary are described below.
 
 ## Shared Program configuration
 
@@ -438,7 +438,7 @@ Append `--verify-reset` to the raw qualifier command to exercise reader seeks,
 processor reset, monotonic IDs, repeated Program/full-panorama renders, rejected
 transfer changes and failure retirement. On the 120-pair hockey clip, all 120
 per-frame detection/tracking/crop log rows match the earlier composition. This
-reusable owner is not yet connected to CLI/UI playback.
+reusable owner now serves the ROCm CLI; desktop ownership remains pending.
 
 ## Chapter video clock
 
@@ -456,7 +456,7 @@ clock separately from each retained sample's unchanged file segment/PTS. Seeks
 at a boundary select the next chapter; seeking exactly to the end produces
 clean EOS and still permits subsequent seeks. Errors retire the reader and
 cancellation is permanent. The raw Program qualifier and ROCm CLI use this owner through `VaStereoVideo`;
-application audio coordination remains pending.
+application audio now follows this video clock through `media/AudioPlaylist`.
 
 The VA reader consumes non-selected compressed streams through closed valves.
 Leaving audio unlinked caused a demuxer error when its tail outlasted video;
@@ -541,9 +541,9 @@ slices. It fails with the original plugin and passes with the private plugin.
 Earlier recordings described above had ten-bit pixels but that incorrect profile
 label; rebuilt output reports both `Main 10` and `yuv420p10le`.
 
-This is still the configured qualification path. The normal CLI/desktop runtime,
-application stereo/audio ownership, live controls, model compilation cache and
-installed AMD discovery remain integration work.
+The configured qualifier and normal ROCm CLI share these components. Desktop
+routing, live controls, model compilation cache and installed AMD discovery
+remain integration work.
 
 Configured validation on the RX 9060 XT: 120 raw stereo pairs from
 `vegas-calheat-1` at 60 seconds produced 2,719 confirmed track observations and
@@ -566,7 +566,7 @@ sequence numbers after a seek and ends at the shorter synchronized recording.
 A half-failed seek retires both readers. The output clock comes from the frame
 index and saved origin, so chapter duration rounding and audio tails cannot
 shift Program time. Retained VA samples survive seeks and owner destruction.
-The configured qualifier and AMD CLI use this owner. Desktop playback and audio
+The configured qualifier and AMD CLI use this owner. Desktop playback and runtime controls
 coordination remain pending. Hardware tests cover fractional offsets, both
 left- and right-limited EOS, 25/30 fps chapter transitions, retained pixels,
 backward/end seeks, partial seek failure and cancellation.
@@ -593,7 +593,7 @@ ownership, repeated EOS, post-EOS rejection, nonempty-file rejection, timestamp
 overflow, exhausted-pool timeout, concurrent cancellation of a blocked acquire,
 retained surfaces after destruction and headless EGL/GL preview. The configured
 qualifier and AMD CLI use both the stereo and sink owners. Desktop routing and
-application audio remain pending.
+desktop runtime controls remain pending.
 
 Output review found that the generic VA encoder factory can select another
 GPU on a multi-device host. `gpu/vaapi/VaElement` now shares the reader factory
@@ -630,11 +630,11 @@ the baseline aspect unless the counterpart was explicitly configured. Tone is
 applied to the Program output after detection. This does not yet reproduce
 pre-inference tone changes from the native high-bit stitching path.
 
-The supported command is currently explicit video-only playback. `AmdProgramAdmission`
-rejects enabled audio, analytics, diagnostic overlays, telemetry and
-other known unconnected stages before preparing the GPU. It also rejects disabling
-a mandatory Program stage. Disable audio explicitly for current playback. The
-example also disables scoreboard so games without a saved polygon can run:
+The command supports saved Program playback with detection, tracking, scoreboard
+and source audio. `AmdProgramAdmission` rejects enabled analytics, diagnostic
+overlays, telemetry and other known unconnected stages before preparing the GPU.
+It also rejects disabling a mandatory Program stage. The example disables
+scoreboard so games without a saved polygon can run:
 
 ```bash
 bazelisk build --config=opt --config=rocm //src/apps/hstream-cli:hstream-cli
@@ -642,7 +642,7 @@ HM_CONFIG_ROOT="$PWD/configs" /tmp/hstream-private-gstva/run \
   /tmp/hstream-private-migraphx/run bazel-bin/src/apps/hstream-cli/hstream-cli \
   -g GAME -c configs/ds_hockey_app_config.yaml \
   --enable-sources=URI-MULTIPLE --enable-sinks=FAKE --start-time=60 -t=2 \
-  --options=pipeline.hmaudio.enable=0,pipeline.hmplaycropper.show-scoreboard=0 \
+  --options=pipeline.hmplaycropper.show-scoreboard=0 \
   --options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml
 ```
 
@@ -665,7 +665,7 @@ the completed file is already published.
 The CLI accepts one application YAML and rejects two-stage calibration, unknown
 arguments, unsupported sinks and malformed time/preview arguments. Time limits
 advance from completed Program frames. Runtime stdin commands, desktop preview
-channel routing, seek/pause acknowledgments, audio, interactive scoreboard selection, player overlays,
+channel routing, seek/pause acknowledgments, interactive scoreboard selection, player overlays,
 telemetry, managed jobs and automatic calibration are still integration work.
 Tracker association uses the explicit AMD geometric settings; it does not run
 NvDCF's appearance model. Model compilation is repeated at startup until the
@@ -729,3 +729,73 @@ focused HIP tests, six NVIDIA-build tests (including the local V100 kernel test
 and existing scoreboard interpolation regression), and the full x86 build pass.
 Both scoreboard reviews found no necessary fixes. ARM/Jetson validation retains
 the missing local sysroot/native ARM64 host and unreachable `stubby` limitations.
+
+
+## Program audio on AMD
+
+`media/Mp4AudioReader` opens only the native AAC-LC decoder; compressed video is
+marked discarded. It returns bounded owned float PCM at the recording's native
+sample rate, with one operation deadline and sticky cancellation. A seek includes
+the preceding AAC access unit, including negative priming timestamps at file
+origin, to rebuild overlap state before exposing audio. Mono and stereo AAC-LC
+up to 96 kHz are supported; missing/ambiguous audio tracks and format changes
+fail. Audio uses a separate MP4 demuxer so its backpressure cannot stall either
+camera's GPU decoder. It rereads compressed file data but never decodes, maps or
+copies a video surface.
+
+`media/AudioPlaylist` binds chapters to their discovered file identities and uses
+the same video-track origins/durations as `VaVideoPlaylist`. It trims audio tails,
+fills gaps inside a valid audio track with silence, and rounds each video-clock
+boundary once to the nearest audio sample (at most half a sample of error).
+The CLI drains it only through the completed pair's end. Seeks discard pending
+PCM and rebind the selected chapter; errors retire the owner. Audio enabled
+without an audio track is an error, rather than a silently muted output.
+
+`ProgramAudioConfig` resolves generic/numbered native audio fields and underscore
+aliases by layer. It currently requires one source-linked block (`src=2`,
+`dest=1`, `sink-id=-1`) feeding all requested sinks, from the camera with zero
+saved synchronization offset. `runtime.amd.audio` owns decoder/queue bounds and
+the AAC output bitrate. Source sample rate/channels come from the file; no
+independent resampling default is introduced. `pipeline.hmaudio.enable=0`
+disables audio. ALSA source capture and separate audio files remain unsupported.
+
+`VaProgramSink` places audio and video in the same GStreamer pipeline. MP4 output
+uses bounded PCM submission, `avenc_aac`, and the existing video mux. A bounded
+compressed-video queue covers four AAC access units plus one video packet,
+derived from the native sample/frame rates. It releases VA surfaces while AAC
+accumulates preroll. Packet size is bounded by the existing encoded-packet guard.
+The mux selects the earliest packet without chunk batching, so it cannot hold
+audio waiting for a future video chunk past the bounded producer. Preview uses
+ALSA, the configured `alsa-dest-device`, and `HSTREAM_RENDER_AUDIO_MUTED` for the
+initial mute. Normal-speed preview shares the system presentation clock (ALSA follows it); an unpaced
+preview drops old monitor-only PCM when its bounded appsrc fills. Archive audio
+always retains samples. Blocking audio pushes and mux EOS have cancellable
+waits. All PCM work is CPU audio work; video stays GPU-resident.
+
+`media/Mp4AudioEdit` now owns the fixed-size MP4 edits previously local to
+`HighlightMp4Audio`. Both callers preserve avenc_aac's 1024-sample decoder preroll
+and remove it from the audible timeline after mux EOS. The shared implementation
+accepts the source rate and exact PCM count, preserves descriptor offset, validates
+all metadata before writing, and never touches video payload. The Highlights
+wrapper retains its existing 48 kHz/millisecond contract. Publication still owns
+the final flush and non-overwriting link.
+
+Focused tests cover AAC priming and seek alignment, audio gaps/chapter tails,
+file replacement, watermark boundaries, configuration precedence, blocked-push
+cancellation, and 120-frame 60 fps VA HEVC/AAC exports at 48 kHz and 8 kHz with only two VA
+surfaces. The export test decodes only
+audio to compare its audible phase against the input tone. Headless EGL preview
+with a PCM-only wrapper around ALSA's null device exercises clocked audio/video EOS; this does not qualify
+physical speaker output. The existing Highlights MP4 regression test remains in
+place for both metadata versions and rejection without partial edits.
+
+The real audio-enabled Program export from `vegas-calheat-1` at 60 seconds
+completed 120 frames and 2,719 track observations. `ffprobe` reports 3840×2160
+Main10/full-range BT.709 video and 48 kHz stereo AAC-LC, both starting at zero and
+lasting 2.002 seconds. The run took 109.49 seconds including uncached model
+compilation, with 2.16 GiB maximum resident memory. This does not claim real-time
+playback. The full x86 build and focused native/HIP tests pass. ARM/Jetson checks
+remain blocked by the missing local sysroot/native host and unreachable `stubby`.
+The HockeyMON baseline copies match exactly and preserve every pre-existing
+value; its Bazel test cannot reach analysis because local Torch requires the
+missing `libcupti.so.13`.

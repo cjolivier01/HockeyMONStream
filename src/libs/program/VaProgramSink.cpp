@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <gst/app/gstappsrc.h>
+#include <gst/audio/audio.h>
 #include <gst/video/videooverlay.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -9,9 +10,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 #include "hstream/src/libs/gpu/vaapi/VaElement.h"
+#include "hstream/src/libs/media/Mp4AudioEdit.h"
 #include "hstream/src/libs/program/EncodedColorimetry.h"
 
 namespace hm::program {
@@ -39,11 +42,12 @@ bool SetUnsigned(GstElement* element, const char* name, unsigned number) {
 struct VaProgramSink::Impl {
   VaProgramSinkConfig config;
   std::unique_ptr<gpu::VaOutputPool> pool;
-  GstElement *pipeline{}, *input{}, *sink{};
+  GstElement *pipeline{}, *input{}, *sink{}, *audio_input{};
   GstBus* bus{};
   int fd{-1};
   GstClockTime previous{GST_CLOCK_TIME_NONE};
-  bool retired{false}, eos_sent{false}, finished{false};
+  int64_t audio_samples{};
+  bool retired{false}, eos_sent{false}, finished{false}, audio_finalized{false};
   std::atomic<bool> cancelled{false};
   ~Impl() {
     if (pipeline)
@@ -52,6 +56,8 @@ struct VaProgramSink::Impl {
       gst_object_unref(bus);
     if (input)
       gst_object_unref(input);
+    if (audio_input)
+      gst_object_unref(audio_input);
     if (sink)
       gst_object_unref(sink);
     if (pipeline)
@@ -102,6 +108,11 @@ absl::StatusOr<std::unique_ptr<VaProgramSink>> VaProgramSink::Create(const VaPro
       !config.cancellation_poll || config.cancellation_poll > config.operation_timeout || config.video.fps_n <= 0 ||
       config.video.fps_d <= 0)
     return absl::InvalidArgumentError("Program output requires explicit positive bounds and frame rate");
+  if (config.audio &&
+      (config.audio->format.rate <= 0 || config.audio->format.rate > 96000 || config.audio->format.channels < 1 ||
+       config.audio->format.channels > 2 || !config.audio->queue_samples ||
+       config.audio->queue_samples > size_t(INT64_MAX) / (2 * sizeof(float)) || config.audio->bitrate <= 0))
+    return absl::InvalidArgumentError("Program audio requires explicit mono/stereo format, bitrate and queue bound");
   std::string graph;
   switch (config.kind) {
     case VaProgramSinkKind::kDiscard:
@@ -133,9 +144,40 @@ absl::StatusOr<std::unique_ptr<VaProgramSink>> VaProgramSink::Create(const VaPro
       return absl::UnavailableError("No HEVC VA encoder on the selected HIP render node");
     const std::string factory = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(gst_element_get_factory(selected)));
     gst_object_unref(selected);
-    graph = "appsrc name=frames format=time ! " + factory +
-        " name=encoder b-frames=0 ! h265parse ! mp4mux ! "
-        "fdsink name=output enable-last-sample=false";
+    graph = "appsrc name=frames format=time ! " + factory + " name=encoder b-frames=0 ! h265parse ! ";
+    if (config.audio) {
+      // Cover AAC-LC's input accumulation and priming plus the mux's retained
+      // current/next audio packets (four 1024-sample units). Keep this encoded
+      // video in a bounded queue so mux preroll cannot pin the VA surfaces
+      // required to submit the corresponding PCM (especially at low rates).
+      const auto samples = static_cast<__int128>(4 * 1024) * config.video.fps_n;
+      const auto denominator = int64_t(config.audio->format.rate) * config.video.fps_d;
+      const auto packets = (samples + denominator - 1) / denominator + 1;
+      if (packets > UINT_MAX || packets > SIZE_MAX / config.maximum_encoded_packet_bytes)
+        return absl::OutOfRangeError("AAC preroll queue exceeds its encoded packet bounds");
+      graph +=
+          "queue max-size-bytes=0 max-size-time=0 max-size-buffers=" + std::to_string(static_cast<unsigned>(packets)) +
+          " ! ";
+    }
+    graph += "mp4mux name=mux interleave-time=0 ! fdsink name=output enable-last-sample=false";
+    // Sequential bounded submission requires the mux to choose the earliest
+    // packet each time. Its default chunk batching holds one stream while
+    // waiting for future frames of the other, deadlocking the producer when
+    // that held stream's queue fills before the chunk boundary.
+  }
+  if (config.audio) {
+    graph += " appsrc name=audio format=time ! ";
+    switch (config.kind) {
+      case VaProgramSinkKind::kHevcMp4:
+        graph += "avenc_aac name=aac ! aacparse ! mux.";
+        break;
+      case VaProgramSinkKind::kPreview:
+        graph += "audioconvert ! audioresample ! volume name=volume ! alsasink name=audio_output";
+        break;
+      case VaProgramSinkKind::kDiscard:
+        graph += "fakesink name=audio_output enable-last-sample=false";
+        break;
+    }
   }
   GError* error{};
   impl->pipeline = gst_parse_launch(graph.c_str(), &error);
@@ -158,6 +200,54 @@ absl::StatusOr<std::unique_ptr<VaProgramSink>> VaProgramSink::Create(const VaPro
   g_object_set(
       impl->input, "block", FALSE, "max-bytes", guint64(0), "max-buffers", guint64(config.pool_frames), nullptr);
   g_object_set(impl->sink, "sync", config.realtime, nullptr);
+  if (config.audio) {
+    impl->audio_input = gst_bin_get_by_name(GST_BIN(impl->pipeline), "audio");
+    if (!impl->audio_input)
+      return absl::InternalError("Program audio graph is missing its input");
+    GstAudioInfo audio_info{};
+    gst_audio_info_set_format(
+        &audio_info, GST_AUDIO_FORMAT_F32LE, config.audio->format.rate, config.audio->format.channels, nullptr);
+    auto* caps = gst_audio_info_to_caps(&audio_info);
+    if (!caps)
+      return absl::InvalidArgumentError("Cannot describe Program audio format");
+    gst_app_src_set_caps(GST_APP_SRC(impl->audio_input), caps);
+    gst_caps_unref(caps);
+    g_object_set(
+        impl->audio_input,
+        "block",
+        FALSE,
+        "max-bytes",
+        guint64(config.audio->queue_samples * config.audio->format.channels * sizeof(float)),
+        nullptr);
+    if (config.kind == VaProgramSinkKind::kHevcMp4) {
+      auto* encoder = gst_bin_get_by_name(GST_BIN(impl->pipeline), "aac");
+      if (!encoder)
+        return absl::InternalError("Program audio graph is missing its encoder");
+      g_object_set(encoder, "bitrate", config.audio->bitrate, nullptr);
+      gst_object_unref(encoder);
+    } else {
+      auto* output = gst_bin_get_by_name(GST_BIN(impl->pipeline), "audio_output");
+      if (!output)
+        return absl::InternalError("Program audio graph is missing its output");
+      g_object_set(output, "sync", config.realtime, "async", FALSE, nullptr);
+      if (config.kind == VaProgramSinkKind::kPreview) {
+        // Video owns pacing. An ALSA clock can remain at zero until its device
+        // buffer fills, while a small video pool prevents submitting enough
+        // PCM to fill that buffer. Both sinks instead follow the system clock.
+        g_object_set(output, "provide-clock", FALSE, nullptr);
+        if (!config.audio->alsa_device.empty())
+          g_object_set(output, "device", config.audio->alsa_device.c_str(), nullptr);
+        auto* volume = gst_bin_get_by_name(GST_BIN(impl->pipeline), "volume");
+        g_object_set(volume, "mute", config.audio->muted, nullptr);
+        gst_object_unref(volume);
+        // An unpaced monitor observes processing; it must not throttle archive
+        // audio. The appsrc bound drops the oldest monitor-only PCM on overload.
+        if (!config.realtime)
+          gst_app_src_set_leaky_type(GST_APP_SRC(impl->audio_input), GST_APP_LEAKY_TYPE_DOWNSTREAM);
+      }
+      gst_object_unref(output);
+    }
+  }
   if (config.kind == VaProgramSinkKind::kHevcMp4) {
     impl->fd = fcntl(config.output_fd, F_DUPFD_CLOEXEC, 0);
     struct stat file {};
@@ -167,6 +257,8 @@ absl::StatusOr<std::unique_ptr<VaProgramSink>> VaProgramSink::Create(const VaPro
     const auto flags = fcntl(impl->fd, F_GETFL);
     if (flags < 0 || (flags & O_ACCMODE) == O_RDONLY || (flags & O_APPEND))
       return absl::InvalidArgumentError("MP4 output requires a writable descriptor without append mode");
+    if (config.audio && (flags & O_ACCMODE) != O_RDWR)
+      return absl::InvalidArgumentError("AAC MP4 output requires a read/write descriptor for its final edit");
     g_object_set(impl->sink, "fd", impl->fd, nullptr);
     auto* encoder = gst_bin_get_by_name(GST_BIN(impl->pipeline), "encoder");
     auto* encoder_input = encoder ? gst_element_get_static_pad(encoder, "sink") : nullptr;
@@ -252,16 +344,71 @@ absl::Status VaProgramSink::Finish() {
     impl.eos_sent = true;
     if (gst_app_src_end_of_stream(GST_APP_SRC(impl.input)) != GST_FLOW_OK)
       return impl.Retire(absl::UnavailableError("Program output refused EOS"));
+    if (impl.audio_input && gst_app_src_end_of_stream(GST_APP_SRC(impl.audio_input)) != GST_FLOW_OK)
+      return impl.Retire(absl::UnavailableError("Program audio refused EOS"));
   }
   const auto deadline = Deadline(impl.config.operation_timeout);
   for (;;) {
     const auto polled = impl.Poll();
-    if (!polled.ok() || impl.finished)
+    if (!polled.ok())
       return polled;
+    if (impl.finished) {
+      if (impl.config.kind == VaProgramSinkKind::kHevcMp4 && impl.config.audio && !impl.audio_finalized) {
+        const auto edited = media::FinalizeMp4Audio(impl.fd, impl.config.audio->format.rate, impl.audio_samples);
+        if (!edited.ok())
+          return impl.Retire(edited);
+        impl.audio_finalized = true;
+      }
+      return impl.Poll();
+    }
     if (Clock::now() >= deadline)
       return impl.Retire(absl::DeadlineExceededError("Program output did not finish EOS"));
     impl.PauseUntil(deadline);
   }
+}
+absl::Status VaProgramSink::PushAudio(const media::AudioFrame& frame) {
+  auto& impl = *impl_;
+  auto status = impl.Poll();
+  if (!status.ok())
+    return status;
+  if (!impl.audio_input || impl.eos_sent)
+    return absl::FailedPreconditionError("Program audio requires an active audio input");
+  const auto& config = *impl.config.audio;
+  if (frame.format.rate != config.format.rate || frame.format.channels != config.format.channels ||
+      frame.sample != impl.audio_samples || frame.pcm.empty() || frame.pcm.size() % config.format.channels ||
+      frame.samples() > config.queue_samples || frame.samples() > size_t(INT64_MAX - impl.audio_samples) ||
+      !std::all_of(frame.pcm.begin(), frame.pcm.end(), [](float value) { return std::isfinite(value); }))
+    return impl.Retire(
+        absl::InvalidArgumentError("Program audio requires bounded contiguous PCM with the configured format"));
+  const auto bytes = frame.pcm.size() * sizeof(float);
+  const auto maximum = config.queue_samples * config.format.channels * sizeof(float);
+  const auto deadline = Deadline(impl.config.operation_timeout);
+  const bool observational = impl.config.kind == VaProgramSinkKind::kPreview && !impl.config.realtime;
+  while (!observational && gst_app_src_get_current_level_bytes(GST_APP_SRC(impl.audio_input)) > maximum - bytes) {
+    status = impl.Poll();
+    if (!status.ok())
+      return status;
+    if (Clock::now() >= deadline)
+      return impl.Retire(absl::DeadlineExceededError("Program audio output stalled"));
+    impl.PauseUntil(deadline);
+  }
+  const auto end = impl.audio_samples + frame.samples();
+  const auto time = gst_util_uint64_scale(impl.audio_samples, GST_SECOND, config.format.rate);
+  const auto next = gst_util_uint64_scale(end, GST_SECOND, config.format.rate);
+  if (next > uint64_t(INT64_MAX) || next <= time)
+    return impl.Retire(absl::OutOfRangeError("Program audio exceeded its sample clock"));
+  auto* buffer = gst_buffer_new_allocate(nullptr, bytes, nullptr);
+  if (!buffer)
+    return impl.Retire(absl::ResourceExhaustedError("Cannot allocate Program audio buffer"));
+  gst_buffer_fill(buffer, 0, frame.pcm.data(), bytes);
+  GST_BUFFER_PTS(buffer) = time;
+  GST_BUFFER_DURATION(buffer) = next - time;
+  GST_BUFFER_OFFSET(buffer) = impl.audio_samples;
+  GST_BUFFER_OFFSET_END(buffer) = end;
+  if (gst_app_src_push_buffer(GST_APP_SRC(impl.audio_input), buffer) != GST_FLOW_OK)
+    return impl.Retire(absl::UnavailableError("Program output refused audio"));
+  impl.audio_samples = end;
+  return absl::OkStatus();
 }
 absl::Status VaProgramSink::SetWindow(uintptr_t window) {
   auto& impl = *impl_;

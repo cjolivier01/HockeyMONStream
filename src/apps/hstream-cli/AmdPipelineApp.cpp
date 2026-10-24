@@ -19,8 +19,10 @@
 #include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/gpu/vaapi/VaStereoVideo.h"
+#include "hstream/src/libs/media/AudioPlaylist.h"
 #include "hstream/src/libs/program/AmdProgramAdmission.h"
 #include "hstream/src/libs/program/AmdProgramProcessor.h"
+#include "hstream/src/libs/program/ProgramAudioConfig.h"
 #include "hstream/src/libs/program/ProgramDetectorSettings.h"
 #include "hstream/src/libs/program/ProgramFileOutput.h"
 #include "hstream/src/libs/program/ProgramLaunchConfig.h"
@@ -55,13 +57,16 @@ class Cancellation {
  public:
   Cancellation(
       hm::gpu::VaStereoVideo& source,
+      hm::media::AudioPlaylist* audio,
       const std::vector<std::unique_ptr<hm::program::VaProgramSink>>& outputs,
       uint64_t poll)
-      : worker_([&, poll] {
+      : worker_([&, audio, poll] {
           std::unique_lock<std::mutex> lock(mutex_);
           while (!done_) {
             if (interrupted) {
               source.Cancel();
+              if (audio)
+                audio->Cancel();
               for (const auto& output : outputs)
                 output->Cancel();
               return;
@@ -105,6 +110,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
       args.application.empty() ? root / "ds_hockey_app_config.yaml" : std::filesystem::path(args.application),
       args.options));
   Status(hm::program::ValidateAmdProgramAdmission(launch.configuration));
+  const auto audio_config = Take(hm::program::ResolveProgramAudioConfig(launch.configuration, launch.frame_offsets));
   auto output_config = Take(hm::program::ResolveProgramOutputConfig(launch.configuration));
   const auto scoreboard = Take(
       hm::program::ResolveProgramScoreboardConfig(launch.configuration, output_config.width, output_config.height));
@@ -127,6 +133,11 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   Status(source->Seek(start));
   auto pair = Take(source->Read());
   Require(pair.has_value(), "The requested start has no complete stereo frame");
+  std::unique_ptr<hm::media::AudioPlaylist> audio;
+  if (audio_config) {
+    audio = Take(hm::media::AudioPlaylist::Create(audio_config->reader, launch.chapters[audio_config->camera]));
+    Status(audio->Seek(pair->time));
+  }
   const auto& left = pair->cameras[0].info;
   const auto& right = pair->cameras[1].info;
   Require(gst_video_colorimetry_is_equal(&left.colorimetry, &right.colorimetry), "Camera colorimetry differs");
@@ -186,6 +197,16 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   output_info.colorimetry = left.colorimetry;
   output_info.chroma_site = GST_VIDEO_CHROMA_SITE_JPEG;
   std::vector<std::unique_ptr<hm::program::VaProgramSink>> outputs;
+  std::optional<hm::program::VaProgramAudioConfig> sink_audio;
+  if (audio_config) {
+    const auto* mute = std::getenv("HSTREAM_RENDER_AUDIO_MUTED");
+    sink_audio = hm::program::VaProgramAudioConfig{
+        audio->format(),
+        audio_config->queue_samples,
+        audio_config->bitrate,
+        audio_config->alsa_device,
+        mute && std::string(mute) == "1"};
+  }
   for (const auto& name : args.sinks) {
     const auto kind = name == "ENCODE_FILE" ? hm::program::VaProgramSinkKind::kHevcMp4
         : name == "RENDER"                  ? hm::program::VaProgramSinkKind::kPreview
@@ -203,14 +224,16 @@ void Run(const hm::program::AmdPipelineOptions& args) {
          output_config.keyframe_interval,
          launch.amd.maximum_encoded_packet_bytes,
          static_cast<uintptr_t>(args.window),
-         nullptr});
+         nullptr,
+         sink_audio});
     outputs.push_back(Take(std::move(output)));
   }
   std::signal(SIGTERM, Stop);
   std::signal(SIGINT, Stop);
-  Cancellation cancellation(*source, outputs, launch.amd.cancellation_poll_ns);
+  Cancellation cancellation(*source, audio.get(), outputs, launch.amd.cancellation_poll_ns);
   g_print("HSTREAM_AMD_PREPARATION state=ready\n");
   const auto first = pair->time;
+  const auto first_audio_sample = audio ? gst_util_uint64_scale_round(first, audio->format().rate, GST_SECOND) : 0;
   uint64_t frames = 0, tracks = 0;
   for (;;) {
     const auto completed =
@@ -219,6 +242,16 @@ void Run(const hm::program::AmdPipelineOptions& args) {
       std::unique_ptr<GstBuffer, decltype(&gst_buffer_unref)> buffer(Take(output->Acquire()), gst_buffer_unref);
       Status(processor->Render(buffer.get(), output_info, output_config.render));
       Status(output->Push(buffer.release(), pair->time - first, pair->duration));
+    }
+    if (audio) {
+      for (;;) {
+        auto pcm = Take(audio->ReadUntil(pair->time + pair->duration));
+        if (!pcm)
+          break;
+        pcm->sample -= first_audio_sample;
+        for (const auto& output : outputs)
+          Status(output->PushAudio(*pcm));
+      }
     }
     ++frames;
     tracks += completed.observation.tracks.size();

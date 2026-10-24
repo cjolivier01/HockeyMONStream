@@ -74,12 +74,10 @@ absl::Status ValidateAmdProgramAdmission(const config::ProgramConfiguration& con
             std::string("AMD Program does not yet support ") + feature + "; disable " + paths.back());
     };
     reject({"pipeline.hmstitcher.configure-only"}, "calibration-only playback");
-    // The native generic audio block overrides numbered blocks by layer rank.
+    // Audio selections are validated separately against the saved source offsets.
     const auto pipeline = config.values["pipeline"];
     for (const auto& entry : pipeline) {
       const auto name = entry.first.as<std::string>();
-      if (name.rfind("hmaudio", 0) == 0)
-        reject({"pipeline." + name + ".enable", "pipeline.hmaudio.enable"}, "audio");
       if (name.rfind("secondary-gie", 0) == 0)
         reject({"pipeline." + name + ".enable"}, "secondary inference");
       if (name.rfind("dewarper", 0) == 0 || name == "ds-example" || name == "hm-image-meta-merger" ||

@@ -1,9 +1,19 @@
 #pragma once
 
+#include <optional>
+
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
+#include "hstream/src/libs/media/Mp4AudioReader.h"
 
 namespace hm::program {
 enum class VaProgramSinkKind { kDiscard, kHevcMp4, kPreview };
+struct VaProgramAudioConfig {
+  media::AudioFormat format;
+  size_t queue_samples;
+  int bitrate;
+  std::string alsa_device;
+  bool muted;
+};
 struct VaProgramSinkConfig {
   VaProgramSinkKind kind;
   int device;
@@ -14,6 +24,7 @@ struct VaProgramSinkConfig {
   // Encode mode duplicates this empty regular file's writable descriptor at
   // offset zero. No other writer may use it during this owner. Its caller owns
   // output naming, exclusive creation, publication and cleanup after failure.
+  // With audio it must be O_RDWR, for the post-EOS AAC metadata edit.
   int output_fd;
   unsigned bitrate_kbps, keyframe_interval;
   size_t maximum_encoded_packet_bytes;
@@ -22,6 +33,7 @@ struct VaProgramSinkConfig {
   // Optional caller-owned GL display context, retained by the pipeline. Any
   // externally wrapped EGL/GBM/native-display resources must outlive this sink.
   GstContext* gl_context;
+  std::optional<VaProgramAudioConfig> audio;
 };
 
 // Bounded GPU output owner. Acquire returns an exclusively owned linear VA
@@ -37,6 +49,9 @@ class VaProgramSink {
 
   absl::StatusOr<GstBuffer*> Acquire();
   absl::Status Push(GstBuffer* buffer, GstClockTime time, GstClockTime duration);
+  // Interleaved float audio on a zero-based sample clock. Frames must be
+  // contiguous; the caller trims/fills the recording timeline before pushing.
+  absl::Status PushAudio(const media::AudioFrame& frame);
   // Drain output through mux/sink EOS with a bounded, cancellable wait. File
   // publication is permitted only after this succeeds.
   absl::Status Finish();

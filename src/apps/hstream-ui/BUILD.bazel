@@ -674,7 +674,7 @@ cc_library(
     hdrs = ["HighlightMp4Audio.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = ["@qt//:qt_core"],
+    deps = ["//src/libs/media:mp4_audio_edit", "@qt//:qt_core"],
 )
 
 cc_library(

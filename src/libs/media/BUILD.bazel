@@ -1,6 +1,43 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "mp4_audio_edit",
+    srcs = ["Mp4AudioEdit.cpp"],
+    hdrs = ["Mp4AudioEdit.h"],
+    include_prefix = "hstream/src/libs/media",
+    deps = ["@com_google_absl//absl/status:status"],
+)
+
+cc_library(
+    name = "audio_playlist",
+    srcs = ["AudioPlaylist.cpp"],
+    hdrs = ["AudioPlaylist.h"],
+    include_prefix = "hstream/src/libs/media",
+    deps = [":mp4_audio_reader", ":mp4_video_track"],
+)
+
+cc_test(
+    name = "audio_playlist_test",
+    srcs = ["AudioPlaylistTest.cpp"],
+    deps = [":audio_playlist", ":test_mp4"],
+)
+
+cc_library(
+    name = "mp4_audio_reader",
+    srcs = ["Mp4AudioReader.cpp"],
+    hdrs = ["Mp4AudioReader.h"],
+    include_prefix = "hstream/src/libs/media",
+    linkopts = ["-L/usr/local/lib", "-lavformat", "-lavcodec", "-lavutil"],
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "mp4_audio_reader_test",
+    srcs = ["Mp4AudioReaderTest.cpp"],
+    deps = [":mp4_audio_reader", ":test_mp4"],
+)
+
+cc_library(
     name = "mp4_video_track",
     srcs = ["Mp4VideoTrack.cpp"],
     hdrs = ["Mp4VideoTrack.h"],
