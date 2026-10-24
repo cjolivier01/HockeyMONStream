@@ -1,5 +1,8 @@
 # Repository Guidelines
 
+## Skills
+- Some skill scan be found in the files and dirs under the 'skills' dir
+
 ## Project Structure & Modules
 - Code: `src/` with libraries in `src/libs/*`, apps in `src/apps`, optional plugins in `src/gst-plugins`.
 - Build files: `BUILD.bazel` next to sources; external repos in `WORKSPACE.bazel` and `buildfiles/`.
