@@ -140,14 +140,14 @@ int main() {
     check(count(commands, a::detail::Kind::kGlyph, true) == 0, "Bright dots use dark jersey digits for contrast");
     commands.Clear();
     {
-      // A named side reads as one of two groups in one hue, not as its track
-      // colour: on a minimap the question is which team, not which skater.
+      // A named side uses the home/away palette instead of its track colour.
       // Each case gets its own overlay because the two-group reading latches
       // per stream, which is what keeps it steady between frames.
       hm::draw_display::RinkMiniMap named(map);
-      Frame dark_side(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome);
-      check(named.Append(dark_side.frame, 1600, 1200, 800, 600, &commands), "A named dark side stays visible");
-      check(dotColor(commands, {0.16, 0.18, 0.22, 1}), "The dark side fills with the dark team colour");
+      Frame home(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome);
+      check(named.Append(home.frame, 1600, 1200, 800, 600, &commands), "The home side stays visible");
+      check(dotColor(commands, {0, 0, 128.0 / 255, 1}), "Home fills navy");
+      check(count(commands, a::detail::Kind::kGlyph, true) == 2, "Navy dots use light jersey digits");
       commands.Clear();
     }
     {
@@ -174,12 +174,25 @@ int main() {
       commands.Clear();
     }
     {
-      // Home wearing light: HOME names the group, the sweater decides the fill.
-      hm::draw_display::RinkMiniMap light_home(map, {{}, {}, false});
-      Frame home(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome);
-      check(light_home.Append(home.frame, 1600, 1200, 800, 600, &commands), "A light-sweater home side draws");
-      check(dotColor(commands, {0.93, 0.94, 0.96, 1}), "Home in light sweaters must not be drawn dark");
-      commands.Clear();
+      // Sweater choice cannot reverse the home/away colours.
+      for (const bool home_is_dark : {false, true}) {
+        for (const auto side :
+             {pa::TeamLabel::kHome, pa::TeamLabel::kAway, pa::TeamLabel::kDark, pa::TeamLabel::kLight}) {
+          hm::draw_display::RinkMiniMap named(map, {{}, {}, home_is_dark});
+          Frame player(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, side);
+          check(named.Append(player.frame, 1600, 1200, 800, 600, &commands), "A named side draws");
+          const bool home = side == pa::TeamLabel::kHome || (side == pa::TeamLabel::kDark && home_is_dark) ||
+              (side == pa::TeamLabel::kLight && !home_is_dark);
+          check(
+              dotColor(
+                  commands, home ? NvOSD_ColorParams{0, 0, 128.0 / 255, 1} : NvOSD_ColorParams{1, 215.0 / 255, 0, 1}),
+              "Home stays navy and away stays gold for either sweater choice");
+          check(
+              count(commands, a::detail::Kind::kGlyph, true) == (home ? 2 : 0),
+              "Jersey digits contrast with the navy/gold fill");
+          commands.Clear();
+        }
+      }
     }
     {
       // Once a side is named the reading stays: a later frame carrying no

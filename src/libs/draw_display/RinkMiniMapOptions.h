@@ -9,9 +9,8 @@ struct RinkMiniMapOptions {
   enum class Position { kUpperRight, kUpperLeft, kLowerLeft };
   Size size{Size::kStandard};
   Position position{Position::kUpperRight};
-  // Which sweater the home side wore, when the game said. HOME and AWAY are
-  // names for the two groups, not shades: with home in light sweaters the
-  // home side must still be drawn light.
+  // Resolves DARK/LIGHT labels to home/away when known. HOME/AWAY labels use
+  // fixed navy/gold fills regardless of which sweater the home side wore.
   std::optional<bool> home_is_dark;
 };
 

@@ -133,11 +133,11 @@ bool RinkMiniMap::Append(
     analytics_epoch_ = result->epoch;
   }
   size_t visible = 0;
-  // Teams, when the game has named them, are the thing worth reading off a
-  // minimap: two groups in one hue, dark against light, rather than 32 track
-  // colours nobody can tell apart at this size. Without a side the dot is
-  // hollow, which says "not known" instead of guessing a group. Ignored
-  // players keep the boxes' grey override.
+  // Home is navy and away is gold, independently of sweater colour. Games
+  // without a home-sweater mapping retain dark/light fills. Unknown sides
+  // are hollow; ignored players keep the boxes' grey override.
+  const Color team_home{0.0F, 0.0F, 128.0F / 255, 1.0F};
+  const Color team_away{1.0F, 215.0F / 255, 0.0F, 1.0F};
   const Color team_dark{0.16F, 0.18F, 0.22F, 1.0F};
   const Color team_light{0.93F, 0.94F, 0.96F, 1.0F};
   // Switch to the two-group reading only once this stream has named a side,
@@ -186,22 +186,24 @@ bool RinkMiniMap::Append(
         break;
       }
     }
-    // HOME and AWAY are names for the two groups; which sweater each wore is
-    // what the map draws, so an unnamed game reads its labels directly and a
-    // named one maps home and away back through options_.home_is_dark.
-    const bool home_in_dark = options_.home_is_dark.value_or(true);
-    const bool dark_side = side == player_analytics::TeamLabel::kDark ||
-        (side == player_analytics::TeamLabel::kHome && home_in_dark) ||
-        (side == player_analytics::TeamLabel::kAway && !home_in_dark);
-    const bool light_side = side == player_analytics::TeamLabel::kLight ||
-        (side == player_analytics::TeamLabel::kAway && home_in_dark) ||
-        (side == player_analytics::TeamLabel::kHome && !home_in_dark);
-    named_sides_ = named_sides_ || dark_side || light_side;
+    // Resolve an unnamed dark/light label only when the game tells us which
+    // sweater home wore. HOME/AWAY labels already carry that identity.
+    if (options_.home_is_dark &&
+        (side == player_analytics::TeamLabel::kDark || side == player_analytics::TeamLabel::kLight)) {
+      const bool dark = side == player_analytics::TeamLabel::kDark;
+      side = dark == *options_.home_is_dark ? player_analytics::TeamLabel::kHome : player_analytics::TeamLabel::kAway;
+    }
+    const bool known_side = side != player_analytics::TeamLabel::kUnknown;
+    named_sides_ = named_sides_ || known_side;
     const auto& box_color = player.ignored ? preview_overlay::kIgnoredPlayerColor : box.border_color;
     const Color track_color{
         float(box_color.red), float(box_color.green), float(box_color.blue), float(box_color.alpha)};
-    const bool named = !player.ignored && (dark_side || light_side);
-    const Color color = !named ? track_color : dark_side ? team_dark : team_light;
+    const bool named = !player.ignored && known_side;
+    const Color color = !named                       ? track_color
+        : side == player_analytics::TeamLabel::kHome ? team_home
+        : side == player_analytics::TeamLabel::kAway ? team_away
+        : side == player_analytics::TeamLabel::kDark ? team_dark
+                                                     : team_light;
     const float radius = (number.empty() ? 5.0F : 10.0F) * scale;
     // A named side fills; an unknown one is left hollow over the ice so the
     // two readings cannot be mistaken for each other.
