@@ -24,6 +24,18 @@ cc_test(
     deps = [":va_video_reader", ":va_hip_frame"],
 )
 
+cc_test(
+    name = "va_probe_descriptors_test",
+    srcs = ["VaProbeDescriptorsTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    linkopts = ["-ldl", "-Wl,--export-dynamic"],
+    deps = [":va_hip_frame"],
+)
+
 cc_library(
     name = "va_output_pool",
     srcs = ["VaOutputPool.cpp"],

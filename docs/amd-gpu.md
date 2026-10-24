@@ -124,7 +124,14 @@ retirement, and retained pixels after reader destruction. Sixteen seeks and
 eight chapter changes per codec show stable descriptor counts with the private
 library (47 → 47 for H.264; 47 → 46 for HEVC). The same chapter test fails with
 the unpatched library (137 → 241). Two synthetic luma bytes are read back solely
-to verify retained-frame ownership. The composed raw Program qualifier now uses
+to verify retained-frame ownership. A separate descriptor-ownership test injects
+a failed driver export and deliberately reuses its closed descriptor numbers:
+the probe must leave those new owners open. Successful exports with rejected
+layouts must be closed, as must ordinary successful probes. This test fails with
+the initial cleanup patch and passes with cleanup gated on export success.
+The reader also exercises retirement after a real malformed-container error.
+Its cancellation test covers sticky cancellation; interruption during a blocked
+driver call is not promised or tested. The composed raw Program qualifier now uses
 the reusable reader. Full application source/audio lifecycle and desktop
 integration remain unqualified. RGBA/BGRA import layouts are accepted by the
 adapter, but only NV12/P010 codec paths are qualified.

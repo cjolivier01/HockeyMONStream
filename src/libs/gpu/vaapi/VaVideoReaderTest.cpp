@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
@@ -170,6 +171,15 @@ void Exercise(const std::filesystem::path& root, bool hevc, const std::string& r
   Status(reader->OpenFile(black, 0));
   Check(!reader->OpenFile(root / "missing.mp4", 0).ok(), "Missing chapter accepted");
   Check(!reader->Read().ok(), "Reader continued after a failed transition");
+  const auto malformed = root / "invalid.mp4";
+  {
+    std::ofstream file(malformed);
+    file << "This is not an MP4 container.";
+  }
+  reader = Take(hm::gpu::VaVideoReader::Create(config));
+  const auto decode_error = reader->OpenFile(malformed, 0);
+  Check(absl::IsUnavailable(decode_error), "Malformed container did not report its GStreamer error");
+  Check(reader->Read().status() == decode_error, "Reader continued after a real decoder transition failure");
   std::cout << (hevc ? "HEVC/P010" : "H264/NV12")
             << " EOF, seek, chapter, retained frame, cancel and failure checks passed; fds " << before << " -> "
             << after << '\n';
