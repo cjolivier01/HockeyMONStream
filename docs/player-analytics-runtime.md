@@ -211,6 +211,11 @@ transform metadata suppresses diagnostic drawing for that frame. Jersey/action
 labels require the transformed player box to intersect the viewport, so fully
 cropped-out players cannot leave labels clamped to its edge.
 
+The GL compositor accepts native panorama coordinates above 16K for both player
+overlays and the stitched watermark. Those coordinates map into the bounded
+preview viewport; they do not allocate a panorama-sized texture. Command/upload
+limits and the viewport-scaled fragment budget still bound rendering work.
+
 One producer assigns the 32-color palette to full 64-bit tracks before the tracked
 preview tee. Boxes, skeletons and labels share those colors across views. Released
 colors are reused and temporary palette overflow can recover uniqueness. Untracked

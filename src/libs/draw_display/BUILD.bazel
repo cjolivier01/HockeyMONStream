@@ -205,7 +205,7 @@ cc_test(
         "@platforms//cpu:x86_64": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":analytics_overlay_gl"],
+    deps = [":analytics_overlay_gl", ":watermark"],
 )
 
 cc_library(

@@ -237,7 +237,10 @@ GlRenderResult GlCompositor::Render(float width, float height, const CommandList
     ++counters_.empty_renders;
     return result;
   }
-  if (!std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0 || width > 16384 || height > 16384) {
+  // These are logical source coordinates, not texture or framebuffer sizes.
+  // Native panoramas can exceed 16K while rendering into a bounded preview.
+  // Command/upload limits and the viewport-scaled fragment budget bound work.
+  if (!std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0) {
     result.status = GlRenderStatus::kInvalidArgument;
     return result;
   }
