@@ -134,9 +134,9 @@ layouts must be closed, as must ordinary successful probes. This test fails with
 the initial cleanup patch and passes with cleanup gated on export success.
 The reader also exercises retirement after a real malformed-container error.
 Its cancellation test covers sticky cancellation; interruption during a blocked
-driver call is not promised or tested. The composed raw Program qualifier now uses
-the reusable reader. Full application source/audio lifecycle and desktop
-integration remain unqualified. RGBA/BGRA import layouts are accepted by the
+driver call is not promised or tested. The composed raw Program qualifier and
+CLI use the reusable reader; the audio, desktop and lifecycle qualification
+is described below. RGBA/BGRA import layouts are accepted by the
 adapter, but only NV12/P010 codec paths are qualified.
 
 ## Native AMD inference
@@ -257,7 +257,7 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 | Allocation and pairing | Bounded VA DMA-BUF pools, HIP imports and exact stereo clock | Broader codec/device qualification |
 | Stitching | Saved calibration with HIP `hm-cupano` and shared conversion | Automatic calibration, rotated generations and live controls |
 | Model execution | Native MIGraphX inference in the ROCm CLI | Broader numerical qualification and optional analytics |
-| Tracking | Native geometric association, shared rink filter and camera policy | Appearance reassociation, telemetry and desktop seek policy |
+| Tracking | Native geometric association, shared rink filter and camera policy | Appearance reassociation and telemetry-backed seek history |
 | Crop and preview | Shared HIP crop into VA output; native-window EGL Program preview with tracked-player boxes | Source/Stitched channels and Play/Rink diagnostics |
 | Desktop, jobs and publication | Saved Program playback and managed Program/4K archives | Additional live controls, exported job launch and highlight export |
 
@@ -323,14 +323,16 @@ the GL memory handoff, not desktop embedding, resize, pause or tab behavior.
 
 GStreamer 1.24.2's VA format table advertises RGBA as DRM `RA24`, while the
 allocated surface exports the correct `AB24` layout. Direct YUV output avoids
-that RGB VPP negotiation bug and its extra conversion pass. No private
-GStreamer build or misleading caps are needed. The canonical render-node path
+that RGB VPP negotiation bug and its extra conversion pass without patching
+the RGB format table. The private VA build above is still required for descriptor
+cleanup and Main10 signaling. The canonical render-node path
 is also required: VA factories compare their path with the context verbatim,
 so passing a PCI symlink alias can trigger an error while starting elements.
 
 These tests qualify components. The CLI integration described below composes
-raw-camera pairing/stitching and saved Program startup. Model caching, desktop routing,
-desktop channel routing and installed runtime discovery remain pending.
+raw-camera pairing/stitching and saved Program startup. Later sections describe
+model caching and desktop Program routing. Additional preview channels and
+installed runtime discovery remain pending.
 
 
 ## Raw-camera Program qualification
@@ -388,9 +390,9 @@ is not real-time. `ffprobe` verifies all 120 frames, 60000/1001 fps, centered ch
 and full-range BT.709 matching the raw inputs. Bounded offline thumbnails were
 inspected after export; the processing loop never reads video back.
 
-The desktop acceptance workflow remains incomplete. Automatic calibration,
-model caching and native desktop ownership still need integration. The CLI
-composition and its current supported boundary are described below.
+The CLI and desktop now compose these components with cached model preparation,
+audio and managed archives, as described below. Automatic calibration remains
+unavailable on AMD; playback requires saved reviewed calibration.
 
 ## Shared Program configuration
 
@@ -408,8 +410,8 @@ requires every value from the effective document and validates integer ranges,
 timeout conversion and association settings before GPU preparation. It does not
 select an application backend or change NVIDIA/Aspen behavior. The raw Program
 qualifier now consumes these settings; its input/model paths and codec/output
-choices remain explicit qualification arguments. The ROCm CLI now resolves application configuration and owns these components;
-desktop integration remains pending.
+choices remain explicit qualification arguments. The ROCm CLI resolves application
+configuration and owns these components for both direct and desktop playback.
 
 ## Reusable Program processor
 
@@ -439,7 +441,7 @@ Append `--verify-reset` to the raw qualifier command to exercise reader seeks,
 processor reset, monotonic IDs, repeated Program/full-panorama renders, rejected
 transfer changes and failure retirement. On the 120-pair hockey clip, all 120
 per-frame detection/tracking/crop log rows match the earlier composition. This
-reusable owner now serves the ROCm CLI; desktop ownership remains pending.
+reusable owner serves the ROCm CLI, including desktop-launched playback.
 
 ## Chapter video clock
 
@@ -567,8 +569,8 @@ sequence numbers after a seek and ends at the shorter synchronized recording.
 A half-failed seek retires both readers. The output clock comes from the frame
 index and saved origin, so chapter duration rounding and audio tails cannot
 shift Program time. Retained VA samples survive seeks and owner destruction.
-The configured qualifier and AMD CLI use this owner. Desktop playback and runtime controls
-coordination remain pending. Hardware tests cover fractional offsets, both
+The configured qualifier and AMD CLI use this owner. Desktop seeks use its reset
+contract, as described below. Hardware tests cover fractional offsets, both
 left- and right-limited EOS, 25/30 fps chapter transitions, retained pixels,
 backward/end seeks, partial seek failure and cancellation.
 
@@ -593,8 +595,8 @@ Hardware tests cover five-frame NV12 and P010 HEVC files, duplicate descriptor
 ownership, repeated EOS, post-EOS rejection, nonempty-file rejection, timestamp
 overflow, exhausted-pool timeout, concurrent cancellation of a blocked acquire,
 retained surfaces after destruction and headless EGL/GL preview. The configured
-qualifier and AMD CLI use both the stereo and sink owners. Desktop routing and
-desktop runtime controls remain pending.
+qualifier and AMD CLI use both the stereo and sink owners. Desktop routing,
+pause/resume and local seek behavior are described below.
 
 Output review found that the generic VA encoder factory can select another
 GPU on a multi-device host. `gpu/vaapi/VaElement` now shares the reader factory
