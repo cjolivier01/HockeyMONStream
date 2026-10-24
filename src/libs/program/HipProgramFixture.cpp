@@ -288,7 +288,11 @@ int main(int argc, char** argv) {
       // Match the delayed camera initialization with an explicit fixture full-canvas view.
       const auto crop = observed.crop.value_or(hm::BBox(0, 0, width, height));
       const auto transform = hm::playcropper::CalculateFrameTransformGeometry(width, height, crop, false, 0, 0);
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(settings.operation_timeout_ns);
+      const auto now = std::chrono::steady_clock::now();
+      const auto timeout = std::chrono::nanoseconds(settings.operation_timeout_ns);
+      const auto deadline = timeout > std::chrono::steady_clock::time_point::max() - now
+                                ? std::chrono::steady_clock::time_point::max()
+                                : now + timeout;
       auto acquired = pool->Acquire();
       while (absl::IsResourceExhausted(acquired.status()) && std::chrono::steady_clock::now() < deadline) {
         const auto error = output.Error();
@@ -319,7 +323,7 @@ int main(int argc, char** argv) {
     Check(gst_app_src_end_of_stream(GST_APP_SRC(output.endpoint)) == GST_FLOW_OK, "Output refused EOS");
     auto* bus = gst_element_get_bus(output.value);
     auto* message = gst_bus_timed_pop_filtered(
-        bus, 30 * GST_SECOND, static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+        bus, settings.operation_timeout_ns, static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
     gst_object_unref(bus);
     const bool eos = message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS;
     if (message)
