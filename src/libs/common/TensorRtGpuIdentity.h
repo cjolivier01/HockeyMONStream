@@ -4,13 +4,13 @@
 #include <string>
 
 #include "absl/status/statusor.h"
+#include "hstream/src/libs/common/GpuMemoryProfile.h"
 
 namespace hm::inference {
 
 // CUDA ordinals honor CUDA_VISIBLE_DEVICES, unlike a shell query of nvidia-smi.
 absl::StatusOr<std::string> TensorRtGpuName(unsigned device);
 absl::StatusOr<uint64_t> CudaGpuTotalMemoryBytes(unsigned device);
-bool UseLowMemoryProfile(uint64_t total_memory_bytes);
 std::string SanitizeGpuName(std::string name);
 // Explicit paths stay explicit; bundled paths use {gpu} to select this device.
 std::string ResolveGpuEnginePath(std::string path, const std::string& gpu_name);

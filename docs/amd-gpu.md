@@ -886,3 +886,17 @@ seek segments. `@reset-progress-rate GENERATION` implements the existing reset
 acknowledgment and generation fencing; resume/seek also clear rate history.
 The shared rate estimator reports an unknown ETA if an extremely slow rate
 would overflow its nanosecond clock, on either backend.
+
+### Desktop build boundary
+
+`//src/apps/hstream-ui:hstream-ui` now builds with `--config=rocm` and
+`--repo_env=CUDA_PATH=/tmp/hstream-no-cuda`. Its executable does not link CUDA,
+TensorRT, DeepStream or NVIDIA surface libraries. The existing desktop window,
+configuration editors and CPU stitching/rink-map helpers remain shared. GPU
+memory detection uses HIP in this build and preserves the existing memory-profile
+threshold. CUDA builds retain their existing query and optional dialogs.
+
+Camera Experiments and Highlights still own NVIDIA-only video pipelines. Their
+buttons are disabled with an explanation in the ROCm build; no placeholder video
+backend is substituted. This build boundary does not yet make desktop Program
+launch operational: runtime discovery and preview-channel routing remain pending.

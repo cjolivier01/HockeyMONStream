@@ -6,8 +6,6 @@ namespace hm::inference {
 
 namespace {
 
-constexpr uint64_t kLowMemoryGpuLimitBytes = 8ULL * 1024ULL * 1024ULL * 1024ULL;
-
 absl::StatusOr<cudaDeviceProp> CudaGpuProperties(unsigned device) {
   cudaDeviceProp properties{};
   const auto status = cudaGetDeviceProperties(&properties, device);
@@ -35,14 +33,7 @@ absl::StatusOr<std::string> TensorRtGpuName(unsigned device) {
 }
 
 absl::StatusOr<uint64_t> CudaGpuTotalMemoryBytes(unsigned device) {
-  auto properties = CudaGpuProperties(device);
-  if (!properties.ok())
-    return properties.status();
-  return static_cast<uint64_t>(properties->totalGlobalMem);
-}
-
-bool UseLowMemoryProfile(uint64_t total_memory_bytes) {
-  return total_memory_bytes <= kLowMemoryGpuLimitBytes;
+  return GpuTotalMemoryBytes(device);
 }
 
 std::string ResolveGpuEnginePath(std::string path, const std::string& gpu_name) {

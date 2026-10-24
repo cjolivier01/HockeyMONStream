@@ -19,12 +19,22 @@ cc_library(
 )
 
 cc_library(
+    name = "gpu_memory_profile",
+    srcs = ["GpuMemoryProfile.cpp"],
+    hdrs = ["GpuMemoryProfile.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["//src/libs/gpu:runtime", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_library(
     name = "tensorrt_gpu_identity",
     srcs = ["TensorRtGpuIdentity.cpp"],
     hdrs = ["TensorRtGpuIdentity.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":gpu_memory_profile",
         "@com_google_absl//absl/status:statusor",
         "@local_cuda//:cuda",
         "//toolchains/jetson:cuda_runtime",

@@ -1,7 +1,7 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
-#include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
@@ -10,9 +10,13 @@
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
+#ifndef HSTREAM_USE_HIP
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
+#endif
 #include "src/apps/hstream-ui/HighlightPlan.h"
+#ifndef HSTREAM_USE_HIP
 #include "src/apps/hstream-ui/HighlightsDialog.h"
+#endif
 #include "src/apps/hstream-ui/InputLensWidget.h"
 #include "src/apps/hstream-ui/Int8PreparationDialog.h"
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
@@ -4629,10 +4633,15 @@ bool hm::ui_internal::reconcile_cleanup_directory_for_test(const QString& direct
 
 std::optional<unsigned> hm::ui_internal::configured_pipeline_gpu(const YAML::Node& effective_config) {
   YAML::Node configured;
+#ifdef HSTREAM_USE_HIP
+  if (!lookup_yaml_path(effective_config, "runtime.amd.gpu_id", &configured))
+    return std::nullopt;
+#else
   if (!lookup_yaml_path(effective_config, "pipeline.application.global-gpu-id", &configured) &&
       !lookup_yaml_path(effective_config, "pipeline.hmstitcher.gpu-id", &configured)) {
     return 0;
   }
+#endif
   if (!configured.IsScalar())
     return std::nullopt;
   try {
@@ -6130,6 +6139,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   experiments->setObjectName("cameraExperimentsButton");
   experiments->setToolTip(
       "Replay a short DriveGPT recording from its historical camera state with independent trial settings.");
+#ifdef HSTREAM_USE_HIP
+  experiments->setEnabled(false);
+  experiments->setToolTip("Camera experiments are not yet available on AMD.");
+#else
   connect(experiments, &QPushButton::clicked, this, [this]() {
     if (!ensureSavedControlConfigLoaded())
       return;
@@ -6147,6 +6160,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
   });
+#endif
   action_bar->addWidget(experiments);
   stitching_experiments_button_ = new QPushButton(action_icon(ActionIcon::Stitching), "Stitching experiments…");
   stitching_experiments_button_->setObjectName("stitchingExperimentsButton");
@@ -6225,6 +6239,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   highlights_button_->setObjectName("highlightsButton");
   // The tooltip explains whichever of the two states the button is in, so
   // updateRunControls() owns it.
+#ifndef HSTREAM_USE_HIP
   connect(highlights_button_, &QPushButton::clicked, this, [this]() {
     if (auto* existing = findChild<QDialog*>("highlightsDialog")) {
       existing->show();
@@ -6269,6 +6284,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     dialog->show();
     updateRunControls();
   });
+#endif
   action_bar->addWidget(highlights_button_);
   action_bar->addStretch(1);
   auto* playback_start_label = new QLabel("Playback start");
@@ -10552,7 +10568,7 @@ void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config)
   QString profile = hm::ui_internal::configured_gpu_memory_profile(baseline_layer_, user_layer_);
   const auto gpu = hm::ui_internal::configured_pipeline_gpu(effective);
   if (profile == "auto" && gpu.has_value()) {
-    const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(*gpu);
+    const auto total_memory_bytes = hm::inference::GpuTotalMemoryBytes(*gpu);
     if (total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes))
       profile = "low";
   }
@@ -17220,11 +17236,16 @@ void HStreamWindow::updateRunControls() {
   if (stitching_experiments_button_)
     stitching_experiments_button_->setEnabled(!running && !finalizing);
   if (highlights_button_) {
+#ifdef HSTREAM_USE_HIP
+    highlights_button_->setEnabled(false);
+    highlights_button_->setToolTip("Highlights are not yet available on AMD.");
+#else
     highlights_button_->setEnabled(!running && !finalizing && !isCalibrationRun() && have_published_archives_);
     highlights_button_->setToolTip(
         have_published_archives_
             ? "Play highlight intervals from a published archive of this game, or export them as one video."
             : "Publish an archive for this game before using Highlights.");
+#endif
   }
   if (archive_toggle != output_toggles_.end() && archive_toggle->second)
     archive_toggle->second->setEnabled(!isCalibrationRun());

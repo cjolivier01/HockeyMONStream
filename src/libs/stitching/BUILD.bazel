@@ -39,7 +39,7 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto"],
   deps = [
-    ":rink_map", ":rink_leveling", ":stitching", ":hugin_project",
+    ":rink_map", ":rink_leveling", ":stitching_core", ":hugin_project",
     ":canvas_constraint_check", ":game_config", ":transaction_state",
     "//src/libs/assets:asset_manager", "//src/libs/common:process",
     "@com_google_absl//absl/strings", "@opencv_linux//:opencv", "@yaml-cpp",
@@ -64,7 +64,7 @@ cc_library(
 cc_test(
   name = "playback_rink_map_test",
   srcs = ["PlaybackRinkMapTest.cpp"],
-  deps = [":playback_rink_map", ":stitching"],
+  deps = [":playback_rink_map", ":stitching_core"],
 )
 
 cc_test(
@@ -748,6 +748,7 @@ cc_library(
     "-O3",
   ],
   linkopts = [
+    "-fopenmp",
     "-lfftw3f",
     "-lm",
   ],
@@ -934,7 +935,7 @@ cc_library(
     hdrs = ["AutoInputLens.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [":video_lens_metadata", ":stitching"],
+    deps = [":video_lens_metadata", ":stitching_core"],
 )
 
 cc_test(

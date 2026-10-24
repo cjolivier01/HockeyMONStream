@@ -1,9 +1,9 @@
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 
-#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
-#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"

@@ -3,7 +3,7 @@
 #include "absl/cleanup/cleanup.h"
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
-#include "hstream/src/libs/common/TensorRtGpuIdentity.h"
+#include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
@@ -3351,6 +3351,12 @@ bool test_highlights_dialog_controls(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   if (!start || !highlights || !refresh_games || !mode)
     return false;
+#ifdef HSTREAM_USE_HIP
+  activate(highlights);
+  return expect(!highlights->isEnabled() && highlights->toolTip().contains("not yet available on AMD") &&
+                    !window->findChild<QDialog*>("highlightsDialog"),
+                "AMD must explain unavailable Highlights without opening a native pipeline");
+#endif
   mode->setCurrentIndex(mode->findData("program"));
   QApplication::processEvents();
   if (!expect(
@@ -14190,6 +14196,17 @@ bool test_camera_controls(HStreamWindow* window) {
 }
 
 bool test_gpu_memory_profile() {
+#ifdef HSTREAM_USE_HIP
+  const YAML::Node amd_gpu = YAML::Load(
+      "runtime: {amd: {gpu_id: 2}}\npipeline: {application: {global-gpu-id: 3}}");
+  if (!expect(
+          hm::ui_internal::configured_pipeline_gpu(amd_gpu) == 2 &&
+              !hm::ui_internal::configured_pipeline_gpu(YAML::Node(YAML::NodeType::Map)) &&
+              !hm::ui_internal::configured_pipeline_gpu(YAML::Load("runtime: {amd: {gpu_id: -1}}")) &&
+              !hm::ui_internal::configured_pipeline_gpu(YAML::Load("runtime: {amd: {gpu_id: null}}")),
+          "The AMD UI must query the configured HIP ordinal independently of NVIDIA GPU settings"))
+    return false;
+#else
   const YAML::Node stitcher_gpu = YAML::Load("pipeline: {hmstitcher: {gpu-id: 2}}");
   const YAML::Node global_gpu = YAML::Load("pipeline: {application: {global-gpu-id: 3}, hmstitcher: {gpu-id: 2}}");
   const YAML::Node invalid_gpu = YAML::Load("pipeline: {application: {global-gpu-id: -1}}");
@@ -14201,6 +14218,7 @@ bool test_gpu_memory_profile() {
           "The UI must resolve the effective CUDA ordinal with the runner's global/stitcher precedence")) {
     return false;
   }
+#endif
 
   const YAML::Node baseline_profile = YAML::Load("runtime: {gpu_memory_profile: standard}");
   const YAML::Node user_profile = YAML::Load("runtime: {gpu-memory-profile: low}");
@@ -14245,7 +14263,7 @@ bool test_gpu_memory_profile() {
   if (!QDir().mkpath(game_directory))
     return false;
 
-  const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(0);
+  const auto total_memory_bytes = hm::inference::GpuTotalMemoryBytes(0);
   const QString expected_default =
       total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes) ? "low" : "standard";
   YAML::Node stale_game_profile(YAML::NodeType::Map);
@@ -15503,10 +15521,13 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     activate(save);
     activate(start);
     activate(clean);
+    int expected_rejections = 4; // Save, Play, Clean and export.
     for (const char* name : {"cameraExperimentsButton", "stitchingExperimentsButton"}) {
       auto* experiments = require_child<QPushButton>(&window, name);
       if (!experiments)
         return false;
+      if (experiments->isEnabled())
+        ++expected_rejections;
       activate(experiments);
     }
     auto* export_job = require_child<QAction>(&window, "saveJobScriptAction");
@@ -15520,7 +15541,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     if (!expect(
             resulting_contents == original_contents && fs::is_regular_file(retained_image) &&
                 window.logText().count("pipeline started pid=") == launches_before &&
-                window.logText().count("Game settings could not be loaded.") == rejected_before + 6 &&
+                window.logText().count("Game settings could not be loaded.") == rejected_before + expected_rejections &&
                 !window.findChild<QDialog*>("cameraExperimentDialog") &&
                 !window.findChild<QDialog*>("stitchingExperimentDialog"),
             "Failed YAML loading must block Save, Play, Clean, export and experiments without changing retained inputs"))
@@ -18050,6 +18071,12 @@ bool test_camera_experiment_initial_controls(HStreamWindow* window) {
   auto* launch = require_child<QPushButton>(window, "cameraExperimentsButton");
   if (!count || !launch)
     return false;
+#ifdef HSTREAM_USE_HIP
+  activate(launch);
+  return expect(!launch->isEnabled() && launch->toolTip().contains("not yet available on AMD") &&
+                    !window->findChild<QDialog*>("cameraExperimentDialog"),
+                "AMD must explain unavailable Camera Experiments without opening a native pipeline");
+#endif
   const int saved = count->value();
   count->setValue(1);
   launch->click();
