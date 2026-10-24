@@ -63,7 +63,7 @@ cc_library(
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool", "//src/libs/gpu/vaapi:va_element", "//src/libs/media:mp4_audio_reader", "//src/libs/media:mp4_audio_edit"],
+    deps = ["@mesa_interop//:gstreamer_gl", ":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool", "//src/libs/gpu/vaapi:va_element", "//src/libs/media:mp4_audio_reader", "//src/libs/media:mp4_audio_edit"],
 )
 
 cc_test(

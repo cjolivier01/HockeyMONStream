@@ -24,7 +24,7 @@ absl::StatusOr<std::unique_ptr<ProgramRuntimeControl>> ProgramRuntimeControl::Cr
     uint64_t poll_ns,
     Callbacks callbacks) {
   if (!maximum || !poll_ns || poll_ns > uint64_t(INT64_MAX) || !callbacks.pause || !callbacks.mute || !callbacks.emit ||
-      !callbacks.cancelled || !callbacks.reset_progress || !callbacks.seek)
+      !callbacks.cancelled || !callbacks.reset_progress || !callbacks.seek || !callbacks.preview)
     return absl::InvalidArgumentError("Runtime control requires explicit bounds and callbacks");
   const int fd = fcntl(input_fd, F_DUPFD_CLOEXEC, 0);
   if (fd < 0)
@@ -48,6 +48,12 @@ absl::Status ProgramRuntimeControl::Command(const std::string& line) {
     const auto result = std::from_chars(text.data(), text.data() + text.size(), *value);
     return result.ec == std::errc{} && result.ptr == text.data() + text.size();
   };
+  if (command == "@set-preview-active") {
+    std::string surplus;
+    uint64_t generation = 0;
+    if (trailing && !(input >> surplus) && integer(extra, &generation) && generation)
+      return callbacks_.preview(value, generation);
+  }
   if (command == "@seek" || command == "@seek-relative") {
     const bool relative = command == "@seek-relative";
     std::string surplus;

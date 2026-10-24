@@ -2,6 +2,7 @@
 
 #include <glib.h>
 
+#include <charconv>
 #include <sstream>
 #include <stdexcept>
 
@@ -10,12 +11,13 @@
 namespace hm::program {
 namespace {
 struct RawOptions {
-  gchar *game{}, *sources{}, *sinks{}, *start{}, *limit{};
+  gchar *game{}, *sources{}, *sinks{}, *start{}, *limit{}, *preview_windows{}, *preview_active{};
+  gchar *stitch_time{}, *invalidation{};
   gchar **applications{}, **options{};
   gboolean realtime{false}, show{false};
   gint64 window{};
   ~RawOptions() {
-    for (auto* value : {game, sources, sinks, start, limit})
+    for (auto* value : {game, sources, sinks, start, limit, preview_windows, preview_active, stitch_time, invalidation})
       g_free(value);
     g_strfreev(applications);
     g_strfreev(options);
@@ -54,6 +56,28 @@ absl::StatusOr<AmdPipelineOptions> ParseAmdPipelineOptions(std::vector<std::stri
         {"time-limit", 't', 0, G_OPTION_ARG_STRING, &raw.limit, "Completed video duration", "SECONDS|HH:MM:SS"},
         {"render-realtime", 0, 0, G_OPTION_ARG_NONE, &raw.realtime, "Pace preview to source time", nullptr},
         {"render-window-id", 0, 0, G_OPTION_ARG_INT64, &raw.window, "Native preview window", "XID"},
+        {"stitch-frame-time", 0, 0, G_OPTION_ARG_STRING, &raw.stitch_time, "Saved calibration reference", "TIME"},
+        {"clean-expected-invalidation-id",
+         0,
+         0,
+         G_OPTION_ARG_STRING,
+         &raw.invalidation,
+         "Expected saved calibration revision",
+         "ID"},
+        {"ui-preview-windows",
+         0,
+         0,
+         G_OPTION_ARG_STRING,
+         &raw.preview_windows,
+         "Desktop preview windows",
+         "CHANNEL:XID,..."},
+        {"ui-preview-active",
+         0,
+         0,
+         G_OPTION_ARG_STRING,
+         &raw.preview_active,
+         "Initial desktop preview",
+         "CHANNEL|none"},
         {"show", 0, 0, G_OPTION_ARG_NONE, &raw.show, "Show the selected render output", nullptr},
         {nullptr}};
     auto* context = g_option_context_new("— native AMD Program playback");
@@ -73,6 +97,14 @@ absl::StatusOr<AmdPipelineOptions> ParseAmdPipelineOptions(std::vector<std::stri
     Require(raw.window >= 0 && uint64_t(raw.window) <= UINTPTR_MAX, "Invalid native window ID");
     AmdPipelineOptions result;
     result.game = raw.game;
+    if (raw.stitch_time) {
+      Require(*raw.stitch_time, "Empty saved calibration reference");
+      result.saved_stitch_time = raw.stitch_time;
+    }
+    if (raw.invalidation) {
+      Require(*raw.invalidation, "Empty saved calibration revision");
+      result.expected_invalidation = raw.invalidation;
+    }
     if (raw.applications) {
       Require(*raw.applications[0], "Empty application YAML path");
       result.application = raw.applications[0];
@@ -87,8 +119,38 @@ absl::StatusOr<AmdPipelineOptions> ParseAmdPipelineOptions(std::vector<std::stri
       Require(result.sinks.insert(name).second, "Duplicate Program sink: " + name);
     }
     Require(
-        (!raw.show && !raw.window && !raw.realtime) || result.sinks.count("RENDER"),
+        (!raw.show && !raw.window && !raw.realtime && !raw.preview_windows && !raw.preview_active) ||
+            result.sinks.count("RENDER"),
         "Preview options require the RENDER sink");
+    if (raw.preview_windows || raw.preview_active) {
+      Require(
+          raw.preview_windows && *raw.preview_windows && raw.preview_active && *raw.preview_active,
+          "Desktop preview requires both windows and an initial channel");
+      Require(!raw.window, "Desktop preview windows cannot accompany --render-window-id");
+      Require(std::string(raw.preview_windows).back() != ',', "Empty desktop preview target");
+      std::set<uintptr_t> ids;
+      std::istringstream windows(raw.preview_windows);
+      for (std::string part; std::getline(windows, part, ',');) {
+        const auto colon = part.find(':');
+        Require(colon != std::string::npos, "Preview target must be CHANNEL:XID");
+        const auto channel = part.substr(0, colon), id = part.substr(colon + 1);
+        Require(
+            channel == "program" || channel == "stitched" || channel == "source0" || channel == "source1" ||
+                channel == "source2",
+            "Unknown AMD desktop preview channel");
+        uintptr_t window = 0;
+        const auto parsed = std::from_chars(id.data(), id.data() + id.size(), window);
+        Require(parsed.ec == std::errc{} && parsed.ptr == id.data() + id.size() && window, "Invalid desktop window ID");
+        Require(
+            result.preview_windows.emplace(channel, window).second && ids.insert(window).second,
+            "Duplicate desktop preview target");
+      }
+      Require(result.preview_windows.count("program"), "AMD desktop preview requires a Program window");
+      result.preview_active = raw.preview_active;
+      Require(
+          result.preview_active == "none" || result.preview_windows.count(result.preview_active),
+          "Initial preview channel must have a window");
+    }
     if (raw.start)
       result.start = Time(raw.start);
     if (raw.limit) {

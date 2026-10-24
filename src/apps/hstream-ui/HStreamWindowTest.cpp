@@ -1144,12 +1144,16 @@ bool test_matching_development_runtime_selection() {
   const fs::path matching_runner = output_apps / "hstream-cli" / "hstream-cli";
   const fs::path unrelated_runner = workspace_root / "bazel-bin" / "src" / "apps" / "hstream-cli" / "hstream-cli";
   const std::vector<fs::path> runtime_artifacts = {
+#ifdef HSTREAM_USE_HIP
+      matching_runner,
+#else
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       execution_root / "bazel-out/k8-opt/bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+#endif
   };
   std::error_code error;
   fs::create_directories(application.parent_path(), error);
@@ -1217,7 +1221,11 @@ bool test_matching_development_runtime_selection() {
     return expect(false, "Could not remove a synthetic runtime artifact: " + error.message());
   if (!expect(
           hm::ui_internal::missing_development_runtime_artifact(selected_bazel_bin)
+#ifdef HSTREAM_USE_HIP
+              .endsWith("src/apps/hstream-cli/hstream-cli"),
+#else
               .endsWith("libgstdsxvideoconvert.so"),
+#endif
           "A Bazel UI must identify a missing matching runtime artifact before Play"))
     return false;
 
@@ -6947,7 +6955,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0
               ? x11_calibration_preview_ok
               : !window->logText().contains("--render-window-id=") &&
+#ifdef HSTREAM_USE_HIP
+                  !window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
+#else
                   window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
+#endif
                   window->logText().contains("--show-scaled=0.3012048193") &&
                   !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
                   camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
@@ -7721,8 +7733,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           window->logText().count("--render-window-id=") == embedded_commands_before_external_run,
           "nv3dsink run must not promise an embedded preview") ||
       !expect(
+#ifdef HSTREAM_USE_HIP
+          !window->logText().contains("USE_NEW_NVSTREAMMUX=yes"),
+          "AMD runner must not add DeepStream mux settings") ||
+#else
           window->logText().contains("USE_NEW_NVSTREAMMUX=yes"),
           "UI runner should default to the DeepStream 9.1 new stream mux") ||
+#endif
       !expect(
           window->logText().contains("HM_RENDER_SINK=nv3dsink"),
           "UI runner should preserve the self-managed desktop render sink") ||
@@ -16781,6 +16798,91 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
   return passed;
 }
 
+#ifdef HSTREAM_USE_HIP
+// Opt-in hardware qualification. Use a private copy of a calibrated game:
+// ordinary desktop controls save next-run choices into that game's config.
+bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) {
+  auto* game = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* render = require_child<QCheckBox>(window, "renderVideoCheck");
+  auto* tabs = require_child<QTabWidget>(window, "previewTabs");
+  auto* target = require_child<QWidget>(window, "previewRenderTarget");
+  auto* surface = require_child<QWidget>(window, "previewSurface");
+  if (!game || !create || !start || !stop || !mode || !render || !tabs || !target || !surface)
+    return false;
+  const absl::Cleanup cleanup = [&] {
+    activate(stop);
+    QTest::qWaitFor([&] { return window->pipelineStateText() == "STOPPED"; }, 30000);
+    std::cout << window->completeLogText().toStdString() << '\n';
+  };
+  game->setText(game_id);
+  activate(create);
+  mode->setCurrentIndex(mode->findData("program"));
+  for (const auto* name :
+       {"outputToggle_archive-file",
+        "outputToggle_archive-stitched",
+        "outputToggle_archive-program-4k",
+        "drivegptCsvCheck",
+        "showPlayerTrackingCheck",
+        "showPlayTrackingCheck",
+        "showRinkMaskCheck"}) {
+    auto* toggle = require_child<QCheckBox>(window, name);
+    if (!toggle)
+      return false;
+    toggle->setChecked(false);
+  }
+  render->setChecked(true);
+  tabs->setCurrentIndex(0);
+  activate(start);
+  const auto ready = [&] { return surface->property("previewRendererState").toString() == "ready"; };
+  if (!expect(
+          QTest::qWaitFor([&] { return ready() || window->pipelineStateText() == "STOPPED"; }, 120000) && ready(),
+          "AMD Program must present a native GPU frame through the desktop"))
+    return false;
+  auto* pipeline = window->findChild<QProcess*>();
+  if (!pipeline)
+    return false;
+  const auto environment = pipeline->processEnvironment();
+  if (!expect(
+          !environment.value("LD_LIBRARY_PATH").contains("/opt/nvidia/deepstream") &&
+              !environment.value("GST_PLUGIN_PATH").contains("/opt/nvidia/deepstream") &&
+              environment.value("GST_PLUGIN_PATH_1_0") == qEnvironmentVariable("GST_PLUGIN_PATH_1_0"),
+          "AMD desktop launch must preserve its private VA runtime without injecting DeepStream"))
+    return false;
+  render->setChecked(false);
+  if (!expect(
+          QTest::qWaitFor([&] { return window->logText().contains("GPU preview disabled generation="); }, 10000),
+          "Render off must receive its native acknowledgment"))
+    return false;
+  render->setChecked(true);
+  if (!expect(QTest::qWaitFor(ready, 10000), "Render on must present a fresh Program frame"))
+    return false;
+  tabs->setCurrentIndex(1);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] { return window->logText().contains("GPU preview unavailable channel=stitched"); }, 10000),
+          "Unported preview channels must report unavailable"))
+    return false;
+  const auto previous_generation = surface->property("previewRendererGeneration").toULongLong();
+  tabs->setCurrentIndex(0);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] {
+                return ready() && surface->property("previewRendererGeneration").toULongLong() > previous_generation;
+              },
+              10000),
+          "Returning to Program must restore a newly acknowledged native frame"))
+    return false;
+  return expect(
+      target->geometry() == target->parentWidget()->rect() &&
+          QRegularExpression("HSTREAM_AMD_FRAME .* tracks=[1-9]").match(window->logText()).hasMatch(),
+      "AMD desktop playback must fill its native target and retain detected tracks");
+}
+#endif
+
 bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -18321,6 +18423,10 @@ int main(int argc, char** argv) {
       return 1;
     }
     window.show();
+#ifdef HSTREAM_USE_HIP
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AMD_PROGRAM"))
+      return run_amd_program_preview_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
+#endif
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_COMPLETION_ONLY"))
       return run_real_calibration_completion_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
     if (!run_real_pipeline_e2e(&window, QString::fromLocal8Bit(e2e_game_id))) {

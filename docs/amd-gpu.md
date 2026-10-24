@@ -3,7 +3,8 @@
 Status: native HIP kernels, VA/HIP video interoperability and MIGraphX inference
 work on AMD. A ROCm build of `hstream-cli` now owns the saved-calibration Program
 video path: stereo decode, stitching, detection, rink filtering, geometric
-tracking, camera crop, saved scoreboard, GL preview and HEVC/MP4 output. Desktop integration, audio
+tracking, camera crop, saved scoreboard, GL preview and HEVC/AAC MP4 output. Desktop Program
+launch uses the same pipeline; additional preview channels, live controls
 and other optional application features remain unfinished. This is
 not yet a complete AMD application release.
 
@@ -257,8 +258,8 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 | Stitching | Saved calibration with HIP `hm-cupano` and shared conversion | Automatic calibration, rotated generations and live controls |
 | Model execution | Native MIGraphX inference in the ROCm CLI | Broader numerical qualification and optional analytics |
 | Tracking | Native geometric association, shared rink filter and camera policy | Appearance reassociation, telemetry and desktop seek policy |
-| Crop and preview | Shared HIP crop into VA output; native-window GL preview | Desktop channels, resize, pause and tab behavior |
-| Desktop, jobs and publication | Core video CLI and atomic local MP4 output | Desktop playback/controls, managed archives and highlight export |
+| Crop and preview | Shared HIP crop into VA output; native-window EGL Program preview | Source/Stitched channels and preview overlays |
+| Desktop, jobs and publication | Saved Program playback and atomic local CLI MP4 output | Live controls, managed archives and highlight export |
 
 Do not pass `--config=rocm` to `//...` as an application build: many targets
 still directly depend on NVIDIA libraries. Compute tests do not establish
@@ -664,7 +665,7 @@ the completed file is already published.
 
 The CLI accepts one application YAML and rejects two-stage calibration, unknown
 arguments, unsupported sinks and malformed time/preview arguments. Time limits
-advance from completed Program frames. Desktop preview channel routing, interactive scoreboard selection, player overlays,
+advance from completed Program frames. Additional desktop preview channels, interactive scoreboard selection, player overlays,
 telemetry, managed jobs and automatic calibration are still integration work.
 Tracker association uses the explicit AMD geometric settings; it does not run
 NvDCF's appearance model. Compiled-model reuse follows `runtime.amd.model_cache`.
@@ -898,5 +899,55 @@ threshold. CUDA builds retain their existing query and optional dialogs.
 
 Camera Experiments and Highlights still own NVIDIA-only video pipelines. Their
 buttons are disabled with an explanation in the ROCm build; no placeholder video
-backend is substituted. This build boundary does not yet make desktop Program
-launch operational: runtime discovery and preview-channel routing remain pending.
+backend is substituted. The AMD desktop launcher requires the matching CLI and
+preserves the caller's private VA/MIGraphX runtime paths. It does not stage
+DeepStream plugins/libraries and uses a separate GStreamer registry. Installed
+runtime packaging remains pending.
+
+### Desktop Program preview
+
+The ROCm CLI accepts the desktop's `--ui-preview-windows=CHANNEL:XID,...` and
+`--ui-preview-active=CHANNEL|none` protocol. Program is the available video
+channel. Selecting a mapped Source/Stitched tab deactivates Program and reports
+that channel unavailable; returning to Program requests a fresh frame. The
+third source target reserved by the desktop is accepted even for stereo games.
+Unknown/unmapped runtime selections fail without disturbing the current branch.
+Generations reject stale commands, and startup begins at generation 1 to match
+the UI. The optional desktop calibration revision/reference arguments must
+match the saved game snapshot; CLI overrides cannot rewrite that snapshot.
+They do not trigger automatic calibration.
+
+`VaProgramSink` observes glimagesink's draw callback and fences the GL thread
+from the processing owner before announcing `ready`. Submitted buffers and
+base-sink render counters alone do not establish that a window frame was drawn.
+An activation watermark excludes queued old frames from readiness; seeking
+resets that watermark with the output timeline. Disabling fences earlier draws
+and draws black on subsequent exposes. Audio mute remains independently
+controlled. The CLI selects EGL before creating GStreamer threads because GLX
+cannot negotiate the P010 DMA-BUF path. No video is mapped or read back.
+
+`NativePreviewSurface` clears native sink children as well as its own surface
+on resize/remap. This includes glimagesink's child window while its process is
+SIGSTOP-paused. Ordinary Qt updates preserve the frame; no geometry handler
+pumps posted events. The X11 test includes an idle renderer child and verifies
+both black clearing and preservation during ordinary updates.
+
+Opt-in desktop qualification uses the actual UI and CLI on an AMD-accelerated
+X11 display. Use a private copy of a calibrated game because normal desktop
+controls save next-run choices. With `HM_GAME_DIR` selecting that private root,
+run the matching `hstream_ui_test` binary with `HSTREAM_UI_E2E_GAME_ID=GAME` and
+`HSTREAM_UI_E2E_AMD_PROGRAM=1`, through the private runtime launchers above.
+The check exercises Play, Render off/on, an unavailable tab and return to
+Program, and requires native readiness plus nonempty track observations.
+This does not qualify other tabs, optional live controls, archive jobs or
+physical monitor/speaker output. The first model compilation can take longer
+than cached startup; a private virtual X11 display and null ALSA device are
+sufficient for protocol qualification.
+
+On the RX 9060 XT, the real desktop check processed frames with detected tracks,
+acknowledged Render off/on, and restored Program at generation 5 after visiting
+the unavailable Stitched tab. A separate 120-frame native-window run covered
+stale/unmapped selections, seeking and SIGSTOP-paused resize. Its stopped GL
+child retained 10,000 nonblack sampled pixels after a parent-only clear; the
+new clear reduced that bounded diagnostic sample to zero. Pixel sampling was
+only in the external test driver. The ordinary desktop/CLI path has no readback.

@@ -1311,6 +1311,7 @@ QString configure_pipeline_runtime_environment(
   // Keep the child CLI on this exact private root, including when the UI had
   // to create an unpredictable last-resort temporary directory.
   env.insert("HSTREAM_RUNTIME_CACHE_DIR", cache_root);
+#ifndef HSTREAM_USE_HIP
   // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
   // by stitching. Match run.sh while preserving an explicit diagnostic
   // override from the caller.
@@ -1323,6 +1324,7 @@ QString configure_pipeline_runtime_environment(
         hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ? "ximagesink"
                                                                                                      : "nv3dsink");
   }
+#endif
   QDir registry_dir(QDir(cache_root).filePath("gstreamer-1.0"));
   if (registry_dir.mkpath(".")) {
     const QString arch = runtime_architecture_name();
@@ -1331,17 +1333,28 @@ QString configure_pipeline_runtime_environment(
     const QString output_configuration = bazel_output_configuration(selected_bazel_bin);
     env.insert(
         "GST_REGISTRY",
-        registry_dir.filePath(QString("registry.hstream.native-onnx-v1.%1.%2.bin").arg(arch, output_configuration)));
+        registry_dir.filePath(QString("registry.hstream."
+#ifdef HSTREAM_USE_HIP
+                                      "amd-va-v1."
+#else
+                                      "native-onnx-v1."
+#endif
+                                      "%1.%2.bin")
+                                  .arg(arch, output_configuration)));
   }
 
   prepend_env_path(env, "GST_PLUGIN_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
+#ifndef HSTREAM_USE_HIP
   prepend_env_path(env, "GST_PLUGIN_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
+#endif
   prepend_env_path(env, "LD_LIBRARY_PATH", QDir(working_dir).filePath("lib"));
   prepend_env_path(env, "LD_LIBRARY_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
+#ifndef HSTREAM_USE_HIP
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
   if (!bazel_bin_path.isEmpty())
     return stage_bazel_gst_plugins(env, cache_root, bazel_bin_path);
+#endif
   return {};
 }
 
@@ -4776,12 +4789,18 @@ QString hm::ui_internal::matching_development_bazel_bin(const QString& applicati
 QString hm::ui_internal::missing_development_runtime_artifact(const QString& bazel_bin_path) {
   const QDir bazel_bin(canonical_dir_path(bazel_bin_path));
   const QStringList required = {
+#ifdef HSTREAM_USE_HIP
+      // AMD processing is linked into the matching CLI; it has no HStream
+      // GStreamer plugins to stage. Preserve the caller's VA/ROCm search paths.
+      "src/apps/hstream-cli/hstream-cli",
+#else
       "src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
       "src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so",
       "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+#endif
   };
   for (const QString& relative_path : required) {
     const QString artifact = bazel_bin.filePath(relative_path);

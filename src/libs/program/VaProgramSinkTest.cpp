@@ -167,6 +167,7 @@ int main(int argc, char** argv) {
     frames(*sink);
     Check(!sink->SetPaused(true).ok(), "Finished output accepted pause");
     Check(!sink->SetAudioMuted(true).ok(), "Discard output accepted preview mute");
+    Check(!sink->SetPreviewVisible(true, 0).ok() && !sink->PreviewReady().ok(), "Discard output claimed a preview");
     sink.reset();
     {
       auto blocked = Take(hm::program::VaProgramSink::Create(config));
@@ -368,7 +369,38 @@ int main(int argc, char** argv) {
           "Single-surface preview cannot replace its retained picture");
       preview.pool_frames = 2;
       auto preview_sink = Take(hm::program::VaProgramSink::Create(preview));
+      Check(!Take(preview_sink->PreviewReady()), "Preview ready before its first frame");
+      Check(!preview_sink->SetPreviewVisible(true, GST_CLOCK_TIME_NONE).ok(), "Invalid preview time accepted");
+      const auto submit = [&](int frame) {
+        Buffer buffer(Take(preview_sink->Acquire()), gst_buffer_unref);
+        tile.Render(buffer.get(), preview.video);
+        Status(preview_sink->Push(buffer.release(), frame * 40 * GST_MSECOND, 40 * GST_MSECOND));
+      };
+      const auto wait_ready = [&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!Take(preview_sink->PreviewReady()) && std::chrono::steady_clock::now() < deadline)
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        Check(Take(preview_sink->PreviewReady()), "No completed GL draw for the selected preview epoch");
+      };
+      Status(preview_sink->SetPreviewVisible(false, 0));
+      for (int i = 0; i < 5; ++i)
+        submit(i);
+      Check(!Take(preview_sink->PreviewReady()), "Hidden preview became ready");
+      Status(preview_sink->SetPreviewVisible(true, 5 * 40 * GST_MSECOND));
+      std::this_thread::sleep_for(std::chrono::milliseconds(40));
+      Check(!Take(preview_sink->PreviewReady()), "Queued old frames acknowledged a new preview epoch");
+      for (int i = 5; i < 10; ++i)
+        submit(i);
+      wait_ready();
+      Status(preview_sink->SetPreviewVisible(false, 10 * 40 * GST_MSECOND));
+      submit(10);
+      Check(!Take(preview_sink->PreviewReady()), "Disabled preview retained its old readiness");
+      Status(preview_sink->ResetTimeline());
+      Check(!Take(preview_sink->PreviewReady()), "Timeline reset lost hidden preview state");
+      Status(preview_sink->SetPreviewVisible(true, 0));
       frames(*preview_sink);
+      wait_ready();
+      Check(!preview_sink->SetPreviewVisible(false, 0).ok(), "Completed preview accepted visibility changes");
       preview_sink.reset();
       preview.audio = hm::program::VaProgramAudioConfig{{48000, 2}, 8192, 192000, "hstream_null", false};
       std::cout << "Testing clocked GL/ALSA preview\n" << std::flush;
@@ -390,6 +422,7 @@ int main(int argc, char** argv) {
       // Both PCM sample zero and video timestamp zero must be accepted after
       // flushing an active GL/ALSA timeline, without recreating the owner.
       Status(preview_sink->ResetTimeline());
+      Check(!Take(preview_sink->PreviewReady()), "Seek retained preview readiness from the old timeline");
       for (int64_t i = 0; i < 5; ++i) {
         Buffer buffer(Take(preview_sink->Acquire()), gst_buffer_unref);
         tile.Render(buffer.get(), preview.video);

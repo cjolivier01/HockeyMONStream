@@ -56,6 +56,13 @@ class VaProgramSink {
   // publication is permitted only after this succeeds.
   absl::Status Finish();
   absl::Status SetWindow(uintptr_t window);
+  // Changes visibility at a complete frame boundary. Disabling fences earlier
+  // GL draws; subsequent exposes draw black. Enabling starts a new readiness
+  // epoch, admitting only frames at/after minimum_time on this output timeline.
+  absl::Status SetPreviewVisible(bool visible, GstClockTime minimum_time);
+  // True only after an admitted GL draw and a GL-thread completion barrier.
+  // Buffer submission/base-sink statistics do not imply window presentation.
+  absl::StatusOr<bool> PreviewReady();
   // Call between submissions. PAUSED freezes the shared audio/video clock;
   // preroll may remain pending until resume supplies the next input. No waits
   // or application operation deadlines remain active after this returns.

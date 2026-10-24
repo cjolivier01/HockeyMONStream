@@ -69,6 +69,10 @@ int main(int argc, char** argv) {
     Check(
         overridden.ok() && overridden->camera["zoom-in-aggressiveness"].as<int>() == 83,
         "Launch override did not reach the Program camera");
+    Check(
+        overridden->saved_game["rink"]["camera"]["zoom_in_aggressiveness"].as<int>() == 61 &&
+            YAML::Dump(overridden->saved_game) == YAML::Dump(game),
+        "Launch overrides changed the saved game snapshot used for calibration admission");
 
     // Explicit native files preserve same-layer camera values. Higher launch
     // canonical values still win, using the shared NVIDIA mapping contract.

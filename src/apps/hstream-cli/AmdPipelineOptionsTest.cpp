@@ -29,9 +29,57 @@ int main() {
     Check(
         result.ok() && result->window == 1234 && result->realtime && result->sinks.size() == 2,
         "Preview controls lost");
+    result = parse({"--stitch-frame-time=00:03:39", "--clean-expected-invalidation-id=saved-revision"});
+    Check(
+        result.ok() && result->saved_stitch_time == "00:03:39" && result->expected_invalidation == "saved-revision",
+        "Saved calibration requirements lost");
+    result = parse(
+        {"--enable-sinks=RENDER",
+         "--ui-preview-windows=program:12,stitched:13,source0:14,source1:15",
+         "--ui-preview-active=none"});
+    Check(
+        result.ok() && result->preview_windows.size() == 4 && result->preview_windows.at("program") == 12 &&
+            result->preview_active == "none",
+        "Desktop preview mapping lost");
+    for (const auto& windows :
+         {"",
+          "program:0",
+          "program:-1",
+          "program:+1",
+          "program:18446744073709551616",
+          "program:1,",
+          "program:1,,source0:2",
+          "program:1,program:2",
+          "program:1,stitched:1",
+          "program:1,source3:2",
+          "stitched:1",
+          "program:1:2"})
+      Check(
+          !parse(
+               {"--enable-sinks=RENDER", std::string("--ui-preview-windows=") + windows, "--ui-preview-active=program"})
+               .ok(),
+          "Invalid desktop targets accepted");
+    Check(
+        !parse({"--enable-sinks=RENDER", "--ui-preview-windows=program:12"}).ok(), "Missing initial preview accepted");
+    Check(!parse({"--enable-sinks=RENDER", "--ui-preview-active=program"}).ok(), "Missing preview windows accepted");
+    Check(
+        !parse({"--ui-preview-windows=program:12", "--ui-preview-active=program"}).ok(),
+        "Fake output accepted desktop preview");
+    Check(
+        !parse({"--enable-sinks=RENDER", "--ui-preview-windows=program:12", "--ui-preview-active=stitched"}).ok(),
+        "Unmapped initial preview accepted");
+    Check(
+        !parse({"--enable-sinks=RENDER",
+                "--render-window-id=13",
+                "--ui-preview-windows=program:12",
+                "--ui-preview-active=program"})
+             .ok(),
+        "Conflicting preview window forms accepted");
     for (const auto& extra : std::vector<std::vector<std::string>>{
              {"-c", "first.yaml", "-c", "second.yaml"},
              {"--cfg-file="},
+             {"--stitch-frame-time="},
+             {"--clean-expected-invalidation-id="},
              {"--enable-sinks=FAKE,"},
              {"--enable-sinks=FAKE,,RENDER"},
              {"--enable-sinks=FAKE,FAKE"},

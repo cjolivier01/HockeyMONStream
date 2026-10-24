@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <gst/app/gstappsrc.h>
 #include <gst/audio/audio.h>
+#include <gst/gl/gl.h>
+#include <gst/gl/gstglfuncs.h>
 #include <gst/video/videooverlay.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -38,6 +40,41 @@ bool SetUnsigned(GstElement* element, const char* name, unsigned number) {
   g_value_unset(&value);
   return valid;
 }
+struct PreviewEpoch {
+  bool visible;
+  GstClockTime minimum_time;
+  std::atomic<bool> observed{false};
+  bool presented{false}; // Processing owner only.
+  PreviewEpoch(bool visible, GstClockTime time) : visible(visible), minimum_time(time) {}
+};
+struct PreviewState {
+  std::shared_ptr<PreviewEpoch> epoch = std::make_shared<PreviewEpoch>(true, 0);
+};
+gboolean PreviewDraw(GstElement*, GstGLContext* context, GstSample* sample, gpointer data) noexcept {
+  const auto& state = *static_cast<std::shared_ptr<PreviewState>*>(data);
+  const auto epoch = std::atomic_load(&state->epoch);
+  if (!epoch->visible) {
+    context->gl_vtable->ClearColor(0, 0, 0, 1);
+    context->gl_vtable->Clear(GL_COLOR_BUFFER_BIT);
+    return TRUE; // Suppress glimagesink's video drawing, including exposes.
+  }
+  const auto* buffer = sample ? gst_sample_get_buffer(sample) : nullptr;
+  if (buffer && GST_BUFFER_PTS_IS_VALID(buffer) && GST_BUFFER_PTS(buffer) >= epoch->minimum_time)
+    epoch->observed.store(true, std::memory_order_release);
+  return FALSE; // Let glimagesink render the imported GPU texture.
+}
+void FencePreview(GstElement* sink) {
+  GstGLContext* context{};
+  g_object_get(sink, "context", &context, nullptr);
+  if (!context)
+    return; // No GL context means no draw has started yet.
+  // This is called from the processing owner, never a GL callback. The
+  // synchronous message runs after the current draw callback and buffer swap.
+  // Scheduling an async message *inside* client-draw is insufficient: GLib
+  // may dispatch it immediately on the same thread, before the default draw.
+  gst_gl_context_thread_add(context, [](GstGLContext*, gpointer) {}, nullptr);
+  gst_object_unref(context);
+}
 } // namespace
 struct VaProgramSink::Impl {
   VaProgramSinkConfig config;
@@ -49,10 +86,14 @@ struct VaProgramSink::Impl {
   int64_t audio_samples{};
   bool retired{false}, eos_sent{false}, finished{false}, audio_finalized{false};
   bool paused{false};
+  std::shared_ptr<PreviewState> preview;
+  gulong preview_draw_handler{};
   std::atomic<bool> cancelled{false};
   ~Impl() {
     if (pipeline)
       gst_element_set_state(pipeline, GST_STATE_NULL);
+    if (sink && preview_draw_handler)
+      g_signal_handler_disconnect(sink, preview_draw_handler);
     if (bus)
       gst_object_unref(bus);
     if (input)
@@ -294,8 +335,17 @@ absl::StatusOr<std::unique_ptr<VaProgramSink>> VaProgramSink::Create(const VaPro
     gst_object_unref(encoder);
     if (!color.ok())
       return color;
-  } else if (config.kind == VaProgramSinkKind::kPreview && config.window) {
-    gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(impl->sink), config.window);
+  } else if (config.kind == VaProgramSinkKind::kPreview) {
+    impl->preview = std::make_shared<PreviewState>();
+    impl->preview_draw_handler = g_signal_connect_data(
+        impl->sink,
+        "client-draw",
+        G_CALLBACK(PreviewDraw),
+        new std::shared_ptr<PreviewState>(impl->preview),
+        [](gpointer data, GClosure*) { delete static_cast<std::shared_ptr<PreviewState>*>(data); },
+        GConnectFlags(0));
+    if (config.window)
+      gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(impl->sink), config.window);
   }
   if (gst_element_set_state(impl->pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     const auto status = impl->Poll();
@@ -439,7 +489,42 @@ absl::Status VaProgramSink::SetWindow(uintptr_t window) {
   if (impl.config.kind != VaProgramSinkKind::kPreview || !window || impl.eos_sent)
     return absl::FailedPreconditionError("An active preview and positive window ID are required");
   gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(impl.sink), window);
+  const auto epoch = std::atomic_load(&impl.preview->epoch);
+  std::atomic_store(
+      &impl.preview->epoch,
+      std::make_shared<PreviewEpoch>(epoch->visible, GST_CLOCK_TIME_IS_VALID(impl.previous) ? impl.previous + 1 : 0));
+  FencePreview(impl.sink);
   return absl::OkStatus();
+}
+absl::Status VaProgramSink::SetPreviewVisible(bool visible, GstClockTime minimum_time) {
+  auto& impl = *impl_;
+  const auto status = impl.Poll();
+  if (!status.ok())
+    return status;
+  if (!impl.preview || impl.eos_sent || !GST_CLOCK_TIME_IS_VALID(minimum_time) || minimum_time > uint64_t(INT64_MAX))
+    return absl::FailedPreconditionError("Preview visibility requires an active preview and finite frame time");
+  std::atomic_store(&impl.preview->epoch, std::make_shared<PreviewEpoch>(visible, minimum_time));
+  FencePreview(impl.sink);
+  return impl.Poll();
+}
+absl::StatusOr<bool> VaProgramSink::PreviewReady() {
+  auto& impl = *impl_;
+  auto status = impl.Poll();
+  if (!status.ok())
+    return status;
+  if (!impl.preview)
+    return absl::FailedPreconditionError("Readiness requires a Program preview");
+  const auto epoch = std::atomic_load(&impl.preview->epoch);
+  if (!epoch->visible || !epoch->observed.load(std::memory_order_acquire))
+    return false;
+  if (!epoch->presented) {
+    FencePreview(impl.sink);
+    status = impl.Poll();
+    if (!status.ok())
+      return status;
+    epoch->presented = true;
+  }
+  return true;
 }
 absl::Status VaProgramSink::SetPaused(bool paused) {
   auto& impl = *impl_;
@@ -478,6 +563,10 @@ absl::Status VaProgramSink::ResetTimeline() {
     return absl::FailedPreconditionError("Timeline reset requires unpaused local Program output before EOS");
   if (gst_element_set_state(impl.pipeline, GST_STATE_READY) == GST_STATE_CHANGE_FAILURE)
     return impl.Retire(absl::UnavailableError("Program output could not flush its timeline"));
+  if (impl.preview) {
+    const auto epoch = std::atomic_load(&impl.preview->epoch);
+    std::atomic_store(&impl.preview->epoch, std::make_shared<PreviewEpoch>(epoch->visible, 0));
+  }
   impl.previous = GST_CLOCK_TIME_NONE;
   impl.audio_samples = 0;
   if (gst_element_set_state(impl.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)

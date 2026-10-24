@@ -25,6 +25,7 @@ class ProgramRuntimeControl {
     std::function<absl::Status(uint64_t)> reset_progress;
     // Amount is a nonnegative run-relative position, or a signed relative jump.
     std::function<absl::Status(int64_t, bool, uint64_t)> seek;
+    std::function<absl::Status(const std::string&, uint64_t)> preview;
   };
   static absl::StatusOr<std::unique_ptr<ProgramRuntimeControl>> Create(
       int input_fd,

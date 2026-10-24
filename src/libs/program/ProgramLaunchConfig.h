@@ -12,7 +12,7 @@ namespace hm::program {
 struct ProgramLaunchConfig {
   std::filesystem::path game, application_file, inference_file;
   hm::config::ProgramConfiguration configuration;
-  YAML::Node camera, inference;
+  YAML::Node saved_game, camera, inference;
   AmdProgramSettings amd;
   stitching::ResolvedBlendSettings blend;
   bool minimize_blend;

@@ -24,6 +24,8 @@ struct Fixture {
   uint64_t reset_generation{0}, seek_generation{0};
   int64_t seek_position{0};
   bool seek_relative{false};
+  std::string preview_channel;
+  uint64_t preview_generation{0};
   std::mutex mutex;
   std::condition_variable wake;
   std::vector<std::string> messages;
@@ -65,6 +67,11 @@ struct Fixture {
            seek_position = position;
            seek_relative = relative;
            seek_generation = generation;
+           return absl::OkStatus();
+         },
+         [this](const std::string& channel, uint64_t generation) {
+           preview_channel = channel;
+           preview_generation = generation;
            return absl::OkStatus();
          }});
     close(pipefd[0]);
@@ -127,6 +134,17 @@ int main() {
       fixture.Send("@set-render-audio-muted 1\n");
       Check(fixture.control->Service().ok() && fixture.muted, "mute failed");
       fixture.WaitMessage("HSTREAM_RENDER_AUDIO muted=1 branches=1");
+      fixture.Send("@set-preview-active program 9\n");
+      Check(
+          fixture.control->Service().ok() && fixture.preview_channel == "program" && fixture.preview_generation == 9,
+          "preview activation fields lost");
+      for (const auto* command :
+           {"@set-preview-active none 0\n", "@set-preview-active none -1\n", "@set-preview-active none 10 extra\n"}) {
+        fixture.Send(command);
+        Check(
+            fixture.control->Service().ok() && fixture.preview_channel == "program" && fixture.preview_generation == 9,
+            "malformed preview activation executed");
+      }
       fixture.Send("@reset-progress-rate 3\n@seek 123456789 2\n");
       Check(
           fixture.control->Service().ok() && fixture.reset_generation == 3 && fixture.seek_position == 123456789 &&

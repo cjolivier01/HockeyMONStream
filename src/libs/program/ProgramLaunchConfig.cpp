@@ -49,6 +49,7 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       return game.status();
     if (!*game)
       return absl::FailedPreconditionError("Program requires saved game configuration and calibration");
+    result.saved_game = YAML::Clone(**game);
     result.application_file = fs::absolute(application_file);
     const auto native = YAML::LoadFile(result.application_file.string());
     auto merged = hm::config::ResolveProgramConfiguration(baseline->values, *user, **game, native, option_groups);

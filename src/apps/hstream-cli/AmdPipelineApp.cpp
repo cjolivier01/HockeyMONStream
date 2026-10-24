@@ -113,6 +113,21 @@ void Run(const hm::program::AmdPipelineOptions& args) {
       args.game,
       args.application.empty() ? root / "ds_hockey_app_config.yaml" : std::filesystem::path(args.application),
       args.options));
+  if (args.saved_stitch_time) {
+    const auto saved = hm::get_node(launch.saved_game, "stitching.stitch_frame_time");
+    Require(
+        saved && saved->IsScalar() && saved->as<std::string>() == *args.saved_stitch_time,
+        "AMD playback requires --stitch-frame-time to match the saved calibration reference");
+  }
+  if (args.expected_invalidation) {
+    const auto saved = hm::get_node(launch.saved_game, "hstream_ui.stitching_calibration.invalidation_id");
+    const auto state = hm::get_node(launch.saved_game, "hstream_ui.stitching_calibration.status");
+    const auto invalidated = hm::get_node(launch.saved_game, "hstream_ui.stitching_calibration.artifacts_invalidated");
+    Require(
+        saved && saved->IsScalar() && saved->as<std::string>() == *args.expected_invalidation && state &&
+            state->IsScalar() && state->as<std::string>() == "complete" && (!invalidated || !invalidated->as<bool>()),
+        "AMD playback requires the requested completed calibration revision; automatic calibration is unavailable");
+  }
   Status(hm::program::ValidateAmdProgramAdmission(launch.configuration));
   const auto audio_config = Take(hm::program::ResolveProgramAudioConfig(launch.configuration, launch.frame_offsets));
   auto output_config = Take(hm::program::ResolveProgramOutputConfig(launch.configuration));
@@ -202,6 +217,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   output_info.colorimetry = left.colorimetry;
   output_info.chroma_site = GST_VIDEO_CHROMA_SITE_JPEG;
   std::vector<std::unique_ptr<hm::program::VaProgramSink>> outputs;
+  hm::program::VaProgramSink* preview_output{};
   std::optional<hm::program::VaProgramAudioConfig> sink_audio;
   if (audio_config) {
     const auto* mute = std::getenv("HSTREAM_RENDER_AUDIO_MUTED");
@@ -228,10 +244,12 @@ void Run(const hm::program::AmdPipelineOptions& args) {
          output_config.bitrate_kbps,
          output_config.keyframe_interval,
          launch.amd.maximum_encoded_packet_bytes,
-         static_cast<uintptr_t>(args.window),
+         args.preview_windows.empty() ? args.window : args.preview_windows.at("program"),
          nullptr,
          sink_audio});
     outputs.push_back(Take(std::move(output)));
+    if (name == "RENDER")
+      preview_output = outputs.back().get();
   }
   std::signal(SIGTERM, Stop);
   std::signal(SIGINT, Stop);
@@ -242,6 +260,77 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   const uint64_t horizon = std::min(source->duration() - start, limit.value_or(source->duration() - start));
   uint64_t playback_position = 0;
   bool repositioned = false;
+  uint64_t preview_generation = 0;
+  GstClockTime next_preview_time = 0;
+  bool preview_waiting = false;
+  std::string preview_channel = "none";
+  const auto select_preview = [&](const std::string& channel, uint64_t generation) {
+    if (args.preview_windows.empty() || !preview_output) {
+      g_print(
+          "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
+          " message=Desktop preview windows were not configured\n",
+          channel.c_str(),
+          generation);
+      return absl::OkStatus();
+    }
+    if (generation && generation <= preview_generation) {
+      g_print(
+          "HSTREAM_PREVIEW channel=%s status=stale generation=%" G_GUINT64_FORMAT
+          " message=Newer preview selection is active\n",
+          channel.c_str(),
+          generation);
+      return absl::OkStatus();
+    }
+    preview_generation = generation;
+    if (channel != "none" && !args.preview_windows.count(channel)) {
+      g_print(
+          "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
+          " message=Preview channel has no configured window\n",
+          channel.c_str(),
+          generation);
+      return absl::OkStatus();
+    }
+    // Other desktop channels will get their own GPU frame routing. Until then
+    // report their absence explicitly, without showing a Program crop as a
+    // source camera or stitched panorama.
+    const bool available = channel == "program";
+    const auto status = preview_output->SetPreviewVisible(available, next_preview_time);
+    if (!status.ok())
+      return status;
+    if (!available && channel != "none" && preview_channel == "program") {
+      // A failed selection alone leaves the UI's previous channel active.
+      // Announce the branch we actually disabled so returning to Program
+      // requests a fresh activation instead of trusting its previous frame.
+      g_print(
+          "HSTREAM_PREVIEW channel=program status=deactivated generation=%" G_GUINT64_FORMAT
+          " message=Program preview disabled for this channel\n",
+          generation);
+    }
+    preview_channel = available ? "program" : "none";
+    preview_waiting = available;
+    g_print(
+        "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " message=%s\n",
+        channel.c_str(),
+        available               ? "activated"
+            : channel == "none" ? "deactivated"
+                                : "unavailable",
+        generation,
+        available               ? "Waiting for the first Program GPU frame"
+            : channel == "none" ? "Preview disabled"
+                                : "This AMD preview channel is not yet available");
+    return absl::OkStatus();
+  };
+  const auto publish_preview_ready = [&] {
+    if (preview_waiting && Take(preview_output->PreviewReady())) {
+      preview_waiting = false;
+      g_print(
+          "HSTREAM_PREVIEW channel=program status=ready generation=%" G_GUINT64_FORMAT
+          " message=First GPU frame presented resolution=%dx%d\n",
+          preview_generation,
+          output_info.width,
+          output_info.height);
+    }
+  };
   hm::PlaybackRateEstimator rate;
   auto rate_start = std::chrono::steady_clock::now();
   uint64_t rate_frames = 0;
@@ -323,6 +412,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
               }
               for (const auto& output : outputs)
                 Status(output->ResetTimeline());
+              next_preview_time = 0;
+              preview_waiting = !args.preview_windows.empty() && preview_channel == "program";
             }
             previous_segments = completed_video;
             repositioned = true;
@@ -334,8 +425,14 @@ void Run(const hm::program::AmdPipelineOptions& args) {
                 playback_position);
             return absl::OkStatus();
           },
+          select_preview,
       }));
   g_print("HSTREAM_AMD_PREPARATION state=ready\n");
+  if (!args.preview_windows.empty()) {
+    // Announce protocol availability before activation/first-frame responses.
+    g_print("HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=1\n", args.preview_active.c_str());
+    Status(select_preview(args.preview_active, 1));
+  }
   for (;;) {
     const auto completed =
         Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get()));
@@ -354,6 +451,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
           Status(output->PushAudio(*pcm));
       }
     }
+    next_preview_time = pair->time - first + 1;
+    publish_preview_ready();
     ++frames;
     ++rate_frames;
     const auto segment_video = pair->time - first + pair->duration;
@@ -398,6 +497,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   }
   for (const auto& output : outputs)
     Status(output->Finish());
+  publish_preview_ready();
   if (interrupted)
     throw Failure(absl::CancelledError("Program cancelled before publication"));
   if (file)
@@ -448,6 +548,16 @@ int main(int argc, char** argv) {
   int result = 0;
   try {
     const auto args = Take(hm::program::ParseAmdPipelineOptions({argv, argv + argc}));
+    if (args.sinks.count("RENDER")) {
+      // P010 DMA-BUF import requires EGL. GStreamer's default X11 platform is
+      // GLX, which cannot negotiate this GPU-resident preview path. Select the
+      // required API before GStreamer creates any worker/context threads.
+      const auto* platform = g_getenv("GST_GL_PLATFORM");
+      Require(
+          !platform || !*platform || std::string(platform) == "egl",
+          "AMD Program preview requires GST_GL_PLATFORM=egl");
+      g_setenv("GST_GL_PLATFORM", "egl", TRUE);
+    }
     XInitThreads();
     gst_init(&argc, &argv);
     Run(args);
