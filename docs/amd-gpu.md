@@ -473,3 +473,18 @@ replacement, cancellation and twelve additional chapter switches without
 file-descriptor growth. Only the test reads one synthetic luma byte. Fixture
 preparation uses `/usr/bin/ffmpeg` with libx264/AAC; production playback remains
 native and uses VA decoding.
+
+`ProgramLaunchConfig` resolves the shared baseline, per-user overlay, saved game,
+native application underlay and ordered launch option groups before GPU work. It
+loads camera and inference selections using the declaring layer's reference
+roots, applies the shared canonical camera mapping in memory, and preserves
+ordered camera chapters and fractional synchronization. Missing/invalid saved
+inputs fail startup. `ConfigLayers` now supplies NVIDIA's merge, provenance and
+camera-reference primitives as well. This prepares application startup; it does
+not yet select an AMD CLI/UI backend.
+
+Configuration validation: all four focused HIP-build checks and four CUDA-build
+checks pass, including native configurator persistence. The full local x86 build
+passes. Both startup configuration reviews found no necessary fixes. The Jetson
+attempt still lacks `aarch64-linux-gnu-gcc-11`, `stubby` is unreachable, and native
+SBSA requires an ARM64 host.

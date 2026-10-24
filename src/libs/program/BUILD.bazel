@@ -164,3 +164,31 @@ cc_library(
         "@hm-cupano//src/pano:cuda_pano",
     ],
 )
+
+cc_library(
+    name = "launch_config",
+    srcs = ["ProgramLaunchConfig.cpp"],
+    hdrs = ["ProgramLaunchConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [
+        ":amd_program_settings", "//src/libs/common:config_layers",
+        "//src/libs/common:baseline_config", "//src/libs/common:user_config",
+        "//src/libs/stitching:game_config", "//src/libs/tracking:program_camera_mapping",
+    ],
+)
+
+cc_test(
+    name = "launch_config_test",
+    srcs = ["ProgramLaunchConfigTest.cpp"],
+    args = [
+        "$(location //configs:baseline.yaml)",
+        "$(location //configs:ds_hockey_app_config.yaml)",
+        "$(location //configs:play_tracker_config.yaml)",
+        "$(location //configs:config_infer_yolov8_hockey.yaml)",
+    ],
+    data = [
+        "//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml",
+        "//configs:play_tracker_config.yaml", "//configs:config_infer_yolov8_hockey.yaml",
+    ],
+    deps = [":launch_config"],
+)

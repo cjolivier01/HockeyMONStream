@@ -1,3 +1,4 @@
+#include "hstream/src/libs/common/ConfigLayers.h"
 #include "configurator.h"
 #include "hstream/src/libs/tracking/ProgramCameraMapping.h"
 #include "hstream/src/libs/common/PinnedFile.h"
@@ -6237,56 +6238,18 @@ absl::Status Configurator::materialize_playtracker_config(
   if (!configured_file.IsScalar())
     return absl::InvalidArgumentError("pipeline.ds-playtracker.config-file must name a base YAML file");
 
-  const fs::path configured_path = configured_file.as<std::string>();
-  std::vector<fs::path> candidates;
-  if (configured_path.is_absolute()) {
-    candidates.push_back(configured_path);
-  } else {
-    auto append_candidate = [&](const fs::path& root) {
-      if (root.empty())
-        return;
-      const fs::path candidate = root / configured_path;
-      if (std::find(candidates.begin(), candidates.end(), candidate) == candidates.end())
-        candidates.push_back(candidate);
-    };
-    const int configured_file_rank = explicit_value_rank("pipeline.ds-playtracker.config-file");
-    if (configured_file_rank == 3) {
-      append_candidate(fs::current_path());
-    } else if (configured_file_rank == 2) {
-      append_candidate(game_dir);
-    } else if (configured_file_rank == 1) {
-      const auto user_config_path = user_config::file_path();
-      if (user_config_path.ok())
-        append_candidate(user_config_path->parent_path());
-    } else {
-      // Structural app defaults are owned by the app config, not by an
-      // arbitrary same-named file left in the selected game directory.
-      append_candidate(pipeline_config_dir);
-      append_candidate(fs::path(config_root_dir_));
-    }
-    append_candidate(pipeline_config_dir);
-    append_candidate(fs::path(config_root_dir_));
-    append_candidate(game_dir);
-    append_candidate(fs::current_path());
-    append_candidate(fs::current_path() / "configs");
+  const int configured_file_rank = explicit_value_rank("pipeline.ds-playtracker.config-file");
+  fs::path user_directory;
+  if (configured_file_rank == 1) {
+    const auto user_config_path = user_config::file_path();
+    if (user_config_path.ok())
+      user_directory = user_config_path->parent_path();
   }
   fs::path base_path;
-  for (const fs::path& candidate : candidates) {
-    std::error_code error;
-    if (fs::is_regular_file(candidate, error) && !error) {
-      base_path = candidate;
-      break;
-    }
-  }
-  if (base_path.empty()) {
-    std::string searched;
-    for (const fs::path& candidate : candidates) {
-      if (!searched.empty())
-        searched += ", ";
-      searched += candidate.string();
-    }
-    return absl::NotFoundError("Could not locate pipeline.ds-playtracker.config-file; searched: " + searched);
-  }
+  HM_ASSIGN_OR_RETURN(base_path, hm::config::ResolveReference(
+      configured_file.as<std::string>(), configured_file_rank,
+      {pipeline_config_dir, config_root_dir_, game_dir, user_directory, fs::current_path()},
+      "pipeline.ds-playtracker.config-file"));
 
   YAML::Node base;
   try {
@@ -9063,47 +9026,11 @@ YAML::Node Configurator::recording_configuration() const {
 }
 
 YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest) {
-  if (!overlay.IsMap()) {
-    return base;
-  }
-  if (!base.IsMap()) {
-    return overlay;
-  }
-  YAML::Node result = base;
-  for (const auto& pair : overlay) {
-    const std::string& key = pair.first.as<std::string>();
-
-    // Check if key exists in base
-    if (warn_if_key_not_in_dest && !base[key]) {
-      std::cerr << "Warning: Key '" << key << "' in overlay does not exist in base config\n";
-    }
-
-    // If both are maps, recursively merge
-    if (pair.second.IsMap() && base[key].IsDefined() && base[key].IsMap()) {
-      result[key] = merge_nodes(base[key], pair.second, warn_if_key_not_in_dest);
-    } else {
-      result[key] = pair.second;
-    }
-  }
-
-  return result;
+  return hm::config::MergeNodes(base, overlay, warn_if_key_not_in_dest);
 }
 
 void Configurator::record_explicit_overlay(const YAML::Node& overlay, const std::string& prefix, int rank) {
-  if (!overlay.IsMap()) {
-    if (!prefix.empty())
-      explicit_value_ranks_[prefix] = rank;
-    return;
-  }
-  if (overlay.size() == 0 && !prefix.empty()) {
-    explicit_value_ranks_[prefix] = rank;
-    return;
-  }
-  for (const auto& entry : overlay) {
-    const std::string key = entry.first.as<std::string>();
-    const std::string path = prefix.empty() ? key : prefix + "." + key;
-    record_explicit_overlay(entry.second, path, rank);
-  }
+  hm::config::RecordLeafRanks(overlay, prefix, rank, explicit_value_ranks_);
 }
 
 int Configurator::explicit_value_rank(const std::string& path) const {

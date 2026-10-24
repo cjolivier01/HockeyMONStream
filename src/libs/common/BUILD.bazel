@@ -482,3 +482,18 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [":utils_base", "@com_google_absl//absl/status:status", "@com_google_absl//absl/status:statusor"],
 )
+
+cc_library(
+    name = "config_layers",
+    srcs = ["ConfigLayers.cpp"],
+    hdrs = ["ConfigLayers.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":config_path", "@yaml-cpp", "@com_google_absl//absl/status:statusor", "@com_google_absl//absl/strings"],
+)
+
+cc_test(
+    name = "config_layers_test",
+    srcs = ["ConfigLayersTest.cpp"],
+    deps = [":config_layers"],
+)

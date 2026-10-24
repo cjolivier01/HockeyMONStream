@@ -30,6 +30,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/common:config_layers",
     "//src/libs/tracking:program_camera_mapping",
     "//src/libs/publication",
     "//src/libs/stitching:auto_input_lens",
