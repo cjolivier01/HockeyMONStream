@@ -19,6 +19,7 @@ struct DetectorConfig {
   bool maintain_aspect, symmetric_padding;
   gpu::MigraphxSession::Precision precision;
   size_t maximum_io_bytes;
+  std::optional<gpu::MigraphxCacheConfig> cache;
 };
 
 // Native AMD execution of the shipped YOLO xyxy/score/class ONNX contract.

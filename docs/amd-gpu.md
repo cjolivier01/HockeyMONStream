@@ -145,8 +145,8 @@ MIGraphX's native GPU target. It supports FP32 or FP16 operations with contiguou
 FP32 bindings. It disables automatic copies, allocates bindings once, and uses
 one explicit caller-owned HIP stream. Destruction drains that stream before
 freeing model storage. All input shapes and the binding byte bound are explicit;
-unsupported tensor contracts fail preparation. Compiled-model caching is still
-pending, so preparation currently recompiles the model at startup.
+unsupported tensor contracts fail preparation. The CLI uses the compiled-model
+cache described below; low-level callers can explicitly omit caching.
 
 `src/libs/detection/HipDetector.*` composes that session with shared CUDA/HIP
 preprocessing and proposal filtering. It accepts GPU RGBA8, packed RGB10, NV12
@@ -255,7 +255,7 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 | Decode and encode | VA H.264/HEVC stereo readers and HEVC/MP4 output in the ROCm CLI | Additional application sink modes |
 | Allocation and pairing | Bounded VA DMA-BUF pools, HIP imports and exact stereo clock | Broader codec/device qualification |
 | Stitching | Saved calibration with HIP `hm-cupano` and shared conversion | Automatic calibration, rotated generations and live controls |
-| Model execution | Native MIGraphX inference in the ROCm CLI | Compiled-model cache, broader numerical qualification and optional analytics |
+| Model execution | Native MIGraphX inference in the ROCm CLI | Broader numerical qualification and optional analytics |
 | Tracking | Native geometric association, shared rink filter and camera policy | Appearance reassociation, telemetry and desktop seek policy |
 | Crop and preview | Shared HIP crop into VA output; native-window GL preview | Desktop channels, resize, pause and tab behavior |
 | Desktop, jobs and publication | Core video CLI and atomic local MP4 output | Desktop playback/controls, managed archives and highlight export |
@@ -542,7 +542,7 @@ Earlier recordings described above had ten-bit pixels but that incorrect profile
 label; rebuilt output reports both `Main 10` and `yuv420p10le`.
 
 The configured qualifier and normal ROCm CLI share these components. Desktop
-routing, live controls, model compilation cache and installed AMD discovery
+routing, live controls and installed AMD discovery
 remain integration work.
 
 Configured validation on the RX 9060 XT: 120 raw stereo pairs from
@@ -668,8 +668,7 @@ advance from completed Program frames. Runtime stdin commands, desktop preview
 channel routing, seek/pause acknowledgments, interactive scoreboard selection, player overlays,
 telemetry, managed jobs and automatic calibration are still integration work.
 Tracker association uses the explicit AMD geometric settings; it does not run
-NvDCF's appearance model. Model compilation is repeated at startup until the
-native cache is implemented.
+NvDCF's appearance model. Compiled-model reuse follows `runtime.amd.model_cache`.
 
 The initial normal CLI runs processed 120 frames and 2,719 track observations
 from `vegas-calheat-1` at 60 seconds. Encoded output was 3840×2160 HEVC with 120
@@ -811,3 +810,34 @@ alongside the 60 fps / 48 kHz and 8 kHz cases. The 1 fps fixture uses intra-only
 encoding at 100 kb/s because this Mesa driver emits a filler-only inter-frame
 access unit at that rate; the invalid packet is rejected by colorimetry validation.
 The scheduling fix does not hide that driver limitation.
+
+## Compiled AMD model cache
+
+`gpu/migraphx/MigraphxCache` retains native compiled programs across CLI runs.
+`runtime.amd.model_cache` in the shared baseline enables it, sets the directory
+to `{user_cache}/hstream/migraphx`, and bounds each serialized program at 2 GiB.
+`{user_cache}` resolves to `XDG_CACHE_HOME` or `HOME/.cache`; an explicit absolute
+directory is also supported. Set `enable=false` for uncached preparation.
+These settings are resolved before GPU preparation and do not affect NVIDIA.
+
+Every launch parses ONNX and hashes the uncompiled program, including external
+tensor bytes and resolved shapes. The key also covers precision, our compilation
+contract, GPU architecture/model, HIP versions, kernel release, actual loaded
+MIGraphX/HIP/HIPRTC/math-library paths and SHA-256 contents, and relevant ROCm
+environment values. Custom `MIGRAPHX_HIP_COMPILER` overrides require disabling
+the cache. Library hashing is startup work; no cache I/O occurs on video frames.
+
+A miss compiles and validates bindings before publishing. A hit copies the
+bounded program into a private preparation directory, verifies its SHA-256,
+loads it, and rechecks the same binding/output contracts. Corrupt or oversized
+entries fail visibly; remove the named entry or explicitly disable caching to
+recover. No silent recompilation masks a damaged cache. Cache roots/entries
+must be private directories owned by the current user, without symlinks.
+
+Program and checksum publish together through an atomic no-replacement
+directory rename after file/directory sync. Concurrent misses may compile
+independently, but only one complete entry wins. Normal completion/failure
+removes preparation directories; SIGKILL can leave a private `.prepare-*`
+directory, which can be removed when no preparation is running. There is no
+automatic eviction: users may remove old entries while playback is stopped.
+The byte limit is per program, not a total cache quota.

@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
+#include "hstream/src/libs/gpu/migraphx/MigraphxCacheConfig.h"
 #include "hstream/src/libs/tracking/NativeTracker.h"
 #include "yaml-cpp/yaml.h"
 
@@ -15,6 +17,7 @@ struct AmdProgramSettings {
   uint64_t operation_timeout_ns, cancellation_poll_ns;
   size_t maximum_inference_io_bytes, maximum_encoded_packet_bytes;
   bool compact_stitch_workspace;
+  std::optional<gpu::MigraphxCacheConfig> model_cache;
   tracking::TrackerConfig tracker;
 };
 

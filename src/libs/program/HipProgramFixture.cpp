@@ -152,7 +152,7 @@ int main(int argc, char** argv) {
           detector.maintain_aspect,
           detector.symmetric_padding,
           detector.fp16 ? hm::gpu::MigraphxSession::Precision::kFloat16 : hm::gpu::MigraphxSession::Precision::kFloat32,
-          settings.maximum_inference_io_bytes};
+          settings.maximum_inference_io_bytes, settings.model_cache};
       const auto& selected_blend = launch.blend;
       switch (Take(hm::stitching::ParseBlendMode(selected_blend.mode))) {
         case hm::stitching::BlendMode::kLaplacian:
@@ -193,7 +193,7 @@ int main(int argc, char** argv) {
           property["maintain-aspect-ratio"].as<int>() != 0,
           property["symmetric-padding"].as<int>() != 0,
           hm::gpu::MigraphxSession::Precision::kFloat16,
-          settings.maximum_inference_io_bytes};
+          settings.maximum_inference_io_bytes, settings.model_cache};
     }
     Check(!std::filesystem::exists(output_file), "Output already exists");
     Check(frames > 0 && out_width > 0 && out_height > 0, "Invalid fixture dimensions or frame count");

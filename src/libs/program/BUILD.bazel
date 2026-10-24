@@ -71,7 +71,7 @@ cc_library(
     srcs = ["AmdProgramSettings.cpp"],
     hdrs = ["AmdProgramSettings.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["//src/libs/common:config_path", "//src/libs/tracking:native_tracker", "@yaml-cpp"],
+    deps = ["//src/libs/common:config_path", "//src/libs/tracking:native_tracker", "//src/libs/gpu/migraphx:cache_config", "@yaml-cpp"],
 )
 
 cc_test(

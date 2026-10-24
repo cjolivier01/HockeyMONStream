@@ -1,10 +1,12 @@
 #pragma once
 
 #include "hstream/src/libs/gpu/Runtime.h"
+#include "hstream/src/libs/gpu/migraphx/MigraphxCacheConfig.h"
 
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -37,12 +39,14 @@ class MigraphxSession {
       const std::vector<ModelInputShape>& inputs,
       Precision precision,
       int device,
-      size_t maximum_io_bytes);
+      size_t maximum_io_bytes,
+      const std::optional<MigraphxCacheConfig>& cache = std::nullopt);
   ~MigraphxSession();
   MigraphxSession(const MigraphxSession&) = delete;
   MigraphxSession& operator=(const MigraphxSession&) = delete;
 
   size_t input_count() const;
+  bool cache_hit() const;
   const Tensor& input(size_t index) const;
   size_t output_count() const;
   // Valid after a successful Enqueue; output storage may alias an input for

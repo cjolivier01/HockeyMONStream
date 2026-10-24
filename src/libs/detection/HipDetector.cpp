@@ -84,7 +84,8 @@ absl::StatusOr<std::unique_ptr<HipDetector>> HipDetector::Create(const DetectorC
       {{config.input_name, {1, 3, static_cast<size_t>(config.height), static_cast<size_t>(config.width)}}},
       config.precision,
       config.device,
-      config.maximum_io_bytes);
+      config.maximum_io_bytes,
+      config.cache);
   if (!session.ok())
     return session.status();
   if ((*session)->output_count() != 1)

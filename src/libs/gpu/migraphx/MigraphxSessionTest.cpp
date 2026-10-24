@@ -73,13 +73,18 @@ constexpr unsigned char kAddModel[] = {
     0x08, 0x0a, 0x02, 0x08, 0x01, 0x0a, 0x02, 0x08, 0x02, 0x42, 0x04, 0x0a, 0x00, 0x10, 0x11,
 };
 
-void TestCompute(const Model& model, Session::Precision precision) {
+void TestCompute(
+    const Model& model,
+    Session::Precision precision,
+    const std::optional<hm::gpu::MigraphxCacheConfig>& cache = std::nullopt,
+    bool hit = false) {
   Stream stream, other;
   constexpr size_t kIterations = 16;
   Host inputs(kIterations * 4), outputs(kIterations * 2);
-  auto created = Session::Compile(model.path, {{"left", {1, 2}}, {"right", {1, 2}}}, precision, 0, 24);
+  auto created = Session::Compile(model.path, {{"left", {1, 2}}, {"right", {1, 2}}}, precision, 0, 24, cache);
   Check(created.ok(), created.status().ToString());
   auto session = std::move(*created);
+  Check(session->cache_hit() == hit, "unexpected cache hit/miss");
   Check(session->input_count() == 2 && session->output_count() == 1, "input/output count");
   Check(session->input(0).dimensions == std::vector<size_t>({1, 2}), "input shape");
   Check(session->output(0).data == nullptr, "no output before enqueue");
@@ -139,6 +144,89 @@ void TestInvalid(const Model& model) {
   Check(!Session::Compile(model.path + ".missing", good, Session::Precision::kFloat32, 0, 24).ok(), "missing model");
   Check(!Session::Compile(model.path, good, Session::Precision::kFloat32, -1, 24).ok(), "invalid device");
 }
+struct Directory {
+  std::filesystem::path path;
+  Directory() {
+    std::string value = (std::filesystem::temp_directory_path() / "hstream-cache-test-XXXXXX").string();
+    Check(mkdtemp(value.data()), "create cache test directory");
+    path = value;
+  }
+  ~Directory() {
+    std::filesystem::remove_all(path);
+  }
+};
+void TestCache(const Model& add) {
+  Directory directory;
+  const hm::gpu::MigraphxCacheConfig cache{directory.path / "cache", 1048576};
+  TestCompute(add, Session::Precision::kFloat32, cache, false);
+  TestCompute(add, Session::Precision::kFloat32, cache, true);
+  TestCompute(add, Session::Precision::kFloat16, cache, false);
+  TestCompute(add, Session::Precision::kFloat16, cache, true);
+  const auto compile = [&](const hm::gpu::MigraphxCacheConfig& config, size_t io) {
+    return Session::Compile(
+        add.path, {{"left", {1, 2}}, {"right", {1, 2}}}, Session::Precision::kFloat32, 0, io, config);
+  };
+  Check(!compile(cache, 23).ok(), "cached graph bypassed binding bound");
+  Check(!compile({cache.directory, 1}, 24).ok(), "cache byte bound ignored");
+  Check(!compile({"relative", cache.maximum_entry_bytes}, 24).ok(), "relative cache accepted");
+  std::filesystem::create_directory_symlink(cache.directory, directory.path / "alias");
+  Check(!compile({directory.path / "alias", cache.maximum_entry_bytes}, 24).ok(), "cache symlink accepted");
+  setenv("MIGRAPHX_TRACE_COMPILE", "0", 1);
+  TestCompute(add, Session::Precision::kFloat32, cache, false);
+  unsetenv("MIGRAPHX_TRACE_COMPILE");
+  TestCompute(add, Session::Precision::kFloat32, cache, true);
+  size_t entries = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(cache.directory)) {
+    Check(entry.path().filename().string().size() == 64, "temporary preparation leaked");
+    ++entries;
+    std::ofstream program(entry.path() / "program.mxr", std::ios::binary | std::ios::trunc);
+    program << "corrupt";
+  }
+  Check(entries == 3, "precision/environment did not isolate cache entries");
+  const auto corrupt = compile(cache, 24);
+  Check(
+      !corrupt.ok() && corrupt.status().ToString().find("corrupt entry") != std::string::npos,
+      "corrupt cache silently recompiled");
+}
+
+// Add(input, weight) with an external float32 [1,2] initializer. Replacing only
+// weights.bin must invalidate the cache and alter the computed result.
+constexpr unsigned char kExternalModel[] = {
+    0x08, 0x09, 0x3a, 0xa0, 0x01, 0x0a, 0x1c, 0x0a, 0x05, 0x69, 0x6e, 0x70, 0x75, 0x74, 0x0a, 0x06, 0x77, 0x65, 0x69,
+    0x67, 0x68, 0x74, 0x12, 0x06, 0x6f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x22, 0x03, 0x41, 0x64, 0x64, 0x12, 0x08, 0x65,
+    0x78, 0x74, 0x65, 0x72, 0x6e, 0x61, 0x6c, 0x2a, 0x43, 0x08, 0x01, 0x08, 0x02, 0x10, 0x01, 0x42, 0x06, 0x77, 0x65,
+    0x69, 0x67, 0x68, 0x74, 0x6a, 0x17, 0x0a, 0x08, 0x6c, 0x6f, 0x63, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x12, 0x0b, 0x77,
+    0x65, 0x69, 0x67, 0x68, 0x74, 0x73, 0x2e, 0x62, 0x69, 0x6e, 0x6a, 0x0b, 0x0a, 0x06, 0x6f, 0x66, 0x66, 0x73, 0x65,
+    0x74, 0x12, 0x01, 0x30, 0x6a, 0x0b, 0x0a, 0x06, 0x6c, 0x65, 0x6e, 0x67, 0x74, 0x68, 0x12, 0x01, 0x38, 0x70, 0x01,
+    0x5a, 0x17, 0x0a, 0x05, 0x69, 0x6e, 0x70, 0x75, 0x74, 0x12, 0x0e, 0x0a, 0x0c, 0x08, 0x01, 0x12, 0x08, 0x0a, 0x02,
+    0x08, 0x01, 0x0a, 0x02, 0x08, 0x02, 0x62, 0x18, 0x0a, 0x06, 0x6f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x12, 0x0e, 0x0a,
+    0x0c, 0x08, 0x01, 0x12, 0x08, 0x0a, 0x02, 0x08, 0x01, 0x0a, 0x02, 0x08, 0x02, 0x42, 0x04, 0x0a, 0x00, 0x10, 0x11,
+};
+void TestExternalCache() {
+  Directory directory;
+  Model external(kExternalModel, sizeof(kExternalModel));
+  const auto model = directory.path / "model.onnx";
+  std::filesystem::copy_file(external.path, model);
+  const hm::gpu::MigraphxCacheConfig cache{directory.path / "cache", 1048576};
+  Stream stream;
+  Host output(2);
+  for (int iteration = 0; iteration < 4; ++iteration) {
+    const float weights[2] = {2.f + 10 * (iteration / 2), 4.f};
+    {
+      std::ofstream data(directory.path / "weights.bin", std::ios::binary | std::ios::trunc);
+      data.write(reinterpret_cast<const char*>(weights), sizeof(weights));
+    }
+    auto created = Session::Compile(model, {{"input", {1, 2}}}, Session::Precision::kFloat32, 0, 16, cache);
+    Check(created.ok(), created.status().ToString());
+    auto session = std::move(*created);
+    Check(session->cache_hit() == bool(iteration % 2), "external weights cache invalidation/reuse");
+    Hip(hipMemsetAsync(session->input(0).data, 0, 8, stream.value));
+    Check(session->Enqueue(stream.value).ok(), "enqueue external graph");
+    Hip(hipMemcpyAsync(output.data, session->output(0).data, 8, hipMemcpyDeviceToHost, stream.value));
+    session.reset();
+    Check(output.data[0] == weights[0] && output.data[1] == weights[1], "cached external weights changed result");
+  }
+}
 } // namespace
 int main() {
   try {
@@ -147,6 +235,8 @@ int main() {
     TestCompute(add, Session::Precision::kFloat16);
     TestIdentity(identity);
     TestInvalid(add);
+    TestCache(add);
+    TestExternalCache();
     std::cout << "MIGraphX GPU inference, stream ordering, lifetime and contract checks passed\n";
     return 0;
   } catch (const std::exception& error) {

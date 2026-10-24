@@ -1,5 +1,6 @@
 #include "hstream/src/libs/program/AmdProgramSettings.h"
 
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -42,6 +43,28 @@ absl::StatusOr<AmdProgramSettings> ResolveAmdProgramSettings(const YAML::Node& c
     result.maximum_inference_io_bytes = Integer<size_t>(config, "maximum_inference_io_bytes");
     result.maximum_encoded_packet_bytes = Integer<int>(config, "maximum_encoded_packet_bytes");
     result.compact_stitch_workspace = Required(config, "compact_stitch_workspace").as<bool>();
+    const bool cache_enabled = Required(config, "model_cache.enable").as<bool>();
+    auto cache_directory = Required(config, "model_cache.directory").as<std::string>();
+    const auto cache_bytes = Integer<size_t>(config, "model_cache.maximum_entry_bytes");
+    if (cache_enabled) {
+      const std::string token = "{user_cache}";
+      if (cache_directory.rfind(token + '/', 0) == 0) {
+        const char* xdg = std::getenv("XDG_CACHE_HOME");
+        const char* home = std::getenv("HOME");
+        std::filesystem::path root;
+        if (xdg && *xdg) {
+          root = xdg;
+        } else if (home && *home) {
+          root = std::filesystem::path(home) / ".cache";
+        } else {
+          return absl::InvalidArgumentError("model_cache requires HOME, XDG_CACHE_HOME or an absolute directory");
+        }
+        cache_directory.replace(0, token.size(), root.string());
+      }
+      if (!std::filesystem::path(cache_directory).is_absolute())
+        return absl::InvalidArgumentError("runtime.amd.model_cache.directory must resolve to an absolute path");
+      result.model_cache = gpu::MigraphxCacheConfig{cache_directory, cache_bytes};
+    }
     result.tracker = {
         Required(config, "tracker.low_score").as<float>(),
         Required(config, "tracker.high_score").as<float>(),

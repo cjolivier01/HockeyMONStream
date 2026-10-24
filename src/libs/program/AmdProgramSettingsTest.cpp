@@ -1,6 +1,7 @@
 #include "hstream/src/libs/program/AmdProgramSettings.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -16,10 +17,13 @@ int main(int argc, char** argv) {
   if (argc != 2)
     return 2;
   try {
+    // Bazel omits the user's HOME/XDG settings. This resolver creates no files.
+    Check(setenv("XDG_CACHE_HOME", "/tmp/hstream-config-test-cache", 1) == 0, "Cannot set test cache base");
     auto baseline = hm::baseline_config::load_from_root(std::filesystem::path(argv[1]).parent_path());
     Check(baseline.ok(), "Cannot load baseline");
     const auto settings = hm::program::ResolveAmdProgramSettings(baseline->values);
-    Check(settings.ok(), "Cannot resolve shipped AMD settings");
+    if (!settings.ok())
+      throw std::runtime_error(settings.status().ToString());
     Check(
         settings->gpu_id == 0 && settings->reader_queue_frames == 2 && settings->output_pool_frames == 8 &&
             settings->operation_timeout_ns == 30000000000ULL && settings->cancellation_poll_ns == 10000000 &&
@@ -35,12 +39,25 @@ int main(int argc, char** argv) {
         changed.ok() && changed->gpu_id == 1 && changed->reader_queue_frames == 3 &&
             changed->tracker.keep_lost_frames == 0,
         "Explicit settings were ignored");
+    Check(
+        settings->model_cache && settings->model_cache->directory.is_absolute() &&
+            settings->model_cache->maximum_entry_bytes == 2147483648ULL,
+        "Missing shipped cache policy");
+    override["runtime"]["amd"]["model_cache"]["directory"] = "/tmp/explicit-model-cache";
+    changed = hm::program::ResolveAmdProgramSettings(override);
+    Check(
+        changed.ok() && changed->model_cache->directory == "/tmp/explicit-model-cache", "Explicit cache path ignored");
+    override["runtime"]["amd"]["model_cache"]["directory"] = "relative";
+    Check(!hm::program::ResolveAmdProgramSettings(override).ok(), "Relative cache directory accepted");
+    override["runtime"]["amd"]["model_cache"]["enable"] = false;
+    changed = hm::program::ResolveAmdProgramSettings(override);
+    Check(changed.ok() && !changed->model_cache, "Disabled cache resolves storage");
     // Every resource/association setting must come from the effective document.
     // Playback/output settings have their own resolver and missing-key tests.
     const auto amd = baseline->values["runtime"]["amd"];
     for (const auto& entry : amd) {
       const auto key = entry.first.as<std::string>();
-      if (key == "output" || key == "playback_start_seconds")
+      if (key == "output" || key == "audio" || key == "playback_start_seconds")
         continue;
       auto missing = YAML::Clone(baseline->values);
       missing["runtime"]["amd"].remove(key);
@@ -50,6 +67,11 @@ int main(int argc, char** argv) {
       auto missing = YAML::Clone(baseline->values);
       missing["runtime"]["amd"]["tracker"].remove(entry.first.as<std::string>());
       Check(!hm::program::ResolveAmdProgramSettings(missing).ok(), "Missing tracker key acquired a hidden default");
+    }
+    for (const auto& entry : amd["model_cache"]) {
+      auto missing = YAML::Clone(baseline->values);
+      missing["runtime"]["amd"]["model_cache"].remove(entry.first.as<std::string>());
+      Check(!hm::program::ResolveAmdProgramSettings(missing).ok(), "Missing cache key acquired a hidden default");
     }
     for (const auto* key : {"gpu_id", "reader_queue_frames", "maximum_inference_io_bytes", "operation_timeout_ms"}) {
       auto invalid = YAML::Clone(baseline->values);

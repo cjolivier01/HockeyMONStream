@@ -1,15 +1,23 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "cache_config",
+    hdrs = ["MigraphxCacheConfig.h"],
+    include_prefix = "hstream/src/libs/gpu/migraphx",
+)
+
+cc_library(
     name = "session",
-    srcs = ["MigraphxSession.cpp"],
-    hdrs = ["MigraphxSession.h"],
+    srcs = ["MigraphxSession.cpp", "MigraphxCache.cpp"],
+    hdrs = ["MigraphxSession.h", "MigraphxCache.h"],
     include_prefix = "hstream/src/libs/gpu/migraphx",
     target_compatible_with = select({
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [
+        ":cache_config",
+        "//src/libs/assets:asset_manager",
         "//src/libs/gpu:runtime",
         "@com_google_absl//absl/status:statusor",
         "@hstream_rocm//:migraphx",

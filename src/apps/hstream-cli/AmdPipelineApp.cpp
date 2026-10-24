@@ -157,7 +157,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
       detector.maintain_aspect,
       detector.symmetric_padding,
       detector.fp16 ? hm::gpu::MigraphxSession::Precision::kFloat16 : hm::gpu::MigraphxSession::Precision::kFloat32,
-      launch.amd.maximum_inference_io_bytes};
+      launch.amd.maximum_inference_io_bytes,
+      launch.amd.model_cache};
   auto blend = hm::pano::BlendSettings::HardSeam();
   switch (Take(hm::stitching::ParseBlendMode(launch.blend.mode))) {
     case hm::stitching::BlendMode::kLaplacian:

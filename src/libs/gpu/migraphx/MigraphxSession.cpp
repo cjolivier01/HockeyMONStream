@@ -1,4 +1,5 @@
 #include "hstream/src/libs/gpu/migraphx/MigraphxSession.h"
+#include "hstream/src/libs/gpu/migraphx/MigraphxCache.h"
 
 #include <migraphx/migraphx.hpp>
 
@@ -63,6 +64,7 @@ struct MigraphxSession::Impl {
   size_t maximum_io_bytes;
   hipStream_t stream{nullptr};
   bool retired{false};
+  bool cache_hit{false};
   std::optional<migraphx::program> program;
   std::optional<migraphx::program_parameters> parameters;
   std::optional<migraphx::arguments> results;
@@ -94,7 +96,8 @@ absl::StatusOr<std::unique_ptr<MigraphxSession>> MigraphxSession::Compile(
     const std::vector<ModelInputShape>& inputs,
     Precision precision,
     int device,
-    size_t maximum_io_bytes) {
+    size_t maximum_io_bytes,
+    const std::optional<MigraphxCacheConfig>& cache_config) {
   try {
     Require(!inputs.empty() && maximum_io_bytes >= sizeof(float), "Model inputs and I/O byte bound are required");
     Require(precision == Precision::kFloat32 || precision == Precision::kFloat16, "Unsupported model precision");
@@ -119,11 +122,20 @@ absl::StatusOr<std::unique_ptr<MigraphxSession>> MigraphxSession::Compile(
           Describe(parsed[name], nullptr, maximum_io_bytes).dimensions == expected->second,
           "ONNX input shape mismatch");
     }
-    if (precision == Precision::kFloat16)
-      migraphx::quantize_fp16(*impl->program);
-    migraphx::compile_options compile;
-    compile.set_offload_copy(false);
-    impl->program->compile(migraphx::target("gpu"), compile);
+    const migraphx::target target("gpu");
+    std::unique_ptr<MigraphxCache> cache;
+    if (cache_config) {
+      cache = MigraphxCache::Prepare(*cache_config, *impl->program, device, precision == Precision::kFloat16);
+      impl->cache_hit = cache->Load(*impl->program);
+      std::fprintf(stderr, "MIGraphX cache %s: %s\n", impl->cache_hit ? "hit" : "miss", cache->key().c_str());
+    }
+    if (!impl->cache_hit) {
+      if (precision == Precision::kFloat16)
+        migraphx::quantize_fp16(*impl->program);
+      migraphx::compile_options compile;
+      compile.set_offload_copy(false);
+      impl->program->compile(target, compile);
+    }
     impl->parameters.emplace();
     const auto compiled = impl->program->get_parameter_shapes();
     size_t remaining = maximum_io_bytes;
@@ -147,6 +159,8 @@ absl::StatusOr<std::unique_ptr<MigraphxSession>> MigraphxSession::Compile(
     for (const auto& shape : impl->program->get_output_shapes()) {
       impl->outputs.push_back(Describe(shape, nullptr, maximum_io_bytes));
     }
+    if (cache && !impl->cache_hit)
+      cache->Publish(*impl->program);
     return std::unique_ptr<MigraphxSession>(new MigraphxSession(std::move(impl)));
   } catch (const Failure& error) {
     return error.status;
@@ -157,6 +171,9 @@ absl::StatusOr<std::unique_ptr<MigraphxSession>> MigraphxSession::Compile(
 
 size_t MigraphxSession::input_count() const {
   return impl_->inputs.size();
+}
+bool MigraphxSession::cache_hit() const {
+  return impl_->cache_hit;
 }
 const MigraphxSession::Tensor& MigraphxSession::input(size_t index) const {
   return impl_->inputs.at(index);
