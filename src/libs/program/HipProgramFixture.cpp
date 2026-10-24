@@ -8,7 +8,7 @@
 
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
-#include "hstream/src/libs/gpu/vaapi/VaVideoReader.h"
+#include "hstream/src/libs/gpu/vaapi/VaVideoPlaylist.h"
 #include "hstream/src/libs/program/AmdProgramProcessor.h"
 #include "hstream/src/libs/program/AmdProgramSettings.h"
 #include "hstream/src/libs/program/EncodedColorimetry.h"
@@ -37,7 +37,6 @@ T Take(absl::StatusOr<T> result) {
 void Status(const absl::Status& status) {
   Check(status.ok(), status.ToString());
 }
-using Sample = std::unique_ptr<GstSample, decltype(&gst_sample_unref)>;
 using Buffer = std::unique_ptr<GstBuffer, decltype(&gst_buffer_unref)>;
 struct Pipeline {
   GstElement* value{};
@@ -83,27 +82,29 @@ struct Pipeline {
         "Pipeline start failed: " + Error());
   }
 };
-std::unique_ptr<hm::gpu::VaVideoReader> OpenReader(
+std::unique_ptr<hm::gpu::VaVideoPlaylist> OpenPlaylist(
     const hm::program::AmdProgramSettings& settings,
     const char* path,
     double start) {
   Check(std::isfinite(start) && start >= 0 && start < double(G_MAXINT64 / GST_SECOND), "Invalid seek time");
   char pci[32]{};
   Hip(hipDeviceGetPCIBusId(pci, sizeof(pci), settings.gpu_id));
-  auto reader = Take(hm::gpu::VaVideoReader::Create(
+  auto reader = Take(hm::gpu::VaVideoPlaylist::Create(
       {hm::gpu::VaVideoCodec::kHevc,
        GST_VIDEO_FORMAT_P010_10LE,
        std::string("/dev/dri/by-path/pci-") + pci + "-render",
        settings.reader_queue_frames,
        settings.operation_timeout_ns,
-       settings.cancellation_poll_ns}));
-  Status(reader->OpenFile(path, static_cast<GstClockTime>(start * GST_SECOND)));
+       settings.cancellation_poll_ns},
+      {path},
+      {}));
+  Status(reader->Seek(static_cast<GstClockTime>(start * GST_SECOND)));
   return reader;
 }
-Sample Read(hm::gpu::VaVideoReader& reader) {
+hm::gpu::VaVideoFrame Read(hm::gpu::VaVideoPlaylist& reader) {
   auto frame = Take(reader.Read());
   Check(frame.has_value(), "Raw input ended early");
-  return std::move(frame->sample);
+  return std::move(*frame);
 }
 GstVideoInfo Info(GstSample* sample) {
   GstVideoInfoDmaDrm info{};
@@ -161,11 +162,11 @@ int main(int argc, char** argv) {
     const hm::program::ProgramRenderSettings render{false, 0, 0, 0, false, 0};
     std::cout << "Validated raw panorama " << processor->width() << 'x' << processor->height()
               << " generation=" << processor->generation() << '\n';
-    auto left = OpenReader(settings, argv[5], left_start);
-    auto right = OpenReader(settings, argv[6], right_start);
+    auto left = OpenPlaylist(settings, argv[5], left_start);
+    auto right = OpenPlaylist(settings, argv[6], right_start);
     Pipeline output;
     auto a = Read(*left), b = Read(*right);
-    const auto left_info = Info(a.get()), right_info = Info(b.get());
+    const auto left_info = Info(a.sample.get()), right_info = Info(b.sample.get());
     Check(
         left_info.fps_n == right_info.fps_n && left_info.fps_d == right_info.fps_d &&
             gst_video_colorimetry_is_equal(&left_info.colorimetry, &right_info.colorimetry),
@@ -202,12 +203,10 @@ int main(int argc, char** argv) {
         a = Read(*left);
         b = Read(*right);
       }
-      const auto ai = Info(a.get()), bi = Info(b.get());
+      const auto ai = Info(a.sample.get()), bi = Info(b.sample.get());
       Check(
           gst_video_info_is_equal(&left_info, &ai) && gst_video_info_is_equal(&right_info, &bi), "Input caps changed");
-      auto* ab = gst_sample_get_buffer(a.get());
-      auto* bb = gst_sample_get_buffer(b.get());
-      const auto pts = GST_BUFFER_PTS(ab), other_pts = GST_BUFFER_PTS(bb);
+      const auto pts = a.time, other_pts = b.time;
       Check(
           GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(other_pts) &&
               (!GST_CLOCK_TIME_IS_VALID(previous) || pts > previous),
@@ -219,7 +218,7 @@ int main(int argc, char** argv) {
       if (!sequence)
         first = pts;
       previous = pts;
-      auto completed = Take(processor->Process(sequence, a.get(), b.get()));
+      auto completed = Take(processor->Process(sequence, a.sample.get(), b.sample.get()));
       const auto& observed = completed.observation;
       const auto& crop = completed.crop;
       observations += observed.tracks.size();
@@ -241,7 +240,7 @@ int main(int argc, char** argv) {
       Buffer buffer(Take(std::move(acquired)), gst_buffer_unref);
       Status(processor->Render(buffer.get(), out_info, render));
       GST_BUFFER_PTS(buffer.get()) = pts - first;
-      GST_BUFFER_DURATION(buffer.get()) = GST_BUFFER_DURATION(ab);
+      GST_BUFFER_DURATION(buffer.get()) = a.duration;
       Check(
           gst_app_src_push_buffer(GST_APP_SRC(output.endpoint), buffer.release()) == GST_FLOW_OK,
           "Output refused frame");
@@ -281,7 +280,7 @@ int main(int argc, char** argv) {
       for (unsigned sequence = 0; sequence < 4; ++sequence) {
         a = Read(*left);
         b = Read(*right);
-        const auto completed = Take(processor->Process(sequence, a.get(), b.get()));
+        const auto completed = Take(processor->Process(sequence, a.sample.get(), b.sample.get()));
         for (const auto& track : completed.observation.tracks) {
           Check(track.id > highest_id, "Seek reused an object ID");
           ++reset_observations;
@@ -292,7 +291,7 @@ int main(int argc, char** argv) {
         Status(processor->Render(output_frame.get(), out_info, full));
       }
       Check(reset_observations, "No confirmed tracks after processor reset/reader seek");
-      Check(!processor->Process(4, nullptr, b.get()).ok(), "Invalid input was accepted");
+      Check(!processor->Process(4, nullptr, b.sample.get()).ok(), "Invalid input was accepted");
       Check(
           !processor->Reset().ok() && !processor->Render(output_frame.get(), out_info, render).ok(),
           "Processing failure did not retire the processor");

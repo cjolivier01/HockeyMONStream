@@ -1,0 +1,24 @@
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "mp4_video_track",
+    srcs = ["Mp4VideoTrack.cpp"],
+    hdrs = ["Mp4VideoTrack.h"],
+    include_prefix = "hstream/src/libs/media",
+    linkopts = ["-L/usr/local/lib", "-lavformat", "-lavcodec", "-lavutil"],
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_library(
+    name = "test_mp4",
+    testonly = True,
+    hdrs = ["TestMp4.h"],
+    include_prefix = "hstream/src/libs/media",
+    deps = ["//src/libs/common:process"],
+)
+
+cc_test(
+    name = "mp4_video_track_test",
+    srcs = ["Mp4VideoTrackTest.cpp"],
+    deps = [":mp4_video_track", ":test_mp4"],
+)

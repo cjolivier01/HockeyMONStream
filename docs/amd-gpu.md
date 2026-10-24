@@ -436,3 +436,40 @@ processor reset, monotonic IDs, repeated Program/full-panorama renders, rejected
 transfer changes and failure retirement. On the 120-pair hockey clip, all 120
 per-frame detection/tracking/crop log rows match the earlier composition. This
 reusable owner is not yet connected to CLI/UI playback.
+
+## Chapter video clock
+
+`media/Mp4VideoTrack` reads ordinary local MP4 video headers with libavformat. It
+never calls `avformat_find_stream_info`, opens a decoder or launches a process.
+Video duration, start time, frame count and rate come from the video track; an
+audio tail cannot move the next chapter's origin. Unknown/overflowing timing,
+ambiguous video tracks, incompatible FFmpeg ABI and unsupported codecs fail.
+Preparation has an explicit deadline and cancellation callback.
+
+`gpu/vaapi/VaVideoPlaylist` owns ordered chapters and one reusable VA reader.
+It verifies stable source identity during discovery and before chapter opens,
+requires matching codec/geometry/frame rate, and exposes a continuous video
+clock separately from each retained sample's unchanged file segment/PTS. Seeks
+at a boundary select the next chapter; seeking exactly to the end produces
+clean EOS and still permits subsequent seeks. Errors retire the reader and
+cancellation is permanent. The raw Program qualifier now uses this owner, with
+one file per camera; application source selection and stereo/audio coordination
+remain pending.
+
+The VA reader consumes non-selected compressed streams through closed valves.
+Leaving audio unlinked caused a demuxer error when its tail outlasted video;
+using an ordinary sink on the demux thread can instead block preroll before a
+reordered video decoder has enough input. Closed valves consume those packets
+and events without decoding, buffering or waiting for preroll. They are removed
+on each NULL chapter reset. Missing selected video fails immediately. GStreamer
+1.24.2's qtdemux can suppress video shorter than 20% of the container as a
+thumbnail; such inputs fail explicitly rather than timing out.
+
+The metadata CPU test and VA playlist test create small synthetic files with
+B-frames, a 0.2-second video and 0.5-second audio, including a 0.4-second starting
+edit. Three chapters produce exactly fifteen frames at 25fps on a 0.6-second
+video clock. Tests cover boundary/backward/end seeks, retained pixels, source
+replacement, cancellation and twelve additional chapter switches without
+file-descriptor growth. Only the test reads one synthetic luma byte. Fixture
+preparation uses `/usr/bin/ffmpeg` with libx264/AAC; production playback remains
+native and uses VA decoding.

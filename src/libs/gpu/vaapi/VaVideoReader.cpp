@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <string>
+#include <vector>
 
 namespace hm::gpu {
 namespace {
@@ -41,22 +42,14 @@ GstElement* MakeVaElement(const char* suffix, const std::filesystem::path& rende
   return selected;
 }
 
-// Called from a GStreamer streaming thread. No application work or exceptions.
-void LinkVideo(GstElement*, GstPad* pad, gpointer parser) noexcept {
-  if (g_strcmp0(GST_PAD_NAME(pad), "video_0") != 0)
-    return;
-  auto* sink = gst_element_get_static_pad(GST_ELEMENT(parser), "sink");
-  if (sink) {
-    (void)gst_pad_link(pad, sink);
-    gst_object_unref(sink);
-  }
-}
 } // namespace
 
 struct VaVideoReader::Impl {
   VaVideoReaderConfig config;
   GstElement* pipeline = nullptr;
   GstElement* file = nullptr;
+  GstElement* parser = nullptr;
+  std::vector<GstElement*> discards;
   GstElement* sink = nullptr;
   GstBus* bus = nullptr;
   std::atomic<bool> cancelled{false};
@@ -71,6 +64,55 @@ struct VaVideoReader::Impl {
       gst_object_unref(bus);
     if (pipeline)
       gst_object_unref(pipeline);
+  }
+
+  // qtdemux may keep delivering audio after video EOS. An unlinked audio
+  // tail becomes NOT_LINKED once the video pad is done. Discard compressed
+  // non-selected streams without decoding them or retaining their buffers.
+  // Only the streaming callback mutates discards until NULL joins that thread.
+  static void LinkPad(GstElement* demux, GstPad* pad, gpointer data) noexcept {
+    auto& self = *static_cast<Impl*>(data);
+    GstElement* target = self.parser;
+    try {
+      if (g_strcmp0(GST_PAD_NAME(pad), "video_0") != 0) {
+        target = gst_element_factory_make("valve", nullptr);
+        if (!target) {
+          GST_ELEMENT_ERROR(demux, CORE, MISSING_PLUGIN, ("Missing compressed-stream discard sink"), (nullptr));
+          return;
+        }
+        // A closed valve consumes buffers/events without preroll. A sink on
+        // the demux thread can block before a reordered decoder prerolls.
+        g_object_set(target, "drop", TRUE, "drop-mode", 0, nullptr);
+        if (!gst_bin_add(GST_BIN(self.pipeline), target)) {
+          gst_object_unref(target);
+          GST_ELEMENT_ERROR(demux, CORE, FAILED, ("Cannot add compressed-stream discard sink"), (nullptr));
+          return;
+        }
+        self.discards.push_back(target);
+        if (!gst_element_sync_state_with_parent(target)) {
+          GST_ELEMENT_ERROR(demux, CORE, STATE_CHANGE, ("Cannot start compressed-stream discard sink"), (nullptr));
+          return;
+        }
+      }
+      auto* sink = gst_element_get_static_pad(target, "sink");
+      const bool linked = sink && gst_pad_link(pad, sink) == GST_PAD_LINK_OK;
+      if (sink)
+        gst_object_unref(sink);
+      if (!linked)
+        GST_ELEMENT_ERROR(demux, CORE, PAD, ("Cannot link MP4 stream"), ("%s", GST_PAD_NAME(pad)));
+    } catch (...) {
+      GST_ELEMENT_ERROR(demux, CORE, FAILED, ("Cannot prepare MP4 stream"), (nullptr));
+    }
+  }
+
+  static void CheckVideoPad(GstElement* demux, gpointer data) noexcept {
+    auto& self = *static_cast<Impl*>(data);
+    auto* sink = gst_element_get_static_pad(self.parser, "sink");
+    const bool linked = sink && gst_pad_is_linked(sink);
+    if (sink)
+      gst_object_unref(sink);
+    if (!linked)
+      GST_ELEMENT_ERROR(demux, STREAM, WRONG_TYPE, ("MP4 demuxer exposed no selected video track"), (nullptr));
   }
 
   absl::Status Retire(absl::Status status) {
@@ -173,13 +215,13 @@ absl::StatusOr<std::unique_ptr<VaVideoReader>> VaVideoReader::Create(const VaVid
   };
   impl->file = add(gst_element_factory_make("filesrc", nullptr));
   auto* demux = add(gst_element_factory_make("qtdemux", nullptr));
-  auto* parser =
+  impl->parser =
       add(gst_element_factory_make(config.codec == VaVideoCodec::kHevc ? "h265parse" : "h264parse", nullptr));
   auto* decoder = add(MakeVaElement(config.codec == VaVideoCodec::kHevc ? "h265dec" : "h264dec", render));
   auto* convert = add(MakeVaElement("postproc", render));
   auto* filter = add(gst_element_factory_make("capsfilter", nullptr));
   impl->sink = add(gst_element_factory_make("appsink", nullptr));
-  if (!impl->file || !demux || !parser || !decoder || !convert || !filter || !impl->sink)
+  if (!impl->file || !demux || !impl->parser || !decoder || !convert || !filter || !impl->sink)
     return absl::UnavailableError("Missing MP4/VA decoder, postprocessor or appsink on " + render.string());
   g_object_set(convert, "disable-passthrough", TRUE, nullptr);
   auto* caps = gst_caps_new_simple(
@@ -213,9 +255,10 @@ absl::StatusOr<std::unique_ptr<VaVideoReader>> VaVideoReader::Create(const VaVid
     return TRUE;
   };
   gst_app_sink_set_callbacks(GST_APP_SINK(impl->sink), &callbacks, nullptr, nullptr);
-  g_signal_connect(demux, "pad-added", G_CALLBACK(LinkVideo), parser);
+  g_signal_connect(demux, "pad-added", G_CALLBACK(Impl::LinkPad), impl.get());
+  g_signal_connect(demux, "no-more-pads", G_CALLBACK(Impl::CheckVideoPad), impl.get());
   if (!gst_element_link(impl->file, demux) ||
-      !gst_element_link_many(parser, decoder, convert, filter, impl->sink, nullptr))
+      !gst_element_link_many(impl->parser, decoder, convert, filter, impl->sink, nullptr))
     return absl::UnavailableError("Cannot link VA video reader");
   return std::unique_ptr<VaVideoReader>(new VaVideoReader(std::move(impl)));
 }
@@ -234,6 +277,9 @@ absl::Status VaVideoReader::OpenFile(const std::filesystem::path& path, GstClock
   status = impl_->State(GST_STATE_NULL, deadline);
   if (!status.ok())
     return status;
+  for (auto* discard : impl_->discards)
+    gst_bin_remove(GST_BIN(impl_->pipeline), discard);
+  impl_->discards.clear();
   g_object_set(impl_->file, "location", path.c_str(), nullptr);
   status = impl_->State(GST_STATE_PAUSED, deadline);
   if (!status.ok())
