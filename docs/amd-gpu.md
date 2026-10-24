@@ -617,8 +617,9 @@ requires an ARM64 machine.
 loads immutable baseline/user/game/application/launch configuration and requires
 saved source chapters, synchronization, calibration and rink mask. It owns one
 serialized `VaStereoVideo`, `AmdProgramProcessor` and one bounded `VaProgramSink`
-per requested output. No steady-state video readback is added. SIGINT/SIGTERM
-cancel source/sink waits after preparation; during model compilation the process
+per requested output. No steady-state video readback is added. SIGTERM
+cancels source/sink waits after preparation; SIGINT drains completed output.
+During model compilation the process
 retains ordinary signal termination. A desktop parent identity is checked with
 `PR_SET_PDEATHSIG` before startup. GLib output and errors join the existing bounded
 process diagnostics.
@@ -856,16 +857,17 @@ remain pending while paused; resume supplies the remaining input.
 
 `@set-render-audio-muted 0|1` changes only preview volume and emits the existing
 `HSTREAM_RENDER_AUDIO` acknowledgment with its branch count. Archive PCM and
-encoded audio remain unchanged. `@quit` or `q` cancels the run without publishing
-a partial output. SIGINT/SIGTERM also interrupt a paused control waiter.
+encoded audio remain unchanged. `@quit` or `q` drains completed output like
+desktop Stop. SIGINT/SIGTERM also interrupt a paused control waiter.
 
 `runtime.amd.maximum_runtime_command_bytes` bounds both retained line storage
 and input work per unpaused service call. Overlong/malformed commands report
 an error; a truncated line is never executed at EOF. Ordinary stdin EOF leaves
 playback running; EOF while paused cancels because no resume can arrive.
-Controls become active after the first completed pair, so model preparation is
-not acknowledged as a paused playback graph. Preview-channel routing and other
-native runtime mutations are still unconnected.
+Controls become active after preparation and before the first processed pair.
+Queued quit and end-of-recording seeks consume no frames. Model preparation is
+not acknowledged as a paused playback graph. Preview-channel routing uses the
+generation protocol described below; additional runtime mutations remain pending.
 
 `@seek POSITION_NS GENERATION` seeks local preview/discard runs relative to the
 configured playback start. `@seek-relative DELTA_NS GENERATION` jumps from the
@@ -987,3 +989,12 @@ Stop retains the completed clip. A queued quit before the first frame produces
 no file. SIGTERM, parent death, paused stdin EOF and processing/output failures
 still abort and discard the unnamed output. A later SIGINT cannot downgrade a
 SIGTERM cancellation. Decoder/output waits retain their configured bounds.
+
+The opt-in `//src/apps/hstream-cli:amd_program_lifecycle_test` runs ten real-camera
+cases, including a queued seek to EOS before the first frame, one-frame encode,
+normal/paused Stop, conflicting signals and stdin loss. Set
+`HSTREAM_AMD_TEST_GAME_ID` and `HSTREAM_AMD_TEST_START_SECONDS` to a saved calibrated
+game with audio and at least two seconds remaining, supply `HM_CONFIG_ROOT` and
+`HM_GAME_DIR`, and launch Bazel through the private runtimes above. The test
+requires ffprobe/ffmpeg to inspect and fully decode the temporary output clips;
+those offline checks are the only video readback in the test.

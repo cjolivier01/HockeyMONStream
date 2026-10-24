@@ -481,7 +481,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   // A quit command queued during model preparation must not consume a first frame.
   if (!service_control())
     throw Failure(absl::CancelledError("Program stopped before its first completed frame"));
-  for (;;) {
+  // A queued startup seek may land exactly at EOS and leave no input pair.
+  while (pair) {
     const auto completed =
         Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get()));
     if (overlay_state.selection().players)

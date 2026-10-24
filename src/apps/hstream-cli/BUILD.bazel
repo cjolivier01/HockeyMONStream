@@ -578,3 +578,19 @@ cc_test(
     srcs = ["AmdPipelineOptionsTest.cpp"],
     deps = [":amd_pipeline_options"],
 )
+
+py_test(
+    name = "amd_program_lifecycle_test",
+    srcs = ["AmdProgramLifecycleTest.py"],
+    main = "AmdProgramLifecycleTest.py",
+    args = ["$(location :hstream-cli)"],
+    data = [":hstream-cli"],
+    env_inherit = ["HOME", "HM_CONFIG_ROOT", "HM_GAME_DIR", "LD_LIBRARY_PATH", "GST_PLUGIN_PATH_1_0",
+        "HSTREAM_AMD_TEST_GAME_ID", "HSTREAM_AMD_TEST_START_SECONDS"],
+    tags = ["manual", "local", "gpu"],
+    timeout = "long",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
