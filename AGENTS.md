@@ -66,6 +66,7 @@ Native preview widgets share `NativePreviewSurface`: while an external sink owns
 ## Commit & PR Guidelines
 - Commits: imperative and scoped (preferred Conventional Commits). Example: `feat(stitching): improve synchronization for dual-camera`.
 - PRs: include purpose, configs/commands used to validate, relevant logs/output or screenshots, and linked issues. Note any platform constraints (Jetson vs x86).
+- Whenever referencing a PR, always write out its full URL visibly, including in progress updates and final responses. A PR number or linked label alone is insufficient.
 - PR default: open normal (ready-for-review) PRs. Only open draft PRs when explicitly requested.
 - No AI attribution anywhere a PR is visible: titles, descriptions, commit messages, and PR comments. Drop generated-by footers, `Co-Authored-By` lines naming a model, and any mention of assistants, agents, or subagent reviews. Describe the change and how it was checked, not what produced it.
 - Write like a person, not a manual. Short, direct sentences about this code and what it does; concrete numbers and file names over general principles. Skip the marketing adjectives, the tidy bullet triples, the bold section labels on every line, and the summary paragraph that repeats what was just said.
