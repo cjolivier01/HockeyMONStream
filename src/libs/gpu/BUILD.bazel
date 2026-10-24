@@ -1,0 +1,72 @@
+load("//bazel:gpu_library.bzl", "gpu_library")
+
+cc_library(
+    name = "runtime",
+    hdrs = ["Runtime.h"],
+    include_prefix = "hstream/src/libs/gpu",
+    visibility = ["//visibility:public"],
+    deps = select({
+        "//:use_hip": ["@hstream_rocm//:runtime"],
+        "//conditions:default": ["//toolchains/jetson:cuda_runtime", "@local_cuda//:cuda"],
+    }),
+)
+
+test_suite(
+    name = "portable_gpu_tests",
+    tags = ["manual"],
+    tests = [
+        "//src/libs/gpu:convert_image_test",
+        "//src/libs/detection:gpu_test",
+        "//src/libs/program:gpu_test",
+        "//src/libs/draw_display:analytics_overlay_test",
+        "//src/libs/highlights:texture_blend_test",
+        "//src/libs/player_analytics/runtime:pose_gpu_test",
+        "//src/libs/player_analytics/runtime:team_gpu_test",
+        "@hm-cupano//src/cuda:cudaBlend_test",
+        "@hm-cupano//src/cuda:cudaBlend3_test",
+        "@hm-cupano//src/cuda:cudaBlendN_test",
+        "@hm-cupano//src/pano:cudaMat_basic_test",
+        "@hm-cupano//src/pano:cudaPano_test",
+        "@hm-cupano//src/pano:cudaPano3_test",
+        "@hm-cupano//src/pano:cudaPanoN_test",
+        "@hm-cupano//src/pano:rgb10Remap_test",
+    ],
+)
+
+cc_library(
+    name = "image",
+    srcs = ["Image.cpp"],
+    hdrs = ["Image.h"],
+    include_prefix = "hstream/src/libs/gpu",
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "image_sampling",
+    hdrs = ["ImageSampling.cuh"],
+    include_prefix = "hstream/src/libs/gpu",
+    visibility = ["//visibility:public"],
+    deps = [":runtime", ":image"],
+)
+
+cc_library(
+    name = "convert_image_headers",
+    hdrs = ["ConvertImage.h"],
+    include_prefix = "hstream/src/libs/gpu",
+    visibility = ["//visibility:public"],
+    deps = [":image", ":runtime"],
+)
+
+gpu_library(
+    name = "convert_image",
+    srcs = ["ConvertImage.cu"],
+    visibility = ["//visibility:public"],
+    deps = [":convert_image_headers", ":image_sampling"],
+)
+
+cc_test(
+    name = "convert_image_test",
+    srcs = ["ConvertImageTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":convert_image", "@opencv_linux//:opencv"],
+)

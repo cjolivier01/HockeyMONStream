@@ -1,9 +1,7 @@
 #include "hstream/src/libs/player_analytics/runtime/PoseGpu.h"
 
-#include <cuda_runtime.h>
-#include <math_constants.h>
-
 #include <cstdint>
+#include <limits>
 
 namespace hm::player_analytics {
 namespace {
@@ -84,15 +82,15 @@ __global__ void DecodeKernel(
       results[output] = {};
     return;
   }
-  Maximum mx{-CUDART_INF_F, 0, 0};
-  Maximum my{-CUDART_INF_F, 0, 0};
+  Maximum mx{-std::numeric_limits<float>::infinity(), 0, 0};
+  Maximum my{-std::numeric_limits<float>::infinity(), 0, 0};
   for (int i = tid; i < 384; i += kThreads) {
     const float value = simcc_x[joint * 384 + i];
-    mx = Merge(mx, {isfinite(value) ? value : -CUDART_INF_F, i, !isfinite(value)});
+    mx = Merge(mx, {isfinite(value) ? value : -std::numeric_limits<float>::infinity(), i, !isfinite(value)});
   }
   for (int i = tid; i < 512; i += kThreads) {
     const float value = simcc_y[joint * 512 + i];
-    my = Merge(my, {isfinite(value) ? value : -CUDART_INF_F, i, !isfinite(value)});
+    my = Merge(my, {isfinite(value) ? value : -std::numeric_limits<float>::infinity(), i, !isfinite(value)});
   }
   x_maximum[tid] = mx;
   y_maximum[tid] = my;

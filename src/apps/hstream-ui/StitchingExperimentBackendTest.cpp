@@ -2,7 +2,7 @@
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
-#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"

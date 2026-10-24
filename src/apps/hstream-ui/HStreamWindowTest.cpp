@@ -3,7 +3,7 @@
 #include "absl/cleanup/cleanup.h"
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
-#include "hstream/src/libs/common/TensorRtGpuIdentity.h"
+#include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
@@ -1144,12 +1144,16 @@ bool test_matching_development_runtime_selection() {
   const fs::path matching_runner = output_apps / "hstream-cli" / "hstream-cli";
   const fs::path unrelated_runner = workspace_root / "bazel-bin" / "src" / "apps" / "hstream-cli" / "hstream-cli";
   const std::vector<fs::path> runtime_artifacts = {
+#ifdef HSTREAM_USE_HIP
+      matching_runner,
+#else
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       execution_root / "bazel-out/k8-opt/bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+#endif
   };
   std::error_code error;
   fs::create_directories(application.parent_path(), error);
@@ -1217,7 +1221,11 @@ bool test_matching_development_runtime_selection() {
     return expect(false, "Could not remove a synthetic runtime artifact: " + error.message());
   if (!expect(
           hm::ui_internal::missing_development_runtime_artifact(selected_bazel_bin)
+#ifdef HSTREAM_USE_HIP
+              .endsWith("src/apps/hstream-cli/hstream-cli"),
+#else
               .endsWith("libgstdsxvideoconvert.so"),
+#endif
           "A Bazel UI must identify a missing matching runtime artifact before Play"))
     return false;
 
@@ -3351,6 +3359,12 @@ bool test_highlights_dialog_controls(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   if (!start || !highlights || !refresh_games || !mode)
     return false;
+#ifdef HSTREAM_USE_HIP
+  activate(highlights);
+  return expect(!highlights->isEnabled() && highlights->toolTip().contains("not yet available on AMD") &&
+                    !window->findChild<QDialog*>("highlightsDialog"),
+                "AMD must explain unavailable Highlights without opening a native pipeline");
+#endif
   mode->setCurrentIndex(mode->findData("program"));
   QApplication::processEvents();
   if (!expect(
@@ -6941,7 +6955,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0
               ? x11_calibration_preview_ok
               : !window->logText().contains("--render-window-id=") &&
+#ifdef HSTREAM_USE_HIP
+                  !window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
+#else
                   window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
+#endif
                   window->logText().contains("--show-scaled=0.3012048193") &&
                   !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
                   camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
@@ -7715,8 +7733,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           window->logText().count("--render-window-id=") == embedded_commands_before_external_run,
           "nv3dsink run must not promise an embedded preview") ||
       !expect(
+#ifdef HSTREAM_USE_HIP
+          !window->logText().contains("USE_NEW_NVSTREAMMUX=yes"),
+          "AMD runner must not add DeepStream mux settings") ||
+#else
           window->logText().contains("USE_NEW_NVSTREAMMUX=yes"),
           "UI runner should default to the DeepStream 9.1 new stream mux") ||
+#endif
       !expect(
           window->logText().contains("HM_RENDER_SINK=nv3dsink"),
           "UI runner should preserve the self-managed desktop render sink") ||
@@ -12126,8 +12149,17 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   auto active_calibration_lock = hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path());
+  // Loading the game also starts background map validation. Let that reader
+  // finish before this test deliberately holds the artifact lock across Save.
+  const bool lock_ready = QTest::qWaitFor(
+      [&] {
+        if (active_calibration_lock.ok() && !*active_calibration_lock)
+          active_calibration_lock = hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path());
+        return !active_calibration_lock.ok() || bool(*active_calibration_lock);
+      },
+      2000);
   if (!expect(
-          active_calibration_lock.ok() && *active_calibration_lock,
+          lock_ready && active_calibration_lock.ok() && *active_calibration_lock,
           "Unchanged-width preset save must have a contended calibration fixture")) {
     return false;
   }
@@ -13965,7 +13997,16 @@ bool test_camera_controls(HStreamWindow* window) {
   for (int value = 471; value <= 490; ++value) {
     max_speed_x->setValue(value);
   }
-  QTest::qWait(220);
+  // The 200 ms debounce precedes the 40 ms acknowledgment timeout. A fixed
+  // 220 ms sleep can expire before the latest coalesced request times out.
+  const bool both_controls_timed_out = QTest::qWaitFor(
+      [&] {
+        return window->logText().contains(
+                   "camera control Max_Speed_X_x10=470 apply=failed reason=acknowledgement-timeout") &&
+            window->logText().contains(
+                "camera control Max_Speed_X_x10=490 apply=failed reason=acknowledgement-timeout");
+      },
+      2000);
   const fs::path runtime_dir = fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui";
   auto runtime_snapshot_count = [&]() {
     return static_cast<int>(std::count_if(
@@ -13978,10 +14019,7 @@ bool test_camera_controls(HStreamWindow* window) {
           runtime_snapshot_count() <= 2,
           "A non-acknowledging backend should retain at most the last acknowledged and one in-flight snapshot") &&
       expect(
-          window->logText().contains("camera control Max_Speed_X_x10=470 apply=failed "
-                                     "reason=acknowledgement-timeout") &&
-              window->logText().contains("camera control Max_Speed_X_x10=490 apply=failed "
-                                         "reason=acknowledgement-timeout"),
+          both_controls_timed_out,
           "A stalled live-control backend should time out both the in-flight and coalesced latest values");
   const auto timeout_hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
   if (!timeout_hugin_generation.ok()) {
@@ -14190,6 +14228,17 @@ bool test_camera_controls(HStreamWindow* window) {
 }
 
 bool test_gpu_memory_profile() {
+#ifdef HSTREAM_USE_HIP
+  const YAML::Node amd_gpu = YAML::Load(
+      "runtime: {amd: {gpu_id: 2}}\npipeline: {application: {global-gpu-id: 3}}");
+  if (!expect(
+          hm::ui_internal::configured_pipeline_gpu(amd_gpu) == 2 &&
+              !hm::ui_internal::configured_pipeline_gpu(YAML::Node(YAML::NodeType::Map)) &&
+              !hm::ui_internal::configured_pipeline_gpu(YAML::Load("runtime: {amd: {gpu_id: -1}}")) &&
+              !hm::ui_internal::configured_pipeline_gpu(YAML::Load("runtime: {amd: {gpu_id: null}}")),
+          "The AMD UI must query the configured HIP ordinal independently of NVIDIA GPU settings"))
+    return false;
+#else
   const YAML::Node stitcher_gpu = YAML::Load("pipeline: {hmstitcher: {gpu-id: 2}}");
   const YAML::Node global_gpu = YAML::Load("pipeline: {application: {global-gpu-id: 3}, hmstitcher: {gpu-id: 2}}");
   const YAML::Node invalid_gpu = YAML::Load("pipeline: {application: {global-gpu-id: -1}}");
@@ -14201,6 +14250,7 @@ bool test_gpu_memory_profile() {
           "The UI must resolve the effective CUDA ordinal with the runner's global/stitcher precedence")) {
     return false;
   }
+#endif
 
   const YAML::Node baseline_profile = YAML::Load("runtime: {gpu_memory_profile: standard}");
   const YAML::Node user_profile = YAML::Load("runtime: {gpu-memory-profile: low}");
@@ -14245,7 +14295,7 @@ bool test_gpu_memory_profile() {
   if (!QDir().mkpath(game_directory))
     return false;
 
-  const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(0);
+  const auto total_memory_bytes = hm::inference::GpuTotalMemoryBytes(0);
   const QString expected_default =
       total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes) ? "low" : "standard";
   YAML::Node stale_game_profile(YAML::NodeType::Map);
@@ -15503,10 +15553,13 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     activate(save);
     activate(start);
     activate(clean);
+    int expected_rejections = 4; // Save, Play, Clean and export.
     for (const char* name : {"cameraExperimentsButton", "stitchingExperimentsButton"}) {
       auto* experiments = require_child<QPushButton>(&window, name);
       if (!experiments)
         return false;
+      if (experiments->isEnabled())
+        ++expected_rejections;
       activate(experiments);
     }
     auto* export_job = require_child<QAction>(&window, "saveJobScriptAction");
@@ -15520,7 +15573,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     if (!expect(
             resulting_contents == original_contents && fs::is_regular_file(retained_image) &&
                 window.logText().count("pipeline started pid=") == launches_before &&
-                window.logText().count("Game settings could not be loaded.") == rejected_before + 6 &&
+                window.logText().count("Game settings could not be loaded.") == rejected_before + expected_rejections &&
                 !window.findChild<QDialog*>("cameraExperimentDialog") &&
                 !window.findChild<QDialog*>("stitchingExperimentDialog"),
             "Failed YAML loading must block Save, Play, Clean, export and experiments without changing retained inputs"))
@@ -16759,6 +16812,151 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     QTest::qWait(100);
   return passed;
 }
+
+#ifdef HSTREAM_USE_HIP
+// Opt-in hardware qualification. Use a private copy of a calibrated game:
+// ordinary desktop controls save next-run choices into that game's config.
+bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) {
+  const bool archives = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AMD_ARCHIVES");
+  auto* game = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* render = require_child<QCheckBox>(window, "renderVideoCheck");
+  auto* tabs = require_child<QTabWidget>(window, "previewTabs");
+  auto* target = require_child<QWidget>(window, "previewRenderTarget");
+  auto* surface = require_child<QWidget>(window, "previewSurface");
+  if (!game || !create || !start || !stop || !mode || !render || !tabs || !target || !surface)
+    return false;
+  const absl::Cleanup cleanup = [&] {
+    activate(stop);
+    QTest::qWaitFor([&] { return window->pipelineStateText() == "STOPPED"; }, 30000);
+    std::cout << window->completeLogText().toStdString() << '\n';
+  };
+  game->setText(game_id);
+  activate(create);
+  mode->setCurrentIndex(mode->findData("program"));
+  for (const auto* name :
+       {"outputToggle_archive-file",
+        "outputToggle_archive-stitched",
+        "outputToggle_archive-program-4k",
+        "drivegptCsvCheck",
+        "showPlayerTrackingCheck",
+        "showPlayTrackingCheck",
+        "showRinkMaskCheck"}) {
+    auto* toggle = require_child<QCheckBox>(window, name);
+    if (!toggle)
+      return false;
+    toggle->setChecked(false);
+  }
+  if (archives) {
+    window->findChild<QCheckBox*>("outputToggle_archive-file")->setChecked(true);
+    window->findChild<QCheckBox*>("outputToggle_archive-program-4k")->setChecked(true);
+  }
+  render->setChecked(true);
+  tabs->setCurrentIndex(0);
+  activate(start);
+  const auto ready = [&] { return surface->property("previewRendererState").toString() == "ready"; };
+  if (!expect(
+          QTest::qWaitFor([&] { return ready() || window->pipelineStateText() == "STOPPED"; }, 120000) && ready(),
+          "AMD Program must present a native GPU frame through the desktop"))
+    return false;
+  auto* pipeline = window->findChild<QProcess*>();
+  if (!pipeline)
+    return false;
+  const auto environment = pipeline->processEnvironment();
+  if (!expect(
+          !environment.value("LD_LIBRARY_PATH").contains("/opt/nvidia/deepstream") &&
+              !environment.value("GST_PLUGIN_PATH").contains("/opt/nvidia/deepstream") &&
+              environment.value("GST_PLUGIN_PATH_1_0") == qEnvironmentVariable("GST_PLUGIN_PATH_1_0"),
+          "AMD desktop launch must preserve its private VA runtime without injecting DeepStream"))
+    return false;
+  auto* boxes = require_child<QCheckBox>(window, "showPlayerTrackingCheck");
+  if (!boxes)
+    return false;
+  boxes->setChecked(true);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] { return window->completeLogText().contains("preview overlays players=1 play=0 rink=0 apply=live"); },
+              10000),
+          "Player boxes must receive a live application acknowledgment"))
+    return false;
+  render->setChecked(false);
+  if (!expect(
+          QTest::qWaitFor([&] { return window->logText().contains("GPU preview disabled generation="); }, 10000),
+          "Render off must receive its native acknowledgment"))
+    return false;
+  render->setChecked(true);
+  if (!expect(QTest::qWaitFor(ready, 10000), "Render on must present a fresh Program frame"))
+    return false;
+  const auto before_boxes_off = window->completeLogText().size();
+  boxes->setChecked(false);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] {
+                return window->completeLogText()
+                    .mid(before_boxes_off)
+                    .contains("preview overlays players=0 play=0 rink=0 apply=live");
+              },
+              10000),
+          "Player boxes off must reconcile without a timeout"))
+    return false;
+  tabs->setCurrentIndex(1);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] { return window->logText().contains("GPU preview unavailable channel=stitched"); }, 10000),
+          "Unported preview channels must report unavailable"))
+    return false;
+  const auto previous_generation = surface->property("previewRendererGeneration").toULongLong();
+  tabs->setCurrentIndex(0);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] {
+                return ready() && surface->property("previewRendererGeneration").toULongLong() > previous_generation;
+              },
+              10000),
+          "Returning to Program must restore a newly acknowledged native frame"))
+    return false;
+  if (!expect(
+          target->geometry() == target->parentWidget()->rect() &&
+              QRegularExpression("HSTREAM_AMD_FRAME .* tracks=[1-9]").match(window->logText()).hasMatch(),
+          "AMD desktop playback must fill its native target and retain detected tracks"))
+    return false;
+  activate(stop);
+  if (!expect(
+          QTest::qWaitFor([&] { return window->pipelineStateText() == "STOPPED"; }, 30000) &&
+              window->completeLogText().contains("pipeline finished exit=0 status=normal"),
+          "AMD desktop Stop must drain successfully"))
+    return false;
+  if (archives) {
+    const auto finished = [&] {
+      const auto* headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
+      return headline && headline->property("finalizationState").toString() != "running";
+    };
+    if (!expect(
+            QTest::qWaitFor(finished, 60000) &&
+                window->findChild<QLabel*>("archiveFinalizeHeadline")->property("finalizationState").toString() ==
+                    "complete",
+            "AMD Program archives must complete managed publication"))
+      return false;
+    for (const auto* name : {"archiveOutputPath", "program4kOutputPath"}) {
+      const auto* label = require_child<QLabel>(window, name);
+      if (!label || !expect(label->text().startsWith("Completed archive: "), "Archive path was not published"))
+        return false;
+      const auto path = label->text().mid(QString("Completed archive: ").size());
+      if (!expect(QFileInfo(path).isFile() && QFileInfo(path).size() > 0, "Published AMD archive is empty"))
+        return false;
+      std::cout << "AMD_UI_PUBLISHED " << path.toStdString() << '\n';
+    }
+    if (!expect(
+            window->completeLogText().contains("All outputs published; run working files removed."),
+            "Managed publication did not remove owned working files"))
+      return false;
+  }
+  return true;
+}
+#endif
 
 bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
@@ -18050,6 +18248,12 @@ bool test_camera_experiment_initial_controls(HStreamWindow* window) {
   auto* launch = require_child<QPushButton>(window, "cameraExperimentsButton");
   if (!count || !launch)
     return false;
+#ifdef HSTREAM_USE_HIP
+  activate(launch);
+  return expect(!launch->isEnabled() && launch->toolTip().contains("not yet available on AMD") &&
+                    !window->findChild<QDialog*>("cameraExperimentDialog"),
+                "AMD must explain unavailable Camera Experiments without opening a native pipeline");
+#endif
   const int saved = count->value();
   count->setValue(1);
   launch->click();
@@ -18294,6 +18498,10 @@ int main(int argc, char** argv) {
       return 1;
     }
     window.show();
+#ifdef HSTREAM_USE_HIP
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AMD_PROGRAM"))
+      return run_amd_program_preview_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
+#endif
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_COMPLETION_ONLY"))
       return run_real_calibration_completion_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
     if (!run_real_pipeline_e2e(&window, QString::fromLocal8Bit(e2e_game_id))) {

@@ -48,12 +48,31 @@ int main(int argc, char** argv) {
   QGuiApplication::sync();
   auto* connection = qGuiApp->nativeInterface<QNativeInterface::QX11Application>()->connection();
   const auto window = static_cast<xcb_window_t>(surface.winId());
+  // Model the child window glimagesink embeds below its supplied XID. An idle
+  // child has no event handler to help repaint after its parent is resized.
+  const auto renderer = xcb_generate_id(connection);
+  xcb_create_window(
+      connection,
+      XCB_COPY_FROM_PARENT,
+      renderer,
+      window,
+      40,
+      40,
+      80,
+      60,
+      0,
+      XCB_WINDOW_CLASS_INPUT_OUTPUT,
+      XCB_COPY_FROM_PARENT,
+      0,
+      nullptr);
+  xcb_map_window(connection, renderer);
   const auto gc = xcb_generate_id(connection);
   const uint32_t magenta = 0xff00ff;
   xcb_create_gc(connection, gc, window, XCB_GC_FOREGROUND, &magenta);
   auto fill = [&] {
     const xcb_rectangle_t rect{0, 0, static_cast<uint16_t>(surface.width()), static_cast<uint16_t>(surface.height())};
     xcb_poly_fill_rectangle(connection, window, gc, 1, &rect);
+    xcb_poly_fill_rectangle(connection, renderer, gc, 1, &rect);
     xcb_flush(connection);
   };
   auto pixel = [&](int x, int y) {
@@ -73,10 +92,12 @@ int main(int argc, char** argv) {
   bool ok = true;
   for (const QSize size : {QSize(480, 270), QSize(240, 135)}) {
     fill();
-    ok &= expect(pixel(20, 20) == magenta, "Fixture must contain stale native pixels");
+    ok &= expect(pixel(20, 20) == magenta && pixel(50, 50) == magenta, "Fixture must contain stale native pixels");
     surface.update();
     QGuiApplication::sync();
-    ok &= expect(pixel(20, 20) == magenta, "Ordinary Qt updates must preserve externally rendered frames");
+    ok &= expect(
+        pixel(20, 20) == magenta && pixel(50, 50) == magenta,
+        "Ordinary Qt updates must preserve externally rendered frames, including sink children");
     PostedEvent probe;
     QCoreApplication::postEvent(&probe, new QEvent(QEvent::User));
     surface.resize(size);
@@ -84,14 +105,17 @@ int main(int argc, char** argv) {
     QGuiApplication::sync();
     ok &= expect(probe.delivered, "The normal event loop must deliver the probe");
     ok &= expect(
-        pixel(20, 20) == 0 && pixel(size.width() - 2, size.height() - 2) == 0,
+        pixel(20, 20) == 0 && pixel(50, 50) == 0 && pixel(size.width() - 2, size.height() - 2) == 0,
         "Growing and shrinking idle previews must clear all stale native pixels");
   }
   fill();
   surface.hide();
   surface.show();
   QGuiApplication::sync();
-  ok &= expect(pixel(20, 20) == 0, "Remapping must clear stale pixels without waiting for a video frame");
+  ok &= expect(
+      pixel(20, 20) == 0 && pixel(50, 50) == 0,
+      "Remapping must clear stale pixels and sink children without waiting for a video frame");
+  xcb_destroy_window(connection, renderer);
   xcb_free_gc(connection, gc);
   return ok ? 0 : 1;
 }

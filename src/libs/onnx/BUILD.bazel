@@ -86,3 +86,18 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
     ],
 )
+
+cc_library(
+    name = "image_input",
+    srcs = ["ImageInput.cpp"],
+    hdrs = ["ImageInput.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "image_input_test",
+    srcs = ["ImageInputTest.cpp"],
+    deps = [":image_input"],
+)

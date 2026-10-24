@@ -221,6 +221,15 @@ bool test_ui_launch_enables_progress_sampling() {
 
 int main() {
   bool ok = true;
+  {
+    hm::PlaybackRateEstimator rate;
+    const auto start = std::chrono::steady_clock::now();
+    rate.sample(0, hm::kUnknownPlaybackTime - 1, start, std::chrono::seconds(1));
+    const auto tiny =
+        rate.sample(1, hm::kUnknownPlaybackTime - 1, start + std::chrono::seconds(1), std::chrono::seconds(1));
+    ok &=
+        expect(tiny.speed_x > 0 && tiny.eta_ns == hm::kUnknownPlaybackTime, "unrepresentable ETA must remain unknown");
+  }
   ok &= test_timed_progress_requires_completed_output();
   ok &= test_timed_progress_instances_and_generations_are_independent();
   ok &= test_timed_progress_keeps_frame_count_fallback();

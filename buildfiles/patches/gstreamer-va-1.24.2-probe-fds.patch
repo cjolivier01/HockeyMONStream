@@ -1,0 +1,45 @@
+--- a/gst-libs/gst/va/gstvaallocator.c
++++ b/gst-libs/gst/va/gstvaallocator.c
+@@ -554,6 +554,7 @@
+   GstVideoFormat format;
+   VASurfaceID surface;
+   guint64 prev_modifier = DRM_FORMAT_MOD_INVALID;
++  gboolean exported = FALSE;
+ 
+   _init_debug_category ();
+ 
+@@ -584,6 +585,7 @@
+ 
+   if (!va_export_surface_to_dmabuf (display, surface, export_flags, &desc))
+     goto failed;
++  exported = TRUE;
+ 
+   if (GST_VIDEO_INFO_N_PLANES (info) != desc.num_layers)
+     goto failed;
+@@ -628,6 +630,14 @@
+ 
+ failed:
+   {
++#ifndef G_OS_WIN32
++    /* A failed export retains ownership in the driver, which may already have
++     * closed partial exports. Only successful exports transfer these fds. */
++    if (exported) {
++      for (i = 0; i < desc.num_objects && i < G_N_ELEMENTS (desc.objects); i++)
++        close (desc.objects[i].fd);
++    }
++#endif
+     va_destroy_surfaces (display, &surface, 1);
+     return FALSE;
+   }
+@@ -661,6 +671,11 @@
+     return DRM_FORMAT_MOD_INVALID;
+ 
+   va_destroy_surfaces (display, &surface, 1);
++#ifndef G_OS_WIN32
++  /* These probe exports never become GstMemory, so the probe owns their fds. */
++  for (guint i = 0; i < desc.num_objects; i++)
++    close (desc.objects[i].fd);
++#endif
+ 
+   return desc.objects[0].drm_format_modifier;
+ }

@@ -2,6 +2,7 @@
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 
+#include <fcntl.h>
 #include <sched.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -152,6 +153,51 @@ int main(int argc, char** argv) {
       std::cout << "Bind-mount regression skipped: unprivileged mount namespaces unavailable\n";
     }
     exercise("success", base / "work-success", nullptr);
+    {
+      const auto game = base / "producer-admission/game";
+      fs::create_directories(game);
+      const auto manifest = pub::CreateRun(game, base / "producer-admission/work", "run-admission");
+      setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
+      const auto refused = [&](bool telemetry) {
+        try {
+          pub::ValidatePipelineStart(telemetry);
+          return false;
+        } catch (const std::exception&) {
+          return true;
+        }
+      };
+      require(refused(true), "unstarted manifest cannot admit a producer");
+      pub::BeginRun(manifest, true);
+      require(refused(false), "video-only producer must reject requested telemetry");
+      const auto run = YAML::LoadFile(manifest.string());
+      require(
+          run["telemetry_required"].as<bool>() && run["outputs"].size() == 0,
+          "producer admission must not clear telemetry or register an output");
+      require(!refused(true), "capable producer should accept running manifest");
+      const auto output = manifest.parent_path() / "program.mp4";
+      std::ofstream(output) << "owned output";
+      const int descriptor = ::open(output.c_str(), O_RDONLY | O_CLOEXEC);
+      require(descriptor >= 0, "open original output");
+      fs::rename(output, output.string() + ".original");
+      std::ofstream(output) << "replacement";
+      bool rejected = false;
+      try {
+        pub::RegisterOutput(output, "program", true, descriptor);
+      } catch (const std::exception&) {
+        rejected = true;
+      }
+      require(
+          rejected && YAML::LoadFile(manifest.string())["outputs"].size() == 0,
+          "registration must reject replacement of an owned output");
+      fs::remove(output);
+      fs::rename(output.string() + ".original", output);
+      pub::RegisterOutput(output, "program", true, descriptor);
+      ::close(descriptor);
+      pub::CompletePipeline(false, 0);
+      require(refused(true), "closed manifest cannot admit another producer");
+      unsetenv("HSTREAM_JOB_MANIFEST");
+      pub::ValidatePipelineStart(false);
+    }
     {
       const auto game = base / "calibration/game";
       fs::create_directories(game);

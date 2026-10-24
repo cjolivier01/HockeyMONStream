@@ -13,6 +13,7 @@
 #include "absl/status/statusor.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/common/ManagedObject.h"
+#include "hstream/src/libs/tracking/ProgramCameraConfig.h"
 #include "hstream/src/libs/common/TrackColorMeta.h"
 #include "hstream/src/libs/playtracker_replay/RinkCameraGuide.h"
 // #include "deepstream/sources/includes/nvbufsurface.h"
@@ -22,10 +23,6 @@
 #include "yaml-cpp/yaml.h"
 
 typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
-
-namespace gst_hm_playtracker {
-hm::play_tracker::PlayTrackerConfig create_play_tracker_config(const hm::BBox& arena_box, const YAML::Node& yaml);
-}
 
 // Init parameters structure as input, required for instantiating
 // playtracker_lib

@@ -1,5 +1,6 @@
 #include "dsfieldmask_lib.h"
 #include "fieldmask_payload.h"
+#include "hstream/src/libs/detection/RinkDetectionMask.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/common/PlotContext.h"
 #include "hstream/src/libs/common/Status.h"
@@ -49,84 +50,6 @@ struct DsFieldMaskCtx {
 
 namespace {
 
-constexpr float side_edges_bbox_by_half_width_ratio = 0.2;
-
-bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
-  int byteIndex = (point.y * mask.cols + point.x / 8); // Byte index in the data
-  int bitIndex = point.x % 8; // Bit index within the byte
-  // int bitIndex = point.x & 7;
-  return (mask.data[byteIndex] & (1 << (7 - bitIndex))) != 0;
-  // int bitIndex = point.x % 8; // Bit index within the byte
-  // uchar val = mask.at<uchar>(cv::Point2l(point.x/8, point.y));
-  // return (val & (1 << bitIndex)) != 0;
-}
-
-// Convert 8-bit-per-pixel mask to 1-bit-per-pixel (packed as bytes)
-cv::Mat convert_to_bit_mask(const cv::Mat& inputMask) {
-  if (inputMask.type() != CV_8UC1) {
-    throw std::invalid_argument("Input mask must be a CV_8UC1 matrix.");
-  }
-
-  // Output matrix: 1/8th the number of columns (rounded up), same rows
-  int packedCols = (inputMask.cols + 7) / 8;
-  cv::Mat bitMask(inputMask.rows, packedCols, CV_8UC1, cv::Scalar(0));
-
-  for (int y = 0; y < inputMask.rows; ++y) {
-    const uchar* inputRow = inputMask.ptr<uchar>(y);
-    uchar* outputRow = bitMask.ptr<uchar>(y);
-
-    for (int x = 0; x < inputMask.cols; ++x) {
-      if (inputRow[x] != 0) {
-        outputRow[x / 8] |= (1 << (7 - (x % 8))); // Set the corresponding bit
-      }
-    }
-  }
-
-  return bitMask;
-}
-
-// Compute the centroid of a binary mask
-cv::Point2f compute_centroid(const cv::Mat& mask, cv::Rect2i& bbox) {
-  if (mask.type() != CV_8UC1) {
-    throw std::invalid_argument("Input mask must be a CV_8UC1 matrix.");
-  }
-  // cv::Rect bbox(0,)
-  double sumX = 0.0, sumY = 0.0;
-  int count = 0;
-
-  int low_x = std::numeric_limits<int>::max(), low_y = std::numeric_limits<int>::max();
-  int high_x = -1, high_y = -1;
-
-  for (int y = 0; y < mask.rows; ++y) {
-    const uchar* row = mask.ptr<uchar>(y);
-    for (int x = 0; x < mask.cols; ++x) {
-      if (row[x] != 0) { // Check for non-zero values
-        sumX += x;
-        sumY += y;
-        low_x = std::min(x, low_x);
-        low_y = std::min(y, low_y);
-        high_x = std::max(x, high_x);
-        high_y = std::max(y, high_y);
-        ++count;
-      }
-    }
-  }
-
-  if (count == 0) {
-    throw std::runtime_error("The mask has no non-zero pixels.");
-  }
-
-  if (low_x != std::numeric_limits<int>::max() && low_y != std::numeric_limits<int>::max() && high_x > 0 &&
-      high_y > 0) {
-    bbox = cv::Rect2i(low_x, low_y, high_x - low_x, high_y - low_y);
-  } else {
-    bbox = cv::Rect2i(0, 0, 0, 0);
-  }
-
-  // Return the centroid as a floating-point point
-  return cv::Point2f(sumX / count, sumY / count);
-}
-
 void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx, bool draw) {
   if (!frame_meta->obj_meta_list || !frame_meta->bInferDone) {
     return;
@@ -174,78 +97,23 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
       bbox_coords.width = obj_meta->rect_params.width;
       bbox_coords.height = obj_meta->rect_params.height;
     }
-    const float half_width = bbox_coords.width / 2;
-    const float bbox_center_x = bbox_coords.left + half_width;
-    const float half_height = bbox_coords.height / 2;
-
-    // Keep track of extremes for debugging
-    // max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
-    // max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
-
-    const int raise_center_height_amount =
-        float(bbox_coords.height) * ctx->initParams.raise_bbox_center_by_height_ratio;
-    const int lower_bottom_height_amount =
-        float(bbox_coords.height) * ctx->initParams.lower_bbox_bottom_by_height_ratio;
-
-    // Center of bounding box
-    cv::Point2f ptCenter = cv::Point2f(bbox_center_x, bbox_coords.top + half_height - raise_center_height_amount);
-
+    const auto decision = hm::detection::EvaluateRinkDetection(
+        ctx->detection_bit_mask, ctx->detection_u8_mask.size(), ctx->detection_mask_centroid,
+        {bbox_coords.left, bbox_coords.top, bbox_coords.width, bbox_coords.height},
+        {scale_width, scale_height}, ctx->initParams.raise_bbox_center_by_height_ratio,
+        ctx->initParams.lower_bbox_bottom_by_height_ratio);
     if (plot_context) {
       plot_context->plot_circle(
-          hm::Point{.x = ptCenter.x, .y = ptCenter.y},
-          /*radius=*/std::abs(raise_center_height_amount),
-          /*thickness=*/std::max(1, std::abs(raise_center_height_amount) / 2),
+          hm::Point{.x = decision.center.x, .y = decision.center.y},
+          std::abs(decision.raised_center), std::max(1, std::abs(decision.raised_center) / 2),
           hm::utils::ColorRGB{0, 255, 0});
-    }
-
-    // Bottom of bounding box (for testing if their feet are on the ice)
-    cv::Point2f ptBottom = cv::Point2f(bbox_center_x, bbox_coords.top + bbox_coords.height);
-
-    ptBottom.y -= lower_bottom_height_amount;
-
-    if (plot_context) {
       plot_context->plot_circle(
-          hm::Point{.x = ptBottom.x, .y = ptBottom.y},
-          /*radius=*/std::abs(lower_bottom_height_amount),
-          /*thickness=*/std::max(1, std::abs(lower_bottom_height_amount) / 2),
+          hm::Point{.x = decision.bottom.x, .y = decision.bottom.y},
+          std::abs(decision.lowered_bottom), std::max(1, std::abs(decision.lowered_bottom) / 2),
           hm::utils::ColorRGB{255, 0, 0});
     }
-
-    if (ptBottom.x <= ctx->detection_mask_centroid.x) {
-      // left side, so move right just a little bit
-      ptBottom.x += half_width * side_edges_bbox_by_half_width_ratio;
-    } else {
-      // right side, so move left just a little bit
-      ptBottom.x -= half_width * side_edges_bbox_by_half_width_ratio;
-    }
-
-    ptBottom.x *= scale_width;
-    ptBottom.y *= scale_height;
-    ptCenter.x *= scale_width;
-    ptCenter.y *= scale_height;
-
-    // ok, well, let's just do bottoms against centroid y
-    if (ptBottom.y <= ctx->detection_mask_centroid.y) {
-      // It's in the top half of the ice, so we just look at the (adjusted) bottom in the mask
-      ptBottom.x = std::clamp(ptBottom.x, 0.0f, float(frame_meta->source_frame_width - 1));
-      ptBottom.y = std::clamp(ptBottom.y, 0.0f, float(frame_meta->source_frame_height - 1));
-      // if (ctx->detection_u8_mask.at<uchar>(ptBottom) == 0) {
-      //   remove_me = l_obj;
-      // }
-      if (!is_bit_set(ctx->detection_bit_mask, ptBottom)) {
-        remove_me = l_obj;
-      }
-    } else {
-      // It's in the bottom half of the ice, so we check center
-      ptCenter.x = std::clamp(ptCenter.x, 0.0f, float(frame_meta->source_frame_width - 1));
-      ptCenter.y = std::clamp(ptCenter.y, 0.0f, float(frame_meta->source_frame_height - 1));
-      // if (ctx->detection_u8_mask.at<uchar>(ptCenter) == 0) {
-      //   remove_me = l_obj;
-      // }
-      if (!is_bit_set(ctx->detection_bit_mask, ptCenter)) {
-        remove_me = l_obj;
-      }
-    }
+    if (!decision.keep)
+      remove_me = l_obj;
     if (remove_me) {
       nvds_remove_obj_meta_from_frame(frame_meta, obj_meta);
     }
@@ -397,8 +265,8 @@ absl::Status DsFieldMaskProcessFrame(
         (ctx->detection_u8_mask.empty() || ctx->detection_u8_mask.type() != CV_8UC1 ||
          cv::countNonZero(ctx->detection_u8_mask) == 0))
       return absl::FailedPreconditionError("Analysis requires a nonempty CV_8UC1 rink mask with ice pixels");
-    ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
-    ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
+    ctx->detection_mask_centroid = hm::detection::compute_centroid(ctx->detection_u8_mask, ctx->field_box);
+    ctx->detection_bit_mask = hm::detection::convert_to_bit_mask(ctx->detection_u8_mask);
     ctx->loaded_output_generation = output_generation;
     ctx->loaded_output_authorization_id = output_authorization_id;
   }

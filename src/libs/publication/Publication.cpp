@@ -413,6 +413,17 @@ fs::path EnvironmentWorkingDirectory() {
   const auto path = EnvironmentManifest();
   return path.empty() ? fs::path() : path.parent_path();
 }
+void ValidatePipelineStart(bool supports_telemetry) {
+  const auto manifest = EnvironmentManifest();
+  if (manifest.empty())
+    return;
+  ManifestLock lock(manifest);
+  const auto run = load(manifest);
+  if (run["state"].as<std::string>() != "running")
+    fail("Managed pipeline requires a running manifest");
+  if (!supports_telemetry && run["telemetry_required"].as<bool>(false))
+    fail("This pipeline does not support the requested telemetry capture");
+}
 static fs::path create_run(const fs::path& game, const fs::path& output_root, const std::string& id) {
   validate_id(id);
   const fs::path logical_game = fs::absolute(game).lexically_normal();
@@ -467,7 +478,7 @@ fs::path CreateRun(const fs::path& game, const fs::path& output_root, const std:
   GameLock admission(fs::canonical(game));
   return create_run(game, output_root, id);
 }
-void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc) {
+void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc, int expected_fd) {
   const auto manifest = EnvironmentManifest();
   if (manifest.empty())
     return;
@@ -479,6 +490,14 @@ void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc) {
   const auto st = info(absolute);
   if (!S_ISREG(st.st_mode))
     fail("Run output is not a regular file");
+  const auto owned_identity = identity(absolute);
+  if (expected_fd >= 0) {
+    struct stat expected {};
+    check(::fstat(expected_fd, &expected) == 0, "Cannot inspect owned output descriptor");
+    if (uint64_t(expected.st_dev) != owned_identity["device"].as<uint64_t>() ||
+        uint64_t(expected.st_ino) != owned_identity["inode"].as<uint64_t>())
+      fail("Output file was replaced before registration");
+  }
   for (auto output : run["outputs"]) {
     if (output["path"].as<std::string>() == absolute.string()) {
       if (!matches(absolute, output["identity"]))
@@ -490,7 +509,7 @@ void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc) {
   output["path"] = absolute.string();
   output["kind"] = kind;
   output["hevc"] = hevc;
-  output["identity"] = identity(absolute);
+  output["identity"] = owned_identity;
   const fs::path owner_lock = absolute.string() + ".hstream-owner-lock";
   if (entry_exists(owner_lock))
     output["owner_lock_identity"] = identity(owner_lock);

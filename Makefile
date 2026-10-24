@@ -42,6 +42,26 @@ WINDOWS_SIGNING_TIMESTAMP_URL ?= http://timestamp.digicert.com
 
 all: print_targets
 
+.PHONY: amd-kernels test-amd-kernels test-amd-video test-amd-inference test-amd-tracking test-amd-driver-interop
+
+amd-kernels:
+	$(BAZEL) build --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) //src/libs/gpu:portable_gpu_tests //src/libs/player_analytics/runtime:semantic_gpu_test
+
+test-amd-kernels:
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu:portable_gpu_tests
+
+test-amd-video:
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/gpu/vaapi:va_video_reader_test //src/libs/gpu/vaapi:va_video_playlist_test //src/libs/gpu/vaapi:va_stereo_video_test //src/libs/media:stereo_frame_plan_test //src/libs/media:mp4_video_track_test //src/libs/gpu/vaapi:va_probe_descriptors_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_sink_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test //src/libs/program:encoded_colorimetry_test
+
+test-amd-inference:
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/migraphx:session_test //src/libs/detection:gpu_test //src/libs/detection:postprocess_test //src/libs/detection:hip_detector_failure_test
+
+test-amd-tracking:
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --test_output=errors //src/libs/tracking:native_tracker_test //src/libs/tracking:program_tracking_test //src/libs/detection:rink_detection_mask_test
+
+test-amd-driver-interop:
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
+
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
 	hstream-job hstream-finalize hstream-cli run-hstream-cli hstream-ui hstream-web-job run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
@@ -216,6 +236,7 @@ print_targets:
 		'x86_64         Build optimized for x86_64 (--cpu=k8, auto-adds Blackwell host flags when needed).' \
 		'arm64          Build optimized for native non-Jetson arm64/SBSA hosts (--config=arm64).' \
 		'jetson         Build optimized for Jetson (--config=jetson, needs $(JETSON_SYSROOT)).' \
+		'amd-kernels    Build the portable GPU kernels and tests with native HIP/ROCm (see docs/amd-gpu.md).' \
 		'' \
 		'Apps' \
 		'----' \
@@ -249,6 +270,11 @@ print_targets:
 		'Tests' \
 		'-----' \
 		'test           Run Bazel tests with --config=opt.' \
+		'test-amd-kernels Run the shared pixel and preprocessing tests on AMD.' \
+		'test-amd-video Run VA/HIP hardware decode, processing and encode tests on AMD.' \
+		'test-amd-inference Run native MIGraphX and detector preprocessing tests on AMD.' \
+		'test-amd-tracking Test the shared rink filter, native tracking and Program camera policy.' \
+		'test-amd-driver-interop Test MIGraphX, VA and EGL together (requires isolated SDK loader).' \
 		'' \
 		'Maintenance & Cleanup' \
 		'---------------------' \

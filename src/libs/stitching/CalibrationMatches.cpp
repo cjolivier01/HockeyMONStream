@@ -20,7 +20,7 @@
 
 #include <opencv2/calib3d.hpp>
 
-#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/TransactionState.h"

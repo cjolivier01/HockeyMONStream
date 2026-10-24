@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cupano/pano/cudaMat.h"
+#include "hstream/src/libs/program/FrameGeometry.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CudaStreamCompletionFence.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
@@ -18,21 +19,6 @@ namespace playcropper {
 
 using CudaStreamCompletionFence = videoprep::CudaStreamCompletionFence;
 using CudaStreamSynchronizer = videoprep::CudaStreamSynchronizer;
-
-struct FrameTransformGeometry {
-  BBox source_rect;
-  Point anchor_point;
-  BBox crop_box;
-  float angle;
-};
-
-FrameTransformGeometry CalculateFrameTransformGeometry(
-    size_t input_width,
-    size_t input_height,
-    const BBox& tracking_box,
-    bool no_crop,
-    float fixed_edge_rotation_angle_left,
-    float fixed_edge_rotation_angle_right);
 
 class PlayCropperPriv : public CustomAlgorithmBase {
   using Super = CustomAlgorithmBase;

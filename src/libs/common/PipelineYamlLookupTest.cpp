@@ -1,4 +1,4 @@
-#include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/common/ConfigPath.h"
 
 #include <cstdint>
 #include <iostream>

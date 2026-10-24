@@ -1,0 +1,403 @@
+load("//bazel:gpu_library.bzl", "gpu_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "preview_overlay_runtime",
+    hdrs = ["PreviewOverlayRuntime.h"],
+    include_prefix = "hstream/src/libs/program",
+)
+
+cc_library(
+    name = "runtime_control",
+    srcs = ["ProgramRuntimeControl.cpp"],
+    hdrs = ["ProgramRuntimeControl.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":preview_overlay_runtime", "@com_google_absl//absl/status:statusor"],
+)
+cc_test(
+    name = "runtime_control_test",
+    srcs = ["ProgramRuntimeControlTest.cpp"],
+    deps = [":runtime_control"],
+)
+
+cc_library(
+    name = "audio_config",
+    srcs = ["ProgramAudioConfig.cpp"],
+    hdrs = ["ProgramAudioConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_layers", "//src/libs/common:config_path", "//src/libs/media:mp4_audio_reader"],
+)
+cc_test(
+    name = "audio_config_test",
+    srcs = ["ProgramAudioConfigTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)", "$(location //configs:ds_hockey_app_config.yaml)"],
+    data = ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml"],
+    deps = [":audio_config"],
+)
+
+cc_library(
+    name = "render_settings",
+    hdrs = ["ProgramRenderSettings.h"],
+    deps = ["//src/libs/scoreboard:plan"],
+    include_prefix = "hstream/src/libs/program",
+)
+
+cc_library(
+    name = "archive_config",
+    srcs = ["ProgramArchiveConfig.cpp"],
+    hdrs = ["ProgramArchiveConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":output_config", "//src/libs/common:config_path", "//src/libs/common:video_bitrate"],
+)
+
+cc_library(
+    name = "output_config",
+    srcs = ["ProgramOutputConfig.cpp"],
+    hdrs = ["ProgramOutputConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":render_settings", "//src/libs/common:config_layers", "//src/libs/common:config_path",
+            "//src/libs/stitching:game_config", "//src/libs/stitching:stitching_algorithms"],
+)
+
+cc_test(
+    name = "archive_config_test",
+    srcs = ["ProgramArchiveConfigTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)", "$(location //configs:ds_hockey_app_config.yaml)"],
+    data = ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml"],
+    deps = [":archive_config"],
+)
+
+cc_test(
+    name = "output_config_test",
+    srcs = ["ProgramOutputConfigTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)"],
+    data = ["//configs:baseline.yaml"],
+    deps = [":output_config"],
+)
+
+cc_library(
+    name = "va_program_sink",
+    srcs = ["VaProgramSink.cpp"],
+    hdrs = ["VaProgramSink.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = ["@mesa_interop//:gstreamer_gl", ":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool", "//src/libs/gpu/vaapi:va_element", "//src/libs/media:mp4_audio_reader", "//src/libs/media:mp4_audio_edit"],
+)
+
+cc_test(
+    name = "va_program_sink_test",
+    srcs = ["VaProgramSinkTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_program_sink", ":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_element", "//src/libs/media:mp4_video_track",
+            "//src/libs/media:test_mp4", "@mesa_interop", "@mesa_interop//:gstreamer_gl"],
+)
+
+cc_library(
+    name = "amd_program_settings",
+    srcs = ["AmdProgramSettings.cpp"],
+    hdrs = ["AmdProgramSettings.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_path", "//src/libs/tracking:native_tracker", "//src/libs/gpu/migraphx:cache_config", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "amd_program_settings_test",
+    srcs = ["AmdProgramSettingsTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)"],
+    data = ["//configs:baseline.yaml"],
+    deps = [":amd_program_settings", "//src/libs/common:baseline_config"],
+)
+
+cc_library(
+    name = "frame_geometry",
+    srcs = ["FrameGeometry.cpp"],
+    hdrs = ["FrameGeometry.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["@hm//hockeymon/csrc/play_tracker"],
+)
+
+cc_library(
+    name = "shadow_tone_curve",
+    hdrs = ["ShadowToneCurve.h"],
+    include_prefix = "hstream/src/libs/program",
+)
+
+cc_library(
+    name = "gpu_headers",
+    hdrs = ["ProgramGpu.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":frame_geometry", "//src/libs/gpu:image", "//src/libs/gpu:runtime", "//src/libs/scoreboard:plan"],
+)
+
+gpu_library(
+    name = "gpu",
+    srcs = ["ProgramGpu.cu"],
+    deps = [":gpu_headers", ":shadow_tone_curve", "//src/libs/gpu:image_sampling"],
+)
+
+cc_test(
+    name = "gpu_test",
+    srcs = ["ProgramGpuTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":gpu", ":shadow_tone_curve", "@opencv_linux//:opencv"],
+)
+
+cc_test(
+    name = "va_program_output_test",
+    srcs = ["VaProgramOutputTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu", ":va_program_output", ":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool"],
+    linkopts = ["-lgstcodecparsers-1.0"],
+)
+
+cc_library(
+    name = "va_program_output",
+    srcs = ["VaProgramOutput.cpp"],
+    hdrs = ["VaProgramOutput.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu_headers", "//src/libs/gpu/vaapi:va_hip_frame"],
+)
+cc_test(
+    name = "va_program_p010_output_test",
+    args = ["--p010"],
+    srcs = ["VaProgramOutputTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu", ":va_program_output", ":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool"],
+    linkopts = ["-lgstcodecparsers-1.0"],
+)
+
+cc_test(
+    name = "va_program_preview_test",
+    srcs = ["VaProgramPreviewTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_output_pool",
+            "@mesa_interop", "@mesa_interop//:gstreamer_gl"],
+)
+
+cc_test(
+    name = "va_program_p010_preview_test",
+    srcs = ["VaProgramPreviewTest.cpp"],
+    args = ["--p010"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":gpu", ":va_program_output", "//src/libs/gpu/vaapi:va_output_pool",
+            "@mesa_interop", "@mesa_interop//:gstreamer_gl"],
+)
+
+cc_binary(
+    name = "hip_program_fixture",
+    srcs = ["HipProgramFixture.cpp"],
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":amd_program_processor", ":va_program_sink", ":amd_program_settings",
+        ":launch_config", ":detector_settings", "//src/libs/media:stereo_frame_plan",
+        "//src/libs/stitching:stitching_algorithms",
+        "//src/libs/common:baseline_config",
+        "//src/libs/gpu/vaapi:va_video_playlist",
+        "//src/libs/gpu/vaapi:va_stereo_video",
+        "//src/libs/gpu/vaapi:va_output_pool",
+    ],
+)
+
+cc_library(
+    name = "encoded_colorimetry",
+    srcs = ["EncodedColorimetry.cpp"],
+    hdrs = ["EncodedColorimetry.h"],
+    include_prefix = "hstream/src/libs/program",
+    linkopts = ["-L/usr/local/lib", "-lavcodec", "-lavutil"],
+    deps = ["@gstreamer", "@com_google_absl//absl/status:status"],
+)
+
+cc_test(
+    name = "encoded_colorimetry_test",
+    srcs = ["EncodedColorimetryTest.cpp"],
+    deps = [":encoded_colorimetry"],
+)
+
+cc_library(
+    name = "preview_boxes",
+    srcs = ["ProgramPreviewBoxes.cpp"],
+    hdrs = ["ProgramPreviewBoxes.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":frame_geometry", "//src/libs/draw_display:analytics_overlay",
+            "//src/libs/player_analytics:track_colors", "//src/libs/tracking:native_tracker"],
+)
+
+cc_test(
+    name = "preview_boxes_test",
+    srcs = ["ProgramPreviewBoxesTest.cpp"],
+    deps = [":preview_boxes"],
+)
+
+cc_library(
+    name = "amd_program_types",
+    hdrs = ["AmdProgramTypes.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({"//:use_hip": [], "//conditions:default": ["@platforms//:incompatible"]}),
+    deps = [":render_settings", ":calibration", ":preview_boxes", "//src/libs/detection:hip_detector",
+            "//src/libs/tracking:program_tracking", "@hm-cupano//src/pano:cuda_pano"],
+)
+
+cc_library(
+    name = "amd_program_processor",
+    srcs = ["AmdProgramProcessor.cpp"],
+    hdrs = ["AmdProgramProcessor.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({"//:use_hip": [], "//conditions:default": ["@platforms//:incompatible"]}),
+    deps = [":amd_program_types", ":amd_video_stages"],
+)
+
+cc_library(
+    name = "amd_video_stages",
+    srcs = ["AmdVideoStages.cpp"],
+    hdrs = ["AmdVideoStages.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":amd_program_types", ":gpu", ":va_program_output", ":render_settings", ":calibration", ":preview_boxes",
+        "//src/libs/gpu:convert_image",
+        "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
+        "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",
+        "@hm-cupano//src/pano:cuda_pano",
+    ],
+)
+
+cc_library(
+    name = "calibration",
+    srcs = ["ProgramCalibration.cpp"],
+    hdrs = ["ProgramCalibration.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_path",
+            "//src/libs/stitching:game_config", "//src/libs/stitching:hugin_project"],
+)
+
+cc_test(
+    name = "calibration_test",
+    srcs = ["ProgramCalibrationTest.cpp"],
+    deps = [":calibration"],
+)
+
+cc_library(
+    name = "launch_config",
+    srcs = ["ProgramLaunchConfig.cpp"],
+    hdrs = ["ProgramLaunchConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [
+        ":amd_program_settings", "//src/libs/common:config_layers",
+        "//src/libs/common:baseline_config", "//src/libs/common:user_config",
+        "//src/libs/stitching:game_config", "//src/libs/tracking:program_camera_mapping",
+        "//src/libs/stitching:stitching_algorithms",
+    ],
+)
+
+cc_test(
+    name = "launch_config_test",
+    srcs = ["ProgramLaunchConfigTest.cpp"],
+    args = [
+        "$(location //configs:baseline.yaml)",
+        "$(location //configs:ds_hockey_app_config.yaml)",
+        "$(location //configs:play_tracker_config.yaml)",
+        "$(location //configs:config_infer_yolov8_hockey.yaml)",
+    ],
+    data = [
+        "//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml",
+        "//configs:play_tracker_config.yaml", "//configs:config_infer_yolov8_hockey.yaml",
+    ],
+    deps = [":launch_config"],
+)
+
+cc_library(
+    name = "detector_settings",
+    srcs = ["ProgramDetectorSettings.cpp"],
+    hdrs = ["ProgramDetectorSettings.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/assets:asset_manager", "//src/libs/onnx:image_input", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "detector_settings_test",
+    srcs = ["ProgramDetectorSettingsTest.cpp"],
+    args = ["$(location //configs:config_infer_yolov8_hockey_fp16.yaml)"],
+    data = ["//configs:config_infer_yolov8_hockey_fp16.yaml"],
+    deps = [":detector_settings", "//src/libs/assets:asset_manager"],
+)
+
+cc_library(
+    name = "amd_program_admission",
+    srcs = ["AmdProgramAdmission.cpp"],
+    hdrs = ["AmdProgramAdmission.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_layers", "//src/libs/common:config_path"],
+)
+cc_test(
+    name = "amd_program_admission_test",
+    srcs = ["AmdProgramAdmissionTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)", "$(location //configs:ds_hockey_app_config.yaml)"],
+    data = ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml"],
+    deps = [":amd_program_admission"],
+)
+cc_library(
+    name = "file_output",
+    srcs = ["ProgramFileOutput.cpp"],
+    hdrs = ["ProgramFileOutput.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+cc_test(
+    name = "file_output_test",
+    srcs = ["ProgramFileOutputTest.cpp"],
+    deps = [":file_output"],
+)
+
+cc_library(
+    name = "scoreboard_config",
+    srcs = ["ProgramScoreboardConfig.cpp"],
+    hdrs = ["ProgramScoreboardConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_layers", "//src/libs/common:config_path", "//src/libs/scoreboard:plan"],
+)
+cc_test(
+    name = "scoreboard_config_test",
+    srcs = ["ProgramScoreboardConfigTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)", "$(location //configs:ds_hockey_app_config.yaml)"],
+    data = ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml"],
+    deps = [":scoreboard_config"],
+)

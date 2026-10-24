@@ -46,6 +46,11 @@ and archive output. It is the performance-oriented counterpart to the Python
 [HockeyMON](https://github.com/cjolivier01/HockeyMON) project. Production
 calibration uses native C++/ONNX and does not invoke Python.
 
+A ROCm build of `hstream-cli` and `hstream-ui` supports saved-calibration Program playback on AMD,
+including stitching, detection, tracking, crop, native preview, audio and Program/4K HEVC archives.
+Automatic calibration and optional application features remain under development; see [AMD status and tests](docs/amd-gpu.md)
+for supported commands, private runtime requirements and current limits.
+
 ### Who it is for
 
 - Youth and amateur sports teams that want control of their footage and compute.

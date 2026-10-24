@@ -1,6 +1,6 @@
-#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
-#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
@@ -19,7 +19,6 @@
 
 #include <yaml-cpp/yaml.h>
 
-#include "cupano/pano/cudaMat.h"
 
 #include <algorithm>
 #include <array>
@@ -1652,72 +1651,6 @@ bool test_dependency_tree(const std::string& dir_name, bool add_rink_mask) {
   return true;
 }
 
-absl::StatusOr<cv::Mat> download_image(surface::Surface surf) {
-  cv::Mat cpu_img;
-  if (surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA) {
-    cpu_img = cv::Mat(static_cast<int>(surf.height()), static_cast<int>(surf.width()), CV_8UC4);
-    const cudaError_t copy_status = cudaMemcpy2D(
-        cpu_img.data,
-        cpu_img.step,
-        surf.dataptr(),
-        surf.pitch(),
-        cpu_img.cols * cpu_img.elemSize(),
-        cpu_img.rows,
-        cudaMemcpyDeviceToHost);
-    if (copy_status != cudaSuccess) {
-      return absl::FailedPreconditionError(
-          TO_STRING("Unable to download RGBA calibration image from GPU: " << cudaGetErrorString(copy_status)));
-    }
-    // This existing calibration-only readback feeds OpenCV encoders/inference,
-    // which expect BGR(A), while the GPU surface stores R,G,B,A bytes.
-    cv::cvtColor(cpu_img, cpu_img, cv::COLOR_RGBA2BGRA);
-  } else if (
-      surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709 ||
-      surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_2020) {
-    std::vector<uint32_t> packed(static_cast<size_t>(surf.width()) * surf.height());
-    const cudaError_t copy_status = cudaMemcpy2D(
-        packed.data(),
-        static_cast<size_t>(surf.width()) * sizeof(uint32_t),
-        surf.dataptr(),
-        surf.pitch(),
-        static_cast<size_t>(surf.width()) * sizeof(uint32_t),
-        surf.height(),
-        cudaMemcpyDeviceToHost);
-    if (copy_status != cudaSuccess) {
-      return absl::FailedPreconditionError(
-          TO_STRING("Unable to download RGB10 calibration image from GPU: " << cudaGetErrorString(copy_status)));
-    }
-    cpu_img = cv::Mat(static_cast<int>(surf.height()), static_cast<int>(surf.width()), CV_16UC3);
-    constexpr uint32_t kRgb10Mask = 0x3ffu;
-    for (int y = 0; y < cpu_img.rows; ++y) {
-      auto* row = cpu_img.ptr<cv::Vec3w>(y);
-      const auto* packed_row = packed.data() + static_cast<size_t>(y) * surf.width();
-      for (int x = 0; x < cpu_img.cols; ++x) {
-        const uint32_t pixel = packed_row[x];
-        const uint16_t red = static_cast<uint16_t>(((pixel & kRgb10Mask) * 65535u + 511u) / 1023u);
-        const uint16_t green = static_cast<uint16_t>(((((pixel >> 10) & kRgb10Mask) * 65535u + 511u) / 1023u));
-        const uint16_t blue = static_cast<uint16_t>(((((pixel >> 20) & kRgb10Mask) * 65535u + 511u) / 1023u));
-        row[x] = cv::Vec3w(blue, green, red);
-      }
-    }
-  } else {
-    return absl::InvalidArgumentError("Invalid image format");
-  }
-  if (cpu_img.empty()) {
-    return absl::FailedPreconditionError("Unable to download image from GPU");
-  }
-  return cpu_img;
-}
-
-absl::Status save_image(surface::Surface surf, const std::string& filename) {
-  cv::Mat cpu_img;
-  HM_ASSIGN_OR_RETURN(cpu_img, download_image(surf));
-  if (!cv::imwrite(filename, cpu_img)) {
-    return absl::FailedPreconditionError("Unable to write image to file");
-  }
-  return absl::OkStatus();
-}
-
 absl::StatusOr<cv::Mat> load_feature_image(const fs::path& image_file) {
   cv::Mat image = cv::imread(image_file.string(), cv::IMREAD_UNCHANGED);
   if (image.empty()) {
@@ -1797,7 +1730,9 @@ absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const f
 
 absl::Status save_stitched_image(
     const std::string& game_dir,
-    surface::Surface surface,
+    size_t width,
+    size_t height,
+    const CalibrationImageReader& read_image,
     const std::string& producer_output_generation) {
   if (game_dir.empty())
     return absl::InvalidArgumentError("Cannot save stitched scoreboard image without a game directory");
@@ -1806,10 +1741,12 @@ absl::Status save_stitched_image(
         "Cannot publish a scoreboard snapshot without the stitched-output generation that produced it");
   }
   HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
-      producer_output_generation, static_cast<size_t>(surface.width()), static_cast<size_t>(surface.height())));
+      producer_output_generation, width, height));
   HM_RETURN_IF_ERROR(preflight_stitched_snapshot_generation(game_dir, producer_output_generation));
   cv::Mat image;
-  HM_ASSIGN_OR_RETURN(image, download_image(surface));
+  if (!read_image)
+    return absl::InvalidArgumentError("A calibration image reader is required");
+  HM_ASSIGN_OR_RETURN(image, read_image());
   return save_stitched_image(game_dir, image, producer_output_generation);
 }
 
@@ -3220,7 +3157,7 @@ absl::Status update_stitching_match_inspection(
 
 absl::Status create_control_points(
     const std::string& game_dir,
-    const std::vector<StitchingCalibrationFramePair>& frame_pairs,
+    const std::vector<CalibrationFrameInput>& frame_pairs,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     size_t max_output_width,
@@ -3356,8 +3293,10 @@ absl::Status create_control_points(
         (index == 0 ? "right.png" : TO_STRING("right_" << std::setw(4) << std::setfill('0') << index << ".png"));
     if (!pair.left_image.empty() || !pair.right_image.empty())
       return absl::FailedPreconditionError("Calibration cannot mix retained inputs and captured surfaces");
-    HM_RETURN_IF_ERROR(save_image(pair.left, left_file));
-    HM_RETURN_IF_ERROR(save_image(pair.right, right_file));
+    if (!pair.left || !pair.right)
+      return absl::InvalidArgumentError("Captured calibration inputs require both image writers");
+    HM_RETURN_IF_ERROR(pair.left(left_file));
+    HM_RETURN_IF_ERROR(pair.right(right_file));
     metadata_frames.emplace_back(left_file, pair.left_source);
     metadata_frames.emplace_back(right_file, pair.right_source);
     input_files.emplace_back(left_file, right_file);
@@ -5419,7 +5358,7 @@ absl::Status save_rink_profile_with_stitched_image(
 
 absl::Status create_field_mask(
     const std::string& game_dir,
-    surface::Surface surface,
+    const CalibrationImageWriter& write_image,
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
@@ -5489,7 +5428,9 @@ absl::Status create_field_mask(
   if (::chmod(input_dir.c_str(), 0700) != 0)
     return absl::InternalError("Unable to protect private rink input directory");
   const fs::path stitched_path = input_dir / "s.png";
-  HM_RETURN_IF_ERROR(save_image(surface, stitched_path));
+  if (!write_image)
+    return absl::InvalidArgumentError("A calibration image writer is required");
+  HM_RETURN_IF_ERROR(write_image(stitched_path));
   const cv::Mat stitched = cv::imread(stitched_path.string(), cv::IMREAD_COLOR);
   if (stitched.empty())
     return absl::FailedPreconditionError("Unable to reload stitched frame for rink inference");
@@ -5652,26 +5593,10 @@ absl::Status reframe_stitching(
   return HuginProject::Reframe(game_dir, options);
 }
 
-absl::Status configure_stitching(
-    const std::string& game_dir,
-    surface::Surface left_surface,
-    surface::Surface right_surface,
-    const std::string& expected_invalidation_id,
-    const std::function<bool()>& is_cancelled,
-    size_t max_output_width,
-    const std::string& captured_frame_selection_fingerprint) {
-  return configure_stitching(
-      game_dir,
-      std::vector<StitchingCalibrationFramePair>{{left_surface, right_surface}},
-      expected_invalidation_id,
-      is_cancelled,
-      max_output_width,
-      captured_frame_selection_fingerprint);
-}
 
 absl::Status configure_stitching(
     const std::string& game_dir,
-    const std::vector<StitchingCalibrationFramePair>& frame_pairs,
+    const std::vector<CalibrationFrameInput>& frame_pairs,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     size_t max_output_width,

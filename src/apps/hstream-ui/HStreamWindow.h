@@ -107,7 +107,7 @@ StitchingCanvasConstraintDecision decide_stitching_canvas_constraint_change(
     const std::optional<bool>& artifacts_compatible,
     const std::optional<bool>& requires_regeneration);
 // Mirrors the runner's GPU precedence. Invalid or negative configured values
-// cannot name a CUDA ordinal and return no selection.
+// cannot name a CUDA/HIP ordinal and return no selection.
 std::optional<unsigned> configured_pipeline_gpu(const YAML::Node& effective_config);
 // Resolves the configured profile from the non-game baseline/user layers with
 // the runner's dashed/underscored alias precedence. An absent or entirely

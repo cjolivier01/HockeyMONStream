@@ -1,7 +1,7 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
-#include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
@@ -10,9 +10,13 @@
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
+#ifndef HSTREAM_USE_HIP
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
+#endif
 #include "src/apps/hstream-ui/HighlightPlan.h"
+#ifndef HSTREAM_USE_HIP
 #include "src/apps/hstream-ui/HighlightsDialog.h"
+#endif
 #include "src/apps/hstream-ui/InputLensWidget.h"
 #include "src/apps/hstream-ui/Int8PreparationDialog.h"
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
@@ -1307,6 +1311,7 @@ QString configure_pipeline_runtime_environment(
   // Keep the child CLI on this exact private root, including when the UI had
   // to create an unpredictable last-resort temporary directory.
   env.insert("HSTREAM_RUNTIME_CACHE_DIR", cache_root);
+#ifndef HSTREAM_USE_HIP
   // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
   // by stitching. Match run.sh while preserving an explicit diagnostic
   // override from the caller.
@@ -1319,6 +1324,7 @@ QString configure_pipeline_runtime_environment(
         hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ? "ximagesink"
                                                                                                      : "nv3dsink");
   }
+#endif
   QDir registry_dir(QDir(cache_root).filePath("gstreamer-1.0"));
   if (registry_dir.mkpath(".")) {
     const QString arch = runtime_architecture_name();
@@ -1327,17 +1333,28 @@ QString configure_pipeline_runtime_environment(
     const QString output_configuration = bazel_output_configuration(selected_bazel_bin);
     env.insert(
         "GST_REGISTRY",
-        registry_dir.filePath(QString("registry.hstream.native-onnx-v1.%1.%2.bin").arg(arch, output_configuration)));
+        registry_dir.filePath(QString("registry.hstream."
+#ifdef HSTREAM_USE_HIP
+                                      "amd-va-v1."
+#else
+                                      "native-onnx-v1."
+#endif
+                                      "%1.%2.bin")
+                                  .arg(arch, output_configuration)));
   }
 
   prepend_env_path(env, "GST_PLUGIN_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
+#ifndef HSTREAM_USE_HIP
   prepend_env_path(env, "GST_PLUGIN_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
+#endif
   prepend_env_path(env, "LD_LIBRARY_PATH", QDir(working_dir).filePath("lib"));
   prepend_env_path(env, "LD_LIBRARY_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
+#ifndef HSTREAM_USE_HIP
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
   if (!bazel_bin_path.isEmpty())
     return stage_bazel_gst_plugins(env, cache_root, bazel_bin_path);
+#endif
   return {};
 }
 
@@ -4629,10 +4646,15 @@ bool hm::ui_internal::reconcile_cleanup_directory_for_test(const QString& direct
 
 std::optional<unsigned> hm::ui_internal::configured_pipeline_gpu(const YAML::Node& effective_config) {
   YAML::Node configured;
+#ifdef HSTREAM_USE_HIP
+  if (!lookup_yaml_path(effective_config, "runtime.amd.gpu_id", &configured))
+    return std::nullopt;
+#else
   if (!lookup_yaml_path(effective_config, "pipeline.application.global-gpu-id", &configured) &&
       !lookup_yaml_path(effective_config, "pipeline.hmstitcher.gpu-id", &configured)) {
     return 0;
   }
+#endif
   if (!configured.IsScalar())
     return std::nullopt;
   try {
@@ -4767,12 +4789,18 @@ QString hm::ui_internal::matching_development_bazel_bin(const QString& applicati
 QString hm::ui_internal::missing_development_runtime_artifact(const QString& bazel_bin_path) {
   const QDir bazel_bin(canonical_dir_path(bazel_bin_path));
   const QStringList required = {
+#ifdef HSTREAM_USE_HIP
+      // AMD processing is linked into the matching CLI; it has no HStream
+      // GStreamer plugins to stage. Preserve the caller's VA/ROCm search paths.
+      "src/apps/hstream-cli/hstream-cli",
+#else
       "src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
       "src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so",
       "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+#endif
   };
   for (const QString& relative_path : required) {
     const QString artifact = bazel_bin.filePath(relative_path);
@@ -6130,6 +6158,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   experiments->setObjectName("cameraExperimentsButton");
   experiments->setToolTip(
       "Replay a short DriveGPT recording from its historical camera state with independent trial settings.");
+#ifdef HSTREAM_USE_HIP
+  experiments->setEnabled(false);
+  experiments->setToolTip("Camera experiments are not yet available on AMD.");
+#else
   connect(experiments, &QPushButton::clicked, this, [this]() {
     if (!ensureSavedControlConfigLoaded())
       return;
@@ -6147,6 +6179,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
   });
+#endif
   action_bar->addWidget(experiments);
   stitching_experiments_button_ = new QPushButton(action_icon(ActionIcon::Stitching), "Stitching experiments…");
   stitching_experiments_button_->setObjectName("stitchingExperimentsButton");
@@ -6225,6 +6258,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   highlights_button_->setObjectName("highlightsButton");
   // The tooltip explains whichever of the two states the button is in, so
   // updateRunControls() owns it.
+#ifndef HSTREAM_USE_HIP
   connect(highlights_button_, &QPushButton::clicked, this, [this]() {
     if (auto* existing = findChild<QDialog*>("highlightsDialog")) {
       existing->show();
@@ -6269,6 +6303,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     dialog->show();
     updateRunControls();
   });
+#endif
   action_bar->addWidget(highlights_button_);
   action_bar->addStretch(1);
   auto* playback_start_label = new QLabel("Playback start");
@@ -10552,7 +10587,7 @@ void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config)
   QString profile = hm::ui_internal::configured_gpu_memory_profile(baseline_layer_, user_layer_);
   const auto gpu = hm::ui_internal::configured_pipeline_gpu(effective);
   if (profile == "auto" && gpu.has_value()) {
-    const auto total_memory_bytes = hm::inference::CudaGpuTotalMemoryBytes(*gpu);
+    const auto total_memory_bytes = hm::inference::GpuTotalMemoryBytes(*gpu);
     if (total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes))
       profile = "low";
   }
@@ -11573,6 +11608,18 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   const bool calibration_ended_incomplete = calibration_pending_ && !stopped_by_user;
   const bool completed_successfully =
       exit_status == QProcess::NormalExit && exit_code == 0 && !stopped_by_user && !calibration_ended_incomplete;
+  bool archive_completed = completed_successfully;
+  if (stopped_by_user && exit_status == QProcess::NormalExit && exit_code == 0 && !calibration_pending_ &&
+      !managed_archive_manifest_.isEmpty()) {
+    try {
+      // A capable runner drains deliberate Stop through mux EOS and commits
+      // its manifest. Keep playback's stopped state, but publish that completed
+      // clip. Legacy/interrupted runners have no such completion authority.
+      archive_completed = hm::publication::PipelineCompleted(managed_archive_manifest_.toStdString());
+    } catch (const std::exception& error) {
+      appendLog(QString("Could not verify stopped archive completion: %1").arg(QString::fromUtf8(error.what())));
+    }
+  }
   QStringList archive_results;
   const QString archive_game_id = active_run_game_id_;
   bool retain_archive_log_guard_for_recovery = false;
@@ -11589,14 +11636,14 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
         (initial_size < 0 || archive_info.size() != initial_size ||
          archive_info.lastModified().toMSecsSinceEpoch() != initial_mtime_ms);
     if (output_updated && archive_info.size() > 0) {
-      output_states_[output_id]->setText(completed_successfully ? "FINALIZING" : "INCOMPLETE");
+      output_states_[output_id]->setText(archive_completed ? "FINALIZING" : "INCOMPLETE");
       archive_results << QString("archive %1: %2 (%3 bytes)")
                              .arg(
-                                 completed_successfully ? "container closed; lossless MP4 finalization starting"
-                                                        : "may be incomplete",
+                                 archive_completed ? "container closed; lossless MP4 finalization starting"
+                                                   : "may be incomplete",
                                  path)
                              .arg(archive_info.size());
-      if (completed_successfully) {
+      if (archive_completed) {
         pending_archive_finalizations_.push_back({path, archive_game_id, output_id, hevc_video, stitched_archive});
       } else {
         retain_archive_log_guard_for_recovery = true;
@@ -17220,11 +17267,16 @@ void HStreamWindow::updateRunControls() {
   if (stitching_experiments_button_)
     stitching_experiments_button_->setEnabled(!running && !finalizing);
   if (highlights_button_) {
+#ifdef HSTREAM_USE_HIP
+    highlights_button_->setEnabled(false);
+    highlights_button_->setToolTip("Highlights are not yet available on AMD.");
+#else
     highlights_button_->setEnabled(!running && !finalizing && !isCalibrationRun() && have_published_archives_);
     highlights_button_->setToolTip(
         have_published_archives_
             ? "Play highlight intervals from a published archive of this game, or export them as one video."
             : "Publish an archive for this game before using Highlights.");
+#endif
   }
   if (archive_toggle != output_toggles_.end() && archive_toggle->second)
     archive_toggle->second->setEnabled(!isCalibrationRun());

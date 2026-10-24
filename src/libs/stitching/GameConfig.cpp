@@ -1,6 +1,6 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
-#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"

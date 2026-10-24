@@ -805,14 +805,11 @@ absl::StatusOr<std::vector<AssetSpec>> discover_impl(
     }
     if (transform)
       transform(config);
-    std::vector<YAML::Node> specs;
-    for (const char* key : {"pretrained-assets", "assets", "downloads"})
-      normalize_specs(config[key], &specs);
-    for (const YAML::Node& node : specs) {
-      auto spec = make_spec(node, config, canonical);
-      if (!spec.ok())
-        return spec.status();
-      assets.push_back(std::move(*spec));
+    auto declarations = AssetManager::DeclaredAssets(config, canonical, limits);
+    if (!declarations.ok())
+      return declarations.status();
+    for (auto& spec : *declarations) {
+      assets.push_back(std::move(spec));
       if (assets.size() > limits.maximum_assets)
         return absl::ResourceExhaustedError("Too many pretrained assets");
     }
@@ -822,6 +819,33 @@ absl::StatusOr<std::vector<AssetSpec>> discover_impl(
       pending.push_back({child, item.depth + 1});
   }
   return assets;
+}
+
+absl::StatusOr<std::vector<AssetSpec>> AssetManager::DeclaredAssets(
+    const YAML::Node& document,
+    const fs::path& origin,
+    const Limits& limits) {
+  if (!origin.is_absolute())
+    return absl::InvalidArgumentError("Asset snapshot origin must be absolute");
+  if (!document.IsMap())
+    return absl::InvalidArgumentError("Asset configuration must be a YAML map");
+  try {
+    std::vector<YAML::Node> specs;
+    for (const char* key : {"pretrained-assets", "assets", "downloads"})
+      normalize_specs(document[key], &specs);
+    if (specs.size() > limits.maximum_assets)
+      return absl::ResourceExhaustedError("Too many pretrained assets");
+    std::vector<AssetSpec> result;
+    for (const auto& node : specs) {
+      auto spec = make_spec(node, document, origin);
+      if (!spec.ok())
+        return spec.status();
+      result.push_back(std::move(*spec));
+    }
+    return result;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid asset declarations: " + std::string(error.what()));
+  }
 }
 
 absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(

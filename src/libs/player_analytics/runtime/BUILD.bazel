@@ -1,4 +1,4 @@
-load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("//bazel:gpu_library.bzl", "gpu_library")
 
 INCLUDE_PREFIX = "hstream/src/libs/player_analytics/runtime/"
 
@@ -27,8 +27,7 @@ cc_library(
     deps = [
         "//src/libs/player_analytics:types",
         "@com_google_absl//absl/status:statusor",
-        "@local_cuda//:cuda",
-        "//toolchains/jetson:cuda_runtime",
+        "//src/libs/gpu:runtime",
     ],
 )
 
@@ -39,16 +38,17 @@ cc_library(
     deps = [":pose_gpu_headers"],
 )
 
-cuda_library(
+gpu_library(
     name = "pose_gpu",
     srcs = ["PoseGpu.cu"],
     visibility = ["//visibility:public"],
     deps = [":pose_gpu_headers"],
 )
 
-cc_binary(
+cc_test(
     name = "pose_gpu_test",
     srcs = ["PoseGpuTest.cpp"],
+    tags = ["manual", "requires-gpu"],
     deps = [":pose_affine", ":pose_gpu", "@opencv_linux//:opencv"],
 )
 
@@ -85,7 +85,7 @@ cc_library(
     ],
 )
 
-cuda_library(
+gpu_library(
     name = "semantic_gpu",
     srcs = ["SemanticGpu.cu"],
     visibility = ["//visibility:public"],
@@ -98,9 +98,10 @@ cc_binary(
     deps = [":semantic_roi", ":semantic_gpu", "@opencv_linux//:opencv"],
 )
 
-cc_binary(
+cc_test(
     name = "team_gpu_test",
     srcs = ["TeamGpuTest.cpp"],
+    tags = ["manual", "requires-gpu"],
     deps = [":semantic_gpu"],
 )
 

@@ -266,7 +266,7 @@ cc_library(
         "//src/libs/stitching:rink_leveling",
         "//src/libs/stitching:rink_map",
         "//src/libs/stitching:rink_mask_geometry",
-        "//src/libs/stitching:stitching",
+        "//src/libs/stitching:stitching_core",
         "//src/libs/stitching:transaction_state",
         "@com_google_absl//absl/strings",
         "@opencv_linux//:opencv",
@@ -418,15 +418,15 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
-        "//src/libs/common:status",
-        "//src/libs/common:utils",
+        "//src/libs/common:status_macros",
+        "//src/libs/common:utils_base",
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
         "//src/libs/stitching:player_frame_input_store",
         "//src/libs/stitching:player_frame_selection",
-        "//src/libs/stitching:stitching",
+        "//src/libs/stitching:stitching_core",
         "//src/libs/stitching:transaction_state",
         "@yaml-cpp",
     ],
@@ -441,8 +441,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":stitching_experiment_backend",
-        "//src/libs/common:status",
-        "//src/libs/common:utils",
+        "//src/libs/common:status_macros",
+        "//src/libs/common:utils_base",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:player_frame_selection",
         "//src/libs/stitching:transaction_state",
@@ -512,7 +512,7 @@ cc_library(
         ":stitching_experiment_store",
         "//src/libs/common:baseline_config",
         "//src/libs/common:user_config",
-        "//src/libs/common:utils",
+        "//src/libs/common:utils_base",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
         "//src/libs/stitching:player_frame_selection",
@@ -560,7 +560,7 @@ cc_test(
         "//src/libs/stitching:hugin_project",
         "//src/libs/stitching:player_frame_input_store",
         "//src/libs/stitching:player_frame_selection",
-        "//src/libs/stitching:stitching",
+        "//src/libs/stitching:stitching_core",
         "@opencv_linux//:opencv",
         "@yaml-cpp",
     ],
@@ -674,7 +674,7 @@ cc_library(
     hdrs = ["HighlightMp4Audio.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = ["@qt//:qt_core"],
+    deps = ["//src/libs/media:mp4_audio_edit", "@qt//:qt_core"],
 )
 
 cc_library(
@@ -729,7 +729,7 @@ cc_test(
 cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp", "RinkFramingControls.cpp"],
-    hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h", "RinkFramingControls.h"],
+    hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h", "RinkFramingControls.h", "CameraControlSpecs.h"],
     copts = COMMON_COPTS,
     linkopts = ["-lxcb"],
     target_compatible_with = QT_UI_COMPATIBILITY,
@@ -745,8 +745,7 @@ cc_library(
         ":ansi_log_format",
         ":application_identity",
         ":archive_catalog",
-        ":camera_experiment_dialog",
-        ":highlights_dialog",
+        ":highlight_plan",
         ":pipeline_inspector_widget",
         ":player_analytics_controls",
         ":projection_crop_dialog",
@@ -758,7 +757,7 @@ cc_library(
         ":telemetry_csv_publisher",
         "//src/libs/common:baseline_config",
         "//src/libs/common:playtracker_config_roles",
-        "//src/libs/common:tensorrt_gpu_identity",
+        "//src/libs/common:gpu_memory_profile",
         "//src/libs/common:user_config",
         "//src/libs/stitching:playback_rink_map",
         "//src/libs/stitching:canvas_constraint_check",
@@ -771,7 +770,10 @@ cc_library(
         "//src/libs/stitching:stitching_reframe",
         "@qt//:qt_widgets",
         "@yaml-cpp",
-    ],
+    ] + select({
+        "//:use_hip": [],
+        "//conditions:default": [":camera_experiment_dialog", ":highlights_dialog"],
+    }),
 )
 
 cc_test(
@@ -830,11 +832,12 @@ cc_binary(
         "//src/libs/common:process_diagnostics",
         ":action_icons",
         ":hstream_window",
-        # DeepStream's nvbufsurface libraries use the CUDA Driver API. Link
-        # the toolkit stub so package builds do not require a host GPU driver.
-        "@local_cuda//:cuda",
         "@qt//:qt_widgets",
-    ],
+    ] + select({
+        "//:use_hip": [],
+        # NVIDIA preview dependencies need the driver API stub for packaging.
+        "//conditions:default": ["@local_cuda//:cuda"],
+    }),
 )
 
 cc_binary(
@@ -885,7 +888,7 @@ cc_test(
         ":rink_leveling_dialog",
         ":scoreboard_selection_dialog",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
-        "//src/libs/common:tensorrt_gpu_identity",
+        "//src/libs/common:gpu_memory_profile",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:player_frame_selection",
         "@com_google_absl//absl/cleanup",

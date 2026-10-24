@@ -1,6 +1,15 @@
 INCLUDE_PREFIX = "hstream/src/libs/common/"
 
 cc_library(
+    name = "config_path",
+    srcs = ["ConfigPath.cpp"],
+    hdrs = ["ConfigPath.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@yaml-cpp", "@com_google_absl//absl/strings"],
+)
+
+cc_library(
     name = "shutdown_watchdog",
     srcs = ["ShutdownWatchdog.cpp"],
     hdrs = ["ShutdownWatchdog.h"],
@@ -10,12 +19,22 @@ cc_library(
 )
 
 cc_library(
+    name = "gpu_memory_profile",
+    srcs = ["GpuMemoryProfile.cpp"],
+    hdrs = ["GpuMemoryProfile.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["//src/libs/gpu:runtime", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_library(
     name = "tensorrt_gpu_identity",
     srcs = ["TensorRtGpuIdentity.cpp"],
     hdrs = ["TensorRtGpuIdentity.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":gpu_memory_profile",
         "@com_google_absl//absl/status:statusor",
         "@local_cuda//:cuda",
         "//toolchains/jetson:cuda_runtime",
@@ -36,21 +55,25 @@ cc_library(
 )
 
 cc_library(
+    name = "video_bitrate",
+    hdrs = ["VideoBitrate.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "utils",
     srcs = [
         "ApplicationPayload.cpp",
-        "ConfigYaml.cpp",
         "PlotContext.cpp",
         "RenderSet.cpp",
         "pipeline_utils.cpp",
     ],
     hdrs = [
         "ApplicationPayload.h",
-        "ConfigYaml.h",
         "PlotContext.h",
         "RenderSet.h",
         "TempFile.h",
-        "VideoBitrate.h",
         "pipeline_utils.h",
     ],
     copts = [
@@ -60,6 +83,9 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":video_bitrate",
+        ":config_yaml",
+        ":config_path",
         ":pinned_file",
         ":process",
         ":utils_base",
@@ -89,7 +115,11 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
-    ":utils_base",
+    ":status_macros",
+    "@deepstream//:deepstream_lib",
+    "@hm//hockeymon/csrc/play_tracker",
+    "@hm-cupano//src/cuda:cuda_status",
+    "@jetson-utils//image:image_format",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
   ]
@@ -99,7 +129,7 @@ cc_test(
     name = "pipeline_yaml_lookup_test",
     srcs = ["PipelineYamlLookupTest.cpp"],
     deps = [
-        ":utils",
+        ":config_path",
         "@yaml-cpp",
     ],
 )
@@ -349,13 +379,7 @@ cc_library(
     hdrs = ["utils.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
-        "@gstreamer",
-        "@deepstream//:deepstream_lib",
-        "@hm//hockeymon/csrc/play_tracker",
-        "@hm-cupano//src/cuda:cuda_status",
-        "@jetson-utils//image:image_format",
-    ],
+    deps = ["@gstreamer", "@yaml-cpp"],
 )
 
 cc_library(
@@ -457,4 +481,36 @@ cc_test(
     name = "track_color_meta_test",
     srcs = ["TrackColorMetaTest.cpp"],
     deps = [":track_color_meta"],
+)
+
+cc_library(
+    name = "config_yaml",
+    srcs = ["ConfigYaml.cpp"],
+    hdrs = ["ConfigYaml.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer", "@yaml-cpp"],
+)
+
+cc_library(
+    name = "status_macros",
+    hdrs = ["StatusMacros.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":utils_base", "@com_google_absl//absl/status:status", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_library(
+    name = "config_layers",
+    srcs = ["ConfigLayers.cpp"],
+    hdrs = ["ConfigLayers.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":config_path", "@yaml-cpp", "@com_google_absl//absl/status:statusor", "@com_google_absl//absl/strings"],
+)
+
+cc_test(
+    name = "config_layers_test",
+    srcs = ["ConfigLayersTest.cpp"],
+    deps = [":config_layers"],
 )

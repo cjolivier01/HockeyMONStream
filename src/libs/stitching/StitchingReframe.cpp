@@ -15,7 +15,7 @@
 #include <sstream>
 
 #include "hstream/src/libs/common/BaselineConfig.h"
-#include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"

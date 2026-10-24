@@ -8,6 +8,9 @@ load("//bazel:conditional_local_repository.bzl", "conditional_local_repository")
 load("//bazel:libsoup_repository.bzl", "libsoup_repository")
 load("//bazel:onnxruntime_gpu_repository.bzl", "onnxruntime_gpu_arm64_repository")
 load("//bazel:player_tensorrt_sdk_repository.bzl", "player_tensorrt_sdk_repository")
+load("//bazel:rocm_repository.bzl", "rocm_repository")
+
+rocm_repository(name = "hstream_rocm")
 
 player_tensorrt_sdk_repository(name = "player_tensorrt")
 load("//bazel:tensorrt_sdk_repository.bzl", "tensorrt_sdk_repository")
@@ -207,6 +210,7 @@ git_repository(
 git_repository(
     name = "hm-cupano",
     commit = "ffc00431e008e3846442e5b1901e6e69513a380f",
+    repo_mapping = {"@local_rocm": "@hstream_rocm"},
     remote = "ssh://git@github.com/cjolivier01/hm-cupano",
 )
 
@@ -215,6 +219,7 @@ git_repository(
     commit = "c34f73a80ee39093f749b01293cd9bed9ef0eaca",
     patch_args = ["-p1"],
     patches = ["//third_party/patches:jetson_utils_libsoup3.patch"],
+    repo_mapping = {"@rocm_sdk_includes": "@hstream_rocm"},
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )
 
@@ -228,6 +233,15 @@ git_repository(
     name = "hm",
     commit = "6100af5a884ebe084f65c765cc72b329e318b84c",
     remote = "ssh://git@github.com/cjolivier01/HockeyMON",
+)
+
+# Native metadata-only tracking reuses HockeyMON's Eigen Kalman filter.
+http_archive(
+    name = "eigen",
+    sha256 = "0215c6593c4ee9f1f7f28238c4e8995584ebf3b556e9dbf933d84feb98d5b9ef",
+    strip_prefix = "eigen-3.3.8",
+    urls = ["https://gitlab.com/libeigen/eigen/-/archive/3.3.8/eigen-3.3.8.tar.bz2"],
+    build_file = "//buildfiles:third_party/eigen.BUILD",
 )
 
 ################################ Multiblend ################################
@@ -336,6 +350,20 @@ conditional_local_repository(
         "/opt/jetson-sysroot/usr",
         "/usr",
     ],
+)
+
+# Optional Linux VA/EGL coexistence qualification for native AMD execution.
+conditional_local_repository(
+    name = "mesa_interop",
+    build_file = "@//buildfiles:third_party/mesa_interop.BUILD",
+    paths = ["/usr"],
+)
+
+# Only selected by the native AMD video interoperability targets.
+conditional_local_repository(
+    name = "vaapi",
+    build_file = "@//buildfiles:third_party/vaapi.BUILD",
+    paths = ["/usr"],
 )
 
 conditional_local_repository(

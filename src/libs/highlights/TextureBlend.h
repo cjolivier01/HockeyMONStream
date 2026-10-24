@@ -1,6 +1,6 @@
 #pragma once
-#include <cuda_runtime_api.h>
 #include <cstddef>
+#include "hstream/src/libs/gpu/Runtime.h"
 namespace hm::highlights {
 // Texture assets are RGBA8. Video remains in device memory, in RGBA8 or RGB10A2.
 cudaError_t BlendTexture(

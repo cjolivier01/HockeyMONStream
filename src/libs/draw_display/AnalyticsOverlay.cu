@@ -1,6 +1,6 @@
 #include "hstream/src/libs/draw_display/AnalyticsOverlayInternal.h"
 
-#include <cuda_runtime.h>
+#include "hstream/src/libs/gpu/Runtime.h"
 
 namespace hm::draw_display::analytics::detail {
 namespace {
@@ -118,6 +118,9 @@ __global__ void Draw420(
   if (x + 1 >= image.width || y + 1 >= image.height)
     return;
   const float code_scale = TenBit ? 4.0F : 1.0F;
+  const auto color = image.explicit_yuv_encoding
+      ? image.yuv_encoding
+      : gpu::YuvEncoding{0.2126F, 0.0722F, 16 * code_scale, 219 * code_scale, 128 * code_scale, 224 * code_scale};
   const float storage_scale = TenBit ? 64.0F : 1.0F;
   float luma[4];
   for (int j = 0; j < 2; ++j) {
@@ -131,8 +134,8 @@ __global__ void Draw420(
   }
   float u, v;
   if constexpr (TenBit) {
-    const auto* uv = reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(image.chroma) +
-                                                        (y / 2) * image.chroma_pitch) + x;
+    const auto* uv =
+        reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(image.chroma) + (y / 2) * image.chroma_pitch) + x;
     u = uv[0] / storage_scale;
     v = uv[1] / storage_scale;
   } else {
@@ -143,10 +146,10 @@ __global__ void Draw420(
   for (uint32_t reference = 0; reference < tile.reference_count; ++reference) {
     const Command c = commands[references[tile.first_reference + reference]];
     const float red = c.color.red, green = c.color.green, blue = c.color.blue;
-    const float y_linear = 0.2126F * red + 0.7152F * green + 0.0722F * blue;
-    const float target_y = (16.0F + 219.0F * y_linear) * code_scale;
-    const float target_u = (128.0F + 224.0F * (blue - y_linear) / 1.8556F) * code_scale;
-    const float target_v = (128.0F + 224.0F * (red - y_linear) / 1.5748F) * code_scale;
+    const float y_linear = color.kr * red + (1 - color.kr - color.kb) * green + color.kb * blue;
+    const float target_y = color.y_offset + color.y_range * y_linear;
+    const float target_u = color.uv_offset + color.uv_range * (blue - y_linear) / (2 * (1 - color.kb));
+    const float target_v = color.uv_offset + color.uv_range * (red - y_linear) / (2 * (1 - color.kr));
     float alpha_sum = 0.0F;
     for (int j = 0; j < 2; ++j)
       for (int i = 0; i < 2; ++i) {
@@ -174,8 +177,7 @@ __global__ void Draw420(
     }
   }
   if constexpr (TenBit) {
-    auto* uv = reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(image.chroma) +
-                                           (y / 2) * image.chroma_pitch) + x;
+    auto* uv = reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(image.chroma) + (y / 2) * image.chroma_pitch) + x;
     uv[0] = static_cast<uint16_t>(fminf(1023.0F, fmaxf(0.0F, floorf(u + 0.5F)))) << 6;
     uv[1] = static_cast<uint16_t>(fminf(1023.0F, fmaxf(0.0F, floorf(v + 0.5F)))) << 6;
   } else {
@@ -197,11 +199,11 @@ cudaError_t Raster(
     cudaStream_t stream) {
   const dim3 threads(kTileSize, kTileSize);
   if (image.format == PixelFormat::kP010)
-    Draw420<true><<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(
-        image, commands, tiles, references, atlas);
+    Draw420<true>
+        <<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(image, commands, tiles, references, atlas);
   else if (image.format == PixelFormat::kI420)
-    Draw420<false><<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(
-        image, commands, tiles, references, atlas);
+    Draw420<false>
+        <<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(image, commands, tiles, references, atlas);
   else if (image.format == PixelFormat::kRgb10A2)
     Draw<true><<<tile_count, threads, 0, stream>>>(image, commands, tiles, references, atlas);
   else

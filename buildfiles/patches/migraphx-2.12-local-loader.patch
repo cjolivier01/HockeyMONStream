@@ -1,0 +1,11 @@
+--- a/src/dynamic_loader.cpp
++++ b/src/dynamic_loader.cpp
+@@ -57,7 +57,7 @@
+ #pragma GCC diagnostic ignored "-Wignored-attributes"
+ #endif
+     dynamic_loader_impl(const fs::path& p, std::shared_ptr<tmp_dir> t = nullptr)
+-        : handle(dlopen(p.string().c_str(), RTLD_GLOBAL | RTLD_NOW),
++        : handle(dlopen(p.string().c_str(), RTLD_LOCAL | RTLD_NOW | RTLD_DEEPBIND),
+                  manage_deleter<decltype(&dlclose), &dlclose>{}),
+           temp(std::move(t))
+     {

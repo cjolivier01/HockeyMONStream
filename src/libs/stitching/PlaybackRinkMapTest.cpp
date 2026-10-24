@@ -1,6 +1,6 @@
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
-#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <unistd.h>

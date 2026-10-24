@@ -1,0 +1,140 @@
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "va_element",
+    srcs = ["VaElement.cpp"],
+    hdrs = ["VaElement.h"],
+    include_prefix = "hstream/src/libs/gpu/vaapi",
+    deps = ["@gstreamer"],
+)
+
+cc_library(
+    name = "va_stereo_video",
+    srcs = ["VaStereoVideo.cpp"],
+    hdrs = ["VaStereoVideo.h"],
+    include_prefix = "hstream/src/libs/gpu/vaapi",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_video_playlist", "//src/libs/media:stereo_frame_plan"],
+)
+
+cc_test(
+    name = "va_stereo_video_test",
+    srcs = ["VaStereoVideoTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_stereo_video", ":va_hip_frame", "//src/libs/media:test_mp4"],
+)
+
+cc_library(
+    name = "va_video_reader",
+    srcs = ["VaVideoReader.cpp"],
+    hdrs = ["VaVideoReader.h"],
+    include_prefix = "hstream/src/libs/gpu/vaapi",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_element", "@gstreamer", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "va_video_reader_test",
+    srcs = ["VaVideoReaderTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_video_reader", ":va_hip_frame"],
+)
+
+cc_test(
+    name = "va_probe_descriptors_test",
+    srcs = ["VaProbeDescriptorsTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    linkopts = ["-ldl", "-Wl,--export-dynamic"],
+    deps = [":va_hip_frame"],
+)
+
+cc_library(
+    name = "va_output_pool",
+    srcs = ["VaOutputPool.cpp"],
+    hdrs = ["VaOutputPool.h"],
+    include_prefix = "hstream/src/libs/gpu/vaapi",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_hip_frame"],
+)
+
+cc_library(
+    name = "va_hip_frame",
+    srcs = ["VaHipFrame.cpp"],
+    hdrs = ["VaHipFrame.h"],
+    include_prefix = "hstream/src/libs/gpu/vaapi",
+    defines = ["GST_USE_UNSTABLE_API"],
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    linkopts = ["-lgstva-1.0"],
+    deps = [
+        "//src/libs/gpu:runtime",
+        "@com_google_absl//absl/status:statusor",
+        "@gstreamer",
+        "@hstream_rocm//:runtime",
+        "@vaapi",
+    ],
+)
+
+cc_test(
+    name = "va_hip_frame_test",
+    srcs = ["VaHipFrameTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":va_hip_frame",
+        "//src/libs/draw_display:analytics_overlay",
+    ],
+)
+
+cc_library(
+    name = "va_video_playlist",
+    srcs = ["VaVideoPlaylist.cpp"],
+    hdrs = ["VaVideoPlaylist.h"],
+    include_prefix = "hstream/src/libs/gpu/vaapi",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_video_reader", "//src/libs/media:mp4_video_track"],
+)
+
+cc_test(
+    name = "va_video_playlist_test",
+    srcs = ["VaVideoPlaylistTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [":va_video_playlist", ":va_hip_frame", "//src/libs/media:test_mp4", "//src/libs/media:stereo_frame_plan"],
+)

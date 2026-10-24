@@ -1,0 +1,84 @@
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "program_camera_mapping",
+    srcs = ["ProgramCameraMapping.cpp"],
+    hdrs = ["ProgramCameraMapping.h"],
+    include_prefix = "hstream/src/libs/tracking",
+    deps = [
+        "//src/libs/common:config_path",
+        "//src/libs/common:playtracker_config_roles",
+        "//src/libs/common:status_macros",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "program_camera_mapping_test",
+    srcs = ["ProgramCameraMappingTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)"],
+    data = ["//configs:baseline.yaml"],
+    deps = [":program_camera_mapping", "//src/libs/common:baseline_config"],
+)
+
+cc_library(
+    name = "native_tracker",
+    srcs = ["NativeTracker.cpp"],
+    hdrs = ["NativeTracker.h"],
+    include_prefix = "hstream/src/libs/tracking",
+    deps = [
+        "//src/libs/detection:types",
+        "@com_google_absl//absl/status:statusor",
+        "@hm//hockeymon/csrc/bytetrack:bytetrack_lib",
+    ],
+)
+
+cc_test(
+    name = "native_tracker_test",
+    srcs = ["NativeTrackerTest.cpp"],
+    deps = [":native_tracker"],
+)
+
+cc_binary(
+    name = "hip_video_tracking_fixture",
+    srcs = ["HipVideoTrackingFixture.cpp"],
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":native_tracker",
+        "//src/libs/detection:hip_detector",
+        "//src/libs/detection:va_detector_image",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "program_camera_config",
+    srcs = ["ProgramCameraConfig.cpp"],
+    hdrs = ["ProgramCameraConfig.h"],
+    include_prefix = "hstream/src/libs/tracking",
+    deps = [
+        "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
+        "//src/libs/common:config_yaml",
+        "//src/libs/common:playtracker_config_roles",
+        "@com_google_absl//absl/strings",
+        "@hm//hockeymon/csrc/play_tracker",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "program_tracking",
+    srcs = ["ProgramTracking.cpp"],
+    hdrs = ["ProgramTracking.h"],
+    include_prefix = "hstream/src/libs/tracking",
+    deps = [":native_tracker", ":program_camera_config", "//src/libs/detection:rink_detection_mask"],
+)
+
+cc_test(
+    name = "program_tracking_test",
+    srcs = ["ProgramTrackingTest.cpp"],
+    deps = [":program_tracking"],
+)

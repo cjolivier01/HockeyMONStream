@@ -1,13 +1,21 @@
-load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("//bazel:gpu_library.bzl", "gpu_library")
 cc_library(
     name = "texture_blend_headers",
     hdrs = ["TextureBlend.h"],
+    include_prefix = "hstream/src/libs/highlights",
     visibility = ["//visibility:public"],
-    deps = ["//toolchains/jetson:cuda_runtime", "@local_cuda//:cuda"],
+    deps = ["//src/libs/gpu:runtime"],
 )
-cuda_library(
+gpu_library(
     name = "texture_blend",
     srcs = ["TextureBlend.cu"],
     visibility = ["//visibility:public"],
     deps = [":texture_blend_headers"],
+)
+
+cc_test(
+    name = "texture_blend_test",
+    srcs = ["TextureBlendTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":texture_blend"],
 )
