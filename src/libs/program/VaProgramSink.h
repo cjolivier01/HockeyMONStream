@@ -61,6 +61,10 @@ class VaProgramSink {
   // or application operation deadlines remain active after this returns.
   absl::Status SetPaused(bool paused);
   absl::Status SetAudioMuted(bool muted);
+  // Local preview/discard only. Flush queued audio/video through READY and
+  // restart the existing graph with timestamp/sample origin zero. The VA pool,
+  // native window and mute choice survive; encoded archives cannot seek.
+  absl::Status ResetTimeline();
   void Cancel() noexcept;
   const GstVideoInfo& video_info() const;
 

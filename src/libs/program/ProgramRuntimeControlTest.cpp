@@ -21,6 +21,7 @@ struct Fixture {
   std::atomic<bool> cancelled{false};
   bool paused{false}, muted{false}, fail_pause{false};
   size_t pause_calls{0};
+  uint64_t reset_generation{0}, seek_position{0}, seek_generation{0};
   std::mutex mutex;
   std::condition_variable wake;
   std::vector<std::string> messages;
@@ -53,7 +54,16 @@ struct Fixture {
            }
            wake.notify_all();
          },
-         [this] { return cancelled.load(); }});
+         [this] { return cancelled.load(); },
+         [this](uint64_t generation) {
+           reset_generation = generation;
+           return absl::OkStatus();
+         },
+         [this](uint64_t position, uint64_t generation) {
+           seek_position = position;
+           seek_generation = generation;
+           return absl::OkStatus();
+         }});
     close(pipefd[0]);
     Check(created.ok(), created.status().ToString());
     control = std::move(*created);
@@ -100,6 +110,8 @@ int main() {
       fixture.Send("use 7\n");
       fixture.Start();
       fixture.WaitMessage("status=prepared generation=7");
+      fixture.Send("@seek 100 1\n");
+      fixture.WaitMessage("reason=playback-paused");
       fixture.Send("@process-resume 6\n");
       fixture.WaitMessage("stale process pause/resume generation=6");
       {
@@ -112,6 +124,15 @@ int main() {
       fixture.Send("@set-render-audio-muted 1\n");
       Check(fixture.control->Service().ok() && fixture.muted, "mute failed");
       fixture.WaitMessage("HSTREAM_RENDER_AUDIO muted=1 branches=1");
+      fixture.Send("@reset-progress-rate 3\n@seek 123456789 2\n");
+      Check(
+          fixture.control->Service().ok() && fixture.reset_generation == 3 && fixture.seek_position == 123456789 &&
+              fixture.seek_generation == 2,
+          "seek/reset fields lost");
+      fixture.Send("@seek 999 1\n@seek 123 2 extra\n@seek -1 3\n");
+      Check(
+          fixture.control->Service().ok() && fixture.seek_position == 123456789 && fixture.seek_generation == 2,
+          "stale/malformed seek executed");
       fixture.Send("@process-pause +8\n@process-pause 0\n@process-pause 8 extra\n");
       Check(fixture.control->Service().ok() && fixture.pause_calls == 2, "malformed generation executed");
       fixture.Send(std::string(100, 'x') + "@quit\n@set-render-audio-muted 0\n");

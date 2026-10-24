@@ -158,6 +158,12 @@ int main(int argc, char** argv) {
     Status(sink->SetPaused(true));
     Check(!sink->Acquire().ok() && !sink->Finish().ok(), "Paused output accepted submission/EOS");
     Status(sink->SetPaused(false));
+    {
+      Buffer before_seek(Take(sink->Acquire()), gst_buffer_unref);
+      tile.Render(before_seek.get(), info);
+      Status(sink->Push(before_seek.release(), GST_SECOND, 40 * GST_MSECOND));
+      Status(sink->ResetTimeline());
+    }
     frames(*sink);
     Check(!sink->SetPaused(true).ok(), "Finished output accepted pause");
     Check(!sink->SetAudioMuted(true).ok(), "Discard output accepted preview mute");
@@ -266,6 +272,7 @@ int main(int argc, char** argv) {
       auto writer = hm::program::VaProgramSink::Create(encoded);
       close(encoded.output_fd);
       sink = Take(std::move(writer));
+      Check(!sink->ResetTimeline().ok(), "Archive output accepted a seek");
       frames(*sink);
       sink.reset();
       const auto meta = Take(hm::media::ReadMp4VideoTrack(path, 10 * GST_SECOND, {}));
@@ -375,6 +382,15 @@ int main(int argc, char** argv) {
           Status(preview_sink->SetAudioMuted(false));
           Status(preview_sink->SetPaused(false));
         }
+        Buffer buffer(Take(preview_sink->Acquire()), gst_buffer_unref);
+        tile.Render(buffer.get(), preview.video);
+        Status(preview_sink->Push(buffer.release(), i * 40 * GST_MSECOND, 40 * GST_MSECOND));
+        Status(preview_sink->PushAudio({i * 1920, {48000, 2}, std::vector<float>(3840)}));
+      }
+      // Both PCM sample zero and video timestamp zero must be accepted after
+      // flushing an active GL/ALSA timeline, without recreating the owner.
+      Status(preview_sink->ResetTimeline());
+      for (int64_t i = 0; i < 5; ++i) {
         Buffer buffer(Take(preview_sink->Acquire()), gst_buffer_unref);
         tile.Render(buffer.get(), preview.video);
         Status(preview_sink->Push(buffer.release(), i * 40 * GST_MSECOND, 40 * GST_MSECOND));

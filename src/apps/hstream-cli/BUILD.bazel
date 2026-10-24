@@ -108,7 +108,7 @@ filegroup(
 cc_binary(
     name = "hstream-cli",
     srcs = select({
-        "//:use_hip": ["AmdPipelineApp.cpp"],
+        "//:use_hip": ["AmdPipelineApp.cpp", "PlaybackProgress.cpp", "PlaybackProgress.h"],
         "//conditions:default": HSTREAM_CLI_SRCS,
     }),
     copts = HSTREAM_CLI_COPTS,

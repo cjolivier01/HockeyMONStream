@@ -24,7 +24,7 @@ absl::StatusOr<std::unique_ptr<ProgramRuntimeControl>> ProgramRuntimeControl::Cr
     uint64_t poll_ns,
     Callbacks callbacks) {
   if (!maximum || !poll_ns || poll_ns > uint64_t(INT64_MAX) || !callbacks.pause || !callbacks.mute || !callbacks.emit ||
-      !callbacks.cancelled)
+      !callbacks.cancelled || !callbacks.reset_progress || !callbacks.seek)
     return absl::InvalidArgumentError("Runtime control requires explicit bounds and callbacks");
   const int fd = fcntl(input_fd, F_DUPFD_CLOEXEC, 0);
   if (fd < 0)
@@ -44,6 +44,30 @@ absl::Status ProgramRuntimeControl::Command(const std::string& line) {
   }
   input >> value;
   const bool trailing = bool(input >> extra);
+  const auto integer = [](const std::string& text, uint64_t* value) {
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), *value);
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+  };
+  if (command == "@seek") {
+    std::string surplus;
+    uint64_t position = 0, generation = 0;
+    if (trailing && !(input >> surplus) && integer(value, &position) && integer(extra, &generation) && generation &&
+        position <= uint64_t(INT64_MAX)) {
+      if (generation <= seek_generation_ || paused_) {
+        callbacks_.emit(
+            "HSTREAM_SEEK status=failed generation=" + std::to_string(generation) +
+            " reason=" + (paused_ ? "playback-paused" : "stale-generation") + "\n");
+        return absl::OkStatus();
+      }
+      seek_generation_ = generation;
+      return callbacks_.seek(position, generation);
+    }
+  }
+  if (!trailing && command == "@reset-progress-rate") {
+    uint64_t generation = 0;
+    if (integer(value, &generation) && generation)
+      return callbacks_.reset_progress(generation);
+  }
   if (!trailing && (command == "@process-pause" || command == "@process-resume")) {
     uint64_t generation = 0;
     const auto number = std::from_chars(value.data(), value.data() + value.size(), generation);

@@ -1,6 +1,7 @@
 #include "PlaybackProgress.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace hm {
 
@@ -70,7 +71,9 @@ PlaybackRateEstimator::Estimate PlaybackRateEstimator::sample(
   const double wall_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(wall_delta).count();
   estimate.speed_x = (static_cast<double>(processed_delta_ns) / 1000000000.0) / wall_seconds;
   if (remaining_ns != kUnknownPlaybackTime && estimate.speed_x > 0.0) {
-    estimate.eta_ns = static_cast<uint64_t>(static_cast<double>(remaining_ns) / estimate.speed_x);
+    const double eta = static_cast<double>(remaining_ns) / estimate.speed_x;
+    if (std::isfinite(eta) && eta < static_cast<double>(kUnknownPlaybackTime))
+      estimate.eta_ns = static_cast<uint64_t>(eta);
   }
   return estimate;
 }

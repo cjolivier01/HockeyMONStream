@@ -469,6 +469,21 @@ absl::Status VaProgramSink::SetAudioMuted(bool muted) {
   gst_object_unref(volume);
   return absl::OkStatus();
 }
+absl::Status VaProgramSink::ResetTimeline() {
+  auto& impl = *impl_;
+  const auto status = impl.Poll();
+  if (!status.ok())
+    return status;
+  if (impl.config.kind == VaProgramSinkKind::kHevcMp4 || impl.paused || impl.eos_sent)
+    return absl::FailedPreconditionError("Timeline reset requires unpaused local Program output before EOS");
+  if (gst_element_set_state(impl.pipeline, GST_STATE_READY) == GST_STATE_CHANGE_FAILURE)
+    return impl.Retire(absl::UnavailableError("Program output could not flush its timeline"));
+  impl.previous = GST_CLOCK_TIME_NONE;
+  impl.audio_samples = 0;
+  if (gst_element_set_state(impl.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
+    return impl.Retire(absl::UnavailableError("Program output could not restart its timeline"));
+  return impl.Poll();
+}
 void VaProgramSink::Cancel() noexcept {
   impl_->cancelled.store(true, std::memory_order_relaxed);
 }

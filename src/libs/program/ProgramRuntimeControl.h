@@ -19,6 +19,11 @@ class ProgramRuntimeControl {
     std::function<absl::StatusOr<size_t>(bool)> mute;
     std::function<void(const std::string&)> emit;
     std::function<bool()> cancelled;
+    // Callbacks own acknowledgment/validation of their application state.
+    // A failed status retires playback. Rejected requests return OK after their
+    // failure acknowledgment, without partially modifying the graph.
+    std::function<absl::Status(uint64_t)> reset_progress;
+    std::function<absl::Status(uint64_t, uint64_t)> seek;
   };
   static absl::StatusOr<std::unique_ptr<ProgramRuntimeControl>> Create(
       int input_fd,
@@ -39,6 +44,7 @@ class ProgramRuntimeControl {
   Callbacks callbacks_;
   std::string line_;
   uint64_t generation_{0};
+  uint64_t seek_generation_{0};
   bool paused_{false}, eof_{false}, dropping_{false};
 };
 } // namespace hm::program

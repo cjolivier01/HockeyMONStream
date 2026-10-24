@@ -329,7 +329,7 @@ so passing a PCI symlink alias can trigger an error while starting elements.
 
 These tests qualify components. The CLI integration described below composes
 raw-camera pairing/stitching and saved Program startup. Model caching, desktop routing,
-desktop seek/reset controls and installed runtime discovery remain pending.
+desktop channel routing and installed runtime discovery remain pending.
 
 
 ## Raw-camera Program qualification
@@ -542,7 +542,7 @@ Earlier recordings described above had ten-bit pixels but that incorrect profile
 label; rebuilt output reports both `Main 10` and `yuv420p10le`.
 
 The configured qualifier and normal ROCm CLI share these components. Desktop
-routing, seek/overlay controls and installed AMD discovery
+routing, overlay controls and installed AMD discovery
 remain integration work.
 
 Configured validation on the RX 9060 XT: 120 raw stereo pairs from
@@ -664,8 +664,7 @@ the completed file is already published.
 
 The CLI accepts one application YAML and rejects two-stage calibration, unknown
 arguments, unsupported sinks and malformed time/preview arguments. Time limits
-advance from completed Program frames. Desktop preview channel routing, seek
-acknowledgments, interactive scoreboard selection, player overlays,
+advance from completed Program frames. Desktop preview channel routing, interactive scoreboard selection, player overlays,
 telemetry, managed jobs and automatic calibration are still integration work.
 Tracker association uses the explicit AMD geometric settings; it does not run
 NvDCF's appearance model. Compiled-model reuse follows `runtime.amd.model_cache`.
@@ -864,5 +863,22 @@ and input work per unpaused service call. Overlong/malformed commands report
 an error; a truncated line is never executed at EOF. Ordinary stdin EOF leaves
 playback running; EOF while paused cancels because no resume can arrive.
 Controls become active after the first completed pair, so model preparation is
-not acknowledged as a paused playback graph. Seek, preview-channel routing and
-other native runtime mutations are still unconnected.
+not acknowledged as a paused playback graph. Preview-channel routing and other
+native runtime mutations are still unconnected.
+
+`@seek POSITION_NS GENERATION` seeks local preview/discard runs; archive outputs,
+paused requests, stale generations and positions past the synchronized end are
+rejected before graph mutation. The stereo owner selects the exact first pair
+at or after the target. Audio seeks to that pair and restarts its sample origin.
+Output graphs go through READY to flush queued audio/video and restart at zero,
+retaining the VA pool, native window and volume choice. Inference/stitch resources
+survive; tracking and camera histories reset. A failed partial seek retires
+playback. Seeking exactly the synchronized duration completes the local run.
+
+Completed frames emit the desktop `HSTREAM_PROGRESS` fields with synchronized
+source position, duration, remaining time, rate, FPS and generation. Position
+queries never advance timed runs: the time limit counts completed video across
+seek segments. `@reset-progress-rate GENERATION` implements the existing reset
+acknowledgment and generation fencing; resume/seek also clear rate history.
+The shared rate estimator reports an unknown ETA if an extremely slow rate
+would overflow its nanosecond clock, on either backend.

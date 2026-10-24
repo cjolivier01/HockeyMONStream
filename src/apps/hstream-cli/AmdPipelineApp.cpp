@@ -5,9 +5,11 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <csignal>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <set>
@@ -15,6 +17,7 @@
 #include <thread>
 
 #include "AmdPipelineOptions.h"
+#include "PlaybackProgress.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
@@ -233,6 +236,18 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   std::signal(SIGTERM, Stop);
   std::signal(SIGINT, Stop);
   Cancellation cancellation(*source, audio.get(), outputs, launch.amd.cancellation_poll_ns);
+  auto first = pair->time;
+  auto first_audio_sample = audio ? gst_util_uint64_scale_round(first, audio->format().rate, GST_SECOND) : 0;
+  uint64_t frames = 0, tracks = 0, completed_video = 0, previous_segments = 0, progress_generation = 0;
+  bool repositioned = false;
+  hm::PlaybackRateEstimator rate;
+  auto rate_start = std::chrono::steady_clock::now();
+  uint64_t rate_frames = 0;
+  const auto reset_rates = [&] {
+    rate.reset();
+    rate_start = std::chrono::steady_clock::now();
+    rate_frames = 0;
+  };
   auto control = Take(hm::program::ProgramRuntimeControl::Create(
       STDIN_FILENO,
       launch.amd.maximum_runtime_command_bytes,
@@ -244,6 +259,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
               if (!status.ok())
                 return status;
             }
+            if (!paused)
+              reset_rates();
             return absl::OkStatus();
           },
           [&](bool muted) -> absl::StatusOr<size_t> {
@@ -262,11 +279,57 @@ void Run(const hm::program::AmdPipelineOptions& args) {
           },
           [](const std::string& message) { g_print("%s", message.c_str()); },
           [] { return interrupted.load(std::memory_order_relaxed) != 0; },
+          [&](uint64_t generation) {
+            if (generation < progress_generation) {
+              g_print(
+                  "HSTREAM_PROGRESS status=stale-reset generation=%" G_GUINT64_FORMAT
+                  " active_generation=%" G_GUINT64_FORMAT " stage=0 instance=aggregate instances=1\n",
+                  generation,
+                  progress_generation);
+            } else {
+              if (generation > progress_generation) {
+                progress_generation = generation;
+                reset_rates();
+              }
+              g_print(
+                  "HSTREAM_PROGRESS status=reset generation=%" G_GUINT64_FORMAT
+                  " stage=0 instance=aggregate instances=1\n",
+                  generation);
+            }
+            return absl::OkStatus();
+          },
+          [&](uint64_t position, uint64_t generation) {
+            if (file || position > source->duration()) {
+              g_print(
+                  "HSTREAM_SEEK status=failed generation=%" G_GUINT64_FORMAT " reason=%s\n",
+                  generation,
+                  file ? "local-render-required" : "position-out-of-range");
+              return absl::OkStatus();
+            }
+            pair.reset();
+            Status(source->Seek(position));
+            pair = Take(source->Read());
+            Status(processor->Reset());
+            if (pair) {
+              first = pair->time;
+              if (audio) {
+                Status(audio->Seek(first));
+                first_audio_sample = gst_util_uint64_scale_round(first, audio->format().rate, GST_SECOND);
+              }
+              for (const auto& output : outputs)
+                Status(output->ResetTimeline());
+            }
+            previous_segments = completed_video;
+            repositioned = true;
+            reset_rates();
+            g_print(
+                "HSTREAM_SEEK status=ok generation=%" G_GUINT64_FORMAT " position_ns=%" G_GUINT64_FORMAT "\n",
+                generation,
+                pair ? pair->time : source->duration());
+            return absl::OkStatus();
+          },
       }));
   g_print("HSTREAM_AMD_PREPARATION state=ready\n");
-  const auto first = pair->time;
-  const auto first_audio_sample = audio ? gst_util_uint64_scale_round(first, audio->format().rate, GST_SECOND) : 0;
-  uint64_t frames = 0, tracks = 0;
   for (;;) {
     const auto completed =
         Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get()));
@@ -286,6 +349,10 @@ void Run(const hm::program::AmdPipelineOptions& args) {
       }
     }
     ++frames;
+    ++rate_frames;
+    const auto segment_video = pair->time - first + pair->duration;
+    Require(segment_video <= uint64_t(INT64_MAX) - previous_segments, "Completed playback exceeded its clock");
+    completed_video = previous_segments + segment_video;
     tracks += completed.observation.tracks.size();
     g_print(
         "HSTREAM_AMD_FRAME sequence=%" G_GUINT64_FORMAT " time-ns=%" G_GUINT64_FORMAT " detections=%zu tracks=%zu\n",
@@ -293,12 +360,32 @@ void Run(const hm::program::AmdPipelineOptions& args) {
         pair->time,
         completed.detection_count,
         completed.observation.tracks.size());
-    if (limit && pair->time - first + pair->duration >= *limit)
+    const auto now = std::chrono::steady_clock::now();
+    const auto position = std::min(source->duration(), pair->time + pair->duration);
+    const auto remaining = source->duration() - position;
+    const auto speed = rate.sample(position, remaining, now, std::chrono::nanoseconds(pair->duration));
+    const double seconds = std::chrono::duration<double>(now - rate_start).count();
+    std::ostringstream progress;
+    progress << "HSTREAM_PROGRESS processed_ns=" << position << " total_ns=" << source->duration()
+             << " remaining_ns=" << remaining << " eta_ns=";
+    if (speed.eta_ns == hm::kUnknownPlaybackTime)
+      progress << "unknown";
+    else
+      progress << speed.eta_ns;
+    progress << std::fixed << std::setprecision(6) << " speed_x=" << speed.speed_x
+             << " fps=" << speed.speed_x * output_info.fps_n / output_info.fps_d
+             << " fps_avg=" << (seconds > 0 ? rate_frames / seconds : 0)
+             << " fraction=" << static_cast<double>(position) / source->duration()
+             << " stage=0 instance=aggregate instances=1 generation=" << progress_generation;
+    g_print("%s\n", progress.str().c_str());
+    if (limit && completed_video >= *limit)
       break;
     // No source, audio or output operation is waiting when a pause is
     // acknowledged. SIGSTOP can therefore never consume their stall budgets.
+    repositioned = false;
     Status(control->Service());
-    pair = Take(source->Read());
+    if (!repositioned)
+      pair = Take(source->Read());
     if (!pair)
       break;
   }
