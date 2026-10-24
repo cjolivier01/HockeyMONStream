@@ -33,6 +33,10 @@ filegroup(
         "AnsiLogFormat.h",
         "ApplicationIdentity.cpp",
         "ApplicationIdentity.h",
+        "BackendOptions.cpp",
+        "BackendOptions.h",
+        "BackendPreview.cpp",
+        "BackendPreview.h",
         "CalibrationImage.cpp",
         "CalibrationImage.h",
         "StitchingStillPreview.cpp",
@@ -726,6 +730,33 @@ cc_test(
 )
 
 cc_library(
+    name = "backend_options",
+    srcs = ["BackendOptions.cpp"],
+    hdrs = ["BackendOptions.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_core"],
+)
+
+cc_library(
+    name = "backend_preview",
+    srcs = ["BackendPreview.cpp"],
+    hdrs = ["BackendPreview.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_gui"],
+)
+
+cc_test(
+    name = "backend_options_test",
+    srcs = ["BackendOptionsTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":backend_options", ":backend_preview", ":native_preview_surface", "@qt//:qt_widgets"],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp", "RinkFramingControls.cpp"],
     hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h", "RinkFramingControls.h"],
@@ -737,6 +768,8 @@ cc_library(
         "//src/libs/publication",
         "//src/libs/stitching:auto_input_lens",
         ":input_lens_widget",
+        ":backend_options",
+        ":backend_preview",
         ":native_preview_surface",
         ":stitching_still_preview",
         "//src/libs/common:process_diagnostics",
@@ -771,6 +804,15 @@ cc_library(
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "shared_backend_window_test",
+    srcs = ["SharedBackendWindowTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":hstream_window", ":backend_preview", ":native_preview_surface", "@qt//:qt_widgets", "@qt//:qt_test", "@yaml-cpp"],
 )
 
 cc_test(
@@ -821,7 +863,13 @@ cc_binary(
     name = "hstream-ui",
     srcs = ["main.cpp"],
     copts = COMMON_COPTS,
-    data = ["//src/apps/hstream-cli:hstream-cli", "//src/apps/hstream-job:hstream-job"],
+    data = [
+        "//src/apps/hstream-cli:hstream-cli",
+        "//src/apps/hstream-job:hstream-job",
+        "//src/apps/hstream-calibration-export:hstream-calibration-export",
+        "//src/apps/hstream-model-prepare:hstream-model-prepare",
+        "//src/apps/hstream-model-infer:hstream-model-infer",
+    ],
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
@@ -829,6 +877,7 @@ cc_binary(
         "//src/libs/common:process_diagnostics",
         ":action_icons",
         ":hstream_window",
+        ":backend_options",
         # DeepStream's nvbufsurface libraries use the CUDA Driver API. Link
         # the toolkit stub so package builds do not require a host GPU driver.
         "@local_cuda//:cuda",
@@ -896,7 +945,7 @@ cc_test(
 
 cc_test(
     name = "int8_preparation_dialog_test",
-    srcs = ["Int8PreparationDialogTest.cpp", "Int8PreparationDialog.cpp", "Int8PreparationDialog.h"],
+    srcs = ["Int8PreparationDialogTest.cpp", "Int8PreparationDialog.cpp", "Int8PreparationDialog.h", "ValueControlWheel.h"],
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,

@@ -60,7 +60,7 @@ bool expect(bool condition, const char* message) {
 }
 
 std::string file_identity(const std::filesystem::path& path) {
-  struct stat metadata {};
+  struct stat metadata{};
   if (::stat(path.c_str(), &metadata) != 0)
     return {};
   std::ostringstream value;
@@ -517,10 +517,11 @@ int main() {
   const cv::Mat mismatched_live_rotation_snapshot(24, 32, CV_8UC3, cv::Scalar(32, 64, 96));
   ok &= expect(
       live_rotation_generation.ok() &&
-          absl::IsAborted(hm::stitching::save_stitched_image(
-              directory.string(),
-              mismatched_live_rotation_snapshot,
-              live_rotation_generation.ok() ? *live_rotation_generation : "")),
+          absl::IsAborted(
+              hm::stitching::save_stitched_image(
+                  directory.string(),
+                  mismatched_live_rotation_snapshot,
+                  live_rotation_generation.ok() ? *live_rotation_generation : "")),
       "snapshot publication must reject image dimensions that disagree with the producer generation");
   const cv::Mat live_rotation_snapshot(32, 96, CV_8UC3, cv::Scalar(32, 64, 96));
   ok &= expect(
@@ -600,6 +601,75 @@ int main() {
       wrote_replacement_mapping && !stale_generation.empty() &&
           absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
       "a selector opened on a replaced stitched canvas must not publish stale coordinates");
+  const auto single_directory = directory / "single-source";
+  std::filesystem::create_directories(single_directory);
+  YAML::Node single_config;
+  single_config["game"]["videos"]["source"].push_back("recording.mp4");
+  single_config["game"]["videos"]["left"] = YAML::Node(YAML::NodeType::Null);
+  std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+  cv::imwrite((single_directory / "s.png").string(), replacement_snapshot);
+  const auto single_canvas = Selector::OpenCanvas(single_directory, true);
+  ok &= expect(
+      single_canvas.ok() && single_canvas->width == 96 && single_canvas->height == 32 &&
+          single_canvas->generation.hugin_generation.empty() && !single_canvas->generation.snapshot_identity.empty(),
+      "single-source scoreboard must pin exact image bytes without Hugin calibration");
+  if (single_canvas.ok()) {
+    ok &= expect(
+        Selector::Save(single_directory, disabled, single_canvas->generation).ok(),
+        "single-source scoreboard save must use the native config transaction");
+    cv::imwrite((single_directory / "replacement.png").string(), replacement_snapshot);
+    std::filesystem::rename(single_directory / "replacement.png", single_directory / "s.png");
+    ok &= expect(
+        absl::IsAborted(Selector::Save(single_directory, disabled, single_canvas->generation)),
+        "single-source scoreboard must reject a replaced image");
+    single_config["game"]["videos"]["source"] = "recording.mp4";
+    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+    const auto new_canvas = Selector::OpenCanvas(single_directory, true);
+    ok &= expect(
+        new_canvas.ok() && new_canvas->generation.hugin_generation.empty() &&
+            Selector::Save(single_directory, disabled, new_canvas->generation).ok(),
+        "a scalar source playlist supports single-source scoreboard selection and save");
+    single_config["game"]["videos"]["right"] = "second.mp4";
+    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+    ok &= expect(
+        new_canvas.ok() && absl::IsAborted(Selector::Save(single_directory, disabled, new_canvas->generation)),
+        "single-source scoreboard must reject a game changed to multiple camera playlists");
+  }
+  const auto source_reference = directory / "private-source";
+  std::filesystem::create_directories(source_reference);
+  const auto recording = source_reference / "recording.mp4";
+  std::ofstream(recording) << "recording";
+  YAML::Node reference_config;
+  reference_config["game"]["videos"]["source"].push_back(recording.string());
+  std::ofstream(source_reference / "config.yaml") << reference_config << '\n';
+  cv::imwrite((source_reference / "s.png").string(), replacement_snapshot);
+  const auto reference_canvas = Selector::OpenCanvas(source_reference, true);
+  auto pair_config = YAML::LoadFile((directory / "config.yaml").string());
+  pair_config["game"]["videos"]["left"] = recording.string();
+  pair_config["game"]["videos"]["right"] = recording.string();
+  std::ofstream(directory / "config.yaml") << pair_config << '\n';
+  const auto pair_ownership = Selector::SameSingleSource(directory, source_reference);
+  ok &= expect(pair_ownership.ok() && !*pair_ownership, "A private source must not claim a saved pair's scoreboard");
+  if (reference_canvas.ok()) {
+    ok &= expect(
+        absl::IsAborted(Selector::Save(directory, disabled, reference_canvas->generation, source_reference)),
+        "A private source must not persist coordinates into a saved pair");
+    single_config["game"]["videos"].remove("right");
+    single_config["game"]["videos"]["source"] = recording.string();
+    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+    std::filesystem::remove(single_directory / "s.png");
+    const auto same_ownership = Selector::SameSingleSource(single_directory, source_reference);
+    ok &= expect(
+        same_ownership.ok() && *same_ownership &&
+            Selector::Save(single_directory, disabled, reference_canvas->generation, source_reference).ok(),
+        "Saved single-source selections persist through a private canvas without publishing game/s.png");
+    ok &= expect(!std::filesystem::exists(single_directory / "s.png"), "Persistence must not create a saved canvas");
+    single_config["game"]["videos"]["right"] = recording.string();
+    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+    ok &= expect(
+        absl::IsAborted(Selector::Save(single_directory, disabled, reference_canvas->generation, source_reference)),
+        "A saved source change during selection must reject the private canvas");
+  }
   std::filesystem::remove_all(directory);
   return ok ? 0 : 1;
 }

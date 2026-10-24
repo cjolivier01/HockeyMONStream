@@ -212,6 +212,9 @@ bazelisk --batch --output_base="${output_base}" build \
   //src/apps/hstream-assets:hstream-assets \
   //src/apps/hstream-job:hstream-job \
   //src/apps/hstream-finalize:hstream-finalize \
+  //src/apps/hstream-calibration-export:hstream-calibration-export \
+  //src/apps/hstream-model-prepare:hstream-model-prepare \
+  //src/apps/hstream-model-infer:hstream-model-infer \
   //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo \
   //src/gst-plugins/gst-dsxvideoconvert:libgstdsxvideoconvert.so \
   //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \
@@ -226,6 +229,7 @@ if [[ ! -x "${cuobjdump}" ]]; then
 fi
 cuda_elfs=(
   bazel-bin/src/apps/hstream-cli/hstream-cli
+  bazel-bin/src/apps/hstream-calibration-export/hstream-calibration-export
   bazel-bin/src/apps/hstream-assets/hstream-assets
   bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
   bazel-bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so

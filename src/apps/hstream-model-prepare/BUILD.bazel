@@ -1,0 +1,17 @@
+cc_binary(
+    name = "hstream-model-prepare",
+    srcs = ["main.cpp"],
+    data = ["//src/apps/player-model-builder:player-model-builder"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/apps/hstream-cli:player_model_cache",
+        "@yaml-cpp",
+    ],
+)
+
+sh_test(
+    name = "model_prepare_test",
+    srcs = ["ModelPrepareTest.sh"],
+    args = ["$(rootpath :hstream-model-prepare)"],
+    data = [":hstream-model-prepare", "ModelPrepareTest.py"],
+)

@@ -8,6 +8,16 @@
 
 namespace hm::stitching {
 
+struct LiveOutputEpoch;
+
+// Validate a foreign runtime request against the exact loaded calibration and
+// the UI-owned pending authorization without committing it before backend ack.
+absl::Status validate_live_output_epoch(
+    const std::string& game_dir,
+    const LiveOutputEpoch& epoch,
+    const std::string& loaded_hugin_generation,
+    std::string* output_generation = nullptr);
+
 struct LiveStitchedOutputAuthorization {
   std::string pending_generation;
   std::string authorization_id;
