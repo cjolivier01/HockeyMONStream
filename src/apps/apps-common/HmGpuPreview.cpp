@@ -2161,9 +2161,11 @@ void gst_hm_gpu_preview_sink_class_init(GstHmGpuPreviewSinkClass* klass) {
       g_param_spec_uint(
           "player-drawing-layers",
           "Player drawing layers",
-          "Live drawing bitmask: pose 2, jerseys 4, actions 8, teams 16",
+          "Live drawing bitmask: boxes 1, pose 2, jerseys 4, actions 8, teams 16. The preview draws the "
+          "analytics layers and takes boxes through show-player-tracking, but it accepts the complete "
+          "selection so one value can address every element that draws.",
           0,
-          30,
+          31,
           0,
           G_PARAM_READWRITE));
   g_object_class_install_property(

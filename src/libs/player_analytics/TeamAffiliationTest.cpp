@@ -580,6 +580,34 @@ bool CorrectsARankingTheGameContradicts() {
   return ok;
 }
 
+// A correction raises the bar it was taken on, so the ranking cannot be
+// walked back and forth by evidence no better than what already overturned it.
+bool ACorrectionCannotBeWalkedBack() {
+  TeamClusterer clusterer(kSettings);
+  const auto observe = [&clusterer](float coordinate, float lightness) {
+    std::array<float, kTeamEmbedding> embedding{};
+    embedding[0] = coordinate;
+    return clusterer.Observe(embedding.data(), lightness);
+  };
+  const auto feed = [&observe](int crops, float a_lightness, float b_lightness) {
+    for (int i = 0; i < crops; ++i)
+      observe(i % 2 ? 10.0F : -10.0F, i % 2 ? b_lightness : a_lightness);
+  };
+  feed(256, 50.0F, 43.5F);
+  bool ok = Check(clusterer.dark_cluster().has_value(), "the opening stretch names the split");
+  const auto first = clusterer.dark_cluster();
+  feed(2600, 40.0F, 55.0F);
+  ok &= Check(clusterer.dark_cluster() != first, "the strong contradiction corrects the ranking");
+  const auto corrected = clusterer.dark_cluster();
+  const uint32_t revision = clusterer.ranking_revision();
+  // Back the other way, over the switch margin but under the 15 L the
+  // correction was taken on.
+  feed(2600, 52.0F, 43.0F);
+  ok &= Check(clusterer.dark_cluster() == corrected, "weaker contrary evidence cannot undo a stronger correction");
+  ok &= Check(clusterer.ranking_revision() == revision, "no second correction is reported");
+  return ok;
+}
+
 // One bad window must not swap every badge on screen, so a single contrary
 // fit is held rather than acted on.
 bool OneContraryFitIsNotEnough() {
@@ -608,6 +636,7 @@ int main() {
   bool ok = true;
   ok &= SeparatesTwoSquads();
   ok &= CorrectsARankingTheGameContradicts();
+  ok &= ACorrectionCannotBeWalkedBack();
   ok &= OneContraryFitIsNotEnough();
   ok &= RefitKeepsClusterIdentity();
   ok &= DeclinesNonFiniteEmbeddings();

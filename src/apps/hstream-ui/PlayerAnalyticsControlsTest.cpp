@@ -601,7 +601,7 @@ void LiveDrawingSelection() {
           !Control<QComboBox>(widget, "playerPoseModel")->isEnabled(),
       "Compute choices are disabled during a run");
   Require(
-      Control<QLabel>(widget, "playerAnalyticsStatus")->text().contains("run in progress"),
+      Control<QLabel>(widget, "playerAnalyticsStatus")->text().contains("applies to this run"),
       "The status says why the compute choices are disabled");
   widget.setLiveDrawingOnly(false);
   Require(
@@ -642,6 +642,14 @@ void HomeSweater() {
   Require(
       cleared["game"]["home_is_dark"].IsNull(),
       "Clearing it must say nobody named the sides rather than dropping the key");
+  // An edited clear has to reach a run that was never saved, like every other
+  // control here; an untouched one must stay out of the way of a native value.
+  Require(
+      reloaded.arguments().contains("--options=pipeline.player-analytics.home-is-dark=null"),
+      "A cleared home sweater must reach an unsaved run");
+  PlayerAnalyticsControls untouched;
+  Require(
+      untouched.arguments().filter("home-is-dark").isEmpty(), "An untouched home sweater must not override anything");
 }
 
 int main(int argc, char** argv) {

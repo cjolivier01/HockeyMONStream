@@ -559,10 +559,12 @@ QStringList PlayerAnalyticsControls::arguments() const {
       continue;
     if (field.kind == Kind::kSide) {
       const QString side = value(field).toString();
-      if (side.isEmpty())
+      // An untouched control must not override a native setting, but an
+      // operator who clears it means it for this run too, saved or not.
+      if (side.isEmpty() && !changed(field))
         continue;
-      append(field.key, side);
-      append(field.native_alias, side);
+      append(field.key, side.isEmpty() ? QString("null") : side);
+      append(field.native_alias, side.isEmpty() ? QString("null") : side);
       continue;
     }
     if (field.kind == Kind::kFlag) {
@@ -692,11 +694,9 @@ void PlayerAnalyticsControls::updateStatus() {
     return;
   }
   status_->setText(
-      live_drawing_only_
-          ? "Drawing applies to the run in progress. The compute choices above it are disabled until it stops, "
-            "because starting or stopping a model mid-run would change what is being measured."
-          : "Changes apply on the next run. Save Preset keeps these choices. Standard models are "
-            "downloaded and prepared automatically when needed, then reused for this GPU.");
+      live_drawing_only_ ? "Drawing applies to this run. The compute choices above it resume when it stops."
+                         : "Changes apply on the next run. Save Preset keeps these choices. Standard models are "
+                           "downloaded and prepared automatically when needed, then reused for this GPU.");
 }
 bool PlayerAnalyticsControls::isDrawingField(const QString& key) {
   // The four analytics layers plus the Program box switch. Everything else in

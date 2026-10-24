@@ -1840,11 +1840,18 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
     auto configure_overlays = [&](GstElement* sink, const hm::player_analytics::Config& analytics) {
       g_object_set(G_OBJECT(sink), "rink-mask-file", rink_mask_file.c_str(), nullptr);
-      hm::gpu_preview::configure_player_analytics(sink, analytics.drawing_layers(), analytics.pose.confidence_threshold);
+      // A rebuilt graph keeps the operator's live selection rather than
+      // reverting to the choice the run launched with.
+      hm::gpu_preview::configure_player_analytics(
+          sink,
+          player_drawing_layers_ ? *player_drawing_layers_ : analytics.drawing_layers(),
+          analytics.pose.confidence_threshold);
       const char* size = g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_SIZE");
       const char* position = g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_POSITION");
       hm::gpu_preview::configure_rink_mini_map(
-          sink, rink_map, hm::draw_display::RinkMiniMapPreferences(size ? size : "", position ? position : ""));
+          sink,
+          rink_map,
+          hm::draw_display::RinkMiniMapPreferences(size ? size : "", position ? position : "", analytics.home_is_dark));
     };
 
     struct PreviewProbeState {
@@ -4475,6 +4482,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@inspect-set-property <request-id> <stage> <generation> <app-index> <base64-path> <base64-property> "
       "<base64-value>: "
       "Set a backend-approved live property\n"
+      "\t@set-player-drawing <generation> <layers>: Select player-analytics drawing layers live\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
@@ -5889,6 +5897,20 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     }
     return set_preview_overlays_runtime(command);
   }
+  constexpr absl::string_view kPlayerDrawingCommand = "set-player-drawing";
+  if (trimmed_line.rfind(std::string(kPlayerDrawingCommand), 0) == 0) {
+    guint64 generation = 0;
+    guint layers = 0;
+    if (std::sscanf(
+            trimmed_line.c_str() + kPlayerDrawingCommand.size(), "%" G_GUINT64_FORMAT " %u", &generation, &layers) !=
+            2 ||
+        generation == 0) {
+      g_print("HSTREAM_PLAYER_DRAWING status=failed generation=0 layers=0 reason=malformed-command\n");
+      std::fflush(stdout);
+      return false;
+    }
+    return set_player_drawing_runtime(generation, layers);
+  }
   if (trimmed_line.rfind("inspect-", 0) == 0) {
     InspectorCommand command;
     if (!parse_inspector_command(trimmed_line, &command)) {
@@ -6594,6 +6616,60 @@ bool PipelineApplication::set_preview_overlays_runtime(const hm::pipeline_intern
     return true;
   }
   preview_overlay_state_.commit(command);
+  emit("applied");
+  return true;
+}
+
+bool PipelineApplication::apply_player_drawing_layers(guint layers) {
+  bool applied = false;
+  for (const auto& app : stage_app_contexts_.at(current_stage_)) {
+    if (!app || !app->pipeline.pipeline)
+      continue;
+    for (const char* name : {"playcropper0", "playcropper"}) {
+      GstElement* element = gst_bin_get_by_name(GST_BIN(app->pipeline.pipeline), name);
+      if (!element)
+        continue;
+      g_object_set(G_OBJECT(element), "player-drawing-layers", layers, nullptr);
+      gst_object_unref(element);
+      applied = true;
+      break;
+    }
+  }
+  std::set<GstElement*> seen;
+  for (const auto& [channel, preview] : ui_preview_channels_) {
+    (void)channel;
+    if (!preview.sink || !seen.insert(preview.sink).second)
+      continue;
+    g_object_set(G_OBJECT(preview.sink), "player-drawing-layers", layers, nullptr);
+    applied = true;
+  }
+  return applied;
+}
+
+bool PipelineApplication::set_player_drawing_runtime(guint64 generation, guint layers) {
+  const guint selection = layers &
+      (hm::player_analytics::kDrawPlayerBoxes | hm::player_analytics::kDrawPose | hm::player_analytics::kDrawJerseys |
+       hm::player_analytics::kDrawActions | hm::player_analytics::kDrawTeams);
+  auto emit = [&](const char* status, const char* reason = nullptr) {
+    g_print(
+        "HSTREAM_PLAYER_DRAWING status=%s generation=%" G_GUINT64_FORMAT " layers=%u%s%s\n",
+        status,
+        generation,
+        selection,
+        reason ? " reason=" : "",
+        reason ? reason : "");
+    std::fflush(stdout);
+  };
+  if (generation <= player_drawing_generation_) {
+    emit("failed", "stale-generation");
+    return true;
+  }
+  if (!apply_player_drawing_layers(selection)) {
+    emit("failed", "no-drawing-targets");
+    return true;
+  }
+  player_drawing_layers_ = selection;
+  player_drawing_generation_ = generation;
   emit("applied");
   return true;
 }

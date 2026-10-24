@@ -126,10 +126,17 @@ COCO17 observations, retained display poses and team affiliation. All producers 
 be rebuilt together; no persistent telemetry schema changes.
 
 Drawing selections apply to a run in progress. The desktop sends the whole
-selection as `player-drawing-layers` to `playcropper0` and to the GPU preview
-sinks, and that live mask is authoritative over the launch-time
-`player-overlay-layers` and `plot-player-tracking` keys, so a layer switched
-off mid-run stays off. It selects among results the models already produced:
+selection with `@set-player-drawing <generation> <layers>`, and the runner
+applies it to the Program cropper and to whichever preview sinks that graph
+built -- which of them exist depends on the run, so addressing them by name
+from the desktop would fail whenever one is absent. The runner answers
+`HSTREAM_PLAYER_DRAWING status=applied|failed`, and only an accepted
+selection is remembered as live. The same mask is reapplied when the graph is
+rebuilt, so a seek or stage restart does not revert to the launch-time
+choice. It is authoritative over the launch-time `player-overlay-layers` and
+`plot-player-tracking` keys, so a layer switched off mid-run stays off.
+`player-drawing-layers` is also allowlisted as an ordinary runtime property
+for scripted use against a named element. It selects among results the models already produced:
 no model starts, stops, or changes cadence, which is why the compute choices
 in the Players tab disable themselves while a run owns the pipeline. Tracks
 that had no colour allocated when the run started draw grey until it restarts.

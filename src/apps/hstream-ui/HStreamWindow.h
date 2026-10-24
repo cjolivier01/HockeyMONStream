@@ -336,6 +336,7 @@ class HStreamWindow : public QMainWindow {
   bool handleGpuPreviewStatus(const QString& line);
   bool handlePreviewOverlayDiagnostic(const QString& line);
   bool handlePreviewOverlayResponse(const QString& line);
+  bool handlePlayerDrawingResponse(const QString& line);
   QLabel* previewStatusForChannel(const QString& channel) const;
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;
@@ -1036,6 +1037,8 @@ class HStreamWindow : public QMainWindow {
   // Players tab; compute choices wait for the next run.
   std::optional<unsigned> scheduled_player_drawing_layers_;
   std::optional<unsigned> published_player_drawing_layers_;
+  std::optional<unsigned> pending_player_drawing_layers_;
+  quint64 player_drawing_request_{0};
   bool scheduled_rotation_controls_ready_{false};
   bool live_rotation_authorization_pending_{false};
   bool deferred_restart_requested_{false};

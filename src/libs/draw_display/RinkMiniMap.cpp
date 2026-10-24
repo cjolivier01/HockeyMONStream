@@ -111,8 +111,12 @@ bool RinkMiniMap::Append(
   if (result && (result->pts_ns != frame->buf_pts || result->stream_id != frame->source_id))
     result = nullptr;
   if (result) {
-    if (analytics_epoch_ && *analytics_epoch_ != result->epoch)
+    if (analytics_epoch_ && *analytics_epoch_ != result->epoch) {
       smoothing_.Reset();
+      // A new analytics epoch is a new fit: whatever sides were named belong
+      // to the run that ended, not to this one.
+      named_sides_ = false;
+    }
     analytics_epoch_ = result->epoch;
   }
   size_t visible = 0;
@@ -123,14 +127,11 @@ bool RinkMiniMap::Append(
   // players keep the boxes' grey override.
   const Color team_dark{0.16F, 0.18F, 0.22F, 1.0F};
   const Color team_light{0.93F, 0.94F, 0.96F, 1.0F};
-  // Only switch to the two-group reading once the game has actually named a
-  // side. A run with teams off keeps the track colours it has always drawn
-  // rather than turning every dot hollow.
-  bool any_side = false;
-  if (result) {
-    for (size_t i = 0; i < std::min(result->player_count, player_analytics::kMaximumTracks) && !any_side; ++i)
-      any_side = result->players[i].team.label != player_analytics::TeamLabel::kUnknown;
-  }
+  // Switch to the two-group reading only once this stream has named a side,
+  // and keep reading it that way afterwards: a run with teams off keeps its
+  // track colours, and a frame that happens to carry no decided track must
+  // not flip the whole map back for one frame. The flag is latched from the
+  // per-player walk below, so no extra pass over the results is needed.
   const size_t inspected = std::min(snapshot->player_rects.size(), player_analytics::kMaximumTracks);
   for (size_t index = 0; index < inspected; ++index) {
     const auto& player = snapshot->player_rects[index];
@@ -172,8 +173,17 @@ bool RinkMiniMap::Append(
         break;
       }
     }
-    const bool dark_side = side == player_analytics::TeamLabel::kHome || side == player_analytics::TeamLabel::kDark;
-    const bool light_side = side == player_analytics::TeamLabel::kAway || side == player_analytics::TeamLabel::kLight;
+    // HOME and AWAY are names for the two groups; which sweater each wore is
+    // what the map draws, so an unnamed game reads its labels directly and a
+    // named one maps home and away back through options_.home_is_dark.
+    const bool home_in_dark = options_.home_is_dark.value_or(true);
+    const bool dark_side = side == player_analytics::TeamLabel::kDark ||
+        (side == player_analytics::TeamLabel::kHome && home_in_dark) ||
+        (side == player_analytics::TeamLabel::kAway && !home_in_dark);
+    const bool light_side = side == player_analytics::TeamLabel::kLight ||
+        (side == player_analytics::TeamLabel::kAway && home_in_dark) ||
+        (side == player_analytics::TeamLabel::kHome && !home_in_dark);
+    named_sides_ = named_sides_ || dark_side || light_side;
     const auto& box_color = player.ignored ? preview_overlay::kIgnoredPlayerColor : box.border_color;
     const Color track_color{
         float(box_color.red), float(box_color.green), float(box_color.blue), float(box_color.alpha)};
@@ -182,7 +192,7 @@ bool RinkMiniMap::Append(
     const float radius = (number.empty() ? 5.0F : 10.0F) * scale;
     // A named side fills; an unknown one is left hollow over the ice so the
     // two readings cannot be mistaken for each other.
-    const bool hollow = !named && !player.ignored && any_side;
+    const bool hollow = !named && !player.ignored && named_sides_;
     commands->AddDisc(p.x, p.y, radius + 1.5F * scale, white);
     if (hollow) {
       commands->AddDisc(p.x, p.y, radius, ink);

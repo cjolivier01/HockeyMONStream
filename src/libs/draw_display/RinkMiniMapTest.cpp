@@ -31,7 +31,7 @@ struct Frame {
       double shift_x = 0,
       uint64_t pts_ns = 100,
       pa::TeamLabel team = pa::TeamLabel::kUnknown,
-      bool team_names_other_track = false) {
+      bool second_undecided_track = false) {
     check(frame, "Metadata allocation");
     frame->source_id = 4;
     frame->buf_pts = pts_ns;
@@ -56,6 +56,14 @@ struct Frame {
       observation.player_rects.assign(pa::kMaximumTracks, outside);
     }
     observation.player_rects.push_back(player);
+    if (second_undecided_track) {
+      // A skater the clusterer has not called yet, on the ice beside one it
+      // has. Both are tracked and both are drawn.
+      auto undecided = player;
+      undecided.track_id = 23;
+      undecided.rect.left = 300 + shift_x;
+      observation.player_rects.push_back(undecided);
+    }
     if (snapshot)
       check(p::add_prepared_overlay_snapshot_meta(frame, observation), "Snapshot attachment");
     if (jersey) {
@@ -65,7 +73,7 @@ struct Frame {
       result.coordinate_width = 800;
       result.coordinate_height = 600;
       result.player_count = 1;
-      result.players[0].track_id = team_names_other_track ? 23 : 22;
+      result.players[0].track_id = 22;
       result.players[0].box = {350, 100, 100, 200};
       result.players[0].jersey.text = {'0', '7', '\0'};
       result.players[0].jersey.observed_at = 80;
@@ -131,31 +139,68 @@ int main() {
     check(dotColor(commands, {1, 1, 0, 1}), "Bright dot retains the box colour");
     check(count(commands, a::detail::Kind::kGlyph, true) == 0, "Bright dots use dark jersey digits for contrast");
     commands.Clear();
-    // A named side reads as one of two groups in one hue, not as its track
-    // colour: on a minimap the question is which team, not which skater.
-    Frame dark_side(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome);
-    check(overlay.Append(dark_side.frame, 1600, 1200, 800, 600, &commands), "A named dark side stays visible");
-    check(dotColor(commands, {0.16, 0.18, 0.22, 1}), "The dark side fills with the dark team colour");
-    commands.Clear();
-    Frame light_side(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kLight);
-    check(overlay.Append(light_side.frame, 1600, 1200, 800, 600, &commands), "A named light side stays visible");
-    check(dotColor(commands, {0.93, 0.94, 0.96, 1}), "The light side fills with the light team colour");
-    check(
-        count(commands, a::detail::Kind::kGlyph, true) == 0,
-        "Digits on a light dot are drawn dark so they stay readable");
-    commands.Clear();
-    // Someone on the ice has a side, so a skater without one is drawn hollow
-    // rather than filled with a colour that would read as a third group.
-    Frame unknown_side(
-        generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kDark, true);
-    check(overlay.Append(unknown_side.frame, 1600, 1200, 800, 600, &commands), "An unnamed skater stays visible");
-    check(count(commands, a::detail::Kind::kDisc) == 3, "An unknown side is drawn as a ring, not a filled dot");
-    check(dotColor(commands, {0.96, 0.98, 1, 1}), "The ring is left open over the ice");
-    commands.Clear();
-    // Teams off: nothing has been named, so the track colours stay as they
-    // were rather than every dot going hollow.
+    {
+      // A named side reads as one of two groups in one hue, not as its track
+      // colour: on a minimap the question is which team, not which skater.
+      // Each case gets its own overlay because the two-group reading latches
+      // per stream, which is what keeps it steady between frames.
+      hm::draw_display::RinkMiniMap named(map);
+      Frame dark_side(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome);
+      check(named.Append(dark_side.frame, 1600, 1200, 800, 600, &commands), "A named dark side stays visible");
+      check(dotColor(commands, {0.16, 0.18, 0.22, 1}), "The dark side fills with the dark team colour");
+      commands.Clear();
+    }
+    {
+      hm::draw_display::RinkMiniMap named(map);
+      Frame light_side(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kLight);
+      check(named.Append(light_side.frame, 1600, 1200, 800, 600, &commands), "A named light side stays visible");
+      check(dotColor(commands, {0.93, 0.94, 0.96, 1}), "The light side fills with the light team colour");
+      check(
+          count(commands, a::detail::Kind::kGlyph, true) == 0,
+          "Digits on a light dot are drawn dark so they stay readable");
+      commands.Clear();
+    }
+    {
+      // Someone on the ice has a side, so a skater without one is drawn
+      // hollow rather than filled with a colour that reads as a third group.
+      hm::draw_display::RinkMiniMap named(map);
+      Frame unknown_side(
+          generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kDark, true);
+      check(named.Append(unknown_side.frame, 1600, 1200, 800, 600, &commands), "An unnamed skater stays visible");
+      check(
+          count(commands, a::detail::Kind::kDisc) == 5,
+          "A named skater is a filled dot and an undecided one beside them is a ring");
+      check(dotColor(commands, {0.96, 0.98, 1, 1}), "The ring is left open over the ice");
+      commands.Clear();
+    }
+    {
+      // Home wearing light: HOME names the group, the sweater decides the fill.
+      hm::draw_display::RinkMiniMap light_home(map, {{}, {}, false});
+      Frame home(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome);
+      check(light_home.Append(home.frame, 1600, 1200, 800, 600, &commands), "A light-sweater home side draws");
+      check(dotColor(commands, {0.93, 0.94, 0.96, 1}), "Home in light sweaters must not be drawn dark");
+      commands.Clear();
+    }
+    {
+      // Once a side is named the reading stays: a later frame carrying no
+      // decided track is an unknown skater, not a game without teams.
+      hm::draw_display::RinkMiniMap settled(map);
+      Frame named(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kDark);
+      check(settled.Append(named.frame, 1600, 1200, 800, 600, &commands), "The naming frame draws");
+      commands.Clear();
+      Frame undecided(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 140);
+      check(settled.Append(undecided.frame, 1600, 1200, 800, 600, &commands), "The following frame draws");
+      check(
+          count(commands, a::detail::Kind::kDisc) == 3,
+          "A frame with no decided track keeps the two-group reading instead of flipping back");
+      commands.Clear();
+    }
+    // Teams off: nothing has been named on this stream, so the track colours
+    // stay as they were rather than every dot going hollow. A fresh overlay,
+    // because the two-group reading latches per stream once a side appears.
+    hm::draw_display::RinkMiniMap teamless(map);
     Frame unnamed(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1});
-    check(overlay.Append(unnamed.frame, 1600, 1200, 800, 600, &commands), "An unnamed run still draws");
+    check(teamless.Append(unnamed.frame, 1600, 1200, 800, 600, &commands), "An unnamed run still draws");
     check(dotColor(commands, {0.2, 0.4, 0.7, 1}), "Without any named side the dots keep their track colour");
     check(count(commands, a::detail::Kind::kDisc) == 2, "An unnamed dot is a plain filled dot");
     commands.Clear();

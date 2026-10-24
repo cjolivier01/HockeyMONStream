@@ -150,8 +150,13 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
       // game.home_is_dark through as 1/0 like every other mapped flag, and
       // yaml-cpp's bool conversion rejects that spelling. Absent and null stay
       // "nobody said", which is why the presence test is separate.
-      if (node["home-is-dark"] && !node["home-is-dark"].IsNull())
-        config.home_is_dark = Flag(node["home-is-dark"]);
+      // A CLI override is always a string, so "null" is how the desktop says
+      // nobody named the sides on a run it has not saved yet. YAML null and
+      // an absent key mean the same thing.
+      const YAML::Node home = node["home-is-dark"];
+      const bool cleared = home && home.IsScalar() && (home.Scalar() == "null" || home.Scalar() == "~");
+      if (home && !home.IsNull() && !cleared)
+        config.home_is_dark = Flag(home);
     }
     if (config.jersey.enabled && node["jersey"]["roi-mode"]) {
       const auto mode = node["jersey"]["roi-mode"].as<std::string>();

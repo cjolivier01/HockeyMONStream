@@ -231,6 +231,10 @@ void TeamClusterer::Fit() noexcept {
       mean_ = previous_mean;
       inverse_deviation_ = previous_deviation;
       since_fit_ = 0;
+      // This fit told us nothing, so it also breaks a run of contradictions:
+      // "twice running" has to mean two fits good enough to judge, not two
+      // separated by minutes of splits that were thrown away.
+      contrary_fits_ = 0;
       return;
     }
     // Keep published indices using ownership in the previous fit's metric.
@@ -277,12 +281,15 @@ void TeamClusterer::Fit() noexcept {
         ++ranking_revision_;
       }
     } else if (
-        balanced_ && order != dark_cluster_ && gap >= settings_.minimum_lightness_gap * settings_.switch_hysteresis) {
+        balanced_ && order != dark_cluster_ && gap >= settings_.minimum_lightness_gap * settings_.switch_hysteresis &&
+        gap > static_cast<double>(ranking_gap_)) {
       // A ranking taken on a marginal gap can be wrong for the rest of the
       // game, so a later fit may overturn it -- but only on the terms the
       // per-track vote already uses for its own incumbent: beat the bar by
-      // the switch margin, and say the same thing twice running. One window
-      // of bad crops must not swap every badge on screen.
+      // the switch margin, beat the separation the incumbent itself was taken
+      // on, and say the same thing twice running. One window of bad crops
+      // must not swap every badge on screen, and because each correction
+      // raises the bar it set, the ranking cannot be walked back and forth.
       if (++contrary_fits_ >= 2) {
         dark_cluster_ = order;
         ranking_gap_ = static_cast<float>(gap);
