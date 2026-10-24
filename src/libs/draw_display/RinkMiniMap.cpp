@@ -50,6 +50,11 @@ bool RinkMiniMap::Append(
   }
   if (!rotation_)
     return false;
+  if (frame->source_id != source_id_) {
+    // Another stream's teams are not this one's, named or not.
+    named_sides_ = false;
+    analytics_epoch_.reset();
+  }
   if (!last_pts_ || frame->source_id != source_id_ || frame->buf_pts < *last_pts_ ||
       frame->buf_pts == player_analytics::kInvalidTime || frame->buf_pts - *last_pts_ > 300000000 ||
       frame->frame_num < last_frame_num_)

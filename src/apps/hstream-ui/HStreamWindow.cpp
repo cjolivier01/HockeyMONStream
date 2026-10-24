@@ -16283,6 +16283,10 @@ bool HStreamWindow::handlePlayerDrawingResponse(const QString& line) {
                   .arg(match.captured(4).isEmpty() ? QString("rejected") : match.captured(4)));
   }
   pending_player_drawing_layers_.reset();
+  // Camera controls can be waiting behind this answer, and the selection can
+  // have moved on while it was in flight; both are settled from here.
+  schedulePlayerDrawingRuntimeControl();
+  flushScheduledRuntimeControls();
   return true;
 }
 
@@ -21715,7 +21719,9 @@ void HStreamWindow::schedulePlayerDrawingRuntimeControl() {
     return;
   }
   const unsigned layers = player_analytics_controls_->drawingLayers();
-  if (published_player_drawing_layers_ && *published_player_drawing_layers_ == layers) {
+  const std::optional<unsigned> in_force =
+      pending_player_drawing_layers_ ? pending_player_drawing_layers_ : published_player_drawing_layers_;
+  if (in_force && *in_force == layers) {
     // Toggled away and back inside the debounce. Drop the queued value and
     // retire its timer, or the pipeline would be sent a selection the tab no
     // longer shows.

@@ -100,6 +100,10 @@ class TeamClusterer {
   // Consecutive accepted fits whose lightness order contradicts the ranking by
   // more than the switch margin. One such fit is noise; the correction waits.
   uint8_t contrary_fits_{0};
+  // How many of those a correction needs. It grows with each correction, so
+  // sustained evidence can always win but a ranking cannot be walked back and
+  // forth cheaply. Capped so recovery stays reachable in a long game.
+  uint8_t required_confirmations_{2};
   float ranking_gap_{0};
   bool fitted_{false};
   bool ranked_{false};

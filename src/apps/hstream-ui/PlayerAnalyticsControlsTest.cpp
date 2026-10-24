@@ -642,6 +642,19 @@ void HomeSweater() {
   Require(
       cleared["game"]["home_is_dark"].IsNull(),
       "Clearing it must say nobody named the sides rather than dropping the key");
+  // Saved and unsaved clears have to agree: an edit reconciles the native key
+  // the same way the other mapped flags do, so a run cannot read HOME/AWAY
+  // from a native setting the operator just cleared.
+  YAML::Node with_native;
+  with_native["pipeline"]["player-analytics"]["home-is-dark"] = 1;
+  PlayerAnalyticsControls over_native;
+  over_native.loadConfig(YAML::Node(), YAML::Node(), with_native, QDir::currentPath());
+  Control<QComboBox>(over_native, "playerHomeSide")->setCurrentIndex(0);
+  Require(over_native.applyChanges(with_native).isEmpty(), "Clearing over a native sweater failed");
+  Require(
+      with_native["pipeline"]["player-analytics"]["home-is-dark"].IsNull() &&
+          with_native["game"]["home_is_dark"].IsNull(),
+      "An edited clear must reconcile the native key rather than leave it naming the sides");
   // An edited clear has to reach a run that was never saved, like every other
   // control here; an untouched one must stay out of the way of a native value.
   Require(

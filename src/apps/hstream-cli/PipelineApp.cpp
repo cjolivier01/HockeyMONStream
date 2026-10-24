@@ -5768,6 +5768,10 @@ void PipelineApplication::commit_runtime_property(
   // Selection is an operator action, not a setting to repeat after a seek/restart.
   if (property_name == "scoreboard-reselect")
     return;
+  // A scripted per-element drawing write is newer than whatever the desktop
+  // last selected, so stop restoring that selection over the top of it.
+  if (property_name == "player-drawing-layers")
+    player_drawing_layers_.reset();
   runtime_property_overrides_.erase(
       std::remove_if(
           runtime_property_overrides_.begin(),
@@ -8437,6 +8441,11 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     NVGSTDS_ERR_MSG_V("Failed to restore live runtime properties");
     return FALSE;
   }
+  // After the per-element replay, so the newest whole-graph drawing selection
+  // wins, and through the same resolver the command uses: a rebuilt graph may
+  // not have every preview sink, which the replay above cannot tolerate.
+  if (player_drawing_layers_)
+    apply_player_drawing_layers(*player_drawing_layers_);
   for (i = 0; i < app_ctx_ptr->config.num_sink_sub_bins; i++) {
     GstElement* sink = app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink;
     if (!GST_IS_VIDEO_OVERLAY(sink) || manages_its_own_window(sink))

@@ -195,6 +195,21 @@ int main() {
           "A frame with no decided track keeps the two-group reading instead of flipping back");
       commands.Clear();
     }
+    {
+      // A second stream's naming is not this one's. Switching sources clears
+      // the reading rather than drawing one game's teams over another's.
+      hm::draw_display::RinkMiniMap shared(map);
+      Frame named(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kDark);
+      check(shared.Append(named.frame, 1600, 1200, 800, 600, &commands), "the naming frame draws");
+      commands.Clear();
+      Frame other(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 140);
+      other.frame->source_id = 9;
+      check(shared.Append(other.frame, 1600, 1200, 800, 600, &commands), "another source draws");
+      check(
+          count(commands, a::detail::Kind::kDisc) == 2 && dotColor(commands, {0.2, 0.4, 0.7, 1}),
+          "A different source starts from its own track colours, not the last one's teams");
+      commands.Clear();
+    }
     // Teams off: nothing has been named on this stream, so the track colours
     // stay as they were rather than every dot going hollow. A fresh overlay,
     // because the two-group reading latches per stream once a side appears.

@@ -88,12 +88,22 @@ and it never reaches through to erase a native `home-is-dark`, which still
 wins where one exists.
 
 The ranking is taken on the first balanced fit whose groups differ by
-`min_lightness_gap`, and a later fit can take it back. Early crops can catch
+`min_lightness_gap`, and a later fit can take it back. Each correction then
+asks for one more consecutive confirmation than the last, up to five, so
+sustained contradiction always wins while a ranking cannot be walked back and
+forth by evidence that keeps changing its mind.
+
+One limitation to know about: a track leaves the sampling schedule once its
+side commits, so a game whose tracks all settle shortly after the first fit
+can stop producing the crops a refit needs, and a wrong ranking then waits on
+track churn. `team-unranked` and `team-reranks` make that visible, but there
+is no deadline on it. Early crops can catch
 one squad under the lights and the other in shadow, and a ranking taken that
 way is wrong for the rest of the game, so a fit measuring the opposite order
-replaces it once it beats the same bar by `switch_hysteresis` on two
-consecutive refits — the terms the per-track vote already uses against its own
-incumbent. Centroid pairing keeps index 0 on the same squad across refits, so
+replaces it once it beats the same bar by `switch_hysteresis` on consecutive
+accepted fits — the terms the per-track vote already uses against its own
+incumbent. A refit that was thrown away counts for neither side and breaks the
+run. Centroid pairing keeps index 0 on the same squad across refits, so
 the contradiction is evidence about the ranking rather than about which group
 is which, and flipping it relabels every badge at once with no per-track
 churn. An established ranking is never withdrawn: a fit that cannot tell

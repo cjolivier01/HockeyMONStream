@@ -580,9 +580,10 @@ bool CorrectsARankingTheGameContradicts() {
   return ok;
 }
 
-// A correction raises the bar it was taken on, so the ranking cannot be
-// walked back and forth by evidence no better than what already overturned it.
-bool ACorrectionCannotBeWalkedBack() {
+// A wrong ranking must be recoverable however confident it looked, and a
+// second reversal must cost more than the first so the badges cannot be
+// walked back and forth.
+bool CorrectionsCostMoreEachTime() {
   TeamClusterer clusterer(kSettings);
   const auto observe = [&clusterer](float coordinate, float lightness) {
     std::array<float, kTeamEmbedding> embedding{};
@@ -593,18 +594,24 @@ bool ACorrectionCannotBeWalkedBack() {
     for (int i = 0; i < crops; ++i)
       observe(i % 2 ? 10.0F : -10.0F, i % 2 ? b_lightness : a_lightness);
   };
-  feed(256, 50.0F, 43.5F);
+  // Named confidently and wrongly: an 18 L separation the opening crops
+  // happened to measure the wrong way round.
+  feed(256, 50.0F, 32.0F);
   bool ok = Check(clusterer.dark_cluster().has_value(), "the opening stretch names the split");
   const auto first = clusterer.dark_cluster();
-  feed(2600, 40.0F, 55.0F);
-  ok &= Check(clusterer.dark_cluster() != first, "the strong contradiction corrects the ranking");
+  // Sustained contradiction at 12 L -- past the switch margin, under the gap
+  // that named it. A confident mistake still has to be correctable.
+  feed(2000, 40.0F, 52.0F);
+  ok &= Check(clusterer.dark_cluster() != first, "a confident early ranking is still correctable");
   const auto corrected = clusterer.dark_cluster();
   const uint32_t revision = clusterer.ranking_revision();
-  // Back the other way, over the switch margin but under the 15 L the
-  // correction was taken on.
-  feed(2600, 52.0F, 43.0F);
-  ok &= Check(clusterer.dark_cluster() == corrected, "weaker contrary evidence cannot undo a stronger correction");
-  ok &= Check(clusterer.ranking_revision() == revision, "no second correction is reported");
+  // Two qualifying fits the other way are now one short of what it takes.
+  feed(1300, 52.0F, 40.0F);
+  ok &= Check(clusterer.dark_cluster() == corrected, "a second reversal needs more confirmation than the first");
+  ok &= Check(clusterer.ranking_revision() == revision, "no second correction is reported yet");
+  // Keep saying it and the ranking does move: evidence wins in the end.
+  feed(1300, 52.0F, 40.0F);
+  ok &= Check(clusterer.dark_cluster() != corrected, "sustained contradiction eventually wins");
   return ok;
 }
 
@@ -622,11 +629,16 @@ bool OneContraryFitIsNotEnough() {
   bool ok = Check(clusterer.dark_cluster().has_value(), "the split is named");
   const auto first = clusterer.dark_cluster();
   const uint32_t revision = clusterer.ranking_revision();
-  // Exactly one refit's worth of inverted crops.
+  // Exactly one refit's worth of inverted crops, contradicting by 20 L --
+  // comfortably qualifying, so only the consecutive rule holds it back.
   for (int i = 0; i < 601; ++i)
-    observe(i % 2 ? 10.0F : -10.0F, i % 2 ? 40.0F : 55.0F);
+    observe(i % 2 ? 10.0F : -10.0F, i % 2 ? 35.0F : 55.0F);
   ok &= Check(clusterer.dark_cluster() == first, "one contrary fit must not flip the ranking");
   ok &= Check(clusterer.ranking_revision() == revision, "one contrary fit is not a correction");
+  // The second says the same thing, and now it counts.
+  for (int i = 0; i < 601; ++i)
+    observe(i % 2 ? 10.0F : -10.0F, i % 2 ? 35.0F : 55.0F);
+  ok &= Check(clusterer.dark_cluster() != first, "a second qualifying fit completes the correction");
   return ok;
 }
 
@@ -636,7 +648,7 @@ int main() {
   bool ok = true;
   ok &= SeparatesTwoSquads();
   ok &= CorrectsARankingTheGameContradicts();
-  ok &= ACorrectionCannotBeWalkedBack();
+  ok &= CorrectionsCostMoreEachTime();
   ok &= OneContraryFitIsNotEnough();
   ok &= RefitKeepsClusterIdentity();
   ok &= DeclinesNonFiniteEmbeddings();

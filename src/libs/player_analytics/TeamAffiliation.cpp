@@ -66,6 +66,7 @@ void TeamClusterer::Reset() noexcept {
   dark_cluster_ = 0;
   ranking_revision_ = 0;
   contrary_fits_ = 0;
+  required_confirmations_ = 2;
   ranking_gap_ = 0;
 }
 
@@ -281,19 +282,26 @@ void TeamClusterer::Fit() noexcept {
         ++ranking_revision_;
       }
     } else if (
-        balanced_ && order != dark_cluster_ && gap >= settings_.minimum_lightness_gap * settings_.switch_hysteresis &&
-        gap > static_cast<double>(ranking_gap_)) {
+        balanced_ && order != dark_cluster_ && gap >= settings_.minimum_lightness_gap * settings_.switch_hysteresis) {
       // A ranking taken on a marginal gap can be wrong for the rest of the
       // game, so a later fit may overturn it -- but only on the terms the
       // per-track vote already uses for its own incumbent: beat the bar by
-      // the switch margin, beat the separation the incumbent itself was taken
-      // on, and say the same thing twice running. One window of bad crops
-      // must not swap every badge on screen, and because each correction
-      // raises the bar it set, the ranking cannot be walked back and forth.
-      if (++contrary_fits_ >= 2) {
+      // the switch margin, and say the same thing on consecutive fits. One
+      // window of bad crops must not swap every badge on screen.
+      //
+      // Each correction then asks for one more confirmation than the last.
+      // Sustained contradiction still wins, which is the point, but the
+      // ranking cannot be walked back and forth by evidence that keeps
+      // changing its mind. The bar is repetition rather than the largest gap
+      // the game has measured: a wider gap can be different lighting rather
+      // than better evidence, and making it a floor would protect exactly
+      // the confident early mistake this exists to correct.
+      if (++contrary_fits_ >= required_confirmations_) {
         dark_cluster_ = order;
         ranking_gap_ = static_cast<float>(gap);
         contrary_fits_ = 0;
+        if (required_confirmations_ < 5)
+          ++required_confirmations_;
         ++ranking_revision_;
       }
     } else {

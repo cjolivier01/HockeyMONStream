@@ -508,11 +508,6 @@ QString PlayerAnalyticsControls::applyChanges(YAML::Node& destination) const {
         selected = side.isEmpty() ? YAML::Node(YAML::NodeType::Null) : YAML::Node(side == "true");
       }
       Set(staged, field.key.split('.'), selected);
-      // Clearing the home sweater says nobody named the sides. It must not
-      // reach through and erase an explicit native setting, which still wins
-      // and which the operator did not touch here.
-      if (field.kind == Kind::kSide && selected.IsNull())
-        continue;
       // Preserve explicit native settings on unrelated saves. On an edit only,
       // reconcile the conflicting same-destination leaf with the canonical choice.
       if (!field.native_alias.isEmpty() &&
