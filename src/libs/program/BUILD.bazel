@@ -250,7 +250,7 @@ cc_library(
     srcs = ["ProgramCalibration.cpp"],
     hdrs = ["ProgramCalibration.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["//src/libs/common:config_path", "//src/libs/common:utils_base",
+    deps = ["//src/libs/common:config_path",
             "//src/libs/stitching:game_config", "//src/libs/stitching:hugin_project"],
 )
 

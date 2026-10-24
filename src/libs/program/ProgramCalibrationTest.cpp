@@ -42,8 +42,18 @@ int main() {
     Check(
         ValidateProgramCalibrationSelection(fractional, {"219.125", "original"}).ok(), "Fractional reference differs");
     Check(!ValidateProgramCalibrationSelection(fractional, requested).ok(), "Different reference accepted");
-    for (const auto* time : {"", "bad", "-1", "nan", "1e50"})
+    fractional["stitching"]["stitch_frame_time"] = "00:01:02.099";
+    for (const auto* time : {"62.099", "01:02.099", "00:01:02.0990000000"})
+      Check(ValidateProgramCalibrationSelection(fractional, {time, "original"}).ok(), "Decimal reference differs");
+    for (const auto* time : {"62.098999999", "62.099000001", "62.0990000001"})
+      Check(!ValidateProgramCalibrationSelection(fractional, {time, "original"}).ok(), "Distinct reference accepted");
+    for (const auto* time : {"", "bad", "-1", "nan", "1e50", "0:0:0:219", "219.", "0::219", "18446744073.709551616"})
       Check(!ValidateProgramCalibrationSelection(saved, {time, "original"}).ok(), "Invalid reference accepted");
+    auto boundary = YAML::Clone(saved);
+    boundary["stitching"]["stitch_frame_time"] = "18446744073.709551615";
+    Check(
+        ValidateProgramCalibrationSelection(boundary, {"5124095:34:33.709551615", "original"}).ok(),
+        "Largest representable reference differs");
     for (const auto* owner : {"", "replacement"})
       Check(!ValidateProgramCalibrationSelection(saved, {"219", owner}).ok(), "Wrong owner accepted");
     auto pending = YAML::Clone(saved);
