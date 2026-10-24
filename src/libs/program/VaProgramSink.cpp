@@ -168,9 +168,18 @@ absl::StatusOr<std::unique_ptr<VaProgramSink>> VaProgramSink::Create(const VaPro
   if (config.audio) {
     graph += " appsrc name=audio format=time ! ";
     switch (config.kind) {
-      case VaProgramSinkKind::kHevcMp4:
-        graph += "avenc_aac name=aac ! aacparse ! mux.";
-        break;
+      case VaProgramSinkKind::kHevcMp4: {
+        // The mux retains a picture until its successor determines its
+        // duration. Cover that lookahead and the producer's current frame
+        // interval, plus two audio access units for packet lookahead.
+        const auto samples = int64_t(2) * config.audio->format.rate * config.video.fps_d;
+        const auto denominator = int64_t(1024) * config.video.fps_n;
+        const auto packets = (samples + denominator - 1) / denominator + 2;
+        if (packets > UINT_MAX)
+          return absl::OutOfRangeError("Video frame interval exceeds the AAC packet queue bound");
+        graph += "avenc_aac name=aac ! aacparse ! queue max-size-bytes=0 max-size-time=0 max-size-buffers=" +
+            std::to_string(packets) + " ! mux.";
+      } break;
       case VaProgramSinkKind::kPreview:
         graph += "audioconvert ! audioresample ! volume name=volume ! alsasink name=audio_output";
         break;

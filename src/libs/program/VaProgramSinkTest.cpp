@@ -252,12 +252,18 @@ int main(int argc, char** argv) {
       close(encoded.output_fd);
       Check(!existing.ok(), "Output owner accepted a nonempty file");
     }
-    for (const int rate : {48000, 8000}) {
-      const auto path = root.path / ("audio-" + std::to_string(rate) + ".mp4");
-      std::cout << "Testing continuous HEVC/AAC output at " << rate << " Hz\n" << std::flush;
+    for (const auto& rates : {std::pair<int, int>{48000, 60}, {8000, 60}, {48000, 1}}) {
+      const int rate = rates.first, fps = rates.second;
+      const int seconds = fps == 1 ? 5 : 2;
+      const auto path = root.path / ("audio-" + std::to_string(rate) + "-" + std::to_string(fps) + ".mp4");
+      std::cout << "Testing continuous HEVC/AAC output at " << rate << " Hz / " << fps << " fps\n" << std::flush;
       auto encoded = config;
       encoded.kind = hm::program::VaProgramSinkKind::kHevcMp4;
-      encoded.video.fps_n = 60;
+      encoded.video.fps_n = fps;
+      // Use intra-only low-rate input: this Mesa driver emits a filler-only
+      // P access unit at 1 fps independently of the audio path.
+      encoded.bitrate_kbps = fps == 1 ? 100 : 1000;
+      encoded.keyframe_interval = fps == 1 ? 1 : 25;
       encoded.pool_frames = 8;
       encoded.audio = hm::program::VaProgramAudioConfig{{rate, 2}, 8192, 192000, "", false};
       // Smaller than AAC preroll at either rate: encoded buffering must free
@@ -271,28 +277,34 @@ int main(int argc, char** argv) {
       Check(encoded.output_fd >= 0, "Cannot reopen audio test MP4");
       sink = Take(hm::program::VaProgramSink::Create(encoded));
       close(encoded.output_fd);
-      for (int64_t i = 0; i < 120; ++i) {
+      for (int64_t i = 0; i < seconds * fps; ++i) {
         auto acquired = sink->Acquire();
         Check(
             acquired.ok(),
             acquired.status().ToString() + " at frame " + std::to_string(i) + " rate " + std::to_string(rate));
         Buffer buffer(*acquired, gst_buffer_unref);
         tile.Render(buffer.get(), encoded.video);
-        const auto start = gst_util_uint64_scale(i, GST_SECOND, 60);
-        const auto end = gst_util_uint64_scale(i + 1, GST_SECOND, 60);
+        const auto start = gst_util_uint64_scale(i, GST_SECOND, fps);
+        const auto end = gst_util_uint64_scale(i + 1, GST_SECOND, fps);
         Status(sink->Push(buffer.release(), start, end - start));
-        const auto first_sample = i * rate / 60;
-        const auto sample_count = (i + 1) * rate / 60 - first_sample;
-        hm::media::AudioFrame audio{first_sample, {rate, 2}, std::vector<float>(sample_count * 2)};
-        for (int j = 0; j < sample_count; ++j)
-          audio.pcm[j * 2] = audio.pcm[j * 2 + 1] = .1f * std::sin((audio.sample + j) * 2 * M_PI * 997 / rate);
-        Status(sink->PushAudio(audio));
+        const auto first_sample = i * rate / fps;
+        const auto last_sample = (i + 1) * rate / fps;
+        for (auto sample = first_sample; sample < last_sample;) {
+          const auto sample_count = std::min<int64_t>(4096, last_sample - sample);
+          hm::media::AudioFrame audio{sample, {rate, 2}, std::vector<float>(sample_count * 2)};
+          for (int j = 0; j < sample_count; ++j)
+            audio.pcm[j * 2] = audio.pcm[j * 2 + 1] = .1f * std::sin((audio.sample + j) * 2 * M_PI * 997 / rate);
+          Status(sink->PushAudio(audio));
+          sample += sample_count;
+        }
       }
       Status(sink->Finish());
       Status(sink->Finish());
       sink.reset();
       const auto video = Take(hm::media::ReadMp4VideoTrack(path, 10 * GST_SECOND, {}));
-      Check(video.frames == 120 && video.duration_ns == 2 * GST_SECOND, "Audio changed encoded video duration");
+      Check(
+          video.frames == uint64_t(seconds * fps) && video.duration_ns == seconds * GST_SECOND,
+          "Audio changed encoded video duration");
       auto reader = Take(hm::media::Mp4AudioReader::Create({10 * GST_SECOND, 1024 * 1024, 4096}));
       Status(reader->Open(path));
       Status(reader->Seek(0));
@@ -303,14 +315,14 @@ int main(int argc, char** argv) {
       while (audio) {
         for (size_t i = 0; i < audio->samples(); ++i) {
           const auto sample = audio->sample + i;
-          if (sample >= size_t(2 * rate))
+          if (sample >= size_t(seconds * rate))
             break;
           error += std::abs(audio->pcm[i * 2] - .1 * std::sin(sample * 2 * M_PI * 997 / rate));
           ++count;
         }
         audio = Take(reader->Read());
       }
-      Check(count == size_t(2 * rate) && error / count < .005, "AAC edit shifted or lost audible samples");
+      Check(count == size_t(seconds * rate) && error / count < .005, "AAC edit shifted or lost audible samples");
     }
     {
       Graphics graphics;

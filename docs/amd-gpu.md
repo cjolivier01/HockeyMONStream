@@ -764,8 +764,11 @@ uses bounded PCM submission, `avenc_aac`, and the existing video mux. A bounded
 compressed-video queue covers four AAC access units plus one video packet,
 derived from the native sample/frame rates. It releases VA surfaces while AAC
 accumulates preroll. Packet size is bounded by the existing encoded-packet guard.
-The mux selects the earliest packet without chunk batching, so it cannot hold
-audio waiting for a future video chunk past the bounded producer. Preview uses
+A corresponding compressed-audio queue covers two video-frame intervals (current
+picture plus mux lookahead) and two AAC access units. This prevents low-fps audio
+from blocking the next video submission. The mux selects the earliest packet
+without chunk batching, so it cannot hold audio waiting for a future video chunk
+past the bounded producer. Preview uses
 ALSA, the configured `alsa-dest-device`, and `HSTREAM_RENDER_AUDIO_MUTED` for the
 initial mute. Normal-speed preview shares the system presentation clock (ALSA follows it); an unpaced
 preview drops old monitor-only PCM when its bounded appsrc fills. Archive audio
@@ -799,3 +802,12 @@ remain blocked by the missing local sysroot/native host and unreachable `stubby`
 The HockeyMON baseline copies match exactly and preserve every pre-existing
 value; its Bazel test cannot reach analysis because local Torch requires the
 missing `libcupti.so.13`.
+
+Audio review round 1 found low-sample-rate AAC preroll could exhaust the VA pool;
+the compressed-video queue fixes that with two-surface regressions. Round 2 found
+the opposite low-fps PCM stall; the compressed-audio queue now covers the mux's
+next-picture lookahead. A five-second 1 fps / 48 kHz native regression passes,
+alongside the 60 fps / 48 kHz and 8 kHz cases. The 1 fps fixture uses intra-only
+encoding at 100 kb/s because this Mesa driver emits a filler-only inter-frame
+access unit at that rate; the invalid packet is rejected by colorimetry validation.
+The scheduling fix does not hide that driver limitation.
