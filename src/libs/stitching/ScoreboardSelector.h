@@ -38,12 +38,18 @@ class ScoreboardSelector {
       const std::filesystem::path& game_dir,
       bool allow_single_source = false);
 
+  // Compare source ownership independently from stitched artifacts.
+  static absl::StatusOr<bool> SameSingleSource(
+      const std::filesystem::path& game_dir,
+      const std::filesystem::path& reference_dir);
+
   static bool IsDisabled(const Polygon& polygon);
   static absl::StatusOr<Polygon> ValidateAndOrder(Polygon polygon, int image_width, int image_height);
   static absl::Status Save(
       const std::filesystem::path& game_dir,
       const Polygon& polygon,
-      const std::optional<CanvasGeneration>& expected_generation = std::nullopt);
+      const std::optional<CanvasGeneration>& expected_generation = std::nullopt,
+      const std::filesystem::path& single_source_reference = {});
   // Wait for the operator, but release the video worker promptly on pipeline stop.
   static absl::Status Run(const std::filesystem::path& game_dir, const std::function<bool()>& is_cancelled = {});
 };

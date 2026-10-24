@@ -223,10 +223,21 @@ void export_calibration(
   check(stitching::publish_named_file(destination / "native-calibration.yaml", YAML::Dump(manifest) + "\n"));
   cleanup.complete = true;
 }
-YAML::Node scoreboard_canvas(const fs::path& game, const fs::path& image_destination) {
-  const auto canvas = take(stitching::ScoreboardSelector::OpenCanvas(game, true));
+YAML::Node scoreboard_canvas(
+    const fs::path& game,
+    const fs::path& image_destination,
+    const fs::path& source_reference) {
+  const auto canvas =
+      take(stitching::ScoreboardSelector::OpenCanvas(source_reference.empty() ? game : source_reference, true));
+  if (!source_reference.empty() && !canvas.generation.hugin_generation.empty())
+    throw std::runtime_error("Private scoreboard reference must belong to a single source");
   check(stitching::publish_named_file(image_destination, canvas.png_bytes));
   YAML::Node result;
+  result["game_directory"] = game.string();
+  if (!source_reference.empty()) {
+    result["source_game_directory"] = source_reference.string();
+    result["persist_to_game"] = take(stitching::ScoreboardSelector::SameSingleSource(game, source_reference));
+  }
   result["width"] = canvas.width;
   result["height"] = canvas.height;
   result["image_path"] = image_destination.string();
@@ -257,7 +268,13 @@ YAML::Node save_scoreboard(const fs::path& game, const fs::path& request_path) {
       generation["snapshot_identity"].as<std::string>()};
   if (expected.snapshot_identity.empty())
     throw std::runtime_error("Scoreboard requires a pinned native canvas generation");
-  const auto current_canvas = take(stitching::ScoreboardSelector::OpenCanvas(game, true));
+  const fs::path source_reference =
+      canvas["source_game_directory"] ? fs::canonical(canvas["source_game_directory"].as<std::string>()) : fs::path{};
+  if (!source_reference.empty() &&
+      (!expected.hugin_generation.empty() || canvas["game_directory"].as<std::string>() != game.string()))
+    throw std::runtime_error("Private scoreboard reference belongs to a different source or game");
+  const auto current_canvas =
+      take(stitching::ScoreboardSelector::OpenCanvas(source_reference.empty() ? game : source_reference, true));
   if (current_canvas.width != canvas["width"].as<int>() || current_canvas.height != canvas["height"].as<int>() ||
       current_canvas.generation.hugin_generation != expected.hugin_generation ||
       current_canvas.generation.stitched_output_generation != expected.stitched_output_generation ||
@@ -267,7 +284,13 @@ YAML::Node save_scoreboard(const fs::path& game, const fs::path& request_path) {
     polygon = take(
         stitching::ScoreboardSelector::ValidateAndOrder(
             polygon, canvas["width"].as<int>(), canvas["height"].as<int>()));
-  check(stitching::ScoreboardSelector::Save(game, polygon, expected));
+  if (source_reference.empty()) {
+    check(stitching::ScoreboardSelector::Save(game, polygon, expected));
+  } else if (canvas["persist_to_game"].as<bool>()) {
+    check(stitching::ScoreboardSelector::Save(game, polygon, expected, source_reference));
+  } else {
+    check(stitching::ScoreboardSelector::Save(source_reference, polygon, expected));
+  }
   YAML::Node result;
   for (const auto& point : polygon) {
     YAML::Node pair;
@@ -341,13 +364,14 @@ YAML::Node export_rink_map(const fs::path& game, const fs::path& request_path) {
 int main(int argc, char** argv) {
   try {
     fs::path game, destination, scoreboard_request, scoreboard_image, epoch_request, rink_map_request, session_config;
+    fs::path scoreboard_reference;
     size_t maximum_width = 0;
     for (int i = 1; i < argc; ++i) {
       const std::string argument = argv[i];
       if (argument == "--help") {
         std::cout << "Usage: hstream-calibration-export --game-dir DIR\n"
                      "  --destination NEW_DIR [--max-output-width N] [--config YAML]\n"
-                     "  --scoreboard-canvas PRIVATE_PNG\n"
+                     "  --scoreboard-canvas PRIVATE_PNG [--scoreboard-reference-game PRIVATE_DIR]\n"
                      "  --save-scoreboard REQUEST_YAML\n"
                      "  --validate-epoch REQUEST_YAML\n"
                      "  --rink-map REQUEST_YAML\n";
@@ -367,6 +391,8 @@ int main(int argc, char** argv) {
         epoch_request = argv[i];
       else if (argument == "--save-scoreboard")
         scoreboard_request = argv[i];
+      else if (argument == "--scoreboard-reference-game")
+        scoreboard_reference = fs::canonical(argv[i]);
       else if (argument == "--scoreboard-canvas")
         scoreboard_image = argv[i];
       else if (argument == "--max-output-width") {
@@ -387,6 +413,8 @@ int main(int argc, char** argv) {
     if (modes != 1)
       throw std::runtime_error(
           "Specify exactly one export destination, scoreboard operation, or epoch validation request");
+    if (!scoreboard_reference.empty() && scoreboard_image.empty())
+      throw std::runtime_error("A private scoreboard reference requires --scoreboard-canvas");
     if (!rink_map_request.empty()) {
       std::cout << export_rink_map(fs::canonical(game), rink_map_request) << '\n';
       return 0;
@@ -396,7 +424,7 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (!scoreboard_image.empty()) {
-      std::cout << scoreboard_canvas(fs::canonical(game), fs::absolute(scoreboard_image)) << '\n';
+      std::cout << scoreboard_canvas(fs::canonical(game), fs::absolute(scoreboard_image), scoreboard_reference) << '\n';
       return 0;
     }
     if (!scoreboard_request.empty()) {

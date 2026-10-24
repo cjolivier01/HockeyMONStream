@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/BackendPreview.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
+#include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
@@ -135,6 +136,51 @@ struct HStreamWindowTestAccess {
       }
       window.preview_tabs_->setCurrentIndex(0);
       QTest::qWait(1000);
+      if (qEnvironmentVariableIsSet("HM_UI_E2E_SCOREBOARD")) {
+        require(waitFor([&] { return window.pause_button_->isEnabled(); }), "Pause is available for scoreboard E2E");
+        window.pause_button_->click();
+        require(waitFor([&] { return window.pipeline_paused_; }), "Actual Program acknowledges pause");
+        require(window.pipeline_cooperative_pause_, "Actual Python pause retains the supervisor event loop");
+        const qint64 paused_position = window.playback_position_ns_;
+        QTest::qWait(500);
+        require(window.playback_position_ns_ == paused_position, "Acknowledged pause does not advance Program frames");
+        require(window.scoreboard_select_button_->isEnabled(), "Paused Program permits scoreboard selection");
+        window.scoreboard_select_button_->click();
+        require(
+            waitFor([&] { return window.scoreboard_selection_dialog_ != nullptr; }, 180000),
+            "Actual paused Program opens its source scoreboard selector");
+        auto* dialog = window.scoreboard_selection_dialog_;
+        require(dialog->loadError().isEmpty(), "Actual source canvas loads without using saved panorama dimensions");
+        auto* canvas =
+            static_cast<ScoreboardSelectionCanvas*>(dialog->findChild<QWidget*>("scoreboardSelectionCanvas"));
+        require(canvas && canvas->imageSize() == QSize(1920, 1080), "Selector uses the actual source dimensions");
+        auto* save = dialog->findChild<QPushButton*>("scoreboardSaveButton");
+        require(save && save->text() == "Apply to This Run", "Override selection clearly identifies its run scope");
+        canvas->setPoints({{10, 10}, {110, 10}, {110, 60}, {10, 60}});
+        if (!captures.isEmpty())
+          require(
+              dialog->grab().save(QDir(captures).filePath("source-scoreboard-paused.png")),
+              "Save paused source selector screenshot");
+        save->click();
+        require(
+            waitFor([&] { return window.scoreboard_selection_dialog_ == nullptr; }, 15000),
+            "Paused frame owner acknowledges the actual source selection");
+        require(window.pipeline_paused_, "Scoreboard save keeps the operator's pause");
+        const auto selected =
+            YAML::LoadFile(window.backend_preview_directory_->filePath("scoreboard-source/config.yaml").toStdString());
+        require(
+            selected["rink"]["scoreboard"]["perspective_polygon"][0][0].as<int>() == 10,
+            "Native source transaction persists the selected run polygon");
+        window.pause_button_->click();
+        require(
+            waitFor([&] { return !window.pipeline_paused_ && window.pending_process_resume_generation_ == 0; }),
+            "Actual Program resumes after selection");
+        require(
+            waitFor([&] { return window.playback_position_ns_ > paused_position; }, 15000),
+            "Resumed Program advances actual frames");
+        window.pause_button_->click();
+        require(waitFor([&] { return window.pipeline_paused_; }), "Pause again before Stop/publication");
+      }
     }
     window.stop_button_->click();
     require(window.pipeline_process_->state() == QProcess::NotRunning, "Actual Stop waits for every processing child");
@@ -215,6 +261,7 @@ struct HStreamWindowTestAccess {
   static void checkLifecycle(HStreamWindow& window, const QString& runner, const QString& frames) {
     window.show();
     for (const bool completed_receipt : {true, false}) {
+      window.resetPlaybackProgress(true);
       window.active_run_game_id_ = "game";
       window.active_hockeymon_program_ = true;
       window.backend_publication_complete_ = false;
@@ -252,6 +299,62 @@ struct HStreamWindowTestAccess {
       require(
           window.scoreboard_controls_status_->text() == "Scoreboard placement also applies to recordings and streams.",
           "Program readiness replaces the idle scoreboard helper text");
+      if (completed_receipt) {
+        window.pause_button_->click();
+        require(
+            waitFor([&] { return window.pipeline_paused_ && window.pipeline_cooperative_pause_; }),
+            "Cooperative pause is acknowledged by the backend");
+        window.pipeline_process_->write("@test-ping\n");
+        require(
+            waitFor([&] { return window.log_->toPlainText().contains("BACKEND_PONG"); }),
+            "Cooperative pause keeps the backend process responsive");
+        require(
+            window.scoreboard_select_button_->isEnabled(), "Cooperative HockeyMON pause permits scoreboard selection");
+        window.active_hockeymon_program_ = false;
+        window.pipeline_cooperative_pause_ = false;
+        window.updateScoreboardControls();
+        require(
+            !window.scoreboard_select_button_->isEnabled(),
+            "Native process pause still requires resume before selection");
+        window.active_hockeymon_program_ = true;
+        window.pipeline_cooperative_pause_ = true;
+        window.pause_button_->click();
+        require(
+            waitFor([&] { return !window.pipeline_paused_ && window.pending_process_resume_generation_ == 0; }),
+            "Cooperative resume is acknowledged by the backend");
+        const QString pinned = window.backend_preview_directory_->filePath("pinned-scoreboard.png");
+        QImage source(640, 360, QImage::Format_RGB32);
+        source.fill(Qt::magenta);
+        require(source.save(pinned), "Write private source canvas");
+        writeFile(window.backend_preview_directory_->filePath("spec.json"), "{\"session_id\":\"scoreboard-session\"}");
+        const QString url = "http://127.0.0.1:1/?token=" + QString(64, 'a');
+        const QJsonObject descriptor{
+            {"version", 1},
+            {"game_id", "game"},
+            {"session_id", "scoreboard-session"},
+            {"url", url},
+            {"image_path", pinned},
+            {"points", QJsonArray{}},
+            {"scope", "run"}};
+        writeFile(
+            window.backend_preview_directory_->filePath("scoreboard-selection.json"),
+            QJsonDocument(descriptor).toJson());
+        window.handleScoreboardSelectorOutput("Scoreboard selector: " + url);
+        require(
+            window.scoreboard_selection_dialog_ && window.scoreboard_selection_dialog_->loadError().isEmpty(),
+            "Shared scoreboard loads its private canvas without saved game/s.png");
+        auto* canvas = static_cast<ScoreboardSelectionCanvas*>(
+            window.scoreboard_selection_dialog_->findChild<QWidget*>("scoreboardSelectionCanvas"));
+        require(canvas->imageSize() == QSize(640, 360), "Shared selector shows private source dimensions");
+        require(
+            window.scoreboard_selection_dialog_->findChild<QPushButton*>("scoreboardSaveButton")->text() ==
+                "Apply to This Run",
+            "A source override exposes run-local selection scope");
+        window.scoreboard_selection_dialog_->closeAfterBackendCompletion();
+        require(waitFor([&] { return window.scoreboard_selection_dialog_ == nullptr; }), "Close fixture selector");
+        window.scoreboard_selector_url_.clear();
+        window.scoreboard_reselect_waiting_ = false;
+      }
       window.preview_tabs_->setCurrentIndex(1);
       require(
           waitFor([&] {
@@ -500,6 +603,14 @@ for line in sys.stdin:
         print(f'HSTREAM_PREVIEW channel={channel} status={status} generation={generation} message=shared preview', flush=True)
         if channel != 'none':
             print(f'HSTREAM_PREVIEW channel={channel} status=ready generation={generation} message=first frame resolution=320x180', flush=True)
+    elif fields[0] == '@process-pause':
+        print(f'HSTREAM_PROCESS_PAUSE status=prepared generation={fields[1]} mode=cooperative', flush=True)
+    elif fields[0] == '@process-resume':
+        print(f'HSTREAM_PROCESS_PAUSE status=resumed generation={fields[1]}', flush=True)
+    elif fields[0] == '@reset-progress-rate':
+        print(f'HSTREAM_PROGRESS status=reset generation={fields[1]}', flush=True)
+    elif fields[0] == '@test-ping':
+        print('BACKEND_PONG', flush=True)
     elif fields[0] in ('@test-finish', 'q'):
         if os.environ['TEST_RECEIPT'] == '1':
             print('HM_BACKEND_PUBLICATION ' + json.dumps({'version': 1, 'game_id': 'game', 'status': 'complete', 'artifacts': []}), flush=True)

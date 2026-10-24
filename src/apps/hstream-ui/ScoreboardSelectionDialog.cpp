@@ -532,6 +532,15 @@ QString ScoreboardSelectionDialog::loadError() const {
   return load_error_;
 }
 
+void ScoreboardSelectionDialog::setRunScopedSelection() {
+  run_scoped_ = true;
+  setWindowTitle("Scoreboard selection — current run");
+  save_button_->setText("Apply to This Run");
+  set_control_help(
+      save_button_, "Apply these corners to the current source override. The saved game's selection is preserved.");
+  set_control_help(no_scoreboard_button_, "Disable the scoreboard for this source override only.");
+}
+
 void ScoreboardSelectionDialog::closeAfterBackendCompletion() {
   backend_completed_ = true;
   if (pending_reply_)
@@ -647,7 +656,8 @@ void ScoreboardSelectionDialog::buildUi() {
     QMessageBox confirmation(
         QMessageBox::Question,
         "Confirm no scoreboard",
-        "Mark this game as having no scoreboard? The scoreboard overlay will be disabled.",
+        run_scoped_ ? "Disable the scoreboard for this source override only?"
+                    : "Mark this game as having no scoreboard? The scoreboard overlay will be disabled.",
         QMessageBox::Yes | QMessageBox::No,
         this);
     confirmation.setObjectName("scoreboardNoScoreboardConfirmation");

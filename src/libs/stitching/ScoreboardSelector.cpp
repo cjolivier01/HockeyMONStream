@@ -181,7 +181,10 @@ absl::StatusOr<std::string> configured_stitched_output_generation(const YAML::No
 }
 
 bool has_single_source(const YAML::Node& config) {
-  const auto videos = config["game"]["videos"];
+  const auto game = config["game"];
+  if (!game.IsMap())
+    return false;
+  const auto videos = game["videos"];
   if (!videos.IsMap())
     return false;
   size_t playlists = 0;
@@ -199,6 +202,39 @@ bool has_single_source(const YAML::Node& config) {
     }
   }
   return playlists == 1;
+}
+
+absl::StatusOr<std::vector<fs::path>> single_source_paths(const YAML::Node& config, const fs::path& directory) {
+  std::vector<fs::path> paths;
+  if (!has_single_source(config))
+    return paths;
+  try {
+    for (const auto& entry : config["game"]["videos"]) {
+      const auto values = entry.second;
+      if (!values || values.IsNull())
+        continue;
+      const auto append = [&](const YAML::Node& value) -> absl::Status {
+        const fs::path path(value.as<std::string>());
+        if (path.empty())
+          return absl::OkStatus();
+        std::error_code error;
+        auto resolved = fs::weakly_canonical(path.is_absolute() ? path : directory / path, error);
+        if (error)
+          return absl::FailedPreconditionError("Scoreboard source is unavailable: " + path.string());
+        paths.push_back(std::move(resolved));
+        return absl::OkStatus();
+      };
+      if (values.IsScalar()) {
+        HM_RETURN_IF_ERROR(append(values));
+      } else {
+        for (const auto& value : values)
+          HM_RETURN_IF_ERROR(append(value));
+      }
+    }
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid scoreboard source ownership: " + std::string(error.what()));
+  }
+  return paths;
 }
 
 std::chrono::milliseconds client_lifetime() {
@@ -592,10 +628,27 @@ absl::StatusOr<ScoreboardSelector::Polygon> ScoreboardSelector::ValidateAndOrder
   return ordered;
 }
 
+absl::StatusOr<bool> ScoreboardSelector::SameSingleSource(const fs::path& game_dir, const fs::path& reference_dir) {
+  try {
+    const auto game = YAML::LoadFile((game_dir / "config.yaml").string());
+    const auto reference = YAML::LoadFile((reference_dir / "config.yaml").string());
+    std::vector<fs::path> game_sources, reference_sources;
+    HM_ASSIGN_OR_RETURN(game_sources, single_source_paths(game, game_dir));
+    HM_ASSIGN_OR_RETURN(reference_sources, single_source_paths(reference, reference_dir));
+    return !game_sources.empty() && game_sources == reference_sources;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Cannot read scoreboard source ownership: " + std::string(error.what()));
+  }
+}
+
 absl::Status ScoreboardSelector::Save(
     const fs::path& game_dir,
     const Polygon& polygon,
-    const std::optional<CanvasGeneration>& expected_generation) {
+    const std::optional<CanvasGeneration>& expected_generation,
+    const fs::path& single_source_reference) {
+  if (!single_source_reference.empty() &&
+      (!expected_generation.has_value() || !expected_generation->hugin_generation.empty()))
+    return absl::InvalidArgumentError("A private source reference requires an unstitched canvas generation");
   std::unique_ptr<HuginProject::ArtifactLock> hugin_lock;
   if (expected_generation.has_value() && !expected_generation->hugin_generation.empty()) {
     auto lock = HuginProject::RecoverAndLock(game_dir);
@@ -613,6 +666,19 @@ absl::Status ScoreboardSelector::Save(
   auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
     return config_lock.status();
+  std::unique_ptr<GameConfigTransactionLock> reference_lock;
+  if (!single_source_reference.empty()) {
+    if (fs::equivalent(game_dir, single_source_reference))
+      return absl::InvalidArgumentError("A source reference must be private to the run");
+    auto lock = GameConfigTransactionLock::Acquire(single_source_reference);
+    if (!lock.ok())
+      return lock.status();
+    bool same_sources = false;
+    HM_ASSIGN_OR_RETURN(same_sources, SameSingleSource(game_dir, single_source_reference));
+    if (!same_sources)
+      return absl::AbortedError("Saved game sources changed; reopen the scoreboard selector");
+    reference_lock = std::move(*lock);
+  }
   const fs::path config_path = game_dir / "config.yaml";
   YAML::Node config(YAML::NodeType::Map);
   try {
@@ -642,7 +708,8 @@ absl::Status ScoreboardSelector::Save(
       if (expected_generation->hugin_generation.empty() &&
           (!expected_generation->stitched_output_generation.empty() || !has_single_source(config)))
         return absl::AbortedError("Unstitched scoreboard canvas requires exactly one source playlist");
-      auto current_snapshot_identity = snapshot_file_identity(game_dir / "s.png");
+      auto current_snapshot_identity =
+          snapshot_file_identity((single_source_reference.empty() ? game_dir : single_source_reference) / "s.png");
       if (!current_snapshot_identity.ok())
         return current_snapshot_identity.status();
       if (!expected_generation->snapshot_identity.empty() &&

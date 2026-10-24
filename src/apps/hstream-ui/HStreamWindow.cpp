@@ -6715,7 +6715,9 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   scoreboard_select_button_ = new QPushButton(action_icon(ActionIcon::Crop), "Select scoreboard…");
   scoreboard_select_button_->setObjectName("selectScoreboardButton");
   scoreboard_select_button_->setToolTip(
-      "Select or reselect the scoreboard corners during Program playback. Resume playback first if paused.");
+      backend_.isHockeyMon()
+          ? "Select or reselect the scoreboard corners during Program playback, including while paused."
+          : "Select or reselect the scoreboard corners during Program playback. Resume playback first if paused.");
   scoreboard_position_combo_ = new QComboBox();
   scoreboard_position_combo_->setObjectName("scoreboardPositionCombo");
   scoreboard_position_combo_->addItem("Upper left", "upper-left");
@@ -11885,6 +11887,7 @@ void HStreamWindow::startPipeline() {
   pipeline_uses_process_group_ = false;
 #endif
   pipeline_paused_ = false;
+  pipeline_cooperative_pause_ = false;
   pending_process_pause_generation_ = 0;
   pending_process_resume_generation_ = 0;
   pipeline_stop_requested_ = false;
@@ -11972,7 +11975,7 @@ void HStreamWindow::pauseOrResumePipeline() {
     return;
   }
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
-  if (::kill(target, SIGCONT) != 0) {
+  if (!pipeline_cooperative_pause_ && ::kill(target, SIGCONT) != 0) {
     appendLog("failed to signal pipeline process for pause/resume");
     return;
   }
@@ -12041,6 +12044,7 @@ void HStreamWindow::stopPipeline() {
   if (pipeline_paused_ && pid > 0) {
     ::kill(target, SIGCONT);
     pipeline_paused_ = false;
+    pipeline_cooperative_pause_ = false;
   }
 #endif
   // The Python supervisor must let its worker drain archives and telemetry.
@@ -12240,6 +12244,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
       false,
       "archive-program-4k");
   pipeline_paused_ = false;
+  pipeline_cooperative_pause_ = false;
   pending_process_pause_generation_ = 0;
   pending_process_resume_generation_ = 0;
   pipeline_uses_process_group_ = false;
@@ -12469,6 +12474,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   if (calibration_pending_ && !calibration_dialog_failed_)
     failStitchingCalibration(QString("The calibration process could not continue: %1").arg(error_message));
   pipeline_paused_ = false;
+  pipeline_cooperative_pause_ = false;
   pending_process_pause_generation_ = 0;
   pending_process_resume_generation_ = 0;
   pending_playback_seek_generation_ = 0;
@@ -12691,7 +12697,7 @@ bool HStreamWindow::resumeProcessPause(quint64 generation) {
 
 bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
   static const QRegularExpression prepared(
-      QStringLiteral("^HSTREAM_PROCESS_PAUSE status=(prepared|resumed) generation=([0-9]+)$"));
+      QStringLiteral("^HSTREAM_PROCESS_PAUSE status=(prepared|resumed) generation=([0-9]+)(?: mode=(cooperative))?$"));
   if (!line.startsWith("HSTREAM_PROCESS_PAUSE ")) {
     return false;
   }
@@ -12712,7 +12718,8 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
 #ifdef Q_OS_UNIX
   const qint64 pid = pipeline_process_->processId();
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
-  if (pid <= 0 || ::kill(target, SIGSTOP) != 0) {
+  pipeline_cooperative_pause_ = active_hockeymon_program_ && match.captured(3) == "cooperative";
+  if (pid <= 0 || (!pipeline_cooperative_pause_ && ::kill(target, SIGSTOP) != 0)) {
     if (!resumeProcessPause(generation)) {
       stopPipeline();
       return true;
@@ -16143,7 +16150,8 @@ void HStreamWindow::updateScoreboardControls() {
   const bool available = !isArchiveFinalizing() && !isCalibrationRun() && !calibration_pending_ &&
       pending_scoreboard_property_.isEmpty() && pending_playback_seek_generation_ == 0 &&
       playback_seek_recovery_generation_ == 0 && pending_process_pause_generation_ == 0 &&
-      pending_process_resume_generation_ == 0 && (!running || (!pipeline_paused_ && !pipeline_stop_requested_));
+      pending_process_resume_generation_ == 0 &&
+      (!running || ((!pipeline_paused_ || pipeline_cooperative_pause_) && !pipeline_stop_requested_));
   const bool live = running && scoreboard_runtime_ready_ && active_run_game_id_ == game_id_edit_->text().trimmed();
   scoreboard_select_button_->setEnabled(scoreboard_selection_dialog_ || (available && live && !selecting));
   scoreboard_position_combo_->setEnabled(
@@ -16157,7 +16165,7 @@ void HStreamWindow::updateScoreboardControls() {
 
 bool HStreamWindow::sendScoreboardCommand(const QString& property, const QString& value) {
   if (!pipeline_process_ || pipeline_process_->state() != QProcess::Running || !scoreboard_runtime_ready_ ||
-      pipeline_paused_ || !pending_scoreboard_property_.isEmpty())
+      (pipeline_paused_ && !pipeline_cooperative_pause_) || !pending_scoreboard_property_.isEmpty())
     return false;
   const QByteArray command = QString("@set-property playcropper0 %1=%2\n").arg(property, value).toUtf8();
   if (pipeline_process_->write(command) != command.size())
@@ -16282,8 +16290,51 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     QVector<QPoint> initial_points;
     const QString game_dir = gameDirectory(active_run_game_id_);
     const QString config_path = QDir(game_dir).filePath("config.yaml");
+    QString image_path = QDir(game_dir).filePath("s.png");
+    bool run_scoped = false;
+    if (active_hockeymon_program_) {
+      try {
+        if (!backend_preview_directory_)
+          throw std::runtime_error("The scoreboard backend session is unavailable");
+        const auto read_object = [&](const QString& name) {
+          QFile file(backend_preview_directory_->filePath(name));
+          if (QFileInfo(file).isSymLink() || !file.open(QIODevice::ReadOnly) || file.size() > 65536)
+            throw std::runtime_error("Cannot read the scoreboard session descriptor");
+          const auto document = QJsonDocument::fromJson(file.readAll());
+          if (!document.isObject())
+            throw std::runtime_error("Invalid scoreboard session descriptor");
+          return document.object();
+        };
+        const auto descriptor = read_object("scoreboard-selection.json");
+        const auto spec = read_object("spec.json");
+        if (descriptor.value("version").toInt() != 1 || descriptor.value("url").toString() != url_text ||
+            descriptor.value("game_id").toString() != active_run_game_id_ ||
+            descriptor.value("session_id").toString().isEmpty() ||
+            descriptor.value("session_id") != spec.value("session_id"))
+          throw std::runtime_error("Scoreboard selection belongs to a different backend session");
+        const QFileInfo image(descriptor.value("image_path").toString());
+        if (!image.isFile() || image.isSymLink() ||
+            image.canonicalPath() != QFileInfo(backend_preview_directory_->path()).canonicalFilePath())
+          throw std::runtime_error("Scoreboard image is not owned by this backend session");
+        image_path = image.canonicalFilePath();
+        const auto points = descriptor.value("points").toArray();
+        if (!points.isEmpty() && points.size() != 4)
+          throw std::runtime_error("Invalid backend scoreboard points");
+        for (const auto& value : points) {
+          const auto pair = value.toArray();
+          if (pair.size() != 2 || !pair[0].isDouble() || !pair[1].isDouble())
+            throw std::runtime_error("Invalid backend scoreboard point");
+          initial_points.push_back(QPoint(pair[0].toInt(), pair[1].toInt()));
+        }
+        run_scoped = descriptor.value("scope").toString() == "run";
+      } catch (const std::exception& exception) {
+        appendLog(QString("Cannot open the current scoreboard canvas: %1").arg(exception.what()));
+        stopPipeline();
+        return;
+      }
+    }
     try {
-      if (QFileInfo(config_path).isFile()) {
+      if (!active_hockeymon_program_ && QFileInfo(config_path).isFile()) {
         const YAML::Node polygon =
             YAML::LoadFile(config_path.toStdString())["rink"]["scoreboard"]["perspective_polygon"];
         bool disabled = polygon && polygon.IsSequence() && polygon.size() == 4;
@@ -16319,7 +16370,9 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
       scoreboard_selection_dialog_ = nullptr;
     }
     auto* dialog =
-        new ScoreboardSelectionDialog(QUrl(url_text), QDir(game_dir).filePath("s.png"), initial_points, this);
+        new ScoreboardSelectionDialog(QUrl(url_text), image_path, initial_points, this);
+    if (run_scoped)
+      dialog->setRunScopedSelection();
     dialog->loadProposal();
     dialog->cancellationFailed = [this](const QString& reason) {
       appendLog(QString("scoreboard selector cancellation failed; stopping pipeline: %1").arg(reason));
