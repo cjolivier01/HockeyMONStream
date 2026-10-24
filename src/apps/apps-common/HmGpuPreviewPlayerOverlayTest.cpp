@@ -17,6 +17,7 @@ namespace {
 namespace pa = hm::player_analytics;
 namespace preview = hm::preview_overlay;
 namespace gpu = hm::gpu_preview;
+std::string rink_status_messages;
 
 void Check(bool condition, const char* message) {
   if (!condition)
@@ -174,9 +175,35 @@ int main(int argc, char** argv) {
       Check(stale.analytics_command_count == 0, "Frame without calibration identity leaked mini-map");
     }
     g_object_set(sink, "channel", "program", nullptr);
+    const auto original_print = g_set_print_handler(+[](const gchar* message) { rink_status_messages += message; });
+    gpu::configure_rink_mini_map(sink, map);
+    gpu::inspect_preview_overlays_for_test(sink, fresh);
+    Check(rink_status_messages.find("status=ready") != std::string::npos, "Matching frame did not report readiness");
+    g_usleep(G_USEC_PER_SEC);
     Check(
         gpu::inspect_preview_overlays_for_test(sink, missing).analytics_command_count == 0,
         "Mini-map without Program geometry must fail closed");
+    Check(
+        rink_status_messages.find(
+            "status=unavailable message=The preview frame is missing its Program crop geometry") != std::string::npos,
+        "Missing Program transform retained the previous ready status");
+    auto* no_batch = gst_buffer_new();
+    auto* list = gst_buffer_get_nvds_batch_meta(fresh)->frame_meta_list;
+    auto* saved_frame = list->data;
+    for (auto* no_metadata : {no_batch, fresh}) {
+      if (no_metadata == fresh)
+        list->data = nullptr;
+      rink_status_messages.clear();
+      gpu::configure_rink_mini_map(sink, map);
+      Check(
+          gpu::inspect_preview_overlays_for_test(sink, no_metadata).analytics_command_count == 0 &&
+              rink_status_messages.find("status=unavailable message=The preview frame is missing its frame metadata") !=
+                  std::string::npos,
+          "Missing frame metadata did not explain suppressed mini-map drawing");
+    }
+    list->data = saved_frame;
+    gst_buffer_unref(no_batch);
+    g_set_print_handler(original_print);
     gpu::configure_rink_mini_map(sink, nullptr);
     Check(
         gpu::inspect_preview_overlays_for_test(sink, fresh).analytics_command_count == 0,

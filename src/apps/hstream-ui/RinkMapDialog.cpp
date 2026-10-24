@@ -1151,12 +1151,16 @@ void RinkMapDialog::startGuide() {
       std::vector<GuideStep> steps;
       std::set<size_t> assigned;
       for (const auto& feature : recipe) {
+        const bool line_feature =
+            std::any_of(rink::RinkMapFeatures().begin(), rink::RinkMapFeatures().end(), [&](const auto& definition) {
+              return feature == definition.id && definition.line;
+            });
         int row = -1, item_cost = 3;
         for (size_t i = 0; i < state_.document.observations.size(); ++i) {
           const auto& mark = state_.document.observations[i];
           if (assigned.count(i))
             continue;
-          const bool candidate = mark.line && mark.feature.empty() &&
+          const bool candidate = line_feature && mark.line && mark.feature.empty() &&
               ((feature.find("blue-") == 0 && mark.label == "Blue Line") ||
                (feature.find("goal-") == 0 && mark.label == "Goal Line"));
           const int candidate_cost = mark.feature == feature ? (mark.enabled ? 0 : 1) : candidate ? 2 : 4;

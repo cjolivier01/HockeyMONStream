@@ -441,6 +441,42 @@ int main(int argc, char** argv) {
   rink::RinkMapDocument document;
   document.generation = snapshot->generation;
   document.calibration_revision = snapshot->revision.toStdString();
+  {
+    auto suggestions = document;
+    for (int camera = 0; camera < 2; ++camera) {
+      rink::RinkMapObservation line;
+      line.camera = camera;
+      line.label = "Goal Line";
+      line.line = line.automatic = true;
+      const double x = (camera ? 1 : -1) * (suggestions.layout.length / 2 - suggestions.layout.goal_inset);
+      line.pixels = {sourcePoint({x, -6}), sourcePoint({x, 6})};
+      suggestions.observations.push_back(line);
+    }
+    const auto prepared = UpdateRinkMap(*snapshot, suggestions, false, {});
+    if (!expect(
+            prepared.ok() && SaveRinkMap(*snapshot, prepared->document).ok(), "Save unassigned goal-line suggestions"))
+      return 1;
+    RinkMapDialog guided(game.path());
+    guided.show();
+    if (!expect(idle(guided), "Suggested goal-line editor opens"))
+      return 1;
+    guided.findChild<QPushButton*>("rinkMapGuideStart")->click();
+    auto* apply = guided.findChild<QPushButton*>("rinkMapGuideApply");
+    auto* table = guided.findChild<QTableWidget*>("rinkMapObservationsTable");
+    for (int row = 0; row < 2; ++row) {
+      ok &= expect(
+          apply->isVisible() && !apply->text().contains("boards"),
+          "A detected line is never offered as a corner point");
+      apply->click();
+      ok &= expect(idle(guided), "Assigned line is validated before the next prompt");
+      const auto* identity = qobject_cast<QComboBox*>(table->cellWidget(row, 1));
+      ok &= expect(
+          identity && identity->currentData() == (row ? "goal-right-line" : "goal-left-line") &&
+              guided.findChild<QPushButton*>("saveRinkMapButton")->isEnabled(),
+          "Guided goal-line assignment remains saveable");
+    }
+    ok &= expect(SaveRinkMap(*snapshot, document).ok(), "Restore the empty fixture after suggested-line review");
+  }
   rink::RinkMapObservation centre;
   centre.feature = "center-line";
   centre.line = true;
