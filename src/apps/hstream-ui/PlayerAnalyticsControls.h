@@ -44,7 +44,7 @@ class PlayerAnalyticsControls : public QWidget {
   void setLiveDrawingOnly(bool live);
 
  private:
-  enum class Kind { kFlag, kPath, kRoi, kModel, kRate };
+  enum class Kind { kFlag, kPath, kRoi, kModel, kRate, kSide };
   struct Field {
     QString key;
     QString native_alias;

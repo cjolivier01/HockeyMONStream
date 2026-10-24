@@ -82,7 +82,10 @@ Team affiliation is fitted per stream, not classified: two centroids over the
 embeddings this game has produced, ranked dark-vs-light by mean crop lightness.
 `game.home_is_dark` maps to `pipeline.player-analytics.home-is-dark` and names
 the two groups; without it the overlay reads DARK and LIGHT, which is unnamed
-but never wrong.
+but never wrong. **Home sweater** in the Players tab writes it: dark, light,
+or not set. Clearing it writes an explicit null rather than removing the key,
+and it never reaches through to erase a native `home-is-dark`, which still
+wins where one exists.
 
 The ranking is taken on the first balanced fit whose groups differ by
 `min_lightness_gap`, and a later fit can take it back. Early crops can catch

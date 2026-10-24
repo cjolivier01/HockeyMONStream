@@ -213,9 +213,19 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
   addFlag("team.enabled", kAnalytics + "team.enable", "playerTeamEnable", "Label home and away", compute);
   addModel(kAnalytics + "team.model", "playerTeamModel", "Team model", compute);
   addPath(kAnalytics + "team.bundle", "playerTeamBundle", true, compute);
+  auto* home_side = new QComboBox();
+  home_side->setObjectName("playerHomeSide");
+  home_side->addItem("Not set (badges read DARK and LIGHT)", QString());
+  home_side->addItem("Home wears dark", QString("true"));
+  home_side->addItem("Home wears light", QString("false"));
+  static_cast<QFormLayout*>(compute->layout())->addRow("Home sweater", home_side);
+  fields_.push_back({"game.home_is_dark", kAnalytics + "home-is-dark", Kind::kSide, home_side, QString()});
+  connect(home_side, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, index = fields_.size() - 1] {
+    changed(index);
+  });
   auto* team_help = new QLabel(
-      "Teams are split by appearance within this game, so the two groups read DARK and LIGHT until "
-      "game.home_is_dark says which sweater the home side wore. The split needs a few hundred crops "
+      "Teams are split by appearance within this game, so the two groups read DARK and LIGHT until the home "
+      "sweater above says which side wore which. The split needs a few hundred crops "
       "before the first labels appear, and a track stops being sampled once its side is decided.");
   team_help->setWordWrap(true);
   static_cast<QFormLayout*>(compute->layout())->addRow(team_help);
@@ -335,7 +345,7 @@ void PlayerAnalyticsControls::setChangedCallback(std::function<void()> callback)
 QVariant PlayerAnalyticsControls::value(const Field& field) const {
   if (field.kind == Kind::kFlag)
     return static_cast<QCheckBox*>(field.editor)->isChecked();
-  if (field.kind == Kind::kRoi || field.kind == Kind::kModel)
+  if (field.kind == Kind::kRoi || field.kind == Kind::kModel || field.kind == Kind::kSide)
     return static_cast<QComboBox*>(field.editor)->currentData();
   return static_cast<QLineEdit*>(field.editor)->text();
 }
@@ -379,6 +389,16 @@ QVariant PlayerAnalyticsControls::read(const Field& field, const std::vector<YAM
       return field.kind == Kind::kRoi ? QString("bbox") : field.kind == Kind::kRate ? QString("10") : QString();
     if (!resolved.IsScalar())
       throw std::invalid_argument("Expected a scalar path/mode");
+    if (field.kind == Kind::kSide) {
+      // The configurator writes mapped flags as 1/0, so read every spelling a
+      // layer may hold rather than only yaml-cpp's own booleans.
+      const std::string raw = resolved.Scalar();
+      if (raw == "1" || raw == "true" || raw == "yes" || raw == "on" || raw == "True")
+        return QString("true");
+      if (raw == "0" || raw == "false" || raw == "no" || raw == "off" || raw == "False")
+        return QString("false");
+      throw std::invalid_argument("Expected a boolean home sweater");
+    }
     return QString::fromStdString(resolved.as<std::string>());
   } catch (const std::exception&) {
     *valid = false;
@@ -479,9 +499,20 @@ QString PlayerAnalyticsControls::applyChanges(YAML::Node& destination) const {
     for (const auto& field : fields_) {
       if (!changed(field))
         continue;
-      const YAML::Node selected = field.kind == Kind::kFlag ? YAML::Node(value(field).toBool())
-                                                            : YAML::Node(value(field).toString().toStdString());
+      YAML::Node selected = field.kind == Kind::kFlag ? YAML::Node(value(field).toBool())
+                                                      : YAML::Node(value(field).toString().toStdString());
+      if (field.kind == Kind::kSide) {
+        // Unset is a value here, not an omission: it is how the overlay is
+        // told nobody named the sides, and it must survive a save.
+        const QString side = value(field).toString();
+        selected = side.isEmpty() ? YAML::Node(YAML::NodeType::Null) : YAML::Node(side == "true");
+      }
       Set(staged, field.key.split('.'), selected);
+      // Clearing the home sweater says nobody named the sides. It must not
+      // reach through and erase an explicit native setting, which still wins
+      // and which the operator did not touch here.
+      if (field.kind == Kind::kSide && selected.IsNull())
+        continue;
       // Preserve explicit native settings on unrelated saves. On an edit only,
       // reconcile the conflicting same-destination leaf with the canonical choice.
       if (!field.native_alias.isEmpty() &&
@@ -512,7 +543,9 @@ YAML::Node PlayerAnalyticsControls::effectiveConfig() const {
     map(QString("team.") + canonical, kAnalytics + "team." + native);
   map("game.home_is_dark", kAnalytics + "home-is-dark");
   for (const auto& field : fields_)
-    if (!field.native_alias.isEmpty())
+    // kSide is not a flag and the map above already resolved it with the
+    // layer precedence an explicit native setting relies on.
+    if (!field.native_alias.isEmpty() && field.kind != Kind::kSide)
       Set(effective, field.native_alias.split('.'), YAML::Node(value(field).toBool()));
   return effective;
 }
@@ -524,6 +557,14 @@ QStringList PlayerAnalyticsControls::arguments() const {
     // cropper private-property precedence. Never synthesize an off override.
     if (field.key == "plot.plot_individual_player_tracking" && !changed(field))
       continue;
+    if (field.kind == Kind::kSide) {
+      const QString side = value(field).toString();
+      if (side.isEmpty())
+        continue;
+      append(field.key, side);
+      append(field.native_alias, side);
+      continue;
+    }
     if (field.kind == Kind::kFlag) {
       const QString text = value(field).toBool() ? "true" : "false";
       append(field.key, text);

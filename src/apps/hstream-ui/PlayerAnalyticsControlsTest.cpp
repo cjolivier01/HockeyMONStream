@@ -609,12 +609,48 @@ void LiveDrawingSelection() {
       "Compute choices come back when no run owns the pipeline");
 }
 
+// Which sweater the home side wore is the only thing that turns DARK/LIGHT
+// into HOME/AWAY, and it has to be sayable in the app rather than by hand.
+void HomeSweater() {
+  PlayerAnalyticsControls widget;
+  auto* side = Control<QComboBox>(widget, "playerHomeSide");
+  Require(side->currentData().toString().isEmpty(), "Nobody has named the sides by default");
+
+  YAML::Node game;
+  side->setCurrentIndex(side->findData(QString("true")));
+  Require(widget.applyChanges(game).isEmpty(), "Saving the home sweater failed");
+  Require(game["game"]["home_is_dark"].as<bool>(), "Home wearing dark must save as true");
+
+  PlayerAnalyticsControls reloaded;
+  reloaded.loadConfig(YAML::Node(), YAML::Node(), game, QDir::currentPath());
+  Require(
+      Control<QComboBox>(reloaded, "playerHomeSide")->currentData().toString() == "true",
+      "The saved home sweater must come back");
+
+  // The configurator writes the mapped native flag as 1/0.
+  YAML::Node native;
+  native["pipeline"]["player-analytics"]["home-is-dark"] = 0;
+  PlayerAnalyticsControls mapped;
+  mapped.loadConfig(YAML::Node(), native, YAML::Node(), QDir::currentPath());
+  Require(
+      Control<QComboBox>(mapped, "playerHomeSide")->currentData().toString() == "false",
+      "A native 1/0 home sweater must be understood");
+
+  YAML::Node cleared;
+  Control<QComboBox>(reloaded, "playerHomeSide")->setCurrentIndex(0);
+  Require(reloaded.applyChanges(cleared).isEmpty(), "Clearing the home sweater failed");
+  Require(
+      cleared["game"]["home_is_dark"].IsNull(),
+      "Clearing it must say nobody named the sides rather than dropping the key");
+}
+
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
   QTemporaryDir directory;
   Require(directory.isValid(), "Cannot create test directory");
   Disabled();
   LiveDrawingSelection();
+  HomeSweater();
   PoseDrawingAndRate();
   ModelChoices(directory.path());
   LegacyProgramBoxes(directory.path());
