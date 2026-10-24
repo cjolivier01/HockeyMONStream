@@ -171,6 +171,14 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
     if (config.action.enabled && !config.pose.every_frame && config.pose.rate_hz < 10)
       throw std::invalid_argument(
           "action recognition requires pose.rate-hz >= 10 or fps for the causal sample profile");
+    if (config.action.enabled && config.pose.model != "custom" && config.action.model != "custom") {
+      const auto* pose = FindModel("pose", config.pose.model);
+      const auto* action = FindModel("action", config.action.model);
+      if (YAML::Load(pose->contract_json)["topology_id"].as<std::string>() !=
+          YAML::Load(action->contract_json)["topology_id"].as<std::string>())
+        throw std::invalid_argument(
+            "pose and action models must use the same joint layout; select both HARPET models for hockey actions");
+    }
     config.maximum_tracks = Limit(node, "max-tracks", kMaximumTracks, kMaximumTracks);
     config.maximum_due_rois = Limit(node, "max-due-rois", kMaximumDueRois, kMaximumDueRois);
     if (config.jersey.enabled && config.jersey_roi_mode == JerseyRoiMode::kPose && config.maximum_due_rois < 2)

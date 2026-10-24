@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string_view>
+#include <vector>
 
 namespace hm::player_analytics {
 
@@ -18,5 +19,6 @@ struct CatalogModel {
 
 std::string_view DefaultModelId(std::string_view feature);
 const CatalogModel* FindModel(std::string_view feature, std::string_view id);
+std::vector<const CatalogModel*> ModelsForFeature(std::string_view feature);
 
 } // namespace hm::player_analytics

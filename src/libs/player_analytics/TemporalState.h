@@ -126,11 +126,19 @@ class TeamConsensus {
   int current_{-1};
 };
 
-// Stores only normalized compact skeletons. Allocate per admitted action track,
-// never for pose-only/jersey-only runs. Dense model tensors are built on demand.
+// Stores compact skeletons (normalized COCO, pixel-space HARPET). Allocate per
+// admitted action track, never for pose-only/jersey-only runs. Dense model
+// tensors are built on demand.
 class ActionHistory {
  public:
   static constexpr size_t kTensorFloats = 2 * kActionSamples * kCocoJoints * 3;
+  explicit ActionHistory(PoseTopology topology = PoseTopology::kCoco17) : topology_(topology) {}
+  size_t tensor_floats() const noexcept {
+    return hockey() ? 1 * 3 * 18 * 3 : kTensorFloats;
+  }
+  uint64_t maximum_gap() const noexcept {
+    return hockey() ? 250000000ULL : kActionMaximumGap;
+  }
   bool Observe(uint64_t pts_ns, const Pose& pose, float metadata_width, float metadata_height) noexcept;
   bool ready(uint64_t now_ns) const noexcept;
   bool WriteTensor(uint64_t now_ns, float* output, size_t count) const noexcept;
@@ -142,6 +150,19 @@ class ActionHistory {
   void Reset() noexcept;
 
  private:
+  bool hockey() const noexcept {
+    return topology_ == PoseTopology::kHarpet18;
+  }
+  size_t sample_count() const noexcept {
+    return hockey() ? 3 : kActionSamples;
+  }
+  size_t joint_count() const noexcept {
+    return hockey() ? kHarpetJoints : kCocoJoints;
+  }
+  uint64_t sample_period() const noexcept {
+    return hockey() ? 166666667ULL : kActionSamplePeriod;
+  }
+  PoseTopology topology_;
   void Append(uint64_t pts_ns, const Pose& pose) noexcept;
   std::array<Pose, kActionSamples> samples_{};
   std::array<uint64_t, kActionSamples> times_{};
@@ -156,6 +177,7 @@ class ActionHistory {
 
 class ActionLabelState {
  public:
+  explicit ActionLabelState(PoseTopology topology = PoseTopology::kCoco17) : topology_(topology) {}
   bool Observe(
       uint64_t pts_ns,
       uint64_t window_start_ns,
@@ -166,6 +188,7 @@ class ActionLabelState {
   void Reset() noexcept;
 
  private:
+  PoseTopology topology_;
   ActionResult current_;
   uint64_t last_attempt_{kInvalidTime};
   int contender_{-1};

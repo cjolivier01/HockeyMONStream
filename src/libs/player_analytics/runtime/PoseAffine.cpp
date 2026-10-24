@@ -5,7 +5,9 @@
 
 namespace hm::player_analytics {
 
-absl::StatusOr<PoseAffine> MakePoseAffine(const ImageView& image, const PoseRoi& roi) {
+absl::StatusOr<PoseAffine> MakePoseAffine(const ImageView& image, const PoseRoi& roi, float padding) {
+  if (padding != 1.25F && padding != 3.5F)
+    return absl::InvalidArgumentError("unsupported pose crop padding");
   const auto& box = roi.metadata_box;
   for (float value : {box.left, box.top, box.width, box.height, roi.metadata_width, roi.metadata_height})
     if (!std::isfinite(value) || std::abs(value) > 1000000)
@@ -17,8 +19,8 @@ absl::StatusOr<PoseAffine> MakePoseAffine(const ImageView& image, const PoseRoi&
   const float scale_y = image.height / roi.metadata_height;
   const float center_x = (box.left + box.width * 0.5F) * scale_x;
   const float center_y = (box.top + box.height * 0.5F) * scale_y;
-  float width = box.width * scale_x * 1.25F;
-  float height = box.height * scale_y * 1.25F;
+  float width = box.width * scale_x * padding;
+  float height = box.height * scale_y * padding;
   if (width > height * 0.75F)
     height = width / 0.75F;
   else
@@ -44,11 +46,15 @@ absl::StatusOr<PoseAffine> MakePoseAffine(const ImageView& image, const PoseRoi&
   const float forward_scale_y = static_cast<float>(exact_scale_y);
   const float forward_x = static_cast<float>(kPoseInputWidth * 0.5 - center_x * exact_scale);
   const float forward_y = static_cast<float>(kPoseInputHeight * 0.5 - center_y * exact_scale_y);
+  // Match warpAffine's double-precision determinant inversion, including its
+  // rounding order. Independent reciprocals can straddle an interpolation-table
+  // boundary for large hockey crops, changing a few uint8 pixels.
+  const double inverse_determinant = 1.0 / (static_cast<double>(forward_scale) * forward_scale_y);
   PoseAffine result;
-  result.dx = 1.0 / forward_scale;
-  result.dy = 1.0 / forward_scale_y;
-  result.x0 = -forward_x / static_cast<double>(forward_scale);
-  result.y0 = -forward_y / static_cast<double>(forward_scale_y);
+  result.dx = forward_scale_y * inverse_determinant;
+  result.dy = forward_scale * inverse_determinant;
+  result.x0 = -forward_x * result.dx;
+  result.y0 = -forward_y * result.dy;
   result.surface_to_metadata_x = 1 / scale_x;
   result.surface_to_metadata_y = 1 / scale_y;
   return result;

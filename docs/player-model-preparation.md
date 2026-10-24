@@ -28,7 +28,8 @@ The initial supported profiles are RTMPose-M COCO17 (256×192), hockey PARSeq
 (100 samples, generic NTU60 labels). An NTU60 prediction is not a hockey shot/pass/check
 label. The action timeline is causal, 10 Hz over 9.9 seconds; published ten-clip benchmark
 accuracy does not describe this deployment. HARPET18 has a different skeleton and is
-not accepted by this initial COCO17 profile.
+not accepted by this COCO17 profile; it has its own paired pose and action
+selections under [Hockey exports](#hockey-exports) below.
 
 ## Export environment
 
@@ -175,3 +176,19 @@ preparation checks complete coverage and replays every case. Original minimum/
 optimum/maximum batch fixture names remain stable. Older exports without row-count
 provenance remain usable, but should be regenerated when their validation NPZ had
 more rows than the maximum batch. Existing immutable bundles are unchanged.
+
+## Hockey exports
+
+HockeyMON's `scripts/export_hockey_models.py` exports the fine-tuned HARPET18
+pose and four-action models. Its `export.json` and validation references work
+with this repository's existing `prepare_player_models.py build` command. The
+legacy `export` subcommand still exports its original pinned generic models.
+Hockey export checks every deduplicated validation input; native build replays
+those references at dynamic batches including 1, 2 and 8.
+
+Select the paired hockey catalog entries in the UI, or use
+`configs/player-analytics/hockey-example.yaml`. The native cache downloads the
+SHA-pinned ONNX and prepares a local engine as for the existing catalog. Do not
+copy GPU-specific engines between machines. Pose padding, joint ordering, action
+normalization and timing are fixed by the manifest and cannot be interchanged
+with COCO/NTU60. See [the runtime contract](player-analytics-runtime.md#hockey-pose-and-actions).

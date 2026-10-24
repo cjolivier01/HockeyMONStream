@@ -80,7 +80,8 @@ JerseyCropSelection MakeJerseyCrop(
     float metadata_width,
     float metadata_height,
     JerseyRoiMode mode,
-    const Pose* pose) noexcept {
+    const Pose* pose,
+    PoseTopology topology) noexcept {
   JerseyCropSelection result;
   if (image.width < 1 || image.height < 1 || image.width > 65536 || image.height > 65536 ||
       !Coordinate(metadata_width) || !Coordinate(metadata_height) || metadata_width <= 0 || metadata_height <= 0 ||
@@ -95,11 +96,13 @@ JerseyCropSelection MakeJerseyCrop(
     bottom = box.top + box.height * 0.95;
   } else if (mode == JerseyRoiMode::kPose) {
     result.reason = JerseyCropReason::kInsufficientPose;
-    if (!pose)
+    if (!pose || (topology != PoseTopology::kCoco17 && topology != PoseTopology::kHarpet18))
       return result;
     left = top = std::numeric_limits<double>::infinity();
     right = bottom = -std::numeric_limits<double>::infinity();
-    for (size_t joint : {5U, 6U, 11U, 12U}) {
+    const std::array<size_t, 4> joints =
+        topology == PoseTopology::kHarpet18 ? std::array<size_t, 4>{12, 13, 2, 3} : std::array<size_t, 4>{5, 6, 11, 12};
+    for (size_t joint : joints) {
       const auto& point = (*pose)[joint];
       if (!Coordinate(point.x) || !Coordinate(point.y) || !std::isfinite(point.confidence) || point.confidence < 0.4F ||
           point.confidence > 1)

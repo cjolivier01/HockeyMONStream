@@ -29,7 +29,7 @@ fallback. [Preparation details](player-model-preparation.md) also document custo
 The synchronous metadata element sits after `nvtracker`, before `vpplaytracker`.
 It consumes tracked person boxes, samples padded ROIs on GPU, runs TensorRT on
 one owned stream and reduces SimCC outputs on GPU. Only compact joint results
-return to the CPU (at most 1,632 bytes per eight-player batch). The video surface
+return to the CPU (at most 1,728 bytes per eight-player batch). The video surface
 and all crop pixels remain on GPU. The GStreamer map accesses only the NVMM
 surface descriptor. On Jetson, surface arrays use a read-only CUDA/EGL import;
 logical image dimensions remain separate from aligned EGL storage dimensions;
@@ -67,7 +67,8 @@ A `model` ID makes that selection explicit. `model: custom` uses an existing `bu
 directory instead; legacy paths without a model ID retain this custom behavior.
 Bbox jersey mode works without pose. Pose-guided jersey requires pose enabled and
 fresh same-frame shoulders/hips; it skips incomplete poses without falling back
-to bbox crops. Action requires explicit COCO17 pose at at least 10 Hz or `fps`.
+to bbox crops. Action requires explicit pose at at least 10 Hz or `fps`, with
+the same joint layout as the selected action model.
 In `fps` mode actual input cadence and model budgets must still satisfy the
 history's source-time gap requirements. Drawing
 preferences cannot satisfy either dependency. Team needs neither pose nor a
@@ -122,18 +123,50 @@ a retained label can appear between inference updates, then expires without
 repeat reinforcement. Expired/evicted identities and resets clear evidence.
 The batch-eight resize workspace is about 26 MiB, allocated only with jersey enabled.
 
-STGCN++ consumes 100 causal COCO17 samples at 100 ms intervals (9.9 seconds),
+The generic STGCN++ selection consumes 100 causal COCO17 samples at 100 ms intervals (9.9 seconds),
 with a zero second-person slot. At least eight joints at confidence >=0.3 are
 required per observation. Interpolation uses only observations already received;
 gaps over 150 ms, missing identities, inadequate poses and source/seek changes
 clear history and labels. Only a new complete window may run inference; repeatedly
 processing one window cannot strengthen its label. The bundled model profile is
-NTU60 daily activities, **not a trained hockey event detector**. Useful hockey
-accuracy requires separate evaluation or training.
+NTU60 daily activities. For skating, passing and shooting, select the hockey
+models described below.
 
-Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V4`, schema 4, with separate fresh
-COCO17 observations, retained display poses and team affiliation. All producers and consumers must
-be rebuilt together; no persistent telemetry schema changes.
+### Hockey pose and actions
+
+Select **RTMPose-M hockey** and **Hockey actions** together in Program Controls →
+Players, or apply [hockey-example.yaml](../configs/player-analytics/hockey-example.yaml).
+Existing generic defaults are unchanged. Mixed COCO/HARPET selections fail
+validation; custom bundles are also checked at engine loading.
+
+The hockey profile uses `harpet18`: 16 MPII body joints, stick top (16), and stick
+tip (17). It draws the MPII skeleton and a yellow stick segment, and uses the
+correct shoulders/hips for pose-guided jersey crops. Its 192×256 input uses
+body-box padding 3.5 to include the extended stick. Tracked detector boxes and
+occlusion can still move the tip outside the crop.
+
+The hockey action model consumes three causal poses spaced 166,666,667 ns apart,
+covering about 333 ms. Input is `[N,1,3,18,3]` in metadata pixels with confidence.
+Pelvis centering, visible-body-height normalization and masking confidence below
+0.3 are inside the model. Every observation/interpolated sample needs eight
+confident body joints and a confident pelvis; gaps above 250 ms reset history.
+No future frame is used. The existing bounded scheduler and label hysteresis
+remain in force, so inference coverage depends on video cadence and model budget.
+
+Class order is backward skating, forward skating, passing, shooting. This is a
+four-class player classifier: idle, goalie and other actions have no trained
+class. Confidence rejection does not turn it into a general event detector.
+Training used VIP-HARPET triplets with exact duplicate leakage removed. Metrics,
+data limitations, reproducible commands and other candidate datasets are in
+[HockeyMON's training record](https://github.com/cjolivier01/HockeyMON/blob/hm-hockey-keypoints/docs/hockey-training.md).
+Benchmark boxes come from body annotations; detector-to-action live accuracy is
+not established by those scores.
+
+Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V5`, schema 5: an explicit pose
+topology with 18-slot storage (the final slot is zero for COCO17), separate
+fresh observations and retained display poses, and team affiliation. All
+producers and consumers must be rebuilt together; no persistent telemetry
+schema changes.
 
 Drawing selections apply to a run in progress. The desktop sends the whole
 selection with `@set-player-drawing <generation> <layers>`, and the runner
@@ -168,7 +201,9 @@ hide later ready tracks. Capacity and low video cadence may prevent action histo
 from becoming ready; the pipeline reports unknown rather than inventing poses.
 The scheduler bounds analytics work without dropping video frames.
 
-Per sample, compact D2H is 204 bytes for pose or 8 bytes for jersey/action. Team is
+Per sample, compact D2H is 216 bytes for a pose -- the decoder always fills the
+18-slot array and zeroes the unused slot for COCO17 -- or 8 bytes for
+jersey/action. Team is
 the exception: 4 bytes of crop lightness plus the raw 1 KiB embedding, because the
 two-means fit that turns an embedding into a side is a host-side per-stream model
 and no reduction kernel can stand in for it. Action

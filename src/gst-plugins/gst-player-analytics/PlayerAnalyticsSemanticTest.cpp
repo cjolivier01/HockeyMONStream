@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -400,6 +401,50 @@ void Guided(const char* pose, const char* jersey, Fixture& real_image) {
       "Guided pair did not resume on fresh pose cadence");
   std::cout << "Pose-guided jersey requires fresh joints: valid pairs, no stale joints or bbox fallback passed\n";
 }
+
+void Hockey(const char* pose, const char* action, const char* fixture_directory) {
+  const std::filesystem::path path(fixture_directory);
+  const auto fixture = YAML::LoadFile((path / "fixture.json").string());
+  Fixture image(cv::imread((path / fixture["image"].as<std::string>()).string()));
+  const auto roi = fixture["roi_xywh"];
+  const pa::Box box{roi[0].as<float>(), roi[1].as<float>(), roi[2].as<float>(), roi[3].as<float>()};
+  auto config = Base();
+  config.maximum_due_rois = 4;
+  config.batch_size = 2;
+  config.pose.enabled = config.action.enabled = true;
+  config.pose.bundle = pose;
+  config.action.bundle = action;
+  config.action.confidence_threshold = 0;
+  config.action.rate_hz = 240;
+  auto processor = Create(config);
+  const std::vector<Detection> detections{{kId, box}, {kId + 1, box}};
+  constexpr uint64_t period = 166666667;
+  pa::FrameResult result;
+  for (int frame = 0; frame < 5; ++frame) {
+    result = Process(*processor, image, frame * period, frame, detections);
+    Require(
+        result.player_count == 2 && result.pose_topology == pa::PoseTopology::kHarpet18 && result.players[0].has_pose &&
+            result.players[0].pose[17].confidence > 0,
+        "Actual HARPET pose or stick tip was lost");
+    if (frame < 2)
+      Require(processor->counters().action_enqueues == 0, "Hockey action used an incomplete history");
+  }
+  Require(
+      processor->counters().action_enqueues > 0 && result.players[0].action.label >= 0 &&
+          result.players[0].action.label < 4 && result.players[0].action_text[0] != '\0' &&
+          result.players[1].action.label == result.players[0].action.label &&
+          result.players[1].track_id != result.players[0].track_id &&
+          result.players[0].action.observed_at - result.players[0].action.window_start == 2 * period,
+      "Hockey tensor/label dictionary, three-sample history or batch identity failed");
+  const auto samples = processor->counters().model_samples;
+  Process(*processor, image, 4 * period, 5, detections);
+  Require(processor->counters().model_samples == samples, "Duplicate PTS reinforced hockey evidence");
+  result = Process(*processor, image, 4 * period + 300000000, 6, detections);
+  Require(result.players[0].action.label < 0, "Hockey gap retained old action evidence");
+  result = Process(*processor, image, 0, 7, detections);
+  Require(result.players[0].action.label < 0, "Hockey seek retained old action evidence");
+  std::cout << "Actual HARPET18 pose -> batched three-frame four-action inference, gaps and seek passed\n";
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -409,9 +454,15 @@ int main(int argc, char** argv) {
     DrawingAndCadence(argv[1], image, {0, 0, float(image.width), float(image.height)});
     return 0;
   }
+  if (argc == 5) {
+    Require(std::string(argv[4]) == "--hockey", "Expected --hockey for the four-argument profile");
+    Hockey(argv[1], argv[2], argv[3]);
+    return 0;
+  }
   if (argc != 6) {
     std::cerr << "Usage: PlayerAnalyticsSemanticTest POSE_BUNDLE JERSEY_BUNDLE ACTION_BUNDLE POSE_SCENE JERSEY_SCENE\n";
     std::cerr << "   or: PlayerAnalyticsSemanticTest POSE_BUNDLE POSE_SCENE --pose-drawing\n";
+    std::cerr << "   or: PlayerAnalyticsSemanticTest POSE_BUNDLE ACTION_BUNDLE POSE_FIXTURE_DIR --hockey\n";
     return 1;
   }
   Fixture pose_image(cv::imread(argv[4]));

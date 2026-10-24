@@ -154,14 +154,13 @@ int main() {
     xs[0] = std::numeric_limits<float>::quiet_NaN();
     Cuda(cudaMemcpyAsync(simcc_x.data, xs.data(), xs.size() * sizeof(float), cudaMemcpyHostToDevice, stream.stream));
     Cuda(cudaMemcpyAsync(simcc_y.data, ys.data(), ys.size() * sizeof(float), cudaMemcpyHostToDevice, stream.stream));
-    Cuda(
-        pa::DecodePose(
-            simcc_x.as<float>(),
-            simcc_y.as<float>(),
-            affines.as<pa::PoseAffine>(),
-            rois.size(),
-            results.as<pa::Pose>(),
-            stream.stream));
+    Cuda(pa::DecodePose(
+        simcc_x.as<float>(),
+        simcc_y.as<float>(),
+        affines.as<pa::PoseAffine>(),
+        rois.size(),
+        results.as<pa::Pose>(),
+        stream.stream));
     std::array<pa::Pose, rois.size()> poses{};
     Cuda(cudaMemcpyAsync(poses.data(), results.data, sizeof(poses), cudaMemcpyDeviceToHost, stream.stream));
     Cuda(cudaStreamSynchronize(stream.stream));
@@ -181,6 +180,40 @@ int main() {
     auto invalid = rois[0];
     invalid.metadata_width = 0;
     Check(!pa::MakePoseAffine(view, invalid).ok(), "invalid coordinate dimensions were accepted");
+    // A separate 18-channel input catches batch-stride errors and verifies that
+    // the new final channel survives GPU reduction and coordinate conversion.
+    Buffer hockey_x(sizeof(float) * 2 * 18 * 384), hockey_y(sizeof(float) * 2 * 18 * 512);
+    std::vector<float> hx(2 * 18 * 384, -1), hy(2 * 18 * 512, -1);
+    for (size_t b = 0; b < 2; ++b)
+      for (size_t joint = 0; joint < 18; ++joint) {
+        hx[(b * 18 + joint) * 384 + 20 + joint + b] = 0.9F;
+        hy[(b * 18 + joint) * 512 + 40 + joint + b] = 0.7F;
+      }
+    Cuda(cudaMemcpyAsync(hockey_x.data, hx.data(), hx.size() * sizeof(float), cudaMemcpyHostToDevice, stream.stream));
+    Cuda(cudaMemcpyAsync(hockey_y.data, hy.data(), hy.size() * sizeof(float), cudaMemcpyHostToDevice, stream.stream));
+    Cuda(pa::DecodePose(
+        hockey_x.as<float>(),
+        hockey_y.as<float>(),
+        affines.as<pa::PoseAffine>(),
+        2,
+        results.as<pa::Pose>(),
+        stream.stream,
+        18));
+    Cuda(cudaMemcpyAsync(poses.data(), results.data, sizeof(pa::Pose) * 2, cudaMemcpyDeviceToHost, stream.stream));
+    Cuda(cudaStreamSynchronize(stream.stream));
+    for (size_t b = 0; b < 2; ++b)
+      for (size_t joint = 0; joint < 18; ++joint)
+        Check(
+            std::abs(
+                poses[b][joint].x -
+                (transforms[b].x0 + transforms[b].dx * (20 + joint + b) * .5) * transforms[b].surface_to_metadata_x) <
+                    .0001 &&
+                poses[b][joint].confidence == .7F,
+            "HARPET SimCC joint/batch stride was corrupted");
+    auto wide = pa::MakePoseAffine(view, rois[0], 3.5F);
+    Check(
+        wide.ok() && std::abs(wide->dx / transforms[0].dx - 2.8) < .00001,
+        "hockey body crop must use the trained 3.5 padding");
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
