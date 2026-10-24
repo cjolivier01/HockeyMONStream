@@ -6,18 +6,12 @@
 #include <gst/app/gstappsrc.h>
 #include <gst/video/video-info-dma.h>
 
-#include "cupano/pano/cudaPano.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
-#include "hstream/src/libs/detection/HipDetector.h"
-#include "hstream/src/libs/detection/VaDetectorImage.h"
-#include "hstream/src/libs/gpu/ConvertImage.h"
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
 #include "hstream/src/libs/gpu/vaapi/VaVideoReader.h"
+#include "hstream/src/libs/program/AmdProgramProcessor.h"
 #include "hstream/src/libs/program/AmdProgramSettings.h"
 #include "hstream/src/libs/program/EncodedColorimetry.h"
-#include "hstream/src/libs/program/VaProgramOutput.h"
-#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
-#include "hstream/src/libs/tracking/ProgramTracking.h"
 
 #include <chrono>
 #include <cmath>
@@ -117,28 +111,14 @@ GstVideoInfo Info(GstSample* sample) {
   Check(info.vinfo.fps_n > 0 && info.vinfo.fps_d > 0, "Missing input frame rate");
   return info.vinfo;
 }
-struct Compute {
-  hipStream_t stream{};
-  std::unique_ptr<hm::pano::cuda::CudaStitchPano<half4, half4>> stitcher;
-  std::unique_ptr<hm::CudaMat<half4>> left, right, panorama;
-  Compute() {
-    Hip(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
-  }
-  ~Compute() {
-    (void)hipStreamSynchronize(stream);
-    panorama.reset();
-    right.reset();
-    left.reset();
-    stitcher.reset();
-    (void)hipStreamDestroy(stream);
-  }
-};
 } // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 15) {
-    std::cerr << "Usage: hip_program_fixture GAME MODEL INFER_YAML CAMERA_YAML LEFT RIGHT "
-                 "LEFT_SECONDS RIGHT_SECONDS FRAMES MODEL_WIDTH MODEL_HEIGHT OUTPUT_WIDTH OUTPUT_HEIGHT OUTPUT_MP4\n";
+  const bool verify_reset = argc == 16 && std::string(argv[15]) == "--verify-reset";
+  if (argc != 15 && !verify_reset) {
+    std::cerr
+        << "Usage: hip_program_fixture GAME MODEL INFER_YAML CAMERA_YAML LEFT RIGHT "
+           "LEFT_SECONDS RIGHT_SECONDS FRAMES MODEL_WIDTH MODEL_HEIGHT OUTPUT_WIDTH OUTPUT_HEIGHT OUTPUT_MP4 [--verify-reset]\n";
     return 2;
   }
   gst_init(&argc, &argv);
@@ -168,38 +148,19 @@ int main(int argc, char** argv) {
         property["symmetric-padding"].as<int>() != 0,
         hm::gpu::MigraphxSession::Precision::kFloat16,
         settings.maximum_inference_io_bytes};
-    Hip(hipSetDevice(config.device));
-    Compute compute;
-    auto artifacts = Take(hm::stitching::lock_stitching_artifacts_for_load(game, 0));
-    Check(artifacts.artifact_lock && artifacts.load_snapshot, "Missing compatible saved stitching artifacts");
-    hm::pano::ControlMasks masks;
-    Check(masks.load(artifacts.load_snapshot->directory().string(), 0), "Cannot load pinned control masks");
-    Status(artifacts.load_snapshot->verify());
-    Check(
-        masks.canvas_width() == artifacts.canvas_size.width && masks.canvas_height() == artifacts.canvas_size.height,
-        "Loaded control masks changed validated dimensions");
-    const auto generation = Take(hm::stitching::stitched_output_generation_id(
-        artifacts.generation_id, 0, masks.canvas_width(), masks.canvas_height()));
-    const auto loaded_generation = artifacts.generation_id;
-    artifacts.artifact_lock.reset();
-    artifacts.load_snapshot.reset();
-    Check(
-        Take(hm::stitching::current_stitched_output_generation_id(game)) == generation,
-        "Fixture requires current unrotated saved geometry");
-    auto mask = Take(hm::stitching::load_field_mask_for_loaded_generation(game, generation, loaded_generation));
-    auto tracking = Take(hm::tracking::ProgramTracking::Create(
-        mask,
-        YAML::LoadFile(argv[4])["play-tracker"],
-        settings.tracker,
-        baseline.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
-        baseline.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>()));
-    compute.stitcher = std::make_unique<hm::pano::cuda::CudaStitchPano<half4, half4>>(
-        1, hm::pano::BlendSettings::Laplacian(11), masks, true, true, 0, settings.compact_stitch_workspace);
-    Check(compute.stitcher->status().ok(), compute.stitcher->status().message());
-    const int width = compute.stitcher->canvas_width(), height = compute.stitcher->canvas_height();
-    Check(width == mask.cols && height == mask.rows, "Stitcher and rink mask geometry differ");
-    std::cout << "Validated raw panorama " << width << 'x' << height << " generation=" << generation << '\n';
-    auto detector = Take(hm::detection::HipDetector::Create(config));
+    auto processor = Take(hm::program::AmdProgramProcessor::Create(
+        {game,
+         config,
+         YAML::LoadFile(argv[4])["play-tracker"],
+         settings.tracker,
+         hm::pano::BlendSettings::Laplacian(11),
+         true,
+         settings.compact_stitch_workspace,
+         baseline.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
+         baseline.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>()}));
+    const hm::program::ProgramRenderSettings render{false, 0, 0, 0, false, 0};
+    std::cout << "Validated raw panorama " << processor->width() << 'x' << processor->height()
+              << " generation=" << processor->generation() << '\n';
     auto left = OpenReader(settings, argv[5], left_start);
     auto right = OpenReader(settings, argv[6], right_start);
     Pipeline output;
@@ -209,11 +170,6 @@ int main(int argc, char** argv) {
         left_info.fps_n == right_info.fps_n && left_info.fps_d == right_info.fps_d &&
             gst_video_colorimetry_is_equal(&left_info.colorimetry, &right_info.colorimetry),
         "Camera colorimetry or frame rate differs");
-    compute.left = std::make_unique<hm::CudaMat<half4>>(1, left_info.width, left_info.height);
-    compute.right = std::make_unique<hm::CudaMat<half4>>(1, right_info.width, right_info.height);
-    compute.panorama = std::make_unique<hm::CudaMat<half4>>(1, width, height);
-    Check(
-        compute.left->is_valid() && compute.right->is_valid() && compute.panorama->is_valid(), "GPU allocation failed");
     GstVideoInfo out_info{};
     Check(
         gst_video_info_set_format(&out_info, GST_VIDEO_FORMAT_P010_10LE, out_width, out_height),
@@ -238,7 +194,7 @@ int main(int argc, char** argv) {
     g_object_set(file, "location", argv[14], nullptr);
     gst_object_unref(file);
     output.Start();
-    uint64_t observations = 0, crops = 0;
+    uint64_t observations = 0, crops = 0, highest_id = 0;
     GstClockTime first = GST_CLOCK_TIME_NONE, previous = GST_CLOCK_TIME_NONE;
     const auto begin = std::chrono::steady_clock::now();
     for (int sequence = 0; sequence < frames; ++sequence) {
@@ -263,36 +219,18 @@ int main(int argc, char** argv) {
       if (!sequence)
         first = pts;
       previous = pts;
-      auto af = Take(hm::gpu::VaHipFrame::Import(ab, compute.stream, hm::gpu::VaHipFrame::Access::kRead));
-      auto bf = Take(hm::gpu::VaHipFrame::Import(bb, compute.stream, hm::gpu::VaHipFrame::Access::kRead));
-      const auto ai_gpu = Take(hm::detection::DescribeVaDetectorImage(*af, ai));
-      const auto bi_gpu = Take(hm::detection::DescribeVaDetectorImage(*bf, bi));
-      Hip(hm::gpu::ConvertToRgba16Float(ai_gpu, compute.left->data(), compute.left->pitch(), compute.stream));
-      Hip(hm::gpu::ConvertToRgba16Float(bi_gpu, compute.right->data(), compute.right->pitch(), compute.stream));
-      auto stitched =
-          compute.stitcher->process(*compute.left, *compute.right, compute.stream, std::move(compute.panorama));
-      Check(stitched.ok(), stitched.status().message());
-      compute.panorama = stitched.ConsumeValueOrDie();
-      const hm::gpu::Image image{
-          compute.panorama->data(),
-          nullptr,
-          size_t(compute.panorama->pitch()),
-          0,
-          width,
-          height,
-          hm::gpu::PixelFormat::kRgba16Float};
-      auto detections = Take(detector->Detect(image, compute.stream));
-      auto observed = Take(tracking->Process(sequence, width, height, detections));
+      auto completed = Take(processor->Process(sequence, a.get(), b.get()));
+      const auto& observed = completed.observation;
+      const auto& crop = completed.crop;
       observations += observed.tracks.size();
       crops += observed.crop.has_value();
-      // Match the delayed camera initialization with an explicit fixture full-canvas view.
-      const auto crop = observed.crop.value_or(hm::BBox(0, 0, width, height));
-      const auto transform = hm::playcropper::CalculateFrameTransformGeometry(width, height, crop, false, 0, 0);
+      for (const auto& track : observed.tracks)
+        highest_id = std::max(highest_id, track.id);
       const auto now = std::chrono::steady_clock::now();
       const auto timeout = std::chrono::nanoseconds(settings.operation_timeout_ns);
       const auto deadline = timeout > std::chrono::steady_clock::time_point::max() - now
-                                ? std::chrono::steady_clock::time_point::max()
-                                : now + timeout;
+          ? std::chrono::steady_clock::time_point::max()
+          : now + timeout;
       auto acquired = pool->Acquire();
       while (absl::IsResourceExhausted(acquired.status()) && std::chrono::steady_clock::now() < deadline) {
         const auto error = output.Error();
@@ -301,22 +239,15 @@ int main(int argc, char** argv) {
         acquired = pool->Acquire();
       }
       Buffer buffer(Take(std::move(acquired)), gst_buffer_unref);
-      auto destination =
-          Take(hm::gpu::VaHipFrame::Import(buffer.get(), compute.stream, hm::gpu::VaHipFrame::Access::kWrite));
-      const auto yuv = Take(hm::playcropper::DescribeVaProgramOutput(*destination, out_info));
-      Hip(hm::playcropper::RenderProgramYuv(image, yuv, transform, 0, false, 0, compute.stream));
-      Status(destination->Complete());
-      destination.reset();
-      Status(af->Complete());
-      Status(bf->Complete());
+      Status(processor->Render(buffer.get(), out_info, render));
       GST_BUFFER_PTS(buffer.get()) = pts - first;
       GST_BUFFER_DURATION(buffer.get()) = GST_BUFFER_DURATION(ab);
       Check(
           gst_app_src_push_buffer(GST_APP_SRC(output.endpoint), buffer.release()) == GST_FLOW_OK,
           "Output refused frame");
-      std::cout << "Frame " << sequence << " detections=" << detections.size() << " rink=" << observed.detections.size()
-                << " tracks=" << observed.tracks.size() << " crop=" << crop.left << ',' << crop.top << ',' << crop.right
-                << ',' << crop.bottom << '\n'
+      std::cout << "Frame " << sequence << " detections=" << completed.detection_count
+                << " rink=" << observed.detections.size() << " tracks=" << observed.tracks.size()
+                << " crop=" << crop.left << ',' << crop.top << ',' << crop.right << ',' << crop.bottom << '\n'
                 << std::flush;
     }
     Check(observations && crops, "No tracked Program camera output");
@@ -329,9 +260,44 @@ int main(int argc, char** argv) {
     if (message)
       gst_message_unref(message);
     Check(eos, "Output did not complete mux EOS: " + output.Error());
-    std::cout << frames << " raw pairs -> " << observations << " tracks -> " << crops << " Program crops, "
-              << std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count()
+    const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+    std::cout << frames << " raw pairs -> " << observations << " tracks -> " << crops << " Program crops, " << seconds
               << " seconds; HEVC MP4 closed\n";
+    if (verify_reset) {
+      Buffer output_frame(Take(pool->Acquire()), gst_buffer_unref);
+      auto wrong_color = out_info;
+      wrong_color.colorimetry.transfer = GST_VIDEO_TRANSFER_SMPTE2084;
+      Check(
+          absl::IsInvalidArgument(processor->Render(output_frame.get(), wrong_color, render)),
+          "Output transfer mismatch was accepted");
+      Status(processor->Render(output_frame.get(), out_info, render));
+      Status(processor->Reset());
+      Check(
+          absl::IsFailedPrecondition(processor->Render(output_frame.get(), out_info, render)),
+          "Reset retained a stale panorama");
+      Status(left->Seek(static_cast<GstClockTime>(left_start * GST_SECOND)));
+      Status(right->Seek(static_cast<GstClockTime>(right_start * GST_SECOND)));
+      uint64_t reset_observations = 0;
+      for (unsigned sequence = 0; sequence < 4; ++sequence) {
+        a = Read(*left);
+        b = Read(*right);
+        const auto completed = Take(processor->Process(sequence, a.get(), b.get()));
+        for (const auto& track : completed.observation.tracks) {
+          Check(track.id > highest_id, "Seek reused an object ID");
+          ++reset_observations;
+        }
+        Status(processor->Render(output_frame.get(), out_info, render));
+        auto full = render;
+        full.no_crop = true;
+        Status(processor->Render(output_frame.get(), out_info, full));
+      }
+      Check(reset_observations, "No confirmed tracks after processor reset/reader seek");
+      Check(!processor->Process(4, nullptr, b.get()).ok(), "Invalid input was accepted");
+      Check(
+          !processor->Reset().ok() && !processor->Render(output_frame.get(), out_info, render).ok(),
+          "Processing failure did not retire the processor");
+      std::cout << "Processor seek/reset, repeated Program/Stitched render, monotonic IDs and retirement passed\n";
+    }
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

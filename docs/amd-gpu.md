@@ -406,3 +406,33 @@ select an application backend or change NVIDIA/Aspen behavior. The raw Program
 qualifier now consumes these settings; its input/model paths and codec/output
 choices remain explicit qualification arguments. CLI/UI configuration loading
 and runtime ownership are still pending.
+
+## Reusable Program processor
+
+`program/AmdProgramProcessor` now owns the validated saved panorama, GPU
+workspaces, MIGraphX detector, rink pruning, object association and native camera
+policy. The raw-camera qualifier uses this owner. `Process` consumes a paired
+VA sample from each original camera and returns compact observation metadata;
+`Render` can draw the completed GPU panorama repeatedly into exclusively owned
+NV12/P010 output buffers at caller-selected sizes. A full-panorama render uses
+the existing no-crop transform. Input/output transfers and primaries must agree;
+this stage converts YUV matrices/ranges but is not a tone mapper.
+
+The owner pins and validates saved control maps and the exact-generation rink
+mask before GPU preparation. It currently requires the current unrotated saved
+geometry; calibration, post-stitch rotation and reconstruction on changed
+source caps remain application work. The caller owns source identity, stereo
+pairing, timestamps, output pools and decoder/sink lifecycles.
+
+`Reset` clears camera/object histories and the last renderable frame after a
+seek, preserving model compilation and stitch allocations. Object IDs are not
+reused. Processing failures retire the owner; a reset cannot revive failed GPU
+state. Input imports fence their stream on every exit, and destruction drains
+work before freeing workspaces and the detector's stream. No full video frame
+returns to CPU memory.
+
+Append `--verify-reset` to the raw qualifier command to exercise reader seeks,
+processor reset, monotonic IDs, repeated Program/full-panorama renders, rejected
+transfer changes and failure retirement. On the 120-pair hockey clip, all 120
+per-frame detection/tracking/crop log rows match the earlier composition. This
+reusable owner is not yet connected to CLI/UI playback.

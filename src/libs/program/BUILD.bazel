@@ -125,14 +125,10 @@ cc_binary(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [
-        ":gpu", ":va_program_output", ":encoded_colorimetry", ":amd_program_settings",
+        ":amd_program_processor", ":encoded_colorimetry", ":amd_program_settings",
         "//src/libs/common:baseline_config",
-        "//src/libs/gpu:convert_image",
         "//src/libs/gpu/vaapi:va_video_reader",
         "//src/libs/gpu/vaapi:va_output_pool",
-        "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
-        "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",
-        "@hm-cupano//src/pano:cuda_pano",
     ],
 )
 
@@ -149,4 +145,22 @@ cc_test(
     name = "encoded_colorimetry_test",
     srcs = ["EncodedColorimetryTest.cpp"],
     deps = [":encoded_colorimetry"],
+)
+
+cc_library(
+    name = "amd_program_processor",
+    srcs = ["AmdProgramProcessor.cpp"],
+    hdrs = ["AmdProgramProcessor.h"],
+    include_prefix = "hstream/src/libs/program",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":gpu", ":va_program_output",
+        "//src/libs/gpu:convert_image",
+        "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
+        "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",
+        "@hm-cupano//src/pano:cuda_pano",
+    ],
 )
