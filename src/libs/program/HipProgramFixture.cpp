@@ -10,6 +10,7 @@
 #include "hstream/src/libs/detection/VaDetectorImage.h"
 #include "hstream/src/libs/gpu/ConvertImage.h"
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
+#include "hstream/src/libs/gpu/vaapi/VaVideoReader.h"
 #include "hstream/src/libs/program/EncodedColorimetry.h"
 #include "hstream/src/libs/program/VaProgramOutput.h"
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
@@ -85,40 +86,24 @@ struct Pipeline {
         "Pipeline start failed: " + Error());
   }
 };
-void OpenReader(Pipeline& pipeline, const char* path, double start) {
+std::unique_ptr<hm::gpu::VaVideoReader> OpenReader(int device, const char* path, double start) {
   Check(std::isfinite(start) && start >= 0 && start < double(G_MAXINT64 / GST_SECOND), "Invalid seek time");
-  pipeline.Create(
-      "filesrc name=file ! qtdemux ! h265parse ! vah265dec ! "
-      "vapostproc disable-passthrough=true ! "
-      "video/x-raw(memory:DMABuf),format=DMA_DRM,drm-format=P010 ! "
-      "appsink name=frames sync=false max-buffers=2",
-      "frames");
-  auto* file = gst_bin_get_by_name(GST_BIN(pipeline.value), "file");
-  g_object_set(file, "location", path, nullptr);
-  gst_object_unref(file);
-  GstAppSinkCallbacks callbacks{};
-  callbacks.propose_allocation = [](GstAppSink*, GstQuery* query, gpointer) -> gboolean {
-    gst_query_add_allocation_meta(query, GST_VIDEO_META_API_TYPE, nullptr);
-    return TRUE;
-  };
-  gst_app_sink_set_callbacks(GST_APP_SINK(pipeline.endpoint), &callbacks, nullptr, nullptr);
-  Check(gst_element_set_state(pipeline.value, GST_STATE_PAUSED) != GST_STATE_CHANGE_FAILURE, "Cannot preroll decoder");
-  Check(
-      gst_element_get_state(pipeline.value, nullptr, nullptr, 30 * GST_SECOND) == GST_STATE_CHANGE_SUCCESS,
-      "Decoder preroll failed: " + pipeline.Error());
-  Check(
-      gst_element_seek_simple(
-          pipeline.value,
-          GST_FORMAT_TIME,
-          static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
-          static_cast<gint64>(start * GST_SECOND)),
-      "Cannot seek raw input");
-  pipeline.Start();
+  char pci[32]{};
+  Hip(hipDeviceGetPCIBusId(pci, sizeof(pci), device));
+  auto reader = Take(hm::gpu::VaVideoReader::Create(
+      {hm::gpu::VaVideoCodec::kHevc,
+       GST_VIDEO_FORMAT_P010_10LE,
+       std::string("/dev/dri/by-path/pci-") + pci + "-render",
+       2,
+       30 * GST_SECOND,
+       10 * GST_MSECOND}));
+  Status(reader->OpenFile(path, static_cast<GstClockTime>(start * GST_SECOND)));
+  return reader;
 }
-Sample Read(Pipeline& pipeline) {
-  Sample sample(gst_app_sink_try_pull_sample(GST_APP_SINK(pipeline.endpoint), 30 * GST_SECOND), gst_sample_unref);
-  Check(bool(sample), "Raw input timed out or ended early: " + pipeline.Error());
-  return sample;
+Sample Read(hm::gpu::VaVideoReader& reader) {
+  auto frame = Take(reader.Read());
+  Check(frame.has_value(), "Raw input ended early");
+  return std::move(frame->sample);
 }
 GstVideoInfo Info(GstSample* sample) {
   GstVideoInfoDmaDrm info{};
@@ -208,10 +193,10 @@ int main(int argc, char** argv) {
     Check(width == mask.cols && height == mask.rows, "Stitcher and rink mask geometry differ");
     std::cout << "Validated raw panorama " << width << 'x' << height << " generation=" << generation << '\n';
     auto detector = Take(hm::detection::HipDetector::Create(config));
-    Pipeline left, right, output;
-    OpenReader(left, argv[5], left_start);
-    OpenReader(right, argv[6], right_start);
-    auto a = Read(left), b = Read(right);
+    auto left = OpenReader(config.device, argv[5], left_start);
+    auto right = OpenReader(config.device, argv[6], right_start);
+    Pipeline output;
+    auto a = Read(*left), b = Read(*right);
     const auto left_info = Info(a.get()), right_info = Info(b.get());
     Check(
         left_info.fps_n == right_info.fps_n && left_info.fps_d == right_info.fps_d &&
@@ -251,8 +236,8 @@ int main(int argc, char** argv) {
     const auto begin = std::chrono::steady_clock::now();
     for (int sequence = 0; sequence < frames; ++sequence) {
       if (sequence) {
-        a = Read(left);
-        b = Read(right);
+        a = Read(*left);
+        b = Read(*right);
       }
       const auto ai = Info(a.get()), bi = Info(b.get());
       Check(

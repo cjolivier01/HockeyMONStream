@@ -111,6 +111,7 @@ cc_binary(
     deps = [
         ":gpu", ":va_program_output", ":encoded_colorimetry",
         "//src/libs/gpu:convert_image",
+        "//src/libs/gpu/vaapi:va_video_reader",
         "//src/libs/gpu/vaapi:va_output_pool",
         "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
         "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",

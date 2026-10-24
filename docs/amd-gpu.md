@@ -91,12 +91,43 @@ Each codec processes 32 frames and checks encoded pixels, untouched background,
 timestamps, EOS, shared-buffer rejection and repeated-import descriptor cleanup.
 Pixel readback occurs only in the bounded test verifier after re-encode/decode.
 
-On the installed GStreamer/Mesa stack, repeatedly creating and destroying entire
-test pipelines retains DMA-BUF descriptors even with HIP processing removed.
-The import/release checks on a retained surface do not leak descriptors. Repeated
-application restart/seek qualification must resolve the separate media-stack
-lifetime issue before claiming production playback support. RGBA/BGRA import
-layouts are accepted by the adapter, but only NV12/P010 codec paths are qualified.
+`VaVideoReader` provides reusable local H.264/HEVC MP4 decoding with explicit
+device, pixel format, queue bound and operation/cancellation timing. It selects
+the VA decoder and postprocessor factories by their actual render node. Seek
+flushes the current decoder; opening another chapter resets the same elements
+through NULL. GStreamer 1.24.2 closes the postprocessor's filter on PAUSED → READY
+and only reopens it on NULL → READY, so stopping at READY fails renegotiation.
+Samples retain their surfaces across seek, chapter change and reader destruction.
+No decoded pixels are mapped. The reader returns file-relative stream timestamps;
+the future playlist owner must supply chapter offsets and pair the cameras.
+Cancellation is permanent and checked between bounded waits. GStreamer/driver
+calls themselves are not interruptible. Errors retire the reader.
+
+Repeated chapter changes exposed an upstream GStreamer 1.24.2 leak:
+`gst_va_dmabuf_get_modifier_for_format` exports a temporary VA surface but never
+closes its DMA-BUF handles. On this host that leaked 13 descriptors per restart,
+without HIP involvement. The private build below fixes the probe and failed
+exports, leaving the installed library, plugins and core unchanged. It builds
+only `libgstva-1.0` against the installed 1.24.2 development packages. The source
+archive is SHA-pinned; the runtime retains its source, patch, build recipe and
+license. The recipe deliberately rejects other SDK versions.
+
+```bash
+scripts/build_amd_gstreamer.sh /tmp/hstream-private-gstva 8
+/tmp/hstream-private-gstva/run /tmp/hstream-private-migraphx/run \
+  make test-amd-video
+```
+
+The reader hardware test checks exact timestamps, EOS, seeking after EOS,
+queued-frame flushing, chapter changes, cancellation, failed-transition
+retirement, and retained pixels after reader destruction. Sixteen seeks and
+eight chapter changes per codec show stable descriptor counts with the private
+library (47 → 47 for H.264; 47 → 46 for HEVC). The same chapter test fails with
+the unpatched library (137 → 241). Two synthetic luma bytes are read back solely
+to verify retained-frame ownership. The composed raw Program qualifier now uses
+the reusable reader. Full application source/audio lifecycle and desktop
+integration remain unqualified. RGBA/BGRA import layouts are accepted by the
+adapter, but only NV12/P010 codec paths are qualified.
 
 ## Native AMD inference
 

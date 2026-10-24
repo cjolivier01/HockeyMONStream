@@ -1,0 +1,25 @@
+--- a/gst-libs/gst/va/gstvaallocator.c
++++ b/gst-libs/gst/va/gstvaallocator.c
+@@ -628,6 +628,10 @@
+ 
+ failed:
+   {
++#ifndef G_OS_WIN32
++    for (i = 0; i < desc.num_objects && i < G_N_ELEMENTS (desc.objects); i++)
++      close (desc.objects[i].fd);
++#endif
+     va_destroy_surfaces (display, &surface, 1);
+     return FALSE;
+   }
+@@ -661,6 +665,11 @@
+     return DRM_FORMAT_MOD_INVALID;
+ 
+   va_destroy_surfaces (display, &surface, 1);
++#ifndef G_OS_WIN32
++  /* These probe exports never become GstMemory, so the probe owns their fds. */
++  for (guint i = 0; i < desc.num_objects; i++)
++    close (desc.objects[i].fd);
++#endif
+ 
+   return desc.objects[0].drm_format_modifier;
+ }
