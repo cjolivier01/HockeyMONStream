@@ -148,6 +148,11 @@ class PipelineApplication {
   bool set_render_window_runtime(guint64 window_id);
   bool set_preview_active_runtime(const std::string& channel, guint64 generation);
   bool set_preview_overlays_runtime(const hm::pipeline_internal::PreviewOverlayCommand& command);
+  // Live player-analytics drawing selection. Targets whichever Program and
+  // preview elements this graph actually built, so a selection cannot fail
+  // wholesale because one preview channel is not in use.
+  bool set_player_drawing_runtime(guint64 generation, guint layers);
+  bool apply_player_drawing_layers(guint layers);
   bool apply_preview_overlay_state(const hm::pipeline_internal::PreviewOverlaySelection& selection, bool apply_sinks);
   bool update_preview_overlay_producers();
   bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
@@ -308,6 +313,11 @@ class PipelineApplication {
   bool ui_preview_channel_explicitly_disabled_{false};
   guint64 active_ui_preview_generation_{1};
   hm::pipeline_internal::PreviewOverlayRuntimeState preview_overlay_state_;
+  // Last accepted live drawing selection, re-applied when the graph is
+  // rebuilt so a seek or stage restart does not silently restore the
+  // launch-time choice.
+  std::optional<guint> player_drawing_layers_;
+  guint64 player_drawing_generation_{0};
   bool rink_map_preview_requested_{false};
   bool rink_map_preview_active_{false};
   std::vector<GstElement*> preview_overlay_producers_;

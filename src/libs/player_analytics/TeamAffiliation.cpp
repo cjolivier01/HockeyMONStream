@@ -64,6 +64,10 @@ void TeamClusterer::Reset() noexcept {
   ranked_ = false;
   balanced_ = false;
   dark_cluster_ = 0;
+  ranking_revision_ = 0;
+  contrary_fits_ = 0;
+  required_confirmations_ = 2;
+  ranking_gap_ = 0;
 }
 
 void TeamClusterer::Fit() noexcept {
@@ -228,6 +232,10 @@ void TeamClusterer::Fit() noexcept {
       mean_ = previous_mean;
       inverse_deviation_ = previous_deviation;
       since_fit_ = 0;
+      // This fit told us nothing, so it also breaks a run of contradictions:
+      // "twice running" has to mean two fits good enough to judge, not two
+      // separated by minutes of splits that were thrown away.
+      contrary_fits_ = 0;
       return;
     }
     // Keep published indices using ownership in the previous fit's metric.
@@ -251,21 +259,56 @@ void TeamClusterer::Fit() noexcept {
   // Rank the two groups by mean crop lightness so they can be named. The
   // chest band takes in ice, boards and other skaters, so this mean carries
   // real noise; ranking on a gap smaller than that noise would land
-  // differently at each refit and swap every badge on screen at once. Once a
-  // ranking is established it is kept: sweaters do not change mid-game, and
-  // the centroid pairing above means index 0 still denotes the same squad.
+  // differently at each refit and swap every badge on screen at once. The
+  // centroid pairing above means index 0 still denotes the same squad across
+  // refits, so a later fit measuring the opposite order is evidence that the
+  // ranking in force is wrong, not that the squads changed sweaters.
   if (members[0] != 0 && members[1] != 0) {
     const double mean0 = lightness[0] / static_cast<double>(members[0]);
     const double mean1 = lightness[1] / static_cast<double>(members[1]);
+    const double gap = std::fabs(mean0 - mean1);
+    const int8_t order = mean0 <= mean1 ? 0 : 1;
     // Only rank from a split that is publishable. A lopsided fit separates
     // the officials from everyone else, and its lightness gap is large and
     // meaningless -- striped shirts against a merged field. Latching the
     // ranking from it and publishing that later, when the squads do separate,
     // inverts every badge for the rest of the game, measured at 10 of 20
     // seeds.
-    if (!ranked_ && balanced_ && std::fabs(mean0 - mean1) >= settings_.minimum_lightness_gap) {
-      dark_cluster_ = mean0 <= mean1 ? 0 : 1;
-      ranked_ = true;
+    if (!ranked_) {
+      if (balanced_ && gap >= settings_.minimum_lightness_gap) {
+        dark_cluster_ = order;
+        ranked_ = true;
+        ranking_gap_ = static_cast<float>(gap);
+        ++ranking_revision_;
+      }
+    } else if (
+        balanced_ && order != dark_cluster_ && gap >= settings_.minimum_lightness_gap * settings_.switch_hysteresis) {
+      // A ranking taken on a marginal gap can be wrong for the rest of the
+      // game, so a later fit may overturn it -- but only on the terms the
+      // per-track vote already uses for its own incumbent: beat the bar by
+      // the switch margin, and say the same thing on consecutive fits. One
+      // window of bad crops must not swap every badge on screen.
+      //
+      // Each correction then asks for one more confirmation than the last.
+      // Sustained contradiction still wins, which is the point, but the
+      // ranking cannot be walked back and forth by evidence that keeps
+      // changing its mind. The bar is repetition rather than the largest gap
+      // the game has measured: a wider gap can be different lighting rather
+      // than better evidence, and making it a floor would protect exactly
+      // the confident early mistake this exists to correct.
+      if (++contrary_fits_ >= required_confirmations_) {
+        dark_cluster_ = order;
+        ranking_gap_ = static_cast<float>(gap);
+        contrary_fits_ = 0;
+        if (required_confirmations_ < 5)
+          ++required_confirmations_;
+        ++ranking_revision_;
+      }
+    } else {
+      // Agreement, or a contradiction too weak to act on. Either way the
+      // ranking in force stands: an uncertain fit is a reason to keep the
+      // current answer, not to withdraw it and blank every badge.
+      contrary_fits_ = 0;
     }
   }
 

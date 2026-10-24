@@ -56,6 +56,11 @@ bool RinkMiniMap::Append(
       std::isfinite(snapshot->coordinate_height) && snapshot->coordinate_width > 0 && snapshot->coordinate_height > 0;
   if (!have_tracks)
     smoothing_.Reset();
+  if (frame->source_id != source_id_) {
+    // Another stream's teams are not this one's, named or not.
+    named_sides_ = false;
+    analytics_epoch_.reset();
+  }
   if (!last_pts_ || frame->source_id != source_id_ || frame->buf_pts < *last_pts_ ||
       frame->buf_pts == player_analytics::kInvalidTime || frame->buf_pts - *last_pts_ > 300000000 ||
       frame->frame_num < last_frame_num_)
@@ -119,13 +124,27 @@ bool RinkMiniMap::Append(
   if (result && (result->pts_ns != frame->buf_pts || result->stream_id != frame->source_id))
     result = nullptr;
   if (result) {
-    if (analytics_epoch_ && *analytics_epoch_ != result->epoch)
+    if (analytics_epoch_ && *analytics_epoch_ != result->epoch) {
       smoothing_.Reset();
+      // A new analytics epoch is a new fit: whatever sides were named belong
+      // to the run that ended, not to this one.
+      named_sides_ = false;
+    }
     analytics_epoch_ = result->epoch;
   }
   size_t visible = 0;
-  // Reuse the upstream box palette even when box drawing is off. These colours
-  // identify tracks, not teams; ignored players match the boxes' grey override.
+  // Teams, when the game has named them, are the thing worth reading off a
+  // minimap: two groups in one hue, dark against light, rather than 32 track
+  // colours nobody can tell apart at this size. Without a side the dot is
+  // hollow, which says "not known" instead of guessing a group. Ignored
+  // players keep the boxes' grey override.
+  const Color team_dark{0.16F, 0.18F, 0.22F, 1.0F};
+  const Color team_light{0.93F, 0.94F, 0.96F, 1.0F};
+  // Switch to the two-group reading only once this stream has named a side,
+  // and keep reading it that way afterwards: a run with teams off keeps its
+  // track colours, and a frame that happens to carry no decided track must
+  // not flip the whole map back for one frame. The flag is latched from the
+  // per-player walk below, so no extra pass over the results is needed.
   const size_t inspected = have_tracks ? std::min(snapshot->player_rects.size(), player_analytics::kMaximumTracks) : 0;
   for (size_t index = 0; index < inspected; ++index) {
     const auto& player = snapshot->player_rects[index];
@@ -147,13 +166,18 @@ bool RinkMiniMap::Append(
     const uint32_t color_key = (channel(palette.red) << 16) | (channel(palette.green) << 8) | channel(palette.blue);
     const auto p = point(smoothing_.Update(player.track_id, frame->buf_pts, color_key, *location));
     std::string_view number;
+    auto side = player_analytics::TeamLabel::kUnknown;
     if (result && player.track_id != player_analytics::kUntrackedId) {
       for (size_t i = 0; i < std::min(result->player_count, player_analytics::kMaximumTracks); ++i) {
         const auto& value = result->players[i];
-        const auto& jersey = value.jersey;
-        if (value.track_id != player.track_id || jersey.observed_at > frame->buf_pts ||
-            jersey.expires_at < frame->buf_pts)
+        if (value.track_id != player.track_id)
           continue;
+        // Same walk the jersey read already costs: affiliation rides along on
+        // the entry this loop was going to find anyway.
+        side = value.team.label;
+        const auto& jersey = value.jersey;
+        if (jersey.observed_at > frame->buf_pts || jersey.expires_at < frame->buf_pts)
+          break;
         size_t length = 0;
         while (length < 2 && jersey.text[length] >= '0' && jersey.text[length] <= '9')
           ++length;
@@ -162,12 +186,36 @@ bool RinkMiniMap::Append(
         break;
       }
     }
+    // HOME and AWAY are names for the two groups; which sweater each wore is
+    // what the map draws, so an unnamed game reads its labels directly and a
+    // named one maps home and away back through options_.home_is_dark.
+    const bool home_in_dark = options_.home_is_dark.value_or(true);
+    const bool dark_side = side == player_analytics::TeamLabel::kDark ||
+        (side == player_analytics::TeamLabel::kHome && home_in_dark) ||
+        (side == player_analytics::TeamLabel::kAway && !home_in_dark);
+    const bool light_side = side == player_analytics::TeamLabel::kLight ||
+        (side == player_analytics::TeamLabel::kAway && home_in_dark) ||
+        (side == player_analytics::TeamLabel::kHome && !home_in_dark);
+    named_sides_ = named_sides_ || dark_side || light_side;
     const auto& box_color = player.ignored ? preview_overlay::kIgnoredPlayerColor : box.border_color;
-    const Color color{float(box_color.red), float(box_color.green), float(box_color.blue), float(box_color.alpha)};
-    const Color label = color.red * .2126F + color.green * .7152F + color.blue * .0722F > .5F ? ink : white;
+    const Color track_color{
+        float(box_color.red), float(box_color.green), float(box_color.blue), float(box_color.alpha)};
+    const bool named = !player.ignored && (dark_side || light_side);
+    const Color color = !named ? track_color : dark_side ? team_dark : team_light;
     const float radius = (number.empty() ? 5.0F : 10.0F) * scale;
+    // A named side fills; an unknown one is left hollow over the ice so the
+    // two readings cannot be mistaken for each other.
+    const bool hollow = !named && !player.ignored && named_sides_;
     commands->AddDisc(p.x, p.y, radius + 1.5F * scale, white);
-    commands->AddDisc(p.x, p.y, radius, color);
+    if (hollow) {
+      commands->AddDisc(p.x, p.y, radius, ink);
+      commands->AddDisc(p.x, p.y, radius - 1.5F * scale, white);
+    } else {
+      commands->AddDisc(p.x, p.y, radius, color);
+    }
+    // Numbers read against whatever the dot ended up being filled with.
+    const Color fill = hollow ? white : color;
+    const Color label = fill.red * .2126F + fill.green * .7152F + fill.blue * .0722F > .5F ? ink : white;
     if (!number.empty()) {
       const float text_height = 13 * scale;
       commands->AddText(p.x - number.size() * text_height / 3, p.y - text_height / 2, text_height, number, label);

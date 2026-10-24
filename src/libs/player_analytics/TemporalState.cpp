@@ -252,50 +252,52 @@ void ActionHistory::Reset() noexcept {
 void ActionHistory::Append(uint64_t pts_ns, const Pose& pose) noexcept {
   samples_[next_] = pose;
   times_[next_] = pts_ns;
-  next_ = (next_ + 1) % kActionSamples;
-  count_ = std::min(count_ + 1, kActionSamples);
+  next_ = (next_ + 1) % sample_count();
+  count_ = std::min(count_ + 1, sample_count());
 }
 
 bool ActionHistory::Observe(uint64_t pts_ns, const Pose& pose, float width, float height) noexcept {
-  if (pts_ns == kInvalidTime || !std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0) {
+  if (pts_ns == kInvalidTime || !std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0 ||
+      (topology_ != PoseTopology::kCoco17 && topology_ != PoseTopology::kHarpet18)) {
     Reset();
     return false;
   }
   if (previous_pts_ != kInvalidTime &&
-      (pts_ns < previous_pts_ || pts_ns - previous_pts_ > kActionMaximumGap || width != width_ || height != height_))
+      (pts_ns < previous_pts_ || pts_ns - previous_pts_ > maximum_gap() || width != width_ || height != height_))
     Reset();
   if (pts_ns == previous_pts_)
     return false;
   Pose normalized{};
   size_t confident = 0;
-  for (size_t i = 0; i < pose.size(); ++i) {
+  for (size_t i = 0; i < joint_count(); ++i) {
     const auto& p = pose[i];
     if (!std::isfinite(p.x) || !std::isfinite(p.y) || !Probability(p.confidence)) {
       Reset();
       return false;
     }
     if (p.confidence >= 0.3F) {
-      normalized[i] = {2 * p.x / width - 1, 2 * p.y / height - 1, p.confidence};
+      normalized[i] = hockey() ? p : Keypoint{2 * p.x / width - 1, 2 * p.y / height - 1, p.confidence};
       if (!std::isfinite(normalized[i].x) || !std::isfinite(normalized[i].y)) {
         Reset();
         return false;
       }
-      ++confident;
+      if (!hockey() || i < 16)
+        ++confident;
     }
   }
-  if (confident < 8 || pts_ns > kInvalidTime - 1 - kActionSamplePeriod) {
+  if (confident < 8 || pts_ns > kInvalidTime - 1 - sample_period() || (hockey() && normalized[6].confidence < 0.3F)) {
     Reset();
     return false;
   }
   if (previous_pts_ == kInvalidTime) {
     Append(pts_ns, normalized);
-    next_sample_ = pts_ns + kActionSamplePeriod;
+    next_sample_ = pts_ns + sample_period();
   } else {
     while (next_sample_ <= pts_ns) {
       const float weight = static_cast<float>(next_sample_ - previous_pts_) / (pts_ns - previous_pts_);
       Pose sample{};
       size_t valid_joints = 0;
-      for (size_t i = 0; i < sample.size(); ++i) {
+      for (size_t i = 0; i < joint_count(); ++i) {
         const float confidence = next_sample_ == pts_ns ? normalized[i].confidence
                                                         : std::min(previous_[i].confidence, normalized[i].confidence);
         if (confidence > 0) {
@@ -303,15 +305,16 @@ bool ActionHistory::Observe(uint64_t pts_ns, const Pose& pose, float width, floa
               previous_[i].x + weight * (normalized[i].x - previous_[i].x),
               previous_[i].y + weight * (normalized[i].y - previous_[i].y),
               confidence};
-          ++valid_joints;
+          if (!hockey() || i < 16)
+            ++valid_joints;
         }
       }
-      if (valid_joints < 8) {
+      if (valid_joints < 8 || (hockey() && sample[6].confidence < 0.3F)) {
         Reset();
         return false;
       }
       Append(next_sample_, sample);
-      next_sample_ += kActionSamplePeriod;
+      next_sample_ += sample_period();
     }
   }
   previous_ = normalized;
@@ -322,26 +325,27 @@ bool ActionHistory::Observe(uint64_t pts_ns, const Pose& pose, float width, floa
 }
 
 bool ActionHistory::ready(uint64_t now_ns) const noexcept {
-  return count_ == kActionSamples && now_ns != kInvalidTime && previous_pts_ != kInvalidTime &&
-      now_ns >= previous_pts_ && now_ns - previous_pts_ <= kActionMaximumGap;
+  return count_ == sample_count() && now_ns != kInvalidTime && previous_pts_ != kInvalidTime &&
+      now_ns >= previous_pts_ && now_ns - previous_pts_ <= maximum_gap();
 }
 
 uint64_t ActionHistory::window_start() const noexcept {
-  return count_ ? times_[(next_ + kActionSamples - count_) % kActionSamples] : kInvalidTime;
+  return count_ ? times_[(next_ + sample_count() - count_) % sample_count()] : kInvalidTime;
 }
 
 uint64_t ActionHistory::window_end() const noexcept {
-  return count_ ? times_[(next_ + kActionSamples - 1) % kActionSamples] : kInvalidTime;
+  return count_ ? times_[(next_ + sample_count() - 1) % sample_count()] : kInvalidTime;
 }
 
 bool ActionHistory::WriteTensor(uint64_t now_ns, float* output, size_t count) const noexcept {
-  if (!output || count != kTensorFloats || !ready(now_ns))
+  if (!output || count != tensor_floats() || !ready(now_ns))
     return false;
   std::fill(output, output + count, 0);
   size_t cursor = 0;
-  for (size_t time = 0; time < kActionSamples; ++time) {
-    const auto& pose = samples_[(next_ + time) % kActionSamples];
-    for (const auto& point : pose) {
+  for (size_t time = 0; time < sample_count(); ++time) {
+    const auto& pose = samples_[(next_ + time) % sample_count()];
+    for (size_t joint = 0; joint < joint_count(); ++joint) {
+      const auto& point = pose[joint];
       output[cursor++] = point.x;
       output[cursor++] = point.y;
       output[cursor++] = point.confidence;
@@ -378,9 +382,10 @@ bool ActionLabelState::Observe(
   if (pts_ns == kInvalidTime || pts_ns == last_attempt_)
     return false;
   last_attempt_ = pts_ns;
-  if (window_start == kInvalidTime || window_start > pts_ns ||
-      pts_ns - window_start < (kActionSamples - 1) * kActionSamplePeriod || label < 0 || label >= 60 ||
-      !Probability(confidence) || !Probability(minimum) || confidence < minimum) {
+  const bool hockey = topology_ == PoseTopology::kHarpet18;
+  if ((topology_ != PoseTopology::kCoco17 && !hockey) || window_start == kInvalidTime || window_start > pts_ns ||
+      pts_ns - window_start < (hockey ? 333333334ULL : (kActionSamples - 1) * kActionSamplePeriod) || label < 0 ||
+      label >= (hockey ? 4 : 60) || !Probability(confidence) || !Probability(minimum) || confidence < minimum) {
     contender_ = -1;
     contender_count_ = 0;
     return false;

@@ -114,17 +114,23 @@ std::vector<std::string> Strings(const YAML::Node& node, size_t count, size_t ma
 void PoseProfile(const YAML::Node& node, ModelManifest* manifest) {
   Require(manifest->model_family == "rtmpose", "pose model family must be rtmpose");
   manifest->topology_id = String(node, "topology_id");
-  Require(manifest->topology_id == "coco17", "only coco17 pose layout is supported");
+  const bool hockey = manifest->topology_id == "harpet18";
+  Require(hockey || manifest->topology_id == "coco17", "unsupported pose topology");
+  manifest->pose_joints = hockey ? 18 : 17;
+  manifest->pose_padding = hockey ? 3.5F : 1.25F;
   manifest->inputs = Tensors(node["inputs"], {{-1, 3, 256, 192}});
-  manifest->outputs = Tensors(node["outputs"], {{-1, 17, 384}, {-1, 17, 512}});
+  const int64_t joints = manifest->pose_joints;
+  manifest->outputs = Tensors(node["outputs"], {{-1, joints, 384}, {-1, joints, 512}});
   const auto p = node["preprocessing"];
   Keys(p, {"id", "color", "mean", "std", "padding", "simcc_split_ratio", "flip_test"});
   manifest->preprocessing_id = String(p, "id");
-  Require(manifest->preprocessing_id == "rtmpose-coco17-affine-v1", "unsupported pose preprocessing");
+  Require(
+      manifest->preprocessing_id == (hockey ? "rtmpose-harpet18-affine-v1" : "rtmpose-coco17-affine-v1"),
+      "unsupported pose preprocessing");
   Require(String(p, "color") == "rgb", "pose color order must be rgb");
   Numbers(p, "mean", {123.675, 116.28, 103.53});
   Numbers(p, "std", {58.395, 57.12, 57.375});
-  Number(p, "padding", 1.25);
+  Number(p, "padding", manifest->pose_padding);
   Number(p, "simcc_split_ratio", 2);
   Require(!p["flip_test"].as<bool>(), "pose flip test is unsupported by this deployment profile");
 }
@@ -197,20 +203,36 @@ void TeamProfile(const YAML::Node& node, ModelManifest* manifest) {
 void ActionProfile(const YAML::Node& node, ModelManifest* manifest) {
   Require(manifest->model_family == "stgcnpp", "action model family must be stgcnpp");
   manifest->topology_id = String(node, "topology_id");
-  Require(manifest->topology_id == "coco17", "action model requires coco17 keypoints");
-  manifest->inputs = Tensors(node["inputs"], {{-1, 2, 100, 17, 3}});
-  manifest->outputs = Tensors(node["outputs"], {{-1, 60}});
-  manifest->labels = Strings(node["labels"], 60, 128);
+  const bool hockey = manifest->topology_id == "harpet18";
+  Require(hockey || manifest->topology_id == "coco17", "unsupported action topology");
+  manifest->pose_joints = hockey ? 18 : 17;
+  manifest->action_samples = hockey ? 3 : 100;
+  manifest->action_persons = hockey ? 1 : 2;
+  manifest->inputs = Tensors(
+      node["inputs"],
+      hockey ? std::vector<std::vector<int64_t>>{{-1, 1, 3, 18, 3}}
+             : std::vector<std::vector<int64_t>>{{-1, 2, 100, 17, 3}});
+  manifest->outputs = Tensors(node["outputs"], {{-1, hockey ? 4 : 60}});
+  manifest->labels = Strings(node["labels"], hockey ? 4 : 60, 128);
+  if (hockey)
+    Require(
+        manifest->labels == std::vector<std::string>{"backward skating", "forward skating", "passing", "shooting"},
+        "HARPET action labels must follow the trained class order");
   const auto p = node["preprocessing"];
   Keys(p, {"id", "coordinate_normalization", "sample_period_ns", "max_gap_ns", "samples", "second_person"});
   manifest->preprocessing_id = String(p, "id");
-  Require(manifest->preprocessing_id == "stgcnpp-coco17-causal-v1", "unsupported action preprocessing");
   Require(
-      String(p, "coordinate_normalization") == "full_canvas_minus1_plus1" && String(p, "second_person") == "zeros",
+      manifest->preprocessing_id == (hockey ? "stgcnpp-harpet18-causal-v1" : "stgcnpp-coco17-causal-v1"),
+      "unsupported action preprocessing");
+  Require(
+      String(p, "coordinate_normalization") ==
+              (hockey ? "pixels_model_root_body_height" : "full_canvas_minus1_plus1") &&
+          String(p, "second_person") == (hockey ? "absent" : "zeros"),
       "unsupported action normalization/person profile");
   Require(
-      p["sample_period_ns"].as<uint64_t>() == kActionSamplePeriod &&
-          p["max_gap_ns"].as<uint64_t>() == kActionMaximumGap && p["samples"].as<size_t>() == kActionSamples,
+      p["sample_period_ns"].as<uint64_t>() == (hockey ? 166666667ULL : kActionSamplePeriod) &&
+          p["max_gap_ns"].as<uint64_t>() == (hockey ? 250000000ULL : kActionMaximumGap) &&
+          p["samples"].as<size_t>() == manifest->action_samples,
       "unsupported causal action timeline profile");
 }
 

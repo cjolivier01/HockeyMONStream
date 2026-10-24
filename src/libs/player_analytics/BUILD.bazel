@@ -48,8 +48,8 @@ cc_binary(
 cc_test(
     name = "model_catalog_test",
     srcs = ["ModelCatalogTest.cpp"],
-    args = ["$(location //configs:player-models/" + feature + ".json)" for feature in ["pose", "jersey", "action", "reid", "team"]],
-    data = ["//configs:player-models/" + feature + ".json" for feature in ["pose", "jersey", "action", "reid", "team"]],
+    args = ["$(location //configs:player-models/" + feature + ".json)" for feature in ["pose", "jersey", "action", "reid", "team", "hockey-pose", "hockey-action"]],
+    data = ["//configs:player-models/" + feature + ".json" for feature in ["pose", "jersey", "action", "reid", "team", "hockey-pose", "hockey-action"]],
     deps = [":model_catalog", ":model_contract"],
 )
 

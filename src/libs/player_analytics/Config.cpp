@@ -150,8 +150,13 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
       // game.home_is_dark through as 1/0 like every other mapped flag, and
       // yaml-cpp's bool conversion rejects that spelling. Absent and null stay
       // "nobody said", which is why the presence test is separate.
-      if (node["home-is-dark"] && !node["home-is-dark"].IsNull())
-        config.home_is_dark = Flag(node["home-is-dark"]);
+      // A CLI override is always a string, so "null" is how the desktop says
+      // nobody named the sides on a run it has not saved yet. YAML null and
+      // an absent key mean the same thing.
+      const YAML::Node home = node["home-is-dark"];
+      const bool cleared = home && home.IsScalar() && (home.Scalar() == "null" || home.Scalar() == "~");
+      if (home && !home.IsNull() && !cleared)
+        config.home_is_dark = Flag(home);
     }
     if (config.jersey.enabled && node["jersey"]["roi-mode"]) {
       const auto mode = node["jersey"]["roi-mode"].as<std::string>();
@@ -166,6 +171,14 @@ absl::StatusOr<Config> ParseConfig(const YAML::Node& node) {
     if (config.action.enabled && !config.pose.every_frame && config.pose.rate_hz < 10)
       throw std::invalid_argument(
           "action recognition requires pose.rate-hz >= 10 or fps for the causal sample profile");
+    if (config.action.enabled && config.pose.model != "custom" && config.action.model != "custom") {
+      const auto* pose = FindModel("pose", config.pose.model);
+      const auto* action = FindModel("action", config.action.model);
+      if (YAML::Load(pose->contract_json)["topology_id"].as<std::string>() !=
+          YAML::Load(action->contract_json)["topology_id"].as<std::string>())
+        throw std::invalid_argument(
+            "pose and action models must use the same joint layout; select both HARPET models for hockey actions");
+    }
     config.maximum_tracks = Limit(node, "max-tracks", kMaximumTracks, kMaximumTracks);
     config.maximum_due_rois = Limit(node, "max-due-rois", kMaximumDueRois, kMaximumDueRois);
     if (config.jersey.enabled && config.jersey_roi_mode == JerseyRoiMode::kPose && config.maximum_due_rois < 2)

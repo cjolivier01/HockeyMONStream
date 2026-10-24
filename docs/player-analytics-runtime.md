@@ -29,7 +29,7 @@ fallback. [Preparation details](player-model-preparation.md) also document custo
 The synchronous metadata element sits after `nvtracker`, before `vpplaytracker`.
 It consumes tracked person boxes, samples padded ROIs on GPU, runs TensorRT on
 one owned stream and reduces SimCC outputs on GPU. Only compact joint results
-return to the CPU (at most 1,632 bytes per eight-player batch). The video surface
+return to the CPU (at most 1,728 bytes per eight-player batch). The video surface
 and all crop pixels remain on GPU. The GStreamer map accesses only the NVMM
 surface descriptor. On Jetson, surface arrays use a read-only CUDA/EGL import;
 logical image dimensions remain separate from aligned EGL storage dimensions;
@@ -67,7 +67,8 @@ A `model` ID makes that selection explicit. `model: custom` uses an existing `bu
 directory instead; legacy paths without a model ID retain this custom behavior.
 Bbox jersey mode works without pose. Pose-guided jersey requires pose enabled and
 fresh same-frame shoulders/hips; it skips incomplete poses without falling back
-to bbox crops. Action requires explicit COCO17 pose at at least 10 Hz or `fps`.
+to bbox crops. Action requires explicit pose at at least 10 Hz or `fps`, with
+the same joint layout as the selected action model.
 In `fps` mode actual input cadence and model budgets must still satisfy the
 history's source-time gap requirements. Drawing
 preferences cannot satisfy either dependency. Team needs neither pose nor a
@@ -82,7 +83,35 @@ Team affiliation is fitted per stream, not classified: two centroids over the
 embeddings this game has produced, ranked dark-vs-light by mean crop lightness.
 `game.home_is_dark` maps to `pipeline.player-analytics.home-is-dark` and names
 the two groups; without it the overlay reads DARK and LIGHT, which is unnamed
-but never wrong.
+but never wrong. **Home sweater** in the Players tab writes it: dark, light,
+or not set. Clearing it writes an explicit null rather than removing the key,
+and it never reaches through to erase a native `home-is-dark`, which still
+wins where one exists.
+
+The ranking is taken on the first balanced fit whose groups differ by
+`min_lightness_gap`, and a later fit can take it back. Each correction then
+asks for one more consecutive confirmation than the last, up to five, so
+sustained contradiction always wins while a ranking cannot be walked back and
+forth by evidence that keeps changing its mind.
+
+One limitation to know about: a track leaves the sampling schedule once its
+side commits, so a game whose tracks all settle shortly after the first fit
+can stop producing the crops a refit needs, and a wrong ranking then waits on
+track churn. `team-unranked` and `team-reranks` make that visible, but there
+is no deadline on it. Early crops can catch
+one squad under the lights and the other in shadow, and a ranking taken that
+way is wrong for the rest of the game, so a fit measuring the opposite order
+replaces it once it beats the same bar by `switch_hysteresis` on consecutive
+accepted fits — the terms the per-track vote already uses against its own
+incumbent. A refit that was thrown away counts for neither side and breaks the
+run. Centroid pairing keeps index 0 on the same squad across refits, so
+the contradiction is evidence about the ranking rather than about which group
+is which, and flipping it relabels every badge at once with no per-track
+churn. An established ranking is never withdrawn: a fit that cannot tell
+leaves the current answer standing rather than blanking every badge.
+`team-reranks` in the shutdown counters reports how often this happened, and
+`team-unranked` separates crops that arrived before any ranking from
+`team-unassigned`, which counts crops the centroids were too close to call.
 
 Jersey inference uses the hockey PARSeq profile with the full 95-token vocabulary,
 one/two digits followed by EOS, and preserved leading zeroes. GPU preprocessing
@@ -94,18 +123,66 @@ a retained label can appear between inference updates, then expires without
 repeat reinforcement. Expired/evicted identities and resets clear evidence.
 The batch-eight resize workspace is about 26 MiB, allocated only with jersey enabled.
 
-STGCN++ consumes 100 causal COCO17 samples at 100 ms intervals (9.9 seconds),
+The generic STGCN++ selection consumes 100 causal COCO17 samples at 100 ms intervals (9.9 seconds),
 with a zero second-person slot. At least eight joints at confidence >=0.3 are
 required per observation. Interpolation uses only observations already received;
 gaps over 150 ms, missing identities, inadequate poses and source/seek changes
 clear history and labels. Only a new complete window may run inference; repeatedly
 processing one window cannot strengthen its label. The bundled model profile is
-NTU60 daily activities, **not a trained hockey event detector**. Useful hockey
-accuracy requires separate evaluation or training.
+NTU60 daily activities. For skating, passing and shooting, select the hockey
+models described below.
 
-Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V4`, schema 4, with separate fresh
-COCO17 observations, retained display poses and team affiliation. All producers and consumers must
-be rebuilt together; no persistent telemetry schema changes.
+### Hockey pose and actions
+
+Select **RTMPose-M hockey** and **Hockey actions** together in Program Controls →
+Players, or apply [hockey-example.yaml](../configs/player-analytics/hockey-example.yaml).
+Existing generic defaults are unchanged. Mixed COCO/HARPET selections fail
+validation; custom bundles are also checked at engine loading.
+
+The hockey profile uses `harpet18`: 16 MPII body joints, stick top (16), and stick
+tip (17). It draws the MPII skeleton and a yellow stick segment, and uses the
+correct shoulders/hips for pose-guided jersey crops. Its 192×256 input uses
+body-box padding 3.5 to include the extended stick. Tracked detector boxes and
+occlusion can still move the tip outside the crop.
+
+The hockey action model consumes three causal poses spaced 166,666,667 ns apart,
+covering about 333 ms. Input is `[N,1,3,18,3]` in metadata pixels with confidence.
+Pelvis centering, visible-body-height normalization and masking confidence below
+0.3 are inside the model. Every observation/interpolated sample needs eight
+confident body joints and a confident pelvis; gaps above 250 ms reset history.
+No future frame is used. The existing bounded scheduler and label hysteresis
+remain in force, so inference coverage depends on video cadence and model budget.
+
+Class order is backward skating, forward skating, passing, shooting. This is a
+four-class player classifier: idle, goalie and other actions have no trained
+class. Confidence rejection does not turn it into a general event detector.
+Training used VIP-HARPET triplets with exact duplicate leakage removed. Metrics,
+data limitations, reproducible commands and other candidate datasets are in
+[HockeyMON's training record](https://github.com/cjolivier01/HockeyMON/blob/hm-hockey-keypoints/docs/hockey-training.md).
+Benchmark boxes come from body annotations; detector-to-action live accuracy is
+not established by those scores.
+
+Frame metadata is `HSTREAM.PLAYER_ANALYTICS.V5`, schema 5: an explicit pose
+topology with 18-slot storage (the final slot is zero for COCO17), separate
+fresh observations and retained display poses, and team affiliation. All
+producers and consumers must be rebuilt together; no persistent telemetry
+schema changes.
+
+Drawing selections apply to a run in progress. The desktop sends the whole
+selection with `@set-player-drawing <generation> <layers>`, and the runner
+applies it to the Program cropper and to whichever preview sinks that graph
+built -- which of them exist depends on the run, so addressing them by name
+from the desktop would fail whenever one is absent. The runner answers
+`HSTREAM_PLAYER_DRAWING status=applied|failed`, and only an accepted
+selection is remembered as live. The same mask is reapplied when the graph is
+rebuilt, so a seek or stage restart does not revert to the launch-time
+choice. It is authoritative over the launch-time `player-overlay-layers` and
+`plot-player-tracking` keys, so a layer switched off mid-run stays off.
+`player-drawing-layers` is also allowlisted as an ordinary runtime property
+for scripted use against a named element. It selects among results the models already produced:
+no model starts, stops, or changes cadence, which is why the compute choices
+in the Players tab disable themselves while a run owns the pipeline. Tracks
+that had no colour allocated when the run started draw grey until it restarts.
 
 `max-due-rois` is an aggregate model-sample budget shared by pose, jersey, action
 and team. Weighted rotating turns favor pose 2:1:1:1 and lend unused work. Team
@@ -124,7 +201,9 @@ hide later ready tracks. Capacity and low video cadence may prevent action histo
 from becoming ready; the pipeline reports unknown rather than inventing poses.
 The scheduler bounds analytics work without dropping video frames.
 
-Per sample, compact D2H is 204 bytes for pose or 8 bytes for jersey/action. Team is
+Per sample, compact D2H is 216 bytes for a pose -- the decoder always fills the
+18-slot array and zeroes the unused slot for COCO17 -- or 8 bytes for
+jersey/action. Team is
 the exception: 4 bytes of crop lightness plus the raw 1 KiB embedding, because the
 two-means fit that turns an embedding into a side is a host-side per-stream model
 and no reduction kernel can stand in for it. Action

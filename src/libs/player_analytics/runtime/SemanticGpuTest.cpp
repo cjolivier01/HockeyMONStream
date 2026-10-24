@@ -80,6 +80,17 @@ void RoiTests() {
       pa::MakeJerseyCrop(view, {10, 20, 100, 200}, 320, 960, pa::JerseyRoiMode::kPose, &pose).reason ==
           pa::JerseyCropReason::kInsufficientPose,
       "pose mode implicitly fell back");
+  pa::Pose hockey{};
+  hockey[12] = {30, 60, .8F};
+  hockey[13] = {70, 60, .8F};
+  hockey[2] = {35, 120, .8F};
+  hockey[3] = {65, 120, .8F};
+  const auto hockey_torso = pa::MakeJerseyCrop(
+      view, {10, 20, 100, 200}, 320, 960, pa::JerseyRoiMode::kPose, &hockey, pa::PoseTopology::kHarpet18);
+  Check(
+      hockey_torso && hockey_torso.crop.left == torso.crop.left && hockey_torso.crop.top == torso.crop.top &&
+          hockey_torso.crop.width == torso.crop.width && hockey_torso.crop.height == torso.crop.height,
+      "HARPET shoulders/hips do not select the correct torso");
   Check(
       pa::MakeJerseyCrop(view, {-1000, -1000, 10, 10}, 320, 960, pa::JerseyRoiMode::kBox).reason ==
           pa::JerseyCropReason::kOutsideImage,
@@ -129,9 +140,8 @@ void CropTests(const fs::path& path) {
     }
     Cuda(cudaMemcpyAsync(frame.data, pixels.data(), pixels.size(), cudaMemcpyHostToDevice, stream.stream));
     image.format = pa::PixelFormat::kRgba8;
-    Cuda(
-        pa::PreprocessJersey(
-            image, crops.data(), count, scratch.data, pa::JerseyScratchBytes(8), input.as<float>(), stream.stream));
+    Cuda(pa::PreprocessJersey(
+        image, crops.data(), count, scratch.data, pa::JerseyScratchBytes(8), input.as<float>(), stream.stream));
     Cuda(cudaMemcpyAsync(
         tensor.data(),
         input.data,
@@ -158,9 +168,8 @@ void CropTests(const fs::path& path) {
     }
     Cuda(cudaMemcpyAsync(frame.data, packed.data(), packed.size(), cudaMemcpyHostToDevice, stream.stream));
     image.format = pa::PixelFormat::kRgba10A2;
-    Cuda(
-        pa::PreprocessJersey(
-            image, crops.data(), count, scratch.data, pa::JerseyScratchBytes(8), input.as<float>(), stream.stream));
+    Cuda(pa::PreprocessJersey(
+        image, crops.data(), count, scratch.data, pa::JerseyScratchBytes(8), input.as<float>(), stream.stream));
     Cuda(cudaMemcpyAsync(
         ten_tensor.data(),
         input.data,
@@ -263,6 +272,18 @@ void DecoderTests(const fs::path& bundle) {
       pa::ReduceAction(action_in.as<float>(), 0, action_out.as<pa::ActionObservation>(), stream.stream) ==
           cudaErrorInvalidValue,
       "zero batch launched");
+  const std::array<float, 12> hockey_logits{
+      {0, 0, 0, 0, -10, -10, -10, 10, 1, 2, 3, std::numeric_limits<float>::quiet_NaN()}};
+  Cuda(cudaMemcpyAsync(
+      action_in.data, hockey_logits.data(), sizeof(hockey_logits), cudaMemcpyHostToDevice, stream.stream));
+  Cuda(pa::ReduceAction(action_in.as<float>(), 3, action_out.as<pa::ActionObservation>(), stream.stream, 4));
+  Cuda(cudaMemcpyAsync(
+      predictions.data(), action_out.data, 3 * sizeof(pa::ActionObservation), cudaMemcpyDeviceToHost, stream.stream));
+  Cuda(cudaStreamSynchronize(stream.stream));
+  Check(
+      predictions[0].label == 0 && std::abs(predictions[0].confidence - .25F) < .000001F && predictions[1].label == 3 &&
+          predictions[1].confidence > .999F && predictions[2].label == -1,
+      "four-class hockey softmax, stride or nonfinite suppression failed");
   std::cout << "metadata ROI and compact jersey/action decoder tests passed\n";
 }
 int main(int argc, char** argv) {

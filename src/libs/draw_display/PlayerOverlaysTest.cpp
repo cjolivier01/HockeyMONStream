@@ -560,6 +560,29 @@ void IgnoredAndSemanticLabels() {
       list.size() == 13 && list.data()[11].y0 >= list.data()[4].y1,
       "play-only snapshot lost ignored semantic row separation");
 }
+void HockeySkeleton() {
+  Frame frame;
+  auto result = Result();
+  result.pose_topology = pa::PoseTopology::kHarpet18;
+  result.players[0].action = {};
+  result.players[0].action_text = {};
+  result.players[0].pose[16] = {180, 250, .9F};
+  result.players[0].pose[17] = {600, 400, .9F};
+  frame.Attach(result);
+  a::CommandList list;
+  a::BuildPlayerOverlays(frame.frame, a::kPose, .3F, nullptr, 800, 600, &list);
+  Check(list.size() == 34, "hockey skeleton must emit 16 bones and 18 joints");
+  const auto& stick = list.data()[15];
+  Near(stick.x0, 180, "stick must begin at the annotated stick top");
+  Near(stick.x1, 600, "stick tip was omitted or connected as a COCO joint");
+  Near(stick.color.red, 1, "stick must use its distinct yellow color");
+  Frame hidden;
+  result.players[0].pose[17].confidence = 0;
+  hidden.Attach(result);
+  list.Clear();
+  a::BuildPlayerOverlays(hidden.frame, a::kPose, .3F, nullptr, 800, 600, &list);
+  Check(list.size() == 32, "missing stick tip must suppress both its joint and bone");
+}
 } // namespace
 int main() {
   struct Test {
@@ -567,6 +590,7 @@ int main() {
     void (*run)();
   };
   const Test cases[] = {
+      {"hockey_skeleton", HockeySkeleton},
       {"geometry_and_colors", GeometryAndColors},
       {"copy_on_write_colors", CopyOnWriteColors},
       {"overflow_colors", OverflowColors},

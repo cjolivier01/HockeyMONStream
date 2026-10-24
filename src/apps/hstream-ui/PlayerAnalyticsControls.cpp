@@ -203,8 +203,9 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
   addModel(kAnalytics + "action.model", "playerActionModel", "Activity model", compute);
   addPath(kAnalytics + "action.bundle", "playerActionBundle", true, compute);
   auto* action_help = new QLabel(
-      "Activities require pose at 10 Hz or faster and 9.9 seconds of continuous observations. "
-      "Labels describe generic activities, not hockey events.");
+      "Activities require pose at 10 Hz or faster, and continuous observations: 9.9 seconds for the generic "
+      "model, a third of a second for the hockey one. The generic labels describe everyday activities, not "
+      "hockey events; the hockey model needs the hockey pose selected with it.");
   action_help->setWordWrap(true);
   static_cast<QFormLayout*>(compute->layout())->addRow(action_help);
   // Unlike the other three, team has a canonical enable key that HockeyMON
@@ -213,9 +214,19 @@ PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(pare
   addFlag("team.enabled", kAnalytics + "team.enable", "playerTeamEnable", "Label home and away", compute);
   addModel(kAnalytics + "team.model", "playerTeamModel", "Team model", compute);
   addPath(kAnalytics + "team.bundle", "playerTeamBundle", true, compute);
+  auto* home_side = new QComboBox();
+  home_side->setObjectName("playerHomeSide");
+  home_side->addItem("Not set (badges read DARK and LIGHT)", QString());
+  home_side->addItem("Home wears dark", QString("true"));
+  home_side->addItem("Home wears light", QString("false"));
+  static_cast<QFormLayout*>(compute->layout())->addRow("Home sweater", home_side);
+  fields_.push_back({"game.home_is_dark", kAnalytics + "home-is-dark", Kind::kSide, home_side, QString()});
+  connect(home_side, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, index = fields_.size() - 1] {
+    changed(index);
+  });
   auto* team_help = new QLabel(
-      "Teams are split by appearance within this game, so the two groups read DARK and LIGHT until "
-      "game.home_is_dark says which sweater the home side wore. The split needs a few hundred crops "
+      "Teams are split by appearance within this game, so the two groups read DARK and LIGHT until the home "
+      "sweater above says which side wore which. The split needs a few hundred crops "
       "before the first labels appear, and a track stops being sampled once its side is decided.");
   team_help->setWordWrap(true);
   static_cast<QFormLayout*>(compute->layout())->addRow(team_help);
@@ -312,15 +323,8 @@ void PlayerAnalyticsControls::addModel(const QString& key, const QString& name, 
   editor->setObjectName(name);
   const auto feature = ModelFeature(key);
   const auto id = std::string(pa::DefaultModelId(feature));
-  const auto* model = pa::FindModel(feature, id);
-  const QString title = model ? QString::fromUtf8(model->label) : QString::fromStdString(id);
-  editor->addItem(title, QString::fromStdString(id));
-  if (feature == "reid") {
-    const std::string alternative = "reidentificationnet-deployable-v1.2";
-    const auto* nvidia = pa::FindModel(feature, alternative);
-    if (nvidia && alternative != id)
-      editor->addItem(QString::fromUtf8(nvidia->label), QString::fromStdString(alternative));
-  }
+  for (const auto* model : pa::ModelsForFeature(feature))
+    editor->addItem(QString::fromUtf8(model->label), QString::fromUtf8(model->id));
   editor->addItem("Custom…", "custom");
   editor->setProperty("knownModelCount", editor->count());
   editor->setToolTip("Uses the supplied model or downloads it when needed, prepares it for this GPU, then reuses it.");
@@ -335,7 +339,7 @@ void PlayerAnalyticsControls::setChangedCallback(std::function<void()> callback)
 QVariant PlayerAnalyticsControls::value(const Field& field) const {
   if (field.kind == Kind::kFlag)
     return static_cast<QCheckBox*>(field.editor)->isChecked();
-  if (field.kind == Kind::kRoi || field.kind == Kind::kModel)
+  if (field.kind == Kind::kRoi || field.kind == Kind::kModel || field.kind == Kind::kSide)
     return static_cast<QComboBox*>(field.editor)->currentData();
   return static_cast<QLineEdit*>(field.editor)->text();
 }
@@ -379,6 +383,16 @@ QVariant PlayerAnalyticsControls::read(const Field& field, const std::vector<YAM
       return field.kind == Kind::kRoi ? QString("bbox") : field.kind == Kind::kRate ? QString("10") : QString();
     if (!resolved.IsScalar())
       throw std::invalid_argument("Expected a scalar path/mode");
+    if (field.kind == Kind::kSide) {
+      // The configurator writes mapped flags as 1/0, so read every spelling a
+      // layer may hold rather than only yaml-cpp's own booleans.
+      const std::string raw = resolved.Scalar();
+      if (raw == "1" || raw == "true" || raw == "yes" || raw == "on" || raw == "True")
+        return QString("true");
+      if (raw == "0" || raw == "false" || raw == "no" || raw == "off" || raw == "False")
+        return QString("false");
+      throw std::invalid_argument("Expected a boolean home sweater");
+    }
     return QString::fromStdString(resolved.as<std::string>());
   } catch (const std::exception&) {
     *valid = false;
@@ -479,8 +493,14 @@ QString PlayerAnalyticsControls::applyChanges(YAML::Node& destination) const {
     for (const auto& field : fields_) {
       if (!changed(field))
         continue;
-      const YAML::Node selected = field.kind == Kind::kFlag ? YAML::Node(value(field).toBool())
-                                                            : YAML::Node(value(field).toString().toStdString());
+      YAML::Node selected = field.kind == Kind::kFlag ? YAML::Node(value(field).toBool())
+                                                      : YAML::Node(value(field).toString().toStdString());
+      if (field.kind == Kind::kSide) {
+        // Unset is a value here, not an omission: it is how the overlay is
+        // told nobody named the sides, and it must survive a save.
+        const QString side = value(field).toString();
+        selected = side.isEmpty() ? YAML::Node(YAML::NodeType::Null) : YAML::Node(side == "true");
+      }
       Set(staged, field.key.split('.'), selected);
       // Preserve explicit native settings on unrelated saves. On an edit only,
       // reconcile the conflicting same-destination leaf with the canonical choice.
@@ -512,7 +532,9 @@ YAML::Node PlayerAnalyticsControls::effectiveConfig() const {
     map(QString("team.") + canonical, kAnalytics + "team." + native);
   map("game.home_is_dark", kAnalytics + "home-is-dark");
   for (const auto& field : fields_)
-    if (!field.native_alias.isEmpty())
+    // kSide is not a flag and the map above already resolved it with the
+    // layer precedence an explicit native setting relies on.
+    if (!field.native_alias.isEmpty() && field.kind != Kind::kSide)
       Set(effective, field.native_alias.split('.'), YAML::Node(value(field).toBool()));
   return effective;
 }
@@ -524,6 +546,16 @@ QStringList PlayerAnalyticsControls::arguments() const {
     // cropper private-property precedence. Never synthesize an off override.
     if (field.key == "plot.plot_individual_player_tracking" && !changed(field))
       continue;
+    if (field.kind == Kind::kSide) {
+      const QString side = value(field).toString();
+      // An untouched control must not override a native setting, but an
+      // operator who clears it means it for this run too, saved or not.
+      if (side.isEmpty() && !changed(field))
+        continue;
+      append(field.key, side.isEmpty() ? QString("null") : side);
+      append(field.native_alias, side.isEmpty() ? QString("null") : side);
+      continue;
+    }
     if (field.kind == Kind::kFlag) {
       const QString text = value(field).toBool() ? "true" : "false";
       append(field.key, text);
@@ -646,11 +678,54 @@ void PlayerAnalyticsControls::updateStatus() {
     field.label->setVisible(custom);
   }
   const auto error = validation(false);
+  if (!error.isEmpty()) {
+    status_->setText(error);
+    return;
+  }
   status_->setText(
-      error.isEmpty() ? "Changes apply on the next run. Save Preset keeps these choices. Standard models are "
-                        "downloaded and prepared automatically when needed, then reused for this GPU."
-                      : error);
+      live_drawing_only_ ? "Drawing applies to this run. The compute choices above it resume when it stops."
+                         : "Changes apply on the next run. Save Preset keeps these choices. Standard models are "
+                           "downloaded and prepared automatically when needed, then reused for this GPU.");
 }
+bool PlayerAnalyticsControls::isDrawingField(const QString& key) {
+  // The four analytics layers plus the Program box switch. Everything else in
+  // the Drawing group feeds per-track state the processor owns, so it changes
+  // what is computed and has to wait for the next run.
+  return key == "plot.plot_pose" || key == "plot.plot_jersey_numbers" || key == "plot.plot_actions" ||
+      key == "plot.plot_teams" || key == "plot.plot_individual_player_tracking";
+}
+
+unsigned PlayerAnalyticsControls::drawingLayers() const {
+  unsigned layers = 0;
+  for (const auto& field : fields_) {
+    if (field.kind != Kind::kFlag || !value(field).toBool())
+      continue;
+    if (field.key == "plot.plot_individual_player_tracking")
+      layers |= hm::player_analytics::kDrawPlayerBoxes;
+    else if (field.key == "plot.plot_pose")
+      layers |= hm::player_analytics::kDrawPose;
+    else if (field.key == "plot.plot_jersey_numbers")
+      layers |= hm::player_analytics::kDrawJerseys;
+    else if (field.key == "plot.plot_actions")
+      layers |= hm::player_analytics::kDrawActions;
+    else if (field.key == "plot.plot_teams")
+      layers |= hm::player_analytics::kDrawTeams;
+  }
+  return layers;
+}
+
+void PlayerAnalyticsControls::setLiveDrawingOnly(bool live) {
+  live_drawing_only_ = live;
+  for (auto& field : fields_) {
+    const bool editable = !live || isDrawingField(field.key);
+    if (field.editor)
+      field.editor->setEnabled(editable);
+    if (field.label)
+      field.label->setEnabled(editable);
+  }
+  updateStatus();
+}
+
 QString PlayerAnalyticsControls::validateForRun() {
   const auto error = validation(true);
   if (error.isEmpty())

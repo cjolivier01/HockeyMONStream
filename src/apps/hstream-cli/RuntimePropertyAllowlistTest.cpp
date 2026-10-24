@@ -74,7 +74,16 @@ int main() {
           "GPU preview debug layers must be live-toggleable on both preview channels") ||
       !expect(
           !is_allowlisted_runtime_property("program_gpu_preview_sink", "rink-mask-file"),
-          "Runtime commands must not replace the trusted game-scoped rink-mask path")) {
+          "Runtime commands must not replace the trusted game-scoped rink-mask path") ||
+      !expect(
+          is_allowlisted_runtime_property("playcropper0", "player-drawing-layers") &&
+              is_allowlisted_runtime_property("program_gpu_preview_sink", "player-drawing-layers") &&
+              is_allowlisted_runtime_property("stitched_gpu_preview_sink", "player-drawing-layers"),
+          "Player drawing layers must be live-toggleable where they are drawn") ||
+      !expect(
+          !is_allowlisted_runtime_property("hmplayeranalytics0", "player-drawing-layers") &&
+              !is_allowlisted_runtime_property("playcropper0", "player-overlay-layers"),
+          "Only the live drawing key is runtime-settable, and not on the analytics element")) {
     return 1;
   }
   return 0;

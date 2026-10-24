@@ -45,6 +45,22 @@ constexpr CatalogModel kModels[] = {
      // kMaximumBatch, not the tracker's 32: this runs through NativeEngine,
      // whose contract caps engine batch at the analytics batch size.
      8},
+    {"pose",
+     "rtmpose-m-harpet18-256x192",
+     "RTMPose-M hockey (16 body + 2 stick points)",
+     "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/"
+     "rtmpose-m-harpet18-256x192-de819b8bdf6f0c01.onnx",
+     "de819b8bdf6f0c014ad39507148555e3adb797b23db21cbf6a513b321c0aeb6f",
+     kHockeyPoseContract,
+     8},
+    {"action",
+     "stgcnpp-harpet18-actions4",
+     "Hockey actions (skating, passing, shooting; HARPET pose)",
+     "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/"
+     "stgcnpp-harpet18-actions4-833d3ec938ca4018.onnx",
+     "833d3ec938ca4018de3a547b88c135626f293abd23497e58b0d670692a744c66",
+     kHockeyActionContract,
+     8},
     {"reid",
      "reidentificationnet-deployable-v1.2",
      "NVIDIA ReIdentificationNet",
@@ -68,5 +84,13 @@ const CatalogModel* FindModel(std::string_view feature, std::string_view id) {
     if (feature == model.feature && id == model.id)
       return &model;
   return nullptr;
+}
+
+std::vector<const CatalogModel*> ModelsForFeature(std::string_view feature) {
+  std::vector<const CatalogModel*> result;
+  for (const auto& model : kModels)
+    if (feature == model.feature)
+      result.push_back(&model);
+  return result;
 }
 } // namespace hm::player_analytics

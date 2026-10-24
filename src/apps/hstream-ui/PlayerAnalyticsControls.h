@@ -10,9 +10,12 @@
 
 class QLabel;
 
-// Next-run preferences only. This widget never emits runtime commands, loads an
-// inference engine, or inspects disabled model/config paths. Separate layers
-// preserve native-over-canonical precedence without flattening away provenance.
+// Next-run preferences, with one exception the widget still does not act on
+// itself: drawing selections are reported through drawingLayers() so the
+// window can apply them to a running pipeline. This widget never emits runtime
+// commands, loads an inference engine, or inspects disabled model/config
+// paths. Separate layers preserve native-over-canonical precedence without
+// flattening away provenance.
 class PlayerAnalyticsControls : public QWidget {
  public:
   explicit PlayerAnalyticsControls(QWidget* parent = nullptr);
@@ -32,9 +35,16 @@ class PlayerAnalyticsControls : public QWidget {
   QStringList arguments() const;
   // Bounded enabled-only manifest/config checks; no engine/ONNX bytes or CUDA.
   QString validateForRun();
+  // Selected drawing layers as a player_analytics::kDraw* bitmask. Drawing is
+  // the only part of this widget a running pipeline can honour: it picks among
+  // results the models already produced and starts nothing.
+  unsigned drawingLayers() const;
+  // While a run owns the pipeline, leave the drawing selections editable and
+  // disable the compute choices, which cannot take effect until it restarts.
+  void setLiveDrawingOnly(bool live);
 
  private:
-  enum class Kind { kFlag, kPath, kRoi, kModel, kRate };
+  enum class Kind { kFlag, kPath, kRoi, kModel, kRate, kSide };
   struct Field {
     QString key;
     QString native_alias;
@@ -55,7 +65,9 @@ class PlayerAnalyticsControls : public QWidget {
   YAML::Node effectiveConfig() const;
   QString validation(bool inspect_files) const;
   QString selectedModel(const QString& key) const;
+  static bool isDrawingField(const QString& key);
   void updateStatus();
+  bool live_drawing_only_{false};
   void addFlag(
       const QString& key,
       const QString& alias,

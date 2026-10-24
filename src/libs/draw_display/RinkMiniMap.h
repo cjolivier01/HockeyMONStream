@@ -40,6 +40,10 @@ class RinkMiniMap {
   std::optional<double> rotation_;
   RinkTrackSmoothing smoothing_;
   std::optional<uint64_t> last_pts_, analytics_epoch_;
+  // Latched once this stream names a side. Teams do not become unnamed, so
+  // a frame whose results are missing or all undecided must not drop the
+  // overlay back to track colours for a frame.
+  bool named_sides_{false};
   int last_frame_num_{0};
   unsigned source_id_{0};
   const char* unavailable_reason_{"Waiting for a preview frame."};

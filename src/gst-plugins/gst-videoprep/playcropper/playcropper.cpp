@@ -408,6 +408,15 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     player_overlay_layers_ = static_cast<uint32_t>(value) &
         (player_analytics::kDrawPose | player_analytics::kDrawJerseys | player_analytics::kDrawActions |
          player_analytics::kDrawTeams);
+  } else if (key == "player-drawing-layers") {
+    // The desktop's live selection, boxes included. Once it arrives it is the
+    // whole answer: the launch-time keys below it cannot put a layer back that
+    // the operator has just switched off.
+    const int value = std::atoi(prop.value.c_str());
+    live_player_layers_ = static_cast<uint32_t>(value) &
+        (player_analytics::kDrawPlayerBoxes | player_analytics::kDrawPose | player_analytics::kDrawJerseys |
+         player_analytics::kDrawActions | player_analytics::kDrawTeams);
+    live_player_layers_set_ = true;
   } else if (key == "player-joint-confidence") {
     float value = 0;
     if (!parse_finite_float(prop.value, &value) || value < 0 || value > 1)
@@ -803,8 +812,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
       completion_fence.MarkSubmitted();
       HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, frame_meta, cuda_stream_));
     }
-    const uint32_t player_layers =
-        player_overlay_layers_ | (plot_player_tracking_ ? player_analytics::kDrawPlayerBoxes : 0U);
+    const uint32_t player_layers = live_player_layers_set_
+        ? live_player_layers_
+        : (player_overlay_layers_ | (plot_player_tracking_ ? player_analytics::kDrawPlayerBoxes : 0U));
     {
       using namespace draw_display::analytics;
       player_overlay_commands_.Clear();

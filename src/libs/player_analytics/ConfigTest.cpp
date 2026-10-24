@@ -10,12 +10,11 @@ namespace pa = hm::player_analytics;
 
 int main() {
   auto absent = pa::ParseConfig(YAML::Node());
-  auto disabled = pa::ParseConfig(
-      YAML::Load(
-          "pose: {enable: 0, bundle: [invalid, nonexistent], rate-hz: nope}\n"
-          "jersey: {enable: false, roi-mode: invalid}\n"
-          "action: {enable: 0, bundle: /no/such/model}\n"
-          "max-tracks: invalid\ndraw-pose: true\ndraw-jerseys: 1\n"));
+  auto disabled =
+      pa::ParseConfig(YAML::Load("pose: {enable: 0, bundle: [invalid, nonexistent], rate-hz: nope}\n"
+                                 "jersey: {enable: false, roi-mode: invalid}\n"
+                                 "action: {enable: 0, bundle: /no/such/model}\n"
+                                 "max-tracks: invalid\ndraw-pose: true\ndraw-jerseys: 1\n"));
   if (!absent.ok() || absent->enabled() || !disabled.ok() || disabled->enabled() || !disabled->drawing.pose ||
       !disabled->drawing.jersey || !absent->continuous_pose_drawing || absent->pose.rate_hz != 10 ||
       absent->pose.every_frame) {
@@ -26,6 +25,8 @@ int main() {
            "pose: {enable: 1, model: custom}",
            "pose: {enable: 1, model: unknown}",
            "pose: {enable: 1, model: parseq-hockey-cvprw2024}",
+           "pose: {enable: 1}\naction: {enable: 1, model: stgcnpp-harpet18-actions4}",
+           "pose: {enable: 1, model: rtmpose-m-harpet18-256x192}\naction: {enable: 1}",
            "pose: {enable: 1, bundle: x}\njersey: {enable: 1, bundle: y, roi-mode: pose}\nmax-due-rois: 1",
            "action: {enable: 1, bundle: x}",
            "jersey: {enable: 1, bundle: x, roi-mode: pose}",
@@ -47,10 +48,9 @@ int main() {
       return 2;
     }
   }
-  auto valid = pa::ParseConfig(
-      YAML::Load(
-          "jersey: {enable: 1, bundle: /deliberately/nonexistent, roi-mode: bbox}\n"
-          "pose: {enable: 0, bundle: [invalid]}\nmax-due-rois: 3\n"));
+  auto valid =
+      pa::ParseConfig(YAML::Load("jersey: {enable: 1, bundle: /deliberately/nonexistent, roi-mode: bbox}\n"
+                                 "pose: {enable: 0, bundle: [invalid]}\nmax-due-rois: 3\n"));
   if (!valid.ok() || !valid->jersey.enabled || valid->pose.enabled || valid->batch_size != 3) {
     std::cerr << "pure parsing must allow bbox-only jersey with a path whose existence is checked later\n";
     return 3;
@@ -152,5 +152,10 @@ int main() {
     std::cerr << "a disabled team feature must not require clustering values\n";
     return 10;
   }
+  // Paired hockey models share a joint layout, so this pairing must parse.
+  const auto hockey = pa::ParseConfig(YAML::Load(
+      "pose: {enable: 1, model: rtmpose-m-harpet18-256x192}\naction: {enable: 1, model: stgcnpp-harpet18-actions4}"));
+  if (!hockey.ok())
+    return 11;
   return 0;
 }

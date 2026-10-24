@@ -189,7 +189,12 @@ startup, so an exported job cannot silently ignore an unusable map.
 After saving a reviewed, fitted map, leave **Show rink mini-map during playback**
 checked under **Stitched → Rink**, then start playback. The Program and Stitched
 desktop GPU previews show an overhead rink with player circles in the same
-track colours as their detection boxes, including when boxes are hidden. The
+track colours as their detection boxes, including when boxes are hidden. Once
+the team feature has named the two sides, the circles switch to showing
+affiliation instead: one hue, filled dark for the dark side and light for the
+light side, and hollow for a skater whose side is not known yet. A game where
+nothing has been named keeps the track colours, so a run with teams off looks
+as it always did. The
 setting applies on the next playback and works independently of player boxes.
 It currently requires the embedded X11 GPU preview on x86. **Mini-map size** offers
 Icon, Compact, Standard and Large. Icon is half Compact's width and height.

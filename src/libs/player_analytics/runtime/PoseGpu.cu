@@ -8,7 +8,7 @@
 namespace hm::player_analytics {
 namespace {
 
-static_assert(sizeof(Pose) == kCocoJoints * sizeof(Keypoint));
+static_assert(sizeof(Pose) == kHarpetJoints * sizeof(Keypoint));
 
 __device__ int ReadChannel(const ImageView image, int x, int y, int channel) {
   if (x < 0 || y < 0 || x >= image.width || y >= image.height)
@@ -65,14 +65,25 @@ __device__ Maximum Merge(Maximum a, Maximum b) {
   return a;
 }
 
-__global__ void DecodeKernel(const float* simcc_x, const float* simcc_y, const PoseAffine* affines, Keypoint* results) {
+__global__ void DecodeKernel(
+    const float* simcc_x,
+    const float* simcc_y,
+    const PoseAffine* affines,
+    Keypoint* results,
+    size_t joints) {
   constexpr int kThreads = 128;
   __shared__ Maximum x_maximum[kThreads];
   __shared__ Maximum y_maximum[kThreads];
   const int keypoint = blockIdx.y;
   const int batch = blockIdx.x;
   const int tid = threadIdx.x;
-  const size_t joint = static_cast<size_t>(batch) * kCocoJoints + keypoint;
+  const size_t joint = static_cast<size_t>(batch) * joints + keypoint;
+  const size_t output = static_cast<size_t>(batch) * kHarpetJoints + keypoint;
+  if (keypoint >= joints) {
+    if (!tid)
+      results[output] = {};
+    return;
+  }
   Maximum mx{-CUDART_INF_F, 0, 0};
   Maximum my{-CUDART_INF_F, 0, 0};
   for (int i = tid; i < 384; i += kThreads) {
@@ -106,7 +117,7 @@ __global__ void DecodeKernel(const float* simcc_x, const float* simcc_y, const P
       if (!isfinite(result.x) || !isfinite(result.y))
         result = {};
     }
-    results[joint] = result;
+    results[output] = result;
   }
 }
 
@@ -137,10 +148,13 @@ cudaError_t DecodePose(
     const PoseAffine* affines,
     size_t batch,
     Pose* results,
-    cudaStream_t stream) {
-  if (!x || !y || !affines || !results || !stream || batch == 0 || batch > kMaximumBatch)
+    cudaStream_t stream,
+    size_t joints) {
+  if (!x || !y || !affines || !results || !stream || batch == 0 || batch > kMaximumBatch ||
+      (joints != kCocoJoints && joints != kHarpetJoints))
     return cudaErrorInvalidValue;
-  DecodeKernel<<<dim3(batch, kCocoJoints), 128, 0, stream>>>(x, y, affines, reinterpret_cast<Keypoint*>(results));
+  DecodeKernel<<<dim3(batch, kHarpetJoints), 128, 0, stream>>>(
+      x, y, affines, reinterpret_cast<Keypoint*>(results), joints);
   return cudaGetLastError();
 }
 

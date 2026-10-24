@@ -95,6 +95,10 @@ struct GstVideoPrep
   gdouble fixed_edge_rotation_angle_right;
   gdouble dynamic_acceleration_scaling;
   guint preview_overlay_flags;
+  // Which player-analytics layers the owning element draws. Live: the desktop
+  // turns pose, jersey, action and team drawing on and off during playback.
+  guint player_overlay_layers;
+  gboolean player_overlay_layers_set;
   gboolean high_bit_depth;
   gboolean high_bit_depth_output;
   gdouble shadow_lift;
