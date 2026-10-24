@@ -213,6 +213,8 @@ bazelisk --batch --output_base="${output_base}" build \
   //src/apps/hstream-job:hstream-job \
   //src/apps/hstream-finalize:hstream-finalize \
   //src/apps/hstream-calibration-export:hstream-calibration-export \
+  //src/apps/hstream-model-prepare:hstream-model-prepare \
+  //src/apps/hstream-model-infer:hstream-model-infer \
   //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo \
   //src/gst-plugins/gst-dsxvideoconvert:libgstdsxvideoconvert.so \
   //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \

@@ -53,6 +53,7 @@ struct HStreamWindowTestAccess {
             !window.development_pipeline_runner_.isEmpty(),
         "Real integration checks require the matching built HStream tools");
     const bool preparation_stop = qEnvironmentVariableIsSet("HM_UI_E2E_STOP_PREPARATION");
+    const bool render_off_first = qEnvironmentVariableIsSet("HM_UI_E2E_RENDER_OFF_FIRST");
     const bool initial_launch = !window.backend_.initial_launch.isEmpty();
     const int cameras = qEnvironmentVariableIntValue("HM_UI_E2E_CAMERAS");
     const QString captures = qEnvironmentVariable("HM_UI_E2E_CAPTURES");
@@ -75,7 +76,7 @@ struct HStreamWindowTestAccess {
     window.resize(1560, 960);
     window.show();
     window.openGame(game, false);
-    window.render_video_toggle_->setChecked(true);
+    window.render_video_toggle_->setChecked(!render_off_first);
     window.realtime_playback_toggle_->setChecked(true);
     window.drivegpt_csv_toggle_->setChecked(!initial_launch);
     for (auto& [kind, toggle] : window.output_toggles_)
@@ -91,6 +92,15 @@ struct HStreamWindowTestAccess {
           waitFor([&] { return window.log_->toPlainText().contains("Starting shared native calibration"); }, 30000),
           "Actual native preparation must begin before Stop");
     } else {
+      if (render_off_first) {
+        require(
+            waitFor([&] { return window.preview_runtime_ready_; }, 180000),
+            "Render-off startup must announce command readiness without an image");
+        require(
+            !QFileInfo::exists(window.backend_preview_directory_->filePath("preview-final.jpg")),
+            "Render-off startup does not publish preview frames");
+        window.render_video_toggle_->setChecked(true);
+      }
       require(
           waitFor(
               [&] {
@@ -216,6 +226,8 @@ struct HStreamWindowTestAccess {
       window.pipeline_render_embedded_ = true;
       auto environment = QProcessEnvironment::systemEnvironment();
       environment.insert("HM_HSTREAM_CALIBRATION_EXPORT", "/bin/true");
+      environment.insert("HM_HSTREAM_MODEL_PREPARE", "/bin/true");
+      environment.insert("HM_HSTREAM_MODEL_INFER", "/bin/true");
       environment.insert("TEST_FRAMES", frames);
       environment.insert("TEST_RECEIPT", completed_receipt ? "1" : "0");
       window.prepareBackendPreview(environment);
@@ -332,6 +344,8 @@ struct HStreamWindowTestAccess {
       toggle->setChecked(false);
     QProcessEnvironment environment;
     environment.insert("HM_HSTREAM_CALIBRATION_EXPORT", "/bin/true");
+    environment.insert("HM_HSTREAM_MODEL_PREPARE", "/bin/true");
+    environment.insert("HM_HSTREAM_MODEL_INFER", "/bin/true");
     environment.insert("HSTREAM_UI_BACKEND_SESSION", "/must/not/reuse");
     window.prepareBackendPreview(environment);
     const QString session = environment.value("HSTREAM_UI_BACKEND_SESSION");

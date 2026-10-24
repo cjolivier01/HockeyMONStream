@@ -140,6 +140,8 @@ HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
 HSTREAM_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-job/hstream-job"
 HSTREAM_FINALIZE="${TOPDIR}/bazel-bin/src/apps/hstream-finalize/hstream-finalize"
 HSTREAM_CALIBRATION_EXPORT="${TOPDIR}/bazel-bin/src/apps/hstream-calibration-export/hstream-calibration-export"
+HSTREAM_MODEL_PREPARE="${TOPDIR}/bazel-bin/src/apps/hstream-model-prepare/hstream-model-prepare"
+HSTREAM_MODEL_INFER="${TOPDIR}/bazel-bin/src/apps/hstream-model-infer/hstream-model-infer"
 HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
 HSTREAM_PLAYER_MODEL_BUILDER="${TOPDIR}/bazel-bin/src/apps/player-model-builder/player-model-builder"
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
@@ -166,6 +168,14 @@ if [[ ! -f "${HSTREAM_FINALIZE}" ]]; then
 fi
 if [[ ! -f "${HSTREAM_CALIBRATION_EXPORT}" ]]; then
   echo "ERROR: ${HSTREAM_CALIBRATION_EXPORT} not found. Run make hstream-calibration-export first." >&2
+  exit 1
+fi
+if [[ ! -f "${HSTREAM_MODEL_PREPARE}" ]]; then
+  echo "ERROR: ${HSTREAM_MODEL_PREPARE} not found. Run make hstream-model-prepare first." >&2
+  exit 1
+fi
+if [[ ! -f "${HSTREAM_MODEL_INFER}" ]]; then
+  echo "ERROR: ${HSTREAM_MODEL_INFER} not found. Run make hstream-model-infer first." >&2
   exit 1
 fi
 if [[ ! -f "${HSTREAM_ASSETS}" ]]; then
@@ -379,6 +389,12 @@ package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-finalize")
 cp "${HSTREAM_CALIBRATION_EXPORT}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-calibration-export"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-calibration-export"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-calibration-export")
+cp "${HSTREAM_MODEL_PREPARE}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-model-prepare"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-model-prepare"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-model-prepare")
+cp "${HSTREAM_MODEL_INFER}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-model-infer"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-model-infer"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-model-infer")
 cp "${HSTREAM_ASSETS}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-assets")
@@ -1103,6 +1119,8 @@ ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
 ln -s "${INSTALL_PREFIX}/bin/hstream-job" "${STAGING}/usr/bin/hstream-job"
 ln -s "${INSTALL_PREFIX}/bin/hstream-finalize" "${STAGING}/usr/bin/hstream-finalize"
 ln -s "${INSTALL_PREFIX}/bin/hstream-calibration-export" "${STAGING}/usr/bin/hstream-calibration-export"
+ln -s "${INSTALL_PREFIX}/bin/hstream-model-prepare" "${STAGING}/usr/bin/hstream-model-prepare"
+ln -s "${INSTALL_PREFIX}/bin/hstream-model-infer" "${STAGING}/usr/bin/hstream-model-infer"
 ln -s "${INSTALL_PREFIX}/bin/hstream-assets" "${STAGING}/usr/bin/hstream-assets"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream"
 ln -s \

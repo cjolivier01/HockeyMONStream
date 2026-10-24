@@ -7738,6 +7738,22 @@ void HStreamWindow::prepareBackendPreview(QProcessEnvironment& environment) {
       throw std::runtime_error(("Matching calibration exporter is unavailable: " + exporter).toStdString());
     environment.insert("HM_HSTREAM_CALIBRATION_EXPORT", exporter);
   }
+  if (environment.value("HM_HSTREAM_MODEL_PREPARE").isEmpty()) {
+    const QString preparer = development_bazel_bin_.isEmpty()
+        ? QDir(QFileInfo(nativeRunnerPath()).absolutePath()).filePath("hstream-model-prepare")
+        : QDir(development_bazel_bin_).filePath("src/apps/hstream-model-prepare/hstream-model-prepare");
+    if (!QFileInfo(preparer).isExecutable())
+      throw std::runtime_error(("Matching model preparation helper is unavailable: " + preparer).toStdString());
+    environment.insert("HM_HSTREAM_MODEL_PREPARE", preparer);
+  }
+  if (environment.value("HM_HSTREAM_MODEL_INFER").isEmpty()) {
+    const QString inference = development_bazel_bin_.isEmpty()
+        ? QDir(QFileInfo(nativeRunnerPath()).absolutePath()).filePath("hstream-model-infer")
+        : QDir(development_bazel_bin_).filePath("src/apps/hstream-model-infer/hstream-model-infer");
+    if (!QFileInfo(inference).isExecutable())
+      throw std::runtime_error(("Matching model inference helper is unavailable: " + inference).toStdString());
+    environment.insert("HM_HSTREAM_MODEL_INFER", inference);
+  }
   if (!backend_preview_) {
     backend_preview_ = std::make_unique<hm::ui::BackendPreview>();
     backend_preview_->frameReady = [this](const QString& channel, const QImage& image) {
