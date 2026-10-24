@@ -358,6 +358,9 @@ absl::StatusOr<std::unique_ptr<AmdProgramGraph>> AmdProgramGraph::Create(
     uint64_t timeout_ns,
     uint64_t poll_ns,
     std::function<bool()> cancelled) {
+  if (maximum_frames < 2)
+    return absl::InvalidArgumentError(
+        "Program graph requires at least 2 frames: completion sinks retain the previous frame");
   if (!timeout_ns || timeout_ns > INT64_MAX || !poll_ns || poll_ns > timeout_ns || !cancelled)
     return absl::InvalidArgumentError("Program graph requires explicit finite timing and cancellation");
   try {

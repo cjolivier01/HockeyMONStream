@@ -80,6 +80,19 @@ int main(int argc, char** argv) {
       Check(!hm::program::ResolveAmdProgramSettings(invalid).ok(), "Negative integer wrapped into an unsigned setting");
     }
     auto invalid = YAML::Clone(baseline->values);
+    for (const auto frames : {0, 1, 2}) {
+      invalid["runtime"]["amd"]["output_pool_frames"] = frames;
+      const auto pool = hm::program::ResolveAmdProgramSettings(invalid);
+      if (frames < 2) {
+        Check(
+            absl::IsInvalidArgument(pool.status()) &&
+                pool.status().message().find("output_pool_frames") != std::string::npos,
+            "Undersized Program pool did not fail configuration admission");
+      } else {
+        Check(pool.ok() && pool->output_pool_frames == 2, "Minimum Program pool was rejected or silently enlarged");
+      }
+    }
+    invalid = YAML::Clone(baseline->values);
     invalid["runtime"]["amd"]["operation_timeout_ms"] = std::numeric_limits<int64_t>::max();
     Check(!hm::program::ResolveAmdProgramSettings(invalid).ok(), "Nanosecond overflow accepted");
     invalid = YAML::Clone(baseline->values);

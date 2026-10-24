@@ -36,6 +36,11 @@ absl::StatusOr<AmdProgramSettings> ResolveAmdProgramSettings(const YAML::Node& c
     result.gpu_id = Integer<int>(config, "gpu_id", true);
     result.reader_queue_frames = Integer<unsigned>(config, "reader_queue_frames");
     result.output_pool_frames = Integer<unsigned>(config, "output_pool_frames");
+    // The processing and crop appsinks retain their last delivered frame until
+    // its replacement arrives, even with enable-last-sample disabled.
+    if (result.output_pool_frames < 2)
+      return absl::InvalidArgumentError(
+          "runtime.amd.output_pool_frames must be at least 2: Program completion sinks retain the previous frame");
     result.operation_timeout_ns = Nanoseconds(config, "operation_timeout_ms");
     result.cancellation_poll_ns = Nanoseconds(config, "cancellation_poll_ms");
     if (result.cancellation_poll_ns > result.operation_timeout_ns)

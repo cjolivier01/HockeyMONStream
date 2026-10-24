@@ -10,6 +10,8 @@ namespace hm::program {
 // GPU frame across every element and each independent output render.
 class AmdProgramGraph {
  public:
+  // maximum_frames must be at least two: completion appsinks retain the last
+  // delivered buffer until its replacement arrives.
   static absl::StatusOr<std::unique_ptr<AmdProgramGraph>> Create(
       const AmdProgramProcessorConfig& config,
       size_t maximum_frames,

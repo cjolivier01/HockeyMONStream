@@ -1081,7 +1081,11 @@ Header copies clone metadata and retain the panorama; render envelopes with an
 exclusive destination cannot be copied. Each stage validates its input phase.
 Panorama allocations are reused only after every downstream owner releases
 them, with the existing `runtime.amd.output_pool_frames` as their allocation
-ceiling. Allocation is lazy. GPU reads/writes complete at the stage boundary;
+ceiling. The Program graph requires at least two pool frames, including with a
+FAKE sink: completion appsinks retain the previous frame until its replacement
+arrives. A value below two fails configuration admission before GPU startup;
+the configured bound is never silently increased. The baseline remains eight.
+Allocation is lazy. GPU reads/writes complete at the stage boundary;
 no frame is mapped to system memory. Cropped output advertises linear DMA-BUF
 caps. If appsink still holds its completed buffer, the encoder handoff creates
 only a writable header, refs the exact existing memories, and pins the original
@@ -1118,5 +1122,10 @@ lifetime after producer destruction. It reads back eight bytes per lifetime
 check solely in the hardware verifier. CPU component tests cover ordered stage
 execution, shared-header isolation, parent-pool lifetime without memory copying,
 state reset, EOS, unconfigured startup and exception/error propagation. The
-full local NVIDIA x86 build and V100 crop/overlay tests pass. ARM64/Jetson
-validation retains the documented missing host/sysroot and unreachable `stubby`.
+full local NVIDIA x86 build and V100 crop/overlay tests pass. Meshy's full
+NVIDIA x86 build and component/tracking tests also pass with GStreamer 1.28
+and FFmpeg 8. Pool-boundary qualification rejects one frame before GPU setup
+and processes 12 frames with the minimum two-frame pool in both FAKE and HEVC
+archive modes; the archive fully decodes. Settings regressions cover zero,
+one and two frames on native and HIP builds. ARM64/Jetson validation retains
+the documented missing host/sysroot and unreachable `stubby`.
