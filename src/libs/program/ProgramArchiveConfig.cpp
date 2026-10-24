@@ -37,7 +37,7 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
       if (!four_k && name != "ENCODE_FILE")
         continue;
       YAML::Node sink;
-      std::string prefix;
+      std::string prefix, section;
       for (const auto& entry : config.values["pipeline"]) {
         const auto key = entry.first.as<std::string>();
         const auto node = entry.second;
@@ -46,6 +46,7 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
         if (!prefix.empty())
           return absl::InvalidArgumentError("AMD Program requires one configured sink per archive kind: " + name);
         sink.reset(YAML::Clone(node));
+        section = key;
         prefix = "pipeline." + key + ".";
       }
       if (prefix.empty())
@@ -103,7 +104,10 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
       if (!Null(bitrate) && bitrate_rank > 0 && bitrate_rank >= amd_bitrate_rank) {
         output.bitrate_kbps = (Positive(bitrate, prefix + "bitrate") + 999) / 1000;
       } else if (amd_bitrate_rank > 0) {
-        // ResolveProgramOutputConfig already applied the explicit AMD bitrate.
+        // The base Program may contain a higher-ranked canonical override,
+        // which applies only to ENCODE_FILE, not the independent 4K branch.
+        const std::string path = "runtime.amd.output.bitrate_kbps";
+        output.bitrate_kbps = Positive(config.values["runtime"]["amd"]["output"]["bitrate_kbps"], path);
       } else if (source_bitrate) {
         const auto bits = scale_bitrate(*source_bitrate, output.width, output.height);
         if (!bits || !*bits || *bits > INT_MAX)
@@ -116,13 +120,23 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
       YAML::Node file = sink["output-file"];
       bool explicit_file = Rank(config, prefix + "output-file") > 0;
       bool canonical_file = false;
+      const auto reset_file = [&] {
+        const auto value = config.layers.empty()
+            ? std::nullopt
+            : get_node(config.layers.front(), "pipeline." + section + ".output-file");
+        file.reset(value ? YAML::Clone(*value) : YAML::Node());
+        explicit_file = canonical_file = false;
+      };
       if (!four_k && Rank(config, "video_out.output_video_path") > Rank(config, prefix + "output-file")) {
         const auto canonical = config.values["video_out"]["output_video_path"];
         if (!Null(canonical)) {
           file.reset(YAML::Clone(canonical));
           explicit_file = canonical_file = true;
-        }
+        } else
+          reset_file();
       }
+      if (Null(file))
+        reset_file();
       if (Null(file) || !file.IsScalar() || file.Scalar().empty())
         return absl::InvalidArgumentError("Archive output requires a configured filename");
       if (file.Scalar().find_first_of("\r\n") != std::string::npos)

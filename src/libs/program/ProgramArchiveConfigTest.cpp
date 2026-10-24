@@ -68,12 +68,24 @@ int main(int argc, char** argv) {
         result.ok() && result->at("ENCODE_FILE").output.bitrate_kbps == 5000 &&
             result->at("ENCODE_PROGRAM_4K_FILE").output.bitrate_kbps == 5000,
         "AMD bitrate lost same-layer precedence");
+    result =
+        resolve({"video_out.bit_rate=10000000"}, YAML::Load("runtime: {amd: {output: {bitrate_kbps: 5000}}}"), source);
+    Check(
+        result.ok() && result->at("ENCODE_FILE").output.bitrate_kbps == 10000 &&
+            result->at("ENCODE_PROGRAM_4K_FILE").output.bitrate_kbps == 5000,
+        "Higher Program-only bitrate leaked into the independent 4K branch");
     auto game = YAML::Load("pipeline: {sink2: {bitrate: 7000000, output-file: saved.mp4}}");
     result = resolve({"video_out.bit_rate=8000000,video_out.output_video_path=launch.mp4"}, game, source);
     Check(
         result.ok() && result->at("ENCODE_FILE").output.bitrate_kbps == 8000 &&
             result->at("ENCODE_FILE").path == std::filesystem::absolute("launch.mp4"),
         "Higher canonical layer did not override native sink");
+    for (const auto* clear : {"video_out.output_video_path=null", "pipeline.sink2.output-file=null"}) {
+      result = resolve({clear}, game);
+      Check(
+          result.ok() && result->at("ENCODE_FILE").path == directory / "tracking_output.mp4",
+          "Cleared archive filename retained the lower-layer saved filename");
+    }
     result =
         resolve({"video_out.bit_rate=8000000,pipeline.sink2.bitrate=9000000,"
                  "video_out.output_video_path=canonical.mp4,pipeline.sink2.output-file=native.mp4"});
