@@ -1,0 +1,35 @@
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "va_hip_frame",
+    srcs = ["VaHipFrame.cpp"],
+    hdrs = ["VaHipFrame.h"],
+    include_prefix = "hstream/src/libs/gpu/vaapi",
+    defines = ["GST_USE_UNSTABLE_API"],
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    linkopts = ["-lgstva-1.0"],
+    deps = [
+        "@com_google_absl//absl/status:statusor",
+        "@gstreamer",
+        "@hstream_rocm//:runtime",
+        "@vaapi",
+    ],
+)
+
+cc_test(
+    name = "va_hip_frame_test",
+    srcs = ["VaHipFrameTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    timeout = "moderate",
+    target_compatible_with = select({
+        "//:use_hip": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        ":va_hip_frame",
+        "//src/libs/draw_display:analytics_overlay",
+    ],
+)

@@ -343,6 +343,13 @@ conditional_local_repository(
     ],
 )
 
+# Only selected by the native AMD video interoperability targets.
+conditional_local_repository(
+    name = "vaapi",
+    build_file = "@//buildfiles:third_party/vaapi.BUILD",
+    paths = ["/usr"],
+)
+
 conditional_local_repository(
     name = "qt",
     build_file = "@//buildfiles:third_party/qt6.BUILD",

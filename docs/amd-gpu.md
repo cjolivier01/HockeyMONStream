@@ -1,6 +1,7 @@
 # AMD GPU port
 
-Status: native HIP builds of the shared compute kernels work on AMD. **The
+Status: native HIP builds of the shared compute kernels and VA/HIP video
+interoperability tests work on AMD. **The
 `hstream-cli` and desktop video pipelines still require NVIDIA.** This is the
 compute portion of the port, not an AMD release of the application.
 
@@ -32,6 +33,7 @@ targets do not need CUDA, TensorRT, or DeepStream SDKs.
 ```sh
 make amd-kernels
 make test-amd-kernels
+make test-amd-video
 
 # Equivalent test command; also works without --config=rocm on NVIDIA.
 bazelisk test --config=opt --config=rocm --local_test_jobs=1 --test_output=errors \
@@ -67,11 +69,38 @@ in the build inputs. Deployments must supply the compatible ROCm runtime and
 its loader configuration. Cross-compiling AMD targets with the Jetson toolchain
 is not supported.
 
+## VA-API video interoperability
+
+`src/libs/gpu/vaapi/VaHipFrame.*` imports linear VA surfaces into HIP without
+mapping or copying their pixels to the host. It retains the GStreamer buffer,
+validates exported object and plane extents, rejects tiled layouts and shared
+writable inputs, and releases all imported mappings and descriptors. Import
+waits for the VA producer. The caller submits work on its explicit HIP stream
+and calls `Complete()` before passing the frame to another VA element; destruction
+also drains unfinished work. The stream must outlive the import. These CPU-side
+fence waits do not transfer video; asynchronous external-fence integration and
+import caching remain performance work.
+
+The optional `make test-amd-video` target additionally requires GStreamer 1.24
+with the VA plugin and development library, libva development headers, and Mesa
+VA drivers. It negotiates linear NV12 and P010 DMA-BUF frames between hardware
+decode and encode. The P010 case runs HStream's existing HIP overlay compositor.
+Each codec processes 32 frames and checks encoded pixels, untouched background,
+timestamps, EOS, shared-buffer rejection and repeated-import descriptor cleanup.
+Pixel readback occurs only in the bounded test verifier after re-encode/decode.
+
+On the installed GStreamer/Mesa stack, repeatedly creating and destroying entire
+test pipelines retains DMA-BUF descriptors even with HIP processing removed.
+The import/release checks on a retained surface do not leak descriptors. Repeated
+application restart/seek qualification must resolve the separate media-stack
+lifetime issue before claiming production playback support. RGBA/BGRA import
+layouts are accepted by the adapter, but only NV12/P010 codec paths are qualified.
+
 ## Application work still required
 
 | Boundary | Current implementation | Remaining AMD work |
 | --- | --- | --- |
-| Decode and encode | NVIDIA codecs and NVMM | AMD codecs and GPU surface import/export, with timestamp and EOS parity |
+| Decode and encode | NVIDIA codecs and NVMM; standalone VA/HIP codec tests | Integrate AMD codecs and imported surfaces into the application graph |
 | Allocation and batching | `NvBufSurface`, NVIDIA pools and DeepStream metadata | Portable surface ownership and synchronization integrated with GStreamer |
 | Stitching integration | HIP-capable `hm-cupano` called by a DeepStream plugin | Connect HIP to portable surfaces; port high-bit conversion adapters |
 | Model execution | TensorRT and NVIDIA inference plugins | AMD inference, model preparation/cache identity, numerical qualification |

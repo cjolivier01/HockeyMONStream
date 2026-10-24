@@ -112,7 +112,7 @@ Native preview widgets share `NativePreviewSurface`: while an external sink owns
 
 ### Video graph and implementation map
 
-- `src/libs/gpu/Runtime.h` and `bazel/gpu_library.bzl` select native CUDA or HIP for the shared highlight, overlay and player preprocessing/reduction kernels. `--config=rocm` also enables the pinned `hm-cupano`/`jetson-utils` HIP paths; `//src/libs/gpu:portable_gpu_tests` validates both backends. This is compute support only: the desktop/CLI video pipelines, DeepStream surfaces, TensorRT execution and NVIDIA codec/preview integration remain NVIDIA-specific. See `docs/amd-gpu.md` before extending the AMD path; HIP pointers and handles must never cross into NVIDIA libraries.
+- `src/libs/gpu/Runtime.h` and `bazel/gpu_library.bzl` select native CUDA or HIP for the shared highlight, overlay and player preprocessing/reduction kernels. `--config=rocm` also enables the pinned `hm-cupano`/`jetson-utils` HIP paths; `//src/libs/gpu:portable_gpu_tests` validates both backends. `src/libs/gpu/vaapi/VaHipFrame.*` retains and imports linear VA surfaces into HIP, with explicit producer/consumer waits and no pixel readback; its hardware test qualifies NV12/H.264 and P010/HEVC with the existing overlay compositor. The desktop/CLI video pipelines, DeepStream surfaces, TensorRT execution and NVIDIA codec/preview integration remain NVIDIA-specific. See `docs/amd-gpu.md` before extending the AMD path; HIP pointers and handles must never cross into NVIDIA libraries.
 
 The normal enabled Program path is below; calibration-only stages and optional elements change the graph. `create_common_elements()` in `deepstream_app.cpp` builds links from downstream to upstream, so its source order is the reverse of video flow.
 
