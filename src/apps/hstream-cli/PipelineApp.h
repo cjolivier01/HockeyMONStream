@@ -31,6 +31,7 @@
 
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
+#include "hstream/src/apps/apps-common/PreviewRouteOwner.h"
 
 // Application and common headers.
 #include "Int8FrameSampler.h"
@@ -310,9 +311,7 @@ class PipelineApplication {
     GstElement* sink{nullptr};
   };
   std::map<std::string, UiPreviewChannel> ui_preview_channels_;
-  std::string active_ui_preview_channel_;
-  bool ui_preview_channel_explicitly_disabled_{false};
-  guint64 active_ui_preview_generation_{1};
+  hm::preview::RouteOwner preview_routes_;
   hm::pipeline_internal::PreviewOverlayRuntimeState preview_overlay_state_;
   // Last accepted live drawing selection, re-applied when the graph is
   // rebuilt so a seek or stage restart does not silently restore the

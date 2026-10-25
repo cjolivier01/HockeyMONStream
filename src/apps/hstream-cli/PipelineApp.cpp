@@ -1818,6 +1818,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     bool sources_only) {
   if (!ui_preview_window_ids_.empty()) {
     if (!sources_only) {
+      preview_routes_.forget_routes();
+      ui_preview_channels_.clear();
       preview_overlay_producers_.clear();
       preview_overlay_probe_flags_.store(0, std::memory_order_release);
     }
@@ -1951,13 +1953,13 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "max-size-time",
           static_cast<guint64>(0),
           nullptr);
-      const bool initially_active = channel == active_ui_preview_channel_;
+      const bool initially_active = channel == preview_routes_.selected_channel();
       g_object_set(
           G_OBJECT(ingress_isolation),
           "channel",
           channel.c_str(),
           "generation",
-          static_cast<guint64>(active_ui_preview_generation_),
+          static_cast<guint64>(preview_routes_.operation_generation()),
           "active",
           initially_active ? TRUE : FALSE,
           nullptr);
@@ -1966,7 +1968,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "channel",
           channel.c_str(),
           "generation",
-          static_cast<guint64>(active_ui_preview_generation_),
+          static_cast<guint64>(preview_routes_.operation_generation()),
           "active",
           initially_active ? TRUE : FALSE,
           nullptr);
@@ -2004,7 +2006,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "channel",
           channel.c_str(),
           "generation",
-          static_cast<guint64>(active_ui_preview_generation_),
+          static_cast<guint64>(preview_routes_.operation_generation()),
           "sync",
           realtime,
           "max-lateness",
@@ -2041,9 +2043,29 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           });
       gst_object_unref(probe_pad);
       ui_preview_channels_[channel] = UiPreviewChannel{ingress_isolation, isolation, sink};
-      if (initially_active)
-        active_ui_preview_channel_ = channel;
-      return true;
+      return preview_routes_.register_route(
+          channel,
+          {
+              [ingress_isolation](bool active, std::uint64_t generation) {
+                hm::gpu_preview::set_isolation_active(ingress_isolation, active, generation);
+              },
+              [isolation](bool active, std::uint64_t generation) {
+                hm::gpu_preview::set_isolation_active(isolation, active, generation);
+              },
+              [ingress_isolation, isolation] {
+                return hm::gpu_preview::isolation_active(ingress_isolation) &&
+                    hm::gpu_preview::isolation_active(isolation);
+              },
+              [sink](std::uint64_t generation) { hm::gpu_preview::set_renderer_generation(sink, generation); },
+              [ingress_isolation, isolation, sink](std::uint64_t generation) {
+                hm::gpu_preview::set_renderer_generation(sink, generation);
+                hm::gpu_preview::set_isolation_generation(ingress_isolation, generation);
+                hm::gpu_preview::set_isolation_generation(isolation, generation);
+                return hm::gpu_preview::isolation_active(ingress_isolation) &&
+                    hm::gpu_preview::isolation_active(isolation);
+              },
+              [sink](std::uint64_t generation) { return hm::gpu_preview::quiesce(sink, generation); },
+          });
     };
 
     const auto& app_context = app_contexts.front();
@@ -2258,14 +2280,11 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
             " message=no active camera source for XID %" G_GUINT64_FORMAT "\n",
             channel.c_str(),
-            active_ui_preview_generation_,
+            preview_routes_.operation_generation(),
             window_id);
       }
     }
-    if (!active_ui_preview_channel_.empty() && !ui_preview_channels_.count(active_ui_preview_channel_)) {
-      active_ui_preview_channel_.clear();
-      ui_preview_channel_explicitly_disabled_ = false;
-    }
+    preview_routes_.reconcile_selection();
     const bool has_overlay_sink =
         std::any_of(ui_preview_channels_.begin(), ui_preview_channels_.end(), [](const auto& channel) {
           return hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel.first);
@@ -2600,6 +2619,8 @@ absl::Status PipelineApplication::createMainLoop(
   auto owned_windows = std::make_shared<std::set<Window>>();
   cleanup_stack.push([this, contexts = app_contexts, stage = current_stage_, owned_windows] {
     begin_pipeline_recreation();
+    preview_routes_.forget_routes();
+    ui_preview_channels_.clear();
     for (const auto& context : contexts) {
       if (!context) {
         continue;
@@ -2888,8 +2909,8 @@ absl::Status PipelineApplication::playPipelines(
     // Re-arm the initial channel directly after PLAYING. Startup must not race
     // an external command against installation of the GLib stdin poll.
     const std::string channel = hm::pipeline_internal::preview_channel_for_pipeline_start(
-        active_ui_preview_channel_, initial_ui_preview_channel_, ui_preview_channel_explicitly_disabled_);
-    const guint64 generation = active_ui_preview_generation_ + 1;
+        preview_routes_.selected_channel(), initial_ui_preview_channel_, preview_routes_.explicitly_disabled());
+    const guint64 generation = preview_routes_.operation_generation() + 1;
     emit_preview_protocol(
         "HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=%" G_GUINT64_FORMAT "\n",
         channel.c_str(),
@@ -3492,9 +3513,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     if (initial_ui_preview_channel_ != "none" && !ui_preview_window_ids_.count(initial_ui_preview_channel_)) {
       return absl::InvalidArgumentError("--ui-preview-active must name a channel present in --ui-preview-windows");
     }
-    ui_preview_channel_explicitly_disabled_ = initial_ui_preview_channel_ == "none";
-    active_ui_preview_channel_ = ui_preview_channel_explicitly_disabled_ ? std::string() : initial_ui_preview_channel_;
-    active_ui_preview_generation_ = 1;
+    preview_routes_.initialize_selection(initial_ui_preview_channel_, 1);
   }
   if (ui_preview_realtime_ && headless_render_video_)
     return absl::InvalidArgumentError("--render-realtime cannot be combined with --headless-render-video");
@@ -6117,7 +6136,7 @@ bool PipelineApplication::seek_runtime_impl(
   if (stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
     return reject("rejected", "stitching-calibration-active");
   }
-  if (!ui_preview_window_ids_.empty() && active_ui_preview_channel_.empty()) {
+  if (!ui_preview_window_ids_.empty() && preview_routes_.selected_channel().empty()) {
     return reject("rejected", "local-render-disabled");
   }
   const auto stage = stage_app_contexts_.find(current_stage_);
@@ -6540,7 +6559,7 @@ bool PipelineApplication::apply_preview_overlay_state(
           g_object_get_data(G_OBJECT(context->pipeline.pipeline), "hstream-output-rink-map") != nullptr;
   const guint output_flags = output_map_active ? 1U : 0U;
   const guint producer_flags =
-      preview_overlay_producer_flags(producer_selection, active_ui_preview_channel_) | output_flags;
+      preview_overlay_producer_flags(producer_selection, preview_routes_.selected_channel()) | output_flags;
   bool applied = true;
   for (const SinkState& state : sinks) {
     g_object_set(
@@ -6709,125 +6728,36 @@ bool PipelineApplication::set_player_drawing_runtime(guint64 generation, guint l
 }
 
 bool PipelineApplication::set_preview_active_runtime(const std::string& channel, guint64 generation) {
-  if (ui_preview_channels_.empty()) {
-    preview_overlay_probe_flags_.store(0, std::memory_order_release);
-    g_printerr("runtime preview activation failed: GPU-native UI previews are not configured\n");
-    return false;
-  }
-  if (generation <= active_ui_preview_generation_) {
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=stale generation=%" G_GUINT64_FORMAT
-        " message=activation generation is not newer than %" G_GUINT64_FORMAT "\n",
-        channel.c_str(),
-        generation,
-        active_ui_preview_generation_);
-    return true;
-  }
-
-  const auto previous = ui_preview_channels_.find(active_ui_preview_channel_);
-  if (previous != ui_preview_channels_.end() && previous->first == channel) {
-    // A first-frame recovery for the selected channel must not destroy its
-    // renderer or wait behind a buffer that is still negotiating downstream.
-    // Advancing the generation re-arms the ready acknowledgement on the next
-    // presented frame while leaving the observational GPU branch flowing.
-    hm::gpu_preview::set_renderer_generation(previous->second.sink, generation);
-    hm::gpu_preview::set_isolation_generation(previous->second.ingress_isolation, generation);
-    hm::gpu_preview::set_isolation_generation(previous->second.isolation, generation);
-    active_ui_preview_generation_ = generation;
-    if (!hm::gpu_preview::isolation_active(previous->second.ingress_isolation) ||
-        !hm::gpu_preview::isolation_active(previous->second.isolation)) {
-      active_ui_preview_channel_.clear();
-      ui_preview_channel_explicitly_disabled_ = false;
-      update_preview_overlay_producers();
-      emit_preview_protocol(
-          "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
-          " message=the selected GPU preview channel cannot be re-armed\n",
-          channel.c_str(),
-          generation);
-      return true;
-    }
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
-        " message=GPU preview branch re-armed\n",
-        channel.c_str(),
-        generation);
-    return true;
-  }
-  if (previous != ui_preview_channels_.end()) {
-    // Close the cheap ingress gate first so no new buffer enters the queue.
-    // Closing the post-queue barrier then waits for any buffer already inside
-    // the converter/sink path. Only then is renderer destruction safe.
-    hm::gpu_preview::set_isolation_active(previous->second.ingress_isolation, false, generation);
-    hm::gpu_preview::set_isolation_active(previous->second.isolation, false, generation);
-    if (!hm::gpu_preview::quiesce(previous->second.sink, generation)) {
-      active_ui_preview_channel_.clear();
-      ui_preview_channel_explicitly_disabled_ = false;
-      active_ui_preview_generation_ = generation;
-      update_preview_overlay_producers();
-      emit_preview_protocol(
-          "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
-          " message=could not quiesce the previous preview channel\n",
-          channel.c_str(),
-          generation);
-      return true;
-    }
-  }
-
-  active_ui_preview_channel_.clear();
-  ui_preview_channel_explicitly_disabled_ = false;
-  active_ui_preview_generation_ = generation;
-  if (channel == "none") {
-    ui_preview_channel_explicitly_disabled_ = true;
-    update_preview_overlay_producers();
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=none status=deactivated generation=%" G_GUINT64_FORMAT
-        " message=all GPU preview branches are inactive\n",
-        generation);
-    return true;
-  }
-
-  const auto target = ui_preview_channels_.find(channel);
-  if (target == ui_preview_channels_.end()) {
-    update_preview_overlay_producers();
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
-        " message=the requested camera source is unavailable\n",
-        channel.c_str(),
-        generation);
-    return true;
-  }
-
-  // Arm metadata production before opening either preview gate so the first
-  // admitted Program/Stitched frame already has the requested immutable
-  // snapshot (and Program crop transform, when needed).
-  active_ui_preview_channel_ = channel;
-  ui_preview_channel_explicitly_disabled_ = false;
-  update_preview_overlay_producers();
-  g_object_set(G_OBJECT(target->second.sink), "generation", generation, nullptr);
-  // Arm the drain barrier before opening the ingress gate. A newly enqueued
-  // buffer can therefore never be dropped between the two gates.
-  hm::gpu_preview::set_isolation_active(target->second.isolation, true, generation);
-  hm::gpu_preview::set_isolation_active(target->second.ingress_isolation, true, generation);
-  if (!hm::gpu_preview::isolation_active(target->second.isolation) ||
-      !hm::gpu_preview::isolation_active(target->second.ingress_isolation)) {
-    hm::gpu_preview::set_isolation_active(target->second.ingress_isolation, false, generation);
-    hm::gpu_preview::set_isolation_active(target->second.isolation, false, generation);
-    hm::gpu_preview::quiesce(target->second.sink, generation);
-    active_ui_preview_channel_.clear();
-    ui_preview_channel_explicitly_disabled_ = false;
-    update_preview_overlay_producers();
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
-        " message=the requested GPU preview channel has failed locally\n",
-        channel.c_str(),
-        generation);
-    return true;
+  const auto result =
+      preview_routes_.select_current(channel, generation, [this] { update_preview_overlay_producers(); });
+  using Status = hm::preview::RouteOwner::Status;
+  const char* status = "failed";
+  switch (result.status) {
+    case Status::kUnconfigured:
+      preview_overlay_probe_flags_.store(0, std::memory_order_release);
+      g_printerr("runtime preview activation failed: GPU-native UI previews are not configured\n");
+      return false;
+    case Status::kActivated:
+      status = "activated";
+      break;
+    case Status::kDeactivated:
+      status = "deactivated";
+      break;
+    case Status::kUnavailable:
+      status = "unavailable";
+      break;
+    case Status::kStale:
+      status = "stale";
+      break;
+    default:
+      break;
   }
   emit_preview_protocol(
-      "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
-      " message=GPU preview branch activated\n",
+      "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " message=%s\n",
       channel.c_str(),
-      generation);
+      status,
+      generation,
+      result.reason.c_str());
   return true;
 }
 
@@ -8334,6 +8264,7 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     }
   }
   g_print("Destroy pipeline\n");
+  preview_routes_.forget_routes();
   ui_preview_channels_.clear();
   preview_overlay_producers_.clear();
   preview_overlay_probe_flags_.store(0, std::memory_order_release);
@@ -8694,9 +8625,10 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
     }
   }
   for (auto it = ui_preview_channels_.begin(); it != ui_preview_channels_.end();) {
-    if (it->first.rfind("source", 0) == 0)
+    if (it->first.rfind("source", 0) == 0) {
+      preview_routes_.forget_route(it->first);
       it = ui_preview_channels_.erase(it);
-    else
+    } else
       ++it;
   }
   if (!gst_bin_remove(GST_BIN(app->pipeline.pipeline), sources.bin))

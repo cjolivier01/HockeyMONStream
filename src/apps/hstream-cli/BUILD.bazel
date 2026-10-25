@@ -32,6 +32,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/apps/apps-common:preview_route_owner",
     "//src/gst-plugins/gst-rink-map:overlay",
     "//src/libs/program:preview_overlay_runtime",
     "//src/libs/common:config_layers",

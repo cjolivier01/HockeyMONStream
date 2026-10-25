@@ -1,6 +1,20 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "preview_route_owner",
+    srcs = ["PreviewRouteOwner.cpp"],
+    hdrs = ["PreviewRouteOwner.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "preview_route_owner_test",
+    srcs = ["PreviewRouteOwnerTest.cpp"],
+    deps = [":preview_route_owner"],
+)
+
+cc_library(
     name = "uri_playlist_capture_pool_drain",
     srcs = ["UriPlaylistCapturePoolDrain.cpp"],
     hdrs = ["UriPlaylistCapturePoolDrain.h"],
