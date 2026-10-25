@@ -257,6 +257,14 @@ cc_library(
 )
 
 cc_test(
+    name = "pipeline_process_output_test",
+    size = "small",
+    srcs = ["PipelineRuntimeControlTest.cpp"],
+    args = ["--test-output-reader"],
+    deps = ["//src/libs/recording"],
+)
+
+cc_test(
     name = "pipeline_runtime_control_test",
     srcs = ["PipelineRuntimeControlTest.cpp"],
     args = ["$(location :hstream-cli)"],
