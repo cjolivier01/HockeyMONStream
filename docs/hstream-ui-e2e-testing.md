@@ -21,11 +21,14 @@ controls without changing files. Save Preset then writes an empty YAML map (`{}`
 if no further edits were made; edits after Reset are saved as new overrides.
 Playback and game-specific actions require selecting a game.
 
-Both NVIDIA and AMD loaders apply baseline, existing `~/.hstream/hstream.yaml`
-preferences, UI defaults, and game configuration in that order, followed by
-explicit launch overrides. Existing legacy preferences remain supported; the
-Defaults editor and Reset show the bundled baseline, not legacy preferences.
-Missing defaults mean no overrides. Invalid defaults fail with their source path
+Both NVIDIA and AMD loaders apply baseline, UI defaults, and game configuration
+in that order, followed by explicit launch overrides. Until defaults.yaml exists,
+legacy tuning in `~/.hstream/hstream.yaml` remains supported. Saving Defaults
+opts into the new tuning file, including when Reset writes `{}`; legacy tuning
+is then ignored so it cannot override new settings through native aliases or
+reappear after Reset. Legacy `paths` preferences remain supported and the legacy
+file is never modified. Relative native references resolve beside the active
+user tuning file. The Defaults editor always shows baseline plus defaults. Invalid defaults fail with their source path
 instead of silently falling back. Native tracker tuning uses immutable generated
 tracker files alongside the defaults, referenced by absolute path so it works
 for every game; these are never written into the bundled configuration.

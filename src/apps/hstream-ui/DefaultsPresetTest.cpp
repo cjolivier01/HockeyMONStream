@@ -12,8 +12,11 @@
 #include "hstream/src/libs/common/UserConfig.h"
 
 struct HStreamWindowTestAccess {
-  static void HighBit(HStreamWindow& window) {
-    window.setHighBitDepthMode("1");
+  static void HighBit(HStreamWindow& window, const QString& mode = "1") {
+    window.setHighBitDepthMode(mode);
+  }
+  static QString HighBitMode(HStreamWindow& window) {
+    return window.highBitDepthMode();
   }
   static bool Save(HStreamWindow& window) {
     return window.savePreset();
@@ -65,6 +68,12 @@ int main(int argc, char** argv) {
   Write(games.filePath("override/config.yaml"), "stitching: {max_output_width: 6200}\n");
   Write(games.filePath("Defaults/config.yaml"), "stitching: {max_output_width: 6400}\n");
   const auto original_game = Read(games.filePath("override/config.yaml"));
+  QDir().mkpath(home.filePath(".hstream"));
+  Write(
+      home.filePath(".hstream/hstream.yaml"),
+      "pipeline: {hmstitcher: {blend-mode: gpu-hard-seam}}\n"
+      "rink: {camera: {zoom_in_aggressiveness: 37}}\n");
+  const auto legacy_preferences = Read(home.filePath(".hstream/hstream.yaml"));
   HStreamWindow window;
   auto* selector = Find<QComboBox>(window, "gameSelector");
   auto* width = Find<QSpinBox>(window, "stitchMaxOutputWidthSpin");
@@ -77,14 +86,19 @@ int main(int argc, char** argv) {
   Require(!Find<QPushButton>(window, "startPipelineButton")->isEnabled(), "Defaults cannot run a pipeline");
   Require(!QFile::exists(defaults_path), "Selecting Defaults must not create a preset");
   const int baseline_width = width->value();
+  const auto baseline_zoom = window.cameraControlValue("Zoom_In_Aggressiveness");
   width->setValue(6000);
+  auto* blend = Find<QComboBox>(window, "blendModeCombo");
+  blend->setCurrentIndex(blend->findData("alpha"));
   Require(save->isEnabled() && HStreamWindowTestAccess::Save(window), "Cannot save default width");
   Require(!save->isEnabled(), "Saved Defaults must be clean");
   auto defaults = YAML::LoadFile(defaults_path.toStdString());
   Require(defaults["stitching"]["max_output_width"].as<int>() == 6000, "Defaults saved to wrong path/value");
   Require(Read(baseline_path) == original_baseline, "Saving defaults changed baseline.yaml");
   selector->setCurrentIndex(selector->findText("inherit"));
-  Require(width->value() == 6000 && reset->isHidden(), "Game did not inherit defaults or reset remained visible");
+  Require(
+      width->value() == 6000 && reset->isHidden() && blend->currentData() == "alpha",
+      "Game did not inherit defaults or old native blend alias overrode Defaults");
   selector->setCurrentIndex(selector->findText("override"));
   Require(width->value() == 6200, "Game override must outrank defaults");
   // A real game called Defaults is distinct from the tagged entry.
@@ -107,6 +121,24 @@ int main(int argc, char** argv) {
           Find<QSpinBox>(window, "controlPointsSpin")->value() == 1000 &&
           window.cameraControlValue("Exposure_x100") == 110 && window.cameraControlValue("Use_10_Bit_Grading") == 1,
       "Game failed to inherit calibration and color defaults");
+  Find<QSpinBox>(window, "calibrationFrameCountSpin")->setValue(4);
+  HStreamWindowTestAccess::HighBit(window, "auto");
+  Require(HStreamWindowTestAccess::Save(window), "Cannot override default frame count/precision in a game");
+  auto saved_game = YAML::LoadFile(games.filePath("inherit/config.yaml").toStdString());
+  Require(
+      saved_game["stitching"]["calibration_frame_count"].as<int>() == 4 &&
+          saved_game["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"].as<std::string>() == "auto",
+      "Game overrides were removed because they equal the shipped baseline");
+  saved_game["pipeline"]["hmplaycropper"]["properties"]["exposure"] = 0.9;
+  saved_game["hstream_ui"].remove("camera_controls");
+  Write(games.filePath("inherit/config.yaml"), QByteArray::fromStdString(YAML::Dump(saved_game)));
+  selector->setCurrentIndex(0);
+  selector->setCurrentIndex(selector->findText("inherit"));
+  Require(
+      Find<QSpinBox>(window, "calibrationFrameCountSpin")->value() == 4 &&
+          HStreamWindowTestAccess::HighBitMode(window) == "auto" && window.cameraControlValue("Exposure_x100") == 90,
+      "Inherited values overrode explicit game frame count, Auto precision or other-owner tone");
+  Write(games.filePath("inherit/config.yaml"), "{}\n");
   selector->setCurrentIndex(0);
   const auto before_reset = Read(defaults_path);
   reset->click();
@@ -116,7 +148,10 @@ int main(int argc, char** argv) {
   defaults = YAML::LoadFile(defaults_path.toStdString());
   Require(defaults.IsMap() && defaults.size() == 0, "Reset and Save must leave an empty overlay");
   selector->setCurrentIndex(selector->findText("inherit"));
-  Require(width->value() == baseline_width, "Game retained cleared defaults");
+  Require(
+      width->value() == baseline_width && window.cameraControlValue("Zoom_In_Aggressiveness") == baseline_zoom,
+      "Game retained cleared defaults or resurrected legacy tuning");
+  Require(Read(home.filePath(".hstream/hstream.yaml")) == legacy_preferences, "Defaults modified legacy preferences");
   selector->setCurrentIndex(0);
   reset->click();
   width->setValue(5800);

@@ -994,6 +994,7 @@ class HStreamWindow : public QMainWindow {
   // Keep explicit layers separate for settings with canonical/native alias precedence.
   YAML::Node baseline_layer_;
   YAML::Node user_layer_;
+  QString user_config_source_;
   QString baseline_config_root_;
   bool default_drivegpt_database_enabled_;
   QString default_stitch_frame_time_{"00:00:00"};

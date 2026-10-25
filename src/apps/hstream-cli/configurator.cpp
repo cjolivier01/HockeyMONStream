@@ -6241,9 +6241,7 @@ absl::Status Configurator::materialize_playtracker_config(
   const int configured_file_rank = explicit_value_rank("pipeline.ds-playtracker.config-file");
   fs::path user_directory;
   if (configured_file_rank == 1) {
-    const auto user_config_path = user_config::file_path();
-    if (user_config_path.ok())
-      user_directory = user_config_path->parent_path();
+    user_directory = user_config_snapshot_path_.parent_path();
   }
   fs::path base_path;
   HM_ASSIGN_OR_RETURN(base_path, hm::config::ResolveReference(
@@ -7780,12 +7778,14 @@ absl::Status Configurator::ensure_user_config_snapshot() {
   if (user_config_snapshot_.has_value() && resolved_game_dir_.has_value())
     return absl::OkStatus();
 
-  YAML::Node user_overlay;
-  HM_ASSIGN_OR_RETURN(user_overlay, user_config::load_or_create());
+  user_config::Snapshot user_snapshot;
+  HM_ASSIGN_OR_RETURN(user_snapshot, user_config::load_snapshot_or_create());
+  const YAML::Node& user_overlay = user_snapshot.values;
   auto root = user_config::game_root(user_overlay);
   if (!root.ok())
     return root.status();
   user_config_snapshot_ = YAML::Clone(user_overlay);
+  user_config_snapshot_path_ = user_snapshot.path;
   resolved_game_dir_ = game_id_.empty() ? fs::path() : *root / game_id_;
   return absl::OkStatus();
 }
@@ -8955,6 +8955,7 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
         YAML::Clone(private_config_),
         /*warn_if_key_not_in_dest=*/!config);
     stitching::PreserveLegacyInputLensSelection(config, private_config_);
+    hm::config::RestoreGameCalibrationFrameCount(config, private_config_, explicit_value_ranks_, 2);
   } else {
     private_config_ = YAML::Node(YAML::NodeType::Map);
     persisted_private_config_ = YAML::Node(YAML::NodeType::Map);

@@ -4961,15 +4961,17 @@ void HStreamWindow::loadBaselineDefaults() {
   const auto loaded = hm::baseline_config::load();
   if (!loaded.ok())
     throw std::runtime_error(loaded.status().ToString());
-  const auto user_overlay =
-      (editing_defaults_ ? absl::StatusOr<YAML::Node>(YAML::Node(YAML::NodeType::Map))
-                         : hm::user_config::load_or_create());
-  if (!user_overlay.ok())
-    throw std::runtime_error(user_overlay.status().ToString());
-  baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
-  hm::stitching::PreserveLegacyInputLensSelection(baseline_config_, *user_overlay);
+  const auto user_snapshot = editing_defaults_
+      ? absl::StatusOr<hm::user_config::Snapshot>(hm::user_config::Snapshot{YAML::Node(YAML::NodeType::Map), {}})
+      : hm::user_config::load_snapshot_or_create();
+  if (!user_snapshot.ok())
+    throw std::runtime_error(user_snapshot.status().ToString());
+  const YAML::Node& user_overlay = user_snapshot->values;
+  user_config_source_ = QString::fromStdString(user_snapshot->path.string());
+  baseline_config_ = merge_yaml_maps(loaded->values, user_overlay);
+  hm::stitching::PreserveLegacyInputLensSelection(baseline_config_, user_overlay);
   baseline_layer_ = YAML::Clone(loaded->values);
-  user_layer_ = YAML::Clone(*user_overlay);
+  user_layer_ = YAML::Clone(user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
 
   auto require = [this](const QString& path) {
@@ -5033,7 +5035,7 @@ void HStreamWindow::loadBaselineDefaults() {
     throw std::runtime_error("Effective baseline stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
   default_stitch_frame_time_ = format_stitch_frame_time(*parsed_stitch_frame_time);
   default_stitch_max_output_width_ =
-      read_stitch_max_output_width_from_config(*user_overlay, -1, std::numeric_limits<int>::max());
+      read_stitch_max_output_width_from_config(user_overlay, -1, std::numeric_limits<int>::max());
   if (default_stitch_max_output_width_ < 0) {
     default_stitch_max_output_width_ = read_stitch_max_output_width_from_config(
         loaded->values, 0, std::numeric_limits<int>::max(), /*native_fallback_for_null_canonical=*/true);
@@ -5078,8 +5080,8 @@ void HStreamWindow::loadBaselineDefaults() {
   }
   YAML::Node user_mapping_backend;
   YAML::Node user_projection;
-  if (lookup_yaml_path(*user_overlay, "stitching.mapping_backend", &user_mapping_backend) &&
-      user_mapping_backend.IsScalar() && !lookup_yaml_path(*user_overlay, "stitching.projection", &user_projection) &&
+  if (lookup_yaml_path(user_overlay, "stitching.mapping_backend", &user_mapping_backend) &&
+      user_mapping_backend.IsScalar() && !lookup_yaml_path(user_overlay, "stitching.projection", &user_projection) &&
       default_mapping_backend_ != "nona") {
     default_projection_ = "rectilinear";
   }
@@ -5087,7 +5089,7 @@ void HStreamWindow::loadBaselineDefaults() {
     default_mapping_backend_ = "opencv-magsac";
   if (default_mapping_backend_ != "nona") {
     default_run_autooptimizer_ = false;
-    if (!lookup_yaml_path(*user_overlay, "stitching.projection", &user_projection))
+    if (!lookup_yaml_path(user_overlay, "stitching.projection", &user_projection))
       default_projection_ = "rectilinear";
   }
   const auto default_backend = hm::stitching::ParseMappingBackend(default_mapping_backend_.toStdString());
@@ -9090,9 +9092,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
   hm::stitching::write_stitch_projection_framing(config, active_projection_framing_);
   if (!writeRinkLevelingSelection(config))
     return false;
-  if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
-    config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
-  }
+  config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
   write_stitch_max_output_width_override(config, active_stitch_max_output_width_, default_stitch_max_output_width_);
   calibration["status"] = status.toStdString();
   if (status == "pending")
@@ -9367,9 +9367,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (stitched_output_geometry_changed && invalidate_scoreboard_geometry(config)) {
       appendLog("stitching output geometry changed; scoreboard perspective must be configured again");
     }
-    if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
-      config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
-    }
+    config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
     write_stitch_max_output_width_override(config, active_stitch_max_output_width_, default_stitch_max_output_width_);
     active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     config["hstream_ui"]["stitching_calibration"]["control_points"] = control_points;
@@ -18412,11 +18410,7 @@ std::pair<QString, int> HStreamWindow::resolvePlaytrackerConfig(
     const YAML::Node& game_config,
     bool original,
     const QString& game_dir) const {
-  const auto user =
-      (editing_defaults_ ? absl::StatusOr<YAML::Node>(YAML::Node(YAML::NodeType::Map))
-                         : hm::user_config::load_or_create());
-  if (!user.ok())
-    throw std::runtime_error(user.status().ToString());
+  const YAML::Node& user = user_layer_;
   constexpr const char* file_key = "pipeline.ds-playtracker.config-file";
   YAML::Node configured_file;
   YAML::Node original_file;
@@ -18429,7 +18423,7 @@ std::pair<QString, int> HStreamWindow::resolvePlaytrackerConfig(
     native_rank = 2;
   } else if (!has_original && lookup_yaml_path(game_config, file_key, &configured_file)) {
     native_rank = 2;
-  } else if (lookup_yaml_path(*user, file_key, &configured_file)) {
+  } else if (lookup_yaml_path(user, file_key, &configured_file)) {
     native_rank = 1;
   } else if (!lookup_yaml_path(baseline_config_, file_key, &configured_file)) {
     const QString app_config_path = pipelineConfigPath("ds_hockey_app_config.yaml");
@@ -18451,10 +18445,7 @@ std::pair<QString, int> HStreamWindow::resolvePlaytrackerConfig(
       if (native_rank == 2)
         candidates << QDir(game_dir).filePath(configured);
       if (native_rank == 1) {
-        const auto user_path = hm::user_config::file_path();
-        if (!user_path.ok())
-          throw std::runtime_error(user_path.status().ToString());
-        candidates << QDir(QString::fromStdString(user_path->parent_path().string())).filePath(configured);
+        candidates << QFileInfo(user_config_source_).dir().filePath(configured);
       }
       candidates << QDir(QFileInfo(pipelineConfigPath("ds_hockey_app_config.yaml")).absolutePath()).filePath(configured)
                  << QDir(baseline_config_root_).filePath(configured) << QDir(game_dir).filePath(configured)
@@ -18473,11 +18464,7 @@ std::map<QString, double> HStreamWindow::readPlayerSizeControls(
     const YAML::Node& game_config,
     bool inherited,
     QString* native_error) const {
-  const auto user =
-      (editing_defaults_ ? absl::StatusOr<YAML::Node>(YAML::Node(YAML::NodeType::Map))
-                         : hm::user_config::load_or_create());
-  if (!user.ok())
-    throw std::runtime_error(user.status().ToString());
+  const YAML::Node& user = user_layer_;
   const QString game_dir = controlConfigDirectory();
   int native_rank = 0;
   YAML::Node native(YAML::NodeType::Map);
@@ -18500,7 +18487,7 @@ std::map<QString, double> HStreamWindow::readPlayerSizeControls(
   auto effective = [&](const char* canonical_key, const char* native_key) {
     YAML::Node value;
     lookup_yaml_path(baseline_config_, canonical_key, &value);
-    int canonical_rank = lookup_yaml_path(*user, canonical_key, nullptr) ? 1 : 0;
+    int canonical_rank = lookup_yaml_path(user, canonical_key, nullptr) ? 1 : 0;
     YAML::Node game_value;
     if (!inherited && lookup_yaml_path(game_config, canonical_key, &game_value)) {
       value.reset(game_value);
@@ -19152,35 +19139,30 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
         ? QStringList{QStringLiteral("pipeline.hmplaycropper.properties"), QStringLiteral("pipeline.hmstitcher.properties")}
         : QStringList{
               QStringLiteral("pipeline.hmstitcher.properties"), QStringLiteral("pipeline.hmplaycropper.properties")};
-    for (const QString& owner : tone_property_owners) {
-      const QString path = owner + ".shadow-lift";
-      YAML::Node value;
-      if (lookup_yaml_path(config, path, &value) || lookup_yaml_path(user_layer_, path, &value)) {
-        stage_control("Bring_Up_Shadows", bounded_integer_control(path, value, 0, 100));
-        break;
+    const auto tone_value = [&](const QString& property) -> std::optional<std::pair<QString, YAML::Node>> {
+      for (const YAML::Node& layer : {config, user_layer_}) {
+        for (const QString& owner : tone_property_owners) {
+          const QString path = owner + "." + property;
+          YAML::Node value;
+          if (lookup_yaml_path(layer, path, &value))
+            return std::make_pair(path, value);
+        }
       }
-    }
-    for (const QString& owner : tone_property_owners) {
-      const QString path = owner + ".shadow-lift-black-point";
-      YAML::Node value;
-      if (lookup_yaml_path(config, path, &value) || lookup_yaml_path(user_layer_, path, &value)) {
-        stage_control("Lift_Shadow_Black_Point", strict_boolean_control(path, value));
-        break;
-      }
-    }
-    for (const QString& owner : tone_property_owners) {
-      const QString path = owner + ".exposure";
-      YAML::Node value;
-      if (!lookup_yaml_path(config, path, &value) && !lookup_yaml_path(user_layer_, path, &value))
-        continue;
-      const double setting = value.as<double>();
+      return std::nullopt;
+    };
+    if (const auto value = tone_value("shadow-lift"))
+      stage_control("Bring_Up_Shadows", bounded_integer_control(value->first, value->second, 0, 100));
+    if (const auto value = tone_value("shadow-lift-black-point"))
+      stage_control("Lift_Shadow_Black_Point", strict_boolean_control(value->first, value->second));
+    if (const auto value = tone_value("exposure")) {
+      const auto& path = value->first;
+      const double setting = value->second.as<double>();
       const int setting_x100 = rounded_control(path, setting * 100.0);
       if (!std::isfinite(setting) || setting < 0.0 || setting > 1.3 ||
           std::abs(setting * 100.0 - setting_x100) > 1e-6) {
         throw std::invalid_argument(QString("%1 must be from 0.00 through 1.30 in hundredths").arg(path).toStdString());
       }
       stage_control("Exposure_x100", setting_x100);
-      break;
     }
     YAML::Node controls = config["hstream_ui"]["camera_controls"];
     int loaded = 0;
@@ -19730,9 +19712,9 @@ bool HStreamWindow::applySavedControlConfig(
   if (!retain_selected_frames && stitch_frame_time != default_stitch_frame_time_) {
     config["stitching"]["stitch_frame_time"] = stitch_frame_time.toStdString();
   }
-  if (selected_frame_count != kDefaultStitchCalibrationFrameCount) {
-    config["stitching"]["calibration_frame_count"] = selected_frame_count;
-  }
+  // Keep this paired with saved calibration bookkeeping even when it equals
+  // today's defaults; later defaults edits must not create conflicting counts.
+  config["stitching"]["calibration_frame_count"] = selected_frame_count;
   config["stitching"]["control_point_matcher"] = selected_control_point_matcher.toStdString();
   config["stitching"]["control_point_resolution"] = control_point_resolution_.toStdString();
   hm::stitching::write_control_point_filtering(config, control_point_filtering_);
@@ -19858,6 +19840,11 @@ bool HStreamWindow::applySavedControlConfig(
   const QString tone_path_prefix = QString("pipeline.%1.properties").arg(tone_element);
   if (high_bit_depth_mode != "auto") {
     config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = use_high_bit_grading;
+    mark_runtime_key("pipeline.hmstitcher.properties.high-bit-depth");
+  } else if (
+      lookup_yaml_path(user_layer_, "pipeline.hmstitcher.properties.high-bit-depth", nullptr) ||
+      lookup_yaml_path(user_layer_, "hstream_ui.camera_controls.Use_10_Bit_Grading", nullptr)) {
+    config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = "auto";
     mark_runtime_key("pipeline.hmstitcher.properties.high-bit-depth");
   }
   if (has_control(controls, "Bring_Up_Shadows")) {
