@@ -1,6 +1,6 @@
 # Proposed Qt and browser preview parity
 
-**Status: proposed, unimplemented.** This document describes the remaining native
+**Status: production browser route transport is unimplemented; shared native routing, GPU surface and identity primitives exist.** This document describes the remaining native
 transport work needed for HockeyMONWeb to reproduce Qt preview routing and
 playback behavior. It is not a description of shipped capabilities. The current
 browser workspace and generated controls do not establish full workflow parity.
@@ -22,7 +22,10 @@ experiment-authoring, defaults, or alternate-backend ports.
 | Responsibility | Current owner and behavior |
 | --- | --- |
 | Logical preview branches | `src/apps/hstream-cli/PipelineApp.cpp`, `configure_source_preview_sinks()`, builds them only when `--ui-preview-windows` supplies X11 window IDs. Program taps the output tee, tracked Stitched taps the graph before Program crop, and source previews tap the native source tees. Calibration-only Stitched uses the stitcher's preview branch. |
-| Route activation | `PipelineApplication::set_preview_active_runtime()` owns the active channel and a monotonically increasing preview generation. It closes the old ingress gate, drains the post-queue barrier, quiesces the old renderer, then opens the new route. `none` disables all preview branches. |
+| Route activation | `src/apps/apps-common/PreviewRouteOwner.*` owns the active channel and a monotonically increasing operation generation. `PipelineApplication::set_preview_active_runtime()` delegates to it using the existing gates/renderers and retains Qt's acknowledgments. Typed C++ admission can additionally fence run/stage/topology; this is not yet exposed as a browser runtime capability. |
+| Selected stream | `SelectedPreviewStream.*` isolates each route's caps, segment, flush and EOF and supplies one presentation clock. It retains the exact original GPU memory and source buffer, including native metadata and source PTS. The main-output route owns EOF. This element is tested independently but is not registered by the production CLI. |
+| Owned browser surface | `PreviewGpuSurface.*` fits the selected NVMM frame into a fixed RGBA GPU surface, applies a supplied painter, and bounds cadence and surface ownership using explicit caller configuration. Pool exhaustion drops preview frames while sources continue. CUDA-device input is currently required; Jetson surface-array and AMD consumers are not implemented. |
+| Encoded identity | `PreviewTransportFrames.*` bounds frame-to-RTP bookkeeping, independently fences peer and route operations, and rejects stale/delta output until an epoch's first keyframe. Browser presentation acknowledgments and production signaling integration remain unimplemented. |
 | Qt presentation | `src/apps/apps-common/HmGpuPreview.*` owns `hmpreviewisolation` and the x86 NVIDIA/OpenGL `hmgpupreviewsink`. The renderer reports readiness after presentation. `HStreamWindow` waits for matching channel/generation messages and handles retries and failures. |
 | Browser presentation | `create_webrtc_sink_bin()` in `src/apps/apps-common/deepstream_sink_bin.cpp` creates a separate H.264 encoder, RTP payloader, and `WebRtcEndpoint`. This sink is connected to the normal output tee. It is not a consumer of the desktop's selectable preview routes. |
 | WebRTC lifecycle | `WebRtcEndpoint.*` retains stable RTP input pads while replacing the inner peer transport. Signaling callbacks are fenced by peer generation and run on their owning main context. Disconnected inputs drain without blocking processing. See [web-preview.md](web-preview.md). |
@@ -40,11 +43,12 @@ playback does not reproduce the native source route's timing or ownership.
 
 ## Shared route and presentation ownership
 
-Extract the existing branch construction and activation state from
-`PipelineApplication` into a native preview route owner under
-`src/apps/apps-common/`. Keep it independent of Qt window types. This owner
-registers logical channels, native frame taps, gate/barrier state, availability,
-and operation generations. Presentation adapters supply the final consumer:
+`PreviewRouteOwner` now owns activation independently of Qt window types, with
+borrowed native gate and consumer callbacks. Its CPU tests cover registration
+without XIDs, generation/session admission, switching, metadata ordering,
+consumer failure, graph replacement and in-flight drain barriers. Native branch
+construction still lives in `PipelineApplication` and requires window IDs.
+Extract that construction next so presentation adapters supply the final consumer:
 
 - Qt uses the existing `hmgpupreviewsink` targets and X11 readiness contract.
 - Browser sessions use one route selector and one hardware encoder/WebRTC target.
@@ -74,9 +78,11 @@ selected native GPU route
   -> existing WebRtcEndpoint
 ```
 
-A standard GStreamer selector can provide the routing primitive if its caps,
-segment, inactive-pad and EOS behavior satisfies the tests below. The native
-owner, not browser code, owns switching and drain ordering. Keep output caps
+`SelectedPreviewStream` supplies the routing primitive. A stock `input-selector`
+allowed inactive EOF to block behind a selected stream, so local event ownership
+is explicit. CPU regression tests cover inactive EOS during an admitted blocked
+frame, authoritative EOF, source replacement, exact memory references and source
+pool retention. The native owner owns switching and drain ordering. Keep output caps
 fixed for the encoder so changing source dimensions/aspect does not require a new
 SDP negotiation. Preserve aspect through GPU letterboxing. Force an IDR after a
 route or transport epoch change. Gate inactive routes before GPU conversion, and

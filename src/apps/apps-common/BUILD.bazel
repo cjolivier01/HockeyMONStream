@@ -15,6 +15,66 @@ cc_test(
 )
 
 cc_library(
+    name = "selected_preview_stream",
+    srcs = ["SelectedPreviewStream.cpp"],
+    hdrs = ["SelectedPreviewStream.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "selected_preview_stream_test",
+    srcs = ["SelectedPreviewStreamTest.cpp"],
+    deps = [":selected_preview_stream", "@gstreamer"],
+)
+
+cc_test(
+    name = "selected_preview_stream_gpu_test",
+    srcs = ["SelectedPreviewStreamGpuTest.cpp"],
+    tags = ["manual", "requires-gpu", "local"],
+    deps = [
+        ":hm_gpu_preview",
+        ":preview_route_owner",
+        ":preview_gpu_surface",
+        ":preview_transport_frames",
+        ":selected_preview_stream",
+        ":webrtc_endpoint",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_library(
+    name = "preview_gpu_surface",
+    srcs = ["PreviewGpuSurface.cpp"],
+    hdrs = ["PreviewGpuSurface.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":selected_preview_stream",
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_library(
+    name = "preview_transport_frames",
+    srcs = ["PreviewTransportFrames.cpp"],
+    hdrs = ["PreviewTransportFrames.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":selected_preview_stream", "@gstreamer"],
+)
+
+cc_test(
+    name = "preview_transport_frames_test",
+    srcs = ["PreviewTransportFramesTest.cpp"],
+    deps = [":preview_transport_frames"],
+)
+
+cc_library(
     name = "uri_playlist_capture_pool_drain",
     srcs = ["UriPlaylistCapturePoolDrain.cpp"],
     hdrs = ["UriPlaylistCapturePoolDrain.h"],
