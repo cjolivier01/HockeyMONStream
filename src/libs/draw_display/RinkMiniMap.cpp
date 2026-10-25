@@ -133,11 +133,11 @@ bool RinkMiniMap::Append(
     analytics_epoch_ = result->epoch;
   }
   size_t visible = 0;
-  // Home is navy and away is gold, independently of sweater colour. Games
+  // Home is navy and away is orange, independently of sweater colour. Games
   // without a home-sweater mapping retain dark/light fills. Unknown sides
   // are hollow; ignored players keep the boxes' grey override.
   const Color team_home{0.0F, 0.0F, 128.0F / 255, 1.0F};
-  const Color team_away{1.0F, 215.0F / 255, 0.0F, 1.0F};
+  const Color team_away{1.0F, 140.0F / 255, 0.0F, 1.0F};
   const Color team_dark{0.16F, 0.18F, 0.22F, 1.0F};
   const Color team_light{0.93F, 0.94F, 0.96F, 1.0F};
   // Switch to the two-group reading only once this stream has named a side,

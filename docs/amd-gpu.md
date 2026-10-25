@@ -974,7 +974,7 @@ parser and generation state; successful requests receive `status=applied`.
 Unsupported Play/Rink layers and stale requests receive `status=failed` and
 leave the previous selection intact. These two diagnostic layers remain pending.
 Team affiliation and the rink mini-map also remain unavailable in the AMD
-preview; the mini-map's navy Home and gold Away markers currently use the NVIDIA
+preview; the mini-map's navy Home and orange Away markers currently use the NVIDIA
 preview path.
 
 `ProgramPreviewBoxes` retains bounded CPU metadata and shared track-color leases,
