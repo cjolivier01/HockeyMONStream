@@ -3,6 +3,7 @@
 #include "hstream/src/apps/apps-common/PreviewRouteOwner.h"
 #include "hstream/src/apps/apps-common/PreviewTransportFrames.h"
 #include "hstream/src/apps/apps-common/SelectedPreviewStream.h"
+#include "hstream/src/apps/apps-common/WebPreviewTarget.h"
 #include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
 
 #include <gst/rtp/gstrtpbuffer.h>
@@ -78,86 +79,33 @@ struct Observations {
   std::vector<GstBuffer*> retained_surfaces;
   std::array<unsigned, 7> operations{};
   std::array<unsigned, 7> rtp_operations{};
-  hm::preview::TransportFrames transport{64};
   GstClockTime raw_pts{GST_CLOCK_TIME_NONE};
   GstClockTime encoded_pts{GST_CLOCK_TIME_NONE};
   GstClockTime first_rtp_pts{GST_CLOCK_TIME_NONE};
   std::uint32_t first_rtp_timestamp{0};
 };
 
-GstPadProbeReturn prepare_encode(GstPad* pad, GstPadProbeInfo* info, gpointer data) {
-  auto& observation = *static_cast<Observations*>(data);
-  auto* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-  const auto* identity = hm::preview::frame_identity(buffer);
-  if (!identity) {
-    std::lock_guard<std::mutex> lock(observation.mutex);
-    ++observation.errors;
-    return GST_PAD_PROBE_DROP;
-  }
-  const auto admitted = observation.transport.Admit(*identity);
-  if (!admitted.accepted)
-    return GST_PAD_PROBE_DROP;
-  if (admitted.force_keyframe) {
-    unsigned count;
-    {
-      std::lock_guard<std::mutex> lock(observation.mutex);
-      count = ++observation.keyframe_requests;
-    }
-    if (!gst_pad_send_event(
-            pad,
-            gst_video_event_new_downstream_force_key_unit(
-                GST_BUFFER_PTS(buffer), GST_CLOCK_TIME_NONE, GST_BUFFER_PTS(buffer), TRUE, count))) {
-      std::lock_guard<std::mutex> lock(observation.mutex);
-      ++observation.errors;
-    }
-  }
-  return GST_PAD_PROBE_OK;
-}
-
-bool observe_rtp_packet(GstBuffer* buffer, Observations& observation) {
-  GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
-  if (!gst_rtp_buffer_map(buffer, GST_MAP_READ, &rtp))
-    return false;
-  const auto packet = observation.transport.Rtp(
-      GST_BUFFER_PTS(buffer),
-      gst_rtp_buffer_get_timestamp(&rtp),
-      gst_rtp_buffer_get_ssrc(&rtp),
-      gst_rtp_buffer_get_marker(&rtp));
-  gst_rtp_buffer_unmap(&rtp);
-  if (!packet.accepted)
-    return false;
-  if (packet.completed) {
+void observe_events(hm::preview::WebPreviewTarget& target, Observations& observation) {
+  for (const auto& event : target.TakeEvents()) {
+    if (event.kind != hm::preview::TransportEvent::Kind::kPacketized)
+      continue;
     std::lock_guard<std::mutex> lock(observation.mutex);
     ++observation.rtp_frames;
     if (!GST_CLOCK_TIME_IS_VALID(observation.first_rtp_pts)) {
-      observation.first_rtp_pts = packet.completed->presentation_pts;
-      observation.first_rtp_timestamp = packet.completed->rtp_timestamp;
+      observation.first_rtp_pts = event.frame.presentation_pts;
+      observation.first_rtp_timestamp = event.rtp_timestamp;
     } else {
       const auto expected = static_cast<std::uint32_t>(
-          gst_util_uint64_scale(packet.completed->presentation_pts - observation.first_rtp_pts, 90000, GST_SECOND));
-      const auto actual = packet.completed->rtp_timestamp - observation.first_rtp_timestamp;
+          gst_util_uint64_scale(event.frame.presentation_pts - observation.first_rtp_pts, 90000, GST_SECOND));
+      const auto actual = event.rtp_timestamp - observation.first_rtp_timestamp;
       if (std::abs(static_cast<std::int32_t>(actual - expected)) > 1)
         ++observation.errors;
     }
-    if (packet.completed->operation < observation.rtp_operations.size())
-      ++observation.rtp_operations[packet.completed->operation];
+    if (event.frame.operation < observation.rtp_operations.size())
+      ++observation.rtp_operations[event.frame.operation];
     else
       ++observation.errors;
   }
-  return true;
-}
-
-GstPadProbeReturn observe_rtp(GstPad*, GstPadProbeInfo* info, gpointer data) {
-  auto& observation = *static_cast<Observations*>(data);
-  bool accepted = true;
-  if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
-    auto* list = GST_PAD_PROBE_INFO_BUFFER_LIST(info);
-    for (guint i = 0; i < gst_buffer_list_length(list); ++i)
-      accepted &= observe_rtp_packet(gst_buffer_list_get(list, i), observation);
-  } else {
-    accepted = observe_rtp_packet(GST_PAD_PROBE_INFO_BUFFER(info), observation);
-  }
-  return accepted ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
 }
 
 bool paint_owned(GstBuffer* input, const hm::preview::OwnedSurfaceView& output, Observations& observation) {
@@ -231,26 +179,6 @@ GstPadProbeReturn observe_raw(GstPad*, GstPadProbeInfo* info, gpointer data) {
   return GST_PAD_PROBE_OK;
 }
 
-GstPadProbeReturn observe_encoded(GstPad*, GstPadProbeInfo* info, gpointer data) {
-  auto* observation = static_cast<Observations*>(data);
-  GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-  if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer)))
-    return GST_PAD_PROBE_OK;
-  GstMapInfo map{};
-  if (!gst_buffer_map(buffer, &map, GST_MAP_READ))
-    return GST_PAD_PROBE_DROP;
-  const bool idr = hm::preview::H264AccessUnitHasIdr(map.data, map.size);
-  gst_buffer_unmap(buffer, &map);
-  const auto identity = observation->transport.Encoded(GST_BUFFER_PTS(buffer), idr);
-  if (!identity)
-    return GST_PAD_PROBE_DROP;
-  std::lock_guard<std::mutex> lock(observation->mutex);
-  ++observation->encoded_frames;
-  if (GST_CLOCK_TIME_IS_VALID(observation->encoded_pts) && GST_BUFFER_PTS(buffer) <= observation->encoded_pts)
-    ++observation->errors;
-  observation->encoded_pts = GST_BUFFER_PTS(buffer);
-  return GST_PAD_PROBE_OK;
-}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -259,63 +187,48 @@ int main(int argc, char** argv) {
     return 1;
   GError* error = nullptr;
   GstElement* pipeline = gst_pipeline_new("selected-preview-gpu-fixture");
-  GstElement* selected = hm::preview::selected_stream_create("selected", "gpu-fixture", "memory:NVMM", "program");
   Observations observation;
-  observation.transport.SetPeer(1);
-  GstElement* surface = hm::preview::gpu_surface_create(
-      "surface", {640, 360, 30, 1, 8, 0}, [&](GstBuffer* input, const hm::preview::OwnedSurfaceView& output) {
+  hm::preview::WebPreviewConfig config;
+  config.name = "web-preview";
+  config.stream_id = "gpu-fixture";
+  config.eof_channel = "program";
+  config.surface = {640, 360, 30, 1, 8, 0};
+  config.conversion_pool_frames = 8;
+  config.bitrate = 1000000;
+  config.idr_interval = 10;
+  config.h264_profile = 0;
+  config.encoder_tuning = 3;
+  config.rtp_payload = 96;
+  config.pending_frames = 64;
+  config.pending_events = 4;
+  config.stun_server = "";
+  std::string target_error;
+  auto invalid = config;
+  invalid.encoder_tuning.reset();
+  if (hm::preview::WebPreviewTarget::Validate(invalid, &target_error))
+    return 1;
+  auto target = hm::preview::WebPreviewTarget::Create(
+      config,
+      [&](GstBuffer* input, const hm::preview::OwnedSurfaceView& output) {
         return paint_owned(input, output, observation);
-      });
-  GstElement* consumer = gst_parse_bin_from_description(
-      "nvvideoconvert gpu-id=0 nvbuf-memory-type=2 output-buffers=8 ! "
-      "video/x-raw(memory:NVMM),format=NV12,width=640,height=360 ! "
-      "nvv4l2h264enc name=encoder bitrate=1000000 iframeinterval=10 idrinterval=10 num-B-Frames=0 "
-      "tuning-info-id=3 insert-sps-pps=true ! "
-      "h264parse ! video/x-h264,stream-format=byte-stream,alignment=au ! identity name=encoded ! "
-      "rtph264pay name=rtp pt=96 config-interval=1",
-      TRUE,
-      &error);
-  if (!pipeline || !selected || !surface || !consumer || error) {
-    std::cerr << "GPU fixture construction failed: " << (error ? error->message : "missing element") << '\n';
+      },
+      &target_error);
+  if (!pipeline || !target) {
+    std::cerr << "GPU target construction failed: " << target_error << '\n';
     return 1;
   }
-  gst_bin_add_many(GST_BIN(pipeline), selected, surface, consumer, nullptr);
-  if (!gst_element_link_many(selected, surface, consumer, nullptr))
+  if (!gst_bin_add(GST_BIN(pipeline), target->bin()) || !target->SetPeer(1))
     return 1;
-  GstElement* endpoint = hstream::webrtc_endpoint_create("preview-transport", nullptr);
-  if (!endpoint || !gst_bin_add(GST_BIN(pipeline), endpoint))
-    return 1;
-  GstCaps* rtp_caps =
-      gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000");
-  GstPad* transport_input = hstream::webrtc_endpoint_add_track(endpoint, rtp_caps);
-  gst_caps_unref(rtp_caps);
-  GstPad* consumer_output = gst_element_get_static_pad(consumer, "src");
-  if (!transport_input || !consumer_output || gst_pad_link(consumer_output, transport_input) != GST_PAD_LINK_OK)
-    return 1;
-  gst_pad_add_probe(
-      consumer_output,
-      static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST),
-      observe_rtp,
-      &observation,
-      nullptr);
-  gst_object_unref(consumer_output);
-  gst_object_unref(transport_input);
-  GstElement* encoder = gst_bin_get_by_name(GST_BIN(consumer), "encoder");
-  GstPad* encoder_input = gst_element_get_static_pad(encoder, "sink");
-  gst_pad_add_probe(encoder_input, GST_PAD_PROBE_TYPE_BUFFER, prepare_encode, &observation, nullptr);
-  gst_object_unref(encoder_input);
-  gst_object_unref(encoder);
+  GstElement* selected = gst_bin_get_by_name(GST_BIN(target->bin()), "selected");
+  GstElement* surface = gst_bin_get_by_name(GST_BIN(target->bin()), "surface");
   GstPad* selected_output = gst_element_get_static_pad(selected, "src");
   gst_pad_add_probe(selected_output, GST_PAD_PROBE_TYPE_BUFFER, observe_raw, &observation, nullptr);
   gst_object_unref(selected_output);
   GstPad* owned_output = gst_element_get_static_pad(surface, "src");
   gst_pad_add_probe(owned_output, GST_PAD_PROBE_TYPE_BUFFER, observe_owned, &observation, nullptr);
   gst_object_unref(owned_output);
-  GstElement* encoded = gst_bin_get_by_name(GST_BIN(consumer), "encoded");
-  GstPad* encoded_input = gst_element_get_static_pad(encoded, "sink");
-  gst_pad_add_probe(encoded_input, GST_PAD_PROBE_TYPE_BUFFER, observe_encoded, &observation, nullptr);
-  gst_object_unref(encoded_input);
-  gst_object_unref(encoded);
+  gst_object_unref(selected);
+  gst_object_unref(surface);
 
   hm::preview::RouteOwner owner;
   owner.initialize_selection("none", 0);
@@ -339,7 +252,7 @@ int main(int argc, char** argv) {
       return 1;
     }
     gst_bin_add(GST_BIN(pipeline), source);
-    route_pads[index] = hm::preview::selected_stream_add_route(selected, channel.c_str());
+    route_pads[index] = target->AddRoute(channel);
     GstPad* source_output = gst_element_get_static_pad(source, "src");
     if (gst_pad_link(source_output, route_pads[index]) != GST_PAD_LINK_OK)
       return 1;
@@ -363,19 +276,17 @@ int main(int argc, char** argv) {
             },
             [&, index, ingress, drain] {
               return hm::gpu_preview::isolation_active(ingress) && hm::gpu_preview::isolation_active(drain) &&
-                  hm::preview::selected_stream_active(selected, route_pads[index], generations[index]);
+                  target->Active(route_pads[index], generations[index]);
             },
             [&, index](std::uint64_t generation) {
               generations[index] = generation;
-              hm::preview::selected_stream_select(selected, route_pads[index], generation);
+              target->Select(route_pads[index], generation);
             },
             [&, index](std::uint64_t generation) {
               generations[index] = generation;
-              return hm::preview::selected_stream_select(selected, route_pads[index], generation);
+              return target->Select(route_pads[index], generation);
             },
-            [&](std::uint64_t generation) {
-              return hm::preview::selected_stream_select(selected, nullptr, generation);
-            },
+            [&](std::uint64_t generation) { return target->Select(nullptr, generation); },
         });
     gst_object_unref(ingress);
     gst_object_unref(drain);
@@ -389,6 +300,8 @@ int main(int argc, char** argv) {
   unsigned next = 0;
   bool eof = false;
   while (success && !eof && std::chrono::steady_clock::now() < deadline) {
+    if (sources[0].frames >= 23)
+      observe_events(*target, observation);
     if (next < thresholds.size() && sources[0].frames >= thresholds[next]) {
       if (next == 0) {
         std::lock_guard<std::mutex> lock(observation.mutex);
@@ -398,8 +311,28 @@ int main(int argc, char** argv) {
           gst_buffer_unref(buffer);
         observation.retained_surfaces.clear();
       }
-      if (next == 3)
-        success &= observation.transport.SetPeer(2);
+      if (next == 3) {
+        // Recreate an inactive source binding while the rest of the target
+        // remains PLAYING. The existing upstream sticky caps/segment must be
+        // admitted by the new ghost pad, and the endpoint identity stays fixed.
+        auto* output = gst_pad_get_peer(route_pads[1]);
+        success &= output && gst_pad_unlink(output, route_pads[1]);
+        target->RemoveRoute(route_pads[1]);
+        gst_object_unref(route_pads[1]);
+        route_pads[1] = target->AddRoute("source0");
+        success &= route_pads[1] && output && gst_pad_link(output, route_pads[1]) == GST_PAD_LINK_OK;
+        if (output)
+          gst_object_unref(output);
+        auto* endpoint = target->endpoint();
+        success &= target->SetPeer(2);
+        auto* peer = hstream::webrtc_endpoint_reset_peer(endpoint);
+        success &= peer != nullptr;
+        if (peer)
+          gst_object_unref(peer);
+        success &= target->SetPeer(3);
+        hstream::webrtc_endpoint_detach_peer(endpoint);
+        success &= target->endpoint() == endpoint;
+      }
       const auto result = owner.select_current(selections[next], next + 2, {});
       success &= result.status == hm::preview::RouteOwner::Status::kActivated ||
           result.status == hm::preview::RouteOwner::Status::kDeactivated;
@@ -421,27 +354,35 @@ int main(int argc, char** argv) {
     }
     gst_message_unref(message);
   }
+  observe_events(*target, observation);
+  const auto counters = target->counters();
+  observation.encoded_frames = counters.encoded;
+  observation.keyframe_requests = counters.keyframe_requests;
   owner.forget_routes();
   gst_element_set_state(pipeline, GST_STATE_NULL);
   for (auto* buffer : observation.retained_surfaces)
     gst_buffer_unref(buffer);
   observation.retained_surfaces.clear();
   gst_object_unref(bus);
-  for (auto* pad : route_pads)
+  for (auto* pad : route_pads) {
+    target->RemoveRoute(pad);
     gst_object_unref(pad);
+  }
+  target.reset();
   gst_object_unref(pipeline);
   success &= eof && next == thresholds.size() && observation.errors == 0 && sources[0].errors == 0 &&
       sources[1].errors == 0 && observation.raw_frames > 40 && observation.encoded_frames > 40 &&
       observation.raw_frames > observation.owned_frames && observation.owned_frames == observation.painted_frames &&
-      observation.encoded_frames <= observation.owned_frames && observation.rtp_frames == observation.encoded_frames &&
-      observation.keyframe_requests >= 5 && observation.rtp_operations[1] > 0 && observation.rtp_operations[2] > 0 &&
-      observation.rtp_operations[3] > 0 && observation.rtp_operations[4] == 0 && observation.rtp_operations[5] > 0 &&
-      observation.rtp_operations[6] > 0 && observation.operations[1] > 0 && observation.operations[2] > 0 &&
-      observation.operations[3] > 0 && observation.operations[4] == 0 && observation.operations[5] > 0 &&
-      observation.operations[6] > 0;
+      observation.encoded_frames <= observation.owned_frames && counters.packetized == observation.encoded_frames &&
+      counters.events_dropped > 0 && counters.keyframe_failures == 0 && observation.keyframe_requests >= 5 &&
+      observation.rtp_operations[1] > 0 && observation.rtp_operations[2] > 0 && observation.rtp_operations[3] > 0 &&
+      observation.rtp_operations[4] == 0 && observation.rtp_operations[5] > 0 && observation.rtp_operations[6] > 0 &&
+      observation.operations[1] > 0 && observation.operations[2] > 0 && observation.operations[3] > 0 &&
+      observation.operations[4] == 0 && observation.operations[5] > 0 && observation.operations[6] > 0;
   std::cout << "NVMM frames=" << observation.raw_frames << " encoded=" << observation.encoded_frames
             << " owned=" << observation.owned_frames << " painted=" << observation.painted_frames
-            << " RTP=" << observation.rtp_frames << " IDR-requests=" << observation.keyframe_requests
+            << " RTP=" << counters.packetized << " observed=" << observation.rtp_frames
+            << " event-drops=" << counters.events_dropped << " IDR-requests=" << observation.keyframe_requests
             << " errors=" << observation.errors << " source-errors=" << sources[0].errors << ',' << sources[1].errors
             << " source-frames=" << sources[0].frames << ',' << sources[1].frames << " switches=" << next
             << " eof=" << eof << '\n';

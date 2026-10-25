@@ -37,6 +37,9 @@ class TransportFrames {
   // The signaling owner must set its independently increasing peer generation
   // before replacing transport. Pending old-peer encoded/RTP output is rejected.
   bool SetPeer(std::uint64_t peer);
+  // Route deactivation must retire delayed encoder/RTP output even when no
+  // replacement raw frame will arrive. Preserve monotonic admission bounds.
+  void DiscardPending();
   struct Admission {
     bool accepted{false};
     bool force_keyframe{false};

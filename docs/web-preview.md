@@ -37,6 +37,35 @@ route and peer epochs. These primitives are not yet connected to production
 headless routes or authenticated browser presentation acknowledgments. Shared
 overlay preparation alone does not implement GPU drawing of all Qt layers.
 
+`WebPreviewTarget` assembles those primitives into an independently owned bin:
+one selected stream, bounded CUDA-device RGBA surfaces, GPU NV12 conversion,
+hardware H.264 with B frames disabled, Annex-B access units, RTP, and a stable
+`WebRtcEndpoint`. All dimensions, cadence, pools, metadata budgets, bitrate,
+profile, tuning, payload and STUN settings are explicit constructor inputs.
+Missing hardware elements fail construction; there is no software fallback.
+The endpoint is borrowed through the target for the audio owner's later track
+attachment. Its initial drain must exist before parenting the endpoint so the
+target participates in its parent's EOS aggregation.
+
+`PreviewTransportMonitor` owns bounded sender events and counters. Route off,
+active-route removal and peer replacement retire delayed output immediately.
+Events distinguish encoded access units from completed RTP frames; neither is a
+browser presentation receipt. Streaming probes only queue metadata for polling,
+with observable overflow; they do not call signaling or schedule work per frame.
+The caller closes ingress/drain gates around route mutations and stops the
+parent pipeline before destroying the target. The caller must fence the peer
+generation before replacing its transport; production signaling is not wired to
+this API yet.
+
+The GPU fixture now uses this target directly. It covers live source-binding
+replacement, Render off, natural main-output EOF, incomplete peer teardown,
+surface-pool exhaustion and event-queue overflow alongside native metadata and
+exact source/presentation/RTP identity. CPU monitor tests exercise compressed
+reference loss, delayed RTP markers, route/peer retirement and bounded events.
+This target remains unexposed: no production graph registration, defaults,
+browser messages, audio timeline, complete overlay painter, seek support or
+connected-browser qualification is added by the adapter.
+
 `WebRtcEndpoint` exposes stable RTP ghost pads for the video and audio branches.
 Each browser WebSocket receives a new inner `webrtcbin`, including fresh SDP,
 ICE and DTLS state. Reusing a previous transport after a browser reload is not

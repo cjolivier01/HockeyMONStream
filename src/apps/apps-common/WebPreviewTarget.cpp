@@ -1,0 +1,330 @@
+#include "WebPreviewTarget.h"
+
+#include "WebRtcEndpoint.h"
+
+#include <gst/video/video-event.h>
+#include <nvbufsurface.h>
+
+#include <climits>
+#include <exception>
+
+namespace hm::preview {
+namespace {
+bool fail(std::string* error, const char* message) {
+  if (error)
+    *error = message;
+  return false;
+}
+
+GstPadProbeReturn admit(GstPad* pad, GstPadProbeInfo* info, gpointer data) noexcept {
+  try {
+    auto& monitor = **static_cast<std::shared_ptr<TransportMonitor>*>(data);
+    auto* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+    const auto result = monitor.Admit(buffer ? frame_identity(buffer) : nullptr);
+    if (!result.accepted)
+      return GST_PAD_PROBE_DROP;
+    if (result.force_keyframe) {
+      // The key-unit count is only a request label, not the 64-bit route/peer
+      // identity. The native encoder must emit a real IDR before RTP admission.
+      const auto count = static_cast<guint>(monitor.counters().keyframe_requests + 1);
+      const bool accepted = gst_pad_send_event(
+          pad,
+          gst_video_event_new_downstream_force_key_unit(
+              GST_BUFFER_PTS(buffer), GST_CLOCK_TIME_NONE, GST_BUFFER_PTS(buffer), TRUE, count));
+      monitor.KeyframeRequest(accepted);
+      if (!accepted)
+        return GST_PAD_PROBE_DROP;
+    }
+    return GST_PAD_PROBE_OK;
+  } catch (...) {
+    (**static_cast<std::shared_ptr<TransportMonitor>*>(data)).ProbeFailure();
+    return GST_PAD_PROBE_DROP;
+  }
+}
+
+GstPadProbeReturn encoded(GstPad*, GstPadProbeInfo* info, gpointer data) noexcept {
+  try {
+    return (**static_cast<std::shared_ptr<TransportMonitor>*>(data)).Encoded(GST_PAD_PROBE_INFO_BUFFER(info))
+        ? GST_PAD_PROBE_OK
+        : GST_PAD_PROBE_DROP;
+  } catch (...) {
+    (**static_cast<std::shared_ptr<TransportMonitor>*>(data)).ProbeFailure();
+    return GST_PAD_PROBE_DROP;
+  }
+}
+
+GstPadProbeReturn rtp(GstPad*, GstPadProbeInfo* info, gpointer data) noexcept {
+  try {
+    auto& monitor = **static_cast<std::shared_ptr<TransportMonitor>*>(data);
+    if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
+      auto* list = gst_buffer_list_make_writable(GST_PAD_PROBE_INFO_BUFFER_LIST(info));
+      GST_PAD_PROBE_INFO_DATA(info) = list;
+      return monitor.FilterRtp(list) ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
+    }
+    return monitor.Rtp(GST_PAD_PROBE_INFO_BUFFER(info)) ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
+  } catch (...) {
+    (**static_cast<std::shared_ptr<TransportMonitor>*>(data)).ProbeFailure();
+    return GST_PAD_PROBE_DROP;
+  }
+}
+} // namespace
+
+bool WebPreviewTarget::Validate(const WebPreviewConfig& c, std::string* error) {
+  if (c.name.empty() || c.stream_id.empty() || c.eof_channel.empty() || c.eof_channel.size() > 64)
+    return fail(error, "Preview target requires a name, stream identity and bounded EOF channel");
+  if (!c.surface.width || !c.surface.height || c.surface.width > 8192 || c.surface.height > 8192 ||
+      c.surface.width % 2 || c.surface.height % 2 || !c.surface.rate_numerator || !c.surface.rate_denominator ||
+      c.surface.rate_numerator > INT_MAX || c.surface.rate_denominator > 1000000 ||
+      double(c.surface.rate_numerator) / c.surface.rate_denominator > 120 || !c.surface.pool_frames ||
+      c.surface.pool_frames > 64 || !c.conversion_pool_frames || !c.bitrate || !c.idr_interval || !c.pending_frames ||
+      !c.pending_events || !c.h264_profile || !c.encoder_tuning || !c.stun_server || c.rtp_payload < 96 ||
+      c.rtp_payload > 127)
+    return fail(error, "Preview target requires explicit valid GPU, encoder, RTP and queue configuration");
+  if ((*c.h264_profile != 0 && *c.h264_profile != 1 && *c.h264_profile != 2 && *c.h264_profile != 4) ||
+      (*c.encoder_tuning != 2 && *c.encoder_tuning != 3))
+    return fail(error, "Preview requires an 8-bit 4:2:0 H.264 profile and a low-latency encoder tuning");
+  return true;
+}
+
+WebPreviewTarget::WebPreviewTarget(const WebPreviewConfig& config)
+    : monitor_(std::make_shared<TransportMonitor>(config.pending_frames, config.pending_events)) {}
+
+std::unique_ptr<WebPreviewTarget> WebPreviewTarget::Create(
+    const WebPreviewConfig& config,
+    SurfacePainter painter,
+    std::string* error) {
+  if (error)
+    error->clear();
+  if (!Validate(config, error))
+    return nullptr;
+  try {
+    auto target = std::unique_ptr<WebPreviewTarget>(new WebPreviewTarget(config));
+    if (!target->Build(config, std::move(painter), error))
+      return nullptr;
+    return target;
+  } catch (const std::exception& exception) {
+    if (error)
+      *error = exception.what();
+    return nullptr;
+  }
+}
+
+bool WebPreviewTarget::Probe(
+    GstElement* element,
+    const char* name,
+    GstPadProbeType type,
+    GstPadProbeCallback callback) {
+  auto* pad = gst_element_get_static_pad(element, name);
+  if (!pad)
+    return false;
+  auto* hold = new std::shared_ptr<TransportMonitor>(monitor_);
+  const auto id = gst_pad_add_probe(
+      pad, type, callback, hold, [](gpointer data) { delete static_cast<std::shared_ptr<TransportMonitor>*>(data); });
+  if (!id) {
+    gst_object_unref(pad);
+    return false;
+  }
+  probes_.emplace_back(pad, id);
+  return true;
+}
+
+bool WebPreviewTarget::Build(const WebPreviewConfig& c, SurfacePainter painter, std::string* error) {
+  bin_ = gst_bin_new(c.name.c_str());
+  if (!bin_)
+    return fail(error, "Could not allocate preview target bin");
+  gst_object_ref_sink(bin_);
+  auto add = [&](GstElement* element) -> GstElement* {
+    if (!element)
+      return nullptr;
+    if (!gst_bin_add(GST_BIN(bin_), element)) {
+      gst_object_unref(element);
+      return nullptr;
+    }
+    return element;
+  };
+  selected_ = add(selected_stream_create("selected", c.stream_id.c_str(), "memory:NVMM", c.eof_channel.c_str()));
+  auto* surface = add(gpu_surface_create("surface", c.surface, std::move(painter)));
+  auto* convert = add(gst_element_factory_make("nvvideoconvert", "convert"));
+  auto* raw = add(gst_element_factory_make("capsfilter", "encoder-input"));
+  auto* encoder = add(gst_element_factory_make("nvv4l2h264enc", "encoder"));
+  auto* parser = add(gst_element_factory_make("h264parse", "parser"));
+  auto* au = add(gst_element_factory_make("capsfilter", "access-units"));
+  auto* payloader = add(gst_element_factory_make("rtph264pay", "rtp"));
+  if (!selected_ || !surface || !convert || !raw || !encoder || !parser || !au || !payloader)
+    return fail(error, "Required GPU H.264 preview element is unavailable; no software fallback exists");
+  for (const char* property :
+       {"bitrate",
+        "profile",
+        "iframeinterval",
+        "idrinterval",
+        "num-B-Frames",
+        "tuning-info-id",
+        "insert-sps-pps",
+        "gpu-id"}) {
+    if (!g_object_class_find_property(G_OBJECT_GET_CLASS(encoder), property))
+      return fail(error, "GPU H.264 encoder lacks a required low-latency property");
+  }
+  g_object_set(
+      convert,
+      "gpu-id",
+      c.surface.gpu_id,
+      "nvbuf-memory-type",
+      NVBUF_MEM_CUDA_DEVICE,
+      "compute-hw",
+      1,
+      "output-buffers",
+      c.conversion_pool_frames,
+      nullptr);
+  auto* caps = gst_caps_new_simple(
+      "video/x-raw",
+      "format",
+      G_TYPE_STRING,
+      "NV12",
+      "width",
+      G_TYPE_INT,
+      c.surface.width,
+      "height",
+      G_TYPE_INT,
+      c.surface.height,
+      nullptr);
+  gst_caps_set_features(caps, 0, gst_caps_features_new("memory:NVMM", nullptr));
+  g_object_set(raw, "caps", caps, nullptr);
+  gst_caps_unref(caps);
+  caps = gst_caps_from_string("video/x-h264,stream-format=byte-stream,alignment=au");
+  g_object_set(au, "caps", caps, nullptr);
+  gst_caps_unref(caps);
+  g_object_set(
+      encoder,
+      "bitrate",
+      c.bitrate,
+      "profile",
+      *c.h264_profile,
+      "iframeinterval",
+      c.idr_interval,
+      "idrinterval",
+      c.idr_interval,
+      "num-B-Frames",
+      0u,
+      "tuning-info-id",
+      *c.encoder_tuning,
+      "insert-sps-pps",
+      TRUE,
+      "gpu-id",
+      c.surface.gpu_id,
+      nullptr);
+  g_object_set(payloader, "pt", c.rtp_payload, "config-interval", -1, nullptr);
+  if (!gst_element_link_many(selected_, surface, convert, raw, encoder, parser, au, payloader, nullptr))
+    return fail(error, "Could not link GPU preview encoder path");
+  caps = gst_caps_new_simple(
+      "application/x-rtp",
+      "media",
+      G_TYPE_STRING,
+      "video",
+      "encoding-name",
+      G_TYPE_STRING,
+      "H264",
+      "payload",
+      G_TYPE_INT,
+      c.rtp_payload,
+      "clock-rate",
+      G_TYPE_INT,
+      90000,
+      nullptr);
+  auto* endpoint = hstream::webrtc_endpoint_create("endpoint", c.stun_server->c_str());
+  auto* input = endpoint ? hstream::webrtc_endpoint_add_track(endpoint, caps) : nullptr;
+  gst_caps_unref(caps);
+  // Add its initial drain before parenting the endpoint. GstBin snapshots a
+  // child's SINK flag when adding it; an empty nested endpoint otherwise leaves
+  // this target absent from the parent pipeline's EOS aggregation.
+  endpoint_ = add(endpoint);
+  auto* output = gst_element_get_static_pad(payloader, "src");
+  const bool linked = endpoint_ && input && output && gst_pad_link(output, input) == GST_PAD_LINK_OK;
+  if (input)
+    gst_object_unref(input);
+  if (output)
+    gst_object_unref(output);
+  if (!linked || !Probe(encoder, "sink", GST_PAD_PROBE_TYPE_BUFFER, admit) ||
+      !Probe(au, "src", GST_PAD_PROBE_TYPE_BUFFER, encoded) ||
+      !Probe(payloader, "src", GstPadProbeType(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST), rtp))
+    return fail(error, "Could not attach GPU preview transport and identity probes");
+  return true;
+}
+
+WebPreviewTarget::~WebPreviewTarget() {
+  for (auto& [pad, id] : probes_) {
+    gst_pad_remove_probe(pad, id);
+    gst_object_unref(pad);
+  }
+  while (!routes_.empty())
+    RemoveRoute(routes_.begin()->first);
+  if (bin_)
+    gst_object_unref(bin_);
+}
+
+GstPad* WebPreviewTarget::AddRoute(const std::string& channel) {
+  if (channel.empty() || channel.size() > 64)
+    return nullptr;
+  auto* selected = selected_stream_add_route(selected_, channel.c_str());
+  if (!selected)
+    return nullptr;
+  const auto name = "sink_" + std::to_string(next_route_++);
+  auto* ghost = gst_ghost_pad_new(name.c_str(), selected);
+  if (!ghost || !gst_element_add_pad(bin_, ghost)) {
+    if (ghost)
+      gst_object_unref(ghost);
+    selected_stream_remove_route(selected_, selected);
+    gst_object_unref(selected);
+    return nullptr;
+  }
+  routes_.emplace(ghost, Route{selected, channel});
+  if (GST_STATE(bin_) >= GST_STATE_PAUSED)
+    gst_pad_set_active(ghost, TRUE);
+  return GST_PAD(gst_object_ref(ghost));
+}
+
+void WebPreviewTarget::RemoveRoute(GstPad* route) {
+  auto found = routes_.find(route);
+  if (found == routes_.end())
+    return;
+  if (active_route_ == route) {
+    // Removing an active source must retire its delayed encoder output even
+    // when the replacement has not been constructed or never produces a frame.
+    selected_stream_select(selected_, nullptr, operation_);
+    monitor_->Select("", operation_);
+    active_route_ = nullptr;
+  }
+  selected_stream_remove_route(selected_, found->second.selected);
+  gst_ghost_pad_set_target(GST_GHOST_PAD(route), nullptr);
+  gst_element_remove_pad(bin_, route);
+  gst_object_unref(found->second.selected);
+  routes_.erase(found);
+}
+
+bool WebPreviewTarget::Select(GstPad* route, std::uint64_t operation) {
+  auto found = routes_.find(route);
+  if (route && found == routes_.end())
+    return false;
+  if (!selected_stream_select(selected_, route ? found->second.selected : nullptr, operation))
+    return false;
+  if (!monitor_->Select(route ? found->second.channel : "", operation))
+    return false;
+  active_route_ = route;
+  operation_ = operation;
+  return true;
+}
+
+bool WebPreviewTarget::Active(GstPad* route, std::uint64_t operation) const {
+  const auto found = routes_.find(route);
+  return found != routes_.end() && selected_stream_active(selected_, found->second.selected, operation);
+}
+
+bool WebPreviewTarget::SetPeer(std::uint64_t generation) {
+  return monitor_->SetPeer(generation);
+}
+std::vector<TransportEvent> WebPreviewTarget::TakeEvents() {
+  return monitor_->TakeEvents();
+}
+TransportCounters WebPreviewTarget::counters() const {
+  return monitor_->counters();
+}
+} // namespace hm::preview

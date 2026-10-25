@@ -33,6 +33,12 @@ bool TransportFrames::SetPeer(std::uint64_t peer) {
   return true;
 }
 
+void TransportFrames::DiscardPending() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  frames_.clear();
+  need_keyframe_ = true;
+}
+
 TransportFrames::Admission TransportFrames::Admit(const FrameIdentityMeta& frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!capacity_ || !peer_ || !frame.channel || !*frame.channel || std::strlen(frame.channel) > 64 ||

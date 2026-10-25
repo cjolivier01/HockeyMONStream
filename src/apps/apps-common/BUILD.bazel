@@ -40,6 +40,7 @@ cc_test(
         ":preview_transport_frames",
         ":selected_preview_stream",
         ":webrtc_endpoint",
+        ":web_preview_target",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ],
@@ -72,6 +73,37 @@ cc_test(
     name = "preview_transport_frames_test",
     srcs = ["PreviewTransportFramesTest.cpp"],
     deps = [":preview_transport_frames"],
+)
+
+cc_library(
+    name = "preview_transport_monitor",
+    srcs = ["PreviewTransportMonitor.cpp"],
+    hdrs = ["PreviewTransportMonitor.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":preview_transport_frames", "@gstreamer"],
+)
+
+cc_test(
+    name = "preview_transport_monitor_test",
+    srcs = ["PreviewTransportMonitorTest.cpp"],
+    deps = [":preview_transport_monitor", "@gstreamer"],
+)
+
+cc_library(
+    name = "web_preview_target",
+    srcs = ["WebPreviewTarget.cpp"],
+    hdrs = ["WebPreviewTarget.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":preview_gpu_surface",
+        ":preview_transport_monitor",
+        ":selected_preview_stream",
+        ":webrtc_endpoint",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
 )
 
 cc_library(
