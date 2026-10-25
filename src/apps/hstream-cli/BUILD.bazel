@@ -93,13 +93,14 @@ HSTREAM_CLI_DEPS = [
 
 cc_test(
     name = "web_preview_options_test",
-    srcs = ["WebPreviewOptionsTest.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h"],
+    srcs = ["WebPreviewOptionsTest.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h", "WebPreviewRuntime.h"],
     data = ["//configs:baseline.yaml"],
     deps = [
         "//src/apps/apps-common:preview_route_owner",
         "//src/libs/program:preview_overlay_config",
         "@yaml-cpp",
         "@json_glib",
+        "@gstreamer",
         "@com_google_absl//absl/status:statusor",
     ],
 )

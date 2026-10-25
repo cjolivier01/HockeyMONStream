@@ -1,4 +1,5 @@
 #include "WebPreviewOptions.h"
+#include "WebPreviewRuntime.h"
 #include "hstream/src/libs/program/PreviewOverlayConfig.h"
 
 #include <json-glib/json-glib.h>
@@ -23,6 +24,7 @@ void ReplaceReject(const std::string& from, const std::string& to) {
 } // namespace
 
 int main() {
+  gst_init(nullptr, nullptr);
   auto baseline = YAML::LoadFile("configs/baseline.yaml");
   auto defaults = hm::pipeline_internal::ReadPreviewOverlaySelection(baseline);
   Check(defaults.ok(), "Shared overlay baseline was rejected");
@@ -110,6 +112,42 @@ int main() {
       "Stale session mutated native routes");
   auto result = owner.select(*request, {});
   Check(result.status == hm::preview::RouteOwner::Status::kActivated && active, "Valid selection was rejected");
+  auto* pipeline = gst_pipeline_new("pause-admission");
+  auto deferred = *request;
+  deferred.channel = "none";
+  deferred.operation = 3;
+  unsigned changed_routes = 0;
+  const auto changed_route = [&] { ++changed_routes; };
+  for (const auto desired_state : {GST_STATE_NULL, GST_STATE_READY, GST_STATE_PAUSED}) {
+    gst_element_set_state(pipeline, desired_state);
+    const auto paused_result = hm::preview::SelectWebPreviewRoute(pipeline, owner, deferred, changed_route);
+    Check(
+        paused_result.status == hm::preview::RouteOwner::Status::kFailed && changed_routes == 0 && active &&
+            owner.operation_generation() == 2,
+        "Nonplaying route request entered a drain or changed route identity");
+    if (desired_state == GST_STATE_PAUSED)
+      Check(paused_result.reason == "preview-paused", "Paused route rejection lost its reason");
+  }
+  gst_element_set_state(pipeline, GST_STATE_PLAYING);
+  auto wrong_stage = deferred;
+  ++wrong_stage.session.stage;
+  Check(
+      hm::preview::SelectWebPreviewRoute(pipeline, owner, wrong_stage, changed_route).status ==
+              hm::preview::RouteOwner::Status::kWrongSession &&
+          changed_routes == 0 && active,
+      "Resuming admitted a deferred request from the old stage");
+  const auto resumed = hm::preview::SelectWebPreviewRoute(pipeline, owner, deferred, changed_route);
+  Check(
+      resumed.status == hm::preview::RouteOwner::Status::kDeactivated && changed_routes == 1 && !active,
+      "Playing route did not apply after resuming");
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  gst_object_unref(pipeline);
+  // Restore the original route for the capability serialization checks below.
+  auto restored = *request;
+  restored.operation = 4;
+  Check(
+      owner.select(restored, {}).status == hm::preview::RouteOwner::Status::kActivated,
+      "Could not restore capability route after pause checks");
   const auto reply = hm::preview::WebPreviewRouteReply(*request, result);
   Check(
       reply.find("\"requestId\":\"1234\"") != std::string::npos &&
@@ -152,22 +190,26 @@ int main() {
   };
   auto wrong = *overlay;
   ++wrong.session.stage;
-  const auto stale_reply = hm::preview::ApplyWebPreviewOverlays(wrong, overlay->session, state, apply);
+  const auto stale_reply = hm::preview::ApplyWebPreviewOverlays(wrong, overlay->session, state, "", apply);
   Check(
       stale_reply.find("\"status\":\"stale\"") != std::string::npos && mutations == 0 && state.generation() == 0,
       "Stale overlay session mutated state");
+  const auto blocked = hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, "preview-paused", apply);
+  Check(
+      blocked.find("preview-paused") != std::string::npos && mutations == 0 && state.generation() == 0,
+      "Paused overlay request entered the mutation or advanced its generation");
   const auto failed =
-      hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, [](const auto&) { return false; });
+      hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, "", [](const auto&) { return false; });
   Check(
       failed.find("\"status\":\"failed\"") != std::string::npos && state.generation() == 0 &&
           state.selection() == *defaults,
       "Failed overlay transaction changed committed selection");
-  const auto applied = hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, apply);
+  const auto applied = hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, "", apply);
   Check(
       applied.find("\"status\":\"applied\"") != std::string::npos && mutations == 1 &&
           state.generation() == UINT64_MAX && state.selection() == overlay->command.selection,
       "Overlay commit lost authoritative selection");
-  hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, apply);
+  hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, "", apply);
   Check(mutations == 1, "Replayed overlay request mutated state");
   const std::string query_json =
       R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":-1,"topology":"18446744073709551615","requestId":"query-1"})";
@@ -176,7 +218,7 @@ int main() {
       query.ok() && !hm::preview::ParseWebPreviewOverlays(query_json).ok() &&
           !hm::preview::ParseWebPreviewOverlays(overlay_json, true).ok(),
       "Query/mutation envelope was interchangeable");
-  const auto queried = hm::preview::ApplyWebPreviewOverlays(*query, overlay->session, state, apply);
+  const auto queried = hm::preview::ApplyWebPreviewOverlays(*query, overlay->session, state, "preview-paused", apply);
   Check(
       queried.find("\"status\":\"state\"") != std::string::npos &&
           queried.find("\"generation\":\"18446744073709551615\"") != std::string::npos && mutations == 1,

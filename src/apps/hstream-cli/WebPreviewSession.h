@@ -27,6 +27,7 @@ class WebPreviewSession {
   void Stop();
   std::string Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays) const;
   std::string Command(const RouteOwner::Request& request);
+  std::string MutationBlockReason() const;
   const RouteOwner::Session& identity() const {
     return routes_.session();
   }

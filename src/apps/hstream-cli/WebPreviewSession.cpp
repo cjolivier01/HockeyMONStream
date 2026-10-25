@@ -1,4 +1,5 @@
 #include "WebPreviewSession.h"
+#include "WebPreviewRuntime.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
@@ -403,7 +404,11 @@ std::string WebPreviewSession::Capability(const pipeline_internal::PreviewOverla
 std::string WebPreviewSession::Command(const RouteOwner::Request& request) {
   const auto result = stopped_
       ? RouteOwner::Result{RouteOwner::Status::kFailed, "preview-stopped"}
-      : routes_.select(request, [this] { overlays_ready_ = reconcile_overlays_ && reconcile_overlays_(); });
+      : SelectWebPreviewRoute(app_.pipeline.pipeline, routes_, request,
+            [this] { overlays_ready_ = reconcile_overlays_ && reconcile_overlays_(); });
   return WebPreviewRouteReply(request, result);
+}
+std::string WebPreviewSession::MutationBlockReason() const {
+  return stopped_ ? "preview-stopped" : WebPreviewMutationBlockReason(app_.pipeline.pipeline);
 }
 } // namespace hm::preview

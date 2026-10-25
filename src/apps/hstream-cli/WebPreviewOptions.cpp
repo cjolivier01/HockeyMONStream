@@ -290,6 +290,7 @@ std::string ApplyWebPreviewOverlays(
     const WebPreviewOverlayRequest& request,
     const RouteOwner::Session& session,
     pipeline_internal::PreviewOverlayRuntimeState& state,
+    const std::string& mutation_blocked_reason,
     const std::function<bool(const pipeline_internal::PreviewOverlaySelection&)>& apply) {
   std::string status, reason;
   if (session.run.empty() || !session.topology || !apply) {
@@ -303,6 +304,9 @@ std::string ApplyWebPreviewOverlays(
   } else if (!state.is_fresh(request.command)) {
     status = "stale";
     reason = "stale-generation";
+  } else if (!mutation_blocked_reason.empty()) {
+    status = "failed";
+    reason = mutation_blocked_reason;
   } else if (!apply(request.command.selection)) {
     status = "failed";
     reason = "apply-failed";

@@ -6134,6 +6134,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
         *request,
         web_preview_ && web_preview_->available() ? web_preview_->identity() : hm::preview::RouteOwner::Session{},
         preview_overlay_state_,
+        web_preview_ ? web_preview_->MutationBlockReason() : "preview-unavailable",
         [this](const auto& selection) { return web_preview_ && apply_preview_overlay_state(selection, true); });
     g_print("HSTREAM_PREVIEW_OVERLAY_STATE %s\n", reply.c_str());
     std::fflush(stdout);
