@@ -200,3 +200,19 @@ through `--test_env=GST_REGISTRY=/tmp/hstream-webrtc-test-registry.bin`.
 Press Enter in the server
 terminal to exercise graceful stop. This fixture is test-only and is not part of
 the installed runtime.
+
+For exact browser frame matching, add
+`--presentation --run RUN_UUID --stage 0 --topology 1` after the fixture port.
+This mode sends video only, admits identities from the actual raw encoder-input
+PTS, and monitors the actual H.264 access units and RTP packets. It uses the
+managed peer/readiness barrier and optional observer protocol described above.
+Match browser `requestVideoFrameCallback` RTP timestamps with receiver
+`getSynchronizationSources()` RTP timestamp/SSRC and the packetized event;
+accepted native receipts appear as `WEBRTC_TEST_PRESENTED` JSON on stdout.
+
+The fixture's stdin accepts `route program`, `route stitched`, `off`, `recover`
+and `quit`. Route commands change the identity attached to this one test-pattern
+stream and increment its operation; they do not implement native Program or
+Stitched processing. Use this mode to qualify browser decoding, identity
+matching, stale-frame rejection and peer replacement. Production route ordering,
+overlay composition, audio and Qt workflow parity require their own tests.
