@@ -77,7 +77,7 @@ contract, then testing both interfaces against the same native checkout.
 | `experiment-create` | `settings` with `control_points`, `frame_count`, `stitch_frame_time`, optional matcher/resolution/rotation/camera/filtering, plus optional `sequence`. Creates a native isolated pending candidate. |
 | `experiment-edit` | Saved `workspace`, inspected `fingerprint`, replacement `frames`, and optional `sequence`. Creates a new candidate from immutable edited matches without changing the inspected candidate. |
 | `experiment-run` | Saved `workspace` and optional `require_ice_mask`. Runs native calibration through `hstream-job --interactive`, then validates native completion before returning success. |
-| `experiment-inspect` | Saved `workspace`. Returns native inspection images, timestamps, quality and source validation. |
+| `experiment-inspect` | Saved `workspace`. Returns versioned saved-frame inspection, exact source identities, coverage, images and source validation; see below. |
 | `experiment-complete` | Saved `workspace`, optional `require_ice_mask`. Validates already-generated native calibration; it does not run a solve. |
 | `experiment-promote` | Saved `workspace`. Transactionally promotes the candidate's existing native calibration into the run's main game. The web worker controls adoption into the project. |
 | `track-runs` | `database` and optional `game`; omission enumerates the database's game IDs. Returns native telemetry run IDs. |
@@ -112,6 +112,20 @@ profile's fallback. Reopening a saved descriptor never rereads MP4 metadata.
 The returned workspace stores the complete camera selection, including
 nullable automation policies, and both filtering choices. Subsequent workers
 retain those frozen settings through inspection, solve, edit and promotion.
+`experiment-inspect` returns `inspection_version: 1`, `player_selected`,
+`expected_pair_count`, `anchor_ns`, `fingerprint`, `source_validation`, and
+`coverage_grid` (columns, rows, and the same three band colors as Qt). Each frame
+retains two positional `thumbnails` and two `match_images` (points then lines);
+missing files are JSON null, so a missing left image never shifts the right image.
+The two `sources` contain `available`, filename-only `name`, `source_seconds`,
+`source_pts_ns` and `decoded_sequence`. Nanosecond timestamps and sequence IDs
+are decimal strings to preserve 64-bit values in JavaScript. Frame `coverage`,
+`size_band_counts`, `eligible_people`, `quality` and `timeline_ns` come directly
+from the shared inspector. Coverage is in baseline stitched scoring cells,
+not raw-camera coordinates. Inspection reads saved artifacts without launching
+decoding, inference or calibration. Browser artifact IDs replace native paths
+at the existing authenticated result boundary.
+
 The `experiment-optics-filtering-v1` capability is required by the web worker so
 an older adapter cannot silently discard those settings. The browser offers
 explicit source inheritance and displays the frozen settings for comparison.

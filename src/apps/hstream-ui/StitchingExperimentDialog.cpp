@@ -182,27 +182,28 @@ class SelectedFrameCoverage : public QWidget {
  protected:
   void paintEvent(QPaintEvent*) override {
     QPainter painter(this);
-    constexpr std::array<Qt::GlobalColor, 3> colors{Qt::blue, Qt::darkGreen, Qt::darkYellow};
-    const double cell_width = static_cast<double>(width()) / 16;
-    const double cell_height = static_cast<double>(height()) / 9;
+    constexpr unsigned columns = kStitchingExperimentCoverageColumns;
+    constexpr unsigned rows = kStitchingExperimentCoverageRows;
+    const double cell_width = static_cast<double>(width()) / columns;
+    const double cell_height = static_cast<double>(height()) / rows;
     painter.fillRect(rect(), QColor("#f3f4f6"));
     for (const uint16_t value : cells_) {
-      if (value >= 3 * 16 * 9)
+      if (value >= kStitchingExperimentCoverageColors.size() * columns * rows)
         continue;
-      const unsigned band = value / (16 * 9);
-      const unsigned cell = value % (16 * 9);
+      const unsigned band = value / (columns * rows);
+      const unsigned cell = value % (columns * rows);
       painter.fillRect(
           QRectF(
-              (cell % 16 + static_cast<double>(band) / 3) * cell_width,
-              cell / 16 * cell_height,
+              (cell % columns + static_cast<double>(band) / 3) * cell_width,
+              cell / columns * cell_height,
               cell_width / 3,
               cell_height),
-          colors[band]);
+          QColor(kStitchingExperimentCoverageColors[band]));
     }
     painter.setPen(QColor("#d1d5db"));
-    for (int column = 0; column <= 16; ++column)
+    for (unsigned column = 0; column <= columns; ++column)
       painter.drawLine(QPointF(column * cell_width, 0), QPointF(column * cell_width, height()));
-    for (int row = 0; row <= 9; ++row)
+    for (unsigned row = 0; row <= rows; ++row)
       painter.drawLine(QPointF(0, row * cell_height), QPointF(width(), row * cell_height));
   }
 

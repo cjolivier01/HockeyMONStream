@@ -653,8 +653,8 @@ def main():
         (inspection / "frames.yaml").write_text(
             "version: 1\nexpected_pair_count: 1\ninvalidation_id: "
             + candidate["invalidation_id"]
-            + "\npairs:\n  - index: 0\n    left: {path: cam1/clip.mp4, source_seconds: 0}\n"
-            "    right: {path: cam2/clip.mp4, source_seconds: 0}\n"
+            + "\npairs:\n  - index: 0\n    left: {path: cam1/clip.mp4, source_seconds: 12.125}\n"
+            "    right: {path: cam2/clip.mp4, source_seconds: 12.25}\n"
         )
         for side in ("left", "right"):
             (inspection / (side + "_0.jpg")).write_bytes(b"inspection-artifact-fixture")
@@ -663,7 +663,29 @@ def main():
         run(args.binary, path)
         inspected = json.loads((experiments / "operation-result.json").read_text())
         assert inspected["result"]["workspace"]["settings"] == candidate["settings"]
+        result = inspected["result"]
+        assert result["inspection_version"] == 1
+        assert result["expected_pair_count"] == 1
+        assert result["player_selected"] is False
+        assert result["coverage_grid"] == {
+            "columns": 16,
+            "rows": 9,
+            "colors": ["#0000ff", "#008000", "#808000"],
+        }
+        frame = result["frames"][0]
+        assert [source["name"] for source in frame["sources"]] == ["clip.mp4", "clip.mp4"]
+        assert [source["source_seconds"] for source in frame["sources"]] == [12.125, 12.25]
+        assert frame["match_images"] == [None, None]
+        assert len(frame["thumbnails"]) == 2 and all(frame["thumbnails"])
+        assert frame["coverage"] == [] and frame["size_band_counts"] == [0, 0, 0]
         assert_artifacts(experiments, inspected)
+        # A missing left thumbnail cannot shift the right image into its place.
+        (inspection / "left_0.jpg").unlink()
+        (experiments / "operation-result.json").unlink()
+        run(args.binary, request(experiments, "experiment-inspect", {"workspace": candidate}))
+        missing = json.loads((experiments / "operation-result.json").read_text())
+        assert missing["result"]["frames"][0]["thumbnails"] == [None, frame["thumbnails"][1]]
+        assert_artifacts(experiments, missing)
         for change, expected_error in (
             ({"input_lens": {"distortion": [0, 0, 2]}}, "distortion"),
             ({"input_lens": {"center_offset": [0]}}, "array size"),

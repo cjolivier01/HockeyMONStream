@@ -709,29 +709,62 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
   const auto inspection = take(InspectStitchingExperimentFrames(saved));
   QJsonArray frames;
   for (const auto& frame : inspection.frames) {
-    QJsonArray thumbnails, matches;
-    for (const auto& path : frame.thumbnails)
-      if (!path.empty()) {
+    QJsonArray thumbnails, matches, sources, coverage, bands;
+    for (const auto& path : frame.thumbnails) {
+      if (!path.empty() && fs::exists(path)) {
         thumbnails.append(text(Relative(request, path)));
         artifacts.append(Artifact(request, path, "image"));
+      } else {
+        thumbnails.append(QJsonValue::Null);
       }
-    for (const auto& path : frame.match_images)
+    }
+    for (const auto& path : frame.match_images) {
       if (!path.empty() && fs::exists(path)) {
         matches.append(text(Relative(request, path)));
         artifacts.append(Artifact(request, path, "image"));
+      } else {
+        matches.append(QJsonValue::Null);
       }
+    }
+    for (size_t camera = 0; camera < frame.camera_paths.size(); ++camera)
+      sources.append(
+          QJsonObject{
+              {"available", !frame.camera_paths[camera].empty()},
+              // Browser users see the original media filename, never a worker path.
+              {"name", text(fs::path(frame.camera_paths[camera]).filename().string())},
+              {"source_seconds", frame.source_seconds[camera]},
+              {"source_pts_ns", QString::number(frame.source_pts_ns[camera])},
+              {"decoded_sequence", QString::number(frame.decoded_sequences[camera])}});
+    for (const auto cell : frame.coverage)
+      coverage.append(int(cell));
+    for (const auto count : frame.size_band_counts)
+      bands.append(int(count));
     frames.append(
         QJsonObject{
             {"timeline_ns", QString::number(frame.timeline_ns)},
             {"thumbnails", thumbnails},
             {"match_images", matches},
+            {"sources", sources},
+            {"coverage", coverage},
+            {"size_band_counts", bands},
             {"eligible_people", int(frame.eligible_people)},
             {"quality", frame.quality}});
   }
+  QJsonArray colors;
+  for (const auto* color : kStitchingExperimentCoverageColors)
+    colors.append(color);
   return {
+      {"inspection_version", 1},
       {"workspace", workspace_json(request, saved)},
       {"fingerprint", text(inspection.fingerprint)},
       {"player_selected", inspection.player_selected},
+      {"expected_pair_count", int(inspection.expected_pair_count)},
+      {"anchor_ns", QString::number(inspection.anchor_ns)},
+      {"coverage_grid",
+       QJsonObject{
+           {"columns", int(kStitchingExperimentCoverageColumns)},
+           {"rows", int(kStitchingExperimentCoverageRows)},
+           {"colors", colors}}},
       {"source_validation", text(inspection.source_validation)},
       {"frames", frames}};
 }

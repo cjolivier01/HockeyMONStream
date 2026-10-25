@@ -138,6 +138,12 @@ struct StitchingExperimentFrameInspection {
   std::vector<StitchingExperimentSelectedFrame> frames;
 };
 
+// The inspector shows three apparent-size bands in the baseline panorama grid.
+// These are image-space scoring cells, never distances or raw-camera overlays.
+inline constexpr unsigned kStitchingExperimentCoverageColumns = 16;
+inline constexpr unsigned kStitchingExperimentCoverageRows = 9;
+inline constexpr std::array<const char*, 3> kStitchingExperimentCoverageColors{"#0000ff", "#008000", "#808000"};
+
 // Reads the highlighted candidate's captured ordinary frames or frozen player
 // selection, including partial captures from a failed solve. Thumbnail paths
 // are confined to its private bounded inspection set.
