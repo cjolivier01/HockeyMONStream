@@ -1315,3 +1315,13 @@ cc_test(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":rink_map_dialog", ":rink_leveling_dialog", ":scoreboard_selection_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
 )
+
+cc_binary(
+    name = "tone_controls_gpu_test",
+    testonly = True,
+    srcs = ["ToneControlsGpuTest.cpp"],
+    tags = ["manual", "requires-gpu", "local"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    copts = COMMON_COPTS,
+    deps = [":hstream_window", "@qt//:qt_widgets", "@qt//:qt_test"],
+)

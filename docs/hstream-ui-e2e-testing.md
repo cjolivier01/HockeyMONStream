@@ -190,6 +190,32 @@ to the source game. Configured stitching artifacts are reflinked (or copied
 when reflinks are not available), while `config.yaml`, UI state, locks, and
 encoded output remain isolated. The source game is not modified.
 
+The separate opt-in GPU tone check runs real Program processing with video
+rendering and archive outputs disabled. It compares native typed readbacks
+with Qt edits: coalesced shadows/black-point/exposure updates, a newer edit
+queued behind genuine delayed acknowledgments, mirrored keyboard changes,
+wheel protection, retained disabled black-point state, and Save Preset during
+playback. Changing the next-run precision checkbox must preserve the active
+native owner and precision before and after Save.
+
+Build `//src/apps/hstream-ui:tone_controls_gpu_test` and the native CLI/plugins
+first. Run this command inside the machine's GPU allocation, once with
+`standard` and once with `high-bit`, using a different artifact directory:
+
+```bash
+python3 scripts/test_hstream_tone_controls_gpu.py \
+  --source-game /mnt/games/game-42 --native-root "$PWD" \
+  --artifacts /tmp/tone-standard --precision standard
+```
+
+The wrapper requires a recorded game with saved calibration (`panorama.tif`),
+copies configuration/calibration into the new artifact directory, and symlinks
+untouched video inputs. It disables optional calibration dialogs
+and telemetry in that copy and isolates Qt preferences. Model caches remain
+available from the normal user environment. Logs, native runner SHA-256, and
+screenshots stay outside the Git tree. This test verifies tone-control behavior;
+it does not establish preview pixel, calibration, or complete workflow parity.
+
 Set `HSTREAM_UI_E2E_SKIP_OPTIONAL_REVIEW=1` for preview-only acceptance when an
 older fixture may need calibration regeneration. This disables optional crop
 and leveling review in the copied game's settings; it does not change the
