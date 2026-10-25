@@ -162,7 +162,7 @@ def calibration_contract(binary, root):
         assert preview.stat().st_mtime_ns == identity
 
 
-def gopro_optics_movie():
+def gopro_optics_movie(prescription=True, firmware="", axis_fov=True):
     """Bounded MP4/GPMF fixture shared in shape with VideoLensMetadataTest.cpp.
 
     No encoded video is needed: candidate creation imports header metadata only.
@@ -183,6 +183,7 @@ def gopro_optics_movie():
     global_tags = b"".join(
         [
             tag("MINF", "c", b"MISSION 1 PRO"),
+            tag("FMWR", "c", firmware.encode()) if firmware else b"",
             tag("PRJT", "F", b"GPRO", 4),
             tag("EISA", "c", b"HS EIS"),
             tag("HCTL", "c", b"Off"),
@@ -200,27 +201,35 @@ def gopro_optics_movie():
             floats("MAPY", 1),
             floats("ARUW", 1.77777779102325),
             floats("ARWA", 1.77777779102325),
-            floats("XFOV", 120.000427246094),
-            floats("YFOV", 70.3657608032227),
-            floats("ZFOV", 135.511917114258),
+            floats("XFOV", 120.000427246094) if axis_fov else b"",
+            floats("YFOV", 70.3657608032227) if axis_fov else b"",
+            floats("ZFOV", 135.511917114258) if axis_fov else b"",
             floats("ZMPL", 0.476107776165009),
-            floats(
-                "POLY",
-                0,
-                2.67053532600403,
-                0.22922171652317,
-                -2.08499050140381,
-                1.64104437828064,
-                -7.24889386797406e-13,
-                4.47891317133589e-13,
-                0,
-                width=32,
+            (
+                floats(
+                    "POLY",
+                    0,
+                    2.67053532600403,
+                    0.22922171652317,
+                    -2.08499050140381,
+                    1.64104437828064,
+                    -7.24889386797406e-13,
+                    4.47891317133589e-13,
+                    0,
+                    width=32,
+                )
+                if prescription
+                else b""
             ),
-            tag(
-                "PYCF",
-                "c",
-                b"".join(f"r{i}".encode().ljust(8, b"\0") for i in range(8)),
-                8,
+            (
+                tag(
+                    "PYCF",
+                    "c",
+                    b"".join(f"r{i}".encode().ljust(8, b"\0") for i in range(8)),
+                    8,
+                )
+                if prescription
+                else b""
             ),
         ]
     )
@@ -240,7 +249,7 @@ def automatic_experiment_optics_contract(binary, root):
     automatic = "  camera_config: auto\n  camera_automation: {fov: true, lens: true}\n"
     frozen = "  auto_input_lens_frozen: true\n"
 
-    def create(name, source, override=None, metadata=True):
+    def create(name, source, override=None, metadata=True, lens_settings=None):
         directory = root / name
         directory.mkdir()
         settings = {
@@ -254,13 +263,15 @@ def automatic_experiment_optics_contract(binary, root):
         for side in ("cam1", "cam2"):
             (directory / "game" / side).mkdir()
             (directory / "game" / side / "clip.mp4").write_bytes(
-                gopro_optics_movie() if metadata else b"metadata unavailable"
+                metadata
+                if isinstance(metadata, bytes)
+                else gopro_optics_movie() if metadata else b"metadata unavailable"
             )
         (directory / "game/config.yaml").write_text(
             "game:\n  videos:\n    left: [cam1/clip.mp4]\n    right: [cam2/clip.mp4]\n"
             "hstream_ui:\n  video_roles:\n    left: [cam1/clip.mp4]\n    right: [cam2/clip.mp4]\n"
             "stitching:\n  camera_fov: {horizontal_fov: 111, vertical_fov: 77}\n"
-            + lens
+            + (lens_settings or lens)
             + source
         )
         run(binary, path)
@@ -327,6 +338,66 @@ def automatic_experiment_optics_contract(binary, root):
         "vertical_fov": 65,
     }
     assert fallback["settings"]["camera"]["input_lens"]["distortion"] == [0, 0.02, 0]
+    # Compare automatic fallback with the actual bundled profile resolved by
+    # the ordinary nonautomatic selection, without duplicating its defaults.
+    references = {}
+    for profile_name in ("manual", "gopro-mission-1", "gopro-mission-1-factory"):
+        _, reference = create(
+            "profile-reference-" + profile_name,
+            manual + frozen,
+            {
+                "camera_config": profile_name,
+                "camera_automation": {"fov": False, "lens": False},
+            },
+            metadata=False,
+        )
+        references[profile_name] = reference["settings"]["camera"]
+    for profile_name in ("manual", "gopro-mission-1"):
+        override = {"camera_automation": {"fov": True, "lens": True}}
+        if profile_name != "manual":
+            override["camera_config"] = profile_name
+        _, fallback = create(
+            "missing-profile-catalog-" + profile_name,
+            manual + frozen,
+            override,
+            metadata=False,
+            lens_settings="  input_lens: {projection: rectilinear, optimization: fixed, distortion: [0, 0.1, 0], center_offset: [0, 0]}\n",
+        )
+        camera = fallback["settings"]["camera"]
+        assert camera["camera_fov"] == references[profile_name]["camera_fov"], camera
+        assert camera["input_lens"] == references[profile_name]["input_lens"], camera
+    # A partial game-level catalog retains the baseline's other profile leaves.
+    _, partial = create(
+        "partial-profile-catalog",
+        manual
+        + frozen
+        + "  camera_configs:\n    gopro-mission-1:\n      horizontal_fov: 99\n",
+        {
+            "camera_config": "gopro-mission-1",
+            "camera_automation": {"fov": True, "lens": True},
+        },
+        metadata=False,
+    )
+    assert partial["settings"]["camera"]["camera_fov"] == {
+        "horizontal_fov": 99,
+        "vertical_fov": references["gopro-mission-1"]["camera_fov"]["vertical_fov"],
+    }
+    assert (
+        partial["settings"]["camera"]["input_lens"]
+        == references["gopro-mission-1"]["input_lens"]
+    )
+    # Recording mode is identifiable but has no radial prescription. The
+    # bundled verified mode catalog must provide the missing correction.
+    _, mode = create(
+        "baseline-recording-mode",
+        automatic,
+        metadata=gopro_optics_movie(
+            prescription=False, firmware="H26.01.02.02.70", axis_fov=False
+        ),
+    )
+    expected = references["gopro-mission-1-factory"]
+    assert mode["settings"]["camera"]["input_lens"] == expected["input_lens"], mode
+    assert mode["settings"]["camera"]["camera_fov"] == expected["camera_fov"], mode
     _, inherited = create("auto-inherited", automatic + frozen)
     assert inherited["settings"]["camera"]["camera_fov"] == {
         "horizontal_fov": 111,

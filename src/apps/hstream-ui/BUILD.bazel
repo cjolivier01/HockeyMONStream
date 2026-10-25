@@ -422,6 +422,8 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:baseline_config",
+        "//src/libs/common:config_layers",
         "//src/libs/common:status_macros",
         "//src/libs/common:utils_base",
         "//src/libs/stitching:calibration_matches",

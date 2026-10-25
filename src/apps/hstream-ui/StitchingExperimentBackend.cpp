@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 
+#include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
@@ -1030,6 +1032,14 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     // true matches Qt's explicit-edit refresh of an existing frozen source.
     if (refresh_camera_metadata.has_value() && frozen_settings.camera) {
       auto metadata_config = YAML::Clone(config);
+      hm::baseline_config::BaselineConfig baseline;
+      HM_ASSIGN_OR_RETURN(baseline, hm::baseline_config::load());
+      const auto effective_stitching =
+          hm::config::MergeNodes(YAML::Clone(baseline.values["stitching"]), YAML::Clone(config["stitching"]), false);
+      // Qt resolves profile defaults and recording-mode matches from baseline
+      // plus game overrides. Copy only that catalog into the metadata reader;
+      // its playlists must remain the validated private aliases above.
+      metadata_config["stitching"]["camera_configs"] = YAML::Clone(effective_stitching["camera_configs"]);
       if (*refresh_camera_metadata)
         metadata_config["stitching"].remove("auto_input_lens_frozen");
       frozen_settings.camera =

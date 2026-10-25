@@ -101,6 +101,9 @@ explicit optics. Native `GameConfig` and `InputLens` readers validate these
 values and preserve legacy manual selections. After source aliases and playlists
 are validated and linked into the private candidate, `ReadAutoInputLensForGame`
 imports metadata for automatic components, matching the Qt experiment dialog.
+Its camera-profile catalog merges the bundled baseline with game overrides, so
+sparse game configs retain the same fallback optics and verified recording-mode
+profiles as Qt. This merge never replaces the validated private playlists.
 Unedited frozen sources retain their snapshot; explicit profile, optics or policy
 edits refresh automatic components. Unavailable metadata uses the selected
 profile's fallback. Reopening a saved descriptor never rereads MP4 metadata.
