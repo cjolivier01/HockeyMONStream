@@ -70,7 +70,7 @@ struct StitchingIterationSettings {
   QString sync_method{"audio"};
   bool show_crop_dialog{true};
   bool show_leveling_dialog{true};
-  QString playback_start_time{"00:00:00"};
+  QString playback_start_time;
 
   bool operator!=(const StitchingIterationSettings& other) const {
     return sync_method != other.sync_method || show_crop_dialog != other.show_crop_dialog ||

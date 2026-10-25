@@ -15756,6 +15756,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   if (!source_baseline.has_value())
     return expect(false, "Could not locate bundled baseline.yaml for user-default fixture");
   YAML::Node baseline = YAML::LoadFile(source_baseline->string());
+  baseline["hstream_ui"]["playback_start_time"] = "01:02:03.456";
   baseline["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = YAML::Node(YAML::NodeType::Null);
   baseline["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1234;
   {
@@ -16425,6 +16426,19 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   }
   try {
     HStreamWindow legacy_baseline_window;
+    legacy_baseline_window.show();
+    auto* playback = require_child<QTimeEdit>(&legacy_baseline_window, "playbackStartTimeEdit");
+    ok &= expect(playback && playback->time() == QTime(1, 2, 3, 456),
+                 "Playback start must read the resolved baseline instead of a compiled-in zero");
+    if (playback) {
+      playback->setFocus(Qt::OtherFocusReason);
+      QApplication::processEvents();
+      playback->setCurrentSection(QDateTimeEdit::MSecSection);
+      QTest::keyClicks(playback, "250");
+      QTest::keyClick(playback, Qt::Key_Tab);
+      QApplication::processEvents();
+      ok &= expect(playback->time() == QTime(1, 2, 3, 250), "Typed playback milliseconds must remain exact");
+    }
     auto* mapping_backend = require_child<QComboBox>(&legacy_baseline_window, "mappingBackendCombo");
     auto* run_autooptimizer = require_child<QCheckBox>(&legacy_baseline_window, "runAutooptimizerCheck");
     ok &= expect(
@@ -16434,6 +16448,15 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   } catch (const std::exception& error) {
     std::cerr << "FAIL: Older baseline UI startup threw: " << error.what() << '\n';
     ok = false;
+  }
+  baseline["hstream_ui"].remove("playback_start_time");
+  std::ofstream(QDir(baseline_root.path()).filePath("baseline.yaml").toStdString()) << baseline << '\n';
+  try {
+    HStreamWindow missing_playback_baseline;
+    ok &= expect(false, "A baseline without playback_start_time must fail instead of choosing a literal default");
+  } catch (const std::exception& error) {
+    ok &= expect(std::string(error.what()).find("hstream_ui.playback_start_time") != std::string::npos,
+                 "Missing playback baseline must identify its required key");
   }
   if (original_home.isEmpty())
     qunsetenv("HOME");

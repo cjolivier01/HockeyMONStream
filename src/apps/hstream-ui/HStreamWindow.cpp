@@ -5048,6 +5048,7 @@ void HStreamWindow::loadBaselineDefaults() {
   };
   auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
 
+  require("hstream_ui.playback_start_time");
   default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_);
   default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
 
