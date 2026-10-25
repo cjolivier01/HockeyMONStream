@@ -86,6 +86,7 @@ QJsonObject Capabilities() {
       "calibration-complete",
       "highlight-render",
       "highlight-preview",
+      "highlight-card-preview",
       "matches-read",
       "matches-publish",
       "experiment-create",

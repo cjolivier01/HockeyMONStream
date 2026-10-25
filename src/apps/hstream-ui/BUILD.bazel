@@ -1243,6 +1243,7 @@ cc_binary(
         ":calibration_image",
         ":highlight_plan",
         ":highlight_reel_pipeline",
+        ":highlight_scene",
         ":highlights_encode_settings",
         ":highlight_tracking",
         ":stitching_experiment_backend",
@@ -1272,6 +1273,26 @@ sh_test(
     srcs = ["WebJobTest.py"],
     args = ["$(location :hstream-web-job)"],
     data = [":hstream-web-job"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+)
+
+cc_test(
+    name = "web_card_preview_test",
+    srcs = ["WebCardPreviewTest.cpp"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_scene", ":web_job_spec", "@qt//:qt_gui"],
+)
+
+sh_test(
+    name = "web_card_probe_test",
+    srcs = ["WebCardProbeTest.py"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job", "WebJobTest.py"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     tags = ["local"],
 )

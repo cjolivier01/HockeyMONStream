@@ -9,19 +9,25 @@
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/HighlightPlan.h"
 #include "src/apps/hstream-ui/HighlightReelPipeline.h"
+#include "src/apps/hstream-ui/HighlightScene.h"
 #include "src/apps/hstream-ui/HighlightTracking.h"
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <yaml-cpp/yaml.h>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDateTime>
+#include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
+#include <QtCore/QSaveFile>
 #include <QtGui/QGuiApplication>
 #include <algorithm>
 #include <atomic>
@@ -30,6 +36,7 @@
 #include <cmath>
 #include <csignal>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -80,9 +87,14 @@ QString fingerprint(const QJsonObject& payload) {
   return result;
 }
 
-hm::ui::ArchiveMediaInfo probe(const fs::path& archive) {
+hm::ui::ArchiveMediaInfo probe(const fs::path& archive, bool metadata_only = false) {
   QProcess process;
-  process.start("ffprobe", {"-v", "error", "-show_streams", "-show_format", "-of", "json", qs(archive)});
+  QStringList arguments{"-v", "error"};
+  if (metadata_only)
+    arguments << "-protocol_whitelist" << "file" << "-f" << "mov" << "-enable_drefs" << "0"
+              << "-use_absolute_path" << "0";
+  arguments << "-show_streams" << "-show_format" << "-of" << "json" << qs(archive);
+  process.start("ffprobe", arguments);
   require(process.waitForStarted(5000), "Could not start archive inspection");
   QByteArray output, errors;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -97,11 +109,59 @@ hm::ui::ArchiveMediaInfo probe(const fs::path& archive) {
     }
   }
   output += process.readAllStandardOutput();
+  errors += process.readAllStandardError();
+  require(output.size() + errors.size() <= 1024 * 1024, "Archive inspection exceeded its output limit");
   require(process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0, "Archive inspection failed");
   hm::ui::ArchiveMediaInfo media;
   QString error;
   if (!hm::ui::ParseArchiveMediaInfo(output, &media, &error))
     throw std::runtime_error(error.toStdString());
+  return media;
+}
+
+hm::ui::ArchiveMediaInfo card_archive(const Request& request) {
+  const auto source = request.runtime.value("archive_probe").toObject();
+  const auto name = RequiredString(source, "path", 4096);
+  const fs::path path(name.toStdString());
+  require(
+      path.is_absolute() && path.lexically_normal() == path && request.authorized_media.size() == 1 &&
+          request.authorized_media.at(0).isString() && request.authorized_media.at(0).toString() == name,
+      "Card preview requires exactly its frozen authorized archive");
+  const auto expected = source.value("identity").toObject();
+  require(expected.size() == 5, "Card archive identity is incomplete");
+  // Open every directory without following aliases, then pin the immutable file
+  // while the metadata-only probe reads its descriptor. The archive is neither
+  // copied into this run nor retained as a symlink or hardlink after completion.
+  QFile pinned;
+  int descriptor = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  require(descriptor >= 0, "Cannot open the archive filesystem root");
+  require(pinned.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive root");
+  for (auto component = path.begin(); component != path.end(); ++component) {
+    if (*component == path.root_directory())
+      continue;
+    require(*component != "." && *component != "..", "Invalid card archive path");
+    const bool last = std::next(component) == path.end();
+    descriptor = ::openat(
+        pinned.handle(), component->c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | (last ? O_NONBLOCK : O_DIRECTORY));
+    require(descriptor >= 0, "Cannot open the frozen card archive without following links");
+    pinned.close();
+    require(pinned.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive input");
+  }
+  const auto matches = [&] {
+    struct stat info{};
+    require(::fstat(pinned.handle(), &info) == 0 && S_ISREG(info.st_mode), "Card archive is not a regular file");
+    const QJsonObject actual{
+        {"dev", QString::number(info.st_dev)},
+        {"ino", QString::number(info.st_ino)},
+        {"size", QString::number(info.st_size)},
+        {"mtime_ns", QString::number(qint64(info.st_mtim.tv_sec) * 1000000000 + info.st_mtim.tv_nsec)},
+        {"ctime_ns", QString::number(qint64(info.st_ctim.tv_sec) * 1000000000 + info.st_ctim.tv_nsec)}};
+    require(actual == expected, "Card archive identity changed before or during inspection");
+  };
+  matches();
+  const auto media =
+      probe(fs::path("/proc") / std::to_string(::getpid()) / "fd" / std::to_string(pinned.handle()), true);
+  matches();
   return media;
 }
 
@@ -135,6 +195,34 @@ hm::ui::HighlightPlan load_plan(const Request& request) {
 
 QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
   auto plan = load_plan(request);
+  if (request.operation == "highlight-card-preview") {
+    require(
+        plan.intervals.size() == 1 && plan.intervals.front().is_card && !request.payload.contains("selected_indices"),
+        "Card preview requires exactly one authored card");
+    require(plan.archive_path.isEmpty(), "Card preview accepts only its frozen archive probe");
+    const auto media = card_archive(request);
+    QImage image;
+    QString error;
+    require(!interrupted, "cancelled");
+    if (!hm::ui::RasterHighlightCard(
+            plan.intervals.front().card, qs(request.root), &image, &error, QSize(media.width, media.height)))
+      throw std::runtime_error(error.toStdString());
+    require(!interrupted, "cancelled");
+    const auto path = request.root / "highlight-card.png";
+    require(!fs::exists(path), "Refusing to replace an existing card preview");
+    QSaveFile output(qs(path));
+    require(output.open(QIODevice::WriteOnly), "Cannot create the card preview");
+    require(
+        image.save(&output, "PNG") && output.flush() && ::fsync(output.handle()) == 0 && output.commit(),
+        "Cannot publish the card preview");
+    artifacts.append(Artifact(request, path, "image"));
+    return {
+        {"preview", "highlight-card.png"},
+        {"width", image.width()},
+        {"height", image.height()},
+        {"source_width", media.width},
+        {"source_height", media.height}};
+  }
   QVector<hm::ui::HighlightInterval> selected;
   if (request.payload.contains("selected_indices")) {
     require(request.payload.value("selected_indices").isArray(), "Expected selected item indices");
