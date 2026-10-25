@@ -755,8 +755,13 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--capabilities") {
+    // Readiness probes need neither a display server nor a request workspace.
+    std::cout << QJsonDocument(hm::web::Capabilities()).toJson(QJsonDocument::Compact).constData() << '\n';
+    return 0;
+  }
   if (argc != 3 || std::string(argv[1]) != "--request") {
-    std::cerr << "usage: hstream-web-job --request JOB_ROOT/operation-request.json\n";
+    std::cerr << "usage: hstream-web-job --request JOB_ROOT/operation-request.json | --capabilities\n";
     return 64;
   }
   std::optional<Request> request;
@@ -773,7 +778,7 @@ int main(int argc, char** argv) {
     const auto receipt = request->root / "operation-result.json";
     previous_receipt = fs::exists(receipt);
     if (previous_receipt) {
-      const auto previous = ReadObject(receipt);
+      const auto previous = ReadObject(receipt, hm::web::kMaximumResultBytes);
       require(
           previous.value("request_sha256").toString() == QString::fromLatin1(hash),
           "A different operation already used this run");

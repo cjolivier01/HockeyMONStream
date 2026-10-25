@@ -144,6 +144,16 @@ def main():
     parser.add_argument("--gpu", action="store_true")
     args = parser.parse_args()
     args.binary = args.binary.resolve()
+    probe = subprocess.run(
+        [str(args.binary), "--capabilities"],
+        env={**os.environ, "QT_QPA_PLATFORM": "invalid-readiness-platform"},
+        capture_output=True, text=True, check=True, timeout=15,
+    )
+    capabilities = json.loads(probe.stdout)
+    assert capabilities["schema"] == capabilities["request_schema"] == capabilities["receipt_schema"] == 1
+    assert "calibration-complete" in capabilities["operations"]
+    assert len(capabilities["operations"]) == len(set(capabilities["operations"]))
+    assert capabilities["maximum_request_bytes"] < capabilities["maximum_result_bytes"]
     with tempfile.TemporaryDirectory(prefix="hstream-web-contract-") as temporary:
         root = Path(temporary)
         calibration_contract(args.binary, root)
@@ -185,6 +195,15 @@ def main():
         receipt = json.loads((tracks / "operation-result.json").read_text())
         assert receipt["result"]["runs"] == ["run-one", "run-two"]
         assert_artifacts(tracks, receipt)
+        # Valid result documents may exceed the request limit. Completed-run
+        # retries must use the advertised result bound and preserve the receipt.
+        receipt_path = tracks / "operation-result.json"
+        receipt["result"]["details"] = "x" * (capabilities["maximum_request_bytes"] + 1)
+        large_receipt = json.dumps(receipt).encode()
+        assert len(large_receipt) < capabilities["maximum_result_bytes"]
+        receipt_path.write_bytes(large_receipt)
+        run(args.binary, path)
+        assert receipt_path.read_bytes() == large_receipt
         experiments = root / "experiments"
         experiments.mkdir()
         path = request(

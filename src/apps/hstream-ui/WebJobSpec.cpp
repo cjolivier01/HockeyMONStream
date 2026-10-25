@@ -72,7 +72,7 @@ QJsonObject ReadObject(const fs::path& path, std::size_t maximum) {
 }
 void WriteObject(const fs::path& path, const QJsonObject& value) {
   const auto contents = QJsonDocument(value).toJson(QJsonDocument::Compact);
-  require(contents.size() <= 32 * 1024 * 1024, "Result exceeds its size bound");
+  require(std::size_t(contents.size()) <= kMaximumResultBytes, "Result exceeds its size bound");
   QSaveFile output(QString::fromStdString(path.string()));
   require(output.open(QIODevice::WriteOnly), "Cannot create result document");
   require(
@@ -81,18 +81,8 @@ void WriteObject(const fs::path& path, const QJsonObject& value) {
   require(output.commit(), "Cannot publish result document");
   sync_directory(path.parent_path());
 }
-Request LoadRequest(const fs::path& filename) {
-  const auto document = ReadObject(filename);
-  require(document.value("schema").toInt() == 1, "Unsupported workflow request schema");
-  Request request;
-  request.root = fs::canonical(RequiredString(document, "root").toStdString());
-  require(fs::canonical(filename).parent_path() == request.root, "Request must be stored directly inside its job root");
-  request.game = Contained(request.root, RequiredString(document, "game_dir"));
-  require(fs::is_directory(request.game), "Game directory is unavailable");
-  request.run_id = RequiredString(document, "run_id", 64).toStdString();
-  require(std::regex_match(request.run_id, std::regex("[A-Za-z0-9_-]{8,64}")), "Invalid run identity");
-  request.operation = RequiredString(document, "operation", 64).toStdString();
-  const QStringList operations{
+QJsonObject Capabilities() {
+  const QJsonArray operations{
       "calibration-complete",
       "highlight-render",
       "highlight-preview",
@@ -108,7 +98,28 @@ Request LoadRequest(const fs::path& filename) {
       "track-choices",
       "track-capture",
       "camera-replay"};
-  require(operations.contains(QString::fromStdString(request.operation)), "Unsupported workflow operation");
+  return {
+      {"schema", 1},
+      {"request_schema", 1},
+      {"receipt_schema", 1},
+      {"operations", operations},
+      {"maximum_request_bytes", int(kMaximumRequestBytes)},
+      {"maximum_result_bytes", int(kMaximumResultBytes)}};
+}
+Request LoadRequest(const fs::path& filename) {
+  const auto document = ReadObject(filename);
+  require(document.value("schema").toInt() == 1, "Unsupported workflow request schema");
+  Request request;
+  request.root = fs::canonical(RequiredString(document, "root").toStdString());
+  require(fs::canonical(filename).parent_path() == request.root, "Request must be stored directly inside its job root");
+  request.game = Contained(request.root, RequiredString(document, "game_dir"));
+  require(fs::is_directory(request.game), "Game directory is unavailable");
+  request.run_id = RequiredString(document, "run_id", 64).toStdString();
+  require(std::regex_match(request.run_id, std::regex("[A-Za-z0-9_-]{8,64}")), "Invalid run identity");
+  request.operation = RequiredString(document, "operation", 64).toStdString();
+  require(
+      Capabilities().value("operations").toArray().contains(QString::fromStdString(request.operation)),
+      "Unsupported workflow operation");
   require(document.value("payload").isObject(), "Expected an operation payload");
   request.payload = document.value("payload").toObject();
   request.runtime = document.value("runtime").toObject();

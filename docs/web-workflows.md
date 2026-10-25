@@ -17,6 +17,14 @@ detaching camera aliases, releasing input references, or publishing artifacts.
 
 ## Request and receipt
 
+Workers probe `hstream-web-job --capabilities` before admitting work. This
+display-independent command returns protocol `schema`, `request_schema`,
+`receipt_schema`, the supported `operations`, and request/result byte limits.
+The operation list also drives request validation, so readiness cannot advertise
+operations the request parser rejects. HockeyMONWeb checks its required operations
+against this deployed executable in addition to checking the generated startup
+catalog. Deploy changes to this contract with the matching web worker.
+
 ```json
 {
   "schema": 1,
@@ -47,6 +55,14 @@ its receipt. Reusing that run for different input fails and preserves its
 receipt. A failed or cancelled run needs a new run directory for retry. Failure
 receipts publish no artifacts. SIGTERM/SIGINT request cancellation; the outer
 supervisor still owns the final descendant-stop and storage checks.
+
+Completed-run retries read receipts using the same 32 MiB bound as publication;
+the smaller 16 MiB request bound must not reject a previously successful result.
+
+Qt/browser comparison coverage and the remaining workflow differences are tracked
+in the companion HockeyMONWeb repository's `docs/qt-web-parity.md`. Changes to
+desktop UI sources require regenerating and reviewing its Qt control/layout
+contract, then testing both interfaces against the same native checkout.
 
 ## Operations
 
