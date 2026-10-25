@@ -201,6 +201,34 @@ cc_test(
     deps = [":hstream_lossless_nvstreammux", "@gstreamer"],
 )
 
+# CPU metadata preparation shared by native desktop and encoded previews.
+cc_library(
+    name = "preview_overlay_scene",
+    srcs = ["PreviewOverlayScene.cpp"],
+    hdrs = ["PreviewOverlayScene.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/draw_display:analytics_overlay",
+        "//src/libs/draw_display:player_overlays",
+        "//src/libs/draw_display:rink_mini_map",
+        "//src/libs/stitching:stitching",
+        "@deepstream//:deepstream_lib",
+    ],
+)
+
+cc_test(
+    name = "preview_overlay_scene_test",
+    srcs = ["PreviewOverlaySceneTest.cpp"],
+    deps = [
+        ":preview_overlay_scene",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/stitching:stitching",
+        "@deepstream//:deepstream_lib",
+    ],
+)
+
 cc_library(
     name = "hm_gpu_preview",
     srcs = ["HmGpuPreview.cpp"],
@@ -225,6 +253,7 @@ cc_library(
         "@gstreamer",
     ] + select({
         "@platforms//cpu:x86_64": [
+            ":preview_overlay_scene",
             "//src/libs/draw_display:analytics_overlay_gl",
             "//src/libs/draw_display:player_overlays",
             "//src/libs/draw_display:rink_mini_map",
