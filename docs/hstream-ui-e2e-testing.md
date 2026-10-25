@@ -180,6 +180,23 @@ to the source game. Configured stitching artifacts are reflinked (or copied
 when reflinks are not available), while `config.yaml`, UI state, locks, and
 encoded output remain isolated. The source game is not modified.
 
+Set `HSTREAM_UI_E2E_SKIP_OPTIONAL_REVIEW=1` for preview-only acceptance when an
+older fixture may need calibration regeneration. This disables optional crop
+and leveling review in the copied game's settings; it does not change the
+source game or skip native calibration. Scoreboard selection remains automated.
+
+`HSTREAM_UI_E2E_PREVIEW_TRANSITIONS_ONLY=1` selects a separate live X11 check:
+Program → paused Stitched → Camera 1, a source-only seek, Render off immediately
+after starting a backward seek, restart with rendering still off, then Program
+reactivation. It preserves Qt's rule that Render off disables new seek requests.
+It turns archive routes and telemetry off so native local seeking is available,
+uses normal-speed playback, and requires generation-matched readiness plus
+nonblank native diagnostic captures. It writes `preview-transitions-report.txt`
+and `pipeline.log` in the artifact directory. Run this with `--x11-preview` and
+the same copied-game setup; it replaces the archive/visual-matching check, so
+run the ordinary archive check separately. A new-process restart is covered;
+this does not force the same-process full-reconstruction seek fallback.
+
 On X11, the backend renders NVMM video through CUDA/OpenGL into the native
 preview windows. The acceptance test requests bounded diagnostic captures of
 the presented GPU framebuffer; ordinary playback performs no CPU frame readback.
