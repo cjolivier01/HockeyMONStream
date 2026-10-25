@@ -423,3 +423,11 @@ cc_test(
     data = ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml"],
     deps = [":scoreboard_config"],
 )
+
+cc_library(
+    name = "preview_overlay_config",
+    srcs = ["PreviewOverlayConfig.cpp"],
+    hdrs = ["PreviewOverlayConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":preview_overlay_runtime", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)

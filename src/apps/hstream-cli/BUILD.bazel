@@ -35,6 +35,7 @@ HSTREAM_CLI_DEPS = [
     "//src/apps/apps-common:web_preview_target",
     "//src/apps/apps-common:preview_overlay_painter",
     "//src/apps/apps-common:preview_overlay_scene",
+    "//src/libs/program:preview_overlay_config",
     "//src/libs/program:tone_control_command",
     "//src/libs/program:tone_controls",
     "//src/apps/apps-common:preview_route_owner",
@@ -96,6 +97,7 @@ cc_test(
     data = ["//configs:baseline.yaml"],
     deps = [
         "//src/apps/apps-common:preview_route_owner",
+        "//src/libs/program:preview_overlay_config",
         "@yaml-cpp",
         "@json_glib",
         "@com_google_absl//absl/status:statusor",
@@ -148,7 +150,7 @@ cc_binary(
     deps = select({
         "//:use_hip": [
             ":amd_pipeline_options", "//src/gst-plugins/gst-rink-map:overlay", "//src/libs/program:amd_program_admission", "//src/libs/program:file_output",
-            "//src/libs/program:calibration",
+            "//src/libs/program:calibration", "//src/libs/program:preview_overlay_config",
             "//src/libs/program:archive_config", "//src/libs/publication", "//src/libs/common:user_config",
             "//src/gst-plugins/gst-amd-program:graph", "//src/libs/program:launch_config",
             "//src/libs/program:detector_settings", "//src/libs/program:output_config",

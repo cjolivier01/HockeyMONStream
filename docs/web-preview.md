@@ -5,8 +5,8 @@ with the browser is described in [web-preview-parity-design.md](web-preview-pari
 The route activation owner is shared native code. An explicit private
 `--web-preview-run-id=<UUID>` now installs selectable native routes and the
 presentation contract; ordinary `WEBRTC` launches retain the static output.
-This opt-in is not full Qt workflow parity: live diagnostic controls, replay-mask
-ownership and audio/seek timeline qualification remain unfinished.
+This opt-in is not full Qt workflow parity: archived replay-mask ownership and
+audio/seek timeline qualification remain unfinished.
 
 `PreviewRouteOwner` owns logical route selection and its operation generation.
 The desktop CLI registers its existing gates and renderer callbacks, retaining
@@ -48,7 +48,7 @@ defaults or enable this launch before its own deployment qualification.
 After the matching inspector session has been published, stdout emits:
 
 ```text
-HSTREAM_PREVIEW_PRESENTATION {"version":1,"run":"UUID","stage":0,"topology":"1","operation":"1","channel":"program","channels":["program","stitched","source0","source1"],"width":1600,"height":900,"seek":false,"receiptLimits":{"maxFrames":512,"maxAgeMs":3000}}
+HSTREAM_PREVIEW_PRESENTATION {"version":1,"run":"UUID","stage":0,"topology":"1","operation":"1","channel":"program","channels":["program","stitched","source0","source1"],"overlays":{"generation":"0","players":false,"play":false,"rink":false},"width":1600,"height":900,"seek":false,"receiptLimits":{"maxFrames":512,"maxAgeMs":3000}}
 ```
 
 `channels` contains only installed routes. Width/height are even and bounded
@@ -75,7 +75,8 @@ probe failures. This used the production browser, authenticated signaling
 gateway, Slurm supervisor and original camera media. Calibration inputs/maps
 were reused after a precision change; their bytes and timestamps stayed the
 same and no dependency invalidation ran. Audio synchronization, seek, calibration
-reconstruction and live diagnostic controls remain separate qualifications.
+reconstruction remain separate qualifications. Live diagnostics have their own
+comparison described below; the earlier authenticated route run did not test them.
 
 `RouteAttachment` in `PreviewRouteGraph.*` separates graph attachment from the
 consumer. The current Qt path uses its existing Program output tee, inserts a
@@ -145,7 +146,50 @@ panorama coordinate extents.
 
 The opt-in route painter draws analytics and the Stitched watermark on the
 owned subimage, using the actual source CAPS and desktop reference dimensions.
-Optional diagnostic controls are not yet wired to this session.
+Player boxes, Play tracking and Rink mask use the same immutable scene builder
+and producer-selection transaction as Qt. The three startup values come from
+required `preview_overlays.players/play/rink` settings. The explicit launcher
+environment `HSTREAM_UI_PREVIEW_OVERLAYS=players,play,rink` replaces that selection;
+an empty value disables all three, while an absent value preserves the resolved
+baseline. Qt's top status bar reads the same settings and sends its explicit
+selection on launch. AMD reads the same required settings but still rejects
+unsupported Play/Rink diagnostics.
+
+Qt defers an overlay change made during startup, including Render-on, until
+`HSTREAM_PREVIEW_RUNTIME status=ready`. It preserves the latest checkbox choices
+without claiming success or starting an acknowledgment timeout early; readiness
+starts the ordinary native transaction and timeout.
+
+The private browser supervisor changes all three selections atomically:
+
+```text
+@preview-overlays {"version":1,"run":"UUID","stage":0,"topology":"1","requestId":"overlay-1","generation":"1","players":true,"play":false,"rink":true}
+HSTREAM_PREVIEW_OVERLAY_STATE {"version":1,"run":"UUID","stage":0,"topology":"1","requestId":"overlay-1","generation":"1","status":"applied","reason":"","state":{"generation":"1","players":true,"play":false,"rink":true}}
+@preview-overlays-query {"version":1,"run":"UUID","stage":0,"topology":"1","requestId":"query-1"}
+HSTREAM_PREVIEW_OVERLAY_STATE {"version":1,"run":"UUID","stage":0,"topology":"1","requestId":"query-1","status":"state","reason":"","state":{"generation":"1","players":true,"play":false,"rink":true}}
+```
+
+Both commands require the exact run/stage/topology and a bounded request token.
+Mutation generations are positive decimal uint64 strings, independent of route
+operations; initial committed generation is `"0"`. The parser rejects extra,
+missing, duplicate or mistyped fields. A stale session/generation returns
+`stale`; an absent/stopped session returns `unavailable`; producer/readback
+failure returns `failed`. Every correlated reply contains the complete last
+committed `state`; failures never advance it. Queries do not mutate or replay
+anything. Malformed commands have no correlated reply. The legacy unscoped
+`set-preview-overlays` command is rejected in opted-in browser sessions.
+
+Qt and the browser register the same dsplaytracker producer or bounded fallback
+snapshot probe. Route selection reconciles producer flags before opening gates;
+source/Render-off routes stop optional snapshot production while retaining the
+operator's selected flags. Only a successful producer transaction publishes the
+browser painter's atomic three-flag snapshot. An applied selection acknowledges
+configuration, not a displayed frame: masks still require the live frame's valid
+crop, stitched canvas and calibration generation. The bounded saved PNG loader
+runs under the same artifact ownership checks as Qt and retains immutable alpha
+bytes per identity; retries use the existing bounded backoff. It reads only the
+static mask, never video. The GPU painter validates that identity on every frame
+and writes only the owned preview surface. Archived replay masks remain separate.
 
 `PreviewOverlayGlPaths` is the unchanged desktop `GL_POLYGON`/`GL_LINE_*`
 drawing pass. `GpuGlSurface` runs it in a private headless EGL compatibility
@@ -172,8 +216,23 @@ stream synchronization and no video readback. AMD compilation succeeds, but
 unavailable regression checks that video and every other overlay stay unchanged.
 See `docs/amd-gpu.md` for this explicit runtime gap.
 
-Archived replay-mask ownership, live diagnostic settings/route wiring and
-complete encoded-browser overlay comparisons remain unfinished. These pixel
+Live NVIDIA qualification compared Player boxes → Player boxes + Play tracking →
+all three layers → all off on both Program and Stitched. Qt required complete live
+acknowledgments and bounded framebuffer captures; Chromium required matching set
+and query state plus new decoded-frame receipts before each capture. The browser
+run also rejected stale topology/generation and the unscoped legacy command,
+then switched source/off/on routes, replaced its peer and stopped cleanly:
+153 native presented receipts, zero rejected receipts and zero probe failures.
+The shared GPU painter oracle passed its native GL path, immutable-mask identity,
+crop mapping and letterbox guard checks. The media captures are different source
+frames, so they demonstrate live behavior and geometry, not frame-aligned lossy
+encode equivalence. CPU protocol tests run on NVIDIA and AMD configurations;
+x86/AMD CLI and Jetson CLI cross-builds pass. No Jetson runtime or AMD browser
+consumer is qualified by these checks.
+
+Archived replay-mask ownership and exhaustive encoded-browser overlay comparisons
+remain unfinished. Live control/capture checks do not establish frame-aligned
+lossy-encoder equality for arbitrary media. These pixel
 and generation-fencing tests do not establish full browser preview parity.
 
 `WebPreviewTarget` assembles those primitives into an independently owned bin:

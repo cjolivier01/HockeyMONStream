@@ -46,6 +46,13 @@ bool Decimal(const std::string& value, uint64_t* output) {
   const auto parsed = std::from_chars(value.data(), value.data() + value.size(), *output);
   return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size();
 }
+bool Boolean(JsonObject* object, const char* name, bool* value) {
+  auto* node = json_object_get_member(object, name);
+  if (!node || !JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_BOOLEAN)
+    return false;
+  *value = json_node_get_boolean(node);
+  return true;
+}
 void Add(JsonBuilder* builder, const char* name, const std::string& value) {
   json_builder_set_member_name(builder, name);
   json_builder_add_string_value(builder, value.c_str());
@@ -69,6 +76,17 @@ std::string Serialize(const std::function<void(JsonBuilder*)>& fill) {
   json_node_free(root);
   g_object_unref(builder);
   return result;
+}
+void OverlayState(JsonBuilder* builder, const pipeline_internal::PreviewOverlayRuntimeState& state) {
+  json_builder_begin_object(builder);
+  Add(builder, "generation", std::to_string(state.generation()));
+  const auto selection = state.selection();
+  for (const auto& entry :
+       {std::pair{"players", selection.players}, {"play", selection.play}, {"rink", selection.rink}}) {
+    json_builder_set_member_name(builder, entry.first);
+    json_builder_add_boolean_value(builder, entry.second);
+  }
+  json_builder_end_object(builder);
 }
 void Identity(
     JsonBuilder* builder,
@@ -234,7 +252,83 @@ std::string WebPreviewRouteReply(const RouteOwner::Request& request, const Route
   });
 }
 
-std::string WebPreviewCapability(const WebPreviewOptions& options, const RouteOwner& owner) {
+absl::StatusOr<WebPreviewOverlayRequest> ParseWebPreviewOverlays(const std::string& json, bool query) {
+  if (json.empty() || json.size() > 1024)
+    return absl::InvalidArgumentError("Preview overlay JSON exceeds its limit");
+  auto* parser = json_parser_new();
+  unsigned member_count = 0;
+  g_signal_connect(
+      parser,
+      "object-member",
+      G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer data) { ++*static_cast<unsigned*>(data); }),
+      &member_count);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebPreviewOverlayRequest request;
+  request.query = query;
+  gint64 version = 0, stage = 0;
+  std::string topology, generation;
+  const bool valid = object && member_count == (query ? 5U : 9U) && json_object_get_size(object) == member_count &&
+      Integer(object, "version", &version) && version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN &&
+      stage <= INT_MAX && String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &request.request_id) && Token(request.request_id) &&
+      (query ||
+       (String(object, "generation", &generation) && Decimal(generation, &request.command.generation) &&
+        Boolean(object, "players", &request.command.selection.players) &&
+        Boolean(object, "play", &request.command.selection.play) &&
+        Boolean(object, "rink", &request.command.selection.rink)));
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid preview overlay identity or selection");
+  request.session.stage = static_cast<int>(stage);
+  return request;
+}
+
+std::string ApplyWebPreviewOverlays(
+    const WebPreviewOverlayRequest& request,
+    const RouteOwner::Session& session,
+    pipeline_internal::PreviewOverlayRuntimeState& state,
+    const std::function<bool(const pipeline_internal::PreviewOverlaySelection&)>& apply) {
+  std::string status, reason;
+  if (session.run.empty() || !session.topology || !apply) {
+    status = "unavailable";
+    reason = "selectable-preview-unavailable";
+  } else if (!(request.session == session)) {
+    status = "stale";
+    reason = "stale-session";
+  } else if (request.query) {
+    status = "state";
+  } else if (!state.is_fresh(request.command)) {
+    status = "stale";
+    reason = "stale-generation";
+  } else if (!apply(request.command.selection)) {
+    status = "failed";
+    reason = "apply-failed";
+  } else {
+    state.commit(request.command);
+    status = "applied";
+  }
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", request.request_id);
+    if (!request.query)
+      Add(builder, "generation", std::to_string(request.command.generation));
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    json_builder_set_member_name(builder, "state");
+    OverlayState(builder, state);
+  });
+}
+
+std::string WebPreviewCapability(
+    const WebPreviewOptions& options,
+    const RouteOwner& owner,
+    const pipeline_internal::PreviewOverlayRuntimeState& overlays) {
   return Serialize([&](JsonBuilder* builder) {
     Identity(
         builder,
@@ -246,6 +340,8 @@ std::string WebPreviewCapability(const WebPreviewOptions& options, const RouteOw
     for (const auto& channel : owner.channels())
       json_builder_add_string_value(builder, channel.c_str());
     json_builder_end_array(builder);
+    json_builder_set_member_name(builder, "overlays");
+    OverlayState(builder, overlays);
     Add(builder, "width", options.width);
     Add(builder, "height", options.height);
     json_builder_set_member_name(builder, "seek");

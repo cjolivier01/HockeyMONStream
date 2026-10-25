@@ -21,6 +21,7 @@
 #include "configurator.h"
 #include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
+#include "hstream/src/libs/program/PreviewOverlayConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
@@ -1145,8 +1146,6 @@ PipelineApplication::PipelineApplication()
       rcfg_(0),
       rrowsel_(FALSE),
       selecting_(FALSE) {
-  preview_overlay_state_ =
-      hm::pipeline_internal::PreviewOverlayRuntimeState(preview_overlay_selection_from_environment());
   rink_map_preview_requested_ = g_strcmp0(g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP"), "1") == 0;
   memset(fps_, 0, sizeof(fps_));
   memset(fps_avg_, 0, sizeof(fps_avg_));
@@ -1690,6 +1689,15 @@ absl::Status PipelineApplication::createPipelines(
       }
     });
   }
+  if (!preview_overlay_initialized_ && !app_contexts.empty()) {
+    auto initial = hm::pipeline_internal::ReadPreviewOverlaySelection(app_contexts.front()->configurator().config());
+    if (!initial.ok())
+      return initial.status();
+    if (g_getenv("HSTREAM_UI_PREVIEW_OVERLAYS"))
+      *initial = preview_overlay_selection_from_environment();
+    preview_overlay_state_ = hm::pipeline_internal::PreviewOverlayRuntimeState(*initial);
+    preview_overlay_initialized_ = true;
+  }
   // Section 2: Create pipelines for each instance.
   if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
     const auto& app = app_contexts.front();
@@ -1830,10 +1838,13 @@ absl::Status PipelineApplication::createPipelines(
       hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_created" + s);
     }
   }
-  if (rink_mask_preparation_ == RinkMaskPreparation::kNone)
+  if (rink_mask_preparation_ == RinkMaskPreparation::kNone) {
+    HM_RETURN_IF_ERROR(configure_preview_overlay_producers(app_contexts));
     HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
+  }
   if (web_preview_)
-    HM_RETURN_IF_ERROR(web_preview_->Attach());
+    HM_RETURN_IF_ERROR(
+        web_preview_->Attach([this] { return apply_preview_overlay_state(preview_overlay_state_.selection(), true); }));
   return auto_focus_cameras(app_contexts);
 }
 
@@ -1844,7 +1855,8 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
           app,
           app.configurator().config(),
           {web_preview_run_id_, static_cast<int>(current_stage_), inspector_topology_generation_ + 1},
-          retained_web_preview_selection_));
+          retained_web_preview_selection_,
+          hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : "").string()));
   return absl::OkStatus();
 }
 
@@ -1852,8 +1864,39 @@ void PipelineApplication::publish_web_preview_capability() {
   if (!web_preview_ || web_preview_->identity().stage != current_stage_ ||
       web_preview_->identity().topology != inspector_topology_generation_)
     return;
-  g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability().c_str());
+  g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability(preview_overlay_state_).c_str());
   std::fflush(stdout);
+}
+
+absl::Status PipelineApplication::configure_preview_overlay_producers(
+    const std::vector<std::shared_ptr<HmApp>>& app_contexts) {
+  preview_overlay_producers_.clear();
+  preview_overlay_probe_flags_.store(0, std::memory_order_release);
+  const bool diagnostics =
+      web_preview_ || ui_preview_window_ids_.count("program") || ui_preview_window_ids_.count("stitched");
+  if (!diagnostics)
+    return absl::OkStatus();
+  for (const auto& app : app_contexts) {
+    auto* producer = app->pipeline.dsplaytracker_bin.elem_dsplaytracker;
+    if (producer) {
+      preview_overlay_producers_.push_back(producer);
+      continue;
+    }
+    auto* source = hm::gst::SelectTrackedPreviewSource(
+        app->pipeline.dsplaytracker_bin.bin,
+        app->pipeline.common_elements.player_analytics,
+        app->pipeline.common_elements.tracker_bin.bin);
+    if (!source)
+      source = app->pipeline.hmstitcher_bin.elem_hmstitcher;
+    const char* pad = "src";
+    if (!source) {
+      source = app->pipeline.common_elements.hmplaycropper_bin.playcropper;
+      pad = "sink";
+    }
+    if (!hm::preview_overlay::ConfigureTrackColorProducer(source, false, &preview_overlay_probe_flags_, pad))
+      return absl::InternalError("Could not install the shared post-tracker preview overlay producer");
+  }
+  return absl::OkStatus();
 }
 
 absl::Status PipelineApplication::configure_source_preview_sinks(
@@ -1863,8 +1906,6 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     if (!sources_only) {
       preview_routes_.forget_routes();
       ui_preview_channels_.clear();
-      preview_overlay_producers_.clear();
-      preview_overlay_probe_flags_.store(0, std::memory_order_release);
     }
     if (app_contexts.size() != 1) {
       return absl::InvalidArgumentError("GPU-native UI previews require exactly one active pipeline context");
@@ -2149,28 +2190,11 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     }
 
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
-    GstElement* preview_overlay_producer = app_context->pipeline.dsplaytracker_bin.elem_dsplaytracker;
-    if (!sources_only && preview_overlay_producer)
-      preview_overlay_producers_.push_back(preview_overlay_producer);
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
     GstElement* tracked_preview_source = hm::gst::SelectTrackedPreviewSource(
         app_context->pipeline.dsplaytracker_bin.bin,
         app_context->pipeline.common_elements.player_analytics,
         app_context->pipeline.common_elements.tracker_bin.bin);
-    if (!sources_only &&
-        (program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
-        !preview_overlay_producer) {
-      GstElement* snapshot_source = tracked_preview_source ? tracked_preview_source : stitcher.elem_hmstitcher;
-      const char* snapshot_pad = "src";
-      if (!snapshot_source) {
-        snapshot_source = app_context->pipeline.common_elements.hmplaycropper_bin.playcropper;
-        snapshot_pad = "sink";
-      }
-      if (!hm::preview_overlay::ConfigureTrackColorProducer(
-              snapshot_source, false, &preview_overlay_probe_flags_, snapshot_pad)) {
-        return absl::InternalError("Could not install the post-tracker GPU overlay snapshot producer");
-      }
-    }
     if (!sources_only && stitched_target != ui_preview_window_ids_.end()) {
       const bool tracked = tracked_preview_source != nullptr;
       const std::string prefix = tracked ? "stitched_gpu_preview_" : "hmstitcher_preview_";
@@ -6097,6 +6121,24 @@ bool PipelineApplication::reapply_runtime_properties() {
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   const std::string trimmed_line = trim_ascii(line);
+  const bool overlay_query =
+      trimmed_line == "preview-overlays-query" || trimmed_line.rfind("preview-overlays-query ", 0) == 0;
+  if (overlay_query || trimmed_line == "preview-overlays" || trimmed_line.rfind("preview-overlays ", 0) == 0) {
+    const auto request =
+        hm::preview::ParseWebPreviewOverlays(trim_ascii(trimmed_line.substr(overlay_query ? 22 : 16)), overlay_query);
+    if (!request.ok()) {
+      g_printerr("runtime preview overlays rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    const auto reply = hm::preview::ApplyWebPreviewOverlays(
+        *request,
+        web_preview_ && web_preview_->available() ? web_preview_->identity() : hm::preview::RouteOwner::Session{},
+        preview_overlay_state_,
+        [this](const auto& selection) { return web_preview_ && apply_preview_overlay_state(selection, true); });
+    g_print("HSTREAM_PREVIEW_OVERLAY_STATE %s\n", reply.c_str());
+    std::fflush(stdout);
+    return true;
+  }
   if (trimmed_line == "preview-route" || trimmed_line.rfind("preview-route ", 0) == 0) {
     const auto request = hm::preview::ParseWebPreviewRoute(trim_ascii(trimmed_line.substr(13)));
     if (!request.ok()) {
@@ -6151,6 +6193,10 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   }
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
   if (hm::pipeline_internal::is_preview_overlay_command(trimmed_line)) {
+    if (web_preview_) {
+      g_printerr("Selectable browser sessions require the fenced preview-overlays command\n");
+      return false;
+    }
     hm::pipeline_internal::PreviewOverlayCommand command;
     if (!hm::pipeline_internal::parse_preview_overlay_command(trimmed_line, &command)) {
       emit_preview_protocol(
@@ -6720,7 +6766,7 @@ bool PipelineApplication::apply_preview_overlay_state(
   std::vector<SinkState> sinks;
   std::set<GstElement*> seen_sinks;
   if (apply_sinks) {
-    if (ui_preview_channels_.empty())
+    if (ui_preview_channels_.empty() && !web_preview_)
       return false;
     for (const auto& [channel, preview] : ui_preview_channels_) {
       if (!hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel))
@@ -6747,7 +6793,7 @@ bool PipelineApplication::apply_preview_overlay_state(
           nullptr);
       sinks.push_back(state);
     }
-    if (sinks.empty())
+    if (sinks.empty() && !web_preview_)
       return false;
   }
 
@@ -6777,7 +6823,9 @@ bool PipelineApplication::apply_preview_overlay_state(
           g_object_get_data(G_OBJECT(context->pipeline.pipeline), "hstream-output-rink-map") != nullptr;
   const guint output_flags = output_map_active ? 1U : 0U;
   const guint producer_flags =
-      preview_overlay_producer_flags(producer_selection, preview_routes_.selected_channel()) | output_flags;
+      preview_overlay_producer_flags(
+          producer_selection, web_preview_ ? web_preview_->selection() : preview_routes_.selected_channel()) |
+      output_flags;
   bool applied = true;
   for (const SinkState& state : sinks) {
     g_object_set(
@@ -6842,6 +6890,8 @@ bool PipelineApplication::apply_preview_overlay_state(
     return false;
   }
   preview_overlay_probe_flags_.store(producer_flags, std::memory_order_release);
+  if (apply_sinks && web_preview_)
+    web_preview_->SetOverlays(selection);
   return true;
 }
 
@@ -8617,6 +8667,13 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     NVGSTDS_ERR_MSG_V("Failed to arm replacement URI-playlist chapter seeks before preroll");
     return FALSE;
   }
+  if (web_preview_ || !ui_preview_window_ids_.empty()) {
+    const auto configured = configure_preview_overlay_producers(stage_app_contexts_.at(current_stage_));
+    if (!configured.ok()) {
+      g_printerr("Cannot rebuild preview overlay producers: %s\n", configured.ToString().c_str());
+      return FALSE;
+    }
+  }
   if (!ui_preview_window_ids_.empty()) {
     const auto stage = stage_app_contexts_.find(current_stage_);
     if (stage == stage_app_contexts_.end()) {
@@ -8630,7 +8687,8 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     }
   }
   if (web_preview_) {
-    const auto preview_status = web_preview_->Attach();
+    const auto preview_status =
+        web_preview_->Attach([this] { return apply_preview_overlay_state(preview_overlay_state_.selection(), true); });
     if (!preview_status.ok()) {
       g_printerr("Cannot attach replacement web preview: %s\n", preview_status.ToString().c_str());
       return FALSE;

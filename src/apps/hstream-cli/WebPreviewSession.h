@@ -19,16 +19,21 @@ class WebPreviewSession {
       AppCtx& app,
       const YAML::Node& resolved,
       RouteOwner::Session identity,
-      const std::string& retained_selection);
+      const std::string& retained_selection,
+      const std::string& game_dir);
   ~WebPreviewSession();
-  absl::Status Attach();
+  absl::Status Attach(const std::function<bool()>& reconcile_overlays);
+  void SetOverlays(pipeline_internal::PreviewOverlaySelection selection);
   void Stop();
-  std::string Capability() const;
+  std::string Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays) const;
   std::string Command(const RouteOwner::Request& request);
   const RouteOwner::Session& identity() const {
     return routes_.session();
   }
   std::string selection() const;
+  bool available() const {
+    return !stopped_ && !channels_.empty();
+  }
 
  private:
   struct PaintState;
@@ -44,6 +49,8 @@ class WebPreviewSession {
   std::shared_ptr<WebPreviewSignaling> signaling_;
   RouteOwner routes_;
   bool stopped_{false};
+  bool overlays_ready_{false};
+  std::function<bool()> reconcile_overlays_;
 };
 
 } // namespace hm::preview

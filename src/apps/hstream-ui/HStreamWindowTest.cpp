@@ -96,6 +96,50 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool previewOverlayStartupChecks() {
+    const QByteArray old_timeout = qgetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    const bool had_timeout = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", "20");
+    const absl::Cleanup restore_timeout = [&] {
+      if (had_timeout)
+        qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", old_timeout);
+      else
+        qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    };
+    HStreamWindow window;
+    window.render_video_toggle_->setChecked(false);
+    if (!startStubPipelineProcess(&window))
+      return false;
+    const absl::Cleanup stop = [&] { killStubPipelineProcess(&window); };
+    window.pipeline_render_embedded_ = true;
+    window.preview_runtime_ready_ = false;
+    window.preview_overlay_generation_ = 0;
+    window.show_player_tracking_toggle_->setChecked(true);
+    window.show_play_tracking_toggle_->setChecked(true);
+    window.show_rink_mask_toggle_->setChecked(true);
+    window.render_video_toggle_->setChecked(true);
+    QTest::qWait(80);
+    bool ok = window.preview_overlay_deferred_ && window.preview_overlay_generation_ == 0 &&
+        window.pending_preview_overlay_generation_ == 0 && window.show_player_tracking_toggle_->isChecked() &&
+        window.show_play_tracking_toggle_->isChecked() && window.show_rink_mask_toggle_->isChecked() &&
+        !window.logText().contains("apply=live") &&
+        !window.logText().contains("reason=acknowledgement-timeout");
+    window.handleGpuPreviewStatus("HSTREAM_PREVIEW_RUNTIME status=ready channel=program generation=1");
+    ok &= !window.preview_overlay_deferred_ && window.preview_overlay_generation_ == 1 &&
+        window.pending_preview_overlay_generation_ == 1;
+    window.handlePreviewOverlayResponse("HSTREAM_PREVIEW_OVERLAYS status=applied generation=1 players=1 play=1 rink=1");
+    QTest::qWait(40);
+    ok &= window.pending_preview_overlay_generation_ == 0 && window.confirmed_show_player_tracking_ &&
+        window.confirmed_show_play_tracking_ && window.confirmed_show_rink_mask_ &&
+        window.logText().contains("preview overlays players=1 play=1 rink=1 apply=live") &&
+        !window.logText().contains("reason=acknowledgement-timeout");
+    window.clearPreviewFrames();
+    if (!ok)
+      std::cerr
+          << "Delayed preview readiness must preserve choices and start acknowledgment timing only after readiness\n"
+          << window.logText().toStdString();
+    return ok;
+  }
   static bool scoreboardControlChecks(HStreamWindow* window) {
     const QString config_path = window->gameDirectoryText() + "/config.yaml";
     QFile file(config_path);
@@ -17058,6 +17102,41 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
     }
     return expect(false, "Current route's captured frame must not remain blank");
   };
+  const auto compare_overlays = [&](const QString& channel) {
+    if (!qEnvironmentVariableIsSet("HSTREAM_UI_E2E_PREVIEW_OVERLAY_CONTROLS"))
+      return true;
+    const std::array<QCheckBox*, 3> toggles{
+        require_child<QCheckBox>(window, "showPlayerTrackingCheck"),
+        require_child<QCheckBox>(window, "showPlayTrackingCheck"),
+        require_child<QCheckBox>(window, "showRinkMaskCheck")};
+    for (const auto* toggle : toggles)
+      if (!toggle)
+        return false;
+    for (const auto& state :
+         {std::array<bool, 3>{true, false, false}, {true, true, false}, {true, true, true}, {false, false, false}}) {
+      const auto before = window->completeLogText().size();
+      for (size_t i = 0; i < toggles.size(); ++i)
+        toggles[i]->setChecked(state[i]);
+      const QString expected = QString("preview overlays players=%1 play=%2 rink=%3 apply=live")
+                                   .arg(state[0] ? 1 : 0)
+                                   .arg(state[1] ? 1 : 0)
+                                   .arg(state[2] ? 1 : 0);
+      if (!wait_for(
+              [&] { return window->completeLogText().mid(before).contains(expected); },
+              "All preview diagnostics receive the complete live acknowledgment"))
+        return false;
+      QTest::qWait(300);
+      if (!capture(
+              channel,
+              QString("overlays-%1-%2%3%4.png")
+                  .arg(channel)
+                  .arg(state[0] ? 1 : 0)
+                  .arg(state[1] ? 1 : 0)
+                  .arg(state[2] ? 1 : 0)))
+        return false;
+    }
+    return true;
+  };
   const bool passed = [&] {
     activate(start);
     if (!wait_for(
@@ -17065,7 +17144,7 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
             "Real Program preview and local seeking become available",
             180000))
       return false;
-    if (!capture("program", "transitions-program.png"))
+    if (!capture("program", "transitions-program.png") || !compare_overlays("program"))
       return false;
     const auto before_pause = generation(program);
     activate(pause);
@@ -17082,7 +17161,7 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
             },
             "Resuming activates the paused tab selection"))
       return false;
-    if (!capture("stitched", "transitions-stitched.png"))
+    if (!capture("stitched", "transitions-stitched.png") || !compare_overlays("stitched"))
       return false;
     const auto before_source = generation(stitched);
     tabs->setCurrentIndex(2);
@@ -18792,6 +18871,10 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (!HStreamWindowTestAccess::previewOverlayStartupChecks())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_OVERLAY_STARTUP_ONLY"))
+    return 0;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_GEOMETRY_ONLY")) {
     HStreamWindow window;
     window.resize(1440, 900);

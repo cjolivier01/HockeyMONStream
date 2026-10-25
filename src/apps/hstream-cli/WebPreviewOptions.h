@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hstream/src/apps/apps-common/PreviewRouteOwner.h"
+#include "hstream/src/libs/program/PreviewOverlayRuntime.h"
 
 #include <yaml-cpp/yaml.h>
 #include "absl/status/statusor.h"
@@ -35,6 +36,23 @@ absl::StatusOr<WebPreviewOptions> ReadWebPreviewOptions(const YAML::Node& resolv
 bool ValidWebPreviewRun(const std::string& run);
 absl::StatusOr<RouteOwner::Request> ParseWebPreviewRoute(const std::string& json);
 std::string WebPreviewRouteReply(const RouteOwner::Request& request, const RouteOwner::Result& result);
-std::string WebPreviewCapability(const WebPreviewOptions& options, const RouteOwner& owner);
+struct WebPreviewOverlayRequest {
+  RouteOwner::Session session;
+  std::string request_id;
+  pipeline_internal::PreviewOverlayCommand command;
+  bool query{false};
+};
+absl::StatusOr<WebPreviewOverlayRequest> ParseWebPreviewOverlays(const std::string& json, bool query = false);
+// Validates session and generation before invoking the same native transaction
+// used by Qt. Failed/stale requests never mutate or advance committed state.
+std::string ApplyWebPreviewOverlays(
+    const WebPreviewOverlayRequest& request,
+    const RouteOwner::Session& session,
+    pipeline_internal::PreviewOverlayRuntimeState& state,
+    const std::function<bool(const pipeline_internal::PreviewOverlaySelection&)>& apply);
+std::string WebPreviewCapability(
+    const WebPreviewOptions& options,
+    const RouteOwner& owner,
+    const pipeline_internal::PreviewOverlayRuntimeState& overlays);
 
 } // namespace hm::preview

@@ -1,4 +1,5 @@
 #include "WebPreviewSession.h"
+#include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
@@ -8,6 +9,7 @@
 #include <gstnvdsmeta.h>
 
 #include <atomic>
+#include <chrono>
 #include <utility>
 
 namespace hm::preview {
@@ -29,6 +31,61 @@ struct WebPreviewSession::PaintState {
   unsigned program_width, program_height, source_width, source_height;
   unsigned analytics_layers;
   float joint_confidence;
+  std::atomic<unsigned> overlay_flags{0};
+  std::string game_dir, invalidation, mask_generation;
+  unsigned mask_width{0}, mask_height{0}, mask_failures{0};
+  bool mask_loaded{false};
+  std::chrono::steady_clock::time_point mask_retry;
+
+  void EnsureMask(const gpu_preview::PreviewOverlayScene& scene, unsigned flags) {
+    if (!(flags & 4U) || !scene.diagnostic_coordinates_valid)
+      return;
+    const auto width = gpu_preview::ExactPreviewDimension(scene.stitched_surface_width);
+    const auto height = gpu_preview::ExactPreviewDimension(scene.stitched_surface_height);
+    if (!width || !height || scene.stitched_output_generation.empty())
+      return;
+    if (mask_generation != scene.stitched_output_generation || mask_width != *width || mask_height != *height) {
+      // Invalidate before any replacement load. The painter also checks the
+      // immutable image identity against every frame and its actual canvas.
+      painter.SetRinkMask({}, {});
+      mask_generation = scene.stitched_output_generation;
+      mask_width = *width;
+      mask_height = *height;
+      mask_loaded = false;
+      mask_failures = 0;
+      mask_retry = {};
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (mask_loaded || now < mask_retry)
+      return;
+    std::shared_ptr<const gpu_preview::RinkMaskImage> image;
+    const auto status =
+        stitching::visit_current_field_mask(game_dir, mask_generation, invalidation, [&](const std::string& path) {
+          gpu_preview::RinkMaskLoadOptions options;
+          options.downsample_to_texture_budget = true;
+          options.maximum_source_dimension =
+              std::max(gpu_preview::kMaximumRinkMaskDimension, std::max(*width, *height));
+          options.maximum_source_pixels = gpu_preview::kMaximumPreviewRinkMaskSourcePixels;
+          options.maximum_resource_bytes = gpu_preview::kMaximumPreviewRinkMaskResourceBytes;
+          auto loaded = gpu_preview::load_rink_mask_png(path, {}, {}, options);
+          if (!loaded)
+            return absl::FailedPreconditionError(loaded.message);
+          if (!gpu_preview::rink_mask_dimensions_match(loaded.image, *width, *height))
+            return absl::FailedPreconditionError("field mask differs from the live stitched canvas");
+          image = std::make_shared<const gpu_preview::RinkMaskImage>(std::move(loaded.image));
+          return absl::OkStatus();
+        });
+    if (!status.ok()) {
+      if (!mask_failures)
+        g_printerr(
+            "HSTREAM_PREVIEW_OVERLAY channel=web status=validation-failed message=%s\n", status.ToString().c_str());
+      mask_failures = std::min(mask_failures + 1U, 6U);
+      mask_retry = now + std::chrono::seconds(gpu_preview::rink_mask_retry_delay_seconds(mask_failures));
+      return;
+    }
+    painter.SetRinkMask(std::move(image), mask_generation);
+    mask_loaded = true;
+  }
 
   bool Paint(GstBuffer* frame, const OwnedSurfaceView& output) {
     const auto* identity = frame_identity(frame);
@@ -46,23 +103,25 @@ struct WebPreviewSession::PaintState {
     auto* batch = native ? gst_buffer_get_nvds_batch_meta(native) : nullptr;
     const auto* metadata =
         batch && batch->frame_meta_list ? static_cast<const NvDsFrameMeta*>(batch->frame_meta_list->data) : nullptr;
+    const auto flags = overlay_flags.load(std::memory_order_acquire);
     const gpu_preview::PreviewOverlayOptions options{
         route->first,
         source ? source_width : program_width,
         source ? source_height : program_height,
         route->second->width.load(std::memory_order_acquire),
         route->second->height.load(std::memory_order_acquire),
-        false,
-        false,
+        (flags & 1U) != 0,
+        (flags & 2U) != 0,
         analytics_layers,
         joint_confidence};
     const auto scene = gpu_preview::BuildPreviewOverlayScene(metadata, options, commands, nullptr);
+    EnsureMask(scene, flags);
     auto* pixels = static_cast<uint8_t*>(output.rgba) + output.video.top * output.pitch + output.video.left * 4;
     const auto result = painter.Paint(
         {pixels, output.pitch, output.video.width, output.video.height},
         scene,
         commands,
-        {route->first, options.negotiated_width, options.negotiated_height, false},
+        {route->first, options.negotiated_width, options.negotiated_height, (flags & 4U) != 0},
         output.stream);
     return result.status == gpu_preview::PreviewPaintStatus::kOk ||
         result.status == gpu_preview::PreviewPaintStatus::kOverlaySuppressed;
@@ -76,7 +135,8 @@ absl::StatusOr<std::unique_ptr<WebPreviewSession>> WebPreviewSession::Prepare(
     AppCtx& app,
     const YAML::Node& resolved,
     RouteOwner::Session identity,
-    const std::string& retained_selection) {
+    const std::string& retained_selection,
+    const std::string& game_dir) {
   auto options = ReadWebPreviewOptions(resolved);
   if (!options.ok())
     return options.status();
@@ -97,6 +157,11 @@ absl::StatusOr<std::unique_ptr<WebPreviewSession>> WebPreviewSession::Prepare(
     return absl::FailedPreconditionError("Native preview gates are unavailable");
   auto session = std::unique_ptr<WebPreviewSession>(new WebPreviewSession(app, *options));
   auto& paint = *session->paint_;
+  // The configurator owns the selected game directory; this path is never
+  // supplied by a runtime browser command.
+  paint.game_dir = game_dir;
+  const char* invalidation = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
+  paint.invalidation = invalidation ? invalidation : "";
   paint.program_width = options->program_reference_width;
   paint.program_height = options->program_reference_height;
   paint.source_width = options->source_reference_width;
@@ -203,11 +268,11 @@ absl::Status WebPreviewSession::AddRoute(const std::string& channel, RouteTap ta
         return routes_.register_route(
             channel,
             {
-                [state](bool active, uint64_t operation) {
-                  gpu_preview::set_isolation_active(state->ingress, active, operation);
+                [state, this](bool active, uint64_t operation) {
+                  gpu_preview::set_isolation_active(state->ingress, active && overlays_ready_, operation);
                 },
-                [state](bool active, uint64_t operation) {
-                  gpu_preview::set_isolation_active(state->drain, active, operation);
+                [state, this](bool active, uint64_t operation) {
+                  gpu_preview::set_isolation_active(state->drain, active && overlays_ready_, operation);
                 },
                 [state, target] {
                   return gpu_preview::isolation_active(state->ingress) && gpu_preview::isolation_active(state->drain) &&
@@ -233,7 +298,14 @@ absl::Status WebPreviewSession::AddRoute(const std::string& channel, RouteTap ta
   return absl::OkStatus();
 }
 
-absl::Status WebPreviewSession::Attach() {
+void WebPreviewSession::SetOverlays(pipeline_internal::PreviewOverlaySelection selection) {
+  paint_->overlay_flags.store(
+      (selection.players ? 1U : 0U) | (selection.play ? 2U : 0U) | (selection.rink ? 4U : 0U),
+      std::memory_order_release);
+}
+
+absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_overlays) {
+  reconcile_overlays_ = reconcile_overlays;
   auto& output = app_.pipeline.instance_bins[0].sink_bin;
   auto status = AddRoute("program", {RouteTap::Kind::kExistingTee, output.bin, output.tee});
   if (!status.ok())
@@ -266,7 +338,8 @@ absl::Status WebPreviewSession::Attach() {
     // The source drain now ends at the shared target, not a per-source sink.
     source.fakesink = nullptr;
   }
-  const auto selected = routes_.select_current(options_.initial_channel, 1, {});
+  const auto selected = routes_.select_current(
+      options_.initial_channel, 1, [this] { overlays_ready_ = reconcile_overlays_ && reconcile_overlays_(); });
   if (selected.status != RouteOwner::Status::kActivated && selected.status != RouteOwner::Status::kDeactivated)
     return absl::FailedPreconditionError("Initial browser route is unavailable: " + selected.reason);
   signaling_ = target_->Signaling({routes_.session(), options_.poll_interval_ms, options_.events_per_batch});
@@ -324,12 +397,13 @@ WebPreviewSession::~WebPreviewSession() {
 std::string WebPreviewSession::selection() const {
   return routes_.selected_channel().empty() ? "none" : routes_.selected_channel();
 }
-std::string WebPreviewSession::Capability() const {
-  return WebPreviewCapability(options_, routes_);
+std::string WebPreviewSession::Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays) const {
+  return WebPreviewCapability(options_, routes_, overlays);
 }
 std::string WebPreviewSession::Command(const RouteOwner::Request& request) {
-  const auto result =
-      stopped_ ? RouteOwner::Result{RouteOwner::Status::kFailed, "preview-stopped"} : routes_.select(request, {});
+  const auto result = stopped_
+      ? RouteOwner::Result{RouteOwner::Status::kFailed, "preview-stopped"}
+      : routes_.select(request, [this] { overlays_ready_ = reconcile_overlays_ && reconcile_overlays_(); });
   return WebPreviewRouteReply(request, result);
 }
 } // namespace hm::preview

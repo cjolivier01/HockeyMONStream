@@ -1,4 +1,5 @@
 #include "WebPreviewOptions.h"
+#include "hstream/src/libs/program/PreviewOverlayConfig.h"
 
 #include <json-glib/json-glib.h>
 
@@ -23,6 +24,17 @@ void ReplaceReject(const std::string& from, const std::string& to) {
 
 int main() {
   auto baseline = YAML::LoadFile("configs/baseline.yaml");
+  auto defaults = hm::pipeline_internal::ReadPreviewOverlaySelection(baseline);
+  Check(defaults.ok(), "Shared overlay baseline was rejected");
+  auto explicit_defaults = YAML::Clone(baseline);
+  explicit_defaults["preview_overlays"]["play"] = true;
+  Check(
+      hm::pipeline_internal::ReadPreviewOverlaySelection(explicit_defaults)->play,
+      "Shared overlay reader ignored explicit baseline override");
+  explicit_defaults["preview_overlays"].remove("rink");
+  Check(
+      !hm::pipeline_internal::ReadPreviewOverlaySelection(explicit_defaults).ok(),
+      "Shared overlay reader supplied an independent default");
   auto configured = hm::preview::ReadWebPreviewOptions(baseline);
   Check(configured.ok(), "Canonical preview baseline was rejected");
   auto changed = YAML::Clone(baseline);
@@ -104,7 +116,8 @@ int main() {
           reply.find("\"status\":\"activated\"") != std::string::npos,
       "Reply lost request correlation");
   auto* parser = json_parser_new();
-  const auto capability = hm::preview::WebPreviewCapability(*custom, owner);
+  const auto capability =
+      hm::preview::WebPreviewCapability(*custom, owner, hm::pipeline_internal::PreviewOverlayRuntimeState(*defaults));
   Check(
       json_parser_load_from_data(parser, capability.data(), capability.size(), nullptr), "Capability is invalid JSON");
   auto* object = json_node_get_object(json_parser_get_root(parser));
@@ -114,5 +127,59 @@ int main() {
           std::string(json_object_get_string_member(object, "channel")) == "source127",
       "Capability did not reflect resolved limits and active route");
   g_object_unref(parser);
+
+  const std::string overlay_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":-1,"topology":"18446744073709551615","requestId":"overlay-1","generation":"18446744073709551615","players":true,"play":false,"rink":true})";
+  auto overlay = hm::preview::ParseWebPreviewOverlays(overlay_json);
+  Check(overlay.ok() && overlay->command.generation == UINT64_MAX, "Overlay uint64 identity lost precision");
+  for (const auto& invalid :
+       {std::pair{std::string("true"), std::string("1")},
+        {"\"generation\":\"18446744073709551615\"", "\"generation\":1"},
+        {"\"generation\":\"18446744073709551615\"", "\"generation\":\"0\""},
+        {"\"rink\":true", "\"rink\":true,\"extra\":false"},
+        {"\"rink\":true", "\"rink\":false,\"rink\":true"},
+        {"\"play\":false,", ""},
+        {"overlay-1", "bad request"}}) {
+    auto input = overlay_json;
+    input.replace(input.find(invalid.first), invalid.first.size(), invalid.second);
+    Check(!hm::preview::ParseWebPreviewOverlays(input).ok(), "Malformed overlay envelope admitted");
+  }
+  hm::pipeline_internal::PreviewOverlayRuntimeState state(*defaults);
+  unsigned mutations = 0;
+  const auto apply = [&](const auto&) {
+    ++mutations;
+    return true;
+  };
+  auto wrong = *overlay;
+  ++wrong.session.stage;
+  const auto stale_reply = hm::preview::ApplyWebPreviewOverlays(wrong, overlay->session, state, apply);
+  Check(
+      stale_reply.find("\"status\":\"stale\"") != std::string::npos && mutations == 0 && state.generation() == 0,
+      "Stale overlay session mutated state");
+  const auto failed =
+      hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, [](const auto&) { return false; });
+  Check(
+      failed.find("\"status\":\"failed\"") != std::string::npos && state.generation() == 0 &&
+          state.selection() == *defaults,
+      "Failed overlay transaction changed committed selection");
+  const auto applied = hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, apply);
+  Check(
+      applied.find("\"status\":\"applied\"") != std::string::npos && mutations == 1 &&
+          state.generation() == UINT64_MAX && state.selection() == overlay->command.selection,
+      "Overlay commit lost authoritative selection");
+  hm::preview::ApplyWebPreviewOverlays(*overlay, overlay->session, state, apply);
+  Check(mutations == 1, "Replayed overlay request mutated state");
+  const std::string query_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":-1,"topology":"18446744073709551615","requestId":"query-1"})";
+  const auto query = hm::preview::ParseWebPreviewOverlays(query_json, true);
+  Check(
+      query.ok() && !hm::preview::ParseWebPreviewOverlays(query_json).ok() &&
+          !hm::preview::ParseWebPreviewOverlays(overlay_json, true).ok(),
+      "Query/mutation envelope was interchangeable");
+  const auto queried = hm::preview::ApplyWebPreviewOverlays(*query, overlay->session, state, apply);
+  Check(
+      queried.find("\"status\":\"state\"") != std::string::npos &&
+          queried.find("\"generation\":\"18446744073709551615\"") != std::string::npos && mutations == 1,
+      "Read-only overlay query changed state or lost full readback");
   return 0;
 }

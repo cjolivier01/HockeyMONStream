@@ -260,6 +260,7 @@ class PipelineApplication {
   static gboolean inject_stitching_calibration_error_static(gpointer arg);
   gboolean inject_stitching_calibration_error();
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
+  absl::Status configure_preview_overlay_producers(const std::vector<std::shared_ptr<HmApp>>& app_contexts);
   absl::Status configure_source_preview_sinks(
       const std::vector<std::shared_ptr<HmApp>>& app_contexts,
       bool sources_only = false);
@@ -323,6 +324,7 @@ class PipelineApplication {
   absl::Status prepare_web_preview(HmApp& app);
   void publish_web_preview_capability();
   hm::pipeline_internal::PreviewOverlayRuntimeState preview_overlay_state_;
+  bool preview_overlay_initialized_{false};
   // Last accepted live drawing selection, re-applied when the graph is
   // rebuilt so a seek or stage restart does not silently restore the
   // launch-time choice.

@@ -859,6 +859,7 @@ class HStreamWindow : public QMainWindow {
   int preview_recovery_attempts_{0};
   int preview_disable_attempts_{0};
   bool preview_runtime_ready_{false};
+  bool preview_overlay_deferred_{false};
   std::set<QString> preview_frame_channels_received_;
   QString active_run_game_id_;
   QString active_archive_output_path_;

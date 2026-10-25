@@ -1210,3 +1210,11 @@ The local AMD preview minimap is still a separate port gap.
 on both backends, including real GPU pixel changes, timing, stale-map suppression
 and EOS. `rink_map_test` covers shared configuration layering and immutable
 metadata; `defaults_preset_test` covers UI save/inheritance/reset.
+
+Qt and both CLI backends now resolve initial Player boxes / Play tracking /
+Rink mask selections from required `preview_overlays` baseline settings. An
+explicit `HSTREAM_UI_PREVIEW_OVERLAYS` launch selection replaces those values.
+The AMD local preview still supports only Player boxes: Play/Rink settings
+fail explicitly. The new fenced selectable-browser overlay protocol and mask
+consumer belong to the NVIDIA WebPreviewSession; no AMD browser-target or
+EGL/HIP interoperability qualification is implied.

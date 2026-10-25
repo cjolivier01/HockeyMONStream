@@ -233,6 +233,17 @@ the same copied-game setup; it replaces the archive/visual-matching check, so
 run the ordinary archive check separately. A new-process restart is covered;
 this does not force the same-process full-reconstruction seek fallback.
 
+The focused CPU regression `HSTREAM_UI_TEST_PREVIEW_OVERLAY_STARTUP_ONLY=1`
+checks that overlay changes and Render-on before runtime readiness retain the
+latest choices, send no early command, and start acknowledgment timing only
+after the native readiness handshake.
+
+With `HSTREAM_UI_E2E_PREVIEW_OVERLAY_CONTROLS=1`, the transition check also
+changes Player boxes, Play tracking and Rink mask on Program and Stitched,
+requires complete live acknowledgments and captures each combined selection.
+It ends each route with all three off. These are diagnostic framebuffer captures;
+ordinary playback does not read video back to the CPU.
+
 On X11, the backend renders NVMM video through CUDA/OpenGL into the native
 preview windows. The acceptance test requests bounded diagnostic captures of
 the presented GPU framebuffer; ordinary playback performs no CPU frame readback.

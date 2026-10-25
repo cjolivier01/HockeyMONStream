@@ -115,6 +115,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/UserConfig.h"
+#include "hstream/src/libs/program/PreviewOverlayConfig.h"
 #include "hstream/src/libs/stitching/ControlPointMatcher.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
@@ -6217,8 +6218,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   show_rink_mask_toggle_ = new QCheckBox("Rink mask");
   show_rink_mask_toggle_->setObjectName("showRinkMaskCheck");
   show_rink_mask_toggle_->setToolTip("Composite the saved ice-rink mask as translucent green on both GPU previews");
+  const auto preview_overlay_defaults = hm::pipeline_internal::ReadPreviewOverlaySelection(baseline_config_);
+  if (!preview_overlay_defaults.ok())
+    throw std::runtime_error(preview_overlay_defaults.status().ToString());
+  show_player_tracking_toggle_->setChecked(preview_overlay_defaults->players);
+  show_play_tracking_toggle_->setChecked(preview_overlay_defaults->play);
+  show_rink_mask_toggle_->setChecked(preview_overlay_defaults->rink);
   for (QCheckBox* toggle : {show_player_tracking_toggle_, show_play_tracking_toggle_, show_rink_mask_toggle_}) {
-    toggle->setChecked(false);
     connect(toggle, &QCheckBox::toggled, this, [this]() { setRuntimePreviewOverlays(); });
   }
 
@@ -12411,6 +12417,7 @@ void HStreamWindow::clearPreviewFrames() {
   preview_recovery_attempts_ = 0;
   preview_disable_attempts_ = 0;
   preview_runtime_ready_ = false;
+  preview_overlay_deferred_ = false;
   updatePreviewTabResolution("program", 0, 0);
   updatePreviewTabResolution("stitched", 0, 0);
 }
@@ -16774,6 +16781,10 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       return true;
     preview_runtime_ready_ = true;
     preview_generation_ = generation;
+    if (preview_overlay_deferred_) {
+      preview_overlay_deferred_ = false;
+      setRuntimePreviewOverlays();
+    }
     const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
     const QString selected_channel = selectedPipelinePreviewChannel();
     if (!render_video) {
@@ -17418,6 +17429,16 @@ void HStreamWindow::setRuntimePreviewOverlays(bool reconciliation) {
     } else if (!adoptPreviewOverlayReconciliationFallback("embedded-preview-unavailable")) {
       restoreConfirmedPreviewOverlays("embedded-preview-unavailable");
     }
+    return;
+  }
+  if (!preview_runtime_ready_) {
+    // Retain the operator's latest complete selection while the child starts.
+    // The normal transaction/timeout begins only after its runtime handshake.
+    preview_overlay_deferred_ = true;
+    appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=waiting-for-runtime")
+                  .arg(players ? 1 : 0)
+                  .arg(play ? 1 : 0)
+                  .arg(rink ? 1 : 0));
     return;
   }
   const quint64 generation = ++preview_overlay_generation_;
