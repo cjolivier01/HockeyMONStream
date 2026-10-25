@@ -318,3 +318,16 @@ cc_library(
         "@gstreamer//:gstreamer",
     ],
 )
+
+# Explicit pool dependency for filters that own bounded NVMM output surfaces.
+cc_library(
+    name = "nvds_buffer_pool",
+    linkopts = select({
+        ":jetson": ["-L/opt/jetson-sysroot/usr/lib/aarch64-linux-gnu/nvidia", "-lnvdsbufferpool"],
+        "//conditions:default": ["-L/opt/nvidia/deepstream/deepstream/lib",
+            "-lnvdsbufferpool"],
+    }),
+    additional_linker_inputs = select({":jetson": [], "//conditions:default": glob(["lib/*bufferpool.so"])}),
+    visibility = ["//visibility:public"],
+    deps = [":deepstream_lib"],
+)

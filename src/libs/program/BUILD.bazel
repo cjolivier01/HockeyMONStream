@@ -39,7 +39,7 @@ cc_test(
 cc_library(
     name = "render_settings",
     hdrs = ["ProgramRenderSettings.h"],
-    deps = ["//src/libs/scoreboard:plan"],
+    deps = ["//src/libs/scoreboard:plan", "//src/libs/draw_display:rink_mini_map_core"],
     include_prefix = "hstream/src/libs/program",
 )
 
@@ -254,7 +254,7 @@ cc_library(
     srcs = ["ProgramPreviewBoxes.cpp"],
     hdrs = ["ProgramPreviewBoxes.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = [":frame_geometry", "//src/libs/draw_display:analytics_overlay",
+    deps = ["//src/libs/draw_display:rink_mini_map_core", ":frame_geometry", "//src/libs/draw_display:analytics_overlay",
             "//src/libs/player_analytics:track_colors", "//src/libs/tracking:native_tracker"],
 )
 
@@ -269,7 +269,7 @@ cc_library(
     hdrs = ["AmdProgramTypes.h"],
     include_prefix = "hstream/src/libs/program",
     target_compatible_with = select({"//:use_hip": [], "//conditions:default": ["@platforms//:incompatible"]}),
-    deps = [":render_settings", ":calibration", ":preview_boxes", "//src/libs/detection:hip_detector",
+    deps = ["//src/gst-plugins/gst-rink-map:config", ":render_settings", ":calibration", ":preview_boxes", "//src/libs/detection:hip_detector",
             "//src/libs/tracking:program_tracking", "@hm-cupano//src/pano:cuda_pano"],
 )
 

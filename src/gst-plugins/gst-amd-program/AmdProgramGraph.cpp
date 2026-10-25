@@ -219,6 +219,10 @@ class Crop final : public gst::Component {
         render.info,
         render.settings,
         render.preview ? &*render.preview : nullptr));
+    if (render.settings.rink_map)
+      Require(
+          rink_map::AttachFrame(render.target.get(), *render.settings.rink_map, render.info),
+          "Cannot attach output rink-map metadata");
     info_ = render.info;
     GST_BUFFER_PTS(render.target.get()) = GST_BUFFER_PTS(input);
     GST_BUFFER_DURATION(render.target.get()) = GST_BUFFER_DURATION(input);
@@ -392,7 +396,10 @@ absl::StatusOr<std::unique_ptr<AmdProgramGraph>> AmdProgramGraph::Create(
       raw.push_back(stage.release());
     impl->processing->Create("amd-program-processing", std::move(raw));
     auto* crop = Take(gst::CreateElement("hmamdcrop", "program-crop", std::make_unique<Crop>(std::move(renderer))));
-    impl->rendering->Create("amd-program-rendering", {crop});
+    std::vector<GstElement*> render_stages{crop};
+    if (config.rink_map)
+      render_stages.push_back(Take(rink_map::Create(*config.rink_map)));
+    impl->rendering->Create("amd-program-rendering", std::move(render_stages));
     return std::unique_ptr<AmdProgramGraph>(new AmdProgramGraph(std::move(impl)));
   } catch (const Failure& error) {
     return error.status;

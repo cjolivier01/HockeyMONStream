@@ -191,6 +191,17 @@ bool FrameResultCopySucceedsForTest(const NvDsFrameMeta* frame, FrameMetaFailure
   return false;
 }
 
+std::shared_ptr<const FrameResult> ShareFrameResult(const NvDsFrameMeta* frame) noexcept {
+  if (!frame)
+    return nullptr;
+  for (const auto* item = frame->frame_user_meta_list; item; item = item->next) {
+    const auto* meta = static_cast<const NvDsUserMeta*>(item->data);
+    if (meta && meta->base_meta.meta_type == FrameResultMetaType() && meta->user_meta_data)
+      return *static_cast<const Payload*>(meta->user_meta_data);
+  }
+  return nullptr;
+}
+
 const FrameResult* FindFrameResult(const NvDsFrameMeta* frame) noexcept {
   if (!frame)
     return nullptr;

@@ -44,6 +44,8 @@ GstFlowReturn Chain(GstPad*, GstObject* parent, GstBuffer* input) {
       return GST_FLOW_ERROR;
     }
     auto result = self->state->processor->Process(owned.get());
+    if (!result.ok() && absl::IsCancelled(result.status()))
+      return GST_FLOW_FLUSHING;
     if (!result.ok() || !*result) {
       Error(self, result.ok() ? "Program component produced no output" : result.status().ToString());
       return GST_FLOW_ERROR;
@@ -95,6 +97,8 @@ bool Reset(HmProgramElement* self) {
 }
 gboolean Event(GstPad*, GstObject* parent, GstEvent* event) {
   auto* self = reinterpret_cast<HmProgramElement*>(parent);
+  if (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START && self->state->processor)
+    self->state->processor->Interrupt();
   if (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP && !Reset(self)) {
     gst_event_unref(event);
     return FALSE;
@@ -111,6 +115,10 @@ GstStateChangeReturn ChangeState(GstElement* element, GstStateChange transition)
     GST_ELEMENT_ERROR(self, CORE, STATE_CHANGE, ("Program component requires valid resolved configuration"), (nullptr));
     return GST_STATE_CHANGE_FAILURE;
   }
+  if (transition == GST_STATE_CHANGE_PAUSED_TO_READY && self->state->processor)
+    self->state->processor->Interrupt();
+  if (transition == GST_STATE_CHANGE_READY_TO_PAUSED && !Reset(self))
+    return GST_STATE_CHANGE_FAILURE;
   const auto result = GST_ELEMENT_CLASS(hm_program_element_parent_class)->change_state(element, transition);
   if (result != GST_STATE_CHANGE_FAILURE && transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
     GST_PAD_STREAM_LOCK(self->sink);
@@ -184,6 +192,7 @@ PROGRAM_ELEMENT(HmRinkFilter, hm_rink_filter, "Calibrated rink detection filteri
 PROGRAM_ELEMENT(HmObjectTrack, hm_object_track, "Native motion and overlap object association")
 PROGRAM_ELEMENT(HmCameraTrack, hm_camera_track, "Program camera policy")
 PROGRAM_ELEMENT(HmAmdCrop, hm_amd_crop, "AMD GPU Program crop and overlays")
+PROGRAM_ELEMENT(HmRinkMap, hm_rink_map, "GPU rink minimap output overlay")
 #undef PROGRAM_ELEMENT
 
 gboolean Register(GstPlugin* plugin) {
@@ -193,6 +202,27 @@ gboolean Register(GstPlugin* plugin) {
       gst_element_register(plugin, "hmobjecttrack", GST_RANK_NONE, hm_object_track_get_type()) &&
       gst_element_register(plugin, "hmcameratrack", GST_RANK_NONE, hm_camera_track_get_type()) &&
       gst_element_register(plugin, "hmamdcrop", GST_RANK_NONE, hm_amd_crop_get_type());
+}
+gboolean RegisterRinkMap(GstPlugin* plugin) {
+  return gst_element_register(plugin, "hmrinkmap", GST_RANK_NONE, hm_rink_map_get_type());
+}
+bool RegisterRinkMapPlugin() {
+  static std::once_flag once;
+  static bool registered = false;
+  std::call_once(once, [] {
+    registered = gst_plugin_register_static(
+        GST_VERSION_MAJOR,
+        GST_VERSION_MINOR,
+        "hstreamrinkmap",
+        "GPU rink minimap output overlay",
+        RegisterRinkMap,
+        "1.0",
+        "MIT/X11",
+        "HockeyMONStream",
+        "HockeyMONStream",
+        "https://github.com/cjolivier01/HockeyMONStream");
+  });
+  return registered;
 }
 } // namespace
 namespace hm::program::gst {
@@ -235,7 +265,7 @@ absl::StatusOr<GstElement*> CreateElement(
     const char* name,
     std::unique_ptr<Component> processor,
     GstCaps* output_caps) {
-  if (!processor || !RegisterProgramPlugin())
+  if (!processor || !(std::string(factory) == "hmrinkmap" ? RegisterRinkMapPlugin() : RegisterProgramPlugin()))
     return absl::InvalidArgumentError("Cannot register or configure Program component");
   auto* element = gst_element_factory_make(factory, name);
   if (!element)

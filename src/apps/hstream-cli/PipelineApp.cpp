@@ -1,3 +1,4 @@
+#include "OutputRinkMap.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
@@ -1716,6 +1717,11 @@ absl::Status PipelineApplication::createPipelines(
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
+    HM_RETURN_IF_ERROR(
+        hm::ConfigureOutputRinkMap(
+            *app_contexts[i],
+            hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : ""),
+            rink_mask_preparation_ != RinkMaskPreparation::kNone));
     // Defer corners only for graphs that will be replaced after calibration.
     if (std::find(restart_candidates.begin(), restart_candidates.end(), i) != restart_candidates.end()) {
       if (GstElement* cropper = app_contexts[i]->pipeline.common_elements.hmplaycropper_bin.playcropper) {
@@ -6510,7 +6516,15 @@ bool PipelineApplication::apply_preview_overlay_state(
 
   auto producer_selection = selection;
   producer_selection.players = producer_selection.players || rink_map_preview_active_;
-  const guint producer_flags = preview_overlay_producer_flags(producer_selection, active_ui_preview_channel_);
+  bool output_map_active = false;
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  if (active_stage != stage_app_contexts_.end())
+    for (const auto& context : active_stage->second)
+      output_map_active |= context && context->pipeline.pipeline &&
+          g_object_get_data(G_OBJECT(context->pipeline.pipeline), "hstream-output-rink-map") != nullptr;
+  const guint output_flags = output_map_active ? 1U : 0U;
+  const guint producer_flags =
+      preview_overlay_producer_flags(producer_selection, active_ui_preview_channel_) | output_flags;
   bool applied = true;
   for (const SinkState& state : sinks) {
     g_object_set(
@@ -8378,6 +8392,14 @@ gboolean PipelineApplication::recreate_pipeline_impl(
           overlay_graphics_static,
           observe_processed_output_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
+    return FALSE;
+  }
+  const auto rink_status = hm::ConfigureOutputRinkMap(
+      *static_cast<HmApp*>(app_ctx_ptr),
+      hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : ""),
+      rink_mask_preparation_ != RinkMaskPreparation::kNone);
+  if (!rink_status.ok()) {
+    g_printerr("Cannot configure output rink map: %s\n", rink_status.ToString().c_str());
     return FALSE;
   }
   if (runtime_seek_restart && !defer_uri_playlist_main_context_callbacks(&app_ctx_ptr->pipeline.multi_src_bin)) {

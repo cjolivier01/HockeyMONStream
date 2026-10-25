@@ -18,6 +18,7 @@
 
 #include "AmdPipelineOptions.h"
 #include "PlaybackProgress.h"
+#include "hstream/src/gst-plugins/gst-rink-map/RinkMapOverlay.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
@@ -146,6 +147,15 @@ void Run(const hm::program::AmdPipelineOptions& args) {
       args.game,
       args.application.empty() ? root / "ds_hockey_app_config.yaml" : std::filesystem::path(args.application),
       args.options));
+  auto rink_settings = Take(hm::rink_map::ResolveSettings(launch.configuration.values));
+  std::shared_ptr<const hm::stitching::PlaybackRinkMap> output_rink_map;
+  if (rink_settings.enabled && encoding) {
+    auto prepared = hm::stitching::LoadPlaybackRinkMap(launch.game);
+    if (prepared.ok())
+      output_rink_map = *prepared;
+    else
+      g_printerr("HSTREAM_OUTPUT_RINK_MAP status=unavailable message=%s\n", prepared.status().ToString().c_str());
+  }
   const hm::program::ProgramCalibrationRequest calibration{args.saved_stitch_time, args.expected_invalidation};
   Status(hm::program::ValidateProgramCalibrationSelection(launch.saved_game, calibration));
   Status(hm::program::ValidateAmdProgramAdmission(launch.configuration));
@@ -244,21 +254,25 @@ void Run(const hm::program::AmdPipelineOptions& args) {
     case hm::stitching::BlendMode::kHardSeam:
       break;
   }
-  auto processor = Take(hm::program::AmdProgramGraph::Create(
-      {launch.game,
-       detector_config,
-       launch.camera,
-       launch.amd.tracker,
-       blend,
-       launch.minimize_blend,
-       launch.amd.compact_stitch_workspace,
-       launch.configuration.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
-       launch.configuration.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>(),
-       calibration},
-      launch.amd.output_pool_frames,
-      launch.amd.operation_timeout_ns,
-      launch.amd.cancellation_poll_ns,
-      [] { return AbortRequested(); }));
+  auto processor = Take(
+      hm::program::AmdProgramGraph::Create(
+          {launch.game,
+           detector_config,
+           launch.camera,
+           launch.amd.tracker,
+           blend,
+           launch.minimize_blend,
+           launch.amd.compact_stitch_workspace,
+           launch.configuration.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
+           launch.configuration.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>(),
+           calibration,
+           output_rink_map
+               ? std::optional<hm::rink_map::Configuration>({rink_settings, output_rink_map, launch.amd.gpu_id})
+               : std::nullopt},
+          launch.amd.output_pool_frames,
+          launch.amd.operation_timeout_ns,
+          launch.amd.cancellation_poll_ns,
+          [] { return AbortRequested(); }));
   GstVideoInfo output_info{};
   Require(
       gst_video_info_set_format(&output_info, GST_VIDEO_FORMAT_P010_10LE, output_config.width, output_config.height),
@@ -269,6 +283,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   output_info.chroma_site = GST_VIDEO_CHROMA_SITE_JPEG;
   std::vector<std::unique_ptr<hm::program::VaProgramSink>> outputs;
   std::vector<std::pair<GstVideoInfo, hm::program::ProgramRenderSettings>> render_settings;
+  std::vector<bool> encoded_outputs;
   hm::program::VaProgramSink* preview_output{};
   std::optional<hm::program::VaProgramAudioConfig> sink_audio;
   if (audio_config) {
@@ -304,6 +319,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
           settings.width,
           settings.height));
     render_settings.emplace_back(info, settings.render);
+    encoded_outputs.push_back(kind == hm::program::VaProgramSinkKind::kHevcMp4);
     auto output = hm::program::VaProgramSink::Create(
         {kind,
          launch.amd.gpu_id,
@@ -543,15 +559,19 @@ void Run(const hm::program::AmdPipelineOptions& args) {
     const auto completed =
         Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get(),
                                 pair->time, pair->duration));
-    if (overlay_state.selection().players)
+    if (overlay_state.selection().players || output_rink_map)
       preview_boxes.Update(pair->time, completed.observation.tracks);
     for (size_t index = 0; index < outputs.size(); ++index) {
       const auto& output = outputs[index];
       std::unique_ptr<GstBuffer, decltype(&gst_buffer_unref)> buffer(Take(output->Acquire()), gst_buffer_unref);
+      auto settings = render_settings[index].second;
+      if (output_rink_map && encoded_outputs[index])
+        settings.rink_map = std::make_shared<const hm::draw_display::RinkMapFrame>(preview_boxes.RinkFrame(
+            processor->generation(), processor->width(), processor->height(), pair->time, pair->sequence));
       buffer.reset(Take(processor->Render(
           buffer.release(),
           render_settings[index].first,
-          render_settings[index].second,
+          settings,
           output.get() == preview_output && overlay_state.selection().players ? &preview_boxes : nullptr)));
       Status(output->Push(buffer.release(), pair->time - first, pair->duration));
     }

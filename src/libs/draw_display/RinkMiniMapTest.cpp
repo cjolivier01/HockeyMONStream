@@ -123,6 +123,8 @@ int main() {
     const auto generation = *rink::stitched_output_generation_id(map->hugin_generation, 0, 1600, 1200);
     a::CommandList commands;
     Frame fresh(generation);
+    const auto portable = hm::draw_display::ReadRinkMapFrame(fresh.frame, 1600, 1200);
+    check(portable.analytics.get() == pa::FindFrameResult(fresh.frame), "Adapter must share immutable analytics");
     check(overlay.Append(fresh.frame, 1600, 1200, 800, 600, &commands), "Valid mini-map must draw");
     check(count(commands, a::detail::Kind::kDisc) == 2, "One player produces one bordered dot");
     check(dotColor(commands, {0.2, 0.4, 0.7, 1}), "Dot must use the immutable detection-box colour");

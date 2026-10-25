@@ -55,6 +55,38 @@ const draw_display::analytics::CommandList& ProgramPreviewBoxes::Build(
   }
   return commands_;
 }
+draw_display::RinkMapFrame ProgramPreviewBoxes::RinkFrame(
+    const std::string& generation,
+    unsigned width,
+    unsigned height,
+    uint64_t pts,
+    uint64_t sequence) const {
+  draw_display::RinkMapFrame frame;
+  frame.generation = generation;
+  frame.stitched_width = width;
+  frame.stitched_height = height;
+  frame.coordinate_width = width;
+  frame.coordinate_height = height;
+  frame.pts = pts;
+  frame.sequence = sequence;
+  frame.have_tracks = true;
+  for (const auto& track : tracks_) {
+    const auto lease = colors_.Find(track.id);
+    if (!lease || lease->slot >= player_analytics::kTrackPalette.size())
+      continue;
+    const auto& color = player_analytics::kTrackPalette[lease->slot];
+    const auto& b = track.box;
+    frame.players.push_back(
+        {b.left,
+         b.top,
+         b.right - b.left,
+         b.bottom - b.top,
+         {color.red, color.green, color.blue, color.alpha},
+         track.id,
+         false});
+  }
+  return frame;
+}
 void ProgramPreviewBoxes::Reset() {
   colors_.Reset();
   tracks_.clear();

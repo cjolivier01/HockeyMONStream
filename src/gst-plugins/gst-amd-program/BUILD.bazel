@@ -13,7 +13,7 @@ cc_library(
     hdrs = ["AmdProgramGraph.h"],
     include_prefix = "hstream/src/gst-plugins/gst-amd-program",
     target_compatible_with = select({"//:use_hip": [], "//conditions:default": ["@platforms//:incompatible"]}),
-    deps = [":elements", "//src/libs/program:amd_video_stages", "//src/libs/program:amd_program_types",
+    deps = ["//src/gst-plugins/gst-rink-map:overlay", ":elements", "//src/libs/program:amd_video_stages", "//src/libs/program:amd_program_types",
             "@mesa_interop"],
 )
 
