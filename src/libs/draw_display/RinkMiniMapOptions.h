@@ -10,7 +10,7 @@ struct RinkMiniMapOptions {
   Size size{Size::kStandard};
   Position position{Position::kUpperRight};
   // Resolves DARK/LIGHT labels to home/away when known. HOME/AWAY labels use
-  // fixed navy/gold fills regardless of which sweater the home side wore.
+  // fixed navy/orange fills regardless of which sweater the home side wore.
   std::optional<bool> home_is_dark;
 };
 

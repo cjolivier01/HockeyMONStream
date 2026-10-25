@@ -185,11 +185,11 @@ int main() {
               (side == pa::TeamLabel::kLight && !home_is_dark);
           check(
               dotColor(
-                  commands, home ? NvOSD_ColorParams{0, 0, 128.0 / 255, 1} : NvOSD_ColorParams{1, 215.0 / 255, 0, 1}),
-              "Home stays navy and away stays gold for either sweater choice");
+                  commands, home ? NvOSD_ColorParams{0, 0, 128.0 / 255, 1} : NvOSD_ColorParams{1, 140.0 / 255, 0, 1}),
+              "Home stays navy and away stays orange for either sweater choice");
           check(
               count(commands, a::detail::Kind::kGlyph, true) == (home ? 2 : 0),
-              "Jersey digits contrast with the navy/gold fill");
+              "Jersey digits contrast with the navy/orange fill");
           commands.Clear();
         }
       }

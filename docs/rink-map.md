@@ -191,7 +191,7 @@ checked under **Stitched → Rink**, then start playback. The Program and Stitch
 desktop GPU previews show an overhead rink with player circles in the same
 track colours as their detection boxes, including when boxes are hidden. Once
 the team feature has named the two sides, the circles switch to showing
-affiliation instead: navy blue for Home, gold for Away, and hollow for a skater
+affiliation instead: navy blue for Home, orange for Away, and hollow for a skater
 whose side is not known yet. Home and Away keep those colours regardless of
 which sweaters they wear. Without a home-sweater mapping, DARK/LIGHT sides
 retain dark/light fills. A game where nothing has been named keeps the track
