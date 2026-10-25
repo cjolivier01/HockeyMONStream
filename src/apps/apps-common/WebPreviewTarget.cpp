@@ -109,6 +109,11 @@ void peer_connection(GObject* peer, GParamSpec*, gpointer data) {
 }
 } // namespace
 
+struct WebPreviewTarget::PeerLifetime {
+  std::mutex mutex;
+  WebPreviewTarget* target{nullptr};
+};
+
 bool WebPreviewTarget::Validate(const WebPreviewConfig& c, std::string* error) {
   if (c.name.empty() || c.stream_id.empty() || c.eof_channel.empty() || c.eof_channel.size() > 64)
     return fail(error, "Preview target requires a name, stream identity and bounded EOF channel");
@@ -117,8 +122,8 @@ bool WebPreviewTarget::Validate(const WebPreviewConfig& c, std::string* error) {
       c.surface.rate_numerator > INT_MAX || c.surface.rate_denominator > 1000000 ||
       double(c.surface.rate_numerator) / c.surface.rate_denominator > 120 || !c.surface.pool_frames ||
       c.surface.pool_frames > 64 || !c.conversion_pool_frames || !c.bitrate || !c.idr_interval || !c.pending_frames ||
-      !c.pending_events || !c.h264_profile || !c.encoder_tuning || !c.stun_server || c.rtp_payload < 96 ||
-      c.rtp_payload > 127)
+      !c.pending_events || !c.presentation_history || !c.h264_profile || !c.encoder_tuning || !c.stun_server ||
+      c.rtp_payload < 96 || c.rtp_payload > 127)
     return fail(error, "Preview target requires explicit valid GPU, encoder, RTP and queue configuration");
   if ((*c.h264_profile != 0 && *c.h264_profile != 1 && *c.h264_profile != 2 && *c.h264_profile != 4) ||
       (*c.encoder_tuning != 2 && *c.encoder_tuning != 3))
@@ -127,7 +132,14 @@ bool WebPreviewTarget::Validate(const WebPreviewConfig& c, std::string* error) {
 }
 
 WebPreviewTarget::WebPreviewTarget(const WebPreviewConfig& config)
-    : monitor_(std::make_shared<TransportMonitor>(config.pending_frames, config.pending_events)) {}
+    : monitor_(
+          std::make_shared<TransportMonitor>(
+              config.pending_frames,
+              config.pending_events,
+              config.presentation_history)),
+      peer_lifetime_(std::make_shared<PeerLifetime>()) {
+  peer_lifetime_->target = this;
+}
 
 std::unique_ptr<WebPreviewTarget> WebPreviewTarget::Create(
     const WebPreviewConfig& config,
@@ -296,6 +308,11 @@ bool WebPreviewTarget::Build(const WebPreviewConfig& c, SurfacePainter painter, 
 }
 
 WebPreviewTarget::~WebPreviewTarget() {
+  {
+    std::lock_guard<std::mutex> lock(peer_lifetime_->mutex);
+    peer_lifetime_->target = nullptr;
+  }
+  monitor_->Recover();
   if (rtp_gate_)
     rtp_gate_stop(rtp_gate_);
   for (auto& [pad, id] : probes_) {
@@ -368,6 +385,7 @@ bool WebPreviewTarget::Active(GstPad* route, std::uint64_t operation) const {
 GstElement* WebPreviewTarget::ReplacePeer(std::uint64_t generation) {
   if (!rtp_gate_begin_transition(rtp_gate_, generation))
     return nullptr;
+  peer_generation_ = generation;
   // Release preroll/transport waits before the output barrier. Taking the
   // barrier first would deadlock a push that needs this NULL to complete.
   hstream::webrtc_endpoint_detach_peer(endpoint_);
@@ -398,9 +416,35 @@ GstElement* WebPreviewTarget::ReplacePeer(std::uint64_t generation) {
 bool WebPreviewTarget::DetachPeer(std::uint64_t generation) {
   if (!rtp_gate_begin_transition(rtp_gate_, generation))
     return false;
+  peer_generation_ = generation;
   hstream::webrtc_endpoint_detach_peer(endpoint_);
   return rtp_gate_finish_transition(rtp_gate_, generation, [] { return true; }) &&
       rtp_gate_set_ready(rtp_gate_, generation, true, [](bool) { return true; });
+}
+
+std::shared_ptr<WebPreviewSignaling> WebPreviewTarget::Signaling(const WebPreviewObserverConfig& config) {
+  if (!signaling_.expired())
+    return {};
+  auto result = std::make_shared<WebPreviewSignaling>();
+  result->observer = std::make_shared<WebPreviewObserver>(monitor_, config);
+  result->initial_peer_generation = peer_generation_;
+  std::weak_ptr<PeerLifetime> weak = peer_lifetime_;
+  result->replace_peer = [weak](std::uint64_t peer) -> GstElement* {
+    auto lifetime = weak.lock();
+    if (!lifetime)
+      return nullptr;
+    std::lock_guard<std::mutex> lock(lifetime->mutex);
+    return lifetime->target ? lifetime->target->ReplacePeer(peer) : nullptr;
+  };
+  result->detach_peer = [weak](std::uint64_t peer) {
+    auto lifetime = weak.lock();
+    if (!lifetime)
+      return false;
+    std::lock_guard<std::mutex> lock(lifetime->mutex);
+    return lifetime->target && lifetime->target->DetachPeer(peer);
+  };
+  signaling_ = result;
+  return result;
 }
 std::vector<TransportEvent> WebPreviewTarget::TakeEvents() {
   return monitor_->TakeEvents();

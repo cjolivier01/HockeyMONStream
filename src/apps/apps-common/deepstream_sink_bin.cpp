@@ -40,6 +40,7 @@
 #include "hstream/src/apps/apps-common/ArchiveWatermark.h"
 #include "hstream/src/apps/apps-common/EncoderDimensions.h"
 #include "hstream/src/apps/apps-common/HStreamBatchDemux.h"
+#include "hstream/src/apps/apps-common/WebPreviewObserver.h"
 #include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
@@ -518,6 +519,8 @@ struct WebRtcSignalServer : std::enable_shared_from_this<WebRtcSignalServer> {
   GMainContext* context{g_main_context_ref_thread_default()};
   guint64 generation{0};
   GSource* offer_source{nullptr};
+  GSource* frame_source{nullptr};
+  std::shared_ptr<hm::preview::WebPreviewSignaling> preview;
   bool offer_sent{false};
   bool answer_received{false};
   bool remote_ready{false};
@@ -610,6 +613,29 @@ void send_json_message(JsonBuilder* builder, WebRtcSignalServer* signal_server) 
   g_free(text);
   json_node_free(root);
   g_object_unref(generator);
+}
+
+void start_preview_observer(const std::shared_ptr<WebRtcSignalServer>& state) {
+  if (!state->preview)
+    return;
+  state->frame_source = g_timeout_source_new(state->preview->observer->poll_interval_ms());
+  g_source_set_callback(
+      state->frame_source,
+      [](gpointer data) -> gboolean {
+        auto state = static_cast<std::weak_ptr<WebRtcSignalServer>*>(data)->lock();
+        if (!state)
+          return G_SOURCE_REMOVE;
+        std::lock_guard<std::recursive_mutex> lock(state->mutex);
+        if (state->stopped)
+          return G_SOURCE_REMOVE;
+        const auto message = state->preview->observer->Poll();
+        if (message && state->connection)
+          send_websocket_text(state.get(), message->c_str());
+        return G_SOURCE_CONTINUE;
+      },
+      new std::weak_ptr<WebRtcSignalServer>(state),
+      [](gpointer data) { delete static_cast<std::weak_ptr<WebRtcSignalServer>*>(data); });
+  g_source_attach(state->frame_source, state->context);
 }
 
 void send_error_message(WebRtcSignalServer* signal_server, const gchar* message) {
@@ -822,6 +848,10 @@ void on_webrtc_ws_message(
     }
   } else if (!g_strcmp0(message_type, "candidate")) {
     handle_webrtc_candidate(signal_server, object);
+  } else if (signal_server->preview && size <= 4096 &&
+      signal_server->preview->observer->Handle(object) != hm::preview::WebPreviewObserver::Message::kUnrecognized) {
+    // Receipt validity is observable in the bounded observer/monitor counters.
+    // Do not reflect arbitrary receipt traffic into another outgoing queue.
   } else {
     send_error_message(signal_server, "Expected an SDP answer or ICE candidate; refresh the preview client");
   }
@@ -830,6 +860,8 @@ void on_webrtc_ws_message(
 
 void detach_webrtc_peer(WebRtcSignalServer* state) {
   ++state->generation;
+  if (state->preview)
+    state->preview->observer->Retire(state->generation);
   state->offer_sent = false;
   state->answer_received = false;
   state->remote_ready = false;
@@ -848,10 +880,13 @@ void detach_webrtc_peer(WebRtcSignalServer* state) {
         nullptr,
         reinterpret_cast<gpointer>(on_webrtc_ice_candidate),
         nullptr);
-    hstream::webrtc_endpoint_detach_peer(state->endpoint);
+    if (!state->preview)
+      hstream::webrtc_endpoint_detach_peer(state->endpoint);
     gst_object_unref(state->webrtc);
     state->webrtc = nullptr;
   }
+  if (state->preview)
+    state->preview->detach_peer(state->generation);
 }
 
 void on_webrtc_ws_closed(SoupWebsocketConnection* connection, gpointer user_data) {
@@ -894,6 +929,11 @@ void on_webrtc_ws_connected(
   if (signal_server->stopped)
     return;
 
+  // SDP can be larger than a receipt, but both are bounded before JSON parsing.
+  // This is a protocol admission limit for the optional preview adapter.
+  if (signal_server->preview)
+    soup_websocket_connection_set_max_incoming_payload_size(connection, 256 * 1024);
+
   if (signal_server->connection) {
     auto* old = signal_server->connection;
     signal_server->connection = nullptr;
@@ -905,7 +945,15 @@ void on_webrtc_ws_connected(
     g_object_unref(old);
   }
   detach_webrtc_peer(signal_server);
-  signal_server->webrtc = hstream::webrtc_endpoint_reset_peer(signal_server->endpoint);
+  if (signal_server->preview) {
+    ++signal_server->generation;
+    signal_server->preview->observer->Retire(signal_server->generation);
+    signal_server->webrtc = signal_server->preview->replace_peer(signal_server->generation);
+    if (signal_server->webrtc)
+      signal_server->preview->observer->Activate(signal_server->generation);
+  } else {
+    signal_server->webrtc = hstream::webrtc_endpoint_reset_peer(signal_server->endpoint);
+  }
   if (!signal_server->webrtc) {
     soup_websocket_connection_close(connection, SOUP_WEBSOCKET_CLOSE_SERVER_ERROR, "preview initialization failed");
     return;
@@ -970,11 +1018,17 @@ void on_webrtc_http_request(
 #endif
 }
 
-gboolean start_webrtc_signaling(GstElement* webrtc, const NvDsSinkEncoderConfig* config) {
+gboolean start_webrtc_signaling(
+    GstElement* webrtc,
+    const NvDsSinkEncoderConfig* config,
+    std::shared_ptr<hm::preview::WebPreviewSignaling> preview = {}) {
   GError* error = nullptr;
   auto owned = std::make_shared<WebRtcSignalServer>();
   auto* signal_server = owned.get();
   signal_server->endpoint = GST_ELEMENT(gst_object_ref(webrtc));
+  signal_server->preview = std::move(preview);
+  if (signal_server->preview)
+    signal_server->generation = signal_server->preview->initial_peer_generation;
   signal_server->port = config->webrtc_port ? config->webrtc_port : kDefaultWebRtcPort;
   signal_server->server = soup_server_new("server-header", "hstream-webrtc", NULL);
   if (!signal_server->server) {
@@ -1000,6 +1054,7 @@ gboolean start_webrtc_signaling(GstElement* webrtc, const NvDsSinkEncoderConfig*
     return FALSE;
   }
 
+  start_preview_observer(owned);
   g_mutex_lock(&webrtc_signal_servers_lock);
   webrtc_signal_servers.push_back(std::move(owned));
   g_mutex_unlock(&webrtc_signal_servers_lock);
@@ -1041,6 +1096,11 @@ void destroy_webrtc_signal_servers(GstElement* pipeline = nullptr) {
   for (const auto& state : servers) {
     std::lock_guard<std::recursive_mutex> lock(state->mutex);
     state->stopped = true;
+    if (state->frame_source) {
+      g_source_destroy(state->frame_source);
+      g_source_unref(state->frame_source);
+      state->frame_source = nullptr;
+    }
     if (state->connection) {
       auto* connection = state->connection;
       state->connection = nullptr;
@@ -1068,6 +1128,15 @@ void prepare_webrtc_sinks_for_stop(GstElement* pipeline) {
 
 gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncoderConfig* config) {
   return start_webrtc_signaling(webrtc, config);
+}
+
+gboolean start_webrtc_signaling_for_preview(
+    GstElement* endpoint,
+    const NvDsSinkEncoderConfig* config,
+    std::shared_ptr<hm::preview::WebPreviewSignaling> preview) {
+  if (!endpoint || !config || !preview || !preview->observer || !preview->replace_peer || !preview->detach_peer)
+    return FALSE;
+  return start_webrtc_signaling(endpoint, config, std::move(preview));
 }
 
 gboolean link_webrtc_rtp_src_to_sink(

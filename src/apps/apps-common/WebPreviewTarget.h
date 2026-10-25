@@ -2,6 +2,7 @@
 
 #include "hstream/src/apps/apps-common/PreviewGpuSurface.h"
 #include "hstream/src/apps/apps-common/PreviewTransportMonitor.h"
+#include "hstream/src/apps/apps-common/WebPreviewObserver.h"
 
 #include <map>
 #include <memory>
@@ -18,7 +19,7 @@ struct WebPreviewConfig {
   std::optional<std::uint32_t> h264_profile;
   std::optional<std::uint32_t> encoder_tuning;
   std::uint32_t rtp_payload{0};
-  std::size_t pending_frames{0}, pending_events{0};
+  std::size_t pending_frames{0}, pending_events{0}, presentation_history{0};
   // An explicitly empty string means no STUN server.
   std::optional<std::string> stun_server;
 };
@@ -67,6 +68,9 @@ class WebPreviewTarget {
   // Detach resumes the disconnected drain, which does not imply presentation.
   GstElement* ReplacePeer(std::uint64_t generation);
   bool DetachPeer(std::uint64_t generation);
+  // Construct once, before signaling starts. Stop signaling before destroying
+  // this target. Retained callbacks fail safely after target destruction.
+  std::shared_ptr<WebPreviewSignaling> Signaling(const WebPreviewObserverConfig& config);
   std::vector<TransportEvent> TakeEvents();
   TransportCounters counters() const;
 
@@ -85,9 +89,13 @@ class WebPreviewTarget {
   std::map<GstPad*, Route> routes_;
   std::vector<std::pair<GstPad*, gulong>> probes_;
   std::shared_ptr<TransportMonitor> monitor_;
+  struct PeerLifetime;
+  std::shared_ptr<PeerLifetime> peer_lifetime_;
+  std::weak_ptr<WebPreviewSignaling> signaling_;
   std::uint64_t next_route_{0};
   GstPad* active_route_{nullptr};
   std::uint64_t operation_{0};
+  std::uint64_t peer_generation_{0};
 };
 
 } // namespace hm::preview

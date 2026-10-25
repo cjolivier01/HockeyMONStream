@@ -52,11 +52,11 @@ int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   bool passed = true;
   try {
-    hm::preview::TransportMonitor invalid(0, 2);
+    hm::preview::TransportMonitor invalid(0, 2, 4);
     passed &= expect(false, "Zero transport capacity was admitted");
   } catch (const std::invalid_argument&) {
   }
-  hm::preview::TransportMonitor monitor(1, 2);
+  hm::preview::TransportMonitor monitor(1, 2, 4);
   passed &= expect(monitor.Select("program", 1) && monitor.SetPeer(1), "Initial binding failed");
   auto frame = identity("program", 1, 1);
   passed &= expect(

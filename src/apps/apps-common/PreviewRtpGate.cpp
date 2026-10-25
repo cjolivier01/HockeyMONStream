@@ -147,6 +147,10 @@ bool rtp_gate_begin_transition(GstElement* element, std::uint64_t peer) {
   std::lock_guard<std::mutex> lock(self->state->state);
   if (self->state->stopping || peer <= self->state->peer)
     return false;
+  // Retire receipt history before touching the old endpoint. Already accepted
+  // pushes may still be draining, but can no longer validate a browser receipt.
+  if (!self->state->monitor->SetPeer(peer))
+    return false;
   self->state->peer = peer;
   self->state->transitioning = true;
   self->state->ready = false;
@@ -165,7 +169,9 @@ bool rtp_gate_finish_transition(GstElement* element, std::uint64_t peer, const s
     if (state.peer != peer || !state.transitioning)
       return false;
   }
-  if (!state.monitor->SetPeer(peer) || !mutation())
+  // Raw/encoded frames could arrive while the old endpoint was being stopped.
+  state.monitor->Recover();
+  if (!mutation())
     return false;
   std::lock_guard<std::mutex> lock(state.state);
   if (state.peer != peer)
@@ -184,6 +190,7 @@ bool rtp_gate_set_ready(GstElement* element, std::uint64_t peer, bool ready, std
     if (!peer || state.peer != peer || state.transitioning || state.stopping || !control || !control(false))
       return false;
     state.ready = false;
+    state.monitor->Recover();
     state.requested_ready = ready;
     state.downstream = std::move(control);
     if (!state.pending) {

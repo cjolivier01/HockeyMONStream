@@ -201,6 +201,7 @@ int main(int argc, char** argv) {
   config.rtp_payload = 96;
   config.pending_frames = 64;
   config.pending_events = 4;
+  config.presentation_history = 32;
   config.stun_server = "";
   std::string target_error;
   auto invalid = config;

@@ -18,7 +18,8 @@ identity without GPU calls; they do not supply an AMD consumer. The independent
 `PreviewGpuSurface` prototype accepts CUDA-device NVMM and remains unavailable
 for HIP/VA surfaces. Its NVIDIA hardware test is not AMD preview qualification.
 `WebPreviewTarget` currently assembles only that CUDA-device surface path and
-the NVIDIA H.264 encoder. Its bounded `PreviewTransportMonitor` is CPU-only,
+the NVIDIA H.264 encoder. Its bounded `PreviewTransportMonitor`, separate
+`PreviewPresentationHistory` and optional `WebPreviewObserver` are CPU-only,
 but no HIP/VA target or AMD browser capability is registered. Jetson cross-build
 success likewise does not qualify Jetson surface-array input or runtime encoding.
 

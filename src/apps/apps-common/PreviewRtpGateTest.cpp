@@ -19,7 +19,7 @@ void check(bool condition, const char* message) {
   }
 }
 struct Fixture {
-  std::shared_ptr<hm::preview::TransportMonitor> monitor = std::make_shared<hm::preview::TransportMonitor>(8, 32);
+  std::shared_ptr<hm::preview::TransportMonitor> monitor = std::make_shared<hm::preview::TransportMonitor>(8, 32, 32);
   GstElement* gate = hm::preview::rtp_gate_create("gate", monitor);
   GstPad *input, *output, *source, *sink;
   std::mutex mutex;
@@ -161,7 +161,14 @@ int main(int argc, char** argv) {
   }
   // This must not wait for the held compressed push. Real callers now NULL/
   // detach the old transport to release its waits before FinishTransition.
+  auto events = fixture.monitor->TakeEvents();
+  check(
+      !events.empty() && events.back().kind == hm::preview::TransportEvent::Kind::kPacketized,
+      "Held peer packet has no sender identity");
+  auto event = events.back();
+  hm::preview::PacketFrame receipt{event.frame, event.rtp_timestamp, event.ssrc};
   check(hm::preview::rtp_gate_begin_transition(fixture.gate, 2), "Could not close output in flight");
+  check(!fixture.monitor->Presented(receipt), "Old receipt survived until endpoint transition completed");
   auto replacing = std::async(std::launch::async, [&] {
     {
       std::lock_guard<std::mutex> lock(fixture.mutex);
@@ -236,7 +243,14 @@ int main(int argc, char** argv) {
         fixture.ready.wait_for(lock, std::chrono::seconds(2), [&] { return fixture.blocked; }),
         "Delta did not reach the post-admission hold");
   }
+  events = fixture.monitor->TakeEvents();
+  check(
+      !events.empty() && events.back().kind == hm::preview::TransportEvent::Kind::kPacketized,
+      "Held reconnect packet has no sender identity");
+  event = events.back();
+  receipt = {event.frame, event.rtp_timestamp, event.ssrc};
   check(fixture.request_ready(2, false) && fixture.request_ready(2, true), "Readiness requests blocked/rejected");
+  check(!fixture.monitor->Presented(receipt), "Reconnect receipt survived while its endpoint was closed");
   // Give the deferred worker a turn while the admitted packet still owns its
   // flow barrier. Reopening early must fail even when callback order is stable.
   std::this_thread::sleep_for(std::chrono::milliseconds(50));

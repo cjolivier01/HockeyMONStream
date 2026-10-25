@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hstream/src/apps/apps-common/PreviewPresentationHistory.h"
 #include "hstream/src/apps/apps-common/PreviewTransportFrames.h"
 
 #include <deque>
@@ -21,12 +22,13 @@ struct TransportCounters {
   std::uint64_t rejected_raw{0}, rejected_encoded{0}, rejected_rtp{0};
   std::uint64_t keyframe_requests{0}, keyframe_failures{0}, events_dropped{0};
   std::uint64_t probe_failures{0};
+  std::uint64_t presented{0}, rejected_presented{0}, history_evicted{0};
 };
 
 class TransportMonitor {
  public:
-  // Both capacities are mandatory; zero is invalid. No shipped defaults.
-  TransportMonitor(std::size_t frame_capacity, std::size_t event_capacity);
+  // All capacities are mandatory; zero is invalid. No shipped defaults.
+  TransportMonitor(std::size_t frame_capacity, std::size_t event_capacity, std::size_t history_capacity);
   bool SetPeer(std::uint64_t peer);
   // A newly connected transport must start from a newly admitted IDR; frames
   // encoded while its endpoint was gated did not establish decoder references.
@@ -45,12 +47,16 @@ class TransportMonitor {
   // mixed list after accepting its IDR marker would falsely end recovery.
   bool FilterRtp(GstBufferList* list);
   std::vector<TransportEvent> TakeEvents();
+  std::optional<PacketFrame> Presented(const PacketFrame& receipt);
+  std::optional<PacketFrame> TakePresented();
   TransportCounters counters() const;
 
  private:
   void Push(TransportEvent event);
   mutable std::mutex mutex_;
   TransportFrames frames_;
+  PresentationHistory history_;
+  std::optional<PacketFrame> presented_;
   const std::size_t event_capacity_;
   std::uint64_t operation_{0};
   std::string channel_;

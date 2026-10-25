@@ -40,6 +40,7 @@ cc_test(
         ":preview_transport_frames",
         ":selected_preview_stream",
         ":webrtc_endpoint",
+        ":web_preview_observer",
         ":web_preview_target",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
@@ -76,12 +77,36 @@ cc_test(
 )
 
 cc_library(
+    name = "preview_presentation_history",
+    srcs = ["PreviewPresentationHistory.cpp"],
+    hdrs = ["PreviewPresentationHistory.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":preview_transport_frames"],
+)
+
+cc_library(
+    name = "web_preview_observer",
+    srcs = ["WebPreviewObserver.cpp"],
+    hdrs = ["WebPreviewObserver.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":preview_route_owner", ":preview_transport_monitor", "@json_glib"],
+)
+
+cc_test(
+    name = "web_preview_observer_test",
+    srcs = ["WebPreviewObserverTest.cpp"],
+    deps = [":web_preview_observer", "@gstreamer", "@json_glib"],
+)
+
+cc_library(
     name = "preview_transport_monitor",
     srcs = ["PreviewTransportMonitor.cpp"],
     hdrs = ["PreviewTransportMonitor.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [":preview_transport_frames", "@gstreamer"],
+    deps = [":preview_transport_frames", ":preview_presentation_history", "@gstreamer"],
 )
 
 cc_test(
@@ -102,6 +127,7 @@ cc_library(
         ":preview_transport_monitor",
         ":selected_preview_stream",
         ":webrtc_endpoint",
+        ":web_preview_observer",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ],
@@ -494,6 +520,7 @@ cc_library(
     deps = [
         ":archive_watermark",
         ":webrtc_endpoint",
+        ":web_preview_observer",
         "//src/libs/tracker_reid:tracker_reid",
         ":player_analytics_bin",
         ":encoder_dimensions",
@@ -682,4 +709,11 @@ cc_binary(
     testonly = True,
     srcs = ["WebRtcPreviewTestServer.cpp"],
     deps = [":deepstream_apps_common", ":webrtc_endpoint", "@gstreamer"],
+)
+
+cc_test(
+    name = "web_preview_signaling_test",
+    srcs = ["WebPreviewSignalingTest.cpp"],
+    tags = ["local"],
+    deps = [":deepstream_apps_common", ":web_preview_observer", ":webrtc_endpoint", "@gstreamer", "@libsoup"],
 )

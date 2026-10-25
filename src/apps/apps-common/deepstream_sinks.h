@@ -21,6 +21,7 @@
 
 #include "deepstream_config.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -198,6 +199,15 @@ void set_embedded_gpu_preview_video_mode(gboolean enabled, gboolean preserve_ren
 void set_render_playback_realtime(gboolean enabled, gboolean preparing_calibration = FALSE);
 gboolean render_playback_realtime();
 gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncoderConfig* config);
+namespace hm::preview {
+struct WebPreviewSignaling;
+}
+// Unexposed selectable-target adapter; no production graph registers it yet.
+// Its caller stops signaling before destroying the target.
+gboolean start_webrtc_signaling_for_preview(
+    GstElement* endpoint,
+    const NvDsSinkEncoderConfig* config,
+    std::shared_ptr<hm::preview::WebPreviewSignaling> preview);
 gboolean link_webrtc_rtp_src_to_sink(
     GstElement* webrtc,
     GstElement* rtp_src_element,

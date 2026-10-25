@@ -6,8 +6,9 @@
 #include <utility>
 
 namespace hm::preview {
-TransportMonitor::TransportMonitor(std::size_t frames, std::size_t events) : frames_(frames), event_capacity_(events) {
-  if (!frames || !events)
+TransportMonitor::TransportMonitor(std::size_t frames, std::size_t events, std::size_t history)
+    : frames_(frames), history_(history), event_capacity_(events) {
+  if (!frames || !events || events > 65536)
     throw std::invalid_argument("Preview transport requires explicit nonzero frame/event capacities");
 }
 
@@ -16,6 +17,8 @@ bool TransportMonitor::SetPeer(std::uint64_t peer) {
   if (!frames_.SetPeer(peer))
     return false;
   events_.clear();
+  history_.Clear();
+  presented_.reset();
   return true;
 }
 
@@ -23,6 +26,8 @@ void TransportMonitor::Recover() {
   std::lock_guard<std::mutex> lock(mutex_);
   frames_.DiscardPending();
   events_.clear();
+  history_.Clear();
+  presented_.reset();
 }
 
 bool TransportMonitor::Select(const std::string& channel, std::uint64_t operation) {
@@ -31,6 +36,8 @@ bool TransportMonitor::Select(const std::string& channel, std::uint64_t operatio
     return false;
   frames_.DiscardPending();
   events_.clear();
+  history_.Clear();
+  presented_.reset();
   channel_ = channel;
   operation_ = operation;
   return true;
@@ -59,6 +66,9 @@ void TransportMonitor::KeyframeRequest(bool accepted) {
 void TransportMonitor::ProbeFailure() noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
   frames_.DiscardPending();
+  history_.Clear();
+  presented_.reset();
+  events_.clear();
   ++counters_.probe_failures;
 }
 
@@ -113,6 +123,7 @@ bool TransportMonitor::Rtp(GstBuffer* buffer) {
   ++counters_.packets;
   if (packet.completed) {
     ++counters_.packetized;
+    history_.Record(*packet.completed);
     Push({
         TransportEvent::Kind::kPacketized,
         *packet.completed,
@@ -150,6 +161,24 @@ std::vector<TransportEvent> TransportMonitor::TakeEvents() {
 
 TransportCounters TransportMonitor::counters() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return counters_;
+  auto result = counters_;
+  result.history_evicted = history_.evicted();
+  return result;
+}
+
+std::optional<PacketFrame> TransportMonitor::Presented(const PacketFrame& receipt) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto result = history_.Presented(receipt);
+  if (result) {
+    ++counters_.presented;
+    presented_ = result;
+  } else
+    ++counters_.rejected_presented;
+  return result;
+}
+
+std::optional<PacketFrame> TransportMonitor::TakePresented() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return std::exchange(presented_, std::nullopt);
 }
 } // namespace hm::preview

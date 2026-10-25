@@ -54,14 +54,17 @@ browser presentation receipt. Streaming probes only queue metadata for polling,
 with observable overflow; they do not call signaling or schedule work per frame.
 The caller closes ingress/drain gates around route mutations and stops the
 parent pipeline before destroying the target. A different active channel needs
-a newer operation generation. Production signaling is not wired to this API yet.
+a newer operation generation. Its optional signaling adapter remains unexposed;
+production graph construction does not call it yet.
 
 `WebPreviewTarget::ReplacePeer` and `DetachPeer` own compressed-output retirement;
 callers must not reset or detach its borrowed endpoint directly. `PreviewRtpGate`
 holds a barrier from RTP identity admission through the complete downstream
 push. Replacement first closes that gate without waiting, then detaches/NULLs
-the old endpoint to release downstream waits. Only after accepted pushes return
-does it retire metadata and construct the new peer under the barrier. Closing
+the old endpoint to release downstream waits. Receipt history and the peer
+generation retire before touching the endpoint. After accepted pushes return,
+it also discards work admitted during teardown and constructs the new peer
+under the barrier. Closing
 raw ingress or clearing the identity ledger alone cannot protect a packet that
 already passed admission but has not reached its destination.
 
@@ -89,8 +92,62 @@ surface-pool exhaustion and event-queue overflow alongside native metadata and
 exact source/presentation/RTP identity. CPU monitor tests exercise compressed
 reference loss, delayed RTP markers, route/peer retirement and bounded events.
 This target remains unexposed: no production graph registration, defaults,
-browser messages, audio timeline, complete overlay painter, seek support or
-connected-browser qualification is added by the adapter.
+production browser integration, audio timeline, complete overlay painter, seek
+support or connected-browser qualification is added by the adapter.
+
+The optional `WebPreviewTarget::Signaling` adapter delegates peer changes through
+those lifecycle methods. `start_webrtc_signaling_for_preview` uses the existing
+Soup server and one periodic source attached to its signaling context. The
+source drains bounded `PreviewTransportMonitor` events; no streaming thread
+creates per-frame idle callbacks. `WebPreviewObserver` emits at most one
+unacknowledged metadata batch. While a client withholds credit, subsequent
+sender events are discarded with a counter, bounding the outgoing metadata
+backlog as well as the native queue. Poll cadence and event budget are explicit
+constructor inputs; no new shipped defaults or CLI capabilities are registered.
+
+`PreviewPresentationHistory` retains completed RTP identities independently of
+the pending encoder/RTP ledger. Its explicit capacity evicts oldest entries.
+A presentation receipt must match the current run, stage, topology, peer,
+channel, operation, sequence, RTP timestamp and SSRC. Run/topology/peer fencing
+is checked on the signaling context; the monitor atomically checks history and
+route/recovery retirement. Duplicate and backward receipts are rejected. A
+single latest accepted observation can be consumed through `TakePresented`;
+route off, replacement and recovery also clear this pending observation. An
+accepted receipt is a client's claim matched to a packetized frame, not an
+independent measurement of displayed pixels.
+
+The version-1 optional metadata protocol is:
+
+- Server `preview-frames`: `version`, `run`, `stage`, `topology`, `peer`, `batch`,
+  and a bounded `events` array. Each event has `boundary` (`encoded` or
+  `packetized`), `channel`, `operation`, `sequence`, `sourcePts` and
+  `presentationPts`. Packetized events additionally carry `rtpTimestamp` and
+  `ssrc`.
+- Client `preview-frames-ack`: exactly `type`, `version`, `run`, `stage`,
+  `topology`, `peer` and `batch`. This returns one batch of signaling credit;
+  it does not report video presentation.
+- Client `preview-presented`: exactly `type`, `version`, `run`, `stage`,
+  `topology`, `peer`, `channel`, `operation`, `sequence`, `rtpTimestamp`, `ssrc`
+  and `observation: "video-frame-callback"`. The browser must first match
+  `requestVideoFrameCallback` RTP metadata to a signaled packetized identity.
+  `ontrack`, `playing`, or a successful credit acknowledgment are insufficient.
+
+Unsigned 64-bit identities/timestamps use decimal strings to avoid JavaScript
+number truncation; 32-bit RTP fields and the signed stage use JSON integers.
+Receipts are bounded to 4096 bytes; the optional connection's overall incoming
+limit is 256 KiB for SDP. Unknown receipt fields/types and stale identities fail
+admission. Native admission tests do not implement the browser matcher or its
+covered-preview behavior. The authenticated outer gateway has not admitted this
+optional protocol yet. Keep that integration and real decoded-frame comparison
+as explicit gates before claiming presentation or Qt parity.
+
+`web_preview_observer_test` checks history after marker retirement, loss/overflow,
+RTP wrap, exact 64-bit identities, strict receipts, Render off, peer retirement
+and reconnect recovery. `web_preview_signaling_test` connects real Soup
+WebSocket clients to the production handlers, checks one outstanding metadata
+batch, delegated replacement ordering and removal of the single drain source
+on stop. Its frame identities and receipts are synthetic; it is a signaling
+ownership test, not browser decoding qualification.
 
 `WebRtcEndpoint` exposes stable RTP ghost pads for the video and audio branches.
 Each browser WebSocket receives a new inner `webrtcbin`, including fresh SDP,
