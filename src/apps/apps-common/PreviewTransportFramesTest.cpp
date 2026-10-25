@@ -109,6 +109,21 @@ int main() {
       admission.force_keyframe && bounded.Encoded(6 * GST_MSECOND, true).has_value() &&
           bounded.Rtp(6 * GST_MSECOND, 600, 456, true).accepted,
       "Reference-loss recovery did not admit a new IDR");
+  hm::preview::TransportFrames delayed_idr(4);
+  delayed_idr.SetPeer(1);
+  delayed_idr.Admit(frame("program", 1, 1));
+  delayed_idr.Encoded(GST_MSECOND, true);
+  delayed_idr.Admit(frame("program", 1, 2));
+  passed &= expect(
+      !delayed_idr.Encoded(2 * GST_MSECOND, false) && !delayed_idr.Rtp(GST_MSECOND, 100, 456, true).accepted &&
+          delayed_idr.Admit(frame("program", 1, 3)).force_keyframe && !delayed_idr.Encoded(3 * GST_MSECOND, false),
+      "Delayed older IDR admitted a delta after an encoded reference picture was rejected");
+  delayed_idr.Admit(frame("program", 1, 4));
+  passed &= expect(
+      delayed_idr.Encoded(4 * GST_MSECOND, true).has_value() &&
+          delayed_idr.Rtp(4 * GST_MSECOND, 400, 456, true).accepted,
+      "Delayed-IDR reference loss did not recover at a newly admitted IDR");
+
   hm::preview::TransportFrames missing_packet(8);
   missing_packet.SetPeer(1);
   missing_packet.Admit(frame("program", 1, 1));

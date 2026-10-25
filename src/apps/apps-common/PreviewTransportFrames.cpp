@@ -67,7 +67,10 @@ std::optional<TransportFrame> TransportFrames::Encoded(GstClockTime pts, bool ke
   if (frame == frames_.end() || frame->encoded)
     return std::nullopt;
   if (need_keyframe_ && !keyframe) {
-    frames_.erase(frame);
+    // This delta already entered the encoder's reference chain. An older
+    // pending IDR cannot establish recovery after we drop it: a later delta
+    // could reference this omitted picture. Require a newly admitted IDR.
+    frames_.clear();
     return std::nullopt;
   }
   frame->encoded = true;
