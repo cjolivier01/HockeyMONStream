@@ -563,6 +563,11 @@ bool create_render_audio_branch(
     // Apply backpressure only in explicitly paced playback. Archive audio
     // retains its own lossless queue and unchanged sample timestamps.
     g_object_set(G_OBJECT(queue), "leaky", 0, NULL);
+    // Exact-pair gating releases audio only after its matching video frames.
+    // An ALSA clock stops while its ring buffer is priming after a source seek;
+    // video waiting on that clock would then prevent the audio needed to start
+    // it. Keep both paced branches on the pipeline's monotonic system clock.
+    g_object_set(G_OBJECT(audiosink), "provide-clock", FALSE, NULL);
   }
   g_object_set(G_OBJECT(audiosink), "sync", realtime, "async", FALSE, "max-lateness", gint64{-1}, "qos", FALSE, NULL);
   if (*hmaudio_config->alsa_dest_device) {
