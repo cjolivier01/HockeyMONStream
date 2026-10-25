@@ -2149,6 +2149,12 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       std::string error;
       auto attachment =
           hm::preview::RouteAttachment::Create(tap, {ingress, queue, drain, converter, caps, sink}, nullptr, &error);
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+      // Preserve the calibration branch's CUDA copy engine when construction
+      // moves out of create_hmstitcher_bin; VIC cannot copy these device surfaces.
+      if (attachment && !tracked)
+        g_object_set(G_OBJECT(converter), "copy-hw", 2, nullptr);
+#endif
       if (!attachment ||
           !configure_path(
               queue,
