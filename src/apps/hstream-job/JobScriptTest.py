@@ -583,6 +583,9 @@ class JobScriptTest(unittest.TestCase):
             ("RENDER,ENCODE_STITCHED_FILE", "ENCODE_STITCHED_FILE"),
             ("ENCODE_STITCHED_FILE,RENDER,ENCODE_PROGRAM_4K_FILE",
              "ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE"),
+            ("ENCODE_FILE,ENCODE_PROGRAM_4K_FILE", "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE"),
+            ("ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_STITCHED_FILE",
+             "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_STITCHED_FILE"),
         ):
             with self.subTest(sinks=sinks):
                 (self.game / "config.yaml").write_text(json.dumps({

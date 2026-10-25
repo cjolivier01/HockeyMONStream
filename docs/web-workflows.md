@@ -19,7 +19,7 @@ detaching camera aliases, releasing input references, or publishing artifacts.
 
 Workers probe `hstream-web-job --capabilities` before admitting work. This
 display-independent command returns protocol `schema`, `request_schema`,
-`receipt_schema`, the supported `operations`, and request/result byte limits.
+`receipt_schema`, the supported `operations`, `features`, and request/result byte limits.
 The operation list also drives request validation, so readiness cannot advertise
 operations the request parser rejects. HockeyMONWeb checks its required operations
 against this deployed executable in addition to checking the generated startup
@@ -72,7 +72,7 @@ contract, then testing both interfaces against the same native checkout.
 | `calibration-complete` | Trusted setup postprocessor after a successful bounded calibration-only CLI run. Requires nonempty `invalidation_id` matching the persisted owner and optional boolean `require_ice_mask`. Validates the native generation, completes its calibration state, and publishes `game/setup-preview.png` from the existing panorama using the shared bounded (1920-pixel maximum) reader. Missing panorama or generation fails the operation. Returns `state`, `invalidation_id`, and `preview`; the receipt retains calibration artifacts for adoption. |
 | `matches-read` | Optional `fingerprint`; omission reads the current native match snapshot. Optional trusted `workspace` selects an experiment instead of the main game. Returns original camera images, dimensions and endpoints. |
 | `matches-publish` | Existing `fingerprint` and `frames` containing `index` and `matches` (`left`, `right`, optional `score`). Validates original-image endpoints and publishes an immutable manual snapshot. This does not activate new maps; use the candidate edit/solve/promote sequence. |
-| `experiment-create` | `settings` with `control_points`, `frame_count`, `stitch_frame_time`, optional matcher/resolution/rotation, plus optional `sequence`. Creates a native isolated pending candidate. |
+| `experiment-create` | `settings` with `control_points`, `frame_count`, `stitch_frame_time`, optional matcher/resolution/rotation/camera/filtering, plus optional `sequence`. Creates a native isolated pending candidate. |
 | `experiment-edit` | Saved `workspace`, inspected `fingerprint`, replacement `frames`, and optional `sequence`. Creates a new candidate from immutable edited matches without changing the inspected candidate. |
 | `experiment-run` | Saved `workspace` and optional `require_ice_mask`. Runs native calibration through `hstream-job --interactive`, then validates native completion before returning success. |
 | `experiment-inspect` | Saved `workspace`. Returns native inspection images, timestamps, quality and source validation. |
@@ -90,6 +90,20 @@ reconstruct authorized camera aliases when staging a subsequent operation.
 Immutable match/source metadata must never be rewritten to bypass provenance
 checks. Camera aliases should resolve to stable authorized upload identities;
 per-run hardlink paths change the native canonical-path fingerprint.
+
+Experiment settings use the desktop's canonical camera map: `camera` contains
+`camera_config`, `camera_fov`, `input_lens`, and `camera_automation`.
+`control_point_filtering` contains `epipolar_ransac` and
+`homography_consistency`. Both accept partial overrides at creation. Omitted
+values inherit the selected source config over the bundled baseline; choosing a
+camera profile resets inherited FOV/lens values to that profile before applying
+explicit optics. Native `GameConfig` and `InputLens` readers validate these
+values. The returned workspace stores the complete camera selection, including
+nullable automation policies, and both filtering choices. Subsequent workers
+retain those frozen settings through inspection, solve, edit and promotion.
+The `experiment-optics-filtering-v1` capability is required by the web worker so
+an older adapter cannot silently discard those settings. The browser offers
+explicit source inheritance and displays the frozen settings for comparison.
 
 For `experiment-create`, the worker also supplies a top-level `authorized_media`
 array of absolute canonical upload paths. The native staged-workspace API

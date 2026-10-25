@@ -1236,6 +1236,7 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":web_job_spec",
+        "//src/libs/common:baseline_config",
         ":calibration_image",
         ":highlight_plan",
         ":highlight_reel_pipeline",

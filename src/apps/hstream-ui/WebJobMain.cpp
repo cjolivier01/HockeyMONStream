@@ -1,4 +1,5 @@
 // Thin headless owners of the same native libraries used by the desktop dialogs.
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
@@ -264,8 +265,77 @@ QJsonObject matches_result(
       {"frames", frames}};
 }
 
-StitchingExperimentSettings settings(const QJsonObject& object) {
+void merge_settings(YAML::Node destination, const YAML::Node& overlay) {
+  for (const auto& entry : overlay) {
+    const auto key = entry.first.as<std::string>();
+    if (entry.second.IsMap() && destination[key].IsMap())
+      merge_settings(destination[key], entry.second);
+    else
+      destination[key] = YAML::Clone(entry.second);
+  }
+}
+
+QJsonObject camera_json(const hm::stitching::StitchCameraSelection& camera) {
+  YAML::Node saved;
+  hm::stitching::write_stitch_camera_selection(saved, camera);
+  const auto optics = saved["stitching"], lens = optics["input_lens"];
+  QJsonObject input;
+  for (const char* key : {"projection", "optimization"})
+    input.insert(key, text(lens[key].as<std::string>()));
+  for (const char* key : {"distortion", "center_offset"}) {
+    QJsonArray components;
+    for (const auto& value : lens[key])
+      components.append(value.as<double>());
+    input.insert(key, components);
+  }
+  QJsonObject automation;
+  for (const char* key : {"fov", "lens"}) {
+    const auto value = optics["camera_automation"][key];
+    automation.insert(key, value.IsNull() ? QJsonValue(QJsonValue::Null) : QJsonValue(value.as<bool>()));
+  }
+  return {
+      {"camera_config", text(optics["camera_config"].as<std::string>())},
+      {"camera_fov", QJsonObject{{"horizontal_fov", camera.horizontal_fov}, {"vertical_fov", camera.vertical_fov}}},
+      {"input_lens", input},
+      {"camera_automation", automation}};
+}
+
+QJsonObject filtering_json(const hm::stitching::ControlPointFiltering& filtering) {
+  YAML::Node saved;
+  hm::stitching::write_control_point_filtering(saved, filtering);
+  const auto value = saved["stitching"]["control_point_filtering"];
+  return {
+      {"epipolar_ransac", value["epipolar_ransac"].as<bool>()},
+      {"homography_consistency", value["homography_consistency"].as<bool>()}};
+}
+
+StitchingExperimentSettings settings(const QJsonObject& object, const YAML::Node& source) {
   StitchingExperimentSettings result;
+  auto effective = YAML::Clone(take(hm::baseline_config::load()).values);
+  merge_settings(effective, source);
+  if (object.contains("camera")) {
+    require(object.value("camera").isObject(), "Expected camera optics settings");
+    const auto camera = object.value("camera").toObject();
+    const std::set<QString> allowed{"camera_config", "camera_fov", "input_lens", "camera_automation"};
+    for (auto item = camera.begin(); item != camera.end(); ++item)
+      require(allowed.count(item.key()), "Unsupported experiment camera setting");
+    // A profile-only selection resolves that profile's optics, rather than
+    // carrying a previous profile's explicit FOV/lens correction into it.
+    if (camera.contains("camera_config")) {
+      effective["stitching"].remove("camera_fov");
+      effective["stitching"].remove("input_lens");
+      effective["stitching"].remove("camera_automation");
+    }
+    merge_settings(effective["stitching"], YAML::Load(QJsonDocument(camera).toJson().toStdString()));
+  }
+  result.camera = take(hm::stitching::read_stitch_camera_selection(effective));
+  if (object.contains("control_point_filtering")) {
+    require(object.value("control_point_filtering").isObject(), "Expected geometric filtering settings");
+    merge_settings(
+        effective["stitching"]["control_point_filtering"],
+        YAML::Load(QJsonDocument(object.value("control_point_filtering").toObject()).toJson().toStdString()));
+  }
+  result.control_point_filtering = take(hm::stitching::read_control_point_filtering(effective));
   result.control_points = integer(object, "control_points", 10, 5000, 100);
   result.frame_count = integer(object, "frame_count", 1, 16, 1);
   result.stitch_frame_time = RequiredString(object, "stitch_frame_time", 32).toStdString();
@@ -294,6 +364,10 @@ QJsonObject settings_json(const StitchingExperimentSettings& value) {
       {"control_points", value.control_points},
       {"frame_count", value.frame_count},
       {"stitch_frame_time", text(value.stitch_frame_time)}};
+  if (value.camera)
+    result.insert("camera", camera_json(*value.camera));
+  if (value.control_point_filtering)
+    result.insert("control_point_filtering", filtering_json(*value.control_point_filtering));
   if (value.control_point_matcher)
     result.insert("control_point_matcher", text(*value.control_point_matcher));
   if (value.control_point_resolution)
@@ -317,9 +391,8 @@ StitchingExperimentWorkspace workspace(const Request& request) {
   result.game_id = RequiredString(object, "game_id", 255).toStdString();
   result.invalidation_id = RequiredString(object, "invalidation_id", 128).toStdString();
   require(result.game_directory.filename() == result.game_id, "Workspace game identity mismatch");
-  result.settings = settings(object.value("settings").toObject());
-  result.settings.camera = take(
-      hm::stitching::read_stitch_camera_selection(YAML::LoadFile((result.game_directory / "config.yaml").string())));
+  result.settings =
+      settings(object.value("settings").toObject(), YAML::LoadFile((result.game_directory / "config.yaml").string()));
   const auto manual = object.value("settings").toObject().value("manual_control_points").toString();
   if (!manual.isEmpty())
     result.settings.manual_control_points = manual.toStdString();
@@ -446,7 +519,8 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
       created = take(CreateStagedStitchingExperimentWorkspace(
           request.game,
           request.root / "experiments",
-          settings(request.payload.value("settings").toObject()),
+          settings(
+              request.payload.value("settings").toObject(), YAML::LoadFile((request.game / "config.yaml").string())),
           sequence,
           authorized_media));
     } else {
