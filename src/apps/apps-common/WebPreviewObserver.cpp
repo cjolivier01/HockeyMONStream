@@ -150,6 +150,7 @@ WebPreviewObserver::Message WebPreviewObserver::Handle(JsonObject* object) {
     if (json_object_get_size(object) != 7 || !decimal(object, "batch", &batch) || batch != outstanding_batch_)
       return rejected();
     outstanding_batch_ = 0;
+    acknowledged_batches_.fetch_add(1, std::memory_order_relaxed);
     return Message::kAcknowledged;
   }
   PacketFrame receipt{};

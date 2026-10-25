@@ -103,11 +103,15 @@ int main(int argc, char** argv) {
       observer.dropped_events() == 16 && monitor->counters().history_evicted == 5 &&
           handle(observer, receipt(2)) == Message::kRejected && handle(observer, receipt(9)) == Message::kPresented,
       "Bounded history did not evict old frames or retain latest receipt");
+  const auto presentations_before_ack = monitor->counters().presented;
   passed &= expect(
       handle(observer, base("preview-frames-ack") + ",\"batch\":\"2\"}") == Message::kRejected &&
           handle(observer, base("preview-frames-ack") + ",\"batch\":\"1\"}") == Message::kAcknowledged &&
           handle(observer, base("preview-frames-ack") + ",\"batch\":\"1\"}") == Message::kRejected,
       "Batch acknowledgment admitted stale/duplicate credit");
+  passed &= expect(
+      observer.acknowledged_batches() == 1 && monitor->counters().presented == presentations_before_ack,
+      "Batch acknowledgment changed presentation evidence or counted rejected credit");
   passed &= expect(deliver(*monitor, 10) && deliver(*monitor, 11) && deliver(*monitor, 12), "Burst failed");
   batch = observer.Poll();
   passed &= expect(
@@ -118,6 +122,10 @@ int main(int argc, char** argv) {
       observer.Retire(2) && !observer.Retire(1) && !observer.Poll() &&
           handle(observer, receipt(12)) == Message::kRejected && !observer.TakePresented(),
       "Peer retirement preserved events or receipt before endpoint replacement");
+  passed &= expect(
+      handle(observer, base("preview-frames-ack") + ",\"batch\":\"2\"}") == Message::kRejected &&
+          observer.acknowledged_batches() == 1,
+      "Retired peer refreshed receiver liveness");
   passed &= expect(
       monitor->SetPeer(2) && observer.Activate(2) && !observer.Activate(1) && deliver(*monitor, 13),
       "Replacement observer could not admit fresh IDR");

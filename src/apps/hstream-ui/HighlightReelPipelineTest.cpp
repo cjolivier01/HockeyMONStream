@@ -462,6 +462,19 @@ int main(int argc, char** argv) {
       app->processEvents();
       QThread::msleep(10);
     }
+    const auto before_hidden = pipeline.Poll().position_ms;
+    window.hide();
+    for (int i = 0; i < 650; ++i) {
+      app->processEvents();
+      QThread::msleep(10);
+    }
+    const auto hidden = pipeline.Poll();
+    if (hidden.finished || !hidden.error.isEmpty() || hidden.position_ms <= before_hidden + 1000) {
+      std::cerr << "Backgrounding the authored preview stopped its reel timeline\n";
+      return 1;
+    }
+    window.show();
+    app->processEvents();
     pipeline.Cancel();
     if (!wait(pipeline, 5000, true))
       return 1;

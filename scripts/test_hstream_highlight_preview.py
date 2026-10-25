@@ -116,7 +116,7 @@ def wait(predicate, process, log, timeout=40):
     raise AssertionError(log.read_text(errors="replace")[-6000:])
 
 
-def exercise(args, *, loop, connect=True, abandon=False):
+def exercise(args, *, loop, connect=True, abandon=False, background=False):
     root = args.artifacts / str(uuid.uuid4())
     root.mkdir()
     (root / "game").mkdir()
@@ -240,13 +240,16 @@ def exercise(args, *, loop, connect=True, abandon=False):
                 with sync_playwright() as playwright:
                     browser = playwright.chromium.launch(
                         executable_path=args.chrome,
-                        headless=True,
+                        headless=not args.headed,
                         args=[
                             "--no-sandbox",
                             "--autoplay-policy=no-user-gesture-required",
                         ],
                     )
-                    page = browser.new_page(viewport={"width": 1280, "height": 720})
+                    browser_context = browser.new_context(
+                        viewport={"width": 1280, "height": 720}
+                    )
+                    page = browser_context.new_page()
                     failures = []
                     page.on("pageerror", lambda error: failures.append(str(error)))
                     page.goto(f"http://127.0.0.1:{server.server_port}/")
@@ -269,8 +272,19 @@ def exercise(args, *, loop, connect=True, abandon=False):
                       window.receipts = []; window.colors = []; window.cueColors = []; window.messages = []; window.completed = false;
                       window.audioPeak = 0;
                       const audioContext = new AudioContext();
-                      let audioSource, analyser;
+                      let audioSource, analyser, audioMedia;
+                      window.sampleAudio = () => {
+                        if (!analyser) return 0;
+                        const sample = new Float32Array(analyser.fftSize);
+                        analyser.getFloatTimeDomainData(sample);
+                        return Math.max(...sample.map(Math.abs));
+                      };
                       const video = document.getElementById('video');
+                      const requestFrame = video.requestVideoFrameCallback.bind(video);
+                      video.requestVideoFrameCallback = callback => {
+                        window.lastFrameCallback = callback;
+                        return requestFrame(callback);
+                      };
                       const canvas = document.createElement('canvas'); canvas.width = 1; canvas.height = 1;
                       const context = canvas.getContext('2d', {willReadFrequently:true});
                       window.player = new StreamHighlightPreview({run, video,
@@ -282,7 +296,9 @@ def exercise(args, *, loop, connect=True, abandon=False):
                           colors.push(Array.from(context.getImageData(0,0,1,1).data));
                           context.drawImage(video, video.videoWidth*.1, video.videoHeight*.25, 1, 1, 0, 0, 1, 1);
                           cueColors.push(Array.from(context.getImageData(0,0,1,1).data));
-                          if (!audioSource && video.srcObject?.getAudioTracks().length) {
+                          if (audioMedia !== video.srcObject && video.srcObject?.getAudioTracks().length) {
+                            audioSource?.disconnect();
+                            audioMedia = video.srcObject;
                             audioSource = audioContext.createMediaStreamSource(video.srcObject);
                             analyser = audioContext.createAnalyser(); analyser.fftSize = 256;
                             audioSource.connect(analyser);
@@ -320,6 +336,94 @@ def exercise(args, *, loop, connect=True, abandon=False):
                             max(v.get("position_ms", 0) for v in events(log_path))
                             > 3000
                         )
+                        if background:
+                            page.wait_for_function(
+                                "sampleAudio() > 0.01", timeout=10000
+                            )
+                            page.evaluate("""() => {
+                              video.muted = false;
+                              video.cancelVideoFrameCallback(player.presenter.callback);
+                              player.presenter.callback = null;
+                            }""")
+                            page.wait_for_timeout(250)
+                            before = max(
+                                int(v.get("presented", "0")) for v in events(log_path)
+                            )
+                            background_tab = page.context.new_page()
+                            background_tab.goto("about:blank")
+                            background_tab.bring_to_front()
+                            desktop = None
+                            if args.headed:
+                                # Playwright may place pages in separate desktop
+                                # windows. Minimize this test window so the real
+                                # browser visibility state is unambiguously hidden.
+                                desktop = browser_context.new_cdp_session(page)
+                                window = desktop.send("Browser.getWindowForTarget")
+                                desktop.send(
+                                    "Browser.setWindowBounds",
+                                    {
+                                        "windowId": window["windowId"],
+                                        "bounds": {"windowState": "minimized"},
+                                    },
+                                )
+                                page.wait_for_timeout(250)
+                            hidden = page.evaluate("document.hidden")
+                            if args.headed and not hidden:
+                                print(
+                                    "NOTE: Chrome kept document.hidden=false after tab change/minimize; this run qualifies suspended frame callbacks, not real hidden-tab visibility.",
+                                    flush=True,
+                                )
+                            page.wait_for_timeout(7000)
+                            background_audio = page.evaluate("""async () => {
+                              let peak = 0;
+                              for (let i = 0; i < 8; ++i) {
+                                peak = Math.max(peak, sampleAudio());
+                                await new Promise(resolve => setTimeout(resolve, 250));
+                              }
+                              return peak;
+                            }""")
+                            assert (
+                                background_audio > 0.01
+                            ), "Background source audio stopped"
+                            assert process.poll() is None, log_path.read_text(
+                                errors="replace"
+                            )[-2000:]
+                            assert (
+                                max(
+                                    int(v.get("presented", "0"))
+                                    for v in events(log_path)
+                                )
+                                == before
+                            ), "ACKs were counted as presented frames"
+                            if desktop:
+                                desktop.send(
+                                    "Browser.setWindowBounds",
+                                    {
+                                        "windowId": window["windowId"],
+                                        "bounds": {"windowState": "normal"},
+                                    },
+                                )
+                            page.bring_to_front()
+                            page.evaluate(
+                                "player.presenter.callback = video.requestVideoFrameCallback(lastFrameCallback)"
+                            )
+                            page.wait_for_function(
+                                "before => receipts.length > before + 3",
+                                arg=page.evaluate("receipts.length"),
+                                timeout=10000,
+                            )
+                            background_tab.close()
+                            print(
+                                f"PASS background={hidden} no_frame_callbacks=7000ms native_presented={before} audio_peak={background_audio}",
+                                flush=True,
+                            )
+                            # Keep the peer open but stop returning batch credit.
+                            # Transport alone cannot retain the GPU indefinitely.
+                            page.evaluate("""() => {
+                              const send = player.presenter.send;
+                              player.presenter.send = value => value.type === 'preview-frames-ack' ? true : send(value);
+                            }""")
+                            page.wait_for_function("completed", timeout=15000)
                     else:
                         page.wait_for_function("completed", timeout=30000)
                     assert page.evaluate(
@@ -377,6 +481,12 @@ def main():
     parser.add_argument("--web-root", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="Use a real desktop to qualify hidden-tab behavior",
+    )
+    parser.add_argument("--liveness-only", action="store_true")
+    parser.add_argument(
         "--chrome", default=shutil.which("google-chrome") or shutil.which("chromium")
     )
     args = parser.parse_args()
@@ -391,11 +501,15 @@ def main():
     args.web_root = args.web_root.resolve()
     args.artifacts = args.artifacts.resolve()
     args.artifacts.mkdir(exist_ok=True, parents=True)
+    if args.liveness_only:
+        exercise(args, loop=True, abandon=True, background=True)
+        return
     exercise(args, loop=True)
     exercise(args, loop=False)
     exercise(args, loop=True, connect=False)
     exercise(args, loop=True, connect=False, abandon=True)
     exercise(args, loop=True, abandon=True)
+    exercise(args, loop=True, abandon=True, background=True)
 
 
 if __name__ == "__main__":

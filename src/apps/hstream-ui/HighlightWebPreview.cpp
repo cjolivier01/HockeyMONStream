@@ -12,6 +12,7 @@
 namespace hm::ui {
 struct HighlightWebPreview::Impl {
   std::unique_ptr<hm::preview::WebPreviewTarget> target;
+  std::shared_ptr<hm::preview::WebPreviewObserver> observer;
   GstElement* graph{nullptr}; // The reel's stopped-before-destruction owner.
   GMainContext* context{g_main_context_new()};
   GMainLoop* loop{g_main_loop_new(context, FALSE)};
@@ -20,6 +21,7 @@ struct HighlightWebPreview::Impl {
   std::mutex progress_mutex;
   std::chrono::steady_clock::time_point progress;
   uint64_t presented{0};
+  uint64_t acknowledged{0};
   unsigned connect_timeout_ms, disconnect_timeout_ms;
   ~Impl() {
     g_main_loop_unref(loop);
@@ -127,6 +129,7 @@ std::unique_ptr<HighlightWebPreview> HighlightWebPreview::Create(
   auto signaling = state.target->Signaling({{config.run, 0, 1}, o.poll_interval_ms, o.events_per_batch});
   if (!signaling)
     return fail("Could not prepare authored preview signaling");
+  state.observer = signaling->observer;
   std::promise<bool> ready;
   auto result = ready.get_future();
   state.signaling = std::thread([&state, port = config.port, signaling, ready = std::move(ready)]() mutable {
@@ -177,15 +180,20 @@ bool HighlightWebPreview::CheckPresentation(std::string* error) {
   std::lock_guard<std::mutex> lock(state.progress_mutex);
   const auto now = std::chrono::steady_clock::now();
   const auto count = counters().presented;
-  if (count != state.presented) {
+  const auto acknowledged = state.observer->acknowledged_batches();
+  // Browsers may suspend video-frame callbacks in background tabs while
+  // continuing audio and signaling. Keep initial playback gated by an actual
+  // presented frame, then accept current-peer batch ACKs only as liveness.
+  if (count != state.presented || (state.presented && acknowledged != state.acknowledged)) {
     state.presented = count;
     state.progress = now;
   }
+  state.acknowledged = acknowledged;
   if (now - state.progress <=
       std::chrono::milliseconds(state.presented ? state.disconnect_timeout_ms : state.connect_timeout_ms))
     return true;
   if (error)
-    *error = state.presented ? "Authored preview stopped receiving browser frame receipts"
+    *error = state.presented ? "Authored preview stopped receiving browser acknowledgments"
                              : "Authored preview browser did not connect before its deadline";
   return false;
 }

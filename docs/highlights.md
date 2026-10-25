@@ -47,7 +47,9 @@ Cards have editable text, background/text colors, type size/weight, and duration
 The companion web reel uses this same authored pipeline through hardware
 H.264/Opus WebRTC. It waits for an accepted first browser frame before advancing
 the reel, supports native looping and peer reconnection, and cancels on Stop or
-dialog/page close. Receipt deadlines retire abandoned clients. Browser item
+dialog/page close. After its first exact presentation, accepted frame-batch
+acknowledgments keep healthy background tabs alive even when the browser suspends
+video-frame callbacks; acknowledgement deadlines retire abandoned clients. Browser item
 editor inspection and in-frame cue/recorded-track picking remain unfinished;
 see `docs/web-workflows.md` for the live transport contract and comparison test.
 

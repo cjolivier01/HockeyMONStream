@@ -185,8 +185,12 @@ replacement fences receipts by peer generation. Signaling retires before graph
 EOS/NULL, including cancellation without a connected peer.
 
 The canonical `web_preview.authored_connect_timeout_ms` and
-`authored_disconnect_timeout_ms` bound initial browser absence and lost accepted
-presentations. The outer supervisor still owns descendant cleanup and keeps the
+`authored_disconnect_timeout_ms` bound initial browser absence and lost current-peer
+frame-batch acknowledgments. Playback still requires an exact first presentation;
+after that, accepted metadata acknowledgments prove receiver liveness independently
+of video-frame callbacks, which browsers may suspend in background tabs. These
+acknowledgments never uncover pixels or count as presented frames. The outer
+supervisor still owns descendant cleanup and keeps the
 recording reserved until it confirms termination. Closing the dialog/page asks
 that supervisor to cancel; a lost request cannot leave an endless loop running.
 
@@ -200,6 +204,14 @@ gateway. Compare with `highlight_reel_pipeline_test` on a GPU-backed X11 display
 Xvfb cannot provide its CUDA/OpenGL preview interop. Use Xvfb for
 `highlight_item_editor_interaction_test`, and the offscreen platform for
 `highlights_dialog_test`.
+
+Add `--headed --liveness-only` on a desktop to attempt a real tab/window background
+transition, suspend frame callbacks longer than the configured deadline, restore
+fresh presentations, and then verify timeout when batch acknowledgments stop
+despite an open peer. The result records `document.hidden`; Chromium 155 on the
+current desktop keeps it false even after tab switching/minimizing, so that run
+qualifies suspended callbacks, not an actual hidden-tab transition. The Qt reel
+test hides its native preview while the timeline continues.
 
 ## Trusted runtime for candidate solves
 
