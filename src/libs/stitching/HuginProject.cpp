@@ -618,14 +618,17 @@ absl::Status validate_nonempty_file(const fs::path& path) {
   return absl::OkStatus();
 }
 
-absl::StatusOr<int> lock_stitch_transactions(const fs::path& root) {
+absl::StatusOr<int> lock_stitch_transactions(const fs::path& root, bool wait = true) {
   const fs::path path = root / ".hstream-stitch.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (descriptor < 0)
     return absl::InternalError("Unable to open stitch transaction lock: " + std::string(std::strerror(errno)));
-  if (::flock(descriptor, LOCK_EX) != 0) {
-    const std::string message = std::strerror(errno);
+  if (::flock(descriptor, LOCK_EX | (wait ? 0 : LOCK_NB)) != 0) {
+    const int lock_errno = errno;
+    const std::string message = std::strerror(lock_errno);
     ::close(descriptor);
+    if (!wait && (lock_errno == EWOULDBLOCK || lock_errno == EAGAIN))
+      return absl::UnavailableError("Stitching artifacts are being updated");
     return absl::InternalError("Unable to lock stitch transaction: " + message);
   }
   return descriptor;
@@ -1827,11 +1830,13 @@ HuginProject::ArtifactLock::~ArtifactLock() {
   }
 }
 
-absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> HuginProject::RecoverAndLock(const fs::path& game_dir) {
+absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> HuginProject::RecoverAndLock(
+    const fs::path& game_dir,
+    bool wait) {
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)
     return absl::NotFoundError("Unable to recover Hugin artifacts outside an existing game directory");
-  auto descriptor = lock_stitch_transactions(game_dir);
+  auto descriptor = lock_stitch_transactions(game_dir, wait);
   if (!descriptor.ok())
     return descriptor.status();
   auto lock = std::unique_ptr<ArtifactLock>(new ArtifactLock(*descriptor));
@@ -1839,7 +1844,8 @@ absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> HuginProject::Recove
   // journal. Recover that inner transaction first so an AWAITING_CONFIG
   // stitch journal never decides from a config rename that the rink journal
   // would subsequently roll back.
-  auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
+  auto config_transaction =
+      wait ? GameConfigTransactionLock::Acquire(game_dir) : GameConfigTransactionLock::TryAcquire(game_dir);
   if (!config_transaction.ok())
     return config_transaction.status();
   auto recovery = recover_stitch_transactions_locked(game_dir);

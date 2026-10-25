@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -54,6 +55,27 @@ constexpr size_t kMaximumBodyBytes = 4 * 1024;
 constexpr size_t kMaximumSnapshotBytes = 256 * 1024 * 1024;
 constexpr auto kTokenLifetime = std::chrono::minutes(30);
 constexpr auto kDefaultClientLifetime = std::chrono::seconds(10);
+
+template <class Acquire>
+auto acquire_scoreboard_lock(Acquire acquire, const std::function<bool()>& is_cancelled) -> decltype(acquire(true)) {
+  if (!is_cancelled)
+    return acquire(true);
+  while (!is_cancelled()) {
+    auto lock = acquire(false);
+    if (lock.ok() || !absl::IsUnavailable(lock.status()))
+      return lock;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return absl::CancelledError("Scoreboard save expired before changing the selection");
+}
+
+auto acquire_scoreboard_config(const fs::path& game, const std::function<bool()>& is_cancelled) {
+  return acquire_scoreboard_lock(
+      [&](bool wait) {
+        return wait ? GameConfigTransactionLock::Acquire(game) : GameConfigTransactionLock::TryAcquire(game);
+      },
+      is_cancelled);
+}
 
 std::string snapshot_identity(const struct stat& metadata) {
   std::ostringstream value;
@@ -645,13 +667,15 @@ absl::Status ScoreboardSelector::Save(
     const fs::path& game_dir,
     const Polygon& polygon,
     const std::optional<CanvasGeneration>& expected_generation,
-    const fs::path& single_source_reference) {
+    const fs::path& single_source_reference,
+    const std::function<bool()>& is_cancelled) {
   if (!single_source_reference.empty() &&
       (!expected_generation.has_value() || !expected_generation->hugin_generation.empty()))
     return absl::InvalidArgumentError("A private source reference requires an unstitched canvas generation");
   std::unique_ptr<HuginProject::ArtifactLock> hugin_lock;
   if (expected_generation.has_value() && !expected_generation->hugin_generation.empty()) {
-    auto lock = HuginProject::RecoverAndLock(game_dir);
+    auto lock =
+        acquire_scoreboard_lock([&](bool wait) { return HuginProject::RecoverAndLock(game_dir, wait); }, is_cancelled);
     if (!lock.ok())
       return lock.status();
     auto current_generation = HuginProject::GenerationId(game_dir, **lock);
@@ -663,14 +687,14 @@ absl::Status ScoreboardSelector::Save(
     }
     hugin_lock = std::move(*lock);
   }
-  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  auto config_lock = acquire_scoreboard_config(game_dir, is_cancelled);
   if (!config_lock.ok())
     return config_lock.status();
   std::unique_ptr<GameConfigTransactionLock> reference_lock;
   if (!single_source_reference.empty()) {
     if (fs::equivalent(game_dir, single_source_reference))
       return absl::InvalidArgumentError("A source reference must be private to the run");
-    auto lock = GameConfigTransactionLock::Acquire(single_source_reference);
+    auto lock = acquire_scoreboard_config(single_source_reference, is_cancelled);
     if (!lock.ok())
       return lock.status();
     bool same_sources = false;
@@ -747,16 +771,22 @@ absl::Status ScoreboardSelector::Save(
   }
   std::ostringstream serialized;
   serialized << config << '\n';
+  // A deadline stops an unstarted mutation. Once publication starts, only its
+  // result can establish whether the selection changed; elapsed time cannot.
+  if (is_cancelled && is_cancelled())
+    return absl::CancelledError("Scoreboard save expired before changing the selection");
   return publish_game_config(game_dir, serialized.str());
 }
 
 absl::StatusOr<ScoreboardSelector::CanvasSnapshot> ScoreboardSelector::OpenCanvas(
     const fs::path& game_dir,
-    bool allow_single_source) {
-  auto hugin_lock = HuginProject::RecoverAndLock(game_dir);
+    bool allow_single_source,
+    const std::function<bool()>& is_cancelled) {
+  auto hugin_lock =
+      acquire_scoreboard_lock([&](bool wait) { return HuginProject::RecoverAndLock(game_dir, wait); }, is_cancelled);
   if (!hugin_lock.ok())
     return hugin_lock.status();
-  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  auto config_lock = acquire_scoreboard_config(game_dir, is_cancelled);
   if (!config_lock.ok())
     return config_lock.status();
   YAML::Node config(YAML::NodeType::Map);

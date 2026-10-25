@@ -1,4 +1,5 @@
 #include <cmath>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -251,6 +252,24 @@ YAML::Node save_scoreboard(const fs::path& game, const fs::path& request_path) {
   if (fs::file_size(request_path) > 16384)
     throw std::runtime_error("Scoreboard request exceeds the metadata limit");
   const YAML::Node request = YAML::LoadFile(request_path.string());
+  std::function<bool()> is_cancelled;
+  if (request["deadline"]) {
+    const double deadline = request["deadline"].as<double>();
+    if (!std::isfinite(deadline) || deadline <= 0)
+      throw std::runtime_error("Scoreboard save deadline must be a positive monotonic timestamp");
+    is_cancelled = [deadline] {
+      timespec now{};
+      if (::clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        throw std::runtime_error("Cannot read the scoreboard save deadline clock");
+      return static_cast<double>(now.tv_sec) + static_cast<double>(now.tv_nsec) / 1e9 >= deadline;
+    };
+  }
+  const auto unchanged = [](const absl::Status& status) {
+    YAML::Node result;
+    result["status"] = "unchanged";
+    result["error"] = status.ToString();
+    return result;
+  };
   const YAML::Node points = request["points"];
   if (!points.IsSequence() || points.size() != 4)
     throw std::runtime_error("Scoreboard requires four points");
@@ -273,8 +292,11 @@ YAML::Node save_scoreboard(const fs::path& game, const fs::path& request_path) {
   if (!source_reference.empty() &&
       (!expected.hugin_generation.empty() || canvas["game_directory"].as<std::string>() != game.string()))
     throw std::runtime_error("Private scoreboard reference belongs to a different source or game");
-  const auto current_canvas =
-      take(stitching::ScoreboardSelector::OpenCanvas(source_reference.empty() ? game : source_reference, true));
+  auto opened =
+      stitching::ScoreboardSelector::OpenCanvas(source_reference.empty() ? game : source_reference, true, is_cancelled);
+  if (absl::IsCancelled(opened.status()))
+    return unchanged(opened.status());
+  const auto current_canvas = take(std::move(opened));
   if (current_canvas.width != canvas["width"].as<int>() || current_canvas.height != canvas["height"].as<int>() ||
       current_canvas.generation.hugin_generation != expected.hugin_generation ||
       current_canvas.generation.stitched_output_generation != expected.stitched_output_generation ||
@@ -284,13 +306,17 @@ YAML::Node save_scoreboard(const fs::path& game, const fs::path& request_path) {
     polygon = take(
         stitching::ScoreboardSelector::ValidateAndOrder(
             polygon, canvas["width"].as<int>(), canvas["height"].as<int>()));
+  absl::Status saved;
   if (source_reference.empty()) {
-    check(stitching::ScoreboardSelector::Save(game, polygon, expected));
+    saved = stitching::ScoreboardSelector::Save(game, polygon, expected, {}, is_cancelled);
   } else if (canvas["persist_to_game"].as<bool>()) {
-    check(stitching::ScoreboardSelector::Save(game, polygon, expected, source_reference));
+    saved = stitching::ScoreboardSelector::Save(game, polygon, expected, source_reference, is_cancelled);
   } else {
-    check(stitching::ScoreboardSelector::Save(source_reference, polygon, expected));
+    saved = stitching::ScoreboardSelector::Save(source_reference, polygon, expected, {}, is_cancelled);
   }
+  if (absl::IsCancelled(saved))
+    return unchanged(saved);
+  check(saved);
   YAML::Node result;
   for (const auto& point : polygon) {
     YAML::Node pair;

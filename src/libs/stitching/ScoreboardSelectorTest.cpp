@@ -19,6 +19,7 @@
 #include <arpa/inet.h>
 #include <opencv2/imgcodecs.hpp>
 #include <signal.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -669,6 +670,45 @@ int main() {
     ok &= expect(
         absl::IsAborted(Selector::Save(single_directory, disabled, reference_canvas->generation, source_reference)),
         "A saved source change during selection must reject the private canvas");
+  }
+  const auto cancellation_game = directory / "cancelled-save";
+  std::filesystem::create_directories(cancellation_game);
+  const std::string original_config =
+      "game: {videos: {source: [source.mp4]}}\nrink: {scoreboard: {perspective_polygon: [[2,2],[30,2],[30,10],[2,10]]}}\n";
+  std::ofstream(cancellation_game / "config.yaml") << original_config;
+  cv::imwrite((cancellation_game / "s.png").string(), replacement_snapshot);
+  auto cancellation_canvas = Selector::OpenCanvas(cancellation_game, true);
+  ok &= expect(cancellation_canvas.ok(), "deadline fixture must open its native canvas");
+  const int held_config = ::open((cancellation_game / ".hstream-config.lock").c_str(), O_RDWR);
+  ok &= expect(held_config >= 0 && ::flock(held_config, LOCK_EX) == 0, "deadline fixture must hold config lock");
+  auto expires = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+  auto cancelled = [&] { return std::chrono::steady_clock::now() >= expires; };
+  auto blocked_canvas = Selector::OpenCanvas(cancellation_game, true, cancelled);
+  ok &= expect(absl::IsCancelled(blocked_canvas.status()), "canvas lock wait must honour the save deadline");
+  if (cancellation_canvas.ok()) {
+    expires = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+    ok &= expect(
+        absl::IsCancelled(Selector::Save(cancellation_game, disabled, cancellation_canvas->generation, {}, cancelled)),
+        "config lock wait must expire without saving");
+  }
+  ::close(held_config);
+  if (cancellation_canvas.ok()) {
+    int cancellation_checks = 0;
+    ok &= expect(
+        absl::IsCancelled(
+            Selector::Save(
+                cancellation_game,
+                disabled,
+                cancellation_canvas->generation,
+                {},
+                [&] { return ++cancellation_checks > 1; })),
+        "a deadline reached after acquiring ownership must still prevent publication");
+    std::ifstream unchanged_file(cancellation_game / "config.yaml");
+    const std::string unchanged_config((std::istreambuf_iterator<char>(unchanged_file)), {});
+    ok &= expect(unchanged_config == original_config, "cancelled native save must preserve exact config bytes");
+    ok &= expect(
+        Selector::Save(cancellation_game, disabled, cancellation_canvas->generation, {}, [] { return false; }).ok(),
+        "a nonexpired save must still commit after an expired attempt");
   }
   std::filesystem::remove_all(directory);
   return ok ? 0 : 1;

@@ -273,7 +273,10 @@ class HuginProject {
   // Recover and retain the publication lock while a caller decodes the flat
   // artifact set. This prevents a concurrent calibration from exposing a
   // mixed generation to ControlMasks readers.
-  static absl::StatusOr<std::unique_ptr<ArtifactLock>> RecoverAndLock(const std::filesystem::path& game_dir);
+  // With wait=false, return Unavailable if a stitch/config/rink lock is held.
+  static absl::StatusOr<std::unique_ptr<ArtifactLock>> RecoverAndLock(
+      const std::filesystem::path& game_dir,
+      bool wait = true);
 
   // Identifies the currently published flat Hugin generation. The supplied
   // lock must still be held so every artifact belongs to one generation.

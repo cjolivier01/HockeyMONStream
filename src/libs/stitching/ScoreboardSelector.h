@@ -36,7 +36,8 @@ class ScoreboardSelector {
   // The immutable bytes and identity are captured together under native locks.
   static absl::StatusOr<CanvasSnapshot> OpenCanvas(
       const std::filesystem::path& game_dir,
-      bool allow_single_source = false);
+      bool allow_single_source = false,
+      const std::function<bool()>& is_cancelled = {});
 
   // Compare source ownership independently from stitched artifacts.
   static absl::StatusOr<bool> SameSingleSource(
@@ -49,7 +50,8 @@ class ScoreboardSelector {
       const std::filesystem::path& game_dir,
       const Polygon& polygon,
       const std::optional<CanvasGeneration>& expected_generation = std::nullopt,
-      const std::filesystem::path& single_source_reference = {});
+      const std::filesystem::path& single_source_reference = {},
+      const std::function<bool()>& is_cancelled = {});
   // Wait for the operator, but release the video worker promptly on pipeline stop.
   static absl::Status Run(const std::filesystem::path& game_dir, const std::function<bool()>& is_cancelled = {});
 };

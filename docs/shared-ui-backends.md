@@ -56,7 +56,14 @@ canvas in the private backend session. The Qt selector uses the session's pinned
 PNG and corners, never a saved pair's `s.png`. Native save verifies the source
 playlist under the game config lock before persisting to a saved single-source
 game. Temporary source overrides retain their selection only for the current run,
-including seeks. Once Python's frame-owner mailbox is ready, its pause receipt
+including seeks. Save requests may carry an absolute `CLOCK_MONOTONIC` deadline;
+native canvas validation and transaction lock acquisition poll that deadline,
+then check it under ownership immediately before publication. Expiry before
+mutation returns an explicit `unchanged` result. Once publication starts, only
+its result determines whether the selection changed. HockeyMON retains timed-out
+HTTP requests and prevents Cancel from claiming no change while the outcome is
+pending, unknown or already committed.
+Once Python's frame-owner mailbox is ready, its pause receipt
 includes `mode=cooperative` only after the frame owner stops advancement. Qt keeps
 the supervisor alive to serve selection and other runtime requests; resume also
 waits for the frame-owner receipt. Startup and native pauses retain SIGSTOP and
