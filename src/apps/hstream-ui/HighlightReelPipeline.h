@@ -4,6 +4,7 @@
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
 
 namespace hm::ui {
+struct HighlightWebPreviewConfig;
 // One decoder at a time, one continuous output encoder/mux, and bounded NVMM
 // pools. Preview and export share source timing and all authored GPU rendering.
 class HighlightReelPipeline {
@@ -14,6 +15,7 @@ class HighlightReelPipeline {
     qint64 archive_offset_ms{0};
     ArchiveMediaInfo media;
     quint64 window_id{0}; // nonzero for preview; output_path for export
+    std::shared_ptr<const HighlightWebPreviewConfig> web_preview;
     bool loop{false};
     qint64 inspect_game_ms{-1}; // hold one authored frame for positioning
   };
@@ -22,6 +24,8 @@ class HighlightReelPipeline {
     QString error;
     qint64 position_ms{0}, total_ms{0};
     int item{-1};
+    bool waiting_for_browser{false};
+    quint64 presented_frames{0};
   };
   HighlightReelPipeline();
   ~HighlightReelPipeline();

@@ -157,6 +157,7 @@ absl::StatusOr<WebPreviewOptions> ReadWebPreviewOptions(const YAML::Node& resolv
     // pipeline. Fewer conversion buffers can stall before the first output.
     READ(conversion_pool_frames, 8, 8);
     READ(bitrate, 1, 100000000);
+    READ(audio_bitrate, 4000, 650000);
     READ(idr_interval, 1, 600);
     READ(h264_profile, 0, 4);
     READ(encoder_tuning, 2, 3);
@@ -169,8 +170,13 @@ absl::StatusOr<WebPreviewOptions> ReadWebPreviewOptions(const YAML::Node& resolv
     READ(queue_frames, 1, 8);
     READ(browser_max_frames, 1, 4096);
     READ(browser_max_age_ms, 100, 30000);
+    READ(authored_connect_timeout_ms, 1000, 300000);
+    READ(authored_disconnect_timeout_ms, 1000, 300000);
 #undef READ
     options.initial_channel = node["initial_channel"].as<std::string>();
+    options.stun_server = node["stun_server"].as<std::string>();
+    if (options.stun_server.size() > 2048 || options.stun_server.find('\0') != std::string::npos)
+      return absl::InvalidArgumentError("Invalid web_preview.stun_server");
     if (!Channel(options.initial_channel) || options.width % 2 || options.height % 2 ||
         options.rate_numerator > 60 * options.rate_denominator || options.h264_profile == 3 ||
         options.rtp_payload == 97 || options.events_per_batch > options.pending_events ||

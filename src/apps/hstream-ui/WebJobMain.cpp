@@ -11,6 +11,7 @@
 #include "src/apps/hstream-ui/HighlightReelPipeline.h"
 #include "src/apps/hstream-ui/HighlightScene.h"
 #include "src/apps/hstream-ui/HighlightTracking.h"
+#include "src/apps/hstream-ui/HighlightWebPreview.h"
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
@@ -32,6 +33,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -53,6 +55,7 @@ using hm::web::Request;
 using hm::web::RequiredString;
 using hm::web::WriteObject;
 volatile std::sig_atomic_t interrupted = 0;
+unsigned preview_port = 0; // Assigned only by the supervisor's command line.
 void cancel(int) {
   interrupted = 1;
 }
@@ -246,8 +249,48 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
   hm::ui::HighlightReelPipeline::Request job;
   job.archive_path = plan.archive_path;
   job.asset_root = qs(request.root);
-  job.output_path = qs(request.root / "highlights.mp4");
-  require(!fs::exists(job.output_path.toStdString()), "Refusing to replace an existing reel output");
+  const bool live = request.operation == "highlight-live-preview";
+  if (live) {
+    require(request.payload.value("loop").isBool(), "Live highlight preview requires an explicit loop choice");
+    require(preview_port, "Live highlight preview requires a supervisor-assigned signaling port");
+    auto config = std::make_shared<hm::ui::HighlightWebPreviewConfig>();
+    config->options = take(hm::preview::ReadWebPreviewOptions(take(hm::baseline_config::load()).values));
+    config->run = request.run_id;
+    config->port = preview_port;
+    config->stun_server = config->options.stun_server;
+    job.web_preview = config;
+    job.loop = request.payload.value("loop").toBool();
+    const auto& o = config->options;
+    const QJsonObject descriptor{
+        {"version", 1},
+        {"run", text(request.run_id)},
+        {"stage", 0},
+        {"topology", "1"},
+        {"operation", "1"},
+        {"channel", "program"},
+        {"channels", QJsonArray{"program"}},
+        {"width", int(o.width)},
+        {"height", int(o.height)},
+        {"seek", false},
+        {"receiptLimits",
+         QJsonObject{{"maxFrames", int(o.browser_max_frames)}, {"maxAgeMs", int(o.browser_max_age_ms)}}}};
+    std::cout << "HSTREAM_HIGHLIGHT_PREVIEW "
+              << QJsonDocument(
+                     QJsonObject{
+                         {"version", 1},
+                         {"kind", "session"},
+                         {"run", text(request.run_id)},
+                         {"stage", 0},
+                         {"generation", 1},
+                         {"presentation", descriptor}})
+                     .toJson(QJsonDocument::Compact)
+                     .constData()
+              << std::endl;
+  } else {
+    require(!preview_port, "A signaling port is only valid for live highlight preview");
+    job.output_path = qs(request.root / "highlights.mp4");
+    require(!fs::exists(job.output_path.toStdString()), "Refusing to replace an existing reel output");
+  }
   job.items = selected;
   job.archive_offset_ms = integer(request.payload, "archive_offset_ms", 0, 86400000, 0);
   if (!job.archive_path.isEmpty())
@@ -265,6 +308,25 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
     if (interrupted)
       pipeline.Cancel();
     const auto status = pipeline.Poll();
+    if (live) {
+      std::cout << "HSTREAM_HIGHLIGHT_PREVIEW "
+                << QJsonDocument(
+                       QJsonObject{
+                           {"version", 1},
+                           {"kind", "state"},
+                           {"run", text(request.run_id)},
+                           {"stage", 0},
+                           {"generation", 1},
+                           {"position_ms", status.position_ms},
+                           {"duration_ms", duration},
+                           {"item", status.item},
+                           {"waiting", status.waiting_for_browser},
+                           {"finished", status.finished},
+                           {"presented", QString::number(status.presented_frames)}})
+                       .toJson(QJsonDocument::Compact)
+                       .constData()
+                << std::endl;
+    }
     if (status.finished) {
       require(!status.cancelled && !interrupted, "cancelled");
       require(status.error.isEmpty(), status.error.toStdString());
@@ -272,7 +334,8 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
-  artifacts.append(Artifact(request, request.root / "highlights.mp4", "video"));
+  if (!live)
+    artifacts.append(Artifact(request, request.root / "highlights.mp4", "video"));
   return {{"duration_ms", duration}, {"items", selected.size()}};
 }
 
@@ -928,9 +991,19 @@ int main(int argc, char** argv) {
     std::cout << QJsonDocument(hm::web::Capabilities()).toJson(QJsonDocument::Compact).constData() << '\n';
     return 0;
   }
-  if (argc != 3 || std::string(argv[1]) != "--request") {
+  if ((argc != 3 && argc != 4) || std::string(argv[1]) != "--request") {
     std::cerr << "usage: hstream-web-job --request JOB_ROOT/operation-request.json | --capabilities\n";
     return 64;
+  }
+  if (argc == 4) {
+    const std::string argument(argv[3]), prefix("--preview-port=");
+    if (argument.rfind(prefix, 0) != 0)
+      return 64;
+    const auto digits = argument.substr(prefix.size());
+    const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), preview_port);
+    if (parsed.ec != std::errc{} || parsed.ptr != digits.data() + digits.size() || preview_port < 1024 ||
+        preview_port > 65535)
+      return 64;
   }
   std::optional<Request> request;
   bool previous_receipt = false;
@@ -940,6 +1013,9 @@ int main(int argc, char** argv) {
   QGuiApplication application(argc, argv);
   try {
     request = hm::web::LoadRequest(argv[2]);
+    require(
+        !preview_port || request->operation == "highlight-live-preview",
+        "Signaling is only available for live highlight preview");
     const auto hash = QCryptographicHash::hash(
                           QJsonDocument(ReadObject(argv[2])).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256)
                           .toHex();

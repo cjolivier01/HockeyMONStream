@@ -8,7 +8,7 @@ HSTREAM_CLI_SRCS = glob(
         "*.cpp",
         "*.h",
     ],
-    exclude = ["*Test.cpp", "PlayerModelCache.cpp", "AmdPipelineApp.cpp", "AmdPipelineOptions.cpp"],
+    exclude = ["*Test.cpp", "PlayerModelCache.cpp", "AmdPipelineApp.cpp", "AmdPipelineOptions.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h"],
 )
 
 HSTREAM_CLI_COPTS = [
@@ -32,6 +32,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    ":web_preview_options",
     "//src/apps/apps-common:web_preview_target",
     "//src/apps/apps-common:preview_overlay_painter",
     "//src/apps/apps-common:preview_overlay_scene",
@@ -91,11 +92,26 @@ HSTREAM_CLI_DEPS = [
     "@com_google_absl//absl/cleanup",
 ]
 
+cc_library(
+    name = "web_preview_options",
+    srcs = ["WebPreviewOptions.cpp"],
+    hdrs = ["WebPreviewOptions.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/apps/apps-common:preview_route_owner",
+        "//src/libs/program:preview_overlay_config",
+        "@yaml-cpp",
+        "@json_glib",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
 cc_test(
     name = "web_preview_options_test",
-    srcs = ["WebPreviewOptionsTest.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h", "WebPreviewRuntime.h"],
+    srcs = ["WebPreviewOptionsTest.cpp", "WebPreviewRuntime.h"],
     data = ["//configs:baseline.yaml"],
     deps = [
+        ":web_preview_options",
         "//src/apps/apps-common:preview_route_owner",
         "//src/libs/program:preview_overlay_config",
         "@yaml-cpp",

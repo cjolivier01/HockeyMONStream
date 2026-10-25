@@ -44,6 +44,13 @@ Cards have editable text, background/text colors, type size/weight, and duration
 
 **Preview selected/all** and **Loop selected/all** show the authored sequence on the native NVIDIA/X11 preview. Resize or maximize the dialog; the preview's top-right icon expands/restores its layout. **Stop** restores that layout and cancels the active job. Cancellation finishes asynchronous cleanup before another job starts or the dialog closes.
 
+The companion web reel uses this same authored pipeline through hardware
+H.264/Opus WebRTC. It waits for an accepted first browser frame before advancing
+the reel, supports native looping and peer reconnection, and cancels on Stop or
+dialog/page close. Receipt deadlines retire abandoned clients. Browser item
+editor inspection and in-frame cue/recorded-track picking remain unfinished;
+see `docs/web-workflows.md` for the live transport contract and comparison test.
+
 Preview and export share `HighlightReelPipeline`, `HighlightScene`, and the CUDA texture compositor. One archive decoder runs at a time. Decoded NVMM frames are copied device-to-device into six owned output surfaces, then annotated there. Video pixels are never downloaded for drawing. Only static text/shapes/cards/logos are rasterized on the CPU and uploaded once per item; the artwork budget is 128 MiB per item. Preview scales to at most 1280×720; export retains even archive dimensions up to 8192 per side. Eight-bit exports use H.264 or HEVC according to the archive; ten-bit exports use RGB10A2 rendering and HEVC/P010 encoding. NVIDIA decoding, conversion and hardware encoding are required. The desktop feature remains excluded from the repository's Jetson build, as the existing Qt UI is; the shared CUDA compositor builds separately.
 
 Video and stereo 48 kHz PCM audio are placed on one output timeline. Audio is trimmed at sample boundaries, with silence for cards, missing audio and gaps. Decoded timestamps map through their source segments so MP4 edit lists retain delayed audio/video positions. The controller seeks to a keyframe, restarts the NVIDIA decoder after preroll, and trims decoded frames/samples itself without a decoder stop-time seek. Source frame timestamps determine video boundaries; cuts can fall between frames, with precision limited to the source frame cadence. The native pipeline drains one encoder and MP4 mux at reel end; AAC padding occurs once, rather than accumulating at every join. There are no FFmpeg rendering, encoding or concatenation jobs. The dialog still uses `ffprobe` solely for archive inspection.

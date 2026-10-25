@@ -685,12 +685,27 @@ cc_library(
 )
 
 cc_library(
+    name = "highlight_web_preview",
+    srcs = ["HighlightWebPreview.cpp"],
+    hdrs = ["HighlightWebPreview.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        "//src/apps/hstream-cli:web_preview_options",
+        "//src/apps/apps-common:web_preview_target",
+        "//src/apps/apps-common:webrtc_signaling",
+        "//src/apps/apps-common:webrtc_endpoint",
+        "@gstreamer",
+    ],
+)
+
+cc_library(
     name = "highlight_reel_pipeline",
     srcs = ["HighlightReelPipeline.cpp"],
     hdrs = ["HighlightReelPipeline.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_scene", ":highlight_mp4_audio", ":highlights_encode_settings", "//src/libs/highlights:texture_blend",
+    deps = [":highlight_web_preview", ":highlight_scene", ":highlight_mp4_audio", ":highlights_encode_settings", "//src/libs/highlights:texture_blend",
             "//src/apps/apps-common:hm_gpu_preview", "@deepstream//:deepstream_lib", "@gstreamer", "@qt//:qt_gui"],
 )
 
@@ -1249,6 +1264,7 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":highlight_web_preview",
         ":web_job_spec",
         "//src/libs/common:baseline_config",
         ":calibration_image",

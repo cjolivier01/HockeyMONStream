@@ -24,14 +24,16 @@ absl::StatusOr<PreviewReferenceGeometry> ReadPreviewReferenceGeometry(const YAML
 // deliberately has no usable defaults and is shared with the CPU admission test.
 struct WebPreviewOptions {
   unsigned width, height, rate_numerator, rate_denominator;
-  unsigned surface_pool_frames, conversion_pool_frames, bitrate, idr_interval;
+  unsigned surface_pool_frames, conversion_pool_frames, bitrate, audio_bitrate, idr_interval;
   unsigned h264_profile, encoder_tuning, rtp_payload;
   unsigned pending_frames, pending_events, presentation_history;
   unsigned poll_interval_ms, events_per_batch, queue_frames;
   unsigned browser_max_frames, browser_max_age_ms;
+  unsigned authored_connect_timeout_ms, authored_disconnect_timeout_ms;
   unsigned program_reference_width, program_reference_height;
   unsigned source_reference_width, source_reference_height;
   std::string initial_channel;
+  std::string stun_server;
 };
 
 absl::StatusOr<WebPreviewOptions> ReadWebPreviewOptions(const YAML::Node& resolved);

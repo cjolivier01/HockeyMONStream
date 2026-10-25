@@ -69,6 +69,7 @@ contract, then testing both interfaces against the same native checkout.
 | Operation | Payload and behavior |
 | --- | --- |
 | `highlight-preview`, `highlight-render` | Native schema-2 `plan`, optional `archive_path`, `archive_offset_ms`, and `selected_indices`. The existing GPU reel pipeline encodes cards, clips, overlays and audio to `highlights.mp4`. Preview is bounded to 30 seconds; export to 24 hours. Cards alone need no archive. Asset and recorded-binding paths must be run-relative. |
+| `highlight-live-preview` | The same plan/assets/selection, plus required boolean `loop`. Plays the shared native authored reel through hardware H.264/Opus WebRTC, without an MP4 artifact. The supervisor supplies `--preview-port=N`; payloads cannot select ports. Finite completion publishes only `operation-data.json`; Stop/cancellation publishes no artifact. |
 | `highlight-card-preview` | One authored card in a native schema-2 `plan`, with no `archive_path` or `selected_indices`. Uses the desktop's `RasterHighlightCard` to publish `highlight-card.png`, fitted to the selected archive's aspect inside the existing 1920×1080 raster bound. Returns `preview`, `width`, `height`, `source_width`, and `source_height`. Requires the frozen metadata probe described below. |
 | `calibration-complete` | Trusted setup postprocessor after a successful bounded calibration-only CLI run. Requires nonempty `invalidation_id` matching the persisted owner and optional boolean `require_ice_mask`. Validates the native generation, completes its calibration state, and publishes `game/setup-preview.png` from the existing panorama using the shared bounded (1920-pixel maximum) reader. Missing panorama or generation fails the operation. Returns `state`, `invalidation_id`, and `preview`; the receipt retains calibration artifacts for adoption. |
 | `matches-read` | Optional `fingerprint`; omission reads the current native match snapshot. Optional trusted `workspace` selects an experiment instead of the main game. Returns original camera images, dimensions and endpoints. |
@@ -151,7 +152,40 @@ preview when the card editor opens with an archive selected, and Preview card
 renders the current unsaved fields. Stop/close retire that modal's generation
 and cancel its pending run, including admission that returns after close.
 Late result and image-load callbacks cannot repopulate a retired preview.
-Video/cue authored preview and in-frame positioning remain separate work.
+The reel's Preview/Loop actions use `highlight-live-preview` for moving video and
+authored cues. The item editor's held-frame inspection, in-frame positioning and
+recorded-track picking remain separate work.
+
+## Live authored reel
+
+`HighlightWebPreview` adapts `HighlightReelPipeline` to the shared
+`WebPreviewTarget` and `WebRtcSignaling`; Qt and web use the same archive decoder,
+card raster, cue compositor, audio timeline and loop implementation. The target
+converts only GPU-owned output surfaces and uses hardware H.264 encoding. Static
+artwork remains the existing bounded CPU raster; video is never read back.
+
+The first authored frame repeats with silence until an exact native/browser
+presentation receipt is accepted. Source audio/video then start at one common
+timestamp offset, so short reels cannot finish during negotiation. Browser
+replacement fences receipts by peer generation. Signaling retires before graph
+EOS/NULL, including cancellation without a connected peer.
+
+The canonical `web_preview.authored_connect_timeout_ms` and
+`authored_disconnect_timeout_ms` bound initial browser absence and lost accepted
+presentations. The outer supervisor still owns descendant cleanup and keeps the
+recording reserved until it confirms termination. Closing the dialog/page asks
+that supervisor to cancel; a lost request cannot leave an endless loop running.
+
+Run `scripts/test_hstream_highlight_preview.py --native-root PATH --web-root PATH
+--artifacts /tmp/highlight-preview-check` with NVIDIA hardware, Chromium and
+Playwright. It uses the production browser player and verifies decoded card/clip
+and cue pixels, non-silent source audio, exact receipts, looping, reconnect,
+finite completion, cancellation and abandoned-client cleanup. Its fixture
+redirects state/ticket/signaling addresses; it does not qualify the authenticated
+gateway. Compare with `highlight_reel_pipeline_test` on a GPU-backed X11 display;
+Xvfb cannot provide its CUDA/OpenGL preview interop. Use Xvfb for
+`highlight_item_editor_interaction_test`, and the offscreen platform for
+`highlights_dialog_test`.
 
 ## Trusted runtime for candidate solves
 
