@@ -1,6 +1,7 @@
 #include "PreviewGpuSurface.h"
 
 #include "SelectedPreviewStream.h"
+#include "hstream/src/libs/draw_display/OpaqueVideoCanvas.h"
 
 #include <nvbufsurface.h>
 #include <nvbufsurftransform.h>
@@ -142,11 +143,15 @@ bool render(State& state, GstBuffer* input, Surface& output) {
     transform.transform_filter = NvBufSurfTransformInter_Bilinear;
     transform.src_rect = &source_rect;
     transform.dst_rect = &destination_rect;
-    // Clear the full owned surface on the same GPU stream before fitting the
-    // source. A previous route's pixels must never remain in letterbox bars.
-    rendered = cudaMemset2DAsync(out.dataPtr, out.pitch, 0, out.width * 4, out.height, state.stream) == cudaSuccess &&
-        NvBufSurfTransformSetSessionParams(&session) == NvBufSurfTransformError_Success &&
-        NvBufSurfTransform(source, output.value, &transform) == NvBufSurfTransformError_Success;
+    // Fit first, then clear bars and normalize owned video alpha in one GPU
+    // pass. Transparent panorama corners must blend drawings like Qt's opaque
+    // RGB video pass. Neither source nor archive pixels are modified.
+    rendered = NvBufSurfTransformSetSessionParams(&session) == NvBufSurfTransformError_Success &&
+        NvBufSurfTransform(source, output.value, &transform) == NvBufSurfTransformError_Success &&
+        hm::draw_display::FinishOpaqueVideoCanvas(
+            {out.dataPtr, out.pitch, out.width, out.height},
+            {destination_rect.left, destination_rect.top, width, height},
+            state.stream) == cudaSuccess;
     if (rendered && state.painter) {
       try {
         rendered = state.painter(

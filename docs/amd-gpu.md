@@ -39,6 +39,10 @@ explicit logical coordinate extent mapped onto a bounded output viewport.
 `AlphaMaskOverlay` uses the same CUDA/HIP kernel for bilinear coverage with a
 transparent border and affine inverse crop/rotation. Both primitive suites pass
 on AMD hardware at `ripper` and NVIDIA; the native Qt OpenGL pixel oracle runs on x86 CUDA.
+The shared `OpaqueVideoCanvas` kernel also clears bars and normalizes only the
+owned output alpha before drawing. Its pixel, transparent-corner blend and
+padding regressions pass on NVIDIA and AMD (`ripper`); a 100-frame 1080p pass
+measured 0.0400 ms/frame on AMD. This does not enable a HIP/VA browser target.
 No production HIP/VA browser painter or route is enabled by these primitives.
 `PreviewOverlayPainter` now shares Qt's unchanged aliased diagnostic paths via
 `GpuGlSurface`, with the same CUDA/HIP graphics interop implementation. The HIP

@@ -90,6 +90,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":selected_preview_stream",
+        "//src/libs/draw_display:opaque_video_canvas",
+        "//src/libs/draw_display:opaque_video_canvas_headers",
         "//toolchains/jetson:cuda_runtime",
         "@deepstream//:deepstream_lib",
         "@gstreamer",

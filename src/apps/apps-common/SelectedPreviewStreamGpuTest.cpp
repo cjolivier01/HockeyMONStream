@@ -39,6 +39,27 @@ GstPadProbeReturn add_native_metadata(GstPad*, GstPadProbeInfo* info, gpointer d
   // through the selector and hardware encoder, raw video stays in NVMM.
   if (source->source)
     GST_BUFFER_PTS(buffer) += 3600 * GST_SECOND;
+  else {
+    // Test-only transparent panorama corner on the RGBA source. The target
+    // must normalize its owned copy without changing this source allocation.
+    GstMapInfo map{};
+    if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+      ++source->errors;
+      return GST_PAD_PROBE_DROP;
+    }
+    if (map.size < sizeof(NvBufSurface)) {
+      gst_buffer_unmap(buffer, &map);
+      ++source->errors;
+      return GST_PAD_PROBE_DROP;
+    }
+    auto* surface = reinterpret_cast<NvBufSurface*>(map.data);
+    const auto result = cudaMemset(static_cast<unsigned char*>(surface->surfaceList[0].dataPtr) + 3, 0, 1);
+    gst_buffer_unmap(buffer, &map);
+    if (result != cudaSuccess) {
+      ++source->errors;
+      return GST_PAD_PROBE_DROP;
+    }
+  }
   NvDsBatchMeta* batch = nvds_create_batch_meta(1);
   if (batch)
     batch->max_frames_in_batch = 1;
@@ -119,13 +140,24 @@ bool paint_owned(GstBuffer* input, const hm::preview::OwnedSurfaceView& output, 
   bool valid = source && source->surfaceList && source->surfaceList[0].dataPtr != output.rgba && output.width == 640 &&
       output.height == 360 && output.video.width == expected_width && output.video.height == 360 &&
       output.video.left == (640 - expected_width) / 2 && output.video.top == 0;
-  // Test-only four-byte readback verifies cleared letterbox bars. Production
+  // Test-only bounded readbacks verify cleared bars and owned alpha. Production
   // adapter code performs GPU-only copies and never maps raw video to the CPU.
   std::array<unsigned char, 4> border{255, 255, 255, 255};
   valid &=
       cudaMemcpyAsync(border.data(), output.rgba, border.size(), cudaMemcpyDeviceToHost, output.stream) == cudaSuccess;
   valid &= cudaStreamSynchronize(output.stream) == cudaSuccess;
-  valid &= border[0] == 0 && border[1] == 0 && border[2] == 0;
+  valid &= border[0] == 0 && border[1] == 0 && border[2] == 0 && border[3] == 255;
+  if (std::string(identity->channel) == "program") {
+    std::array<unsigned char, 4> original{}, copied{};
+    auto* owned = static_cast<unsigned char*>(output.rgba) + output.video.left * 4;
+    valid &=
+        cudaMemcpyAsync(
+            original.data(), source->surfaceList[0].dataPtr, original.size(), cudaMemcpyDeviceToHost, output.stream) ==
+        cudaSuccess;
+    valid &= cudaMemcpyAsync(copied.data(), owned, copied.size(), cudaMemcpyDeviceToHost, output.stream) == cudaSuccess;
+    valid &= cudaStreamSynchronize(output.stream) == cudaSuccess;
+    valid &= original[3] == 0 && copied[3] == 255;
+  }
   // Exercise drawing on this owned output before the encoder's independent
   // conversion stream receives it. The source's device memory stays separate.
   auto* mark = static_cast<unsigned char*>(output.rgba) + output.video.left * 4;

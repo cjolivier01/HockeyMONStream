@@ -4,6 +4,28 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 INCLUDE_PREFIX = "hstream/src/libs/draw_display"
 
 cc_library(
+    name = "opaque_video_canvas_headers",
+    hdrs = ["OpaqueVideoCanvas.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":analytics_overlay_headers"],
+)
+
+gpu_library(
+    name = "opaque_video_canvas",
+    srcs = ["OpaqueVideoCanvas.cu"],
+    visibility = ["//visibility:public"],
+    deps = [":opaque_video_canvas_headers"],
+)
+
+cc_test(
+    name = "opaque_video_canvas_test",
+    srcs = ["OpaqueVideoCanvasTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":opaque_video_canvas", ":opaque_video_canvas_headers", ":analytics_overlay"],
+)
+
+cc_library(
     name = "rink_mini_map_options",
     hdrs = ["RinkMiniMapOptions.h"],
     include_prefix = INCLUDE_PREFIX,

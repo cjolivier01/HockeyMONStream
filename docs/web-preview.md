@@ -99,12 +99,22 @@ check; these attachment tests do not qualify AMD consumers.
 memory and source-buffer pool ownership, and assigns a monotonic presentation
 clock without changing source PTS. `PreviewGpuSurface` bounds cadence and pool
 ownership, fits differing source shapes into one GPU RGBA canvas, and lends only
-that owned surface to a painter. All dimensions, rates and pool sizes must be
+that owned surface to a painter. After fitting, `OpaqueVideoCanvas` clears bars
+and forces alpha255 in one shared CUDA/HIP pass, replacing the preceding memset.
+Qt displays RGB video without source transparency; preserving alpha0 panorama
+corners would make a later translucent watermark incorrectly become full red.
+Only the owned canvas changes, and source/archive alpha remains untouched.
+All dimensions, rates and pool sizes must be
 passed explicitly; no new default set is defined by these APIs. Its GPU fixture
 uses CPU patterns only at source creation, then keeps raw frames on the GPU
 through conversion and hardware encoding. It verifies route changes, Render off,
 native metadata, source PTS, owned surface separation and pool exhaustion without
-stalling source progress. A four-byte test-only readback checks cleared bars.
+stalling source progress. Bounded test-only readbacks check cleared bars, opaque
+owned pixels and unchanged alpha0 source pixels. `opaque_video_canvas_test` also
+checks partial-alpha inputs, RGB/pitch preservation, invalid geometry and the
+transparent-corner overlay blend. Its 100-frame 1080p GPU timing on 2026-10-25
+was 0.0045 ms/frame on NVIDIA and 0.0400 ms/frame on AMD; these are primitive
+measurements, not end-to-end browser latency.
 `PreviewTransportFrames` separately bounds frame/encoded/RTP identity and fences
 route and peer epochs. The opt-in session connects them to native headless
 routes; authenticated gateway and browser deployment require their separate
