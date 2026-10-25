@@ -47,6 +47,11 @@ absl::Status ConfigureOutputRinkMap(HmApp& app, const std::filesystem::path& gam
     return absl::OkStatus();
   }
   settings->options.home_is_dark = app.config.player_analytics_config.analytics.home_is_dark;
+  return InstallOutputRinkMap(app, {*settings, *map, 0});
+}
+absl::Status InstallOutputRinkMap(AppCtx& app, const rink_map::Configuration& config) {
+  if (!config.settings.enabled || !config.map)
+    return absl::OkStatus();
   g_object_set_data(G_OBJECT(app.pipeline.pipeline), "hstream-output-rink-map", GINT_TO_POINTER(1));
   if (auto* producer = app.pipeline.dsplaytracker_bin.elem_dsplaytracker) {
     unsigned flags = 0;
@@ -58,8 +63,15 @@ absl::Status ConfigureOutputRinkMap(HmApp& app, const std::filesystem::path& gam
   auto* upstream = app.pipeline.dsplaytracker_bin.bin;
   if (!upstream)
     upstream = app.pipeline.common_elements.tracker_bin.bin;
+  // Stitched-only archives deliberately omit inference and tracking. Freeze an
+  // empty snapshot from the stitcher so the reviewed outline still renders.
   if (!upstream)
-    return absl::FailedPreconditionError("Output rink map requires the tracked Program path");
+    upstream = app.pipeline.hmstitcher_bin.elem_hmstitcher;
+  if (!upstream) {
+    g_printerr("HSTREAM_OUTPUT_RINK_MAP status=unavailable message=No stitched frame producer\n");
+    g_object_set_data(G_OBJECT(app.pipeline.pipeline), "hstream-output-rink-map", nullptr);
+    return absl::OkStatus();
+  }
   auto* pad = gst_element_get_static_pad(upstream, "src");
   if (!pad)
     return absl::InternalError("Cannot find rink-map snapshot pad");
@@ -85,7 +97,7 @@ absl::Status ConfigureOutputRinkMap(HmApp& app, const std::filesystem::path& gam
           gst_object_unref(sink);
         return absl::InternalError("Missing encoder input link");
       }
-      auto filter = rink_map::Create({*settings, *map, int(encoder.gpu_id)});
+      auto filter = rink_map::Create({config.settings, config.map, int(encoder.gpu_id)});
       if (!filter.ok()) {
         gst_object_unref(peer);
         gst_object_unref(sink);

@@ -596,3 +596,12 @@ py_test(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
 )
+
+cc_test(
+    name = "output_rink_map_test",
+    srcs = ["OutputRinkMapTest.cpp", "OutputRinkMap.cpp", "OutputRinkMap.h", "deepstream_app.h", "configurator.h"],
+    copts = HSTREAM_CLI_COPTS,
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    deps = HSTREAM_CLI_DEPS,
+    target_compatible_with = select({"//:use_hip": ["@platforms//:incompatible"], "//conditions:default": []}),
+)
