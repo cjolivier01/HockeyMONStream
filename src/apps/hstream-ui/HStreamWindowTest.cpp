@@ -1623,7 +1623,12 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "print('HSTREAM_STARTUP stage=stitching message=Discovering source chapters and validating saved stitching "
       "artifacts', flush=True)\n");
-  file.write("time.sleep(float(os.environ.get('HSTREAM_UI_TEST_STARTUP_DELAY_MS', '0')) / 1000.0)\n");
+  file.write("startup_hold = os.environ.get('HSTREAM_UI_TEST_STARTUP_HOLD_DIR', '')\n");
+  file.write("startup_deadline = time.monotonic() + 30.0\n");
+  file.write("while startup_hold and os.path.isdir(startup_hold):\n");
+  file.write("    if time.monotonic() >= startup_deadline:\n");
+  file.write("        sys.exit('test did not release the startup hold')\n");
+  file.write("    time.sleep(0.005)\n");
   file.write(
       "print('HSTREAM_STARTUP stage=decoding message=Starting decoders and waiting for the first frame', "
       "flush=True)\n");
@@ -5398,16 +5403,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW", "1");
   qputenv("HSTREAM_UI_TEST_PREVIEW_TIMEOUT_MS", "20");
   qputenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER", "1");
-  qputenv("HSTREAM_UI_TEST_STARTUP_DELAY_MS", "150");
+  // Hold the fake runner in this stage until its presentation is inspected;
+  // a short fixed delay can expire before Qt runs under concurrent builds.
+  QTemporaryDir startup_hold;
+  if (!expect(startup_hold.isValid(), "Could not prepare the startup-stage hold"))
+    return false;
+  qputenv("HSTREAM_UI_TEST_STARTUP_HOLD_DIR", startup_hold.path().toLocal8Bit());
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
     surface->setProperty("previewRendererState", "ready");
   }
   activate(start);
-  for (int i = 0; i < 100 && !playback_progress->format().contains("validating saved stitching artifacts"); ++i) {
+  for (int i = 0; i < 500 && !playback_progress->format().contains("validating saved stitching artifacts"); ++i) {
     QApplication::processEvents();
     QTest::qWait(5);
   }
-  qunsetenv("HSTREAM_UI_TEST_STARTUP_DELAY_MS");
+  qunsetenv("HSTREAM_UI_TEST_STARTUP_HOLD_DIR");
   if (!expect(
           playback_progress->isVisible() && playback_progress->minimum() == 0 && playback_progress->maximum() == 0 &&
               playback_progress->format().contains("STARTING") &&
@@ -5435,6 +5445,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Program")) {
     return false;
   }
+  if (!expect(startup_hold.remove(), "Could not release the startup-stage hold"))
+    return false;
   for (int i = 0; i < 200 &&
        (!window->logText().contains("one-pass stitching calibration complete; continuous program playback running") ||
         window->pipelineStateText() != "PLAYING");
@@ -5607,14 +5619,31 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             static_cast<long double>(displayed_playback_position_ns) * seek_slider->maximum() /
             static_cast<long double>(displayed_playback_duration_ns)))
       : seek_slider->minimum();
-  const QString expected_restored_seek_text = displayed_playback_duration_ns > 0
-      ? QString("%1 / %2").arg(
-            format_test_video_time_ns(displayed_playback_position_ns),
-            format_test_video_time_ns(displayed_playback_duration_ns))
-      : "00:00:00 / --:--:--";
+  const auto current_seek_position_text = [window]() {
+    const qint64 position_ns = HStreamWindowTestAccess::playbackPositionNs(window);
+    const qint64 duration_ns = HStreamWindowTestAccess::playbackDurationNs(window);
+    return duration_ns > 0
+        ? QString("%1 / %2").arg(format_test_video_time_ns(position_ns), format_test_video_time_ns(duration_ns))
+        : QString("00:00:00 / --:--:--");
+  };
+  const QString expected_restored_seek_text = current_seek_position_text();
   const bool outside_release_cancelled = !seek_slider->isSliderDown() &&
       seek_slider->value() == expected_restored_seek_value && seek_position->text() == expected_restored_seek_text &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
+  // Playback can advance between cancelled gestures (including delayed reset
+  // samples). Each cancellation must restore the latest accepted position,
+  // rather than the position captured after the first cancellation.
+  const qint64 advanced_playback_position_ns = displayed_playback_position_ns + 1'000'000'000LL;
+  HStreamWindowTestAccess::handlePlaybackProgressOutput(
+      window,
+      QString("HSTREAM_PROGRESS processed_ns=%1 total_ns=600000000000 instance=aggregate generation=%2")
+          .arg(advanced_playback_position_ns)
+          .arg(HStreamWindowTestAccess::playbackResetGeneration(window)));
+  if (!expect(
+          HStreamWindowTestAccess::playbackPositionNs(window) == advanced_playback_position_ns &&
+              current_seek_position_text() != expected_restored_seek_text,
+          "The cancellation regression must advance accepted playback progress between gestures"))
+    return false;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
   seek_slider->setEnabled(false);
@@ -5622,7 +5651,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   seek_slider->setEnabled(true);
   QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_finish, 0);
   QApplication::processEvents();
-  const bool disabled_drag_sent_no_seek = seek_position->text() == expected_restored_seek_text &&
+  const bool disabled_drag_sent_no_seek = seek_position->text() == current_seek_position_text() &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
@@ -5631,7 +5660,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const bool ungrab_cancelled_drag = !seek_slider->isSliderDown();
   QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_finish, 0);
   QApplication::processEvents();
-  const bool ungrabbed_drag_sent_no_seek = seek_position->text() == expected_restored_seek_text &&
+  const bool ungrabbed_drag_sent_no_seek = seek_position->text() == current_seek_position_text() &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
