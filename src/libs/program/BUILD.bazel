@@ -3,6 +3,14 @@ load("//bazel:gpu_library.bzl", "gpu_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "tone_control_command",
+    srcs = ["ToneControlCommand.cpp"],
+    hdrs = ["ToneControlCommand.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":tone_controls"],
+)
+
+cc_library(
     name = "tone_controls",
     srcs = ["ToneControls.cpp"],
     hdrs = ["ToneControls.h"],

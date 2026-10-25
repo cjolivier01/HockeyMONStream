@@ -114,6 +114,7 @@ class PipelineApplication {
   absl::Status stopPipeline(std::shared_ptr<HmApp> app_context) const;
 
  private:
+  friend struct PipelineToneControlsTestAccess;
   // Callback and helper functions.
   static void all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   static void _intr_handler(int signum);
@@ -178,7 +179,10 @@ class PipelineApplication {
       const std::string& property_name,
       const std::string& value);
   bool set_element_properties_runtime(
-      const std::vector<std::tuple<std::string, std::string, std::string>>& assignments);
+      const std::vector<std::tuple<std::string, std::string, std::string>>& assignments,
+      std::string* failure_reason = nullptr,
+      bool emit_legacy_ack = true);
+  bool set_tone_controls_runtime(const std::string& line);
   struct PreparedRuntimeProperty {
     std::string original_value;
     std::string applied_value;
@@ -416,6 +420,7 @@ class PipelineApplication {
   std::atomic<bool> pipeline_recreation_active_{false};
   std::mutex pipeline_access_mu_;
   uint64_t inspector_topology_generation_ ABSL_GUARDED_BY(pipeline_access_mu_){0};
+  uint64_t last_tone_request_id_ ABSL_GUARDED_BY(pipeline_access_mu_){0};
   bool runtime_seek_recreation_timed_out_{false};
   bool runtime_seek_shutdown_requested_{false};
   std::atomic<uint64_t> runtime_seek_recovery_frame_generation_{0};

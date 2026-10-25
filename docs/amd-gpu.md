@@ -971,6 +971,12 @@ physical monitor/speaker output. The first model compilation can take longer
 than cached startup; a private virtual X11 display and null ALSA device are
 sufficient for protocol qualification.
 
+The native NVIDIA CLI's typed `set-tone-controls` transaction is not implemented
+by `ProgramRuntimeControl` on AMD. Shared tone IDs/ranges/scaling are available
+in `ToneControls`, but AMD must add the same stage/topology fencing, correlated
+completion and rollback/replay tests before an outer client enables that
+capability. The existing desktop wire and AMD startup tone settings are unchanged.
+
 On the RX 9060 XT, the real desktop check processed frames with detected tracks,
 acknowledged Render off/on, and restored Program at generation 5 after visiting
 the unavailable Stitched tab. A separate 120-frame native-window run covered

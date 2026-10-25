@@ -32,6 +32,8 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/program:tone_control_command",
+    "//src/libs/program:tone_controls",
     "//src/apps/apps-common:preview_route_owner",
     "//src/gst-plugins/gst-rink-map:overlay",
     "//src/libs/program:preview_overlay_runtime",
@@ -228,6 +230,30 @@ cc_test(
         "//src/libs/common:utils",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "pipeline_tone_controls_test",
+    srcs = ["PipelineToneControlsTest.cpp"],
+    copts = HSTREAM_CLI_COPTS,
+    target_compatible_with = select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [":pipeline_application_test_library"],
+)
+
+cc_library(
+    name = "pipeline_application_test_library",
+    testonly = True,
+    srcs = HSTREAM_CLI_SRCS,
+    copts = HSTREAM_CLI_COPTS + ["-DHSTREAM_PIPELINE_APPLICATION_LIBRARY"],
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    target_compatible_with = select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = HSTREAM_CLI_DEPS,
 )
 
 cc_test(

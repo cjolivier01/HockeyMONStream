@@ -1,5 +1,7 @@
 #include "OutputRinkMap.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/program/ToneControlCommand.h"
+#include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 /* clang-format off */
@@ -5156,13 +5158,13 @@ void json_add_int_member(JsonBuilder* builder, const char* name, gint64 value) {
   json_builder_add_int_value(builder, value);
 }
 
-void emit_inspector_response(JsonBuilder* builder) {
+void emit_runtime_json_response(JsonBuilder* builder, const char* prefix) {
   JsonGenerator* generator = json_generator_new();
   JsonNode* root = json_builder_get_root(builder);
   json_generator_set_root(generator, root);
   json_generator_set_pretty(generator, FALSE);
   gchar* document = json_generator_to_data(generator, nullptr);
-  g_print("HSTREAM_PIPELINE_INSPECTOR %s\n", document ? document : "{}");
+  g_print("%s %s\n", prefix, document ? document : "{}");
   std::fflush(stdout);
   g_free(document);
   json_node_free(root);
@@ -5181,7 +5183,7 @@ JsonBuilder* begin_inspector_response(const char* kind, guint64 request_id, cons
 
 void finish_inspector_response(JsonBuilder* builder) {
   json_builder_end_object(builder);
-  emit_inspector_response(builder);
+  emit_runtime_json_response(builder, "HSTREAM_PIPELINE_INSPECTOR");
   g_object_unref(builder);
 }
 
@@ -5480,6 +5482,122 @@ bool PipelineApplication::set_inspected_element_property_runtime(
   return true;
 }
 
+bool PipelineApplication::set_tone_controls_runtime(const std::string& line) {
+  hm::diagnostics::Breadcrumb("runtime-command", "set-tone-controls");
+  hm::program::ToneControlCommand command;
+  const auto parsed = hm::program::ParseToneControlCommand(line, &command);
+  std::string reason;
+  std::string message;
+  std::string tone_element;
+  bool applied = false;
+  {
+    // The same fence as inspector mutations: a reconstruction waits for an
+    // admitted transaction, and a request waiting on this lock rechecks the
+    // current topology before looking up any element or changing a property.
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    if (command.request_id && command.request_id <= last_tone_request_id_) {
+      reason = "stale-request";
+      message = "Tone request IDs must increase for this process; duplicate IDs are not reapplied";
+    } else {
+      if (command.request_id)
+        last_tone_request_id_ = command.request_id;
+      if (!parsed.ok()) {
+        reason = "invalid-command";
+        message = parsed.message();
+      } else if (int8_sample_output_) {
+        reason = "capture-active";
+        message = "Tone mutations are unavailable during INT8 sample capture";
+      } else if (
+          pipeline_recreation_active_.load(std::memory_order_acquire) ||
+          runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+        reason = "reconstructing";
+        message = "Pipeline reconstruction is in progress";
+      } else if (runtime_seek_pending_) {
+        reason = "seeking";
+        message = "Playback seek or frame recovery is in progress";
+      } else if (current_stage_ != command.stage || inspector_topology_generation_ != command.generation) {
+        reason = "stale-session";
+        message = "Tone request stage/topology generation is no longer current";
+      } else {
+        const auto stage = stage_app_contexts_.find(current_stage_);
+        if (stage == stage_app_contexts_.end() || stage->second.size() != 1 || !stage->second.front() ||
+            !stage->second.front()->pipeline.pipeline) {
+          reason = "unsupported-topology";
+          message = "Typed tone controls require exactly one active pipeline";
+        } else {
+          GstElement* pipeline = stage->second.front()->pipeline.pipeline;
+          GstElement* stitcher = gst_bin_get_by_name(GST_BIN(pipeline), "hmstitcher0");
+          gboolean high_bit_depth = FALSE;
+          if (stitcher) {
+            GParamSpec* precision = g_object_class_find_property(G_OBJECT_GET_CLASS(stitcher), "high-bit-depth");
+            if (!precision || G_PARAM_SPEC_VALUE_TYPE(precision) != G_TYPE_BOOLEAN ||
+                !(precision->flags & G_PARAM_READABLE)) {
+              reason = "precision-unavailable";
+              message = "Active stitcher does not expose its resolved precision";
+            } else {
+              g_object_get(stitcher, "high-bit-depth", &high_bit_depth, nullptr);
+            }
+            gst_object_unref(stitcher);
+          }
+          if (reason.empty() && (current_stage_ < 0 || stitching_calibration_only_) && !high_bit_depth) {
+            reason = "ineligible-calibration";
+            message = "Live calibration tone controls require high-bit-depth stitching";
+          }
+          if (reason.empty()) {
+            std::vector<std::tuple<std::string, std::string, std::string>> assignments;
+            for (const auto& spec : hm::program::kToneControls) {
+              const auto control =
+                  std::find_if(command.controls.begin(), command.controls.end(), [&](const auto& item) {
+                    return item.id == spec.id;
+                  });
+              if (control == command.controls.end())
+                continue;
+              const auto property = hm::program::BuildTonePropertyCommand(control->id, control->value, high_bit_depth);
+              if (!property.ok()) {
+                reason = "invalid-command";
+                message = property.status().message();
+                break;
+              }
+              tone_element = property->element;
+              assignments.emplace_back(property->element, property->property, property->value);
+            }
+            if (reason.empty()) {
+              // Reuse the Qt batch's prepare/validate/rollback and committed
+              // override replay. Only the correlated reply acknowledges this
+              // request; legacy per-property success lines are suppressed.
+              applied = set_element_properties_runtime(assignments, &message, false);
+              if (!applied)
+                reason = "apply-rejected";
+            }
+          }
+        }
+      }
+    }
+  }
+  JsonBuilder* reply = begin_inspector_response("set-result", command.request_id, applied ? "ok" : "error");
+  json_add_int_member(reply, "stage", command.stage);
+  json_add_int_member(reply, "generation", static_cast<gint64>(command.generation));
+  if (!applied) {
+    json_add_string_member(reply, "reason", reason);
+    json_add_string_member(reply, "message", message);
+  } else {
+    json_add_string_member(reply, "element", tone_element);
+    json_builder_set_member_name(reply, "controls");
+    json_builder_begin_array(reply);
+    for (const auto& control : command.controls) {
+      json_builder_begin_object(reply);
+      json_add_string_member(reply, "id", control.id);
+      json_add_int_member(reply, "value", control.value);
+      json_builder_end_object(reply);
+    }
+    json_builder_end_array(reply);
+  }
+  json_builder_end_object(reply);
+  emit_runtime_json_response(reply, "HSTREAM_TONE_CONTROLS");
+  g_object_unref(reply);
+  return applied;
+}
+
 bool PipelineApplication::set_element_property_runtime(
     const std::string& element_name,
     const std::string& property_name,
@@ -5579,7 +5697,16 @@ bool PipelineApplication::set_element_property_runtime(
 }
 
 bool PipelineApplication::set_element_properties_runtime(
-    const std::vector<std::tuple<std::string, std::string, std::string>>& assignments) {
+    const std::vector<std::tuple<std::string, std::string, std::string>>& assignments,
+    std::string* failure_reason,
+    bool emit_legacy_ack) {
+  if (failure_reason)
+    failure_reason->clear();
+  const auto fail = [failure_reason](const std::string& reason) {
+    if (failure_reason)
+      *failure_reason = reason;
+    return false;
+  };
   struct PendingAssignment {
     GstElement* element{nullptr};
     std::string element_name;
@@ -5613,7 +5740,7 @@ bool PipelineApplication::set_element_properties_runtime(
           "runtime command failed: property is not live-mutable here: %s.%s\n",
           element_name.c_str(),
           property_name.c_str());
-      return false;
+      return fail("property-not-live: " + element_name + "." + property_name);
     }
     GstElement* element = nullptr;
     for (const auto& app : app_ctx) {
@@ -5624,7 +5751,7 @@ bool PipelineApplication::set_element_properties_runtime(
     }
     if (!element) {
       g_printerr("runtime command failed: element not found: %s\n", element_name.c_str());
-      return false;
+      return fail("missing-element: " + element_name);
     }
     PendingAssignment assignment;
     assignment.element = element;
@@ -5633,7 +5760,7 @@ bool PipelineApplication::set_element_properties_runtime(
     if (!prepare_runtime_property(element_name, property_name, value, &assignment.prepared)) {
       assignment.prepared.original_value = value;
       pending.push_back(std::move(assignment));
-      return false;
+      return fail("property-preparation-failed: " + element_name + "." + property_name);
     }
     assignment.pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name.c_str());
     if (!assignment.pspec ||
@@ -5645,7 +5772,7 @@ bool PipelineApplication::set_element_properties_runtime(
           element_name.c_str(),
           property_name.c_str(),
           value.c_str());
-      return false;
+      return fail("invalid-property-value: " + element_name + "." + property_name);
     }
     if (assignments.size() > 1 && (assignment.pspec->flags & G_PARAM_READABLE) == 0) {
       pending.push_back(std::move(assignment));
@@ -5653,7 +5780,7 @@ bool PipelineApplication::set_element_properties_runtime(
           "runtime command failed: property has no rollback snapshot: %s.%s\n",
           element_name.c_str(),
           property_name.c_str());
-      return false;
+      return fail("property-not-readable: " + element_name + "." + property_name);
     }
     g_value_init(&assignment.previous, G_PARAM_SPEC_VALUE_TYPE(assignment.pspec));
     if ((assignment.pspec->flags & G_PARAM_READABLE) != 0) {
@@ -5706,17 +5833,18 @@ bool PipelineApplication::set_element_properties_runtime(
         failed.element_name.c_str(),
         failed.property_name.c_str(),
         failed.prepared.original_value.c_str());
-    return false;
+    return fail("property-rejected: " + failed.element_name + "." + failed.property_name);
   }
   for (const PendingAssignment& assignment : pending) {
     if (!replaying_runtime_properties_) {
       commit_runtime_property(assignment.element_name, assignment.property_name, assignment.prepared);
     }
-    g_print(
-        "runtime property %s %s=%s\n",
-        assignment.element_name.c_str(),
-        assignment.property_name.c_str(),
-        assignment.prepared.original_value.c_str());
+    if (emit_legacy_ack)
+      g_print(
+          "runtime property %s %s=%s\n",
+          assignment.element_name.c_str(),
+          assignment.property_name.c_str(),
+          assignment.prepared.original_value.c_str());
   }
   return true;
 }
@@ -5896,6 +6024,10 @@ bool PipelineApplication::reapply_runtime_properties() {
 }
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
+  const std::string trimmed_line = trim_ascii(line);
+  if (trimmed_line == "set-tone-controls" || trimmed_line.rfind("set-tone-controls ", 0) == 0 ||
+      trimmed_line.rfind("set-tone-controls\t", 0) == 0)
+    return set_tone_controls_runtime(trimmed_line);
   if (int8_sample_output_) {
     g_printerr("Runtime mutations are unavailable during INT8 sample capture\n");
     return false;
@@ -5903,7 +6035,6 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kResetProgressCommand = "reset-progress-rate";
   constexpr absl::string_view kSeekRelativeCommand = "seek-relative";
   constexpr absl::string_view kSeekCommand = "seek";
-  const std::string trimmed_line = trim_ascii(line);
   hm::diagnostics::Breadcrumb("runtime-command", trimmed_line.substr(0, trimmed_line.find_first_of(" \t")));
   const bool prepare_process_pause = trimmed_line.rfind("process-pause ", 0) == 0;
   const bool resume_process_pause = trimmed_line.rfind("process-resume ", 0) == 0;
@@ -8904,6 +9035,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
 //------------------------------------------------------------------------------
 // Main function.
 //------------------------------------------------------------------------------
+#ifndef HSTREAM_PIPELINE_APPLICATION_LIBRARY
 int main(int argc, char* argv[]) {
 #if defined(__linux__)
   if (const char* expected_parent_text = std::getenv("HSTREAM_UI_PARENT_PID")) {
@@ -9025,3 +9157,4 @@ int main(int argc, char* argv[]) {
   }
   return finish(0);
 }
+#endif
