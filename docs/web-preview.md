@@ -5,7 +5,7 @@ with the browser is described in [web-preview-parity-design.md](web-preview-pari
 The route activation owner is shared native code. An explicit private
 `--web-preview-run-id=<UUID>` now installs selectable native routes and the
 presentation contract; ordinary `WEBRTC` launches retain the static output.
-This opt-in is not full Qt workflow parity: diagnostic strokes, replay-mask
+This opt-in is not full Qt workflow parity: live diagnostic controls, replay-mask
 ownership and audio/seek timeline qualification remain unfinished.
 
 `PreviewRouteOwner` owns logical route selection and its operation generation.
@@ -66,6 +66,16 @@ wrong run/stage/topology or an older operation. An activation acknowledgment
 does not establish browser presentation: the existing `preview-frames` /
 `preview-presented` exchange must match an actual decoded callback and receiver
 RTP timestamp/SSRC before uncovering the video.
+
+An authenticated local HockeyMONWeb run qualified this path against native
+`9b43282a` and web `292ed06`: Program, Stitched, both source routes, Render
+off/on, rapid tab changes, peer replacement and normal Stop passed. Native
+counters reported 102 presented frames, zero rejected presentations and zero
+probe failures. This used the production browser, authenticated signaling
+gateway, Slurm supervisor and original camera media. Calibration inputs/maps
+were reused after a precision change; their bytes and timestamps stayed the
+same and no dependency invalidation ran. Audio synchronization, seek, calibration
+reconstruction and live diagnostic controls remain separate qualifications.
 
 `RouteAttachment` in `PreviewRouteGraph.*` separates graph attachment from the
 consumer. The current Qt path uses its existing Program output tee, inserts a
