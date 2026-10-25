@@ -22,7 +22,9 @@ for HIP/VA surfaces. Its NVIDIA hardware test is not AMD preview qualification.
 `WebPreviewTarget` currently assembles only that CUDA-device surface path and
 the NVIDIA H.264 encoder. Its bounded `PreviewTransportMonitor`, separate
 `PreviewPresentationHistory` and optional `WebPreviewObserver` are CPU-only,
-but no HIP/VA target or AMD browser capability is registered. Jetson cross-build
+but no HIP/VA target or AMD browser capability is registered. The new explicit
+`--web-preview-run-id` CLI path remains NVIDIA-only; the AMD CLI does not admit
+that option or advertise selectable browser routes. Jetson cross-build
 success likewise does not qualify Jetson surface-array input or runtime encoding.
 
 ## Implemented paths

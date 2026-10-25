@@ -1612,6 +1612,9 @@ absl::Status PipelineApplication::configureInstances(
           !app_ctx->config.dsplaytracker_config.enable && !app_ctx->config.tracker_config.enable;
       app_ctx->config.hmsticher_config.preview_tap_only = app_ctx->config.hmsticher_config.ui_preview;
     }
+    if (!web_preview_run_id_.empty())
+      app_ctx->config.hmsticher_config.preview_tap_only =
+          !app_ctx->config.dsplaytracker_config.enable && !app_ctx->config.tracker_config.enable;
     const std::string video_converter = effective_video_converter_element_name(app_ctx->config);
     if (!stage_video_converter.has_value()) {
       stage_video_converter = video_converter;
@@ -1672,6 +1675,21 @@ absl::Status PipelineApplication::configureInstances(
 absl::Status PipelineApplication::createPipelines(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
     CleanupStack& cleanup_stack) {
+  if (!web_preview_run_id_.empty() && rink_mask_preparation_ == RinkMaskPreparation::kNone) {
+    if (app_contexts.size() != 1)
+      return absl::InvalidArgumentError("Selectable browser preview requires one native pipeline context");
+    HM_RETURN_IF_ERROR(prepare_web_preview(*app_contexts.front()));
+    // Also covers partial create_pipeline failures before createMainLoop has
+    // installed its ordinary graph cleanup. The target must outlive its graph.
+    cleanup_stack.push([this, app = app_contexts.front()] {
+      if (web_preview_) {
+        web_preview_->Stop();
+        if (app->pipeline.pipeline)
+          destroy_pipeline(app.get());
+        web_preview_.reset();
+      }
+    });
+  }
   // Section 2: Create pipelines for each instance.
   if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
     const auto& app = app_contexts.front();
@@ -1814,7 +1832,28 @@ absl::Status PipelineApplication::createPipelines(
   }
   if (rink_mask_preparation_ == RinkMaskPreparation::kNone)
     HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
+  if (web_preview_)
+    HM_RETURN_IF_ERROR(web_preview_->Attach());
   return auto_focus_cameras(app_contexts);
+}
+
+absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
+  HM_ASSIGN_OR_RETURN(
+      web_preview_,
+      hm::preview::WebPreviewSession::Prepare(
+          app,
+          app.configurator().config(),
+          {web_preview_run_id_, static_cast<int>(current_stage_), inspector_topology_generation_ + 1},
+          retained_web_preview_selection_));
+  return absl::OkStatus();
+}
+
+void PipelineApplication::publish_web_preview_capability() {
+  if (!web_preview_ || web_preview_->identity().stage != current_stage_ ||
+      web_preview_->identity().topology != inspector_topology_generation_)
+    return;
+  g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability().c_str());
+  std::fflush(stdout);
 }
 
 absl::Status PipelineApplication::configure_source_preview_sinks(
@@ -2072,6 +2111,10 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
         };
 
     const auto& app_context = app_contexts.front();
+    hm::preview::PreviewReferenceGeometry reference;
+    HM_ASSIGN_OR_RETURN(
+        reference,
+        hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
     NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
     const auto program_target = ui_preview_window_ids_.find("program");
     if (!sources_only && program_target != ui_preview_window_ids_.end()) {
@@ -2098,8 +2141,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
               "program",
               program_target->second,
               app_context->config.hmsticher_config.gpu_id,
-              1600,
-              900) ||
+              reference.program_width,
+              reference.program_height) ||
           !attachment->Commit([&] { return register_path(ingress, drain, sink, "program"); }))
         return absl::InternalError("Could not attach the GPU-native Program preview: " + error);
       configure_overlays(sink, app_context->config.player_analytics_config.analytics);
@@ -2166,8 +2209,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
               "stitched",
               stitched_target->second,
               app_context->config.hmsticher_config.gpu_id,
-              1600,
-              900) ||
+              reference.program_width,
+              reference.program_height) ||
           !attachment->Commit([&] { return register_path(ingress, drain, sink, "stitched"); }))
         return absl::InternalError("Could not attach the GPU-native Stitched preview: " + error);
       if (!tracked) {
@@ -2213,8 +2256,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
               channel,
               target->second,
               source_config.gpu_id,
-              1280,
-              720) ||
+              reference.source_width,
+              reference.source_height) ||
           !attachment->Commit([&] { return register_path(ingress, drain, sink, channel); }))
         return absl::InternalError("Could not attach the GPU-native preview for " + channel + ": " + error);
       source.fakesink = sink;
@@ -2256,9 +2299,13 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     return absl::InvalidArgumentError("--source-render-window-ids requires exactly one active pipeline context");
   }
 
-  constexpr gint kProgramPreviewWidth = 1600;
-  constexpr gint kProgramPreviewHeight = 900;
   const auto& app_context = app_contexts.front();
+  hm::preview::PreviewReferenceGeometry reference;
+  HM_ASSIGN_OR_RETURN(
+      reference,
+      hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
+  const gint kProgramPreviewWidth = reference.program_width;
+  const gint kProgramPreviewHeight = reference.program_height;
   HM_RETURN_IF_ERROR(select_video_converter_for_element_creation(app_context->config, "source previews"));
   NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
   GstElement* program_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_preview_queue");
@@ -2351,8 +2398,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     return absl::InternalError("Could not link retained Program preview branch");
   }
 
-  constexpr gint kCameraPreviewWidth = 1280;
-  constexpr gint kCameraPreviewHeight = 720;
+  const gint kCameraPreviewWidth = reference.source_width;
+  const gint kCameraPreviewHeight = reference.source_height;
   for (const auto& app_context : app_contexts) {
     NvDsSrcParentBin& sources = app_context->pipeline.multi_src_bin;
     const guint preview_count = std::min<guint>(sources.num_bins, static_cast<guint>(source_render_window_ids_.size()));
@@ -2565,6 +2612,8 @@ absl::Status PipelineApplication::createMainLoop(
   auto owned_windows = std::make_shared<std::set<Window>>();
   cleanup_stack.push([this, contexts = app_contexts, stage = current_stage_, owned_windows] {
     begin_pipeline_recreation();
+    if (web_preview_)
+      web_preview_->Stop();
     preview_routes_.forget_routes();
     ui_preview_channels_.clear();
     for (const auto& context : contexts) {
@@ -2760,6 +2809,8 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
   if (!pipeline) {
     return absl::OkStatus();
   }
+  if (web_preview_)
+    web_preview_->Stop();
   if (one_pass_calibration_contexts_.count(app_context.get()) != 0) {
     // A one-pass generation has no complete downstream stream to finalize
     // until calibration posts its completion message. On interruption, discard
@@ -3185,6 +3236,21 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        },
        "GPU-native UI preview targets as logical-channel:XID pairs",
        "program:XID,stitched:XID,source0:XID,..."},
+      {"web-preview-run-id",
+       0,
+       0,
+       G_OPTION_ARG_CALLBACK,
+       (gpointer) + [](const gchar*, const gchar* value, gpointer data, GError** error) -> gboolean {
+         const std::string run = value ? value : "";
+         if (!hm::preview::ValidWebPreviewRun(run)) {
+           g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE, "--web-preview-run-id requires a UUID");
+           return FALSE;
+         }
+         static_cast<PipelineApplication*>(data)->web_preview_run_id_ = run;
+         return TRUE;
+       },
+       "Enable private selectable WebRTC preview for this supervisor-owned run",
+       "UUID"},
       {"ui-preview-active",
        0,
        0,
@@ -3451,6 +3517,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       g_unsetenv(key);
   }
 
+  if (!web_preview_run_id_.empty() &&
+      (!ui_preview_window_ids_.empty() || !source_render_window_ids_.empty() || render_window_id_ ||
+       int8_sample_output_ || stitching_player_scan_output_))
+    return absl::InvalidArgumentError("Selectable WebRTC preview cannot share Qt targets or offline sampling");
   if (!ui_preview_window_ids_.empty()) {
     if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()) {
       return absl::FailedPreconditionError(
@@ -6027,6 +6097,20 @@ bool PipelineApplication::reapply_runtime_properties() {
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   const std::string trimmed_line = trim_ascii(line);
+  if (trimmed_line == "preview-route" || trimmed_line.rfind("preview-route ", 0) == 0) {
+    const auto request = hm::preview::ParseWebPreviewRoute(trim_ascii(trimmed_line.substr(13)));
+    if (!request.ok()) {
+      g_printerr("runtime preview route rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    const auto reply = web_preview_
+        ? web_preview_->Command(*request)
+        : hm::preview::WebPreviewRouteReply(*request,
+            {hm::preview::RouteOwner::Status::kUnconfigured, "selectable-preview-unavailable"});
+    g_print("HSTREAM_PREVIEW_ROUTE %s\n", reply.c_str());
+    std::fflush(stdout);
+    return true;
+  }
   if (trimmed_line == "set-tone-controls" || trimmed_line.rfind("set-tone-controls ", 0) == 0 ||
       trimmed_line.rfind("set-tone-controls\t", 0) == 0 || trimmed_line == "query-tone-controls" ||
       trimmed_line.rfind("query-tone-controls ", 0) == 0 || trimmed_line.rfind("query-tone-controls\t", 0) == 0)
@@ -8353,6 +8437,7 @@ void PipelineApplication::publish_inspector_topology() {
     published_generation = ++inspector_topology_generation_;
   }
   emit_pipeline_inspector_session(published_stage, published_generation);
+  publish_web_preview_capability();
 }
 
 void PipelineApplication::begin_pipeline_recreation() {
@@ -8376,6 +8461,7 @@ void PipelineApplication::end_pipeline_recreation(bool topology_changed) {
   }
   if (published_session.has_value()) {
     emit_pipeline_inspector_session(published_session->first, published_session->second);
+    publish_web_preview_capability();
   }
 }
 
@@ -8398,6 +8484,10 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     }
   }
   g_print("Destroy pipeline\n");
+  if (web_preview_) {
+    retained_web_preview_selection_ = web_preview_->selection();
+    web_preview_->Stop();
+  }
   preview_routes_.forget_routes();
   ui_preview_channels_.clear();
   preview_overlay_producers_.clear();
@@ -8426,6 +8516,7 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   } else {
     destroy_pipeline(app_ctx_ptr);
   }
+  web_preview_.reset();
   remember_scoreboard_selection(app_ctx_ptr, GST_OBJECT(retiring_cropper), retiring_epoch ? retiring_epoch : "");
   g_free(retiring_epoch);
   if (retiring_cropper)
@@ -8462,6 +8553,13 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     runtime_playback_offset_ns_.store(runtime_seek_target_ns, std::memory_order_release);
   }
   g_print("Recreate pipeline\n");
+  if (!web_preview_run_id_.empty()) {
+    const auto preview_status = prepare_web_preview(*static_cast<HmApp*>(app_ctx_ptr));
+    if (!preview_status.ok()) {
+      g_printerr("Cannot prepare replacement web preview: %s\n", preview_status.ToString().c_str());
+      return FALSE;
+    }
+  }
   set_render_playback_realtime(
       ui_preview_realtime_,
       static_cast<HmApp*>(app_ctx_ptr)->configurator().stitching_calibration_required() &&
@@ -8528,6 +8626,13 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     const absl::Status preview_status = configure_source_preview_sinks(stage->second);
     if (!preview_status.ok()) {
       NVGSTDS_ERR_MSG_V("Failed to rebuild GPU preview branches: %s", preview_status.ToString().c_str());
+      return FALSE;
+    }
+  }
+  if (web_preview_) {
+    const auto preview_status = web_preview_->Attach();
+    if (!preview_status.ok()) {
+      g_printerr("Cannot attach replacement web preview: %s\n", preview_status.ToString().c_str());
       return FALSE;
     }
   }

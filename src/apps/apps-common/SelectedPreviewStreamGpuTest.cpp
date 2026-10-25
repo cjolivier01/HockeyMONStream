@@ -209,6 +209,10 @@ int main(int argc, char** argv) {
   invalid.encoder_tuning.reset();
   if (hm::preview::WebPreviewTarget::Validate(invalid, &target_error))
     return 1;
+  invalid = config;
+  invalid.conversion_pool_frames = 3;
+  if (hm::preview::WebPreviewTarget::Validate(invalid, &target_error))
+    return 1;
   auto target = hm::preview::WebPreviewTarget::Create(
       config,
       [&](GstBuffer* input, const hm::preview::OwnedSurfaceView& output) {

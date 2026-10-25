@@ -32,6 +32,8 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/apps/apps-common:web_preview_target",
+    "//src/apps/apps-common:preview_overlay_painter",
     "//src/libs/program:tone_control_command",
     "//src/libs/program:tone_controls",
     "//src/apps/apps-common:preview_route_owner",
@@ -86,6 +88,18 @@ HSTREAM_CLI_DEPS = [
     "@com_google_absl//absl/status:statusor",
     "@com_google_absl//absl/cleanup",
 ]
+
+cc_test(
+    name = "web_preview_options_test",
+    srcs = ["WebPreviewOptionsTest.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h"],
+    data = ["//configs:baseline.yaml"],
+    deps = [
+        "//src/apps/apps-common:preview_route_owner",
+        "@yaml-cpp",
+        "@json_glib",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
 
 cc_library(
     name = "player_model_cache",

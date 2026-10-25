@@ -2,9 +2,11 @@
 
 The remaining work to share Qt's selectable preview routes and playback controls
 with the browser is described in [web-preview-parity-design.md](web-preview-parity-design.md).
-The route activation owner is shared native code; the browser route consumer and
-presentation contract remain unimplemented. The transport lifecycle below still
-describes the current static WebRTC output.
+The route activation owner is shared native code. An explicit private
+`--web-preview-run-id=<UUID>` now installs selectable native routes and the
+presentation contract; ordinary `WEBRTC` launches retain the static output.
+This opt-in is not full Qt workflow parity: diagnostic strokes, replay-mask
+ownership and audio/seek timeline qualification remain unfinished.
 
 `PreviewRouteOwner` owns logical route selection and its operation generation.
 The desktop CLI registers its existing gates and renderer callbacks, retaining
@@ -16,11 +18,54 @@ graph forgets borrowed route callbacks before destroying their native objects.
 
 The owner is independent of XIDs and GPU APIs. Its typed request additionally
 binds a run, stage, topology, request ID and operation generation, with validation
-before mutation. This C++ admission API is not yet a stdin/HTTP capability: the
-CLI still constructs production routes only for `--ui-preview-windows`, and no
-headless selectable WebRTC target is registered. `preview_route_owner_test`
+before mutation. Qt uses `--ui-preview-windows`; the private browser path uses
+the same native taps and gates without XIDs. `preview_route_owner_test`
 exercises the owner without a display, including an in-flight drain barrier;
 `hm_gpu_preview_test` retains the actual GStreamer gate/failure tests.
+
+`hstream-cli/WebPreviewSession.*` prepares one target before graph construction.
+The selected WEBRTC sink slot adopts its bin and stable endpoint, so audio can
+attach its existing Opus/RTP track before signaling starts. The sink builder
+does not create the old video encoder, a duplicate Program branch, or a fake
+fallback for that slot. After graph construction, the session attaches Program,
+Stitched and available source branches, chooses the initial route and starts
+signaling. Teardown retires signaling, closes every route gate, stops/disposes
+the native graph, then releases the target. Calibration reconstruction creates
+a fresh target and topology; local seeking remains rejected for WEBRTC outputs.
+
+The launch requires exactly one untiled native context and one non-demux
+WEBRTC sink on source 0, with an explicit signaling port. It cannot share Qt
+window targets or offline sampling. `configs/baseline.yaml` owns every new
+`web_preview` budget and initial selection. Shared `preview_reference` dimensions
+size the Qt GPU rendering surfaces and browser overlay coordinate extent; neither
+interface supplies independent geometry defaults. The hardware encoder requires
+at least eight conversion-pool buffers to avoid startup starvation; the native
+configuration rejects smaller pools and bounds total surface memory.
+The resolved browser receipt limits
+are sent with the capability; the outer service must not supply independent
+defaults or enable this launch before its own deployment qualification.
+
+After the matching inspector session has been published, stdout emits:
+
+```text
+HSTREAM_PREVIEW_PRESENTATION {"version":1,"run":"UUID","stage":0,"topology":"1","operation":"1","channel":"program","channels":["program","stitched","source0","source1"],"width":1600,"height":900,"seek":false,"receiptLimits":{"maxFrames":512,"maxAgeMs":3000}}
+```
+
+`channels` contains only installed routes. Width/height are even and bounded
+by 3840×2160; source indices are 0..127. The supervisor sends:
+
+```text
+@preview-route {"version":1,"run":"UUID","stage":0,"topology":"1","requestId":"1234","operation":"2","channel":"stitched"}
+```
+
+The `HSTREAM_PREVIEW_ROUTE` JSON reply echoes the request identity, operation
+and channel, with `status` (`activated`, `deactivated`, `unavailable`, `stale`
+or `failed`) and `reason`. Topology/operation are exact decimal strings;
+request IDs contain at most 64 ASCII token characters. No route changes on a
+wrong run/stage/topology or an older operation. An activation acknowledgment
+does not establish browser presentation: the existing `preview-frames` /
+`preview-presented` exchange must match an actual decoded callback and receiver
+RTP timestamp/SSRC before uncovering the video.
 
 `RouteAttachment` in `PreviewRouteGraph.*` separates graph attachment from the
 consumer. The current Qt path uses its existing Program output tee, inserts a
@@ -41,11 +86,14 @@ request the existing stitcher output tee without allocating a Qt sink there;
 legacy standalone YAML `ui-preview` continues to construct its own renderer.
 CPU tests cover commit, rejected publication, broken consumer links, source
 queue/pad identity, archive preservation and nested shared-target rollback.
+Moving the final source drain also refreshes ancestor sink flags: already-parented
+GStreamer bins otherwise retain a phantom EOS sink. A CPU graph test requires
+actual pipeline EOS after that nested source replacement.
 The NVIDIA hardware fixture exercises the same factory with shared-target
 Program/source switches and natural EOF. Real Qt checks cover Program,
 paused Stitched selection, source-only seek, Render off during seek, restart
 and Program reactivation. The calibration-only tap still needs its own runtime
-check; these results do not qualify production browser routes or AMD consumers.
+check; these attachment tests do not qualify AMD consumers.
 
 `SelectedPreviewStream` isolates inactive route events, preserves original NVMM
 memory and source-buffer pool ownership, and assigns a monotonic presentation
@@ -58,9 +106,9 @@ through conversion and hardware encoding. It verifies route changes, Render off,
 native metadata, source PTS, owned surface separation and pool exhaustion without
 stalling source progress. A four-byte test-only readback checks cleared bars.
 `PreviewTransportFrames` separately bounds frame/encoded/RTP identity and fences
-route and peer epochs. These primitives are not yet connected to production
-headless routes or authenticated browser presentation acknowledgments. Shared
-overlay preparation alone does not implement GPU drawing of all Qt layers.
+route and peer epochs. The opt-in session connects them to native headless
+routes; authenticated gateway and browser deployment require their separate
+behavior gate. Shared overlay preparation alone does not implement every Qt layer.
 
 `PreviewOverlayPainter` now consumes that immutable scene on an owned RGBA
 video subimage. It maps analytics/glyphs from their source coordinate extent,
@@ -75,7 +123,9 @@ these passes against Qt's unchanged OpenGL rendering (maximum channel error 2
 for analytics and 1 for mask RGB), including rotated/cropped masks and extreme
 panorama coordinate extents.
 
-This painter remains unconnected to production routes. Legacy Qt aliased
+The opt-in route painter draws analytics and the Stitched watermark on the
+owned subimage, using the actual source CAPS and desktop reference dimensions.
+Optional diagnostic controls are not yet wired to this session. Legacy Qt aliased
 `GL_LINE_*` diagnostic strokes are not equivalent to the portable compositor's
 rounded antialiased lines; the painter explicitly rejects them before writing
 any pixels. Archived replay-mask ownership, live settings/route wiring and
@@ -99,8 +149,8 @@ browser presentation receipt. Streaming probes only queue metadata for polling,
 with observable overflow; they do not call signaling or schedule work per frame.
 The caller closes ingress/drain gates around route mutations and stops the
 parent pipeline before destroying the target. A different active channel needs
-a newer operation generation. Its optional signaling adapter remains unexposed;
-production graph construction does not call it yet.
+a newer operation generation. The private opt-in session creates its signaling
+adapter only after every native route is attached.
 
 `WebPreviewTarget::ReplacePeer` and `DetachPeer` own compressed-output retirement;
 callers must not reset or detach its borrowed endpoint directly. `PreviewRtpGate`
@@ -136,9 +186,13 @@ replacement, Render off, natural main-output EOF, incomplete peer teardown,
 surface-pool exhaustion and event-queue overflow alongside native metadata and
 exact source/presentation/RTP identity. CPU monitor tests exercise compressed
 reference loss, delayed RTP markers, route/peer retirement and bounded events.
-This target remains unexposed: no production graph registration, defaults,
-production browser integration, audio timeline, complete overlay painter, seek
-support or connected-browser qualification is added by the adapter.
+A real Chromium run against the opt-in native CLI additionally checks Program →
+Stitched → source0 → source1 → none → Program, rejects a stale topology, replaces
+the peer, and requires exact decoded presentation receipts plus clean EOS/Stop.
+The x86 NVIDIA run on 2026-10-25 produced 31 accepted presentation receipts, zero
+rejected receipts and zero probe failures. It observed the shared Opus track,
+but does not establish audio synchronization, paced playback, calibration
+reconstruction, Jetson runtime, authenticated gateway behavior or full Qt parity.
 
 The optional `WebPreviewTarget::Signaling` adapter delegates peer changes through
 those lifecycle methods. `start_webrtc_signaling_for_preview` uses the existing
@@ -148,7 +202,7 @@ creates per-frame idle callbacks. `WebPreviewObserver` emits at most one
 unacknowledged metadata batch. While a client withholds credit, subsequent
 sender events are discarded with a counter, bounding the outgoing metadata
 backlog as well as the native queue. Poll cadence and event budget are explicit
-constructor inputs; no new shipped defaults or CLI capabilities are registered.
+constructor inputs resolved from the opt-in session baseline.
 
 `PreviewPresentationHistory` retains completed RTP identities independently of
 the pending encoder/RTP ledger. Its explicit capacity evicts oldest entries.

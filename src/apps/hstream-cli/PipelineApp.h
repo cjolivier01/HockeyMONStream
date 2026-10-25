@@ -39,6 +39,7 @@
 #include "PlayerFrameScan.h"
 #include "PreviewOverlayRuntime.h"
 #include "TerminalProgressUi.h"
+#include "WebPreviewSession.h"
 #include "configurator.h"
 #include "deepstream_app.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
@@ -316,6 +317,11 @@ class PipelineApplication {
   };
   std::map<std::string, UiPreviewChannel> ui_preview_channels_;
   hm::preview::RouteOwner preview_routes_;
+  std::string web_preview_run_id_;
+  std::string retained_web_preview_selection_;
+  std::unique_ptr<hm::preview::WebPreviewSession> web_preview_;
+  absl::Status prepare_web_preview(HmApp& app);
+  void publish_web_preview_capability();
   hm::pipeline_internal::PreviewOverlayRuntimeState preview_overlay_state_;
   // Last accepted live drawing selection, re-applied when the graph is
   // rebuilt so a seek or stage restart does not silently restore the

@@ -20,6 +20,35 @@ struct GhostPad {
 GstPad* pad(GstElement* element, const char* name) {
   return element ? gst_element_get_static_pad(element, name) : nullptr;
 }
+void refresh_sink_ancestors(GstElement* element) {
+  // GstBin updates its own SINK flag when its last sink is removed, but does
+  // not propagate that change through bins which were already parented.
+  // A source route moved to a shared external target otherwise leaves a
+  // phantom sink in pipeline EOS aggregation. Attachments run while stopped.
+  for (auto* current = GST_OBJECT(gst_object_ref(element)); current;) {
+    if (GST_IS_BIN(current)) {
+      auto* children = gst_bin_iterate_elements(GST_BIN(current));
+      GValue value = G_VALUE_INIT;
+      bool has_sink = false;
+      while (gst_iterator_next(children, &value) == GST_ITERATOR_OK) {
+        has_sink |= GST_OBJECT_FLAG_IS_SET(g_value_get_object(&value), GST_ELEMENT_FLAG_SINK);
+        g_value_reset(&value);
+      }
+      if (G_VALUE_TYPE(&value))
+        g_value_unset(&value);
+      gst_iterator_free(children);
+      GST_OBJECT_LOCK(current);
+      if (has_sink)
+        GST_OBJECT_FLAG_SET(current, GST_ELEMENT_FLAG_SINK);
+      else
+        GST_OBJECT_FLAG_UNSET(current, GST_ELEMENT_FLAG_SINK);
+      GST_OBJECT_UNLOCK(current);
+    }
+    auto* parent = gst_object_get_parent(current);
+    gst_object_unref(current);
+    current = parent;
+  }
+}
 } // namespace
 
 struct RouteAttachment::State {
@@ -331,6 +360,8 @@ bool RouteAttachment::Commit(const std::function<bool()>& publish) {
   if (publish && !publish())
     return false;
   state_->committed = true;
+  if (state_->sink_removed)
+    refresh_sink_ancestors(state_->tap.parent);
   return true;
 }
 } // namespace hm::preview

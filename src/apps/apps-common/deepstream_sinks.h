@@ -76,6 +76,10 @@ typedef struct {
   guint udp_port;
   guint webrtc_port;
   gchar* webrtc_stun_server;
+  // Runtime-only borrowed target, supplied before graph/audio construction.
+  // When present this replaces the static WEBRTC video branch entirely.
+  GstElement* preview_bin{nullptr};
+  GstElement* preview_endpoint{nullptr};
   guint64 udp_buffer_size;
   guint iframeinterval;
   guint copy_meta;
@@ -202,8 +206,7 @@ gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncod
 namespace hm::preview {
 struct WebPreviewSignaling;
 }
-// Unexposed selectable-target adapter; no production graph registers it yet.
-// Its caller stops signaling before destroying the target.
+// Selectable-target adapter. Its caller stops signaling before destroying it.
 gboolean start_webrtc_signaling_for_preview(
     GstElement* endpoint,
     const NvDsSinkEncoderConfig* config,

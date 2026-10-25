@@ -2380,7 +2380,7 @@ gboolean create_pipeline(
       for (size_t sink_index = 0; sink_index < appCtx->config.num_sink_sub_bins; ++sink_index) {
         const NvDsSinkSubBinConfig& sink_config = appCtx->config.sink_bin_sub_bin_config[sink_index];
         if (!sink_config.enable || sink_config.source_id != i || sink_config.link_to_demux ||
-            sink_config.type != NV_DS_SINK_WEBRTC) {
+            sink_config.type != NV_DS_SINK_WEBRTC || sink_config.encoder_config.preview_bin) {
           continue;
         }
         GstElement* webrtc = pipeline->instance_bins[i].sink_bin.sub_bins[sink_index].sink;

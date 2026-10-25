@@ -1,6 +1,19 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "decoder_pad_link",
+    hdrs = ["DecoderPadLink.h"],
+    include_prefix = INCLUDE_PREFIX,
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "decoder_pad_link_test",
+    srcs = ["DecoderPadLinkTest.cpp"],
+    deps = [":decoder_pad_link", "@gstreamer"],
+)
+
+cc_library(
     name = "preview_route_graph",
     srcs = ["PreviewRouteGraph.cpp"],
     hdrs = ["PreviewRouteGraph.h"],
@@ -13,6 +26,12 @@ cc_test(
     name = "preview_route_graph_test",
     srcs = ["PreviewRouteGraphTest.cpp"],
     deps = [":preview_route_graph", "@gstreamer"],
+)
+
+cc_test(
+    name = "web_preview_sink_ownership_test",
+    srcs = ["WebPreviewSinkOwnershipTest.cpp"],
+    deps = [":deepstream_apps_common", ":preview_route_graph", "@gstreamer"],
 )
 
 cc_library(
@@ -558,6 +577,7 @@ cc_library(
     deps = [
         ":archive_watermark",
         ":webrtc_endpoint",
+        ":decoder_pad_link",
         ":web_preview_observer",
         "//src/libs/tracker_reid:tracker_reid",
         ":player_analytics_bin",

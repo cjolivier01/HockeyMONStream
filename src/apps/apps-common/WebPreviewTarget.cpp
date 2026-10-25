@@ -121,7 +121,7 @@ bool WebPreviewTarget::Validate(const WebPreviewConfig& c, std::string* error) {
       c.surface.width % 2 || c.surface.height % 2 || !c.surface.rate_numerator || !c.surface.rate_denominator ||
       c.surface.rate_numerator > INT_MAX || c.surface.rate_denominator > 1000000 ||
       double(c.surface.rate_numerator) / c.surface.rate_denominator > 120 || !c.surface.pool_frames ||
-      c.surface.pool_frames > 64 || !c.conversion_pool_frames || !c.bitrate || !c.idr_interval || !c.pending_frames ||
+      c.surface.pool_frames > 64 || c.conversion_pool_frames < 8 || !c.bitrate || !c.idr_interval || !c.pending_frames ||
       !c.pending_events || !c.presentation_history || !c.h264_profile || !c.encoder_tuning || !c.stun_server ||
       c.rtp_payload < 96 || c.rtp_payload > 127)
     return fail(error, "Preview target requires explicit valid GPU, encoder, RTP and queue configuration");

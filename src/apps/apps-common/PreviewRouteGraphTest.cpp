@@ -178,6 +178,41 @@ void bridge() {
       "Commit removed required source bridge");
   gst_object_unref(pipeline);
 }
+void moved_source_eos() {
+  auto* pipeline = gst_pipeline_new("moved-source-eos");
+  auto* sources = gst_bin_new("sources");
+  auto* camera = gst_bin_new("camera");
+  auto* producer = element("fakesrc", "producer");
+  auto* tee = element("tee", "camera-tee");
+  auto* queue = element("queue", "source-queue");
+  auto* old_sink = element("fakesink", "old-source-drain");
+  auto* consumer = element("fakesink", "shared-consumer");
+  g_object_set(producer, "num-buffers", 3, nullptr);
+  gst_bin_add_many(GST_BIN(camera), producer, tee, queue, old_sink, nullptr);
+  check(gst_element_link(producer, tee) && gst_element_link(queue, old_sink), "Source fixture link failed");
+  auto* requested = request(tee, queue);
+  gst_bin_add(GST_BIN(sources), camera);
+  gst_bin_add_many(GST_BIN(pipeline), sources, consumer, nullptr);
+  check(GST_OBJECT_FLAG_IS_SET(sources, GST_ELEMENT_FLAG_SINK), "Fixture has no inherited source drain");
+  auto* input = gst_element_get_static_pad(consumer, "sink");
+  std::string error;
+  auto attach = RouteAttachment::Create(
+      {RouteTap::Kind::kReplaceDrain, camera, tee, queue, old_sink}, path(queue, false), input, &error);
+  check(attach && attach->Commit([] { return true; }), "Shared source replacement failed");
+  attach.reset();
+  check(!GST_OBJECT_FLAG_IS_SET(sources, GST_ELEMENT_FLAG_SINK), "Source ancestors retain a phantom EOS sink");
+  check(GST_OBJECT_FLAG_IS_SET(pipeline, GST_ELEMENT_FLAG_SINK), "Shared consumer lost EOS ownership");
+  auto* bus = gst_element_get_bus(pipeline);
+  check(gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE, "EOS fixture failed start");
+  auto* message = gst_bus_timed_pop_filtered(bus, GST_SECOND, GstMessageType(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+  check(message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS, "Shared source replacement prevented pipeline EOS");
+  gst_message_unref(message);
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  gst_object_unref(bus);
+  gst_object_unref(input);
+  gst_object_unref(requested);
+  gst_object_unref(pipeline);
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -186,5 +221,6 @@ int main(int argc, char** argv) {
   tracked();
   source();
   bridge();
+  moved_source_eos();
   return 0;
 }

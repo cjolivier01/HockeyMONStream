@@ -24,8 +24,8 @@ struct WebPreviewConfig {
   std::optional<std::string> stun_server;
 };
 
-// Independent, unexposed GPU browser target. It does not start signaling,
-// advertise a CLI capability, install graph taps, or claim overlay/seek parity.
+// GPU browser target. Its graph owner starts signaling, advertises capability
+// and installs native taps; this component alone does not claim workflow parity.
 // Every configurable value is supplied by the caller's resolved configuration.
 // There is no software encoder or system-memory fallback.
 //

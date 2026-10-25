@@ -2824,7 +2824,12 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
         break;
       case NV_DS_SINK_WEBRTC:
         config_array[i].encoder_config.sync = config_array[i].sync;
-        if (!create_webrtc_sink_bin(&config_array[i].encoder_config, &bin->sub_bins[i]))
+        if (config_array[i].encoder_config.preview_bin && config_array[i].encoder_config.preview_endpoint) {
+          // Shared target owns its single encoder and stable audio endpoint.
+          // Native routes attach later; do not create/link a static video path.
+          bin->sub_bins[i].bin = config_array[i].encoder_config.preview_bin;
+          bin->sub_bins[i].sink = config_array[i].encoder_config.preview_endpoint;
+        } else if (!create_webrtc_sink_bin(&config_array[i].encoder_config, &bin->sub_bins[i]))
           goto done;
         break;
       case NV_DS_SINK_MSG_CONV_BROKER:
@@ -2837,7 +2842,15 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
     }
 
     if (config_array[i].type != NV_DS_SINK_MSG_CONV_BROKER) {
-      gst_bin_add(GST_BIN(bin->bin), bin->sub_bins[i].bin);
+      if (!gst_bin_add(GST_BIN(bin->bin), bin->sub_bins[i].bin))
+        goto done;
+      if (config_array[i].type == NV_DS_SINK_WEBRTC && config_array[i].encoder_config.preview_bin) {
+        // Count this real target so the legacy empty-output fallback does not
+        // allocate an unrelated fake Program branch.
+        ++bin->num_bins;
+        ++normal_num_bins;
+        continue;
+      }
       GstElement* route_tee = config_array[i].type == NV_DS_SINK_ENCODE_STITCHED_FILE ? bin->stitched_tee : bin->tee;
       if (!route_tee || !link_element_to_tee_src_pad(route_tee, bin->sub_bins[i].bin)) {
         goto done;
