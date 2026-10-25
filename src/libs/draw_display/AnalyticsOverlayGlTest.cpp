@@ -1,4 +1,5 @@
 #include "hstream/src/libs/draw_display/AnalyticsOverlayGl.h"
+#include "hstream/src/libs/draw_display/AlphaMaskOverlay.h"
 #include "hstream/src/libs/draw_display/Watermark.h"
 
 #define GL_GLEXT_PROTOTYPES
@@ -495,6 +496,96 @@ void ScaledViewport(float width, float height) {
   std::cout << "gl_viewport width=" << width << " height=" << height << " gpu_channel_max_error=" << maximum
             << " output_coordinates_scaled=1 letterbox_preserved=1 shared_triangle_edges=1\n";
 }
+void MaskPixels() {
+  namespace d = hm::draw_display;
+  constexpr unsigned width = 96, height = 72;
+  Target target(128, 96);
+  std::vector<uint8_t> mask(12 * 11);
+  for (unsigned y = 0; y < 11; ++y)
+    for (unsigned x = 0; x < 12; ++x)
+      mask[y * 12 + x] = (x * 71 + y * 19) % 256;
+  GLuint texture{};
+  glGenTextures(1, &texture);
+  glBindTexture(GL_TEXTURE_2D, texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+  const GLfloat border[] = {0, 0, 0, 0};
+  glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA8, 12, 11, 0, GL_ALPHA, GL_UNSIGNED_BYTE, mask.data());
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  cudaStream_t stream{};
+  void *device{}, *device_mask{};
+  Cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+  Cuda(cudaMalloc(&device, 128 * 96 * 4));
+  Cuda(cudaMalloc(&device_mask, mask.size()));
+  Cuda(cudaMemcpy(device_mask, mask.data(), mask.size(), cudaMemcpyHostToDevice));
+  const std::array<d::AlphaMaskMapping, 3> mappings = {{
+      {0, 0, 1.0F / width, 0, 0, 1.0F / height},
+      {-.3F, .2F, .8F / width, .5F / width, -.4F / height, 1.2F / height},
+      {1, 1, -1.0F / width, 0, 0, -1.0F / height},
+  }};
+  unsigned maximum = 0;
+  for (const auto& mapping : mappings) {
+    target.Clear();
+    const auto before = target.Read();
+    Cuda(cudaMemcpyAsync(device, before.data(), before.size(), cudaMemcpyHostToDevice, stream));
+    Cuda(
+        d::DrawAlphaMask(
+            {static_cast<uint8_t*>(device) + (12 * 128 + 16) * 4, 128 * 4, width, height},
+            {static_cast<uint8_t*>(device_mask), 12, 12, 11},
+            mapping,
+            {0, 1, 0, .28F},
+            stream));
+    std::vector<uint8_t> expected(before.size());
+    Cuda(cudaMemcpyAsync(expected.data(), device, expected.size(), cudaMemcpyDeviceToHost, stream));
+    Cuda(cudaStreamSynchronize(stream));
+    glViewport(16, 12, width, height);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glColor4f(0, 1, 0, .28F);
+    // Same fixed-function native rink-mask pass, including bottom-to-top GL
+    // vertices and top-to-bottom saved mask coordinates. Readback is test-only.
+    glBegin(GL_QUADS);
+    for (const auto& point : std::array<std::array<float, 2>, 4>{{{0, height}, {width, height}, {width, 0}, {0, 0}}}) {
+      glTexCoord2f(
+          mapping.origin_u + point[0] * mapping.step_x_u + point[1] * mapping.step_y_u,
+          mapping.origin_v + point[0] * mapping.step_x_v + point[1] * mapping.step_y_v);
+      glVertex2f(-1 + 2 * point[0] / width, 1 - 2 * point[1] / height);
+    }
+    glEnd();
+    glColor4f(1, 1, 1, 1);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    const auto actual = target.Read();
+    for (unsigned y = 0; y < 96; ++y)
+      for (unsigned x = 0; x < 128; ++x) {
+        const size_t index = (y * 128 + x) * 4;
+        if (x < 16 || x >= 112 || y < 12 || y >= 84) {
+          Check(std::memcmp(actual.data() + index, before.data() + index, 4) == 0, "GL mask changed letterbox");
+          Check(std::memcmp(expected.data() + index, before.data() + index, 4) == 0, "GPU mask changed letterbox");
+        }
+        // RGB is the displayed/encoded video contract. Legacy GL mask blending
+        // changes framebuffer alpha; the video encoder ignores that component.
+        for (unsigned c = 0; c < 3; ++c) {
+          const unsigned error = std::abs(int(actual[index + c]) - int(expected[index + c]));
+          maximum = std::max(maximum, error);
+          Check(error <= 2, "GPU mask differs from native GL bilinear/inverse mapping");
+        }
+      }
+  }
+  glDeleteTextures(1, &texture);
+  Cuda(cudaFree(device));
+  Cuda(cudaFree(device_mask));
+  Cuda(cudaStreamDestroy(stream));
+  GlCheck();
+  std::cout << "gl_mask inverse_affine=1 transparent_border=1 letterbox_preserved=1 gpu_rgb_max_error=" << maximum
+            << '\n';
+}
 void LargeCanvasWatermark() {
   // The native panorama is wider than 16K; only the bounded preview framebuffer
   // is allocated. Match the geometry that failed in blackhawks-p3 playback.
@@ -633,6 +724,7 @@ int main(int argc, char** argv) {
     ScaledViewport(64, 48);
     ScaledViewport(20457, 5256);
     ScaledViewport(5256, 20457);
+    MaskPixels();
     LargeCanvasWatermark();
     FailureSuppression();
     if (argc == 2 && std::string(argv[1]) == "--benchmark") {

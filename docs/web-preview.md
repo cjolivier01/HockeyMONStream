@@ -62,6 +62,26 @@ route and peer epochs. These primitives are not yet connected to production
 headless routes or authenticated browser presentation acknowledgments. Shared
 overlay preparation alone does not implement GPU drawing of all Qt layers.
 
+`PreviewOverlayPainter` now consumes that immutable scene on an owned RGBA
+video subimage. It maps analytics/glyphs from their source coordinate extent,
+fills convex diagnostic polygons with half-open triangle edges, samples a
+generation/canvas-bound rink mask using the native inverse Program transform,
+and draws the Stitched watermark last with the desktop converter's negotiated
+dimensions. Optional overlay capacity cannot suppress the required watermark.
+Static masks upload once per immutable asset; video never returns to the CPU.
+The CUDA/HIP mask kernel uses bilinear sampling and a transparent border, with
+work confined to the destination video rectangle. Test-only readback compares
+these passes against Qt's unchanged OpenGL rendering (maximum channel error 2
+for analytics and 1 for mask RGB), including rotated/cropped masks and extreme
+panorama coordinate extents.
+
+This painter remains unconnected to production routes. Legacy Qt aliased
+`GL_LINE_*` diagnostic strokes are not equivalent to the portable compositor's
+rounded antialiased lines; the painter explicitly rejects them before writing
+any pixels. Archived replay-mask ownership, live settings/route wiring and
+complete encoded-browser comparisons also remain unfinished. Its primitive
+pixel tests and generation-fencing tests do not establish full preview parity.
+
 `WebPreviewTarget` assembles those primitives into an independently owned bin:
 one selected stream, bounded CUDA-device RGBA surfaces, GPU NV12 conversion,
 hardware H.264 with B frames disabled, Annex-B access units, RTP, and a stable

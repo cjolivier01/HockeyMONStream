@@ -176,6 +176,28 @@ cc_library(
     deps = [":analytics_overlay_headers", ":analytics_overlay_atlas", ":analytics_overlay_cuda"],
 )
 
+cc_library(
+    name = "alpha_mask_overlay_headers",
+    hdrs = ["AlphaMaskOverlay.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":analytics_overlay_headers"],
+)
+
+gpu_library(
+    name = "alpha_mask_overlay",
+    srcs = ["AlphaMaskOverlay.cu"],
+    visibility = ["//visibility:public"],
+    deps = [":alpha_mask_overlay_headers"],
+)
+
+cc_test(
+    name = "alpha_mask_overlay_test",
+    srcs = ["AlphaMaskOverlayTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":alpha_mask_overlay", ":alpha_mask_overlay_headers"],
+)
+
 cc_test(
     name = "analytics_overlay_test",
     srcs = ["AnalyticsOverlayTest.cpp"],
@@ -206,7 +228,7 @@ cc_test(
         "@platforms//cpu:x86_64": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":analytics_overlay_gl", ":watermark"],
+    deps = [":analytics_overlay_gl", ":watermark", ":alpha_mask_overlay", ":alpha_mask_overlay_headers"],
 )
 
 cc_library(

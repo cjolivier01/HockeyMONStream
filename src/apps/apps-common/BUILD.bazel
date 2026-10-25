@@ -380,6 +380,28 @@ cc_test(
 )
 
 cc_library(
+    name = "preview_overlay_painter",
+    srcs = ["PreviewOverlayPainter.cpp"],
+    hdrs = ["PreviewOverlayPainter.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":preview_overlay_scene",
+        ":rink_mask_image",
+        "//src/libs/draw_display:alpha_mask_overlay",
+        "//src/libs/draw_display:alpha_mask_overlay_headers",
+        "//src/libs/draw_display:watermark",
+    ],
+)
+
+cc_test(
+    name = "preview_overlay_painter_test",
+    srcs = ["PreviewOverlayPainterTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":preview_overlay_painter"],
+)
+
+cc_library(
     name = "hm_gpu_preview",
     srcs = ["HmGpuPreview.cpp"],
     hdrs = ["HmGpuPreview.h"],

@@ -32,6 +32,16 @@ analytics overlay compositor, pose preprocessing/decoding, and jersey, action,
 and team preprocessing/reduction. CUDA and HIP compile the same kernel sources.
 NVIDIA remains the default, including Jetson builds.
 
+The shared analytics compositor also supports convex triangle fans and an
+explicit logical coordinate extent mapped onto a bounded output viewport.
+`AlphaMaskOverlay` uses the same CUDA/HIP kernel for bilinear coverage with a
+transparent border and affine inverse crop/rotation. Both primitive suites pass
+on AMD hardware at `ripper` and NVIDIA; the native Qt OpenGL pixel oracle runs on x86 CUDA.
+No production HIP/VA browser painter or route is enabled by these primitives.
+The experimental native `PreviewOverlayPainter` still rejects unqualified Qt
+aliased diagnostic strokes, and archived replay-mask/browser qualification
+remains outstanding.
+
 The configuration also enables the existing HIP implementations in the pinned
 `hm-cupano` and `jetson-utils` dependencies. Both use the discovered ROCm SDK.
 Panorama, Laplacian blending, pitched/batched images, and packed RGB10 remapping
