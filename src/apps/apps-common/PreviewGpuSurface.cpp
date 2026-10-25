@@ -124,8 +124,14 @@ bool render(State& state, GstBuffer* input, Surface& output) {
     const double scale = std::min(double(out.width) / in.width, double(out.height) / in.height);
     const auto width = std::max(1u, std::min(out.width, static_cast<unsigned>(std::lround(in.width * scale))));
     const auto height = std::max(1u, std::min(out.height, static_cast<unsigned>(std::lround(in.height * scale))));
-    NvBufSurfTransformRect source_rect{0, 0, in.width, in.height, {}};
-    NvBufSurfTransformRect destination_rect{(out.height - height) / 2, (out.width - width) / 2, width, height, {}};
+    NvBufSurfTransformRect source_rect{};
+    source_rect.width = in.width;
+    source_rect.height = in.height;
+    NvBufSurfTransformRect destination_rect{};
+    destination_rect.top = (out.height - height) / 2;
+    destination_rect.left = (out.width - width) / 2;
+    destination_rect.width = width;
+    destination_rect.height = height;
     NvBufSurfTransformConfigParams session{};
     session.compute_mode = NvBufSurfTransformCompute_GPU;
     session.gpu_id = state.config.gpu_id;
