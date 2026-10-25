@@ -292,6 +292,11 @@ struct HStreamWindowTestAccess {
           }),
           "Real backend process must display the first Program frame");
       require(color(window.preview_render_target_).red() > 200, "Program preview contains the producer's pixels");
+      window.schedulePlayerDrawingRuntimeControl();
+      QTest::qWait(150);
+      require(
+          !window.scheduled_player_drawing_layers_ && !window.pending_player_drawing_layers_,
+          "Python player drawing remains a next-run choice without unsupported runtime commands");
       require(window.preview_external_notice_->isHidden(), "A received image removes the native waiting placeholder");
       require(
           waitFor([&] { return window.scoreboard_select_button_->isEnabled(); }),
@@ -396,6 +401,13 @@ struct HStreamWindowTestAccess {
   static void check(HStreamWindow& window, const QString& game_directory) {
     checkResolvedLaunch(window);
     require(window.pipelineRunnerPath() == "/bin/true", "Program uses selected HockeyMON runner");
+    require(
+        window.findChild<QComboBox*>("playerPoseModel")->findData("rtmpose-m-harpet18-256x192") < 0 &&
+            window.findChild<QComboBox*>("playerActionModel")->findData("stgcnpp-harpet18-actions4") < 0,
+        "Python model menus must not offer native-only hockey contracts");
+    require(
+        window.findChild<QComboBox*>("playerReidModel")->findData("reidentificationnet-deployable-v1.2") >= 0,
+        "Python appearance choices retain the supported NVIDIA model");
     require(window.backend_mode_->text().contains("hm-cli"), "Program identifies its Python backend");
     const QString native_runner = window.nativeRunnerPath();
     require(native_runner != "/bin/true", "Native workflow runner stays independent");
@@ -582,6 +594,7 @@ int main(int argc, char** argv) {
     require(QDir().mkpath(game), "Create fixture game");
     writeFile(QDir(game).filePath("config.yaml"), "{}\n");
     qputenv("HM_GAME_DIR", root.path().toUtf8());
+    qputenv("HOME", preferences.path().toUtf8());
     qputenv("XDG_CONFIG_HOME", preferences.path().toUtf8());
     QApplication app(argc, argv);
     HStreamWindow window(nullptr, {"hockeymon", "/bin/true"});

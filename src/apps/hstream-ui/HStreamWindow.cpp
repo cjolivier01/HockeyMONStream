@@ -7355,7 +7355,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     analytics_scroll->setObjectName("playerAnalyticsScrollArea");
     analytics_scroll->setWidgetResizable(true);
     analytics_scroll->setFrameShape(QFrame::NoFrame);
-    player_analytics_controls_ = new PlayerAnalyticsControls();
+    player_analytics_controls_ = new PlayerAnalyticsControls(nullptr, backend_.isHockeyMon());
     player_analytics_controls_->setChangedCallback([this] {
       updatePresetDirtyState();
       schedulePlayerDrawingRuntimeControl();
@@ -8833,7 +8833,7 @@ void HStreamWindow::selectRinkMap() {
       directory,
       this,
       RinkMaskPreparer(
-          pipelineRunnerPath(), working_directory, pipelineConfigPath("ds_hockey_app_config.yaml"), directory, env));
+          nativeRunnerPath(), working_directory, pipelineConfigPath("ds_hockey_app_config.yaml"), directory, env));
   dialog.exec();
   rink_map_editor_active_ = false;
   if (rink_framing_controls_) {
@@ -17833,7 +17833,7 @@ void HStreamWindow::updateRunControls() {
   updateStitchingStillPreview();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (player_analytics_controls_)
-    player_analytics_controls_->setLiveDrawingOnly(running && !isCalibrationRun());
+    player_analytics_controls_->setLiveDrawingOnly(running && !isCalibrationRun() && !active_hockeymon_program_);
   if (!running) {
     // Nothing queued may cross into the next run: its graph starts from the
     // launch arguments, and a stale mask would overwrite them.
@@ -22671,6 +22671,10 @@ void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, double 
 }
 
 void HStreamWindow::schedulePlayerDrawingRuntimeControl() {
+  // The Python protocol has no live player-drawing command. Its controls
+  // remain next-run choices, as indicated by the Players status text.
+  if (active_hockeymon_program_)
+    return;
   if (!player_analytics_controls_ || !pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
       isCalibrationRun()) {
     return;

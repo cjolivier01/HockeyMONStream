@@ -27,6 +27,14 @@ arguments and then executes the matching native runner, retaining native preview
 ownership. Later calibration runs use the native runner directly.
 `--help` does not require a display server.
 
+The shared launcher uses `~/.config/hstream-ui/defaults.yaml` when present.
+Only storage paths survive from the legacy user file; an empty defaults document
+resets tuning to the baseline. Game settings override this user layer. Python
+Players drawing changes apply on the next run; native Program drawing can also
+change during playback. HockeyMON offers the supported standard analytics and
+custom contracts; hockey pose/action models remain native-only. Its appearance
+menu retains both DeepStream and NVIDIA ReIdentificationNet selections.
+
 ## Ownership
 
 The backend selection changes Program processing. Calibration, leveling, rink

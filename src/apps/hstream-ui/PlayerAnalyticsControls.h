@@ -18,7 +18,8 @@ class QLabel;
 // flattening away provenance.
 class PlayerAnalyticsControls : public QWidget {
  public:
-  explicit PlayerAnalyticsControls(QWidget* parent = nullptr);
+  // The shared Python backend currently implements the default catalog contracts.
+  explicit PlayerAnalyticsControls(QWidget* parent = nullptr, bool default_models_only = false);
   void setChangedCallback(std::function<void()> callback);
   // defaults contains canonical baseline plus structural pipeline under pipeline.
   void loadConfig(
@@ -68,6 +69,7 @@ class PlayerAnalyticsControls : public QWidget {
   static bool isDrawingField(const QString& key);
   void updateStatus();
   bool live_drawing_only_{false};
+  bool default_models_only_{false};
   void addFlag(
       const QString& key,
       const QString& alias,

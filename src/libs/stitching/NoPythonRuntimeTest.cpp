@@ -29,6 +29,8 @@ int main(int argc, char** argv) {
   bool ok = argc > 1;
   bool audited_int8_launcher = false;
   bool ui_binary_python = false;
+  bool audited_backend_module = false;
+  bool ui_binary_backend_module = false;
   for (int i = 1; i < argc; ++i) {
     std::ifstream input(argv[i]);
     if (!input) {
@@ -52,6 +54,26 @@ int main(int argc, char** argv) {
         continue;
       for (const std::string& token : forbidden) {
         if (line.find(token) != std::string::npos) {
+          if (token == "hmlib.cli") {
+            // This is an identity check on the optional backend envelope, not
+            // a Python launcher. Keep all other native runtime uses forbidden.
+            if (ends_with(path, "src/apps/hstream-ui/HStreamWindow.cpp") &&
+                trimmed(line) ==
+                    "launch.value(\"module\").toString() != \"hmlib.cli.hmtrack\" || launch.value(\"game_id\").toString() != game ||") {
+              audited_backend_module = true;
+              continue;
+            }
+            if (elf && ends_with(path, "src/apps/hstream-ui/hstream-ui") &&
+                line.find("hmlib.cli.hmtrack") != std::string::npos) {
+              std::string remaining = line;
+              for (size_t position; (position = remaining.find("hmlib.cli.hmtrack")) != std::string::npos;)
+                remaining.erase(position, std::string("hmlib.cli.hmtrack").size());
+              if (remaining.find(token) == std::string::npos) {
+                ui_binary_backend_module = true;
+                continue;
+              }
+            }
+          }
           if (token == "python3") {
             // Explicit source-checkout INT8 preparation is offline. Audit the
             // one launcher exactly; every other UI source stays in scope.
@@ -81,6 +103,10 @@ int main(int argc, char** argv) {
   }
   if (ui_binary_python && !audited_int8_launcher) {
     std::cerr << "FAIL: UI interpreter literal requires the audited offline INT8 launcher source\n";
+    ok = false;
+  }
+  if (ui_binary_backend_module && !audited_backend_module) {
+    std::cerr << "FAIL: UI backend module literal requires the audited envelope identity check\n";
     ok = false;
   }
   return ok ? 0 : 1;

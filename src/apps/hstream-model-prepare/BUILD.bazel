@@ -3,6 +3,10 @@ cc_binary(
     srcs = ["main.cpp"],
     data = ["//src/apps/player-model-builder:player-model-builder"],
     visibility = ["//visibility:public"],
+    target_compatible_with = select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
     deps = [
         "//src/apps/hstream-cli:player_model_cache",
         "@yaml-cpp",

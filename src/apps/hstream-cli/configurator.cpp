@@ -4968,6 +4968,9 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
       absl::Status lock_cleanup = absl::OkStatus();
       if (have_recovery_lock_identity) {
         if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_OWNER_LOCK")) {
+          // Retain the old inode while constructing the foreign replacement;
+          // immediate inode reuse would not exercise the identity mismatch.
+          const int original_fd = ::open(recovery_lock_path.c_str(), O_RDONLY | O_CLOEXEC);
           ::unlink(recovery_lock_path.c_str());
           const int replacement_fd =
               ::open(recovery_lock_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
@@ -4977,6 +4980,8 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
             (void)replacement_bytes;
             ::close(replacement_fd);
           }
+          if (original_fd >= 0)
+            ::close(original_fd);
           g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_OWNER_LOCK");
         }
         lock_cleanup =
