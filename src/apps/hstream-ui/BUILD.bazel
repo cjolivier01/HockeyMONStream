@@ -105,6 +105,14 @@ cc_library(
     deps = ["@qt//:qt_widgets"],
 )
 
+cc_binary(
+    name = "action_icons_export",
+    srcs = ["ActionIconsExport.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":action_icons", "@qt//:qt_widgets"],
+)
+
 cc_library(
     name = "native_preview_surface",
     srcs = ["NativePreviewSurface.cpp"],

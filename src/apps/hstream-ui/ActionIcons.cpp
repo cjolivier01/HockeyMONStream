@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 
 namespace {
 QColor standard_color(QStyle::StandardPixmap icon) {
@@ -370,4 +371,12 @@ QIcon action_icon(ActionIcon action) {
   // application-wide proxy installed by main().
   const QIcon icon = qApp->style()->standardIcon(standard);
   return qApp->property("hstreamButtonIconStyle").toBool() ? icon : colored_icon(icon, standard_color(standard));
+}
+
+QIcon tab_icon(const QString& label) {
+  for (const auto& spec : kTabIconSpecs) {
+    if (label == QLatin1String(spec.label))
+      return action_icon(spec.icon);
+  }
+  throw std::invalid_argument("Missing icon for tab: " + label.toStdString());
 }

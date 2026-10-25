@@ -6838,8 +6838,8 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_splitter->setSizes({960, 320});
   stitched_layout->addWidget(stitched_splitter, 1);
 
-  preview_tabs_->addTab(program, "Program");
-  preview_tabs_->addTab(stitched, "Stitched");
+  preview_tabs_->addTab(program, tab_icon("Program"), "Program");
+  preview_tabs_->addTab(stitched, tab_icon("Stitched"), "Stitched");
   for (int camera_index = 0; camera_index < 3; ++camera_index) {
     auto* camera = new QWidget();
     auto* camera_layout = new QVBoxLayout(camera);
@@ -6869,14 +6869,14 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
         QString("Camera %1 decoded source preview — downstream controls do not alter this tab").arg(camera_index + 1));
     camera_status->setObjectName(QString("camera%1PreviewStatusLabel").arg(camera_index + 1));
     camera_layout->addWidget(camera_status);
-    preview_tabs_->addTab(camera, QString("Camera %1").arg(camera_index + 1));
+    preview_tabs_->addTab(camera, tab_icon(QString("Camera %1").arg(camera_index + 1)), QString("Camera %1").arg(camera_index + 1));
   }
   pipeline_inspector_ = new PipelineInspectorWidget();
   pipeline_inspector_->setCommandWriter([this](const QByteArray& command) {
     return pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning &&
         pipeline_process_->write(command) == command.size();
   });
-  pipeline_inspector_tab_index_ = preview_tabs_->addTab(pipeline_inspector_, "Pipeline");
+  pipeline_inspector_tab_index_ = preview_tabs_->addTab(pipeline_inspector_, tab_icon("Pipeline"), "Pipeline");
   preview_tabs_->setTabToolTip(
       pipeline_inspector_tab_index_,
       "Inspect the structured live GStreamer graph, select elements, and edit explicitly live-mutable properties.");
@@ -7356,8 +7356,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       updatePresetDirtyState();
     });
     loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
-    control_tabs->addTab(add_slider_tab(tracking_controls, false), "Tracking");
-    control_tabs->addTab(add_slider_tab(motion_controls, false), "Motion");
+    control_tabs->addTab(add_slider_tab(tracking_controls, false), tab_icon("Tracking"), "Tracking");
+    control_tabs->addTab(add_slider_tab(motion_controls, false), tab_icon("Motion"), "Motion");
     auto* framing_scroll = new QScrollArea();
     framing_scroll->setWidgetResizable(true);
     framing_scroll->setFrameShape(QFrame::NoFrame);
@@ -7368,8 +7368,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       maybeStartDeferredRestart();
     });
     framing_scroll->setWidget(rink_framing_controls_);
-    control_tabs->addTab(framing_scroll, "Rink framing");
-    control_tabs->addTab(add_slider_tab(color_controls, true), "Color");
+    control_tabs->addTab(framing_scroll, tab_icon("Rink framing"), "Rink framing");
+    control_tabs->addTab(add_slider_tab(color_controls, true), tab_icon("Color"), "Color");
     const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
     auto* crop_page = add_slider_tab(crop_controls, false);
     crop_rotation_explanation_ = new QLabel(
@@ -7378,9 +7378,9 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     crop_rotation_explanation_->setWordWrap(true);
     crop_rotation_explanation_->hide();
     crop_page->layout()->addWidget(crop_rotation_explanation_);
-    control_tabs->addTab(crop_page, "Crop Rotation");
-    control_tabs->addTab(runtime_page, "Runtime");
-    control_tabs->addTab(detection_page, "Detection");
+    control_tabs->addTab(crop_page, tab_icon("Crop Rotation"), "Crop Rotation");
+    control_tabs->addTab(runtime_page, tab_icon("Runtime"), "Runtime");
+    control_tabs->addTab(detection_page, tab_icon("Detection"), "Detection");
     auto* analytics_scroll = new QScrollArea();
     analytics_scroll->setObjectName("playerAnalyticsScrollArea");
     analytics_scroll->setWidgetResizable(true);
@@ -7392,10 +7392,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     });
     analytics_scroll->setWidget(player_analytics_controls_);
     loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
-    control_tabs->addTab(analytics_scroll, "Players");
+    control_tabs->addTab(analytics_scroll, tab_icon("Players"), "Players");
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
-    control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
+    control_tabs->addTab(add_slider_tab(rotation_controls, false), tab_icon("Rotation"), "Rotation");
 
     auto* color_page = new QWidget();
     color_page->setObjectName("stitchedColorPrecisionTab");
@@ -7556,7 +7556,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     color_layout->addStretch(1);
     color_scroll->setWidget(color_content);
     color_page_layout->addWidget(color_scroll, 1);
-    control_tabs->addTab(color_page, "Color & Precision");
+    control_tabs->addTab(color_page, tab_icon("Color & Precision"), "Color & Precision");
 
     const auto add_stitching_tab = [control_tabs](const QString& name, const QString& title) {
       auto* scroll = new QScrollArea();
@@ -7572,7 +7572,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       grid->setContentsMargins(8, 8, 8, 8);
       grid->setColumnStretch(1, 1);
       scroll->setWidget(page);
-      control_tabs->addTab(scroll, title);
+      control_tabs->addTab(scroll, tab_icon(title), title);
       return grid;
     };
     auto* alignment_layout = add_stitching_tab("stitchingAlignment", "Alignment");

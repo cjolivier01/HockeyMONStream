@@ -1538,7 +1538,7 @@ CameraExperimentDialog::CameraExperimentDialog(
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(content);
-    tabs->addTab(scroll, label);
+    tabs->addTab(scroll, tab_icon(label), label);
   };
   control_tab("Tracking", tracking_control_specs(defaults));
   control_tab("Motion", motion_control_specs(defaults));
@@ -1580,7 +1580,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   rink_help->setWordWrap(true);
   rink_layout->addWidget(rink_help);
   rink_layout->addStretch();
-  tabs->addTab(rink_tab, "Rink framing");
+  tabs->addTab(rink_tab, tab_icon("Rink framing"), "Rink framing");
   connect(s.rink_aware, &QCheckBox::toggled, this, [this] { impl_->update_controls(); });
   auto* legacy = new QWidget();
   auto* legacy_layout = new QFormLayout(legacy);
@@ -1596,7 +1596,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.legacy_config->setObjectName("experimentLegacyConfig");
   s.legacy_config->setPlaceholderText("Original resolved policy YAML (optional)");
   legacy_layout->addRow("Policy file", s.legacy_config);
-  tabs->addTab(legacy, "Legacy");
+  tabs->addTab(legacy, tab_icon("Legacy"), "Legacy");
   right_layout->addWidget(tabs, 1);
   s.trial_name = new QLineEdit("Trial 1");
   s.trial_name->setObjectName("experimentTrialName");

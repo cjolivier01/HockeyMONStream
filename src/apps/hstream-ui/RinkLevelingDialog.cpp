@@ -142,7 +142,7 @@ RinkLevelingDialog::RinkLevelingDialog(
       });
     }
     page_layout->addLayout(actions);
-    tabs_->addTab(page, camera == 0 ? "Left camera" : "Right camera");
+    tabs_->addTab(page, tab_icon(camera == 0 ? "Left camera" : "Right camera"), camera == 0 ? "Left camera" : "Right camera");
   }
   preview_canvas_ = new ScoreboardSelectionCanvas();
   preview_canvas_->setObjectName("rinkLevelingPreview");
@@ -160,7 +160,7 @@ RinkLevelingDialog::RinkLevelingDialog(
   preview_layout->addWidget(blend_preview_check_);
   preview_layout->addWidget(preview_canvas_, 1);
   preview_canvas_->hide();
-  tabs_->addTab(preview_page, "Preview");
+  tabs_->addTab(preview_page, tab_icon("Preview"), "Preview");
   connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
     if (index >= 0 && index < 2)
       QTimer::singleShot(0, this, [this, index]() { canvases_[index]->fitImage(); });

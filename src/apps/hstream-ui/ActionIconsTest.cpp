@@ -71,6 +71,8 @@ int main(int argc, char** argv) {
     // Directly constructed dialogs must also get colored icons without main().
     for (int value = 0; value <= static_cast<int>(ActionIcon::Undo); ++value)
       check_icon(action_icon(static_cast<ActionIcon>(value)), QString("direct action %1").arg(value));
+    for (const auto& tab : kTabIconSpecs)
+      check_icon(tab_icon(QString::fromLatin1(tab.label)), QString("tab %1").arg(tab.label));
     install_button_icon_style();
     QStyle* installed = application.style();
     install_button_icon_style();

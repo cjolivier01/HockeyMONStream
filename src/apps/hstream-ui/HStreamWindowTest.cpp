@@ -18871,6 +18871,32 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ICONS_ONLY")) {
+    HStreamWindow window;
+    window.resize(1600, 1000);
+    window.show();
+    QGuiApplication::sync();
+    int count = 0;
+    for (auto* tabs : window.findChildren<QTabWidget*>()) {
+      for (int index = 0; index < tabs->count(); ++index) {
+        const QString text = tabs->tabText(index);
+        if (!expect(!tabs->tabIcon(index).isNull(), "Every tab must preserve its semantic icon: " + text.toStdString()))
+          return 1;
+        const auto identity = tabs->tabIcon(index).cacheKey();
+        tabs->setTabText(index, text + " (1920×1080)");
+        if (!expect(tabs->tabIcon(index).cacheKey() == identity, "A live dimension caption must retain its tab icon"))
+          return 1;
+        tabs->setTabText(index, text);
+        ++count;
+      }
+    }
+    if (!expect(count >= 19, "The main and both stage tab bars must be checked"))
+      return 1;
+    const QString screenshot = qEnvironmentVariable("HSTREAM_UI_ICON_SCREENSHOT");
+    if (!screenshot.isEmpty() && !window.grab().save(screenshot))
+      return 1;
+    return 0;
+  }
   if (!HStreamWindowTestAccess::previewOverlayStartupChecks())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_OVERLAY_STARTUP_ONLY"))
