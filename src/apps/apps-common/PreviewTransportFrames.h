@@ -20,6 +20,7 @@ struct TransportFrame {
   std::uint64_t operation, sequence, peer;
   GstClockTime source_pts, presentation_pts;
   bool encoded{false};
+  bool keyframe{false};
 };
 struct PacketFrame : TransportFrame {
   std::uint32_t rtp_timestamp, ssrc;
@@ -27,7 +28,9 @@ struct PacketFrame : TransportFrame {
 
 // Bounded identity bookkeeping for a single selected stream/encoder/payloader.
 // Only compressed packets may be inspected for their RTP header; raw pixels are
-// never read. Presentation remains a separate browser acknowledgement.
+// never read. Overflow retires all outstanding access units and requires a new
+// IDR so no later delta can depend on a dropped reference. Presentation remains
+// a separate browser acknowledgement.
 class TransportFrames {
  public:
   explicit TransportFrames(std::size_t capacity);

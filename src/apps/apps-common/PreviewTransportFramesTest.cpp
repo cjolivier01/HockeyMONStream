@@ -80,5 +80,49 @@ int main() {
   hm::preview::TransportFrames invalid(0);
   invalid.SetPeer(1);
   passed &= expect(!invalid.Admit(frame("program", 1, 1)).accepted, "Missing capacity silently chose a default");
+
+  hm::preview::TransportFrames bounded(1);
+  bounded.SetPeer(1);
+  bounded.Admit(frame("program", 1, 1));
+  passed &= expect(bounded.Encoded(GST_MSECOND, true).has_value(), "Initial IDR was not encoded");
+  admission = bounded.Admit(frame("program", 1, 2));
+  passed &= expect(
+      admission.accepted && admission.force_keyframe && !bounded.Rtp(GST_MSECOND, 100, 456, true).accepted &&
+          !bounded.Encoded(2 * GST_MSECOND, false),
+      "Overflow before the initial IDR marker admitted an undecodable delta");
+  admission = bounded.Admit(frame("program", 1, 3));
+  passed &= expect(
+      admission.force_keyframe && bounded.Encoded(3 * GST_MSECOND, true).has_value() &&
+          bounded.Rtp(3 * GST_MSECOND, 300, 456, true).accepted,
+      "Recovery IDR did not reach the RTP boundary");
+  admission = bounded.Admit(frame("program", 1, 4));
+  passed &= expect(
+      !admission.force_keyframe && bounded.Encoded(4 * GST_MSECOND, false).has_value(),
+      "Delivered IDR did not enable its following delta");
+  admission = bounded.Admit(frame("program", 1, 5));
+  passed &= expect(
+      admission.force_keyframe && !bounded.Rtp(4 * GST_MSECOND, 400, 456, true).accepted &&
+          !bounded.Encoded(5 * GST_MSECOND, false),
+      "Overflow after a delivered IDR admitted a delta referencing a dropped picture");
+  admission = bounded.Admit(frame("program", 1, 6));
+  passed &= expect(
+      admission.force_keyframe && bounded.Encoded(6 * GST_MSECOND, true).has_value() &&
+          bounded.Rtp(6 * GST_MSECOND, 600, 456, true).accepted,
+      "Reference-loss recovery did not admit a new IDR");
+  hm::preview::TransportFrames missing_packet(8);
+  missing_packet.SetPeer(1);
+  missing_packet.Admit(frame("program", 1, 1));
+  missing_packet.Encoded(GST_MSECOND, true);
+  missing_packet.Rtp(GST_MSECOND, 100, 456, true);
+  for (std::uint64_t i = 2; i <= 3; ++i) {
+    missing_packet.Admit(frame("program", 1, i));
+    passed &= expect(missing_packet.Encoded(i * GST_MSECOND, false).has_value(), "Delta was not encoded");
+  }
+  passed &= expect(
+      !missing_packet.Rtp(3 * GST_MSECOND, 300, 456, true).accepted &&
+          missing_packet.Admit(frame("program", 1, 4)).force_keyframe &&
+          missing_packet.Encoded(4 * GST_MSECOND, true).has_value() &&
+          missing_packet.Rtp(4 * GST_MSECOND, 400, 456, true).accepted,
+      "Missing earlier encoded access unit did not require an IDR at the RTP boundary");
   return passed ? 0 : 1;
 }

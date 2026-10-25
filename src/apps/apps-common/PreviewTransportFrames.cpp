@@ -47,8 +47,13 @@ TransportFrames::Admission TransportFrames::Admit(const FrameIdentityMeta& frame
     channel_ = frame.channel;
     need_keyframe_ = true;
   }
-  while (frames_.size() >= capacity_)
-    frames_.pop_front();
+  if (frames_.size() >= capacity_) {
+    // Losing any pending reference picture invalidates later deltas. Retire
+    // the whole outstanding set so an older IDR cannot subsequently clear
+    // recovery even though a newer reference picture was discarded.
+    frames_.clear();
+    need_keyframe_ = true;
+  }
   frames_.push_back({frame.channel, frame.operation, frame.sequence, peer_, frame.source_pts, frame.presentation_pts});
   sequence_ = frame.sequence;
   last_pts_ = frame.presentation_pts;
@@ -65,8 +70,8 @@ std::optional<TransportFrame> TransportFrames::Encoded(GstClockTime pts, bool ke
     frames_.erase(frame);
     return std::nullopt;
   }
-  need_keyframe_ = false;
   frame->encoded = true;
+  frame->keyframe = keyframe;
   return *frame;
 }
 
@@ -80,8 +85,22 @@ TransportFrames::Packet TransportFrames::Rtp(
       std::find_if(frames_.begin(), frames_.end(), [pts](const auto& value) { return value.presentation_pts == pts; });
   if (frame == frames_.end() || !frame->encoded)
     return {};
+  // Encoded AUs are ordered, but a caller may lose an earlier AU before this
+  // packet boundary. That picture may be a reference even though its encoder
+  // notification succeeded. Require an IDR across that missing packet gap too.
+  if (std::any_of(frames_.begin(), frame, [](const auto& earlier) { return earlier.encoded; }))
+    need_keyframe_ = true;
+  if (need_keyframe_ && !frame->keyframe) {
+    frames_.clear();
+    return {};
+  }
   if (!marker)
     return {true, std::nullopt};
+  // Encoding is not delivery to the RTP boundary. Raw admission can run ahead
+  // and retire this access unit; only its surviving final packet establishes
+  // the reference picture on which later deltas may depend.
+  if (frame->keyframe)
+    need_keyframe_ = false;
   PacketFrame result{*frame, timestamp, ssrc};
   // One hardware encoder emits access units in order (B frames disabled).
   // Retire missing earlier frames as well, keeping metadata strictly bounded.
