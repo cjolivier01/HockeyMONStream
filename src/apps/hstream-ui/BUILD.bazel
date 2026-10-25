@@ -1053,6 +1053,35 @@ cc_test(
     ],
 )
 
+
+cc_test(
+    name = "defaults_preset_test",
+    srcs = ["DefaultsPresetTest.cpp"],
+    data = [
+        "//configs:play_tracker_config.yaml",
+        "//configs:ds_hockey_app_config.yaml",
+        "//configs:ds_hockey_configure_stitching.yaml",
+        "//configs:config_infer_yolov8_hockey.yaml",
+        "//configs:config_infer_yolov8_hockey_fp16.yaml",
+        "//configs:config_infer_yolov8_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8_hockey_int8.yaml",
+        "//configs:config_infer_yolov8s_hockey.yaml",
+        "//configs:config_infer_yolov8s_hockey_fp16.yaml",
+        "//configs:config_infer_yolov8s_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8s_hockey_int8.yaml",
+    ],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":hstream_window",
+        "//src/libs/common:baseline_config",
+        "//src/libs/common:user_config",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
+)
+
 cc_test(
     name = "highlight_scene_test",
     srcs = ["HighlightSceneTest.cpp"],

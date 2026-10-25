@@ -2518,7 +2518,8 @@ bool test_path_preferences() {
             }) ||
         !choose_root(&restored, empty) ||
         !expect(
-            restored.gameIdText().isEmpty() && restored.videoSetCount() == 0 && restored.gameDirectoryText() == empty &&
+            restored.gameIdText().isEmpty() && restored.videoSetCount() == 0 &&
+                restored.gameDirectoryText() == QDir::home().filePath(".config/hstream-ui/defaults.yaml") &&
                 restored.windowTitle() == "HStream UI",
             "An empty root must clear the old game, video list and window title"))
       return false;
@@ -18514,9 +18515,11 @@ int main(int argc, char** argv) {
   QTemporaryDir game_root;
   QTemporaryDir source_root;
   QTemporaryDir preferences;
-  if (!game_root.isValid() || !source_root.isValid() || !preferences.isValid()) {
+  QTemporaryDir user_home;
+  if (!game_root.isValid() || !source_root.isValid() || !preferences.isValid() || !user_home.isValid()) {
     return 1;
   }
+  qputenv("HOME", user_home.path().toLocal8Bit());
   qputenv("XDG_CONFIG_HOME", preferences.path().toLocal8Bit());
   qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
   qunsetenv("USE_NEW_NVSTREAMMUX");

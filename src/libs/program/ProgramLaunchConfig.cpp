@@ -34,11 +34,12 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
   auto baseline = baseline_config::load();
   if (!baseline.ok())
     return baseline.status();
-  auto user = user_config::load_or_create();
-  if (!user.ok())
-    return user.status();
+  auto user_snapshot = user_config::load_snapshot_or_create();
+  if (!user_snapshot.ok())
+    return user_snapshot.status();
+  const YAML::Node& user = user_snapshot->values;
   try {
-    const auto lower = hm::config::MergeNodes(YAML::Clone(baseline->values), YAML::Clone(*user), false);
+    const auto lower = hm::config::MergeNodes(YAML::Clone(baseline->values), YAML::Clone(user), false);
     auto root = user_config::game_root(lower);
     if (!root.ok())
       return root.status();
@@ -52,7 +53,7 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
     result.saved_game = YAML::Clone(**game);
     result.application_file = fs::absolute(application_file);
     const auto native = YAML::LoadFile(result.application_file.string());
-    auto merged = hm::config::ResolveProgramConfiguration(baseline->values, *user, **game, native, option_groups);
+    auto merged = hm::config::ResolveProgramConfiguration(baseline->values, user, **game, native, option_groups);
     if (!merged.ok())
       return merged.status();
     result.configuration = std::move(*merged);
@@ -77,10 +78,7 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
     if (!settings.ok())
       return settings.status();
     result.amd = *settings;
-    fs::path user_directory;
-    const auto user_file = user_config::file_path();
-    if (user_file.ok())
-      user_directory = user_file->parent_path();
+    const fs::path user_directory = user_snapshot->path.parent_path();
     const hm::config::ReferenceRoots roots{
         result.application_file.parent_path(), baseline->root, result.game, user_directory, fs::current_path()};
     const auto camera_file = Reference(result.configuration, roots, "pipeline.ds-playtracker.config-file");

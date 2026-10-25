@@ -2205,7 +2205,8 @@ int main() {
 
   const fs::path layered_game = games / "layered";
   fs::create_directories(layered_game);
-  std::ofstream(layered_game / "config.yaml") << "pipeline:\n  layered-value: private\n  private-only: yes\n";
+  std::ofstream(layered_game / "config.yaml") << "pipeline:\n  layered-value: private\n  private-only: yes\n"
+                                                 "hstream_ui: {stitching_calibration: {frame_count: 4}}\n";
   hm::Configurator layered("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto layered_config = layered.load_config();
   ok &= expect(
@@ -2218,6 +2219,32 @@ int main() {
           !fs::exists(layered_game / ".hstream-stitch.lock"),
       "Config precedence must be baseline, then user overlay, then game-private YAML without artifact recovery for "
       "an ordinary config");
+  const fs::path defaults_path = test_home / ".config/hstream-ui/defaults.yaml";
+  fs::create_directories(defaults_path.parent_path());
+  std::ofstream(defaults_path) << "pipeline: {layered-value: defaults, defaults-only: yes}\n"
+                                  "stitching: {stitch_frame_time: '00:00:09', calibration_frame_count: 6}\n";
+  hm::Configurator with_defaults("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto default_config = with_defaults.load_config();
+  ok &= expect(
+      default_config.ok() && (*default_config)["pipeline"]["layered-value"].as<std::string>() == "private" &&
+          (*default_config)["pipeline"]["defaults-only"].as<std::string>() == "yes" &&
+          (*default_config)["stitching"]["calibration_frame_count"].as<int>() == 4 &&
+          !hm::get_node(with_defaults.game_private_config(), "stitching.calibration_frame_count").has_value() &&
+          (*default_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:09",
+      "UI defaults must overlay baseline below game-private configuration");
+  std::ofstream(defaults_path) << "not: [valid\n";
+  hm::Configurator invalid_defaults("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  ok &= expect(!invalid_defaults.load_config().ok(), "Malformed defaults must fail instead of silently falling back");
+  std::ofstream(defaults_path) << "{}\n";
+  hm::Configurator reset_defaults("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto reset_config = reset_defaults.load_config();
+  ok &= expect(
+      reset_config.ok() && (*reset_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:07",
+      "Empty defaults must restore baseline tuning, not legacy tuning");
+  std::ofstream(defaults_path).close();
+  hm::Configurator empty_defaults("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  ok &= expect(empty_defaults.load_config().ok(), "An empty defaults file must be an empty overlay");
+  fs::remove(defaults_path);
   ::unsetenv("HM_GAME_DIR");
   ok &= expect(
       hm::Configurator::get_game_dir("layered") == games / "layered",

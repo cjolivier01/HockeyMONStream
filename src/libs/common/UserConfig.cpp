@@ -166,7 +166,7 @@ absl::StatusOr<fs::path> file_path() {
   return *home / ".hstream" / "hstream.yaml";
 }
 
-absl::StatusOr<YAML::Node> load_or_create() {
+absl::StatusOr<YAML::Node> load_preferences_or_create() {
   auto path = file_path();
   if (!path.ok()) {
     // Explicit environment roots remain usable in non-login automation where
@@ -192,6 +192,101 @@ absl::StatusOr<YAML::Node> load_or_create() {
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError(absl::StrCat("Failed to load user config ", path->string(), ": ", error.what()));
   }
+}
+
+absl::StatusOr<fs::path> defaults_path() {
+  auto home = home_directory();
+  if (!home.ok())
+    return home.status();
+  return *home / ".config" / "hstream-ui" / "defaults.yaml";
+}
+
+absl::StatusOr<fs::path> active_file_path() {
+  auto path = defaults_path();
+  if (!path.ok())
+    return path.status();
+  std::error_code error;
+  const auto status = fs::symlink_status(*path, error);
+  if (error == std::errc::no_such_file_or_directory || (!error && status.type() == fs::file_type::not_found))
+    return file_path();
+  if (error)
+    return absl::InternalError(absl::StrCat("Failed to inspect ", path->string(), ": ", error.message()));
+  return path;
+}
+
+absl::StatusOr<YAML::Node> load_defaults() {
+  auto path = defaults_path();
+  if (!path.ok()) {
+    const char* game_root = std::getenv("HM_GAME_DIR");
+    if (game_root && *game_root)
+      return YAML::Node(YAML::NodeType::Map);
+    return path.status();
+  }
+  std::error_code error;
+  const auto status = fs::symlink_status(*path, error);
+  if (error == std::errc::no_such_file_or_directory || (!error && status.type() == fs::file_type::not_found))
+    return YAML::Node(YAML::NodeType::Map);
+  if (error)
+    return absl::InternalError(absl::StrCat("Failed to inspect ", path->string(), ": ", error.message()));
+  try {
+    auto config = YAML::LoadFile(path->string());
+    if (!config || config.IsNull())
+      return YAML::Node(YAML::NodeType::Map);
+    if (!config.IsMap())
+      return absl::InvalidArgumentError(absl::StrCat("UI defaults must be a YAML map: ", path->string()));
+    return config;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(absl::StrCat("Failed to load UI defaults ", path->string(), ": ", error.what()));
+  }
+}
+
+namespace {
+YAML::Node overlay_defaults(const YAML::Node& lower, const YAML::Node& upper) {
+  if (!lower.IsMap() || !upper.IsMap())
+    return YAML::Clone(upper);
+  YAML::Node result = YAML::Clone(lower);
+  for (const auto& entry : upper) {
+    const auto key = entry.first.as<std::string>();
+    const YAML::Node previous = result[key];
+    result[key] = overlay_defaults(previous, entry.second);
+  }
+  return result;
+}
+} // namespace
+
+absl::StatusOr<Snapshot> load_snapshot_or_create() {
+  auto preferences = load_preferences_or_create();
+  if (!preferences.ok())
+    return preferences.status();
+  const auto legacy = file_path();
+  if (!legacy.ok())
+    return Snapshot{*preferences, {}}; // Explicit non-login roots; no HOME-backed document.
+  const auto active = active_file_path();
+  if (!active.ok())
+    return active.status();
+  if (*active == *legacy)
+    return Snapshot{*preferences, *legacy};
+  auto defaults = load_defaults();
+  if (!defaults.ok())
+    return defaults.status();
+  try {
+    // Saving Defaults explicitly opts into baseline + defaults + game tuning.
+    // Do not merge older tuning aliases back into that layer, including after
+    // Reset publishes {}. Keep the legacy document intact for compatibility.
+    YAML::Node paths(YAML::NodeType::Map);
+    if ((*preferences)[kPathsKey])
+      paths[kPathsKey] = YAML::Clone((*preferences)[kPathsKey]);
+    return Snapshot{overlay_defaults(paths, *defaults), *active};
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(absl::StrCat("Invalid UI defaults overlay: ", error.what()));
+  }
+}
+
+absl::StatusOr<YAML::Node> load_or_create() {
+  auto snapshot = load_snapshot_or_create();
+  if (!snapshot.ok())
+    return snapshot.status();
+  return snapshot->values;
 }
 
 absl::StatusOr<fs::path> game_root(const YAML::Node& config) {

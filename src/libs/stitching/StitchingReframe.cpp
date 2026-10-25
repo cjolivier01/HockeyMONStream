@@ -71,7 +71,7 @@ absl::StatusOr<YAML::Node> effective_config(const YAML::Node& config) {
   if (!baseline.ok())
     return baseline.status();
   YAML::Node effective = YAML::Clone(baseline->values);
-  const auto user_path = hm::user_config::file_path();
+  const auto user_path = hm::user_config::active_file_path();
   if (user_path.ok()) {
     std::error_code error;
     const bool exists = fs::exists(*user_path, error);

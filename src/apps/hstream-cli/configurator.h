@@ -310,6 +310,7 @@ class Configurator {
   // recorded, and bundled baseline is implicit rank 0.
   std::map<std::string, int> explicit_value_ranks_;
   std::optional<YAML::Node> user_config_snapshot_;
+  std::filesystem::path user_config_snapshot_path_;
   std::optional<std::filesystem::path> resolved_game_dir_;
   YAML::Node private_config_;
   YAML::Node persisted_private_config_;

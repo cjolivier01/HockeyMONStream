@@ -17,6 +17,10 @@ using LeafRanks = std::map<std::string, int>;
 YAML::Node MergeNodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest);
 void RecordLeafRanks(const YAML::Node& overlay, const std::string& prefix, int rank, LeafRanks& ranks);
 
+// Older UI saves omitted the canonical count when it was four, while retaining
+// game-local calibration bookkeeping. Keep that saved count above new defaults.
+void RestoreGameCalibrationFrameCount(YAML::Node& effective, const YAML::Node& game, LeafRanks& ranks, int game_rank);
+
 struct ReferenceRoots {
   std::filesystem::path application, baseline, game, user, working;
 };

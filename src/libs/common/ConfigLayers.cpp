@@ -51,6 +51,16 @@ void RecordLeafRanks(const YAML::Node& overlay, const std::string& prefix, int r
   }
 }
 
+void RestoreGameCalibrationFrameCount(YAML::Node& effective, const YAML::Node& game, LeafRanks& ranks, int game_rank) {
+  if (get_node(game, "stitching.calibration_frame_count"))
+    return;
+  const auto count = get_node(game, "hstream_ui.stitching_calibration.frame_count");
+  if (!count)
+    return;
+  effective["stitching"]["calibration_frame_count"] = YAML::Clone(*count);
+  ranks["stitching.calibration_frame_count"] = game_rank;
+}
+
 absl::StatusOr<std::filesystem::path> ResolveReference(
     const std::filesystem::path& configured,
     int rank,
@@ -115,6 +125,7 @@ absl::StatusOr<ProgramConfiguration> ResolveProgramConfiguration(
     RecordLeafRanks(user, {}, 1, result.ranks);
     result.values = MergeNodes(result.values, YAML::Clone(game), false);
     RecordLeafRanks(game, {}, 2, result.ranks);
+    RestoreGameCalibrationFrameCount(result.values, game, result.ranks, 2);
     result.values["pipeline"] = MergeNodes(YAML::Clone(native_app), result.values["pipeline"], false);
     YAML::Node layer(YAML::NodeType::Map);
     for (const auto& group : option_groups) {
