@@ -17016,7 +17016,9 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
     timer.start();
     while (!predicate() && timer.elapsed() < timeout_ms) {
       QApplication::processEvents();
-      if (!window->scoreboardSelectorUrl().isEmpty()) {
+      // Completion can delete the dialog before the queued URL-clear reaches
+      // the window. Do not submit the already completed selection again.
+      if (!window->scoreboardSelectorUrl().isEmpty() && window->findChild<QDialog*>("scoreboardSelectionDialog")) {
         QString error;
         if (!submit_no_scoreboard(window, &error)) {
           std::cerr << error.toStdString() << '\n';

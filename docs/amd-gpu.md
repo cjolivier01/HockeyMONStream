@@ -13,7 +13,9 @@ not depend on CUDA, HIP, Qt or X11. The NVIDIA CLI uses it for existing desktop
 route activation. It does not add AMD source/Stitched branches or WebRTC;
 those consumers and their capability reports remain unfinished. No HIP surface
 or pointer is passed to the NVIDIA preview implementation.
-`SelectedPreviewStream` and `PreviewTransportFrames` likewise isolate events and
+`PreviewRouteGraph` is also CPU/GStreamer-only; its NVIDIA CLI integration does
+not add AMD source/Stitched route construction. `SelectedPreviewStream` and
+`PreviewTransportFrames` likewise isolate events and
 identity without GPU calls; they do not supply an AMD consumer. The independent
 `PreviewGpuSurface` prototype accepts CUDA-device NVMM and remains unavailable
 for HIP/VA surfaces. Its NVIDIA hardware test is not AMD preview qualification.

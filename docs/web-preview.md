@@ -22,6 +22,31 @@ headless selectable WebRTC target is registered. `preview_route_owner_test`
 exercises the owner without a display, including an in-flight drain barrier;
 `hm_gpu_preview_test` retains the actual GStreamer gate/failure tests.
 
+`RouteAttachment` in `PreviewRouteGraph.*` separates graph attachment from the
+consumer. The current Qt path uses its existing Program output tee, inserts a
+tracked Stitched tee after the selected tracking/analytics producer, uses the
+calibration stitcher's output tee, and replaces each source's original fake
+sink while retaining its queue and tee request pad. It does not add a second
+Program tee or move processing, archive or overlay-producer stages.
+
+Attachment is a transaction while the tap's parent is stopped: new nodes,
+links, requested pads and any cross-bin ghost pads remain provisional until
+configuration and route-callback publication succeed. Failure restores the
+original tracked/source links and source queue settings, then removes partial
+nodes/pads. Committed objects belong to their graph parents; owners still
+retire borrowed route callbacks before destroying/replacing those parents.
+The same factory accepts an external shared-target sink pad and bridges only
+the necessary ancestors. Calibration uses runtime-only `preview_tap_only` to
+request the existing stitcher output tee without allocating a Qt sink there;
+legacy standalone YAML `ui-preview` continues to construct its own renderer.
+CPU tests cover commit, rejected publication, broken consumer links, source
+queue/pad identity, archive preservation and nested shared-target rollback.
+The NVIDIA hardware fixture exercises the same factory with shared-target
+Program/source switches and natural EOF. Real Qt checks cover Program,
+paused Stitched selection, source-only seek, Render off during seek, restart
+and Program reactivation. The calibration-only tap still needs its own runtime
+check; these results do not qualify production browser routes or AMD consumers.
+
 `SelectedPreviewStream` isolates inactive route events, preserves original NVMM
 memory and source-buffer pool ownership, and assigns a monotonic presentation
 clock without changing source PTS. `PreviewGpuSurface` bounds cadence and pool

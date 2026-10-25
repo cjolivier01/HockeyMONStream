@@ -47,9 +47,12 @@ playback does not reproduce the native source route's timing or ownership.
 `PreviewRouteOwner` now owns activation independently of Qt window types, with
 borrowed native gate and consumer callbacks. Its CPU tests cover registration
 without XIDs, generation/session admission, switching, metadata ordering,
-consumer failure, graph replacement and in-flight drain barriers. Native branch
-construction still lives in `PipelineApplication` and requires window IDs.
-Extract that construction next so presentation adapters supply the final consumer:
+consumer failure, graph replacement and in-flight drain barriers.
+`RouteAttachment` in `PreviewRouteGraph.*` now owns transactional attachment at
+those exact native taps, without window IDs. The Qt path uses this factory,
+and the GPU fixture uses it to bridge Program/source taps into the shared
+`WebPreviewTarget`. Production browser route registration remains unimplemented.
+Presentation adapters supply the final consumer:
 
 - Qt uses the existing `hmgpupreviewsink` targets and X11 readiness contract.
 - Browser sessions use one route selector and one hardware encoder/WebRTC target.

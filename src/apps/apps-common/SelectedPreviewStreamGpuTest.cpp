@@ -1,5 +1,6 @@
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/PreviewGpuSurface.h"
+#include "hstream/src/apps/apps-common/PreviewRouteGraph.h"
 #include "hstream/src/apps/apps-common/PreviewRouteOwner.h"
 #include "hstream/src/apps/apps-common/PreviewTransportFrames.h"
 #include "hstream/src/apps/apps-common/SelectedPreviewStream.h"
@@ -245,52 +246,65 @@ int main(int argc, char** argv) {
         "nvvideoconvert gpu-id=0 nvbuf-memory-type=2 output-buffers=8 name=upload ! "
         "video/x-raw(memory:NVMM),format=" +
         (index ? "P010_10LE" : "RGBA") +
-        " ! hmpreviewisolation name=ingress ! "
-        "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! hmpreviewisolation name=drain";
-    GstElement* source = gst_parse_bin_from_description(description.c_str(), TRUE, &error);
+        " ! tee name=tap ! queue name=fakequeue ! fakesink name=original-drain sync=false async=false";
+    GstElement* source = gst_parse_bin_from_description(description.c_str(), FALSE, &error);
     if (!source || error) {
       std::cerr << "GPU source fixture failed: " << (error ? error->message : "missing element") << '\n';
       return 1;
     }
     gst_bin_add(GST_BIN(pipeline), source);
     route_pads[index] = target->AddRoute(channel);
-    GstPad* source_output = gst_element_get_static_pad(source, "src");
-    if (gst_pad_link(source_output, route_pads[index]) != GST_PAD_LINK_OK)
+    auto* tee = gst_bin_get_by_name(GST_BIN(source), "tap");
+    auto* old_queue = gst_bin_get_by_name(GST_BIN(source), "fakequeue");
+    auto* old_sink = gst_bin_get_by_name(GST_BIN(source), "original-drain");
+    auto* ingress = gst_element_factory_make("hmpreviewisolation", "ingress");
+    auto* drain = gst_element_factory_make("hmpreviewisolation", "drain");
+    auto* queue = index ? old_queue : gst_element_factory_make("queue", "preview-queue");
+    const hm::preview::RouteTap tap = index
+        ? hm::preview::RouteTap{hm::preview::RouteTap::Kind::kReplaceDrain, source, tee, old_queue, old_sink}
+        : hm::preview::RouteTap{hm::preview::RouteTap::Kind::kExistingTee, source, tee};
+    auto attachment =
+        hm::preview::RouteAttachment::Create(tap, {ingress, queue, drain}, route_pads[index], &target_error);
+    if (!attachment) {
+      std::cerr << "GPU preview tap failed: " << target_error << '\n';
       return 1;
-    gst_object_unref(source_output);
+    }
+    g_object_set(queue, "max-size-buffers", 1u, "max-size-bytes", 0u, "max-size-time", guint64{0}, "leaky", 2, nullptr);
     GstElement* upload = gst_bin_get_by_name(GST_BIN(source), "upload");
     GstPad* upload_output = gst_element_get_static_pad(upload, "src");
     gst_pad_add_probe(upload_output, GST_PAD_PROBE_TYPE_BUFFER, add_native_metadata, &sources[index], nullptr);
     gst_object_unref(upload_output);
     gst_object_unref(upload);
-    GstElement* ingress = gst_bin_get_by_name(GST_BIN(source), "ingress");
-    GstElement* drain = gst_bin_get_by_name(GST_BIN(source), "drain");
     hm::gpu_preview::set_isolation_failure_peer(drain, ingress);
-    owner.register_route(
-        channel,
-        {
-            [ingress](bool active, std::uint64_t generation) {
-              hm::gpu_preview::set_isolation_active(ingress, active, generation);
-            },
-            [drain](bool active, std::uint64_t generation) {
-              hm::gpu_preview::set_isolation_active(drain, active, generation);
-            },
-            [&, index, ingress, drain] {
-              return hm::gpu_preview::isolation_active(ingress) && hm::gpu_preview::isolation_active(drain) &&
-                  target->Active(route_pads[index], generations[index]);
-            },
-            [&, index](std::uint64_t generation) {
-              generations[index] = generation;
-              target->Select(route_pads[index], generation);
-            },
-            [&, index](std::uint64_t generation) {
-              generations[index] = generation;
-              return target->Select(route_pads[index], generation);
-            },
-            [&](std::uint64_t generation) { return target->Select(nullptr, generation); },
-        });
-    gst_object_unref(ingress);
-    gst_object_unref(drain);
+    if (!attachment->Commit([&] {
+          return owner.register_route(
+              channel,
+              {
+                  [ingress](bool active, std::uint64_t generation) {
+                    hm::gpu_preview::set_isolation_active(ingress, active, generation);
+                  },
+                  [drain](bool active, std::uint64_t generation) {
+                    hm::gpu_preview::set_isolation_active(drain, active, generation);
+                  },
+                  [&, index, ingress, drain] {
+                    return hm::gpu_preview::isolation_active(ingress) && hm::gpu_preview::isolation_active(drain) &&
+                        target->Active(route_pads[index], generations[index]);
+                  },
+                  [&, index](std::uint64_t generation) {
+                    generations[index] = generation;
+                    target->Select(route_pads[index], generation);
+                  },
+                  [&, index](std::uint64_t generation) {
+                    generations[index] = generation;
+                    return target->Select(route_pads[index], generation);
+                  },
+                  [&](std::uint64_t generation) { return target->Select(nullptr, generation); },
+              });
+        }))
+      return 1;
+    gst_object_unref(tee);
+    gst_object_unref(old_queue);
+    gst_object_unref(old_sink);
   }
   bool success = owner.select_current("program", 1, {}).status == hm::preview::RouteOwner::Status::kActivated;
   success &= gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;

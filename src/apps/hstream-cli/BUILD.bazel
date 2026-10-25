@@ -35,6 +35,7 @@ HSTREAM_CLI_DEPS = [
     "//src/libs/program:tone_control_command",
     "//src/libs/program:tone_controls",
     "//src/apps/apps-common:preview_route_owner",
+    "//src/apps/apps-common:preview_route_graph",
     "//src/gst-plugins/gst-rink-map:overlay",
     "//src/libs/program:preview_overlay_runtime",
     "//src/libs/common:config_layers",

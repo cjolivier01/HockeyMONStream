@@ -1,6 +1,21 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "preview_route_graph",
+    srcs = ["PreviewRouteGraph.cpp"],
+    hdrs = ["PreviewRouteGraph.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "preview_route_graph_test",
+    srcs = ["PreviewRouteGraphTest.cpp"],
+    deps = [":preview_route_graph", "@gstreamer"],
+)
+
+cc_library(
     name = "preview_route_owner",
     srcs = ["PreviewRouteOwner.cpp"],
     hdrs = ["PreviewRouteOwner.h"],
@@ -35,6 +50,7 @@ cc_test(
     tags = ["manual", "requires-gpu", "local"],
     deps = [
         ":hm_gpu_preview",
+        ":preview_route_graph",
         ":preview_route_owner",
         ":preview_gpu_surface",
         ":preview_transport_frames",

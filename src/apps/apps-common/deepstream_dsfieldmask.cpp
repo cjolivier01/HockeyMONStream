@@ -755,7 +755,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
       gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, high_bit_depth ? "RGB10A2_LE" : "RGBA", NULL),
       bin->cap_filter);
 
-  if (config->ui_preview || config->archive_stitched) {
+  if (config->ui_preview || config->preview_tap_only || config->archive_stitched) {
     HMGST_ELEMENT_MAKE_BINADD(bin->output_tee, "tee", "hmstitcher_output_tee");
     NVGSTDS_LINK_ELEMENT(bin->elem_hmstitcher, bin->output_tee);
     if (high_bit_depth_output) {
@@ -791,7 +791,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
       NVGSTDS_BIN_ADD_GHOST_PAD_NAMED(bin->bin, bin->stitched_queue, "src", "stitched_src");
     }
 
-    if (config->ui_preview) {
+    if (config->ui_preview && !config->preview_tap_only) {
       if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()) {
         NVGSTDS_ERR_MSG_V("GPU-native stitching preview is unavailable on this platform");
         goto done;

@@ -75,6 +75,7 @@
 #include "TensorRtModelCache.h"
 #include "hstream/src/apps/apps-common/AsyncInferenceSeekRecovery.h"
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
+#include "hstream/src/apps/apps-common/PreviewRouteGraph.h"
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
@@ -1609,6 +1610,7 @@ absl::Status PipelineApplication::configureInstances(
       // graphs need the stitcher's own preview branch and its GPU resources.
       app_ctx->config.hmsticher_config.ui_preview = ui_preview_window_ids_.count("stitched") &&
           !app_ctx->config.dsplaytracker_config.enable && !app_ctx->config.tracker_config.enable;
+      app_ctx->config.hmsticher_config.preview_tap_only = app_ctx->config.hmsticher_config.ui_preview;
     }
     const std::string video_converter = effective_video_converter_element_name(app_ctx->config);
     if (!stage_video_converter.has_value()) {
@@ -1935,8 +1937,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
                               guint64 window_id,
                               guint gpu_id,
                               gint width,
-                              gint height,
-                              bool link_elements) -> bool {
+                              gint height) -> bool {
       if (!queue || !ingress_isolation || !isolation || !converter || !caps_filter || !sink)
         return false;
       const guint64 aligned_pitch = (static_cast<guint64>(width) * 4ULL + 255ULL) & ~255ULL;
@@ -2020,12 +2021,6 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "enable-last-sample",
           FALSE,
           nullptr);
-      // The ingress gate keeps inactive buffers out of the queue. The second
-      // gate remains after the queue as a drain barrier: once it is closed,
-      // no already-enqueued buffer can still reach the converter or renderer.
-      if (link_elements &&
-          !gst_element_link_many(ingress_isolation, queue, isolation, converter, caps_filter, sink, nullptr))
-        return false;
       // Unrestricted processing bounds preview work to 30 fps. Paced playback
       // retains every frame and uses its timestamp, including 50/60 fps video.
       GstPad* probe_pad = gst_element_get_static_pad(ingress_isolation, "src");
@@ -2044,64 +2039,69 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             delete state;
           });
       gst_object_unref(probe_pad);
-      ui_preview_channels_[channel] = UiPreviewChannel{ingress_isolation, isolation, sink};
-      return preview_routes_.register_route(
-          channel,
-          {
-              [ingress_isolation](bool active, std::uint64_t generation) {
-                hm::gpu_preview::set_isolation_active(ingress_isolation, active, generation);
-              },
-              [isolation](bool active, std::uint64_t generation) {
-                hm::gpu_preview::set_isolation_active(isolation, active, generation);
-              },
-              [ingress_isolation, isolation] {
-                return hm::gpu_preview::isolation_active(ingress_isolation) &&
-                    hm::gpu_preview::isolation_active(isolation);
-              },
-              [sink](std::uint64_t generation) { hm::gpu_preview::set_renderer_generation(sink, generation); },
-              [ingress_isolation, isolation, sink](std::uint64_t generation) {
-                hm::gpu_preview::set_renderer_generation(sink, generation);
-                hm::gpu_preview::set_isolation_generation(ingress_isolation, generation);
-                hm::gpu_preview::set_isolation_generation(isolation, generation);
-                return hm::gpu_preview::isolation_active(ingress_isolation) &&
-                    hm::gpu_preview::isolation_active(isolation);
-              },
-              [sink](std::uint64_t generation) { return hm::gpu_preview::quiesce(sink, generation); },
-          });
+      return true;
     };
+    auto register_path =
+        [&](GstElement* ingress_isolation, GstElement* isolation, GstElement* sink, const std::string& channel) {
+          if (!preview_routes_.register_route(
+                  channel,
+                  {
+                      [ingress_isolation](bool active, std::uint64_t generation) {
+                        hm::gpu_preview::set_isolation_active(ingress_isolation, active, generation);
+                      },
+                      [isolation](bool active, std::uint64_t generation) {
+                        hm::gpu_preview::set_isolation_active(isolation, active, generation);
+                      },
+                      [ingress_isolation, isolation] {
+                        return hm::gpu_preview::isolation_active(ingress_isolation) &&
+                            hm::gpu_preview::isolation_active(isolation);
+                      },
+                      [sink](std::uint64_t generation) { hm::gpu_preview::set_renderer_generation(sink, generation); },
+                      [ingress_isolation, isolation, sink](std::uint64_t generation) {
+                        hm::gpu_preview::set_renderer_generation(sink, generation);
+                        hm::gpu_preview::set_isolation_generation(ingress_isolation, generation);
+                        hm::gpu_preview::set_isolation_generation(isolation, generation);
+                        return hm::gpu_preview::isolation_active(ingress_isolation) &&
+                            hm::gpu_preview::isolation_active(isolation);
+                      },
+                      [sink](std::uint64_t generation) { return hm::gpu_preview::quiesce(sink, generation); },
+                  }))
+            return false;
+          ui_preview_channels_[channel] = UiPreviewChannel{ingress_isolation, isolation, sink};
+          return true;
+        };
 
     const auto& app_context = app_contexts.front();
     NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
     const auto program_target = ui_preview_window_ids_.find("program");
     if (!sources_only && program_target != ui_preview_window_ids_.end()) {
       GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_gpu_preview_queue");
-      GstElement* ingress_isolation =
-          gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_ingress_isolation");
-      GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_isolation");
+      GstElement* ingress = gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_ingress_isolation");
+      GstElement* drain = gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_isolation");
       GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "program_gpu_preview_converter");
-      GstElement* caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_gpu_preview_caps");
+      GstElement* caps = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_gpu_preview_caps");
       GstElement* sink = gst_element_factory_make("hmgpupreviewsink", "program_gpu_preview_sink");
-      if (!output.bin || !output.tee || !queue || !ingress_isolation || !isolation || !converter || !caps_filter ||
-          !sink) {
-        return absl::InternalError("Could not create the GPU-native Program preview branch");
-      }
-      gst_bin_add_many(GST_BIN(output.bin), ingress_isolation, queue, isolation, converter, caps_filter, sink, nullptr);
-      if (!configure_path(
+      std::string error;
+      auto attachment = hm::preview::RouteAttachment::Create(
+          {hm::preview::RouteTap::Kind::kExistingTee, output.bin, output.tee},
+          {ingress, queue, drain, converter, caps, sink},
+          nullptr,
+          &error);
+      if (!attachment ||
+          !configure_path(
               queue,
-              ingress_isolation,
-              isolation,
+              ingress,
+              drain,
               converter,
-              caps_filter,
+              caps,
               sink,
               "program",
               program_target->second,
               app_context->config.hmsticher_config.gpu_id,
               1600,
-              900,
-              true) ||
-          !link_element_to_tee_src_pad(output.tee, ingress_isolation)) {
-        return absl::InternalError("Could not link the GPU-native Program preview branch");
-      }
+              900) ||
+          !attachment->Commit([&] { return register_path(ingress, drain, sink, "program"); }))
+        return absl::InternalError("Could not attach the GPU-native Program preview: " + error);
       configure_overlays(sink, app_context->config.player_analytics_config.analytics);
     }
 
@@ -2129,89 +2129,50 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       }
     }
     if (!sources_only && stitched_target != ui_preview_window_ids_.end()) {
-      GstElement* playtracker = tracked_preview_source;
-      if (playtracker) {
-        GstPad* playtracker_src = gst_element_get_static_pad(playtracker, "src");
-        GstPad* tracked_downstream_sink = playtracker_src ? gst_pad_get_peer(playtracker_src) : nullptr;
-        GstElement* tracked_downstream =
-            tracked_downstream_sink ? gst_pad_get_parent_element(tracked_downstream_sink) : nullptr;
-        if (!playtracker_src || !tracked_downstream_sink || !tracked_downstream) {
-          if (tracked_downstream)
-            gst_object_unref(tracked_downstream);
-          if (tracked_downstream_sink)
-            gst_object_unref(tracked_downstream_sink);
-          if (playtracker_src)
-            gst_object_unref(playtracker_src);
-          return absl::FailedPreconditionError("The play tracker does not expose a linked downstream preview point");
-        }
-        auto tracked_link_cleanup = absl::MakeCleanup([&] {
-          gst_object_unref(tracked_downstream);
-          gst_object_unref(tracked_downstream_sink);
-          gst_object_unref(playtracker_src);
-        });
-        GstElement* tee = gst_element_factory_make(NVDS_ELEM_TEE, "stitched_tracking_gpu_preview_tee");
-        GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "stitched_gpu_preview_queue");
-        GstElement* ingress_isolation =
-            gst_element_factory_make("hmpreviewisolation", "stitched_gpu_preview_ingress_isolation");
-        GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "stitched_gpu_preview_isolation");
-        GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "stitched_gpu_preview_converter");
-        GstElement* caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "stitched_gpu_preview_caps");
-        GstElement* sink = gst_element_factory_make("hmgpupreviewsink", "stitched_gpu_preview_sink");
-        if (!tee || !queue || !ingress_isolation || !isolation || !converter || !caps_filter || !sink) {
-          return absl::InternalError("Could not create the tracked Stitched GPU preview branch");
-        }
-        gst_bin_add_many(
-            GST_BIN(app_context->pipeline.pipeline),
-            tee,
-            ingress_isolation,
-            queue,
-            isolation,
-            converter,
-            caps_filter,
-            sink,
-            nullptr);
-        if (!gst_pad_unlink(playtracker_src, tracked_downstream_sink) || !gst_element_link(playtracker, tee) ||
-            !link_element_to_tee_src_pad(tee, tracked_downstream) ||
-            !configure_path(
-                queue,
-                ingress_isolation,
-                isolation,
-                converter,
-                caps_filter,
-                sink,
-                "stitched",
-                stitched_target->second,
-                app_context->config.hmsticher_config.gpu_id,
-                1600,
-                900,
-                true) ||
-            !link_element_to_tee_src_pad(tee, ingress_isolation)) {
-          return absl::InternalError("Could not link the tracked Stitched GPU preview branch");
-        }
-        configure_overlays(sink, app_context->config.player_analytics_config.analytics);
-      } else {
-        if (!stitcher.preview_queue || !stitcher.preview_ingress_isolation || !stitcher.preview_isolation ||
-            !stitcher.preview_converter || !stitcher.preview_caps_filter || !stitcher.preview_sink) {
-          return absl::FailedPreconditionError("The stitched GPU preview branch was not created");
-        }
-        g_object_set(G_OBJECT(stitcher.preview_sink), "window-id", stitched_target->second, nullptr);
-        if (!configure_path(
-                stitcher.preview_queue,
-                stitcher.preview_ingress_isolation,
-                stitcher.preview_isolation,
-                stitcher.preview_converter,
-                stitcher.preview_caps_filter,
-                stitcher.preview_sink,
-                "stitched",
-                stitched_target->second,
-                app_context->config.hmsticher_config.gpu_id,
-                1600,
-                900,
-                false)) {
-          return absl::InternalError("Could not configure the GPU-native Stitched preview branch");
-        }
-        configure_overlays(stitcher.preview_sink, app_context->config.player_analytics_config.analytics);
+      const bool tracked = tracked_preview_source != nullptr;
+      const std::string prefix = tracked ? "stitched_gpu_preview_" : "hmstitcher_preview_";
+      GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, (prefix + "queue").c_str());
+      GstElement* ingress = gst_element_factory_make("hmpreviewisolation", (prefix + "ingress_isolation").c_str());
+      GstElement* drain = gst_element_factory_make("hmpreviewisolation", (prefix + "isolation").c_str());
+      GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, (prefix + "converter").c_str());
+      GstElement* caps = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, (prefix + "caps").c_str());
+      GstElement* sink = gst_element_factory_make("hmgpupreviewsink", (prefix + "sink").c_str());
+      hm::preview::RouteTap tap{hm::preview::RouteTap::Kind::kExistingTee, stitcher.bin, stitcher.output_tee};
+      if (tracked)
+        tap = {
+            hm::preview::RouteTap::Kind::kAfterElement,
+            app_context->pipeline.pipeline,
+            tracked_preview_source,
+            nullptr,
+            nullptr,
+            "stitched_tracking_gpu_preview_tee"};
+      std::string error;
+      auto attachment =
+          hm::preview::RouteAttachment::Create(tap, {ingress, queue, drain, converter, caps, sink}, nullptr, &error);
+      if (!attachment ||
+          !configure_path(
+              queue,
+              ingress,
+              drain,
+              converter,
+              caps,
+              sink,
+              "stitched",
+              stitched_target->second,
+              app_context->config.hmsticher_config.gpu_id,
+              1600,
+              900) ||
+          !attachment->Commit([&] { return register_path(ingress, drain, sink, "stitched"); }))
+        return absl::InternalError("Could not attach the GPU-native Stitched preview: " + error);
+      if (!tracked) {
+        stitcher.preview_queue = queue;
+        stitcher.preview_ingress_isolation = ingress;
+        stitcher.preview_isolation = drain;
+        stitcher.preview_converter = converter;
+        stitcher.preview_caps_filter = caps;
+        stitcher.preview_sink = sink;
       }
+      configure_overlays(sink, app_context->config.player_analytics_config.analytics);
     }
 
     NvDsSrcParentBin& sources = app_context->pipeline.multi_src_bin;
@@ -2221,58 +2182,35 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       if (target == ui_preview_window_ids_.end())
         continue;
       NvDsSrcBin& source = sources.sub_bins[source_index];
-      if (!source.bin || !source.tee || !source.fakesink_queue || !source.fakesink) {
-        return absl::FailedPreconditionError(TO_STRING(channel << " does not expose a preview tee branch"));
-      }
-      GstPad* source_queue_sink = gst_element_get_static_pad(source.fakesink_queue, "sink");
-      GstPad* old_tee_pad = source_queue_sink ? gst_pad_get_peer(source_queue_sink) : nullptr;
-      if (!source_queue_sink || !old_tee_pad || GST_OBJECT_PARENT(old_tee_pad) != GST_OBJECT(source.tee) ||
-          !gst_pad_unlink(old_tee_pad, source_queue_sink)) {
-        if (old_tee_pad)
-          gst_object_unref(old_tee_pad);
-        if (source_queue_sink)
-          gst_object_unref(source_queue_sink);
-        return absl::InternalError(TO_STRING("Could not detach the fake preview branch for " << channel));
-      }
-      gst_element_release_request_pad(source.tee, old_tee_pad);
-      gst_object_unref(old_tee_pad);
-      gst_object_unref(source_queue_sink);
-      gst_element_unlink(source.fakesink_queue, source.fakesink);
-      if (!gst_bin_remove(GST_BIN(source.bin), source.fakesink)) {
-        return absl::InternalError(TO_STRING("Could not replace the fake sink for " << channel));
-      }
-      source.fakesink = nullptr;
-      GstElement* ingress_isolation =
+      GstElement* ingress =
           gst_element_factory_make("hmpreviewisolation", (channel + "_gpu_preview_ingress_isolation").c_str());
-      GstElement* isolation =
-          gst_element_factory_make("hmpreviewisolation", (channel + "_gpu_preview_isolation").c_str());
+      GstElement* drain = gst_element_factory_make("hmpreviewisolation", (channel + "_gpu_preview_isolation").c_str());
       GstElement* converter =
           gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, (channel + "_gpu_preview_converter").c_str());
-      GstElement* caps_filter =
-          gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, (channel + "_gpu_preview_caps").c_str());
+      GstElement* caps = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, (channel + "_gpu_preview_caps").c_str());
       GstElement* sink = gst_element_factory_make("hmgpupreviewsink", (channel + "_gpu_preview_sink").c_str());
-      if (!ingress_isolation || !isolation || !converter || !caps_filter || !sink)
-        return absl::InternalError(TO_STRING("Could not create the GPU-native preview branch for " << channel));
-      gst_bin_add_many(GST_BIN(source.bin), ingress_isolation, isolation, converter, caps_filter, sink, nullptr);
+      std::string error;
+      auto attachment = hm::preview::RouteAttachment::Create(
+          {hm::preview::RouteTap::Kind::kReplaceDrain, source.bin, source.tee, source.fakesink_queue, source.fakesink},
+          {ingress, source.fakesink_queue, drain, converter, caps, sink},
+          nullptr,
+          &error);
       const NvDsSourceConfig& source_config = app_context->config.multi_source_config[source_index];
-      if (!configure_path(
+      if (!attachment ||
+          !configure_path(
               source.fakesink_queue,
-              ingress_isolation,
-              isolation,
+              ingress,
+              drain,
               converter,
-              caps_filter,
+              caps,
               sink,
               channel,
               target->second,
               source_config.gpu_id,
               1280,
-              720,
-              true)) {
-        return absl::InternalError(TO_STRING("Could not link the GPU-native preview branch for " << channel));
-      }
-      if (!link_element_to_tee_src_pad(source.tee, ingress_isolation)) {
-        return absl::InternalError(TO_STRING("Could not attach the GPU-native preview branch for " << channel));
-      }
+              720) ||
+          !attachment->Commit([&] { return register_path(ingress, drain, sink, channel); }))
+        return absl::InternalError("Could not attach the GPU-native preview for " + channel + ": " + error);
       source.fakesink = sink;
     }
 
