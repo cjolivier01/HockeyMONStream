@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
@@ -7226,11 +7227,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       }
     }
     if (include_color_toggles) {
-      addCameraCheckBox(
-          content_layout,
-          "Lift_Shadow_Black_Point",
-          "Lift black point too (stronger)",
-          default_value("Lift_Shadow_Black_Point") != 0);
+      const auto& black_point = *hm::program::FindToneControl("Lift_Shadow_Black_Point");
+      addCameraCheckBox(content_layout, black_point.id, black_point.label, default_value(black_point.id) != 0);
       addCameraCheckBox(
           content_layout,
           "Use_10_Bit_Grading",
@@ -7245,10 +7243,14 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
 
   const auto tracking_controls = tracking_control_specs(default_value);
   const auto motion_controls = motion_control_specs(default_value);
-  const std::vector<CameraSliderSpec> color_controls = {
-      {"Bring_Up_Shadows", "Bring up shadows (%)", 0, 100, 0},
-      {"Exposure_x100", "Exposure x100", 0, 130, 0},
-  };
+  std::vector<CameraSliderSpec> color_controls;
+  for (const auto& spec : hm::program::kToneControls) {
+    if (spec.maximum == 1)
+      continue; // Black-point lift stays beside its existing checkbox controls.
+    // Preserve the existing initial slider state; saved tone settings load
+    // after construction. The shared specification carries no default values.
+    color_controls.push_back({spec.id, spec.label, spec.minimum, spec.maximum, 0, spec.property, spec.divisor});
+  }
   const std::vector<CameraSliderSpec> stitch_controls = {
       {"Stitch_Rotate_Degrees", "Final stitched-output rotation", 0, 180, default_value("Stitch_Rotate_Degrees")},
       {"Link_Fixed_Edge_Rotation_Left_Right",
@@ -7450,7 +7452,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       add_mirrored_slider(*spec);
     };
     add_color_slider("Bring_Up_Shadows");
-    add_mirrored_checkbox("Lift_Shadow_Black_Point", "Lift black point too (stronger)");
+    const auto& black_point = *hm::program::FindToneControl("Lift_Shadow_Black_Point");
+    add_mirrored_checkbox(black_point.id, black_point.label);
     add_color_slider("Exposure_x100");
     add_mirrored_checkbox("Use_10_Bit_Grading", "10-bit / FP16 mode (Auto / Force on / Force off, next run)");
     {
@@ -22595,7 +22598,7 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, double value) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     return false;
   }
-  const bool tone_control = id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point" || id == "Exposure_x100";
+  const bool tone_control = hm::program::FindToneControl(id.toStdString()) != nullptr;
   if (active_run_is_calibration_ && id != "Stitch_Rotate_Degrees" && !(tone_control && active_run_high_bit_depth_)) {
     return false;
   }
@@ -23014,17 +23017,23 @@ void HStreamWindow::flushScheduledRuntimeControls() {
     scheduled_playcropper_controls_.clear();
     scheduled_playcropper_controls_ready_ = false;
     std::vector<RuntimePropertyCommand> commands;
-    const QString tone_element = active_run_high_bit_depth_ ? "hmstitcher0" : "playcropper0";
-    if (controls.count("Bring_Up_Shadows")) {
-      commands.push_back({tone_element, "shadow-lift", QString::number(cameraControlValue("Bring_Up_Shadows"))});
-    }
-    if (controls.count("Lift_Shadow_Black_Point")) {
+    for (const auto& spec : hm::program::kToneControls) {
+      if (!controls.count(spec.id))
+        continue;
+      const auto command =
+          hm::program::BuildTonePropertyCommand(spec.id, cameraControlValue(spec.id), active_run_high_bit_depth_);
+      if (!command.ok()) {
+        for (const auto& [id, value] : controls)
+          appendLog(QString("camera control %1=%2 apply=failed reason=%3")
+                        .arg(id)
+                        .arg(value)
+                        .arg(QString::fromStdString(command.status().ToString())));
+        return;
+      }
       commands.push_back(
-          {tone_element, "shadow-lift-black-point", QString::number(cameraControlValue("Lift_Shadow_Black_Point"))});
-    }
-    if (controls.count("Exposure_x100")) {
-      commands.push_back(
-          {tone_element, "exposure", QString::number(cameraControlValue("Exposure_x100") / 100.0, 'f', 2)});
+          {QString::fromStdString(command->element),
+           QString::fromStdString(command->property),
+           QString::fromStdString(command->value)});
     }
     publishRuntimeControlBatch({controls.begin(), controls.end()}, commands);
     return;

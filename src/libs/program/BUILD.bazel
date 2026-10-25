@@ -3,6 +3,20 @@ load("//bazel:gpu_library.bzl", "gpu_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "tone_controls",
+    srcs = ["ToneControls.cpp"],
+    hdrs = ["ToneControls.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "tone_controls_test",
+    srcs = ["ToneControlsTest.cpp"],
+    deps = [":tone_controls"],
+)
+
+cc_library(
     name = "preview_overlay_runtime",
     hdrs = ["PreviewOverlayRuntime.h"],
     include_prefix = "hstream/src/libs/program",

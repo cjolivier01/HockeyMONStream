@@ -109,6 +109,24 @@ acknowledgments and generation checks. A successful write to stdin does not
 mean the operation was applied. Pipeline inspection uses the shared inspector
 protocol described in [pipeline-inspector.md](pipeline-inspector.md).
 
+`src/libs/program/ToneControls.*` is the shared, Qt-free specification and
+property builder for shadow lift, black-point lift and exposure. Qt reads its
+labels/ranges and uses its validated presentation-unit conversion when building
+the existing property batch. The active run's resolved precision chooses the
+stitcher or Program cropper; changing next-run precision does not retarget a
+running batch. The shared specification carries no default values and leaves
+Qt's initialization and saved-setting resolution unchanged.
+Eligibility, debounce, seek blocking and acknowledgments stay with the runtime
+owner. The builder neither applies changes nor saves presets.
+
+This extraction adds no browser endpoint and no AMD runtime command. Web form
+settings remain admission-time inputs. A future live endpoint must validate
+backend capability and correlate the run, stage, topology generation and request
+before applying a typed control; browsers must not supply raw property commands
+or native filesystem paths. Legacy property acknowledgments alone do not supply
+that identity. `ProgramRuntimeControl` continues to own AMD command dispatch;
+the shared builder does not make unsupported commands available there.
+
 Each Program launch receives a fresh private directory in
 `HSTREAM_UI_BACKEND_SESSION`. `HM_UI_INITIAL_LAUNCH`, when present, names the
 one-use launch document. The selected runner owns its Python workers within the
