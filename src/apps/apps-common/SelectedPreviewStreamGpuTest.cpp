@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
     std::cerr << "GPU target construction failed: " << target_error << '\n';
     return 1;
   }
-  if (!gst_bin_add(GST_BIN(pipeline), target->bin()) || !target->SetPeer(1))
+  if (!gst_bin_add(GST_BIN(pipeline), target->bin()) || !target->DetachPeer(1))
     return 1;
   GstElement* selected = gst_bin_get_by_name(GST_BIN(target->bin()), "selected");
   GstElement* surface = gst_bin_get_by_name(GST_BIN(target->bin()), "surface");
@@ -311,6 +311,14 @@ int main(int argc, char** argv) {
           gst_buffer_unref(buffer);
         observation.retained_surfaces.clear();
       }
+      if (next == 1) {
+        // Replace while a route is actively producing encoded/RTP output.
+        auto* peer = target->ReplacePeer(2);
+        success &= peer != nullptr;
+        if (peer)
+          gst_object_unref(peer);
+        success &= target->DetachPeer(3);
+      }
       if (next == 3) {
         // Recreate an inactive source binding while the rest of the target
         // remains PLAYING. The existing upstream sticky caps/segment must be
@@ -324,13 +332,11 @@ int main(int argc, char** argv) {
         if (output)
           gst_object_unref(output);
         auto* endpoint = target->endpoint();
-        success &= target->SetPeer(2);
-        auto* peer = hstream::webrtc_endpoint_reset_peer(endpoint);
+        auto* peer = target->ReplacePeer(4);
         success &= peer != nullptr;
         if (peer)
           gst_object_unref(peer);
-        success &= target->SetPeer(3);
-        hstream::webrtc_endpoint_detach_peer(endpoint);
+        success &= target->DetachPeer(5);
         success &= target->endpoint() == endpoint;
       }
       const auto result = owner.select_current(selections[next], next + 2, {});

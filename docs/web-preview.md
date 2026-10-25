@@ -53,9 +53,27 @@ Events distinguish encoded access units from completed RTP frames; neither is a
 browser presentation receipt. Streaming probes only queue metadata for polling,
 with observable overflow; they do not call signaling or schedule work per frame.
 The caller closes ingress/drain gates around route mutations and stops the
-parent pipeline before destroying the target. The caller must fence the peer
-generation before replacing its transport; production signaling is not wired to
-this API yet.
+parent pipeline before destroying the target. A different active channel needs
+a newer operation generation. Production signaling is not wired to this API yet.
+
+`WebPreviewTarget::ReplacePeer` and `DetachPeer` own compressed-output retirement;
+callers must not reset or detach its borrowed endpoint directly. `PreviewRtpGate`
+holds a barrier from RTP identity admission through the complete downstream
+push. Replacement first closes that gate without waiting, then detaches/NULLs
+the old endpoint to release downstream waits. Only after accepted pushes return
+does it retire metadata and construct the new peer under the barrier. Closing
+raw ingress or clearing the identity ledger alone cannot protect a packet that
+already passed admission but has not reached its destination.
+
+The new peer remains gated during SDP/DTLS negotiation. Its connection callback
+opens the target only after the endpoint's valve opens and retires every frame
+encoded before readiness, requiring a newly admitted IDR. Stale connection
+callbacks cannot open a replacement generation. Connection callbacks never wait
+on the output barrier, since transport teardown may be joining them. The CPU
+regression holds an accepted packet between admission and forwarding while
+replacement starts, verifies delivery to the old destination, then exercises
+negotiation/reconnection recovery. The GPU fixture also replaces a peer during
+active output. These checks do not establish browser presentation parity.
 
 The GPU fixture now uses this target directly. It covers live source-binding
 replacement, Render off, natural main-output EOF, incomplete peer teardown,

@@ -94,16 +94,33 @@ cc_library(
     name = "web_preview_target",
     srcs = ["WebPreviewTarget.cpp"],
     hdrs = ["WebPreviewTarget.h"],
+    copts = ["-DGST_USE_UNSTABLE_API"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
         ":preview_gpu_surface",
+        ":preview_rtp_gate",
         ":preview_transport_monitor",
         ":selected_preview_stream",
         ":webrtc_endpoint",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ],
+)
+
+cc_library(
+    name = "preview_rtp_gate",
+    srcs = ["PreviewRtpGate.cpp"],
+    hdrs = ["PreviewRtpGate.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":preview_transport_monitor", "@gstreamer"],
+)
+
+cc_test(
+    name = "preview_rtp_gate_test",
+    srcs = ["PreviewRtpGateTest.cpp"],
+    deps = [":preview_rtp_gate", "@gstreamer"],
 )
 
 cc_library(

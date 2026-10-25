@@ -28,6 +28,9 @@ class TransportMonitor {
   // Both capacities are mandatory; zero is invalid. No shipped defaults.
   TransportMonitor(std::size_t frame_capacity, std::size_t event_capacity);
   bool SetPeer(std::uint64_t peer);
+  // A newly connected transport must start from a newly admitted IDR; frames
+  // encoded while its endpoint was gated did not establish decoder references.
+  void Recover();
   // Called after closing route gates, before opening a replacement. Empty
   // channel disables admission immediately, including delayed encoder output.
   bool Select(const std::string& channel, std::uint64_t operation);

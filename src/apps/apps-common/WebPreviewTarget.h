@@ -52,13 +52,19 @@ class WebPreviewTarget {
     return endpoint_;
   }
   // Returned route pad is an owned reference; remove only with gates closed.
+  // Selecting a different active channel requires a newer operation number.
   GstPad* AddRoute(const std::string& channel);
   void RemoveRoute(GstPad* route);
   bool Select(GstPad* route, std::uint64_t operation);
   bool Active(GstPad* route, std::uint64_t operation) const;
-  // Must precede endpoint detach/reset, on the signaling owner. Wiring that
-  // owner is a separate integration stage; this method never mutates a peer.
-  bool SetPeer(std::uint64_t generation);
+  // Sole peer lifecycle entry points, called on the signaling owner. Do not
+  // detach/reset endpoint() directly. These close compressed output, release
+  // old downstream waits, drain accepted pushes, then retire/replace the peer.
+  // Replace returns an owned peer reference. It admits video only after the
+  // connection is ready and a newly admitted IDR establishes decoder recovery.
+  // Detach resumes the disconnected drain, which does not imply presentation.
+  GstElement* ReplacePeer(std::uint64_t generation);
+  bool DetachPeer(std::uint64_t generation);
   std::vector<TransportEvent> TakeEvents();
   TransportCounters counters() const;
 
@@ -69,6 +75,7 @@ class WebPreviewTarget {
   GstElement* bin_{nullptr};
   GstElement* selected_{nullptr};
   GstElement* endpoint_{nullptr};
+  GstElement* rtp_gate_{nullptr};
   struct Route {
     GstPad* selected;
     std::string channel;

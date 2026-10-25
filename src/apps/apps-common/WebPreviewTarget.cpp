@@ -1,8 +1,10 @@
 #include "WebPreviewTarget.h"
 
+#include "PreviewRtpGate.h"
 #include "WebRtcEndpoint.h"
 
 #include <gst/video/video-event.h>
+#include <gst/webrtc/webrtc.h>
 #include <nvbufsurface.h>
 
 #include <climits>
@@ -53,19 +55,21 @@ GstPadProbeReturn encoded(GstPad*, GstPadProbeInfo* info, gpointer data) noexcep
   }
 }
 
-GstPadProbeReturn rtp(GstPad*, GstPadProbeInfo* info, gpointer data) noexcept {
-  try {
-    auto& monitor = **static_cast<std::shared_ptr<TransportMonitor>*>(data);
-    if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
-      auto* list = gst_buffer_list_make_writable(GST_PAD_PROBE_INFO_BUFFER_LIST(info));
-      GST_PAD_PROBE_INFO_DATA(info) = list;
-      return monitor.FilterRtp(list) ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
-    }
-    return monitor.Rtp(GST_PAD_PROBE_INFO_BUFFER(info)) ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
-  } catch (...) {
-    (**static_cast<std::shared_ptr<TransportMonitor>*>(data)).ProbeFailure();
-    return GST_PAD_PROBE_DROP;
+struct PeerGate {
+  GstElement* gate;
+  std::uint64_t generation;
+  ~PeerGate() {
+    gst_object_unref(gate);
   }
+};
+void peer_connection(GObject* peer, GParamSpec*, gpointer data) {
+  const auto* binding = static_cast<PeerGate*>(data);
+  GstWebRTCPeerConnectionState state;
+  g_object_get(peer, "connection-state", &state, nullptr);
+  // WebRtcEndpoint's earlier handler opens its valve first. Our gate stays
+  // closed until then, and clears frames encoded during SDP/DTLS negotiation.
+  // Never wait for streaming here: NULL may be joining this notification.
+  rtp_gate_set_ready(binding->gate, binding->generation, state == GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED);
 }
 } // namespace
 
@@ -150,7 +154,8 @@ bool WebPreviewTarget::Build(const WebPreviewConfig& c, SurfacePainter painter, 
   auto* parser = add(gst_element_factory_make("h264parse", "parser"));
   auto* au = add(gst_element_factory_make("capsfilter", "access-units"));
   auto* payloader = add(gst_element_factory_make("rtph264pay", "rtp"));
-  if (!selected_ || !surface || !convert || !raw || !encoder || !parser || !au || !payloader)
+  rtp_gate_ = add(rtp_gate_create("rtp-gate", monitor_));
+  if (!selected_ || !surface || !convert || !raw || !encoder || !parser || !au || !payloader || !rtp_gate_)
     return fail(error, "Required GPU H.264 preview element is unavailable; no software fallback exists");
   for (const char* property :
        {"bitrate",
@@ -213,7 +218,7 @@ bool WebPreviewTarget::Build(const WebPreviewConfig& c, SurfacePainter painter, 
       c.surface.gpu_id,
       nullptr);
   g_object_set(payloader, "pt", c.rtp_payload, "config-interval", -1, nullptr);
-  if (!gst_element_link_many(selected_, surface, convert, raw, encoder, parser, au, payloader, nullptr))
+  if (!gst_element_link_many(selected_, surface, convert, raw, encoder, parser, au, payloader, rtp_gate_, nullptr))
     return fail(error, "Could not link GPU preview encoder path");
   caps = gst_caps_new_simple(
       "application/x-rtp",
@@ -237,15 +242,14 @@ bool WebPreviewTarget::Build(const WebPreviewConfig& c, SurfacePainter painter, 
   // child's SINK flag when adding it; an empty nested endpoint otherwise leaves
   // this target absent from the parent pipeline's EOS aggregation.
   endpoint_ = add(endpoint);
-  auto* output = gst_element_get_static_pad(payloader, "src");
+  auto* output = gst_element_get_static_pad(rtp_gate_, "src");
   const bool linked = endpoint_ && input && output && gst_pad_link(output, input) == GST_PAD_LINK_OK;
   if (input)
     gst_object_unref(input);
   if (output)
     gst_object_unref(output);
   if (!linked || !Probe(encoder, "sink", GST_PAD_PROBE_TYPE_BUFFER, admit) ||
-      !Probe(au, "src", GST_PAD_PROBE_TYPE_BUFFER, encoded) ||
-      !Probe(payloader, "src", GstPadProbeType(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST), rtp))
+      !Probe(au, "src", GST_PAD_PROBE_TYPE_BUFFER, encoded))
     return fail(error, "Could not attach GPU preview transport and identity probes");
   return true;
 }
@@ -318,8 +322,42 @@ bool WebPreviewTarget::Active(GstPad* route, std::uint64_t operation) const {
   return found != routes_.end() && selected_stream_active(selected_, found->second.selected, operation);
 }
 
-bool WebPreviewTarget::SetPeer(std::uint64_t generation) {
-  return monitor_->SetPeer(generation);
+GstElement* WebPreviewTarget::ReplacePeer(std::uint64_t generation) {
+  if (!rtp_gate_begin_transition(rtp_gate_, generation))
+    return nullptr;
+  // Release preroll/transport waits before the output barrier. Taking the
+  // barrier first would deadlock a push that needs this NULL to complete.
+  hstream::webrtc_endpoint_detach_peer(endpoint_);
+  GstElement* peer = nullptr;
+  const bool replaced = rtp_gate_finish_transition(rtp_gate_, generation, [&] {
+    peer = hstream::webrtc_endpoint_reset_peer(endpoint_);
+    if (!peer)
+      return false;
+    g_signal_connect_data(
+        peer,
+        "notify::connection-state",
+        G_CALLBACK(peer_connection),
+        new PeerGate{GST_ELEMENT(gst_object_ref(rtp_gate_)), generation},
+        [](gpointer data, GClosure*) { delete static_cast<PeerGate*>(data); },
+        GConnectFlags(0));
+    return true;
+  });
+  if (!replaced) {
+    if (peer)
+      gst_object_unref(peer);
+    return nullptr;
+  }
+  PeerGate current{GST_ELEMENT(gst_object_ref(rtp_gate_)), generation};
+  peer_connection(G_OBJECT(peer), nullptr, &current);
+  return peer;
+}
+
+bool WebPreviewTarget::DetachPeer(std::uint64_t generation) {
+  if (!rtp_gate_begin_transition(rtp_gate_, generation))
+    return false;
+  hstream::webrtc_endpoint_detach_peer(endpoint_);
+  return rtp_gate_finish_transition(rtp_gate_, generation, [] { return true; }) &&
+      rtp_gate_set_ready(rtp_gate_, generation, true);
 }
 std::vector<TransportEvent> WebPreviewTarget::TakeEvents() {
   return monitor_->TakeEvents();

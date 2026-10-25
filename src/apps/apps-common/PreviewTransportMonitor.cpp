@@ -19,6 +19,12 @@ bool TransportMonitor::SetPeer(std::uint64_t peer) {
   return true;
 }
 
+void TransportMonitor::Recover() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  frames_.DiscardPending();
+  events_.clear();
+}
+
 bool TransportMonitor::Select(const std::string& channel, std::uint64_t operation) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!operation || operation < operation_ || channel.size() > 64)
