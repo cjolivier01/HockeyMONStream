@@ -34,6 +34,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 HSTREAM_CLI_DEPS = [
     "//src/apps/apps-common:web_preview_target",
     "//src/apps/apps-common:preview_overlay_painter",
+    "//src/apps/apps-common:preview_overlay_scene",
     "//src/libs/program:tone_control_command",
     "//src/libs/program:tone_controls",
     "//src/apps/apps-common:preview_route_owner",
