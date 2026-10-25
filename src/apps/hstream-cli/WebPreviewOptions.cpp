@@ -329,6 +329,16 @@ std::string ApplyWebPreviewOverlays(
   });
 }
 
+std::string WebPreviewOverlayArtifactEvent(const WebPreviewOverlayArtifact& artifact) {
+  return Serialize([&](JsonBuilder* builder) {
+    Identity(builder, artifact.session, artifact.operation, artifact.channel);
+    Add(builder, "generation", std::to_string(artifact.generation));
+    Add(builder, "artifact", std::string("rink-mask"));
+    Add(builder, "status", artifact.status);
+    Add(builder, "reason", artifact.reason);
+  });
+}
+
 std::string WebPreviewCapability(
     const WebPreviewOptions& options,
     const RouteOwner& owner,

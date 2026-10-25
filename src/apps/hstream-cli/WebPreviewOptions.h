@@ -51,6 +51,12 @@ std::string ApplyWebPreviewOverlays(
     pipeline_internal::PreviewOverlayRuntimeState& state,
     const std::string& mutation_blocked_reason,
     const std::function<bool(const pipeline_internal::PreviewOverlaySelection&)>& apply);
+struct WebPreviewOverlayArtifact {
+  RouteOwner::Session session;
+  uint64_t operation, generation;
+  std::string channel, status, reason;
+};
+std::string WebPreviewOverlayArtifactEvent(const WebPreviewOverlayArtifact& artifact);
 std::string WebPreviewCapability(
     const WebPreviewOptions& options,
     const RouteOwner& owner,

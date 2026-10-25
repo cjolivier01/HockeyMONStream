@@ -156,7 +156,10 @@ class PipelineApplication {
   // wholesale because one preview channel is not in use.
   bool set_player_drawing_runtime(guint64 generation, guint layers);
   bool apply_player_drawing_layers(guint layers);
-  bool apply_preview_overlay_state(const hm::pipeline_internal::PreviewOverlaySelection& selection, bool apply_sinks);
+  bool apply_preview_overlay_state(
+      const hm::pipeline_internal::PreviewOverlaySelection& selection,
+      bool apply_sinks,
+      std::optional<uint64_t> generation = std::nullopt);
   bool update_preview_overlay_producers();
   bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
   bool set_render_audio_muted_runtime(bool muted);

@@ -23,7 +23,7 @@ class WebPreviewSession {
       const std::string& game_dir);
   ~WebPreviewSession();
   absl::Status Attach(const std::function<bool()>& reconcile_overlays);
-  void SetOverlays(pipeline_internal::PreviewOverlaySelection selection);
+  void SetOverlays(pipeline_internal::PreviewOverlaySelection selection, uint64_t generation);
   void Stop();
   std::string Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays) const;
   std::string Command(const RouteOwner::Request& request);
@@ -40,6 +40,8 @@ class WebPreviewSession {
   struct PaintState;
   struct RouteState;
   WebPreviewSession(AppCtx& app, WebPreviewOptions options);
+  void DrainOverlayStatus();
+  guint overlay_status_source_{0};
   absl::Status AddRoute(const std::string& channel, RouteTap tap);
   AppCtx& app_;
   WebPreviewOptions options_;

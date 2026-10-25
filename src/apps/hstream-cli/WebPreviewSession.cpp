@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <utility>
 
 namespace hm::preview {
@@ -32,7 +33,30 @@ struct WebPreviewSession::PaintState {
   unsigned program_width, program_height, source_width, source_height;
   unsigned analytics_layers;
   float joint_confidence;
-  std::atomic<unsigned> overlay_flags{0};
+  // One immutable snapshot binds the three flags and their acknowledged epoch.
+  std::shared_ptr<const pipeline_internal::PreviewOverlayCommand> overlays =
+      std::make_shared<const pipeline_internal::PreviewOverlayCommand>();
+  RouteOwner::Session session;
+  std::mutex artifact_mutex;
+  std::optional<WebPreviewOverlayArtifact> last_artifact, pending_artifact;
+  void ReportArtifact(const FrameIdentityMeta& identity, uint64_t generation, bool ready, const char* reason) {
+    WebPreviewOverlayArtifact event{
+        session,
+        identity.operation,
+        generation,
+        identity.channel,
+        ready ? "ready" : "unavailable",
+        ready ? "" : reason};
+    // Paint calls are serialized by the target. The main-context consumer only
+    // exchanges the latest bounded status; it never waits on GPU or disk work.
+    if (last_artifact && last_artifact->operation == event.operation && last_artifact->generation == generation &&
+        last_artifact->channel == event.channel && last_artifact->status == event.status &&
+        last_artifact->reason == event.reason)
+      return;
+    last_artifact = event;
+    std::lock_guard<std::mutex> lock(artifact_mutex);
+    pending_artifact = std::move(event);
+  }
   std::string game_dir, invalidation, mask_generation;
   unsigned mask_width{0}, mask_height{0}, mask_failures{0};
   bool mask_loaded{false};
@@ -104,7 +128,9 @@ struct WebPreviewSession::PaintState {
     auto* batch = native ? gst_buffer_get_nvds_batch_meta(native) : nullptr;
     const auto* metadata =
         batch && batch->frame_meta_list ? static_cast<const NvDsFrameMeta*>(batch->frame_meta_list->data) : nullptr;
-    const auto flags = overlay_flags.load(std::memory_order_acquire);
+    const auto selected = std::atomic_load(&overlays);
+    const auto selection = selected->selection;
+    const auto flags = (selection.players ? 1U : 0U) | (selection.play ? 2U : 0U) | (selection.rink ? 4U : 0U);
     const gpu_preview::PreviewOverlayOptions options{
         route->first,
         source ? source_width : program_width,
@@ -124,6 +150,14 @@ struct WebPreviewSession::PaintState {
         commands,
         {route->first, options.negotiated_width, options.negotiated_height, (flags & 4U) != 0},
         output.stream);
+    if (selection.rink) {
+      const char* reason = !scene.diagnostic_coordinates_valid ? "The preview frame is missing its crop geometry."
+          : scene.stitched_output_generation.empty() ? "The preview frame is missing its calibration identity."
+          : !mask_loaded                             ? "Rink mask overlay unavailable"
+          : result.mask_identity_missing             ? "The saved rink mask does not match this preview frame."
+                                                     : "The GPU rink mask overlay is unavailable.";
+      ReportArtifact(*identity, selected->generation, result.mask_drawn, reason);
+    }
     return result.status == gpu_preview::PreviewPaintStatus::kOk ||
         result.status == gpu_preview::PreviewPaintStatus::kOverlaySuppressed;
   }
@@ -161,6 +195,7 @@ absl::StatusOr<std::unique_ptr<WebPreviewSession>> WebPreviewSession::Prepare(
   // The configurator owns the selected game directory; this path is never
   // supplied by a runtime browser command.
   paint.game_dir = game_dir;
+  paint.session = identity;
   const char* invalidation = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
   paint.invalidation = invalidation ? invalidation : "";
   paint.program_width = options->program_reference_width;
@@ -299,10 +334,27 @@ absl::Status WebPreviewSession::AddRoute(const std::string& channel, RouteTap ta
   return absl::OkStatus();
 }
 
-void WebPreviewSession::SetOverlays(pipeline_internal::PreviewOverlaySelection selection) {
-  paint_->overlay_flags.store(
-      (selection.players ? 1U : 0U) | (selection.play ? 2U : 0U) | (selection.rink ? 4U : 0U),
-      std::memory_order_release);
+void WebPreviewSession::SetOverlays(pipeline_internal::PreviewOverlaySelection selection, uint64_t generation) {
+  std::atomic_store(
+      &paint_->overlays,
+      std::make_shared<const pipeline_internal::PreviewOverlayCommand>(
+          pipeline_internal::PreviewOverlayCommand{generation, selection}));
+}
+
+void WebPreviewSession::DrainOverlayStatus() {
+  std::optional<WebPreviewOverlayArtifact> event;
+  {
+    std::lock_guard<std::mutex> lock(paint_->artifact_mutex);
+    event.swap(paint_->pending_artifact);
+  }
+  const auto selected = std::atomic_load(&paint_->overlays);
+  if (!event || stopped_ || !selected->selection.rink || event->generation != selected->generation ||
+      event->channel != routes_.selected_channel() || event->operation != routes_.operation_generation())
+    return;
+  // Control commands and this timer run on the same main context, so an event
+  // cannot overtake the complete route/selection acknowledgment that owns it.
+  g_print("HSTREAM_PREVIEW_OVERLAY_ARTIFACT %s\n", WebPreviewOverlayArtifactEvent(*event).c_str());
+  std::fflush(stdout);
 }
 
 absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_overlays) {
@@ -346,6 +398,21 @@ absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_ov
   signaling_ = target_->Signaling({routes_.session(), options_.poll_interval_ms, options_.events_per_batch});
   if (!signaling_ || !start_webrtc_signaling_for_preview(target_->endpoint(), sink_config_, signaling_))
     return absl::InternalError("Could not start selectable preview signaling");
+  overlay_status_source_ = g_timeout_add_full(
+      G_PRIORITY_DEFAULT,
+      options_.poll_interval_ms,
+      +[](gpointer data) noexcept -> gboolean {
+        try {
+          static_cast<WebPreviewSession*>(data)->DrainOverlayStatus();
+        } catch (const std::exception& error) {
+          g_printerr("Could not publish preview overlay status: %s\n", error.what());
+        } catch (...) {
+          g_printerr("Could not publish preview overlay status\n");
+        }
+        return G_SOURCE_CONTINUE;
+      },
+      this,
+      nullptr);
   return absl::OkStatus();
 }
 
@@ -353,6 +420,10 @@ void WebPreviewSession::Stop() {
   if (stopped_)
     return;
   stopped_ = true;
+  if (overlay_status_source_) {
+    g_source_remove(overlay_status_source_);
+    overlay_status_source_ = 0;
+  }
   if (app_.pipeline.pipeline)
     prepare_webrtc_sinks_for_stop(app_.pipeline.pipeline);
   // Shutdown must close every borrowed gate even after failed rearming or the
@@ -384,6 +455,8 @@ void WebPreviewSession::Stop() {
 }
 
 WebPreviewSession::~WebPreviewSession() {
+  if (overlay_status_source_)
+    g_source_remove(overlay_status_source_);
   // No borrowed graph callbacks are used here: the owner's Stop ran before
   // teardown, and partially prepared targets have no registered callbacks.
   routes_.forget_routes();

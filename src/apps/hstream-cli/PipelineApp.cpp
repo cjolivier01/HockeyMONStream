@@ -6135,7 +6135,9 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
         web_preview_ && web_preview_->available() ? web_preview_->identity() : hm::preview::RouteOwner::Session{},
         preview_overlay_state_,
         web_preview_ ? web_preview_->MutationBlockReason() : "preview-unavailable",
-        [this](const auto& selection) { return web_preview_ && apply_preview_overlay_state(selection, true); });
+        [this, &request](const auto& selection) {
+          return web_preview_ && apply_preview_overlay_state(selection, true, request->command.generation);
+        });
     g_print("HSTREAM_PREVIEW_OVERLAY_STATE %s\n", reply.c_str());
     std::fflush(stdout);
     return true;
@@ -6752,7 +6754,8 @@ void PipelineApplication::reset_playback_progress_rates(uint64_t generation) {
 
 bool PipelineApplication::apply_preview_overlay_state(
     const hm::pipeline_internal::PreviewOverlaySelection& selection,
-    bool apply_sinks) {
+    bool apply_sinks,
+    std::optional<uint64_t> generation) {
   struct SinkState {
     GstElement* sink{nullptr};
     gboolean players{FALSE};
@@ -6892,7 +6895,7 @@ bool PipelineApplication::apply_preview_overlay_state(
   }
   preview_overlay_probe_flags_.store(producer_flags, std::memory_order_release);
   if (apply_sinks && web_preview_)
-    web_preview_->SetOverlays(selection);
+    web_preview_->SetOverlays(selection, generation.value_or(preview_overlay_state_.generation()));
   return true;
 }
 

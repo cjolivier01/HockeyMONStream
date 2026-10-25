@@ -223,5 +223,18 @@ int main() {
       queried.find("\"status\":\"state\"") != std::string::npos &&
           queried.find("\"generation\":\"18446744073709551615\"") != std::string::npos && mutations == 1,
       "Read-only overlay query changed state or lost full readback");
+  const auto artifact = hm::preview::WebPreviewOverlayArtifactEvent(
+      {overlay->session, UINT64_MAX, 0, "stitched", "unavailable", "Rink mask overlay unavailable"});
+  parser = json_parser_new();
+  Check(json_parser_load_from_data(parser, artifact.data(), artifact.size(), nullptr), "Invalid artifact event JSON");
+  object = json_node_get_object(json_parser_get_root(parser));
+  Check(
+      json_object_get_size(object) == 10 &&
+          std::string(json_object_get_string_member(object, "operation")) == "18446744073709551615" &&
+          std::string(json_object_get_string_member(object, "generation")) == "0" &&
+          std::string(json_object_get_string_member(object, "artifact")) == "rink-mask" &&
+          std::string(json_object_get_string_member(object, "channel")) == "stitched",
+      "Artifact event lost route/selection identity or initial generation");
+  g_object_unref(parser);
   return 0;
 }

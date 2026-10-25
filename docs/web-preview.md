@@ -179,6 +179,23 @@ committed `state`; failures never advance it. Queries do not mutate or replay
 anything. Malformed commands have no correlated reply. The legacy unscoped
 `set-preview-overlays` command is rejected in opted-in browser sessions.
 
+Mask availability is a separate frame-derived event, independent of the selected
+checkbox state:
+
+```text
+HSTREAM_PREVIEW_OVERLAY_ARTIFACT {"version":1,"run":"UUID","stage":0,"topology":"1","operation":"2","channel":"stitched","generation":"1","artifact":"rink-mask","status":"unavailable","reason":"Rink mask overlay unavailable"}
+```
+
+The status is `ready` (empty reason) or `unavailable` (bounded display text).
+Run/stage/topology, route operation/channel and overlay generation must all match
+the current selection, with Rink mask enabled. Source/Render-off routes do not
+carry this status. It describes the validated mask's availability to the painter;
+it does not establish browser presentation. The native painter enqueues only
+status transitions, retaining one pending event. A main-context timer drains it
+after command acknowledgments and discards retired route/selection epochs.
+Stop removes that timer before retiring the graph. Missing assets fail closed
+and bounded retries can publish recovery without changing checkbox selection.
+
 Qt and the browser register the same dsplaytracker producer or bounded fallback
 snapshot probe. Route selection reconciles producer flags before opening gates;
 source/Render-off routes stop optional snapshot production while retaining the
@@ -339,9 +356,10 @@ number truncation; 32-bit RTP fields and the signed stage use JSON integers.
 Receipts are bounded to 4096 bytes; the optional connection's overall incoming
 limit is 256 KiB for SDP. Unknown receipt fields/types and stale identities fail
 admission. Native admission tests do not implement the browser matcher or its
-covered-preview behavior. The authenticated outer gateway has not admitted this
-optional protocol yet. Keep that integration and real decoded-frame comparison
-as explicit gates before claiming presentation or Qt parity.
+covered-preview behavior. The authenticated outer gateway admits this optional
+protocol and has passed the Program/Stitched/source/off/reconnect comparison
+recorded above. Audio synchronization, seek, replay masks and complete Qt workflow
+parity remain separate gates; preserve their explicit limits.
 
 `web_preview_observer_test` checks history after marker retirement, loss/overflow,
 RTP wrap, exact 64-bit identities, strict receipts, Render off, peer retirement
