@@ -1,5 +1,7 @@
 #include "PreviewOverlayPainter.h"
 
+#include "PreviewOverlayGlPaths.h"
+#include "hstream/src/libs/draw_display/GpuGlSurface.h"
 #include "hstream/src/libs/draw_display/Watermark.h"
 
 #include <algorithm>
@@ -65,12 +67,15 @@ std::optional<draw_display::AlphaMaskMapping> PreviewMaskMapping(
 }
 
 struct PreviewOverlayPainter::State {
-  a::Compositor paths, analytics, watermark;
-  a::CommandList path_commands, watermark_commands;
+  a::Compositor analytics, watermark;
+  a::CommandList watermark_commands;
+  std::unique_ptr<draw_display::GpuGlSurface> gl_paths;
+  unsigned gl_width{0}, gl_height{0};
   std::shared_ptr<const RinkMaskImage> mask, uploaded_mask;
   std::string generation;
   uint8_t* mask_device{nullptr};
-  bool bound{false}, failed{false};
+  bool bound{false}, failed{false}, interop_unavailable{false};
+  draw_display::GpuGlResult interop_failure;
   int device{-1};
   cudaStream_t stream{nullptr};
   ~State() {
@@ -122,44 +127,32 @@ PreviewPaintResult PreviewOverlayPainter::Paint(
 
   const bool diagnostics =
       scene.diagnostic_coordinates_valid && (options.channel != "program" || scene.program_transform.has_value());
-  state.path_commands.Clear();
   bool path_capacity_exceeded = false;
-  // Metadata collection emits convex rectangles, circle fans and arrowheads.
-  // Reject all unqualified strokes before any GPU pass, rather than silently
-  // replacing Qt's display-pixel aliased lines with source-space rounded lines.
+  size_t path_commands = 0;
+  // Validate the complete scene before any GPU writes, even after capacity
+  // exhaustion. Count the same triangles/segments without allocating commands;
+  // all paths share one GL pass, preserving mixed fill/stroke draw order.
   if (diagnostics) {
     for (const auto& path : scene.paths) {
-      if (path.points.size() < (path.filled ? 3U : 2U) || path.color.alpha <= 0)
+      if (path.points.size() < (path.filled ? 3U : 2U))
         continue;
-      if (!path.filled) {
-        result.status = PreviewPaintStatus::kUnqualifiedStroke;
-        return result;
-      }
-      const auto& first = path.points.front();
-      for (size_t i = 2; i < path.points.size(); ++i) {
-        const auto& previous = path.points[i - 1];
-        const auto& next = path.points[i];
-        if (state.path_commands.size() == a::kMaximumCommands) {
-          // Suppress the entire optional path pass, but keep validating every
-          // remaining path before any GPU writes. Reuse bounded command storage
-          // so later invalid geometry or unqualified strokes still fail closed.
-          path_capacity_exceeded = true;
-          state.path_commands.Clear();
-        }
-        if (!state.path_commands.AddTriangle(
-                first.x,
-                first.y,
-                previous.x,
-                previous.y,
-                next.x,
-                next.y,
-                {path.color.red, path.color.green, path.color.blue, path.color.alpha}))
+      for (float color : {path.color.red, path.color.green, path.color.blue, path.color.alpha})
+        if (!std::isfinite(color) || color < 0 || color > 1)
           return invalid();
-      }
+      if (!std::isfinite(path.width) || path.width < 0 || path.width > 16384)
+        return invalid();
+      for (const auto& point : path.points)
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || std::abs(point.x) > 1000000 ||
+            std::abs(point.y) > 1000000)
+          return invalid();
+      const auto count = path.points.size() - (path.filled ? 2U : (path.closed ? 0U : 1U));
+      if (count > a::kMaximumCommands - path_commands)
+        path_capacity_exceeded = true;
+      else if (!path_capacity_exceeded)
+        path_commands += count;
     }
   }
   if (path_capacity_exceeded) {
-    state.path_commands.Clear();
     result.status = PreviewPaintStatus::kOverlaySuppressed;
     result.overlay_status = a::RenderStatus::kCapacity;
   }
@@ -172,6 +165,33 @@ PreviewPaintResult PreviewOverlayPainter::Paint(
           std::min(
               scene.coordinate_width / options.negotiated_width, scene.coordinate_height / options.negotiated_height)))
     return invalid();
+
+  const bool draw_paths = diagnostics && path_commands && !path_capacity_exceeded;
+  auto gl_failure = [&](const draw_display::GpuGlResult& failure) {
+    result.status = failure.status == draw_display::GpuGlStatus::kUnavailable ? PreviewPaintStatus::kInteropUnavailable
+                                                                              : PreviewPaintStatus::kGpuError;
+    result.gpu_error = failure.gpu_error;
+    result.egl_error = failure.egl_error;
+    result.gl_error = failure.gl_error;
+    state.failed = result.status == PreviewPaintStatus::kGpuError;
+    return result;
+  };
+  if (draw_paths) {
+    if (state.interop_unavailable)
+      return gl_failure(state.interop_failure);
+    if (!state.gl_paths || state.gl_width != image.width || state.gl_height != image.height) {
+      // The caller completed the previous frame's stream before this Paint.
+      state.gl_paths = std::make_unique<draw_display::GpuGlSurface>();
+      state.gl_width = image.width;
+      state.gl_height = image.height;
+    }
+    const auto prepared = state.gl_paths->Prepare(image, stream);
+    if (prepared.status != draw_display::GpuGlStatus::kOk) {
+      state.interop_unavailable = prepared.status == draw_display::GpuGlStatus::kUnavailable;
+      state.interop_failure = prepared;
+      return gl_failure(prepared);
+    }
+  }
 
   if (options.show_rink_mask && diagnostics) {
     const auto mapping = PreviewMaskMapping(scene, image.width, image.height);
@@ -220,7 +240,15 @@ PreviewPaintResult PreviewOverlayPainter::Paint(
     }
     return rendered.status == a::RenderStatus::kOk;
   };
-  if (diagnostics && (!render(state.paths, state.path_commands) || !render(state.analytics, analytics))) {
+  if (draw_paths) {
+    const auto painted = state.gl_paths->Paint(image, stream, [&] {
+      DrawPreviewOverlayGlPaths(scene);
+      return true;
+    });
+    if (painted.status != draw_display::GpuGlStatus::kOk)
+      return gl_failure(painted);
+  }
+  if (diagnostics && !render(state.analytics, analytics)) {
     // A required watermark has independent commands/resources and still draws
     // after optional capacity/font/busy suppression, unless the GPU failed.
     if (result.status == PreviewPaintStatus::kGpuError)

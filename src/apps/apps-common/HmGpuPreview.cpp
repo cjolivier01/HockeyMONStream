@@ -473,6 +473,7 @@ void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
 
 #if defined(__x86_64__)
 
+#include "hstream/src/apps/apps-common/PreviewOverlayGlPaths.h"
 #include "hstream/src/apps/apps-common/PreviewOverlayScene.h"
 #include "hstream/src/libs/draw_display/AnalyticsOverlayGl.h"
 #include "hstream/src/libs/draw_display/RinkMiniMap.h"
@@ -1152,28 +1153,6 @@ void draw_rink_mask(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) 
   glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
 }
 
-void draw_overlay_paths(const PreviewOverlays& overlays) {
-  if (overlays.coordinate_width <= 0.0F || overlays.coordinate_height <= 0.0F)
-    return;
-  glDisable(GL_TEXTURE_2D);
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  for (const OverlayPath& path : overlays.paths) {
-    if (path.points.size() < (path.filled ? 3U : 2U))
-      continue;
-    glColor4f(path.color.red, path.color.green, path.color.blue, path.color.alpha);
-    glLineWidth(std::max(1.0F, path.width));
-    glBegin(path.filled ? GL_POLYGON : (path.closed ? GL_LINE_LOOP : GL_LINE_STRIP));
-    for (const auto& point : path.points) {
-      glVertex2f(
-          -1.0F + 2.0F * point.x / overlays.coordinate_width, 1.0F - 2.0F * point.y / overlays.coordinate_height);
-    }
-    glEnd();
-  }
-  glLineWidth(1.0F);
-  glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
-}
-
 void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   RendererState* state = self->state;
   XWindowAttributes attributes{};
@@ -1220,7 +1199,7 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   glVertex2f(-1.0F, 1.0F);
   glEnd();
   draw_rink_mask(self, overlays);
-  draw_overlay_paths(overlays);
+  hm::gpu_preview::DrawPreviewOverlayGlPaths(overlays);
   if (!state->player_commands.empty()) {
     using namespace hm::draw_display::analytics;
     if (!state->player_compositor)

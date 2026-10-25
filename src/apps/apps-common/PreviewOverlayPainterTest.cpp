@@ -1,10 +1,13 @@
 #include "hstream/src/apps/apps-common/PreviewOverlayPainter.h"
 
+#include "hstream/src/apps/apps-common/PreviewOverlayGlPaths.h"
+#include "hstream/src/libs/draw_display/GpuGlSurface.h"
 #include "hstream/src/libs/draw_display/Watermark.h"
 
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace p = hm::gpu_preview;
@@ -126,7 +129,7 @@ void MaskIdentity() {
       "missing Program transform did not suppress diagnostics");
 }
 
-void FilledPathsAndUnqualifiedStrokes() {
+void FilledPathsAndStrokes() {
   Surface surface;
   p::PreviewOverlayPainter painter;
   auto scene = Scene();
@@ -143,13 +146,64 @@ void FilledPathsAndUnqualifiedStrokes() {
   Check(
       reference.RenderMapped(surface.image, 640, 360, rectangle, surface.stream).launched,
       "reference rectangle failed");
-  Check(surface.Read() == actual, "polygon fan seam changed alpha coverage");
+  const auto portable = surface.Read();
+  for (size_t i = 0; i < portable.size(); ++i)
+    Check(std::abs(int(portable[i]) - int(actual[i])) <= 1, "filled polygon differs from portable coverage");
   surface.Reset();
   scene.paths.push_back({{{0, 0}, {640, 360}}, {1, 1, 1, 1}, 3, false, false});
+  scene.paths.push_back({{{100, 100}, {200, 100}, {200, 200}, {100, 200}}, {0, 1, 0, .5F}, 1, true, true});
+  result = painter.Paint(surface.image, scene, empty, options, surface.stream);
+  Check(result.status == p::PreviewPaintStatus::kOk, "native diagnostic strokes rejected");
+  const auto mixed = surface.Read();
+  surface.Reset();
+  hm::draw_display::GpuGlSurface gl_reference;
+  Check(
+      gl_reference
+              .Paint(
+                  surface.image,
+                  surface.stream,
+                  [&] {
+                    p::DrawPreviewOverlayGlPaths(scene);
+                    return true;
+                  })
+              .status == hm::draw_display::GpuGlStatus::kOk,
+      "native mixed path reference failed");
+  Check(surface.Read() == mixed, "mixed fill/stroke order differs from native GL");
+  surface.Reset();
+  auto smaller = surface.image;
+  smaller.width /= 2;
+  result = painter.Paint(smaller, scene, empty, options, surface.stream);
+  Check(result.status == p::PreviewPaintStatus::kOk, "route video geometry change rejected");
+  surface.Read();
+  surface.Reset();
   result = painter.Paint(surface.image, scene, empty, options, surface.stream);
   Check(
-      result.status == p::PreviewPaintStatus::kUnqualifiedStroke && surface.Read() == surface.original,
-      "unqualified native GL stroke did not reject before GPU writes");
+      result.status == p::PreviewPaintStatus::kOk && surface.Read() == mixed,
+      "restored route geometry differs from original preview");
+}
+
+void InteropUnavailable() {
+  Surface surface;
+  p::PreviewOverlayPainter painter;
+  auto scene = Scene();
+  scene.paths.push_back({{{0, 0}, {640, 360}}, {1, 1, 1, 1}, 3, false, false});
+  auto mask = std::make_shared<p::RinkMaskImage>();
+  mask->canvas_width = 1280;
+  mask->canvas_height = 720;
+  mask->width = 4;
+  mask->height = 3;
+  mask->alpha.assign(12, 255);
+  painter.SetRinkMask(mask, "calibration-17");
+  a::CommandList commands;
+  commands.AddFill(0, 0, 640, 360, {1, 0, 0, 1});
+  for (unsigned attempt = 0; attempt < 2; ++attempt) {
+    const auto result = painter.Paint(surface.image, scene, commands, {"stitched", 640, 360, true}, surface.stream);
+    Check(
+        result.status == p::PreviewPaintStatus::kInteropUnavailable && !result.mask_drawn,
+        "unavailable interop did not reject before mask/analytics/watermark");
+    Check(surface.Read() == surface.original, "unavailable interop modified preview video");
+  }
+  std::cout << "preview_painter interop_unavailable=1 unchanged_output=1 no_mask_analytics_watermark_writes=1\n";
 }
 
 void RequiredWatermark() {
@@ -194,23 +248,26 @@ void RequiredWatermark() {
   Check(surface.Read() == actual, "optional path preparation capacity suppressed required watermark");
 
   scene.paths.push_back({{{0, 0}, {640, 360}}, {1, 1, 1, 1}, 3, false, false});
+  scene.paths.back().points.back().x = std::numeric_limits<float>::quiet_NaN();
   surface.Reset();
   result = painter.Paint(surface.image, scene, empty, options, surface.stream);
-  Check(
-      result.status == p::PreviewPaintStatus::kUnqualifiedStroke, "path overflow hid a subsequent unqualified stroke");
-  Check(surface.Read() == surface.original, "stroke after path overflow did not reject before GPU writes");
+  Check(result.status == p::PreviewPaintStatus::kInvalidArgument, "path overflow hid subsequent invalid geometry");
+  Check(surface.Read() == surface.original, "invalid path after overflow did not reject before GPU writes");
 }
 } // namespace
-int main() {
+int main(int argc, char** argv) {
   try {
     Gpu(cudaSetDevice(0));
     Mapping();
     MaskIdentity();
-    FilledPathsAndUnqualifiedStrokes();
+    if (argc == 2 && std::string(argv[1]) == "--expect-interop-unavailable")
+      InteropUnavailable();
+    else
+      FilledPathsAndStrokes();
     RequiredWatermark();
     std::cout
         << "preview_painter immutable_mask=1 generation_canvas_fenced=1 inverse_program=1 missing_transform_closed=1 "
-           "filled_polygon_seams=1 unqualified_strokes_rejected=1 watermark_required=1 letterbox_guards=1\n";
+           "watermark_required=1 optional_path_capacity=1 letterbox_guards=1\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "FAIL: " << error.what() << '\n';

@@ -372,12 +372,23 @@ cc_test(
 
 # CPU metadata preparation shared by native desktop and encoded previews.
 cc_library(
-    name = "preview_overlay_scene",
-    srcs = ["PreviewOverlayScene.cpp"],
+    name = "preview_overlay_scene_data",
+    srcs = ["PreviewOverlaySceneData.cpp"],
     hdrs = ["PreviewOverlayScene.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/draw_display:analytics_overlay_headers",
+    ],
+)
+
+cc_library(
+    name = "preview_overlay_scene",
+    srcs = ["PreviewOverlayScene.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":preview_overlay_scene_data",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/draw_display:analytics_overlay",
         "//src/libs/draw_display:player_overlays",
@@ -399,16 +410,38 @@ cc_test(
 )
 
 cc_library(
+    name = "preview_overlay_gl_paths",
+    srcs = ["PreviewOverlayGlPaths.cpp"],
+    hdrs = ["PreviewOverlayGlPaths.h"],
+    include_prefix = INCLUDE_PREFIX,
+    linkopts = ["-lGL"],
+    visibility = ["//visibility:public"],
+    deps = [":preview_overlay_scene_data"],
+)
+
+cc_test(
+    name = "preview_overlay_gl_paths_test",
+    srcs = ["PreviewOverlayGlPathsTest.cpp"],
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
+    linkopts = ["-lX11"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":preview_overlay_gl_paths", "//src/libs/draw_display:gpu_gl_surface"],
+)
+
+cc_library(
     name = "preview_overlay_painter",
     srcs = ["PreviewOverlayPainter.cpp"],
     hdrs = ["PreviewOverlayPainter.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
-        ":preview_overlay_scene",
+        ":preview_overlay_gl_paths",
+        ":preview_overlay_scene_data",
         ":rink_mask_image",
         "//src/libs/draw_display:alpha_mask_overlay",
         "//src/libs/draw_display:alpha_mask_overlay_headers",
+        "//src/libs/draw_display:analytics_overlay",
+        "//src/libs/draw_display:gpu_gl_surface",
         "//src/libs/draw_display:watermark",
     ],
 )
@@ -417,7 +450,11 @@ cc_test(
     name = "preview_overlay_painter_test",
     srcs = ["PreviewOverlayPainterTest.cpp"],
     tags = ["manual", "requires-gpu"],
-    deps = [":preview_overlay_painter"],
+    deps = [
+        ":preview_overlay_painter",
+        ":preview_overlay_gl_paths",
+        "//src/libs/draw_display:gpu_gl_surface",
+    ],
 )
 
 cc_library(
@@ -444,6 +481,7 @@ cc_library(
         "@gstreamer",
     ] + select({
         "@platforms//cpu:x86_64": [
+            ":preview_overlay_gl_paths",
             ":preview_overlay_scene",
             "//src/libs/draw_display:analytics_overlay_gl",
             "//src/libs/draw_display:player_overlays",

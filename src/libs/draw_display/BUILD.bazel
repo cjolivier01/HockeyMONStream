@@ -219,6 +219,23 @@ cc_library(
     deps = [":analytics_overlay", ":analytics_overlay_atlas"],
 )
 
+cc_library(
+    name = "gpu_gl_surface",
+    srcs = ["GpuGlSurface.cpp"],
+    hdrs = ["GpuGlSurface.h"],
+    include_prefix = INCLUDE_PREFIX,
+    linkopts = ["-lEGL", "-lGL"] + select({"//:use_hip": ["-lgbm"], "//conditions:default": []}),
+    visibility = ["//visibility:public"],
+    deps = [":analytics_overlay_headers"],
+)
+
+cc_test(
+    name = "gpu_gl_surface_test",
+    srcs = ["GpuGlSurfaceTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":gpu_gl_surface", ":analytics_overlay"],
+)
+
 cc_test(
     name = "analytics_overlay_gl_test",
     srcs = ["AnalyticsOverlayGlTest.cpp"],

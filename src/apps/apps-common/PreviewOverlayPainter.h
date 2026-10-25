@@ -16,11 +16,12 @@ struct PreviewPaintOptions {
   bool show_rink_mask;
 };
 
-enum class PreviewPaintStatus { kOk, kInvalidArgument, kUnqualifiedStroke, kOverlaySuppressed, kGpuError };
+enum class PreviewPaintStatus { kOk, kInvalidArgument, kInteropUnavailable, kOverlaySuppressed, kGpuError };
 struct PreviewPaintResult {
   PreviewPaintStatus status{PreviewPaintStatus::kOk};
   draw_display::analytics::RenderStatus overlay_status{draw_display::analytics::RenderStatus::kOk};
   cudaError_t gpu_error{cudaSuccess};
+  unsigned egl_error{0}, gl_error{0};
   bool mask_drawn{false};
   bool mask_identity_missing{false};
 };
@@ -32,13 +33,15 @@ std::optional<draw_display::AlphaMaskMapping> PreviewMaskMapping(
     unsigned output_width,
     unsigned output_height);
 
-// Independently owned RGBA preview subimage only: never pass the producer's tee
-// frame, archive surface, or letterbox bars. One thread, device and stream.
+// Independently owned opaque RGBA preview subimage only: never pass the producer's tee
+// frame, archive surface, or letterbox bars. One device and stream; serialized
+// calls may migrate producer threads when the selected route changes.
 // Caller completes that stream before the next Paint, mask replacement, and
 // destruction; PreviewGpuSurface already establishes that boundary. Static
 // masks upload once per immutable asset, without reading back any video pixels.
-// This is intentionally not installed in a production route yet. Native
-// GL_LINE_* diagnostic strokes remain unqualified and fail before any writes.
+// Native diagnostic paths use the unchanged desktop GL pass through GPU-only
+// interop. Unavailable interop fails before any preview writes. Optional path
+// capacity suppression preserves the mandatory Stitched watermark.
 class PreviewOverlayPainter {
  public:
   PreviewOverlayPainter();

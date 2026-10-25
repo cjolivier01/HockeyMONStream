@@ -112,7 +112,7 @@ behavior gate. Shared overlay preparation alone does not implement every Qt laye
 
 `PreviewOverlayPainter` now consumes that immutable scene on an owned RGBA
 video subimage. It maps analytics/glyphs from their source coordinate extent,
-fills convex diagnostic polygons with half-open triangle edges, samples a
+draws native diagnostic paths through the shared Qt GL pass, samples a
 generation/canvas-bound rink mask using the native inverse Program transform,
 and draws the Stitched watermark last with the desktop converter's negotiated
 dimensions. Optional overlay capacity cannot suppress the required watermark.
@@ -125,12 +125,36 @@ panorama coordinate extents.
 
 The opt-in route painter draws analytics and the Stitched watermark on the
 owned subimage, using the actual source CAPS and desktop reference dimensions.
-Optional diagnostic controls are not yet wired to this session. Legacy Qt aliased
-`GL_LINE_*` diagnostic strokes are not equivalent to the portable compositor's
-rounded antialiased lines; the painter explicitly rejects them before writing
-any pixels. Archived replay-mask ownership, live settings/route wiring and
-complete encoded-browser comparisons also remain unfinished. Its primitive
-pixel tests and generation-fencing tests do not establish full preview parity.
+Optional diagnostic controls are not yet wired to this session.
+
+`PreviewOverlayGlPaths` is the unchanged desktop `GL_POLYGON`/`GL_LINE_*`
+drawing pass. `GpuGlSurface` runs it in a private headless EGL compatibility
+context on the selected CUDA/HIP device, preserving mixed fill/stroke order and
+display-pixel line widths. Two RGBA textures flip GL/video row orientation with
+GPU blits; two D2D transfers move only the owned preview subimage. No source or
+archive surface is writable through this API. The textures total at most
+64 MiB (8,388,608 pixels); a route-size change replaces the owner after the
+caller completes the previous stream. Serialized producer threads may migrate;
+concurrent/reentrant access is rejected, and the prior EGL/GLX context is restored.
+Interop capability is checked before mask, analytics or watermark writes.
+Unavailable interop returns `kInteropUnavailable`, with unchanged video and no
+software fallback. Other GPU/GL failures retire the owner; its caller discards
+the unpublished preview and completes the stream before destruction.
+
+The NVIDIA GLX-versus-EGL oracle compares 3,720 paths across 60 scenes, including
+clipped strokes of widths 1–8, filled paths, alpha/order, extreme panorama
+coordinates and offset letterbox viewports: RGB matches byte-for-byte. A 1080p
+100-frame measurement took 356 microseconds per shared-GL pass versus 33 for
+the portable rounded-line compositor; the exact native path uses 16,588,800
+texture bytes and copies that many device bytes per frame. These timings include
+stream synchronization and no video readback. AMD compilation succeeds, but
+`ripper`'s ROCm/Mesa stack rejects `hipGraphicsGLRegisterImage`; the expected
+unavailable regression checks that video and every other overlay stay unchanged.
+See `docs/amd-gpu.md` for this explicit runtime gap.
+
+Archived replay-mask ownership, live diagnostic settings/route wiring and
+complete encoded-browser overlay comparisons remain unfinished. These pixel
+and generation-fencing tests do not establish full browser preview parity.
 
 `WebPreviewTarget` assembles those primitives into an independently owned bin:
 one selected stream, bounded CUDA-device RGBA surfaces, GPU NV12 conversion,

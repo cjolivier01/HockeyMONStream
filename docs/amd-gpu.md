@@ -40,9 +40,17 @@ explicit logical coordinate extent mapped onto a bounded output viewport.
 transparent border and affine inverse crop/rotation. Both primitive suites pass
 on AMD hardware at `ripper` and NVIDIA; the native Qt OpenGL pixel oracle runs on x86 CUDA.
 No production HIP/VA browser painter or route is enabled by these primitives.
-The experimental native `PreviewOverlayPainter` still rejects unqualified Qt
-aliased diagnostic strokes, and archived replay-mask/browser qualification
-remains outstanding.
+`PreviewOverlayPainter` now shares Qt's unchanged aliased diagnostic paths via
+`GpuGlSurface`, with the same CUDA/HIP graphics interop implementation. The HIP
+owner selects exactly the GPU's DRM render node through EGL/GBM, matching the
+existing AMD display path. On `ripper`, the installed ROCm/Mesa stack rejects
+`hipGraphicsGLRegisterImage` with `hipErrorInvalidValue`. Diagnostic GL overlays
+therefore remain unavailable on this stack: preflight returns
+`kInteropUnavailable` before mask, analytics, watermark or video writes. There
+is no host-video or software fallback. The `gpu_gl_surface_test` and `preview_overlay_painter_test` binaries both
+accept `--expect-interop-unavailable` to explicitly check unchanged output. CUDA qualifies exact GL RGB;
+HIP graphics interop support, archived replay-mask ownership and full browser
+overlay qualification remain outstanding.
 
 The configuration also enables the existing HIP implementations in the pinned
 `hm-cupano` and `jetson-utils` dependencies. Both use the discovered ROCm SDK.
