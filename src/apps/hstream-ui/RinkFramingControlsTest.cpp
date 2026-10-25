@@ -63,6 +63,20 @@ int main(int argc, char** argv) {
       QTest::qWait(10);
     return condition();
   };
+  // Use the real loader for an absent map: a background readiness check must
+  // not acquire/create calibration locks just to report that no map was saved.
+  {
+    QTemporaryDir empty_game;
+    RinkFramingControls absent;
+    absent.setGameDirectory(empty_game.path());
+    if (!wait([&] {
+          return absent.findChild<QLabel*>("rinkFramingStatus")->text().contains("Save a reviewed rink map");
+        }) ||
+        QFile::exists(empty_game.filePath(".hstream-stitch.lock"))) {
+      std::cerr << "Missing-map readiness must not enter a calibration artifact transaction\n";
+      return 1;
+    }
+  }
   auto* enable = controls.findChild<QCheckBox*>("rinkFramingEnable");
   auto* anticipate = controls.findChild<QCheckBox*>("rinkFramingAnticipate");
   auto* goals = controls.findChild<QCheckBox*>("rinkFramingGoals");

@@ -58,6 +58,15 @@ struct RinkFramingControls::MapJob {
 RinkFramingControls::RinkFramingControls(QWidget* parent, MapCheck check) : QWidget(parent), check_(std::move(check)) {
   if (!check_)
     check_ = [](const QString& path, const std::function<bool()>& cancelled) {
+      if (cancelled && cancelled())
+        return absl::CancelledError("Rink map check cancelled");
+      // This optional readiness check must not contend with Play's calibration
+      // transaction when there is no map to inspect. Publication changes the
+      // watched directory and schedules a new check; native startup still owns
+      // authoritative loading and transaction recovery.
+      if (!QFileInfo::exists(QDir(path).filePath("rink-map.yaml")))
+        return absl::FailedPreconditionError(
+            "Save a reviewed rink map before using rink-aware framing or the mini-map");
       return hm::stitching::LoadPlaybackRinkMap(path.toStdString(), cancelled).status();
     };
   check_timer_.setSingleShot(true);
