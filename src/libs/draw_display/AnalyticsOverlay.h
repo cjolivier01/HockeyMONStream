@@ -44,13 +44,14 @@ struct ImageView {
 };
 
 namespace detail {
-enum class Kind : uint32_t { kLine, kDisc, kRectangle, kFill, kGlyph };
+enum class Kind : uint32_t { kLine, kDisc, kRectangle, kFill, kGlyph, kTriangle };
 struct Command {
   float x0, y0, x1, y1;
   Color color;
   float radius;
   Kind kind;
   uint32_t glyph, reserved;
+  float x2, y2;
 };
 struct Tile {
   uint32_t x, y, first_reference, reference_count;
@@ -70,6 +71,9 @@ class CommandList {
   // Rectangle is [left,right) x [top,bottom), with an inward border.
   bool AddRectangle(float left, float top, float right, float bottom, float width, Color color);
   bool AddFill(float left, float top, float right, float bottom, Color color);
+  // Solid triangle with half-open shared edges, so a polygon fan blends each
+  // pixel once. Either winding is accepted; degenerate triangles are rejected.
+  bool AddTriangle(float x0, float y0, float x1, float y1, float x2, float y2, Color color);
   // Text occupies fixed monospace cells: advance = 2/3 pixel_height. y is top,
   // not baseline. Spaces advance without emitting a glyph. Font atlas is fixed.
   bool AddText(
@@ -154,6 +158,16 @@ class Compositor {
   Compositor& operator=(const Compositor&) = delete;
   RenderResult Render(
       const ImageView& image,
+      const CommandList& commands,
+      cudaStream_t stream,
+      const TimingEvents* timing = nullptr);
+  // Logical source coordinates mapped onto this owned image/subimage. Mirrors
+  // GlCompositor's source-to-viewport transform without changing commands or
+  // allocating a source-sized surface. The image's dimensions still bound work.
+  RenderResult RenderMapped(
+      const ImageView& image,
+      float coordinate_width,
+      float coordinate_height,
       const CommandList& commands,
       cudaStream_t stream,
       const TimingEvents* timing = nullptr);

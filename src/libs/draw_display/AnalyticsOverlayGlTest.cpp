@@ -181,7 +181,9 @@ std::vector<uint8_t> CudaReference(
     unsigned height,
     bool packed,
     const std::vector<uint8_t>& original,
-    size_t pitch) {
+    size_t pitch,
+    float coordinate_width = 0,
+    float coordinate_height = 0) {
   cudaStream_t stream{};
   void* device{};
   Cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
@@ -190,8 +192,12 @@ std::vector<uint8_t> CudaReference(
   {
     a::Compositor compositor;
     Cuda(cudaMemcpyAsync(device, original.data(), original.size(), cudaMemcpyHostToDevice, stream));
-    const auto rendered = compositor.Render(
-        {device, pitch, width, height, packed ? a::PixelFormat::kRgb10A2 : a::PixelFormat::kRgba8}, commands, stream);
+    const auto rendered = compositor.RenderMapped(
+        {device, pitch, width, height, packed ? a::PixelFormat::kRgb10A2 : a::PixelFormat::kRgba8},
+        coordinate_width > 0 ? coordinate_width : width,
+        coordinate_height > 0 ? coordinate_height : height,
+        commands,
+        stream);
     Check(rendered.launched, "CUDA reference suppression");
     Cuda(cudaMemcpyAsync(result.data(), device, result.size(), cudaMemcpyDeviceToHost, stream));
     Cuda(cudaStreamSynchronize(stream));
@@ -221,6 +227,8 @@ void Pixels(bool packed) {
   commands.AddText(-8, 51, 29, "87 skating", {.9F, .8F, .1F, .7F});
   commands.AddText(55, 3, 19, "27", {.2F, .7F, .9F, 1});
   commands.AddDisc(136, 102, 7, {1, 0, 1, .9F});
+  commands.AddTriangle(78, 45, 126, 45, 126, 93, {0, 1, 0, .5F});
+  commands.AddTriangle(78, 45, 78, 93, 126, 93, {0, 1, 0, .5F});
   const auto expected = CudaReference(commands, width, height, packed, original, pitch);
   a::GlCompositor renderer;
   target.Upload(original, pitch);
@@ -448,20 +456,44 @@ void StateAndCapacity(Context& owner) {
 void ScaledViewport(float width, float height) {
   Target target(128, 96);
   target.Clear();
+  const auto before = target.Read();
   glViewport(16, 12, 96, 72);
   a::CommandList commands;
-  commands.AddFill(0, 0, width, height, {1, 0, 0, 1});
-  commands.AddDisc(width / 2, height / 2, std::min(width, height) / 10, {0, 1, 0, 1});
+  commands.AddFill(0, 0, width, height, {1, 0, 0, .4F});
+  commands.AddDisc(width / 2, height / 2, std::min(width, height) / 10, {0, 1, 0, .8F});
+  commands.AddLine(-width / 5, height / 3, width * .9F, height * .8F, height / 35, {0, 0, 1, .7F});
+  commands.AddTriangle(width / 8, height / 8, width / 4, height / 8, width / 4, height / 4, {1, 1, 0, .5F});
+  commands.AddTriangle(width / 8, height / 8, width / 8, height / 4, width / 4, height / 4, {1, 1, 0, .5F});
+  const size_t pitch = (96 + 19) * 4;
+  std::vector<uint8_t> original(pitch * 72, 0xa5);
+  for (unsigned y = 0; y < 72; ++y)
+    std::memcpy(original.data() + y * pitch, before.data() + ((y + 12) * 128 + 16) * 4, 96 * 4);
+  const auto expected = CudaReference(commands, 96, 72, false, original, pitch, width, height);
   a::GlCompositor renderer;
   Check(renderer.Render(width, height, commands).drawn, "scaled draw failed");
   const auto actual = target.Read();
-  const auto at = [&](unsigned x, unsigned y, unsigned c) { return actual[(y * 128 + x) * 4 + c]; };
-  Check(at(16, 12, 0) == 255 && at(111, 83, 0) == 255 && at(64, 48, 1) == 255, "scaled viewport coordinate mismatch");
-  Check(
-      at(15, 12, 0) != 255 && at(112, 83, 0) != 255 && at(16, 11, 0) != 255 && at(111, 84, 0) != 255,
-      "letterbox was overwritten");
-  std::cout << "gl_viewport width=" << width << " height=" << height
-            << " output_coordinates_scaled=1 letterbox_preserved=1\n";
+  unsigned maximum = 0;
+  for (unsigned y = 0; y < 96; ++y)
+    for (unsigned x = 0; x < 128; ++x) {
+      const size_t index = (y * 128 + x) * 4;
+      if (x < 16 || x >= 112 || y < 12 || y >= 84) {
+        Check(std::memcmp(actual.data() + index, before.data() + index, 4) == 0, "letterbox was overwritten");
+        continue;
+      }
+      for (unsigned c = 0; c < 4; ++c) {
+        const unsigned error = std::abs(int(actual[index + c]) - int(expected[(y - 12) * pitch + (x - 16) * 4 + c]));
+        maximum = std::max(maximum, error);
+        if (error > 3)
+          throw std::runtime_error(
+              "mapped GL/CUDA mismatch at " + std::to_string(x) + "," + std::to_string(y) +
+              " error=" + std::to_string(error));
+      }
+    }
+  for (unsigned y = 0; y < 72; ++y)
+    for (size_t p = 96 * 4; p < pitch; ++p)
+      Check(expected[y * pitch + p] == 0xa5, "mapped CUDA pitch guard changed");
+  std::cout << "gl_viewport width=" << width << " height=" << height << " gpu_channel_max_error=" << maximum
+            << " output_coordinates_scaled=1 letterbox_preserved=1 shared_triangle_edges=1\n";
 }
 void LargeCanvasWatermark() {
   // The native panorama is wider than 16K; only the bounded preview framebuffer

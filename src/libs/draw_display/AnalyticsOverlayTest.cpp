@@ -162,7 +162,43 @@ void EmptyAndCommandBounds() {
   Check(limited.AddDisc(10, 10, 2, {0, 1, 0, 1}) && !limited.AddDisc(20, 20, 2, {0, 0, 1, 1}), "command cap ignored");
   Check(!limited.AddText(0, 0, 24, "\n", {1, 1, 1, 1}), "control glyph accepted");
   Check(!limited.AddDisc(NAN, 10, 1, {1, 1, 1, 1}), "nonfinite command accepted");
+  a::CommandList triangles;
+  Check(!triangles.AddTriangle(0, 0, 1, 1, 2, 2, {1, 0, 0, 1}), "degenerate triangle accepted");
+  Check(!triangles.AddTriangle(0, 0, 2, 0, NAN, 2, {1, 0, 0, 1}), "nonfinite triangle accepted");
   std::cout << "empty_path cpu_allocations=0 device_allocations=0 uploads=0 launches=0\n";
+}
+void TriangleAndMappedPixels() {
+  Stream stream;
+  Image image(32, 24, a::PixelFormat::kRgba8);
+  a::CommandList triangles;
+  // Two opposite-winding triangles share a diagonal through pixel centers.
+  // Their union must be one translucent rectangle, with no crack/double blend.
+  Check(triangles.AddTriangle(8, 6, 24, 6, 24, 18, {1, 0, 0, .5F}), "triangle rejected");
+  Check(triangles.AddTriangle(8, 6, 8, 18, 24, 18, {1, 0, 0, .5F}), "reversed triangle rejected");
+  a::CommandList rectangle;
+  rectangle.AddFill(8, 6, 24, 18, {1, 0, 0, .5F});
+  for (float scale : {1.0F, 2.0F, .5F}) {
+    image.Reset(stream.value);
+    a::Compositor renderer;
+    Check(
+        renderer.RenderMapped(image.view, 32 * scale, 24 * scale, triangles, stream.value).launched,
+        "mapped triangles suppressed");
+    const auto actual = image.Read(stream.value);
+    image.Reset(stream.value);
+    a::Compositor reference;
+    Check(
+        reference.RenderMapped(image.view, 32 * scale, 24 * scale, rectangle, stream.value).launched,
+        "mapped rectangle suppressed");
+    Check(actual == image.Read(stream.value), "triangles cracked or blended a shared edge twice");
+  }
+  a::Compositor invalid;
+  Check(
+      invalid.RenderMapped(image.view, NAN, 24, triangles, stream.value).status == a::RenderStatus::kInvalidArgument,
+      "nonfinite source extent accepted");
+  Check(
+      invalid.RenderMapped(image.view, 32, 0, triangles, stream.value).status == a::RenderStatus::kInvalidArgument,
+      "zero source extent accepted");
+  std::cout << "triangles shared_edge_once=1 winding_independent=1 mapped_extents=3\n";
 }
 void PixelTests() {
   Stream stream;
@@ -241,23 +277,28 @@ void EncoderFormatTests() {
     a::CommandList commands;
     Check(commands.AddFill(4, 4, 20, 12, {1, 0, 0, 1}), "encoder mark fixture failed");
     a::Compositor compositor;
-    Check(compositor.Render(image, commands, stream.value).status == a::RenderStatus::kOk,
-          "encoder format watermark render failed");
+    Check(
+        compositor.Render(image, commands, stream.value).status == a::RenderStatus::kOk,
+        "encoder format watermark render failed");
     std::vector<uint8_t> actual(bytes);
     Cuda(cudaMemcpyAsync(actual.data(), device, bytes, cudaMemcpyDeviceToHost, stream.value));
     Cuda(cudaStreamSynchronize(stream.value));
     cudaFree(device);
     Check(actual[0] == original[0], "encoder watermark modified a pixel outside its rectangle");
-    Check(actual[4 * y_pitch + 4 * (ten_bit ? 2U : 1U)] != original[4 * y_pitch + 4 * (ten_bit ? 2U : 1U)],
-          "encoder watermark did not modify luma");
-    Check(actual[y_bytes + 2 * uv_pitch + 2 * (ten_bit ? 4U : 1U)] !=
-              original[y_bytes + 2 * uv_pitch + 2 * (ten_bit ? 4U : 1U)],
-          "encoder watermark did not modify chroma");
+    Check(
+        actual[4 * y_pitch + 4 * (ten_bit ? 2U : 1U)] != original[4 * y_pitch + 4 * (ten_bit ? 2U : 1U)],
+        "encoder watermark did not modify luma");
+    Check(
+        actual[y_bytes + 2 * uv_pitch + 2 * (ten_bit ? 4U : 1U)] !=
+            original[y_bytes + 2 * uv_pitch + 2 * (ten_bit ? 4U : 1U)],
+        "encoder watermark did not modify chroma");
     for (unsigned y = 0; y < height; ++y)
-      Check(std::equal(actual.begin() + y * y_pitch + width * (ten_bit ? 2U : 1U),
-                       actual.begin() + (y + 1) * y_pitch,
-                       original.begin() + y * y_pitch + width * (ten_bit ? 2U : 1U)),
-            "encoder watermark overwrote row padding");
+      Check(
+          std::equal(
+              actual.begin() + y * y_pitch + width * (ten_bit ? 2U : 1U),
+              actual.begin() + (y + 1) * y_pitch,
+              original.begin() + y * y_pitch + width * (ten_bit ? 2U : 1U)),
+          "encoder watermark overwrote row padding");
   }
   std::cout << "encoder_formats i420/p010 sparse watermark passed\n";
 }
@@ -602,6 +643,7 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--cpu-only")
       return 0;
     PixelTests();
+    TriangleAndMappedPixels();
     EncoderFormatTests();
     ExplicitYuvTests();
     CapacityAndText();

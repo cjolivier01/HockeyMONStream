@@ -7,7 +7,14 @@ namespace {
 __device__ float Clamp(float x) {
   return fminf(1.0F, fmaxf(0.0F, x));
 }
+__device__ bool InsideEdge(float ax, float ay, float bx, float by, float x, float y) {
+  const float edge = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+  return edge > 0 || (edge == 0 && (by < ay || (by == ay && bx > ax)));
+}
 __device__ float Coverage(const Command& c, float x, float y, const uint8_t* atlas) {
+  if (c.kind == Kind::kTriangle)
+    return InsideEdge(c.x0, c.y0, c.x1, c.y1, x, y) && InsideEdge(c.x1, c.y1, c.x2, c.y2, x, y) &&
+        InsideEdge(c.x2, c.y2, c.x0, c.y0, x, y);
   if (c.kind == Kind::kLine) {
     const float dx = c.x1 - c.x0, dy = c.y1 - c.y0;
     const float length2 = dx * dx + dy * dy;
@@ -71,7 +78,9 @@ __global__ void Draw(
     const Command* commands,
     const Tile* tiles,
     const uint32_t* references,
-    const uint8_t* atlas) {
+    const uint8_t* atlas,
+    float units_x,
+    float units_y) {
   const Tile tile = tiles[blockIdx.x];
   const uint32_t x = tile.x * kTileSize + threadIdx.x;
   const uint32_t y = tile.y * kTileSize + threadIdx.y;
@@ -82,7 +91,7 @@ __global__ void Draw(
   float4 value{};
   for (uint32_t i = 0; i < tile.reference_count; ++i) {
     const Command c = commands[references[tile.first_reference + i]];
-    const float alpha = c.color.alpha * Coverage(c, x + 0.5F, y + 0.5F, atlas);
+    const float alpha = c.color.alpha * Coverage(c, (x + 0.5F) * units_x, (y + 0.5F) * units_y, atlas);
     if (!(alpha > 0))
       continue;
     if (!touched) {
@@ -111,7 +120,9 @@ __global__ void Draw420(
     const Command* commands,
     const Tile* tiles,
     const uint32_t* references,
-    const uint8_t* atlas) {
+    const uint8_t* atlas,
+    float units_x,
+    float units_y) {
   const Tile tile = tiles[blockIdx.x];
   const uint32_t x = tile.x * kTileSize + threadIdx.x * 2;
   const uint32_t y = tile.y * kTileSize + threadIdx.y * 2;
@@ -153,7 +164,7 @@ __global__ void Draw420(
     float alpha_sum = 0.0F;
     for (int j = 0; j < 2; ++j)
       for (int i = 0; i < 2; ++i) {
-        const float alpha = c.color.alpha * Coverage(c, x + i + 0.5F, y + j + 0.5F, atlas);
+        const float alpha = c.color.alpha * Coverage(c, (x + i + 0.5F) * units_x, (y + j + 0.5F) * units_y, atlas);
         luma[j * 2 + i] = luma[j * 2 + i] * (1.0F - alpha) + target_y * alpha;
         alpha_sum += alpha;
       }
@@ -196,18 +207,20 @@ cudaError_t Raster(
     const uint32_t* references,
     uint32_t tile_count,
     const uint8_t* atlas,
+    float units_x,
+    float units_y,
     cudaStream_t stream) {
   const dim3 threads(kTileSize, kTileSize);
   if (image.format == PixelFormat::kP010)
-    Draw420<true>
-        <<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(image, commands, tiles, references, atlas);
+    Draw420<true><<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(
+        image, commands, tiles, references, atlas, units_x, units_y);
   else if (image.format == PixelFormat::kI420)
-    Draw420<false>
-        <<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(image, commands, tiles, references, atlas);
+    Draw420<false><<<tile_count, dim3(kTileSize / 2, kTileSize / 2), 0, stream>>>(
+        image, commands, tiles, references, atlas, units_x, units_y);
   else if (image.format == PixelFormat::kRgb10A2)
-    Draw<true><<<tile_count, threads, 0, stream>>>(image, commands, tiles, references, atlas);
+    Draw<true><<<tile_count, threads, 0, stream>>>(image, commands, tiles, references, atlas, units_x, units_y);
   else
-    Draw<false><<<tile_count, threads, 0, stream>>>(image, commands, tiles, references, atlas);
+    Draw<false><<<tile_count, threads, 0, stream>>>(image, commands, tiles, references, atlas, units_x, units_y);
   return cudaGetLastError();
 }
 } // namespace hm::draw_display::analytics::detail

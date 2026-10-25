@@ -17,7 +17,7 @@ namespace {
 using detail::Command;
 using detail::Kind;
 struct Vertex {
-  float position[2], endpoints[4], color[4], parameters[3];
+  float position[2], endpoints[4], color[4], parameters[3], third[2];
 };
 constexpr size_t kVertexBytes = kMaximumCommands * 4 * sizeof(Vertex);
 constexpr size_t kIndexCount = kMaximumCommands * 6;
@@ -33,7 +33,13 @@ struct Bounds {
 };
 Bounds ClippedBounds(const Command& c, float width, float height) {
   Bounds b{c.x0, c.y0, c.x1, c.y1};
-  if (c.kind == Kind::kLine) {
+  if (c.kind == Kind::kTriangle) {
+    b = {
+        std::min({c.x0, c.x1, c.x2}),
+        std::min({c.y0, c.y1, c.y2}),
+        std::max({c.x0, c.x1, c.x2}),
+        std::max({c.y0, c.y1, c.y2})};
+  } else if (c.kind == Kind::kLine) {
     b = {
         std::min(c.x0, c.x1) - c.radius - 1,
         std::min(c.y0, c.y1) - c.radius - 1,
@@ -53,32 +59,45 @@ attribute vec2 position;
 attribute vec4 endpoints;
 attribute vec4 color;
 attribute vec3 parameters;
+attribute vec2 third;
 uniform vec2 extent;
 varying vec2 pixel;
 varying vec4 ends;
 varying vec4 rgba;
 varying vec3 params;
+varying vec2 point3;
 void main() {
   pixel = position;
   ends = endpoints;
   rgba = color;
   params = parameters;
+  point3 = third;
   gl_Position = vec4(position.x * 2.0 / extent.x - 1.0, 1.0 - position.y * 2.0 / extent.y, 0.0, 1.0);
 }
 )GLSL";
 constexpr char kFragmentShader[] = R"GLSL(#version 120
 uniform sampler2D atlas;
+uniform vec4 viewport_mapping;
 varying vec2 pixel;
 varying vec4 ends;
 varying vec4 rgba;
 varying vec3 params;
+varying vec2 point3;
+bool inside_edge(vec2 a, vec2 b, vec2 p) {
+  float edge = (b.x-a.x)*(p.y-a.y) - (b.y-a.y)*(p.x-a.x);
+  return edge > 0.0 || (edge == 0.0 && (b.y < a.y || (b.y == a.y && b.x > a.x)));
+}
 float sample_cell(vec2 origin, vec2 xy) {
   if (xy.x < 0.0 || xy.x >= 32.0 || xy.y < 0.0 || xy.y >= 48.0) return 0.0;
   return texture2D(atlas, (origin + xy + vec2(0.5)) / vec2(512.0, 576.0)).r;
 }
 void main() {
   float coverage = 0.0;
-  if (params.x < 0.5) {
+  if (params.x > 4.5) {
+    vec2 exact_pixel = vec2(gl_FragCoord.x-viewport_mapping.x,viewport_mapping.y-gl_FragCoord.y)*viewport_mapping.zw;
+    coverage = inside_edge(ends.xy,ends.zw,exact_pixel) && inside_edge(ends.zw,point3,exact_pixel) &&
+               inside_edge(point3,ends.xy,exact_pixel) ? 1.0 : 0.0;
+  } else if (params.x < 0.5) {
     vec2 d = ends.zw - ends.xy;
     float length2 = dot(d,d);
     float u = length2 > 0.0 ? clamp(dot(pixel-ends.xy,d)/length2, 0.0, 1.0) : 0.0;
@@ -128,7 +147,7 @@ struct SavedState {
     void* pointer;
     GLfloat current[4];
   };
-  std::array<Attribute, 4> attributes;
+  std::array<Attribute, 5> attributes;
   GLint program, array_buffer, element_buffer, active_texture, texture, unpack_buffer;
   GLint unpack_alignment, unpack_row_length, unpack_skip_rows, unpack_skip_pixels;
   SavedState() {
@@ -211,7 +230,7 @@ struct GlCompositor::State {
   Display* display{nullptr};
   GLuint program{0}, atlas{0}, index{0};
   std::array<GLuint, 3> buffers{};
-  GLint extent{-1};
+  GLint extent{-1}, viewport_mapping{-1};
   size_t slot{0};
   bool poisoned{false}, font_failed{false};
   std::vector<Vertex> vertices;
@@ -301,7 +320,8 @@ GlRenderResult GlCompositor::Render(float width, float height, const CommandList
             {{p[0], p[1]},
              {c.x0, c.y0, c.x1, c.y1},
              {c.color.red, c.color.green, c.color.blue, c.color.alpha},
-             {static_cast<float>(c.kind), c.radius, static_cast<float>(c.glyph)}});
+             {static_cast<float>(c.kind), c.radius, static_cast<float>(c.glyph)},
+             {c.x2, c.y2}});
       }
     }
     const auto error = [&]() {
@@ -329,6 +349,7 @@ GlRenderResult GlCompositor::Render(float width, float height, const CommandList
           glBindAttribLocation(state.program, 1, "endpoints");
           glBindAttribLocation(state.program, 2, "color");
           glBindAttribLocation(state.program, 3, "parameters");
+          glBindAttribLocation(state.program, 4, "third");
           glLinkProgram(state.program);
         }
         if (vertex)
@@ -344,6 +365,7 @@ GlRenderResult GlCompositor::Render(float width, float height, const CommandList
           return result;
         }
         state.extent = glGetUniformLocation(state.program, "extent");
+        state.viewport_mapping = glGetUniformLocation(state.program, "viewport_mapping");
         glUseProgram(state.program);
         glUniform1i(glGetUniformLocation(state.program, "atlas"), 0);
         for (size_t i = 0; i < kMaximumCommands; ++i) {
@@ -405,6 +427,8 @@ GlRenderResult GlCompositor::Render(float width, float height, const CommandList
       }
       glUseProgram(state.program);
       glUniform2f(state.extent, width, height);
+      glUniform4f(
+          state.viewport_mapping, viewport[0], viewport[1] + viewport[3], width / viewport[2], height / viewport[3]);
       glBindTexture(GL_TEXTURE_2D, state.atlas);
       glBindBuffer(GL_ARRAY_BUFFER, state.buffers[state.slot]);
       state.slot = (state.slot + 1) % state.buffers.size();
@@ -413,13 +437,14 @@ GlRenderResult GlCompositor::Render(float width, float height, const CommandList
       ++counters_.vertex_uploads;
       counters_.vertex_bytes += result.upload_bytes;
       glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, state.index);
-      const GLint sizes[4] = {2, 4, 4, 3};
-      const size_t offsets[4] = {
+      const GLint sizes[5] = {2, 4, 4, 3, 2};
+      const size_t offsets[5] = {
           offsetof(Vertex, position),
           offsetof(Vertex, endpoints),
           offsetof(Vertex, color),
-          offsetof(Vertex, parameters)};
-      for (GLuint i = 0; i < 4; ++i) {
+          offsetof(Vertex, parameters),
+          offsetof(Vertex, third)};
+      for (GLuint i = 0; i < 5; ++i) {
         glEnableVertexAttribArray(i);
         glVertexAttribPointer(
             i, sizes[i], GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<const void*>(offsets[i]));
