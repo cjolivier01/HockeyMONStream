@@ -83,7 +83,10 @@ validate_native_cuda_code() {
   local label="$1"
   local elf="$2"
   local cuda_cubins
-  cuda_cubins="$("${TARGET_CUDA_ROOT}/bin/cuobjdump" --list-elf "${elf}")"
+  if ! cuda_cubins="$("${TARGET_CUDA_ROOT}/bin/cuobjdump" --list-elf "${elf}")"; then
+    echo "ERROR: Ubuntu ${TARGET_UBUNTU} could not inspect native CUDA code in ${label}: ${elf}" >&2
+    exit 1
+  fi
   for cuda_arch in "${TARGET_CUDA_ARCHES[@]}"; do
     if ! grep -q "[.]${cuda_arch}[.]cubin$" <<< "${cuda_cubins}"; then
       echo "ERROR: Ubuntu ${TARGET_UBUNTU} ${label} is missing native ${cuda_arch} CUDA code." >&2
@@ -98,7 +101,8 @@ validate_native_cuda_code() {
 
 validate_native_cuda_code videoprep "${VIDEOPREP_PLUGIN}"
 validate_native_cuda_code hstream-cli "${BUILD_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
-validate_native_cuda_code hstream-calibration-export "${BUILD_DIR}/bazel-bin/src/apps/hstream-calibration-export/hstream-calibration-export"
+# hstream-calibration-export exports saved calibration artifacts and has no
+# embedded device code; only require CUDA payloads in the GPU executables above.
 
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"
