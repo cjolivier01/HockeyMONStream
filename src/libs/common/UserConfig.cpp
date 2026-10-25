@@ -217,6 +217,8 @@ absl::StatusOr<YAML::Node> load_defaults() {
     return absl::InternalError(absl::StrCat("Failed to inspect ", path->string(), ": ", error.message()));
   try {
     auto config = YAML::LoadFile(path->string());
+    if (!config || config.IsNull())
+      return YAML::Node(YAML::NodeType::Map);
     if (!config.IsMap())
       return absl::InvalidArgumentError(absl::StrCat("UI defaults must be a YAML map: ", path->string()));
     return config;

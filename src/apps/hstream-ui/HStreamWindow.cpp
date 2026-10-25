@@ -6204,7 +6204,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   experiments->setToolTip("Camera experiments are not yet available on AMD.");
 #else
   connect(experiments, &QPushButton::clicked, this, [this]() {
-    if (!ensureSavedControlConfigLoaded())
+    if (!ensureSavedControlConfigLoaded() || editing_defaults_)
       return;
     if (auto* existing = findChild<QDialog*>("cameraExperimentDialog")) {
       existing->show();
@@ -6428,7 +6428,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
       return;
     if (game_selector_->itemData(index).toBool())
       selectDefaults();
-    else
+    else if (editing_defaults_ || game_selector_->itemText(index) != game_id_edit_->text())
       selectGame(game_selector_->itemText(index));
   });
 
@@ -17329,6 +17329,10 @@ void HStreamWindow::updateRunControls() {
   }
   if (stitching_experiments_button_)
     stitching_experiments_button_->setEnabled(!editing_defaults_ && !running && !finalizing);
+#ifndef HSTREAM_USE_HIP
+  if (auto* camera_experiments = findChild<QPushButton*>("cameraExperimentsButton"))
+    camera_experiments->setEnabled(!editing_defaults_);
+#endif
   if (highlights_button_) {
 #ifdef HSTREAM_USE_HIP
     highlights_button_->setEnabled(false);
@@ -17412,7 +17416,7 @@ void HStreamWindow::updateRunControls() {
     game_controls_->setEnabled(!running && !finalizing);
   }
   if (video_controls_) {
-    video_controls_->setEnabled(!running && !finalizing);
+    video_controls_->setEnabled(!editing_defaults_ && !running && !finalizing);
   }
   updatePlaybackSeekControls();
   updateStitchedColorPrecisionControls();
@@ -18391,7 +18395,7 @@ void HStreamWindow::updatePresetDirtyState() {
     }
   }
   const bool has_game = !game_id.isEmpty();
-  const bool can_save = dirty && (has_game || editing_defaults_) && saved_control_config_load_error_.isEmpty();
+  const bool can_save = dirty && (has_game || editing_defaults_);
   if (save_preset_button_->isEnabled() != can_save)
     save_preset_button_->setEnabled(can_save);
   const QString description = editing_defaults_
@@ -20261,7 +20265,7 @@ void HStreamWindow::refreshGames() {
     return;
   }
   const QString current = game_id_edit_ ? game_id_edit_->text() : QString();
-  const bool blocked = game_selector_->blockSignals(true);
+  const QSignalBlocker selector_blocker(game_selector_);
   game_selector_->clear();
   game_selector_->addItem("Defaults", true);
 
@@ -20273,7 +20277,6 @@ void HStreamWindow::refreshGames() {
   for (const QFileInfo& dir : dirs) {
     game_selector_->addItem(dir.fileName());
   }
-  game_selector_->blockSignals(blocked);
 
   if (!current.isEmpty()) {
     int index = -1;

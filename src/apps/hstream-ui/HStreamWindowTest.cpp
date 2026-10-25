@@ -18515,9 +18515,11 @@ int main(int argc, char** argv) {
   QTemporaryDir game_root;
   QTemporaryDir source_root;
   QTemporaryDir preferences;
-  if (!game_root.isValid() || !source_root.isValid() || !preferences.isValid()) {
+  QTemporaryDir user_home;
+  if (!game_root.isValid() || !source_root.isValid() || !preferences.isValid() || !user_home.isValid()) {
     return 1;
   }
+  qputenv("HOME", user_home.path().toLocal8Bit());
   qputenv("XDG_CONFIG_HOME", preferences.path().toLocal8Bit());
   qputenv("HM_GAME_DIR", game_root.path().toLocal8Bit());
   qunsetenv("USE_NEW_NVSTREAMMUX");

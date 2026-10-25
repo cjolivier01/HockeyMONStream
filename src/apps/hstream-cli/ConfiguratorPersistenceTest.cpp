@@ -2238,6 +2238,9 @@ int main() {
   ok &= expect(
       reset_config.ok() && (*reset_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08",
       "Empty defaults must restore lower-layer inheritance");
+  std::ofstream(defaults_path).close();
+  hm::Configurator empty_defaults("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  ok &= expect(empty_defaults.load_config().ok(), "An empty defaults file must be an empty overlay");
   fs::remove(defaults_path);
   ::unsetenv("HM_GAME_DIR");
   ok &= expect(
