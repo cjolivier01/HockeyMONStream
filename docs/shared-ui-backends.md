@@ -70,9 +70,9 @@ including seeks. Save requests may carry an absolute `CLOCK_MONOTONIC` deadline;
 native canvas validation and transaction lock acquisition poll that deadline,
 then check it under ownership immediately before publication. Expiry before
 mutation returns an explicit `unchanged` result. Once publication starts, only
-its result determines whether the selection changed. HockeyMON retains timed-out
-HTTP requests and prevents Cancel from claiming no change while the outcome is
-pending, unknown or already committed.
+its result determines whether the selection changed. Callers must retain timed-out
+requests and prevent Cancel from claiming no change while the outcome is pending,
+unknown or already committed.
 Once Python's frame-owner mailbox is ready, its pause receipt
 includes `mode=cooperative` only after the frame owner stops advancement. Qt keeps
 the supervisor alive to serve selection and other runtime requests; resume also
