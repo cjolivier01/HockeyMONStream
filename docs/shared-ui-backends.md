@@ -33,7 +33,9 @@ resets tuning to the baseline. Game settings override this user layer. Python
 Players drawing changes apply on the next run; native Program drawing can also
 change during playback. HockeyMON offers the supported standard analytics and
 custom contracts; hockey pose/action models remain native-only. Its appearance
-menu retains both DeepStream and NVIDIA ReIdentificationNet selections.
+menu retains both DeepStream and NVIDIA ReIdentificationNet selections. Encoded
+rink mini-maps currently require native Program processing; Python launch rejects
+`output.rink-map.enable` instead of silently omitting the requested overlay.
 
 ## Ownership
 
