@@ -1,5 +1,6 @@
 #include "PreviewRtpGate.h"
 
+#include <condition_variable>
 #include <mutex>
 #include <new>
 #include <utility>
@@ -10,6 +11,9 @@ struct State {
   std::shared_ptr<hm::preview::TransportMonitor> monitor;
   std::uint64_t peer{0};
   bool transitioning{false}, ready{false};
+  bool requested_ready{false}, pending{false}, stopping{false};
+  std::function<bool(bool)> downstream;
+  std::condition_variable finished;
 };
 typedef struct _GstHmPreviewRtpGate {
   GstElement parent;
@@ -98,6 +102,28 @@ GstHmPreviewRtpGate* get(GstElement* element) {
       ? reinterpret_cast<GstHmPreviewRtpGate*>(element)
       : nullptr;
 }
+void reconcile_ready(GstElement* element, gpointer) noexcept {
+  auto& state = *get(element)->state;
+  try {
+    // Do not hold the state lock while waiting: connection notifications must
+    // be able to close/invalidate readiness during downstream teardown.
+    std::lock_guard<std::mutex> flow(state.flow);
+    std::lock_guard<std::mutex> lock(state.state);
+    state.ready = false;
+    if (!state.stopping && !state.transitioning && state.downstream) {
+      state.monitor->Recover();
+      if (state.requested_ready)
+        state.ready = state.downstream(true);
+    }
+    state.pending = false;
+  } catch (...) {
+    std::lock_guard<std::mutex> lock(state.state);
+    state.ready = false;
+    state.pending = false;
+    state.monitor->ProbeFailure();
+  }
+  state.finished.notify_all();
+}
 } // namespace
 
 namespace hm::preview {
@@ -119,11 +145,13 @@ bool rtp_gate_begin_transition(GstElement* element, std::uint64_t peer) {
   if (!self || !peer)
     return false;
   std::lock_guard<std::mutex> lock(self->state->state);
-  if (peer <= self->state->peer)
+  if (self->state->stopping || peer <= self->state->peer)
     return false;
   self->state->peer = peer;
   self->state->transitioning = true;
   self->state->ready = false;
+  self->state->requested_ready = false;
+  self->state->downstream = {};
   return true;
 }
 bool rtp_gate_finish_transition(GstElement* element, std::uint64_t peer, const std::function<bool()>& mutation) {
@@ -145,18 +173,45 @@ bool rtp_gate_finish_transition(GstElement* element, std::uint64_t peer, const s
   state.transitioning = false;
   return true;
 }
-bool rtp_gate_set_ready(GstElement* element, std::uint64_t peer, bool ready) {
+bool rtp_gate_set_ready(GstElement* element, std::uint64_t peer, bool ready, std::function<bool(bool)> control) {
   auto* self = get(element);
   if (!self)
     return false;
   auto& state = *self->state;
-  std::lock_guard<std::mutex> lock(state.state);
-  if (!peer || state.peer != peer || state.transitioning)
-    return false;
-  if (ready != state.ready) {
-    state.monitor->Recover();
-    state.ready = ready;
+  bool schedule = false;
+  {
+    std::lock_guard<std::mutex> lock(state.state);
+    if (!peer || state.peer != peer || state.transitioning || state.stopping || !control || !control(false))
+      return false;
+    state.ready = false;
+    state.requested_ready = ready;
+    state.downstream = std::move(control);
+    if (!state.pending) {
+      state.pending = true;
+      schedule = true;
+    }
   }
+  if (schedule)
+    gst_element_call_async(element, reconcile_ready, nullptr, nullptr);
   return true;
+}
+bool rtp_gate_is_ready(GstElement* element, std::uint64_t peer) {
+  auto* self = get(element);
+  if (!self)
+    return false;
+  std::lock_guard<std::mutex> lock(self->state->state);
+  return self->state->peer == peer && self->state->ready && !self->state->transitioning && !self->state->stopping;
+}
+void rtp_gate_stop(GstElement* element) {
+  auto* self = get(element);
+  if (!self)
+    return;
+  auto& state = *self->state;
+  std::unique_lock<std::mutex> lock(state.state);
+  state.stopping = true;
+  state.ready = false;
+  state.requested_ready = false;
+  state.downstream = {};
+  state.finished.wait(lock, [&] { return !state.pending; });
 }
 } // namespace hm::preview

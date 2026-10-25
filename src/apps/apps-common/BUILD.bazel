@@ -94,7 +94,6 @@ cc_library(
     name = "web_preview_target",
     srcs = ["WebPreviewTarget.cpp"],
     hdrs = ["WebPreviewTarget.h"],
-    copts = ["-DGST_USE_UNSTABLE_API"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [

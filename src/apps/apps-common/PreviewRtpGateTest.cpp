@@ -8,6 +8,7 @@
 #include <future>
 #include <iostream>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -25,6 +26,7 @@ struct Fixture {
   std::condition_variable ready;
   bool blocked{false}, release{false}, replacement_started{false};
   std::uint64_t downstream_peer{1};
+  bool downstream_open{false};
   std::vector<std::pair<GstClockTime, std::uint64_t>> delivered;
 
   Fixture() {
@@ -44,7 +46,8 @@ struct Fixture {
         sink, +[](GstPad* pad, GstObject*, GstBuffer* buffer) {
           auto* self = static_cast<Fixture*>(g_object_get_data(G_OBJECT(pad), "fixture"));
           std::lock_guard<std::mutex> lock(self->mutex);
-          self->delivered.emplace_back(GST_BUFFER_PTS(buffer), self->downstream_peer);
+          if (self->downstream_open)
+            self->delivered.emplace_back(GST_BUFFER_PTS(buffer), self->downstream_peer);
           gst_buffer_unref(buffer);
           return GST_FLOW_OK;
         });
@@ -64,17 +67,43 @@ struct Fixture {
     gst_pad_push_event(source, gst_event_new_segment(&segment));
     check(
         hm::preview::rtp_gate_begin_transition(gate, 1) &&
-            hm::preview::rtp_gate_finish_transition(gate, 1, [] { return true; }) &&
-            hm::preview::rtp_gate_set_ready(gate, 1, true) && monitor->Select("program", 1),
+            hm::preview::rtp_gate_finish_transition(gate, 1, [] { return true; }) && set_ready(1, true) &&
+            monitor->Select("program", 1),
         "Initial peer binding failed");
   }
   ~Fixture() {
     gst_element_set_state(gate, GST_STATE_NULL);
+    hm::preview::rtp_gate_stop(gate);
     gst_pad_unlink(source, input);
     gst_pad_unlink(output, sink);
     for (auto* pad : {source, sink, input, output})
       gst_object_unref(pad);
     gst_object_unref(gate);
+  }
+  bool request_ready(std::uint64_t peer, bool active) {
+    return hm::preview::rtp_gate_set_ready(gate, peer, active, [this, peer](bool open) {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (peer != downstream_peer)
+        return false;
+      downstream_open = open;
+      return true;
+    });
+  }
+  bool set_ready(std::uint64_t peer, bool active) {
+    if (!request_ready(peer, active))
+      return false;
+    if (!active)
+      return true;
+    return wait_ready(peer);
+  }
+  bool wait_ready(std::uint64_t peer) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!hm::preview::rtp_gate_is_ready(gate, peer)) {
+      if (std::chrono::steady_clock::now() >= deadline)
+        return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
   }
   bool encode(std::uint64_t sequence, bool idr) {
     hm::preview::FrameIdentityMeta frame{};
@@ -162,11 +191,11 @@ int main(int argc, char** argv) {
   check(
       fixture.delivered.size() == 1 && fixture.delivered.front().second == 1,
       "Old-peer RTP packet reached the replacement transport");
-  check(!hm::preview::rtp_gate_set_ready(fixture.gate, 1, true), "Stale connection notification opened new peer");
+  check(!fixture.set_ready(1, true), "Stale connection notification opened new peer");
   check(
       fixture.encode(2, true) && fixture.push(2) == GST_FLOW_OK && fixture.delivered.size() == 1,
       "A negotiating peer admitted media");
-  check(hm::preview::rtp_gate_set_ready(fixture.gate, 2, true), "Connection readiness failed");
+  check(fixture.set_ready(2, true), "Connection readiness failed");
   check(
       fixture.push(2) == GST_FLOW_OK && fixture.delivered.size() == 1 && !fixture.encode(3, false),
       "Negotiation-period IDR or its dependent delta established recovery");
@@ -175,10 +204,53 @@ int main(int argc, char** argv) {
           fixture.delivered.back().second == 2,
       "Fresh connected-peer IDR was not delivered");
   check(
-      hm::preview::rtp_gate_set_ready(fixture.gate, 2, false) && fixture.encode(5, true) &&
-          hm::preview::rtp_gate_set_ready(fixture.gate, 2, true) && fixture.push(5) == GST_FLOW_OK &&
-          fixture.delivered.size() == 2 && fixture.encode(6, true) && fixture.push(6) == GST_FLOW_OK &&
-          fixture.delivered.size() == 3,
+      fixture.set_ready(2, false) && fixture.encode(5, true) && fixture.set_ready(2, true) &&
+          fixture.push(5) == GST_FLOW_OK && fixture.delivered.size() == 2 && fixture.encode(6, true) &&
+          fixture.push(6) == GST_FLOW_OK && fixture.delivered.size() == 3,
       "Reconnection did not renew IDR recovery");
+  // The consumer models the endpoint valve, not a decoded browser. Hold a
+  // dependent delta after RTP admission, close/reopen the same peer, and prove
+  // that the endpoint remains closed until this accepted push has returned.
+  check(fixture.encode(7, false), "Established-peer delta was not encoded");
+  {
+    std::lock_guard<std::mutex> lock(fixture.mutex);
+    fixture.blocked = fixture.release = false;
+  }
+  const auto ready_probe = gst_pad_add_probe(
+      fixture.output,
+      GST_PAD_PROBE_TYPE_BUFFER,
+      +[](GstPad*, GstPadProbeInfo*, gpointer data) {
+        auto& f = *static_cast<Fixture*>(data);
+        std::unique_lock<std::mutex> lock(f.mutex);
+        f.blocked = true;
+        f.ready.notify_all();
+        f.ready.wait(lock, [&] { return f.release; });
+        return GST_PAD_PROBE_OK;
+      },
+      &fixture,
+      nullptr);
+  auto delta = std::async(std::launch::async, [&] { return fixture.push(7); });
+  {
+    std::unique_lock<std::mutex> lock(fixture.mutex);
+    check(
+        fixture.ready.wait_for(lock, std::chrono::seconds(2), [&] { return fixture.blocked; }),
+        "Delta did not reach the post-admission hold");
+  }
+  check(fixture.request_ready(2, false) && fixture.request_ready(2, true), "Readiness requests blocked/rejected");
+  // Give the deferred worker a turn while the admitted packet still owns its
+  // flow barrier. Reopening early must fail even when callback order is stable.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  {
+    std::lock_guard<std::mutex> lock(fixture.mutex);
+    check(!fixture.downstream_open, "Endpoint reopened while an admitted delta remained in flight");
+    fixture.release = true;
+    fixture.ready.notify_all();
+  }
+  check(delta.get() == GST_FLOW_OK && fixture.wait_ready(2), "Deferred readiness did not complete after drain");
+  gst_pad_remove_probe(fixture.output, ready_probe);
+  check(
+      fixture.delivered.size() == 3 && !fixture.encode(8, false) && fixture.encode(9, true) &&
+          fixture.push(9) == GST_FLOW_OK && fixture.delivered.size() == 4,
+      "A held pre-disconnect delta crossed the reopen before a fresh IDR");
   return 0;
 }

@@ -4,7 +4,6 @@
 #include "WebRtcEndpoint.h"
 
 #include <gst/video/video-event.h>
-#include <gst/webrtc/webrtc.h>
 #include <nvbufsurface.h>
 
 #include <climits>
@@ -57,19 +56,56 @@ GstPadProbeReturn encoded(GstPad*, GstPadProbeInfo* info, gpointer data) noexcep
 
 struct PeerGate {
   GstElement* gate;
+  GWeakRef endpoint;
   std::uint64_t generation;
+  PeerGate(GstElement* gate, GstElement* endpoint, std::uint64_t generation)
+      : gate(GST_ELEMENT(gst_object_ref(gate))), generation(generation) {
+    g_weak_ref_init(&this->endpoint, endpoint);
+  }
   ~PeerGate() {
+    g_weak_ref_clear(&endpoint);
     gst_object_unref(gate);
   }
 };
+struct ReadyDestination {
+  GWeakRef endpoint, peer;
+  std::uint64_t revision;
+  ReadyDestination(GstElement* endpoint, GObject* peer, std::uint64_t revision) : revision(revision) {
+    g_weak_ref_init(&this->endpoint, endpoint);
+    g_weak_ref_init(&this->peer, peer);
+  }
+  ~ReadyDestination() {
+    g_weak_ref_clear(&endpoint);
+    g_weak_ref_clear(&peer);
+  }
+  bool Apply(bool ready) {
+    auto* destination = GST_ELEMENT(g_weak_ref_get(&endpoint));
+    auto* current = GST_ELEMENT(g_weak_ref_get(&peer));
+    const bool applied =
+        destination && current && hstream::webrtc_endpoint_apply_readiness(destination, current, revision, ready);
+    if (current)
+      gst_object_unref(current);
+    if (destination)
+      gst_object_unref(destination);
+    return applied;
+  }
+};
 void peer_connection(GObject* peer, GParamSpec*, gpointer data) {
-  const auto* binding = static_cast<PeerGate*>(data);
-  GstWebRTCPeerConnectionState state;
-  g_object_get(peer, "connection-state", &state, nullptr);
-  // WebRtcEndpoint's earlier handler opens its valve first. Our gate stays
-  // closed until then, and clears frames encoded during SDP/DTLS negotiation.
-  // Never wait for streaming here: NULL may be joining this notification.
-  rtp_gate_set_ready(binding->gate, binding->generation, state == GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED);
+  auto* binding = static_cast<PeerGate*>(data);
+  auto* endpoint = GST_ELEMENT(g_weak_ref_get(&binding->endpoint));
+  if (!endpoint)
+    return;
+  std::uint64_t revision;
+  bool connected;
+  if (hstream::webrtc_endpoint_connection_snapshot(endpoint, GST_ELEMENT(peer), &revision, &connected)) {
+    auto destination = std::make_shared<ReadyDestination>(endpoint, peer, revision);
+    // Managed endpoint notifications close its valves first. The bounded gate
+    // worker drains accepted pushes before a revision-matched reopen. Never
+    // wait for that flow here: NULL may be joining this notification.
+    rtp_gate_set_ready(
+        binding->gate, binding->generation, connected, [destination](bool ready) { return destination->Apply(ready); });
+  }
+  gst_object_unref(endpoint);
 }
 } // namespace
 
@@ -242,6 +278,11 @@ bool WebPreviewTarget::Build(const WebPreviewConfig& c, SurfacePainter painter, 
   // child's SINK flag when adding it; an empty nested endpoint otherwise leaves
   // this target absent from the parent pipeline's EOS aggregation.
   endpoint_ = add(endpoint);
+  if (!endpoint_ || !hstream::webrtc_endpoint_manage_readiness(endpoint_)) {
+    if (input)
+      gst_object_unref(input);
+    return fail(error, "Could not bind managed preview endpoint readiness");
+  }
   auto* output = gst_element_get_static_pad(rtp_gate_, "src");
   const bool linked = endpoint_ && input && output && gst_pad_link(output, input) == GST_PAD_LINK_OK;
   if (input)
@@ -255,6 +296,8 @@ bool WebPreviewTarget::Build(const WebPreviewConfig& c, SurfacePainter painter, 
 }
 
 WebPreviewTarget::~WebPreviewTarget() {
+  if (rtp_gate_)
+    rtp_gate_stop(rtp_gate_);
   for (auto& [pad, id] : probes_) {
     gst_pad_remove_probe(pad, id);
     gst_object_unref(pad);
@@ -337,7 +380,7 @@ GstElement* WebPreviewTarget::ReplacePeer(std::uint64_t generation) {
         peer,
         "notify::connection-state",
         G_CALLBACK(peer_connection),
-        new PeerGate{GST_ELEMENT(gst_object_ref(rtp_gate_)), generation},
+        new PeerGate(rtp_gate_, endpoint_, generation),
         [](gpointer data, GClosure*) { delete static_cast<PeerGate*>(data); },
         GConnectFlags(0));
     return true;
@@ -347,7 +390,7 @@ GstElement* WebPreviewTarget::ReplacePeer(std::uint64_t generation) {
       gst_object_unref(peer);
     return nullptr;
   }
-  PeerGate current{GST_ELEMENT(gst_object_ref(rtp_gate_)), generation};
+  PeerGate current(rtp_gate_, endpoint_, generation);
   peer_connection(G_OBJECT(peer), nullptr, &current);
   return peer;
 }
@@ -357,7 +400,7 @@ bool WebPreviewTarget::DetachPeer(std::uint64_t generation) {
     return false;
   hstream::webrtc_endpoint_detach_peer(endpoint_);
   return rtp_gate_finish_transition(rtp_gate_, generation, [] { return true; }) &&
-      rtp_gate_set_ready(rtp_gate_, generation, true);
+      rtp_gate_set_ready(rtp_gate_, generation, true, [](bool) { return true; });
 }
 std::vector<TransportEvent> WebPreviewTarget::TakeEvents() {
   return monitor_->TakeEvents();

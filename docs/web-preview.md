@@ -65,15 +65,23 @@ does it retire metadata and construct the new peer under the barrier. Closing
 raw ingress or clearing the identity ledger alone cannot protect a packet that
 already passed admission but has not reached its destination.
 
-The new peer remains gated during SDP/DTLS negotiation. Its connection callback
-opens the target only after the endpoint's valve opens and retires every frame
-encoded before readiness, requiring a newly admitted IDR. Stale connection
-callbacks cannot open a replacement generation. Connection callbacks never wait
-on the output barrier, since transport teardown may be joining them. The CPU
-regression holds an accepted packet between admission and forwarding while
-replacement starts, verifies delivery to the old destination, then exercises
-negotiation/reconnection recovery. The GPU fixture also replaces a peer during
-active output. These checks do not establish browser presentation parity.
+The target opts into managed endpoint readiness: connection notifications close
+the endpoint valves and request one coalesced readiness worker. That worker
+drains the output barrier, retires every frame encoded before readiness, then
+opens the endpoint and target together. A newly admitted IDR is required. This
+also prevents a delta accepted before a same-peer disconnect from crossing a
+reopened valve. Deferred requests carry both the peer identity and endpoint
+connection revision; stale requests cannot reopen either gate. Legacy static
+WebRTC outputs retain their automatic connection gating.
+
+Connection callbacks never wait on the output barrier, since transport teardown
+may be joining them. After the parent reaches NULL, target destruction retires
+readiness requests and joins the bounded worker; deferred endpoint/peer bindings
+are weak and refuse reopening during teardown. CPU regressions hold admitted
+packets across replacement and same-peer readiness changes, and negotiate real
+in-process WebRTC peers to check legacy/managed valve behavior. The GPU fixture
+also replaces a peer during active output. These checks do not establish browser
+presentation parity.
 
 The GPU fixture now uses this target directly. It covers live source-binding
 replacement, Render off, natural main-output EOF, incomplete peer teardown,
@@ -129,6 +137,9 @@ H.264 and Opus test media and uses the production signaling handlers. It require
 the GStreamer OpenH264, Opus, WebRTC, DTLS/SRTP and libnice plugins. A missing
 `libsrtp2.so` can leave the WebRTC plugin discoverable while negotiation fails;
 verify `gst-inspect-1.0 srtpenc` and `gst-inspect-1.0 srtpdec` on the compute host.
+After repairing a missing library, an old plugin registry may still blacklist
+SRTP. Use a fresh private `GST_REGISTRY` for verification; Bazel tests accept it
+through `--test_env=GST_REGISTRY=/tmp/hstream-webrtc-test-registry.bin`.
 Press Enter in the server
 terminal to exercise graceful stop. This fixture is test-only and is not part of
 the installed runtime.

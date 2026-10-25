@@ -62,6 +62,8 @@ class WebPreviewTarget {
   // old downstream waits, drain accepted pushes, then retire/replace the peer.
   // Replace returns an owned peer reference. It admits video only after the
   // connection is ready and a newly admitted IDR establishes decoder recovery.
+  // Managed endpoint notifications defer reopening until accepted pushes drain;
+  // destruction joins that bounded readiness worker after the parent is NULL.
   // Detach resumes the disconnected drain, which does not imply presentation.
   GstElement* ReplacePeer(std::uint64_t generation);
   bool DetachPeer(std::uint64_t generation);
