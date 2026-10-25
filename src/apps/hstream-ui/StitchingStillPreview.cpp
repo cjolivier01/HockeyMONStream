@@ -110,23 +110,30 @@ Still load(
     const QString& directory,
     const QString& expected_generation,
     const QByteArray& expected_settings,
-    const QByteArray& expected_revision) {
+    const QByteArray& expected_revision,
+    std::mutex& metadata_mutex,
+    const std::atomic<bool>& cancelled,
+    const std::function<void()>& metadata_locked,
+    const std::function<void()>& decoding) {
   Still result;
   bool png_current = false;
   QFile png(QDir(directory).filePath("s.png"));
   QFile tiff(QDir(directory).filePath("panorama.tif"));
   {
+    // Cancellation closes admission before draining this section. Every lock
+    // acquired below is nonblocking and is released before metadata_mutex,
+    // including early returns. Decoding must stay outside this gate.
+    std::lock_guard<std::mutex> metadata_guard(metadata_mutex);
+    if (cancelled.load())
+      return result;
     const auto path = directory.toStdString();
-    auto artifacts = hm::stitching::try_lock_canvas_constraint_artifacts(path);
+    auto artifacts = hm::stitching::try_lock_canvas_constraint_snapshot(path);
     if (!artifacts.ok() || !*artifacts) {
       result.retry = true;
       return result;
     }
-    auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(path);
-    if (!config_lock.ok()) {
-      result.retry = true;
-      return result;
-    }
+    if (metadata_locked)
+      metadata_locked();
     const auto text = hm::stitching::read_bounded_regular_file_no_follow(
         std::filesystem::path(path) / "config.yaml", 4 * 1024 * 1024, "calibration preview settings");
     if (!text.ok())
@@ -147,7 +154,7 @@ Still load(
       return result;
     }
     if (!expected_generation.isEmpty()) {
-      const auto generation = hm::stitching::stitch_artifact_preflight_generation_id_locked(path);
+      const auto generation = hm::stitching::stitch_artifact_snapshot_generation_id_locked(path);
       if (!generation.ok() || *generation != expected_generation.toStdString())
         return result;
     }
@@ -165,6 +172,10 @@ Still load(
   }
   // Keep the opened inodes across atomic publication, but release publication
   // locks before decoding so Play and settings saves never wait for an image.
+  if (cancelled.load())
+    return result;
+  if (decoding)
+    decoding();
   constexpr int maximum_dimension = 2048;
   if (png.isOpen()) {
     const QString path = QString("/proc/self/fd/%1").arg(png.handle());
@@ -197,6 +208,20 @@ StitchingStillPreview::StitchingStillPreview(QWidget* parent) : QWidget(parent) 
   timer->start();
 }
 
+StitchingStillPreview::~StitchingStillPreview() {
+  cancelRead();
+}
+
+void StitchingStillPreview::cancelRead() {
+  if (!read_state_)
+    return;
+  read_state_->cancelled.store(true);
+  // Do not join the worker: it may already be decoding an opened image. This
+  // barrier drains only our metadata read and forbids a queued stale read from
+  // acquiring publication locks after the caller starts its own transaction.
+  std::lock_guard<std::mutex> metadata_guard(read_state_->metadata_mutex);
+}
+
 void StitchingStillPreview::setSource(
     const QString& directory,
     const QString& expected_generation,
@@ -211,6 +236,7 @@ void StitchingStillPreview::setSource(
   image_ = {};
   setProperty("calibrationImage", QVariant());
   hide();
+  cancelRead();
   refresh();
 }
 
@@ -229,10 +255,15 @@ void StitchingStillPreview::refresh() {
   const auto directory = directory_;
   const auto expected = expected_generation_;
   const auto settings = expected_settings_;
+  const auto state = std::make_shared<ReadState>();
+  read_state_ = state;
+  const auto metadata_locked = metadata_locked_observer_;
+  const auto decoding = decoding_observer_;
   auto result = std::make_shared<Still>();
-  worker_ = QThread::create([directory, expected, settings, current, result] {
+  worker_ = QThread::create([directory, expected, settings, current, result, state, metadata_locked, decoding] {
     try {
-      *result = load(directory, expected, settings, current);
+      *result = load(
+          directory, expected, settings, current, state->metadata_mutex, state->cancelled, metadata_locked, decoding);
     } catch (const std::exception&) {
       // A failed optional image must not terminate playback or the UI.
       *result = {};

@@ -12,6 +12,8 @@
 
 namespace hm::stitching {
 
+class GameConfigTransactionLock;
+
 class CanvasConstraintArtifactLock {
  public:
   ~CanvasConstraintArtifactLock();
@@ -26,8 +28,11 @@ class CanvasConstraintArtifactLock {
       const std::filesystem::path& game_dir);
   friend absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constraint_artifacts(
       const std::filesystem::path& game_dir);
-  explicit CanvasConstraintArtifactLock(int descriptor) : descriptor_(descriptor) {}
+  friend absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_snapshot(
+      const std::filesystem::path& game_dir);
+  explicit CanvasConstraintArtifactLock(int descriptor);
   int descriptor_{-1};
+  std::unique_ptr<GameConfigTransactionLock> snapshot_config_;
 };
 
 struct LightweightCanvasConstraintCheck {
@@ -132,6 +137,13 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_metadata_l
 absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_artifacts(
     const std::filesystem::path& game_dir);
 
+// Optional preview readers hold artifact/config/rink locks without recovery.
+// Returns no lock when a writer or possible journal prevents an advisory read;
+// never decodes images or reads rollback payloads. Writers/startup retain the
+// recovering APIs above. The returned lock owns all three publication locks.
+absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_snapshot(
+    const std::filesystem::path& game_dir);
+
 // Acquires the same artifact lock while waiting for an active Hugin producer.
 // Live config transactions use this before taking GameConfigTransactionLock.
 absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constraint_artifacts(
@@ -152,10 +164,15 @@ struct StitchArtifactContentIdentity {
 absl::StatusOr<StitchArtifactContentIdentity> stitch_artifact_content_identity_locked(
     const std::filesystem::path& artifact_directory);
 
-// Resolves a version-3 identity from its sidecar and bindings without hashing
-// mapping payloads. This is advisory preflight only; loaders must call
-// stitch_artifact_generation_id_locked while holding the artifact lock.
+// Resolves a current version-3 identity from its sidecar and bindings, falling
+// back to full validation/upgrading for older identities or changed bindings.
+// Loaders still call stitch_artifact_generation_id_locked under the artifact lock.
 absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const std::filesystem::path& game_dir);
+
+// Optional readers resolve only metadata-bound identities (or legacy stat IDs
+// without a sidecar). Declines upgrades/changed bindings without hashing mapping
+// payloads or publishing identity updates. Caller holds the artifact lock.
+absl::StatusOr<std::string> stitch_artifact_snapshot_generation_id_locked(const std::filesystem::path& game_dir);
 
 // Returns inode/timestamp bindings for the complete mapping generation. Use
 // this around pathname-based validation to detect non-cooperating writers.

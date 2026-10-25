@@ -1,19 +1,42 @@
 #include "src/apps/hstream-ui/StitchingStillPreview.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
 
 #include <tiffio.h>
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QPointer>
+#include <QtCore/QSemaphore>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtWidgets/QApplication>
 
 #include <functional>
+#include <future>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 #include <vector>
+
+struct StitchingStillPreviewTestAccess {
+  static void observe(StitchingStillPreview& preview, std::function<void()> metadata, std::function<void()> decoding) {
+    preview.metadata_locked_observer_ = std::move(metadata);
+    preview.decoding_observer_ = std::move(decoding);
+  }
+  static std::function<bool()> cancelled(const StitchingStillPreview& preview) {
+    const auto state = preview.read_state_;
+    return [state] { return state && state->cancelled.load(); };
+  }
+  static bool pending(const StitchingStillPreview& preview) {
+    return preview.worker_ != nullptr;
+  }
+  static QPointer<QThread> worker(const StitchingStillPreview& preview) {
+    return preview.worker_;
+  }
+};
 
 namespace {
 void require(bool ok, const char* message) {
@@ -52,6 +75,226 @@ void tiff_fixture(const QString& path) {
     require(TIFFWriteScanline(file, row.data(), y) >= 0, "Cannot write TIFF row");
   TIFFClose(file);
 }
+
+void exercise_metadata_cancellation() {
+  QTemporaryDir game;
+  write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
+  QImage image(32, 16, QImage::Format_RGB32);
+  image.fill(Qt::red);
+  require(image.save(game.filePath("s.png")), "Cannot save cancellation fixture");
+  QWidget host;
+  host.resize(80, 40);
+  host.show();
+  struct Phase {
+    QSemaphore entered;
+    QSemaphore release;
+    void hold() {
+      entered.release();
+      release.acquire();
+    }
+  };
+  auto metadata = std::make_shared<Phase>();
+  StitchingStillPreview preview(&host);
+  std::atomic<int> decodes{0};
+  StitchingStillPreviewTestAccess::observe(preview, [metadata] { metadata->hold(); }, [&] { ++decodes; });
+  preview.setSource(game.path());
+  const bool entered = wait_for([&] { return metadata->entered.tryAcquire(); });
+  if (!entered) {
+    metadata->release.release();
+    preview.setSource({});
+    require(false, "Reader did not enter the actual locked metadata section");
+  }
+  const auto cancelled = StitchingStillPreviewTestAccess::cancelled(preview);
+  bool owned_lock_at_cancel = false;
+  std::thread release_metadata([&] {
+    QElapsedTimer deadline;
+    deadline.start();
+    while (!cancelled() && deadline.elapsed() < 10000)
+      std::this_thread::yield();
+    if (cancelled()) {
+      auto other = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
+      owned_lock_at_cancel = other.ok() && !*other;
+    }
+    metadata->release.release();
+  });
+  QElapsedTimer drain;
+  drain.start();
+  preview.setSource({});
+  const auto drain_ns = drain.nsecsElapsed();
+  release_metadata.join();
+  require(owned_lock_at_cancel, "Cancellation must be exercised while this reader actually owns the artifact lock");
+  auto after = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
+  require(after.ok() && *after, "Clearing the source must release all reader artifact/config locks before returning");
+  after->reset();
+  require(
+      wait_for([&] { return !StitchingStillPreviewTestAccess::pending(preview); }), "Cancelled reader did not finish");
+  require(decodes == 0 && preview.isHidden(), "Cancelled metadata must not start decoding or paint a late still");
+  std::cout << "Own metadata cancellation drain: " << drain_ns << " ns\n";
+
+  // Hold a genuine decode after its metadata locks have gone. Both source
+  // cancellation and widget destruction must return while decoding is held.
+  auto decoding = std::make_shared<Phase>();
+  auto retired = std::make_unique<StitchingStillPreview>(&host);
+  StitchingStillPreviewTestAccess::observe(*retired, {}, [decoding] { decoding->hold(); });
+  retired->setSource(game.path());
+  const bool decode_entered = wait_for([&] { return decoding->entered.tryAcquire(); });
+  if (!decode_entered) {
+    decoding->release.release();
+    retired.reset();
+    require(false, "Reader did not enter its lock-free decode phase");
+  }
+  const auto worker = StitchingStillPreviewTestAccess::worker(*retired);
+  std::promise<void> cleared;
+  auto completed = cleared.get_future();
+  bool waited_for_decode = false;
+  std::thread watchdog([&] {
+    if (completed.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+      waited_for_decode = true;
+      decoding->release.release();
+    }
+  });
+  drain.restart();
+  retired->setSource({});
+  retired.reset();
+  const auto clear_ns = drain.nsecsElapsed();
+  cleared.set_value();
+  watchdog.join();
+  const bool decode_still_running = worker && worker->isRunning();
+  decoding->release.release();
+  require(!waited_for_decode && decode_still_running, "Clearing/destroying a still must never wait for image decoding");
+  require(wait_for([&] { return worker.isNull(); }), "Retired worker did not clean up safely after widget destruction");
+  std::cout << "Clear/destruction during held decode: " << clear_ns << " ns\n";
+
+  // An independent calibration owner still wins. The cancellation gate must
+  // not unlock, borrow or wait on that owner's artifact transaction.
+  auto writer = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
+  require(writer.ok() && *writer, "Cannot hold external writer fixture");
+  StitchingStillPreviewTestAccess::observe(preview, {}, {});
+  preview.setSource(game.path());
+  require(
+      wait_for([&] { return !StitchingStillPreviewTestAccess::pending(preview); }),
+      "Reader waited for external writer");
+  preview.setSource({});
+  require(preview.isHidden(), "Busy external generation must never display a still");
+  auto blocked = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
+  require(blocked.ok() && !*blocked, "Cancelling a reader must preserve external writer ownership");
+  writer->reset();
+}
+
+void exercise_pending_recovery() {
+  for (const auto kind :
+       {hm::stitching::TransactionJournalKind::kStitch, hm::stitching::TransactionJournalKind::kRink}) {
+    for (const bool legacy : {false, true}) {
+      QTemporaryDir game;
+      const QByteArray config = "hstream_ui: {stitching_calibration: {status: complete}}\n";
+      write(game.filePath("config.yaml"), config);
+      QImage image(32, 16, QImage::Format_RGB32);
+      image.fill(Qt::red);
+      require(image.save(game.filePath("s.png")), "Cannot save pending-recovery fixture");
+      const QString prefix = kind == hm::stitching::TransactionJournalKind::kStitch ? "stitch" : "rink";
+      const QString transaction = (legacy ? ".hstream-" : "hstream-") + prefix + "-Ab12CD";
+      require(QDir(game.path()).mkdir(transaction), "Cannot create transaction fixture");
+      const auto journal = QDir(game.filePath(transaction));
+      write(journal.filePath("journal_version"), "2\n");
+      write(journal.filePath("state"), "PREPARED\n");
+      write(journal.filePath("rollback-payload"), "must remain unopened and unchanged\n");
+      if (!legacy) {
+        require(
+            hm::stitching::mark_transaction_recovery_pending(game.path().toStdString(), kind).ok(),
+            "Cannot mark pending recovery");
+      }
+      auto advisory = hm::stitching::try_lock_canvas_constraint_snapshot(game.path().toStdString());
+      require(advisory.ok() && !*advisory, "Advisory reader must decline pending/legacy journals without recovery");
+      QWidget host;
+      host.resize(80, 40);
+      host.show();
+      StitchingStillPreview preview(&host);
+      std::atomic<int> metadata_reads{0}, decodes{0};
+      StitchingStillPreviewTestAccess::observe(preview, [&] { ++metadata_reads; }, [&] { ++decodes; });
+      preview.setSource(game.path());
+      require(
+          wait_for([&] { return !StitchingStillPreviewTestAccess::pending(preview); }),
+          "Advisory reader did not retire");
+      preview.setSource({});
+      require(
+          metadata_reads == 0 && decodes == 0 && preview.isHidden(), "Pending recovery must not enter metadata/decode");
+      QFile saved_config(game.filePath("config.yaml")), saved_state(journal.filePath("state"));
+      require(
+          saved_config.open(QIODevice::ReadOnly) && saved_config.readAll() == config,
+          "Optional still must not recover or alter the calibration config");
+      require(
+          saved_state.open(QIODevice::ReadOnly) && saved_state.readAll() == "PREPARED\n" &&
+              QFile::exists(journal.filePath("rollback-payload")),
+          "Optional still must leave journal and rollback payload for explicit recovery");
+    }
+  }
+}
+
+void exercise_advisory_generation() {
+  QTemporaryDir game;
+  const auto path = game.path().toStdString();
+  write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
+    write(game.filePath(name), "metadata fixture\n");
+  for (const char* name :
+       {"mapping_0000.tif",
+        "mapping_0000_x.tif",
+        "mapping_0000_y.tif",
+        "mapping_0001.tif",
+        "mapping_0001_x.tif",
+        "mapping_0001_y.tif"})
+    tiff_fixture(game.filePath(name));
+  QImage image(32, 16, QImage::Format_RGB32);
+  image.fill(Qt::red);
+  require(
+      image.save(game.filePath("seam_file.png")) && image.save(game.filePath("s.png")),
+      "Cannot save advisory identity fixture");
+  auto artifact_lock = hm::stitching::try_lock_canvas_constraint_snapshot(path);
+  require(artifact_lock.ok() && *artifact_lock, "Cannot hold advisory identity fixture");
+  const auto legacy = hm::stitching::stitch_artifact_snapshot_generation_id_locked(path);
+  require(
+      legacy.ok() && !QFile::exists(game.filePath("stitching_generation_id")),
+      "Legacy stat identity must remain read-only");
+  const auto published = hm::stitching::stitch_artifact_generation_id_locked(path);
+  require(published.ok(), "Cannot publish current identity fixture");
+  const auto current = hm::stitching::stitch_artifact_snapshot_generation_id_locked(path);
+  require(current.ok() && *current == *published, "Advisory identity must accept current metadata-bound generations");
+  QFile identity_file(game.filePath("stitching_generation_id"));
+  require(identity_file.open(QIODevice::ReadOnly), "Cannot read current identity fixture");
+  const QByteArray identity = identity_file.readAll();
+  identity_file.close();
+  write(game.filePath("autooptimiser_out.pto"), "changed metadata fixture\n");
+  const auto changed = hm::stitching::stitch_artifact_snapshot_generation_id_locked(path);
+  require(
+      !changed.ok() && identity_file.open(QIODevice::ReadOnly) && identity_file.readAll() == identity,
+      "Advisory identity must decline changed bindings without republishing them");
+  identity_file.close();
+  const auto bindings = hm::stitching::stitch_artifact_binding_revision_locked(path);
+  require(bindings.ok(), "Cannot read current fixture bindings");
+  const QByteArray version2 = "version=2\nlogical-size=" + QByteArray::number(published->size()) +
+      "\nbindings-size=" + QByteArray::number(bindings->size()) + '\n' + QByteArray::fromStdString(*published) +
+      QByteArray::fromStdString(*bindings);
+  write(game.filePath("stitching_generation_id"), version2);
+  const auto older = hm::stitching::stitch_artifact_snapshot_generation_id_locked(path);
+  require(!older.ok(), "Advisory reader must leave older identity upgrades to explicit validation");
+  artifact_lock->reset();
+  QWidget host;
+  host.resize(80, 40);
+  host.show();
+  StitchingStillPreview preview(&host);
+  std::atomic<int> decodes{0};
+  StitchingStillPreviewTestAccess::observe(preview, {}, [&] { ++decodes; });
+  preview.setSource(game.path(), QString::fromStdString(*published));
+  require(
+      wait_for([&] { return !StitchingStillPreviewTestAccess::pending(preview); }),
+      "Older identity reader did not retire");
+  preview.setSource({});
+  require(
+      decodes == 0 && preview.isHidden() && identity_file.open(QIODevice::ReadOnly) &&
+          identity_file.readAll() == version2,
+      "Optional still must not upgrade an older identity or start image decoding");
+}
+
 void exercise() {
   QTemporaryDir game;
   const QByteArray complete = "hstream_ui:\n  stitching_calibration:\n    status: complete\n";
@@ -159,6 +402,9 @@ void exercise() {
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
   try {
+    exercise_metadata_cancellation();
+    exercise_pending_recovery();
+    exercise_advisory_generation();
     exercise();
     if (argc == 2) {
       QWidget host;

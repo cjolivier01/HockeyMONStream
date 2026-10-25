@@ -39,6 +39,42 @@ bool exercise_marker_protocol(const fs::path& root, hm::stitching::TransactionJo
       final.ok() && !*final;
 }
 
+bool exercise_advisory_snapshot(const fs::path& parent, hm::stitching::TransactionJournalKind kind) {
+  const std::string name = kind == hm::stitching::TransactionJournalKind::kStitch ? "stitch" : "rink";
+  const fs::path root = parent / ("advisory-" + name);
+  fs::create_directory(root);
+  auto legacy = hm::stitching::transaction_snapshot_readable(root, kind);
+  bool ok = expect(legacy.ok() && *legacy, "Legacy completed roots without journals must allow advisory snapshots");
+  auto marked = hm::stitching::mark_transaction_recovery_pending(root, kind);
+  auto pending = hm::stitching::transaction_snapshot_readable(root, kind);
+  ok &= expect(marked.ok() && pending.ok() && !*pending, "Pending recovery must decline advisory reads");
+  ok &= expect(hm::stitching::complete_transaction_recovery(root, kind).ok(), "Cannot finish advisory marker fixture");
+  auto complete = hm::stitching::transaction_snapshot_readable(root, kind);
+  ok &= expect(complete.ok() && *complete, "Completed protocol roots must allow advisory snapshots");
+  const fs::path journal = root / ("hstream-" + name + "-ABC123");
+  fs::create_directory(journal);
+  std::ofstream(journal / "state") << "PREPARED\n";
+  const auto original_time = fs::last_write_time(journal / "state");
+  auto interrupted = hm::stitching::transaction_snapshot_readable(root, kind);
+  ok &= expect(
+      interrupted.ok() && !*interrupted && fs::exists(journal / "state") &&
+          fs::last_write_time(journal / "state") == original_time,
+      "Unmarked possible journals must remain untouched and require explicit recovery");
+  fs::remove_all(journal);
+  const fs::path marker = root / (".hstream-" + name + "-recovery-pending");
+  std::ofstream(root / "unrelated-empty-file");
+  fs::create_symlink(root / "unrelated-empty-file", marker);
+  auto linked = hm::stitching::transaction_snapshot_readable(root, kind);
+  ok &= expect(!linked.ok() && fs::is_symlink(marker), "Advisory snapshots must not follow recovery marker symlinks");
+  fs::remove(marker);
+  for (int index = 0; index < 4097; ++index)
+    std::ofstream(root / ("entry-" + std::to_string(index)));
+  auto bounded = hm::stitching::transaction_snapshot_readable(root, kind);
+  ok &= expect(bounded.ok() && !*bounded, "Advisory legacy/changed-directory inspection must have a fixed entry bound");
+  fs::remove_all(root);
+  return ok;
+}
+
 bool exercise_directory_removal_retry(const fs::path& root, const char* failure) {
   const fs::path directory = root / (std::string("removal-retry-") + failure);
   fs::create_directory(directory);
@@ -161,6 +197,9 @@ int main() {
   ok &= expect(
       exercise_marker_protocol(root, hm::stitching::TransactionJournalKind::kStitch),
       "stitch recovery markers must scan legacy/pending roots and skip steady-state roots");
+
+  ok &= exercise_advisory_snapshot(root, hm::stitching::TransactionJournalKind::kStitch);
+  ok &= exercise_advisory_snapshot(root, hm::stitching::TransactionJournalKind::kRink);
 
   ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   auto forced = hm::stitching::transaction_recovery_scan_required(root, hm::stitching::TransactionJournalKind::kRink);
