@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 #include "hstream/src/libs/recording/Database.h"
+#include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
@@ -313,6 +314,7 @@ StitchingExperimentSettings settings(const QJsonObject& object, const YAML::Node
   StitchingExperimentSettings result;
   auto effective = YAML::Clone(take(hm::baseline_config::load()).values);
   merge_settings(effective, source);
+  hm::stitching::PreserveLegacyInputLensSelection(effective, source);
   if (object.contains("camera")) {
     require(object.value("camera").isObject(), "Expected camera optics settings");
     const auto camera = object.value("camera").toObject();
@@ -326,7 +328,10 @@ StitchingExperimentSettings settings(const QJsonObject& object, const YAML::Node
       effective["stitching"].remove("input_lens");
       effective["stitching"].remove("camera_automation");
     }
-    merge_settings(effective["stitching"], YAML::Load(QJsonDocument(camera).toJson().toStdString()));
+    YAML::Node override;
+    override["stitching"] = YAML::Load(QJsonDocument(camera).toJson().toStdString());
+    merge_settings(effective, override);
+    hm::stitching::PreserveLegacyInputLensSelection(effective, override);
   }
   result.camera = take(hm::stitching::read_stitch_camera_selection(effective));
   if (object.contains("control_point_filtering")) {
@@ -522,7 +527,8 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
           settings(
               request.payload.value("settings").toObject(), YAML::LoadFile((request.game / "config.yaml").string())),
           sequence,
-          authorized_media));
+          authorized_media,
+          !request.payload.value("settings").toObject().value("camera").toObject().isEmpty()));
     } else {
       const auto saved = workspace(request);
       auto source = request;

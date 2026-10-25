@@ -162,6 +162,286 @@ def calibration_contract(binary, root):
         assert preview.stat().st_mtime_ns == identity
 
 
+def gopro_optics_movie():
+    """Bounded MP4/GPMF fixture shared in shape with VideoLensMetadataTest.cpp.
+
+    No encoded video is needed: candidate creation imports header metadata only.
+    Values describe the native test's convertible GoPro Mission 1 lens model.
+    """
+
+    def atom(name, payload):
+        return struct.pack(">I4s", len(payload) + 8, name.encode()) + payload
+
+    def tag(name, kind, payload, width=1):
+        value = name.encode() + kind.encode() + bytes([width])
+        value += struct.pack(">H", len(payload) // width) + payload
+        return value + b"\0" * (-len(value) % 4)
+
+    def floats(name, *values, width=4):
+        return tag(name, "f", struct.pack(">" + "f" * len(values), *values), width)
+
+    global_tags = b"".join(
+        [
+            tag("MINF", "c", b"MISSION 1 PRO"),
+            tag("PRJT", "F", b"GPRO", 4),
+            tag("EISA", "c", b"HS EIS"),
+            tag("HCTL", "c", b"Off"),
+            floats("ZOOM", 1),
+            tag("VFPS", "L", struct.pack(">II", 60000, 1001), 4),
+            tag("VRES", "L", struct.pack(">II", 7680, 4320), 4),
+        ]
+    )
+    lens = b"".join(
+        [
+            tag("DVID", "F", b"FOVL", 4),
+            tag("VFOV", "c", b"W"),
+            floats("ABSC", 0),
+            floats("MAPX", 1),
+            floats("MAPY", 1),
+            floats("ARUW", 1.77777779102325),
+            floats("ARWA", 1.77777779102325),
+            floats("XFOV", 120.000427246094),
+            floats("YFOV", 70.3657608032227),
+            floats("ZFOV", 135.511917114258),
+            floats("ZMPL", 0.476107776165009),
+            floats(
+                "POLY",
+                0,
+                2.67053532600403,
+                0.22922171652317,
+                -2.08499050140381,
+                1.64104437828064,
+                -7.24889386797406e-13,
+                4.47891317133589e-13,
+                0,
+                width=32,
+            ),
+            tag(
+                "PYCF",
+                "c",
+                b"".join(f"r{i}".encode().ljust(8, b"\0") for i in range(8)),
+                8,
+            ),
+        ]
+    )
+    stsd = bytearray(100)
+    stsd[12:16] = b"hvc1"
+    stsd[40:44] = struct.pack(">HH", 7680, 4320)
+    movie = atom(
+        "udta", atom("GPMF", tag("DEVC", "\0", global_tags) + tag("DEVC", "\0", lens))
+    )
+    movie += atom("trak", atom("mdia", atom("minf", atom("stbl", atom("stsd", stsd)))))
+    return atom("moov", movie)
+
+
+def automatic_experiment_optics_contract(binary, root):
+    lens = "  input_lens: {projection: rectilinear, optimization: fixed, distortion: [0, 0, 0], center_offset: [0, 0]}\n"
+    manual = "  camera_config: manual\n  camera_automation: {fov: false, lens: false}\n"
+    automatic = "  camera_config: auto\n  camera_automation: {fov: true, lens: true}\n"
+    frozen = "  auto_input_lens_frozen: true\n"
+
+    def create(name, source, override=None, metadata=True):
+        directory = root / name
+        directory.mkdir()
+        settings = {
+            "control_points": 100,
+            "frame_count": 1,
+            "stitch_frame_time": "00:00:00",
+        }
+        if override is not None:
+            settings["camera"] = override
+        path = request(directory, "experiment-create", {"settings": settings})
+        for side in ("cam1", "cam2"):
+            (directory / "game" / side).mkdir()
+            (directory / "game" / side / "clip.mp4").write_bytes(
+                gopro_optics_movie() if metadata else b"metadata unavailable"
+            )
+        (directory / "game/config.yaml").write_text(
+            "game:\n  videos:\n    left: [cam1/clip.mp4]\n    right: [cam2/clip.mp4]\n"
+            "hstream_ui:\n  video_roles:\n    left: [cam1/clip.mp4]\n    right: [cam2/clip.mp4]\n"
+            "stitching:\n  camera_fov: {horizontal_fov: 111, vertical_fov: 77}\n"
+            + lens
+            + source
+        )
+        run(binary, path)
+        candidate = json.loads((directory / "operation-result.json").read_text())[
+            "result"
+        ]["workspace"]
+        return directory, candidate
+
+    def imported(candidate):
+        camera = candidate["settings"]["camera"]
+        assert (
+            abs(camera["camera_fov"]["horizontal_fov"] - 125.12273264898) < 1e-6
+        ), camera
+        assert abs(camera["input_lens"]["distortion"][1] - 0.04057437656) < 1e-8, camera
+
+    # Initial Qt construction resolves unfrozen automatic sources. Explicit
+    # policy or profile edits refresh a frozen source just like its dialog.
+    _, fresh = create("auto-fresh", automatic)
+    imported(fresh)
+    _, policy = create(
+        "auto-policy",
+        manual + frozen,
+        {"camera_automation": {"fov": True, "lens": True}},
+    )
+    imported(policy)
+    directory, profile = create(
+        "auto-profile", manual + frozen, {"camera_config": "auto"}
+    )
+    imported(profile)
+    _, only_fov = create(
+        "auto-fov-only", manual + frozen, {"camera_automation": {"fov": True}}
+    )
+    fov_camera = only_fov["settings"]["camera"]
+    assert abs(fov_camera["camera_fov"]["horizontal_fov"] - 120.000427246094) < 1e-6
+    assert fov_camera["input_lens"]["distortion"] == [0, 0, 0]
+    _, only_lens = create(
+        "auto-lens-only", manual + frozen, {"camera_automation": {"lens": True}}
+    )
+    lens_camera = only_lens["settings"]["camera"]
+    assert lens_camera["camera_fov"] == {"horizontal_fov": 111, "vertical_fov": 77}
+    assert abs(lens_camera["input_lens"]["distortion"][1] - 0.04057437656) < 1e-8
+    _, optics_edit = create(
+        "auto-optics-edit",
+        automatic + frozen,
+        {"input_lens": {"optimization": "refine"}},
+    )
+    assert (
+        abs(
+            optics_edit["settings"]["camera"]["camera_fov"]["horizontal_fov"]
+            - 120.000427246094
+        )
+        < 1e-6
+    )
+    _, fallback = create(
+        "auto-fallback",
+        "  camera_config: manual\n  camera_automation: {fov: true, lens: true}\n"
+        "  camera_configs:\n    manual:\n      display_name: Test source profile\n"
+        "      horizontal_fov: 95\n      vertical_fov: 65\n"
+        "      input_lens: {projection: rectilinear, optimization: fixed, distortion: [0, 0.02, 0], center_offset: [0, 0]}\n",
+        metadata=False,
+    )
+    assert fallback["settings"]["camera"]["camera_fov"] == {
+        "horizontal_fov": 95,
+        "vertical_fov": 65,
+    }
+    assert fallback["settings"]["camera"]["input_lens"]["distortion"] == [0, 0.02, 0]
+    _, inherited = create("auto-inherited", automatic + frozen)
+    assert inherited["settings"]["camera"]["camera_fov"] == {
+        "horizontal_fov": 111,
+        "vertical_fov": 77,
+    }
+    _, legacy = create("auto-legacy-manual", "")
+    assert legacy["settings"]["camera"]["camera_config"] == "manual"
+    assert legacy["settings"]["camera"]["camera_fov"] == {
+        "horizontal_fov": 111,
+        "vertical_fov": 77,
+    }
+
+    # Saved descriptors never import MP4s again, even if the files or source
+    # config change. A fresh import here would replace the measured lens/FOV
+    # with profile defaults because neither camera still has usable metadata.
+    for side in ("cam1", "cam2"):
+        (directory / "game" / side / "clip.mp4").write_bytes(b"metadata unavailable")
+    game = directory / profile["game_directory"]
+    config = game / "config.yaml"
+    config.write_text(
+        config.read_text().replace(
+            "auto_input_lens_frozen: true", "auto_input_lens_frozen: false"
+        )
+    )
+    inspection = game / "calibration-frame-inspection" / profile["invalidation_id"]
+    inspection.mkdir(parents=True)
+    (inspection / "frames.yaml").write_text(
+        "version: 1\nexpected_pair_count: 1\ninvalidation_id: "
+        + profile["invalidation_id"]
+        + "\npairs:\n  - index: 0\n    left: {path: cam1/clip.mp4, source_seconds: 0}\n"
+        "    right: {path: cam2/clip.mp4, source_seconds: 0}\n"
+    )
+    for side in ("left", "right"):
+        (inspection / (side + "_0.jpg")).write_bytes(b"inspection-artifact-fixture")
+    (directory / "operation-result.json").unlink()
+    path = request(directory, "experiment-inspect", {"workspace": profile})
+    run(binary, path)
+    inspected = json.loads((directory / "operation-result.json").read_text())
+    assert inspected["result"]["workspace"]["settings"] == profile["settings"]
+
+
+def confined_experiment_optics_contract(binary, root):
+    """Rejected source paths must not be opened by automatic metadata import."""
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+    external = root / "unapproved-optics.mp4"
+    external.write_bytes(gopro_optics_movie())
+    for kind in ("playlist", "alias", "authorized"):
+        directory = root / ("optics-confined-" + kind)
+        directory.mkdir()
+        path = request(
+            directory,
+            "experiment-create",
+            {
+                "settings": {
+                    "control_points": 100,
+                    "frame_count": 1,
+                    "stitch_frame_time": "00:00:00",
+                    "camera": {"camera_config": "auto"},
+                }
+            },
+        )
+        for side in ("cam1", "cam2"):
+            (directory / "game" / side).mkdir()
+            media = directory / "game" / side / "clip.mp4"
+            if kind != "playlist":
+                media.symlink_to(external)
+            else:
+                media.write_bytes(gopro_optics_movie())
+        config = (
+            "game:\n  videos:\n    left: [cam1/clip.mp4]\n    right: [cam2/clip.mp4]\n"
+        )
+        if kind == "playlist":
+            config += f"hstream_ui:\n  video_roles:\n    left: [{external}]\n    right: [{external}]\n"
+        (directory / "game/config.yaml").write_text(config)
+        if kind == "authorized":
+            document = json.loads(path.read_text())
+            document["authorized_media"] = [str(external)]
+            path.write_text(json.dumps(document))
+        events = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        assert events >= 0, "Could not observe rejected metadata input"
+        try:
+            assert libc.inotify_add_watch(events, os.fsencode(external), 0x20) >= 0
+            run(binary, path, 0 if kind == "authorized" else 1)
+            receipt = json.loads((directory / "operation-result.json").read_text())
+            if kind == "authorized":
+                camera = receipt["result"]["workspace"]["settings"]["camera"]
+                assert (
+                    abs(camera["camera_fov"]["horizontal_fov"] - 125.12273264898) < 1e-6
+                )
+            else:
+                expected = (
+                    "Workspace input must be named inside its game"
+                    if kind == "playlist"
+                    else "not an authorized media input"
+                )
+                assert expected in receipt["error"], receipt
+            try:
+                observed = os.read(events, 4096)
+            except BlockingIOError:
+                observed = b""
+            if kind == "authorized":
+                assert (
+                    observed
+                ), "Authorized input was not imported through its private alias"
+            else:
+                assert (
+                    not observed
+                ), "Metadata importer opened an unauthorized source before rejection"
+        finally:
+            os.close(events)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
@@ -400,6 +680,8 @@ def main():
         failed = json.loads((experiments / "operation-result.json").read_text())
         assert failed["state"] == "failed" and not failed["artifacts"]
         assert "Native experiment process failed" in failed["error"], failed
+        automatic_experiment_optics_contract(args.binary, root)
+        confined_experiment_optics_contract(args.binary, root)
         if not args.gpu:
             print("Headless native validation/failed-receipt tests passed")
             return

@@ -98,7 +98,13 @@ Experiment settings use the desktop's canonical camera map: `camera` contains
 values inherit the selected source config over the bundled baseline; choosing a
 camera profile resets inherited FOV/lens values to that profile before applying
 explicit optics. Native `GameConfig` and `InputLens` readers validate these
-values. The returned workspace stores the complete camera selection, including
+values and preserve legacy manual selections. After source aliases and playlists
+are validated and linked into the private candidate, `ReadAutoInputLensForGame`
+imports metadata for automatic components, matching the Qt experiment dialog.
+Unedited frozen sources retain their snapshot; explicit profile, optics or policy
+edits refresh automatic components. Unavailable metadata uses the selected
+profile's fallback. Reopening a saved descriptor never rereads MP4 metadata.
+The returned workspace stores the complete camera selection, including
 nullable automation policies, and both filtering choices. Subsequent workers
 retain those frozen settings through inspection, solve, edit and promotion.
 The `experiment-optics-filtering-v1` capability is required by the web worker so

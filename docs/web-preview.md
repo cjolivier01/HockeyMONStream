@@ -1,5 +1,10 @@
 # WebRTC preview lifecycle
 
+The remaining work to share Qt's selectable preview routes and playback controls
+with the browser is described in [web-preview-parity-design.md](web-preview-parity-design.md).
+That design is proposed and unimplemented; the lifecycle below describes the
+current static WebRTC output.
+
 `WebRtcEndpoint` exposes stable RTP ghost pads for the video and audio branches.
 Each browser WebSocket receives a new inner `webrtcbin`, including fresh SDP,
 ICE and DTLS state. Reusing a previous transport after a browser reload is not
@@ -42,6 +47,9 @@ bazelisk run --config=opt //src/apps/apps-common:webrtc_preview_test_server -- 1
 Open `http://127.0.0.1:18080/`, verify moving video and audio, then reload or open a
 new browser session and verify playback again. The fixture generates CPU-only
 H.264 and Opus test media and uses the production signaling handlers. It requires
-the GStreamer OpenH264, Opus, WebRTC and libnice plugins. Press Enter in the server
+the GStreamer OpenH264, Opus, WebRTC, DTLS/SRTP and libnice plugins. A missing
+`libsrtp2.so` can leave the WebRTC plugin discoverable while negotiation fails;
+verify `gst-inspect-1.0 srtpenc` and `gst-inspect-1.0 srtpdec` on the compute host.
+Press Enter in the server
 terminal to exercise graceful stop. This fixture is test-only and is not part of
 the installed runtime.

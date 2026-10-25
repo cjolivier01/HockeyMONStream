@@ -2,6 +2,7 @@
 
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -912,7 +913,8 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     const fs::path& experiment_root,
     const StitchingExperimentSettings& settings,
     int sequence,
-    bool allow_linked_inputs) {
+    bool allow_linked_inputs,
+    std::optional<bool> refresh_camera_metadata = std::nullopt) {
   if (settings.control_point_matcher) {
     if (settings.control_point_matcher->empty())
       return absl::InvalidArgumentError("An explicit experiment control-point matcher must not be empty");
@@ -1022,6 +1024,17 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     if (linked.size() < 2)
       return absl::FailedPreconditionError("Stitching experiments require at least two camera videos");
     HM_RETURN_IF_ERROR(link_calibration_assets(source_game_directory, workspace_path, linked, allow_linked_inputs));
+    // Desktop callers already resolved their controls. Worker candidates must
+    // first bind authorized media, then import optics from those private aliases.
+    // A present false flag resolves unfrozen sources but honors a saved snapshot;
+    // true matches Qt's explicit-edit refresh of an existing frozen source.
+    if (refresh_camera_metadata.has_value() && frozen_settings.camera) {
+      auto metadata_config = YAML::Clone(config);
+      if (*refresh_camera_metadata)
+        metadata_config["stitching"].remove("auto_input_lens_frozen");
+      frozen_settings.camera =
+          hm::stitching::ReadAutoInputLensForGame(workspace_path, metadata_config, *frozen_settings.camera).camera;
+    }
     promote_generated_video_roles(config);
     const std::string invalidation_id = "stitch-experiment-" + std::to_string(::getpid()) + "-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(sequence);
@@ -1071,7 +1084,8 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStagedStitchingExperimentWork
     const fs::path& experiment_root,
     const StitchingExperimentSettings& settings,
     int sequence,
-    const std::vector<fs::path>& authorized_media) {
+    const std::vector<fs::path>& authorized_media,
+    bool refresh_camera_metadata) {
   try {
     if (authorized_media.size() > 10000)
       return absl::InvalidArgumentError("Too many authorized experiment inputs");
@@ -1088,7 +1102,7 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStagedStitchingExperimentWork
       if (!fs::is_regular_file(target) || !allowed.count(target))
         return absl::PermissionDeniedError("Staged experiment alias is not an authorized media input");
     }
-    return create_workspace(source_game_directory, experiment_root, settings, sequence, true);
+    return create_workspace(source_game_directory, experiment_root, settings, sequence, true, refresh_camera_metadata);
   } catch (const fs::filesystem_error& error) {
     return absl::InvalidArgumentError("Cannot validate staged experiment inputs: " + std::string(error.what()));
   }
