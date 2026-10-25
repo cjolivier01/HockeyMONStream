@@ -1036,6 +1036,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> suppressed_crop_rotation_controls_;
   QLabel* crop_rotation_explanation_{nullptr};
   QString saved_high_bit_depth_mode_{"auto"};
+  QString default_high_bit_depth_mode_;
   int saved_stitching_control_points_{0};
   int saved_stitching_calibration_frame_count_{0};
   int saved_stitch_max_output_width_{0};

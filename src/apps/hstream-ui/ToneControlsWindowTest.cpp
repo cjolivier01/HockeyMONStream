@@ -139,6 +139,12 @@ struct HStreamWindowTestAccess {
               !window.stitched_color_checkboxes_.at("Lift_Shadow_Black_Point")->isChecked(),
           "Program and Stitched tone controls diverged");
     }
+    window.setHighBitDepthMode("0");
+    window.resetCameraControls();
+    Check(window.highBitDepthMode() == "0", "Live Reset changed next-run precision");
+    Check(
+        window.stitched_color_checkboxes_.at("Use_10_Bit_Grading")->checkState() == Qt::Unchecked,
+        "Live Reset changed the mirrored next-run precision");
   }
 };
 

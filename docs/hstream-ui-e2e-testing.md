@@ -16,6 +16,16 @@ user defaults file; selecting a game keeps saving to its `config.yaml`.
 The application never writes the bundled baseline. The defaults path is fixed
 under `HOME`, independently of the `XDG_CONFIG_HOME` UI preference location.
 
+Program → Color and Stitched → Color & Precision share the three-state
+**10-bit / FP16 mode** checkbox. Click or Space cycles Auto, Force on, Force off,
+then Auto. Its default comes from `pipeline.hmstitcher.properties.high-bit-depth`
+in `configs/baseline.yaml`; account and game settings retain their usual
+precedence. Saving Auto over a forced default preserves an explicit Auto
+override. Precision changes apply to the next run; Reset Controls during live
+playback preserves that selection. `defaults_preset_test` checks mirrored
+cycling, custom baseline modes, saving/reloading Auto and Reset to Baseline;
+`tone_controls_window_test` checks live Reset preserves next-run precision.
+
 **Reset to Baseline** appears only for Defaults. It loads the baseline into the
 controls without changing files. Save Preset then writes an empty YAML map (`{}`)
 if no further edits were made; edits after Reset are saved as new overrides.

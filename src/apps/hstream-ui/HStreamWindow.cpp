@@ -5274,7 +5274,19 @@ void HStreamWindow::loadBaselineDefaults() {
   runtime_control_ack_timeout_ms_ = integer("hstream_ui.runtime_controls.ack_timeout_ms");
   if (runtime_control_debounce_ms_ <= 0 || runtime_control_ack_timeout_ms_ <= 0)
     throw std::runtime_error("Runtime control debounce and acknowledgment timeout must be positive");
-  camera_defaults_["Use_10_Bit_Grading"] = 0;
+  const YAML::Node precision_default = require("pipeline.hmstitcher.properties.high-bit-depth");
+  if (!precision_default.IsScalar())
+    throw std::runtime_error("Baseline high-bit-depth must be auto, true, false, 1, or 0");
+  const QString precision = QString::fromStdString(precision_default.as<std::string>()).trimmed().toLower();
+  if (precision == "auto")
+    default_high_bit_depth_mode_ = precision;
+  else if (precision == "true" || precision == "1")
+    default_high_bit_depth_mode_ = "1";
+  else if (precision == "false" || precision == "0")
+    default_high_bit_depth_mode_ = "0";
+  else
+    throw std::runtime_error("Baseline high-bit-depth must be auto, true, false, 1, or 0");
+  camera_defaults_["Use_10_Bit_Grading"] = default_high_bit_depth_mode_ == "1" ? 1 : 0;
   YAML::Node controls;
   if (lookup_yaml_path(user_layer_, "hstream_ui.camera_controls", &controls) && controls.IsMap()) {
     for (const auto& entry : controls) {
@@ -11301,7 +11313,7 @@ void HStreamWindow::updateDetectorPrecisionStatus() {
 QString HStreamWindow::highBitDepthMode() const {
   const auto checkbox = camera_checkboxes_.find("Use_10_Bit_Grading");
   if (checkbox == camera_checkboxes_.end() || !checkbox->second)
-    return "auto";
+    return default_high_bit_depth_mode_;
   if (checkbox->second->checkState() == Qt::Checked)
     return "1";
   if (checkbox->second->checkState() == Qt::Unchecked)
@@ -18633,7 +18645,8 @@ void HStreamWindow::resetCameraControls() {
     const auto checkbox = camera_checkboxes_.find(id);
     if (checkbox != camera_checkboxes_.end() && checkbox->second) {
       if (id == "Use_10_Bit_Grading") {
-        checkbox->second->setCheckState(Qt::PartiallyChecked);
+        if (!pipeline_running)
+          setHighBitDepthMode(default_high_bit_depth_mode_);
       } else {
         checkbox->second->setChecked(value != 0);
       }
@@ -19271,7 +19284,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       if (checkbox != camera_checkboxes_.end() && checkbox->second) {
         const bool blocked = checkbox->second->blockSignals(true);
         if (id == "Use_10_Bit_Grading") {
-          checkbox->second->setCheckState(Qt::PartiallyChecked);
+          setHighBitDepthMode(default_high_bit_depth_mode_);
         } else {
           checkbox->second->setChecked(value != 0);
         }
@@ -20453,6 +20466,7 @@ bool HStreamWindow::applySavedControlConfig(
     config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = use_high_bit_grading;
     mark_runtime_key("pipeline.hmstitcher.properties.high-bit-depth");
   } else if (
+      default_high_bit_depth_mode_ != "auto" ||
       lookup_yaml_path(user_layer_, "pipeline.hmstitcher.properties.high-bit-depth", nullptr) ||
       lookup_yaml_path(user_layer_, "hstream_ui.camera_controls.Use_10_Bit_Grading", nullptr)) {
     config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = "auto";
@@ -23250,7 +23264,8 @@ QCheckBox* HStreamWindow::addCameraCheckBox(
   const bool high_bit_depth_mode = id == "Use_10_Bit_Grading";
   if (high_bit_depth_mode) {
     checkbox->setTristate(true);
-    checkbox->setCheckState(Qt::PartiallyChecked);
+    checkbox->setCheckState(default_high_bit_depth_mode_ == "1" ? Qt::Checked
+        : default_high_bit_depth_mode_ == "0" ? Qt::Unchecked : Qt::PartiallyChecked);
   } else {
     checkbox->setChecked(checked);
   }
