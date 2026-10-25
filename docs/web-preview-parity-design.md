@@ -25,15 +25,15 @@ experiment-authoring, defaults, or alternate-backend ports.
 | Route activation | `src/apps/apps-common/PreviewRouteOwner.*` owns the active channel and a monotonically increasing operation generation. `PipelineApplication::set_preview_active_runtime()` delegates to it using the existing gates/renderers and retains Qt's acknowledgments. The private browser command additionally fences run/stage/topology and operation identity. |
 | Selected stream | `SelectedPreviewStream.*` isolates each route's caps, segment, flush and EOF and supplies one presentation clock. It retains the exact original GPU memory and source buffer, including native metadata and source PTS. The main-output route owns EOF. The private browser session registers this consumer after graph construction. |
 | Owned browser surface | `PreviewGpuSurface.*` fits the selected NVMM frame into a fixed RGBA GPU surface, applies a supplied painter, and bounds cadence and surface ownership using explicit caller configuration. Pool exhaustion drops preview frames while sources continue. CUDA-device input is currently required; Jetson surface-array and AMD consumers are not implemented. |
-| Encoded identity | `PreviewTransportFrames.*` bounds frame-to-RTP bookkeeping, independently fences peer and route operations, and rejects stale/delta output until an epoch's first keyframe. A separate bounded `PreviewPresentationHistory` admits exact client-reported receipts through the optional observer. The opt-in session connects this observer to native signaling; an actual Chromium test matches decoded callbacks. Authenticated deployment requires its companion gate. |
+| Encoded identity | `PreviewTransportFrames.*` bounds frame-to-RTP bookkeeping, independently fences peer and route operations, and rejects stale/delta output until an epoch's first keyframe. A separate bounded `PreviewPresentationHistory` admits exact client-reported receipts through the optional observer. Actual Chromium tests match decoded callbacks, including an authenticated local service run through the gateway and Slurm supervisor. |
 | Qt presentation | `src/apps/apps-common/HmGpuPreview.*` owns `hmpreviewisolation` and the x86 NVIDIA/OpenGL `hmgpupreviewsink`. The renderer reports readiness after presentation. `HStreamWindow` waits for matching channel/generation messages and handles retries and failures. |
 | Browser presentation | `create_webrtc_sink_bin()` in `src/apps/apps-common/deepstream_sink_bin.cpp` creates a separate H.264 encoder, RTP payloader, and `WebRtcEndpoint`. Ordinary WEBRTC output retains this static path. The explicit opt-in adopts one shared target with the native selectable routes instead. |
-| Private GPU target | `WebPreviewTarget.*` assembles the selector, owned CUDA surface, hardware H.264 encoder, RTP identity probes and stable endpoint. `PreviewTransportMonitor.*` bounds polled sender events. The GPU fixture uses this adapter; an optional `WebPreviewObserver` connects bounded metadata/receipt handling to the existing signaling server. Private native graph taps and decoded receipts exist. Complete overlay controls, audio timeline, seek and authenticated deployment remain unfinished. |
+| Private GPU target | `WebPreviewTarget.*` assembles the selector, owned CUDA surface, hardware H.264 encoder, RTP identity probes and stable endpoint. `PreviewTransportMonitor.*` bounds polled sender events. `WebPreviewObserver` connects bounded metadata/receipt handling to signaling. The local authenticated service has qualified Program/Stitched/source switching, Render off/on, reconnect and Stop. Native Player boxes, Play tracking and Rink mask controls share the Qt producer transaction and GPU painter; complete browser controls, synchronized audio and seek remain separate work. |
 | WebRTC lifecycle | `WebRtcEndpoint.*` retains stable RTP input pads while replacing the inner peer transport. Signaling callbacks are fenced by peer generation and run on their owning main context. Disconnected inputs drain without blocking processing. See [web-preview.md](web-preview.md). |
 | Main-window seek | `PipelineApp.cpp` permits local-render-only playback. It rejects network/file outputs, active telemetry capture, unavailable source duration, unsupported sources, and conflicting operations. Its source-replacement path retains the GPU processing graph and resets source/tracker state. Its failure and shutdown paths assume no network output. |
 | Main-window restart | `HStreamWindow::restartStage()` stops the current process, waits for cleanup/finalization, verifies the same game/run generation, then starts again. It is a supervisor operation, not a CLI stdin restart command. |
 | Frame stepping | The main Qt window has seek/jump controls. Exact frame stepping belongs to `CameraExperimentPreview`, which seeks a recorded frame index and confirms generation-matched presentation. It is not implemented by rounding an arbitrary seek to a nominal frame duration. |
-| Web runtime bridge | HockeyMONWeb's `tools/webapp/django_app/stream/interactive.py` validates owner/session-bound inspector commands and forwards finish/pause/resume. It does not yet admit preview-route/seek commands or consume their native acknowledgments. |
+| Web runtime bridge | HockeyMONWeb's `tools/webapp/django_app/stream/interactive.py` validates owner/session-bound inspector, tone and preview-route commands and forwards finish/pause/resume. Route activation and decoded presentation have separate confirmations. The operator-only `HSTREAM_SELECTABLE_PREVIEW=1` launch requires a compatible native capability; seek remains unavailable. |
 | AMD | Native AMD Program preview exists, but source/Stitched channels and WebRTC output remain gaps. The web must report the selected backend's actual capabilities. See [amd-gpu.md](amd-gpu.md). |
 
 Two tempting short changes are insufficient. Allowing `@set-preview-active`
@@ -110,17 +110,17 @@ must be reconciled with that source while preserving unrelated launch behavior.
 commands and draws them in GL. Those final GL overlays are not present in the
 ordinary WebRTC encoder input.
 
-Extract transport-independent overlay preparation from
-`collect_preview_overlays()` into shared native code. Reuse
+Shared `PreviewOverlayScene` preparation and the owned-surface
+`PreviewOverlayPainter` now reuse
 `src/libs/common/PreviewOverlayMeta.*`, `src/libs/draw_display/PlayerOverlays.*`,
 `RinkMiniMap.*`, and the portable `AnalyticsOverlay` compositor. The desktop GL
 adapter and browser GPU compositor must consume the same prepared drawing and
 coordinate transforms, including baked-layer suppression and stale geometry
 checks.
 
-The browser adapter must compose into an owned bounded preview surface. It may
+The browser adapter composes into an owned bounded preview surface. It does
 not mutate a borrowed processing/archive surface shared across a tee. Immutable
-metadata work is permitted; full-video readback is not required. Preserve the
+metadata work needs no full-video readback. Preserve the
 current generation fences, producer enablement, and backend-specific drawing
 availability. No archive diagnostics should appear merely because a preview tab
 or checkbox changed.
@@ -160,10 +160,10 @@ There are distinct completion points:
 
 An activated route is not yet visible video. Keep the browser preview covered
 until a current-generation frame is confirmed, so delayed old-route frames cannot
-appear under the new tab label. One possible browser presentation adapter uses a
+appear under the new tab label. The browser presentation adapter uses a
 bounded mapping from native frame identity to encoded RTP timestamp, then matches
-`requestVideoFrameCallback()` metadata. This mechanism still needs implementation
-and browser qualification. Feature-detect the required metadata; an ordinary
+`requestVideoFrameCallback()` metadata. This mechanism has passed both native
+fixture and authenticated GPU browser runs. Feature-detect the required metadata; an ordinary
 video `playing` event is insufficient evidence of frame identity. Sender readiness
 and client presentation must remain separately observable.
 
