@@ -224,6 +224,21 @@ the default of 20. Lowering it should be accompanied by inspection of
 `HSTREAM_UI_E2E_RECORD_MS` can extend the post-FPS recording interval; the
 default is 6000 ms.
 
+The complete fake-runner main-window comparison uses a screen large enough for
+its resize and composed native-control checks:
+
+```sh
+QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 2560x1600x24' \
+  bazel-bin/src/apps/hstream-ui/hstream_ui_test
+```
+
+The default 1280×1024 Xvfb screen clips the test's 1500-pixel-wide focused
+preview, so its top-right icon cannot appear in the captured image. The Bazel
+test uses `QT_QPA_PLATFORM=offscreen` for the non-X11 behavior checks. Set
+`HSTREAM_UI_TEST_DESTRUCTION_ONLY=1` to isolate active pipeline/finalizer and
+transient-process destruction; it verifies safe signal teardown and process reaping on either
+platform. Normal window closing still waits for the pipeline and publication.
+
 The focused native background regression runs with
 `QT_QPA_PLATFORM=xcb xvfb-run -a bazel-bin/src/apps/hstream-ui/native_preview_surface_test`.
 It paints stale native pixels, grows and shrinks the preview without new video,

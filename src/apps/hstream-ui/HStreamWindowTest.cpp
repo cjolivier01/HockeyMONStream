@@ -31,6 +31,7 @@
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
 #include <QtGui/QWindow>
+#include <QtTest/QSignalSpy>
 #include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
@@ -75,6 +76,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -87,6 +89,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -566,6 +569,10 @@ struct HStreamWindowTestAccess {
     window->pipeline_process_->waitForFinished(5000);
     delete window->pipeline_process_;
     window->pipeline_process_ = nullptr;
+  }
+
+  static QProcess* ownedProcess(HStreamWindow* window, bool finalizer) {
+    return finalizer ? window->archive_finalize_process_ : window->pipeline_process_;
   }
 
   static void toggleProcessPause(HStreamWindow* window) {
@@ -18454,6 +18461,42 @@ bool test_process_pause_protocol() {
   return true;
 }
 
+bool test_active_process_destruction() {
+  for (const QString& role : QStringList{"pipeline", "finalizer", "export"}) {
+    auto window = std::make_unique<HStreamWindow>();
+    QProcess* process = role == "export"
+        ? new QProcess(window.get())
+        : HStreamWindowTestAccess::ownedProcess(window.get(), role == "finalizer");
+    bool window_notified = false;
+    QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), window.get(), [&] {
+      window_notified = true;
+    });
+    QSignalSpy errors(process, &QProcess::errorOccurred);
+    QSignalSpy finished(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished));
+    // Keep the production pipeline/finalizer connections; the disconnected
+    // stub would miss their callbacks into a partially destroyed window. Also
+    // cover a transient process with the job exporter's ownership pattern.
+    process->start("sleep", {"120"});
+    if (!expect(process->waitForStarted(5000), "The destruction regression needs an active owned process"))
+      return false;
+    const qint64 pid = process->processId();
+    window.reset();
+    if (!expect(
+            !window_notified && errors.size() == 1 &&
+                errors.front().front().value<QProcess::ProcessError>() == QProcess::Crashed && finished.size() == 1,
+            "Destroying a window must safely terminate its active process without suppressing external observers"))
+      return false;
+#ifdef Q_OS_UNIX
+    errno = 0;
+    if (!expect(
+            ::kill(static_cast<pid_t>(pid), 0) == -1 && errno == ESRCH,
+            "Destroying a window must reap its active process"))
+      return false;
+#endif
+  }
+  return true;
+}
+
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
   // Read-only smoke for a saved game whose crop review should be deferred or
@@ -18553,6 +18596,10 @@ int main(int argc, char** argv) {
   }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_JOB_EXPORT_ONLY"))
     return test_job_export() ? 0 : 1;
+  if (!test_active_process_destruction())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_DESTRUCTION_ONLY"))
+    return 0;
   if (!test_process_pause_protocol()) {
     std::cerr << "test_process_pause_protocol failed\n";
     return 1;

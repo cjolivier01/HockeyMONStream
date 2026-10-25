@@ -5279,6 +5279,13 @@ void HStreamWindow::loadBaselineDefaults() {
 
 HStreamWindow::~HStreamWindow() {
   qApp->removeEventFilter(this);
+  // Normal closeEvent waits for playback and publication. If the window is
+  // destroyed directly, QProcess still kills/reaps its child, but may emit
+  // error/finished while QWidget is already deleting our controls. Disconnect
+  // these callbacks (including transient job exporters) before any members or
+  // child widgets lose their lifetime. Descendant dialogs own their processes.
+  for (QProcess* process : findChildren<QProcess*>(QString(), Qt::FindDirectChildrenOnly))
+    disconnect(process, nullptr, this, nullptr);
   if (telemetry_publication_worker_)
     telemetry_publication_worker_->wait();
   finishArchiveJobLog();
