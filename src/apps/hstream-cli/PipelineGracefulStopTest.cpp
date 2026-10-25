@@ -173,10 +173,46 @@ int run_chapter(bool wedged) {
   return held && advanced ? 0 : 1;
 }
 
-bool child_case(bool wedged, const char* seconds, bool should_exit, int expected_exit, bool chapter = false) {
+int run_paused_stop() {
+  g_setenv("HM_SHUTDOWN_WATCHDOG_SECONDS", "1", TRUE);
+  auto owned_app = std::make_unique<AppCtx>();
+  AppCtx& app = *owned_app;
+  // A real prerolling sink holds a buffer while PAUSED and cannot post EOS
+  // until playback resumes. Treat its EOS as required archive finalization,
+  // rather than accepting the display-only timeout fallback.
+  app.pipeline.pipeline = gst_parse_launch("fakesrc ! queue max-size-buffers=1 ! fakesink sync=false", nullptr);
+  app.config.num_sink_sub_bins = 1;
+  app.config.sink_bin_sub_bin_config[0].enable = TRUE;
+  app.config.sink_bin_sub_bin_config[0].type = NV_DS_SINK_ENCODE_FILE;
+  auto& sources = app.pipeline.multi_src_bin;
+  g_mutex_init(&sources.uri_playlist_barrier_mutex);
+  g_cond_init(&sources.uri_playlist_barrier_cond);
+  sources.uri_playlist_barrier_initialized = TRUE;
+  gst_element_set_state(app.pipeline.pipeline, GST_STATE_PAUSED);
+  GstState current = GST_STATE_NULL;
+  const auto ready = gst_element_get_state(app.pipeline.pipeline, &current, nullptr, 2 * GST_SECOND);
+  if (ready != GST_STATE_CHANGE_SUCCESS || current != GST_STATE_PAUSED)
+    return 1;
+  const bool stopped = stop_pipeline_gracefully(&app, 2 * GST_SECOND);
+  const bool finalized = app.eos_received && app.return_value == 0;
+  gst_object_unref(app.pipeline.pipeline);
+  g_cond_clear(&sources.uri_playlist_barrier_cond);
+  g_mutex_clear(&sources.uri_playlist_barrier_mutex);
+  if (!stopped || !finalized)
+    std::cerr << "Paused pipeline did not drain required EOS before stopping\n";
+  return stopped && finalized ? 0 : 1;
+}
+
+bool child_case(
+    bool wedged,
+    const char* seconds,
+    bool should_exit,
+    int expected_exit,
+    bool chapter = false,
+    bool paused = false) {
   const pid_t child = fork();
   if (child == 0) {
-    _exit(chapter ? run_chapter(wedged) : run_stop(wedged, seconds));
+    _exit(paused ? run_paused_stop() : (chapter ? run_chapter(wedged) : run_stop(wedged, seconds)));
   }
   if (child < 0) {
     return false;
@@ -226,10 +262,10 @@ bool asynchronous_resume_restores_monitoring() {
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
-  if (!child_case(false, "1", true, 0) || !child_case(true, "1", true, 70) || !child_case(true, "0", false, 0) ||
-      !child_case(false, "1", true, 0, true) || !child_case(true, "1", true, 70, true) ||
-      !asynchronous_resume_restores_monitoring()) {
-    std::cerr << "Graceful stop watchdog did not cover source retirement or honor its override\n";
+  if (!child_case(false, "1", true, 0, false, true) || !child_case(false, "1", true, 0) ||
+      !child_case(true, "1", true, 70) || !child_case(true, "0", false, 0) || !child_case(false, "1", true, 0, true) ||
+      !child_case(true, "1", true, 70, true) || !asynchronous_resume_restores_monitoring()) {
+    std::cerr << "Graceful stop did not drain paused EOS, cover source retirement, or honor its watchdog override\n";
     return 1;
   }
   return 0;
