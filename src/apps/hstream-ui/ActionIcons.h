@@ -37,6 +37,7 @@ enum class ActionIcon {
   Fit,
   ActualSize,
   Undo,
+  NewFolder,
   Count,
 };
 
@@ -83,6 +84,7 @@ inline constexpr auto kActionIconSpecs = std::array{
     ActionIconSpec{"fit", ActionIcon::Fit},
     ActionIconSpec{"actualsize", ActionIcon::ActualSize},
     ActionIconSpec{"undo", ActionIcon::Undo},
+    ActionIconSpec{"newfolder", ActionIcon::NewFolder},
 };
 static_assert(kActionIconSpecs.size() == static_cast<size_t>(ActionIcon::Count));
 

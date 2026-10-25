@@ -1099,6 +1099,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        ":action_icons",
         "//src/libs/player_analytics:config",
         "//src/libs/player_analytics:model_catalog",
         "//src/libs/player_analytics:model_contract",

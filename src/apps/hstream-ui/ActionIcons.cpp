@@ -300,6 +300,9 @@ QIcon action_icon(ActionIcon action) {
     case ActionIcon::Delete:
       standard = S::SP_TrashIcon;
       break;
+    case ActionIcon::NewFolder:
+      standard = S::SP_FileDialogNewFolder;
+      break;
     case ActionIcon::Open:
       standard = S::SP_DirOpenIcon;
       break;

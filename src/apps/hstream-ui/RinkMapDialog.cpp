@@ -546,7 +546,8 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent, Rin
   toolbar->addWidget(mask_);
   connect(mask_, &QPushButton::clicked, this, [this] { update(false, true); });
   toolbar->addWidget(stop_);
-  auto* fit = new QPushButton("Fit images");
+  auto* fit = new QPushButton(action_icon(ActionIcon::Fit), "Fit images");
+  fit->setObjectName("rinkMapFitImagesButton");
   toolbar->addWidget(fit);
   undo_ = new QPushButton(action_icon(ActionIcon::Undo), "Undo");
   undo_->setObjectName("rinkMapUndoButton");
