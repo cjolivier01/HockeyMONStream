@@ -6140,6 +6140,8 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
         });
     g_print("HSTREAM_PREVIEW_OVERLAY_STATE %s\n", reply.c_str());
     std::fflush(stdout);
+    if (overlay_query && web_preview_)
+      web_preview_->RefreshOverlayStatus(request->session);
     return true;
   }
   if (trimmed_line == "preview-route" || trimmed_line.rfind("preview-route ", 0) == 0) {

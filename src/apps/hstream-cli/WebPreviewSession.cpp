@@ -11,7 +11,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <mutex>
 #include <utility>
 
 namespace hm::preview {
@@ -37,25 +36,16 @@ struct WebPreviewSession::PaintState {
   std::shared_ptr<const pipeline_internal::PreviewOverlayCommand> overlays =
       std::make_shared<const pipeline_internal::PreviewOverlayCommand>();
   RouteOwner::Session session;
-  std::mutex artifact_mutex;
-  std::optional<WebPreviewOverlayArtifact> last_artifact, pending_artifact;
+  WebPreviewOverlayArtifactMailbox artifacts;
   void ReportArtifact(const FrameIdentityMeta& identity, uint64_t generation, bool ready, const char* reason) {
-    WebPreviewOverlayArtifact event{
-        session,
-        identity.operation,
-        generation,
-        identity.channel,
-        ready ? "ready" : "unavailable",
-        ready ? "" : reason};
-    // Paint calls are serialized by the target. The main-context consumer only
-    // exchanges the latest bounded status; it never waits on GPU or disk work.
-    if (last_artifact && last_artifact->operation == event.operation && last_artifact->generation == generation &&
-        last_artifact->channel == event.channel && last_artifact->status == event.status &&
-        last_artifact->reason == event.reason)
-      return;
-    last_artifact = event;
-    std::lock_guard<std::mutex> lock(artifact_mutex);
-    pending_artifact = std::move(event);
+    // The mailbox never waits on GPU or disk work and retains one status only.
+    artifacts.Publish(
+        {session,
+         identity.operation,
+         generation,
+         identity.channel,
+         ready ? "ready" : "unavailable",
+         ready ? "" : reason});
   }
   std::string game_dir, invalidation, mask_generation;
   unsigned mask_width{0}, mask_height{0}, mask_failures{0};
@@ -341,15 +331,20 @@ void WebPreviewSession::SetOverlays(pipeline_internal::PreviewOverlaySelection s
           pipeline_internal::PreviewOverlayCommand{generation, selection}));
 }
 
+void WebPreviewSession::RefreshOverlayStatus(const RouteOwner::Session& session) {
+  if (!available() || !(session == routes_.session()))
+    return;
+  paint_->artifacts.Replay(session);
+  DrainOverlayStatus();
+}
+
 void WebPreviewSession::DrainOverlayStatus() {
-  std::optional<WebPreviewOverlayArtifact> event;
-  {
-    std::lock_guard<std::mutex> lock(paint_->artifact_mutex);
-    event.swap(paint_->pending_artifact);
-  }
+  if (stopped_)
+    return;
   const auto selected = std::atomic_load(&paint_->overlays);
-  if (!event || stopped_ || !selected->selection.rink || event->generation != selected->generation ||
-      event->channel != routes_.selected_channel() || event->operation != routes_.operation_generation())
+  const auto event =
+      paint_->artifacts.Take(routes_.session(), routes_.operation_generation(), routes_.selected_channel(), *selected);
+  if (!event)
     return;
   // Control commands and this timer run on the same main context, so an event
   // cannot overtake the complete route/selection acknowledgment that owns it.

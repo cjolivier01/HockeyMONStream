@@ -7,6 +7,8 @@
 #include "absl/status/statusor.h"
 
 #include <cstdint>
+#include <mutex>
+#include <optional>
 #include <string>
 
 namespace hm::preview {
@@ -57,6 +59,23 @@ struct WebPreviewOverlayArtifact {
   std::string channel, status, reason;
 };
 std::string WebPreviewOverlayArtifactEvent(const WebPreviewOverlayArtifact& artifact);
+// Bounded producer-to-main-context status. Readback can replay the last status
+// after an acknowledgment was lost, without waiting for another painted frame.
+class WebPreviewOverlayArtifactMailbox {
+ public:
+  void Publish(WebPreviewOverlayArtifact artifact);
+  void Replay(const RouteOwner::Session& session);
+  std::optional<WebPreviewOverlayArtifact> Take(
+      const RouteOwner::Session& session,
+      uint64_t operation,
+      const std::string& channel,
+      const pipeline_internal::PreviewOverlayCommand& overlays);
+
+ private:
+  std::mutex mutex_;
+  std::optional<WebPreviewOverlayArtifact> last_, pending_;
+};
+
 std::string WebPreviewCapability(
     const WebPreviewOptions& options,
     const RouteOwner& owner,

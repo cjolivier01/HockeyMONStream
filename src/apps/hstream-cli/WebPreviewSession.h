@@ -24,6 +24,8 @@ class WebPreviewSession {
   ~WebPreviewSession();
   absl::Status Attach(const std::function<bool()>& reconcile_overlays);
   void SetOverlays(pipeline_internal::PreviewOverlaySelection selection, uint64_t generation);
+  // Called after publishing a matching query acknowledgment, including paused readback.
+  void RefreshOverlayStatus(const RouteOwner::Session& session);
   void Stop();
   std::string Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays) const;
   std::string Command(const RouteOwner::Request& request);

@@ -329,6 +329,36 @@ std::string ApplyWebPreviewOverlays(
   });
 }
 
+void WebPreviewOverlayArtifactMailbox::Publish(WebPreviewOverlayArtifact artifact) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (last_ && last_->session == artifact.session && last_->operation == artifact.operation &&
+      last_->generation == artifact.generation && last_->channel == artifact.channel &&
+      last_->status == artifact.status && last_->reason == artifact.reason)
+    return;
+  last_ = artifact;
+  pending_ = std::move(artifact);
+}
+
+void WebPreviewOverlayArtifactMailbox::Replay(const RouteOwner::Session& session) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (last_ && last_->session == session)
+    pending_ = last_;
+}
+
+std::optional<WebPreviewOverlayArtifact> WebPreviewOverlayArtifactMailbox::Take(
+    const RouteOwner::Session& session,
+    uint64_t operation,
+    const std::string& channel,
+    const pipeline_internal::PreviewOverlayCommand& overlays) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::optional<WebPreviewOverlayArtifact> artifact;
+  artifact.swap(pending_);
+  if (!artifact || !overlays.selection.rink || !(artifact->session == session) ||
+      artifact->generation != overlays.generation || artifact->operation != operation || artifact->channel != channel)
+    return std::nullopt;
+  return artifact;
+}
+
 std::string WebPreviewOverlayArtifactEvent(const WebPreviewOverlayArtifact& artifact) {
   return Serialize([&](JsonBuilder* builder) {
     Identity(builder, artifact.session, artifact.operation, artifact.channel);

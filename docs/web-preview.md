@@ -195,6 +195,10 @@ status transitions, retaining one pending event. A main-context timer drains it
 after command acknowledgments and discards retired route/selection epochs.
 Stop removes that timer before retiring the graph. Missing assets fail closed
 and bounded retries can publish recovery without changing checkbox selection.
+A matching readback query republishes the latest status after its full-state
+reply, including while paused; this recovers a status discarded when the prior
+mutation acknowledgment was lost. Replayed status keeps the same route and
+selection fences and cannot revive a retired or disabled mask.
 
 Qt and the browser register the same dsplaytracker producer or bounded fallback
 snapshot probe. Route selection reconciles producer flags before opening gates;

@@ -236,5 +236,44 @@ int main() {
           std::string(json_object_get_string_member(object, "channel")) == "stitched",
       "Artifact event lost route/selection identity or initial generation");
   g_object_unref(parser);
+  // Losing the mutation acknowledgment can discard the first artifact status
+  // at the outer bridge. Query recovery must republish it even with no new frame.
+  hm::preview::WebPreviewOverlayArtifactMailbox mailbox;
+  const hm::preview::WebPreviewOverlayArtifact unavailable{
+      overlay->session, 2, 1, "stitched", "unavailable", "Rink mask overlay unavailable"};
+  hm::pipeline_internal::PreviewOverlayCommand selected{1, {false, false, true}};
+  const auto take = [&]() { return mailbox.Take(overlay->session, 2, "stitched", selected); };
+  mailbox.Publish(unavailable);
+  Check(take().has_value(), "First mask status was lost");
+  mailbox.Publish(unavailable);
+  Check(!take(), "Unchanged painted frames duplicated mask status");
+  mailbox.Replay(overlay->session);
+  const auto recovered = take();
+  Check(recovered && recovered->reason == unavailable.reason, "Query could not recover unchanged unavailable mask");
+  auto retired_session = overlay->session;
+  retired_session.topology = 1;
+  mailbox.Replay(retired_session);
+  Check(!take(), "Stale query republished mask status");
+  mailbox.Replay(overlay->session);
+  Check(!mailbox.Take(retired_session, 2, "stitched", selected), "Retired topology exposed old mask status");
+  mailbox.Replay(overlay->session);
+  Check(!mailbox.Take(overlay->session, 3, "stitched", selected), "New route operation exposed old mask status");
+  mailbox.Replay(overlay->session);
+  Check(!mailbox.Take(overlay->session, 2, "program", selected), "New channel exposed old mask status");
+  mailbox.Replay(overlay->session);
+  selected.generation = 2;
+  Check(!take(), "New overlay generation exposed old mask status");
+  selected.generation = 1;
+  selected.selection.rink = false;
+  mailbox.Replay(overlay->session);
+  Check(!take(), "Disabled rink overlay exposed old mask status");
+  selected.selection.rink = true;
+  auto ready = unavailable;
+  ready.status = "ready";
+  ready.reason.clear();
+  mailbox.Publish(ready);
+  Check(take()->status == "ready", "Recovery did not replace unavailable mask status");
+  mailbox.Replay(overlay->session);
+  Check(take()->status == "ready", "Query replayed an older unavailable status");
   return 0;
 }
