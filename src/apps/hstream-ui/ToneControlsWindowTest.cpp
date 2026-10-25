@@ -70,7 +70,8 @@ struct HStreamWindowTestAccess {
         shadows->value() == 35 && exposure->value() == 61 && black->isChecked(),
         "Qt tone widgets ignored the resolved baseline/user overlay");
     Check(
-        window.runtime_control_debounce_ms_ == 180 && window.runtimeControlAckTimeoutMs() == 4000,
+        window.runtime_control_debounce_ms_ == 180 && window.runtimeControlAckTimeoutMs() == 4000 &&
+            window.pipeline_stop_timeout_ms_ == 31000 && window.pipeline_kill_timeout_ms_ == 6000,
         "Qt runtime timers ignored the resolved baseline/user overlay");
     Check(shadows->minimum() == 0 && shadows->maximum() == 100, "Qt shadow bounds changed");
     Check(exposure->minimum() == 0 && exposure->maximum() == 130, "Qt exposure bounds changed");
@@ -162,7 +163,8 @@ int main(int argc, char** argv) {
     overlay.write(
         "hstream_ui:\n  camera_controls:\n    Bring_Up_Shadows: 35\n"
         "    Lift_Shadow_Black_Point: 1\n    Exposure_x100: 61\n"
-        "  runtime_controls:\n    debounce_ms: 180\n    ack_timeout_ms: 4000\n");
+        "  runtime_controls:\n    debounce_ms: 180\n    ack_timeout_ms: 4000\n"
+        "    stop_timeout_ms: 31000\n    kill_timeout_ms: 6000\n");
     overlay.close();
     Check(QDir().mkpath(games.filePath("tone-fixture")), "Cannot create the fixture game");
     QApplication app(argc, argv);

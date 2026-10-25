@@ -246,12 +246,6 @@ constexpr int kMinimumReasonableStitchMaxOutputWidth = 4096;
 constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
-// How long SIGINT gets before we SIGKILL the pipeline. Sized to outlast the
-// CLI's own shutdown watchdog (kShutdownWatchdogGraceUs in deepstream_app.cpp,
-// which hard-exits around 13 s after the stop request) so a wedged teardown
-// reports which thread stalled instead of dying anonymously here. Costs
-// nothing on a healthy stop: waitForFinished returns as soon as it exits.
-constexpr int kPipelineTerminateGraceMs = 30000;
 constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
 constexpr char kUiDirectoryName[] = "hstream-ui";
 constexpr char kLegacyUiDirectoryName[] = ".hstream-ui";
@@ -5273,8 +5267,11 @@ void HStreamWindow::loadBaselineDefaults() {
   }
   runtime_control_debounce_ms_ = integer("hstream_ui.runtime_controls.debounce_ms");
   runtime_control_ack_timeout_ms_ = integer("hstream_ui.runtime_controls.ack_timeout_ms");
-  if (runtime_control_debounce_ms_ <= 0 || runtime_control_ack_timeout_ms_ <= 0)
-    throw std::runtime_error("Runtime control debounce and acknowledgment timeout must be positive");
+  pipeline_stop_timeout_ms_ = integer("hstream_ui.runtime_controls.stop_timeout_ms");
+  pipeline_kill_timeout_ms_ = integer("hstream_ui.runtime_controls.kill_timeout_ms");
+  if (runtime_control_debounce_ms_ <= 0 || runtime_control_ack_timeout_ms_ <= 0 || pipeline_stop_timeout_ms_ <= 0 ||
+      pipeline_kill_timeout_ms_ <= 0)
+    throw std::runtime_error("Runtime control and process stop timeouts must be positive");
   const YAML::Node precision_default = require("pipeline.hmstitcher.properties.high-bit-depth");
   if (!precision_default.IsScalar())
     throw std::runtime_error("Baseline high-bit-depth must be auto, true, false, 1, or 0");
@@ -12093,7 +12090,7 @@ void HStreamWindow::stopPipeline() {
 #endif
       pipeline_process_->terminate();
   }
-  if (!pipeline_process_->waitForFinished(kPipelineTerminateGraceMs)) {
+  if (!pipeline_process_->waitForFinished(pipeline_stop_timeout_ms_)) {
     appendLog("pipeline did not exit after terminate; killing");
 #ifdef Q_OS_UNIX
     if (pid > 0 && pipeline_uses_process_group_) {
@@ -12101,7 +12098,7 @@ void HStreamWindow::stopPipeline() {
     }
 #endif
     pipeline_process_->kill();
-    if (!pipeline_process_->waitForFinished(5000)) {
+    if (!pipeline_process_->waitForFinished(pipeline_kill_timeout_ms_)) {
       appendLog("pipeline still running after kill");
     }
   }
