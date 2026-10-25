@@ -283,6 +283,9 @@ final GPU resize. It uses a bounded NVMM output pool and a device-to-device copy
 so a tee's clean input and desktop previews cannot be modified. Software encoder
 branches draw before their existing GPU-to-system-memory converter. CUDA work
 completes before the encoder or Jetson EGL consumer takes the frame.
+Raw Stitched recordings branch off before tracking, so their map shows only the
+rink outline, including when a Program recording runs alongside them. Program
+recordings include tracked-player dots.
 
 AMD inserts the same element after `hmamdcrop`, before the render graph's
 completion sink retains the surface. Only selected archive renders carry map
@@ -294,7 +297,9 @@ this change adds no new network protocol or inference implementation.
 Regression checks: `//src/gst-plugins/gst-rink-map:rink_map_test`,
 `rink_map_gpu_test`, `//src/libs/draw_display:rink_mini_map_test` (NVIDIA adapter),
 `//src/gst-plugins/gst-amd-program:element_test`, and
-`//src/apps/hstream-ui:defaults_preset_test`. The GPU test runs on both CUDA and
+`//src/apps/hstream-ui:defaults_preset_test`. The CLI's `output_rink_map_test`
+covers Stitched-only setup and hardware/software/demux encoder routing.
+The GPU test runs on both CUDA and
 HIP, checks P010 pixels at 720p and 4K, verifies clean shared NVIDIA inputs,
 preserves timestamps and exercises stale calibration and EOS. Readback exists
 only in that test's pixel assertions.
