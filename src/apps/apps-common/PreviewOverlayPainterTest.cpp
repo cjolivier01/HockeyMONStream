@@ -179,6 +179,26 @@ void RequiredWatermark() {
       result.status == p::PreviewPaintStatus::kOverlaySuppressed && result.overlay_status == a::RenderStatus::kCapacity,
       "optional command overflow not reported");
   Check(surface.Read() == actual, "optional overlay capacity suppressed required watermark");
+
+  // 4097 rectangles exceed the 8192-triangle command budget before rendering.
+  // This CPU preparation limit must have the same optional-layer semantics as
+  // the GPU tile/reference limit checked above.
+  scene.paths.assign(
+      a::kMaximumCommands / 2 + 1,
+      p::OverlayPath{{{20, 20}, {100, 20}, {100, 100}, {20, 100}}, {0, 1, 0, 1}, 1, true, true});
+  surface.Reset();
+  result = painter.Paint(surface.image, scene, empty, options, surface.stream);
+  Check(
+      result.status == p::PreviewPaintStatus::kOverlaySuppressed && result.overlay_status == a::RenderStatus::kCapacity,
+      "optional path preparation overflow not reported");
+  Check(surface.Read() == actual, "optional path preparation capacity suppressed required watermark");
+
+  scene.paths.push_back({{{0, 0}, {640, 360}}, {1, 1, 1, 1}, 3, false, false});
+  surface.Reset();
+  result = painter.Paint(surface.image, scene, empty, options, surface.stream);
+  Check(
+      result.status == p::PreviewPaintStatus::kUnqualifiedStroke, "path overflow hid a subsequent unqualified stroke");
+  Check(surface.Read() == surface.original, "stroke after path overflow did not reject before GPU writes");
 }
 } // namespace
 int main() {

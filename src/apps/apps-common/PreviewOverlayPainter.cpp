@@ -123,6 +123,7 @@ PreviewPaintResult PreviewOverlayPainter::Paint(
   const bool diagnostics =
       scene.diagnostic_coordinates_valid && (options.channel != "program" || scene.program_transform.has_value());
   state.path_commands.Clear();
+  bool path_capacity_exceeded = false;
   // Metadata collection emits convex rectangles, circle fans and arrowheads.
   // Reject all unqualified strokes before any GPU pass, rather than silently
   // replacing Qt's display-pixel aliased lines with source-space rounded lines.
@@ -138,6 +139,13 @@ PreviewPaintResult PreviewOverlayPainter::Paint(
       for (size_t i = 2; i < path.points.size(); ++i) {
         const auto& previous = path.points[i - 1];
         const auto& next = path.points[i];
+        if (state.path_commands.size() == a::kMaximumCommands) {
+          // Suppress the entire optional path pass, but keep validating every
+          // remaining path before any GPU writes. Reuse bounded command storage
+          // so later invalid geometry or unqualified strokes still fail closed.
+          path_capacity_exceeded = true;
+          state.path_commands.Clear();
+        }
         if (!state.path_commands.AddTriangle(
                 first.x,
                 first.y,
@@ -149,6 +157,11 @@ PreviewPaintResult PreviewOverlayPainter::Paint(
           return invalid();
       }
     }
+  }
+  if (path_capacity_exceeded) {
+    state.path_commands.Clear();
+    result.status = PreviewPaintStatus::kOverlaySuppressed;
+    result.overlay_status = a::RenderStatus::kCapacity;
   }
   state.watermark_commands.Clear();
   if (options.channel == "stitched" &&
