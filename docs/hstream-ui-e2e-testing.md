@@ -9,6 +9,33 @@ takes precedence over this preference, followed by `paths.game-root` in the
 shared `~/.hstream/hstream.yaml` configuration and finally `~/Videos`.
 An explicit choice in the UI applies immediately to that window and its runner.
 
+The **Existing** dropdown also contains **Defaults**. Selecting it loads the
+bundled `configs/baseline.yaml` overlaid by `~/.config/hstream-ui/defaults.yaml`,
+without a game's settings or recording metadata. **Save Preset** writes that
+user defaults file; selecting a game keeps saving to its `config.yaml`.
+The application never writes the bundled baseline. The defaults path is fixed
+under `HOME`, independently of the `XDG_CONFIG_HOME` UI preference location.
+
+**Reset to Baseline** appears only for Defaults. It loads the baseline into the
+controls without changing files. Save Preset then writes an empty YAML map (`{}`)
+if no further edits were made; edits after Reset are saved as new overrides.
+Playback and game-specific actions require selecting a game.
+
+Both NVIDIA and AMD loaders apply baseline, existing `~/.hstream/hstream.yaml`
+preferences, UI defaults, and game configuration in that order, followed by
+explicit launch overrides. Existing legacy preferences remain supported; the
+Defaults editor and Reset show the bundled baseline, not legacy preferences.
+Missing defaults mean no overrides. Invalid defaults fail with their source path
+instead of silently falling back. Native tracker tuning uses immutable generated
+tracker files alongside the defaults, referenced by absolute path so it works
+for every game; these are never written into the bundled configuration.
+
+Focused checks: `bazelisk test //src/apps/hstream-ui:defaults_preset_test
+//src/apps/hstream-cli:configurator_persistence_test
+//src/libs/program:launch_config_test` covers selection, save/reopen, game
+precedence, color and calibration controls, reset/save, baseline preservation,
+and the shared NVIDIA/AMD configuration paths.
+
 In Video Sets, **Browse** selects one or more files for the chosen camera role.
 **Add** imports that selection (or a typed path); with no selection it opens the
 same multi-file browser. Successful imports clear the selection. Both buttons

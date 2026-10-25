@@ -363,6 +363,10 @@ class HStreamWindow : public QMainWindow {
   void restartStage();
   void maybeStartDeferredRestart();
   bool savePreset(bool require_rink_framing_ready = false, QString* validation_error = nullptr);
+  QString controlConfigDirectory() const;
+  bool saveDefaultsPreset();
+  void selectDefaults();
+  void resetDefaultsToBaseline();
   void saveJobScript();
   void resetCameraControls();
   void cleanStitchingCalibration();
@@ -539,7 +543,7 @@ class HStreamWindow : public QMainWindow {
       const QString& game_dir) const;
   std::map<QString, double> readPlayerSizeControls(
       const YAML::Node& game_config, bool inherited, QString* native_error = nullptr) const;
-  void loadSavedControlConfig();
+  void loadSavedControlConfig(bool baseline_only = false);
   bool ensureSavedControlConfigLoaded();
   bool sendLiveCameraControl(const QString& id, double value);
   bool publishRuntimeControlBatch(
@@ -980,6 +984,12 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> stitched_color_value_labels_;
   QLabel* stitched_color_precision_status_{nullptr};
   std::map<QString, double> camera_defaults_;
+  bool editing_defaults_{false};
+  bool building_defaults_template_{false};
+  bool defaults_reset_pending_{false};
+  bool defaults_save_retry_{false};
+  YAML::Node defaults_template_;
+  QPushButton* reset_defaults_button_{nullptr};
   YAML::Node baseline_config_;
   // Keep explicit layers separate for settings with canonical/native alias precedence.
   YAML::Node baseline_layer_;

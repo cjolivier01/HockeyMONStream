@@ -1132,3 +1132,12 @@ and processes 12 frames with the minimum two-frame pool in both FAKE and HEVC
 archive modes; the archive fully decodes. Settings regressions cover zero,
 one and two frames on native and HIP builds. ARM64/Jetson validation retains
 the documented missing host/sysroot and unreachable `stubby`.
+
+### Editable desktop defaults
+
+The shared desktop Defaults selector saves `~/.config/hstream-ui/defaults.yaml`.
+AMD `LoadProgramLaunchConfig` consumes it through the same per-user loader as
+NVIDIA, below game overrides. Reset to Baseline stages the bundled controls and
+Save Preset clears the overlay. This changes configuration only; GPU frame
+ownership and preview transfers are unchanged. `launch_config_test` covers
+inheritance, game precedence, empty defaults, and invalid-file rejection.

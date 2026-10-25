@@ -3883,6 +3883,31 @@ YAML::Node merge_yaml_maps(const YAML::Node& base, const YAML::Node& overlay) {
   return result;
 }
 
+// Remove equal leaves and empty maps, preserving explicit nulls and sequences.
+YAML::Node preset_difference(const YAML::Node& values, const YAML::Node& baseline) {
+  YAML::Node result(YAML::NodeType::Map);
+  for (const auto& entry : values) {
+    const auto key = entry.first.as<std::string>();
+    YAML::Node reference(YAML::NodeType::Undefined);
+    if (baseline.IsMap()) {
+      for (const auto& candidate : baseline) {
+        if (candidate.first.as<std::string>() == key) {
+          reference.reset(candidate.second);
+          break;
+        }
+      }
+    }
+    if (entry.second.IsMap()) {
+      auto child = preset_difference(entry.second, reference);
+      if (child.size())
+        result[key] = child;
+    } else if (!reference.IsDefined() || YAML::Dump(entry.second) != YAML::Dump(reference)) {
+      result[key] = YAML::Clone(entry.second);
+    }
+  }
+  return result;
+}
+
 bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
   if (!parent.IsMap()) {
     return false;
@@ -4936,7 +4961,9 @@ void HStreamWindow::loadBaselineDefaults() {
   const auto loaded = hm::baseline_config::load();
   if (!loaded.ok())
     throw std::runtime_error(loaded.status().ToString());
-  const auto user_overlay = hm::user_config::load_or_create();
+  const auto user_overlay =
+      (editing_defaults_ ? absl::StatusOr<YAML::Node>(YAML::Node(YAML::NodeType::Map))
+                         : hm::user_config::load_or_create());
   if (!user_overlay.ok())
     throw std::runtime_error(user_overlay.status().ToString());
   baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
@@ -5208,6 +5235,14 @@ void HStreamWindow::loadBaselineDefaults() {
   camera_defaults_["Lift_Shadow_Black_Point"] = 0;
   camera_defaults_["Exposure_x100"] = 0;
   camera_defaults_["Use_10_Bit_Grading"] = 0;
+  YAML::Node controls;
+  if (lookup_yaml_path(user_layer_, "hstream_ui.camera_controls", &controls) && controls.IsMap()) {
+    for (const auto& entry : controls) {
+      const QString id = QString::fromStdString(entry.first.as<std::string>());
+      if (camera_defaults_.count(id))
+        camera_defaults_[id] = entry.second.as<double>();
+    }
+  }
 }
 
 HStreamWindow::~HStreamWindow() {
@@ -6128,6 +6163,12 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   save_preset_button_->setObjectName("savePresetButton");
   auto* reset = new QPushButton(action_icon(ActionIcon::Reset), "Reset Controls");
   reset->setObjectName("resetCameraButton");
+  reset_defaults_button_ = new QPushButton(action_icon(ActionIcon::Reset), "Reset to Baseline");
+  reset_defaults_button_->setObjectName("resetDefaultsButton");
+  reset_defaults_button_->setToolTip(
+      "Load the bundled baseline without saving. Save Preset to clear your defaults overrides.");
+  reset_defaults_button_->setVisible(false);
+  connect(reset_defaults_button_, &QPushButton::clicked, this, [this]() { resetDefaultsToBaseline(); });
   stop_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), "Stop");
   stop_button_->setObjectName("stopPipelineButton");
 
@@ -6316,6 +6357,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   action_bar->addWidget(restart);
   action_bar->addWidget(save_preset_button_);
   action_bar->addWidget(reset);
+  action_bar->addWidget(reset_defaults_button_);
   action_bar->addWidget(stop_button_);
   root->addLayout(status_bar);
   root->addLayout(action_bar);
@@ -6381,16 +6423,33 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
 
   game_selector_ = new QComboBox();
   game_selector_->setObjectName("gameSelector");
-  connect(game_selector_, &QComboBox::currentTextChanged, this, [this](const QString& game_id) {
-    if (!game_id.isEmpty() && game_id != game_id_edit_->text()) {
-      selectGame(game_id);
-    }
+  connect(game_selector_, &QComboBox::currentIndexChanged, this, [this](int index) {
+    if (index < 0)
+      return;
+    if (game_selector_->itemData(index).toBool())
+      selectDefaults();
+    else
+      selectGame(game_selector_->itemText(index));
   });
 
   game_id_edit_ = new QLineEdit();
   game_id_edit_->setObjectName("gameIdEdit");
   game_id_edit_->setPlaceholderText("game-id");
   connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() {
+    if (editing_defaults_ && !game_id_edit_->text().trimmed().isEmpty()) {
+      editing_defaults_ = false;
+      defaults_reset_pending_ = false;
+      defaults_save_retry_ = false;
+      reset_defaults_button_->setVisible(false);
+      const QSignalBlocker selector_blocker(game_selector_);
+      game_selector_->setCurrentIndex(-1);
+      try {
+        loadBaselineDefaults();
+      } catch (const std::exception& error) {
+        saved_control_config_load_error_ = QString::fromUtf8(error.what());
+        appendLog(saved_control_config_load_error_);
+      }
+    }
     rink_map_run_message_.clear();
     rink_map_status_generation_ = 0;
     if (rink_framing_controls_)
@@ -8013,11 +8072,13 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
   }
   YAML::Node effective = YAML::Clone(baseline_config_);
   const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
-  auto saved = hm::stitching::load_game_config_file(game / "config.yaml");
+  auto saved = editing_defaults_ ? absl::StatusOr<std::optional<YAML::Node>>(std::optional<YAML::Node>{})
+                                 : hm::stitching::load_game_config_file(game / "config.yaml");
   if (saved.ok() && saved->has_value())
     effective = merge_yaml_maps(effective, **saved);
   effective["stitching"].remove("auto_input_lens_frozen");
-  const auto resolved = !saved.ok() && (camera.automatic_fov() || camera.automatic_lens())
+  const auto resolved = editing_defaults_ ? hm::stitching::AutoInputLensResult{camera, "Defaults (not read from MP4)"}
+      : !saved.ok() && (camera.automatic_fov() || camera.automatic_lens())
       ? hm::stitching::AutoInputLensResult{camera, "Auto unavailable: " + saved.status().ToString()}
       : hm::stitching::ReadAutoInputLensForGame(game, effective, camera);
   camera = resolved.camera;
@@ -8313,6 +8374,8 @@ bool HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) {
   }
   const std::string selected = rink_configuration_combo_->currentData().toString().toStdString();
   config["stitching"]["rink_config"] = selected.empty() ? YAML::Node(YAML::NodeType::Null) : YAML::Node(selected);
+  if (editing_defaults_)
+    return true;
   // Workers read private YAML. Supply the effective catalog temporarily while
   // retaining inheritance from user-level defaults on the next reload.
   const auto context =
@@ -17248,8 +17311,8 @@ void HStreamWindow::updateRunControls() {
   }
   if (start_button_) {
     start_button_->setEnabled(
-        !running && !finalizing && !archive_recovery_blocked && !live_rotation_authorization_pending_ &&
-        !findChild<QDialog*>("highlightsDialog"));
+        !editing_defaults_ && !running && !finalizing && !archive_recovery_blocked &&
+        !live_rotation_authorization_pending_ && !findChild<QDialog*>("highlightsDialog"));
   }
   if (pause_button_) {
     pause_button_->setEnabled(
@@ -17265,7 +17328,7 @@ void HStreamWindow::updateRunControls() {
     run_mode_selector_->setEnabled(!running && !finalizing);
   }
   if (stitching_experiments_button_)
-    stitching_experiments_button_->setEnabled(!running && !finalizing);
+    stitching_experiments_button_->setEnabled(!editing_defaults_ && !running && !finalizing);
   if (highlights_button_) {
 #ifdef HSTREAM_USE_HIP
     highlights_button_->setEnabled(false);
@@ -17505,7 +17568,113 @@ void HStreamWindow::saveJobScript() {
   process->start(tool, args);
 }
 
+QString HStreamWindow::controlConfigDirectory() const {
+  if (editing_defaults_) {
+    const auto path = hm::user_config::defaults_path();
+    return path.ok() ? QString::fromStdString(path->parent_path().string()) : QString();
+  }
+  return game_id_edit_ ? gameDirectory(game_id_edit_->text()) : gameRoot();
+}
+
+void HStreamWindow::selectDefaults() {
+  editing_defaults_ = true;
+  defaults_reset_pending_ = false;
+  defaults_save_retry_ = false;
+  game_id_edit_->clear();
+  if (reset_defaults_button_)
+    reset_defaults_button_->setVisible(true);
+  try {
+    loadBaselineDefaults();
+    loadSavedControlConfig(true);
+    if (!saved_control_config_load_error_.isEmpty())
+      return;
+    defaults_template_ = YAML::Node(YAML::NodeType::Map);
+    building_defaults_template_ = true;
+    const bool ready =
+        applySavedControlConfig(defaults_template_, nullptr, nullptr, nullptr, stitchingMaxOutputWidth());
+    building_defaults_template_ = false;
+    if (!ready) {
+      saved_control_config_load_error_ = "Could not prepare the baseline preset";
+      return;
+    }
+    loadSavedControlConfig();
+  } catch (const std::exception& error) {
+    building_defaults_template_ = false;
+    saved_control_config_load_error_ = QString::fromUtf8(error.what());
+    appendLog(saved_control_config_load_error_);
+  }
+  refreshVideoSets();
+  updatePresetDirtyState();
+  updateRunControls();
+  appendLog("Defaults selected");
+}
+
+void HStreamWindow::resetDefaultsToBaseline() {
+  if (!editing_defaults_)
+    return;
+  loadSavedControlConfig(true);
+  defaults_reset_pending_ = saved_control_config_load_error_.isEmpty();
+  updatePresetDirtyState();
+  appendLog("Baseline settings loaded. Save Preset to replace your defaults overrides.");
+}
+
+bool HStreamWindow::saveDefaultsPreset() {
+  if (!ensureSavedControlConfigLoaded())
+    return false;
+  const auto path = hm::user_config::defaults_path();
+  if (!path.ok()) {
+    appendLog(QString::fromStdString(path.status().ToString()));
+    return false;
+  }
+  std::error_code error;
+  fs::create_directories(path->parent_path(), error);
+  if (error) {
+    appendLog(QString("Could not create defaults directory: %1").arg(error.message().c_str()));
+    return false;
+  }
+  auto lock = hm::stitching::GameConfigTransactionLock::Acquire(path->parent_path());
+  if (!lock.ok()) {
+    appendLog(QString::fromStdString(lock.status().ToString()));
+    return false;
+  }
+  auto loaded = hm::user_config::load_defaults();
+  if (!loaded.ok() && !defaults_reset_pending_) {
+    appendLog(QString::fromStdString(loaded.status().ToString()));
+    return false;
+  }
+  YAML::Node config = defaults_reset_pending_ ? YAML::Node(YAML::NodeType::Map) : YAML::Clone(*loaded);
+  QString sidecar;
+  if (!applySavedControlConfig(config, nullptr, nullptr, &sidecar, stitchingMaxOutputWidth())) {
+    if (!sidecar.isEmpty())
+      QFile::remove(sidecar);
+    return false;
+  }
+  // Jobs and calibration ownership are game-specific. Keep only the user's
+  // reusable choices and their native tracker reference.
+  remove_yaml_path(config, {"hstream_ui", "job"});
+  remove_yaml_path(config, {"hstream_ui", "generated_runtime_keys"});
+  remove_yaml_path(config, {"hstream_ui", "generated_runtime_values"});
+  YAML::Node reference = merge_yaml_maps(baseline_config_, defaults_template_);
+  config = preset_difference(config, reference);
+  const auto status = hm::stitching::publish_named_file(*path, YAML::Dump(config) + "\n");
+  if (!status.ok()) {
+    // Publication may already be visible if the directory sync failed; retain
+    // its referenced immutable tracker file and allow a retry.
+    defaults_save_retry_ = true;
+    appendLog(QString("Could not save defaults: %1").arg(status.ToString().c_str()));
+    updatePresetDirtyState();
+    return false;
+  }
+  defaults_reset_pending_ = false;
+  defaults_save_retry_ = false;
+  loadSavedControlConfig();
+  appendLog(QString("Defaults saved %1").arg(path->string().c_str()));
+  return true;
+}
+
 bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validation_error) {
+  if (editing_defaults_)
+    return saveDefaultsPreset();
   if (!ensureSavedControlConfigLoaded())
     return false;
   if (!ensureGameDirectory()) {
@@ -18189,7 +18358,8 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
-  bool dirty = retry_required || saved_auto_input_lens_frozen_ != autoInputLensFrozen() || detectorSelectionChanged() ||
+  bool dirty = defaults_reset_pending_ || defaults_save_retry_ || retry_required ||
+      saved_auto_input_lens_frozen_ != autoInputLensFrozen() || detectorSelectionChanged() ||
       (player_analytics_controls_ && player_analytics_controls_->isDirty()) ||
       (rink_framing_controls_ && rink_framing_controls_->isDirty()) ||
       (rink_mask_time_mode_ && saved_rink_mask_time_mode_ != rink_mask_time_mode_->currentData().toString()) ||
@@ -18221,13 +18391,15 @@ void HStreamWindow::updatePresetDirtyState() {
     }
   }
   const bool has_game = !game_id.isEmpty();
-  const bool can_save = dirty && has_game;
+  const bool can_save = dirty && (has_game || editing_defaults_) && saved_control_config_load_error_.isEmpty();
   if (save_preset_button_->isEnabled() != can_save)
     save_preset_button_->setEnabled(can_save);
-  const QString description = !has_game ? "Select or create a game before saving camera-control changes."
-      : retry_required                  ? "Retry saving the current preset because its last durability check failed."
-      : dirty ? "Save the changed stitching and camera controls into this game's config.yaml for future runs."
-              : "No stitching or camera-control changes need saving. Adjust a control to enable Save Preset.";
+  const QString description = editing_defaults_
+      ? "Save these settings to ~/.config/hstream-ui/defaults.yaml for games to inherit."
+      : !has_game      ? "Select or create a game before saving camera-control changes."
+      : retry_required ? "Retry saving the current preset because its last durability check failed."
+      : dirty          ? "Save the changed stitching and camera controls into this game's config.yaml for future runs."
+                       : "No stitching or camera-control changes need saving. Adjust a control to enable Save Preset.";
   if (save_preset_button_->toolTip() != description)
     set_control_help(save_preset_button_, description);
 }
@@ -18236,7 +18408,9 @@ std::pair<QString, int> HStreamWindow::resolvePlaytrackerConfig(
     const YAML::Node& game_config,
     bool original,
     const QString& game_dir) const {
-  const auto user = hm::user_config::load_or_create();
+  const auto user =
+      (editing_defaults_ ? absl::StatusOr<YAML::Node>(YAML::Node(YAML::NodeType::Map))
+                         : hm::user_config::load_or_create());
   if (!user.ok())
     throw std::runtime_error(user.status().ToString());
   constexpr const char* file_key = "pipeline.ds-playtracker.config-file";
@@ -18295,10 +18469,12 @@ std::map<QString, double> HStreamWindow::readPlayerSizeControls(
     const YAML::Node& game_config,
     bool inherited,
     QString* native_error) const {
-  const auto user = hm::user_config::load_or_create();
+  const auto user =
+      (editing_defaults_ ? absl::StatusOr<YAML::Node>(YAML::Node(YAML::NodeType::Map))
+                         : hm::user_config::load_or_create());
   if (!user.ok())
     throw std::runtime_error(user.status().ToString());
-  const QString game_dir = game_id_edit_ ? gameDirectory(game_id_edit_->text()) : gameRoot();
+  const QString game_dir = controlConfigDirectory();
   int native_rank = 0;
   YAML::Node native(YAML::NodeType::Map);
   try {
@@ -18369,7 +18545,7 @@ bool HStreamWindow::ensureSavedControlConfigLoaded() {
   return false;
 }
 
-void HStreamWindow::loadSavedControlConfig() {
+void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   if (stitching_still_preview_)
     stitching_still_preview_->setSource({});
   saved_control_config_load_error_ = "Game settings are still loading";
@@ -18389,12 +18565,20 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   if (control_points_spin_) {
     const bool blocked = control_points_spin_->blockSignals(true);
-    control_points_spin_->setValue(kDefaultStitchCalibrationControlPoints);
+    YAML::Node inherited;
+    control_points_spin_->setValue(
+        lookup_yaml_path(user_layer_, "hstream_ui.stitching_calibration.control_points", &inherited)
+            ? inherited.as<int>()
+            : kDefaultStitchCalibrationControlPoints);
     control_points_spin_->blockSignals(blocked);
   }
   if (calibration_frame_count_spin_) {
     const bool blocked = calibration_frame_count_spin_->blockSignals(true);
-    calibration_frame_count_spin_->setValue(kDefaultStitchCalibrationFrameCount);
+    YAML::Node inherited;
+    calibration_frame_count_spin_->setValue(
+        lookup_yaml_path(baseline_config_, "stitching.calibration_frame_count", &inherited)
+            ? inherited.as<int>()
+            : kDefaultStitchCalibrationFrameCount);
     calibration_frame_count_spin_->blockSignals(blocked);
   }
   if (control_point_matcher_combo_) {
@@ -18526,14 +18710,30 @@ void HStreamWindow::loadSavedControlConfig() {
   updateCropRotationControls();
   synchronizeStitchedColorControls();
 
-  if (game_id_edit_->text().isEmpty()) {
+  if (game_id_edit_->text().isEmpty() && !editing_defaults_) {
     saved_control_config_load_error_.clear();
     captureSavedControlState();
     return;
   }
 
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
-  auto loaded_config = hm::stitching::load_game_config_file(config_path);
+  const auto defaults_path = hm::user_config::defaults_path();
+  if (editing_defaults_ && !defaults_path.ok()) {
+    saved_control_config_load_error_ = QString::fromStdString(defaults_path.status().ToString());
+    appendLog(saved_control_config_load_error_);
+    return;
+  }
+  const fs::path config_path =
+      editing_defaults_ ? *defaults_path : fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  auto loaded_config = [&]() -> absl::StatusOr<std::optional<YAML::Node>> {
+    if (baseline_only)
+      return std::optional<YAML::Node>{};
+    if (!editing_defaults_)
+      return hm::stitching::load_game_config_file(config_path);
+    auto defaults = hm::user_config::load_defaults();
+    if (!defaults.ok())
+      return defaults.status();
+    return std::optional<YAML::Node>(*defaults);
+  }();
   if (!loaded_config.ok()) {
     saved_control_config_load_error_ = QString::fromStdString(loaded_config.status().ToString());
     appendLog(QString("could not load saved controls: %1").arg(loaded_config.status().ToString().c_str()));
@@ -18542,7 +18742,8 @@ void HStreamWindow::loadSavedControlConfig() {
     return;
   }
   try {
-    YAML::Node config = loaded_config->has_value() ? **loaded_config : YAML::Node(YAML::NodeType::Map);
+    YAML::Node config =
+        !baseline_only && loaded_config->has_value() ? **loaded_config : YAML::Node(YAML::NodeType::Map);
     updateDefaultGpuMemoryProfile(config);
     hm::stitching::restore_generated_stitch_rink_context(config);
     hm::stitching::restore_generated_rink_mask_frame_time(config);
@@ -18607,14 +18808,18 @@ void HStreamWindow::loadSavedControlConfig() {
       if (lookup_yaml_path(config, path, &value))
         stage_control(id, strict_boolean_control(path, value));
     };
-    auto stage_high_bit_mode_path = [&config,
+    auto stage_high_bit_mode_path = [this,
+                                     &config,
                                      &stage_control,
                                      &staged_high_bit_depth_mode,
                                      &native_high_bit_depth_mode_present,
                                      &strict_boolean_control](const QString& path, const QString& id) {
       YAML::Node value;
-      if (!lookup_yaml_path(config, path, &value))
-        return;
+      if (!lookup_yaml_path(config, path, &value)) {
+        if (lookup_yaml_path(config, "hstream_ui.camera_controls.Use_10_Bit_Grading", nullptr) ||
+            !lookup_yaml_path(user_layer_, path, &value))
+          return;
+      }
       native_high_bit_depth_mode_present = true;
       if (!value.IsScalar())
         throw std::invalid_argument(QString("%1 must be auto, true, false, 1, or 0").arg(path).toStdString());
@@ -18675,10 +18880,12 @@ void HStreamWindow::loadSavedControlConfig() {
     auto configured_camera_selection = stitchCameraSelectionFromGameConfig(config);
     if (!configured_camera_selection.ok())
       throw std::invalid_argument(std::string(configured_camera_selection.status().message()));
-    const auto auto_lens = hm::stitching::ReadAutoInputLensForGame(
-        gameDirectory(game_id_edit_->text()).toStdString(),
-        merge_yaml_maps(baseline_config_, config),
-        *configured_camera_selection);
+    const auto auto_lens = editing_defaults_
+        ? hm::stitching::AutoInputLensResult{*configured_camera_selection, "Defaults (not read from MP4)"}
+        : hm::stitching::ReadAutoInputLensForGame(
+              gameDirectory(game_id_edit_->text()).toStdString(),
+              merge_yaml_maps(baseline_config_, config),
+              *configured_camera_selection);
     staged_camera_selection = auto_lens.camera;
     {
       auto configured_projection_framing = stitchProjectionFramingFromGameConfig(config);
@@ -18927,7 +19134,8 @@ void HStreamWindow::loadSavedControlConfig() {
     stage_high_bit_mode_path("pipeline.hmstitcher.properties.high-bit-depth", "Use_10_Bit_Grading");
     YAML::Node legacy_high_bit_mode;
     if (!native_high_bit_depth_mode_present &&
-        lookup_yaml_path(config, "hstream_ui.camera_controls.Use_10_Bit_Grading", &legacy_high_bit_mode)) {
+        (lookup_yaml_path(config, "hstream_ui.camera_controls.Use_10_Bit_Grading", &legacy_high_bit_mode) ||
+         lookup_yaml_path(user_layer_, "hstream_ui.camera_controls.Use_10_Bit_Grading", &legacy_high_bit_mode))) {
       const int value = strict_boolean_control("hstream_ui.camera_controls.Use_10_Bit_Grading", legacy_high_bit_mode);
       staged_high_bit_depth_mode = value != 0 ? "1" : "0";
       stage_control("Use_10_Bit_Grading", value);
@@ -18943,7 +19151,7 @@ void HStreamWindow::loadSavedControlConfig() {
     for (const QString& owner : tone_property_owners) {
       const QString path = owner + ".shadow-lift";
       YAML::Node value;
-      if (lookup_yaml_path(config, path, &value)) {
+      if (lookup_yaml_path(config, path, &value) || lookup_yaml_path(user_layer_, path, &value)) {
         stage_control("Bring_Up_Shadows", bounded_integer_control(path, value, 0, 100));
         break;
       }
@@ -18951,7 +19159,7 @@ void HStreamWindow::loadSavedControlConfig() {
     for (const QString& owner : tone_property_owners) {
       const QString path = owner + ".shadow-lift-black-point";
       YAML::Node value;
-      if (lookup_yaml_path(config, path, &value)) {
+      if (lookup_yaml_path(config, path, &value) || lookup_yaml_path(user_layer_, path, &value)) {
         stage_control("Lift_Shadow_Black_Point", strict_boolean_control(path, value));
         break;
       }
@@ -18959,7 +19167,7 @@ void HStreamWindow::loadSavedControlConfig() {
     for (const QString& owner : tone_property_owners) {
       const QString path = owner + ".exposure";
       YAML::Node value;
-      if (!lookup_yaml_path(config, path, &value))
+      if (!lookup_yaml_path(config, path, &value) && !lookup_yaml_path(user_layer_, path, &value))
         continue;
       const double setting = value.as<double>();
       const int setting_x100 = rounded_control(path, setting * 100.0);
@@ -19300,7 +19508,7 @@ bool HStreamWindow::applySavedControlConfig(
           previous_found && current_found && YAML::Dump(current) == previous_value.as<std::string>();
       if (!generated_value_matches && path == "pipeline.ds-playtracker.config-file" && current_found &&
           current.IsScalar() && previous_found && previous_value.IsScalar() && game_id_edit_) {
-        const QString game_dir = gameDirectory(game_id_edit_->text());
+        const QString game_dir = controlConfigDirectory();
         const QString current_path = QString::fromStdString(current.as<std::string>());
         const QString previous_path = QString::fromStdString(previous_value.as<std::string>());
         const QStringList current_candidates = {
@@ -19330,8 +19538,7 @@ bool HStreamWindow::applySavedControlConfig(
   if (had_playtracker_config_base &&
       (!lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config) ||
        (game_id_edit_ &&
-        !resolve_ui_persistent_playtracker_config(
-             config, gameDirectory(game_id_edit_->text()), pipelineWorkingDirectory())
+        !resolve_ui_persistent_playtracker_config(config, controlConfigDirectory(), pipelineWorkingDirectory())
              .isEmpty()))) {
     if (previous_playtracker_config_base.IsNull())
       remove_yaml_path(config, {"pipeline", "ds-playtracker", "config-file"});
@@ -19430,23 +19637,25 @@ bool HStreamWindow::applySavedControlConfig(
     ++changed;
   }
   config["hstream_ui"]["camera_controls"] = controls;
-  YAML::Node job_arguments(YAML::NodeType::Sequence);
-  const QStringList standalone_arguments = pipelineArguments(true, true);
-  for (int index = 0; index < standalone_arguments.size(); ++index) {
-    const QString& argument = standalone_arguments[index];
-    if (argument == "-g" || argument == "-c") {
-      ++index;
-      continue;
+  if (!editing_defaults_) {
+    YAML::Node job_arguments(YAML::NodeType::Sequence);
+    const QStringList standalone_arguments = pipelineArguments(true, true);
+    for (int index = 0; index < standalone_arguments.size(); ++index) {
+      const QString& argument = standalone_arguments[index];
+      if (argument == "-g" || argument == "-c") {
+        ++index;
+        continue;
+      }
+      if (argument == "--enable-sources=URI-MULTIPLE")
+        continue;
+      if (argument.startsWith("--options=runtime.gpu_memory_profile="))
+        continue;
+      job_arguments.push_back(argument.toStdString());
     }
-    if (argument == "--enable-sources=URI-MULTIPLE")
-      continue;
-    if (argument.startsWith("--options=runtime.gpu_memory_profile="))
-      continue;
-    job_arguments.push_back(argument.toStdString());
+    config["hstream_ui"]["job"]["arguments"] = job_arguments;
+    config["hstream_ui"]["job"]["capture_telemetry"] = !standalone_arguments.contains("--stitching-calibration-only") &&
+        drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked();
   }
-  config["hstream_ui"]["job"]["arguments"] = job_arguments;
-  config["hstream_ui"]["job"]["capture_telemetry"] = !standalone_arguments.contains("--stitching-calibration-only") &&
-      drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked();
 
   const bool control_points_changed =
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;
@@ -19549,7 +19758,7 @@ bool HStreamWindow::applySavedControlConfig(
   hm::stitching::write_stitch_projection_framing(config, selected_projection_framing);
   if (!writeRinkLevelingSelection(config))
     return false;
-  if (stitched_output_geometry_changed && invalidate_scoreboard_geometry(config)) {
+  if (!editing_defaults_ && stitched_output_geometry_changed && invalidate_scoreboard_geometry(config)) {
     appendLog("stitching output geometry changed; scoreboard perspective must be configured again");
   }
   write_stitch_max_output_width_override(config, selected_max_output_width, default_stitch_max_output_width_);
@@ -19558,10 +19767,11 @@ bool HStreamWindow::applySavedControlConfig(
     remove_yaml_path(config, {"stitching", "manual_control_points"});
     remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "match_snapshot"});
   }
-  if (stitch_frame_time_changed || sync_method_changed || control_points_changed || frame_count_changed ||
-      control_point_matcher_changed || mapping_backend_changed || camera_changed || projection_changed ||
-      projection_parameters_changed ||
-      projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) {
+  if (!editing_defaults_ &&
+      (stitch_frame_time_changed || sync_method_changed || control_points_changed || frame_count_changed ||
+       control_point_matcher_changed || mapping_backend_changed || camera_changed || projection_changed ||
+       projection_parameters_changed || projection_framing_changed || run_autooptimizer_changed ||
+       canvas_constraint.calibration_required)) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     QString stale_from = stitch_frame_time_changed || sync_method_changed || frame_count_changed
         ? "input"
@@ -19694,7 +19904,7 @@ bool HStreamWindow::applySavedControlConfig(
   const auto current_mask_time = hm::stitching::read_rink_mask_frame_time(merge_yaml_maps(baseline_config_, config));
   const bool mask_time_changed =
       !previous_mask_time.ok() || !current_mask_time.ok() || *previous_mask_time != *current_mask_time;
-  if (rotation_changed_for_artifacts || mask_time_changed) {
+  if (!editing_defaults_ && (rotation_changed_for_artifacts || mask_time_changed)) {
     const ArtifactInvalidationResult invalidation = invalidate_rotation_dependent_artifacts(config);
     config["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "pending";
     if (invalidate_rink_masks) {
@@ -19794,8 +20004,14 @@ bool HStreamWindow::applySavedControlConfig(
         return false;
       }
     }
-  } else if (has_playtracker_runtime_controls && game_id_edit_) {
-    const QString game_dir = gameDirectory(game_id_edit_->text());
+  } else if (has_playtracker_runtime_controls && game_id_edit_ && !building_defaults_template_) {
+    const auto defaults_path = hm::user_config::defaults_path();
+    if (editing_defaults_ && !defaults_path.ok()) {
+      appendLog(QString::fromStdString(defaults_path.status().ToString()));
+      return false;
+    }
+    const QString game_dir =
+        editing_defaults_ ? QString::fromStdString(defaults_path->parent_path().string()) : controlConfigDirectory();
     QDir runtime_dir(QDir(game_dir).filePath(kUiDirectoryName));
     if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
       appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
@@ -19907,7 +20123,9 @@ bool HStreamWindow::applySavedControlConfig(
           *published_playtracker_sidecar = QFileInfo(runtime_config_path).absoluteFilePath();
         }
         config["pipeline"]["ds-playtracker"]["config-file"] =
-            QDir(game_dir).relativeFilePath(runtime_config_path).toStdString();
+            (editing_defaults_ ? QFileInfo(runtime_config_path).absoluteFilePath()
+                               : QDir(game_dir).relativeFilePath(runtime_config_path))
+                .toStdString();
         // Preserve the configured reference, not its resolved absolute path.
         // Null records inheritance from the user/bundled configuration.
         config["hstream_ui"]["playtracker_config_base"] =
@@ -19977,8 +20195,7 @@ bool HStreamWindow::applySavedControlConfig(
       restore_tracker_path(path);
     // A replacement custom reference must not inherit the old sidecar's base.
     if (had_playtracker_config_base && game_id_edit_ &&
-        !resolve_ui_persistent_playtracker_config(
-             config, gameDirectory(game_id_edit_->text()), pipelineWorkingDirectory())
+        !resolve_ui_persistent_playtracker_config(config, controlConfigDirectory(), pipelineWorkingDirectory())
              .isEmpty())
       config["hstream_ui"]["playtracker_config_base"] = YAML::Clone(previous_playtracker_config_base);
     generated_runtime_keys = YAML::Node(YAML::NodeType::Sequence);
@@ -19995,6 +20212,10 @@ bool HStreamWindow::applySavedControlConfig(
     }
     config["hstream_ui"]["generated_runtime_keys"] = generated_runtime_keys;
     config["hstream_ui"]["generated_runtime_values"] = generated_runtime_values;
+  }
+  if (editing_defaults_) {
+    config["hstream_ui"]["stitching_calibration"]["control_points"] = selected_control_points;
+    config["stitching"]["calibration_frame_count"] = selected_frame_count;
   }
   appendLog(QString("preset captured %1 non-default camera controls").arg(changed));
   return true;
@@ -20024,7 +20245,10 @@ void HStreamWindow::browseGameRoot() {
         !previous_game.isEmpty() && QFileInfo(QDir(root).filePath(previous_game)).isDir() ? previous_game : QString());
   }
   refreshGames();
-  selectGame(game_id_edit_->text());
+  if (game_id_edit_->text().isEmpty())
+    selectDefaults();
+  else
+    selectGame(game_id_edit_->text());
   updateWindowTitle();
   updateArchiveOutputPathLabel();
   refreshArchiveAvailability();
@@ -20039,6 +20263,7 @@ void HStreamWindow::refreshGames() {
   const QString current = game_id_edit_ ? game_id_edit_->text() : QString();
   const bool blocked = game_selector_->blockSignals(true);
   game_selector_->clear();
+  game_selector_->addItem("Defaults", true);
 
   QDir root(gameRoot());
   if (!root.exists()) {
@@ -20051,11 +20276,20 @@ void HStreamWindow::refreshGames() {
   game_selector_->blockSignals(blocked);
 
   if (!current.isEmpty()) {
-    const int index = game_selector_->findText(current);
+    int index = -1;
+    for (int i = 1; i < game_selector_->count(); ++i) {
+      if (game_selector_->itemText(i) == current) {
+        index = i;
+        break;
+      }
+    }
     if (index >= 0) {
       game_selector_->setCurrentIndex(index);
     }
-  } else if (game_selector_->count() > 0) {
+  } else if (editing_defaults_ || game_selector_->count() == 1) {
+    selectDefaults();
+  } else if (game_selector_->count() > 1) {
+    game_selector_->setCurrentIndex(1);
     selectGame(game_selector_->currentText());
   } else if (game_path_label_) {
     game_path_label_->setText(gameRoot());
@@ -20067,6 +20301,19 @@ void HStreamWindow::refreshGames() {
 
 void HStreamWindow::selectGame(const QString& game_id) {
   if (!game_id_edit_) {
+    return;
+  }
+  editing_defaults_ = false;
+  defaults_reset_pending_ = false;
+  defaults_save_retry_ = false;
+  if (reset_defaults_button_)
+    reset_defaults_button_->setVisible(false);
+  try {
+    loadBaselineDefaults();
+  } catch (const std::exception& error) {
+    saved_control_config_load_error_ = QString::fromUtf8(error.what());
+    appendLog(saved_control_config_load_error_);
+    updatePresetDirtyState();
     return;
   }
   game_id_edit_->setText(sanitized_game_id(game_id));
@@ -20082,6 +20329,9 @@ void HStreamWindow::selectGame(const QString& game_id) {
 }
 
 void HStreamWindow::createOrLoadGame() {
+  if (editing_defaults_ && !game_id_edit_->text().trimmed().isEmpty()) {
+    selectGame(game_id_edit_->text());
+  }
   if (!ensureGameDirectory()) {
     return;
   }
@@ -20255,6 +20505,14 @@ void HStreamWindow::refreshVideoSets() {
     return;
   }
   video_set_list_->clear();
+  if (editing_defaults_) {
+    const auto path = hm::user_config::defaults_path();
+    if (game_path_label_)
+      game_path_label_->setText(path.ok() ? QString::fromStdString(path->string()) : QString());
+    if (video_sets_path_label_)
+      video_sets_path_label_->clear();
+    return;
+  }
   const QString dir = gameDirectory(game_id_edit_->text());
   if (game_path_label_) {
     game_path_label_->setText(dir);
@@ -20431,6 +20689,10 @@ QString HStreamWindow::relativeToGameDir(const QString& path) const {
 }
 
 bool HStreamWindow::ensureGameDirectory() {
+  if (editing_defaults_) {
+    appendLog("Select or create a game for this action.");
+    return false;
+  }
   if (!game_id_edit_) {
     return false;
   }

@@ -74,6 +74,31 @@ int main(int argc, char** argv) {
             YAML::Dump(overridden->saved_game) == YAML::Dump(game),
         "Launch overrides changed the saved game snapshot used for calibration admission");
 
+    // The AMD launch path uses the same editable defaults overlay as NVIDIA.
+    const auto defaults_path = fixture.root / ".config/hstream-ui/defaults.yaml";
+    fs::create_directories(defaults_path.parent_path());
+    Write(defaults_path, YAML::Load("rink: {camera: {zoom_in_aggressiveness: 48}}"));
+    result = load();
+    Check(
+        result.ok() && result->camera["zoom-in-aggressiveness"].as<int>() == 61,
+        "Game must override UI defaults on AMD");
+    game["rink"]["camera"].remove("zoom_in_aggressiveness");
+    Write(game_dir / "config.yaml", game);
+    result = load();
+    Check(
+        result.ok() && result->camera["zoom-in-aggressiveness"].as<int>() == 48,
+        "AMD camera must inherit UI defaults above legacy preferences");
+    Write(defaults_path, YAML::Load("{}"));
+    result = load();
+    Check(
+        result.ok() && result->camera["zoom-in-aggressiveness"].as<int>() == 37,
+        "Empty defaults must restore inherited AMD camera settings");
+    Write(defaults_path, YAML::Load("[]"));
+    Check(!load().ok(), "Invalid UI defaults must fail closed on AMD");
+    fs::remove(defaults_path);
+    game["rink"]["camera"]["zoom_in_aggressiveness"] = 61;
+    Write(game_dir / "config.yaml", game);
+
     // Explicit native files preserve same-layer camera values. Higher launch
     // canonical values still win, using the shared NVIDIA mapping contract.
     auto custom_camera = YAML::LoadFile(argv[3]);

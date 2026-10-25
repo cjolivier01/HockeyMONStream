@@ -17,6 +17,12 @@ inline constexpr char kOutputRootKey[] = "output-root";
 // If HOME is unavailable but HM_GAME_DIR is explicit, loading yields an empty
 // overlay; HM_OUTPUT_WORK_DIR remains explicit whenever archive output is used.
 absl::StatusOr<std::filesystem::path> file_path();
+// Legacy preferences remain below the editable UI defaults.
+absl::StatusOr<YAML::Node> load_preferences_or_create();
+absl::StatusOr<std::filesystem::path> defaults_path();
+// Missing defaults are an empty overlay; malformed/unreadable files fail closed.
+absl::StatusOr<YAML::Node> load_defaults();
+// Combines legacy preferences and defaults, for both native backends.
 absl::StatusOr<YAML::Node> load_or_create();
 
 absl::StatusOr<std::filesystem::path> game_root(const YAML::Node& config);

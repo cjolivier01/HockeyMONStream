@@ -2518,7 +2518,8 @@ bool test_path_preferences() {
             }) ||
         !choose_root(&restored, empty) ||
         !expect(
-            restored.gameIdText().isEmpty() && restored.videoSetCount() == 0 && restored.gameDirectoryText() == empty &&
+            restored.gameIdText().isEmpty() && restored.videoSetCount() == 0 &&
+                restored.gameDirectoryText() == QDir::home().filePath(".config/hstream-ui/defaults.yaml") &&
                 restored.windowTitle() == "HStream UI",
             "An empty root must clear the old game, video list and window title"))
       return false;
