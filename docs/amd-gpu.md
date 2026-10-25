@@ -972,7 +972,8 @@ physical monitor/speaker output. The first model compilation can take longer
 than cached startup; a private virtual X11 display and null ALSA device are
 sufficient for protocol qualification.
 
-The native NVIDIA CLI's typed `set-tone-controls` transaction is not implemented
+The native NVIDIA CLI's typed `set-tone-controls` transaction and
+`query-tone-controls` capability/readback are not implemented
 by `ProgramRuntimeControl` on AMD. Shared tone IDs/ranges/scaling are available
 in `ToneControls`, but AMD must add the same stage/topology fencing, correlated
 completion and rollback/replay tests before an outer client enables that

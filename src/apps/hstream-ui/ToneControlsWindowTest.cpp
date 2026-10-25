@@ -1,6 +1,8 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 
+#include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
@@ -60,9 +62,16 @@ struct HStreamWindowTestAccess {
   }
 
   static void Run(HStreamWindow& window) {
+    window.selectGame("tone-fixture");
     auto* shadows = window.camera_sliders_.at("Bring_Up_Shadows");
     auto* exposure = window.camera_sliders_.at("Exposure_x100");
     auto* black = window.camera_checkboxes_.at("Lift_Shadow_Black_Point");
+    Check(
+        shadows->value() == 35 && exposure->value() == 61 && black->isChecked(),
+        "Qt tone widgets ignored the resolved baseline/user overlay");
+    Check(
+        window.runtime_control_debounce_ms_ == 180 && window.runtimeControlAckTimeoutMs() == 4000,
+        "Qt runtime timers ignored the resolved baseline/user overlay");
     Check(shadows->minimum() == 0 && shadows->maximum() == 100, "Qt shadow bounds changed");
     Check(exposure->minimum() == 0 && exposure->maximum() == 130, "Qt exposure bounds changed");
     shadows->setValue(0);
@@ -141,6 +150,15 @@ int main(int argc, char** argv) {
     qputenv("XDG_CONFIG_HOME", preferences.path().toLocal8Bit());
     qputenv("HM_GAME_DIR", games.path().toLocal8Bit());
     qputenv("HOME", preferences.path().toLocal8Bit());
+    Check(QDir().mkpath(preferences.filePath(".config/hstream-ui")), "Cannot create the private defaults directory");
+    QFile overlay(preferences.filePath(".config/hstream-ui/defaults.yaml"));
+    Check(overlay.open(QIODevice::WriteOnly), "Cannot write the private defaults overlay");
+    overlay.write(
+        "hstream_ui:\n  camera_controls:\n    Bring_Up_Shadows: 35\n"
+        "    Lift_Shadow_Black_Point: 1\n    Exposure_x100: 61\n"
+        "  runtime_controls:\n    debounce_ms: 180\n    ack_timeout_ms: 4000\n");
+    overlay.close();
+    Check(QDir().mkpath(games.filePath("tone-fixture")), "Cannot create the fixture game");
     QApplication app(argc, argv);
     HStreamWindow window;
     HStreamWindowTestAccess::Run(window);

@@ -28,8 +28,9 @@ absl::Status ParseToneControlCommand(std::string_view line, ToneControlCommand* 
   std::istringstream input{std::string(line)};
   std::string verb, request, stage, generation;
   input >> verb >> request >> stage >> generation;
-  if (verb != "set-tone-controls" || !Integer(request, &command->request_id) || !command->request_id ||
-      command->request_id > uint64_t(std::numeric_limits<int64_t>::max())) {
+  command->query = verb == "query-tone-controls";
+  if ((!command->query && verb != "set-tone-controls") || !Integer(request, &command->request_id) ||
+      !command->request_id || command->request_id > uint64_t(std::numeric_limits<int64_t>::max())) {
     command->request_id = 0;
     return absl::InvalidArgumentError("Tone command requires a positive signed-64-bit request ID");
   }
@@ -37,6 +38,12 @@ absl::Status ParseToneControlCommand(std::string_view line, ToneControlCommand* 
       command->generation > uint64_t(std::numeric_limits<int64_t>::max())) {
     command->generation = 0;
     return absl::InvalidArgumentError("Tone command requires a stage and positive topology generation");
+  }
+  if (command->query) {
+    std::string extra;
+    if (input >> extra)
+      return absl::InvalidArgumentError("Tone query does not accept assignments");
+    return absl::OkStatus();
   }
   std::set<std::string> seen;
   std::string assignment;

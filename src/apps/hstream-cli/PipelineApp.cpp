@@ -486,7 +486,7 @@ void emit_ui_startup(const char* stage, const char* message) {
 void emit_pipeline_inspector_session(long stage, uint64_t topology_generation) {
   g_print(
       "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
-      "\"stage\":%ld,\"generation\":%" G_GUINT64_FORMAT "}\n",
+      "\"stage\":%ld,\"generation\":%" G_GUINT64_FORMAT ",\"toneControlsVersion\":1}\n",
       stage,
       topology_generation);
   std::fflush(stdout);
@@ -5490,6 +5490,8 @@ bool PipelineApplication::set_tone_controls_runtime(const std::string& line) {
   std::string message;
   std::string tone_element;
   bool applied = false;
+  bool resolved_high_bit_depth = false;
+  std::vector<hm::program::ToneControlValue> readback;
   {
     // The same fence as inspector mutations: a reconstruction waits for an
     // admitted transaction, and a request waiting on this lock rechecks the
@@ -5543,7 +5545,53 @@ bool PipelineApplication::set_tone_controls_runtime(const std::string& line) {
             reason = "ineligible-calibration";
             message = "Live calibration tone controls require high-bit-depth stitching";
           }
-          if (reason.empty()) {
+          resolved_high_bit_depth = high_bit_depth;
+          if (reason.empty() && command.query) {
+            tone_element = high_bit_depth ? "hmstitcher0" : "playcropper0";
+            GstElement* owner = gst_bin_get_by_name(GST_BIN(pipeline), tone_element.c_str());
+            if (!owner) {
+              reason = "tone-unavailable";
+              message = "Active pipeline does not contain its tone owner";
+            } else {
+              for (const auto& spec : hm::program::kToneControls) {
+                GParamSpec* property = g_object_class_find_property(G_OBJECT_GET_CLASS(owner), spec.property);
+                if (!property || !(property->flags & G_PARAM_READABLE) || !(property->flags & G_PARAM_WRITABLE)) {
+                  reason = "tone-unavailable";
+                  message = std::string("Active tone property is unavailable: ") + spec.id;
+                  break;
+                }
+                GValue value = G_VALUE_INIT;
+                g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(property));
+                g_object_get_property(G_OBJECT(owner), spec.property, &value);
+                double native_value = std::numeric_limits<double>::quiet_NaN();
+                if (G_VALUE_HOLDS_DOUBLE(&value))
+                  native_value = g_value_get_double(&value);
+                else if (G_VALUE_HOLDS_FLOAT(&value))
+                  native_value = g_value_get_float(&value);
+                else if (G_VALUE_HOLDS_BOOLEAN(&value))
+                  native_value = g_value_get_boolean(&value) ? 1 : 0;
+                else if (G_VALUE_HOLDS_INT(&value))
+                  native_value = g_value_get_int(&value);
+                else if (G_VALUE_HOLDS_UINT(&value))
+                  native_value = g_value_get_uint(&value);
+                g_value_unset(&value);
+                const double units = native_value * spec.divisor;
+                const double integral = std::round(units);
+                // Plugins may expose a double backed by float storage. Allow
+                // its roundoff only; fractional slider steps stay unavailable.
+                const double tolerance = 8 * std::numeric_limits<float>::epsilon() * std::max(1.0, std::abs(units));
+                if (!std::isfinite(units) || integral < spec.minimum || integral > spec.maximum ||
+                    std::abs(units - integral) > tolerance) {
+                  reason = "unrepresentable-value";
+                  message = std::string("Active tone value cannot be represented by the shared slider: ") + spec.id;
+                  break;
+                }
+                readback.push_back({spec.id, static_cast<int>(integral)});
+              }
+              gst_object_unref(owner);
+            }
+            applied = reason.empty();
+          } else if (reason.empty()) {
             std::vector<std::tuple<std::string, std::string, std::string>> assignments;
             for (const auto& spec : hm::program::kToneControls) {
               const auto control =
@@ -5574,7 +5622,8 @@ bool PipelineApplication::set_tone_controls_runtime(const std::string& line) {
       }
     }
   }
-  JsonBuilder* reply = begin_inspector_response("set-result", command.request_id, applied ? "ok" : "error");
+  JsonBuilder* reply = begin_inspector_response(
+      command.query ? "descriptor" : "set-result", command.request_id, applied ? "ok" : "error");
   json_add_int_member(reply, "stage", command.stage);
   json_add_int_member(reply, "generation", static_cast<gint64>(command.generation));
   if (!applied) {
@@ -5582,12 +5631,21 @@ bool PipelineApplication::set_tone_controls_runtime(const std::string& line) {
     json_add_string_member(reply, "message", message);
   } else {
     json_add_string_member(reply, "element", tone_element);
+    json_add_bool_member(reply, "highBitDepth", resolved_high_bit_depth);
     json_builder_set_member_name(reply, "controls");
     json_builder_begin_array(reply);
-    for (const auto& control : command.controls) {
+    for (const auto& control : command.query ? readback : command.controls) {
       json_builder_begin_object(reply);
       json_add_string_member(reply, "id", control.id);
       json_add_int_member(reply, "value", control.value);
+      if (command.query) {
+        const auto* spec = hm::program::FindToneControl(control.id);
+        json_add_string_member(reply, "label", spec->label);
+        json_add_int_member(reply, "minimum", spec->minimum);
+        json_add_int_member(reply, "maximum", spec->maximum);
+        json_add_int_member(reply, "step", 1);
+        json_add_int_member(reply, "divisor", spec->divisor);
+      }
       json_builder_end_object(reply);
     }
     json_builder_end_array(reply);
@@ -6026,7 +6084,8 @@ bool PipelineApplication::reapply_runtime_properties() {
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   const std::string trimmed_line = trim_ascii(line);
   if (trimmed_line == "set-tone-controls" || trimmed_line.rfind("set-tone-controls ", 0) == 0 ||
-      trimmed_line.rfind("set-tone-controls\t", 0) == 0)
+      trimmed_line.rfind("set-tone-controls\t", 0) == 0 || trimmed_line == "query-tone-controls" ||
+      trimmed_line.rfind("query-tone-controls ", 0) == 0 || trimmed_line.rfind("query-tone-controls\t", 0) == 0)
     return set_tone_controls_runtime(trimmed_line);
   if (int8_sample_output_) {
     g_printerr("Runtime mutations are unavailable during INT8 sample capture\n");

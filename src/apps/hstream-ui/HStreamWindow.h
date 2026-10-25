@@ -1014,6 +1014,8 @@ class HStreamWindow : public QMainWindow {
   YAML::Node user_layer_;
   QString user_config_source_;
   QString baseline_config_root_;
+  int runtime_control_debounce_ms_;
+  int runtime_control_ack_timeout_ms_;
   bool default_drivegpt_database_enabled_;
   QString default_stitch_frame_time_{"00:00:00"};
   int default_stitch_max_output_width_{0};

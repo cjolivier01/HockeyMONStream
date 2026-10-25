@@ -245,7 +245,6 @@ constexpr int kMinimumReasonableStitchMaxOutputWidth = 4096;
 constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
-constexpr int kRuntimeControlAckTimeoutMs = 3000;
 // How long SIGINT gets before we SIGKILL the pipeline. Sized to outlast the
 // CLI's own shutdown watchdog (kShutdownWatchdogGraceUs in deepstream_app.cpp,
 // which hard-exits around 13 s after the stop request) so a wedged teardown
@@ -5265,14 +5264,22 @@ void HStreamWindow::loadBaselineDefaults() {
   camera_defaults_["Max_Speed_Y_x10"] = 0;
   camera_defaults_["Max_Accel_X_x10"] = 0;
   camera_defaults_["Max_Accel_Y_x10"] = 0;
-  camera_defaults_["Lift_Shadow_Black_Point"] = 0;
-  camera_defaults_["Exposure_x100"] = 0;
+  for (const auto& spec : hm::program::kToneControls) {
+    const int value = integer(QString("hstream_ui.camera_controls.%1").arg(spec.id));
+    if (value < spec.minimum || value > spec.maximum)
+      throw std::runtime_error(std::string("Invalid baseline tone value: ") + spec.id);
+    camera_defaults_[spec.id] = value;
+  }
+  runtime_control_debounce_ms_ = integer("hstream_ui.runtime_controls.debounce_ms");
+  runtime_control_ack_timeout_ms_ = integer("hstream_ui.runtime_controls.ack_timeout_ms");
+  if (runtime_control_debounce_ms_ <= 0 || runtime_control_ack_timeout_ms_ <= 0)
+    throw std::runtime_error("Runtime control debounce and acknowledgment timeout must be positive");
   camera_defaults_["Use_10_Bit_Grading"] = 0;
   YAML::Node controls;
   if (lookup_yaml_path(user_layer_, "hstream_ui.camera_controls", &controls) && controls.IsMap()) {
     for (const auto& entry : controls) {
       const QString id = QString::fromStdString(entry.first.as<std::string>());
-      if (camera_defaults_.count(id))
+      if (camera_defaults_.count(id) && !hm::program::FindToneControl(id.toStdString()))
         camera_defaults_[id] = entry.second.as<double>();
     }
   }
@@ -7247,9 +7254,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   for (const auto& spec : hm::program::kToneControls) {
     if (spec.maximum == 1)
       continue; // Black-point lift stays beside its existing checkbox controls.
-    // Preserve the existing initial slider state; saved tone settings load
-    // after construction. The shared specification carries no default values.
-    color_controls.push_back({spec.id, spec.label, spec.minimum, spec.maximum, 0, spec.property, spec.divisor});
+    color_controls.push_back(
+        {spec.id, spec.label, spec.minimum, spec.maximum, default_value(spec.id), spec.property, spec.divisor});
   }
   const std::vector<CameraSliderSpec> stitch_controls = {
       {"Stitch_Rotate_Degrees", "Final stitched-output rotation", 0, 180, default_value("Stitch_Rotate_Degrees")},
@@ -22510,7 +22516,7 @@ void HStreamWindow::resolveLiveRotationRuntimeBatch(quint64 batch_id) {
 int HStreamWindow::runtimeControlAckTimeoutMs() const {
   bool valid = false;
   const int test_timeout = qEnvironmentVariableIntValue("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", &valid);
-  return valid && test_timeout > 0 ? test_timeout : kRuntimeControlAckTimeoutMs;
+  return valid && test_timeout > 0 ? test_timeout : runtime_control_ack_timeout_ms_;
 }
 
 void HStreamWindow::timeoutRuntimeControlBatch(quint64 batch_id) {
@@ -22655,7 +22661,7 @@ void HStreamWindow::scheduleRotationRuntimeControl(const QString& id, int value)
   if (id == "Stitch_Rotate_Degrees" && slider != camera_sliders_.end() && slider->second->isSliderDown()) {
     return;
   }
-  QTimer::singleShot(120, this, [this, generation]() {
+  QTimer::singleShot(runtime_control_debounce_ms_, this, [this, generation]() {
     if (generation != scheduled_rotation_control_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
@@ -22670,7 +22676,7 @@ void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, double 
   scheduled_playtracker_controls_[id] = value;
   scheduled_playtracker_controls_ready_ = false;
   const quint64 generation = ++scheduled_playtracker_control_generation_;
-  QTimer::singleShot(120, this, [this, generation]() {
+  QTimer::singleShot(runtime_control_debounce_ms_, this, [this, generation]() {
     if (generation != scheduled_playtracker_control_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
@@ -22704,7 +22710,7 @@ void HStreamWindow::schedulePlayerDrawingRuntimeControl() {
   scheduled_player_drawing_layers_ = layers;
   scheduled_player_drawing_ready_ = false;
   const quint64 generation = ++scheduled_player_drawing_generation_;
-  QTimer::singleShot(120, this, [this, generation]() {
+  QTimer::singleShot(runtime_control_debounce_ms_, this, [this, generation]() {
     if (generation != scheduled_player_drawing_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
@@ -22719,7 +22725,7 @@ void HStreamWindow::schedulePlaycropperRuntimeControl(const QString& id, int val
   scheduled_playcropper_controls_[id] = value;
   scheduled_playcropper_controls_ready_ = false;
   const quint64 generation = ++scheduled_playcropper_control_generation_;
-  QTimer::singleShot(120, this, [this, generation]() {
+  QTimer::singleShot(runtime_control_debounce_ms_, this, [this, generation]() {
     if (generation != scheduled_playcropper_control_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;

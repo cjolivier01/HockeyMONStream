@@ -14,6 +14,7 @@ struct ToneControlValue {
 };
 
 struct ToneControlCommand {
+  bool query{false};
   uint64_t request_id{0};
   int64_t stage{0};
   uint64_t generation{0};

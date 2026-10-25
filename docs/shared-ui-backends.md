@@ -119,12 +119,10 @@ Qt's initialization and saved-setting resolution unchanged.
 Eligibility, debounce, seek blocking and acknowledgments stay with the runtime
 owner. The builder neither applies changes nor saves presets.
 
-This extraction adds no browser endpoint and no AMD runtime command. Web form
-settings remain admission-time inputs. A future live endpoint must validate
-backend capability and correlate the run, stage, topology generation and request
-before applying a typed control; browsers must not supply raw property commands
-or native filesystem paths. Legacy property acknowledgments alone do not supply
-that identity. `ProgramRuntimeControl` continues to own AMD command dispatch;
+The outer web service may enable these three live controls only after a native
+capability announcement and successful correlated readback. Browsers never
+supply raw property commands or native filesystem paths. Legacy property
+acknowledgments alone do not establish the required identity. `ProgramRuntimeControl` continues to own AMD command dispatch;
 the shared builder does not make unsupported commands available there.
 
 The native CLI additionally accepts a correlated tone transaction:
@@ -141,6 +139,22 @@ session record for stage/generation; values from an earlier process cannot
 identify the new run. The command accepts one to three unique canonical tone
 IDs in integral slider units, with a 1024-byte protocol bound. Exposure `61`
 means the existing native setting `0.61`, not exposure stops.
+
+The session record advertises `toneControlsVersion: 1` only in this native
+implementation. `@query-tone-controls REQUEST STAGE GENERATION` shares the
+monotonic request sequence and the transaction's graph lock and eligibility
+checks. Its `HSTREAM_TONE_CONTROLS` `descriptor` reply supplies the resolved
+precision/element and each shared ID, label, bounds, step, divisor and current
+integer slider value. A nonfinite or fractional runtime value fails readback
+with `unrepresentable-value`; only floating-point storage roundoff is tolerated.
+Queries do not mutate properties or replay overrides. An old/AMD/HockeyMON
+runner without the advertised version must remain unavailable to the browser.
+
+The synchronized baseline owns `hstream_ui.camera_controls` for all three
+integer slider defaults and `hstream_ui.runtime_controls.debounce_ms` and
+`ack_timeout_ms` for Qt/browser scheduling. Qt resolves these through its normal
+baseline/user layers. The web contract derives the shipped values from the same
+baseline; live edits never rewrite an admitted run or its staged configuration.
 
 Admission rechecks stage/generation under the pipeline access lock at mutation
 time. Reconstruction, active seek/frame recovery, INT8 capture and stages with

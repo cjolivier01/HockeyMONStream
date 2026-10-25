@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 
@@ -138,6 +139,60 @@ struct PipelineToneControlsTestAccess {
     Check(Output().find(std::string("\"reason\":\"") + reason + "\"") != std::string::npos, "Wrong rejection reason");
     Check(cropper->mutations + stitcher->mutations == mutations, "Rejected command touched properties");
     Check(application.runtime_property_overrides_.size() == overrides, "Rejected command changed replay state");
+  }
+  std::string Query(long stage = 0, uint64_t generation = 1) {
+    return "query-tone-controls " + std::to_string(++next_request) + " " + std::to_string(stage) + " " +
+        std::to_string(generation);
+  }
+  void Queries() {
+    auto descriptor = [&] {
+      const auto mutations = cropper->mutations + stitcher->mutations;
+      ClearOutput();
+      Check(application.handle_runtime_command_line(Query()), "Current tone query failed");
+      Check(Output().find("\"kind\":\"descriptor\"") != std::string::npos, "Tone query did not return descriptor");
+      Check(cropper->mutations + stitcher->mutations == mutations, "Tone query mutated the graph");
+      Check(application.runtime_property_overrides_.empty(), "Tone query created replay overrides");
+    };
+    cropper->shadows = 35;
+    cropper->black = TRUE;
+    cropper->exposure = static_cast<float>(0.61);
+    descriptor();
+    Check(Output().find("\"highBitDepth\":false") != std::string::npos, "Descriptor lost actual precision");
+    Check(
+        Output().find("\"id\":\"Exposure_x100\",\"value\":61") != std::string::npos, "Descriptor lost native readback");
+    Check(
+        Output().find("\"maximum\":130,\"step\":1,\"divisor\":100") != std::string::npos,
+        "Descriptor lost shared units");
+    Rejected("query-tone-controls " + std::to_string(next_request) + " 0 1", "stale-request");
+    Rejected(Query() + " Exposure_x100=5", "invalid-command");
+    Rejected(Query(-1), "stale-session");
+    application.runtime_seek_pending_.emplace();
+    Rejected(Query(), "seeking");
+    application.runtime_seek_pending_.reset();
+    for (double value :
+         {0.615, -0.1, 1.4, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+      cropper->exposure = value;
+      Rejected(Query(), "unrepresentable-value");
+      Check(Output().find("\"controls\"") == std::string::npos, "Failed readback leaked partial authoritative values");
+    }
+    cropper->exposure = 0.61;
+    application.stitching_calibration_only_ = true;
+    Rejected(Query(), "ineligible-calibration");
+    stitcher->high_bit_depth = TRUE;
+    stitcher->exposure = 1.3;
+    descriptor();
+    Check(
+        Output().find("\"element\":\"hmstitcher0\"") != std::string::npos, "Descriptor selected wrong high-bit owner");
+    Check(
+        Output().find("\"id\":\"Exposure_x100\",\"value\":130") != std::string::npos,
+        "Descriptor read wrong high-bit owner");
+    application.stitching_calibration_only_ = false;
+    stitcher->high_bit_depth = FALSE;
+    gst_object_ref(cropper);
+    gst_bin_remove(GST_BIN(pipeline), GST_ELEMENT(cropper));
+    Rejected(Query(), "tone-unavailable");
+    gst_bin_add(GST_BIN(pipeline), GST_ELEMENT(cropper));
+    descriptor();
   }
   void Run() {
     const auto first = Command("Exposure_x100=61 Bring_Up_Shadows=35 Lift_Shadow_Black_Point=1");
@@ -291,6 +346,8 @@ int main(int argc, char** argv) {
   try {
     PipelineToneControlsTestAccess test;
     test.Run();
+    PipelineToneControlsTestAccess queries;
+    queries.Queries();
     g_set_print_handler(previous);
     return 0;
   } catch (const std::exception& error) {
