@@ -153,6 +153,16 @@ cc_test(
 )
 
 cc_library(
+    name = "webrtc_signaling",
+    srcs = ["WebRtcSignaling.cpp"],
+    hdrs = ["WebRtcSignaling.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    copts = ["-DGST_USE_UNSTABLE_API"],
+    deps = [":web_preview_observer", ":webrtc_endpoint", "@gstreamer", "@json_glib", "@libsoup"],
+)
+
+cc_library(
     name = "web_preview_target",
     srcs = ["WebPreviewTarget.cpp"],
     hdrs = ["WebPreviewTarget.h"],
@@ -615,6 +625,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":webrtc_signaling",
         ":archive_watermark",
         ":webrtc_endpoint",
         ":decoder_pad_link",
