@@ -11,21 +11,21 @@ cc_library(
 )
 
 cc_library(
-    name = "rink_mini_map",
+    name = "rink_mini_map_core",
     srcs = ["RinkMiniMap.cpp"],
     hdrs = ["RinkMiniMap.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
-        ":analytics_overlay",
-        ":rink_mini_map_options",
-        ":rink_track_smoothing",
-        "//src/libs/common:preview_overlay_meta",
-        "//src/libs/player_analytics:frame_meta",
-        "//src/libs/stitching:playback_rink_map",
-        "//src/libs/stitching:stitching",
-        "@deepstream//:deepstream_lib",
-    ],
+    deps = [":analytics_overlay", ":rink_mini_map_options", ":rink_track_smoothing",
+            "//src/libs/player_analytics:types", "//src/libs/stitching:playback_rink_map"],
+)
+cc_library(
+    name = "rink_mini_map",
+    srcs = ["RinkMiniMapNv.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [":rink_mini_map_core", "//src/libs/common:preview_overlay_meta",
+            "//src/libs/player_analytics:frame_meta", "//src/libs/stitching:stitching",
+            "@deepstream//:deepstream_lib"],
 )
 
 cc_library(

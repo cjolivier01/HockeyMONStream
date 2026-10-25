@@ -1141,3 +1141,24 @@ NVIDIA, below game overrides. Reset to Baseline stages the bundled controls and
 Save Preset clears the overlay. This changes configuration only; GPU frame
 ownership and preview transfers are unchanged. `launch_config_test` covers
 inheritance, game precedence, empty defaults, and invalid-file rejection.
+
+### Rink minimap in encoded output
+
+`hmrinkmap` now shares the NVIDIA minimap's backend-neutral projection/smoothing
+and the portable GPU compositor. `output.rink-map` has identical YAML settings
+on both backends, including baseline/Defaults/game precedence and the desktop
+output controls. AMD attaches the frame's tracked stitched coordinates before
+`hmamdcrop` hands its exclusive P010 VA surface to this element; the overlay
+runs before the completion sink can retain that frame. The existing output pool
+bounds memory. HIP import/completion fences the VA encoder without pixel readback.
+Preview and discard outputs remain clean.
+
+The existing AMD team/jersey inference and RTSP/WebRTC output gaps remain;
+tracked-player map dots are available for AMD file encoding. The portable map
+accepts team/jersey results when supplied; it never invents missing labels.
+The local AMD preview minimap is still a separate port gap.
+
+`//src/gst-plugins/gst-rink-map:rink_map_gpu_test` validates 720p/4K P010 output
+on both backends, including real GPU pixel changes, timing, stale-map suppression
+and EOS. `rink_map_test` covers shared configuration layering and immutable
+metadata; `defaults_preset_test` covers UI save/inheritance/reset.

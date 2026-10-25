@@ -30,6 +30,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/gst-plugins/gst-rink-map:overlay",
     "//src/libs/program:preview_overlay_runtime",
     "//src/libs/common:config_layers",
     "//src/libs/tracking:program_camera_mapping",
@@ -123,7 +124,7 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = select({
         "//:use_hip": [
-            ":amd_pipeline_options", "//src/libs/program:amd_program_admission", "//src/libs/program:file_output",
+            ":amd_pipeline_options", "//src/gst-plugins/gst-rink-map:overlay", "//src/libs/program:amd_program_admission", "//src/libs/program:file_output",
             "//src/libs/program:calibration",
             "//src/libs/program:archive_config", "//src/libs/publication", "//src/libs/common:user_config",
             "//src/gst-plugins/gst-amd-program:graph", "//src/libs/program:launch_config",

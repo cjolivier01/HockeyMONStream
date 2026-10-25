@@ -1,6 +1,7 @@
 #pragma once
 
 #include <nvdsmeta.h>
+#include <memory>
 
 #include "hstream/src/libs/player_analytics/TrackColors.h"
 #include "hstream/src/libs/player_analytics/Types.h"
@@ -20,6 +21,8 @@ bool AttachFrameResult(
     const FrameResult& result,
     FrameMetaFailureInjection injection = FrameMetaFailureInjection::kNone) noexcept;
 const FrameResult* FindFrameResult(const NvDsFrameMeta* frame) noexcept;
+// Retain the immutable result across output adapters without copying observations.
+std::shared_ptr<const FrameResult> ShareFrameResult(const NvDsFrameMeta* frame) noexcept;
 
 // Copy on write into this frame's handle, before the tracked preview tee. No
 // allocation when no result or no color changes. Existing copies stay immutable.

@@ -14,6 +14,9 @@ class Component {
   // buffer for in-place work, or a newly owned replacement. Never consume input.
   virtual absl::StatusOr<GstBuffer*> Process(GstBuffer* input) = 0;
   virtual absl::Status Reset() = 0;
+  // Called outside the streaming lock on FLUSH_START and teardown. Implementors
+  // that wait for resources must unblock Process; Reset re-enables admission.
+  virtual void Interrupt() noexcept {}
   // Optional newly owned caps after a format-changing operation.
   virtual GstCaps* OutputCaps() const {
     return nullptr;

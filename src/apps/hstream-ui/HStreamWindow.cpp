@@ -6033,6 +6033,24 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       QSettings(ui_settings_path(), QSettings::IniFormat).setValue(key, combo->currentData());
     });
   }
+  output_rink_map_check_ = new QCheckBox("Include rink mini-map in encoded outputs");
+  output_rink_map_check_->setObjectName("outputRinkMapCheck");
+  output_rink_map_check_->setToolTip(
+      "Burn the map into recordings and network video on the next run. Requires a saved, reviewed rink map.");
+  output_rink_map_size_ = new QComboBox();
+  output_rink_map_size_->setObjectName("outputRinkMapSizeCombo");
+  output_rink_map_position_ = new QComboBox();
+  output_rink_map_position_->setObjectName("outputRinkMapPositionCombo");
+  for (int i = 0; i < rink_map_size_combo_->count(); ++i)
+    output_rink_map_size_->addItem(rink_map_size_combo_->itemText(i), rink_map_size_combo_->itemData(i));
+  for (int i = 0; i < rink_map_position_combo_->count(); ++i)
+    output_rink_map_position_->addItem(rink_map_position_combo_->itemText(i), rink_map_position_combo_->itemData(i));
+  connect(output_rink_map_check_, &QCheckBox::toggled, this, [this] {
+    updateRinkMapControls();
+    updatePresetDirtyState();
+  });
+  for (auto* combo : {output_rink_map_size_, output_rink_map_position_})
+    connect(combo, &QComboBox::currentIndexChanged, this, [this] { updatePresetDirtyState(); });
   rink_map_preview_status_ = new QLabel();
   rink_map_preview_status_->setObjectName("rinkMiniMapStatusLabel");
   rink_map_preview_status_->setWordWrap(true);
@@ -7653,6 +7671,11 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     rink_layout->addWidget(rink_mask_time_edit_, 7, 1);
     rink_layout->addWidget(rink_mask_time_source_, 8, 0, 1, 2);
     rink_layout->addWidget(rink_map_button_, 9, 0, 1, 2);
+    rink_layout->addWidget(output_rink_map_check_, 14, 0, 1, 2);
+    rink_layout->addWidget(new QLabel("Output map size"), 15, 0);
+    rink_layout->addWidget(output_rink_map_size_, 15, 1);
+    rink_layout->addWidget(new QLabel("Output map position"), 16, 0);
+    rink_layout->addWidget(output_rink_map_position_, 16, 1);
     rink_layout->addWidget(rink_map_preview_check_, 10, 0, 1, 2);
     rink_layout->addWidget(new QLabel("Mini-map size"), 11, 0);
     rink_layout->addWidget(rink_map_size_combo_, 11, 1);
@@ -8130,7 +8153,27 @@ std::vector<double> HStreamWindow::stitchProjectionParameters() const {
   return parsed.ok() ? hm::stitching::DefaultStitchProjectionParameters(*parsed) : std::vector<double>{};
 }
 
+QString HStreamWindow::outputRinkMapState() const {
+  if (!output_rink_map_check_)
+    return {};
+  return QString("%1|%2|%3")
+      .arg(
+          output_rink_map_check_->isChecked() ? "1" : "0",
+          output_rink_map_size_->currentData().toString(),
+          output_rink_map_position_->currentData().toString());
+}
+
 void HStreamWindow::loadRinkLevelingControls(const YAML::Node& config) {
+  if (output_rink_map_check_) {
+    const auto effective = merge_yaml_maps(baseline_config_, config);
+    const auto map = effective["output"]["rink-map"];
+    const QSignalBlocker enable_block(output_rink_map_check_);
+    const QSignalBlocker size_block(output_rink_map_size_);
+    const QSignalBlocker position_block(output_rink_map_position_);
+    output_rink_map_check_->setChecked(map["enable"].as<bool>());
+    set_combo_to_data(output_rink_map_size_, QString::fromStdString(map["size"].as<std::string>()));
+    set_combo_to_data(output_rink_map_position_, QString::fromStdString(map["position"].as<std::string>()));
+  }
   loadScoreboardControls(config);
   if (!rink_configuration_combo_)
     return;
@@ -8236,6 +8279,13 @@ void HStreamWindow::updateRinkMapControls() {
   if (!rink_map_preview_status_)
     return;
   const bool checked = rink_map_preview_check_->isChecked();
+  if (output_rink_map_check_) {
+    const bool idle =
+        !isArchiveFinalizing() && (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning);
+    output_rink_map_check_->setEnabled(idle);
+    for (auto* combo : {output_rink_map_size_, output_rink_map_position_})
+      combo->setEnabled(idle && output_rink_map_check_->isChecked());
+  }
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (rink_framing_controls_)
     rink_framing_controls_->setCheckingSuspended(
@@ -18294,6 +18344,7 @@ void HStreamWindow::updateStitchFrameTimeAvailability() {
 }
 
 void HStreamWindow::captureSavedControlState() {
+  saved_output_rink_map_ = outputRinkMapState();
   storeProjectionParameterControls();
   saved_camera_controls_.clear();
   for (const auto& [id, default_value] : camera_defaults_) {
@@ -18367,7 +18418,8 @@ void HStreamWindow::updatePresetDirtyState() {
       (rink_mask_time_mode_ && saved_rink_mask_time_mode_ != rink_mask_time_mode_->currentData().toString()) ||
       (rink_mask_time_mode_ && rink_mask_time_mode_->currentData().toString() == "custom" &&
        saved_rink_mask_time_text_ != rink_mask_time_edit_->text()) ||
-      saved_iteration_settings_ != stitchingIterationSettings() || !pending_crop_geometry_.empty() ||
+      saved_output_rink_map_ != outputRinkMapState() || saved_iteration_settings_ != stitchingIterationSettings() ||
+      !pending_crop_geometry_.empty() ||
       (rink_configuration_combo_ && saved_rink_configuration_ != rink_configuration_combo_->currentData().toString()) ||
       saved_projection_framing_.rotation_inherited != loaded_projection_framing_.rotation_inherited ||
       saved_camera_controls_.size() != camera_defaults_.size() || saved_high_bit_depth_mode_ != highBitDepthMode() ||
@@ -19416,6 +19468,16 @@ bool HStreamWindow::applySavedControlConfig(
   }
   remove_yaml_path(config, {"runtime", "gpu-memory-profile"});
   remove_yaml_path(config, {"runtime", "gpu_memory_profile"});
+  if (output_rink_map_check_ && saved_output_rink_map_ != outputRinkMapState()) {
+    const auto before = saved_output_rink_map_.split('|');
+    const auto after = outputRinkMapState().split('|');
+    if (before.size() != 3 || before[0] != after[0])
+      config["output"]["rink-map"]["enable"] = output_rink_map_check_->isChecked();
+    if (before.size() != 3 || before[1] != after[1])
+      config["output"]["rink-map"]["size"] = after[1].toStdString();
+    if (before.size() != 3 || before[2] != after[2])
+      config["output"]["rink-map"]["position"] = after[2].toStdString();
+  }
   const auto previous_mask_time = hm::stitching::read_rink_mask_frame_time(merge_yaml_maps(baseline_config_, config));
   if (!detectorPrecision().isEmpty() && detectorSelectionChanged()) {
     try {

@@ -2,6 +2,7 @@
 
 #include <gst/gst.h>
 #include <gst/video/video-info.h>
+#include "hstream/src/gst-plugins/gst-rink-map/RinkMapOverlay.h"
 
 #include <filesystem>
 #include <memory>
@@ -26,6 +27,7 @@ struct AmdProgramProcessorConfig {
   bool minimize_blend, compact_workspace;
   float raise_center_ratio, lower_bottom_ratio;
   ProgramCalibrationRequest calibration;
+  std::optional<rink_map::Configuration> rink_map;
 };
 
 struct AmdProgramFrame {

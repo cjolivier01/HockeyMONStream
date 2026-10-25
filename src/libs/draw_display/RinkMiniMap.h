@@ -5,7 +5,9 @@
 #include <optional>
 #include <string>
 
-#include <nvdsmeta.h>
+#include "hstream/src/libs/player_analytics/Types.h"
+
+typedef struct _NvDsFrameMeta NvDsFrameMeta;
 
 #include "hstream/src/libs/draw_display/AnalyticsOverlay.h"
 #include "hstream/src/libs/draw_display/RinkMiniMapOptions.h"
@@ -14,7 +16,28 @@
 
 namespace hm::draw_display {
 
-// Preview-only drawing into the existing GPU framebuffer. The prepared map
+// Backend-neutral frame data in original stitched coordinates. No GPU pointers.
+struct RinkMapPlayer {
+  float left{}, top{}, width{}, height{};
+  analytics::Color color;
+  uint64_t track_id{player_analytics::kUntrackedId};
+  bool ignored{false};
+};
+struct RinkMapFrame {
+  std::string generation;
+  unsigned stitched_width{}, stitched_height{};
+  float coordinate_width{}, coordinate_height{};
+  uint64_t pts{player_analytics::kInvalidTime}, sequence{};
+  unsigned source_id{};
+  bool have_tracks{false};
+  std::vector<RinkMapPlayer> players;
+  size_t total_players{};
+  std::shared_ptr<const player_analytics::FrameResult> analytics;
+};
+// NVIDIA adapter; the drawing core does not depend on DeepStream.
+RinkMapFrame ReadRinkMapFrame(const NvDsFrameMeta* frame, unsigned width, unsigned height);
+
+// Shared preview and encoded-output drawing. The prepared map
 // is immutable; each renderer owns its generation cache. No file/video I/O.
 class RinkMiniMap {
  public:
@@ -26,6 +49,8 @@ class RinkMiniMap {
       float display_width,
       float display_height,
       analytics::CommandList* commands);
+  bool Append(const RinkMapFrame& frame, float width, float height, analytics::CommandList* commands);
+  void Reset();
   const char* unavailableReason() const {
     return unavailable_reason_;
   }
@@ -44,7 +69,7 @@ class RinkMiniMap {
   // a frame whose results are missing or all undecided must not drop the
   // overlay back to track colours for a frame.
   bool named_sides_{false};
-  int last_frame_num_{0};
+  uint64_t last_frame_num_{0};
   unsigned source_id_{0};
   const char* unavailable_reason_{"Waiting for a preview frame."};
 };

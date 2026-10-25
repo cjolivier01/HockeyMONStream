@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
   Write(games.filePath("inherit/config.yaml"), "{}\n");
   Write(games.filePath("override/config.yaml"), "stitching: {max_output_width: 6200}\n");
   Write(games.filePath("Defaults/config.yaml"), "stitching: {max_output_width: 6400}\n");
-  const auto original_game = Read(games.filePath("override/config.yaml"));
+  auto original_game = Read(games.filePath("override/config.yaml"));
   QDir().mkpath(home.filePath(".hstream"));
   Write(
       home.filePath(".hstream/hstream.yaml"),
@@ -85,6 +85,13 @@ int main(int argc, char** argv) {
   Require(window.gameIdText().isEmpty(), "Defaults must not masquerade as a game");
   Require(!Find<QPushButton>(window, "startPipelineButton")->isEnabled(), "Defaults cannot run a pipeline");
   Require(!QFile::exists(defaults_path), "Selecting Defaults must not create a preset");
+  auto* output_map = Find<QCheckBox>(window, "outputRinkMapCheck");
+  auto* output_size = Find<QComboBox>(window, "outputRinkMapSizeCombo");
+  auto* output_position = Find<QComboBox>(window, "outputRinkMapPositionCombo");
+  Require(!output_map->isChecked(), "Output map should start disabled");
+  output_map->setChecked(true);
+  output_size->setCurrentIndex(output_size->findData("large"));
+  output_position->setCurrentIndex(output_position->findData("lower-left"));
   const int baseline_width = width->value();
   const auto baseline_zoom = window.cameraControlValue("Zoom_In_Aggressiveness");
   width->setValue(6000);
@@ -94,6 +101,11 @@ int main(int argc, char** argv) {
   Require(!save->isEnabled(), "Saved Defaults must be clean");
   auto defaults = YAML::LoadFile(defaults_path.toStdString());
   Require(defaults["stitching"]["max_output_width"].as<int>() == 6000, "Defaults saved to wrong path/value");
+  Require(
+      defaults["output"]["rink-map"]["enable"].as<bool>() &&
+          defaults["output"]["rink-map"]["size"].as<std::string>() == "large" &&
+          defaults["output"]["rink-map"]["position"].as<std::string>() == "lower-left",
+      "Output map was not saved to Defaults");
   Require(Read(baseline_path) == original_baseline, "Saving defaults changed baseline.yaml");
   selector->setCurrentIndex(selector->findText("inherit"));
   Require(
@@ -101,6 +113,13 @@ int main(int argc, char** argv) {
       "Game did not inherit defaults or old native blend alias overrode Defaults");
   selector->setCurrentIndex(selector->findText("override"));
   Require(width->value() == 6200, "Game override must outrank defaults");
+  Require(output_map->isChecked() && output_size->currentData() == "large", "Game did not inherit output map");
+  output_map->setChecked(false);
+  Require(save->isEnabled() && HStreamWindowTestAccess::Save(window), "Cannot save game map override");
+  Require(
+      !YAML::LoadFile(games.filePath("override/config.yaml").toStdString())["output"]["rink-map"]["enable"].as<bool>(),
+      "Game cannot disable inherited output map");
+  original_game = Read(games.filePath("override/config.yaml"));
   // A real game called Defaults is distinct from the tagged entry.
   for (int i = 1; i < selector->count(); ++i) {
     if (selector->itemText(i) == "Defaults") {
@@ -110,6 +129,7 @@ int main(int argc, char** argv) {
   }
   selector->setCurrentIndex(0);
   Require(width->value() == 6000, "Selecting Defaults leaked game controls");
+  Require(output_map->isChecked(), "Game map override leaked into Defaults");
   Find<QSpinBox>(window, "calibrationFrameCountSpin")->setValue(6);
   Find<QSpinBox>(window, "controlPointsSpin")->setValue(1000);
   HStreamWindowTestAccess::HighBit(window);
@@ -143,6 +163,7 @@ int main(int argc, char** argv) {
   const auto before_reset = Read(defaults_path);
   reset->click();
   Require(width->value() == baseline_width && save->isEnabled(), "Reset did not stage baseline settings");
+  Require(!output_map->isChecked(), "Reset did not clear output map");
   Require(Read(defaults_path) == before_reset, "Reset wrote defaults before Save Preset");
   Require(HStreamWindowTestAccess::Save(window), "Cannot save reset defaults");
   defaults = YAML::LoadFile(defaults_path.toStdString());

@@ -1,0 +1,32 @@
+package(default_visibility = ["//visibility:public"])
+cc_library(
+    name = "config",
+    srcs = ["RinkMapOverlay.cpp"],
+    hdrs = ["RinkMapOverlay.h"],
+    include_prefix = "hstream/src/gst-plugins/gst-rink-map",
+    deps = ["//src/libs/draw_display:rink_mini_map_core", "@gstreamer", "@yaml-cpp"],
+)
+cc_library(
+    name = "overlay",
+    srcs = select({"//:use_hip": ["RinkMapHip.cpp"], "//conditions:default": ["RinkMapNv.cpp"]}),
+    deps = [":config", "//src/gst-plugins/gst-amd-program:elements"] + select({
+        "//:use_hip": ["//src/libs/gpu/vaapi:va_hip_frame", "//src/libs/program:va_program_output"],
+        "//conditions:default": ["//src/libs/draw_display:rink_mini_map", "//src/libs/common:preview_overlay_meta", "@deepstream//:nvds_buffer_pool"],
+    }),
+)
+cc_test(
+    name = "rink_map_test",
+    srcs = ["RinkMapTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)"],
+    data = ["//configs:baseline.yaml"],
+    deps = [":config", "//src/libs/common:config_layers", "//src/libs/stitching:stitching_core"],
+)
+cc_test(
+    name = "rink_map_gpu_test",
+    srcs = ["RinkMapGpuTest.cpp"],
+    tags = ["manual", "gpu", "local"],
+    deps = [":overlay", "//src/libs/stitching:stitching_core"] + select({
+        "//:use_hip": ["//src/libs/gpu/vaapi:va_output_pool", "//src/libs/gpu/vaapi:va_hip_frame"],
+        "//conditions:default": ["@deepstream//:deepstream_lib"],
+    }),
+)

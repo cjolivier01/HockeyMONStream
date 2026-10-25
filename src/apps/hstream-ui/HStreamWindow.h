@@ -661,6 +661,11 @@ class HStreamWindow : public QMainWindow {
   std::array<QDoubleSpinBox*, 2> rink_angle_spins_{};
   QPushButton* rink_leveling_button_{nullptr};
   QPushButton* rink_map_button_{nullptr};
+  QCheckBox* output_rink_map_check_{nullptr};
+  QComboBox* output_rink_map_size_{nullptr};
+  QComboBox* output_rink_map_position_{nullptr};
+  QString outputRinkMapState() const;
+  QString saved_output_rink_map_;
   QCheckBox* rink_map_preview_check_{nullptr};
   QComboBox* rink_map_size_combo_{nullptr};
   QComboBox* rink_map_position_combo_{nullptr};

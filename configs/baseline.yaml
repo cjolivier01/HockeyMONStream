@@ -940,3 +940,11 @@ model:
   svnh_classifier:
     config: null
     checkpoint: pretrained/svhnc/model-65000.pth
+
+# Output overlays are independent of local desktop preview preferences.
+output:
+  rink-map:
+    enable: false
+    size: compact
+    position: upper-right
+    pool-frames: 8

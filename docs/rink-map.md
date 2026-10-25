@@ -246,8 +246,58 @@ match the prepared calibration and output dimensions. Missing or stale geometry
 hides the map and reports why. Missing track snapshots retain the rink outline
 with **WAITING FOR TRACKS** and clear old dots and smoothing history.
 
-The mini-map is a desktop preview overlay. It does not appear in encoded
-archives or change the camera policy, ice mask or leveling.
+The playback checkbox controls only the desktop preview. **Include rink mini-map
+in encoded outputs** separately burns the map into recordings and network video.
+Neither option changes the camera policy, ice mask or leveling.
+
+### Encoded output
+
+The Rink controls have a separate output checkbox, size and position. These are
+next-run presets: save them for a game, or select **Defaults** to save them in
+`~/.config/hstream-ui/defaults.yaml`. Both backends resolve baseline → Defaults →
+game → command-line overrides. The application never changes the bundled baseline.
+CLI/headless jobs can use:
+
+```sh
+hstream-cli -g GAME --enable-sinks=ENCODE_FILE \
+  --options=output.rink-map.enable=true,output.rink-map.size=compact,output.rink-map.position=upper-right
+```
+
+`output.rink-map` in `configs/baseline.yaml` supplies every setting. Sizes are
+`icon`, `compact`, `standard` and `large`; positions are `upper-right`,
+`upper-left` and `lower-left`. The output overlay is disabled by default.
+`pool-frames` bounds NVIDIA's additional output surfaces (2–32); increase it
+only if encoder lookahead exhausts the pool. AMD uses its existing output pool.
+
+The statically registered `hstreamrinkmap` GStreamer plugin provides `hmrinkmap`.
+It consumes immutable calibration/player metadata and composites drawing commands
+on GPU frames. Both backends share projection, smoothing, team/jersey rendering
+and CUDA/HIP drawing kernels. Frame pixels never travel through the CPU.
+Missing or stale calibration suppresses the map and emits
+`HSTREAM_OUTPUT_RINK_MAP status=unavailable`; absent tracks draw an empty rink.
+Flush/reset clears smoothing. Metadata contains original stitched coordinates,
+so Program crops and different output resolutions do not move the player dots.
+
+NVIDIA inserts the element before each file/RTSP/RTMP/WebRTC encoder, after its
+final GPU resize. It uses a bounded NVMM output pool and a device-to-device copy,
+so a tee's clean input and desktop previews cannot be modified. Software encoder
+branches draw before their existing GPU-to-system-memory converter. CUDA work
+completes before the encoder or Jetson EGL consumer takes the frame.
+
+AMD inserts the same element after `hmamdcrop`, before the render graph's
+completion sink retains the surface. Only selected archive renders carry map
+metadata; preview/discard renders pass through clean. HIP writes the exclusive
+P010 VA surface and completes before its VA encoder consumes it. Existing AMD
+network-output and team/jersey inference gaps remain listed in `amd-gpu.md`;
+this change adds no new network protocol or inference implementation.
+
+Regression checks: `//src/gst-plugins/gst-rink-map:rink_map_test`,
+`rink_map_gpu_test`, `//src/libs/draw_display:rink_mini_map_test` (NVIDIA adapter),
+`//src/gst-plugins/gst-amd-program:element_test`, and
+`//src/apps/hstream-ui:defaults_preset_test`. The GPU test runs on both CUDA and
+HIP, checks P010 pixels at 720p and 4K, verifies clean shared NVIDIA inputs,
+preserves timestamps and exercises stale calibration and EOS. Readback exists
+only in that test's pixel assertions.
 
 Camera Experiments can separately use a matching reviewed map for optional
 rink-aware framing comparisons. This experiment uses the same recorded native

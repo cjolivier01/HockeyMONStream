@@ -1,8 +1,13 @@
 #include "hstream/src/gst-plugins/gst-amd-program/ProgramElement.h"
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -12,12 +17,23 @@ void Check(bool ok, const char* message) {
 }
 struct Counts {
   unsigned reset{}, frames{};
-  bool fail{}, throwing{};
+  bool fail{}, throwing{}, block{};
+  std::atomic<bool> blocked{false};
+  std::mutex mutex;
+  std::condition_variable wake;
+  bool interrupted{};
 };
 class Counter : public hm::program::gst::Component {
  public:
   explicit Counter(std::shared_ptr<Counts> counts) : counts_(std::move(counts)) {}
   absl::StatusOr<GstBuffer*> Process(GstBuffer* buffer) override {
+    if (counts_->block) {
+      std::unique_lock<std::mutex> lock(counts_->mutex);
+      counts_->blocked = true;
+      counts_->wake.wait(lock, [&] { return counts_->interrupted; });
+      counts_->blocked = false;
+      return absl::CancelledError("Injected resource wait interrupted");
+    }
     if (counts_->throwing)
       throw std::runtime_error("injected component exception");
     if (counts_->fail)
@@ -27,7 +43,14 @@ class Counter : public hm::program::gst::Component {
     ++counts_->frames;
     return buffer;
   }
+  void Interrupt() noexcept override {
+    std::lock_guard<std::mutex> lock(counts_->mutex);
+    counts_->interrupted = true;
+    counts_->wake.notify_all();
+  }
   absl::Status Reset() override {
+    std::lock_guard<std::mutex> lock(counts_->mutex);
+    counts_->interrupted = false;
     ++counts_->reset;
     return absl::OkStatus();
   }
@@ -51,7 +74,7 @@ struct Pipeline {
     gst_caps_unref(caps);
     auto* previous = source;
     for (const auto* factory :
-         {"hmamdstitch", "hmamdinfer", "hmrinkfilter", "hmobjecttrack", "hmcameratrack", "hmamdcrop"}) {
+         {"hmamdstitch", "hmamdinfer", "hmrinkfilter", "hmobjecttrack", "hmcameratrack", "hmamdcrop", "hmrinkmap"}) {
       counts.push_back(std::make_shared<Counts>());
       auto result = hm::program::gst::CreateElement(factory, factory, std::make_unique<Counter>(counts.back()));
       Check(result.ok(), "Cannot construct Program component");
@@ -115,7 +138,9 @@ void Run() {
     auto* retained = Input();
     graph.Push(gst_buffer_ref(retained));
     auto* sample = graph.Pull();
-    Check(GST_BUFFER_OFFSET(gst_sample_get_buffer(sample)) == 6, "Components did not execute in graph order");
+    Check(
+        GST_BUFFER_OFFSET(gst_sample_get_buffer(sample)) == graph.stages.size(),
+        "Components did not execute in graph order");
     Check(GST_BUFFER_OFFSET(retained) == 0, "Shared upstream header was modified");
     Check(
         GST_BUFFER_PTS(gst_sample_get_buffer(sample)) == 0 &&
@@ -141,6 +166,26 @@ void Run() {
     Check(eos && GST_MESSAGE_TYPE(eos) == GST_MESSAGE_EOS, "EOS did not traverse component graph");
     gst_message_unref(eos);
     gst_object_unref(bus);
+  }
+  {
+    Pipeline graph;
+    graph.counts[0]->block = true;
+    graph.Push(Input());
+    for (unsigned i = 0; i < 200 && !graph.counts[0]->blocked; ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    Check(graph.counts[0]->blocked, "Resource-wait fixture never blocked");
+    auto* pad = gst_element_get_static_pad(graph.source, "src");
+    Check(gst_pad_push_event(pad, gst_event_new_flush_start()), "Flush did not interrupt resource wait");
+    gst_object_unref(pad);
+    Check(
+        gst_element_set_state(graph.pipeline, GST_STATE_READY) != GST_STATE_CHANGE_FAILURE,
+        "Blocked graph could not stop");
+    Check(!graph.counts[0]->blocked, "Streaming remained blocked after stop");
+    graph.counts[0]->block = false;
+    graph.Play();
+    graph.Push(Input());
+    auto* sample = graph.Pull();
+    gst_sample_unref(sample);
   }
   for (const bool throwing : {false, true}) {
     Pipeline graph;
