@@ -16428,16 +16428,31 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     HStreamWindow legacy_baseline_window;
     legacy_baseline_window.show();
     auto* playback = require_child<QTimeEdit>(&legacy_baseline_window, "playbackStartTimeEdit");
-    ok &= expect(playback && playback->time() == QTime(1, 2, 3, 456),
-                 "Playback start must read the resolved baseline instead of a compiled-in zero");
+    ok &= expect(
+        playback && playback->time() == QTime(1, 2, 3, 456),
+        "Playback start must read the resolved baseline instead of a compiled-in zero");
     if (playback) {
       playback->setFocus(Qt::OtherFocusReason);
       QApplication::processEvents();
-      playback->setCurrentSection(QDateTimeEdit::MSecSection);
+      // Select the existing digits for replacement; moving the caret to the
+      // section alone would append to 456 and correctly reject the input.
+      playback->setSelectedSection(QDateTimeEdit::MSecSection);
       QTest::keyClicks(playback, "250");
       QTest::keyClick(playback, Qt::Key_Tab);
       QApplication::processEvents();
-      ok &= expect(playback->time() == QTime(1, 2, 3, 250), "Typed playback milliseconds must remain exact");
+      auto* playback_line = playback->findChild<QLineEdit*>();
+      ok &= expect(
+          playback->time() == QTime(1, 2, 3, 250),
+          QString(
+              "Typed playback milliseconds must remain exact (time=%1, format=%2, section=%3, focus=%4, "
+              "enabled=%5, text=%6)")
+              .arg(playback->time().toString("HH:mm:ss.zzz"))
+              .arg(playback->displayFormat())
+              .arg(static_cast<int>(playback->currentSection()))
+              .arg(playback->hasFocus())
+              .arg(playback->isEnabled())
+              .arg(playback_line ? playback_line->text() : QString("missing"))
+              .toStdString());
     }
     auto* mapping_backend = require_child<QComboBox>(&legacy_baseline_window, "mappingBackendCombo");
     auto* run_autooptimizer = require_child<QCheckBox>(&legacy_baseline_window, "runAutooptimizerCheck");
