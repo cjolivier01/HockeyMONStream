@@ -96,7 +96,7 @@ cc_library(
   srcs = ["TransactionState.cpp"],
   hdrs = ["TransactionState.h"],
   include_prefix = INCLUDE_PREFIX,
-  visibility = ["//src/apps/hstream-ui:__pkg__"],
+  visibility = ["//src/apps/hstream-ui:__pkg__", "//src/apps/hstream-cli:__pkg__"],
   deps = [
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
@@ -138,6 +138,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":live_output_epoch",
     ":canvas_constraint_check",
     ":game_config",
     "//src/libs/common:status_macros",

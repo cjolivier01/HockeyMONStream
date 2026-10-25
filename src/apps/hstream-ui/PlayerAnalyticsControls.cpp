@@ -168,7 +168,8 @@ YAML::Node Document(const QString& path) {
 }
 } // namespace
 
-PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent) : QWidget(parent) {
+PlayerAnalyticsControls::PlayerAnalyticsControls(QWidget* parent, bool default_models_only)
+    : QWidget(parent), default_models_only_(default_models_only) {
   setObjectName("playerAnalyticsControls");
   auto* layout = new QVBoxLayout(this);
   auto* explanation = new QLabel(
@@ -324,7 +325,8 @@ void PlayerAnalyticsControls::addModel(const QString& key, const QString& name, 
   const auto feature = ModelFeature(key);
   const auto id = std::string(pa::DefaultModelId(feature));
   for (const auto* model : pa::ModelsForFeature(feature))
-    editor->addItem(QString::fromUtf8(model->label), QString::fromUtf8(model->id));
+    if (!default_models_only_ || feature == "reid" || model->id == id)
+      editor->addItem(QString::fromUtf8(model->label), QString::fromUtf8(model->id));
   editor->addItem("Custom…", "custom");
   editor->setProperty("knownModelCount", editor->count());
   editor->setToolTip("Uses the supplied model or downloads it when needed, prepares it for this GPU, then reuses it.");
@@ -618,6 +620,10 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
     const std::array<std::pair<const char*, const pa::FeatureConfig*>, 4> features{
         {{"pose", &parsed->pose}, {"jersey", &parsed->jersey}, {"action", &parsed->action}, {"team", &parsed->team}}};
     for (const auto& [name, feature] : features) {
+      if (default_models_only_ && feature->enabled && feature->model != "custom" &&
+          feature->model != pa::DefaultModelId(name))
+        return QString("The HockeyMON backend does not support %1. Select the standard %2 model.")
+            .arg(QString::fromStdString(feature->model), name);
       if (!feature->enabled || feature->model != "custom")
         continue;
       const QString path = Absolute(QString::fromStdString(feature->bundle), structural_directory_);

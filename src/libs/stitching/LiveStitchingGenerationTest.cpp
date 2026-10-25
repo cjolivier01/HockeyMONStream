@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -105,6 +106,13 @@ int main() {
       "post-stitch-rotate-degrees:9.25\noutput-size:320x180\n";
   write_config(root / "config.yaml", generation);
 
+  ok &= expect(
+      hm::stitching::validate_live_output_epoch(root.string(), {0.0, "", "1,2,3,4,5,6,7,8"}, hugin_generation).ok(),
+      "an unchanged epoch may preserve the exact current scoreboard without authorization");
+  ok &= expect(
+      absl::IsAborted(
+          hm::stitching::validate_live_output_epoch(root.string(), {2.0, "", "0,0,0,0,0,0,0,0"}, hugin_generation)),
+      "a changed output epoch requires a pending authorization");
   const auto authorize = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.25, "auth-a");
   YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
   ok &= expect(
@@ -115,6 +123,25 @@ int main() {
           config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
       "authorization must preserve generation bytes and defer active scoreboard invalidation");
 
+  ok &= expect(
+      hm::stitching::validate_live_output_epoch(root.string(), {9.25, "auth-a", "0,0,0,0,0,0,0,0"}, hugin_generation)
+          .ok(),
+      "a foreign runtime may accept the exact authorized loaded output epoch");
+  ok &= expect(
+      absl::IsAborted(
+          hm::stitching::validate_live_output_epoch(
+              root.string(), {9.25, "auth-a", "0,0,0,0,0,0,0,0"}, "different-loaded-generation")),
+      "a live epoch cannot target a replaced runtime calibration");
+  ok &= expect(
+      absl::IsAborted(
+          hm::stitching::validate_live_output_epoch(
+              root.string(), {9.25, "auth-stale", "0,0,0,0,0,0,0,0"}, hugin_generation)),
+      "a foreign runtime must reject a stale authorization ID");
+  ok &= expect(
+      absl::IsAborted(
+          hm::stitching::validate_live_output_epoch(
+              root.string(), {9.25, "auth-a", "1,2,3,4,5,6,7,8"}, hugin_generation)),
+      "rotation and scoreboard invalidation must apply together");
   const auto restore = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 0.0, "auth-restore");
   config = YAML::LoadFile((root / "config.yaml").string());
   ok &= expect(

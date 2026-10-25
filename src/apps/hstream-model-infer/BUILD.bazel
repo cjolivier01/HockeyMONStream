@@ -1,0 +1,30 @@
+cc_binary(
+    name = "hstream-model-infer",
+    srcs = ["main.cpp", "Protocol.h"],
+    copts = ["-Wall", "-std=c++17", "-Wno-error=deprecated-declarations"],
+    linkopts = ["-L/usr/local/cuda/lib64", "-lcudart"],
+    visibility = ["//visibility:public"],
+    target_compatible_with = select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        "@player_tensorrt//:sdk",
+        "@local_cuda//:cuda",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+)
+
+cc_test(
+    name = "protocol_test",
+    srcs = ["ProtocolTest.cpp", "Protocol.h"],
+)
+
+sh_test(
+    name = "model_infer_gpu_test",
+    srcs = ["ModelInferTest.sh"],
+    args = ["$(rootpath :hstream-model-infer)"],
+    data = [":hstream-model-infer", "ModelInferTest.py"],
+    env_inherit = ["HSTREAM_REID_ENGINE"],
+    tags = ["manual", "gpu"],
+)

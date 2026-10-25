@@ -102,13 +102,22 @@ std::optional<qint64> recording_source_origin(const replay::PrepareOptions& opti
   if (!config.Next())
     return std::nullopt;
   const YAML::Node recorded = YAML::Load(config.Text(0));
-  if (recorded["launch"]["start-time-ns"])
-    return recorded["launch"]["start-time-ns"].as<uint64_t>() / 1000000;
-  const YAML::Node ui = recorded["game-at-launch"]["hstream_ui"];
+  const YAML::Node launch = recorded["launch"];
+  if (launch && launch.IsMap() && launch["start-time-ns"])
+    return launch["start-time-ns"].as<uint64_t>() / 1000000;
+  // HockeyMON archives the resolved configuration directly. Older snapshots
+  // lack the native launch envelope and use the explicit UI playback origin.
+  const YAML::Node game_at_launch = recorded["game-at-launch"];
+  const YAML::Node ui =
+      game_at_launch && game_at_launch.IsMap() ? game_at_launch["hstream_ui"] : recorded["hstream_ui"];
+  if (!ui || !ui.IsMap())
+    return std::nullopt;
   const std::string value = ui["playback_start_time"].as<std::string>("");
   qint64 ms = 0;
-  if (hm::ui::ParseHighlightTime(QString::fromStdString(value), &ms))
-    for (const auto& arg : ui["job"]["arguments"])
+  const YAML::Node job = ui["job"];
+  if (job && job.IsMap() && job["arguments"] && job["arguments"].IsSequence() &&
+      hm::ui::ParseHighlightTime(QString::fromStdString(value), &ms))
+    for (const auto& arg : job["arguments"])
       if (arg.as<std::string>() == "--start-time=" + value)
         return ms;
   return std::nullopt;

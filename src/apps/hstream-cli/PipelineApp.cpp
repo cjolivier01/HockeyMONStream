@@ -117,7 +117,7 @@ class PlayerModelPreparationSignals {
  public:
   PlayerModelPreparationSignals() {
     player_model_preparation_interrupted = 0;
-    struct sigaction action {};
+    struct sigaction action{};
     action.sa_handler = interrupt_player_model_preparation;
     sigemptyset(&action.sa_mask);
     interrupt_installed_ = ::sigaction(SIGINT, &action, &interrupt_) == 0;
@@ -131,7 +131,7 @@ class PlayerModelPreparationSignals {
   }
 
  private:
-  struct sigaction interrupt_ {}, terminate_ {};
+  struct sigaction interrupt_{}, terminate_{};
   bool interrupt_installed_{false}, terminate_installed_{false};
 };
 
@@ -579,7 +579,8 @@ absl::Status pause_pipeline_for_model_initialization(
   constexpr auto kModelInitializationTimeout = std::chrono::minutes(15);
   constexpr auto kCancellationTimeout = std::chrono::seconds(5);
   constexpr GstClockTime kPollInterval = 100 * GST_MSECOND;
-  const auto initialization_budget = test_timeout_ms ? std::chrono::milliseconds(test_timeout_ms)
+  const auto initialization_budget = test_timeout_ms
+      ? std::chrono::milliseconds(test_timeout_ms)
       : std::chrono::duration_cast<std::chrono::milliseconds>(kModelInitializationTimeout);
   auto initialization_deadline = std::chrono::steady_clock::now() + initialization_budget;
   std::optional<std::chrono::steady_clock::time_point> initialization_wait_suspended_at;
@@ -1156,7 +1157,9 @@ PipelineApplication::PipelineApplication()
 
 //------------------------------------------------------------------------------
 // PipelineApplication destructor.
-PipelineApplication::~PipelineApplication() = default;
+PipelineApplication::~PipelineApplication() {
+  g_free(settings_overlay_);
+}
 
 //------------------------------------------------------------------------------
 // Callback and helper functions implementation.
@@ -1220,6 +1223,8 @@ absl::Status PipelineApplication::configureInstances(
     }
     const bool yaml_config = g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
         g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yaml");
+    if (!yaml_config && settings_overlay_ && *settings_overlay_)
+      return absl::InvalidArgumentError("Runtime settings overlays require a YAML application config");
     // Clean-only eligibility depends on the layered YAML configuration. Legacy
     // DeepStream text configs cannot own the game-private stitching artifacts,
     // so do not parse or prepare them during an offline cleanup run.
@@ -1232,6 +1237,9 @@ absl::Status PipelineApplication::configureInstances(
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to merge in config file");
       }
+
+      if (settings_overlay_ && *settings_overlay_)
+        HM_RETURN_IF_ERROR(app_ctx->configurator().apply_settings_overlay(settings_overlay_));
 
       auto apply_pipeline_options = [&]() -> absl::Status {
         if (pipeline_options_.empty()) {
@@ -1546,8 +1554,9 @@ absl::Status PipelineApplication::configureInstances(
           else
             g_print("Player models: %s\n", message.c_str());
         };
-        HM_RETURN_IF_ERROR(hm::pipeline::PreparePlayerModelCache(
-            config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path(), options));
+        HM_RETURN_IF_ERROR(
+            hm::pipeline::PreparePlayerModelCache(
+                config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path(), options));
       }
       if (!parse_config_yaml(
               config["pipeline"], &app_ctx->config, fs::path(app_ctx->app_config_file()).parent_path())) {
@@ -2893,9 +2902,9 @@ absl::Status PipelineApplication::playPipelines(
   if (clip_end_time_ns_ > start_time_ns_) {
     const bool natural_source_eos = std::all_of(
         app_contexts.begin(), app_contexts.end(), [](const auto& context) { return context && context->eos_received; });
-    const char* reason = clip_end_boundary_reached_.load(std::memory_order_acquire)
-        ? "end-boundary"
-        : natural_source_eos ? "source-eos" : "interrupted";
+    const char* reason = clip_end_boundary_reached_.load(std::memory_order_acquire) ? "end-boundary"
+        : natural_source_eos                                                        ? "source-eos"
+                                                                                    : "interrupted";
     g_print("HSTREAM_CLIP_RESULT reason=%s\n", reason);
     std::fflush(stdout);
   }
@@ -3373,6 +3382,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        nullptr},
       {"options", 'p', 0, G_OPTION_ARG_FILENAME_ARRAY, &pipline_options, "Set arbitrary option(s)", nullptr},
       {"cfg-file", 'c', 0, G_OPTION_ARG_FILENAME_ARRAY, &cfg_files_, "Set the config file", "FILE"},
+      {"settings-overlay",
+       0,
+       0,
+       G_OPTION_ARG_FILENAME,
+       &settings_overlay_,
+       "Apply a bounded root YAML settings overlay for this run",
+       "FILE"},
       {"enable-sources", 'e', 0, G_OPTION_ARG_FILENAME_ARRAY, &enable_sources_, "Enable Sources", nullptr},
       {"enable-sinks",
        'k',
@@ -6982,8 +6998,8 @@ void PipelineApplication::position_initial_sources_if_ready(AppCtx* app_ctx) {
   const guint64 fallback_ns = uri_playlist_initial_seek_fallback_ns(&sources);
   if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == app_ctx &&
       runtime_seek_pending_->phase == RuntimeSeekPhase::kWaitingForFrame) {
-    const guint fallback_timeout_ms = fallback_ns > 0 ? runtime_seek_fallback_timeout_ms(fallback_ns)
-                                                    : runtime_seek_transition_timeout_ms();
+    const guint fallback_timeout_ms =
+        fallback_ns > 0 ? runtime_seek_fallback_timeout_ms(fallback_ns) : runtime_seek_transition_timeout_ms();
     // Decoder positioning is synchronous. Start the first-output allowance
     // after it completes, so a frame already queued by the decoder can reach
     // the main context before the timeout is evaluated.
@@ -7198,7 +7214,8 @@ gboolean PipelineApplication::stitch_frame_completion_timeout(long stage, uint64
   // its end synchronously so an overdue timer cannot race a queued phase-end
   // or completion message on the main loop.
   for (const auto& context : active_stage->second) {
-    if (context && uri_playlist_calibration_idle_time_us(&context->pipeline.multi_src_bin) <
+    if (context &&
+        uri_playlist_calibration_idle_time_us(&context->pipeline.multi_src_bin) <
             1000LL * stitch_frame_completion_timeout_ms())
       return G_SOURCE_CONTINUE;
   }
@@ -8759,8 +8776,7 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
     if (!gst_pad_send_event(link.peer, flush))
       return FALSE;
   }
-  if (app->config.primary_gie_config.enable &&
-      app->config.primary_gie_config.plugin_type == NV_DS_GIE_PLUGIN_INFER &&
+  if (app->config.primary_gie_config.enable && app->config.primary_gie_config.plugin_type == NV_DS_GIE_PLUGIN_INFER &&
       !hm::ArmAsyncInferenceSeekRecovery(app->pipeline.common_elements.primary_gie_bin.primary_gie))
     return FALSE;
   // FLUSH_STOP does not discard NvDCF's native object histories. Explicitly

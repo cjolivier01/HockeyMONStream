@@ -7446,7 +7446,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QTest::qWait(10);
     }
     rotate->setValue(71);
-    for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=failed");
+    // Authorization runs on a worker and includes a durable config write.
+    // Let the rejection arrive before Stop even on a busy build/test host.
+    for (int i = 0; i < 300 && !window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=failed");
          ++i) {
       QApplication::processEvents();
       QTest::qWait(10);

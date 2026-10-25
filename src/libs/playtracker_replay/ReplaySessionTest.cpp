@@ -200,6 +200,7 @@ int main(int argc, char** argv) {
     if (argc >= 3 && std::string(argv[1]) == "--recording") {
       PrepareOptions options;
       options.manifest_path = argv[2];
+      options.prepare_overlays = true;
       if (argc > 3)
         options.start_seconds = std::stod(argv[3]);
       if (argc > 4)
@@ -208,7 +209,16 @@ int main(int argc, char** argv) {
         options.legacy_arena = hm::BBox(std::stof(argv[5]), std::stof(argv[6]), std::stof(argv[7]), std::stof(argv[8]));
       const auto session = ReplaySession::Prepare(options);
       check(session.ok(), session.status().ToString());
-      std::cout << (*session)->provenance() << "; " << (*session)->original().size() << " samples\n";
+      DsPlayTrackerRuntimeTuning tuning;
+      tuning.update_motion_tuning = false;
+      const auto trial = (*session)->RunTrial("Recorded baseline", tuning);
+      check(trial.ok(), trial.status().ToString());
+      check(trial->frames.size() == (*session)->original().size(), "trial preserves recorded sample count");
+      for (const auto& frame : (*session)->original())
+        check(frame.overlays != nullptr, "recorded preview overlays are available");
+      std::cout << (*session)->provenance() << "; " << (*session)->original().size()
+                << " samples; camera trial and preview overlays validated; historical mask bytes="
+                << (*session)->rink_mask_png().size() << "\n";
       return 0;
     }
     char tmp[] = "/tmp/hstream-replay-test-XXXXXX";

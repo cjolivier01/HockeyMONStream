@@ -3,6 +3,7 @@
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -196,9 +197,8 @@ absl::StatusOr<std::string> scoreboard_property_value(const YAML::Node& config) 
   if (active_polygon && active_polygon.IsDefined() && active_polygon.IsNull() &&
       !pending_scoreboard_polygon_is_recoverable(config))
     return std::string("0,0,0,0,0,0,0,0");
-  const YAML::Node polygon = active_polygon && active_polygon.IsDefined() && !active_polygon.IsNull()
-      ? active_polygon
-      : saved_polygon;
+  const YAML::Node polygon =
+      active_polygon && active_polygon.IsDefined() && !active_polygon.IsNull() ? active_polygon : saved_polygon;
   if (!polygon || !polygon.IsDefined())
     return std::string("0,0,0,0,0,0,0,0");
   if (polygon.IsNull())
@@ -296,6 +296,66 @@ absl::StatusOr<bool> reconcile_inactive_live_stitched_output_authorization(const
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(
         "Unable to reconcile inactive live stitched-output authorization: " + std::string(exception.what()));
+  }
+}
+
+absl::Status validate_live_output_epoch(
+    const std::string& game_dir,
+    const LiveOutputEpoch& epoch,
+    const std::string& loaded_hugin_generation,
+    std::string* output_generation) {
+  if (game_dir.empty() || loaded_hugin_generation.empty() || !std::isfinite(epoch.post_stitch_rotate_degrees))
+    return absl::InvalidArgumentError("Live output epoch requires a loaded Hugin generation and finite rotation");
+  const fs::path root(game_dir);
+  auto hugin_lock = lock_canvas_constraint_artifacts(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  std::string current_hugin;
+  HM_ASSIGN_OR_RETURN(current_hugin, stitch_artifact_generation_id_locked(root));
+  if (current_hugin != loaded_hugin_generation)
+    return absl::AbortedError("Live output epoch targets a different loaded Hugin calibration");
+  try {
+    const YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
+    const std::string completed = config["rink"]["stitched_output_generation"].as<std::string>();
+    EmbeddedHuginGeneration embedded;
+    HM_ASSIGN_OR_RETURN(embedded, embedded_hugin_generation(completed));
+    if (current_hugin.size() != embedded.size || completed.compare(embedded.start, embedded.size, current_hugin) != 0)
+      return absl::AbortedError("Completed stitched output does not match the loaded Hugin calibration");
+    std::string requested;
+    HM_ASSIGN_OR_RETURN(requested, generation_with_rotation(completed, epoch.post_stitch_rotate_degrees));
+    std::optional<std::string> pending, authorization;
+    HM_ASSIGN_OR_RETURN(
+        pending,
+        optional_scalar(config["rink"]["stitched_output_pending_generation"], "Pending stitched-output generation"));
+    HM_ASSIGN_OR_RETURN(
+        authorization,
+        optional_scalar(
+            config["rink"]["stitched_output_pending_authorization_id"], "Pending stitched-output authorization ID"));
+    if (epoch.authorization_id.empty()) {
+      if (pending.has_value() || authorization.has_value() || requested != completed)
+        return absl::AbortedError("Live output rotation requires the current pending authorization");
+    } else {
+      if (!pending.has_value() || !authorization.has_value() || *pending != requested ||
+          *authorization != epoch.authorization_id)
+        return absl::AbortedError("Live output epoch authorization was superseded");
+      bool active = false;
+      HM_ASSIGN_OR_RETURN(active, live_stitched_output_authorization_is_active(config));
+      if (!active)
+        return absl::AbortedError("Live output epoch authorization owner is no longer active");
+    }
+    std::string expected_scoreboard = "0,0,0,0,0,0,0,0";
+    if (requested == completed)
+      HM_ASSIGN_OR_RETURN(expected_scoreboard, scoreboard_property_value(config));
+    if (epoch.scoreboard_property_value != expected_scoreboard)
+      return absl::AbortedError("Live output epoch scoreboard does not match its authorized rotation");
+    if (output_generation)
+      *output_generation = requested;
+    return absl::OkStatus();
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Invalid live output epoch config: " + std::string(exception.what()));
   }
 }
 
