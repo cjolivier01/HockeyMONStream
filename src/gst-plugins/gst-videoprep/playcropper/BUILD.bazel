@@ -156,6 +156,7 @@ cc_binary(
     srcs = ["PlayCropperPlayerOverlayTest.cpp"],
     deps = [
         ":playcropper",
+        "//src/apps/apps-common:rotation_frame_fence",
         "//src/gst-plugins/gst-playtracker:playtracker_context_header",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/draw_display:player_overlays",

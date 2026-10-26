@@ -871,8 +871,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
         }
       }
     }
-    if ((player_layers || preview_overlay::find_overlay_snapshot_meta(frame_meta)) &&
-        !preview_overlay::add_playcropper_transform_meta(frame_meta, preview_transform) &&
+    // Rotation admission needs the exact applied crop even when every optional
+    // overlay is off. Keep this on each owned Program frame, never the tee input.
+    if (!preview_overlay::add_playcropper_transform_meta(frame_meta, preview_transform) &&
         !preview_transform_failure_reported_) {
       g_printerr("HSTREAM_PREVIEW_OVERLAY status=transform-meta-unavailable\n");
       preview_transform_failure_reported_ = true;

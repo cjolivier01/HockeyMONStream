@@ -22,7 +22,9 @@ Qt and this adapter use `LiveRotationConfigOwner`'s serial disk worker. Stop,
 pause and supersession cannot let a late authorization overtake rollback or a
 new run. Program admission compares the producer's exact stitched authorization
 and, after fixed-angle edits, exact crop float metadata. Stitched compares the
-authorization; source routes retain their unchanged pixels. The check runs
+authorization; source routes retain their unchanged pixels. The cropper publishes
+its applied transform on every owned Program frame, including when all player
+drawing and diagnostic overlays are off. The check runs
 inside the selected stream's flow mutex before frame identity assignment, so a
 frame admitted under an old setting cannot receive the new operation. Video
 remains on the GPU. These native ownership/admission tests do not qualify AMD

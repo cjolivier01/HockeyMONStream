@@ -1,3 +1,4 @@
+#include "hstream/src/apps/apps-common/RotationFrameFence.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
 #include "hstream/src/libs/player_analytics/FrameMeta.h"
@@ -6,6 +7,7 @@
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -216,32 +218,64 @@ std::vector<unsigned char> Run(
   Check(
       cropper.allocated(), "mandatory watermark did not allocate the compositor");
   const auto* transform = preview::find_playcropper_transform_meta(meta.output);
-  if (!layers) {
-    Check(!transform, "all-off/no-preview frame attached overlay transform");
-  } else {
-    Check(transform, "semantic drawing did not publish Program transform without diagnostic snapshot");
-    // Independent fixture geometry: input pixels are half metadata coordinates,
-    // source x=40..220, anchor=(90,105), crop=(0,30,180,150), angle=17*(1-130/160).
-    Check(
-        transform->input_width == 320 && transform->input_height == 240 && transform->metadata_width == 640 &&
-            transform->metadata_height == 480 && transform->source_left == 40 && transform->source_top == 0 &&
-            transform->anchor_x == 90 && transform->anchor_y == 105 && transform->crop_left == 0 &&
-            transform->crop_top == 30 && transform->crop_width == 180 && transform->crop_height == 150 &&
-            transform->output_width == 160 && transform->output_height == 120 &&
-            std::abs(transform->angle_degrees - 3.1875F) < 1e-5 && transform->object_meta_transformed,
-        "Program published a transform different from its actual crop/rotation/resize");
-    const bool drawn = confidence <= 0.9F;
-    Check(transform->baked_player_layers == (drawn ? layers : 0), "baked layers claim missing or suppressed pixels");
-    overlay::CommandList preview_commands;
-    overlay::BuildPlayerOverlays(meta.output, layers, confidence, transform, 160, 120, &preview_commands);
-    Check(preview_commands.empty() == (drawn || confidence > 0.9F), "Program preview duplicated baked player drawing");
-  }
+  Check(transform, "Program did not publish its applied transform with all diagnostic overlays off");
+  Check(
+      transform->rotation_controls_valid && transform->fixed_edge_rotation_left == 17.0F &&
+          transform->fixed_edge_rotation_right == 9.0F,
+      "Program transform omitted the fixed angles that produced its pixels");
+  // Independent fixture geometry: input pixels are half metadata coordinates,
+  // source x=40..220, anchor=(90,105), crop=(0,30,180,150), angle=17*(1-130/160).
+  Check(
+      transform->input_width == 320 && transform->input_height == 240 && transform->metadata_width == 640 &&
+          transform->metadata_height == 480 && transform->source_left == 40 && transform->source_top == 0 &&
+          transform->anchor_x == 90 && transform->anchor_y == 105 && transform->crop_left == 0 &&
+          transform->crop_top == 30 && transform->crop_width == 180 && transform->crop_height == 150 &&
+          transform->output_width == 160 && transform->output_height == 120 &&
+          std::abs(transform->angle_degrees - 3.1875F) < 1e-5 && transform->object_meta_transformed,
+      "Program published a transform different from its actual crop/rotation/resize");
+  const bool drawn = confidence <= 0.9F;
+  Check(transform->baked_player_layers == (drawn ? layers : 0), "baked layers claim missing or suppressed pixels");
+  overlay::CommandList preview_commands;
+  overlay::BuildPlayerOverlays(meta.output, layers, confidence, transform, 160, 120, &preview_commands);
+  Check(preview_commands.empty() == (drawn || confidence > 0.9F), "Program preview duplicated baked player drawing");
   const auto pixels = output.Pixels();
   cropper.Shutdown();
   Check(!cropper.allocated(), "caller retained compositor after Shutdown");
   cropper.Shutdown();
   Check(cudaStreamQuery(stream) == cudaSuccess, "idempotent Shutdown left pending work");
   return pixels;
+}
+
+void CheckRotationWithoutOverlays(cudaStream_t stream, Surface& input, Surface& output) {
+  Cropper cropper(stream);
+  Check(cropper.SetProperty({"player-drawing-layers", "0"}), "all-off player drawing rejected");
+  hm::preview::RotationFrameFence fence{"current", {{1.2F, 2.3F}}};
+  // Reuse the actual producer through an unlinked edit and backtracking. None
+  // of these frames has a diagnostic overlay snapshot or a player drawing layer.
+  for (const auto* right : {"2.3", "2.4", "2.3"}) {
+    Check(cropper.SetProperty({"fixed-edge-rotation-angle-left", "1.2"}), "live left rotation rejected");
+    Check(cropper.SetProperty({"fixed-edge-rotation-angle-right", right}), "live right rotation rejected");
+    Metadata meta;
+    Check(!preview::find_overlay_snapshot_meta(meta.output), "fixture unexpectedly enabled diagnostic overlays");
+    const auto status = cropper.GenerateOutput(meta.program, input.value, output.value);
+    Check(status.ok() && output.value->numFilled == 1, "all-off live rotation did not produce Program pixels");
+    Check(cudaStreamQuery(stream) == cudaSuccess, "all-off live rotation left unfinished output work");
+    const auto* transform = preview::find_playcropper_transform_meta(meta.output);
+    Check(transform, "all-off live rotation omitted the metadata required by Program admission");
+    const hm::preview::RotationFrameObservation observed{
+        true,
+        "current",
+        transform->rotation_controls_valid,
+        transform->fixed_edge_rotation_left,
+        transform->fixed_edge_rotation_right};
+    Check(
+        fence.Matches("program", observed) == (std::string(right) == "2.3"),
+        "Program admission did not follow exact applied angles with all overlays off");
+    Check(fence.Matches("stitched", observed), "fixed angles incorrectly gated Stitched preview");
+    Check(transform->baked_player_layers == 0, "all-off rotation claimed baked player overlays");
+    Check(!preview::find_playcropper_transform_meta(meta.original), "live rotation changed Stitched metadata");
+  }
+  cropper.Shutdown();
 }
 } // namespace
 
@@ -256,6 +290,7 @@ int main(int argc, char** argv) {
     for (size_t i = 3; i < original.size(); i += 4)
       original[i] = 255;
     input.Pixels(&original);
+    CheckRotationWithoutOverlays(stream, input, output);
     const auto off = Run(stream, input, output, 0, false, 0.3F);
     const auto empty = Run(stream, input, output, pa::kDrawPose, false, 1.0F);
     Check(empty == off, "empty semantic commands changed output pixels");
