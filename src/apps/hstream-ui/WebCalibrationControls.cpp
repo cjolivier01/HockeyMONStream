@@ -5,6 +5,7 @@
 #include <QtCore/QRegularExpression>
 #include <QtCore/QUuid>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
@@ -14,6 +15,7 @@
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
+#include "hstream/src/libs/stitching/StitchingReframe.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 namespace hm::web {
@@ -309,7 +311,9 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
   // confused with the new run's owner or its post-cleanup artifact set.
   const auto source = payload.value("source").toObject();
   require(source.size() == 2, "Calibration source requires generation and config_sha256");
-  const auto source_generation = RequiredString(source, "generation", 1024 * 1024).toStdString();
+  std::optional<std::string> source_generation;
+  if (!source.value("generation").isNull())
+    source_generation = RequiredString(source, "generation", 1024 * 1024).toStdString();
   const auto source_hash = RequiredString(source, "config_sha256", 64);
   require(QRegularExpression("^[0-9a-f]{64}$").match(source_hash).hasMatch(), "Invalid calibration source config hash");
   const auto previous_controls = payload.value("before_controls").toObject(),
@@ -321,7 +325,12 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
   const auto stop = [&] { require(!cancelled || !cancelled(), "Calibration staging cancelled"); };
   stop();
   const auto allowed = authorized_media(request);
-  auto defaults = YAML::Clone(take(hm::baseline_config::load()).values);
+  const auto baseline = take(hm::baseline_config::load()).values;
+  auto before_defaults = YAML::Clone(baseline);
+  const auto source_controls = YAML::Load(QJsonDocument(previous_controls).toJson().toStdString());
+  merge(before_defaults, source_controls);
+  st::PreserveLegacyInputLensSelection(before_defaults, source_controls);
+  auto defaults = YAML::Clone(baseline);
   merge(defaults, YAML::Load(QJsonDocument(payload.value("defaults").toObject()).toJson().toStdString()));
   const auto owner = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
   st::StitchingCalibrationPlan plan;
@@ -335,23 +344,61 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
         st::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "calibration config"));
     require(hash(bytes) == source_hash, "Calibration source config changed before staging");
     auto original = YAML::Load(bytes);
+    const auto output_generation = at(original, {"rink", "stitched_output_generation"});
+    require(
+        source_generation ? output_generation.IsScalar() && output_generation.as<std::string>() == *source_generation
+                          : !output_generation.IsDefined() || output_generation.IsNull(),
+        "Calibration staging requires the exact saved output generation or its absence");
     require(
         at(original, {"hstream_ui", "stitching_calibration", "status"}).as<std::string>() == "complete" &&
-            at(original, {"rink", "stitched_output_generation"}).as<std::string>() == source_generation,
-        "Calibration staging requires the exact completed source");
+            !st::HasStitchingReframeIntent(original),
+        "Calibration staging requires a completed source without a pending reframe");
     const auto rink = at(original, {"rink"});
     for (const auto& item : rink)
       require(
           item.first.as<std::string>().rfind("stitched_output_pending_", 0) != 0,
           "Calibration staging cannot adopt a pending live authorization");
     const auto generation = take(st::stitch_artifact_preflight_generation_id_locked(request.game));
-    check(st::validate_stitched_output_generation_hugin(source_generation, generation));
-    auto before_effective = YAML::Clone(defaults);
+    if (source_generation)
+      check(st::validate_stitched_output_generation_hugin(*source_generation, generation));
+    // Authenticate the saved tuple against its own frozen form, never the
+    // account defaults admitted for the next run. Private saved geometry wins
+    // over that lower layer, including hidden crop and leveling controls.
+    auto before_effective = YAML::Clone(before_defaults);
     merge(before_effective, original);
     before_effective["stitching"]["max_output_width"] =
-        take(st::ResolveStitchingCalibrationMaxWidth(original, defaults));
+        take(st::ResolveStitchingCalibrationMaxWidth(original, before_defaults));
     st::PreserveLegacyInputLensSelection(before_effective, original);
     const auto before = take(st::ReadStitchingCalibrationState(original, before_effective));
+    const auto stale = at(original, {"hstream_ui", "stitching_calibration", "stale_from"});
+    require(
+        !stale.IsDefined() || stale.IsNull() || (stale.IsScalar() && stale.as<std::string>().empty()),
+        "Calibration staging cannot adopt stale calibration artifacts");
+    const auto claim = at(original, {"hstream_ui", "stitching_calibration", "backend_generation"});
+    if (claim.IsDefined() && !claim.IsNull()) {
+      const auto saved_owner = at(original, {"hstream_ui", "stitching_calibration", "invalidation_id"});
+      require(
+          saved_owner.IsScalar() && !saved_owner.as<std::string>().empty(),
+          "Calibration staging requires the existing backend claim's owner");
+      // Saved-view reframes may intentionally retire the rendered output
+      // identity. Their original algorithm claim still binds the resolved
+      // controls; never replace a conflicting claim with the new launch owner.
+      const auto& controls = before.controls;
+      st::StitchingBackendChoices choices;
+      choices.control_point_matcher = controls.matcher;
+      choices.mapping_backend = controls.backend;
+      choices.projection = controls.projection;
+      choices.run_autooptimizer = controls.autooptimizer;
+      choices.projection_parameters = controls.projection_parameters;
+      choices.projection_framing = controls.framing;
+      choices.camera = controls.camera;
+      choices.control_point_resolution = take(st::read_control_point_resolution(before_effective));
+      choices.control_point_execution_provider = take(st::read_control_point_execution_provider(before_effective));
+      choices.control_point_filtering = controls.filtering;
+      choices.calibration_frame_selection_fingerprint = take(st::player_frame_selection_fingerprint(before_effective));
+      choices.manual_control_point_fingerprint = take(st::manual_control_point_fingerprint(before_effective));
+      check(st::validate_stitching_backend_generation(before_effective, saved_owner.as<std::string>(), choices));
+    }
     before_effective["stitching"]["calibration_frame_count"] = before.controls.frame_count;
     prepared = YAML::Clone(original);
     const auto previous_stitching = previous_controls.value("stitching").toObject();

@@ -511,6 +511,186 @@ void controls_staging_regressions(const QString& binary, const fs::path& source)
           "Changed synchronization cannot reuse the saved alignment for a simultaneous crop edit");
   }
 }
+void saved_view_controls_staging(const QString& binary, const fs::path& source) {
+  const auto original = read(source / "config.yaml");
+  const auto saved = YAML::Load(original);
+  expect(
+      saved["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
+          !saved["rink"]["stitched_output_generation"],
+      "Real saved-crop output must exercise the absent rendered-output identity");
+  for (const std::string name :
+       {"absent",
+        "null",
+        "legacy-no-claim",
+        "present",
+        "null-for-present",
+        "string-for-absent",
+        "omitted",
+        "wrong-type",
+        "empty",
+        "nonscalar",
+        "hash",
+        "pending",
+        "stale",
+        "reframe",
+        "live-authorization",
+        "claim-controls",
+        "claim-owner",
+        "claim-malformed",
+        "stale-output",
+        "missing-map",
+        "malformed-hugin"}) {
+    QTemporaryDir temporary;
+    const fs::path root(temporary.path().toStdString()), game = root / "game";
+    fs::copy(source, game, fs::copy_options::recursive);
+    auto config = YAML::Load(original);
+    QJsonObject payload{
+        {"version", 1},
+        {"source", QJsonObject{{"generation", QJsonValue::Null}}},
+        {"before_controls", QJsonObject{}},
+        {"desired_controls", QJsonObject{}},
+        {"defaults", QJsonObject{}},
+        {"sources", QJsonArray{}}};
+    if (name == "present" || name == "null-for-present") {
+      payload = controls_payload(game, {}, {});
+      config = YAML::LoadFile((game / "config.yaml").string());
+    }
+    auto identity = payload.value("source").toObject();
+    if (name == "null-for-present")
+      identity["generation"] = QJsonValue::Null;
+    if (name == "null")
+      config["rink"]["stitched_output_generation"] = YAML::Node(YAML::NodeType::Null);
+    if (name == "legacy-no-claim")
+      config["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+    if (name == "string-for-absent")
+      identity["generation"] = "unrelated-generation";
+    if (name == "omitted")
+      identity.remove("generation");
+    if (name == "wrong-type")
+      identity["generation"] = false;
+    if (name == "empty")
+      config["rink"]["stitched_output_generation"] = "";
+    if (name == "nonscalar")
+      config["rink"]["stitched_output_generation"]["invalid"] = true;
+    if (name == "pending")
+      config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+    if (name == "stale")
+      config["hstream_ui"]["stitching_calibration"]["stale_from"] = "canvas";
+    if (name == "reframe")
+      config["hstream_ui"]["stitching_calibration"]["reframe"] = YAML::Node(YAML::NodeType::Map);
+    if (name == "live-authorization")
+      config["rink"]["stitched_output_pending_authorization_id"] = "unfinished-live-owner";
+    if (name == "claim-controls")
+      config["stitching"]["projection_framing"]["crop"][0] = 0.2;
+    if (name == "claim-owner")
+      config["hstream_ui"]["stitching_calibration"]["backend_generation"]["invalidation_id"] = "other-owner";
+    if (name == "claim-malformed")
+      config["hstream_ui"]["stitching_calibration"]["backend_generation"] = YAML::Node(YAML::NodeType::Map);
+    if (name == "stale-output") {
+      const std::string stale =
+          "hstream-stitched-output-v1\nhugin-bytes:6\nstale\n"
+          "post-stitch-rotate-degrees:0\noutput-size:64x32\n";
+      config["rink"]["stitched_output_generation"] = stale;
+      identity["generation"] = QString::fromStdString(stale);
+    }
+    if (name == "missing-map")
+      fs::remove(game / "mapping_0000.tif");
+    if (name == "malformed-hugin")
+      write(game / "stitching_generation_id", "not-a-generation");
+    write(game / "config.yaml", YAML::Dump(config));
+    const auto initial = read(game / "config.yaml");
+    identity["config_sha256"] = name == "hash" ? QString(64, '0') : digest(initial);
+    payload["source"] = identity;
+    const bool success = name == "absent" || name == "null" || name == "legacy-no-claim" || name == "present";
+    const auto result = invoke(binary, root, "calibration-controls-stage", payload, success);
+    if (!success) {
+      expect(
+          read(game / "config.yaml") == initial, "Rejected saved-view staging must preserve the exact source config");
+      continue;
+    }
+    const auto staged = YAML::LoadFile((game / "config.yaml").string());
+    expect(
+        result.value("source").toObject() == identity && !result.value("pending").toBool() &&
+            result.value("cleanup").toString() == "none" && result.value("cleanup_completed").toBool() &&
+            result.value("config_sha256").toString() == digest(read(game / "config.yaml")) &&
+            !result.value("invalidation_id").toString().isEmpty() &&
+            result.value("invalidation_id").toString().toStdString() !=
+                config["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() &&
+            result.value("invalidation_id").toString().toStdString() ==
+                staged["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() &&
+            read(game / "mapping_0000.tif") == read(source / "mapping_0000.tif"),
+        "Saved-view no-op staging must bind exact nullable identity and a fresh owner without discarding alignment");
+    expect(
+        YAML::Dump(staged["stitching"]["projection_framing"]) == YAML::Dump(config["stitching"]["projection_framing"]),
+        "Saved-view staging must preserve accepted crop/leveling");
+    if (name != "present")
+      expect(
+          !staged["rink"]["stitched_output_generation"] || staged["rink"]["stitched_output_generation"].IsNull(),
+          "Staging cannot fabricate a rendered-output identity for a saved view");
+  }
+  expect(read(source / "config.yaml") == original, "Staging checks changed the saved-crop source");
+}
+void sparse_controls_changed_defaults(const QString& binary, const fs::path& source) {
+  const auto original = read(source / "config.yaml");
+  const auto source_config = YAML::Load(original);
+  expect(
+      !source_config["stitching"]["camera_fov"] && !source_config["stitching"]["input_lens"] &&
+          !source_config["stitching"]["camera_configs"] &&
+          source_config["hstream_ui"]["stitching_calibration"]["backend_generation"].IsMap(),
+      "The completed sparse source must use a modern profile-derived optics claim");
+  for (const std::string name : {"changed-defaults", "wrong-source-controls", "wrong-private-optics", "wrong-owner"}) {
+    QTemporaryDir temporary;
+    const fs::path root(temporary.path().toStdString()), game = root / "game";
+    fs::copy(source, game, fs::copy_options::recursive);
+    auto config = YAML::Load(original);
+    auto state = config["hstream_ui"]["stitching_calibration"];
+    state["control_points"] = YAML::Clone(config["stitching"]["control_point_limit"]);
+    state["frame_count"] = YAML::Clone(config["stitching"]["calibration_frame_count"]);
+    QJsonObject before_stitching{
+        {"camera_config", "gopro-mission-1"},
+        {"projection_framing", QJsonObject{{"rotation_degrees", QJsonArray{0, 0, 0}}}}};
+    QJsonObject current_stitching{
+        {"camera_config", "gopro-mission-1"},
+        {"camera_fov", QJsonObject{{"horizontal_fov", 110}, {"vertical_fov", 80}}},
+        {"camera_automation", QJsonObject{{"fov", false}, {"lens", false}}},
+        {"input_lens", QJsonObject{{"projection", "rectilinear"}, {"optimization", "refine"}}}};
+    auto desired_stitching = before_stitching;
+    for (auto item = current_stitching.begin(); item != current_stitching.end(); ++item)
+      desired_stitching[item.key()] = item.value();
+    if (name == "wrong-source-controls")
+      before_stitching["camera_fov"] = QJsonObject{{"horizontal_fov", 112}, {"vertical_fov", 70}};
+    if (name == "wrong-private-optics")
+      config["stitching"]["camera_fov"]["horizontal_fov"] = 112;
+    if (name == "wrong-owner")
+      state["backend_generation"]["invalidation_id"] = "unrelated-owner";
+    write(game / "config.yaml", YAML::Dump(config));
+    const auto initial = read(game / "config.yaml");
+    const QJsonObject payload{
+        {"version", 1},
+        {"source", QJsonObject{{"generation", QJsonValue::Null}, {"config_sha256", digest(initial)}}},
+        {"before_controls", QJsonObject{{"stitching", before_stitching}}},
+        {"desired_controls", QJsonObject{{"stitching", desired_stitching}}},
+        {"defaults", QJsonObject{{"stitching", current_stitching}}},
+        {"sources", QJsonArray{}}};
+    const bool success = name == "changed-defaults";
+    const auto result = invoke(binary, root, "calibration-controls-stage", payload, success);
+    if (!success) {
+      expect(read(game / "config.yaml") == initial, "Conflicting old optics or claims must fail before staging");
+      continue;
+    }
+    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    const auto camera = value(read_stitch_camera_selection(stored));
+    expect(
+        result.value("source") == payload.value("source") && result.value("pending").toBool() &&
+            result.value("start_stage").toString() == "canvas" && result.value("cleanup_completed").toBool() &&
+            camera.horizontal_fov == 110 && camera.vertical_fov == 80 &&
+            stored["stitching"]["input_lens"]["optimization"].as<std::string>() == "refine" &&
+            YAML::Dump(stored["stitching"]["projection_framing"]) ==
+                YAML::Dump(config["stitching"]["projection_framing"]),
+        "New Defaults must change desired optics without corrupting the source claim or replacing saved framing");
+  }
+  expect(read(source / "config.yaml") == original, "Defaults staging changed the completed sparse source");
+}
 void sparse_still_defaults(const QString& binary) {
   QTemporaryDir temporary;
   const fs::path root(temporary.path().toStdString()), game = root / "game", home = root / "home";
@@ -542,6 +722,7 @@ void sparse_still_defaults(const QString& binary) {
       complete().value("preview").toString() == "game/setup-preview.png",
       "Sparse modern completion must inherit baseline camera optics");
   expect(fs::is_empty(home), "Read-only completion must not create user preferences");
+  sparse_controls_changed_defaults(binary, game);
   auto user = YAML::Load(
       "stitching: {camera_fov: {horizontal_fov: 113, vertical_fov: 71}, input_lens: {optimization: fixed}}\n");
   effective["stitching"]["camera_fov"] = YAML::Clone(user["stitching"]["camera_fov"]);
@@ -795,6 +976,7 @@ int main(int argc, char** argv) {
     expect(
         final.value("saved").toBool() && final.value("calibration_complete").toBool(),
         "Crop save must publish a new view");
+    saved_view_controls_staging(argv[1], game);
     const auto hugin = [&]() {
       auto lock = value(lock_canvas_constraint_artifacts(game));
       return value(stitch_artifact_generation_id_locked(game));

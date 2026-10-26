@@ -140,7 +140,8 @@ QJsonObject Capabilities() {
            "saved-calibration-still-v1",
            "saved-calibration-reset-v1",
            "calibration-view-rotation-stage-v1",
-           "calibration-controls-stage-v1"}},
+           "calibration-controls-stage-v1",
+           "calibration-controls-stage-v2"}},
       {"maximum_request_bytes", int(kMaximumRequestBytes)},
       {"maximum_result_bytes", int(kMaximumResultBytes)}};
 }

@@ -490,7 +490,7 @@ identity receipts. `desired_generation` describes the source dimensions with
 the requested rotation; startup owns publication of the actual output geometry
 and regenerated downstream artifacts.
 
-`calibration-controls-stage` (`calibration-controls-stage-v1`) stages ordinary
+`calibration-controls-stage` (`calibration-controls-stage-v2`) stages ordinary
 unsaved Play controls in a private copy of a completed calibration. Qt Play and
 this adapter call `StitchingCalibrationControls` for the dependency stage,
 selected-frame/manual-match retention, reframe capture and cleanup owner. This
@@ -501,7 +501,7 @@ dispatch and supply exactly these payload fields:
 ```json
 {
   "version": 1,
-  "source": {"generation": "exact saved output generation", "config_sha256": "64 lowercase hex characters"},
+  "source": {"generation": null, "config_sha256": "64 lowercase hex characters"},
   "before_controls": {},
   "desired_controls": {},
   "defaults": {},
@@ -509,11 +509,28 @@ dispatch and supply exactly these payload fields:
 }
 ```
 
+`source.generation` is the exact nonempty saved `rink.stitched_output_generation`
+string, or explicit JSON null only when that field is absent or YAML null. Saved
+crop/leveling reframes can legitimately complete while retiring that rendered
+output identity. Empty strings, omitted request keys and mismatched presence
+fail; the caller must never synthesize a generation. Version 2 advertises this
+nullable identity contract; payload/result version 1 and the existing string
+contract remain compatible, so the adapter also advertises the v1 capability.
+
 The adapter applies only changed leaves between the two control snapshots over
-the actual saved private config. It verifies the source hash, completed output
-and Hugin identity under artifact/config locks. Defaults are the bundled baseline
-plus the supplied frozen calibration overlay; staging never reloads the process
-user's defaults. Legacy private width aliases retain precedence over baseline
+the actual saved private config. It verifies the exact source hash, completed
+nonstale state without a reframe or pending live authorization, and mandatory
+Hugin preflight identity under artifact/config locks. A saved output generation
+must additionally match that Hugin identity. Existing backend claims must match
+their original owner and frozen resolved controls; supported legacy completed
+sources without a claim do not acquire one merely for admission. The returned
+source preserves the exact nullable identity, and every accepted stage still
+claims a fresh invalidation owner. The old tuple resolves from bundled baseline,
+source-owned `before_controls`, then the original private config. That last layer
+preserves hidden framing and saved optics. New account Defaults cannot change
+the claim being authenticated. Desired controls resolve against the bundled
+baseline plus the supplied current frozen calibration overlay; staging never
+reloads the process user's defaults. Legacy private width aliases retain precedence over baseline
 values. `defaults`, `before_controls` and `desired_controls` accept these canonical
 calibration roots:
 
