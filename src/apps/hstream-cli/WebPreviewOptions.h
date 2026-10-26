@@ -91,6 +91,7 @@ struct WebScoreboardRequest {
   std::string position;
 };
 absl::StatusOr<WebScoreboardRequest> ParseWebScoreboard(const std::string& json);
+std::string WebScoreboardSelectionPhase(const RouteOwner::Session& session, bool active);
 std::string WebScoreboardReply(
     const WebScoreboardRequest& request,
     const std::string& status,

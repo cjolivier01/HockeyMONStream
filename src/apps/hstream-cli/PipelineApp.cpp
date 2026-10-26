@@ -7818,6 +7818,24 @@ void PipelineApplication::remember_scoreboard_selection(
 
 gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage* message) {
   const GstStructure* structure = message ? gst_message_get_structure(message) : nullptr;
+  if (structure && gst_structure_has_name(structure, "hstream-operator-selection-phase")) {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    const auto active_stage = stage_app_contexts_.find(current_stage_);
+    gboolean active = FALSE;
+    if (web_preview_ && app_ctx && active_stage != stage_app_contexts_.end() &&
+        std::any_of(
+            active_stage->second.begin(),
+            active_stage->second.end(),
+            [app_ctx](const auto& context) { return context.get() == app_ctx; }) &&
+        GST_MESSAGE_SRC(message) == GST_OBJECT(app_ctx->pipeline.common_elements.hmplaycropper_bin.playcropper) &&
+        gst_structure_get_boolean(structure, "active", &active)) {
+      g_print(
+          "HSTREAM_WEB_SCOREBOARD_SELECTION %s\n",
+          hm::preview::WebScoreboardSelectionPhase(web_preview_->identity(), active).c_str());
+      std::fflush(stdout);
+    }
+    return TRUE;
+  }
   if (structure && gst_structure_has_name(structure, "hstream-scoreboard-selected")) {
     std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
     if (!app_ctx)

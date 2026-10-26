@@ -423,6 +423,17 @@ std::string WebCameraControlsReply(
   });
 }
 
+std::string WebScoreboardSelectionPhase(const RouteOwner::Session& session, bool active) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", session.run);
+    Add(builder, "stage", session.stage);
+    Add(builder, "topology", std::to_string(session.topology));
+    json_builder_set_member_name(builder, "active");
+    json_builder_add_boolean_value(builder, active);
+  });
+}
+
 absl::StatusOr<WebScoreboardRequest> ParseWebScoreboard(const std::string& json) {
   if (json.empty() || json.size() > 1024)
     return absl::InvalidArgumentError("Scoreboard JSON exceeds its limit");
