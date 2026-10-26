@@ -373,7 +373,10 @@ absl::Status configure_orientation(
 
 bool is_scoreboard_configured(const std::string& game_dir);
 
-absl::Status configure_scoreboard(const std::string& game_dir, const std::function<bool()>& is_cancelled = {});
+absl::Status configure_scoreboard(
+    const std::string& game_dir,
+    const std::function<bool()>& is_cancelled = {},
+    bool explicit_request = false);
 
 // The fingerprint is frozen before frame capture. Empty explicitly identifies ordinary
 // frame spacing; a changed, cleared, or newly added selection aborts before extraction

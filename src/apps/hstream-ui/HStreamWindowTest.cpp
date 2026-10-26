@@ -658,6 +658,23 @@ struct HStreamWindowTestAccess {
     return window->live_rotation_authorization_pending_;
   }
 
+  static void holdRuntimeControlsForPause(HStreamWindow* window) {
+    window->pipeline_paused_ = true;
+  }
+
+  static void beginRuntimeControlsResume(HStreamWindow* window, quint64 generation) {
+    window->pipeline_paused_ = false;
+    window->pending_process_resume_generation_ = generation;
+    window->flushScheduledRuntimeControls();
+  }
+
+  static bool rotationDraftRetained(HStreamWindow* window, int value) {
+    const auto draft = window->scheduled_rotation_controls_.find("Stitch_Rotate_Degrees");
+    return draft != window->scheduled_rotation_controls_.end() && draft->second == value &&
+        window->scheduled_rotation_controls_ready_ && window->runtime_control_batches_.empty() &&
+        window->pending_runtime_controls_.empty() && !window->active_live_rotation_authorization_.has_value();
+  }
+
   static void beginPendingPlaybackSeek(HStreamWindow* window, quint64 generation) {
     window->active_run_local_render_only_ = true;
     window->active_run_is_calibration_ = false;
@@ -7295,6 +7312,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     responsiveness_timer.start();
     qint64 responsive_callback_ms = -1;
     QTimer::singleShot(180, window, [&]() { responsive_callback_ms = responsiveness_timer.elapsed(); });
+    const int paused_rotation_commands_before =
+        window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=");
     rotate->setValue(73);
     for (int i = 0; i < 80 && responsive_callback_ms < 0; ++i) {
       QApplication::processEvents();
@@ -7303,7 +7322,34 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const bool authorization_was_async = !config_lock_failed && config_lock_acquired &&
         HStreamWindowTestAccess::liveRotationAuthorizationPending(window) && responsive_callback_ms >= 0 &&
         responsive_callback_ms < 325;
+    HStreamWindowTestAccess::holdRuntimeControlsForPause(window);
     config_locker.join();
+    for (int i = 0; i < 200 && HStreamWindowTestAccess::liveRotationAuthorizationPending(window); ++i)
+      QTest::qWait(10);
+    const YAML::Node paused_rotation_config = YAML::LoadFile(config.string());
+    if (!expect(
+            !HStreamWindowTestAccess::liveRotationAuthorizationPending(window) &&
+                HStreamWindowTestAccess::rotationDraftRetained(window, 73) &&
+                window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=") ==
+                    paused_rotation_commands_before &&
+                !paused_rotation_config["rink"]["stitched_output_pending_generation"].IsDefined(),
+            "Authorization completed after Pause must roll back its epoch and retain the draft without an ACK timer")) {
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+      activate(stop);
+      return false;
+    }
+    HStreamWindowTestAccess::beginRuntimeControlsResume(window, 113);
+    QTest::qWait(180);
+    if (!expect(
+            HStreamWindowTestAccess::rotationDraftRetained(window, 73) &&
+                window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=") ==
+                    paused_rotation_commands_before,
+            "Rotation authorization must wait for the matching Resume acknowledgement")) {
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+      activate(stop);
+      return false;
+    }
+    HStreamWindowTestAccess::reportProcessPause(window, "resumed", 113);
     for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"); ++i) {
       QApplication::processEvents();
       QTest::qWait(10);

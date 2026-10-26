@@ -1048,7 +1048,7 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
               gst_structure_new("hstream-operator-selection-phase", "active", G_TYPE_BOOLEAN, selecting, nullptr)));
     }
   } activity(scoreboard_selection_active_, GST_ELEMENT(m_element));
-  const auto selection = stitching::configure_scoreboard(game_dir.string(), is_cancelled);
+  const auto selection = stitching::configure_scoreboard(game_dir.string(), is_cancelled, reselect);
   if (reselect && absl::IsCancelled(selection) && !is_cancelled()) {
     std::cout << "Scoreboard selection cancelled; keeping previous selection" << std::endl;
     return absl::OkStatus();

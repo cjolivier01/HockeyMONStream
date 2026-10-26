@@ -854,7 +854,10 @@ absl::StatusOr<ScoreboardSelector::CanvasSnapshot> ScoreboardSelector::OpenCanva
   return CanvasSnapshot{dimensions.cols, dimensions.rows, std::move(snapshot_bytes), canvas_generation};
 }
 
-absl::Status ScoreboardSelector::Run(const fs::path& game_dir, const std::function<bool()>& is_cancelled) {
+absl::Status ScoreboardSelector::Run(
+    const fs::path& game_dir,
+    const std::function<bool()>& is_cancelled,
+    bool explicit_request) {
   const auto cancellation = [&]() -> absl::Status {
     return is_cancelled && is_cancelled() ? absl::CancelledError("Scoreboard selection cancelled by pipeline stop")
                                           : absl::OkStatus();
@@ -868,7 +871,10 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir, const std::functi
                                      std::chrono::steady_clock::time_point deadline) {
     respond_best_effort(socket, status, reason, content_type, body, deadline, is_cancelled);
   };
-  if (const char* disabled = std::getenv("HM_NO_SCOREBOARD"); disabled != nullptr && std::string(disabled) == "1") {
+  // Suppress automatic startup prompts without swallowing a deliberate Qt or
+  // browser Select scoreboard action later in the same session.
+  if (const char* disabled = std::getenv("HM_NO_SCOREBOARD");
+      !explicit_request && disabled != nullptr && std::string(disabled) == "1") {
     return Save(game_dir, {});
   }
   CanvasSnapshot canvas;

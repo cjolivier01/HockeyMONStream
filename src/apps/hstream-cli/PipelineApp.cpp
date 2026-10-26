@@ -1850,15 +1850,19 @@ absl::Status PipelineApplication::createPipelines(
 }
 
 absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
-  if (!stitching_calibration_only_ && current_stage_ == 0 && !web_camera_defaults_) {
-    hm::baseline_config::BaselineConfig baseline;
-    HM_ASSIGN_OR_RETURN(baseline, hm::baseline_config::load());
-    hm::tracking::CameraControlValues defaults;
-    HM_ASSIGN_OR_RETURN(defaults, hm::tracking::ReadPlaytrackerControlValues(baseline.values));
-    web_camera_defaults_ = std::move(defaults);
+  if (!stitching_calibration_only_ && current_stage_ == 0) {
+    if (!web_camera_defaults_) {
+      hm::baseline_config::BaselineConfig baseline;
+      HM_ASSIGN_OR_RETURN(baseline, hm::baseline_config::load());
+      hm::tracking::CameraControlValues defaults;
+      HM_ASSIGN_OR_RETURN(defaults, hm::tracking::ReadPlaytrackerControlValues(baseline.values));
+      web_camera_defaults_ = std::move(defaults);
+    }
     const auto& config = app.configurator().config();
     const auto section = config["pipeline"]["ds-playtracker"];
-    if (section.IsMap() && section["enable"].IsScalar() && config_section_enabled(section)) {
+    // Timed mask preparation has no Program tracker. Seed its controls when
+    // the final graph enables it, retaining live values across later rebuilds.
+    if (!web_camera_controls_ && section.IsMap() && section["enable"].IsScalar() && config_section_enabled(section)) {
       hm::tracking::CameraControlValues values;
       HM_ASSIGN_OR_RETURN(values, hm::tracking::ReadPlaytrackerControlValues(config));
       if (!section["config-file"].IsScalar())
@@ -8426,7 +8430,10 @@ gboolean PipelineApplication::event_thread_func() {
           resume_pipeline(app_ctx[i].get());
       break;
     case 'q':
-      player_scan_interrupted_ = TRUE;
+      // Stop finalizes ordinary playback archives. A timed player scan still
+      // requires its natural boundary and must retain cancellation semantics.
+      if (player_frame_scan_)
+        player_scan_interrupted_ = TRUE;
       quit_ = TRUE;
       if (main_loop_)
         g_main_loop_quit(main_loop_);
@@ -8546,7 +8553,8 @@ gpointer PipelineApplication::nvds_x_event_thread() {
             break;
           }
           if (e.xkey.keycode == q) {
-            player_scan_interrupted_ = TRUE;
+            if (player_frame_scan_)
+              player_scan_interrupted_ = TRUE;
             quit_ = TRUE;
             if (main_loop_)
               g_main_loop_quit(main_loop_);
@@ -8562,7 +8570,8 @@ gpointer PipelineApplication::nvds_x_event_thread() {
               break;
           wm_delete = XInternAtom(display_, "WM_DELETE_WINDOW", 1);
           if (wm_delete != None && wm_delete == (Atom)e.xclient.data.l[0]) {
-            player_scan_interrupted_ = TRUE;
+            if (player_frame_scan_)
+              player_scan_interrupted_ = TRUE;
             quit_ = TRUE;
             if (main_loop_)
               g_main_loop_quit(main_loop_);

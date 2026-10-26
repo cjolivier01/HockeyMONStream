@@ -5512,8 +5512,11 @@ bool is_scoreboard_configured(const std::string& game_dir) {
   }
 }
 
-absl::Status configure_scoreboard(const std::string& game_dir, const std::function<bool()>& is_cancelled) {
-  HM_RETURN_IF_ERROR(ScoreboardSelector::Run(game_dir, is_cancelled));
+absl::Status configure_scoreboard(
+    const std::string& game_dir,
+    const std::function<bool()>& is_cancelled,
+    bool explicit_request) {
+  HM_RETURN_IF_ERROR(ScoreboardSelector::Run(game_dir, is_cancelled, explicit_request));
   if (!is_scoreboard_configured(game_dir)) {
     return absl::InternalError("Scoreboard selector completed without writing perspective_polygon");
   }

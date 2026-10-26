@@ -22953,7 +22953,7 @@ void HStreamWindow::completeLiveRotationAuthorization(
       ? std::optional<LiveRotationAuthorization>(LiveRotationAuthorization{
             game_id, game_dir, pending_generation, authorization_id, invalidate_scoreboard, scoreboard_property_value})
       : std::nullopt;
-  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || pipeline_stop_requested_ ||
       pipeline_run_generation_ != pipeline_run_generation || active_run_game_id_ != game_id) {
     if (authorization.has_value()) {
       active_live_rotation_authorization_ = authorization;
@@ -22968,6 +22968,34 @@ void HStreamWindow::completeLiveRotationAuthorization(
     for (auto& [id, value] : controls)
       scheduled_rotation_controls_.try_emplace(id, value);
     flushScheduledRuntimeControls();
+    return;
+  }
+  if (pipeline_paused_ || pending_process_pause_generation_ != 0 || pending_process_resume_generation_ != 0 ||
+      pending_playback_seek_generation_ != 0 || playback_seek_recovery_generation_ != 0) {
+    // Authorization runs off-thread. Playback can stop accepting properties
+    // while it waits for the config lock, so retire this exact epoch before
+    // letting the scheduler authorize the retained draft after recovery.
+    for (const auto& [id, value] : controls)
+      scheduled_rotation_controls_.try_emplace(id, value);
+    scheduled_rotation_controls_ready_ = true;
+    if (authorization.has_value()) {
+      active_live_rotation_authorization_ = authorization;
+      rollbackLiveRotationAuthorization(
+          *authorization,
+          "playback transition before publication",
+          [this, authorization](
+              bool rolled_back, const std::optional<LiveRotationAuthorization>& restored, const QString&) {
+            if (rolled_back && active_live_rotation_authorization_.has_value() &&
+                active_live_rotation_authorization_->authorization_id == authorization->authorization_id) {
+              active_live_rotation_authorization_.reset();
+            }
+            adoptRestoredLiveRotationAuthorization(restored, "pipeline no longer owns deferred live rotation");
+            if (!rolled_back) {
+              appendLog("deferred live rotation authorization could not be reconciled; stopping pipeline");
+              stopPipeline();
+            }
+          });
+    }
     return;
   }
   if (!authorized) {
