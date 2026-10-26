@@ -387,6 +387,7 @@ class PipelineApplication {
   std::map<long, std::map<int, hm::PlaybackProgressMetrics>> ui_progress_by_stage_;
   uint64_t playback_progress_generation_{0};
   uint64_t process_pause_generation_{0};
+  std::vector<std::weak_ptr<HmApp>> process_clock_paused_;
   bool process_pause_active_{false};
   std::unique_ptr<hm::TerminalProgressUi> progress_ui_;
   std::mutex playback_timing_mu_;

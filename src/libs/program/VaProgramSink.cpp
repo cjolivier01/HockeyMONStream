@@ -15,6 +15,7 @@
 #include <cmath>
 #include <thread>
 
+#include "hstream/src/libs/common/PacedPlayback.h"
 #include "hstream/src/libs/gpu/vaapi/VaElement.h"
 #include "hstream/src/libs/media/Mp4AudioEdit.h"
 #include "hstream/src/libs/program/EncodedColorimetry.h"
@@ -87,9 +88,12 @@ struct VaProgramSink::Impl {
   bool retired{false}, eos_sent{false}, finished{false}, audio_finalized{false};
   bool paused{false};
   std::shared_ptr<PreviewState> preview;
+  std::shared_ptr<hm::gst::PacedPlayback> paced_playback;
   gulong preview_draw_handler{};
   std::atomic<bool> cancelled{false};
   ~Impl() {
+    if (paced_playback)
+      paced_playback->Cancel();
     if (pipeline)
       gst_element_set_state(pipeline, GST_STATE_NULL);
     if (sink && preview_draw_handler)
@@ -116,8 +120,15 @@ struct VaProgramSink::Impl {
       return absl::CancelledError("Program output cancelled");
     if (retired)
       return absl::FailedPreconditionError("Program output retired after failure");
-    while (auto* message =
-               gst_bus_pop_filtered(bus, static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS))) {
+    while (auto* message = gst_bus_pop_filtered(
+               bus, static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS | GST_MESSAGE_LATENCY))) {
+      if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_LATENCY) {
+        const bool configured = gst_bin_recalculate_latency(GST_BIN(pipeline));
+        gst_message_unref(message);
+        if (!configured)
+          return Retire(absl::UnavailableError("Cannot configure Program presentation latency"));
+        continue;
+      }
       if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
         GError* error{};
         gchar* debug{};
@@ -139,8 +150,10 @@ struct VaProgramSink::Impl {
   void PauseUntil(Clock::time_point deadline) const {
     const auto remaining = deadline - Clock::now();
     if (remaining > Clock::duration::zero())
-      std::this_thread::sleep_for(std::min(
-          remaining, std::chrono::duration_cast<Clock::duration>(std::chrono::nanoseconds(config.cancellation_poll))));
+      std::this_thread::sleep_for(
+          std::min(
+              remaining,
+              std::chrono::duration_cast<Clock::duration>(std::chrono::nanoseconds(config.cancellation_poll))));
   }
 };
 VaProgramSink::VaProgramSink(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -282,10 +295,33 @@ absl::StatusOr<std::unique_ptr<VaProgramSink>> VaProgramSink::Create(const VaPro
         return absl::InternalError("Program audio graph is missing its output");
       g_object_set(output, "sync", config.realtime, "async", FALSE, nullptr);
       if (config.kind == VaProgramSinkKind::kPreview) {
-        // Video owns pacing. An ALSA clock can remain at zero until its device
-        // buffer fills, while a small video pool prevents submitting enough
-        // PCM to fill that buffer. Both sinks instead follow the system clock.
+        // The shared owner selects the physical clock only for paced audio,
+        // after configuring bounded device lead and validating video retention.
+        // Unpaced monitoring must not supply a pipeline clock.
         g_object_set(output, "provide-clock", FALSE, nullptr);
+        if (config.realtime) {
+          auto* video_ingress = gst_element_get_static_pad(impl->input, "src");
+          impl->paced_playback = config.audio->paced_playback
+              ? hm::gst::PacedPlayback::Create(impl->pipeline, video_ingress, *config.audio->paced_playback)
+              : nullptr;
+          gst_object_unref(video_ingress);
+          if (!impl->paced_playback || !impl->paced_playback->AttachAudioSink(output)) {
+            gst_object_unref(output);
+            return absl::InvalidArgumentError("Paced Program audio requires resolved shared presentation settings");
+          }
+          // glimagesink wraps its clocked GstBaseSink in GstGLSinkBin. Keep
+          // visibility/window ownership on the bin, but pace the renderer
+          // that actually waits for and presents each GPU frame.
+          GstElement* renderer = nullptr;
+          g_object_get(impl->sink, "sink", &renderer, nullptr);
+          const bool attached = renderer && impl->paced_playback->AttachVideoSink(renderer, config.pool_frames);
+          if (renderer)
+            gst_object_unref(renderer);
+          if (!attached) {
+            gst_object_unref(output);
+            return absl::InternalError("Paced Program preview has no clocked GL renderer");
+          }
+        }
         if (!config.audio->alsa_device.empty())
           g_object_set(output, "device", config.audio->alsa_device.c_str(), nullptr);
         auto* volume = gst_bin_get_by_name(GST_BIN(impl->pipeline), "volume");
@@ -301,7 +337,7 @@ absl::StatusOr<std::unique_ptr<VaProgramSink>> VaProgramSink::Create(const VaPro
   }
   if (config.kind == VaProgramSinkKind::kHevcMp4) {
     impl->fd = fcntl(config.output_fd, F_DUPFD_CLOEXEC, 0);
-    struct stat file {};
+    struct stat file{};
     if (impl->fd < 0 || lseek(impl->fd, 0, SEEK_CUR) != 0 || fstat(impl->fd, &file) || !S_ISREG(file.st_mode) ||
         file.st_size != 0)
       return absl::InvalidArgumentError("MP4 output descriptor must select an empty regular file at offset zero");
@@ -534,8 +570,12 @@ absl::Status VaProgramSink::SetPaused(bool paused) {
   if (impl.eos_sent)
     return absl::FailedPreconditionError("Cannot pause Program output after EOS");
   if (paused != impl.paused) {
+    if (paused && impl.paced_playback && !impl.paced_playback->PreparePause())
+      return impl.Retire(absl::UnavailableError("Program audio did not quiesce before pause"));
     if (gst_element_set_state(impl.pipeline, paused ? GST_STATE_PAUSED : GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
       return impl.Retire(absl::UnavailableError("Program output refused pause/resume"));
+    if (!paused && impl.paced_playback && !impl.paced_playback->ResumeAudioClock())
+      return impl.Retire(absl::UnavailableError("Program audio device refused resume"));
     impl.paused = paused;
   }
   return impl.Poll();
@@ -575,6 +615,8 @@ absl::Status VaProgramSink::ResetTimeline() {
 }
 void VaProgramSink::Cancel() noexcept {
   impl_->cancelled.store(true, std::memory_order_relaxed);
+  if (impl_->paced_playback)
+    impl_->paced_playback->Cancel();
 }
 const GstVideoInfo& VaProgramSink::video_info() const {
   return impl_->config.video;

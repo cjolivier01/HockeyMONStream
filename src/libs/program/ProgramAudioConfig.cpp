@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "hstream/src/libs/common/ConfigPath.h"
+#include "hstream/src/libs/common/PacedPlaybackConfig.h"
 
 namespace hm::program {
 namespace {
@@ -78,6 +79,10 @@ absl::StatusOr<std::optional<ProgramAudioConfig>> ResolveProgramAudioConfig(
         return absl::InvalidArgumentError("Program audio must select a camera with zero stitching offset");
       ProgramAudioConfig result{};
       result.camera = camera;
+      const auto paced = hm::gst::ReadPacedPlaybackSettings(config.values);
+      if (!paced.ok())
+        return paced.status();
+      result.paced_playback = *paced;
       result.reader.operation_timeout_ns =
           Positive(config, "runtime.amd.operation_timeout_ms", INT64_MAX / 1000000) * 1000000;
       result.reader.maximum_packet_bytes = Positive(config, "runtime.amd.audio.maximum_packet_bytes", INT_MAX);

@@ -842,10 +842,25 @@ from blocking the next video submission. The mux selects the earliest packet
 without chunk batching, so it cannot hold audio waiting for a future video chunk
 past the bounded producer. Preview uses
 ALSA, the configured `alsa-dest-device`, and `HSTREAM_RENDER_AUDIO_MUTED` for the
-initial mute. Normal-speed preview shares the system presentation clock (ALSA follows it); an unpaced
+initial mute. Normal-speed preview uses the same `common/PacedPlayback` owner
+as native NVIDIA playback: video and PCM follow the sole monitor's physical
+clock, including processing stalls and pause/resume. Required bounds come from
+`runtime.local_playback` in the canonical baseline. Negotiated device lead must
+fit the retained preview frames; an oversized device fails explicitly. The
+presentation probe attaches to the concrete renderer inside `glimagesink`;
+the wrapping bin retains window and visibility ownership. An unpaced
 preview drops old monitor-only PCM when its bounded appsrc fills. Archive audio
 always retains samples. Blocking audio pushes and mux EOS have cancellable
 waits. All PCM work is CPU audio work; video stays GPU-resident.
+
+The shared CPU device regression checks every unique PCM sample across AAC/video
+boundaries, processing stalls, queued pause/resume and READY reconstruction. It
+also verifies exact archive samples/PTS, cancellation and history/device bounds.
+PCM placement is compared to video targets in device sample positions, separately
+from wall-time skew; late device-period publication is scheduled explicitly.
+ROCm compilation and CPU checks on `ripper` do not qualify audible AMD hardware
+playback. Sustained real-device pause/seek/Stop and source-correlated PCM remain
+required before claiming normal-speed audio parity.
 
 `media/Mp4AudioEdit` now owns the fixed-size MP4 edits previously local to
 `HighlightMp4Audio`. Both callers preserve avenc_aac's 1024-sample decoder preroll

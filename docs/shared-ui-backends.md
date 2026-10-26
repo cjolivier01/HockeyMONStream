@@ -37,6 +37,49 @@ menu retains both DeepStream and NVIDIA ReIdentificationNet selections. Encoded
 rink mini-maps currently require native Program processing; Python launch rejects
 `output.rink-map.enable` instead of silently omitting the requested overlay.
 
+## Native normal-speed audio
+
+With `--render-realtime`, native NVIDIA and AMD Program playback use
+`common/PacedPlayback` when a source-correlated local audio monitor is enabled.
+One bounded epoch maps original video intervals to a common presentation
+clock. Processing stalls delay both video and matching PCM; archive headers,
+PCM and original timestamps stay unchanged. The private audio branch shares
+PCM memory and splits only its headers at video/sample boundaries. Its sample
+positions use one consistent nanosecond rounding rule, so a rounded AAC packet
+PTS cannot move a boundary sample under the previous video's stall offset. Video
+buffers are neither mapped nor read back.
+
+The sole monitor provides the physical clock. The upstream latency reply retains
+producer requirements and includes negotiated device lead for both sinks.
+`runtime.local_playback` supplies required device requests, queue/history bounds,
+preview retention, mapping deadline and pause-quiescence deadline. Device lead
+that cannot fit retained video buffers, unknown source durations and missing
+epoch mappings fail explicitly. Preview queues retain scaled images after
+conversion within the existing image budget.
+
+PCM admission retains one actual video interval plus the configured
+`audio_queue_buffers`/`audio_queue_bytes` headroom. Both finite queue limits derive
+from that interval and the negotiated sample format, so low-rate video cannot
+wait for PCM blocked behind its own queue. Admission uses the same ceiling
+sample cells as monitor splitting; audio EOS releases a genuinely shorter tail.
+
+Before native desktop SIGSTOP or CLI/X11 pause, the runner finishes any active private PCM push,
+holds pending PCM and pauses the GStreamer graph and device. Resume starts the
+preserved physical cursor before releasing those pushes. The pipeline keeps its
+base time through that physical-clock pause: a device period published after
+the pause snapshot must not move video behind PCM retained by the device.
+Resume and cancellation restore ordinary start-time bookkeeping. Seek/READY
+cancels old waits and the next serialized source segment creates a fresh history. These
+changes do not qualify the independent HockeyMON Python Program backend or
+browser audio transport. CPU sample-conservation tests and backend compilation
+are prerequisites; sustained source-correlated hardware playback, native frame
+receipts, pause, seek and graceful Stop still require qualification.
+
+Same-stage calibration restarts preserve a surviving peer's PCM and clock through
+the shared asynchronous pause/resume requests. The GLib restart loop polls PCM
+quiescence under its existing deadline; it never waits for a device push to finish
+inside that callback. A failed restart cancels peer mappings before retirement.
+
 ## Ownership
 
 The backend selection changes Program processing. Calibration, leveling, rink

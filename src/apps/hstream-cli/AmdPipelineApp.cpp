@@ -299,7 +299,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
         audio_config->queue_samples,
         audio_config->bitrate,
         audio_config->alsa_device,
-        mute && std::string(mute) == "1"};
+        mute && std::string(mute) == "1",
+        audio_config->paced_playback};
   }
   for (const auto& name : args.sinks) {
     const auto kind = files.count(name) ? hm::program::VaProgramSinkKind::kHevcMp4

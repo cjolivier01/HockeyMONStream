@@ -3,6 +3,7 @@
 #include "hstream/src/apps/apps-common/ProgramTrackColors.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
+#include "hstream/src/libs/common/PacedPlayback.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/common/ShutdownWatchdog.h"
 #include "hstream/src/libs/common/TrackColorMeta.h"
@@ -489,6 +490,10 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       }
       break;
     }
+    case GST_MESSAGE_LATENCY:
+      if (!gst_bin_recalculate_latency(GST_BIN(appCtx->pipeline.pipeline)))
+        NVGSTDS_WARN_MSG_V("Could not recalculate pipeline presentation latency");
+      break;
     case GST_MESSAGE_STATE_CHANGED: {
       GstState oldstate, newstate;
       gst_message_parse_state_changed(message, &oldstate, &newstate, NULL);
@@ -2641,10 +2646,13 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
   // Do not wait for fresh preroll: retiring the sources below supplies EOS.
   // Completed/failed graphs must not restart processing during cleanup.
   if (!appCtx->eos_received && appCtx->return_value == 0 &&
-      (current == GST_STATE_PAUSED || pending == GST_STATE_PAUSED) &&
-      gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
-    g_printerr("Pipeline could not resume to finalize EOS during shutdown\n");
-    appCtx->return_value = -1;
+      (current == GST_STATE_PAUSED || pending == GST_STATE_PAUSED)) {
+    const auto paced = hm::gst::PacedPlayback::Find(pipeline);
+    if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE ||
+        (paced && !paced->ResumeAudioClock())) {
+      g_printerr("Pipeline could not resume to finalize EOS during shutdown\n");
+      appCtx->return_value = -1;
+    }
   }
   stop_uri_playlist_sources_gracefully(&appCtx->pipeline.multi_src_bin);
   if (appCtx->return_value != 0) {
@@ -2886,9 +2894,14 @@ gboolean pause_pipeline(AppCtx* appCtx) {
     set_uri_playlist_waits_paused(&appCtx->pipeline.multi_src_bin, TRUE);
     return TRUE;
   } else if (cur == GST_STATE_PLAYING) {
+    const auto paced = hm::gst::PacedPlayback::Find(appCtx->pipeline.pipeline);
+    if (paced && !paced->PreparePause())
+      return FALSE;
     set_uri_playlist_waits_paused(&appCtx->pipeline.multi_src_bin, TRUE);
     if (gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
       set_uri_playlist_waits_paused(&appCtx->pipeline.multi_src_bin, FALSE);
+      if (paced)
+        paced->ResumeAudioClock();
       return FALSE;
     }
     ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
@@ -2896,6 +2909,8 @@ gboolean pause_pipeline(AppCtx* appCtx) {
         (pending != GST_STATE_VOID_PENDING && pending != GST_STATE_PAUSED)) {
       if (cur != GST_STATE_PAUSED && pending != GST_STATE_PAUSED) {
         set_uri_playlist_waits_paused(&appCtx->pipeline.multi_src_bin, FALSE);
+        if (paced)
+          paced->ResumeAudioClock();
       }
       return FALSE;
     }
@@ -2921,6 +2936,9 @@ gboolean resume_pipeline(AppCtx* appCtx) {
   }
 
   if (cur == GST_STATE_PLAYING) {
+    const auto paced = hm::gst::PacedPlayback::Find(appCtx->pipeline.pipeline);
+    if (paced && !paced->ResumeAudioClock())
+      return FALSE;
     set_uri_playlist_waits_paused(&appCtx->pipeline.multi_src_bin, FALSE);
     return TRUE;
   } else if (cur == GST_STATE_PAUSED) {
@@ -2935,6 +2953,9 @@ gboolean resume_pipeline(AppCtx* appCtx) {
         (pending != GST_STATE_VOID_PENDING && pending != GST_STATE_PLAYING)) {
       return FALSE;
     }
+    const auto paced = hm::gst::PacedPlayback::Find(appCtx->pipeline.pipeline);
+    if (paced && !paced->ResumeAudioClock())
+      return FALSE;
     resume_perf_measurement(&appCtx->perf_struct);
     set_uri_playlist_waits_paused(&appCtx->pipeline.multi_src_bin, FALSE);
     return TRUE;

@@ -1,5 +1,7 @@
 #include "OutputRinkMap.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/PacedPlayback.h"
+#include "hstream/src/libs/common/PacedPlaybackConfig.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/program/ToneControlCommand.h"
 #include "hstream/src/libs/program/ToneControls.h"
@@ -38,6 +40,7 @@
 #include <gst-nvevent.h>
 #include <gst/gstbin.h>
 #include <gst/video/video.h>
+#include <gst/audio/gstaudiobasesink.h>
 #include <gst/video/videooverlay.h>
 #include <json-glib/json-glib.h>
 #include <nvbufsurface.h>
@@ -558,6 +561,59 @@ bool pipeline_waiting_for_user_input(AppCtx* context) {
       g_object_get(G_OBJECT(cropper), "waiting-for-user-input", &waiting, nullptr);
   }
   return waiting;
+}
+
+absl::Status configure_paced_local_playback(HmApp& app) {
+  if (!render_playback_realtime() || hm::gst::PacedPlayback::Find(app.pipeline.pipeline))
+    return absl::OkStatus();
+  std::vector<GstElement*> audio_sinks;
+  NvDsSinkBin* video_output = nullptr;
+  for (auto& instance : app.pipeline.instance_bins) {
+    if (!instance.hmaudio_bin.bin)
+      continue;
+    auto* iterator = gst_bin_iterate_recurse(GST_BIN(instance.hmaudio_bin.bin));
+    GValue item = G_VALUE_INIT;
+    while (gst_iterator_next(iterator, &item) == GST_ITERATOR_OK) {
+      auto* element = GST_ELEMENT(g_value_get_object(&item));
+      if (GST_IS_AUDIO_BASE_SINK(element)) {
+        audio_sinks.push_back(GST_ELEMENT(gst_object_ref(element)));
+        video_output = &instance.sink_bin;
+      }
+      g_value_reset(&item);
+    }
+    g_value_unset(&item);
+    gst_iterator_free(iterator);
+  }
+  const auto release_audio = absl::MakeCleanup([&] {
+    for (auto* sink : audio_sinks)
+      gst_object_unref(sink);
+  });
+  if (audio_sinks.empty())
+    return absl::OkStatus();
+  if (audio_sinks.size() != 1 || !video_output || !video_output->tee)
+    return absl::FailedPreconditionError("Paced local playback requires one source-correlated audio monitor");
+  hm::gst::PacedPlaybackSettings settings;
+  HM_ASSIGN_OR_RETURN(settings, hm::gst::ReadPacedPlaybackSettings(app.configurator().config()));
+  auto* ingress = gst_element_get_static_pad(video_output->tee, "sink");
+  auto owner = hm::gst::PacedPlayback::Create(app.pipeline.pipeline, ingress, settings);
+  if (ingress)
+    gst_object_unref(ingress);
+  if (!owner || !owner->AttachAudioSink(audio_sinks.front()))
+    return absl::InternalError("Could not attach shared paced audio/video presentation");
+  for (auto& branch : video_output->sub_bins) {
+    if (!branch.sink || !GST_IS_BASE_SINK(branch.sink))
+      continue;
+    gboolean synchronized = FALSE;
+    g_object_get(branch.sink, "sync", &synchronized, nullptr);
+    if (!synchronized)
+      continue;
+    if (branch.queue)
+      g_object_set(branch.queue, "leaky", 0, "max-size-buffers", settings.preview_frames,
+          "max-size-bytes", 0U, "max-size-time", guint64{0}, nullptr);
+    if (!owner->AttachVideoSink(branch.sink, settings.preview_frames))
+      return absl::InternalError("Could not attach the paced Program video clock");
+  }
+  return absl::OkStatus();
 }
 
 absl::Status pause_pipeline_for_model_initialization(
@@ -1846,6 +1902,8 @@ absl::Status PipelineApplication::createPipelines(
     }
   }
   if (rink_mask_preparation_ == RinkMaskPreparation::kNone) {
+    for (const auto& context : app_contexts)
+      HM_RETURN_IF_ERROR(configure_paced_local_playback(*context));
     HM_RETURN_IF_ERROR(configure_preview_overlay_producers(app_contexts));
     HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
   }
@@ -2220,16 +2278,20 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       if (!queue || !ingress_isolation || !isolation || !converter || !caps_filter || !sink)
         return false;
       const guint64 aligned_pitch = (static_cast<guint64>(width) * 4ULL + 255ULL) & ~255ULL;
-      const guint64 path_image_bytes = aligned_pitch * static_cast<guint64>(height) * 2ULL;
+      const auto paced = hm::gst::PacedPlayback::Find(app_contexts.front()->pipeline.pipeline);
+      const guint pool_frames = paced ? paced->settings().preview_frames : 1;
+      const guint64 path_image_bytes = aligned_pitch * static_cast<guint64>(height) * (pool_frames + 1ULL);
       if (path_image_bytes > kPreviewImageBudgetBytes - preview_image_bytes)
         return false;
       preview_image_bytes += path_image_bytes;
+      // Source drains retain their existing one-frame input queue before
+      // scaling; the other preview queues retain only scaled output frames.
       g_object_set(
           G_OBJECT(queue),
           "leaky",
           realtime ? 0 : 2,
           "max-size-buffers",
-          1,
+          channel.rfind("source", 0) == 0 ? 1U : pool_frames,
           "max-size-bytes",
           0,
           "max-size-time",
@@ -2262,7 +2324,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "nvbuf-memory-type",
           NVBUF_MEM_CUDA_DEVICE,
           "output-buffers",
-          1,
+          pool_frames,
           nullptr);
       GstCaps* caps = gst_caps_new_simple(
           "video/x-raw",
@@ -2300,6 +2362,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "enable-last-sample",
           FALSE,
           nullptr);
+      if (paced && !paced->AttachVideoSink(sink, pool_frames))
+        return false;
       // Unrestricted processing bounds preview work to 30 fps. Paced playback
       // retains every frame and uses its timestamp, including 50/60 fps video.
       GstPad* probe_pad = gst_element_get_static_pad(ingress_isolation, "src");
@@ -2365,7 +2429,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       std::string error;
       auto attachment = hm::preview::RouteAttachment::Create(
           {hm::preview::RouteTap::Kind::kExistingTee, output.bin, output.tee},
-          {ingress, queue, drain, converter, caps, sink},
+          {ingress, converter, caps, queue, drain, sink},
           nullptr,
           &error);
       if (!attachment ||
@@ -2412,7 +2476,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             "stitched_tracking_gpu_preview_tee"};
       std::string error;
       auto attachment =
-          hm::preview::RouteAttachment::Create(tap, {ingress, queue, drain, converter, caps, sink}, nullptr, &error);
+          hm::preview::RouteAttachment::Create(tap, {ingress, converter, caps, queue, drain, sink}, nullptr, &error);
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
       // Preserve the calibration branch's CUDA copy engine when construction
       // moves out of create_hmstitcher_bin; VIC cannot copy these device surfaces.
@@ -2842,6 +2906,11 @@ absl::Status PipelineApplication::createMainLoop(
       if (context->return_value == -1) {
         return_value_ = -1;
       }
+      process_clock_paused_.erase(
+          std::remove_if(process_clock_paused_.begin(), process_clock_paused_.end(), [&](const auto& paused) {
+            return paused.lock() == context;
+          }),
+          process_clock_paused_.end());
       hm::diagnostics::Breadcrumb("pipeline", "destroy");
       destroy_pipeline(context.get());
     }
@@ -6630,6 +6699,34 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       return false;
     }
     if (prepare_process_pause && generation > process_pause_generation_) {
+      // Freeze the shared GStreamer clock and the audio device before the UI
+      // stops process threads. Otherwise the physical playback cursor advances
+      // during SIGSTOP and queued PCM is irrecoverably late after SIGCONT.
+      std::vector<std::weak_ptr<HmApp>> paused;
+      const auto stage = stage_app_contexts_.find(current_stage_);
+      if (stage != stage_app_contexts_.end()) {
+        for (const auto& context : stage->second) {
+          const auto owner = hm::gst::PacedPlayback::Find(context->pipeline.pipeline);
+          if (!owner)
+            continue;
+          GstState state = GST_STATE_NULL;
+          gst_element_get_state(context->pipeline.pipeline, &state, nullptr, 0);
+          if (state != GST_STATE_PLAYING)
+            continue;
+          if (!pause_pipeline(context.get())) {
+            resume_pipeline(context.get());
+            for (const auto& previous : paused) {
+              if (const auto retained = previous.lock()) {
+                resume_pipeline(retained.get());
+              }
+            }
+            g_printerr("runtime process pause failed: paced pipeline did not quiesce\n");
+            return false;
+          }
+          paused.push_back(context);
+        }
+      }
+      process_clock_paused_.insert(process_clock_paused_.end(), paused.begin(), paused.end());
       process_pause_generation_ = generation;
       process_pause_active_ = true;
       set_uri_playlist_process_paused(TRUE);
@@ -6639,6 +6736,16 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       return true;
     }
     if (resume_process_pause && generation == process_pause_generation_) {
+      for (const auto& paused : process_clock_paused_) {
+        const auto context = paused.lock();
+        if (!context || !context->pipeline.pipeline)
+          continue;
+        if (!resume_pipeline(context.get())) {
+          g_printerr("runtime process resume failed: paced pipeline did not restart\n");
+          return false;
+        }
+      }
+      process_clock_paused_.clear();
       process_pause_active_ = false;
       set_uri_playlist_process_paused(FALSE);
       g_print("HSTREAM_PROCESS_PAUSE status=resumed generation=%" G_GUINT64_FORMAT "\n", generation);
@@ -8221,6 +8328,17 @@ void PipelineApplication::cancel_stitch_frame_rewind(uint64_t main_loop_generati
     g_source_remove(stitch_frame_rewind_source_id_);
     stitch_frame_rewind_source_id_ = 0;
   }
+  if (stitch_frame_rewind_cancellation_requested_) {
+    const auto stage = stage_app_contexts_.find(current_stage_);
+    if (stage != stage_app_contexts_.end()) {
+      for (const auto& context : stage->second) {
+        if (context) {
+          if (const auto paced = hm::gst::PacedPlayback::Find(context->pipeline.pipeline))
+            paced->Cancel();
+        }
+      }
+    }
+  }
   cancel_stitch_frame_completion_timeout();
   stitch_frame_rewind_pending_contexts_.clear();
   stitch_frame_rewind_cancellation_requested_ = false;
@@ -8255,6 +8373,14 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
     }
   }
   if (rewind_contexts.empty() || quit_) {
+    if (stitch_frame_rewind_cancellation_requested_) {
+      for (const auto& context : active_stage->second) {
+        if (context) {
+          if (const auto paced = hm::gst::PacedPlayback::Find(context->pipeline.pipeline))
+            paced->Cancel();
+        }
+      }
+    }
     stitch_frame_rewind_source_id_ = 0;
     stitch_frame_rewind_pending_contexts_.clear();
     stitch_frame_rewind_cancellation_requested_ = false;
@@ -8275,6 +8401,8 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   auto fail_restart = [&](const char* diagnostic, const char* message) -> gboolean {
     g_printerr("%s\n", diagnostic);
     for (AppCtx* context : stage_contexts) {
+      if (const auto paced = hm::gst::PacedPlayback::Find(context->pipeline.pipeline))
+        paced->Cancel();
       context->return_value = -1;
       context->quit = TRUE;
     }
@@ -8314,11 +8442,6 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
         }
         context->eos_received = TRUE;
       }
-      if (gst_element_set_state(context->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
-        return fail_restart(
-            "Failed to quiesce same-stage pipelines before stitch-frame restart",
-            "Could not pause playback for restart");
-      }
       context->observed_pipeline_state = GST_STATE_VOID_PENDING;
       pause_perf_measurement(&context->perf_struct);
     }
@@ -8330,6 +8453,12 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   if (!stitch_frame_restart_awaiting_playing_) {
     bool all_quiesced = true;
     for (AppCtx* context : stage_contexts) {
+      if (!clean_terminal_context(context) &&
+          hm::gst::RequestPacedPipelinePause(context->pipeline.pipeline) == GST_STATE_CHANGE_FAILURE) {
+        return fail_restart(
+            "Failed to quiesce same-stage pipelines before stitch-frame restart",
+            "Could not pause playback for restart");
+      }
       const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
       if (!bus_running && !clean_terminal_context(context)) {
         return fail_restart(
@@ -8396,7 +8525,7 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
         continue;
       }
       context->observed_pipeline_state = GST_STATE_VOID_PENDING;
-      if (gst_element_set_state(context->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+      if (hm::gst::RequestPacedPipelineResume(context->pipeline.pipeline) == GST_STATE_CHANGE_FAILURE) {
         return fail_restart(
             "Failed to resume a same-stage peer after stitch-frame calibration",
             "Could not resume playback after calibration");
@@ -9101,6 +9230,12 @@ gboolean PipelineApplication::recreate_pipeline_impl(
       g_usleep(static_cast<gulong>(delay_ms) * 1000);
     }
   }
+  process_clock_paused_.erase(
+      std::remove_if(process_clock_paused_.begin(), process_clock_paused_.end(), [app_ctx_ptr](const auto& paused) {
+        const auto context = paused.lock();
+        return !context || context.get() == app_ctx_ptr;
+      }),
+      process_clock_paused_.end());
   g_print("Destroy pipeline\n");
   if (web_preview_) {
     retained_web_preview_selection_ = web_preview_->selection();
@@ -9233,6 +9368,11 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   if (app_ctx_ptr->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured &&
       !arm_uri_playlist_initial_seeks(&app_ctx_ptr->pipeline.multi_src_bin)) {
     NVGSTDS_ERR_MSG_V("Failed to arm replacement URI-playlist chapter seeks before preroll");
+    return FALSE;
+  }
+  const auto paced_status = configure_paced_local_playback(*hm_app);
+  if (!paced_status.ok()) {
+    g_printerr("Cannot rebuild paced local presentation: %s\n", paced_status.ToString().c_str());
     return FALSE;
   }
   if (web_preview_ || !ui_preview_window_ids_.empty()) {
@@ -9464,6 +9604,8 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
   if (delay_ms > 0)
     g_usleep(static_cast<gulong>(delay_ms) * 1000);
   g_print("HSTREAM_SEEK_PHASE phase=sources-stop\n");
+  if (auto paced = hm::gst::PacedPlayback::Find(app->pipeline.pipeline))
+    paced->Cancel();
   // Flush downstream before joining decoders: queued GPU work and sink clock
   // waits must release the old surfaces before the source pool can retire.
   for (const auto& link : links)

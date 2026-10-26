@@ -402,7 +402,13 @@ int main(int argc, char** argv) {
       wait_ready();
       Check(!preview_sink->SetPreviewVisible(false, 0).ok(), "Completed preview accepted visibility changes");
       preview_sink.reset();
-      preview.audio = hm::program::VaProgramAudioConfig{{48000, 2}, 8192, 192000, "hstream_null", false};
+      preview.audio = hm::program::VaProgramAudioConfig{
+          {48000, 2},
+          8192,
+          192000,
+          "hstream_null",
+          false,
+          hm::gst::PacedPlaybackSettings{16683, 4170, 0, 64, 3 * GST_SECOND, 1, 16384, 2, 3 * GST_SECOND}};
       std::cout << "Testing clocked GL/ALSA preview\n" << std::flush;
       preview.realtime = true;
       preview_sink = Take(hm::program::VaProgramSink::Create(preview));
