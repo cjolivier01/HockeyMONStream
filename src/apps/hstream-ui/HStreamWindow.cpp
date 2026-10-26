@@ -5050,6 +5050,7 @@ void HStreamWindow::loadBaselineDefaults() {
   require("hstream_ui.playback_start_time");
   default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_);
   default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
+  default_playback_realtime_ = boolean("hstream_ui.playback_realtime");
   const auto control_points_default = hm::stitching::read_control_point_limit(baseline_config_);
   if (!control_points_default.ok())
     throw std::runtime_error(control_points_default.status().ToString());
@@ -6206,6 +6207,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   realtime_playback_toggle_ = new QCheckBox("Play at normal speed");
   realtime_playback_toggle_->setObjectName("realtimePlaybackCheck");
+  realtime_playback_toggle_->setChecked(default_playback_realtime_);
   realtime_playback_toggle_->setToolTip(
       "Pace video and local audio using the output timestamps. Slow processing keeps every video frame. "
       "Archives keep their frame rate and content, but encoding progresses at playback speed. "

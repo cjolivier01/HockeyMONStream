@@ -1856,7 +1856,8 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
           app.configurator().config(),
           {web_preview_run_id_, static_cast<int>(current_stage_), inspector_topology_generation_ + 1},
           retained_web_preview_selection_,
-          hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : "").string()));
+          hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : "").string(),
+          render_playback_realtime()));
   return absl::OkStatus();
 }
 

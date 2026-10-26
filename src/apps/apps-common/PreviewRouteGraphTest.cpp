@@ -1,7 +1,12 @@
 #include "hstream/src/apps/apps-common/PreviewRouteGraph.h"
 
+#include <gst/app/gstappsrc.h>
+
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <thread>
 
 namespace {
 using namespace hm::preview;
@@ -213,6 +218,83 @@ void moved_source_eos() {
   gst_object_unref(requested);
   gst_object_unref(pipeline);
 }
+
+void playback_clock(bool stop_while_waiting) {
+  // Nonzero recording timestamps must follow their segment, rather than wait
+  // for the recording's absolute offset. The other output models a disconnected
+  // browser: it never controls pacing or receives a command from this test.
+  auto* pipeline = gst_pipeline_new("paced-program");
+  auto* source = element("appsrc", "recording");
+  auto* tee = element("tee", "program");
+  auto* browser_queue = element("queue", "browser-queue");
+  auto* browser = element("fakesink", "disconnected-browser");
+  g_object_set(source, "format", GST_FORMAT_TIME, "handle-segment-change", TRUE, nullptr);
+  gst_bin_add_many(GST_BIN(pipeline), source, tee, browser_queue, browser, nullptr);
+  check(gst_element_link(source, tee) && gst_element_link(browser_queue, browser), "Clock fixture source link failed");
+  auto* browser_pad = request(tee, browser_queue);
+  std::string error;
+  check(AttachPlaybackClock({RouteTap::Kind::kExistingTee, pipeline, tee}, &error), "Program clock attachment failed");
+  auto* sink = gst_bin_get_by_name(GST_BIN(pipeline), "playback_clock");
+  std::atomic<unsigned> frames{0};
+  g_object_set(sink, "signal-handoffs", TRUE, nullptr);
+  g_signal_connect(
+      sink,
+      "handoff",
+      G_CALLBACK(+[](GstElement*, GstBuffer* buffer, GstPad*, gpointer data) {
+        auto& frames = *static_cast<std::atomic<unsigned>*>(data);
+        const auto index = frames.fetch_add(1);
+        check(
+            GST_BUFFER_PTS(buffer) == GstClockTime{60 * GST_SECOND} + index * 100 * GST_MSECOND,
+            "Clock changed source timestamps");
+        // Briefly fall behind. A pacing sink must retain these late frames.
+        if (index == 3)
+          std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      }),
+      &frames);
+  auto* caps = gst_caps_new_empty_simple("application/x-clock-test");
+  GstSegment segment;
+  gst_segment_init(&segment, GST_FORMAT_TIME);
+  segment.start = segment.time = 60 * GST_SECOND;
+  const auto started = std::chrono::steady_clock::now();
+  check(gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE, "Clock fixture failed start");
+  const unsigned count = stop_while_waiting ? 2 : 11;
+  for (unsigned index = 0; index < count; ++index) {
+    auto* buffer = gst_buffer_new_allocate(nullptr, 1, nullptr);
+    GST_BUFFER_PTS(buffer) =
+        segment.start + (stop_while_waiting && index ? 3600 * GST_SECOND : index * 100 * GST_MSECOND);
+    GST_BUFFER_DURATION(buffer) = 100 * GST_MSECOND;
+    auto* sample = gst_sample_new(buffer, caps, &segment, nullptr);
+    check(gst_app_src_push_sample(GST_APP_SRC(source), sample) == GST_FLOW_OK, "Clock fixture push failed");
+    gst_sample_unref(sample);
+    gst_buffer_unref(buffer);
+  }
+  gst_caps_unref(caps);
+  auto* bus = gst_element_get_bus(pipeline);
+  if (stop_while_waiting) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto stopping = std::chrono::steady_clock::now();
+    check(gst_element_set_state(pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE, "Clock fixture failed stop");
+    check(
+        std::chrono::steady_clock::now() - stopping < std::chrono::seconds(1),
+        "Stop waited on future video timestamps");
+  } else {
+    check(gst_app_src_end_of_stream(GST_APP_SRC(source)) == GST_FLOW_OK, "Clock fixture EOS failed");
+    auto* message =
+        gst_bus_timed_pop_filtered(bus, 3 * GST_SECOND, GstMessageType(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+    check(message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS, "Clock fixture did not complete without a browser");
+    gst_message_unref(message);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    check(
+        elapsed >= std::chrono::milliseconds(950) && elapsed < std::chrono::seconds(3),
+        "Program did not follow segment playback time");
+    check(frames == count, "Clock dropped late video frames");
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+  }
+  gst_object_unref(sink);
+  gst_object_unref(bus);
+  gst_object_unref(browser_pad);
+  gst_object_unref(pipeline);
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -222,5 +304,7 @@ int main(int argc, char** argv) {
   source();
   bridge();
   moved_source_eos();
+  playback_clock(false);
+  playback_clock(true);
   return 0;
 }
