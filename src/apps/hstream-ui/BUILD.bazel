@@ -509,7 +509,7 @@ cc_test(
 cc_library(
     name = "stitching_experiment_dialog",
     srcs = ["CalibrationFrameView.cpp", "StitchingExperimentDialog.cpp"],
-    hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h"],
+    hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h", "StitchingExperimentDefaults.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
@@ -1268,7 +1268,7 @@ cc_library(
 
 cc_binary(
     name = "hstream-web-job",
-    srcs = ["WebJobMain.cpp", "CameraControlSpecs.h"],
+    srcs = ["WebJobMain.cpp", "WebExperimentFrames.cpp", "WebExperimentFrames.h", "StitchingExperimentDefaults.h", "CameraControlSpecs.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
@@ -1311,6 +1311,17 @@ sh_test(
     data = [":hstream-web-job"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     tags = ["local"],
+)
+
+cc_test(
+    name = "web_matches_test",
+    srcs = ["WebMatchesTest.cpp"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":web_job_spec", "//src/libs/common:baseline_config", "//src/libs/stitching:calibration_matches", "@qt//:qt_gui", "@yaml-cpp"],
 )
 
 cc_test(

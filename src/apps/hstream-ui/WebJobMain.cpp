@@ -14,6 +14,7 @@
 #include "src/apps/hstream-ui/HighlightWebPreview.h"
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
+#include "src/apps/hstream-ui/WebExperimentFrames.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
 
 #include <fcntl.h>
@@ -39,6 +40,7 @@
 #include <csignal>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -384,6 +386,8 @@ hm::stitching::CalibrationMatchSet matches(const Request& request, bool edit) {
         (camera++ ? pair.right : pair.left) = cv::Point2f(x, y);
       }
       pair.score = Number(point, "score", 0, 1, 1);
+      pair.left_index = integer(point, "left_index", -1, std::numeric_limits<int>::max(), -1);
+      pair.right_index = integer(point, "right_index", -1, std::numeric_limits<int>::max(), -1);
       destination.matches.push_back(pair);
     }
   }
@@ -396,25 +400,68 @@ QJsonObject matches_result(
   QJsonArray frames;
   for (std::size_t index = 0; index < saved.frames.size(); ++index) {
     const auto& frame = saved.frames[index];
-    QJsonArray points, images, sizes;
+    QJsonArray points, images, sizes, source_seconds, source_identity, source_names;
     for (int camera = 0; camera < 2; ++camera) {
       images.append(text(Relative(request, frame.images[camera])));
       sizes.append(QJsonArray{frame.sizes[camera].width, frame.sizes[camera].height});
       artifacts.append(Artifact(request, frame.images[camera], "image"));
+      source_seconds.append(frame.source_seconds[camera]);
+      source_names.append(text(fs::path(frame.source_paths[camera]).filename().string()));
+      source_identity.append(
+          QString::fromLatin1(
+              QCryptographicHash::hash(
+                  QByteArray::fromStdString(frame.source_paths[camera]), QCryptographicHash::Sha256)
+                  .toHex()));
     }
     for (const auto& pair : frame.matches)
       points.append(
           QJsonObject{
               {"left", QJsonArray{pair.left.x, pair.left.y}},
               {"right", QJsonArray{pair.right.x, pair.right.y}},
-              {"score", pair.score}});
-    frames.append(QJsonObject{{"index", int(index)}, {"images", images}, {"sizes", sizes}, {"matches", points}});
+              {"score", pair.score},
+              {"left_index", pair.left_index},
+              {"right_index", pair.right_index}});
+    frames.append(
+        QJsonObject{
+            {"index", int(index)},
+            {"images", images},
+            {"sizes", sizes},
+            {"matches", points},
+            {"source_seconds", source_seconds},
+            {"source_identity", source_identity},
+            {"source_names", source_names}});
   }
   return {
       {"fingerprint", text(saved.fingerprint)},
       {"input_fingerprint", text(saved.input_fingerprint)},
       {"manual", saved.manual},
       {"frames", frames}};
+}
+
+QJsonObject editable_matches_result(const Request& request, const Request& source, QJsonArray& artifacts) {
+  const auto saved = matches(source, false);
+  const auto automatic = saved.manual
+      ? take(hm::stitching::LoadCalibrationMatches(source.game, saved.automatic_fingerprint, false))
+      : saved;
+  bool compatible = !saved.frames.empty() && saved.frames.size() == automatic.frames.size() &&
+      saved.input_fingerprint == automatic.input_fingerprint;
+  for (size_t i = 0; compatible && i < saved.frames.size(); ++i)
+    compatible = saved.frames[i].sizes == automatic.frames[i].sizes &&
+        saved.frames[i].source_paths == automatic.frames[i].source_paths &&
+        saved.frames[i].source_seconds == automatic.frames[i].source_seconds &&
+        (!saved.input_fingerprint.empty() || saved.frames[i].images == automatic.frames[i].images);
+  auto result = matches_result(request, saved, artifacts);
+  result.insert("match_editor_version", 1);
+  result.insert("automatic", matches_result(request, automatic, artifacts));
+  result.insert("automatic_compatible", compatible);
+  result.insert(
+      "editor_limits",
+      QJsonObject{
+          {"maximum_matches_per_pair", int(hm::stitching::kMaximumEditableMatchesPerPair)},
+          {"maximum_image_bytes", qint64(hm::stitching::kMaximumEditableImageBytes)},
+          {"maximum_image_pixels", qint64(hm::stitching::kMaximumEditableImagePixels)},
+          {"maximum_image_dimension", hm::stitching::kMaximumEditableImageDimension}});
+  return result;
 }
 
 void merge_settings(YAML::Node destination, const YAML::Node& overlay) {
@@ -492,9 +539,20 @@ StitchingExperimentSettings settings(const QJsonObject& object, const YAML::Node
         YAML::Load(QJsonDocument(object.value("control_point_filtering").toObject()).toJson().toStdString()));
   }
   result.control_point_filtering = take(hm::stitching::read_control_point_filtering(effective));
-  result.control_points = integer(object, "control_points", 10, 5000, 100);
-  result.frame_count = integer(object, "frame_count", 1, 16, 1);
-  result.stitch_frame_time = RequiredString(object, "stitch_frame_time", 32).toStdString();
+  const auto ui = source["hstream_ui"];
+  const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node(YAML::NodeType::Undefined);
+  result.control_points =
+      integer(object, "control_points", 10, 5000, take(hm::stitching::read_control_point_limit(effective)));
+  result.frame_count = integer(
+      object,
+      "frame_count",
+      1,
+      16,
+      calibration && calibration["frame_count"] ? calibration["frame_count"].as<int>()
+                                                : effective["stitching"]["calibration_frame_count"].as<int>());
+  result.stitch_frame_time = object.contains("stitch_frame_time")
+      ? RequiredString(object, "stitch_frame_time", 32).toStdString()
+      : effective["stitching"]["stitch_frame_time"].as<std::string>();
   qint64 milliseconds;
   require(hm::ui::ParseHighlightTime(text(result.stitch_frame_time), &milliseconds), "Invalid calibration timestamp");
   if (object.contains("control_point_matcher"))
@@ -539,6 +597,13 @@ QJsonObject settings_json(const StitchingExperimentSettings& value) {
   return result;
 }
 StitchingExperimentWorkspace workspace(const Request& request) {
+  if (!request.payload.contains("workspace")) {
+    const auto config = YAML::LoadFile((request.game / "config.yaml").string());
+    const auto saved = take(MainStitchingExperimentWorkspace(request.game, settings({}, config)));
+    require(
+        saved.has_value(), "The selected run has no saved calibration workspace; recover its original frames first");
+    return *saved;
+  }
   require(request.payload.value("workspace").isObject(), "Expected the saved native workspace descriptor");
   const auto object = request.payload.value("workspace").toObject();
   StitchingExperimentWorkspace result;
@@ -597,7 +662,7 @@ void run_process(
       "Native experiment process failed; inspect the run log");
 }
 
-void run_experiment(const Request& request, const StitchingExperimentWorkspace& saved) {
+void run_experiment(const Request& request, const StitchingExperimentWorkspace& saved, bool complete = true) {
   const auto runtime_path = [&](const char* key, bool directory = false) {
     const fs::path path(RequiredString(request.runtime, key, 2048).toStdString());
     require(path.is_absolute(), "Runtime paths must be absolute operator settings");
@@ -657,15 +722,18 @@ void run_experiment(const Request& request, const StitchingExperimentWorkspace& 
       directory,
       environment);
   run_process("/bin/bash", {script}, directory, environment);
-  check(CompleteStitchingExperimentWorkspace(saved, require_mask));
+  if (complete)
+    check(CompleteStitchingExperimentWorkspace(saved, require_mask));
 }
 
 QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
-  if (request.operation == "experiment-create" || request.operation == "experiment-edit") {
+  if (request.operation == "experiment-create" || request.operation == "experiment-edit" ||
+      request.operation == "experiment-prepare-edit" || request.operation == "experiment-save-matches" ||
+      request.operation == "experiment-recover") {
     fs::create_directories(request.root / "experiments");
     const int sequence = integer(request.payload, "sequence", 1, 1024, 1);
     StitchingExperimentWorkspace created;
-    if (request.operation == "experiment-create") {
+    if (request.operation == "experiment-create" || request.operation == "experiment-recover") {
       std::vector<fs::path> authorized_media;
       require(request.authorized_media.size() <= 10000, "Too many authorized media inputs");
       for (const auto& value : request.authorized_media) {
@@ -680,6 +748,8 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
           sequence,
           authorized_media,
           !request.payload.value("settings").toObject().value("camera").toObject().isEmpty()));
+    } else if (request.operation == "experiment-prepare-edit") {
+      created = take(CreateStitchingExperimentEditableCopy(workspace(request), request.root / "experiments", sequence));
     } else {
       const auto saved = workspace(request);
       auto source = request;
@@ -691,9 +761,48 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
           matches(source, true),
           sequence));
     }
-    return {{"workspace", workspace_json(request, created)}, {"state", "queued"}};
+    if (request.operation == "experiment-create" || request.operation == "experiment-edit")
+      return {{"workspace", workspace_json(request, created)}, {"state", "queued"}};
+    const bool recovering = request.operation == "experiment-recover";
+    bool complete = false;
+    try {
+      run_experiment(request, created, !recovering);
+      complete = !recovering;
+    } catch (const std::exception&) {
+      // Recovery prepares immutable original images even when automatic
+      // matching cannot solve them. It never advertises a solved calibration.
+      // Cancellation and ordinary Save & recalibrate failures remain failures.
+      if (interrupted || (!recovering && request.operation != "experiment-prepare-edit"))
+        throw;
+    }
+    auto source = request;
+    source.game = created.game_directory;
+    source.payload.remove("fingerprint");
+    auto result = editable_matches_result(request, source, artifacts);
+    result.insert("workspace", workspace_json(request, created));
+    result.insert("state", complete ? "complete" : "editable");
+    result.insert("calibration_complete", complete);
+    return result;
   }
   const auto saved = workspace(request);
+  if (request.operation == "experiment-scan" || request.operation == "experiment-reuse-selection") {
+    auto companion_request = request;
+    const bool scan = request.operation == "experiment-scan";
+    const auto key = scan ? "baseline_workspace" : "selection_workspace";
+    require(request.payload.value(key).isObject(), "Expected the owned frame-selection dependency");
+    companion_request.payload.insert("workspace", request.payload.value(key));
+    const auto companion = workspace(companion_request);
+    if (scan) {
+      const auto selected = hm::web::ScanExperimentFrames(request, companion, saved, run_process);
+      return {
+          {"workspace", workspace_json(request, saved)},
+          {"state", selected.available ? "queued" : "unavailable"},
+          {"selection_available", selected.available},
+          {"selection_diagnostic", text(selected.diagnostic)}};
+    }
+    check(ReuseStitchingExperimentPlayerSelection(companion, saved));
+    return {{"workspace", workspace_json(request, saved)}, {"state", "queued"}, {"selection_available", true}};
+  }
   if (request.operation == "experiment-run") {
     run_experiment(request, saved);
     return {{"workspace", workspace_json(request, saved)}, {"state", "complete"}};
@@ -707,6 +816,14 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
     return {{"workspace", workspace_json(request, saved)}, {"promoted", true}};
   }
   const auto inspection = take(InspectStitchingExperimentFrames(saved));
+  QString editable_snapshot;
+  const auto config = YAML::LoadFile((saved.game_directory / "config.yaml").string());
+  const auto snapshot = config["hstream_ui"]["stitching_calibration"]["match_snapshot"].as<std::string>("");
+  if (!snapshot.empty()) {
+    const auto editable = hm::stitching::LoadCalibrationMatches(saved.game_directory, snapshot);
+    if (editable.ok())
+      editable_snapshot = text(snapshot);
+  }
   QJsonArray frames;
   for (const auto& frame : inspection.frames) {
     QJsonArray thumbnails, matches, sources, coverage, bands;
@@ -756,6 +873,10 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
   return {
       {"inspection_version", 1},
       {"workspace", workspace_json(request, saved)},
+      {"editable", !editable_snapshot.isEmpty()},
+      {"editable_snapshot", editable_snapshot},
+      {"calibration_complete",
+       config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete"},
       {"fingerprint", text(inspection.fingerprint)},
       {"player_selected", inspection.player_selected},
       {"expected_pair_count", int(inspection.expected_pair_count)},
@@ -1004,7 +1125,16 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
   auto source = request;
   if (request.payload.contains("workspace"))
     source.game = workspace(request).game_directory;
-  auto saved = matches(source, request.operation == "matches-publish");
+  if (request.operation == "matches-read") {
+    auto result = editable_matches_result(request, source, artifacts);
+    result.insert("workspace", workspace_json(request, workspace(source)));
+    const auto config = YAML::LoadFile((source.game / "config.yaml").string());
+    result.insert(
+        "calibration_complete",
+        config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete");
+    return result;
+  }
+  auto saved = matches(source, true);
   if (request.operation == "matches-publish") {
     saved.automatic_fingerprint = saved.manual ? saved.automatic_fingerprint : saved.fingerprint;
     saved.fingerprint.clear();

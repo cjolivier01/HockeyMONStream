@@ -76,6 +76,9 @@ contract, then testing both interfaces against the same native checkout.
 | `matches-publish` | Existing `fingerprint` and `frames` containing `index` and `matches` (`left`, `right`, optional `score`). Validates original-image endpoints and publishes an immutable manual snapshot. This does not activate new maps; use the candidate edit/solve/promote sequence. |
 | `experiment-create` | `settings` with `control_points`, `frame_count`, `stitch_frame_time`, optional matcher/resolution/rotation/camera/filtering, plus optional `sequence`. Creates a native isolated pending candidate. |
 | `experiment-edit` | Saved `workspace`, inspected `fingerprint`, replacement `frames`, and optional `sequence`. Creates a new candidate from immutable edited matches without changing the inspected candidate. |
+| `experiment-prepare-edit` | Saved `workspace` (or completed main calibration) and `sequence`. Uses the desktop editable-copy primitive, then solves and returns the original-image match editor receipt under one supervisor owner. |
+| `experiment-save-matches` | Saved `workspace`, expected `fingerprint`, edited `frames`, and `sequence`. Creates the desktop edited candidate and solves it before releasing ownership. Stale snapshot/generation, cancellation and solve failure publish no successful result. |
+| `experiment-recover` | Worker-staged immutable failed-run settings/media and `sequence`. Captures a new private editable snapshot. A failed automatic solve may still return verified original images with zero correspondences; its result is `state: editable`, `calibration_complete: false`, never a solved calibration. |
 | `experiment-run` | Saved `workspace` and optional `require_ice_mask`. Runs native calibration through `hstream-job --interactive`, then validates native completion before returning success. |
 | `experiment-inspect` | Saved `workspace`. Returns versioned saved-frame inspection, exact source identities, coverage, images and source validation; see below. |
 | `experiment-complete` | Saved `workspace`, optional `require_ice_mask`. Validates already-generated native calibration; it does not run a solve. |
@@ -92,6 +95,26 @@ reconstruct authorized camera aliases when staging a subsequent operation.
 Immutable match/source metadata must never be rewritten to bypass provenance
 checks. Camera aliases should resolve to stable authorized upload identities;
 per-run hardlink paths change the native canonical-path fingerprint.
+
+The `match-editor-v1` feature adds `match_editor_version: 1`, `automatic`,
+`automatic_compatible`, and `editor_limits` to `matches-read` and editable-copy
+results. Current and automatic frames retain native image dimensions, exact
+source times, opaque source-path identities, and original PNG artifact references.
+The browser displays only the selected pair and edits original-camera coordinates.
+Inspection reports `editable_snapshot` and `editable`; match JPEGs alone do not
+establish editability. The current snapshot and workspace generation are checked
+again by `CreateEditedStitchingExperimentWorkspace` before saving. Reset uses the
+same input/frame compatibility checks as the desktop editor.
+
+The web server permits recovery only from an owned terminal run after cleanup
+has released it. It freezes the original settings, source order and upload IDs,
+then verifies their digest again at staging. A cleaned failure is regenerated
+from those uploads; no deleted intermediate is assumed to remain available.
+The failed source stays failed. Recovery evidence and any subsequent read/inspect
+results cannot be promoted, completed or automatically solved through the old
+candidate commands; Save and recalibrate must produce a successful new candidate.
+The ordinary workflow quota, time limit, process containment and cancellation
+rules apply to the complete copy/capture/edit/solve operation.
 
 Experiment settings use the desktop's canonical camera map: `camera` contains
 `camera_config`, `camera_fov`, `input_lens`, and `camera_automation`.
