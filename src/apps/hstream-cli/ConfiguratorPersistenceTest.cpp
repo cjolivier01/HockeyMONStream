@@ -1862,8 +1862,14 @@ int main() {
   std::ofstream(root / "mapping-malformed-properties.yaml") << YAML::Dump(malformed_properties) << '\n';
   hm::Configurator mapping_malformed_properties(
       "mapping-malformed-properties", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  // Baseline now owns native properties (high-bit-depth). Overlay the malformed
+  // value so merging a valid higher layer cannot repair the fixture first.
   const bool mapping_malformed_properties_loaded = mapping_malformed_properties.configure().ok() &&
-      mapping_malformed_properties.underlay_config("pipeline", (root / "mapping-malformed-properties.yaml").string());
+      mapping_malformed_properties.overlay_config("pipeline", (root / "mapping-malformed-properties.yaml").string());
+  ok &= expect(
+      mapping_malformed_properties_loaded &&
+          mapping_malformed_properties.config()["pipeline"]["hmstitcher"]["properties"].IsScalar(),
+      "Malformed-properties regression must reach validation with an invalid effective node");
   const absl::Status mapping_malformed_properties_status = mapping_malformed_properties_loaded
       ? mapping_malformed_properties.apply_supported_baseline_mappings()
       : absl::InternalError("mapping malformed-properties fixture did not load");
@@ -2564,8 +2570,14 @@ game:
       ::setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
       hm::Configurator managed_tracker(
           "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
-      const bool loaded =
-          managed_tracker.configure().ok() && managed_tracker.underlay_config("pipeline", incomplete_pipeline.string());
+      const bool loaded = managed_tracker.configure().ok() &&
+          managed_tracker.underlay_config("pipeline", incomplete_pipeline.string()) &&
+          managed_tracker.apply_config_item("pipeline.sink4.enable", "1").ok() &&
+          managed_tracker.apply_config_item("pipeline.sink4.type", std::to_string(NV_DS_SINK_WEBRTC)).ok() &&
+          managed_tracker.apply_config_item("pipeline.ds-playtracker.show", "1").ok() &&
+          managed_tracker.apply_config_item("pipeline.ds-playtracker.properties.plugin-private-config", "show=1")
+              .ok() &&
+          managed_tracker.apply_config_item("hstream_ui.job.capture_telemetry", "true").ok();
       const auto status = loaded ? managed_tracker.complete_configuration(
                                        false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path())
                                  : absl::InternalError("managed tracker fixture did not load");
@@ -2576,6 +2588,29 @@ game:
           status.ok() && fs::is_regular_file(effective_path) &&
               effective_path.parent_path() == manifest.parent_path() / "playtracker-runtime",
           "Managed tracker runtime configuration belongs to the private run workspace");
+      const auto managed_pipeline = managed_tracker.config()["pipeline"];
+      ok &= expect(
+          status.ok() &&
+              managed_pipeline["ds-playtracker"]["private-properties"]["telemetry-db-dir"].as<std::string>() ==
+                  manifest.parent_path().string() &&
+              managed_pipeline["ds-playtracker"]["private-properties"]["telemetry-game-id"].as<std::string>() ==
+                  "materialize-incomplete" &&
+              YAML::LoadFile(manifest.string())["telemetry_required"].as<bool>() &&
+              managed_pipeline["sink4"]["enable"].as<int>() == 1 &&
+              managed_pipeline["ds-playtracker"]["show"].as<int>() == 1 &&
+              managed_pipeline["ds-playtracker"]["properties"]["plugin-private-config"].as<std::string>() ==
+                  "show=1;telemetry-db-dir=" + manifest.parent_path().string() +
+                      ";telemetry-game-id=materialize-incomplete",
+          "Managed interactive archives must require run-local telemetry while retaining WebRTC and native previews");
+      managed_tracker.apply_config_item("hstream_ui.job.capture_telemetry", "false").IgnoreError();
+      const auto unchecked = managed_tracker.complete_configuration(
+          false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path());
+      ok &= expect(
+          unchecked.ok() &&
+              managed_pipeline["ds-playtracker"]["private-properties"]["telemetry-db-dir"].as<std::string>().empty() &&
+              !YAML::LoadFile(manifest.string())["telemetry_required"].as<bool>() &&
+              managed_pipeline["sink4"]["enable"].as<int>() == 1,
+          "Managed interactive archives must honor telemetry opt-out without disabling WebRTC");
       if (previous_manifest)
         ::setenv("HSTREAM_JOB_MANIFEST", previous_manifest->c_str(), 1);
       else

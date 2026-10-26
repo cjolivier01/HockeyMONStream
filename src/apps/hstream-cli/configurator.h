@@ -206,6 +206,7 @@ class Configurator {
 
  private:
   absl::Status configure_encode_job(YAML::Node& pipeline, bool stitching_calibration_only);
+  absl::Status configure_job_telemetry(YAML::Node& pipeline, bool stitching_calibration_only);
   bool encode_job_{false};
   absl::Status save_private_config_with_backend_claim(
       const YAML::Node& private_config,

@@ -7315,7 +7315,20 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
     element["show"] = 0;
     if (element["private-properties"].IsMap() && element["private-properties"]["show"].IsDefined())
       element["private-properties"]["show"] = 0;
+    auto typed = element["properties"];
+    if (!typed.IsMap())
+      continue;
+    for (auto entry : typed) {
+      auto key = entry.first.as<std::string>();
+      std::replace(key.begin(), key.end(), '_', '-');
+      if (key == "plugin-private-config")
+        entry.second = entry.second.as<std::string>() + ";show=0";
+    }
   }
+  return configure_job_telemetry(pipeline, stitching_calibration_only);
+}
+
+absl::Status Configurator::configure_job_telemetry(YAML::Node& pipeline, bool stitching_calibration_only) {
   bool capture = true;
   HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.drivegpt_database.enabled", true));
   HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.job.capture_telemetry", capture));
@@ -7362,7 +7375,7 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
   }
   if (capture) {
     if (!get_node_value(pipeline, "ds-playtracker.enable", false))
-      return absl::InvalidArgumentError("DriveGPT capture requires the Program camera tracker in an encoding job");
+      return absl::InvalidArgumentError("DriveGPT capture requires the Program camera tracker in a managed job");
     if (telemetry_directory.empty()) {
       auto root = user_config::output_root(config_);
       if (!root.ok())
@@ -7380,19 +7393,15 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
     return absl::InternalError(error.what());
   }
   properties["telemetry-db-dir"] = telemetry_directory;
-  // Typed private strings are applied last by the bin builders. Keep their
-  // unrelated settings, but reassert the job invariants after every override.
-  for (const char* name : {"hmstitcher", "ds-playtracker", "hmplaycropper"}) {
-    auto typed = pipeline[name]["properties"];
-    if (!typed.IsMap())
-      continue;
+  // Typed private strings are applied last by the bin builders. Reassert the
+  // telemetry selection without changing a live session's preview controls.
+  auto typed = pipeline["ds-playtracker"]["properties"];
+  if (typed.IsMap()) {
     for (auto entry : typed) {
       if (normalized_key(entry.first.as<std::string>()) != "plugin-private-config")
         continue;
-      std::string value = entry.second.as<std::string>() + ";show=0";
-      if (std::string(name) == "ds-playtracker")
-        value += ";telemetry-db-dir=" + telemetry_directory + ";telemetry-game-id=" + game_id_;
-      entry.second = value;
+      entry.second = entry.second.as<std::string>() + ";telemetry-db-dir=" + telemetry_directory +
+          ";telemetry-game-id=" + game_id_;
     }
   }
   return absl::OkStatus();
@@ -9132,6 +9141,8 @@ absl::Status Configurator::complete_configuration(
     if (encode_job_) {
       HM_RETURN_IF_ERROR(configure_encode_job(pipeline, stitching_calibration_only));
       show_render_sink = false;
+    } else if (!hm::publication::EnvironmentManifest().empty()) {
+      HM_RETURN_IF_ERROR(configure_job_telemetry(pipeline, stitching_calibration_only));
     }
     HM_RETURN_IF_ERROR(apply_gpu_memory_profile(pipeline));
   }
