@@ -523,3 +523,9 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
 )
+
+cc_test(
+    name = "person_roles_test",
+    srcs = ["PersonRolesTest.cpp"],
+    deps = [":person_roles"],
+)
