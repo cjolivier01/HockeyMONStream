@@ -255,6 +255,17 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
   job.archive_path = plan.archive_path;
   job.asset_root = qs(request.root);
   const bool live = request.operation == "highlight-live-preview";
+  if (request.payload.contains("inspect_game_ms")) {
+    require(live, "Authored frame inspection requires live preview");
+    job.inspect_game_ms = integer(request.payload, "inspect_game_ms", 0, 86400000, -1);
+  }
+  if (!job.archive_path.isEmpty())
+    job.media = probe(job.archive_path.toStdString());
+  else {
+    job.media.width = 1920;
+    job.media.height = 1080;
+    job.media.frame_rate = 30;
+  }
   if (live) {
     require(request.payload.value("loop").isBool(), "Live highlight preview requires an explicit loop choice");
     require(preview_port, "Live highlight preview requires a supervisor-assigned signaling port");
@@ -279,17 +290,20 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
         {"seek", false},
         {"receiptLimits",
          QJsonObject{{"maxFrames", int(o.browser_max_frames)}, {"maxAgeMs", int(o.browser_max_age_ms)}}}};
-    std::cout << "HSTREAM_HIGHLIGHT_PREVIEW "
-              << QJsonDocument(
-                     QJsonObject{
-                         {"version", 1},
-                         {"kind", "session"},
-                         {"run", text(request.run_id)},
-                         {"stage", 0},
-                         {"generation", 1},
-                         {"presentation", descriptor}})
-                     .toJson(QJsonDocument::Compact)
-                     .constData()
+    QJsonObject session{
+        {"version", 1},
+        {"kind", "session"},
+        {"run", text(request.run_id)},
+        {"stage", 0},
+        {"generation", 1},
+        {"presentation", descriptor}};
+    if (job.inspect_game_ms >= 0) {
+      const auto size = hm::ui::HighlightReelPipeline::PreviewSize(job.media);
+      session.insert(
+          "inspection",
+          QJsonObject{{"game_ms", job.inspect_game_ms}, {"width", size.width()}, {"height", size.height()}});
+    }
+    std::cout << "HSTREAM_HIGHLIGHT_PREVIEW " << QJsonDocument(session).toJson(QJsonDocument::Compact).constData()
               << std::endl;
   } else {
     require(!preview_port, "A signaling port is only valid for live highlight preview");
@@ -298,13 +312,6 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
   }
   job.items = selected;
   job.archive_offset_ms = integer(request.payload, "archive_offset_ms", 0, 86400000, 0);
-  if (!job.archive_path.isEmpty())
-    job.media = probe(job.archive_path.toStdString());
-  else {
-    job.media.width = 1920;
-    job.media.height = 1080;
-    job.media.frame_rate = 30;
-  }
   hm::ui::HighlightReelPipeline pipeline;
   QString error;
   if (!pipeline.Start(std::move(job), &error))

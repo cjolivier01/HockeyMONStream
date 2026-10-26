@@ -416,6 +416,27 @@ struct HighlightReelPipeline::Impl {
         return false;
       browser_started = true;
     }
+    if (browser && request.inspect_game_ms >= 0) {
+      // Keep the authored surface on the GPU. Each transport frame has its own
+      // clock/receipt identity, while cue evaluation stays at the inspected
+      // source time. Repeated encoding lets a replacement peer see the same
+      // held frame without another decode or a video readback.
+      for (guint64 index = 0; !stopped(); ++index) {
+        const GstClockTime at = gst_util_uint64_scale(index, GST_SECOND * guint64(fps_d), fps_n);
+        const GstClockTime next = gst_util_uint64_scale(index + 1, GST_SECOND * guint64(fps_d), fps_n);
+        if (!send(at + browser_offset))
+          return false;
+        const auto first = gst_util_uint64_scale(at, kRate, GST_SECOND);
+        const auto last = gst_util_uint64_scale(next, kRate, GST_SECOND);
+        if (!raw_audio_buffer(nullptr, last - first, first, browser_offset))
+          return false;
+        while (!stopped() && running_time() < next + browser_offset) {
+          check_output();
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+      }
+      return false;
+    }
     return send(pts + browser_offset);
   }
   GstClockTime running_time() const {
@@ -707,7 +728,10 @@ struct HighlightReelPipeline::Impl {
         "Could not restart archive decoder after preroll seek");
     check(seek(), "Archive rejected its post-restart highlight seek");
     gst_element_set_state(in.graph.value, GST_STATE_PLAYING);
-    std::thread audio([&] { audio_item(request.inspect_game_ms >= 0 ? nullptr : &in, begin, length, base_ms); });
+    std::thread audio([&] {
+      if (!(request.web_preview && request.inspect_game_ms >= 0))
+        audio_item(request.inspect_game_ms >= 0 ? nullptr : &in, begin, length, base_ms);
+    });
     auto last = Clock::now();
     qint64 frames = 0;
     GstClockTime completed_source = 0;
@@ -780,11 +804,11 @@ struct HighlightReelPipeline::Impl {
     try {
       cuda_check(cudaSetDevice(0));
       cuda_check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-      const double scale = (request.window_id || request.web_preview)
-          ? std::min({1.0, 1280.0 / request.media.width, 720.0 / request.media.height})
-          : 1.0;
-      width = std::max(2, int(request.media.width * scale) & ~1);
-      height = std::max(2, int(request.media.height * scale) & ~1);
+      const auto size = (request.window_id || request.web_preview)
+          ? HighlightReelPipeline::PreviewSize(request.media)
+          : QSize(std::max(2, request.media.width & ~1), std::max(2, request.media.height & ~1));
+      width = size.width();
+      height = size.height();
       ten = !request.window_id && !request.web_preview && request.media.bit_depth > 8;
       gst_util_double_to_fraction(request.media.frame_rate > 0 ? request.media.frame_rate : 30, &fps_n, &fps_d);
       for (int i = 0; i < 6; ++i)
@@ -894,6 +918,10 @@ bool HighlightReelPipeline::PreviewAvailable() {
   gst_registry_scan_path(gst_registry_get(), "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
   return hm::gpu_preview::renderer_available() && hm::gpu_preview::register_elements();
 }
+QSize HighlightReelPipeline::PreviewSize(const ArchiveMediaInfo& media) {
+  const double scale = std::min({1.0, 1280.0 / media.width, 720.0 / media.height});
+  return {std::max(2, int(media.width * scale) & ~1), std::max(2, int(media.height * scale) & ~1)};
+}
 bool HighlightReelPipeline::Start(Request request, QString* error) {
   auto fail = [&](const QString& e) {
     if (error)
@@ -908,8 +936,11 @@ bool HighlightReelPipeline::Start(Request request, QString* error) {
   const int outputs = bool(request.window_id) + !request.output_path.isEmpty() + bool(request.web_preview);
   if (outputs != 1 || (request.window_id && !PreviewAvailable()))
     return fail("Reel needs an output file or an available NVIDIA/X11 preview");
-  if (request.web_preview && request.inspect_game_ms >= 0)
-    return fail("Browser authored-frame inspection is not available");
+  if (request.inspect_game_ms >= 0 &&
+      (request.items.size() != 1 || request.items.front().is_card || request.loop ||
+       request.inspect_game_ms < request.items.front().start_ms ||
+       request.inspect_game_ms >= request.items.front().end_ms || !request.output_path.isEmpty()))
+    return fail("Frame inspection requires one clip, an in-range source time and a preview output");
   qint64 total = 0;
   for (auto& item : request.items) {
     QString e;
@@ -952,7 +983,9 @@ HighlightReelPipeline::Status HighlightReelPipeline::Poll() const {
     result.waiting_for_browser = !impl_->browser_started;
     result.presented_frames = impl_->browser->counters().presented;
   }
-  if (impl_->output) {
+  if (impl_->request.inspect_game_ms >= 0) {
+    result.position_ms = impl_->request.inspect_game_ms - impl_->request.items.front().start_ms;
+  } else if (impl_->output) {
     gint64 time = 0;
     if (gst_element_query_position(impl_->output, GST_FORMAT_TIME, &time))
       result.position_ms =

@@ -448,8 +448,13 @@ int main(int argc, char** argv) {
     r.output_path.clear();
     r.window_id = window.winId();
     r.inspect_game_ms = 10750;
-    if (!pipeline.Start(r, &error) || !wait(pipeline))
+    if (!pipeline.Start(r, &error) || !wait(pipeline) || pipeline.Poll().position_ms != 200)
       return 1;
+    QThread::msleep(100);
+    if (pipeline.Poll().position_ms != 200) {
+      std::cerr << "A held authored frame advanced its source position\n";
+      return 1;
+    }
     window.resize(800, 450);
     app->processEvents();
     pipeline.Cancel();

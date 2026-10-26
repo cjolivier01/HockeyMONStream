@@ -1,4 +1,5 @@
 #pragma once
+#include <QtCore/QSize>
 #include <memory>
 #include "src/apps/hstream-ui/HighlightPlan.h"
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
@@ -33,6 +34,7 @@ class HighlightReelPipeline {
   void Cancel(); // nonblocking; Poll reports completion after cleanup
   Status Poll() const;
   static bool PreviewAvailable();
+  static QSize PreviewSize(const ArchiveMediaInfo& media);
 
  private:
   struct Impl;
