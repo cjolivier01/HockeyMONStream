@@ -19483,8 +19483,13 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     }
     bool normalized_nona_without_autooptimizer = false;
     bool normalized_inactive_autooptimizer = false;
-    int staged_control_points =
-        control_points_spin_ ? control_points_spin_->value() : default_stitch_control_points_;
+    const auto configured_control_points =
+        hm::stitching::read_control_point_limit(merge_yaml_maps(baseline_config_, config));
+    if (!configured_control_points.ok())
+      throw std::invalid_argument(configured_control_points.status().ToString());
+    const int staged_control_points = *configured_control_points;
+    if (staged_control_points < hm::stitching::kMinimumCalibrationControlPoints || staged_control_points > 5000)
+      throw std::invalid_argument("Stitching control-point limit must be in 10..5000");
     int staged_frame_count =
         calibration_frame_count_spin_ ? calibration_frame_count_spin_->value() : kDefaultStitchCalibrationFrameCount;
     int staged_max_output_width = default_stitch_max_output_width_;
@@ -19511,12 +19516,6 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       if (!configured_projection_framing.ok())
         throw std::invalid_argument(std::string(configured_projection_framing.status().message()));
       staged_projection_framing = *configured_projection_framing;
-    }
-    YAML::Node control_points;
-    if (control_points_spin_ &&
-        lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
-        control_points.IsScalar()) {
-      staged_control_points = control_points.as<int>();
     }
     YAML::Node frame_count;
     const auto selected_plan_frame_count = selected_calibration_frame_count(config);

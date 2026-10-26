@@ -14932,6 +14932,31 @@ bool test_detector_model() {
       "switching back to the default model must reload as the default model");
 }
 
+bool test_control_point_limit_precedence() {
+  const QString game_name = "control-point-limit-precedence";
+  const QString game_directory = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_name);
+  if (!QDir().mkpath(game_directory))
+    return false;
+  const auto config_path = QDir(game_directory).filePath("config.yaml").toStdString();
+  std::ofstream(config_path) << "stitching: {control_point_limit: 250}\n";
+  HStreamWindow window;
+  auto* selector = require_child<QComboBox>(&window, "gameSelector");
+  auto* points = require_child<QSpinBox>(&window, "controlPointsSpin");
+  if (!selector || !points)
+    return false;
+  selector->setCurrentIndex(selector->findText(game_name));
+  if (!expect(points->value() == 250, "Qt must load the game-local canonical control-point limit"))
+    return false;
+  std::ofstream(config_path) << "stitching: {control_point_limit: 250}\n"
+                                "hstream_ui: {stitching_calibration: {control_points: 450}}\n";
+  HStreamWindowTestAccess::reloadSavedControls(&window);
+  if (!expect(points->value() == 450, "Explicit saved calibration limits must override the canonical limit"))
+    return false;
+  std::ofstream(config_path) << "{}\n";
+  HStreamWindowTestAccess::reloadSavedControls(&window);
+  return expect(points->value() == 1500, "Removing both overrides must restore the baseline control-point limit");
+}
+
 bool test_preset_reload_with_missing_tracker() {
   const QString game_name = "saved-preset-missing-tracker";
   const QString game_directory = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_name);
@@ -18938,6 +18963,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_CONTROL_POINT_LIMIT_ONLY"))
+    return test_control_point_limit_precedence() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ICONS_ONLY")) {
     HStreamWindow window;
     window.resize(1600, 1000);
@@ -19034,7 +19061,8 @@ int main(int argc, char** argv) {
   }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRESET_RELOAD_ONLY")) {
     HStreamWindow window;
-    return test_preset_reload_with_missing_tracker() && test_game_setup(&window, source_root.path()) &&
+    return test_control_point_limit_precedence() && test_preset_reload_with_missing_tracker() &&
+            test_game_setup(&window, source_root.path()) &&
             test_nonzero_user_stitch_frame_default(window.gameDirectoryText()) && test_camera_controls(&window)
         ? 0
         : 1;
@@ -19120,7 +19148,8 @@ int main(int argc, char** argv) {
   if (!test_rink_mask_time(window.gameDirectoryText()) ||
       !(test_control_point_resolution(window.gameDirectoryText()) &&
         test_control_point_filtering(window.gameDirectoryText())) ||
-      !test_preset_reload_with_missing_tracker() || !test_stitching_iteration_controls(window.gameDirectoryText()))
+      !test_control_point_limit_precedence() || !test_preset_reload_with_missing_tracker() ||
+      !test_stitching_iteration_controls(window.gameDirectoryText()))
     return 1;
   if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
     std::cerr << "test_nonzero_user_stitch_frame_default failed\n";
