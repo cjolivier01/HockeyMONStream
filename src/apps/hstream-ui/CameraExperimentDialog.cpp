@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
@@ -86,43 +87,6 @@ class ExperimentTimeEdit : public QDoubleSpinBox {
   }
 };
 
-// Telemetry PTS usually begins at zero even when the original cameras started
-// later. Use the archived launch origin to bind the selected source moment.
-std::optional<qint64> recording_source_origin(const replay::PrepareOptions& options) {
-  if (!QString::fromStdString(options.manifest_path).endsWith(".db") &&
-      !QString::fromStdString(options.manifest_path).endsWith(".sqlite"))
-    return std::nullopt;
-  hm::recording::Database db(options.manifest_path);
-  db.Validate();
-  hm::recording::Statement config(
-      db.get(),
-      "SELECT artifact_contents FROM config_events WHERE run_id=? AND kind='run-configuration' "
-      "AND length(artifact_contents)<=16777216 ORDER BY event_id LIMIT 1");
-  config.Bind(1, options.run_id);
-  if (!config.Next())
-    return std::nullopt;
-  const YAML::Node recorded = YAML::Load(config.Text(0));
-  const YAML::Node launch = recorded["launch"];
-  if (launch && launch.IsMap() && launch["start-time-ns"])
-    return launch["start-time-ns"].as<uint64_t>() / 1000000;
-  // HockeyMON archives the resolved configuration directly. Older snapshots
-  // lack the native launch envelope and use the explicit UI playback origin.
-  const YAML::Node game_at_launch = recorded["game-at-launch"];
-  const YAML::Node ui =
-      game_at_launch && game_at_launch.IsMap() ? game_at_launch["hstream_ui"] : recorded["hstream_ui"];
-  if (!ui || !ui.IsMap())
-    return std::nullopt;
-  const std::string value = ui["playback_start_time"].as<std::string>("");
-  qint64 ms = 0;
-  const YAML::Node job = ui["job"];
-  if (job && job.IsMap() && job["arguments"] && job["arguments"].IsSequence() &&
-      hm::ui::ParseHighlightTime(QString::fromStdString(value), &ms))
-    for (const auto& arg : job["arguments"])
-      if (arg.as<std::string>() == "--start-time=" + value)
-        return ms;
-  return std::nullopt;
-}
-
 class ExperimentVideoTarget : public hm::ui::NativePreviewSurface {
  public:
   explicit ExperimentVideoTarget(QWidget* parent) : NativePreviewSurface(parent) {
@@ -180,33 +144,25 @@ struct PlotLayerSpec {
   const char* id;
   const char* label;
   const char* legend; // The checkbox, on the dialog's light background.
-  bool initial;
   const char* tip;
 };
 
 constexpr PlotLayerSpec kPlotLayers[kPlotLayerCount] = {
-    {"Recorded",
-     "Recorded",
-     "#64748b",
-     true,
-     "Horizontal center of the Program camera as it was recorded."},
-    {"Program", "Program center", "#0f766e", true, "Horizontal center of the selected trial's Program camera."},
+    {"Recorded", "Recorded", "#64748b", "Horizontal center of the Program camera as it was recorded."},
+    {"Program", "Program center", "#0f766e", "Horizontal center of the selected trial's Program camera."},
     {"Crop",
      "Crop width",
      "#0b6b5e",
-     true,
      "Left and right edges of the Program crop. A narrow band is zoomed in; a wide one is zoomed out."},
-    {"Fast", "Fast box", "#a16207", false, "Center and edges of the fast box that the Program camera chases."},
+    {"Fast", "Fast box", "#a16207", "Center and edges of the fast box that the Program camera chases."},
     {"Players",
      "Players",
      "#1d4ed8",
-     false,
      "Horizontal center of every tracked player. Players the trial excluded from camera logic are dimmed."},
-    {"Cluster", "Cluster", "#6d28d9", false, "Horizontal extent of the player cluster the policy framed."},
+    {"Cluster", "Cluster", "#6d28d9", "Horizontal extent of the player cluster the policy framed."},
     {"Breakaway",
      "Breakaway",
      "#b42318",
-     true,
      "Marks the frames where the policy is catching a breakaway, with the leading edge it is chasing and the "
      "frame it is trying to reach."},
 };
@@ -225,13 +181,13 @@ std::optional<std::pair<double, double>> box_extent(const std::optional<hm::BBox
 
 class CameraPathPlot : public QWidget {
  public:
-  explicit CameraPathPlot(QWidget* parent) : QWidget(parent) {
+  explicit CameraPathPlot(QWidget* parent, const YAML::Node& defaults) : QWidget(parent) {
     setMinimumHeight(190);
     setCursor(Qt::PointingHandCursor);
     setAccessibleName("Visual timeline");
     setToolTip("Click to show a frame. Press Play preview to continue from there.");
     for (int i = 0; i < kPlotLayerCount; ++i)
-      layers[i] = kPlotLayers[i].initial;
+      layers[i] = defaults["plot_layers"][kPlotLayers[i].id].as<bool>();
   }
   std::shared_ptr<const std::vector<replay::Frame>> original;
   std::shared_ptr<const std::vector<replay::Frame>> trial;
@@ -403,14 +359,11 @@ class CameraPathPlot : public QWidget {
       }
     }
     if (original && layers[kPlotRecorded])
-      trace(
-          *original, [](const replay::Frame& f) { return box_center(f.follower); }, QPen(QColor("#94a3b8"), 2));
+      trace(*original, [](const replay::Frame& f) { return box_center(f.follower); }, QPen(QColor("#94a3b8"), 2));
     if (trial && layers[kPlotFast])
-      trace(
-          *trial, [](const replay::Frame& f) { return box_center(f.fast); }, QPen(QColor("#f6be62"), 2));
+      trace(*trial, [](const replay::Frame& f) { return box_center(f.fast); }, QPen(QColor("#f6be62"), 2));
     if (trial && layers[kPlotProgram])
-      trace(
-          *trial, [](const replay::Frame& f) { return box_center(f.follower); }, QPen(QColor("#41dbc0"), 2));
+      trace(*trial, [](const replay::Frame& f) { return box_center(f.follower); }, QPen(QColor("#41dbc0"), 2));
     if (trial && layers[kPlotBreakaway]) {
       if (layers[kPlotProgram])
         trace(
@@ -504,9 +457,10 @@ class CameraPathPlot : public QWidget {
                    .arg(f.tracking.cluster->left, 0, 'f', 0)
                    .arg(f.tracking.cluster->right, 0, 'f', 0);
     if (layers[kPlotBreakaway]) {
-      parts << (f.tracking.breakaway_edge
-                    ? QString("catching breakaway at %1 px").arg(f.tracking.breakaway_edge->x, 0, 'f', 0)
-                    : QString("no breakaway"));
+      parts
+          << (f.tracking.breakaway_edge
+                  ? QString("catching breakaway at %1 px").arg(f.tracking.breakaway_edge->x, 0, 'f', 0)
+                  : QString("no breakaway"));
       if (f.tracking.breakaway_target)
         parts << QString("breakaway target %1–%2 px")
                      .arg(f.tracking.breakaway_target->left, 0, 'f', 0)
@@ -641,6 +595,7 @@ struct CameraExperimentDialog::Impl {
   bool preview_focused{false};
   std::vector<Control> controls;
   std::map<QString, double> initial_controls;
+  QString trial_prefix;
   std::shared_ptr<replay::ReplaySession> session;
   std::vector<replay::TrialResult> trials;
   std::shared_ptr<const std::vector<replay::Frame>> selected;
@@ -895,7 +850,7 @@ struct CameraExperimentDialog::Impl {
     work = std::async(std::launch::async, [options, token, media, raw, playback_ms]() mutable {
       WorkResult result;
       try {
-        const qint64 recorded_origin = recording_source_origin(options).value_or(playback_ms);
+        const qint64 recorded_origin = CameraExperimentRecordingSourceOrigin(options).value_or(playback_ms);
         options.start_seconds += (playback_ms - recorded_origin) / 1000.0;
         if (options.start_seconds < 0) {
           result.error = "Playback start plus Start offset precedes the selected recording";
@@ -979,8 +934,9 @@ struct CameraExperimentDialog::Impl {
       rink_setup = replay::RinkCameraSetup{
           rink_map, {rink_anticipate->isChecked(), rink_goals->isChecked(), rink_zoom->isChecked()}};
     }
-    const std::string name = trial_name->text().trimmed().isEmpty() ? "Trial " + std::to_string(trials.size() + 1)
-                                                                    : trial_name->text().trimmed().toStdString();
+    const std::string name = trial_name->text().trimmed().isEmpty()
+        ? trial_prefix.toStdString() + " " + std::to_string(trials.size() + 1)
+        : trial_name->text().trimmed().toStdString();
     cancellation = std::make_shared<std::atomic<bool>>(false);
     auto token = cancellation;
     close_preview();
@@ -1232,7 +1188,7 @@ struct CameraExperimentDialog::Impl {
         comparison->setCurrentIndex(comparison->count() - 1);
         changing_selection = false;
         select_comparison(true);
-        trial_name->setText(QString("Trial %1").arg(trials.size() + 1));
+        trial_name->setText(trial_prefix + QString(" %1").arg(trials.size() + 1));
       }
       busy(false);
     }
@@ -1270,6 +1226,12 @@ CameraExperimentDialog::CameraExperimentDialog(
   qApp->installEventFilter(this);
   auto& s = *impl_;
   s.initial_controls = camera_controls;
+  const auto baseline = hm::baseline_config::load();
+  if (!baseline.ok())
+    throw std::runtime_error(baseline.status().ToString());
+  const auto preferences = baseline->values["camera_experiments"];
+  if (!preferences || !preferences.IsMap())
+    throw std::runtime_error("Missing required camera_experiments baseline preferences");
   setWindowTitle("HStream · Camera experiments");
   setObjectName("cameraExperimentDialog");
   configure_preview_dialog_window(this);
@@ -1317,6 +1279,10 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.source_mode = new QComboBox();
   s.source_mode->setObjectName("experimentSourceMode");
   s.source_mode->addItems({"Original cameras · stitch during replay", "Saved uncropped panorama"});
+  const auto media_kind = preferences["media_kind"].as<std::string>();
+  if (media_kind != "original-cameras" && media_kind != "panorama")
+    throw std::runtime_error("Invalid camera experiment source preference");
+  s.source_mode->setCurrentIndex(media_kind == "original-cameras" ? 0 : 1);
   source_layout->addRow("Video source", s.source_mode);
   file_row("experimentGameDirectory", "Original game directory", "directory", &s.game_path);
   s.game_path->setText(game_directory);
@@ -1378,14 +1344,16 @@ CameraExperimentDialog::CameraExperimentDialog(
   };
   s.playback_start = time_control("experimentPlaybackStart", "Playback start", playback_start_ms / 1000.0, 1e8);
   s.playback_start->setToolTip("Inherited from the main window. Changes apply only to this experiment.");
-  s.in = time_control("experimentIn", "Start offset", 0, 1e8);
-  s.duration = time_control("experimentDuration", "Duration", 10, 120);
+  s.in = time_control("experimentIn", "Start offset", preferences["start_seconds"].as<double>(), 1e8);
+  s.duration = time_control("experimentDuration", "Duration", preferences["duration_seconds"].as<double>(), 120);
   s.duration->setMinimum(0.1);
-  s.video_origin = time_control("experimentVideoOrigin", "Video start offset", 0, 1e8);
+  s.video_origin = time_control(
+      "experimentVideoOrigin", "Video start offset", preferences["video_offset_seconds"].as<double>(), 1e8);
   range->addStretch();
   source_layout->addRow(range);
   s.uncropped = new QCheckBox();
   s.uncropped->setObjectName("experimentUncropped");
+  s.uncropped->setChecked(preferences["source_confirmed"].as<bool>());
   source_layout->addRow("Video source confirmation", s.uncropped);
   root->addWidget(s.settings);
 
@@ -1400,12 +1368,15 @@ CameraExperimentDialog::CameraExperimentDialog(
   auto* preview_header = new QHBoxLayout();
   s.draw_players = new QCheckBox("Player boxes");
   s.draw_players->setObjectName("experimentDrawPlayers");
+  s.draw_players->setChecked(preferences["players"].as<bool>());
   s.draw_players->setToolTip("Draw recorded player boxes; gray IGNORED labels follow the selected trial's filtering.");
   s.draw_play = new QCheckBox("Play tracking");
   s.draw_play->setObjectName("experimentDrawPlayTracking");
+  s.draw_play->setChecked(preferences["play"].as<bool>());
   s.draw_play->setToolTip("Draw the selected camera policy's boxes, thresholds, clusters, and movement state.");
   s.draw_rink = new QCheckBox("Rink mask");
   s.draw_rink->setObjectName("experimentDrawRinkMask");
+  s.draw_rink->setChecked(preferences["rink"].as<bool>());
   s.draw_rink->setEnabled(false);
   s.draw_rink->setToolTip("Prepare a recording with an archived rink mask to enable this drawing.");
   for (auto* toggle : {s.draw_players, s.draw_play, s.draw_rink}) {
@@ -1450,10 +1421,10 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.stop_preview->setObjectName("experimentStopPreview");
   s.loop = new QCheckBox("Repeat range");
   s.loop->setObjectName("experimentLoop");
-  s.loop->setChecked(true);
+  s.loop->setChecked(preferences["loop"].as<bool>());
   s.realtime = new QCheckBox("Play at normal speed");
   s.realtime->setObjectName("experimentRealtimePlayback");
-  s.realtime->setChecked(true);
+  s.realtime->setChecked(preferences["realtime"].as<bool>());
   s.realtime->setToolTip(
       "Use video timestamps to play at normal speed, retaining late frames when processing is slow. "
       "Pause or Stop to change this; it applies when you next press Play preview. "
@@ -1478,7 +1449,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   plot_layout->setSpacing(2);
   auto* plot_header = new QHBoxLayout();
   plot_header->setContentsMargins(14, 0, 14, 0);
-  s.plot = new CameraPathPlot(plot_panel);
+  s.plot = new CameraPathPlot(plot_panel, preferences);
   s.plot->setObjectName("experimentCameraPlot");
   for (int layer = 0; layer < kPlotLayerCount; ++layer) {
     const PlotLayerSpec& spec = kPlotLayers[layer];
@@ -1486,7 +1457,7 @@ CameraExperimentDialog::CameraExperimentDialog(
     toggle->setObjectName(QString("experimentPlotLayer_") + QString::fromLatin1(spec.id));
     toggle->setToolTip(QString::fromLatin1(spec.tip));
     toggle->setStyleSheet(QString("color:%1;").arg(QString::fromLatin1(spec.legend)));
-    toggle->setChecked(spec.initial);
+    toggle->setChecked(preferences["plot_layers"][spec.id].as<bool>());
     connect(toggle, &QCheckBox::toggled, this, [this, layer](bool enabled) {
       impl_->plot->layers[layer] = enabled;
       impl_->plot->update();
@@ -1514,9 +1485,11 @@ CameraExperimentDialog::CameraExperimentDialog(
   auto* targets = new QHBoxLayout();
   s.fast = new QCheckBox("Fast box");
   s.fast->setObjectName("experimentFastBox");
+  s.fast->setChecked(preferences["apply_to_fast_box"].as<bool>());
   s.follower = new QCheckBox("Program / follower box");
   s.follower->setObjectName("experimentFollowerBox");
-  s.follower->setChecked(true);
+  s.follower->setChecked(preferences["apply_to_follower_box"].as<bool>());
+
   if (const auto value = camera_controls.find("Apply_To_Fast_Box"); value != camera_controls.end())
     s.fast->setChecked(value->second != 0);
   if (const auto value = camera_controls.find("Apply_To_Follower_Box"); value != camera_controls.end())
@@ -1527,7 +1500,13 @@ CameraExperimentDialog::CameraExperimentDialog(
   auto* tabs = new QTabWidget();
   s.parameter_tabs = tabs;
   tabs->setObjectName("experimentControlTabs");
-  const auto defaults = [](const QString& id) { return id == "Zoom_In_Aggressiveness" ? 25 : 0; };
+  const auto defaults = [&preferences](const QString& id) {
+    if (id == "Apply_To_Fast_Box")
+      return int(preferences["apply_to_fast_box"].as<bool>());
+    if (id == "Apply_To_Follower_Box")
+      return int(preferences["apply_to_follower_box"].as<bool>());
+    return preferences["controls"][id.toStdString()].as<int>();
+  };
   auto control_tab = [&](const QString& label, const std::vector<CameraSliderSpec>& specs) {
     auto* content = new QWidget();
     auto* form = new QFormLayout(content);
@@ -1542,30 +1521,24 @@ CameraExperimentDialog::CameraExperimentDialog(
   };
   control_tab("Tracking", tracking_control_specs(defaults));
   control_tab("Motion", motion_control_specs(defaults));
-  control_tab(
-      "Players",
-      {{"Ignore_Largest_Count",
-        "Ignore largest players",
-        0,
-        std::numeric_limits<int>::max(),
-        0,
-        "ignore-largest-bbox-count"},
-       {"Ignore_Oversized_Players", "Ignore oversized players (0 / 1)", 0, 1, 0, "ignore-oversized-bboxes"},
-       {"Oversized_Player_Percent", "Larger than average (%)", 0, 1000, 50, "oversized-bbox-percent"}});
+  control_tab("Players", player_control_specs(defaults));
   auto* rink_tab = new QWidget();
   auto* rink_layout = new QVBoxLayout(rink_tab);
   s.rink_aware = new QCheckBox("Experimental rink-aware framing");
   s.rink_aware->setObjectName("experimentRinkAware");
+  s.rink_aware->setChecked(preferences["rink_aware"].as<bool>());
   s.rink_aware->setEnabled(false);
   rink_layout->addWidget(s.rink_aware);
   s.rink_anticipate = new QCheckBox("Lead the direction of play");
   s.rink_anticipate->setObjectName("experimentRinkAnticipate");
+  s.rink_anticipate->setChecked(preferences["anticipate"].as<bool>());
   s.rink_goals = new QCheckBox("Include the nearby goal during end-zone play");
   s.rink_goals->setObjectName("experimentRinkGoals");
+  s.rink_goals->setChecked(preferences["frame_goals"].as<bool>());
   s.rink_zoom = new QCheckBox("Widen for rushes; tighten when play settles");
   s.rink_zoom->setObjectName("experimentRinkZoom");
+  s.rink_zoom->setChecked(preferences["adaptive_zoom"].as<bool>());
   for (auto* option : {s.rink_anticipate, s.rink_goals, s.rink_zoom}) {
-    option->setChecked(option == s.rink_anticipate);
     option->setEnabled(false);
     rink_layout->addWidget(option);
   }
@@ -1598,7 +1571,8 @@ CameraExperimentDialog::CameraExperimentDialog(
   legacy_layout->addRow("Policy file", s.legacy_config);
   tabs->addTab(legacy, tab_icon("Legacy"), "Legacy");
   right_layout->addWidget(tabs, 1);
-  s.trial_name = new QLineEdit("Trial 1");
+  s.trial_prefix = QString::fromStdString(preferences["trial_name_prefix"].as<std::string>());
+  s.trial_name = new QLineEdit(s.trial_prefix + " 1");
   s.trial_name->setObjectName("experimentTrialName");
   s.trial_name->setMaxLength(100);
   right_layout->addWidget(s.trial_name);

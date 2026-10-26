@@ -320,6 +320,8 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        ":highlight_plan",
+        "//src/libs/recording",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:hugin_project",
         "//src/libs/common:baseline_config",
@@ -359,9 +361,27 @@ cc_test(
 )
 
 cc_library(
+    name = "camera_experiment_web_preview",
+    srcs = ["CameraExperimentWebPreview.cpp"],
+    hdrs = ["CameraExperimentWebPreview.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":camera_experiment_preview",
+        ":highlight_web_preview",
+        "//src/apps/apps-common:preview_overlay_painter",
+        "//src/apps/apps-common:preview_overlay_scene_data",
+        "//src/apps/apps-common:web_preview_target",
+        "//src/apps/apps-common:webrtc_signaling",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_library(
     name = "camera_experiment_preview",
-    srcs = ["CameraExperimentPreview.cpp", "CameraExperimentPreviewWorker.cpp"],
-    hdrs = ["CameraExperimentPreview.h", "CameraExperimentPreviewWorker.h"],
+    srcs = ["CameraExperimentPreview.cpp", "CameraExperimentPreviewOutput.cpp", "CameraExperimentPreviewWorker.cpp"],
+    hdrs = ["CameraExperimentPreview.h", "CameraExperimentPreviewOutput.h", "CameraExperimentPreviewWorker.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
@@ -411,6 +431,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/tracking:camera_control_specs",
+        "//src/libs/common:baseline_config",
         ":value_control_wheel",
         "//src/apps/apps-common:rink_mask_image",
         ":native_preview_surface",
@@ -1267,6 +1288,28 @@ cc_test(
 
 # Headless workflows share the native dialog libraries, without desktop windows.
 cc_library(
+    name = "web_camera_experiment",
+    srcs = ["WebCameraExperiment.cpp", "CameraControlSpecs.h"],
+    hdrs = ["WebCameraExperiment.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        "//src/libs/tracking:camera_control_specs",
+        ":archive_catalog",
+        ":camera_experiment_preview",
+        ":camera_experiment_source",
+        ":camera_experiment_web_preview",
+        ":web_job_spec",
+        "//src/libs/common:baseline_config",
+        "//src/libs/playtracker_replay",
+        "//src/libs/stitching:playback_rink_map",
+        "@gstreamer",
+        "@qt//:qt_core",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "web_job_spec",
     srcs = ["WebJobSpec.cpp"],
     hdrs = ["WebJobSpec.h"],
@@ -1283,6 +1326,7 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/tracking:camera_control_specs",
+        ":web_camera_experiment",
         ":highlight_web_preview",
         ":rink_map_dialog",
         ":projection_crop_dialog",

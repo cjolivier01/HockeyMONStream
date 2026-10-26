@@ -14,6 +14,7 @@
 #include "src/apps/hstream-ui/HighlightWebPreview.h"
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
+#include "src/apps/hstream-ui/WebCameraExperiment.h"
 #include "src/apps/hstream-ui/WebExperimentFrames.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
 #include "src/apps/hstream-ui/WebRinkEditor.h"
@@ -313,7 +314,7 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
     std::cout << "HSTREAM_HIGHLIGHT_PREVIEW " << QJsonDocument(session).toJson(QJsonDocument::Compact).constData()
               << std::endl;
   } else {
-    require(!preview_port, "A signaling port is only valid for live highlight preview");
+    require(!preview_port, "A signaling port is only valid for live highlight or camera preview");
     job.output_path = qs(request.root / "highlights.mp4");
     require(!fs::exists(job.output_path.toStdString()), "Refusing to replace an existing reel output");
   }
@@ -1153,6 +1154,8 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
 }
 
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "camera-experiment")
+    return hm::web::RunCameraExperiment(request, artifacts, preview_port, [] { return interrupted != 0; });
   if (request.operation.rfind("calibration-view-", 0) == 0)
     return hm::web::RunSavedCalibration(request, artifacts, [] { return interrupted != 0; });
   if (request.operation.rfind("rink-map-", 0) == 0)
@@ -1253,8 +1256,8 @@ int main(int argc, char** argv) {
   try {
     request = hm::web::LoadRequest(argv[2]);
     require(
-        !preview_port || request->operation == "highlight-live-preview",
-        "Signaling is only available for live highlight preview");
+        !preview_port || request->operation == "highlight-live-preview" || request->operation == "camera-experiment",
+        "Signaling is only available for live highlight or camera preview");
     const auto hash = QCryptographicHash::hash(
                           QJsonDocument(ReadObject(argv[2])).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256)
                           .toHex();

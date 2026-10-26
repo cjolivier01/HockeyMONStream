@@ -112,7 +112,8 @@ QJsonObject Capabilities() {
       "track-runs",
       "track-choices",
       "track-capture",
-      "camera-replay"};
+      "camera-replay",
+      "camera-experiment"};
   return {
       {"schema", 1},
       {"request_schema", 1},

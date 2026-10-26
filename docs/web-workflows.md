@@ -87,6 +87,27 @@ contract, then testing both interfaces against the same native checkout.
 | `track-choices` | `database`, `run_id`, `route` (`program`, `stitched`, `program-full`), `game_ms`, optional `pts_offset_ms`. Returns native segment-bound track choices. |
 | `track-capture` | Track choice fields plus `plan`, `archive_path`, `archive_offset_ms`, `item_index`, `cue_index`, and `choice`. Uses native track capture and returns a portable plan and `tracked-plan.json`. |
 | `camera-replay` | `database`, `run_id`, bounded `start_seconds` and `duration_seconds`, native `tuning`, and optional fast/follower target booleans. Returns original, baseline and trial trajectories from `ReplaySession`. This operation does not encode a moving camera-preview video. |
+| `camera-experiment` | A completed `database`/`run_id`, `media_kind` (`original-cameras` or `panorama`), bounded `start_seconds`, `duration_seconds` (0.1–120), `playback_start_seconds`, `video_origin_seconds`, and explicit source-confirmation/playback/overlay booleans. Original cameras use the worker-staged game calibration; panoramas require `archive_path` and validated media dimensions. Uses the shared `ReplaySession`, decoder/cropper and preview worker with hardware WebRTC output. The supervisor assigns `--preview-port=N`. |
+
+Camera Experiments accept sequential typed stdin commands for play/pause, Stop,
+frame seek, comparison view, overlays, repeat, real-time playback, source
+confirmation, parameter/rink-aware trials, Save and Close. Native events use
+`HSTREAM_CAMERA_EXPERIMENT ` and fence run, stage, generation and request. The
+browser presentation receipt must match the operation and original source PTS
+before a seek is ready. Stop retires the source while retaining the browser peer;
+Close retires the worker before server ownership is released. A bounded client
+lease sends abandoned sessions through the same supervised cleanup.
+
+The native adapter writes a revisioned trajectory catalog separately from its
+frequent state messages. Save publishes `camera-trial-N.yaml` with an exact
+file-identity receipt, allowing an immediate authenticated download before Close;
+final publication rechecks the same artifacts. Both interfaces resolve defaults
+from `camera_experiments` in the bundled baseline and share the archived recording
+source-origin calculation and immutable historical mask. Legacy manifest import
+is still unavailable in the browser. Scaled-panorama mask rendering, reconnect,
+abandonment and the complete authenticated overlay/rink-aware comparison remain
+qualification gaps; the presence of this operation does not establish full
+Camera workflow parity.
 
 Workspace descriptors returned in `result.workspace` contain `root`,
 `game_directory`, `game_id`, `invalidation_id`, and `settings`. Their paths are

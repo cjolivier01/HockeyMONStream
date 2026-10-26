@@ -1,11 +1,11 @@
 #include "src/apps/hstream-ui/CameraExperimentPreview.h"
+#include "src/apps/hstream-ui/CameraExperimentPreviewOutput.h"
 #include "src/apps/hstream-ui/CameraExperimentSource.h"
 
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
-#include <QtGui/QImage>
 
 #include <gst/gst.h>
 #include <gstnvdsmeta.h>
@@ -66,6 +66,7 @@ struct CameraExperimentPreview::Impl {
   GstElement* cropper{nullptr};
   GstElement* sink{nullptr};
   GstBus* bus{nullptr};
+  std::shared_ptr<CameraExperimentPreviewOutput> output;
   std::unique_ptr<CameraExperimentSource> raw;
   std::future<std::string> rebuilding;
   std::uint64_t raw_start{0};
@@ -209,7 +210,7 @@ struct CameraExperimentPreview::Impl {
             GST_PAD_PROBE_INFO_DATA(info) = mapped;
           }
           self->segment_generation = self->generation;
-          hm::gpu_preview::set_renderer_generation(self->sink, self->generation);
+          self->output->SetGeneration(self->generation);
         }
         return GST_PAD_PROBE_OK;
       }
@@ -369,9 +370,10 @@ bool CameraExperimentPreview::Open(
     double left_rotation,
     double right_rotation,
     std::string* error,
-    std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask) {
+    std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask,
+    std::shared_ptr<CameraExperimentPreviewOutput> output) {
   Close();
-  if (!canvas_width || !canvas_height || !media.width || !media.height || !window_id ||
+  if (!canvas_width || !canvas_height || !media.width || !media.height || (!window_id && !output) ||
       media.video_origin_pts_ns > G_MAXINT64 || media.telemetry_origin_pts_ns > G_MAXINT64)
     return fail(error, "Video binding has invalid dimensions, timestamps, or a missing native window.");
   const auto geometry =
@@ -382,10 +384,9 @@ bool CameraExperimentPreview::Open(
     g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
   gst_init(nullptr, nullptr);
   gst_registry_scan_path(gst_registry_get(), "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
-  if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements())
-    return fail(error, "Camera experiment video preview requires NVIDIA graphics and an X11 display.");
   load_cropper_plugin();
   auto& s = *impl_;
+  s.output = output ? std::move(output) : MakeNativeCameraExperimentPreviewOutput();
   s.media = media;
   s.canvas_width = canvas_width;
   s.canvas_height = canvas_height;
@@ -405,7 +406,15 @@ bool CameraExperimentPreview::Impl::build_graph(std::string* error) {
   s.converter = gst_element_factory_make("nvvideoconvert", "panorama-rgba");
   GstElement* capsfilter = gst_element_factory_make("capsfilter", "panorama-caps");
   s.cropper = gst_element_factory_make("playcropper", "experiment-cropper");
-  s.sink = gst_element_factory_make("hmgpupreviewsink", "experiment-renderer");
+  s.sink = s.output->CreateSink(
+      {s.window_id,
+       s.realtime.load(),
+       !media.stitching,
+       s.draw_players.load(),
+       s.draw_play.load(),
+       s.draw_rink.load(),
+       s.rink_mask},
+      error);
   std::vector<GstElement*> elements{s.converter, capsfilter, s.cropper, s.sink};
   if (!media.stitching)
     elements.push_back(s.decoder);
@@ -467,31 +476,6 @@ bool CameraExperimentPreview::Impl::build_graph(std::string* error) {
         media.stitching->shadow_lift_black_point ? TRUE : FALSE,
         nullptr);
   }
-  g_object_set(
-      s.sink,
-      "window-id",
-      window_id,
-      "channel",
-      "program", // Apply playcropper's exact crop/rotation to recorded drawing coordinates.
-      "sync",
-      s.realtime.load() ? TRUE : FALSE,
-      "max-lateness",
-      gint64{-1},
-      "async",
-      media.stitching ? FALSE : TRUE,
-      "qos",
-      FALSE,
-      "enable-last-sample",
-      TRUE, // One retained GPU frame lets drawing toggles update a paused preview.
-      "show-player-tracking",
-      s.draw_players.load(),
-      "show-play-tracking",
-      s.draw_play.load(),
-      "show-rink-mask",
-      s.draw_rink.load(),
-      nullptr);
-  hm::gpu_preview::configure_recorded_rink_mask(s.sink, s.rink_mask);
-  hm::gpu_preview::set_source_geometry(s.sink, 1280, 720);
   const bool linked = gst_element_link_many(s.converter, capsfilter, s.cropper, s.sink, nullptr);
   if (!linked) {
     clear_graph();
@@ -663,9 +647,9 @@ void CameraExperimentPreview::SetOverlays(bool players, bool play, bool rink) {
   s.draw_play = play;
   s.draw_rink = rink;
   if (!s.rebuilding.valid() && s.sink) {
-    g_object_set(s.sink, "show-player-tracking", players, "show-play-tracking", play, "show-rink-mask", rink, nullptr);
+    s.output->SetOverlays(players, play, rink);
     if (!s.playing && !s.seeking)
-      hm::gpu_preview::redraw_last_sample(s.sink);
+      s.output->Redraw();
   }
 }
 
@@ -757,7 +741,7 @@ CameraExperimentPreview::Status CameraExperimentPreview::Poll() {
   }
   std::uint64_t generation = 0;
   GstClockTime pts = GST_CLOCK_TIME_NONE;
-  const bool acknowledged = s.sink && hm::gpu_preview::presented_frame(s.sink, &generation, &pts);
+  const bool acknowledged = s.sink && s.output->Presented(&generation, &pts);
   std::optional<std::pair<std::size_t, bool>> next_seek;
   bool pause_at_end = false;
   {
@@ -809,7 +793,7 @@ CameraExperimentPreview::Status CameraExperimentPreview::Poll() {
   // in case a layout change races the final presentation during playback.
   if (s.redraw_requested && !s.rebuilding.valid() && !s.playing && !s.seeking && s.presented && s.sink) {
     s.redraw_requested = false;
-    hm::gpu_preview::redraw_last_sample(s.sink);
+    s.output->Redraw();
   }
   std::lock_guard<std::mutex> lock(s.mutex);
   return {s.playing, s.seeking, s.presented, s.error};
@@ -818,14 +802,7 @@ CameraExperimentPreview::Status CameraExperimentPreview::Poll() {
 bool CameraExperimentPreview::Capture(const std::string& path, std::string* error) {
   if (impl_->rebuilding.valid() || !impl_->sink)
     return fail(error, "Wait for the selected frame to finish loading before capturing it.");
-  std::vector<std::uint8_t> rgba;
-  unsigned width = 0;
-  unsigned height = 0;
-  if (!hm::gpu_preview::capture_presented_frame(impl_->sink, &rgba, &width, &height, error))
-    return false;
-  // Explicit operator/test screenshot only; never called by normal playback.
-  QImage image(rgba.data(), width, height, width * 4, QImage::Format_RGBA8888);
-  return image.save(QString::fromStdString(path)) || fail(error, "Could not save the preview screenshot.");
+  return impl_->output->Capture(path, error);
 }
 
 void CameraExperimentPreview::Impl::clear_graph() {
@@ -835,9 +812,11 @@ void CameraExperimentPreview::Impl::clear_graph() {
       gst_element_set_locked_state(sink, FALSE);
   }
   if (graph) {
+    if (output)
+      output->RetireSource();
     gst_element_set_state(graph, GST_STATE_NULL);
-    if (sink)
-      hm::gpu_preview::quiesce(sink, generation);
+    if (output)
+      output->ReleaseSink();
     if (bus)
       gst_object_unref(bus);
     gst_object_unref(graph);

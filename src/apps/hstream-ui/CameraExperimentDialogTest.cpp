@@ -481,8 +481,8 @@ bool e2e(const QStringList& args) {
   heartbeat.start();
   qint64 longest_gap = 0;
   QTimer responsiveness;
-  QObject::connect(
-      &responsiveness, &QTimer::timeout, [&] { longest_gap = std::max(longest_gap, heartbeat.restart()); });
+  const auto record_heartbeat = [&] { longest_gap = std::max(longest_gap, heartbeat.restart()); };
+  QObject::connect(&responsiveness, &QTimer::timeout, record_heartbeat);
   responsiveness.start(10);
   CameraExperimentDialog dialog(
       QFileInfo(args[2]).absolutePath(), nullptr, {}, args.size() > 10 ? std::llround(args[10].toDouble() * 1000) : 0);
@@ -536,11 +536,20 @@ bool e2e(const QStringList& args) {
     return false;
   }
   const auto capture = [&](const char* name) {
+    // GPU readback plus full-dialog PNG encoding is an explicit test-driver
+    // operation. Count any application gap before it, then exclude only that
+    // synchronous capture from the playback responsiveness measurement.
+    record_heartbeat();
+    QElapsedTimer screenshot_time;
+    screenshot_time.start();
     QString error;
-    if (!dialog.captureScreenshot(QDir(artifacts).filePath(name), &error)) {
+    const bool captured = dialog.captureScreenshot(QDir(artifacts).filePath(name), &error);
+    heartbeat.restart();
+    if (!captured) {
       std::cerr << error.toStdString() << '\n';
       return false;
     }
+    std::cout << "Test screenshot " << name << " took " << screenshot_time.elapsed() << " ms\n";
     return true;
   };
   // Require visible frame progress before using screenshots as playback evidence.
@@ -586,8 +595,10 @@ bool e2e(const QStringList& args) {
               const double scale = double(screenshot_image.width()) / dialog.width();
               const QPoint origin = target->mapTo(&dialog, QPoint(0, 0));
               const QImage image = screenshot_image.copy(QRect(
-                  qRound(origin.x() * scale), qRound(origin.y() * scale),
-                  qRound(target->width() * scale), qRound(target->height() * scale)));
+                  qRound(origin.x() * scale),
+                  qRound(origin.y() * scale),
+                  qRound(target->width() * scale),
+                  qRound(target->height() * scale)));
               int bright = 0, samples = 0;
               for (int y = 0; y < image.height(); y += 8)
                 for (int x = 0; x < image.width(); x += 8) {
@@ -698,16 +709,16 @@ bool e2e(const QStringList& args) {
     if (!wait_until([&] { return screenshot->isEnabled(); }))
       return false;
     const QString path = QDir(artifacts).filePath(QString::fromLatin1(name) + ".png");
-    QString error;
-    if (!dialog.captureScreenshot(path, &error)) {
-      std::cerr << "Overlay capture failed: " << error.toStdString() << '\n';
+    if (!capture((QString::fromLatin1(name) + ".png").toUtf8().constData()))
       return false;
-    }
+    QElapsedTimer comparison_time;
+    comparison_time.start();
     const QImage drawn = QImage(path).copy(video_rect);
     int different = 0;
     for (int y = 0; y < clean.height(); ++y)
       for (int x = 0; x < clean.width(); ++x)
         different += clean.pixel(x, y) != drawn.pixel(x, y);
+    std::cout << "Test overlay pixel comparison " << name << " took " << comparison_time.elapsed() << " ms\n";
     if (different < 50 || timeline->value() != comparison_frame) {
       std::cerr << "Paused overlay did not draw on the same GPU frame: " << name << " changed=" << different << '\n';
       return false;
@@ -719,13 +730,14 @@ bool e2e(const QStringList& args) {
   }
   // The plot paints on the CPU, so its layers can be checked directly: flipping
   // one must change what the plot draws on the same paused frame.
-  for (const char* name : {"experimentPlotLayer_Recorded",
-                           "experimentPlotLayer_Program",
-                           "experimentPlotLayer_Crop",
-                           "experimentPlotLayer_Fast",
-                           "experimentPlotLayer_Players",
-                           "experimentPlotLayer_Cluster",
-                           "experimentPlotLayer_Breakaway"}) {
+  for (const char* name :
+       {"experimentPlotLayer_Recorded",
+        "experimentPlotLayer_Program",
+        "experimentPlotLayer_Crop",
+        "experimentPlotLayer_Fast",
+        "experimentPlotLayer_Players",
+        "experimentPlotLayer_Cluster",
+        "experimentPlotLayer_Breakaway"}) {
     auto* toggle = widget<QCheckBox>(dialog, name);
     const QImage before = plot->grab().toImage();
     toggle->toggle();
