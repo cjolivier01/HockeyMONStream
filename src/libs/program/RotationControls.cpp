@@ -33,7 +33,9 @@ bool ValidRotationControls(
   return true;
 }
 
-absl::StatusOr<RotationControlValues> ReadRotationControls(const YAML::Node& resolved) {
+absl::StatusOr<RotationControlValues> ReadRotationControls(
+    const YAML::Node& resolved,
+    const std::optional<std::pair<double, double>>& fixed_edge_readback) {
   try {
     const auto required = [&](const char* path) {
       const auto node = hm::get_node(resolved, path);
@@ -56,9 +58,28 @@ absl::StatusOr<RotationControlValues> ReadRotationControls(const YAML::Node& res
     const bool paired = fixed.IsSequence() && fixed.size() == 2;
     if (!fixed.IsNull() && !fixed.IsScalar() && !paired)
       throw std::invalid_argument("Fixed-edge rotation requires null, an angle, or a left/right pair");
+    const auto fixed_control = [&](bool left) {
+      const auto canonical = paired ? fixed[left ? 0 : 1] : fixed;
+      const int canonical_control = canonical.IsNull() ? 0 : rounded(canonical, 10, 0);
+      if (!fixed_edge_readback)
+        return canonical_control;
+      const double effective = left ? fixed_edge_readback->first : fixed_edge_readback->second;
+      if (!canonical.IsNull()) {
+        const double original = canonical.as<double>();
+        // The cropper stores float angles. For example, 1.15 becomes
+        // 1.149999976158142 when promoted to its double property readback.
+        // Keep Qt's canonical slider step when that is the only difference;
+        // a winning native alias with another effective value still wins.
+        if (effective == original || effective == static_cast<double>(static_cast<float>(original)))
+          return canonical_control;
+      }
+      return rounded(YAML::Node(effective), 10, 0);
+    };
     result["Link_Fixed_Edge_Rotation_Left_Right"] = !paired;
-    result["Left_Fixed_Edge_Rotation_Angle_x10"] = fixed.IsNull() ? 0 : rounded(paired ? fixed[0] : fixed, 10, 0);
-    result["Right_Fixed_Edge_Rotation_Angle_x10"] = fixed.IsNull() ? 0 : rounded(paired ? fixed[1] : fixed, 10, 0);
+    result["Left_Fixed_Edge_Rotation_Angle_x10"] = fixed_control(true);
+    result["Right_Fixed_Edge_Rotation_Angle_x10"] = fixed_control(false);
+    if (fixed_edge_readback && fixed_edge_readback->first != fixed_edge_readback->second)
+      result["Link_Fixed_Edge_Rotation_Left_Right"] = 0;
     if (!ValidRotationControls(result, true, &result))
       throw std::invalid_argument("Rotation is outside its native bounds");
     return result;

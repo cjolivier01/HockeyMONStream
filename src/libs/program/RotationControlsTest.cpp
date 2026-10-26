@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 
 namespace {
 void Check(bool condition, const char* message) {
@@ -66,6 +67,50 @@ int main() {
       legacy_changed.ok() &&
           MergeRotationControls(*legacy_changed, {{"Left_Fixed_Edge_Rotation_Angle_x10", -123}}, &*legacy).ok(),
       "An edit must not shrink the session's original saved angle range");
+  for (const auto& [angle, expected] : {std::pair<double, int>{1.15, 12}, {1.05, 11}, {-1.15, -12}, {1.14999999, 11}}) {
+    config["rink"]["camera"]["fixed_edge_rotation_angle"] = angle;
+    const auto canonical = ReadRotationControls(config);
+    const double effective = static_cast<float>(angle);
+    const auto readback = ReadRotationControls(config, std::make_pair(effective, effective));
+    Check(
+        canonical.ok() && readback.ok() && *readback == *canonical &&
+            readback->at("Left_Fixed_Edge_Rotation_Angle_x10") == expected &&
+            config["rink"]["camera"]["fixed_edge_rotation_angle"].as<double>() == angle,
+        "Float-backed startup readback changed an untouched canonical angle or slider step");
+  }
+  config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Load("[1.05, -1.15]");
+  const auto pair_readback =
+      ReadRotationControls(config, std::make_pair(static_cast<double>(1.05F), static_cast<double>(-1.15F)));
+  Check(
+      pair_readback.ok() && pair_readback->at("Left_Fixed_Edge_Rotation_Angle_x10") == 11 &&
+          pair_readback->at("Right_Fixed_Edge_Rotation_Angle_x10") == -12 &&
+          pair_readback->at("Link_Fixed_Edge_Rotation_Left_Right") == 0,
+      "Independent canonical angles lost their rounding or pair shape on readback");
+  config["rink"]["camera"]["fixed_edge_rotation_angle"] = 1.15;
+  const auto alias_readback =
+      ReadRotationControls(config, std::make_pair(static_cast<double>(1.15F), static_cast<double>(3.4F)));
+  Check(
+      alias_readback.ok() && alias_readback->at("Left_Fixed_Edge_Rotation_Angle_x10") == 12 &&
+          alias_readback->at("Right_Fixed_Edge_Rotation_Angle_x10") == 34 &&
+          alias_readback->at("Link_Fixed_Edge_Rotation_Left_Right") == 0,
+      "A different effective native side alias did not override its canonical angle");
+  const auto linked_alias = ReadRotationControls(config, std::make_pair(2.3, 2.3));
+  Check(
+      linked_alias.ok() && linked_alias->at("Left_Fixed_Edge_Rotation_Angle_x10") == 23 &&
+          linked_alias->at("Right_Fixed_Edge_Rotation_Angle_x10") == 23 &&
+          linked_alias->at("Link_Fixed_Edge_Rotation_Left_Right") == 1,
+      "A different effective generic native alias did not override its canonical angle");
+  config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Node(YAML::NodeType::Null);
+  const auto automatic_readback = ReadRotationControls(config, std::make_pair(2.3, 2.3));
+  Check(
+      automatic_readback.ok() && automatic_readback->at("Left_Fixed_Edge_Rotation_Angle_x10") == 23,
+      "An automatic canonical angle hid the effective native value");
+  for (const double invalid :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(), 1e9}) {
+    Check(
+        !ReadRotationControls(config, std::make_pair(invalid, 0.0)).ok(),
+        "Invalid effective native rotation readback was accepted");
+  }
   config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Load("[1, 2, 3]");
   Check(!ReadRotationControls(config).ok(), "Malformed angle tuple was accepted");
   return 0;

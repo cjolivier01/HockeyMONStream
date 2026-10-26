@@ -1923,8 +1923,14 @@ absl::Status PipelineApplication::initialize_web_rotation_controls() {
   if (!stitcher)
     return absl::OkStatus();
   const auto& resolved = app->configurator().config();
+  std::optional<std::pair<double, double>> fixed_edge_readback;
+  if (auto* cropper = app->pipeline.common_elements.hmplaycropper_bin.playcropper) {
+    gdouble left = 0, right = 0;
+    g_object_get(cropper, "fixed-edge-rotation-angle-left", &left, "fixed-edge-rotation-angle-right", &right, nullptr);
+    fixed_edge_readback = std::make_pair(left, right);
+  }
   hm::program::RotationControlValues controls;
-  HM_ASSIGN_OR_RETURN(controls, hm::program::ReadRotationControls(resolved));
+  HM_ASSIGN_OR_RETURN(controls, hm::program::ReadRotationControls(resolved, fixed_edge_readback));
   gdouble degrees = 0;
   g_object_get(stitcher, "post-stitch-rotate-degrees", &degrees, nullptr);
   if (!std::isfinite(degrees) || degrees < INT_MIN + 90.0 || degrees > INT_MAX - 90.0)
@@ -1937,18 +1943,6 @@ absl::Status PipelineApplication::initialize_web_rotation_controls() {
     return absl::InvalidArgumentError("Missing resolved mapping backend");
   const bool suppressed =
       stitching_calibration_only_ || (backend->as<std::string>() == "nona" && framing.has_leveling_rotation());
-  auto* cropper = app->pipeline.common_elements.hmplaycropper_bin.playcropper;
-  if (cropper) {
-    gdouble left = 0, right = 0;
-    g_object_get(cropper, "fixed-edge-rotation-angle-left", &left, "fixed-edge-rotation-angle-right", &right, nullptr);
-    if (!std::isfinite(left) || !std::isfinite(right) || std::abs(left * 10) > INT_MAX ||
-        std::abs(right * 10) > INT_MAX)
-      return absl::InvalidArgumentError("Invalid native fixed-edge rotation readback");
-    controls["Left_Fixed_Edge_Rotation_Angle_x10"] = std::lround(left * 10);
-    controls["Right_Fixed_Edge_Rotation_Angle_x10"] = std::lround(right * 10);
-    if (left != right)
-      controls["Link_Fixed_Edge_Rotation_Left_Right"] = 0;
-  }
   if (suppressed) {
     controls["Left_Fixed_Edge_Rotation_Angle_x10"] = 0;
     controls["Right_Fixed_Edge_Rotation_Angle_x10"] = 0;

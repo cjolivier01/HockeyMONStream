@@ -2,8 +2,10 @@
 
 #include <array>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/statusor.h"
@@ -32,7 +34,11 @@ struct RotationPropertyCommand {
 
 // Read the resolved canonical values. Null is the native automatic/neutral
 // choice; it is not replaced with an independently maintained default set.
-absl::StatusOr<RotationControlValues> ReadRotationControls(const YAML::Node& resolved);
+// A float-backed readback retains canonical rounding when only its numeric
+// representation differs. Different effective values still own the controls.
+absl::StatusOr<RotationControlValues> ReadRotationControls(
+    const YAML::Node& resolved,
+    const std::optional<std::pair<double, double>>& fixed_edge_readback = std::nullopt);
 bool ValidRotationControls(
     const RotationControlValues& controls,
     bool complete,
