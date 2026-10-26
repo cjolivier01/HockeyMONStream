@@ -27,9 +27,9 @@ void write(const fs::path& path, const std::string& bytes) {
 StitchingBackendChoices choices(const YAML::Node& config) {
   StitchingBackendChoices result;
   result.control_point_matcher = ControlPointMatcherName(value(resolve_control_point_matcher(config)));
-  result.mapping_backend = "nona";
+  result.mapping_backend = config["stitching"]["mapping_backend"].as<std::string>();
   result.projection = config["stitching"]["projection"].as<std::string>();
-  result.run_autooptimizer = true;
+  result.run_autooptimizer = config["stitching"]["run_autooptimizer"].as<bool>();
   result.projection_parameters =
       value(read_stitch_projection_parameters(config, value(ParseStitchProjection(result.projection))));
   result.projection_framing = value(read_stitch_projection_framing(config));
@@ -194,6 +194,52 @@ int main(int argc, char** argv) {
              {"center_offset", QJsonArray{0, 0}}}},
         {"camera_automation", QJsonObject{{"fov", false}, {"lens", false}}},
         {"rink_config", "sharks-ice"}};
+    for (const char* backend : {"opencv-magsac", "opencv-affine-ransac"}) {
+      QTemporaryDir reset_temporary;
+      const fs::path reset_root(reset_temporary.path().toStdString()), reset_game = reset_root / "game";
+      auto opencv = fixture(reset_game);
+      opencv["stitching"]["mapping_backend"] = backend;
+      opencv["stitching"]["projection"] = "rectilinear";
+      opencv["stitching"]["run_autooptimizer"] = false;
+      opencv["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+      require(reserve_stitching_backend_generation_in_config(opencv, "completed-solve", choices(opencv)));
+      write(reset_game / "config.yaml", YAML::Dump(opencv));
+      // OpenCV's completed maps do not provide a NONA optimized project or
+      // Hugin canvas provenance. Its saved image editors must still reject it.
+      for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
+        fs::remove(reset_game / name);
+      for (const char* kind : {"leveling", "crop"})
+        invoke(argv[1], reset_root, "calibration-view-read", {{"kind", kind}}, false);
+      auto controls = optics;
+      controls.insert("mapping_backend", "nona");
+      controls.insert("projection", "general-panini");
+      controls.insert("run_autooptimizer", true);
+      const QJsonObject payload{
+          {"config", QJsonObject{{"stitching", controls}}},
+          {"defaults", QJsonObject{{"stitching", QJsonObject{{"rink_config", "sharks-ice"}}}}},
+          {"source_changed", false},
+          {"settings_changed", true},
+          {"output_changed", false}};
+      const auto reset = invoke(argv[1], reset_root, "calibration-view-reset", payload);
+      const auto stored = YAML::LoadFile((reset_game / "config.yaml").string());
+      const auto state = stored["hstream_ui"]["stitching_calibration"];
+      expect(
+          reset.value("changed").toBool() && reset.value("pending").toBool() &&
+              !reset.value("alignment_reused").toBool() && state["status"].as<std::string>() == "pending" &&
+              state["stale_from"].as<std::string>() == "input" && !state["reframe"] && !state["backend_generation"] &&
+              stored["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+              stored["stitching"]["projection"].as<std::string>() == "general-panini",
+          "Reset from either completed OpenCV backend must stage a full default NONA solve without Hugin artifacts");
+      expect(
+          reset.value("rotation_inherited").toBool() && reset.value("angles").toArray() == QJsonArray{0, -15, 0} &&
+              stored["stitching"]["projection_framing"]["rotation_degrees"].IsNull(),
+          "An OpenCV Reset must preserve inherited default framing");
+      const auto pending_bytes = YAML::Dump(stored);
+      invoke(argv[1], reset_root, "calibration-view-reset", payload, false);
+      expect(
+          YAML::Dump(YAML::LoadFile((reset_game / "config.yaml").string())) == pending_bytes,
+          "Config-only Reset inspection must still reject an unfinished calibration without changing it");
+    }
     for (bool solver_changed : {false, true}) {
       QTemporaryDir reset_temporary;
       const fs::path reset_root(reset_temporary.path().toStdString());

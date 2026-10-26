@@ -114,7 +114,7 @@ struct Snapshot {
   std::string project;
   QJsonObject identity;
 };
-Snapshot snapshot_locked(const Request& request) {
+Snapshot configuration_snapshot_locked(const Request& request) {
   Snapshot result;
   result.config = YAML::Load(take(
       rink::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "calibration config")));
@@ -130,6 +130,11 @@ Snapshot snapshot_locked(const Request& request) {
   const auto projection_name = result.effective["stitching"]["projection"].as<std::string>();
   result.projection = take(rink::ParseStitchProjection(projection_name));
   result.parameters = take(rink::read_stitch_projection_parameters(result.effective, result.projection));
+  return result;
+}
+Snapshot snapshot_locked(const Request& request) {
+  auto result = configuration_snapshot_locked(request);
+  const auto projection_name = result.effective["stitching"]["projection"].as<std::string>();
   const auto camera = take(rink::read_stitch_camera_selection(result.effective));
   const auto error = ProjectionCropDialog::savedCalibrationPreviewError(
       text(request.game.string()), result.framing, text(projection_name), result.parameters, camera);
@@ -161,7 +166,10 @@ QJsonObject reset_view(const Request& request, const std::function<bool()>& canc
       "Saved Reset requires frozen controls and account defaults");
   auto lock = take(rink::lock_canvas_constraint_artifacts(request.game));
   auto config_lock = take(rink::GameConfigTransactionLock::Acquire(request.game));
-  const auto source = snapshot_locked(request);
+  // Reset can replace an OpenCV solve with the default backend. Such a source
+  // has no optimized Hugin project to preview. Only alignment reuse below
+  // requires those artifacts; saved image editors retain the full snapshot.
+  const auto source = configuration_snapshot_locked(request);
   const auto decode = [&](const char* key) {
     return YAML::Load(QJsonDocument(request.payload.value(key).toObject()).toJson().toStdString());
   };
