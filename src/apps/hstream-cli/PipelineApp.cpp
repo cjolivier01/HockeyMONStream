@@ -1864,7 +1864,8 @@ void PipelineApplication::publish_web_preview_capability() {
   if (!web_preview_ || web_preview_->identity().stage != current_stage_ ||
       web_preview_->identity().topology != inspector_topology_generation_)
     return;
-  g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability(preview_overlay_state_).c_str());
+  const bool seek = !stitching_calibration_only_ && current_stage_ == 0 && runtime_seek_is_local_render_only();
+  g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability(preview_overlay_state_, seek).c_str());
   std::fflush(stdout);
 }
 
@@ -4371,7 +4372,7 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
   }
   const bool have_aggregate = instance_progress.size() == active_instances &&
       hm::aggregate_playback_progress(instance_progress, &aggregate_progress);
-  if (std::getenv("HSTREAM_UI_PARENT_PID") && have_aggregate) {
+  if ((std::getenv("HSTREAM_UI_PARENT_PID") || web_preview_) && have_aggregate) {
     auto append_time = [](std::ostringstream& output, uint64_t value) {
       if (value == GST_CLOCK_TIME_NONE) {
         output << "unknown";
@@ -4392,7 +4393,7 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
                 << " fps=" << aggregate_progress.output_fps << " fps_avg=" << aggregate_progress.output_fps_average
                 << " fraction=" << aggregate_progress.fraction << " stage=" << current_stage_
                 << " instance=aggregate instances=" << active_instances
-                << " generation=" << playback_progress_generation_;
+                << " generation=" << playback_progress_generation_ << " topology=" << inspector_topology_generation_;
     g_print("%s\n", ui_progress.str().c_str());
   }
   if (progress_ui_ && progress_ui_->started()) {
@@ -6158,6 +6159,44 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     std::fflush(stdout);
     return true;
   }
+  if (trimmed_line == "preview-seek" || trimmed_line.rfind("preview-seek ", 0) == 0) {
+    const auto request = hm::preview::ParseWebPreviewSeek(trim_ascii(trimmed_line.substr(12)));
+    if (!request.ok()) {
+      g_printerr("runtime preview seek rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    const auto reply = [&](const char* status, const char* reason) {
+      g_print(
+          "HSTREAM_PREVIEW_SEEK %s\n",
+          hm::preview::WebPreviewSeekReply(
+              *request,
+              status,
+              reason,
+              std::string(status) == "accepted" ? request->session.topology : inspector_topology_generation_)
+              .c_str());
+      std::fflush(stdout);
+    };
+    if (!web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
+        request->session.topology != inspector_topology_generation_) {
+      reply("failed", "stale-session");
+      return false;
+    }
+    if (web_seek_pending_ || runtime_seek_pending_ || runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+      reply("failed", "seek-in-progress");
+      return false;
+    }
+    web_seek_pending_ = *request;
+    const bool admitted = seek_runtime(request->position_ns, request->request_id);
+    if (!admitted) {
+      if (web_seek_pending_) {
+        web_seek_pending_.reset();
+        reply("failed", "native-seek-rejected");
+      }
+      return false;
+    }
+    reply("accepted", "");
+    return true;
+  }
   if (trimmed_line == "set-tone-controls" || trimmed_line.rfind("set-tone-controls ", 0) == 0 ||
       trimmed_line.rfind("set-tone-controls\t", 0) == 0 || trimmed_line == "query-tone-controls" ||
       trimmed_line.rfind("query-tone-controls ", 0) == 0 || trimmed_line.rfind("query-tone-controls\t", 0) == 0)
@@ -6335,7 +6374,10 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
 }
 
 bool PipelineApplication::runtime_seek_is_local_render_only() const {
-  auto is_render_type = [](NvDsSinkType type) {
+  const bool private_browser = web_preview_ && !web_preview_run_id_.empty() && !stitching_calibration_only_;
+  auto is_render_type = [private_browser](NvDsSinkType type) {
+    if (private_browser)
+      return type == NV_DS_SINK_WEBRTC;
 #if defined(IS_TEGRA)
     return type == NV_DS_SINK_RENDER_3D || type == NV_DS_SINK_RENDER_DRM;
 #else
@@ -6349,6 +6391,8 @@ bool PipelineApplication::runtime_seek_is_local_render_only() const {
   if (stage == stage_app_contexts_.end() || stage->second.empty()) {
     return false;
   }
+  if (private_browser && stage->second.size() != 1)
+    return false;
   const size_t stage_index = static_cast<size_t>(std::distance(stage_app_contexts_.cbegin(), stage));
   if (enabled_sink_types_.size() != 1 && stage_index >= enabled_sink_types_.size()) {
     return false;
@@ -6364,6 +6408,27 @@ bool PipelineApplication::runtime_seek_is_local_render_only() const {
   for (const auto& app_context : stage->second) {
     if (!app_context) {
       continue;
+    }
+    if (private_browser) {
+      bool file_source = false;
+      for (guint index = 0; index < app_context->config.num_source_sub_bins; ++index) {
+        const auto& source = app_context->config.multi_source_config[index];
+        if (!source.enable)
+          continue;
+        if (source.type != NV_DS_SOURCE_URI && source.type != NV_DS_SOURCE_URI_MULTIPLE)
+          return false;
+        file_source = true;
+      }
+      if (!file_source)
+        return false;
+    }
+    if (private_browser && app_context->config.dsplaytracker_config.enable) {
+      for (const auto& property : app_context->config.dsplaytracker_config.private_properties) {
+        auto name = property.name;
+        std::replace(name.begin(), name.end(), '_', '-');
+        if ((name == "telemetry-csv-dir" || name == "telemetry-db-dir") && !property.value.empty())
+          return false;
+      }
     }
     for (guint index = 0; index < app_context->config.num_sink_sub_bins; ++index) {
       const NvDsSinkSubBinConfig& sink = app_context->config.sink_bin_sub_bin_config[index];
@@ -6408,6 +6473,8 @@ bool PipelineApplication::seek_runtime_impl(
   if (!ui_preview_window_ids_.empty() && preview_routes_.selected_channel().empty()) {
     return reject("rejected", "local-render-disabled");
   }
+  if (web_preview_ && web_preview_->selection() == "none")
+    return reject("rejected", "local-render-disabled");
   const auto stage = stage_app_contexts_.find(current_stage_);
   if (stage == stage_app_contexts_.end() || stage->second.empty()) {
     return reject("failed", "pipeline-unavailable");
@@ -6694,7 +6761,11 @@ void PipelineApplication::advance_runtime_seek() {
   }
 }
 
-void PipelineApplication::finish_runtime_seek(const char* status, const char* reason, uint64_t achieved_position_ns) {
+void PipelineApplication::finish_runtime_seek(
+    const char* status,
+    const char* reason,
+    uint64_t achieved_position_ns,
+    uint64_t source_pts_ns) {
   if (!runtime_seek_pending_) {
     return;
   }
@@ -6716,6 +6787,20 @@ void PipelineApplication::finish_runtime_seek(const char* status, const char* re
         status,
         completed.generation,
         achieved_position_ns == GST_CLOCK_TIME_NONE ? completed.target_ns : achieved_position_ns);
+  }
+  if (web_seek_pending_ && web_seek_pending_->request_id == completed.generation) {
+    const bool succeeded = std::string(status) == "ok";
+    const auto reply = hm::preview::WebPreviewSeekReply(
+        *web_seek_pending_,
+        succeeded ? "completed" : "failed",
+        reason ? reason : "",
+        inspector_topology_generation_,
+        succeeded ? std::optional<uint64_t>(
+                        achieved_position_ns == GST_CLOCK_TIME_NONE ? completed.target_ns : achieved_position_ns)
+                  : std::nullopt,
+        succeeded && source_pts_ns != GST_CLOCK_TIME_NONE ? std::optional<uint64_t>(source_pts_ns) : std::nullopt);
+    g_print("HSTREAM_PREVIEW_SEEK %s\n", reply.c_str());
+    web_seek_pending_.reset();
   }
   std::fflush(stdout);
   if (completed.pipeline) {
@@ -7276,7 +7361,7 @@ void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* messag
         achieved_position_ns = std::min(achieved_position_ns, horizon_ns);
       }
       resume_perf_measurement(&app_ctx->perf_struct);
-      finish_runtime_seek("ok", nullptr, achieved_position_ns);
+      finish_runtime_seek("ok", nullptr, achieved_position_ns, pts_ns);
     }
     return;
   }
@@ -9053,7 +9138,8 @@ void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64
     bool source_linked_audio = true;
     for (const auto& audio : app_ctx->config.hmaudio_config)
       source_linked_audio = source_linked_audio && (!audio.enable || audio.src == SRC_SOURCE_BIN);
-    if (source_render_window_ids_.empty() && !app_ctx->config.use_nvmultiurisrcbin && source_linked_audio) {
+    if (web_preview_run_id_.empty() && source_render_window_ids_.empty() && !app_ctx->config.use_nvmultiurisrcbin &&
+        source_linked_audio) {
       topology_changed = true;
       success = seek_runtime_sources(app_ctx, target_ns);
     } else {

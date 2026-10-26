@@ -258,6 +258,63 @@ std::string WebPreviewRouteReply(const RouteOwner::Request& request, const Route
   });
 }
 
+absl::StatusOr<WebPreviewSeekRequest> ParseWebPreviewSeek(const std::string& json) {
+  if (json.size() > 4096)
+    return absl::InvalidArgumentError("Preview seek JSON exceeds its limit");
+  auto* parser = json_parser_new();
+  unsigned member_count = 0;
+  g_signal_connect(
+      parser,
+      "object-member",
+      G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer data) { ++*static_cast<unsigned*>(data); }),
+      &member_count);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebPreviewSeekRequest request{};
+  gint64 version = 0, stage = 0;
+  std::string topology, identifier, position;
+  const bool valid = object && member_count == 6 && json_object_get_size(object) == 6 &&
+      Integer(object, "version", &version) && version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN &&
+      stage <= INT_MAX && String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &identifier) && Decimal(identifier, &request.request_id) &&
+      request.request_id <= G_MAXINT64 && String(object, "positionNs", &position) &&
+      ((position == "0" && (request.position_ns = 0, true)) || Decimal(position, &request.position_ns)) &&
+      request.position_ns <= G_MAXINT64;
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid preview seek identity or position");
+  request.session.stage = static_cast<int>(stage);
+  return request;
+}
+
+std::string WebPreviewSeekReply(
+    const WebPreviewSeekRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    uint64_t resulting_topology,
+    std::optional<uint64_t> position_ns,
+    std::optional<uint64_t> source_pts_ns) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", std::to_string(request.request_id));
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    Add(builder, "resultTopology", std::to_string(resulting_topology));
+    for (const auto& item : {std::pair{"positionNs", position_ns}, {"sourcePtsNs", source_pts_ns}}) {
+      json_builder_set_member_name(builder, item.first);
+      if (item.second)
+        json_builder_add_string_value(builder, std::to_string(*item.second).c_str());
+      else
+        json_builder_add_null_value(builder);
+    }
+  });
+}
+
 absl::StatusOr<WebPreviewOverlayRequest> ParseWebPreviewOverlays(const std::string& json, bool query) {
   if (json.empty() || json.size() > 1024)
     return absl::InvalidArgumentError("Preview overlay JSON exceeds its limit");
@@ -378,7 +435,8 @@ std::string WebPreviewOverlayArtifactEvent(const WebPreviewOverlayArtifact& arti
 std::string WebPreviewCapability(
     const WebPreviewOptions& options,
     const RouteOwner& owner,
-    const pipeline_internal::PreviewOverlayRuntimeState& overlays) {
+    const pipeline_internal::PreviewOverlayRuntimeState& overlays,
+    bool seek) {
   return Serialize([&](JsonBuilder* builder) {
     Identity(
         builder,
@@ -395,7 +453,7 @@ std::string WebPreviewCapability(
     Add(builder, "width", options.width);
     Add(builder, "height", options.height);
     json_builder_set_member_name(builder, "seek");
-    json_builder_add_boolean_value(builder, FALSE);
+    json_builder_add_boolean_value(builder, seek);
     json_builder_set_member_name(builder, "receiptLimits");
     json_builder_begin_object(builder);
     Add(builder, "maxFrames", options.browser_max_frames);

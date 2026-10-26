@@ -40,6 +40,18 @@ absl::StatusOr<WebPreviewOptions> ReadWebPreviewOptions(const YAML::Node& resolv
 bool ValidWebPreviewRun(const std::string& run);
 absl::StatusOr<RouteOwner::Request> ParseWebPreviewRoute(const std::string& json);
 std::string WebPreviewRouteReply(const RouteOwner::Request& request, const RouteOwner::Result& result);
+struct WebPreviewSeekRequest {
+  RouteOwner::Session session;
+  uint64_t request_id, position_ns;
+};
+absl::StatusOr<WebPreviewSeekRequest> ParseWebPreviewSeek(const std::string& json);
+std::string WebPreviewSeekReply(
+    const WebPreviewSeekRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    uint64_t resulting_topology,
+    std::optional<uint64_t> position_ns = std::nullopt,
+    std::optional<uint64_t> source_pts_ns = std::nullopt);
 struct WebPreviewOverlayRequest {
   RouteOwner::Session session;
   std::string request_id;
@@ -81,6 +93,7 @@ class WebPreviewOverlayArtifactMailbox {
 std::string WebPreviewCapability(
     const WebPreviewOptions& options,
     const RouteOwner& owner,
-    const pipeline_internal::PreviewOverlayRuntimeState& overlays);
+    const pipeline_internal::PreviewOverlayRuntimeState& overlays,
+    bool seek = false);
 
 } // namespace hm::preview

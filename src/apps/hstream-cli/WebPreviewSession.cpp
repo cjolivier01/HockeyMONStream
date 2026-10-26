@@ -466,8 +466,9 @@ WebPreviewSession::~WebPreviewSession() {
 std::string WebPreviewSession::selection() const {
   return routes_.selected_channel().empty() ? "none" : routes_.selected_channel();
 }
-std::string WebPreviewSession::Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays) const {
-  return WebPreviewCapability(options_, routes_, overlays);
+std::string WebPreviewSession::Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays, bool seek)
+    const {
+  return WebPreviewCapability(options_, routes_, overlays, seek);
 }
 std::string WebPreviewSession::Command(const RouteOwner::Request& request) {
   const auto result = stopped_ ? RouteOwner::Result{RouteOwner::Status::kFailed, "preview-stopped"}

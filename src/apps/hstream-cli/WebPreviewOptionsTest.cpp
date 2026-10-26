@@ -164,7 +164,50 @@ int main() {
       json_object_get_int_member(limits, "maxFrames") == 23 && !json_object_get_boolean_member(object, "seek") &&
           std::string(json_object_get_string_member(object, "channel")) == "source127",
       "Capability did not reflect resolved limits and active route");
+  const auto seek_capability = hm::preview::WebPreviewCapability(
+      *custom, owner, hm::pipeline_internal::PreviewOverlayRuntimeState(*defaults), true);
+  Check(
+      json_parser_load_from_data(parser, seek_capability.data(), seek_capability.size(), nullptr) &&
+          json_object_get_boolean_member(json_node_get_object(json_parser_get_root(parser)), "seek"),
+      "Seekable session lost its capability");
   g_object_unref(parser);
+
+  const std::string seek_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","positionNs":"9223372036854775807"})";
+  const auto seek = hm::preview::ParseWebPreviewSeek(seek_json);
+  Check(
+      seek.ok() && seek->position_ns == INT64_MAX && seek->request_id == 1234 && seek->session.topology == 7,
+      "Seek identity or nanosecond time lost precision");
+  for (const auto& invalid :
+       {std::pair{std::string("\"version\":1"), std::string("\"version\":true")},
+        {"\"stage\":0", "\"stage\":0.0"},
+        {"\"topology\":\"7\"", "\"topology\":7"},
+        {"\"topology\":\"7\"", "\"topology\":\"0\""},
+        {"\"requestId\":\"1234\"", "\"requestId\":\"0\""},
+        {"\"requestId\":\"1234\"", "\"requestId\":\"9223372036854775808\""},
+        {"\"positionNs\":\"9223372036854775807\"", "\"positionNs\":\"9223372036854775808\""},
+        {"\"positionNs\":\"9223372036854775807\"", "\"positionNs\":\"-1\""},
+        {"\"positionNs\":\"9223372036854775807\"", "\"positionNs\":\"01\""},
+        {"\"positionNs\":\"9223372036854775807\"", "\"positionNs\":1"},
+        {"\"version\":1", "\"version\":1,\"version\":1"},
+        {"\"stage\":0", "\"stage\":0,\"extra\":0"}}) {
+    auto input = seek_json;
+    input.replace(input.find(invalid.first), invalid.first.size(), invalid.second);
+    Check(!hm::preview::ParseWebPreviewSeek(input).ok(), "Malformed seek envelope admitted");
+  }
+  auto zero_seek = seek_json;
+  zero_seek.replace(zero_seek.find("9223372036854775807"), 19, "0");
+  Check(hm::preview::ParseWebPreviewSeek(zero_seek).ok(), "Seek to start rejected");
+  Check(!hm::preview::ParseWebPreviewSeek(std::string(4097, ' ')).ok(), "Oversize seek admitted");
+  const auto completed_seek = hm::preview::WebPreviewSeekReply(*seek, "completed", "", 8, 4000000000ULL, 0);
+  Check(
+      completed_seek.find("\"resultTopology\":\"8\"") != std::string::npos &&
+          completed_seek.find("\"positionNs\":\"4000000000\"") != std::string::npos &&
+          completed_seek.find("\"sourcePtsNs\":\"0\"") != std::string::npos,
+      "Seek reply lost replacement topology or first completed frame");
+  Check(
+      hm::preview::WebPreviewSeekReply(*seek, "accepted", "", 7).find("\"sourcePtsNs\":null") != std::string::npos,
+      "Seek admission invented first-frame evidence");
 
   const std::string overlay_json =
       R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":-1,"topology":"18446744073709551615","requestId":"overlay-1","generation":"18446744073709551615","players":true,"play":false,"rink":true})";

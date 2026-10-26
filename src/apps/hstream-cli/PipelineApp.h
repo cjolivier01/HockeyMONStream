@@ -214,7 +214,8 @@ class PipelineApplication {
   void finish_runtime_seek(
       const char* status,
       const char* reason = nullptr,
-      uint64_t achieved_position_ns = GST_CLOCK_TIME_NONE);
+      uint64_t achieved_position_ns = GST_CLOCK_TIME_NONE,
+      uint64_t source_pts_ns = GST_CLOCK_TIME_NONE);
   static void handle_fatal_pipeline_error_static(AppCtx* app_ctx);
   void handle_fatal_pipeline_error(AppCtx* app_ctx);
   static gboolean should_defer_eos_static(AppCtx* app_ctx);
@@ -424,6 +425,7 @@ class PipelineApplication {
     std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
   };
   std::optional<RuntimeSeekPending> runtime_seek_pending_;
+  std::optional<hm::preview::WebPreviewSeekRequest> web_seek_pending_;
   std::thread runtime_seek_recreation_thread_;
   std::mutex runtime_seek_recreation_result_mu_;
   std::optional<RuntimeSeekRecreationResult> runtime_seek_recreation_result_;
