@@ -793,6 +793,9 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
     result.insert("workspace", workspace_json(request, created));
     result.insert("state", complete ? "complete" : "editable");
     result.insert("calibration_complete", complete);
+    const auto selection = take(ReusableStitchingExperimentSelectionFingerprint(created.game_directory, created.settings));
+    result.insert("selection_available", !selection.empty());
+    result.insert("selection_fingerprint", text(selection));
     return result;
   }
   const auto saved = workspace(request);
