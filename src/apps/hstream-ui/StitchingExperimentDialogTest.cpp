@@ -2627,12 +2627,16 @@ void exercise(
         widget<QTableWidget>(dialog, "stitchExperimentCandidates")->rowCount() == rows_before,
         "Nine control points must fail validation");
   }
-  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText(gpu ? "100,150" : "10,150");
+  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")
+      ->setText(gpu ? qEnvironmentVariable("HSTREAM_TEST_STITCHING_CONTROL_POINTS", "100,150") : "10,150");
   widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText(player_selection ? "2" : "1");
   widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText(anchor);
   if (player_selection) {
     widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(true);
-    widget<QSpinBox>(dialog, "stitchExperimentPlayerScanDuration")->setValue(10);
+    bool parsed_duration = false;
+    const int scan_seconds = qEnvironmentVariable("HSTREAM_TEST_PLAYER_SCAN_SECONDS", "10").toInt(&parsed_duration);
+    require(parsed_duration && scan_seconds >= 1 && scan_seconds <= 300, "Invalid test player scan duration");
+    widget<QSpinBox>(dialog, "stitchExperimentPlayerScanDuration")->setValue(scan_seconds);
   }
   auto* start = widget<QPushButton>(dialog, "startStitchExperimentBatchButton");
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
