@@ -30,6 +30,7 @@
 #include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/RinkMapDialog.h"
+#include "src/apps/hstream-ui/RuntimeOptions.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/StitchingStillPreview.h"
@@ -4639,78 +4640,6 @@ bool hm::ui_internal::reconcile_cleanup_directory_for_test(const QString& direct
     *error = "cleanup reconciliation is unavailable on this platform";
   return false;
 #endif
-}
-
-std::optional<unsigned> hm::ui_internal::configured_pipeline_gpu(const YAML::Node& effective_config) {
-  YAML::Node configured;
-#ifdef HSTREAM_USE_HIP
-  if (!lookup_yaml_path(effective_config, "runtime.amd.gpu_id", &configured))
-    return std::nullopt;
-#else
-  if (!lookup_yaml_path(effective_config, "pipeline.application.global-gpu-id", &configured) &&
-      !lookup_yaml_path(effective_config, "pipeline.hmstitcher.gpu-id", &configured)) {
-    return 0;
-  }
-#endif
-  if (!configured.IsScalar())
-    return std::nullopt;
-  try {
-    const int ordinal = configured.as<int>();
-    return ordinal >= 0 ? std::optional<unsigned>(static_cast<unsigned>(ordinal)) : std::nullopt;
-  } catch (const YAML::Exception&) {
-    return std::nullopt;
-  }
-}
-
-QString hm::ui_internal::configured_gpu_memory_profile(
-    const YAML::Node& baseline_config,
-    const YAML::Node& user_config) {
-  struct ProfileAlias {
-    int rank{-1};
-    YAML::Node value;
-  } dashed, underscored;
-  const std::array<YAML::Node, 2> layers{baseline_config, user_config};
-  for (int rank = 0; rank < static_cast<int>(layers.size()); ++rank) {
-    YAML::Node runtime;
-    if (lookup_yaml_key(layers[rank], "runtime", &runtime) && !runtime.IsMap()) {
-      dashed = {};
-      underscored = {};
-      continue;
-    }
-    YAML::Node dashed_value;
-    if (lookup_yaml_path(layers[rank], "runtime.gpu-memory-profile", &dashed_value)) {
-      dashed = {rank, YAML::Clone(dashed_value)};
-    }
-    YAML::Node underscored_value;
-    if (lookup_yaml_path(layers[rank], "runtime.gpu_memory_profile", &underscored_value)) {
-      underscored = {rank, YAML::Clone(underscored_value)};
-    }
-  }
-  auto scalar_profile = [](const ProfileAlias& candidate) -> std::optional<QString> {
-    if (candidate.rank < 0 || !candidate.value.IsScalar())
-      return std::nullopt;
-    try {
-      return QString::fromStdString(candidate.value.as<std::string>()).trimmed().toLower().replace('_', '-');
-    } catch (const YAML::Exception&) {
-      return std::nullopt;
-    }
-  };
-  const ProfileAlias& preferred = dashed.rank >= underscored.rank ? dashed : underscored;
-  const ProfileAlias& fallback = dashed.rank >= underscored.rank ? underscored : dashed;
-  std::optional<QString> configured = scalar_profile(preferred);
-  if (!configured)
-    configured = scalar_profile(fallback);
-  if (!configured)
-    return "auto";
-  QString profile = *configured;
-  if (profile == "low-memory")
-    profile = "low";
-  if (profile == "full" || profile == "normal")
-    profile = "standard";
-  if (profile == "auto" || profile == "low" || profile == "standard") {
-    return profile;
-  }
-  return {};
 }
 
 void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous) {
@@ -11111,13 +11040,10 @@ void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config)
   const YAML::Node effective = merge_yaml_maps(defaults, game_config);
   QString profile = hm::ui_internal::configured_gpu_memory_profile(baseline_layer_, user_layer_);
   const auto gpu = hm::ui_internal::configured_pipeline_gpu(effective);
-  if (profile == "auto" && gpu.has_value()) {
-    const auto total_memory_bytes = hm::inference::GpuTotalMemoryBytes(*gpu);
-    if (total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes))
-      profile = "low";
-  }
-  if (profile == "auto" || profile.isEmpty())
-    profile = "standard";
+  const auto resolved = hm::ui_internal::resolve_gpu_memory_profile(profile, gpu);
+  // Preserve the desktop's conservative display when the device is unavailable.
+  // An untouched combo still emits no launch override.
+  profile = resolved.ok() ? *resolved : QStringLiteral("standard");
   const QSignalBlocker blocker(gpu_memory_profile_combo_);
   set_combo_to_data(gpu_memory_profile_combo_, profile);
 }

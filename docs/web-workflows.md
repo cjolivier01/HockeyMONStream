@@ -25,6 +25,17 @@ operations the request parser rejects. HockeyMONWeb checks its required operatio
 against this deployed executable in addition to checking the generated startup
 catalog. Deploy changes to this contract with the matching web worker.
 
+`hstream-web-job --runtime-defaults` is a separate read-only readiness probe
+advertised by `runtime-defaults-v1`. It loads the canonical baseline and active
+user overlay without creating preferences, and uses Qt's shared `RuntimeOptions`
+resolver for the configured GPU. Its bounded JSON contains `version: 1`, the
+requested `auto`/`standard`/`low` profile, the resolved `standard`/`low` profile and
+the GPU ordinal. Failed automatic device queries fail the probe. The outer service
+runs it only during explicit compute validation, then binds the cached result to
+that deployment. Browser polling never invokes it. The shipped profile is
+`runtime.gpu_memory_profile: auto`; an explicit UI selection lasts for the session
+and does not enter presets.
+
 ```json
 {
   "schema": 1,
@@ -422,6 +433,15 @@ and partial maps can be saved, matching Qt. Playback readiness is checked
 separately for a fitted saved map. `web_rink_map_test` uses actual Hugin ray
 transforms and covers read/fit/save, baseline precision, stale saved-map and
 calibration revisions, and rejection of browser-provided rays.
+
+`rink-map-check` (feature `rink-map-check-v1`) accepts an empty payload and
+runs the same `LoadPlaybackRinkMap` used by Qt and Program startup in a private
+CPU workspace. It returns `rink_map_check_version: 1`, a boolean `ready`, and a
+bounded `message`. Only `operation-data.json` is published; calibration inputs
+are deliberately excluded from retained artifacts. The outer service binds and
+caches this result by source, calibration file identities and native deployment,
+then removes the cloned inputs after contained completion and receipt verification.
+It is advisory: enabled Program framing is checked again by native startup.
 
 ### Saved leveling and projection crop
 

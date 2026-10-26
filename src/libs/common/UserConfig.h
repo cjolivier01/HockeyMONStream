@@ -31,6 +31,8 @@ struct Snapshot {
 };
 // Keeps native-reference provenance attached to the exact loaded values.
 absl::StatusOr<Snapshot> load_snapshot_or_create();
+// Same active tuning precedence, without creating a first-run preferences file.
+absl::StatusOr<Snapshot> load_snapshot();
 // Loads the active tuning layer plus legacy paths, for both native backends.
 absl::StatusOr<YAML::Node> load_or_create();
 

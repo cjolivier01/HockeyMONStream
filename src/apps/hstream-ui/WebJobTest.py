@@ -233,7 +233,11 @@ def calibration_still_contract(binary, root):
     run(binary, request(directory, "calibration-still-read", {"config": {}}), 1)
     receipt = json.loads((directory / "operation-result.json").read_text())
     assert receipt["state"] == "failed" and not receipt["artifacts"]
-    assert (source.read_bytes(), source.stat().st_ino, source.stat().st_mtime_ns) == before
+    assert (
+        source.read_bytes(),
+        source.stat().st_ino,
+        source.stat().st_mtime_ns,
+    ) == before
 
 
 def calibration_contract(binary, root):
@@ -632,7 +636,14 @@ def confined_experiment_optics_contract(binary, root):
 
 
 def pinned_archive_contract(binary, root):
-    for case in ("valid", "changed", "final-link", "parent-link", "unauthorized", "wrong-marker"):
+    for case in (
+        "valid",
+        "changed",
+        "final-link",
+        "parent-link",
+        "unauthorized",
+        "wrong-marker",
+    ):
         directory = root / ("pinned-" + case)
         directory.mkdir()
         original = root / ("archive-" + case)
@@ -640,8 +651,13 @@ def pinned_archive_contract(binary, root):
         archive = original / "archive.mp4"
         archive.write_bytes(b"owned archive")
         info = archive.stat()
-        identity = {"dev": str(info.st_dev), "ino": str(info.st_ino), "size": str(info.st_size),
-                    "mtime_ns": str(info.st_mtime_ns), "ctime_ns": str(info.st_ctime_ns)}
+        identity = {
+            "dev": str(info.st_dev),
+            "ino": str(info.st_ino),
+            "size": str(info.st_size),
+            "mtime_ns": str(info.st_mtime_ns),
+            "ctime_ns": str(info.st_ctime_ns),
+        }
         with sqlite3.connect(directory / "telemetry.db") as database:
             database.executescript("""
                 PRAGMA application_id=1213027156;
@@ -662,19 +678,70 @@ def pinned_archive_contract(binary, root):
                 INSERT INTO geometries VALUES('recorded',9,1000,500);
             """)
         authored = plan()
-        cue = {"kind": "arrow", "text": "", "start_ms": 1000, "end_ms": 2000,
-            "x": 0.5, "y": 0.35, "dx": 0, "dy": 0.12, "size": 0.055, "thickness": 0.008,
-            "weight": 900, "color": "#ffff00", "blink": True, "blink_ms": 250, "motion": "fixed", "positions": []}
-        cue.update({key: "" for key in ("database", "run_id", "track_id", "archive_path")})
-        cue.update({key: 0 for key in ("geometry_id", "seek_epoch", "reset_epoch", "source_id", "telemetry_offset_ms", "archive_origin_ms", "archive_size", "archive_mtime_ms")})
-        authored["intervals"][0].update(is_card=False, start_ms=1000, end_ms=2000, annotations=[cue])
-        path = request(directory, "track-capture", {"plan": authored,
-            "archive_path": "inputs/archive.mp4", "database": "telemetry.db", "run_id": "recorded",
-            "route": "stitched", "item_index": 0, "cue_index": 0,
-            "choice": {"id": "17", "geometry": 9, "seek": 3, "reset": 4, "source": 5}})
+        cue = {
+            "kind": "arrow",
+            "text": "",
+            "start_ms": 1000,
+            "end_ms": 2000,
+            "x": 0.5,
+            "y": 0.35,
+            "dx": 0,
+            "dy": 0.12,
+            "size": 0.055,
+            "thickness": 0.008,
+            "weight": 900,
+            "color": "#ffff00",
+            "blink": True,
+            "blink_ms": 250,
+            "motion": "fixed",
+            "positions": [],
+        }
+        cue.update(
+            {key: "" for key in ("database", "run_id", "track_id", "archive_path")}
+        )
+        cue.update(
+            {
+                key: 0
+                for key in (
+                    "geometry_id",
+                    "seek_epoch",
+                    "reset_epoch",
+                    "source_id",
+                    "telemetry_offset_ms",
+                    "archive_origin_ms",
+                    "archive_size",
+                    "archive_mtime_ms",
+                )
+            }
+        )
+        authored["intervals"][0].update(
+            is_card=False, start_ms=1000, end_ms=2000, annotations=[cue]
+        )
+        path = request(
+            directory,
+            "track-capture",
+            {
+                "plan": authored,
+                "archive_path": "inputs/archive.mp4",
+                "database": "telemetry.db",
+                "run_id": "recorded",
+                "route": "stitched",
+                "item_index": 0,
+                "cue_index": 0,
+                "choice": {
+                    "id": "17",
+                    "geometry": 9,
+                    "seek": 3,
+                    "reset": 4,
+                    "source": 5,
+                },
+            },
+        )
         document = json.loads(path.read_text())
         document["authorized_media"] = [str(archive)]
-        document["runtime"] = {"archive_input": {"path": str(archive), "identity": identity}}
+        document["runtime"] = {
+            "archive_input": {"path": str(archive), "identity": identity}
+        }
         if case == "changed":
             archive.write_bytes(b"other archive")
         elif case == "final-link":
@@ -697,13 +764,75 @@ def pinned_archive_contract(binary, root):
             saved = receipt["result"]["plan"]
             cue = saved["intervals"][0]["annotations"][0]
             assert saved["archive_path"] == cue["archive_path"] == "inputs/archive.mp4"
-            assert cue["database"] == "telemetry.db" and cue["archive_size"] == info.st_size
-            assert cue["geometry_id"] == 9 and cue["seek_epoch"] == 3 and cue["source_id"] == 5
+            assert (
+                cue["database"] == "telemetry.db"
+                and cue["archive_size"] == info.st_size
+            )
+            assert (
+                cue["geometry_id"] == 9
+                and cue["seek_epoch"] == 3
+                and cue["source_id"] == 5
+            )
             assert [point["time_ms"] for point in cue["positions"]] == [1000, 1033]
             assert abs(cue["positions"][0]["x"] - 0.25) < 1e-9
             assert_artifacts(directory, receipt)
         else:
             assert receipt["state"] == "failed" and not receipt["artifacts"]
+
+
+def runtime_defaults_contract(binary, root):
+    config = root / "runtime-config"
+    config.mkdir()
+    home = root / "runtime-home"
+    (config / "baseline.yaml").write_text(
+        "runtime: {gpu_memory_profile: standard, amd: {gpu_id: 2}}\n"
+    )
+    (config / "ds_hockey_app_config.yaml").write_text(
+        "application: {global-gpu-id: 2}\n"
+    )
+    environment = {
+        **os.environ,
+        "HOME": str(home),
+        "HM_CONFIG_ROOT": str(config),
+        "QT_QPA_PLATFORM": "invalid-readiness-platform",
+    }
+    probe = subprocess.run(
+        [str(binary), "--runtime-defaults"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    assert json.loads(probe.stdout) == {
+        "version": 1,
+        "requested": "standard",
+        "resolved": "standard",
+        "gpu": 2,
+    }
+    assert not home.exists(), "Readiness must not create first-run preferences"
+    defaults = home / ".config/hstream-ui/defaults.yaml"
+    defaults.parent.mkdir(parents=True)
+    defaults.write_text("runtime: {gpu-memory-profile: low}\n")
+    probe = subprocess.run(
+        [str(binary), "--runtime-defaults"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    assert json.loads(probe.stdout)["resolved"] == "low"
+    assert not (home / ".hstream").exists()
+    (config / "baseline.yaml").write_text("runtime: {}\n")
+    probe = subprocess.run(
+        [str(binary), "--runtime-defaults"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert probe.returncode != 0 and not probe.stdout
 
 
 def main():
@@ -736,6 +865,7 @@ def main():
     assert capabilities["maximum_request_bytes"] < capabilities["maximum_result_bytes"]
     with tempfile.TemporaryDirectory(prefix="hstream-web-contract-") as temporary:
         root = Path(temporary)
+        runtime_defaults_contract(args.binary, root)
         pinned_archive_contract(args.binary, root)
         calibration_contract(args.binary, root)
         calibration_still_contract(args.binary, root)

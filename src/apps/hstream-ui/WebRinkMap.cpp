@@ -140,6 +140,19 @@ QJsonArray drawing(const std::vector<std::vector<cv::Point2d>>& values) {
 } // namespace
 
 QJsonObject RunRinkMap(const Request& request, QJsonArray& artifacts, const std::function<bool()>& cancelled) {
+  if (request.operation == "rink-map-check") {
+    fields(request.payload, {});
+    // The same authoritative loader used by Qt and Program startup. This
+    // private CPU operation publishes metadata only; it never opens editor
+    // images, stages a detector, or retains its cloned calibration inputs.
+    const auto checked = rink::LoadPlaybackRinkMap(request.game, cancelled);
+    if (cancelled && cancelled())
+      throw std::runtime_error("Rink map check cancelled");
+    return {
+        {"rink_map_check_version", 1},
+        {"ready", checked.ok()},
+        {"message", checked.ok() ? QString() : text(std::string(checked.status().message())).left(2048)}};
+  }
   auto snapshot = take(LoadRinkMapSnapshot(text(request.game.string())));
   rink::RinkMapDocument selected;
   selected.generation = snapshot.generation;

@@ -76,6 +76,8 @@ filegroup(
         "PipelineInspectorWidget.h",
         "PlayerAnalyticsControls.cpp",
         "PlayerAnalyticsControls.h",
+        "RuntimeOptions.cpp",
+        "RuntimeOptions.h",
         "RinkFramingControls.cpp",
         "RinkFramingControls.h",
         "PreviewDialogWindow.h",
@@ -826,6 +828,29 @@ cc_test(
 )
 
 cc_library(
+    name = "runtime_options",
+    srcs = ["RuntimeOptions.cpp"],
+    hdrs = ["RuntimeOptions.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        "//src/libs/common:config_path",
+        "//src/libs/common:gpu_memory_profile",
+        "@qt//:qt_core",
+        "@yaml-cpp",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "runtime_options_test",
+    srcs = ["RuntimeOptionsTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":runtime_options", "@qt//:qt_core", "@yaml-cpp"],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp", "RinkFramingControls.cpp"],
     hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h", "RinkFramingControls.h", "CameraControlSpecs.h"],
@@ -834,6 +859,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":runtime_options",
         "//src/libs/tracking:playtracker_runtime_controls",
         "//src/libs/publication",
         "//src/libs/program:tone_controls",
@@ -907,7 +933,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":action_icons", "//src/libs/stitching:playback_rink_map", "@qt//:qt_widgets", "@qt//:qt_test", "@yaml-cpp"],
+    deps = [":action_icons", "//src/libs/common:baseline_config", "//src/libs/stitching:playback_rink_map", "@qt//:qt_widgets", "@qt//:qt_test", "@yaml-cpp"],
 )
 
 cc_test(
@@ -1374,6 +1400,9 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":runtime_options",
+        "//src/libs/common:user_config",
+        "//src/libs/common:config_layers",
         ":stitching_still_image",
         "//src/libs/tracking:camera_control_specs",
         ":web_calibration_controls",

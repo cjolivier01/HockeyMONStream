@@ -58,7 +58,8 @@ class RinkFramingControls : public QWidget {
   bool map_ready_{false};
   bool checking_suspended_{false};
   std::array<QCheckBox*, 4> choices_{};
-  std::array<bool, 4> loaded_{{false, true, false, false}};
+  std::array<bool, 4> defaults_{};
+  std::array<bool, 4> loaded_{};
   QLabel* status_{nullptr};
   QPushButton* turn_off_{nullptr};
   std::function<void()> changed_;

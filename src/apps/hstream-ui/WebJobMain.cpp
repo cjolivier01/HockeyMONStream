@@ -1,5 +1,7 @@
 // Thin headless owners of the same native libraries used by the desktop dialogs.
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/ConfigLayers.h"
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
@@ -13,6 +15,7 @@
 #include "src/apps/hstream-ui/HighlightTracking.h"
 #include "src/apps/hstream-ui/HighlightWebPreview.h"
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
+#include "src/apps/hstream-ui/RuntimeOptions.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/WebCameraExperiment.h"
 #include "src/apps/hstream-ui/WebExperimentFrames.h"
@@ -1168,6 +1171,8 @@ QJsonObject replay(const Request& request) {
 }
 
 void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "rink-map-check")
+    return;
   if (request.operation != "calibration-complete" && request.operation != "calibration-controls-stage" &&
       request.operation.rfind("matches-", 0) != 0 &&
       request.operation.rfind("experiment-", 0) != 0 && request.operation.rfind("rink-map-", 0) != 0 &&
@@ -1262,6 +1267,35 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--runtime-defaults") {
+    try {
+      const auto baseline = take(hm::baseline_config::load());
+      const auto user = take(hm::user_config::load_snapshot());
+      const auto configured = baseline.values["runtime"]["gpu_memory_profile"];
+      if (!configured.IsScalar())
+        throw std::runtime_error("Bundled baseline requires runtime.gpu_memory_profile");
+      auto effective = hm::config::MergeNodes(YAML::Clone(baseline.values), user.values, false);
+      const auto structural_path = baseline.root / "ds_hockey_app_config.yaml";
+      if (fs::is_regular_file(structural_path)) {
+        const auto structural = YAML::LoadFile(structural_path.string());
+        const YAML::Node canonical = effective["pipeline"];
+        effective["pipeline"] =
+            canonical.IsMap() ? hm::config::MergeNodes(structural, canonical, false) : YAML::Clone(structural);
+      }
+      const auto requested = hm::ui_internal::configured_gpu_memory_profile(baseline.values, user.values);
+      const auto gpu = hm::ui_internal::configured_pipeline_gpu(effective);
+      if (!gpu)
+        throw std::runtime_error("The configured GPU ordinal is unavailable");
+      const auto resolved = take(hm::ui_internal::resolve_gpu_memory_profile(requested, gpu));
+      const QJsonObject result{{"version", 1}, {"requested", requested}, {"resolved", resolved}, {"gpu", int(*gpu)}};
+      std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData() << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
+
   if (argc == 3 && std::string(argv[1]) == "--rink-editor") {
     try {
       const auto result = hm::web::RinkEditor(ReadObject(argv[2]));
@@ -1278,7 +1312,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   if ((argc != 3 && argc != 4) || std::string(argv[1]) != "--request") {
-    std::cerr << "usage: hstream-web-job --request JOB_ROOT/operation-request.json | --capabilities\n";
+    std::cerr << "usage: hstream-web-job --request JOB_ROOT/operation-request.json | --capabilities | --runtime-defaults\n";
     return 64;
   }
   if (argc == 4) {

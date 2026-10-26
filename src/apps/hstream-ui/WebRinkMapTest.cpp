@@ -97,6 +97,11 @@ int main(int argc, char** argv) {
         "Missing saved rotation must explain the leveling prerequisite, not throw a YAML error");
     std::ofstream(game / "config.yaml") << "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
                                            "stitching:\n  projection_framing:\n    rotation_degrees: [0, 0, 0]\n";
+    const auto missing = invoke(argv[1], root, "rink-map-check", {});
+    require(!missing.value("ready").toBool(true), "Missing map must not be ready");
+    const auto receipt = hm::web::ReadObject(root / "operation-result.json");
+    require(receipt.value("artifacts").toArray().size() == 1, "Readiness must publish metadata only");
+    invoke(argv[1], root, "rink-map-check", {{"ready", true}}, false);
     const auto opened = invoke(argv[1], root, "rink-map-read", {});
     require(opened.value("fit").toObject().value("state") == "partial", "Empty map must stay partial");
     auto document = opened.value("document").toObject();
@@ -140,7 +145,9 @@ int main(int argc, char** argv) {
         saved.value("saved").toBool() && fs::exists(game / "rink-map.yaml"),
         "Save must publish reviewed native observations");
     invoke(argv[1], root, "rink-map-save", draft, false);
+    const auto check = invoke(argv[1], root, "rink-map-check", {});
     auto reopened = invoke(argv[1], root, "rink-map-read", {});
+    require(check.value("ready") == reopened.value("playback_verified"), "Readiness must share playback validation");
     require(
         reopened.value("document").toObject().value("observations").toArray().size() == 4,
         "Read must retain exact saved marks");
@@ -154,6 +161,9 @@ int main(int argc, char** argv) {
         "rink-map-save",
         {{"snapshot", reopened.value("snapshot")}, {"document", reopened.value("document")}},
         false);
+    require(
+        !invoke(argv[1], root, "rink-map-check", {}).value("ready").toBool(true),
+        "Changed calibration must invalidate readiness");
     std::cout << "Web rink map real-Hugin tests passed\n";
     return 0;
   } catch (const std::exception& error) {

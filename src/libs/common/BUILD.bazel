@@ -157,6 +157,13 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "user_config_read_test",
+    srcs = ["UserConfigReadTest.cpp"],
+    copts = ["-std=c++17"],
+    deps = [":user_config", "@yaml-cpp"],
+)
+
 cc_library(
     name = "baseline_config",
     srcs = ["BaselineConfig.cpp"],

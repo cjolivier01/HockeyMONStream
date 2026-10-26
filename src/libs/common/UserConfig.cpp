@@ -166,7 +166,8 @@ absl::StatusOr<fs::path> file_path() {
   return *home / ".hstream" / "hstream.yaml";
 }
 
-absl::StatusOr<YAML::Node> load_preferences_or_create() {
+namespace {
+absl::StatusOr<YAML::Node> load_preferences(bool create) {
   auto path = file_path();
   if (!path.ok()) {
     // Explicit environment roots remain usable in non-login automation where
@@ -178,9 +179,18 @@ absl::StatusOr<YAML::Node> load_preferences_or_create() {
       return YAML::Node(YAML::NodeType::Map);
     return path.status();
   }
-  const absl::Status created = ensure_first_run_file(*path);
-  if (!created.ok())
-    return created;
+  if (create) {
+    const absl::Status created = ensure_first_run_file(*path);
+    if (!created.ok())
+      return created;
+  } else {
+    std::error_code error;
+    const auto status = fs::symlink_status(*path, error);
+    if (error == std::errc::no_such_file_or_directory || (!error && status.type() == fs::file_type::not_found))
+      return YAML::Node(YAML::NodeType::Map);
+    if (error)
+      return absl::InternalError(absl::StrCat("Failed to inspect ", path->string(), ": ", error.message()));
+  }
 
   try {
     YAML::Node config = YAML::LoadFile(path->string());
@@ -192,6 +202,12 @@ absl::StatusOr<YAML::Node> load_preferences_or_create() {
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError(absl::StrCat("Failed to load user config ", path->string(), ": ", error.what()));
   }
+}
+
+} // namespace
+
+absl::StatusOr<YAML::Node> load_preferences_or_create() {
+  return load_preferences(true);
 }
 
 absl::StatusOr<fs::path> defaults_path() {
@@ -254,8 +270,9 @@ YAML::Node overlay_defaults(const YAML::Node& lower, const YAML::Node& upper) {
 }
 } // namespace
 
-absl::StatusOr<Snapshot> load_snapshot_or_create() {
-  auto preferences = load_preferences_or_create();
+namespace {
+absl::StatusOr<Snapshot> load_snapshot_impl(bool create) {
+  auto preferences = load_preferences(create);
   if (!preferences.ok())
     return preferences.status();
   const auto legacy = file_path();
@@ -280,6 +297,16 @@ absl::StatusOr<Snapshot> load_snapshot_or_create() {
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError(absl::StrCat("Invalid UI defaults overlay: ", error.what()));
   }
+}
+
+} // namespace
+
+absl::StatusOr<Snapshot> load_snapshot_or_create() {
+  return load_snapshot_impl(true);
+}
+
+absl::StatusOr<Snapshot> load_snapshot() {
+  return load_snapshot_impl(false);
 }
 
 absl::StatusOr<YAML::Node> load_or_create() {
