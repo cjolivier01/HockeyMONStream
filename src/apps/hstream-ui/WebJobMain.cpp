@@ -819,7 +819,7 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
       const auto object = request.payload.value("blend").toObject();
       const auto mode = RequiredString(object, "mode");
       require(mode == "laplacian" || mode == "alpha" || mode == "gpu-hard-seam", "Invalid experiment blend mode");
-      blend = StitchingExperimentBlend{mode, std::nullopt};
+      blend = StitchingExperimentBlend{mode.toStdString(), std::nullopt};
       if (object.contains("feather_fraction"))
         blend->feather_fraction = Number(object, "feather_fraction", 0, 1, 0);
     }
