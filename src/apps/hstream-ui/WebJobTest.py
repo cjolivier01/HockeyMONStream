@@ -625,6 +625,8 @@ def main():
         receipt = json.loads((experiments / "operation-result.json").read_text())
         assert_artifacts(experiments, receipt)
         assert receipt["result"]["state"] == "queued"
+        assert receipt["result"]["selection_available"] is False
+        assert receipt["result"]["selection_fingerprint"] == ""
         assert not any(item["path"].endswith(".mp4") for item in receipt["artifacts"])
         candidate = receipt["result"]["workspace"]
         assert (experiments / candidate["game_directory"] / "config.yaml").is_file()
@@ -641,6 +643,38 @@ def main():
             "epipolar_ransac": False,
             "homography_consistency": False,
         }
+        # A derived matrix must inherit the selected candidate's private
+        # settings, not the older main game carried beside that workspace.
+        (experiments / "operation-result.json").unlink()
+        derived_request = request(
+            experiments,
+            "experiment-create",
+            {
+                "source_workspace": candidate,
+                "sequence": 2,
+                "settings": {
+                    "control_points": 101,
+                    "frame_count": 1,
+                    "stitch_frame_time": "00:00:00",
+                },
+            },
+        )
+        document = json.loads(derived_request.read_text())
+        document["authorized_media"] = [
+            str(experiments / "game" / side / "clip.mp4") for side in ("cam1", "cam2")
+        ]
+        derived_request.write_text(json.dumps(document))
+        run(args.binary, derived_request)
+        derived = json.loads((experiments / "operation-result.json").read_text())[
+            "result"
+        ]
+        assert (
+            derived["workspace"]["settings"]["camera"]["camera_fov"]["horizontal_fov"]
+            == 103
+        )
+        assert derived["workspace"]["settings"]["control_points"] == 101
+        assert derived["workspace"]["game_directory"] != candidate["game_directory"]
+
         # A captured-pair fixture allows read-only inspection to exercise the
         # exact workspace JSON returned to the next worker, without GPU work.
         inspection = (
@@ -673,8 +707,14 @@ def main():
             "colors": ["#0000ff", "#008000", "#808000"],
         }
         frame = result["frames"][0]
-        assert [source["name"] for source in frame["sources"]] == ["clip.mp4", "clip.mp4"]
-        assert [source["source_seconds"] for source in frame["sources"]] == [12.125, 12.25]
+        assert [source["name"] for source in frame["sources"]] == [
+            "clip.mp4",
+            "clip.mp4",
+        ]
+        assert [source["source_seconds"] for source in frame["sources"]] == [
+            12.125,
+            12.25,
+        ]
         assert frame["match_images"] == [None, None]
         assert len(frame["thumbnails"]) == 2 and all(frame["thumbnails"])
         assert frame["coverage"] == [] and frame["size_band_counts"] == [0, 0, 0]
@@ -682,9 +722,15 @@ def main():
         # A missing left thumbnail cannot shift the right image into its place.
         (inspection / "left_0.jpg").unlink()
         (experiments / "operation-result.json").unlink()
-        run(args.binary, request(experiments, "experiment-inspect", {"workspace": candidate}))
+        run(
+            args.binary,
+            request(experiments, "experiment-inspect", {"workspace": candidate}),
+        )
         missing = json.loads((experiments / "operation-result.json").read_text())
-        assert missing["result"]["frames"][0]["thumbnails"] == [None, frame["thumbnails"][1]]
+        assert missing["result"]["frames"][0]["thumbnails"] == [
+            None,
+            frame["thumbnails"][1],
+        ]
         assert_artifacts(experiments, missing)
         for change, expected_error in (
             ({"input_lens": {"distortion": [0, 0, 2]}}, "distortion"),
