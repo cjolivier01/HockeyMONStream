@@ -41,6 +41,8 @@ filegroup(
         "CalibrationImage.h",
         "StitchingStillPreview.cpp",
         "StitchingStillPreview.h",
+        "StitchingStillImage.cpp",
+        "StitchingStillImage.h",
         "CalibrationFrameView.cpp",
         "CalibrationFrameView.h",
         "HStreamWindow.cpp",
@@ -168,19 +170,31 @@ cc_library(
 )
 
 cc_library(
+    name = "stitching_still_image",
+    srcs = ["StitchingStillImage.cpp"],
+    hdrs = ["StitchingStillImage.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":calibration_image",
+        "//src/libs/common:baseline_config",
+        "//src/libs/common:user_config",
+        "//src/libs/stitching:auto_input_lens",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:transaction_state",
+        "@qt//:qt_gui",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "stitching_still_preview",
     srcs = ["StitchingStillPreview.cpp"],
     hdrs = ["StitchingStillPreview.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [
-        ":calibration_image",
-        "//src/libs/stitching:canvas_constraint_check",
-        "//src/libs/stitching:game_config",
-        "//src/libs/stitching:transaction_state",
-        "@qt//:qt_widgets",
-        "@yaml-cpp",
-    ],
+    deps = [":stitching_still_image", "@qt//:qt_widgets"],
 )
 
 cc_test(
@@ -189,7 +203,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":calibration_image", ":stitching_still_preview", "//src/libs/stitching:game_config", "@qt//:qt_widgets"],
+    deps = [":calibration_image", ":stitching_still_image", ":stitching_still_preview", "//src/libs/stitching:game_config", "@qt//:qt_widgets"],
 )
 
 cc_library(
@@ -1360,6 +1374,7 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":stitching_still_image",
         "//src/libs/tracking:camera_control_specs",
         ":web_calibration_controls",
         ":web_camera_experiment",
@@ -1427,7 +1442,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":web_job_spec", ":web_calibration_controls", "//src/libs/common:baseline_config", "//src/libs/stitching:canvas_constraint_check", "//src/libs/stitching:game_config", "@qt//:qt_gui"],
+    deps = [":web_job_spec", ":web_calibration_controls", "//src/libs/common:baseline_config", "//src/libs/stitching:auto_input_lens", "//src/libs/stitching:canvas_constraint_check", "//src/libs/stitching:game_config", "@qt//:qt_gui"],
 )
 
 cc_test(

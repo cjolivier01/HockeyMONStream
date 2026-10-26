@@ -23,6 +23,7 @@
 #include "src/apps/hstream-ui/CalibrationImage.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkMapBackend.h"
+#include "src/apps/hstream-ui/StitchingStillImage.h"
 #include "src/apps/hstream-ui/WebRinkEditor.h"
 
 namespace hm::web {
@@ -368,22 +369,94 @@ QJsonObject render(
 }
 } // namespace
 
-QString ExportSavedCalibrationPreview(const Request& request, QJsonArray& artifacts) {
-  const auto source = Contained(request.root, text(Relative(request, request.game / "panorama.tif")));
-  const auto preview = readCalibrationTiff(text(source.string()), 1920);
-  require(!preview.isNull(), "Saved calibration did not produce a readable panorama");
+namespace {
+SavedStitchingStill read_still(
+    const Request& request,
+    const QString& generation,
+    const QByteArray& settings,
+    const std::function<bool()>& cancelled) {
+  require(!cancelled || !cancelled(), "Saved stitching preview cancelled");
+  const auto directory = text(request.game.string());
+  const auto revision = StitchingStillRevision(directory);
+  std::mutex metadata_mutex;
+  auto result = ReadSavedStitchingStill(directory, generation, settings, revision, metadata_mutex, cancelled);
+  require(!cancelled || !cancelled(), "Saved stitching preview cancelled");
+  return result;
+}
+
+bool publish_still(
+    const Request& request,
+    const SavedStitchingStill& still,
+    const fs::path& path,
+    QJsonArray& artifacts,
+    const std::function<bool()>& cancelled) {
+  require(!fs::is_symlink(fs::symlink_status(path)), "Saved preview must not be a symbolic link");
+  QSaveFile output(text(path.string()));
+  require(
+      output.open(QIODevice::WriteOnly) && still.image.save(&output, "PNG") && output.size() <= 32 * 1024 * 1024,
+      "Cannot encode the bounded saved stitching preview");
+  require(!cancelled || !cancelled(), "Saved stitching preview cancelled");
+  // Encoding also happens outside metadata locks. Do not publish a decoded
+  // predecessor if the selected source changed while producing its proxy.
+  if (StitchingStillRevision(text(request.game.string())) != still.revision)
+    return false;
+  require(output.commit(), "Cannot publish the saved stitching preview");
+  artifacts.append(Artifact(request, path, "image"));
+  return true;
+}
+} // namespace
+
+QJsonObject ReadSavedCalibrationStill(
+    const Request& request,
+    QJsonArray& artifacts,
+    const std::function<bool()>& cancelled) {
+  require(
+      request.payload.value("config").isObject() &&
+          request.payload.size() == (request.payload.contains("expected_generation") ? 2 : 1),
+      "Saved stitching preview requires frozen effective settings");
+  const auto generation = request.payload.contains("expected_generation")
+      ? RequiredString(request.payload, "expected_generation", 1024 * 1024)
+      : QString();
+  const auto settings = QJsonDocument(request.payload.value("config").toObject()).toJson(QJsonDocument::Compact);
+  const auto still = read_still(request, generation, settings, cancelled);
+  QJsonObject result{{"calibration_still_version", 1}, {"available", false}, {"retryable", still.retry}};
+  if (still.image.isNull())
+    return result;
+  require(
+      !fs::is_symlink(fs::symlink_status(request.root / "saved-stitching-preview.png")),
+      "Saved preview must not be a symbolic link");
+  const auto path = Contained(request.root, "saved-stitching-preview.png", false);
+  if (!publish_still(request, still, path, artifacts, cancelled)) {
+    result.insert("retryable", true);
+    return result;
+  }
+  result.insert("available", true);
+  result.insert("preview", text(Relative(request, path)));
+  result.insert("width", still.image.width());
+  result.insert("height", still.image.height());
+  result.insert("source_image", still.name);
+  result.insert(
+      "source_revision",
+      QString::fromLatin1(QCryptographicHash::hash(still.revision, QCryptographicHash::Sha256).toHex()));
+  return result;
+}
+
+QString ExportSavedCalibrationPreview(
+    const Request& request,
+    QJsonArray& artifacts,
+    const std::function<bool()>& cancelled) {
+  const auto still = read_still(request, {}, {}, cancelled);
+  require(!still.image.isNull(), "Saved calibration image is unavailable or changing");
+  require(
+      !fs::is_symlink(fs::symlink_status(request.game / "setup-preview.png")),
+      "Saved preview must not be a symbolic link");
   const auto path = Contained(
       request.root,
       text((request.game / "setup-preview.png").lexically_relative(request.root).generic_string()),
       false);
   require(
-      !fs::is_symlink(fs::symlink_status(request.game / "setup-preview.png")),
-      "Saved preview must not be a symbolic link");
-  QSaveFile output(text(path.string()));
-  require(
-      output.open(QIODevice::WriteOnly) && preview.save(&output, "PNG") && output.commit(),
-      "Cannot publish the saved panorama preview");
-  artifacts.append(Artifact(request, path, "image"));
+      publish_still(request, still, path, artifacts, cancelled),
+      "Saved calibration changed while exporting its preview");
   return text(Relative(request, path));
 }
 
@@ -535,7 +608,7 @@ QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, c
     result.insert("saved", true);
     result.insert("calibration_complete", true);
     result.insert("alignment_reused", reframe);
-    result.insert("setup_preview", ExportSavedCalibrationPreview(request, artifacts));
+    result.insert("setup_preview", ExportSavedCalibrationPreview(request, artifacts, cancelled));
   }
   if (request.operation == "calibration-view-preview" || request.operation == "calibration-view-save" ||
       (reading && kind == "crop")) {

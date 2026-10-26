@@ -10,6 +10,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import zlib
 from pathlib import Path
 
 
@@ -123,9 +124,122 @@ def calibration_fixture(game, owner="owner"):
     )
 
 
+def png_fixture(path, width=4096, height=64):
+    def chunk(kind, content):
+        return (
+            struct.pack("!I", len(content))
+            + kind
+            + content
+            + struct.pack("!I", zlib.crc32(kind + content))
+        )
+
+    pixels = (b"\0" + bytes([255, 0, 0]) * width) * height
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack("!2I5B", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(pixels))
+        + chunk(b"IEND", b"")
+    )
+
+
+def calibration_still_contract(binary, root):
+    for case, source in (
+        ("png-only", "s.png"),
+        ("prefer-png", "s.png"),
+        ("tiff-fallback", "panorama.tif"),
+        ("broken-png", "panorama.tif"),
+        ("invalidated-png", "panorama.tif"),
+        ("stale-still", None),
+        ("pending-still", None),
+        ("missing-still", None),
+        ("wrong-generation-still", None),
+        ("pending-recovery-still", None),
+    ):
+        directory = root / case
+        directory.mkdir()
+        game = directory / "game"
+        calibration_fixture(game)
+        config = "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
+        if case == "stale-still":
+            config += "    stale_from: canvas\n"
+        elif case == "pending-still":
+            config = config.replace("complete", "pending")
+        elif case == "invalidated-png":
+            config += "    artifacts_invalidated: true\n"
+        (game / "config.yaml").write_text(config)
+        if case not in {"missing-still", "tiff-fallback"}:
+            png_fixture(game / "s.png")
+        if case in {"png-only", "missing-still"}:
+            (game / "panorama.tif").unlink()
+        if case == "broken-png":
+            (game / "s.png").write_bytes(b"broken PNG")
+        if case == "pending-recovery-still":
+            journal = game / ".hstream-stitch-Ab12CD"
+            journal.mkdir()
+            (journal / "journal_version").write_text("2\n")
+            (journal / "state").write_text("PREPARED\n")
+            (journal / "rollback-payload").write_text("Must not recover")
+        before = {
+            path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+            for path in game.rglob("*")
+            if path.is_file()
+        }
+        payload = {"config": {}}
+        if case == "wrong-generation-still":
+            payload["expected_generation"] = "another-generation"
+        run(binary, request(directory, "calibration-still-read", payload))
+        receipt = json.loads((directory / "operation-result.json").read_text())
+        assert_artifacts(directory, receipt)
+        result = receipt["result"]
+        assert result["calibration_still_version"] == 1
+        assert result["available"] is bool(source), (case, result)
+        assert result["retryable"] is (case == "pending-recovery-still")
+        expected_paths = {"operation-data.json"}
+        if source:
+            assert result["source_image"] == source
+            assert result["preview"] == "saved-stitching-preview.png"
+            assert len(result["source_revision"]) == 64
+            int(result["source_revision"], 16)
+            image = (directory / result["preview"]).read_bytes()
+            assert image.startswith(b"\x89PNG")
+            width, height = struct.unpack("!II", image[16:24])
+            assert [width, height] == [result["width"], result["height"]]
+            assert [width, height] == ([2048, 32] if source == "s.png" else [8, 8])
+            expected_paths.add(result["preview"])
+        else:
+            assert "preview" not in result
+            assert not (directory / "saved-stitching-preview.png").exists()
+        assert {item["path"] for item in receipt["artifacts"]} == expected_paths
+        assert json.loads((directory / "operation-data.json").read_text()) == result
+        for path, identity in before.items():
+            assert (
+                path.read_bytes(),
+                path.stat().st_ino,
+                path.stat().st_mtime_ns,
+            ) == identity
+        assert not (game / "setup-preview.png").exists()
+
+    directory = root / "still-output-symlink"
+    directory.mkdir()
+    game = directory / "game"
+    game.mkdir()
+    (game / "config.yaml").write_text(
+        "hstream_ui: {stitching_calibration: {status: complete}}\n"
+    )
+    source = game / "s.png"
+    png_fixture(source)
+    before = (source.read_bytes(), source.stat().st_ino, source.stat().st_mtime_ns)
+    (directory / "saved-stitching-preview.png").symlink_to(source)
+    run(binary, request(directory, "calibration-still-read", {"config": {}}), 1)
+    receipt = json.loads((directory / "operation-result.json").read_text())
+    assert receipt["state"] == "failed" and not receipt["artifacts"]
+    assert (source.read_bytes(), source.stat().st_ino, source.stat().st_mtime_ns) == before
+
+
 def calibration_contract(binary, root):
     for case in (
         "valid",
+        "valid-png-only",
         "missing-owner",
         "wrong-owner",
         "missing-generation",
@@ -143,10 +257,14 @@ def calibration_contract(binary, root):
             (directory / "game" / "mapping_0001.tif").unlink()
         elif case == "missing-preview":
             (directory / "game" / "panorama.tif").unlink()
+        elif case == "valid-png-only":
+            (directory / "game" / "panorama.tif").unlink()
+            png_fixture(directory / "game" / "s.png")
         path = request(directory, "calibration-complete", payload)
-        run(binary, path, 0 if case == "valid" else 1)
+        valid = case in {"valid", "valid-png-only"}
+        run(binary, path, 0 if valid else 1)
         receipt = json.loads((directory / "operation-result.json").read_text())
-        if case != "valid":
+        if not valid:
             assert receipt["state"] == "failed" and not receipt["artifacts"]
             continue
         assert_artifacts(directory, receipt)
@@ -610,6 +728,8 @@ def main():
         == 1
     )
     assert "calibration-complete" in capabilities["operations"]
+    assert "calibration-still-read" in capabilities["operations"]
+    assert "saved-calibration-still-v1" in capabilities["features"]
     assert "experiment-optics-filtering-v1" in capabilities["features"]
     assert "highlight-pinned-archive-v1" in capabilities["features"]
     assert len(capabilities["operations"]) == len(set(capabilities["operations"]))
@@ -618,6 +738,7 @@ def main():
         root = Path(temporary)
         pinned_archive_contract(args.binary, root)
         calibration_contract(args.binary, root)
+        calibration_still_contract(args.binary, root)
         missing_matches = root / "missing-matches"
         missing_matches.mkdir()
         calibration_fixture(missing_matches / "game")

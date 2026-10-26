@@ -84,6 +84,7 @@ void WriteObject(const fs::path& path, const QJsonObject& value) {
 QJsonObject Capabilities() {
   const QJsonArray operations{
       "calibration-complete",
+      "calibration-still-read",
       "calibration-view-read",
       "calibration-view-estimate",
       "calibration-view-landmarks",
@@ -136,6 +137,7 @@ QJsonObject Capabilities() {
            "camera-legacy-recording-v1",
            "camera-view-catalog-v3",
            "saved-calibration-view-v1",
+           "saved-calibration-still-v1",
            "saved-calibration-reset-v1",
            "calibration-view-rotation-stage-v1",
            "calibration-controls-stage-v1"}},

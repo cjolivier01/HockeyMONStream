@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "src/apps/hstream-ui/WebCalibrationControls.h"
@@ -510,11 +511,76 @@ void controls_staging_regressions(const QString& binary, const fs::path& source)
           "Changed synchronization cannot reuse the saved alignment for a simultaneous crop edit");
   }
 }
+void sparse_still_defaults(const QString& binary) {
+  QTemporaryDir temporary;
+  const fs::path root(temporary.path().toStdString()), game = root / "game", home = root / "home";
+  fs::create_directories(game);
+  fs::create_directories(home);
+  const auto original_home = qgetenv("HOME");
+  qputenv("HOME", QByteArray::fromStdString(home.string()));
+  fixture(game); // Native completion still verifies the ordinary map/project artifacts.
+  auto effective = YAML::Clone(value(hm::baseline_config::load()).values);
+  effective["stitching"]["camera_config"] = "gopro-mission-1";
+  PreserveLegacyInputLensSelection(effective, effective);
+  auto sparse = YAML::Clone(effective);
+  for (const char* key : {"camera_configs", "camera_fov", "input_lens"})
+    sparse["stitching"].remove(key);
+  sparse["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  sparse["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "sparse-still";
+  sparse["hstream_ui"]["stitching_calibration"].remove("stale_from");
+  require(reserve_stitching_backend_generation_in_config(sparse, "sparse-still", choices(effective)));
+  write(game / "config.yaml", YAML::Dump(sparse));
+  expect(
+      cv::imwrite((game / "s.png").string(), cv::Mat(32, 64, CV_8UC3, cv::Scalar(3, 2, 1))),
+      "Cannot write sparse still");
+  // With no embedded catalog or optics this resolves 108/90 and the fixed
+  // fisheye profile, rather than the historical 127.2/95/no-lens fallbacks.
+  const auto complete = [&] {
+    return invoke(binary, root, "calibration-complete", {{"invalidation_id", "sparse-still"}});
+  };
+  expect(
+      complete().value("preview").toString() == "game/setup-preview.png",
+      "Sparse modern completion must inherit baseline camera optics");
+  expect(fs::is_empty(home), "Read-only completion must not create user preferences");
+  auto user = YAML::Load(
+      "stitching: {camera_fov: {horizontal_fov: 113, vertical_fov: 71}, input_lens: {optimization: fixed}}\n");
+  effective["stitching"]["camera_fov"] = YAML::Clone(user["stitching"]["camera_fov"]);
+  effective["stitching"]["input_lens"] = YAML::Clone(user["stitching"]["input_lens"]);
+  PreserveLegacyInputLensSelection(effective, user);
+  PreserveLegacyInputLensSelection(effective, sparse);
+  // The native worker freezes nondefault resolved optics in its game config;
+  // a custom claim with no corresponding worker-visible settings is invalid.
+  write_stitch_camera_selection(sparse, value(read_stitch_camera_selection(effective)));
+  sparse["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+  require(reserve_stitching_backend_generation_in_config(sparse, "sparse-still", choices(effective)));
+  write(game / "config.yaml", YAML::Dump(sparse));
+  const auto defaults = home / ".config/hstream-ui/defaults.yaml";
+  fs::create_directories(defaults.parent_path());
+  write(defaults, YAML::Dump(user));
+  const auto before = read(defaults);
+  expect(
+      complete().value("preview").toString() == "game/setup-preview.png",
+      "Completion must honor frozen private user camera defaults");
+  expect(
+      read(defaults) == before && !fs::exists(home / ".hstream"),
+      "Still export must leave private user files unchanged");
+  user["stitching"]["camera_fov"]["horizontal_fov"] = 114;
+  user["stitching"]["input_lens"]["optimization"] = "refine";
+  write(defaults, YAML::Dump(user));
+  expect(
+      complete().value("preview").toString() == "game/setup-preview.png",
+      "Later Defaults changes must not override explicit frozen game optics");
+  sparse["stitching"]["camera_fov"]["horizontal_fov"] = 114;
+  write(game / "config.yaml", YAML::Dump(sparse));
+  invoke(binary, root, "calibration-complete", {{"invalidation_id", "sparse-still"}}, false);
+  qputenv("HOME", original_home);
+}
 } // namespace
 int main(int argc, char** argv) {
   QGuiApplication app(argc, argv);
   try {
     expect(argc == 2, "Pass adapter binary");
+    sparse_still_defaults(argv[1]);
     // Uniform synthetic images do not always support Enblend seam optimization.
     // Exercise the explicitly enabled native hard-seam path for these tiny stills.
     qputenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1");

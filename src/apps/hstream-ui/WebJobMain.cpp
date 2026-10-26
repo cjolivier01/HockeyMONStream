@@ -901,7 +901,7 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
     return {
         {"workspace", workspace_json(request, saved)},
         {"promoted", true},
-        {"setup_preview", hm::web::ExportSavedCalibrationPreview(request, artifacts)}};
+        {"setup_preview", hm::web::ExportSavedCalibrationPreview(request, artifacts, [] { return interrupted != 0; })}};
   }
   const auto inspected = InspectStitchingExperimentFrames(saved);
   // A saved main calibration can outlive its captured-frame diagnostics, for
@@ -1201,6 +1201,8 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
 }
 
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "calibration-still-read")
+    return hm::web::ReadSavedCalibrationStill(request, artifacts, [] { return interrupted != 0; });
   if (request.operation == "calibration-controls-stage")
     return hm::web::RunCalibrationControlsStage(request, [] { return interrupted != 0; });
   if (request.operation == "camera-experiment")
@@ -1222,15 +1224,8 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
     check(CompleteStitchingExperimentWorkspace(saved, request.payload.value("require_ice_mask").toBool(false)));
     // A single bounded proxy of an existing calibration artifact, never a
     // readback from the steady-state GPU video pipeline.
-    const auto source = Contained(request.root, text(Relative(request, request.game / "panorama.tif")));
-    const auto preview = readCalibrationTiff(text(source.string()), 1920);
-    require(!preview.isNull(), "Calibration did not produce a readable stitched panorama");
-    const auto destination = Contained(
-        request.root,
-        text((request.game / "setup-preview.png").lexically_relative(request.root).generic_string()),
-        false);
-    require(preview.save(text(destination.string()), "PNG"), "Could not publish stitched setup preview");
-    return {{"state", "complete"}, {"invalidation_id", text(owner)}, {"preview", text(Relative(request, destination))}};
+    const auto preview = hm::web::ExportSavedCalibrationPreview(request, artifacts, [] { return interrupted != 0; });
+    return {{"state", "complete"}, {"invalidation_id", text(owner)}, {"preview", preview}};
   }
   if (request.operation.rfind("highlight-", 0) == 0)
     return highlights(request, artifacts);
