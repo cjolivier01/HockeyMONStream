@@ -1,6 +1,8 @@
 #include "WebPreviewSession.h"
 #include "WebPreviewRuntime.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
@@ -11,6 +13,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <utility>
 
 namespace hm::preview {
@@ -35,6 +38,26 @@ struct WebPreviewSession::PaintState {
   // One immutable snapshot binds the three flags and their acknowledged epoch.
   std::shared_ptr<const pipeline_internal::PreviewOverlayCommand> overlays =
       std::make_shared<const pipeline_internal::PreviewOverlayCommand>();
+  std::shared_ptr<const RotationFrameFence> rotation;
+  bool Admit(const char* channel, GstBuffer* frame) const {
+    const auto fence = std::atomic_load(&rotation);
+    if (!fence)
+      return true;
+    RotationFrameObservation observation;
+    auto* batch = frame ? gst_buffer_get_nvds_batch_meta(frame) : nullptr;
+    const auto* metadata =
+        batch && batch->frame_meta_list ? static_cast<const NvDsFrameMeta*>(batch->frame_meta_list->data) : nullptr;
+    if (const auto* epoch = stitching::find_stitched_output_generation_meta(metadata)) {
+      observation.epoch_present = true;
+      observation.authorization_id = epoch->authorization_id();
+    }
+    if (const auto* crop = preview_overlay::find_playcropper_transform_meta(metadata)) {
+      observation.crop_present = crop->rotation_controls_valid;
+      observation.left = crop->fixed_edge_rotation_left;
+      observation.right = crop->fixed_edge_rotation_right;
+    }
+    return fence->Matches(channel ? channel : "", observation);
+  }
   RouteOwner::Session session;
   WebPreviewOverlayArtifactMailbox artifacts;
   void ReportArtifact(const FrameIdentityMeta& identity, uint64_t generation, bool ready, const char* reason) {
@@ -224,6 +247,9 @@ absl::StatusOr<std::unique_ptr<WebPreviewSession>> WebPreviewSession::Prepare(
       &error);
   if (!session->target_)
     return absl::FailedPreconditionError("Could not construct selectable preview: " + error);
+  if (!session->target_->SetFrameAdmission(
+          [state = session->paint_](const char* channel, GstBuffer* frame) { return state->Admit(channel, frame); }))
+    return absl::InternalError("Could not install exact rotation frame admission");
   // Establish the disconnected draining generation before any media enters.
   // Raw identities require a peer epoch even before the first browser arrives;
   // this also lets the real encoder publish its negotiated RTP caps for offers.
@@ -322,6 +348,22 @@ absl::Status WebPreviewSession::AddRoute(const std::string& channel, RouteTap ta
   channels_.emplace(channel, state);
   paint_->channels.emplace(channel, std::move(state));
   return absl::OkStatus();
+}
+
+absl::StatusOr<uint64_t> WebPreviewSession::RearmRotation(RotationFrameFence fence) {
+  if (!available() || routes_.operation_generation() == std::numeric_limits<uint64_t>::max())
+    return absl::FailedPreconditionError("Preview cannot rearm this rotation");
+  // Retain an established exact crop fence across later Stitch-only edits.
+  const auto previous = std::atomic_load(&paint_->rotation);
+  if (!fence.angles && previous)
+    fence.angles = previous->angles;
+  std::atomic_store(&paint_->rotation, std::make_shared<const RotationFrameFence>(std::move(fence)));
+  const auto operation = routes_.operation_generation() + 1;
+  const auto channel = routes_.selected_channel().empty() ? "none" : routes_.selected_channel();
+  const auto result = routes_.select_current(channel, operation, []() {});
+  if (result.status != RouteOwner::Status::kActivated && result.status != RouteOwner::Status::kDeactivated)
+    return absl::FailedPreconditionError("Could not rearm exact rotation preview: " + result.reason);
+  return operation;
 }
 
 void WebPreviewSession::SetOverlays(pipeline_internal::PreviewOverlaySelection selection, uint64_t generation) {

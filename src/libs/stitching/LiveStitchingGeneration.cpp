@@ -4,6 +4,7 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -225,7 +226,107 @@ absl::StatusOr<std::string> scoreboard_property_value(const YAML::Node& config) 
   return value.str();
 }
 
+void remove_native_aliases(YAML::Node config, const char* stage, const char* key, const char* legacy) {
+  YAML::Node node = config["pipeline"][stage];
+  if (!node.IsMap())
+    return;
+  for (const char* bag : {"", "properties", "private-properties"}) {
+    YAML::Node values = *bag ? node[bag] : node;
+    if (values.IsMap()) {
+      values.remove(key);
+      values.remove(legacy);
+    }
+  }
+}
+
 } // namespace
+
+int invalidate_rotation_dependent_artifacts(YAML::Node& config) {
+  int invalidated = 0;
+  if (config["rink"].IsMap()) {
+    for (const char* key :
+         {"stitched_output_generation",
+          "stitched_output_persisted_rotation_degrees",
+          "stitched_output_pending_generation",
+          "stitched_output_pending_authorization_id",
+          "stitched_output_pending_owner_process",
+          "stitched_output_pending_previous_generation",
+          "stitched_output_pending_previous_authorization_id",
+          "stitched_output_pending_previous_owner_process",
+          "mask_frame",
+          "ice_contours_mask_count",
+          "ice_contours_mask_centroid",
+          "ice_contours_combined_bbox"}) {
+      invalidated += config["rink"].remove(key) ? 1 : 0;
+    }
+    config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
+    config["rink"].remove("stitched_output_pending_scoreboard_polygon_invalidated");
+  }
+  remove_native_aliases(config, "hmplaycropper", "scoreboard-perspective-polygon", "scoreboard_perspective_polygon");
+  // Shadow lower layers, as Qt preset saving does, so old geometry cannot return.
+  config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+  return invalidated + 1;
+}
+
+absl::StatusOr<SavedRotationStage> stage_saved_stitched_output_rotation(
+    const std::string& game_dir,
+    const std::string& source_generation,
+    double post_stitch_rotate_degrees) {
+  if (game_dir.empty() || source_generation.empty() || !std::isfinite(post_stitch_rotate_degrees))
+    return absl::InvalidArgumentError("Saved rotation staging requires an exact source and finite rotation");
+  SavedRotationStage result;
+  result.source_generation = source_generation;
+  HM_ASSIGN_OR_RETURN(
+      result.desired_generation, generation_with_rotation(source_generation, post_stitch_rotate_degrees));
+  EmbeddedHuginGeneration embedded;
+  HM_ASSIGN_OR_RETURN(embedded, embedded_hugin_generation(source_generation));
+  const fs::path root(game_dir);
+  auto artifact_lock = lock_canvas_constraint_artifacts(root);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  auto config_lock = GameConfigTransactionLock::Acquire(root);
+  if (!config_lock.ok())
+    return config_lock.status();
+  HM_ASSIGN_OR_RETURN(result.hugin_generation, stitch_artifact_generation_id_locked(root));
+  if (result.hugin_generation.size() != embedded.size ||
+      source_generation.compare(embedded.start, embedded.size, result.hugin_generation) != 0) {
+    return absl::AbortedError("Saved rotation source Hugin artifacts changed");
+  }
+  try {
+    std::string bytes;
+    HM_ASSIGN_OR_RETURN(
+        bytes, read_bounded_regular_file_no_follow(root / "config.yaml", 4 * 1024 * 1024, "game config"));
+    YAML::Node config = YAML::Load(bytes);
+    if (!config.IsMap())
+      return absl::InvalidArgumentError("Game config must be a map");
+    const YAML::Node saved = config["rink"]["stitched_output_generation"];
+    if (!saved.IsScalar() || saved.as<std::string>() != source_generation)
+      return absl::AbortedError("Saved rotation completed source changed");
+    const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    if (!calibration.IsMap() || !calibration["status"].IsScalar() ||
+        calibration["status"].as<std::string>() != "complete") {
+      return absl::FailedPreconditionError("Saved rotation requires completed calibration");
+    }
+    for (const auto& entry : config["rink"]) {
+      if (entry.first.IsScalar() && entry.first.as<std::string>().rfind("stitched_output_pending_", 0) == 0)
+        return absl::FailedPreconditionError("Saved rotation cannot adopt a pending live authorization");
+    }
+    result.changed = result.desired_generation != source_generation;
+    if (!result.changed)
+      return result;
+    config["stitching"]["post_stitch_rotate_degrees"] = post_stitch_rotate_degrees;
+    // A resolved private copy may still contain the old mapped native properties.
+    remove_native_aliases(config, "hmstitcher", "post-stitch-rotate-degrees", "post_stitch_rotate_degrees");
+    invalidate_rotation_dependent_artifacts(config);
+    config["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "pending";
+    auto publish = publish_game_config_without_rink_masks(root, YAML::Dump(config) + "\n", true);
+    if (!publish.ok())
+      return publish.status();
+    return result;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid saved rotation config: " + std::string(error.what()));
+  }
+}
 
 absl::StatusOr<bool> reconcile_inactive_live_stitched_output_authorization(const std::string& game_dir) {
   if (game_dir.empty())

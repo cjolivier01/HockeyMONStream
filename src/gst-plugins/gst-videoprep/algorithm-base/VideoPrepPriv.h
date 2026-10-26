@@ -7,6 +7,8 @@
 #include <cassert>
 #include <cstddef>
 #include <functional>
+#include <optional>
+#include <utility>
 #include "nvbufsurface.h"
 
 #include "absl/status/status.h"
@@ -100,6 +102,12 @@ class VideoPrepPriv : public DSCustomLibraryBase {
   // Read without the processing mutex: the worker may be awaiting an operator.
   virtual bool WaitingForUserInput() const {
     return false;
+  }
+
+  // Exact active settings for runtime readback/rollback, including values
+  // supplied through private configuration rather than typed GObject fields.
+  virtual std::optional<std::pair<float, float>> FixedEdgeRotationAngles() {
+    return std::nullopt;
   }
 
   virtual bool UsesRuntimeOutputSize() const {

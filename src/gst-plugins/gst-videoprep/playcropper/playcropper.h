@@ -35,6 +35,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   // -DSCustomLibraryBase
   BufferResult ProcessBuffer(GstBuffer* inbuf) override;
   bool SetProperty(const Property& prop) override;
+  std::optional<std::pair<float, float>> FixedEdgeRotationAngles() override;
   // DSCustomLibraryBase-
 
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;
@@ -82,6 +83,10 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
   float fixed_edge_rotation_angle_left_{10.0};
   float fixed_edge_rotation_angle_right_{10.0};
+  // Readback must not wait on a processing mutex held by operator selection.
+  std::mutex rotation_readback_mutex_;
+  std::pair<float, float> rotation_readback_{fixed_edge_rotation_angle_left_, fixed_edge_rotation_angle_right_};
+  void UpdateRotationReadback();
   std::atomic<float> shadow_lift_percent_{0.0f};
   std::atomic_bool lift_shadow_black_point_{false};
   std::atomic<float> exposure_{0.0f};

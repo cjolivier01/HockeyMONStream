@@ -835,3 +835,16 @@ cc_test(
     tags = ["local"],
     deps = [":deepstream_apps_common", ":web_preview_observer", ":webrtc_endpoint", "@gstreamer", "@libsoup"],
 )
+
+cc_library(
+    name = "rotation_frame_fence",
+    hdrs = ["RotationFrameFence.h"],
+    include_prefix = "hstream/src/apps/apps-common",
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "rotation_frame_fence_test",
+    srcs = ["RotationFrameFenceTest.cpp"],
+    deps = [":rotation_frame_fence"],
+)

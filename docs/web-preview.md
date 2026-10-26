@@ -8,6 +8,26 @@ presentation contract; ordinary `WEBRTC` launches retain the static output.
 This opt-in is not full Qt workflow parity: archived replay-mask ownership and
 audio/seek timeline qualification remain unfinished.
 
+Live Rotation uses `@web-rotation-controls` and its `-query` counterpart, with
+the same four integer control IDs, linked-angle rules and NONA leveling
+suppression as Qt. Requests bind run, stage, topology and an increasing decimal
+request ID. `HSTREAM_WEB_ROTATION_CONTROLS` replies retain mutation ownership
+through `authorizing`, `applying`, `committing` and `rolling-back`; only settled
+`state`/`applied` replies carry an operation. `fixedEdgeSuppressed` reports the
+native enabled state. An ambiguous property or durable commit failure returns
+`retire-required` with null controls and operation, then stops the graph before
+the process-owned disk authorization is retired.
+
+Qt and this adapter use `LiveRotationConfigOwner`'s serial disk worker. Stop,
+pause and supersession cannot let a late authorization overtake rollback or a
+new run. Program admission compares the producer's exact stitched authorization
+and, after fixed-angle edits, exact crop float metadata. Stitched compares the
+authorization; source routes retain their unchanged pixels. The check runs
+inside the selected stream's flow mutex before frame identity assignment, so a
+frame admitted under an old setting cannot receive the new operation. Video
+remains on the GPU. These native ownership/admission tests do not qualify AMD
+browser presentation or replace real decoded-frame workflow comparisons.
+
 `PreviewRouteOwner` owns logical route selection and its operation generation.
 The desktop CLI registers its existing gates and renderer callbacks, retaining
 the legacy `HSTREAM_PREVIEW` acknowledgments. Selection closes ingress before

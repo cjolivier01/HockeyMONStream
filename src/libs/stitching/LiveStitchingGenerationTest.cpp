@@ -432,6 +432,91 @@ int main() {
   }
   ok &= expect(recovery_hugin_generation.ok(), "recovery fixtures must publish identifiable Hugin artifacts");
 
+  const fs::path stage_root = root / "saved-rotation";
+  fs::create_directories(stage_root);
+  const auto stage_hugin = create_hugin_generation(stage_root);
+  ok &= expect(stage_hugin.ok(), "saved rotation fixtures must have exact Hugin artifacts");
+  if (stage_hugin.ok()) {
+    const std::string source = "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(stage_hugin->size()) + "\n" +
+        *stage_hugin + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
+    write_config(stage_root / "config.yaml", source);
+    YAML::Node staged_config = YAML::LoadFile((stage_root / "config.yaml").string());
+    staged_config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    staged_config["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
+    staged_config["pipeline"]["hmstitcher"]["post-stitch-rotate-degrees"] = 0.0;
+    for (const char* bag : {"", "properties", "private-properties"}) {
+      auto stitcher = *bag ? staged_config["pipeline"]["hmstitcher"][bag] : staged_config["pipeline"]["hmstitcher"];
+      auto cropper =
+          *bag ? staged_config["pipeline"]["hmplaycropper"][bag] : staged_config["pipeline"]["hmplaycropper"];
+      for (const char* key : {"post-stitch-rotate-degrees", "post_stitch_rotate_degrees"})
+        stitcher[key] = 0.0;
+      for (const char* key : {"scoreboard-perspective-polygon", "scoreboard_perspective_polygon"})
+        cropper[key] = "1,2,3,4,5,6,7,8";
+      stitcher["unrelated-value"] = 23;
+    }
+    staged_config["rink"]["stitched_output_persisted_rotation_degrees"] = 0.0;
+    staged_config["rink"]["mask_frame"] = 7;
+    std::ofstream(stage_root / "config.yaml") << staged_config << '\n';
+    const auto read_bytes = [](const fs::path& path) {
+      std::ifstream input(path);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    const std::string original_config = read_bytes(stage_root / "config.yaml");
+    const auto unchanged = hm::stitching::stage_saved_stitched_output_rotation(stage_root.string(), source, 0.0);
+    ok &= expect(
+        unchanged.ok() && !unchanged->changed && read_bytes(stage_root / "config.yaml") == original_config,
+        "an unchanged saved rotation must preserve literal null and all original bytes");
+    const auto stale = hm::stitching::stage_saved_stitched_output_rotation(stage_root.string(), source + "stale", 5.0);
+    ok &= expect(
+        !stale.ok() && read_bytes(stage_root / "config.yaml") == original_config,
+        "a stale source cannot alter private calibration config");
+    const auto authorization = hm::stitching::authorize_live_stitched_output_rotation(stage_root.string(), 4.0, "live");
+    const std::string authorized_config = read_bytes(stage_root / "config.yaml");
+    const auto pending = hm::stitching::stage_saved_stitched_output_rotation(stage_root.string(), source, 9.25);
+    ok &= expect(
+        authorization.ok() && absl::IsFailedPrecondition(pending.status()) &&
+            read_bytes(stage_root / "config.yaml") == authorized_config,
+        "private staging must never adopt process-bound live authorization");
+    std::ofstream(stage_root / "config.yaml") << original_config;
+    std::ofstream(stage_root / "rink_mask_0.png") << "old downstream mask";
+    std::ofstream(stage_root / "s.png") << "old downstream panorama";
+    const auto staged = hm::stitching::stage_saved_stitched_output_rotation(stage_root.string(), source, 9.25);
+    staged_config = YAML::LoadFile((stage_root / "config.yaml").string());
+    const auto hugin_after = [&]() {
+      auto lock = hm::stitching::lock_canvas_constraint_artifacts(stage_root);
+      return hm::stitching::stitch_artifact_generation_id_locked(stage_root);
+    }();
+    ok &= expect(
+        staged.ok() && staged->changed && staged->source_generation == source &&
+            staged->hugin_generation == *stage_hugin && hugin_after.ok() && *hugin_after == *stage_hugin &&
+            staged_config["stitching"]["post_stitch_rotate_degrees"].as<double>() == 9.25 &&
+            !staged_config["rink"]["stitched_output_generation"].IsDefined() &&
+            !staged_config["rink"]["stitched_output_persisted_rotation_degrees"].IsDefined() &&
+            !staged_config["pipeline"]["hmstitcher"]["post-stitch-rotate-degrees"].IsDefined() &&
+            staged_config["rink"]["scoreboard"]["perspective_polygon"].IsNull() &&
+            staged_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
+            staged_config["hstream_ui"]["stitching_calibration"]["rink_mask_status"].as<std::string>() == "pending" &&
+            !fs::exists(stage_root / "rink_mask_0.png") && !fs::exists(stage_root / "s.png"),
+        "saved rotation must retain exact Hugin inputs while retiring output, mask and scoreboard state");
+    for (const char* bag : {"", "properties", "private-properties"}) {
+      const auto stitcher =
+          *bag ? staged_config["pipeline"]["hmstitcher"][bag] : staged_config["pipeline"]["hmstitcher"];
+      const auto cropper =
+          *bag ? staged_config["pipeline"]["hmplaycropper"][bag] : staged_config["pipeline"]["hmplaycropper"];
+      ok &= expect(
+          !stitcher["post-stitch-rotate-degrees"].IsDefined() && !stitcher["post_stitch_rotate_degrees"].IsDefined() &&
+              !cropper["scoreboard-perspective-polygon"].IsDefined() &&
+              !cropper["scoreboard_perspective_polygon"].IsDefined() && stitcher["unrelated-value"].as<int>() == 23,
+          "saved rotation must retire every typed/generic/private alias without removing unrelated settings");
+    }
+    std::ofstream(stage_root / "config.yaml") << original_config;
+    std::ofstream(stage_root / "hm_project.pto", std::ios::app) << "replacement";
+    const auto changed_hugin = hm::stitching::stage_saved_stitched_output_rotation(stage_root.string(), source, 9.25);
+    ok &= expect(
+        absl::IsAborted(changed_hugin.status()) && read_bytes(stage_root / "config.yaml") == original_config,
+        "saved rotation must reject changed Hugin files before publishing config");
+  }
+
   std::error_code ignored;
   fs::remove_all(root, ignored);
   fs::remove_all(recovery_root, ignored);

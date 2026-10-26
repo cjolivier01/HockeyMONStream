@@ -49,7 +49,7 @@ int main() {
       "Contradictory linked angles were admitted");
   const auto neutral = FixedEdgeRotationCommands(*mirrored, {"Link_Fixed_Edge_Rotation_Left_Right"}, true);
   Check(
-      neutral.ok() && neutral->size() == 2 && neutral->front().value == "0.0",
+      neutral.ok() && neutral->size() == 4 && neutral->front().value == "0.0",
       "Leveled nona suppression did not publish a neutral angle");
   Check(
       FixedEdgeRotationCommands(*separate, {"Stitch_Rotate_Degrees"}, false)->empty(),
@@ -61,6 +61,11 @@ int main() {
           MergeRotationControls(*legacy, {{"Left_Fixed_Edge_Rotation_Angle_x10", -100}}).ok() &&
           !MergeRotationControls(*legacy, {{"Left_Fixed_Edge_Rotation_Angle_x10", -124}}).ok(),
       "Saved negative angles did not extend only their existing Qt slider range");
+  const auto legacy_changed = MergeRotationControls(*legacy, {{"Left_Fixed_Edge_Rotation_Angle_x10", -100}});
+  Check(
+      legacy_changed.ok() &&
+          MergeRotationControls(*legacy_changed, {{"Left_Fixed_Edge_Rotation_Angle_x10", -123}}, &*legacy).ok(),
+      "An edit must not shrink the session's original saved angle range");
   config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Load("[1, 2, 3]");
   Check(!ReadRotationControls(config).ok(), "Malformed angle tuple was accepted");
   return 0;

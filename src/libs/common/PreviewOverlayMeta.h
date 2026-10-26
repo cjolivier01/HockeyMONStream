@@ -55,6 +55,11 @@ struct PlayCropperTransform {
   // Layers drawn into this Program surface only; immutable Stitched metadata
   // retains its own independent transform/handle across the tee.
   uint32_t baked_player_layers{0};
+  // Exact producer settings used for this crop. Preview operation changes
+  // alone cannot identify an older crop still in flight on another queue.
+  float fixed_edge_rotation_left{0.0F};
+  float fixed_edge_rotation_right{0.0F};
+  bool rotation_controls_valid{false};
 };
 
 // Immutable pre-playcropper metadata copied at the tracked Stitched tee. Both

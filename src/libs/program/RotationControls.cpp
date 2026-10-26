@@ -69,8 +69,10 @@ absl::StatusOr<RotationControlValues> ReadRotationControls(const YAML::Node& res
 
 absl::StatusOr<RotationControlValues> MergeRotationControls(
     const RotationControlValues& current,
-    const RotationControlValues& edits) {
-  if (!ValidRotationControls(current, true, &current) || !ValidRotationControls(edits, false, &current))
+    const RotationControlValues& edits,
+    const RotationControlValues* range_reference) {
+  const auto* ranges = range_reference ? range_reference : &current;
+  if (!ValidRotationControls(current, true, ranges) || !ValidRotationControls(edits, false, ranges))
     return absl::InvalidArgumentError("Rotation controls must use native steps within Qt bounds");
   auto result = current;
   for (const auto& [id, value] : edits)
@@ -105,12 +107,13 @@ absl::StatusOr<std::vector<RotationPropertyCommand>> FixedEdgeRotationCommands(
     for (const char* element : {"dsplaytracker0", "playcropper0"})
       result.push_back({element, property, text.str()});
   };
-  if (values.at("Link_Fixed_Edge_Rotation_Left_Right")) {
-    add("fixed-edge-rotation-angle", values.at("Left_Fixed_Edge_Rotation_Angle_x10"));
-  } else {
-    add("fixed-edge-rotation-angle-left", values.at("Left_Fixed_Edge_Rotation_Angle_x10"));
-    add("fixed-edge-rotation-angle-right", values.at("Right_Fixed_Edge_Rotation_Angle_x10"));
-  }
+  // Both sides have independent rollback snapshots. A generic property cannot
+  // represent an existing unlinked pair when a later assignment is rejected.
+  const int left = values.at("Left_Fixed_Edge_Rotation_Angle_x10");
+  const int right =
+      values.at("Link_Fixed_Edge_Rotation_Left_Right") ? left : values.at("Right_Fixed_Edge_Rotation_Angle_x10");
+  add("fixed-edge-rotation-angle-left", left);
+  add("fixed-edge-rotation-angle-right", right);
   return result;
 }
 

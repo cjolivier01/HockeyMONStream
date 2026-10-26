@@ -221,6 +221,37 @@ void ValidateLegacyCameraFiles(const std::filesystem::path& manifest) {
         "Legacy camera companions must be regular files in the staged recording directory");
 }
 
+void PublishCameraExperimentCatalog(
+    const std::filesystem::path& root,
+    const std::string& run,
+    QJsonObject metadata,
+    const std::vector<CameraExperimentCatalogView>& views,
+    std::size_t& published_views,
+    std::uint64_t& revision) {
+  require(views.size() >= 2 && views.size() <= std::numeric_limits<int>::max(), "Invalid camera view count");
+  require(published_views <= views.size(), "Camera history cannot remove published views");
+  QJsonArray catalog;
+  for (std::size_t view = 0; view < views.size(); ++view) {
+    const auto& item = views[view];
+    require(item.frames && !item.frames->empty() && item.frames->size() <= 50000, "Invalid camera trajectory size");
+    if (view >= published_views)
+      WriteObject(
+          root / ("camera-view-" + std::to_string(view) + ".json"),
+          {{"version", 2},
+           {"run", QString::fromStdString(run)},
+           {"view", int(view)},
+           {"frames", frames(*item.frames)}});
+    catalog.append(QJsonObject{{"name", QString::fromStdString(item.name)}, {"frame_count", int(item.frames->size())}});
+  }
+  metadata.insert("version", 2);
+  metadata.insert("run", QString::fromStdString(run));
+  metadata.insert("revision", QString::number(revision + 1));
+  metadata.insert("views", catalog);
+  WriteObject(root / "camera-experiment-catalog.json", metadata);
+  published_views = views.size();
+  ++revision;
+}
+
 void CommitCameraExperimentTrials(
     std::vector<replay::TrialResult>& trials,
     std::vector<replay::TrialResult> additions,
@@ -345,7 +376,7 @@ QJsonObject RunCameraExperiment(
   CameraExperimentPreviewWorker preview;
   std::vector<replay::TrialResult> trials;
   std::map<std::size_t, QJsonObject> saved_trials;
-  std::size_t view = 0;
+  std::size_t view = 0, published_views = 0;
   bool preview_open = false, finished = false;
   std::uint64_t last_request = 0, catalog_revision = 0;
   const auto selected_frames = [&]() -> std::shared_ptr<const std::vector<replay::Frame>> {
@@ -356,26 +387,22 @@ QJsonObject RunCameraExperiment(
     return std::make_shared<const std::vector<replay::Frame>>(trials.at(view - 2).frames);
   };
   const auto publish_catalog = [&] {
-    QJsonArray catalog{
-        QJsonObject{{"name", "Recorded"}, {"frames", frames(session->original())}},
-        QJsonObject{{"name", "Baseline replay"}, {"frames", frames(session->baseline())}}};
+    std::vector<CameraExperimentCatalogView> views{
+        {"Recorded", &session->original()}, {"Baseline replay", &session->baseline()}};
     for (const auto& trial : trials)
-      catalog.append(QJsonObject{{"name", QString::fromStdString(trial.name)}, {"frames", frames(trial.frames)}});
-    const QJsonObject document{
-        {"version", 1},
-        {"run", QString::fromStdString(request.run_id)},
-        {"revision", QString::number(++catalog_revision)},
-        {"canvas", QJsonArray{int(session->width()), int(session->height())}},
-        {"provenance", QString::fromStdString(session->provenance())},
-        {"views", catalog},
-        {"mask_available", bool(mask)},
-        {"source_confirmed", confirmed},
-        {"rink_available", bool(rink_map)},
-        {"rink_reason", QString::fromStdString(rink_reason)}};
-    require(
-        std::size_t(QJsonDocument(document).toJson(QJsonDocument::Compact).size()) <= kMaximumResultBytes,
-        "Camera comparison history exceeds its transport limit. Prepare a shorter range or a new experiment.");
-    WriteObject(request.root / "camera-experiment-catalog.json", document);
+      views.push_back({trial.name, &trial.frames});
+    PublishCameraExperimentCatalog(
+        request.root,
+        request.run_id,
+        {{"canvas", QJsonArray{int(session->width()), int(session->height())}},
+         {"provenance", QString::fromStdString(session->provenance())},
+         {"mask_available", bool(mask)},
+         {"source_confirmed", confirmed},
+         {"rink_available", bool(rink_map)},
+         {"rink_reason", QString::fromStdString(rink_reason)}},
+        views,
+        published_views,
+        catalog_revision);
     PublishEvent(request, {{"kind", "catalog"}, {"revision", QString::number(catalog_revision)}});
   };
   const auto seek = [&](std::size_t frame, bool playing, bool replace) {
@@ -479,7 +506,7 @@ QJsonObject RunCameraExperiment(
             require(
                 !state.playing && confirmed, "Pause the preview and confirm the video source before applying a trial");
             require(
-                trials.size() + (boolean(command, "rink_aware") ? 2 : 1) <= 128,
+                trials.size() + (boolean(command, "rink_aware") ? 2 : 1) <= std::numeric_limits<int>::max() - 2,
                 "Camera experiment history exceeds its trial limit");
             const auto parameters = tuning(command);
             const auto name = RequiredString(command, "name", 100).toStdString();

@@ -16,6 +16,7 @@
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
+#include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
@@ -243,6 +244,23 @@ QString ExportSavedCalibrationPreview(const Request& request, QJsonArray& artifa
 }
 
 QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, const std::function<bool()>& cancelled) {
+  if (request.operation == "calibration-view-rotation-stage") {
+    require(
+        request.payload.size() == 2 && request.payload.contains("source_generation") &&
+            request.payload.contains("post_stitch_rotate_degrees"),
+        "Saved rotation staging requires an exact source and rotation");
+    const auto source = RequiredString(request.payload, "source_generation", 1024 * 1024);
+    const auto rotation = request.payload.value("post_stitch_rotate_degrees");
+    require(rotation.isDouble() && std::isfinite(rotation.toDouble()), "Saved rotation must be finite");
+    require(!cancelled || !cancelled(), "Saved rotation staging cancelled");
+    const auto staged = take(
+        rink::stage_saved_stitched_output_rotation(request.game.string(), source.toStdString(), rotation.toDouble()));
+    return {
+        {"source_generation", text(staged.source_generation)},
+        {"desired_generation", text(staged.desired_generation)},
+        {"hugin_generation", text(staged.hugin_generation)},
+        {"changed", staged.changed}};
+  }
   auto source = snapshot(request);
   const auto kind = RequiredString(request.payload, "kind", 16);
   require(kind == "leveling" || kind == "crop", "Unknown saved calibration editor");

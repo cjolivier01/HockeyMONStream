@@ -141,10 +141,33 @@ cc_library(
     ":live_output_epoch",
     ":canvas_constraint_check",
     ":game_config",
+    ":transaction_state",
     "//src/libs/common:status_macros",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
+  name = "live_rotation_config_owner",
+  srcs = ["LiveRotationConfigOwner.cpp"],
+  hdrs = ["LiveRotationConfigOwner.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [":live_stitching_generation", "@com_google_absl//absl/status:status"],
+)
+
+cc_test(
+  name = "live_rotation_config_owner_test",
+  srcs = ["LiveRotationConfigOwnerTest.cpp"],
+  deps = [
+    ":live_rotation_config_owner",
+    ":canvas_constraint_check",
+    ":game_config",
+    "@opencv_linux//:opencv",
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
   ],
 )
 

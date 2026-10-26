@@ -439,6 +439,31 @@ manual crop publication and stale snapshots. Its synthetic uniform stills
 explicitly allow the native hard-seam fallback because Enblend may reject
 featureless overlap; real media still require separate seam qualification.
 
+The Highlights source description uses `highlight-archive-info` and the
+`highlight-archive-info-v1` capability. Its only browser input is a recording-owned
+archive artifact ID. The supervisor freezes its exact file identity; the native
+adapter shares the card preview's pinned read-only descriptor and bounded
+metadata-only probe (30 seconds, 1 MiB probe output). It returns measured codec,
+audio presence, frame rate, duration and dimensions, publishing only checked
+completion metadata. No video is copied, decoded or mapped to the CPU for this
+description. Active readers retain the source's cleanup exclusion until the
+supervisor retires them.
+
+`calibration-view-rotation-stage` is an internal prelaunch operation advertised
+by `calibration-view-rotation-stage-v1`. Its payload contains the private copy's
+exact `source_generation` and finite `post_stitch_rotate_degrees`. It locks the
+Hugin artifacts and config, requires a completed matching output/Hugin
+generation, and rejects every pending live authorization. It retains alignment
+and mapping bytes while writing canonical rotation and retiring the dependent
+output marker, panorama snapshot, rink masks and scoreboard geometry through
+the same recoverable transaction used by Qt Save Preset. The selected immutable
+calibration is never modified. An unchanged rotation preserves config bytes,
+including inherited null values. Its result returns `source_generation`,
+`desired_generation`, `hugin_generation` and `changed`, with final artifact
+identity receipts. `desired_generation` describes the source dimensions with
+the requested rotation; startup owns publication of the actual output geometry
+and regenerated downstream artifacts.
+
 ## Prepared model imports
 
 The browser imports account-owned Pose, Jersey, Activity, Team and Appearance

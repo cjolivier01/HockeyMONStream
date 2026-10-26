@@ -222,6 +222,22 @@ hm::ui::HighlightPlan load_plan(const Request& request, const PinnedArchive* arc
 }
 
 QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "highlight-archive-info") {
+    require(request.payload.isEmpty(), "Archive inspection accepts only its frozen probe");
+    const auto media = card_archive(request);
+    require(
+        std::isfinite(media.duration_seconds) && media.duration_seconds >= 0 &&
+            media.duration_seconds < 9007199254740.0 && std::isfinite(media.frame_rate) && media.frame_rate >= 0 &&
+            media.frame_rate <= 1000000 && !media.video_codec.isEmpty() && media.video_codec.size() <= 128,
+        "Archive information exceeds its metadata bounds");
+    return {
+        {"width", media.width},
+        {"height", media.height},
+        {"video_codec", media.video_codec},
+        {"has_audio", media.has_audio},
+        {"frame_rate", media.frame_rate},
+        {"duration_ms", static_cast<qint64>(std::llround(media.duration_seconds * 1000.0))}};
+  }
   std::optional<PinnedArchive> archive;
   if (request.runtime.contains("archive_input"))
     archive.emplace(request, "archive_input");

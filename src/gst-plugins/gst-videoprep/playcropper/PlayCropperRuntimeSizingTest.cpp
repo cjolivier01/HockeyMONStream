@@ -207,6 +207,8 @@ int main() {
     auto released = release.get_future();
     std::thread worker([&] { waiting_cropper.HoldProcessingLock(held, released); });
     held.get_future().wait();
+    auto readback = std::async(std::launch::async, [&] { return waiting_cropper.FixedEdgeRotationAngles(); });
+    const bool readback_prompt = readback.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
     auto cancel = std::async(std::launch::async, [&] {
       return waiting_cropper.SetProperty({"scoreboard-position", "upper-center"}) &&
           waiting_cropper.SetProperty({"scoreboard-reselect", "1"}) &&
@@ -216,13 +218,24 @@ int main() {
     release.set_value();
     worker.join();
     NvBufSurfaceParams params{};
-    if (!prompt || !cancel.get() ||
+    if (!readback_prompt || !readback.get().has_value() || !prompt || !cancel.get() ||
         !waiting_cropper.EnsureScoreboardConfigured(hm::surface::Surface(&params), nullptr).ok()) {
       std::cerr << "Cancelling selection must bypass the video worker lock and prevent a new selector\n";
       return 1;
     }
   }
 
+  {
+    TestPlayCropperPriv cropper(0, 1);
+    if (!cropper.SetProperty({"fixed-edge-rotation-angle", "12.75"}) ||
+        !cropper.SetProperty({"fixed-edge-rotation-angle-right", "-1.5"}) ||
+        cropper.FixedEdgeRotationAngles() != std::make_optional(std::make_pair(12.75F, -1.5F)) ||
+        cropper.SetProperty({"fixed-edge-rotation-angle-left", "nan"}) ||
+        cropper.FixedEdgeRotationAngles() != std::make_optional(std::make_pair(12.75F, -1.5F))) {
+      std::cerr << "Fixed-edge readback must retain exact active generic/side settings after rejection\n";
+      return 1;
+    }
+  }
   const hm::BBox left_tracking_box(100, 50, 300, 250);
   const hm::playcropper::FrameTransformGeometry no_crop_transform = hm::playcropper::CalculateFrameTransformGeometry(
       /*input_width=*/1000,

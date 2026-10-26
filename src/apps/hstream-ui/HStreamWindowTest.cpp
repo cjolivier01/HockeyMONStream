@@ -4265,6 +4265,24 @@ bool test_preview_remap_geometry(HStreamWindow* window) {
   return true;
 }
 
+bool expect_application_identity(HStreamWindow* window) {
+  const QPixmap application_icon = window->windowIcon().pixmap(256, 256);
+  const QImage application_icon_image = application_icon.toImage().convertToFormat(QImage::Format_ARGB32);
+  if (!expect(
+          QCoreApplication::applicationName() == "hstream-ui" &&
+              QGuiApplication::applicationDisplayName() == "HStream" &&
+              QGuiApplication::desktopFileName() == "hstream-ui" && !window->windowIcon().isNull() &&
+              !application_icon.isNull() &&
+              application_icon.size() / application_icon.devicePixelRatio() == QSize(256, 256) &&
+              qAlpha(application_icon_image.pixel(0, 0)) == 0 &&
+              qAlpha(application_icon_image.pixel(
+                  application_icon_image.width() / 2, application_icon_image.height() / 2)) == 255,
+          "HStream should expose matching desktop identity and a scalable application icon with transparent corners")) {
+    return false;
+  }
+  return true;
+}
+
 bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
@@ -4401,17 +4419,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
 
-  const QPixmap application_icon = window->windowIcon().pixmap(256, 256);
-  const QImage application_icon_image = application_icon.toImage().convertToFormat(QImage::Format_ARGB32);
-  if (!expect(
-          QCoreApplication::applicationName() == "hstream-ui" &&
-              QGuiApplication::applicationDisplayName() == "HStream" &&
-              QGuiApplication::desktopFileName() == "hstream-ui" && !window->windowIcon().isNull() &&
-              !application_icon.isNull() && application_icon.size() == QSize(256, 256) &&
-              qAlpha(application_icon_image.pixel(0, 0)) == 0 && qAlpha(application_icon_image.pixel(128, 128)) == 255,
-          "HStream should expose matching desktop identity and a scalable application icon with transparent corners")) {
+  if (!expect_application_identity(window))
     return false;
-  }
   if (!expect_x11_application_icon(window))
     return false;
   if (!expect(
@@ -4426,7 +4435,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const QString icon_artifact_dir = qEnvironmentVariable("HSTREAM_UI_X11_ARTIFACT_DIR");
   if (!icon_artifact_dir.isEmpty() &&
       (!QDir().mkpath(icon_artifact_dir) ||
-       !application_icon.save(QDir(icon_artifact_dir).filePath("hstream-app-icon.png")))) {
+       !window->windowIcon().pixmap(256, 256).save(QDir(icon_artifact_dir).filePath("hstream-app-icon.png")))) {
     return expect(false, "Could not save the HStream application-icon test artifact");
   }
 
@@ -13740,16 +13749,16 @@ bool test_camera_controls(HStreamWindow* window) {
   fixed_edge_link->setChecked(true);
   fixed_edge_left->setValue(300);
   for (int i = 0; i < 50 &&
-       (!window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle=30.0") ||
-        !window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle=30.0"));
+       (!window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-left=30.0") ||
+        !window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle-left=30.0"));
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(fixed_edge_right->value() == 300, "Linked fixed-edge control should update both sides") ||
       !expect(
-          window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle=30.0") &&
-              window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle=30.0"),
+          window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-left=30.0") &&
+              window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle-left=30.0"),
           "Linked fixed-edge control should update tracker and cropper live")) {
     std::cerr << window->logText().toStdString() << '\n';
     activate(stop);
@@ -19095,6 +19104,8 @@ int main(int argc, char** argv) {
     window.resize(1600, 1000);
     window.show();
     QGuiApplication::sync();
+    if (!expect_application_identity(&window))
+      return 1;
     int count = 0;
     for (auto* tabs : window.findChildren<QTabWidget*>()) {
       for (int index = 0; index < tabs->count(); ++index) {

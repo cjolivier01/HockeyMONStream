@@ -247,9 +247,26 @@ start a replay until **Prepare historical start** is clicked.
 Browser **Screenshot** captures the dialog controls, timeline, and one frozen
 displayed frame into a PNG. This explicit action performs one browser video
 readback, bounded to 16 megapixels; ordinary preview still uses hardware WebRTC.
-The browser comparison catalog is bounded to 32 MiB. A trial that exceeds that
-bound is rejected while retaining the preceding views and preview; start a new
-experiment or shorten the range before adding further comparisons.
+The browser publishes each trajectory separately and fetches only Recorded plus
+the selected view. Adding trials does not reserialize their earlier frames or
+consume a cumulative 32 MiB trajectory budget. There is no separate 128-trial cap.
+Each trajectory still has a 50,000-sample/32 MiB transport bound, and the compact
+view-name catalog has a 32 MiB bound. These are browser resource limits, not full
+long-range equivalence with Qt. A failed publication retains the prior catalog
+and selectable views; retry replaces any unpublished files before committing.
+
+Camera preview loads `libnvdsgst_videoprep.so` from its executable's Bazel
+runfiles or installed bundle before accepting cached GStreamer factories. The
+preview library carries that data dependency into `hstream-web-job`; a copied
+executable must retain its adjacent runfiles. Loader checks compare both
+`videoprep` and `playcropper` factory provenance with the selected plugin.
+
+When an archive has a lower frame rate than the recording, Repeat and end pause
+use the actual last decoded image after its presentation receipt. They do not
+invent a receipt for a telemetry-only sample. An explicit seek still requires
+its selected timestamp and reports an error within the existing seek deadline
+when no matching image is available. GPU comparison of this boundary handling
+remains required; matching control data alone does not qualify it.
 
 ## Implementation and validation
 

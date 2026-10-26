@@ -3,12 +3,32 @@
 #include <optional>
 #include <string>
 
+#include <yaml-cpp/yaml.h>
+
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 
 namespace hm::stitching {
 
 struct LiveOutputEpoch;
+
+// Shared by preset saving and private web-run staging. Hugin alignment and maps
+// remain reusable; output pixels, masks and scoreboard geometry must regenerate.
+int invalidate_rotation_dependent_artifacts(YAML::Node& config);
+
+struct SavedRotationStage {
+  std::string source_generation;
+  std::string desired_generation;
+  std::string hugin_generation;
+  bool changed{false};
+};
+
+// Operates only on a caller-owned private game copy. Never adopts a process-bound
+// live authorization. Validates the exact completed generation before writing.
+absl::StatusOr<SavedRotationStage> stage_saved_stitched_output_rotation(
+    const std::string& game_dir,
+    const std::string& source_generation,
+    double post_stitch_rotate_degrees);
 
 // Validate a foreign runtime request against the exact loaded calibration and
 // the UI-owned pending authorization without committing it before backend ack.

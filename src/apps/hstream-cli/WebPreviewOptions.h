@@ -103,7 +103,8 @@ std::string WebRotationControlsReply(
     const std::string& status,
     const std::string& reason,
     const std::optional<hm::program::RotationControlValues>& controls,
-    std::optional<uint64_t> operation = std::nullopt);
+    std::optional<uint64_t> operation = std::nullopt,
+    bool fixed_edge_suppressed = false);
 
 struct WebScoreboardRequest {
   RouteOwner::Session session;

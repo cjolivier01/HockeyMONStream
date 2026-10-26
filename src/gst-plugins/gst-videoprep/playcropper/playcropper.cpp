@@ -310,6 +310,16 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
   return 0;
 }
 
+std::optional<std::pair<float, float>> PlayCropperPriv::FixedEdgeRotationAngles() {
+  std::lock_guard<std::mutex> lock(rotation_readback_mutex_);
+  return rotation_readback_;
+}
+
+void PlayCropperPriv::UpdateRotationReadback() {
+  std::lock_guard<std::mutex> lock(rotation_readback_mutex_);
+  rotation_readback_ = {fixed_edge_rotation_angle_left_, fixed_edge_rotation_angle_right_};
+}
+
 bool PlayCropperPriv::SetProperty(const Property& prop) {
   // These requests may arrive while the video worker is waiting in the selector.
   if (prop.key == "scoreboard-position") {
@@ -399,14 +409,17 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     }
     fixed_edge_rotation_angle_left_ = angle;
     fixed_edge_rotation_angle_right_ = angle;
+    UpdateRotationReadback();
   } else if (key == "fixed-edge-rotation-angle-left") {
     if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_left_)) {
       return false;
     }
+    UpdateRotationReadback();
   } else if (key == "fixed-edge-rotation-angle-right") {
     if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_right_)) {
       return false;
     }
+    UpdateRotationReadback();
   } else if (key == "shadow-lift") {
     float shadow_lift_percent = 0.0f;
     if (!parse_finite_float(prop.value, &shadow_lift_percent) || shadow_lift_percent < 0.0f ||
@@ -716,6 +729,12 @@ absl::Status PlayCropperPriv::GenerateOutput(
         static_cast<float>(output_height),
         transform.angle,
         transform_object_meta_};
+    // GenerateOutput and SetProperty hold the same process lock. Retain the
+    // settings that produced this exact transform, rather than reading a newer
+    // control selection from the preview's encoder thread.
+    preview_transform.fixed_edge_rotation_left = fixed_edge_rotation_angle_left_;
+    preview_transform.fixed_edge_rotation_right = fixed_edge_rotation_angle_right_;
+    preview_transform.rotation_controls_valid = true;
 
     // Check if we can use our optimized path
     NvBufSurfaceColorFormat color_format = incoming_surface->colorFormat;

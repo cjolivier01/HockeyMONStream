@@ -8,7 +8,7 @@ HSTREAM_CLI_SRCS = glob(
         "*.cpp",
         "*.h",
     ],
-    exclude = ["*Test.cpp", "PlayerModelCache.cpp", "AmdPipelineApp.cpp", "AmdPipelineOptions.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h"],
+    exclude = ["*Test.cpp", "PlayerModelCache.cpp", "AmdPipelineApp.cpp", "AmdPipelineOptions.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h", "WebRotationTransaction.cpp", "WebRotationTransaction.h"],
 )
 
 HSTREAM_CLI_COPTS = [
@@ -33,8 +33,11 @@ HSTREAM_CLI_RUNTIME_DATA = [
 
 HSTREAM_CLI_DEPS = [
     ":web_preview_options",
+    ":web_rotation_transaction",
     "//src/libs/tracking:playtracker_runtime_controls",
     "//src/apps/apps-common:web_preview_target",
+    "//src/apps/apps-common:rotation_frame_fence",
+    "//src/libs/stitching:stitched_output_generation_meta",
     "//src/apps/apps-common:preview_overlay_painter",
     "//src/apps/apps-common:preview_overlay_scene",
     "//src/libs/program:preview_overlay_config",
@@ -92,6 +95,29 @@ HSTREAM_CLI_DEPS = [
     "@com_google_absl//absl/status:statusor",
     "@com_google_absl//absl/cleanup",
 ]
+
+cc_library(
+    name = "web_rotation_transaction",
+    srcs = ["WebRotationTransaction.cpp"],
+    hdrs = ["WebRotationTransaction.h"],
+    deps = [
+        ":web_preview_options",
+        "//src/libs/program:rotation_controls",
+        "//src/libs/stitching:live_rotation_config_owner",
+    ],
+)
+
+cc_test(
+    name = "web_rotation_transaction_test",
+    srcs = ["WebRotationTransactionTest.cpp"],
+    deps = [
+        ":web_rotation_transaction",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "@opencv_linux//:opencv",
+        "@yaml-cpp",
+    ],
+)
 
 cc_library(
     name = "web_preview_options",

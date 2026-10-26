@@ -385,6 +385,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
+    data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
     deps = [
         "//src/apps/apps-common:rink_mask_image",
         "//src/libs/common:preview_overlay_meta",
@@ -856,6 +857,7 @@ cc_library(
         "//src/libs/stitching:rink_mask_frame_time",
         "//src/libs/stitching:live_output_epoch",
         "//src/libs/stitching:live_stitching_generation",
+        "//src/libs/stitching:live_rotation_config_owner",
         "//src/libs/stitching:stitching_algorithms",
         "//src/libs/stitching:stitching_reframe",
         "@qt//:qt_widgets",
@@ -891,6 +893,14 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":action_icons", "//src/libs/stitching:playback_rink_map", "@qt//:qt_widgets", "@qt//:qt_test", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "camera_experiment_plugin_test",
+    srcs = ["CameraExperimentPluginTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":camera_experiment_preview", "@gstreamer", "@qt//:qt_core"],
 )
 
 cc_test(
@@ -1354,6 +1364,7 @@ cc_binary(
         "//src/libs/stitching:auto_input_lens",
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:game_config",
+        "//src/libs/stitching:live_stitching_generation",
         "//src/libs/stitching:rink_leveling",
         "//src/libs/stitching:hugin_project",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
@@ -1398,7 +1409,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":web_job_spec", "//src/libs/common:baseline_config", "//src/libs/stitching:game_config", "@qt//:qt_gui"],
+    deps = [":web_job_spec", "//src/libs/common:baseline_config", "//src/libs/stitching:canvas_constraint_check", "//src/libs/stitching:game_config", "@qt//:qt_gui"],
 )
 
 cc_test(
@@ -1449,7 +1460,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":rink_map_dialog", ":rink_leveling_dialog", ":scoreboard_selection_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
+    deps = [":action_icons", ":rink_map_dialog", ":rink_leveling_dialog", ":scoreboard_selection_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
 )
 
 cc_binary(

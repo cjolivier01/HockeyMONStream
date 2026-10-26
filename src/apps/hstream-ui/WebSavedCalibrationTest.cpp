@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
 namespace fs = std::filesystem;
@@ -233,6 +234,32 @@ int main(int argc, char** argv) {
     expect(
         final.value("saved").toBool() && final.value("calibration_complete").toBool(),
         "Crop save must publish a new view");
+    const auto hugin = [&]() {
+      auto lock = value(lock_canvas_constraint_artifacts(game));
+      return value(stitch_artifact_generation_id_locked(game));
+    }();
+    const std::string output = "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin.size()) + "\n" +
+        hugin + "post-stitch-rotate-degrees:0\noutput-size:64x32\n";
+    auto output_config = YAML::LoadFile((game / "config.yaml").string());
+    output_config["rink"]["stitched_output_generation"] = output;
+    output_config["rink"]["stitched_output_persisted_rotation_degrees"] = 0.0;
+    write(game / "config.yaml", YAML::Dump(output_config));
+    const auto rotation = invoke(
+        argv[1],
+        root,
+        "calibration-view-rotation-stage",
+        {{"source_generation", QString::fromStdString(output)}, {"post_stitch_rotate_degrees", 7.0}});
+    expect(
+        rotation.value("changed").toBool() && rotation.value("hugin_generation").toString().toStdString() == hugin &&
+            YAML::LoadFile((game / "config.yaml").string())["stitching"]["post_stitch_rotate_degrees"].as<double>() ==
+                7.0,
+        "Private rotation staging must preserve exact Hugin input and publish checked artifact receipts");
+    invoke(
+        argv[1],
+        root,
+        "calibration-view-rotation-stage",
+        {{"source_generation", QString::fromStdString(output)}, {"post_stitch_rotate_degrees", 8.0}},
+        false);
     std::cout << "Saved calibration real-Hugin tests passed\n";
     return 0;
   } catch (const std::exception& error) {

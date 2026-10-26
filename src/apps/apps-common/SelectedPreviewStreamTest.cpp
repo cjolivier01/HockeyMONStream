@@ -3,6 +3,7 @@
 #include <gst/video/video.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <future>
@@ -344,8 +345,59 @@ bool source_pool_lifetime() {
 }
 } // namespace
 
+bool test_admission_operation_fence() {
+  Fixture fixture;
+  fixture.headers(0, 2);
+  if (!hm::preview::selected_stream_select(fixture.stream, fixture.routes[0], 1))
+    return false;
+  std::atomic<GstClockTime> desired{1};
+  std::mutex mutex;
+  std::condition_variable ready;
+  bool inspected = false, release = false;
+  hm::preview::selected_stream_set_frame_admission(fixture.stream, [&](const char* channel, GstBuffer* frame) {
+    const bool accepted = std::string(channel) == "program" && GST_BUFFER_PTS(frame) == desired.load();
+    if (!inspected) {
+      std::unique_lock<std::mutex> lock(mutex);
+      inspected = true;
+      ready.notify_all();
+      ready.wait(lock, [&]() { return release; });
+    }
+    return accepted;
+  });
+  auto first = std::async(std::launch::async, [&]() { return fixture.push(0, 1); });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    if (!ready.wait_for(lock, std::chrono::seconds(1), [&]() { return inspected; })) {
+      release = true;
+      ready.notify_all();
+      return expect(false, "Admission callback must inspect the first frame");
+    }
+  }
+  desired.store(2);
+  auto rearm = std::async(
+      std::launch::async, [&]() { return hm::preview::selected_stream_select(fixture.stream, fixture.routes[0], 2); });
+  const bool serialized = rearm.wait_for(std::chrono::milliseconds(30)) == std::future_status::timeout;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release = true;
+    ready.notify_all();
+  }
+  const bool completed = first.get() == GST_FLOW_OK && rearm.get();
+  const bool old_operation = fixture.frames.size() == 1 && hm::preview::frame_identity(fixture.frames[0]) &&
+      hm::preview::frame_identity(fixture.frames[0])->operation == 1;
+  const bool stale_dropped = fixture.push(0, 1) == GST_FLOW_OK && fixture.frames.size() == 1;
+  const bool current_admitted = fixture.push(0, 2) == GST_FLOW_OK && fixture.frames.size() == 2 &&
+      hm::preview::frame_identity(fixture.frames[1])->operation == 2 &&
+      hm::preview::frame_identity(fixture.frames[1])->sequence == 2;
+  return expect(
+      serialized && completed && old_operation && stale_dropped && current_admitted,
+      "Admission and operation assignment must serialize; stale frames must drop without consuming identity");
+}
+
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
+  if (!test_admission_operation_fence())
+    return 1;
   return switching_and_memory() && inactive_eos_and_output_eof() && replacement_and_failure() && source_pool_lifetime()
       ? 0
       : 1;

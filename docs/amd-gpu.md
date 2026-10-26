@@ -302,7 +302,7 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 
 | Boundary | Current implementation | Remaining AMD work |
 | --- | --- | --- |
-| Decode and encode | VA H.264/HEVC stereo readers and HEVC/MP4 output in the ROCm CLI | Additional application sink modes |
+| Decode and encode | VA H.264/HEVC stereo readers and HEVC/MP4 output in the ROCm CLI | Additional application sink modes, including RTMP/RTSP network output and its configured branch dimensions |
 | Allocation and pairing | Bounded VA DMA-BUF pools, HIP imports and exact stereo clock | Broader codec/device qualification |
 | Stitching | Saved calibration with HIP `hm-cupano` and shared conversion | Automatic calibration, rotated generations and live controls |
 | Model execution | Native MIGraphX inference in the ROCm CLI | Broader numerical qualification and optional analytics |

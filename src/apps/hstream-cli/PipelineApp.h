@@ -40,6 +40,7 @@
 #include "PreviewOverlayRuntime.h"
 #include "TerminalProgressUi.h"
 #include "WebPreviewSession.h"
+#include "WebRotationTransaction.h"
 #include "configurator.h"
 #include "deepstream_app.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
@@ -337,6 +338,13 @@ class PipelineApplication {
   std::optional<guint> player_drawing_layers_;
   std::optional<hm::tracking::CameraControlValues> web_camera_defaults_, web_camera_controls_;
   YAML::Node web_camera_base_;
+  std::unique_ptr<hm::preview::WebRotationTransaction> web_rotation_;
+  absl::Status initialize_web_rotation_controls();
+  std::string web_rotation_block_reason(const hm::preview::RouteOwner::Session& session, bool mutation) const;
+  absl::StatusOr<uint64_t> apply_web_rotation_controls(
+      const hm::program::RotationControlValues& controls,
+      const std::set<std::string>& changed,
+      const std::optional<hm::preview::WebRotationTransaction::Authorization>& authorization);
 
   guint64 player_drawing_generation_{0};
   bool rink_map_preview_requested_{false};
@@ -379,6 +387,7 @@ class PipelineApplication {
   std::map<long, std::map<int, hm::PlaybackProgressMetrics>> ui_progress_by_stage_;
   uint64_t playback_progress_generation_{0};
   uint64_t process_pause_generation_{0};
+  bool process_pause_active_{false};
   std::unique_ptr<hm::TerminalProgressUi> progress_ui_;
   std::mutex playback_timing_mu_;
   std::chrono::steady_clock::time_point timed_run_last_progress_wall_;

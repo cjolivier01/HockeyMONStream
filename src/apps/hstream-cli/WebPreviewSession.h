@@ -3,6 +3,7 @@
 #include "WebPreviewOptions.h"
 #include "deepstream_app.h"
 #include "hstream/src/apps/apps-common/PreviewRouteGraph.h"
+#include "hstream/src/apps/apps-common/RotationFrameFence.h"
 #include "hstream/src/apps/apps-common/WebPreviewTarget.h"
 
 #include <memory>
@@ -29,12 +30,18 @@ class WebPreviewSession {
   void Stop();
   std::string Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays, bool seek) const;
   void SetPlayerDrawingLayers(unsigned layers);
+  // A newer route operation is published only after native metadata admission
+  // requires the exact rotation/crop that produced its pixels.
+  absl::StatusOr<uint64_t> RearmRotation(RotationFrameFence fence);
   std::string Command(const RouteOwner::Request& request);
   std::string MutationBlockReason() const;
   const RouteOwner::Session& identity() const {
     return routes_.session();
   }
   std::string selection() const;
+  uint64_t operation() const {
+    return routes_.operation_generation();
+  }
   bool available() const {
     return !stopped_ && !channels_.empty();
   }

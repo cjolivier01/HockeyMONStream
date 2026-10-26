@@ -4615,21 +4615,7 @@ struct ArtifactInvalidationResult {
 };
 
 ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& config) {
-  ArtifactInvalidationResult result;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_generation"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_generation"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_authorization_id"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_owner_process"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_generation"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_authorization_id"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_owner_process"}) ? 1 : 0;
-  result.invalidated += invalidate_scoreboard_geometry(config) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "mask_frame"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
-  return result;
+  return {hm::stitching::invalidate_rotation_dependent_artifacts(config)};
 }
 
 double ratio_x100(int value) {
@@ -5316,6 +5302,15 @@ HStreamWindow::~HStreamWindow() {
   // child widgets lose their lifetime. Descendant dialogs own their processes.
   for (QProcess* process : findChildren<QProcess*>(QString(), Qt::FindDirectChildrenOnly))
     disconnect(process, nullptr, this, nullptr);
+  if (live_rotation_config_owner_) {
+    if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
+      pipeline_process_->kill();
+      pipeline_process_->waitForFinished(-1);
+    }
+    const auto status = live_rotation_config_owner_->Shutdown();
+    if (!status.ok())
+      qWarning("live rotation cleanup failed: %s", status.ToString().c_str());
+  }
   if (telemetry_publication_worker_)
     telemetry_publication_worker_->wait();
   finishArchiveJobLog();
@@ -22494,14 +22489,14 @@ void HStreamWindow::resolveLiveRotationRuntimeBatch(quint64 batch_id) {
     return;
   }
 
-  auto result = std::make_shared<absl::Status>();
-  enqueueLiveRotationConfigTask(
-      [authorization, result]() {
-        *result = hm::stitching::commit_live_stitched_output_rotation(
-            authorization.game_dir, authorization.pending_generation, authorization.authorization_id);
-      },
-      [this, batch_id, authorization, result]() {
-        if (result->ok()) {
+  liveRotationConfigOwner().Commit(
+      {authorization.game_dir,
+       {authorization.pending_generation,
+        authorization.authorization_id,
+        authorization.invalidate_scoreboard,
+        authorization.scoreboard_property_value.toStdString()}},
+      [this, batch_id, authorization](hm::stitching::LiveRotationConfigOwner::Result result) {
+        if (result.status.ok()) {
           if (!authorization.invalidate_scoreboard && active_live_rotation_authorization_.has_value() &&
               active_live_rotation_authorization_->authorization_id == authorization.authorization_id) {
             active_live_rotation_authorization_.reset();
@@ -22511,7 +22506,7 @@ void HStreamWindow::resolveLiveRotationRuntimeBatch(quint64 batch_id) {
         }
         finishRuntimeControlBatch(batch_id, true, "authorization-finalization");
         appendLog(QString("live rotation finalization failed; stopping pipeline for reconciliation: %1")
-                      .arg(QString::fromStdString(result->ToString())));
+                      .arg(QString::fromStdString(result.status.ToString())));
         stopPipeline();
       });
 }
@@ -22791,81 +22786,65 @@ bool HStreamWindow::publishRotationRuntimeControls(
       publishRuntimeControlBatch({controls.begin(), controls.end()}, commands, live_rotation_authorization);
 }
 
-void HStreamWindow::enqueueLiveRotationConfigTask(std::function<void()> work, std::function<void()> complete) {
-  live_rotation_config_tasks_.push_back({std::move(work), std::move(complete)});
+hm::stitching::LiveRotationConfigOwner& HStreamWindow::liveRotationConfigOwner() {
+  if (!live_rotation_config_owner_) {
+    live_rotation_config_owner_ = std::make_unique<hm::stitching::LiveRotationConfigOwner>([this]() {
+      QMetaObject::invokeMethod(this, [this]() { pollLiveRotationConfigOwner(); }, Qt::QueuedConnection);
+    });
+  }
   live_rotation_authorization_pending_ = true;
   updateRunControls();
-  startNextLiveRotationConfigTask();
+  return *live_rotation_config_owner_;
 }
 
-void HStreamWindow::startNextLiveRotationConfigTask() {
-  if (live_rotation_authorization_worker_ || live_rotation_config_tasks_.empty())
+void HStreamWindow::pollLiveRotationConfigOwner() {
+  if (!live_rotation_config_owner_)
     return;
-  LiveRotationConfigTask task = std::move(live_rotation_config_tasks_.front());
-  live_rotation_config_tasks_.pop_front();
-  QThread* worker = QThread::create(std::move(task.work));
-  live_rotation_authorization_worker_ = worker;
-  connect(worker, &QThread::finished, this, [this, complete = std::move(task.complete)]() mutable {
-    live_rotation_authorization_worker_ = nullptr;
-    if (complete)
-      complete();
-    startNextLiveRotationConfigTask();
-    if (!live_rotation_authorization_worker_ && live_rotation_config_tasks_.empty()) {
-      live_rotation_authorization_pending_ = false;
-      updateRunControls();
-      flushScheduledRuntimeControls();
-      if (close_waiting_for_live_rotation_authorization_) {
-        close_waiting_for_live_rotation_authorization_ = false;
-        deferred_restart_requested_ = false;
-        calibration_restart_requested_ = false;
-        QTimer::singleShot(0, this, &QWidget::close);
-      } else {
-        maybeStartDeferredRestart();
-      }
-    }
-  });
-  connect(worker, &QThread::finished, worker, &QObject::deleteLater);
-  worker->start();
+  live_rotation_config_owner_->Poll();
+  if (live_rotation_config_owner_->pending())
+    return;
+  live_rotation_authorization_pending_ = false;
+  updateRunControls();
+  flushScheduledRuntimeControls();
+  if (close_waiting_for_live_rotation_authorization_) {
+    close_waiting_for_live_rotation_authorization_ = false;
+    deferred_restart_requested_ = false;
+    calibration_restart_requested_ = false;
+    QTimer::singleShot(0, this, &QWidget::close);
+  } else {
+    maybeStartDeferredRestart();
+  }
 }
 
 void HStreamWindow::rollbackLiveRotationAuthorization(
     const LiveRotationAuthorization& authorization,
     const QString& reason,
     std::function<void(bool, const std::optional<LiveRotationAuthorization>&, const QString&)> complete) {
-  struct Result {
-    bool ok{false};
-    std::optional<hm::stitching::LiveStitchedOutputAuthorization> restored;
-    QString error;
-  };
-  auto result = std::make_shared<Result>();
-  enqueueLiveRotationConfigTask(
-      [authorization, result]() {
-        const auto rollback = hm::stitching::rollback_live_stitched_output_rotation(
-            authorization.game_dir, authorization.pending_generation, authorization.authorization_id);
-        result->ok = rollback.ok();
-        if (rollback.ok()) {
-          result->restored = *rollback;
-        } else {
-          result->error = QString::fromStdString(rollback.status().ToString());
-        }
-      },
-      [this, authorization, reason, result, complete = std::move(complete)]() mutable {
+  liveRotationConfigOwner().Rollback(
+      {authorization.game_dir,
+       {authorization.pending_generation,
+        authorization.authorization_id,
+        authorization.invalidate_scoreboard,
+        authorization.scoreboard_property_value.toStdString()}},
+      [this, authorization, reason, complete = std::move(complete)](
+          hm::stitching::LiveRotationConfigOwner::Result result) mutable {
         std::optional<LiveRotationAuthorization> restored;
-        if (result->restored.has_value()) {
+        if (result.status.ok() && result.authorization.has_value()) {
+          const auto& value = result.authorization->value;
           restored = LiveRotationAuthorization{
               authorization.game_id,
               authorization.game_dir,
-              result->restored->pending_generation,
-              result->restored->authorization_id,
-              result->restored->invalidate_scoreboard,
-              QString::fromStdString(result->restored->scoreboard_property_value)};
+              value.pending_generation,
+              value.authorization_id,
+              value.invalidate_scoreboard,
+              QString::fromStdString(value.scoreboard_property_value)};
         }
-        if (!result->ok) {
-          appendLog(
-              QString("could not roll back abandoned live rotation authorization (%1): %2").arg(reason, result->error));
+        const QString error = result.status.ok() ? QString() : QString::fromStdString(result.status.ToString());
+        if (!result.status.ok()) {
+          appendLog(QString("could not roll back abandoned live rotation authorization (%1): %2").arg(reason, error));
         }
         if (complete)
-          complete(result->ok, restored, result->error);
+          complete(result.status.ok(), restored, error);
       });
 }
 
@@ -22898,42 +22877,32 @@ void HStreamWindow::rollbackActiveLiveRotationAuthorization(const QString& reaso
 }
 
 void HStreamWindow::startLiveRotationAuthorization(std::map<QString, int> controls, int rotation) {
-  struct Result {
-    bool authorized{false};
-    hm::stitching::LiveStitchedOutputAuthorization authorization;
-    QString error;
-  };
   const quint64 generation = scheduled_rotation_control_generation_;
   const quint64 pipeline_run_generation = pipeline_run_generation_;
   const QString game_id = active_run_game_id_;
   const std::string game_dir = gameDirectory(game_id).toStdString();
   const std::string authorization_id = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-  auto result = std::make_shared<Result>();
-  enqueueLiveRotationConfigTask(
-      [game_dir, rotation, authorization_id, result]() {
-        const auto authorization =
-            hm::stitching::authorize_live_stitched_output_rotation(game_dir, rotation, authorization_id);
-        result->authorized = authorization.ok();
-        if (authorization.ok()) {
-          result->authorization = *authorization;
-        } else {
-          result->error = QString::fromStdString(authorization.status().ToString());
-        }
-      },
-      [this, controls, generation, pipeline_run_generation, game_id, game_dir, rotation, result]() mutable {
+  liveRotationConfigOwner().Authorize(
+      game_dir,
+      rotation,
+      authorization_id,
+      [this, controls, generation, pipeline_run_generation, game_id, game_dir, rotation](
+          hm::stitching::LiveRotationConfigOwner::Result result) mutable {
+        const auto authorization = result.authorization.has_value() ? result.authorization->value
+                                                                    : hm::stitching::LiveStitchedOutputAuthorization{};
         completeLiveRotationAuthorization(
             std::move(controls),
             generation,
             pipeline_run_generation,
             game_id,
             rotation,
-            result->authorized,
-            result->authorization.pending_generation,
-            result->authorization.authorization_id,
-            result->authorization.invalidate_scoreboard,
-            QString::fromStdString(result->authorization.scoreboard_property_value),
+            result.status.ok(),
+            authorization.pending_generation,
+            authorization.authorization_id,
+            authorization.invalidate_scoreboard,
+            QString::fromStdString(authorization.scoreboard_property_value),
             game_dir,
-            result->error);
+            result.status.ok() ? QString() : QString::fromStdString(result.status.ToString()));
       });
 }
 

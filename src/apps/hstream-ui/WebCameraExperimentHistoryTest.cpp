@@ -56,6 +56,42 @@ int main() {
     });
     if (trials.size() != 3 || ReadObject(catalog).value("views").toArray().size() != 3)
       throw std::runtime_error("A rejected publication prevented the next valid comparison");
+    const auto paged = catalog.parent_path() / "paged";
+    std::filesystem::create_directory(paged);
+    std::vector<hm::playtracker_replay::Frame> trajectory(50000);
+    std::vector<CameraExperimentCatalogView> views(5, {"Comparison", &trajectory});
+    std::size_t published = 0;
+    std::uint64_t revision = 0;
+    PublishCameraExperimentCatalog(paged, "run", {}, views, published, revision);
+    std::uintmax_t total = 0;
+    for (int view = 0; view < 5; ++view)
+      total += std::filesystem::file_size(paged / ("camera-view-" + std::to_string(view) + ".json"));
+    if (total <= kMaximumResultBytes || published != 5 || revision != 1)
+      throw std::runtime_error("Separate trajectories retained the cumulative catalog size limit");
+    const auto first_time = std::filesystem::last_write_time(paged / "camera-view-0.json");
+    std::vector<hm::playtracker_replay::Frame> small(1);
+    views.resize(142, {"Small comparison", &small});
+    PublishCameraExperimentCatalog(paged, "run", {}, views, published, revision);
+    const auto paged_catalog = ReadObject(paged / "camera-experiment-catalog.json");
+    if (published != 142 || revision != 2 || paged_catalog.value("views").toArray().size() != 142 ||
+        std::filesystem::last_write_time(paged / "camera-view-0.json") != first_time)
+      throw std::runtime_error("Appending trial 140 rewrote an immutable view or lost history");
+    views.push_back({"Rejected comparison", &small});
+    bool failed_catalog = false;
+    try {
+      PublishCameraExperimentCatalog(
+          paged, "run", {{"oversize", QString(kMaximumResultBytes, QChar('x'))}}, views, published, revision);
+    } catch (const std::exception&) {
+      failed_catalog = true;
+    }
+    if (!failed_catalog || published != 142 || revision != 2 ||
+        ReadObject(paged / "camera-experiment-catalog.json") != paged_catalog)
+      throw std::runtime_error("Failed publication changed the catalog revision or committed view count");
+    small.front().sample_id = 123;
+    PublishCameraExperimentCatalog(paged, "run", {}, views, published, revision);
+    const auto retried = ReadObject(paged / "camera-view-142.json").value("frames").toArray();
+    if (published != 143 || revision != 3 || retried.at(0).toObject().value("sample").toString() != "123")
+      throw std::runtime_error("Retry retained an uncommitted trajectory from the failed batch");
     std::cout << "Camera comparison catalog rollback and retry passed\n";
     return 0;
   } catch (const std::exception& error) {

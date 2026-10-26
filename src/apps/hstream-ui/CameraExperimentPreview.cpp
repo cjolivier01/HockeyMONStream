@@ -6,6 +6,7 @@
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 
 #include <gst/gst.h>
 #include <gstnvdsmeta.h>
@@ -36,28 +37,54 @@ GstCaps* rgba_caps() {
   return caps;
 }
 
-void load_cropper_plugin() {
-  GstElementFactory* existing = gst_element_factory_find("playcropper");
-  if (existing) {
-    gst_object_unref(existing);
-    return;
-  }
-  const QDir app(QCoreApplication::applicationDirPath());
-  const QStringList candidates{
-      app.filePath("../../gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"),
-      app.filePath("../lib/gst-plugins/libnvdsgst_videoprep.so"),
-      app.filePath("lib/gst-plugins/libnvdsgst_videoprep.so"),
-      "/opt/hstream/lib/gst-plugins/libnvdsgst_videoprep.so"};
-  for (const QString& path : candidates) {
-    GstPlugin* plugin = gst_plugin_load_file(path.toLocal8Bit().constData(), nullptr);
-    if (plugin) {
-      gst_object_unref(plugin);
-      return;
-    }
-  }
-}
-
 } // namespace
+
+bool LoadCameraExperimentPlugin(std::string* error) {
+  const QDir app(QCoreApplication::applicationDirPath());
+  const QString relative = "kstream/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so";
+  QStringList candidates{QDir(QCoreApplication::applicationFilePath() + ".runfiles").filePath(relative)};
+  for (const char* variable : {"RUNFILES_DIR", "TEST_SRCDIR"}) {
+    const QString directory = qEnvironmentVariable(variable);
+    if (!directory.isEmpty())
+      candidates.append(QDir(directory).filePath(relative));
+  }
+  candidates.append(
+      {app.filePath("../../gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"),
+       app.filePath("../lib/gst-plugins/libnvdsgst_videoprep.so"),
+       app.filePath("lib/gst-plugins/libnvdsgst_videoprep.so"),
+       "/opt/hstream/lib/gst-plugins/libnvdsgst_videoprep.so"});
+  for (const QString& path : candidates) {
+    const QFileInfo file(path);
+    if (!file.isFile())
+      continue;
+    GError* failure = nullptr;
+    GstPlugin* plugin = gst_plugin_load_file(file.canonicalFilePath().toLocal8Bit().constData(), &failure);
+    if (!plugin) {
+      const std::string reason = failure ? failure->message : "unknown plugin load error";
+      g_clear_error(&failure);
+      return fail(error, "Could not load the Camera preview plugin " + path.toStdString() + ": " + reason);
+    }
+    gst_object_unref(plugin);
+    // A registry may already contain the installed plugin. Explicit bundle
+    // loading must win before either factory is instantiated; never accept a
+    // stale system factory merely because it has the same element name.
+    for (const char* name : {"playcropper", "videoprep"}) {
+      GstElementFactory* factory = gst_element_factory_find(name);
+      GstPlugin* owner = factory ? gst_plugin_feature_get_plugin(GST_PLUGIN_FEATURE(factory)) : nullptr;
+      const char* filename = owner ? gst_plugin_get_filename(owner) : nullptr;
+      const bool matched =
+          filename && QFileInfo(QString::fromLocal8Bit(filename)).canonicalFilePath() == file.canonicalFilePath();
+      if (owner)
+        gst_object_unref(owner);
+      if (factory)
+        gst_object_unref(factory);
+      if (!matched)
+        return fail(error, "The Camera preview factory does not belong to its bundled plugin: " + std::string(name));
+    }
+    return true;
+  }
+  return fail(error, "Could not locate the Camera preview plugin beside its executable or in its runfiles");
+}
 
 struct CameraExperimentPreview::Impl {
   GstElement* graph{nullptr};
@@ -96,6 +123,8 @@ struct CameraExperimentPreview::Impl {
   std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask;
   std::size_t target{0};
   std::optional<std::size_t> presented;
+  std::optional<std::size_t> last_admitted;
+  std::optional<std::pair<std::uint64_t, std::size_t>> exhausted_after;
   std::string error;
   std::chrono::steady_clock::time_point seek_started;
 
@@ -210,6 +239,8 @@ struct CameraExperimentPreview::Impl {
             GST_PAD_PROBE_INFO_DATA(info) = mapped;
           }
           self->segment_generation = self->generation;
+          self->last_admitted.reset();
+          self->exhausted_after.reset();
           self->output->SetGeneration(self->generation);
         }
         return GST_PAD_PROBE_OK;
@@ -270,6 +301,8 @@ struct CameraExperimentPreview::Impl {
           // until the next seek/close, rather than decoding the rest of the
           // game or dropping the final delayed pictures with a segment stop.
           const auto generation = self->segment_generation;
+          if (self->last_admitted)
+            self->exhausted_after = std::make_pair(generation, *self->last_admitted);
           self->range_boundary.wait(lock, [&]() { return self->closing || self->generation != generation; });
         }
         return GST_PAD_PROBE_DROP;
@@ -345,6 +378,7 @@ struct CameraExperimentPreview::Impl {
         object->rect_params.height = camera->height();
         nvds_add_obj_meta_to_frame(frame, object, nullptr);
       }
+      self->last_admitted = *index;
       return GST_PAD_PROBE_OK;
     } catch (const std::exception& exception) {
       std::lock_guard<std::mutex> lock(self->mutex);
@@ -384,7 +418,8 @@ bool CameraExperimentPreview::Open(
     g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
   gst_init(nullptr, nullptr);
   gst_registry_scan_path(gst_registry_get(), "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
-  load_cropper_plugin();
+  if (!LoadCameraExperimentPlugin(error))
+    return false;
   auto& s = *impl_;
   s.output = output ? std::move(output) : MakeNativeCameraExperimentPreviewOutput();
   s.media = media;
@@ -766,16 +801,27 @@ CameraExperimentPreview::Status CameraExperimentPreview::Poll() {
           s.video_pts(s.frames->at(s.target).pts_ns).value_or(GST_CLOCK_TIME_NONE));
       s.error = "No matching frame was presented after the seek. Check the sources, range, and PTS binding.";
       s.seeking = false;
+      pause_at_end = true;
     }
     if (!s.seeking && s.pending_seek && s.error.empty())
       next_seek = std::exchange(s.pending_seek, std::nullopt);
-    if (s.playing && !s.seeking && !next_seek && s.presented && s.frames && *s.presented + 1 == s.frames->size()) {
+    if (ended && s.last_admitted)
+      s.exhausted_after = std::make_pair(s.generation, *s.last_admitted);
+    const bool final_image = s.presented && s.frames &&
+        (*s.presented + 1 == s.frames->size() ||
+         (s.exhausted_after && s.exhausted_after->first == s.generation && *s.presented == s.exhausted_after->second));
+    if (s.playing && !s.seeking && !next_seek && final_image && s.error.empty()) {
+      // The archive may have a lower frame rate than its telemetry. Its final
+      // decoded image is authoritative once the range boundary/EOS is known
+      // and that exact image has been presented. Do not invent a receipt for
+      // a later telemetry-only sample or wait forever for it to be decoded.
       if (s.loop)
         next_seek = std::make_pair(0U, true);
       else
         pause_at_end = true;
-    } else if (ended && s.playing && !next_seek) {
-      s.error = "The video ended before the final selected sample. Check the media binding and range.";
+    } else if (ended && s.playing && !s.last_admitted && !next_seek) {
+      s.error = "The video ended before a selected sample was decoded. Check the media binding and range.";
+      pause_at_end = true;
     }
   }
   if (pause_at_end)

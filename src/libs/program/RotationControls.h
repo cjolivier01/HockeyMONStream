@@ -41,7 +41,8 @@ bool ValidRotationControls(
 // sliders. Fixed-edge units remain tenths through the shared wire conversion.
 absl::StatusOr<RotationControlValues> MergeRotationControls(
     const RotationControlValues& current,
-    const RotationControlValues& edits);
+    const RotationControlValues& edits,
+    const RotationControlValues* range_reference = nullptr);
 absl::StatusOr<std::vector<RotationPropertyCommand>> FixedEdgeRotationCommands(
     const RotationControlValues& values,
     const std::set<std::string>& changed,

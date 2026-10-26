@@ -9,6 +9,10 @@
 #include <string>
 #include <vector>
 
+// Resolve the executable's own plugin before using cached system factories.
+// GStreamer must be initialized; loading factories does not allocate a GPU graph.
+bool LoadCameraExperimentPlugin(std::string* error);
+
 class CameraExperimentPreviewOutput;
 
 // Owns a small decode/crop/render graph. It never runs inference or camera

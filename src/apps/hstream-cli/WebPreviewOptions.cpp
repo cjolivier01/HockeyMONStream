@@ -483,7 +483,8 @@ std::string WebRotationControlsReply(
     const std::string& status,
     const std::string& reason,
     const std::optional<hm::program::RotationControlValues>& controls,
-    std::optional<uint64_t> operation) {
+    std::optional<uint64_t> operation,
+    bool fixed_edge_suppressed) {
   return Serialize([&](JsonBuilder* builder) {
     Add(builder, "version", gint64{1});
     Add(builder, "run", request.session.run);
@@ -492,6 +493,8 @@ std::string WebRotationControlsReply(
     Add(builder, "requestId", request.request_id);
     Add(builder, "status", status);
     Add(builder, "reason", reason);
+    json_builder_set_member_name(builder, "fixedEdgeSuppressed");
+    json_builder_add_boolean_value(builder, fixed_edge_suppressed);
     json_builder_set_member_name(builder, "controls");
     if (controls) {
       json_builder_begin_object(builder);

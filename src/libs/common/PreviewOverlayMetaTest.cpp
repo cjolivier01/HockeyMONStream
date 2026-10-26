@@ -16,22 +16,8 @@ bool near(float actual, float expected) {
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   const hm::preview_overlay::PlayCropperTransform transform{
-      4000.0F,
-      2000.0F,
-      2000.0F,
-      1000.0F,
-      500.0F,
-      100.0F,
-      1500.0F,
-      900.0F,
-      300.0F,
-      200.0F,
-      2400.0F,
-      1350.0F,
-      1920.0F,
-      1080.0F,
-      7.5F,
-      false,
+      4000.0F, 2000.0F, 2000.0F, 1000.0F, 500.0F, 100.0F, 1500.0F, 900.0F, 300.0F, 200.0F,
+      2400.0F, 1350.0F, 1920.0F, 1080.0F, 7.5F,   false,  0,       12.75F, -1.5F,  true,
   };
   for (const hm::preview_overlay::Point point : {
            hm::preview_overlay::Point{500.0F, 100.0F},
@@ -197,8 +183,22 @@ int main(int argc, char** argv) {
   duplicate_transform.angle_degrees = 13.0F;
   const bool duplicate_rejected =
       !hm::preview_overlay::add_playcropper_transform_meta(program_frame, duplicate_transform);
-  const bool isolated = copied && program_frame && stitched_frame && program_snapshot && stitched_snapshot &&
-      program_snapshot != stitched_snapshot && attached && attached_transform &&
+  GstBuffer* downstream = gst_buffer_new();
+  const bool downstream_copied =
+      downstream && program_output && gst_buffer_copy_into(downstream, program_output, GST_BUFFER_COPY_META, 0, -1);
+  auto* downstream_batch = downstream_copied ? gst_buffer_get_nvds_batch_meta(downstream) : nullptr;
+  auto* downstream_frame = downstream_batch && downstream_batch->frame_meta_list
+      ? static_cast<NvDsFrameMeta*>(downstream_batch->frame_meta_list->data)
+      : nullptr;
+  const auto* downstream_transform = hm::preview_overlay::find_playcropper_transform_meta(downstream_frame);
+  const bool rotation_copied = attached_transform && downstream_transform &&
+      downstream_transform != attached_transform && downstream_transform->rotation_controls_valid &&
+      downstream_transform->fixed_edge_rotation_left == 12.75F &&
+      downstream_transform->fixed_edge_rotation_right == -1.5F;
+  if (downstream)
+    gst_buffer_unref(downstream);
+  const bool isolated = rotation_copied && copied && program_frame && stitched_frame && program_snapshot &&
+      stitched_snapshot && program_snapshot != stitched_snapshot && attached && attached_transform &&
       near(attached_transform->angle_degrees, transform.angle_degrees) && duplicate_rejected &&
       !hm::preview_overlay::find_playcropper_transform_meta(stitched_frame) &&
       program_snapshot->player_rects.size() == 1 && stitched_snapshot->player_rects.size() == 1 &&

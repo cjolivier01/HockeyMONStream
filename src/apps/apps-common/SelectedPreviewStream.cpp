@@ -80,6 +80,7 @@ struct StreamState {
       gst_caps_unref(output_caps);
   }
   std::mutex flow;
+  hm::preview::FrameAdmission admission;
   std::string stream_id;
   std::string memory_feature;
   std::string eof_channel;
@@ -175,6 +176,13 @@ GstFlowReturn route_chain(GstPad* pad, GstObject* parent, GstBuffer* original) n
     }
     std::lock_guard<std::mutex> lock(state->flow);
     if (state->selected != pad || state->ended || !GST_CLOCK_TIME_IS_VALID(clock_pts)) {
+      gst_buffer_unref(original);
+      return GST_FLOW_OK;
+    }
+    // Validation and identity assignment must share the operation lock. A
+    // preceding pad probe can pass an old frame before rearm, then accidentally
+    // give it the new operation while it waits to enter this chain.
+    if (state->admission && !state->admission(route->channel, original)) {
       gst_buffer_unref(original);
       return GST_FLOW_OK;
     }
@@ -462,6 +470,15 @@ void selected_stream_remove_route(GstElement* stream, GstPad* pad) {
   }
   gst_pad_set_active(pad, FALSE);
   gst_element_remove_pad(stream, pad);
+}
+
+bool selected_stream_set_frame_admission(GstElement* stream, FrameAdmission admission) {
+  auto* self = get_stream(stream);
+  if (!self || !self->state)
+    return false;
+  std::lock_guard<std::mutex> lock(self->state->flow);
+  self->state->admission = std::move(admission);
+  return true;
 }
 
 bool selected_stream_select(GstElement* stream, GstPad* pad, std::uint64_t operation) {

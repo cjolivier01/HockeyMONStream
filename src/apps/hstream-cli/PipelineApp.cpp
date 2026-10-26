@@ -1161,6 +1161,11 @@ PipelineApplication::PipelineApplication()
 //------------------------------------------------------------------------------
 // PipelineApplication destructor.
 PipelineApplication::~PipelineApplication() {
+  if (web_rotation_) {
+    const auto status = web_rotation_->Shutdown();
+    if (!status.ok())
+      g_printerr("Live rotation retirement failed: %s\n", status.ToString().c_str());
+  }
   g_free(settings_overlay_);
 }
 
@@ -1886,12 +1891,167 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
   return absl::OkStatus();
 }
 
+std::string PipelineApplication::web_rotation_block_reason(
+    const hm::preview::RouteOwner::Session& session,
+    bool mutation) const {
+  if (quit_ || cintr_)
+    return "stopping";
+  if (!web_preview_ || !web_preview_->available() || !(session == web_preview_->identity()) ||
+      session.stage != current_stage_ || session.topology != inspector_topology_generation_)
+    return "stale-session";
+  if (pipeline_recreation_active_.load(std::memory_order_acquire))
+    return "reconstructing";
+  if (!mutation)
+    return {};
+  if (runtime_seek_pending_ || web_seek_pending_)
+    return "seeking";
+  if (process_pause_active_)
+    return "preview-paused";
+  if (stitch_frame_calibration_active_.load(std::memory_order_acquire))
+    return "calibration-pending";
+  return web_preview_->MutationBlockReason();
+}
+
+absl::Status PipelineApplication::initialize_web_rotation_controls() {
+  if (web_rotation_)
+    return absl::OkStatus();
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end() || stage->second.size() != 1)
+    return absl::OkStatus();
+  const auto& app = stage->second.front();
+  auto* stitcher = app->pipeline.hmstitcher_bin.elem_hmstitcher;
+  if (!stitcher)
+    return absl::OkStatus();
+  const auto& resolved = app->configurator().config();
+  hm::program::RotationControlValues controls;
+  HM_ASSIGN_OR_RETURN(controls, hm::program::ReadRotationControls(resolved));
+  gdouble degrees = 0;
+  g_object_get(stitcher, "post-stitch-rotate-degrees", &degrees, nullptr);
+  if (!std::isfinite(degrees) || degrees < INT_MIN + 90.0 || degrees > INT_MAX - 90.0)
+    return absl::InvalidArgumentError("Invalid native Stitch rotation readback");
+  controls["Stitch_Rotate_Degrees"] = std::lround(90 - degrees);
+  hm::stitching::StitchProjectionFraming framing;
+  HM_ASSIGN_OR_RETURN(framing, hm::stitching::read_stitch_projection_framing(resolved));
+  const auto backend = hm::get_node(resolved, "stitching.mapping_backend");
+  if (!backend || !backend->IsScalar())
+    return absl::InvalidArgumentError("Missing resolved mapping backend");
+  const bool suppressed =
+      stitching_calibration_only_ || (backend->as<std::string>() == "nona" && framing.has_leveling_rotation());
+  auto* cropper = app->pipeline.common_elements.hmplaycropper_bin.playcropper;
+  if (cropper) {
+    gdouble left = 0, right = 0;
+    g_object_get(cropper, "fixed-edge-rotation-angle-left", &left, "fixed-edge-rotation-angle-right", &right, nullptr);
+    if (!std::isfinite(left) || !std::isfinite(right) || std::abs(left * 10) > INT_MAX ||
+        std::abs(right * 10) > INT_MAX)
+      return absl::InvalidArgumentError("Invalid native fixed-edge rotation readback");
+    controls["Left_Fixed_Edge_Rotation_Angle_x10"] = std::lround(left * 10);
+    controls["Right_Fixed_Edge_Rotation_Angle_x10"] = std::lround(right * 10);
+    if (left != right)
+      controls["Link_Fixed_Edge_Rotation_Left_Right"] = 0;
+  }
+  if (suppressed) {
+    controls["Left_Fixed_Edge_Rotation_Angle_x10"] = 0;
+    controls["Right_Fixed_Edge_Rotation_Angle_x10"] = 0;
+  }
+  web_rotation_ = std::make_unique<hm::preview::WebRotationTransaction>(
+      hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : "").string(),
+      std::move(controls),
+      suppressed,
+      hm::preview::WebRotationTransaction::Hooks{
+          [this](const auto& session, bool mutation) { return web_rotation_block_reason(session, mutation); },
+          [this](const auto& values, const auto& changed, const auto& authorization) {
+            return apply_web_rotation_controls(values, changed, authorization);
+          },
+          [this]() { return web_preview_ ? web_preview_->operation() : 0; },
+          [](const auto& reply) {
+            g_print("HSTREAM_WEB_ROTATION_CONTROLS %s\n", reply.c_str());
+            std::fflush(stdout);
+          },
+          [this]() {
+            return_value_ = -1;
+            quit_ = TRUE;
+            if (main_loop_)
+              g_main_loop_quit(main_loop_);
+          }});
+  return absl::OkStatus();
+}
+
+absl::StatusOr<uint64_t> PipelineApplication::apply_web_rotation_controls(
+    const hm::program::RotationControlValues& controls,
+    const std::set<std::string>& changed,
+    const std::optional<hm::preview::WebRotationTransaction::Authorization>& authorization) {
+  const auto& contexts = stage_app_contexts_.at(current_stage_);
+  if (contexts.size() != 1 || !web_preview_)
+    return absl::FailedPreconditionError("Rotation graph is unavailable");
+  auto* stitcher = contexts.front()->pipeline.hmstitcher_bin.elem_hmstitcher;
+  if (!stitcher)
+    return absl::FailedPreconditionError("Stitcher is unavailable");
+  gchar* text = nullptr;
+  g_object_get(stitcher, "stitched-output-epoch", &text, nullptr);
+  const auto parsed = hm::stitching::parse_live_output_epoch(text ? text : "");
+  g_free(text);
+  if (!parsed.ok())
+    return parsed.status();
+  auto epoch = *parsed;
+  std::vector<std::tuple<std::string, std::string, std::string>> assignments;
+  const auto fixed = hm::program::FixedEdgeRotationCommands(controls, changed, web_rotation_->suppressed());
+  if (!fixed.ok())
+    return fixed.status();
+  for (const auto& command : *fixed)
+    assignments.emplace_back(command.element, command.property, command.value);
+  if (changed.count("Stitch_Rotate_Degrees")) {
+    epoch.post_stitch_rotate_degrees = 90 - controls.at("Stitch_Rotate_Degrees");
+    epoch.authorization_id = authorization ? authorization->value.authorization_id : std::string();
+    if (authorization)
+      epoch.scoreboard_property_value = authorization->value.scoreboard_property_value;
+    assignments.emplace_back("hmstitcher0", "stitched-output-epoch", hm::stitching::serialize_live_output_epoch(epoch));
+  }
+  std::string reason;
+  if (!assignments.empty() && !set_element_properties_runtime(assignments, &reason, false))
+    return absl::AbortedError("Rotation property transaction failed: " + reason);
+  hm::preview::RotationFrameFence fence{epoch.authorization_id, std::nullopt};
+  if (!fixed->empty()) {
+    const auto* cropper = contexts.front()->pipeline.common_elements.hmplaycropper_bin.playcropper;
+    gdouble left = 0, right = 0;
+    g_object_get(
+        const_cast<GstElement*>(cropper),
+        "fixed-edge-rotation-angle-left",
+        &left,
+        "fixed-edge-rotation-angle-right",
+        &right,
+        nullptr);
+    const float expected_left = static_cast<float>(controls.at("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0);
+    const float expected_right = static_cast<float>(controls.at("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0);
+    if (static_cast<float>(left) != expected_left || static_cast<float>(right) != expected_right)
+      return absl::AbortedError("Rotation crop readback did not match the applied values");
+    fence.angles = std::make_pair(expected_left, expected_right);
+  }
+  return web_preview_->RearmRotation(std::move(fence));
+}
+
 void PipelineApplication::publish_web_preview_capability() {
   if (!web_preview_ || web_preview_->identity().stage != current_stage_ ||
       web_preview_->identity().topology != inspector_topology_generation_)
     return;
+  const auto rotation_status = initialize_web_rotation_controls();
+  if (!rotation_status.ok()) {
+    g_printerr("Could not initialize live Rotation: %s\n", rotation_status.ToString().c_str());
+    return_value_ = -1;
+    quit_ = TRUE;
+    if (main_loop_)
+      g_main_loop_quit(main_loop_);
+    return;
+  }
   const bool seek = !stitching_calibration_only_ && current_stage_ == 0 && runtime_seek_is_local_render_only();
   g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability(preview_overlay_state_, seek).c_str());
+  if (web_rotation_) {
+    const hm::preview::WebRotationControlsRequest request{web_preview_->identity(), "0", {}, true};
+    g_print(
+        "HSTREAM_WEB_ROTATION_CONTROLS %s\n",
+        hm::preview::WebRotationControlsReply(
+            request, "state", "", web_rotation_->controls(), web_preview_->operation(), web_rotation_->suppressed())
+            .c_str());
+  }
   if (!stitching_calibration_only_ && current_stage_ == 0) {
     web_preview_->SetPlayerDrawingLayers(current_player_drawing_layers());
     const hm::preview::WebPlayerDrawingRequest drawing{web_preview_->identity(), "0", 0, true};
@@ -5513,6 +5673,8 @@ bool PipelineApplication::set_inspected_element_property_runtime(
       mutation_error = "Pipeline reconstruction is in progress";
     } else if (current_stage_ != expected_stage || inspector_topology_generation_ != expected_generation) {
       mutation_error = "Stale pipeline inspector stage/generation; refresh the graph";
+    } else if (web_rotation_ && web_rotation_->pending()) {
+      mutation_error = "rotation-pending";
     } else {
       const auto stage = stage_app_contexts_.find(expected_stage);
       if (stage == stage_app_contexts_.end() || app_index >= stage->second.size() || !stage->second[app_index] ||
@@ -5592,6 +5754,9 @@ bool PipelineApplication::set_tone_controls_runtime(const std::string& line) {
           runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
         reason = "reconstructing";
         message = "Pipeline reconstruction is in progress";
+      } else if (!command.query && web_rotation_ && web_rotation_->pending()) {
+        reason = "rotation-pending";
+        message = "Live Rotation is still being finalized";
       } else if (runtime_seek_pending_) {
         reason = "seeking";
         message = "Playback seek or frame recovery is in progress";
@@ -6187,7 +6352,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   // Never wait for reconstruction: Stop must remain responsive.
   const bool typed_preview = trimmed_line.rfind("preview-", 0) == 0 ||
       trimmed_line.rfind("web-player-drawing", 0) == 0 || trimmed_line.rfind("web-scoreboard", 0) == 0 ||
-      trimmed_line.rfind("web-camera-controls", 0) == 0;
+      trimmed_line.rfind("web-camera-controls", 0) == 0 || trimmed_line.rfind("web-rotation-controls", 0) == 0;
   std::unique_lock<std::mutex> preview_lock(pipeline_access_mu_, std::defer_lock);
   bool preview_reconstructing = false;
   if (typed_preview) {
@@ -6211,9 +6376,10 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
         !preview_reconstructing && web_preview_ && web_preview_->available() ? web_preview_->identity()
                                                                              : hm::preview::RouteOwner::Session{},
         preview_overlay_state_,
-        preview_reconstructing ? "reconstructing"
-            : web_preview_     ? web_preview_->MutationBlockReason()
-                               : "preview-unavailable",
+        preview_reconstructing                                            ? "reconstructing"
+            : !overlay_query && web_rotation_ && web_rotation_->pending() ? "rotation-pending"
+            : web_preview_                                                ? web_preview_->MutationBlockReason()
+                                                                          : "preview-unavailable",
         [this, &request](const auto& selection) {
           return web_preview_ && apply_preview_overlay_state(selection, true, request->command.generation);
         });
@@ -6239,6 +6405,33 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     std::fflush(stdout);
     return true;
   }
+  if (trimmed_line.rfind("web-rotation-controls ", 0) == 0 ||
+      trimmed_line.rfind("web-rotation-controls-query ", 0) == 0) {
+    const bool query = trimmed_line.rfind("web-rotation-controls-query ", 0) == 0;
+    const auto request = hm::preview::ParseWebRotationControls(
+        trim_ascii(trimmed_line.substr(query ? 28 : 22)),
+        web_rotation_ ? web_rotation_->ranges() : hm::program::RotationControlValues{},
+        query);
+    if (!request.ok()) {
+      g_printerr("runtime rotation controls rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    if (preview_reconstructing || !web_rotation_) {
+      g_print(
+          "HSTREAM_WEB_ROTATION_CONTROLS %s\n",
+          hm::preview::WebRotationControlsReply(
+              *request,
+              "failed",
+              preview_reconstructing ? "reconstructing" : "rotation-unavailable",
+              std::nullopt,
+              std::nullopt,
+              web_rotation_ && web_rotation_->suppressed())
+              .c_str());
+      std::fflush(stdout);
+      return false;
+    }
+    return web_rotation_->Handle(*request);
+  }
   if (trimmed_line.rfind("web-camera-controls ", 0) == 0 || trimmed_line.rfind("web-camera-controls-query ", 0) == 0) {
     const bool query = trimmed_line.rfind("web-camera-controls-query ", 0) == 0;
     const auto request = hm::preview::ParseWebCameraControls(
@@ -6260,6 +6453,8 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       reason = "program-unavailable";
     } else if (query) {
       status = "state";
+    } else if (web_rotation_ && web_rotation_->pending()) {
+      reason = "rotation-pending";
     } else if (runtime_seek_pending_) {
       reason = "seeking";
     } else if (!(reason = web_preview_->MutationBlockReason()).empty()) {
@@ -6311,6 +6506,8 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       reason = "program-unavailable";
     } else if (request->action == "query") {
       status = "state";
+    } else if (web_rotation_ && web_rotation_->pending()) {
+      reason = "rotation-pending";
     } else if (runtime_seek_pending_) {
       reason = "seeking";
     } else if (!(reason = web_preview_->MutationBlockReason()).empty()) {
@@ -6348,6 +6545,8 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       reason = "program-unavailable";
     } else if (query) {
       status = "state";
+    } else if (web_rotation_ && web_rotation_->pending()) {
+      reason = "rotation-pending";
     } else if (runtime_seek_pending_ || pipeline_recreation_active_.load(std::memory_order_acquire)) {
       reason = "seeking";
     } else if (!(reason = web_preview_->MutationBlockReason()).empty()) {
@@ -6387,6 +6586,10 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     if (!web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
         request->session.topology != inspector_topology_generation_) {
       reply("failed", "stale-session");
+      return false;
+    }
+    if (web_rotation_ && web_rotation_->pending()) {
+      reply("failed", "rotation-pending");
       return false;
     }
     if (web_seek_pending_ || runtime_seek_pending_ || runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
@@ -6431,6 +6634,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     }
     if (prepare_process_pause && generation > process_pause_generation_) {
       process_pause_generation_ = generation;
+      process_pause_active_ = true;
       set_uri_playlist_process_paused(TRUE);
       // The UI may stop all threads as soon as it reads this acknowledgment.
       g_print("HSTREAM_PROCESS_PAUSE status=prepared generation=%" G_GUINT64_FORMAT "\n", generation);
@@ -6438,6 +6642,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       return true;
     }
     if (resume_process_pause && generation == process_pause_generation_) {
+      process_pause_active_ = false;
       set_uri_playlist_process_paused(FALSE);
       g_print("HSTREAM_PROCESS_PAUSE status=resumed generation=%" G_GUINT64_FORMAT "\n", generation);
       std::fflush(stdout);
@@ -6565,6 +6770,10 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   }
   std::vector<std::tuple<std::string, std::string, std::string>> assignments;
   if (parse_runtime_set_properties(line, &assignments)) {
+    if (web_rotation_ && web_rotation_->pending()) {
+      g_printerr("runtime command failed: rotation-pending\n");
+      return false;
+    }
     return set_element_properties_runtime(assignments);
   }
   std::string element_name;
@@ -6579,6 +6788,10 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
         "<element property=value;...>, reset-progress-rate <generation>, inspect-pipeline <request-id>, "
         "inspect-properties <request-id> <app-index> <base64-path>, inspect-set-property <request-id> "
         "<app-index> <base64-path> <base64-property> <base64-value>, or set-property <element> <property=value>\n");
+    return false;
+  }
+  if (web_rotation_ && web_rotation_->pending()) {
+    g_printerr("runtime command failed: rotation-pending\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);
@@ -8277,6 +8490,12 @@ gboolean PipelineApplication::event_thread_func() {
   // runtime command until the completed transaction is published here.
   if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
     return TRUE;
+  }
+  if (web_rotation_) {
+    std::lock_guard<std::mutex> lock(pipeline_access_mu_);
+    web_rotation_->Poll();
+    if (quit_)
+      return FALSE;
   }
   // Timed mask preparation recreates the entire stage rather than using the
   // stitch-frame rewind callback. Preserve the same UI completion protocol,

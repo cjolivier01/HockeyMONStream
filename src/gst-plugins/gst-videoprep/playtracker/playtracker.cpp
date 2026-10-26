@@ -327,6 +327,16 @@ void PlayTrackerPriv::RememberRuntimeTuning(DsPlayTrackerRuntimeTuning tuning, T
   }
 }
 
+std::optional<std::pair<float, float>> PlayTrackerPriv::FixedEdgeRotationAngles() {
+  std::lock_guard<std::mutex> lock(rotation_readback_mutex_);
+  return rotation_readback_;
+}
+
+void PlayTrackerPriv::UpdateRotationReadback() {
+  std::lock_guard<std::mutex> lock(rotation_readback_mutex_);
+  rotation_readback_ = {fixed_edge_rotation_angle_left_, fixed_edge_rotation_angle_right_};
+}
+
 bool PlayTrackerPriv::SetProperty(const Property& prop) {
   std::string key = prop.key;
   std::replace(key.begin(), key.end(), '_', '-');
@@ -422,6 +432,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     }
     fixed_edge_rotation_angle_left_ = angle;
     fixed_edge_rotation_angle_right_ = angle;
+    UpdateRotationReadback();
     RememberRuntimeTuning(
         std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "fixed-edge-rotation-angle-left") {
@@ -436,6 +447,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     fixed_edge_rotation_angle_left_ = angle;
+    UpdateRotationReadback();
     RememberRuntimeTuning(
         std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "fixed-edge-rotation-angle-right") {
@@ -450,6 +462,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     fixed_edge_rotation_angle_right_ = angle;
+    UpdateRotationReadback();
     RememberRuntimeTuning(
         std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "dynamic-acceleration-scaling") {

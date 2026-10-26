@@ -3,6 +3,7 @@
 #include <gst/gst.h>
 
 #include <cstdint>
+#include <functional>
 
 namespace hm::preview {
 
@@ -45,5 +46,10 @@ void selected_stream_remove_route(GstElement* stream, GstPad* pad);
 // operation is allowed; an older operation cannot change the selected route.
 bool selected_stream_select(GstElement* stream, GstPad* pad, std::uint64_t operation);
 bool selected_stream_active(GstElement* stream, GstPad* pad, std::uint64_t operation);
+// Called under the same flow lock that assigns operation identities. False
+// drops a stale native frame without failing the preview. The callback must
+// only inspect metadata and must not reenter this selector or mutate its graph.
+using FrameAdmission = std::function<bool(const char* channel, GstBuffer* original)>;
+bool selected_stream_set_frame_admission(GstElement* stream, FrameAdmission admission);
 
 } // namespace hm::preview

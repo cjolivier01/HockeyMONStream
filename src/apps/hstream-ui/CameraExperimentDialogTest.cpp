@@ -568,6 +568,40 @@ bool e2e(const QStringList& args) {
     std::cerr << "Video made no presented-frame progress: " << status->text().toStdString() << '\n';
     return false;
   }
+  if (args.contains("--unequal-cadence")) {
+    auto* timeline = widget<QSlider>(dialog, "experimentTimeline");
+    int previous = timeline->value();
+    if (!wait_until(
+            [&] {
+              const int current = timeline->value();
+              const bool wrapped = previous > timeline->maximum() / 2 && current < previous;
+              previous = current;
+              return wrapped;
+            },
+            15000)) {
+      std::cerr << "Unequal-cadence replay did not loop on its actual final decoded image\n";
+      return false;
+    }
+    widget<QCheckBox>(dialog, "experimentLoop")->setChecked(false);
+    if (!wait_until([&] { return play->text() != "Pause" && screenshot->isEnabled(); }, 15000) ||
+        timeline->value() >= timeline->maximum() || status->styleSheet().contains("#b42318") ||
+        !capture("unequal-cadence-end.png")) {
+      std::cerr << "Unequal-cadence replay did not pause at its actual final image: " << status->text().toStdString()
+                << '\n';
+      return false;
+    }
+    timeline->setValue(timeline->maximum());
+    QMetaObject::invokeMethod(timeline, "sliderReleased", Qt::DirectConnection);
+    if (!wait_until([&] { return status->text().contains("No matching frame was presented"); }, 20000) ||
+        play->text() == "Pause") {
+      std::cerr << "A seek to a missing telemetry sample did not fail visibly within its deadline\n";
+      return false;
+    }
+    dialog.reject();
+    std::cout
+        << "PASS: unequal-cadence repeat and end pause use actual decoded images; missing-sample seek fails bounded\n";
+    return true;
+  }
   if (play->text() == "Pause")
     play->click();
   if (!wait_until([&] { return widget<QTabWidget>(dialog, "experimentControlTabs")->isEnabled(); }, 60000)) {

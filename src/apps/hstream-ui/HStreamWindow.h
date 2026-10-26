@@ -29,6 +29,7 @@
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/LiveRotationConfigOwner.h"
 
 #include <array>
 #include <deque>
@@ -176,11 +177,6 @@ class HStreamWindow : public QMainWindow {
     std::string authorization_id;
     bool invalidate_scoreboard{false};
     QString scoreboard_property_value;
-  };
-
-  struct LiveRotationConfigTask {
-    std::function<void()> work;
-    std::function<void()> complete;
   };
 
   struct RuntimeControlBatch {
@@ -566,8 +562,8 @@ class HStreamWindow : public QMainWindow {
       std::map<QString, int> controls,
       const std::optional<int>& authorized_stitch_rotation,
       const std::optional<LiveRotationAuthorization>& live_rotation_authorization);
-  void enqueueLiveRotationConfigTask(std::function<void()> work, std::function<void()> complete);
-  void startNextLiveRotationConfigTask();
+  hm::stitching::LiveRotationConfigOwner& liveRotationConfigOwner();
+  void pollLiveRotationConfigOwner();
   void rollbackLiveRotationAuthorization(
       const LiveRotationAuthorization& authorization,
       const QString& reason,
@@ -1096,8 +1092,7 @@ class HStreamWindow : public QMainWindow {
   quint64 deferred_restart_pipeline_generation_{0};
   QString deferred_restart_game_id_;
   std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;
-  QThread* live_rotation_authorization_worker_{nullptr};
-  std::deque<LiveRotationConfigTask> live_rotation_config_tasks_;
+  std::unique_ptr<hm::stitching::LiveRotationConfigOwner> live_rotation_config_owner_;
   bool close_waiting_for_live_rotation_authorization_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};

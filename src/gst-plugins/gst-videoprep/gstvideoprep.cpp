@@ -2132,11 +2132,15 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       g_value_set_double(value, videoprep->fixed_edge_rotation_angle);
       break;
     case PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT:
-      g_value_set_double(value, videoprep->fixed_edge_rotation_angle_left);
+    case PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT: {
+      const auto active = videoprep->priv ? videoprep->priv->FixedEdgeRotationAngles() : std::nullopt;
+      const bool left = prop_id == PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT;
+      g_value_set_double(
+          value,
+          active ? (left ? active->first : active->second)
+                 : (left ? videoprep->fixed_edge_rotation_angle_left : videoprep->fixed_edge_rotation_angle_right));
       break;
-    case PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT:
-      g_value_set_double(value, videoprep->fixed_edge_rotation_angle_right);
-      break;
+    }
     case PROP_DYNAMIC_ACCELERATION_SCALING:
       g_value_set_double(value, videoprep->dynamic_acceleration_scaling);
       break;

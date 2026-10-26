@@ -34,6 +34,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   BufferResult ProcessBuffer(GstBuffer* inbuf) override;
   bool HandleEvent(GstEvent* event) override;
   bool SetProperty(const Property& prop) override;
+  std::optional<std::pair<float, float>> FixedEdgeRotationAngles() override;
   void Shutdown() override;
   // DSCustomLibraryBase-
 
@@ -74,6 +75,10 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   hm::play_tracker::PlayTrackerResults prev_play_tracker_results_;
   float fixed_edge_rotation_angle_left_{10.0};
   float fixed_edge_rotation_angle_right_{10.0};
+  // Readback must not wait on a processing mutex held by operator selection.
+  std::mutex rotation_readback_mutex_;
+  std::pair<float, float> rotation_readback_{fixed_edge_rotation_angle_left_, fixed_edge_rotation_angle_right_};
+  void UpdateRotationReadback();
   // Dynamic acceleration scaling (usually to slower) on the last live-box only
   float dynamic_acceleration_scaling_{1.0};
   unsigned preview_overlay_flags_{0};

@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/RinkMapDialog.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
@@ -96,6 +97,7 @@ cv::Point2d sourcePoint(cv::Point2d rink_point) {
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  install_button_icon_style();
   if (argc == 6 && QString(argv[1]) == "--prepare-mask") {
     const QString game = QString::fromLocal8Bit(argv[2]);
     RinkMapDialog dialog(
@@ -529,6 +531,8 @@ int main(int argc, char** argv) {
     ok &= expect(idle(dialog), "Partial reopen completes");
     const auto* fit = dialog.findChild<QPushButton*>("rinkMapFitImagesButton");
     ok &= expect(fit && !fit->icon().isNull(), "Fit images retains its action icon");
+    for (const auto* button : dialog.findChildren<QPushButton*>())
+      ok &= expect(!button->icon().isNull(), "Rink map buttons retain their action icons");
     auto wheel = [](QWidget* widget, bool pixels = false, bool include_angle = false) {
       const QPoint position = widget->rect().center();
       QWheelEvent event(

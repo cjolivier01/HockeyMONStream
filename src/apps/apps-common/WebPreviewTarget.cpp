@@ -325,6 +325,10 @@ WebPreviewTarget::~WebPreviewTarget() {
     gst_object_unref(bin_);
 }
 
+bool WebPreviewTarget::SetFrameAdmission(FrameAdmission admission) {
+  return selected_stream_set_frame_admission(selected_, std::move(admission));
+}
+
 GstPad* WebPreviewTarget::AddRoute(const std::string& channel) {
   if (channel.empty() || channel.size() > 64)
     return nullptr;
