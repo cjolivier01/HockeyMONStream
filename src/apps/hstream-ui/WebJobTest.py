@@ -677,6 +677,18 @@ def main():
 
         # A captured-pair fixture allows read-only inspection to exercise the
         # exact workspace JSON returned to the next worker, without GPU work.
+        (experiments / "operation-result.json").unlink()
+        run(
+            args.binary,
+            request(experiments, "experiment-inspect", {"workspace": candidate}),
+        )
+        unavailable = json.loads((experiments / "operation-result.json").read_text())[
+            "result"
+        ]
+        assert unavailable["inspection_available"] is False
+        assert unavailable["workspace"] == candidate
+        assert unavailable["frames"] == []
+        assert "No captured calibration frames" in unavailable["source_validation"]
         inspection = (
             experiments
             / candidate["game_directory"]
@@ -699,6 +711,7 @@ def main():
         assert inspected["result"]["workspace"]["settings"] == candidate["settings"]
         result = inspected["result"]
         assert result["inspection_version"] == 1
+        assert result["inspection_available"] is True
         assert result["expected_pair_count"] == 1
         assert result["player_selected"] is False
         assert result["coverage_grid"] == {

@@ -862,7 +862,20 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
         {"promoted", true},
         {"setup_preview", hm::web::ExportSavedCalibrationPreview(request, artifacts)}};
   }
-  const auto inspection = take(InspectStitchingExperimentFrames(saved));
+  const auto inspected = InspectStitchingExperimentFrames(saved);
+  // A saved main calibration can outlive its captured-frame diagnostics, for
+  // example after an alignment-preserving crop. Qt still permits playback of
+  // that calibration and disables its frame inspector. Preserve that state
+  // instead of rejecting the entire main workspace catalog entry.
+  if (!inspected.ok() && !absl::IsNotFound(inspected.status()))
+    check(inspected.status());
+  StitchingExperimentFrameInspection inspection;
+  if (inspected.ok()) {
+    inspection = *inspected;
+  } else {
+    inspection.expected_pair_count = saved.settings.frame_count;
+    inspection.source_validation = std::string(inspected.status().message());
+  }
   QString editable_snapshot;
   const auto config = YAML::LoadFile((saved.game_directory / "config.yaml").string());
   const auto snapshot = config["hstream_ui"]["stitching_calibration"]["match_snapshot"].as<std::string>("");
@@ -919,6 +932,7 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
     colors.append(color);
   return {
       {"inspection_version", 1},
+      {"inspection_available", inspected.ok()},
       {"workspace", workspace_json(request, saved)},
       {"editable", !editable_snapshot.isEmpty()},
       {"editable_snapshot", editable_snapshot},
