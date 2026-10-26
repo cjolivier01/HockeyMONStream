@@ -11,6 +11,10 @@ namespace hm::program {
 // Update once per observed frame, Build for each preview output geometry.
 class ProgramPreviewBoxes {
  public:
+  void SetRoles(int goalie, int referee) {
+    goalie_ = goalie;
+    referee_ = referee;
+  }
   void Update(uint64_t pts_ns, const std::vector<tracking::Observation>& tracks);
   const draw_display::analytics::CommandList& Build(
       const playcropper::FrameTransformGeometry& transform,
@@ -25,6 +29,7 @@ class ProgramPreviewBoxes {
   void Reset();
 
  private:
+  int goalie_{-1}, referee_{-1};
   player_analytics::TrackColorAllocator colors_;
   std::vector<tracking::Observation> tracks_;
   draw_display::analytics::CommandList commands_;

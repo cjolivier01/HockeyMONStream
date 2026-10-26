@@ -127,6 +127,8 @@ int main() {
   const YAML::Node yaml = YAML::Load(R"(
 camera-name: GoPro
 no-wide-start: false
+ignore-referees: false
+ignore-goalies: false
 ignore-largest-bbox: false
 max-speed-ratio-x: 2.0
 max-speed-ratio-y: 3.0

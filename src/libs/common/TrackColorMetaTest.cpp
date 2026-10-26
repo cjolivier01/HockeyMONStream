@@ -3,6 +3,7 @@
 #include <gstnvdsmeta.h>
 
 #include <iostream>
+#include <set>
 #include <vector>
 
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
@@ -168,6 +169,20 @@ int main(int argc, char** argv) {
   Frame reset(10000000, {large_id});
   if (!colors.Apply(reset.meta) || !Same(reset.objects[0]->rect_params.border_color, first_color))
     return 7;
+  Frame roles(40000000, {41, 42, 43, 44});
+  roles.objects[1]->class_id = 1;
+  g_strlcpy(roles.objects[1]->obj_label, "goalie", sizeof(roles.objects[1]->obj_label));
+  roles.objects[2]->class_id = 2;
+  g_strlcpy(roles.objects[2]->obj_label, "official", sizeof(roles.objects[2]->obj_label));
+  roles.objects[3]->class_id = 1;
+  g_strlcpy(roles.objects[3]->obj_label, "bicycle", sizeof(roles.objects[3]->obj_label));
+  if (!colors.Apply(roles.meta) ||
+      !hm::preview_overlay::add_selected_overlay_snapshot_meta(roles.meta, true, false, nullptr)) return 9;
+  const auto* role_snapshot = hm::preview_overlay::find_overlay_snapshot_meta(roles.meta);
+  if (!role_snapshot || role_snapshot->player_rects.size() != 3) return 10;
+  std::set<std::string> labels;
+  for (const auto& player : role_snapshot->player_rects) labels.insert(player.role_label);
+  if (labels != std::set<std::string>{"", "GOALIE", "REF"}) return 11;
   if (!CheckProducer()) {
     std::cerr << "Requested color producer failed off-path, shared ownership, or flush checks\n";
     return 8;

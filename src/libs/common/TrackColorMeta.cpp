@@ -1,4 +1,5 @@
 #include "hstream/src/libs/common/TrackColorMeta.h"
+#include "hstream/src/libs/common/PersonRoles.h"
 
 #include <array>
 #include <memory>
@@ -42,13 +43,13 @@ bool TrackColorState::Apply(NvDsFrameMeta* frame) noexcept {
     size_t count = 0;
     for (NvDsMetaList* item = frame->obj_meta_list; item && count < ids.size(); item = item->next) {
       const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
-      if (object && object->class_id == 0 && object->object_id != UNTRACKED_OBJECT_ID)
+      if (object && hm::IsPerson(object->class_id, object->obj_label) && object->object_id != UNTRACKED_OBJECT_ID)
         ids[count++] = object->object_id;
     }
     stream.colors.Update(stream.epoch, frame->buf_pts, ids.data(), count);
     for (NvDsMetaList* item = frame->obj_meta_list; item; item = item->next) {
       auto* object = static_cast<NvDsObjectMeta*>(item->data);
-      if (!object || object->class_id != 0)
+      if (!object || !hm::IsPerson(object->class_id, object->obj_label))
         continue;
       const auto lease = stream.colors.Find(object->object_id);
       if (lease) {

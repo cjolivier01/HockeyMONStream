@@ -355,6 +355,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:person_roles",
         "@deepstream//:deepstream_lib",
         "@glib",
     ],
@@ -536,6 +537,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:person_roles",
         ":preview_overlay_meta",
         "//src/libs/player_analytics:track_colors",
         "//src/libs/player_analytics:frame_meta",
@@ -596,4 +598,11 @@ cc_test(
     name = "game_storage_test",
     srcs = ["GameStorageTest.cpp"],
     deps = [":game_storage", "@yaml-cpp"],
+)
+
+cc_library(
+    name = "person_roles",
+    hdrs = ["PersonRoles.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
 )

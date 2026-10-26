@@ -14,6 +14,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/common:game_storage",
+        "//src/libs/common:person_roles",
         ":play_cropper_cuda_lib",
         "//src/libs/program:frame_geometry",
         "//src/gst-plugins/gst-videoprep/algorithm-base",

@@ -560,6 +560,27 @@ void IgnoredAndSemanticLabels() {
       list.size() == 13 && list.data()[11].y0 >= list.data()[4].y1,
       "play-only snapshot lost ignored semantic row separation");
 }
+void HockeyRoleBoxes() {
+  Frame frame;
+  frame.Object(1);
+  auto* goalie = frame.Object(2);
+  goalie->class_id = 1;
+  std::strcpy(goalie->obj_label, "goalie");
+  auto* official = frame.Object(3);
+  official->class_id = 2;
+  std::strcpy(official->obj_label, "official");
+  auto* bicycle = frame.Object(4);
+  bicycle->class_id = 1;
+  std::strcpy(bicycle->obj_label, "bicycle");
+  a::CommandList list;
+  a::BuildPlayerOverlays(frame.frame, a::kPlayerBoxes, .3F, nullptr, 800, 600, &list);
+  Check(list.size() == 12 + 6 + 3, "Program must draw three human boxes and only GOALIE/REF text");
+  po::PlayCropperTransform baked{};
+  baked.baked_player_layers = a::kPlayerBoxes;
+  list.Clear();
+  a::BuildPlayerOverlays(frame.frame, a::kPlayerBoxes, .3F, &baked, 800, 600, &list);
+  Check(list.empty(), "Preview must not redraw baked role boxes or labels");
+}
 void HockeySkeleton() {
   Frame frame;
   auto result = Result();
@@ -590,6 +611,7 @@ int main() {
     void (*run)();
   };
   const Test cases[] = {
+      {"hockey_role_boxes", HockeyRoleBoxes},
       {"hockey_skeleton", HockeySkeleton},
       {"geometry_and_colors", GeometryAndColors},
       {"copy_on_write_colors", CopyOnWriteColors},

@@ -1,3 +1,4 @@
+#include "hstream/src/libs/common/PersonRoles.h"
 #include "hstream/src/libs/draw_display/PlayerOverlays.h"
 
 #include "hstream/src/libs/player_analytics/TeamAffiliation.h"
@@ -132,7 +133,7 @@ void BuildPlayerOverlays(
     // the existing immutable overlay snapshot and its independent UI switch.
     for (const auto* item = frame->obj_meta_list; item; item = item->next) {
       const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
-      if (!object || object->class_id != 0 || object->object_id == player_analytics::kUntrackedId)
+      if (!object || !hm::IsPerson(object->class_id, object->obj_label) || object->object_id == player_analytics::kUntrackedId)
         continue;
       const auto& rect = object->rect_params;
       const std::array<Point, 4> points{
@@ -152,7 +153,10 @@ void BuildPlayerOverlays(
         const auto& b = points[(i + 1) % points.size()];
         commands->AddLine(a.x, a.y, b.x, b.y, line_width, color);
       }
-      if (ignored)
+      const auto* role = hm::PersonRoleText(object->obj_label);
+      if (*role)
+        commands->AddText(points[0].x, std::max(0.0F, points[0].y - 24 * scale), 24 * scale, role, {1, 1, 1, 1});
+      else if (ignored)
         AddIgnoredPlayerLabel(rect, transform, coordinate_width, coordinate_height, commands);
     }
   }
@@ -213,7 +217,7 @@ void BuildPlayerOverlays(
       });
     for (const auto* item = frame->obj_meta_list; item; item = item->next) {
       const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
-      if (object && object->class_id == 0 && object->object_id == id)
+      if (object && hm::IsPerson(object->class_id, object->obj_label) && object->object_id == id)
         return preview_overlay::player_is_ignored(*object);
     }
     return false;

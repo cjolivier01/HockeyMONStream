@@ -1,4 +1,5 @@
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
+#include "hstream/src/libs/common/PersonRoles.h"
 
 #include <algorithm>
 #include <cmath>
@@ -211,9 +212,13 @@ bool add_selected_overlay_snapshot_meta(
       snapshot->player_rects.reserve(frame_meta->num_obj_meta);
       for (NvDsMetaList* item = frame_meta->obj_meta_list; item; item = item->next) {
         auto* object_meta = static_cast<NvDsObjectMeta*>(item->data);
-        if (object_meta && object_meta->class_id == 0 && object_meta->object_id != UNTRACKED_OBJECT_ID)
+        if (object_meta && hm::IsPerson(object_meta->class_id, object_meta->obj_label) &&
+            object_meta->object_id != UNTRACKED_OBJECT_ID)
           snapshot->player_rects.push_back(
-              {object_meta->rect_params, object_meta->object_id, player_is_ignored(*object_meta)});
+              {object_meta->rect_params,
+               object_meta->object_id,
+               player_is_ignored(*object_meta),
+               hm::PersonRoleText(object_meta->obj_label)});
       }
     }
     if (include_play) {

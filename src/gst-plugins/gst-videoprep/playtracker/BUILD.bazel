@@ -26,6 +26,7 @@ cc_library(
     copts = ["-std=c++17"],
     deps = [
         "//src/libs/tracking:camera_seek_state",
+        "//src/libs/common:person_roles",
         "//src/libs/publication",
         ":playtracker_payload",
         ":playtracker_telemetry_db",

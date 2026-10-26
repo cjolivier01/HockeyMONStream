@@ -82,6 +82,8 @@ absl::StatusOr<YAML::Node> ResolveProgramCameraConfig(
         play_tracker, destination_key, source_path, type, std::string("play-tracker.") + destination_key);
   };
 
+  HM_RETURN_IF_ERROR(copy_global("ignore-referees", "rink.tracking.cam_ignore_referees", ScalarType::kBool));
+  HM_RETURN_IF_ERROR(copy_global("ignore-goalies", "rink.tracking.cam_ignore_goalies", ScalarType::kBool));
   HM_RETURN_IF_ERROR(copy_global("camera-name", "camera.name", ScalarType::kString));
   HM_RETURN_IF_ERROR(copy_global("no-wide-start", "play_tracker.no_wide_start", ScalarType::kBool));
   HM_RETURN_IF_ERROR(copy_global("ignore-largest-bbox", "rink.tracking.cam_ignore_largest", ScalarType::kBool));

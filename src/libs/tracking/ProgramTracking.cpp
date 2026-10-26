@@ -74,6 +74,8 @@ struct ProgramCamera::Impl {
   hm::play_tracker::PlayTrackerConfig config;
   std::unique_ptr<hm::play_tracker::PlayTracker> camera;
   bool observed{false}, retired{false};
+  bool ignore_referees{false}, ignore_goalies{false};
+  int referee{-1}, goalie{-1};
 };
 ProgramCamera::ProgramCamera(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 ProgramCamera::~ProgramCamera() = default;
@@ -84,6 +86,12 @@ absl::StatusOr<std::unique_ptr<ProgramCamera>> ProgramCamera::Create(const hm::B
       return absl::InvalidArgumentError(error);
     auto impl = std::make_unique<Impl>();
     impl->arena = arena;
+    impl->ignore_referees = config["ignore-referees"].as<bool>();
+    impl->ignore_goalies = config["ignore-goalies"].as<bool>();
+    if (const auto roles = config["person-roles"]) {
+      impl->referee = roles["referee"].as<int>();
+      impl->goalie = roles["goalie"].as<int>();
+    }
     impl->config = gst_hm_playtracker::create_play_tracker_config(arena, config);
     if (impl->config.living_boxes.empty())
       return absl::InvalidArgumentError("Program requires a configured camera follower");
@@ -116,7 +124,8 @@ absl::StatusOr<std::optional<hm::BBox>> ProgramCamera::Process(const std::vector
     for (const auto& track : tracks) {
       const auto& p = track.box;
       // Only players steer the camera, matching DsPlayTrackerProcessFrame.
-      if (p.class_id != 0)
+      if (p.class_id != 0 && (p.class_id != impl.referee || impl.ignore_referees) &&
+          (p.class_id != impl.goalie || impl.ignore_goalies))
         continue;
       ids.push_back(track.id);
       boxes.emplace_back(p.left, p.top, p.right, p.bottom);
